@@ -624,6 +624,7 @@ func TestStoreAcceptTakesWriteIntentBeforeItsReads(t *testing.T) {
 func TestStoreAcceptRollsBackWhenItsContextIsCanceled(t *testing.T) {
 	t.Parallel()
 	database, store := newStoreFixture(t)
+	database.SetMaxOpenConns(1)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	_, err := store.Enqueue(ctx, NewItem{ID: "one", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "hello"})
@@ -631,14 +632,31 @@ func TestStoreAcceptRollsBackWhenItsContextIsCanceled(t *testing.T) {
 	prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
 	require.NoError(t, err)
 	require.NotNil(t, prepared)
+	storedPrepared, preparedAttachments, found, err := getItem(t.Context(), database, "agent-1", "one", true)
+	require.NoError(t, err)
+	require.True(t, found)
 	store.beforeAcceptWrite = cancel
 
 	_, _, err = store.Accept(ctx, *prepared, DispatchResult{StartsTurn: true})
 	require.ErrorIs(t, err, context.Canceled)
+	// The cancellation rollback can own the transaction after Accept returns.
+	// The sole connection becomes available only after that rollback finishes.
+	connection, err := database.Conn(t.Context())
+	require.NoError(t, err)
+	require.NoError(t, connection.Close())
 	assert.Zero(t, database.Stats().InUse, "Accept must release its transaction connection")
 	var count int
 	require.NoError(t, database.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM messages WHERE id = ?`, "one").Scan(&count))
 	assert.Zero(t, count)
+	item, attachments, found, err := getItem(t.Context(), database, "agent-1", "one", true)
+	require.NoError(t, err)
+	require.True(t, found)
+	assert.Equal(t, storedPrepared, item)
+	assert.Equal(t, preparedAttachments, attachments)
+	assert.Equal(t, prepared.Item.Attachments, attachments)
+	assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING, item.State)
+	assert.Positive(t, prepared.ReservedSeq)
+	assert.Equal(t, prepared.ReservedSeq, item.ReservedSeq)
 }
 
 func TestStoreAcceptRollsBackAfterADeferredCommitFailure(t *testing.T) {
@@ -663,6 +681,141 @@ func TestStoreAcceptRollsBackAfterADeferredCommitFailure(t *testing.T) {
 	require.NoError(t, database.QueryRowContext(ctx, `SELECT COUNT(*) FROM agent_input_queue_items WHERE id = ? AND state = ?`, "one", leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING).Scan(&queuedCount))
 	assert.Zero(t, transcriptCount)
 	assert.Equal(t, 1, queuedCount, "a failed commit leaves the prepared input for uncertain-delivery handling")
+}
+
+func TestStorePreparationReturnsTheCommittedItem(t *testing.T) {
+	t.Parallel()
+	for _, operation := range []string{"dispatch", "retry", "steer"} {
+		t.Run(operation, func(t *testing.T) {
+			t.Parallel()
+			database, store := newStoreFixture(t)
+			ctx := t.Context()
+			input := NewItem{
+				ID: "one", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+				Text: "original input", Attachments: []Attachment{{Filename: "original.txt", MimeType: "text/plain", Data: []byte("original attachment")}},
+			}
+			_, err := store.Enqueue(ctx, input)
+			require.NoError(t, err)
+			first, _, err := store.PrepareDispatch(ctx, input.AgentID)
+			require.NoError(t, err)
+			require.NotNil(t, first)
+			_, err = store.RequeueAndPause(ctx, input.AgentID, input.ID, errors.New("native input is not ready"),
+				leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED)
+			require.NoError(t, err)
+			_, err = store.SetPaused(ctx, input.AgentID, false, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_UNSPECIFIED)
+			require.NoError(t, err)
+			switch operation {
+			case "retry":
+				_, err = store.SetPaused(ctx, input.AgentID, true, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_MANUAL)
+				require.NoError(t, err)
+			case "steer":
+				_, _, err = store.TurnStarted(ctx, input.AgentID, true)
+				require.NoError(t, err)
+			}
+			const oldTimestamp = "2001-02-03T04:05:06Z"
+			_, err = database.ExecContext(ctx, "UPDATE agent_input_queue_items SET updated_at = ? WHERE agent_id = ? AND id = ?",
+				oldTimestamp, input.AgentID, input.ID)
+			require.NoError(t, err)
+			queued, _, found, err := getItem(ctx, database, input.AgentID, input.ID, true)
+			require.NoError(t, err)
+			require.True(t, found)
+			require.Equal(t, "native input is not ready", queued.Error)
+			require.Equal(t, oldTimestamp, queued.UpdatedAt)
+			var prepared *PreparedDispatch
+			var snapshot Snapshot
+			switch operation {
+			case "dispatch":
+				prepared, snapshot, err = store.PrepareDispatch(ctx, input.AgentID)
+			case "retry":
+				prepared, snapshot, err = store.PrepareRetry(ctx, input.AgentID)
+			case "steer":
+				prepared, snapshot, err = store.PrepareSteer(ctx, input.AgentID, input.ID)
+			}
+			require.NoError(t, err)
+			require.NotNil(t, prepared)
+			stored, attachments, found, err := getItem(ctx, database, input.AgentID, input.ID, true)
+			require.NoError(t, err)
+			require.True(t, found)
+			assert.Equal(t, stored, prepared.Item.StoredItem, "the returned reservation must describe its actual committed row")
+			assert.Equal(t, attachments, prepared.Item.Attachments)
+			assert.Equal(t, input.Attachments, attachments)
+			assert.Empty(t, stored.Error)
+			assert.NotEqual(t, oldTimestamp, stored.UpdatedAt)
+			assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING, stored.State)
+			assert.Equal(t, prepared.ReservedSeq, stored.ReservedSeq)
+			assert.Greater(t, prepared.ReservedSeq, first.ReservedSeq)
+			require.Len(t, snapshot.Items, 1)
+			assert.Equal(t, stored, snapshot.Items[0].StoredItem)
+			assert.True(t, snapshot.ActiveTurn)
+			assert.Equal(t, operation == "retry", snapshot.Paused)
+			assert.Equal(t, operation == "steer", snapshot.ActiveTurnSteerable)
+		})
+	}
+}
+
+func TestStorePreparationKeepsFullTextAndCanonicalCommittedTimestamp(t *testing.T) {
+	t.Parallel()
+	database, store := newStoreFixture(t)
+	ctx := t.Context()
+	input := NewItem{
+		ID: "one", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+		Text:        strings.Repeat("x", snapshotTextPreviewCharacters+128),
+		Attachments: []Attachment{{Filename: "original.txt", MimeType: "text/plain", Data: []byte("original attachment")}},
+	}
+	_, err := store.Enqueue(ctx, input)
+	require.NoError(t, err)
+	_, err = database.ExecContext(ctx, fmt.Sprintf(`CREATE TRIGGER fixed_preparation_timestamp
+AFTER UPDATE OF state ON agent_input_queue_items
+WHEN NEW.id = 'one' AND NEW.state = %d
+BEGIN
+  UPDATE agent_input_queue_items SET updated_at = '2030-01-02T03:04:05.000Z' WHERE id = NEW.id;
+END`, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING))
+	require.NoError(t, err)
+	prepared, snapshot, err := store.PrepareDispatch(ctx, input.AgentID)
+	require.NoError(t, err)
+	require.NotNil(t, prepared)
+	stored, attachments, found, err := getItem(ctx, database, input.AgentID, input.ID, true)
+	require.NoError(t, err)
+	require.True(t, found)
+	assert.Equal(t, "2030-01-02T03:04:05Z", stored.UpdatedAt)
+	assert.Equal(t, stored, prepared.Item.StoredItem)
+	assert.Equal(t, input.Text, prepared.Item.Text)
+	assert.Equal(t, input.Attachments, attachments)
+	assert.Equal(t, attachments, prepared.Item.Attachments)
+	require.Len(t, snapshot.Items, 1)
+	assert.Equal(t, strings.Repeat("x", snapshotTextPreviewCharacters)+"…", snapshot.Items[0].Text)
+	assert.Equal(t, stored.UpdatedAt, snapshot.Items[0].UpdatedAt)
+}
+
+func TestStorePreparationRejectsAnAbsentCommittedItem(t *testing.T) {
+	t.Parallel()
+	database, store := newStoreFixture(t)
+	ctx := t.Context()
+	input := NewItem{ID: "one", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "original input"}
+	before, err := store.Enqueue(ctx, input)
+	require.NoError(t, err)
+	_, err = database.ExecContext(ctx, fmt.Sprintf(`CREATE TRIGGER remove_prepared_item
+AFTER UPDATE OF state ON agent_input_queue_items
+WHEN NEW.id = 'one' AND NEW.state = %d
+BEGIN
+  DELETE FROM agent_input_queue_items WHERE id = NEW.id;
+END`, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING))
+	require.NoError(t, err)
+	prepared, _, err := store.PrepareDispatch(ctx, input.AgentID)
+	assert.ErrorIs(t, err, ErrConflict)
+	assert.Nil(t, prepared)
+	after, snapshotErr := store.Snapshot(ctx, input.AgentID)
+	require.NoError(t, snapshotErr)
+	assert.Equal(t, before, after, "an absent prepared item must roll back every queue and reservation field")
+	stored, _, found, readErr := getItem(ctx, database, input.AgentID, input.ID, true)
+	require.NoError(t, readErr)
+	require.True(t, found)
+	assert.Equal(t, input.Text, stored.Text)
+	assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, stored.State)
+	assert.Zero(t, stored.ReservedSeq)
+	var highWater int64
+	require.NoError(t, database.QueryRowContext(ctx, "SELECT message_seq_hwm FROM agents WHERE id = ?", input.AgentID).Scan(&highWater))
+	assert.Zero(t, highWater, "the refused preparation must release its uncommitted sequence")
 }
 
 func TestStoreAcceptRejectsAChangedReservedSequence(t *testing.T) {

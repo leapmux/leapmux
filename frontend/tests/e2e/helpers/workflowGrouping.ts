@@ -88,7 +88,7 @@ export async function expectOpaqueNativeWorkflowResult(
   await expandBackgroundTasksSection(context.page)
   const workflow = backgroundTaskRows(context.page, { kind: 'workflow' }).first()
   await expectRowBecomesFinal(context.page, workflow)
-  await expect(workflow).toHaveAttribute('data-status', 'completed')
+  await expect(workflow).toHaveAttribute('data-status', 'succeeded')
   const status = await context.modelScript.status()
   for (const rule of options.ruleNames) {
     expect(status.ruleMatches[rule]).toBe(1)
@@ -108,7 +108,7 @@ export async function expectOpaqueNativeWorkflowResult(
   await proveRegistry()
   await context.page.reload()
   await expandBackgroundTasksSection(context.page)
-  await expect(workflow).toHaveAttribute('data-status', 'completed')
+  await expect(workflow).toHaveAttribute('data-status', 'succeeded')
   await proveRegistry()
 }
 
@@ -150,7 +150,7 @@ export function ungroupedChildTaskProblem(tasks: readonly UngroupedChildTask[], 
   const children = tasks.filter(task => task.kind === BackgroundTaskKind.SUBAGENT)
   if (children.length !== 2)
     return `the registry holds ${children.length} subagent task(s), not 2`
-  if (children.some(task => task.status !== BackgroundTaskStatus.COMPLETED))
+  if (children.some(task => task.status !== BackgroundTaskStatus.SUCCEEDED))
     return 'a subagent task is not completed'
   const ids = children.map(task => task.childAgentId)
   if (childAgentIds === 'absent')
@@ -181,7 +181,7 @@ export async function expectUngroupedChildRows(
     await expect(rows).toHaveCount(2)
     const pair = [rows.nth(0), rows.nth(1)] as const
     for (const row of pair) {
-      await expect(row).toHaveAttribute('data-status', 'completed')
+      await expect(row).toHaveAttribute('data-status', 'succeeded')
       expect(await workflowGroupHeading(row), 'an ungrouped row has no group heading').toBe('')
     }
     expect(await workflowRowsShareGroup(pair[0], pair[1]), 'the two rows share no group heading').toBe(false)
@@ -223,7 +223,7 @@ export async function exerciseUngroupedNativeChildren(
     expect(second.parentId, 'both children belong to one parent').toBe(first.parentId)
     expect(second.childId, 'the two children are distinct agents').not.toBe(first.childId)
     await expectRunningUngroupedChild(context, second)
-    await expect(first.row).toHaveAttribute('data-status', 'completed')
+    await expect(first.row).toHaveAttribute('data-status', 'succeeded')
     await expect(backgroundTaskRows(context.page, { kind: 'subagent' })).toHaveCount(2)
     await expectNoNativeWorkflowGroups(context, first.parentId)
   }, second.finish)

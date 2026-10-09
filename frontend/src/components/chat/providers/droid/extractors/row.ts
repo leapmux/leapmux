@@ -10,7 +10,7 @@ import { parseMcpContentItem } from '../../../model/mcpToolCall'
 import { toolCallRow } from '../../../model/row'
 import { rawTodosToItems } from '../../../normalizers/todo'
 import { toolRequestFor } from '../../defaultToolRequests'
-import { retainedRowIsFinal } from '../../registry'
+import { retainedOutcome, retainedRowIsFinal } from '../../registry'
 import { droidToolKind } from '../toolKinds'
 
 /**
@@ -46,8 +46,8 @@ function droidLifecycle(
   return {
     frameStatus: 'unstated' as const,
     providerOutcome: isError ? ('failed' as const) : null,
-    retainedOutcome: retainedRowIsFinal(completion) ? ('succeeded' as const) : null,
-    rowFinal: isResult,
+    retainedOutcome: retainedOutcome(completion),
+    rowFinal: isResult || retainedRowIsFinal(completion),
     resultFrameLanded: hasResultContent,
   }
 }
@@ -102,7 +102,7 @@ function droidToolRow(
   }
 
   // A command result states how the command ended, which only the command body draws.
-  const commandText = kind === 'execute' && hasInput && isResult ? droidCommandText(resultContent) : undefined
+  const commandText = kind === 'execute' && hasInput && isResult && content !== undefined ? droidCommandText(resultContent) : undefined
   if (commandText !== undefined) {
     const call = createToolCall(envelope, {
       kind: 'execute',
@@ -123,9 +123,9 @@ function droidToolRow(
     kind: requestKind,
     name,
     request,
-    // A result frame states an outcome.
-    // A request with result content triggers the result-before-the-call-finished fault and degrades.
-    ...(isResult || content !== undefined
+    // Retained finality supplies no native result content.
+    // Keep an actual empty result, and keep absent content absent.
+    ...(content !== undefined
       ? { result: { content: resultContent } }
       : {}),
   })

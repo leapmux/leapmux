@@ -195,22 +195,33 @@ func TestClassifyDeliveryError(t *testing.T) {
 	assert.ErrorIs(t, err, read, "the cause stays in the chain")
 }
 
-// The repeat guard holds until a prompt reaches the server. A refused prompt
-// starts no turn, so MiMo can still repeat the old failure after it.
+// Prompt delivery cannot prove that a later unidentifiable failure repeats an old failure.
+// Both rejected and accepted input preserve the next native observation.
 func TestSendInputClearsTheRepeatGuardOnDelivery(t *testing.T) {
 	t.Parallel()
-	a, server := newTestAgent(t, nil)
-	a.lastTurnFailed = true
+	a, sink, server := newSinkTestAgent(t)
+	failure := sessionErrorEvent(t, "APIError", "The native failure after prompt delivery.")
+	feed(a, statusEvent(t, contracts.MiMoStatusTypeBusy), failure,
+		failedMessageEvent(t, "msg_delivery_failure", mainActorID, "APIError", "The native failure after prompt delivery."),
+		statusEvent(t, contracts.MiMoStatusTypeIdle))
 	server.respond("POST /session/ses_test/prompt_async", http.StatusBadRequest, `{}`)
 
 	require.Error(t, a.SendInput("hello", nil))
-	assert.True(t, a.lastTurnFailed)
+	feed(a, failure)
+	require.Equal(t, 1, sink.NotificationCount())
+	assert.Equal(t, string(failure), string(sink.LastNotification().Content))
 
 	server.handle("POST /session/ses_test/prompt_async", func(w http.ResponseWriter, _ *http.Request, _ []byte) {
 		w.WriteHeader(http.StatusNoContent)
 	})
 	require.NoError(t, a.SendInput("hello", nil))
-	assert.False(t, a.lastTurnFailed)
+	feed(a, failure)
+	assert.Equal(t, 2, sink.NotificationCount())
+	assert.Equal(t, string(failure), string(sink.LastNotification().Content))
+	rows := sink.Messages()
+	require.Len(t, rows, 1)
+	assert.True(t, rows[0].TurnEnd)
+	assert.Equal(t, string(failure), string(rows[0].Content))
 }
 
 // The worker's own calls run on goroutines other than the stream's. Each call

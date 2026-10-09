@@ -35,9 +35,9 @@ func (nopStdin) Close() error                { return nil }
 // newTestAgent builds an agent with no process behind it, whose requests reach
 // a fake server, and whose events a test feeds through HandleOutput.
 //
-// The agent already holds a session and the fake catalog, and runs the build
-// mode on mock/alpha with the Ask policy, which is where Start leaves a new
-// agent. A nil services records nothing.
+// The agent holds a session and the fake catalog.
+// It uses build mode on mock/alpha with the Ask policy, as Start does.
+// Nil services record nothing.
 //
 // The agent runs on a mock clock, so no timer of it fires unless a test
 // advances the clock. A test that drives a timer takes the clock with
@@ -55,7 +55,7 @@ func newTestAgent(t *testing.T, services agent.ProviderServices) (*Agent, *fakeS
 	workingDir := t.TempDir()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	a := newAgentState(agent.NewModelProgressResetSink(services),
+	a := newAgentState(services,
 		mimoRPC{endpoint: endpoint.WithHeader(directoryHeader, workingDir), timeout: testTimeout}, workingDir,
 		testutil.NewQuartzMock(t))
 	a.Process = providerkit.NewProcessFrom(providerkit.ProcessConfig{

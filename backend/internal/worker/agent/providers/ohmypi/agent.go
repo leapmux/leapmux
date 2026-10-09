@@ -519,7 +519,7 @@ func (a *Agent) recordCompactionResult(frame json.RawMessage, err error) {
 		})
 		return
 	}
-	if _, persistErr := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, frame); persistErr != nil {
+	if _, persistErr := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: frame}); persistErr != nil {
 		slog.Error("omp persist compact response", "agent_id", a.AgentID(), "error", persistErr)
 	}
 }

@@ -227,7 +227,7 @@ func TestNotificationThreading_RepeatedIdenticalProviderScopedSkipsWrite(t *test
 	payload := raw(t, codexStartupStatus("codex_apps", "failed", "connection failed"))
 
 	// The first notification opens a standalone thread and is broadcast.
-	broadcast, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, payload)
+	broadcast, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: payload})
 	require.NoError(t, err)
 	assert.True(t, broadcast, "the first notification is broadcast to the frontend")
 	rows := listRows()
@@ -238,7 +238,7 @@ func TestNotificationThreading_RepeatedIdenticalProviderScopedSkipsWrite(t *test
 	// broadcast. The broadcast=false return is what keeps the thinking-token
 	// reset decorator in lockstep with the frontend, which never clears here.
 	for i := 0; i < 5; i++ {
-		broadcast, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, payload)
+		broadcast, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: payload})
 		require.NoError(t, err)
 		assert.False(t, broadcast,
 			"an identical ProviderScoped notification collapses and must not report a broadcast")

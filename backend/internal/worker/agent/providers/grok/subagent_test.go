@@ -109,7 +109,7 @@ func TestGrokBlockingSubagentLifecycle(t *testing.T) {
 
 	a.HandleOutput(finished(t, "sub-1", "completed", "Done."))
 	task, _ = sink.BackgroundTask("call_2_0")
-	assert.Equal(t, bgtask.StatusCompleted, task.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, task.Status)
 
 	// The spawn's own result arrives after the finish, with the same report.
 	a.HandleOutput(sessionUpdate(t, grokTestSession, map[string]any{
@@ -118,7 +118,7 @@ func TestGrokBlockingSubagentLifecycle(t *testing.T) {
 		"rawOutput": map[string]any{"type": "SubagentCompleted", "output": "Done.", "subagent_id": "sub-1"},
 	}))
 	task, _ = sink.BackgroundTask("call_2_0")
-	assert.Equal(t, bgtask.StatusCompleted, task.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, task.Status)
 	assert.Equal(t, []string{"Done."}, reportTexts(child), "the two reports of one child are stored once")
 	for _, message := range sink.Messages() {
 		assert.NotContains(t, string(message.Content), "Listing now.", "the child's text stays out of the parent")
@@ -144,7 +144,7 @@ func TestGrokBackgroundSubagentLinksByTheIDItsResultStates(t *testing.T) {
 
 	a.HandleOutput(finished(t, "bg-1", "completed", "BG child done."))
 	task, _ = sink.BackgroundTask("call_8_0")
-	assert.Equal(t, bgtask.StatusCompleted, task.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, task.Status)
 	_, extra := sink.BackgroundTask("bg-1")
 	assert.False(t, extra, "the linked child takes no second row")
 }
@@ -187,7 +187,7 @@ func TestGrokSubagentWithoutASpawnCallTakesItsOwnRow(t *testing.T) {
 
 func TestGrokSubagentStatusMapping(t *testing.T) {
 	t.Parallel()
-	assert.Equal(t, bgtask.StatusCompleted, grokSubagentStatus("completed"))
+	assert.Equal(t, bgtask.StatusSucceeded, grokSubagentStatus("completed"))
 	assert.Equal(t, bgtask.StatusFailed, grokSubagentStatus("failed"))
 	assert.Equal(t, bgtask.StatusStopped, grokSubagentStatus("cancelled"))
 	assert.Equal(t, bgtask.StatusStopped, grokSubagentStatus("something-new"))
@@ -270,7 +270,7 @@ func TestGrokWorkflowRunKeepsOneGroupedRow(t *testing.T) {
 
 	a.HandleOutput(workflow("complete", nil))
 	row, _ = sink.BackgroundTask("workflow:run-1")
-	assert.Equal(t, bgtask.StatusCompleted, row.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
 }
 
 // subagentReports returns the report notifications of one transcript.
@@ -311,9 +311,9 @@ func TestGrokWorkflowRunReportsItsResultSummary(t *testing.T) {
 	require.Len(t, reports, 1)
 	assert.Equal(t, "The cache wins.\n\n_Full report: /w/report.md_", reports[0]["text"])
 	assert.Equal(t, "deep-research: Compare the caches", reports[0]["label"])
-	assert.Equal(t, bgtask.StatusWire(bgtask.StatusCompleted), reports[0]["status"])
+	assert.Equal(t, bgtask.StatusWire(bgtask.StatusSucceeded), reports[0]["status"])
 	row, _ := sink.BackgroundTask("workflow:run-1")
-	assert.Equal(t, bgtask.StatusCompleted, row.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
 }
 
 // A run that ended without completing states no result, and a completed run
@@ -366,7 +366,7 @@ func TestGrokWorkflowStatusMapping(t *testing.T) {
 	t.Parallel()
 	for status, want := range map[string]bgtask.Status{
 		"active": bgtask.StatusRunning, "user_paused": bgtask.StatusRunning, "blocked": bgtask.StatusRunning,
-		"budget_limited": bgtask.StatusRunning, "complete": bgtask.StatusCompleted, "failed": bgtask.StatusFailed,
+		"budget_limited": bgtask.StatusRunning, "complete": bgtask.StatusSucceeded, "failed": bgtask.StatusFailed,
 		"cancelled": bgtask.StatusStopped, "interrupted": bgtask.StatusStopped,
 	} {
 		assert.Equal(t, want, grokWorkflowStatus(status), status)
@@ -381,6 +381,25 @@ func TestGrokWorkflowStatusMapping(t *testing.T) {
 	assert.Equal(t, "", grokWorkflowActivity("active", "", "", -1), "a negative count states no agents")
 }
 
+func TestGrokUnknownWorkflowStatusKeepsTheRowOpenWithoutAReport(t *testing.T) {
+	t.Parallel()
+	for _, status := range []string{"", "finished", "future"} {
+		t.Run(status, func(t *testing.T) {
+			t.Parallel()
+			a, sink, _ := newGrokAgent(t, agent.Options{}, nil)
+			a.HandleOutput(notification(t, grokTestSession, map[string]any{
+				"sessionUpdate": "workflow_updated", "run_id": "unknown-run", "name": "Native workflow",
+				"status": status, "result_summary": "A result does not prove completion", "pause_message": "A message does not prove failure",
+			}))
+			row, present := sink.BackgroundTask("workflow:unknown-run")
+			require.True(t, present)
+			assert.Equal(t, bgtask.StatusRunning, row.Status)
+			assert.True(t, row.EndedAt.IsZero())
+			assert.Empty(t, subagentReports(&sink.Sink))
+		})
+	}
+}
+
 func TestGrokBackgroundCommandRows(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -388,11 +407,11 @@ func TestGrokBackgroundCommandRows(t *testing.T) {
 		snapshot map[string]any
 		want     bgtask.Status
 	}{
-		{name: "success", snapshot: map[string]any{"task_id": "t1", "exit_code": 0, "completed": true}, want: bgtask.StatusCompleted},
+		{name: "success", snapshot: map[string]any{"task_id": "t1", "exit_code": 0, "completed": true}, want: bgtask.StatusSucceeded},
 		{name: "failure", snapshot: map[string]any{"task_id": "t1", "exit_code": 2, "completed": true}, want: bgtask.StatusFailed},
 		{name: "killed", snapshot: map[string]any{"task_id": "t1", "explicitly_killed": true}, want: bgtask.StatusStopped},
 		{name: "signal", snapshot: map[string]any{"task_id": "t1", "signal": "SIGTERM"}, want: bgtask.StatusStopped},
-		{name: "numeric id", snapshot: map[string]any{"task_id": 1, "exit_code": 0}, want: bgtask.StatusCompleted},
+		{name: "numeric id", snapshot: map[string]any{"task_id": 1, "exit_code": 0}, want: bgtask.StatusSucceeded},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -573,7 +592,7 @@ func TestGrokBackgroundSpawnReadsTheIDFromItsContent(t *testing.T) {
 	assert.False(t, extra, "the id links the child, whatever its description states")
 	a.HandleOutput(finished(t, "bg-1", "completed", "Done."))
 	task, _ = sink.BackgroundTask("call_8_0")
-	assert.Equal(t, bgtask.StatusCompleted, task.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, task.Status)
 }
 
 // An agent of a workflow run belongs to the run, never to a blocking spawn of

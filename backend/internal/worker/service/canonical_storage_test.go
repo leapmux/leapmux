@@ -143,7 +143,7 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 		UpdatedAt:    sqltime.NewSQLiteTime(now),
 	}))
 	require.NoError(t, queries.CloseAgentBackgroundTask(ctx, gendb.CloseAgentBackgroundTaskParams{
-		Status:         leapmuxv1.BackgroundTaskStatus(bgtask.StatusCompleted),
+		Status:         leapmuxv1.BackgroundTaskStatus(bgtask.StatusSucceeded),
 		MinFinalStatus: leapmuxv1.BackgroundTaskStatus(bgtask.MinFinalStatus),
 		EndedAt:        sqltime.SQLiteNullTimeOf(now),
 		UpdatedAt:      sqltime.NewSQLiteTime(now),

@@ -81,7 +81,7 @@ func TestAgentResumeCloseBeforeRegistrationStopsLateProcess(t *testing.T) {
 	dispatch(dispatcher, "WatchEvents", &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{
 			AgentId: agentID, Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST,
-			Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL,
+			Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1,
 		}},
 	}, watcher)
 	waitAgentWatchLive(t, svc, agentID)
@@ -198,7 +198,7 @@ func TestCatchUpReplayDoesNotReportALateProcessOfAClosedTab(t *testing.T) {
 	dispatch(dispatcher, "WatchEvents", &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{
 			AgentId: agentID, Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST,
-			Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL,
+			Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1,
 		}},
 	}, watcher)
 	select {
@@ -481,7 +481,7 @@ func TestCloseAgent_DuringStartup_SuppressesActiveAndCleansUp(t *testing.T) {
 			// Subscribe here — by this point the DB row exists, so
 			// WatchEvents accepts the subscription.
 			dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
-				Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: opts.AgentID, Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
+				Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: opts.AgentID, Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}},
 			}, wWatch)
 			// The subscription lands on the session goroutine, after dispatch
 			// returns. Without this wait the CloseAgent below could broadcast to

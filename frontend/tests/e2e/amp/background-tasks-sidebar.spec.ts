@@ -39,7 +39,7 @@ ampTest.describe('Amp subagent registry', () => {
       await expect(child.row).toContainText('Run the fruit task')
       await child.finish()
       await expectRowBecomesFinal(page, child.row)
-      await expect(child.row).toHaveAttribute('data-status', 'completed')
+      await expect(child.row).toHaveAttribute('data-status', 'succeeded')
       await expectSectionPersists(page)
       expect((await modelScript.status()).ruleMatches['the subagent reports']).toBe(1)
       expect(await child.row.getAttribute('data-child-agent-id') ?? '').toBe('')

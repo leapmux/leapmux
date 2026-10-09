@@ -124,14 +124,17 @@ func (a *Agent) startNativeSubagent(raw []byte, event copilotEvent) {
 // finishNativeSubagent closes one subagent's registry row and its transcript state.
 func (a *Agent) finishNativeSubagent(raw []byte, event copilotEvent) {
 	var finished copilotSubagentEvent
-	if err := json.Unmarshal(event.Data, &finished); err != nil {
-		slog.Warn("Read Copilot subagent completion", "agent_id", a.AgentID(), "error", err)
-	}
+	decodeError := json.Unmarshal(event.Data, &finished)
 	child := a.children[event.AgentID]
 	if child == nil {
 		child = a.childForSpawnToolCall(finished.ToolCallID)
 	}
-	status := bgtask.StatusCompleted
+	if decodeError != nil {
+		slog.Warn("Read Copilot subagent completion", "agent_id", a.AgentID(), "error", decodeError)
+		a.persistNativeFrameTo(a.sinkFor(child), raw, agent.SpanInfo{})
+		return
+	}
+	status := bgtask.StatusSucceeded
 	switch {
 	case finished.Cancelled:
 		status = bgtask.StatusStopped

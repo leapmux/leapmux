@@ -244,7 +244,7 @@ func (a *Agent) handleSessionNotice(event hubEvent) {
 	if a.IsDiscardingOutput() {
 		return
 	}
-	if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, event.Raw); err != nil {
+	if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: event.Raw}); err != nil {
 		slog.Error("cline persist notice", "agent_id", a.AgentID(), "error", err)
 	}
 }

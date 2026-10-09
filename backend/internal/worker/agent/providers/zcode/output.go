@@ -186,7 +186,7 @@ func (a *Agent) persistZCodeNotification(event zcodeEventEnvelope) {
 	if content == nil {
 		return
 	}
-	if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content); err != nil {
+	if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: content}); err != nil {
 		slog.Error("zcode persist notification", "agent_id", a.AgentID(), "type", event.Type, "error", err)
 	}
 }
@@ -882,7 +882,7 @@ func zcodeBatchTaskStatus(batch zcodeToolUpdated) bgtask.Status {
 	if batch.ErrorCount > 0 {
 		return bgtask.StatusStopped
 	}
-	return bgtask.StatusCompleted
+	return bgtask.StatusSucceeded
 }
 
 // --- session.updated ---
@@ -1086,7 +1086,7 @@ type zcodeBackgroundTask struct {
 func zcodeBackgroundStatus(status string) (bgtask.Status, bool) {
 	switch status {
 	case "completed":
-		return bgtask.StatusCompleted, true
+		return bgtask.StatusSucceeded, true
 	case "failed", "spawn_error", "timed_out":
 		return bgtask.StatusFailed, true
 	case "cancelled":

@@ -1,15 +1,16 @@
+import type { MessageInitShape } from '@bufbuild/protobuf'
 import type { AgentChatMessage, AgentControlRequest, AgentStatusChange, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { TerminalStatusChange } from '~/generated/proto/leapmux/v1/terminal_pb'
+import type { AgentEvent, WatchEventsRequest, WatchEventsResponse } from '~/generated/proto/leapmux/v1/workspace_pb'
 import type { AgentTab, FileTab, Tab, TerminalTab } from '~/stores/tab.types'
-import { create } from '@bufbuild/protobuf'
+import { create, fromBinary, toBinary } from '@bufbuild/protobuf'
 import { createRoot, mapArray } from 'solid-js'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as workerRpc from '~/api/workerRpc'
-import { compactionContextTokens } from '~/components/chat/notificationEntries'
 import { CATCH_UP_GAP_LIMIT } from '~/generated/contracts/chat-history'
-import { AgentActivityState, AgentControlCancelRequestSchema, AgentProvider, AgentStatus, ContentCompression, ControlResponseState, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
-import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { AgentActivityState, AgentChatMessageSchema, AgentControlCancelRequestSchema, AgentControlRequestSchema, AgentGoalAction, AgentGoalSchema, AgentGoalStatus, AgentProvider, AgentStatus, AgentStatusChangeSchema, BackgroundTaskItemSchema, BackgroundTaskKind, BackgroundTaskStatus, ContentCompression, ControlResponseState, ListAgentMessagesResponseSchema, ListMessageMarksResponseSchema, MessageSource, TodoItemSchema, TodoStatus } from '~/generated/proto/leapmux/v1/agent_pb'
+import { TerminalStatus, TerminalStatusChangeSchema } from '~/generated/proto/leapmux/v1/terminal_pb'
+import { AgentEventSchema, TabType, WatchEventsRequestSchema, WatchEventsResponseSchema, WatchMode, WatchRejectionReason } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { applyNotificationMetadata, applyPendingAxisSuppression, buildAgentStatusTabUpdate, handleActivityChanged, handleAgentInactive, handleAgentMessage, handleAgentSessionInfo, handleAgentSettled, handleAgentStatusChange, handleControlCancellation, handleControlRequest, handleResultDivider, resolveSettingsTabFields, wireRateLimitUpdateFromSessionInfo, wireSessionInfoToUpdates } from '~/hooks/agentEvents'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { applyTerminalStatusChange, handleTerminalBell, handleTerminalNotification, handleTerminalProgress, handleTerminalTitleChanged, markTerminalExited } from '~/hooks/terminalEvents'
@@ -18,14 +19,14 @@ import { ChannelError, channelNotOpenError } from '~/lib/channelError'
 import { parseMessageContent } from '~/lib/messageParser'
 import { createAgentActivityStore } from '~/stores/agentActivity.store'
 import { createAgentInputQueueStore } from '~/stores/agentInputQueue.store'
-import { compactionContextUsage, createAgentSessionStore } from '~/stores/agentSession.store'
+import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore, MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.store'
 import { createControlStore } from '~/stores/control.store'
 import { repoKey } from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 import { LIVE_STATUS_FIELDS, TERMINAL_LIVE_STATUS_FIELDS } from '~/stores/tab.helpers'
 import { createTabMetadataStore } from '~/stores/tabMetadata.store'
-import { emitAddTab } from '~/stores/tabOps'
+import { emitAddTab, emitRemoveTab } from '~/stores/tabOps'
 import { installTestBridge } from '~/test-support/crdtBridge'
 import { createTestQuakeStore, createTestTabStores } from '~/test-support/tabStores'
 
@@ -34,61 +35,76 @@ vi.mock('~/api/workerRpc', async (importOriginal) => {
   return {
     ...actual,
     watchEventsViaChannel: vi.fn(),
-    // The chat-history load the hook fires for the active agent tab. Stubbed so
-    // a test can choose HOW it fails; the real one would reach for a channel
-    // this file never stands up.
+    // The active agent triggers a history request. Stub that request so each test controls its
+    // failure without opening a real channel.
+
     listAgentMessages: vi.fn(),
-    // Only getOrOpenChannel is reached from this module, and it must not
-    // attempt a real handshake.
+    // This module calls only getOrOpenChannel. Its fake must not attempt a real handshake.
     channelManager: {
       getOrOpenChannel: vi.fn().mockResolvedValue('ch-1'),
       hasOpenChannelForWorker: vi.fn().mockReturnValue(true),
-      // Asked by useWatchEventsStreams before it arms a redial, so a caller with
-      // no error in hand still parks on a latched relay. Null is "dialable".
+      // useWatchEventsStreams checks the relay before it schedules a reconnect. Return null unless a
+      // test supplies a fatal refusal.
+
       fatalCloseInfo: vi.fn(() => null),
     },
   }
 })
 
-/** Everything the app told the USER about, whichever helper carried it. */
+/** Retain every user notification, regardless of the helper that supplies it. */
 const mockShowWarnToast = vi.fn()
+const mockToastHost = vi.fn((element: HTMLElement) => {
+  const mounted = element.cloneNode(true) as HTMLElement
+  document.body.appendChild(mounted)
+  return mounted
+})
+let previousToastHost: Window['ot'] | undefined
 
-vi.mock('~/components/common/Toast', async () => {
-  // showWarnToastUnlessDisconnected keeps its REAL rule and reports through the
-  // same spy: these tests ask whether the USER was told, and a stub that always
-  // forwarded would pass whether the rule held or not.
-  const { isDisconnectError } = await import('~/api/workerErrors')
+vi.mock('~/components/common/Toast', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('~/components/common/Toast')>()
   return {
+    ...actual,
     showWarnToast: (...args: unknown[]) => mockShowWarnToast(...args),
     showInfoToast: vi.fn(),
     showWarnToastUnlessDisconnected: (message: string, err: unknown) => {
-      if (!isDisconnectError(err))
+      const previousCalls = mockToastHost.mock.calls.length
+      actual.showWarnToastUnlessDisconnected(message, err)
+      if (mockToastHost.mock.calls.length > previousCalls)
         mockShowWarnToast(message, err)
     },
   }
 })
 
-/**
- * Types a simulated catch-up phase as the runtime union so the guard
- * comparisons (`!== 'live'`, `=== 'live'`) mirror the source instead of
- * being collapsed to a known literal by TS const-narrowing.
- */
+beforeEach(() => {
+  previousToastHost = window.ot
+  mockToastHost.mockClear()
+  window.ot = {
+    toast: Object.assign(() => {}, { el: mockToastHost, clear: () => {} }),
+  }
+})
+
+afterEach(() => {
+  if (previousToastHost === undefined)
+    Reflect.deleteProperty(window, 'ot')
+  else
+    window.ot = previousToastHost
+  for (const result of mockToastHost.mock.results) {
+    if (result.type === 'return')
+      result.value.remove()
+  }
+})
+
 const WS = 'ws-test'
 
-/** The two tool_use rows the tool-progress cases below address, both of one provider session. */
+/** The tool-progress tests address two tool_use rows from one provider session. */
 const TOOL_A = { spanId: 'toolu_A', agentSessionId: 'sess-1' }
 const TOOL_B = { spanId: 'toolu_B', agentSessionId: 'sess-1' }
 
 let nextPosition = 0
 
 /**
- * The tab stores these tests drive, over a real CRDT bridge.
- *
- * The hook reads tabs from the joined `view` and writes worker-sourced fields
- * to `tabMetadata`, so a tab needs BOTH halves: a placement op (which is what
- * puts it in the projection at all) and its metadata. `addAgent` writes both,
- * which is the only reason this helper exists — everything these tests care
- * about (agentStatus, title, git fields) lives on the metadata side.
+ * A joined tab requires placement and metadata. addAgent creates its placement and writes its
+ * metadata. The tests read the joined view and update worker fields through metadata.
  */
 function makeTabStores(workspaceId = WS) {
   const harness = installTestBridge({ workspaceId })
@@ -96,7 +112,7 @@ function makeTabStores(workspaceId = WS) {
   return {
     ...stores,
     rootTileId: harness.rootTileId,
-    /** Place an agent and patch its metadata. Activates, as `addTab` used to. */
+    /** Place an agent and write its metadata. Select its tab unless activate is false. */
     addAgent(id: string, meta: Record<string, unknown> = {}, opts: { tileId?: string, activate?: boolean } = {}) {
       nextPosition += 1
       emitAddTab({
@@ -111,7 +127,7 @@ function makeTabStores(workspaceId = WS) {
       if (opts.activate !== false)
         stores.selection.setActiveById(TabType.AGENT, id)
     },
-    /** Same, for a TERMINAL tab. */
+    /** Place a terminal and write its metadata. Select its tab. */
     addTerminal(id: string, meta: Record<string, unknown> = {}) {
       nextPosition += 1
       emitAddTab({ type: TabType.TERMINAL, id, tileId: harness.rootTileId, position: `p${nextPosition}`, workerId: '' })
@@ -123,188 +139,27 @@ function makeTabStores(workspaceId = WS) {
 
 type TabStores = ReturnType<typeof makeTabStores>
 
+/** Supply actual stores to each direct event handler. */
+function handlerStores(tabs: TabStores, agentSessionStore = createAgentSessionStore()) {
+  return {
+    ...tabs,
+    agentSessionStore,
+    chatStore: createChatStore(),
+    controlStore: createControlStore(),
+    repoGitStore: createRepoGitStore(),
+    getActiveWorkspaceId: () => WS,
+  }
+}
+
+/** Return the runtime phase union for direct handler tests. */
 function simulatePhase(phase: 'catchingUp' | 'live'): 'catchingUp' | 'live' {
   return phase
 }
 
-/**
- * These tests verify the control-request guard in useWorkspaceConnection's
- * handleAgentEvent. Because handleAgentEvent is a closure that depends on
- * gRPC streams, we simulate its logic with real stores to verify the
- * invariant: replayed catch-up control requests must not be added for
- * INACTIVE agents, but live control requests are proof that a stale
- * INACTIVE status should be corrected.
- */
-describe('controlRequest guard for inactive agents', () => {
-  function makeRequest(requestId: string, agentId: string) {
-    return { requestId, agentId, payload: { method: 'item/commandExecution/requestApproval' }, claimToken: `tok-${requestId}` }
-  }
-
-  it('should not add catch-up control request when agent is INACTIVE', () => {
-    createRoot((dispose) => {
-      const tabs = makeTabStores()
-      const controlStore = createControlStore()
-
-      tabs.addAgent('agent-1', { agentStatus: AgentStatus.INACTIVE })
-
-      // Simulate the guard in useWorkspaceConnection's controlRequest handler:
-      // if (catchUpPhase !== 'live' && agentEntry?.agentStatus === AgentStatus.INACTIVE) break
-      const catchUpPhase = simulatePhase('catchingUp')
-      // const agentEntry = tabs.view.getAgentTab(cr.agentId)
-      const agentEntry = tabs.view.getAgentTab('agent-1')
-      if (!(catchUpPhase !== 'live' && agentEntry?.agentStatus === AgentStatus.INACTIVE)) {
-        controlStore.addRequest('agent-1', makeRequest('r1', 'agent-1'))
-      }
-
-      expect(controlStore.getRequests('agent-1')).toHaveLength(0)
-      dispose()
-    })
-  })
-
-  it('should revive stale INACTIVE state and add live control request', () => {
-    createRoot((dispose) => {
-      const tabs = makeTabStores()
-      const controlStore = createControlStore()
-
-      tabs.addAgent('agent-1', { agentStatus: AgentStatus.INACTIVE })
-
-      const catchUpPhase = 'live'
-      if (catchUpPhase === 'live') {
-        const current = tabs.view.getAgentTab('agent-1')
-        if (current?.agentStatus === AgentStatus.INACTIVE)
-          tabs.metadata.patch('agent-1', { agentStatus: AgentStatus.ACTIVE })
-      }
-      const agentEntry = tabs.view.getAgentTab('agent-1')
-      if (!(catchUpPhase !== 'live' && agentEntry?.agentStatus === AgentStatus.INACTIVE)) {
-        controlStore.addRequest('agent-1', makeRequest('r1', 'agent-1'))
-      }
-
-      expect(tabs.view.getAgentTab('agent-1')?.agentStatus).toBe(AgentStatus.ACTIVE)
-      expect(controlStore.getRequests('agent-1')).toHaveLength(1)
-      dispose()
-    })
-  })
-
-  it('should add control request when agent is ACTIVE', () => {
-    createRoot((dispose) => {
-      const tabs = makeTabStores()
-      const controlStore = createControlStore()
-
-      tabs.addAgent('agent-1', { agentStatus: AgentStatus.ACTIVE })
-
-      const catchUpPhase = simulatePhase('catchingUp')
-      const agentEntry = tabs.view.getAgentTab('agent-1')
-      if (!(catchUpPhase !== 'live' && agentEntry?.agentStatus === AgentStatus.INACTIVE)) {
-        controlStore.addRequest('agent-1', makeRequest('r1', 'agent-1'))
-      }
-
-      expect(controlStore.getRequests('agent-1')).toHaveLength(1)
-      dispose()
-    })
-  })
-
-  it('should clear control requests when agent becomes INACTIVE', () => {
-    createRoot((dispose) => {
-      const tabs = makeTabStores()
-      const controlStore = createControlStore()
-
-      tabs.addAgent('agent-1', { agentStatus: AgentStatus.ACTIVE })
-      controlStore.addRequest('agent-1', makeRequest('r1', 'agent-1'))
-
-      expect(controlStore.getRequests('agent-1')).toHaveLength(1)
-
-      // Simulate statusChange INACTIVE → controlStore.clearAgent()
-      tabs.metadata.patch('agent-1', { agentStatus: AgentStatus.INACTIVE })
-      controlStore.clearAgent('agent-1')
-
-      expect(controlStore.getRequests('agent-1')).toHaveLength(0)
-      dispose()
-    })
-  })
-
-  it('should preserve pending control requests across short connection blips', () => {
-    createRoot((dispose) => {
-      const tabs = makeTabStores()
-      const controlStore = createControlStore()
-
-      tabs.addAgent('agent-1', { agentStatus: AgentStatus.ACTIVE })
-      controlStore.addRequest('agent-1', makeRequest('r1', 'agent-1'))
-
-      expect(controlStore.getRequests('agent-1')).toHaveLength(1)
-
-      // Simulate worker-offline transition: agent goes INACTIVE but pending
-      // control requests must survive transient transport blips.
-      tabs.metadata.patch('agent-1', { agentStatus: AgentStatus.INACTIVE })
-
-      expect(controlStore.getRequests('agent-1')).toHaveLength(1)
-      dispose()
-    })
-  })
-
-  it('should clear control requests on worker restart because agent processes stop', () => {
-    createRoot((dispose) => {
-      const tabs = makeTabStores()
-      const controlStore = createControlStore()
-
-      tabs.addAgent('agent-1', { agentStatus: AgentStatus.ACTIVE })
-      controlStore.addRequest('agent-1', makeRequest('r1', 'agent-1'))
-
-      expect(controlStore.getRequests('agent-1')).toHaveLength(1)
-
-      // Simulate the statusChange handler during catch-up replay after a
-      // worker restart: the replayed INACTIVE statusChange triggers clearAgent
-      // because the agent process no longer exists.
-      tabs.metadata.patch('agent-1', { agentStatus: AgentStatus.INACTIVE })
-      controlStore.clearAgent('agent-1')
-
-      expect(controlStore.getRequests('agent-1')).toHaveLength(0)
-
-      // A replayed controlRequest for the now-INACTIVE agent must be skipped
-      // by the controlRequest-case guard in useWorkspaceConnection: catch-up
-      // replay + INACTIVE → break.
-      const catchUpPhase = simulatePhase('catchingUp')
-      const agentEntry = tabs.view.getAgentTab('agent-1')
-      if (!(catchUpPhase !== 'live' && agentEntry?.agentStatus === AgentStatus.INACTIVE)) {
-        controlStore.addRequest('agent-1', makeRequest('r1', 'agent-1'))
-      }
-
-      expect(controlStore.getRequests('agent-1')).toHaveLength(0)
-      dispose()
-    })
-  })
-
-  it('should preserve pending control requests across WatchEvents stream restarts', () => {
-    createRoot((dispose) => {
-      const tabs = makeTabStores()
-      const controlStore = createControlStore()
-
-      tabs.addAgent('agent-1', { agentStatus: AgentStatus.ACTIVE })
-      controlStore.addRequest('agent-1', makeRequest('r1', 'agent-1'))
-
-      expect(controlStore.getRequests('agent-1')).toHaveLength(1)
-
-      // Simulate WatchEvents stream reconnect: the agent is still ACTIVE
-      // (worker didn't restart), so the replayed statusChange does NOT
-      // trigger clearAgent. The same controlRequest is replayed but
-      // addRequest deduplicates by requestId.
-      controlStore.addRequest('agent-1', makeRequest('r1', 'agent-1'))
-
-      expect(controlStore.getRequests('agent-1')).toHaveLength(1)
-      dispose()
-    })
-  })
-})
-
 describe('background agent history trimming', () => {
   /**
-   * Driven through the real `handleAgentMessage`, deliberately.
-   *
-   * These used to re-implement the visibility predicate in the test and assert
-   * against that reimplementation, so the production guard was never executed:
-   * when it regressed from an identity check to a bare truthiness check on
-   * `activeKeyForTile` -- which heals on read and is therefore truthy for any
-   * tile holding any tab -- `trimOldestEnd` became unreachable and every suite
-   * stayed green while background chat history grew without bound.
+   * Exercise the actual message handler. A tile can have a selected key that belongs to another
+   * tab. Compare the exact agent key so background history still receives its size limit.
    */
   function makeTrimStores() {
     const tabs = makeTabStores()
@@ -337,8 +192,8 @@ describe('background agent history trimming', () => {
   }
 
   /**
-   * Fill `agentId` to exactly the cap, then deliver ONE more through the real
-   * handler -- which both persists it and decides whether to trim.
+   * Fill the history to its limit. Deliver one additional row through the actual handler so it
+   * decides whether to trim.
    */
   function overflowThroughHandler(
     stores: ReturnType<typeof makeTrimStores>['stores'],
@@ -355,7 +210,7 @@ describe('background agent history trimming', () => {
       const { stores, tabs } = makeTrimStores()
       tabs.addAgent('active-agent')
       tabs.addAgent('background-agent', {}, { activate: false })
-      // The user is on `active-agent`; both share the root tile.
+      // The user selects active-agent. Both agents share the root tile.
       tabs.selection.setActiveById(TabType.AGENT, 'active-agent')
 
       overflowThroughHandler(stores, 'background-agent', MAX_BACKGROUND_CHAT_MESSAGES)
@@ -387,8 +242,8 @@ describe('background agent history trimming', () => {
   it('does not trim a tab that is tile-active while another tab is workspace-active', () => {
     createRoot((dispose) => {
       const { stores, tabs } = makeTrimStores()
-      // A real second leaf: the point is a tab that is active on ITS tile while
-      // not being the workspace's active tab, so the two must differ.
+      // Use a second tile. Its selected tab must differ from the workspace's focused tab.
+
       const secondTile = tabs.layoutStore.splitTile(tabs.rootTileId, 'horizontal')!
       tabs.addAgent('active-agent')
       tabs.addAgent('visible-agent', {}, { tileId: secondTile, activate: false })
@@ -410,30 +265,38 @@ describe('agent tab notification keys', () => {
     createRoot((dispose) => {
       const tabs = makeTabStores()
       tabs.addAgent('agent-1')
-
-      if (tabs.selection.activeKeyForWorkspace(WS) !== `${TabType.AGENT}:agent-1`) {
-        tabs.metadata.patch('agent-1', { hasNotification: true })
-      }
-
-      expect(tabs.view.getAgentTab('agent-A')?.hasNotification).not.toBe(true)
+      const controlStore = createControlStore()
+      handleControlRequest('agent-1', create(AgentControlRequestSchema, {
+        agentId: 'agent-1',
+        requestId: 'active-tab-request',
+        payload: new TextEncoder().encode('{}'),
+      }), 'live', {
+        ...tabs,
+        agentSessionStore: createAgentSessionStore(),
+        chatStore: createChatStore(),
+        controlStore,
+        getActiveWorkspaceId: () => WS,
+      })
+      expect(tabs.view.getAgentTab('agent-1')).toBeDefined()
+      expect(tabs.view.getAgentTab('agent-1')?.hasNotification).not.toBe(true)
+      expect(controlStore.getRequests('agent-1')).toHaveLength(1)
       dispose()
     })
   })
 
-  // Mirrors the live controlRequest branch in useWorkspaceConnection: a
-  // background tab that receives a control request must light its badge
-  // so the user knows to switch over. The active tab must NOT be badged
-  // (the prompt is already on screen).
+  // Call the real control handler. A live request sets a badge only when the agent tab is off
+  // screen.
+
   function applyControlRequestNotification(
     tabs: TabStores,
     agentId: string,
     catchUpPhase: 'catchingUp' | 'live',
   ) {
-    if (catchUpPhase !== 'live')
-      return
-    if (tabs.selection.activeKeyForWorkspace(WS) !== `${TabType.AGENT}:${agentId}`) {
-      tabs.metadata.patch(agentId, { hasNotification: true })
-    }
+    handleControlRequest(agentId, create(AgentControlRequestSchema, {
+      agentId,
+      requestId: 'notification-request',
+      payload: new TextEncoder().encode('{}'),
+    }), catchUpPhase, handlerStores(tabs))
   }
 
   it('badges a background tab when a live control request arrives', () => {
@@ -466,9 +329,9 @@ describe('agent tab notification keys', () => {
     })
   })
 
-  // A page reload replays still-pending control_requests via the catch-up
-  // path; surfacing them as new badges would alarm the user about prompts
-  // they were already aware of. Only 'live' arrivals should badge.
+  // Reload replays pending control requests. Replay must retain the prompt without creating a
+  // new badge.
+
   it('does not badge during catch-up replay', () => {
     createRoot((dispose) => {
       const tabs = makeTabStores()
@@ -486,42 +349,34 @@ describe('agent tab notification keys', () => {
 })
 
 describe('context usage refresh on compaction boundary', () => {
-  // Mirrors the compaction branch in useWorkspaceConnection's message handler:
-  // a completed boundary refreshes the grid from its post-compaction token
-  // count (resetting the now-stale input/cache components, since the boundary
-  // carries no breakdown) while preserving the known context window, instead of
-  // leaving the pre-compaction usage on screen until the next turn.
+  // Call the real notification handler. A completed compaction replaces stale token components
+  // and retains the known context window.
+
   function applyCompaction(
     sessionStore: ReturnType<typeof createAgentSessionStore>,
     agentId: string,
     content: unknown,
   ) {
-    const msg = {
+    const tabs = makeTabStores()
+    const msg = create(AgentChatMessageSchema, {
       id: 'compact-1',
       source: MessageSource.AGENT,
       content: new TextEncoder().encode(JSON.stringify(content)),
       contentCompression: ContentCompression.NONE,
       seq: 1n,
       agentProvider: AgentProvider.CLAUDE_CODE,
-    } as Parameters<ReturnType<typeof createChatStore>['addMessage']>[1]
-
-    const postTokens = compactionContextTokens(parseMessageContent(msg), AgentProvider.CLAUDE_CODE)
-    if (postTokens === undefined)
-      return
-    const existing = sessionStore.getInfo(agentId).contextUsage
-    sessionStore.updateInfo(agentId, {
-      contextUsage: compactionContextUsage(postTokens, existing),
     })
+    applyNotificationMetadata(agentId, msg, parseMessageContent(msg), handlerStores(tabs, sessionStore), 'live')
   }
 
   const compactBoundary = (meta: Record<string, unknown>) => ({ type: 'system', subtype: 'compact_boundary', compact_metadata: meta })
 
-  // Distinct agent ids per case: the store persists through browser storage,
-  // so a shared id would leak one case's contextWindow into the next.
+  // Use a separate agent ID for each case because the store persists through browser storage.
+  // A shared ID could carry one case's contextWindow into the next case.
   it('drops the grid to the post-compaction size and preserves the context window', () => {
     createRoot((dispose) => {
       const store = createAgentSessionStore()
-      // Pre-compaction usage from the last assistant turn: ~150k of input/cache.
+      // Seed the input and cache usage from the previous turn.
       store.updateInfo('compact-drop', {
         contextUsage: {
           inputTokens: 50000,
@@ -564,7 +419,7 @@ describe('context usage refresh on compaction boundary', () => {
       const before = { inputTokens: 50000, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, contextWindow: 200000 }
       store.updateInfo('compact-noop', { contextUsage: { ...before } })
 
-      // Only pre_tokens -- nothing to resolve a post-compaction size from.
+      // pre_tokens alone supplies no post-compaction count.
       applyCompaction(store, 'compact-noop', compactBoundary({ trigger: 'auto', pre_tokens: 150000 }))
 
       expect(store.getInfo('compact-noop').contextUsage).toEqual(before)
@@ -589,9 +444,9 @@ describe('context usage refresh on compaction boundary', () => {
 })
 
 describe('applyNotificationMetadata usage folding', () => {
-  // The unified context-usage path: usage/cost fold into session info here (the single call site),
-  // via extractContextUsage delegating the raw per-provider shape to Provider.contextUsageFromMessage
-  // while the shared wrapper owns the neutral guards (subagent skip, prefer-normalized, cost).
+  // The neutral extractor reads cost and normalized usage. The provider's session hook reads its
+  // native usage shape.
+
   function stores() {
     const { view, metadata, selection } = makeTabStores()
     return { agentSessionStore: createAgentSessionStore(), agentActivityStore: createAgentActivityStore(), chatStore: createChatStore(), view, metadata, selection, getActiveWorkspaceId: () => WS }
@@ -607,8 +462,8 @@ describe('applyNotificationMetadata usage folding', () => {
     } as Parameters<ReturnType<typeof createChatStore>['addMessage']>[1]
   }
 
-  // Distinct agent ids per case: the session store persists through browser storage,
-  // so a shared id would leak one case's usage into the next.
+  // Use a separate agent ID for each case because the session store persists through browser storage.
+  // A shared ID could carry one case's usage into the next case.
 
   it('applies a plan auto-title from a LIVE plan_updated', () => {
     createRoot((dispose) => {
@@ -624,11 +479,9 @@ describe('applyNotificationMetadata usage folding', () => {
   it('does NOT re-apply a plan auto-title while catching up', () => {
     createRoot((dispose) => {
       const s = stores()
-      // The user renamed the tab after the plan was written. Reloading replays
-      // the historical plan_updated, and re-applying it here silently undid
-      // that rename -- the tab came back named after the plan every time.
-      // Every other side effect in applyNotificationMetadata is derived state
-      // that catch-up SHOULD restore; the title is the one the user owns.
+      // Replay restores planFilePath through its metadata receipt. Replay preserves a manual tab
+      // title and omits live notification effects.
+
       s.metadata.patch('u-plan-catchup', { title: 'My Custom Name' })
       const msg = msgOf({ type: 'plan_updated', plan_title: 'Dummy plan', update_agent_title: true }, AgentProvider.CLAUDE_CODE)
       applyNotificationMetadata('u-plan-catchup', msg, parseMessageContent(msg), s, 'catchingUp')
@@ -692,8 +545,9 @@ describe('applyNotificationMetadata usage folding', () => {
   it('prefers a backend-normalized context_usage over the raw message.usage fallback', () => {
     createRoot((dispose) => {
       const s = stores()
-      // Carries BOTH a normalized context_usage and a raw message.usage; the normalized value wins
-      // and the provider hook is never consulted (guard owned by the shared wrapper).
+      // Supply normalized context usage and native usage together. The neutral extractor must use
+      // the normalized value without calling the provider hook.
+
       const msg = msgOf({ type: 'message_end', context_usage: { input_tokens: 100, cache_read_input_tokens: 20 }, message: { usage: { input: 999 } } }, AgentProvider.PI)
       applyNotificationMetadata('u-normalized', msg, parseMessageContent(msg), s, 'live')
       expect(s.agentSessionStore.getInfo('u-normalized').contextUsage).toEqual({ inputTokens: 100, cacheCreationInputTokens: 0, cacheReadInputTokens: 20 })
@@ -702,9 +556,9 @@ describe('applyNotificationMetadata usage folding', () => {
   })
 
   it('does NOT fold usage/cost from a non-AGENT (LEAPMUX) row — the source gate survives the moved call site', () => {
-    // Every provider persists its usage frames AGENT-source; a LEAPMUX/USER row carrying
-    // total_cost_usd / context_usage / message.usage must be ignored, exactly as the old
-    // applyAgentLifecycleAndUsage (msg.source === AGENT) gate ensured before this extraction moved.
+    // This branch requires AGENT source. A USER or LEAPMUX row with similar usage fields must not
+    // change agent usage.
+
     createRoot((dispose) => {
       const s = stores()
       const msg = { ...msgOf({ type: 'assistant', total_cost_usd: 0.05, context_usage: { input_tokens: 100 }, message: { usage: { input_tokens: 1000 } } }, AgentProvider.CLAUDE_CODE), source: MessageSource.LEAPMUX }
@@ -721,13 +575,7 @@ describe('startupMessage handling in agent statusChange', () => {
     tabs: TabStores,
     sc: { agentId: string, status: AgentStatus, startupMessage?: string },
   ) {
-    const hasStatus = sc.status !== AgentStatus.UNSPECIFIED
-    tabs.metadata.patch(sc.agentId, {
-      ...(hasStatus ? { agentStatus: sc.status } : {}),
-      ...(sc.status === AgentStatus.STARTING
-        ? { startupMessage: sc.startupMessage ?? '' }
-        : hasStatus ? { startupMessage: '' } : {}),
-    })
+    handleAgentStatusChange(sc.agentId, create(AgentStatusChangeSchema, sc), 'live', handlerStores(tabs), createLoadingSignal(), () => {})
   }
 
   it('stores startupMessage while STARTING so the startup panel can render the phase label', () => {
@@ -790,26 +638,22 @@ describe('startupMessage handling in agent statusChange', () => {
 })
 
 describe('per-axis optimistic suppression in agent statusChange', () => {
-  // Exercises the REAL applyPendingAxisSuppression (the handler's per-axis merge):
-  // keep the optimistic value for each axis the agent is actively changing
-  // (settingsLoading.pendingAxes), and apply the server's confirmed value for every
-  // OTHER axis. A pending axis ABSENT from prev is an in-flight CLEAR (useAgentOperations
-  // deletes a cleared key before marking it pending), so it stays absent rather than
-  // re-absorbing the server value. Driven by the REAL createLoadingSignal so the
-  // integration of pendingAxes with the merge is exercised end to end.
+  // Call the actual pending-axis helper with createLoadingSignal. Retain each pending optimistic
+  // value. A pending absent key represents a local clear and must stay absent.
+
   it('keeps the pending axis optimistic while applying a server change to an unrelated axis', () => {
     createRoot((dispose) => {
       const s = createLoadingSignal()
-      // The user is optimistically switching the MODEL; the tab already holds that optimistic value.
+      // The tab already holds the user's optimistic model value.
       s.start('agent-1', ['model'])
       const prev = { model: 'opus', permissionMode: 'default' }
-      // A push confirms the OLD model (the in-flight RPC hasn't resolved server-side) AND a new
-      // server-initiated permissionMode.
+      // The server still reports the old model. It also reports a new permission mode.
+
       const serverValues = { model: 'sonnet', permissionMode: 'plan' }
 
       const merged = applyPendingAxisSuppression(serverValues, prev, s.pendingAxes('agent-1'))
-      expect(merged.model).toBe('opus') // pending axis: optimistic value preserved
-      expect(merged.permissionMode).toBe('plan') // unrelated axis: server value applied, not stranded
+      expect(merged.model).toBe('opus') // Retain the pending model value. Apply the unrelated permission-mode value.
+      expect(merged.permissionMode).toBe('plan')
       dispose()
     })
   })
@@ -817,16 +661,18 @@ describe('per-axis optimistic suppression in agent statusChange', () => {
   it('keeps a pending CLEARED axis absent rather than re-absorbing the server value', () => {
     createRoot((dispose) => {
       const s = createLoadingSignal()
-      // The user optimistically CLEARED permissionMode: useAgentOperations deleted the key from the
-      // tab's optionValues before marking the axis pending, so prev carries no permissionMode entry.
+      // The local clear removes permissionMode before the axis becomes pending. The previous values
+      // therefore contain no permissionMode key.
+
       s.start('agent-1', ['permissionMode'])
       const prev = { model: 'opus' }
-      // A push still carries the server's pre-clear permissionMode (the in-flight RPC hasn't resolved).
+      // The server still reports permissionMode from before the local clear.
       const serverValues = { model: 'opus', permissionMode: 'plan' }
 
       const merged = applyPendingAxisSuppression(serverValues, prev, s.pendingAxes('agent-1'))
-      expect('permissionMode' in merged).toBe(false) // in-flight clear preserved, not re-absorbed
-      expect(merged.model).toBe('opus') // unrelated axis untouched
+      // Preserve the pending clear and the unrelated axis.
+      expect('permissionMode' in merged).toBe(false)
+      expect(merged.model).toBe('opus')
       dispose()
     })
   })
@@ -835,12 +681,13 @@ describe('per-axis optimistic suppression in agent statusChange', () => {
     createRoot((dispose) => {
       const s = createLoadingSignal()
       s.start('agent-1', ['model'])
-      s.stop('agent-1', ['model']) // the RPC resolved
+      s.stop('agent-1', ['model']) // The RPC completed.
       const prev = { model: 'opus', permissionMode: 'default' }
       const serverValues = { model: 'sonnet', permissionMode: 'plan' }
 
       const merged = applyPendingAxisSuppression(serverValues, prev, s.pendingAxes('agent-1'))
-      expect(merged.model).toBe('sonnet') // no longer pending -> server value applies
+      // The server value applies after the pending change ends.
+      expect(merged.model).toBe('sonnet')
       expect(merged.permissionMode).toBe('plan')
       dispose()
     })
@@ -848,14 +695,15 @@ describe('per-axis optimistic suppression in agent statusChange', () => {
 
   it('returns the server values unchanged (same reference) when nothing is pending', () => {
     const serverValues = { model: 'sonnet', permissionMode: 'plan' }
-    // No pending axes -> a no-op, and the SAME reference so the handler's downstream
-    // shallow-equal ref-reuse can short-circuit.
+    // With no pending axis, return the server object unchanged. The write boundary can then reuse
+    // its existing value.
+
     expect(applyPendingAxisSuppression(serverValues, { model: 'opus' }, new Set())).toBe(serverValues)
   })
 })
 
 describe('resolveSettingsTabFields', () => {
-  // Minimal option-group stubs: deriveOptionGroupTabFields reads only id + currentValue.
+  // deriveOptionGroupTabFields reads only id and currentValue from these option groups.
   const group = (id: string, currentValue: string): AvailableOptionGroup =>
     ({ id, label: id, currentValue, options: [] }) as unknown as AvailableOptionGroup
 
@@ -864,13 +712,8 @@ describe('resolveSettingsTabFields', () => {
   })
 
   /**
-   * A re-broadcast that changed no current value must not wake readers of
-   * `optionValues` -- but this producer is deliberately NOT where that is
-   * enforced. It emits the freshly-derived record and `tabMetadata.patch` drops
-   * the write when the content matches (`sameStoredValue`), which covers this
-   * producer, the others, and any written later. Asserted through the store for
-   * that reason: a producer-side assertion would keep passing while the rule
-   * moved out from under it.
+   * The metadata write boundary suppresses unchanged option values. Test that boundary so every
+   * producer receives the same rule. The producer still returns its derived record.
    */
   it('lets the write point drop a re-broadcast that changes no current value', () => {
     const metadata = createTabMetadataStore()
@@ -881,8 +724,8 @@ describe('resolveSettingsTabFields', () => {
     const fields = resolveSettingsTabFields(prev, [group('model', 'opus')], new Set())
     metadata.patch('a1', fields)
 
-    // Same content -> the stored reference survives, so `<For>` rows keyed on
-    // the assembled tab are not torn down and rebuilt.
+    // Equal content preserves the stored reference.
+    // For then retains its rows instead of disposing and creating them again.
     expect(metadata.get('a1')!.optionValues).toBe(stored)
   })
 
@@ -905,7 +748,8 @@ describe('buildAgentStatusTabUpdate', () => {
     const update = buildAgentStatusTabUpdate(sc, false, settings)
     expect('agentStatus' in update).toBe(false)
     expect('agentSessionId' in update).toBe(false)
-    expect(update.optionValues).toEqual({ model: 'opus' }) // settings still apply
+    // The catalog update still applies.
+    expect(update.optionValues).toEqual({ model: 'opus' })
   })
 
   it('carries status, clears startupError/startupMessage on ACTIVE, and merges settings', () => {
@@ -934,9 +778,8 @@ describe('buildAgentStatusTabUpdate', () => {
     expect(failed.startupError).toBe('spawn failed')
   })
 
-  // `withoutLiveStatusFields` strips LIVE_STATUS_FIELDS from a ListAgents reply
-  // that a live event overtook. A field that this builder writes beside the
-  // status and that the list misses would let the older reply overwrite it.
+  // withoutLiveStatusFields removes LIVE_STATUS_FIELDS from an older ListAgents reply after a live event.
+  // Every live status field must belong to that list, or the older reply could replace it.
   it('writes exactly the fields in LIVE_STATUS_FIELDS beside the status', () => {
     const written = new Set<string>()
     for (const status of [AgentStatus.ACTIVE, AgentStatus.INACTIVE, AgentStatus.STARTING, AgentStatus.STARTUP_FAILED]) {
@@ -982,8 +825,8 @@ describe('buildAgentStatusTabUpdate', () => {
     expect(update.agentStatus).toBe(AgentStatus.INACTIVE)
   })
 
-  // The consequence, end to end: the identity guard above is only worth anything if it
-  // actually keeps the tab object -- and with it the `<For>` row -- alive across a push.
+  // Check the joined tab identity and its For row. An unchanged git update must preserve both.
+
   it('keeps the agent tab object (and its <For> row) across a no-op git-status push', () => {
     createRoot((dispose) => {
       const s = makeTabStores()
@@ -998,8 +841,8 @@ describe('buildAgentStatusTabUpdate', () => {
       push()
       const before = s.view.getAgentTab('a1')!
 
-      // `<For>` IS `mapArray`: a row body runs once per item IDENTITY, so a body that
-      // re-runs is a real remount of TileRenderer's agent pane.
+      // For uses mapArray. A repeated row-body call therefore identifies a remount.
+
       let mounts = 0
       const rows = mapArray(() => s.view.forTile(s.rootTileId), (tab) => {
         mounts += 1
@@ -1018,15 +861,8 @@ describe('buildAgentStatusTabUpdate', () => {
 })
 
 /**
- * The statusChange branch for an agent the user is NOT looking at.
- *
- * The sidebar renders every workspace, so a background row must be as correct
- * as a foreground one. This branch used to hand-roll a subset of the foreground
- * patch, which is how the pending-message drain and four metadata fields fell
- * out of it. The drain is the one with a permanent consequence: it fires on the
- * single STARTING -> ACTIVE/STARTUP_FAILED edge, and that edge is never
- * replayed, so a message composed against a starting agent in a background
- * workspace was stranded at "Queued" for the life of the page.
+ * The sidebar shows background agents also. The shared status handler must write their startup
+ * fields through the same path as foreground agents.
  */
 describe('handleAgentStatusChange for background agents', () => {
   function backgroundStores() {
@@ -1129,65 +965,69 @@ describe('handleAgentInactive', () => {
     })
   })
 
-  // The alert an INACTIVE used to raise now rides the Worker's busy -> idle
-  // edge instead, so it is asserted against handleAgentSettled rather than here:
-  // a process exit drives that edge, and routing both would ring twice.
+  // The worker's activity transition owns the alert after a process exit.
+  // An additional alert from INACTIVE status would notify twice.
+  // The handleAgentSettled tests check the activity alert.
 })
 
 describe('workerOnline handling in agent statusChange', () => {
   it('ignores workerOnline=false from status-less git-only updates', () => {
-    let workerOnline = true
-    const applyStatusChange = (sc: { status: AgentStatus, workerOnline: boolean, gitStatus?: unknown }) => {
-      const hasStatus = sc.status !== AgentStatus.UNSPECIFIED
-      if (hasStatus)
-        workerOnline = sc.workerOnline
-      return hasStatus || sc.gitStatus !== undefined
-    }
+    createRoot((dispose) => {
+      try {
+        let workerOnline = true
+        const tabs = makeTabStores()
+        tabs.addAgent('connectivity-agent', { agentStatus: AgentStatus.ACTIVE })
+        const stores = handlerStores(tabs)
+        const patch = vi.spyOn(tabs.metadata, 'patchLive')
+        const applyStatusChange = (sc: MessageInitShape<typeof AgentStatusChangeSchema>) => {
+          const before = patch.mock.calls.length
+          handleAgentStatusChange('connectivity-agent', create(AgentStatusChangeSchema, { agentId: 'connectivity-agent', ...sc }), 'live', stores, createLoadingSignal(), (value) => {
+            workerOnline = value
+          })
+          return patch.mock.calls.length > before
+        }
 
-    expect(applyStatusChange({
-      status: AgentStatus.UNSPECIFIED,
-      workerOnline: false,
-      gitStatus: {},
-    })).toBe(true)
-    expect(workerOnline).toBe(true)
+        expect(applyStatusChange({
+          status: AgentStatus.UNSPECIFIED,
+          workerOnline: false,
+          gitStatus: {},
+        })).toBe(true)
+        expect(workerOnline).toBe(true)
 
-    expect(applyStatusChange({
-      status: AgentStatus.INACTIVE,
-      workerOnline: true,
-    })).toBe(true)
-    expect(workerOnline).toBe(true)
+        expect(applyStatusChange({
+          status: AgentStatus.INACTIVE,
+          workerOnline: true,
+        })).toBe(true)
+        expect(workerOnline).toBe(true)
+        expect(applyStatusChange({ status: AgentStatus.UNSPECIFIED, workerOnline: false })).toBe(false)
+        expect(workerOnline).toBe(true)
+      }
+      finally {
+        dispose()
+      }
+    })
   })
 })
 
-// Regression tests for the "new terminal tab shows 'Starting terminal…'
-// instead of 'Starting <shell>…'" bug: the client subscribes to
-// WatchEvents only after the OpenTerminal response, so the sync-path
-// STARTING broadcast lands with no watcher attached. The fix surfaces
-// the phase label via catch-up replay — these tests lock in the
-// frontend half of that contract.
+// A subscriber can join after the initial STARTING event. Catch-up must supply the current
+// shell phase so the frontend displays the correct startup label.
+
 describe('startupMessage handling in terminal statusChange', () => {
-  // Mirrors the switch in useWorkspaceConnection.handleTerminalEvent's
-  // STARTING branch: on a STARTING event for a tab that is not
-  // already running/starting, store both status and message; on a
-  // same-status STARTING update with a fresh message, patch just the
-  // label so a later phase broadcast refreshes the overlay text.
+  // Call the real terminal status handler. A STARTING event writes the phase label, including a
+  // changed label during the same startup.
+
   function applyStarting(
     tabs: TabStores,
     terminalId: string,
     msg: string | undefined,
   ) {
-    const existing = tabs.view.all().find(
-      (t): t is TerminalTab => t.type === TabType.TERMINAL && t.id === terminalId,
+    applyTerminalStatusChange(
+      tabs.metadata,
+      createRepoGitStore(),
+      tabs.view.getTerminalTab(terminalId),
+      terminalId,
+      create(TerminalStatusChangeSchema, { terminalId, status: TerminalStatus.STARTING, startupMessage: msg ?? '' }),
     )
-    if (existing && existing.status !== TerminalStatus.READY && existing.status !== TerminalStatus.STARTING) {
-      tabs.metadata.patch(terminalId, {
-        terminalStatus: TerminalStatus.STARTING,
-        ...(msg ? { startupMessage: msg } : {}),
-      })
-    }
-    else if (existing?.status === TerminalStatus.STARTING && msg && msg !== existing.startupMessage) {
-      tabs.metadata.patch(terminalId, { startupMessage: msg })
-    }
   }
 
   it('stores startupMessage on the initial STARTING event so the overlay renders the backend phase label', () => {
@@ -1217,10 +1057,9 @@ describe('startupMessage handling in terminal statusChange', () => {
     })
   })
 
-  // Phase-0 ("Preparing working tree") labels are dispatched by the
-  // worker as same-status STARTING events with the per-mode label.
-  // Rolling back on failure uses the same pipe with the rollback label
-  // and then transitions to STARTUP_FAILED. Both should be applied.
+  // The worker sends the worktree phase as another STARTING status. A rollback supplies its own
+  // label before STARTUP_FAILED. Apply both labels.
+
   it('applies the "Creating worktree" phase-0 label to the tab', () => {
     createRoot((dispose) => {
       const tabs = makeTabStores()
@@ -1320,11 +1159,9 @@ describe('applyTerminalStatusChange', () => {
     })
   })
 
-  // A ListTerminals reply that is pending compares this count across the call
-  // (see TabMetadataStore.liveStatusEpoch). Only an event that WROTE the lifecycle
-  // counts. The handler refuses some events, and the reply of a re-ask is what
-  // heals a tab that refused one: a count for an event that wrote nothing would
-  // hold that reply back.
+  // A pending ListTerminals reply compares the live status epoch. Count an applied lifecycle
+  // write. A refused event must not suppress the snapshot that can restore the tab.
+
   describe('liveStatusEpoch', () => {
     function applyEvent(tabs: ReturnType<typeof makeTabStores>, fields: Partial<TerminalStatusChange>) {
       applyTerminalStatusChange(
@@ -1466,11 +1303,10 @@ describe('applyTerminalStatusChange', () => {
       })
     })
 
-    // `keepLiveTerminalStatus` strips TERMINAL_LIVE_STATUS_FIELDS from a ListTerminals
-    // reply that a live event overtook. A field that a live status event writes beside
-    // the status and that the list misses would let the older reply overwrite it.
-    // `contentReady` is the one field outside the list on purpose: nothing ever writes
-    // it to false, so an older reply cannot move it back.
+    // ListTerminals never restores contentReady to false, so an older reply cannot clear it.
+    // Check contentReady separately from TERMINAL_LIVE_STATUS_FIELDS.
+    // Every other field that a live status event writes must belong to that protected list.
+    // Otherwise, an older ListTerminals reply could replace the live field.
     it('writes exactly the fields in TERMINAL_LIVE_STATUS_FIELDS, and contentReady, through patchLiveStatus', () => {
       createRoot((dispose) => {
         const tabs = makeTabStores()
@@ -1535,11 +1371,8 @@ describe('applyTerminalStatusChange', () => {
 })
 
 /**
- * agent_session_info wire-shape handling. The worker broadcasts
- * snake_case keys exclusively (`total_cost_usd`, `context_usage`,
- * `rate_limits`, generation progress, and `pi_*`); these tests
- * reproduce the unwrap-and-merge logic in useWorkspaceConnection that
- * translates wire keys back to the frontend store's camelCase shape.
+ * Call the real session-info handler. It translates recognized snake_case fields and skips an
+ * empty scalar update.
  */
 describe('agent_session_info snake_case wire normalization', () => {
   function applyAgentSessionInfo(
@@ -1547,17 +1380,13 @@ describe('agent_session_info snake_case wire normalization', () => {
     agentId: string,
     info: Record<string, unknown> | undefined,
   ) {
-    if (!info)
-      return
-    const updates: Record<string, unknown> = {}
-    if (typeof info.total_cost_usd === 'number')
-      updates.totalCostUsd = info.total_cost_usd
-    if (info.context_usage !== undefined)
-      updates.contextUsage = info.context_usage
-    if (info.rate_limits !== undefined)
-      updates.rateLimits = info.rate_limits
-    if (Object.keys(updates).length > 0)
-      sessionStore.updateInfo(agentId, updates)
+    const msg = create(AgentChatMessageSchema, {
+      source: MessageSource.LEAPMUX,
+      seq: -1n,
+      contentCompression: ContentCompression.NONE,
+      content: new TextEncoder().encode(JSON.stringify({ type: 'agent_session_info', info })),
+    })
+    handleAgentSessionInfo(agentId, parseMessageContent(msg), { agentSessionStore: sessionStore, chatStore: createChatStore() })
   }
 
   it('writes totalCostUsd from a snake_case payload', () => {
@@ -1610,7 +1439,7 @@ describe('agentMessage sub-handlers', () => {
       const stores = sessionInfoStores()
       const msg = agentMessage({ type: 'agent_session_info', info: { total_cost_usd: 1.5 } })
       const handled = handleAgentSessionInfo('a1', parseMessageContent(msg), stores)
-      // Returning true is the early-break signal: the caller must NOT persist it.
+      // A true return tells the caller to skip transcript storage for this ephemeral message.
       expect(handled).toBe(true)
       expect(stores.agentSessionStore.getInfo('a1').totalCostUsd).toBe(1.5)
       dispose()
@@ -1680,8 +1509,9 @@ describe('agentMessage sub-handlers', () => {
       })
       expect(handleAgentSessionInfo('a1', parseMessageContent(msg), stores)).toBe(true)
       expect(stores.chatStore.getToolProgress('a1', TOOL_A)).toEqual({ elapsedSeconds: 30 })
-      // It is span-keyed state, so it must not leak into AgentSessionInfo (which is
-      // persisted minus its ephemeral keys).
+      // Tool progress is separate from AgentSessionInfo. Its updates create no stored session-info
+      // field.
+
       expect(stores.agentSessionStore.getInfo('a1')).toEqual({})
       dispose()
     })
@@ -1702,12 +1532,10 @@ describe('agentMessage sub-handlers', () => {
       const msg = agentMessage({ type: 'result', subtype: 'success', total_cost_usd: 0.25 })
       const parsed = parseMessageContent(msg)
 
-      handleResultDivider('a1', msg, parsed, stores)
+      handleResultDivider('a1', msg, parsed, stores, 'live')
 
-      // The divider carries no alert of its own, in any catch-up phase -- it does
-      // not read the phase at all now. `stores` has no onAgentSettled field, which
-      // is the point: the only route to the sound and the badge is
-      // handleActivityChanged's busy -> idle edge.
+      // The divider restores scalar metadata through its delivery receipt. It supplies no activity alert.
+      // handleActivityChanged supplies the sound and badge after a transition out of WORKING.
       expect(stores.agentSessionStore.getInfo('a1').totalCostUsd).toBe(0.25)
       dispose()
     })
@@ -1732,8 +1560,7 @@ describe('reconcileLaggingTails', () => {
       hasNewerMessages: overrides.hasNewerMessages ?? (() => false),
       caughtUpToLiveTail: overrides.caughtUpToLiveTail ?? (() => true),
       isTailFillDeferred: overrides.isTailFillDeferred ?? (() => false),
-      // Default to a NON-empty loaded window (1n); the empty-window (0n) recovery branch
-      // is exercised explicitly by its own test.
+      // Default to a loaded window with sequence 1n. The separate empty-window case supplies 0n.
       getLastSeq: overrides.getLastSeq ?? (() => 1n),
       getLiveTailSeq: overrides.getLiveTailSeq ?? (() => 1n),
       isFetchingNewer: overrides.isFetchingNewer ?? (() => false),
@@ -1747,23 +1574,26 @@ describe('reconcileLaggingTails', () => {
   it('forward-fills ONLY an agent that lags its live tail while AT the tail', () => {
     const { catchUp, resume } = run({
       agentTabs: [
-        { id: 'lagging', workerId: 'w1' }, // at tail, not caught up -> fill
-        { id: 'caught-up', workerId: 'w1' }, // at tail, caught up -> no fill
-        { id: 'scrolled-away', workerId: 'w1' }, // hasNewer, NOT deferred -> no fill
+        // Fill only the agent that remains behind the live tail.
+        { id: 'lagging', workerId: 'w1' },
+        { id: 'caught-up', workerId: 'w1' },
+        // Preserve this history window because tail fill is not deferred.
+        { id: 'scrolled-away', workerId: 'w1' },
       ],
       hasNewerMessages: id => id === 'scrolled-away',
       caughtUpToLiveTail: id => id === 'caught-up',
-      // 'lagging' is at the tail; 'scrolled-away' has a loaded (non-empty) window.
+      // lagging is at the tail. scrolled-away has a nonempty loaded window.
       getLastSeq: id => (id === 'lagging' ? 42n : id === 'scrolled-away' ? 30n : 0n),
     })
     expect(catchUp).toEqual([{ workerId: 'w1', agentId: 'lagging', afterSeq: 42n }])
-    expect(resume).toEqual([]) // a plain scrolled-away wall is left to the affordance
+    // Preserve the history window when the user scrolls away without deferred tail fill.
+    expect(resume).toEqual([])
   })
 
   it('skips a tab with no workerId (a non-active-workspace agent)', () => {
     const { catchUp } = run({
       agentTabs: [{ id: 'lagging', workerId: '' }],
-      caughtUpToLiveTail: () => false, // lagging, but no worker to fetch from
+      caughtUpToLiveTail: () => false, // The agent needs tail fill but has no worker that can supply it.
     })
     expect(catchUp).toEqual([])
   })
@@ -1786,22 +1616,28 @@ describe('reconcileLaggingTails', () => {
   it('resumes an exhaustion-forced deferred fill, but not a plain scrolled-away wall', () => {
     const { catchUp, resume } = run({
       agentTabs: [
-        { id: 'deferred', workerId: 'w1' }, // hasNewer + deferred + lagging -> resume
-        { id: 'scrolled-away', workerId: 'w1' }, // hasNewer, NOT deferred -> nothing
+        // Resume deferred tail fill when the loaded history stays behind the live tail.
+        { id: 'deferred', workerId: 'w1' },
+        // Preserve this history window because tail fill is not deferred.
+        { id: 'scrolled-away', workerId: 'w1' },
       ],
-      hasNewerMessages: () => true, // both away from the loaded tail
-      caughtUpToLiveTail: () => false, // both genuinely lagging
+      // Both agents are away from the loaded tail, and both remain behind the live tail.
+      hasNewerMessages: () => true,
+      caughtUpToLiveTail: () => false,
       isTailFillDeferred: id => id === 'deferred',
     })
     expect(resume).toEqual([{ workerId: 'w1', agentId: 'deferred' }])
-    expect(catchUp).toEqual([]) // resume uses the merge path, not catchUpToTail
+    // Resumption merges the deferred page through resumeDeferredTailFill instead of catchUpToTail.
+    expect(catchUp).toEqual([])
   })
 
   it('prefers catchUpToTail at the tail over a deferred resume, and skips a caught-up agent', () => {
     const { catchUp, resume } = run({
       agentTabs: [
-        { id: 'at-tail', workerId: 'w1' }, // !hasNewer, lagging -> catchUpToTail
-        { id: 'caught-up-deferred', workerId: 'w1' }, // caught up, even if deferred -> nothing
+        // Use catchUpToTail when the agent remains behind and has no newer history page.
+        { id: 'at-tail', workerId: 'w1' },
+        // An agent at the live tail requires no fill, even when deferred.
+        { id: 'caught-up-deferred', workerId: 'w1' },
       ],
       hasNewerMessages: () => false,
       caughtUpToLiveTail: id => id === 'caught-up-deferred',
@@ -1815,14 +1651,14 @@ describe('reconcileLaggingTails', () => {
   it('re-anchors an EMPTY window (a full phantom reap) on the latest page instead of forward-filling', () => {
     const { catchUp, resume, jumps } = run({
       agentTabs: [{ id: 'emptied', workerId: 'w1' }],
-      // Not caught up (server content survives), but the loaded window is empty (getLastSeq
-      // 0n) -- a full phantom reap dropped every loaded row. There's no anchor to
-      // forward-fill from, so re-anchor on the latest page.
+      // The server retains content, but reconciliation removed every loaded row, so getLastSeq returns 0n.
+      // No loaded row supplies a forward-paging cursor. Load the latest page instead.
       caughtUpToLiveTail: () => false,
       getLastSeq: () => 0n,
     })
     expect(jumps).toEqual([{ workerId: 'w1', agentId: 'emptied' }])
-    expect(catchUp).toEqual([]) // no forward-fill from an empty window
+    // An empty window cannot use forward paging.
+    expect(catchUp).toEqual([])
     expect(resume).toEqual([])
   })
 
@@ -1831,9 +1667,11 @@ describe('reconcileLaggingTails', () => {
       agentTabs: [{ id: 'emptied', workerId: 'w1' }],
       caughtUpToLiveTail: () => false,
       getLastSeq: () => 0n,
-      isFetchingNewer: () => true, // jumpToLatest's own fetch is resolving
+      // The existing jumpToLatest fetch still owns this empty window.
+      isFetchingNewer: () => true,
     })
-    expect(jumps).toEqual([]) // guarded so the reconcile tick doesn't abort + restart it
+    // Retain the current fetch. The reconcile effect must not cancel and restart it.
+    expect(jumps).toEqual([])
   })
 
   it('re-anchors on the latest page when the live-tail gap exceeds the limit', () => {
@@ -1887,9 +1725,9 @@ describe('reconcileLaggingTails', () => {
   })
 
   it('does nothing for an over-limit gap on a plain scrolled-away wall', () => {
-    // The reader chose this gap (hasNewerMessages, no deferred fill). An
-    // over-limit re-anchor must not yank them to the bottom: scroll-down
-    // paging recovers the tail on their own schedule.
+    // The user chose this history window. An excessive live-tail gap must preserve it. Normal
+    // forward paging lets the user return to the tail.
+
     const { catchUp, resume, jumps } = run({
       agentTabs: [{ id: 'scrolled-away', workerId: 'w1' }],
       hasNewerMessages: () => true,
@@ -1916,9 +1754,8 @@ describe('reconcileLaggingTails', () => {
   })
 })
 
-// Direct coverage for the per-case handlers extracted from handleAgentEvent's
-// dispatcher. The dispatcher closure itself is only driven by gRPC streams, so these
-// exercise the real production handlers (not a re-implementation) against live stores.
+// Call the production handlers that handleAgentEvent selects, with actual stores.
+// The separate replay-ownership cases exercise the dispatcher through registered transport listeners.
 describe('extracted handleAgentEvent branch handlers', () => {
   const enc = (s: string) => new TextEncoder().encode(s)
   const argStores = () => {
@@ -1960,8 +1797,8 @@ describe('extracted handleAgentEvent branch handlers', () => {
         tabs.addAgent('a2')
         tabs.selection.setActiveById(TabType.AGENT, 'a2')
         const activity = createAgentActivityStore()
-        // `uses` is `number | undefined`: the callback is invoked with
-        // undefined whenever the settle carried no tool count.
+        // uses is number or undefined.
+        // The settle handler calls the callback with undefined when the settle supplies no tool count.
         const ended: Array<{ id: string, uses: number | undefined }> = []
         const stores = activityStores(tabs, activity, (id, uses) => ended.push({ id, uses }))
 
@@ -1979,10 +1816,9 @@ describe('extracted handleAgentEvent branch handlers', () => {
 
     it('keeps the parent WORKING when its subagent settles', () => {
       createRoot((dispose) => {
-        // The ThinkingIndicator reads isBusy for the tab's OWN agent id, and a
-        // subagent's activity carries the CHILD's id. A settle that moved the
-        // parent's answer would drop the spinner on a main agent whose turn is
-        // still in flight -- the subagent is one step of that turn.
+        // ThinkingIndicator reads activity for its own agent ID. A child idle event must preserve the
+        // parent's WORKING state while the parent turn continues.
+
         const tabs = makeTabStores()
         tabs.addAgent('root-1')
         tabs.addAgent('child-1', { parentAgentId: 'root-1' })
@@ -2009,9 +1845,9 @@ describe('extracted handleAgentEvent branch handlers', () => {
 
         handleActivityChanged('a1', { state: AgentActivityState.WORKING }, stores)
         handleActivityChanged('a1', { state: AgentActivityState.IDLE }, stores)
-        // A catch-up replay lands beside the live event, and a subprocess
-        // teardown drops the worker's "already published" mark, so the same
-        // value reaches a client twice.
+        // Repeated live idle reports must not repeat the alert. CatchUpStart supplies replay activity
+        // as a baseline without an alert.
+
         handleActivityChanged('a1', { state: AgentActivityState.IDLE }, stores)
 
         expect(ended).toEqual(['a1'])
@@ -2026,8 +1862,8 @@ describe('extracted handleAgentEvent branch handlers', () => {
         const activity = createAgentActivityStore()
         const ended: string[] = []
 
-        // A NOTIFY-mode tab can subscribe after the turn started and receive the
-        // idle report alone. Nothing the user watched finished.
+        // A NOTIFY tab can subscribe after the turn starts and receive IDLE without an earlier WORKING level.
+        // That report creates no settle.
         handleActivityChanged('a1', { state: AgentActivityState.IDLE }, activityStores(tabs, activity, id => ended.push(id)))
 
         expect(ended).toEqual([])
@@ -2038,10 +1874,8 @@ describe('extracted handleAgentEvent branch handlers', () => {
 
     it('rings for a settle that races the replay it arrives during', () => {
       createRoot((dispose) => {
-        // The reason the catch-up phase no longer stands between this event and
-        // the alert. A background task that ends while the burst drains settles
-        // the agent for real, and that settle is the one the user waits for.
-        // Suppressing it for the whole window discarded it.
+        // A live IDLE transition can arrive during replay. It must still produce its alert.
+        // Suppressing live transitions throughout replay would discard that alert.
         const tabs = makeTabStores()
         tabs.addAgent('a1')
         const activity = createAgentActivityStore()
@@ -2072,14 +1906,14 @@ describe('extracted handleAgentEvent branch handlers', () => {
         tabs.addAgent('a1')
         tabs.addAgent('a2')
         tabs.selection.setActiveById(TabType.AGENT, 'a2')
-        // Records `uses: undefined` explicitly: a settle without a tool count
-        // must be distinguishable from one that never fired.
+        // Record uses as undefined when the settle supplies no tool count.
+        // This distinguishes that settle from an absent callback.
         const ended: Array<{ id: string, uses: number | undefined }> = []
         const push = (id: string, uses: number | undefined) => ended.push({ id, uses })
         handleAgentSettled('a1', undefined, settledStores(tabs, push))
         handleAgentSettled('a2', 3, settledStores(tabs, push))
-        // undefined is not zero: a settle that no turn end caused carries no
-        // count and must still alert.
+        // Keep an absent tool count distinct from zero.
+        // The alert callback still runs and receives undefined when no count exists.
         expect(ended).toEqual([{ id: 'a1', uses: undefined }, { id: 'a2', uses: 3 }])
         expect(tabs.view.getAgentTab('a1')?.hasNotification).toBe(true)
         expect(tabs.view.getAgentTab('a2')?.hasNotification).not.toBe(true)
@@ -2124,16 +1958,16 @@ describe('extracted handleAgentEvent branch handlers', () => {
 
     it('caps the queue so a never-mounting terminal cannot grow it without bound', () => {
       const pending = new Map<string, Array<{ data: Uint8Array, isSnapshot: boolean, endOffset: bigint }>>()
-      // Enqueue well over the cap; only the newest MAX_PENDING_TERMINAL_FRAMES survive.
+      // Exceed the frame limit. Retain only the newest MAX_PENDING_TERMINAL_FRAMES frames.
       let evicted = false
       for (let i = 0; i < MAX_PENDING_TERMINAL_FRAMES + 50; i++)
         evicted = enqueuePendingTerminalData(pending, 't1', { data: new Uint8Array([i]), isSnapshot: false, endOffset: BigInt(i) }) || evicted
       expect(pending.get('t1')).toHaveLength(MAX_PENDING_TERMINAL_FRAMES)
-      // The oldest frames were dropped; the last surviving frame is the most recent.
+      // The queue removes its oldest frames and retains its newest frame.
       expect(pending.get('t1')!.at(-1)!.endOffset).toBe(BigInt(MAX_PENDING_TERMINAL_FRAMES + 49))
-      // The eviction is reported: the caller must flag the terminal for a
-      // full-snapshot resubscribe, because the dropped bytes leave a hole no
-      // incremental delta can fill.
+      // The queue reports each eviction. The caller must request a full snapshot because incremental
+      // output cannot restore the removed bytes.
+
       expect(evicted).toBe(true)
     })
 
@@ -2223,9 +2057,8 @@ describe('extracted handleAgentEvent branch handlers', () => {
       })
     })
 
-    // The detached (quake) predicate is covered where the module it belongs to
-    // is: `./terminalEvents.test.ts`, which can assert the OS notification
-    // itself rather than only the badge that stands in for it.
+    // terminalEvents.test.ts checks detached-terminal visibility and the actual desktop
+    // notification.
 
     it('progress patches metadata fields', () => {
       createRoot((dispose) => {
@@ -2266,11 +2099,9 @@ describe('extracted handleAgentEvent branch handlers', () => {
       return { requestId: 'r1', agentId, payload: enc(JSON.stringify({ method: 'item/commandExecution/requestApproval' })) } as unknown as AgentControlRequest
     }
 
-    // An agent that sends a control request BLOCKS on the answer. Dropping the request
-    // because LeapMux cannot read its payload leaves the reader with no question, no way
-    // to answer it, and a turn that never ends -- the shape ACP-005 records. The request
-    // is kept instead, with the bytes that arrived, so the reader can see it and release
-    // the agent.
+    // The provider waits for the control answer. Retain an unreadable request and its bytes so the
+    // user can inspect it and stop the agent.
+
     it.each([
       ['malformed', '{"method":'],
       ['not-an-object', '[1,2]'],
@@ -2285,7 +2116,7 @@ describe('extracted handleAgentEvent branch handlers', () => {
         const [kept] = s.controlStore.getRequests('a1')
         expect(kept).toBeDefined()
         expect(kept?.payloadFault).toBe(fault)
-        // The payload stays EMPTY rather than guessing a shape a plugin would then read.
+        // Keep the decoded payload empty instead of inventing a provider shape.
         expect(kept?.payload).toEqual({})
         // The bytes that arrived are still there, so Copy JSON shows what the agent sent.
         expect(new TextDecoder().decode(kept?.originalPayload)).toBe(bytes)
@@ -2313,10 +2144,9 @@ describe('extracted handleAgentEvent branch handlers', () => {
       })
     })
 
-    // The ALERT a control request used to raise here now rides the Worker's
-    // busy -> idle edge: a pending prompt drives the agent idle, so
-    // handleAgentSettled owns it and raising it in both places rang twice for
-    // one pause. This handler keeps the request and the badge.
+    // The worker's idle transition owns the alert. The control handler retains the request and
+    // sets its badge. A second alert here would notify twice.
+
     it('adds a live request and badges a backgrounded tab', () => {
       createRoot((dispose) => {
         const s = argStores()
@@ -2379,8 +2209,9 @@ describe('extracted handleAgentEvent branch handlers', () => {
           claimToken: 'instance-token-1',
         } as unknown as AgentControlRequest
         handleControlRequest('a1', withToken, 'live', s)
-        // The per-instance token from AgentControlRequest.claim_token must reach the store, since the
-        // answer (handleControlResponse) echoes it back so the worker dedups the answer per instance.
+        // Preserve the claim token in the stored request. The control answer returns that token so the
+        // worker can identify the exact request instance.
+
         expect(s.controlStore.getRequests('a1').find(r => r.requestId === 'r1')?.claimToken).toBe('instance-token-1')
         dispose()
       })
@@ -2401,10 +2232,9 @@ describe('extracted handleAgentEvent branch handlers', () => {
       })
     })
 
-    // A ListAgents reply that is pending compares this count across the call
-    // (see TabMetadataStore.liveStatusEpoch). The event that carries a status
-    // must advance it. A status-less push must not, or the reply would lose the
-    // status that no event replaced.
+    // A pending ListAgents request compares TabMetadataStore.liveStatusEpoch before and after the call.
+    // An event with status must advance that count. An event without status must retain it.
+    // Otherwise, the older reply could discard the status that no live event replaced.
     it('counts an event that carries a status, and only that', () => {
       createRoot((dispose) => {
         const s = argStores()
@@ -2441,8 +2271,9 @@ describe('extracted handleAgentEvent branch handlers', () => {
         let online: boolean | undefined
         const sc = { agentId: 'a1', status: AgentStatus.UNSPECIFIED, workerOnline: false, optionGroups: [] } as unknown as AgentStatusChange
         handleAgentStatusChange('a1', sc, 'live', s, createLoadingSignal(), v => void (online = v), undefined)
-        expect(s.tabs.view.getAgentTab('a1')?.agentStatus).toBe(AgentStatus.ACTIVE) // unchanged
-        expect(online).toBeUndefined() // setWorkerOnline only on a full status snapshot
+        // An event without an explicit status retains the current status and sends no connectivity report.
+        expect(s.tabs.view.getAgentTab('a1')?.agentStatus).toBe(AgentStatus.ACTIVE)
+        expect(online).toBeUndefined()
         dispose()
       })
     })
@@ -2529,9 +2360,7 @@ describe('wireSessionInfoToUpdates', () => {
     })).toBeUndefined()
   })
 
-  // All eight tier fields, so a translation that drops one is caught here rather
-  // than by a blank cell in the rate-limit popover. Only two of the eight had any
-  // coverage before.
+  // Check all eight tier fields so an omitted translation fails before a rate-limit popover displays an empty cell.
   it('translates every rate_limits tier field to its camelCase name', () => {
     const update = wireRateLimitUpdateFromSessionInfo({
       rate_limits: {
@@ -2568,16 +2397,9 @@ describe('wireSessionInfoToUpdates', () => {
   })
 
   /**
-   * A field the tier does not carry is ABSENT from the result, not present and
-   * undefined. That is load-bearing and `toEqual` cannot see it: `toEqual`
-   * ignores an undefined-valued key, but `agentSession.store.ts` decides whether
-   * a tier changed with `shallowEqual`, which compares key COUNTS first. The
-   * stored copy carries whatever the serializer left behind, so a translation
-   * that emitted all eight keys -- `undefined` for the ones the payload omits
-   * -- would compare unequal on every broadcast and write the store each
-   * time.
-   *
-   * Asserted on Object.keys for exactly that reason.
+   * Omit absent rate-limit fields. shallowEqual compares key counts, while toEqual ignores
+   * undefined-valued keys. An explicit undefined field would therefore cause another store write
+   * after serialization. Assert Object.keys also.
    */
   it('omits a tier field the payload does not carry, rather than setting it undefined', () => {
     const update = wireRateLimitUpdateFromSessionInfo({
@@ -2587,7 +2409,7 @@ describe('wireSessionInfoToUpdates', () => {
     if (tier === undefined)
       throw new Error('expected the five_hour tier to be present')
     expect(Object.keys(tier).sort()).toEqual(['isUsingOverage', 'status'])
-    // A real `false` still lands -- only an ABSENT key is dropped.
+    // Preserve false. Omit only an absent or invalid field.
     expect(tier.isUsingOverage).toBe(false)
 
     const sparse = wireRateLimitUpdateFromSessionInfo({
@@ -2628,12 +2450,12 @@ describe('wireSessionInfoToUpdates', () => {
   })
 
   it('skips keys that are absent or fail their type guard', () => {
-    // A non-number cost and a context_usage with no token data contribute nothing.
+    // Kiro reports the context percentage through session info without a token count.
     expect(wireSessionInfoToUpdates({ total_cost_usd: 'free', context_usage: {} })).toEqual({})
   })
 
-  // Kiro states the fill of its context and no token count, and its live reading
-  // arrives on this path, not in a message.
+  // Kiro reports context percentage without a token count through this session-info path.
+  // That update arrives independently of a transcript message.
   it('maps a context_usage that states the fill alone', () => {
     expect(wireSessionInfoToUpdates({ context_usage: { usage_percent: 42.5 } })).toEqual({
       contextUsage: { inputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, usagePercent: 42.5 },
@@ -2648,18 +2470,12 @@ describe('wireSessionInfoToUpdates', () => {
 })
 
 /**
- * The worker-offline sweep walks `view.all()` -- every tab in the ACCOUNT, not
- * one workspace. Both arms must therefore filter on `workerId`: a tab hosted by
- * any other worker still has its transport. Flipping that agent to INACTIVE
- * hides a thinking indicator for a turn that still runs.
- *
- * The agent branch was missing that filter. Before every workspace became live it
- * was a one-workspace bug; the widening made it account-wide.
+ * The offline sweep reads tabs from every account workspace. Filter both tab types by worker
+ * ID so a healthy worker retains its agents and terminals.
  */
 describe('collectWorkerOfflineTargets', () => {
-  // `undefined` in overrides CLEARs a defaulted field; absence keeps it. The
-  // per-variant partials keep kind-specific fields (e.g. a terminal's `status`)
-  // available to the spread below.
+  // An explicit undefined override clears a default. An absent override retains it.
+  // The partial type for each tab variant retains its fields, including terminal status.
   const tab = (over: Partial<AgentTab> | Partial<TerminalTab> | Partial<FileTab>): Tab => ({
     type: TabType.AGENT,
     id: 'a1',
@@ -2708,12 +2524,8 @@ describe('collectWorkerOfflineTargets', () => {
   })
 
   /**
-   * A quake terminal -- the shell behind a quake panel -- has no tile and
-   * no placement, and it is not in `view.all()` at all: the hook composes it in
-   * from the detached family precisely so this sweep can reach it.
-   *
-   * Without that composition an outage left every quake terminal reading READY
-   * for its whole duration, with a live-looking panel that swallowed input.
+   * A quake terminal has no placed tab. Add detached terminals to the offline sweep so they do
+   * not retain READY during an outage.
    */
   it('marks a terminal that has no tile, which is the quake panel\'s shape', () => {
     const { terminals } = collectWorkerOfflineTargets([
@@ -2731,13 +2543,8 @@ describe('collectWorkerOfflineTargets', () => {
 })
 
 /**
- * What the offline sweep actually reclaims, per agent.
- *
- * A dropped link ends the turn silently: the worker sends no result row, no
- * turn-end divider and no INACTIVE status change, and every other reclamation
- * site in the app runs off one of those three. So each live indicator this sweep
- * forgets stays frozen on screen for the whole outage -- and the sweep is the
- * only place that can catch it.
+ * A lost connection can omit the events that clear live indicators. Clear those indicators
+ * locally so they do not remain throughout the outage.
  */
 describe('clearOfflineAgentState', () => {
   function seededStores() {
@@ -2756,15 +2563,15 @@ describe('clearOfflineAgentState', () => {
       const s = seededStores()
       clearOfflineAgentState('a1', s)
 
-      // The two the sweep used to miss. Each badge would otherwise read "30s" /
-      // "1m 30s" for as long as the worker stayed away.
+      // These two tool badges must disappear during the outage.
+      // Otherwise, their old duration labels remain for the entire outage.
       expect(s.chatStore.getToolProgress('a1', TOOL_A)).toBeUndefined()
       expect(s.chatStore.getToolProgress('a1', TOOL_B)).toBeUndefined()
       expect(s.agentSessionStore.getProgress('a1').thinkingTokens).toBeUndefined()
       expect(s.agentSessionStore.getProgress('a1').output).toBeUndefined()
-      // The worker that was going to report the settle is gone, so a retained
-      // busy flag would pin the spinner and keep the Interrupt button on an
-      // agent nothing can interrupt.
+      // The disconnected worker cannot report a settle. Remove the stored activity level.
+      // The view then removes its spinner and unavailable Interrupt control.
+
       expect(s.agentActivityStore.isBusy('a1')).toBe(false)
       dispose()
     })
@@ -2800,24 +2607,13 @@ describe('clearOfflineAgentState', () => {
 })
 
 /**
- * What the user is told when a chat-history load fails.
- *
- * A dropped connection fails every background load at once, so each one that
- * announced its own failure turned a single outage into a row of toasts -- and
- * the copy the user read was `err.message`, which names our own plumbing
- * ("channel not open"). The reconnect loop in useWatchEventsStreams announces
- * the outage once, in plain language, and re-promotes the agent when the link
- * returns, which re-runs this load. A failure the WORKER reported is the
- * opposite case: nothing is retrying it, so it must still reach the user.
- *
- * Drives the real hook, not a helper, because the defect was at the call site:
- * every part of the decision can be right and the site can still call the wrong
- * toast.
+ * Suppress history-load toasts for a lost connection. Report a worker RPC refusal. Exercise
+ * the real hook and actual Toast rule.
  */
 describe('useWorkspaceConnection chat history load', () => {
   /**
-   * Mount the hook over one active agent tab whose history has never loaded,
-   * which is the condition its lazy-load effect fires on.
+   * Mount one active agent whose initial history load is incomplete. The hook's lazy-load effect
+   * then requests its history.
    */
   function mountWithActiveAgent(listAgentMessagesRejectsWith: unknown) {
     vi.mocked(workerRpc.listAgentMessages).mockRejectedValue(listAgentMessagesRejectsWith)
@@ -2883,6 +2679,7 @@ describe('useWorkspaceConnection chat history load', () => {
     try {
       await settle()
       expect(mockShowWarnToast).toHaveBeenCalledWith('Failed to load chat history', refusal)
+      expect(document.querySelector('.toast-message')).toHaveTextContent('agent not found')
     }
     finally {
       dispose()
@@ -2890,11 +2687,10 @@ describe('useWorkspaceConnection chat history load', () => {
   })
 
   it('announces a failed reconcile-driven re-anchor instead of leaving it unhandled', async () => {
-    // A loaded window whose recorded live tail sits past the catch-up limit:
-    // the reconcile tick re-anchors via jumpToLatestMessages, whose LATEST
-    // fetch rejects. The wiring must catch it and show the same toast -- the
-    // voided promise would otherwise surface as one unhandled rejection per
-    // retry cycle.
+    // The loaded window remains behind the live tail by more than the catch-up limit.
+    // The reconcile effect calls jumpToLatestMessages, whose LATEST request rejects.
+    // The caller must catch the rejection and show the same toast.
+    // Otherwise, each later recovery attempt produces an unhandled rejection.
     mockShowWarnToast.mockClear()
     const refusal = new ChannelError('rpc', 'agent not found', { code: 5 })
     vi.mocked(workerRpc.listAgentMessages).mockRejectedValue(refusal)
@@ -2930,5 +2726,1180 @@ describe('useWorkspaceConnection chat history load', () => {
     finally {
       dispose()
     }
+  })
+})
+
+describe('useWorkspaceConnection replay ownership', () => {
+  let dispose: (() => void) | undefined
+  let restoreMarks: (() => void) | undefined
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.spyOn(Math, 'random').mockReturnValue(0.5)
+    vi.mocked(workerRpc.watchEventsViaChannel).mockReset()
+    vi.mocked(workerRpc.listAgentMessages).mockResolvedValue(create(ListAgentMessagesResponseSchema))
+    restoreMarks = vi.spyOn(workerRpc, 'listMessageMarks').mockResolvedValue(create(ListMessageMarksResponseSchema, { minSeq: 0n, maxSeq: 0n })).mockRestore
+  })
+
+  afterEach(() => {
+    dispose?.()
+    dispose = undefined
+    restoreMarks?.()
+    vi.mocked(workerRpc.watchEventsViaChannel).mockReset()
+    vi.restoreAllMocks()
+    vi.useRealTimers()
+  })
+
+  async function flushStream() {
+    for (let i = 0; i < 10; i++)
+      await Promise.resolve()
+  }
+
+  function mountReplay(initial: {
+    cost?: number
+    seq?: bigint
+    status?: AgentStatus
+    agentId?: string
+    parentAgentId?: string
+    rootAgentId?: string
+    hydrated?: boolean
+    workerId?: string
+    relatedAgents?: Array<{ id: string, parentAgentId?: string, rootAgentId?: string, workerId?: string, visible?: boolean, hydrated?: boolean }>
+  } = {}) {
+    const agentId = initial.agentId ?? 'a1'
+    const handles: Array<{ workerId: string, handle: workerRpc.WatchEventsHandle, emit: (event: AgentEvent) => void, end: () => void, requestId: () => bigint }> = []
+    const transmitted: WatchEventsRequest[] = []
+    const requests: Array<{ workerId: string, request: WatchEventsRequest }> = []
+    const ownershipAtTransport: boolean[] = []
+    const settled = vi.fn<(agentId: string, numToolUses?: number) => void>()
+    let messageId = 0
+    const stores = createRoot((close) => {
+      dispose = close
+      const tabs = makeTabStores()
+      tabs.addAgent(agentId, { workerId: initial.workerId ?? 'w1', agentStatus: initial.status ?? AgentStatus.ACTIVE, hydrated: initial.hydrated ?? initial.rootAgentId !== undefined, ...(initial.parentAgentId === undefined ? {} : { parentAgentId: initial.parentAgentId }), ...(initial.rootAgentId === undefined ? {} : { rootAgentId: initial.rootAgentId }) })
+      const primaryTile = () => {
+        const tileId = tabs.view.getAgentTab(agentId)?.tileId
+        if (!tileId)
+          throw new Error('The primary agent requires its current placed leaf.')
+        return tileId
+      }
+      for (const related of initial.relatedAgents ?? []) {
+        const tileId = related.visible ? tabs.layoutStore.splitTile(primaryTile(), 'horizontal') : primaryTile()
+        if (!tileId)
+          throw new Error('A visible related agent requires its own tile.')
+        tabs.addAgent(related.id, { workerId: related.workerId ?? 'w1', agentStatus: AgentStatus.ACTIVE, hydrated: related.hydrated ?? related.rootAgentId !== undefined, ...(related.parentAgentId === undefined ? {} : { parentAgentId: related.parentAgentId }), ...(related.rootAgentId === undefined ? {} : { rootAgentId: related.rootAgentId }) }, { tileId, activate: related.visible ?? false })
+      }
+      tabs.selection.setActiveById(TabType.AGENT, agentId)
+      const agentSessionStore = createAgentSessionStore()
+      const chatStore = createChatStore()
+      chatStore.setMessages(agentId, initial.seq === undefined ? [] : [create(AgentChatMessageSchema, { id: 'initial', seq: initial.seq, source: MessageSource.USER })])
+      if (initial.cost !== undefined)
+        agentSessionStore.updateInfo(agentId, { totalCostUsd: initial.cost })
+      const agentActivityStore = createAgentActivityStore()
+      const controlStore = createControlStore()
+      const agentInputQueueStore = createAgentInputQueueStore()
+      vi.mocked(workerRpc.watchEventsViaChannel).mockImplementation(async (workerId, request) => {
+        const opening = fromBinary(WatchEventsRequestSchema, toBinary(WatchEventsRequestSchema, create(WatchEventsRequestSchema, request)))
+        transmitted.push(opening)
+        requests.push({ workerId, request: opening })
+        let requestId = request.updateId ?? 0n
+        ownershipAtTransport.push(agentSessionStore.acceptsReplay(agentId, requestId))
+        let listener: ((response: WatchEventsResponse) => void) | undefined
+        let ended: (() => void) | undefined
+        const handle: workerRpc.WatchEventsHandle = {
+          update: vi.fn((next) => {
+            requestId = next.updateId ?? 0n
+            const update = fromBinary(WatchEventsRequestSchema, toBinary(WatchEventsRequestSchema, create(WatchEventsRequestSchema, next)))
+            transmitted.push(update)
+            requests.push({ workerId, request: update })
+          }),
+          close: vi.fn(),
+          onEvent: vi.fn((callback) => { listener = callback }),
+          onEnd: (callback) => { ended = callback },
+          onError: vi.fn(),
+        }
+        handles.push({
+          workerId,
+          handle,
+          emit: event => listener?.(create(WatchEventsResponseSchema, { event: { case: 'agentEvent', value: event } })),
+          end: () => ended?.(),
+          requestId: () => requestId,
+        })
+        return handle
+      })
+      useWorkspaceConnection({
+        chatStore,
+        agentInputQueueStore,
+        view: tabs.view,
+        metadata: tabs.metadata,
+        selection: tabs.selection,
+        controlStore,
+        quakeStore: createTestQuakeStore(),
+        getActiveQuakeKeyId: () => null,
+        agentSessionStore,
+        agentActivityStore,
+        repoGitStore: createRepoGitStore(),
+        settingsLoading: createLoadingSignal(),
+        getActiveWorkspaceId: () => WS,
+        onAgentSettled: settled,
+      })
+      return {
+        ...tabs,
+        addAgent(id: string, meta: Record<string, unknown> = {}, opts: { tileId?: string, activate?: boolean } = {}) {
+          tabs.addAgent(id, meta, { ...opts, tileId: opts.tileId ?? primaryTile() })
+        },
+        agentId,
+        agentSessionStore,
+        agentActivityStore,
+        agentInputQueueStore,
+        chatStore,
+        controlStore,
+      }
+    })
+    const emitMessage = (content: unknown, options: { seq?: bigint, replay?: boolean, replayId?: bigint, transcriptOnly?: boolean, origin?: string } = {}) => {
+      const current = handles.at(-1)
+      if (!current)
+        throw new Error('The test requires an open watch stream.')
+      const replayId = options.replay
+        ? options.replayId ?? transmitted.at(-1)?.agents.find(entry => entry.agentId === agentId)?.replayId
+        : 0n
+      if (replayId === undefined)
+        throw new Error('A replay frame requires its actual transmitted identity.')
+      messageId++
+      const frame = receivedEvent({
+        agentId,
+        replay: options.replay ?? false,
+        replayId,
+        event: { case: 'agentMessage', value: create(AgentChatMessageSchema, {
+          id: `wire-message-${messageId}`,
+          seq: options.seq ?? BigInt(messageId),
+          source: MessageSource.AGENT,
+          agentProvider: AgentProvider.CLAUDE_CODE,
+          content: new TextEncoder().encode(JSON.stringify(content)),
+          contentCompression: ContentCompression.NONE,
+          transcriptOnly: options.transcriptOnly ?? false,
+        }) },
+      }, options.origin ?? (options.replay ? agentId : ''))
+      current.emit(frame)
+      if (frame.event.case !== 'agentMessage')
+        throw new Error('The fixture requires a message frame.')
+      return frame.event.value
+    }
+    return { ...stores, handles, transmitted, requests, ownershipAtTransport, emitMessage, settled }
+  }
+
+  function receivedEvent(frame: MessageInitShape<typeof AgentEventSchema>, origin = frame.replay ? frame.agentId ?? '' : '') {
+    return create(AgentEventSchema, { ...frame, replayAgentId: origin })
+  }
+
+  function emitActivity(state: ReturnType<typeof mountReplay>, level: AgentActivityState, replay = false, numToolUses?: number) {
+    const current = state.handles.at(-1)
+    const entry = state.transmitted.at(-1)?.agents.find(candidate => candidate.agentId === state.agentId)
+    if (!current || !entry)
+      throw new Error('The activity frame requires its actual originating watch entry.')
+    current.emit(receivedEvent({
+      agentId: state.agentId,
+      replay,
+      replayId: replay ? entry.replayId : 0n,
+      event: replay
+        ? { case: 'catchUpStart', value: { latestSeq: 0n, activityState: level } }
+        : { case: 'activityChanged', value: { state: level, ...(numToolUses === undefined ? {} : { numToolUses }) } },
+    }))
+  }
+
+  it('keeps live working activity when an older idle baseline replays', async () => {
+    const state = mountReplay()
+    await flushStream()
+    emitActivity(state, AgentActivityState.WORKING)
+    emitActivity(state, AgentActivityState.IDLE, true)
+    expect(state.agentActivityStore.isBusy(state.agentId)).toBe(true)
+    expect(state.settled).not.toHaveBeenCalled()
+    emitActivity(state, AgentActivityState.IDLE, false, 3)
+    emitActivity(state, AgentActivityState.IDLE, false, 3)
+    expect(state.settled).toHaveBeenCalledExactlyOnceWith(state.agentId, 3)
+  })
+
+  it('keeps live idle activity and one alert when an older working baseline replays', async () => {
+    const state = mountReplay()
+    await flushStream()
+    emitActivity(state, AgentActivityState.WORKING)
+    emitActivity(state, AgentActivityState.IDLE, false, 3)
+    emitActivity(state, AgentActivityState.WORKING, true)
+    expect(state.agentActivityStore.isBusy(state.agentId)).toBe(false)
+    emitActivity(state, AgentActivityState.IDLE, false, 3)
+    expect(state.settled).toHaveBeenCalledExactlyOnceWith(state.agentId, 3)
+  })
+
+  it.each([
+    { level: 'working', current: AgentActivityState.WORKING, replayed: AgentActivityState.IDLE, busy: true },
+    { level: 'idle', current: AgentActivityState.IDLE, replayed: AgentActivityState.WORKING, busy: false },
+  ])('keeps a repeated live $level level ahead of an older replay baseline', async ({ current, replayed, busy }) => {
+    const state = mountReplay()
+    await flushStream()
+    state.agentActivityStore.seedPublished(state.agentId, current)
+    emitActivity(state, current)
+    emitActivity(state, replayed, true)
+    expect(state.agentActivityStore.isBusy(state.agentId)).toBe(busy)
+    expect(state.settled).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { level: 'working', before: AgentActivityState.IDLE, replayed: AgentActivityState.WORKING, busy: true },
+    { level: 'idle', before: AgentActivityState.WORKING, replayed: AgentActivityState.IDLE, busy: false },
+  ])('restores an unclaimed cold $level baseline without an alert', async ({ before, replayed, busy }) => {
+    const state = mountReplay()
+    await flushStream()
+    state.agentActivityStore.seedPublished(state.agentId, before)
+    emitActivity(state, replayed, true)
+    expect(state.agentActivityStore.isBusy(state.agentId)).toBe(busy)
+    expect(state.settled).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { topology: 'child-only', topic: 'goal' },
+    { topology: 'child-only', topic: 'tasks' },
+    { topology: 'root-and-child', topic: 'goal' },
+    { topology: 'root-and-child', topic: 'tasks' },
+    { topology: 'nested-child', topic: 'goal' },
+    { topology: 'nested-child', topic: 'tasks' },
+  ] as const)('restores the root $topic from the actual $topology replay lifetime', async ({ topology, topic }) => {
+    const nested = topology === 'nested-child'
+    const state = mountReplay({
+      agentId: 'child-1',
+      parentAgentId: nested ? 'middle-1' : 'root-1',
+      ...(nested
+        ? { relatedAgents: [{ id: 'root-1' }, { id: 'middle-1', parentAgentId: 'root-1' }] }
+        : { rootAgentId: 'root-1' }),
+    })
+    await flushStream()
+    const childEntry = state.transmitted[0]?.agents.find(entry => entry.agentId === 'child-1')
+    const rootEntry = state.transmitted[0]?.agents.find(entry => entry.agentId === 'root-1')
+    if (!childEntry || !rootEntry)
+      throw new Error('The actual child watch must include its root notification entry.')
+    expect(childEntry.mode).toBe(WatchMode.FULL)
+    expect(rootEntry.mode).toBe(WatchMode.NOTIFY)
+    expect(rootEntry.replayId).toBe(0n)
+    expect(state.agentSessionStore.acceptsReplay('child-1', childEntry.replayId)).toBe(true)
+    if (nested) {
+      expect(state.view.getAgentTab('child-1')?.rootAgentId).toBeUndefined()
+      expect(state.view.getAgentTab('child-1')?.parentAgentId).toBe('middle-1')
+      expect(state.view.getAgentTab('middle-1')?.parentAgentId).toBe('root-1')
+      expect(state.view.getAgentTab('root-1')?.parentAgentId).toBeUndefined()
+    }
+    if (topology === 'root-and-child') {
+      const secondTile = state.layoutStore.splitTile(state.rootTileId, 'horizontal')
+      if (!secondTile)
+        throw new Error('The root and child require separate visible tiles.')
+      state.addAgent('root-1', { workerId: 'w1', agentStatus: AgentStatus.ACTIVE }, { tileId: secondTile })
+      await flushStream()
+      const currentRoot = state.transmitted.at(-1)?.agents.find(entry => entry.agentId === 'root-1')
+      expect(currentRoot?.mode).toBe(WatchMode.FULL)
+      expect(currentRoot?.replayId).not.toBe(childEntry.replayId)
+    }
+    const projection = topic === 'goal'
+      ? receivedEvent({
+          agentId: 'root-1',
+          replay: true,
+          replayId: childEntry.replayId,
+          event: { case: 'goalChanged', value: {
+            agentId: 'root-1',
+            goal: create(AgentGoalSchema, { nativeId: 'replayed-root-goal', objective: 'Restore the root goal', createdAt: '2026-10-09T00:00:00.000Z', status: AgentGoalStatus.ACTIVE }),
+            supportedActions: [AgentGoalAction.CLEAR],
+            goalUpdatedAt: '2026-10-09T00:00:01.000Z',
+          } },
+        }, 'child-1')
+      : receivedEvent({
+          agentId: 'root-1',
+          replay: true,
+          replayId: childEntry.replayId,
+          event: { case: 'backgroundTasksChanged', value: {
+            agentId: 'root-1',
+            tasks: [create(BackgroundTaskItemSchema, { id: 'replayed-root-task', kind: BackgroundTaskKind.SUBAGENT, status: BackgroundTaskStatus.RUNNING, childAgentId: 'child-1', parentAgentId: 'root-1', title: 'Restore the root task' })],
+          } },
+        }, 'child-1')
+    state.handles[0]!.emit(projection)
+    if (topic === 'goal') {
+      expect(state.chatStore.goal.get('root-1')?.nativeId).toBe('replayed-root-goal')
+      expect(state.chatStore.goal.supportedActions('root-1')).toEqual(['clear'])
+    }
+    else {
+      expect(state.chatStore.backgroundTasks.get('root-1').map(task => task.rowKey)).toEqual(['replayed-root-task'])
+    }
+  })
+
+  function requestedEntry(state: ReturnType<typeof mountReplay>, origin = state.agentId, workerId = 'w1') {
+    const entry = state.requests.findLast(record => record.workerId === workerId)?.request.agents.find(candidate => candidate.agentId === origin)
+    if (!entry || entry.mode !== WatchMode.FULL || entry.replayId === 0n)
+      throw new Error('The frame requires its actual current FULL watch entry.')
+    return entry
+  }
+
+  function rootPublication(topic: 'goal' | 'tasks', options: {
+    origin?: string
+    destination?: string
+    payloadAgentId?: string
+    replayId?: bigint
+    replay?: boolean
+    value?: string
+    empty?: boolean
+    stamp?: string
+  } = {}) {
+    const destination = options.destination ?? 'root-1'
+    const payloadAgentId = options.payloadAgentId ?? destination
+    const value = options.value ?? 'replayed'
+    const replay = options.replay ?? true
+    return receivedEvent({
+      agentId: destination,
+      replay,
+      replayId: replay ? options.replayId ?? 0n : 0n,
+      event: topic === 'goal'
+        ? { case: 'goalChanged', value: {
+            agentId: payloadAgentId,
+            ...(options.empty ? {} : { goal: create(AgentGoalSchema, { nativeId: `${value}-goal`, objective: `${value} objective`, createdAt: '2026-10-09T00:00:00.000Z', status: AgentGoalStatus.ACTIVE }) }),
+            supportedActions: options.empty ? [AgentGoalAction.SET] : [value === 'live' ? AgentGoalAction.PAUSE : AgentGoalAction.CLEAR],
+            goalUpdatedAt: options.stamp ?? '2026-10-09T00:00:03.000Z',
+          } }
+        : { case: 'backgroundTasksChanged', value: {
+            agentId: payloadAgentId,
+            tasks: options.empty ? [] : [create(BackgroundTaskItemSchema, { id: `${value}-task`, title: `${value} task`, kind: BackgroundTaskKind.SUBAGENT, status: BackgroundTaskStatus.RUNNING, childAgentId: 'child-1', parentAgentId: destination })],
+          } },
+    }, replay ? options.origin ?? 'child-1' : '')
+  }
+
+  function rootState(state: ReturnType<typeof mountReplay>, topic: 'goal' | 'tasks', destination = 'root-1') {
+    return topic === 'goal'
+      ? { goal: state.chatStore.goal.get(destination), actions: state.chatStore.goal.supportedActions(destination) }
+      : state.chatStore.backgroundTasks.get(destination)
+  }
+
+  it('retains the explicit origin through the generated response wrapper', () => {
+    const frame = receivedEvent({ agentId: 'root-1', replay: true, replayId: 1n }, 'child-1')
+    const response = create(WatchEventsResponseSchema, { event: { case: 'agentEvent', value: frame } })
+    expect(response.event.value).toBe(frame)
+    expect(Reflect.get(response.event.value!, 'replayAgentId')).toBe('child-1')
+  })
+
+  it.each(['goal', 'tasks'] as const)('uses exact sibling origins when their FULL %s lifetimes share one numeric ID', async (topic) => {
+    const state = mountReplay({ agentId: 'child-1', parentAgentId: 'root-1', rootAgentId: 'root-1', relatedAgents: [{ id: 'child-2', parentAgentId: 'root-1', rootAgentId: 'root-1', visible: true }] })
+    await flushStream()
+    const first = requestedEntry(state, 'child-1')
+    const sibling = requestedEntry(state, 'child-2')
+    expect(first.replayId).toBe(sibling.replayId)
+    state.handles[0]!.emit(rootPublication(topic, { origin: 'child-1', replayId: first.replayId }))
+    expect(rootState(state, topic)).toMatchObject(topic === 'goal' ? { goal: { nativeId: 'replayed-goal' }, actions: ['clear'] } : [{ rowKey: 'replayed-task' }])
+    state.handles[0]!.emit(rootPublication(topic, { origin: 'child-2', replayId: sibling.replayId, value: 'sibling' }))
+    expect(rootState(state, topic)).toMatchObject(topic === 'goal' ? { goal: { nativeId: 'sibling-goal' }, actions: ['clear'] } : [{ rowKey: 'sibling-task' }])
+  })
+
+  it.each(['goal', 'tasks'] as const)('refuses every invalid origin and destination for root %s snapshots', async (topic) => {
+    const state = mountReplay({ agentId: 'child-1', parentAgentId: 'root-1', rootAgentId: 'root-1', relatedAgents: [{ id: 'root-1' }, { id: 'unrelated-root' }, { id: 'child-2', parentAgentId: 'root-1', rootAgentId: 'root-1' }, { id: 'foreign-root', workerId: 'w2', visible: true }] })
+    await flushStream()
+    const entry = requestedEntry(state)
+    const frames = [
+      { origin: '' },
+      { origin: 'unsent-child' },
+      { origin: 'child-2' },
+      { replayId: 0n },
+      { replayId: entry.replayId + 1n },
+      { replayId: 9007199254740993n },
+      { replayId: (1n << 64n) - 1n },
+      { destination: 'unrelated-root' },
+      { destination: 'child-2' },
+      { destination: 'foreign-root' },
+      { payloadAgentId: 'unrelated-root' },
+      { destination: 'child-1', payloadAgentId: 'root-1' },
+    ]
+    for (const invalid of frames) {
+      state.handles.find(handle => handle.workerId === 'w1')!.emit(rootPublication(topic, { replayId: entry.replayId, ...invalid }))
+      expect(state.chatStore.goal.get('root-1')).toBeUndefined()
+      expect(state.chatStore.backgroundTasks.get('root-1')).toEqual([])
+      expect(state.chatStore.goal.get('unrelated-root')).toBeUndefined()
+      expect(state.chatStore.backgroundTasks.get('unrelated-root')).toEqual([])
+      expect(state.chatStore.goal.get('child-2')).toBeUndefined()
+      expect(state.chatStore.backgroundTasks.get('child-2')).toEqual([])
+    }
+    state.handles.find(handle => handle.workerId === 'w2')!.emit(rootPublication(topic, { replayId: entry.replayId }))
+    expect(rootState(state, topic)).toEqual(topic === 'goal' ? { goal: undefined, actions: [] } : [])
+    state.handles.find(handle => handle.workerId === 'w1')!.emit(rootPublication(topic, { replayId: entry.replayId }))
+    expect(rootState(state, topic)).toMatchObject(topic === 'goal' ? { goal: { nativeId: 'replayed-goal' } } : [{ rowKey: 'replayed-task' }])
+  })
+
+  it.each([
+    { relationship: 'missing parent', relatedAgents: [] },
+    { relationship: 'incomplete parent chain', relatedAgents: [{ id: 'middle-1', parentAgentId: 'missing-root' }] },
+    { relationship: 'cyclic parent chain', relatedAgents: [{ id: 'middle-1', parentAgentId: 'child-1' }] },
+  ])('refuses projection with a $relationship', async ({ relatedAgents }) => {
+    const state = mountReplay({ agentId: 'child-1', parentAgentId: 'middle-1', relatedAgents })
+    await flushStream()
+    const entry = requestedEntry(state)
+    for (const topic of ['goal', 'tasks'] as const)
+      state.handles[0]!.emit(rootPublication(topic, { destination: 'middle-1', replayId: entry.replayId }))
+    expect(state.chatStore.goal.get('middle-1')).toBeUndefined()
+    expect(state.chatStore.backgroundTasks.get('middle-1')).toEqual([])
+  })
+
+  it('restores the authoritative root before the hydrator sets its completion marker', async () => {
+    const state = mountReplay({ agentId: 'child-1', parentAgentId: 'missing-parent', rootAgentId: 'root-1', hydrated: false })
+    await flushStream()
+    const entry = requestedEntry(state)
+    for (const topic of ['goal', 'tasks'] as const)
+      state.handles[0]!.emit(rootPublication(topic, { replayId: entry.replayId }))
+    expect(state.metadata.get('child-1')?.hydrated).toBe(false)
+    expect(state.chatStore.goal.get('root-1')?.nativeId).toBe('replayed-goal')
+    expect(state.chatStore.backgroundTasks.get('root-1').map(task => task.rowKey)).toEqual(['replayed-task'])
+  })
+
+  it.each(['statusChange', 'controlRequest', 'controlResponseChanged', 'controlCancel', 'todosChanged', 'inputQueueChanged', 'goalChanged', 'backgroundTasksChanged'] as const)('refuses an absent or foreign payload agent for replay %s', async (kind) => {
+    const state = mountReplay({ relatedAgents: [{ id: 'foreign' }] })
+    await flushStream()
+    const entry = requestedEntry(state)
+    handleControlRequest('foreign', create(AgentControlRequestSchema, { agentId: 'foreign', requestId: 'foreign-request', claimToken: 'foreign-token', responseState: ControlResponseState.READY, payload: new TextEncoder().encode('{}') }), 'live', { ...state, getActiveWorkspaceId: () => WS })
+    for (const payloadAgentId of ['', 'foreign']) {
+      const events: Record<typeof kind, AgentEvent['event']> = {
+        statusChange: create(AgentEventSchema, { event: { case: 'statusChange', value: { agentId: payloadAgentId, status: AgentStatus.INACTIVE } } }).event,
+        controlRequest: create(AgentEventSchema, { event: { case: 'controlRequest', value: { agentId: payloadAgentId, requestId: 'foreign-request', claimToken: 'foreign-token', responseState: ControlResponseState.DELIVERED, payload: new TextEncoder().encode('{}') } } }).event,
+        controlResponseChanged: create(AgentEventSchema, { event: { case: 'controlResponseChanged', value: { agentId: payloadAgentId, requestId: 'foreign-request', claimToken: 'foreign-token', responseState: ControlResponseState.DELIVERED, payload: new TextEncoder().encode('{}') } } }).event,
+        controlCancel: create(AgentEventSchema, { event: { case: 'controlCancel', value: { agentId: payloadAgentId, requestId: 'foreign-request', claimToken: 'foreign-token', responseState: ControlResponseState.CANCELED } } }).event,
+        todosChanged: create(AgentEventSchema, { event: { case: 'todosChanged', value: { agentId: payloadAgentId, todos: [create(TodoItemSchema, { id: 'foreign-todo', content: 'Foreign todo', status: TodoStatus.IN_PROGRESS })] } } }).event,
+        inputQueueChanged: create(AgentEventSchema, { event: { case: 'inputQueueChanged', value: { snapshot: { agentId: payloadAgentId, revision: 99n } } } }).event,
+        goalChanged: create(AgentEventSchema, { event: { case: 'goalChanged', value: { agentId: payloadAgentId, goal: create(AgentGoalSchema, { objective: 'Foreign goal' }), goalUpdatedAt: '2026-10-09T00:00:04.000Z' } } }).event,
+        backgroundTasksChanged: create(AgentEventSchema, { event: { case: 'backgroundTasksChanged', value: { agentId: payloadAgentId, tasks: [create(BackgroundTaskItemSchema, { id: 'foreign-task', title: 'Foreign task' })] } } }).event,
+      }
+      state.handles[0]!.emit(receivedEvent({ agentId: 'a1', replay: true, replayId: entry.replayId, event: events[kind] }))
+      expect(state.controlStore.getRequests('foreign')).toHaveLength(1)
+      expect(state.controlStore.getRequests('foreign')[0]?.responseState).toBe(ControlResponseState.READY)
+      expect(state.controlStore.getRequests('')).toEqual([])
+      expect(state.view.getAgentTab('foreign')?.agentStatus).toBe(AgentStatus.ACTIVE)
+      expect(state.chatStore.todos.get(payloadAgentId)).toEqual([])
+      expect(state.chatStore.backgroundTasks.get(payloadAgentId)).toEqual([])
+      expect(state.chatStore.goal.get(payloadAgentId)).toBeUndefined()
+      expect(state.agentInputQueueStore.get(payloadAgentId)).toBeUndefined()
+      expect(state.agentSessionStore.acceptsReplay('a1', entry.replayId)).toBe(true)
+    }
+  })
+
+  it.each(['origin worker', 'destination worker', 'root relationship'] as const)('refuses a replay after its %s changes', async (change) => {
+    const state = mountReplay({ agentId: 'child-1', parentAgentId: 'root-1', rootAgentId: 'root-1', relatedAgents: [{ id: 'root-1' }] })
+    await flushStream()
+    const entry = requestedEntry(state)
+    if (change === 'origin worker') {
+      state.addAgent('child-1', { workerId: 'w2' }, { activate: false })
+      expect(state.view.getAgentTab('child-1')?.workerId).toBe('w2')
+    }
+    else if (change === 'destination worker') {
+      state.addAgent('root-1', { workerId: 'w2' }, { activate: false })
+      expect(state.view.getAgentTab('root-1')?.workerId).toBe('w2')
+    }
+    else {
+      state.metadata.patch('child-1', { rootAgentId: 'different-root' })
+    }
+    for (const topic of ['goal', 'tasks'] as const)
+      state.handles[0]!.emit(rootPublication(topic, { replayId: entry.replayId }))
+    expect(state.chatStore.goal.get('root-1')).toBeUndefined()
+    expect(state.chatStore.backgroundTasks.get('root-1')).toEqual([])
+  })
+
+  it('refuses a nested root projection through a parent on another worker', async () => {
+    const state = mountReplay({ agentId: 'child-1', parentAgentId: 'middle-1', relatedAgents: [{ id: 'root-1' }, { id: 'middle-1', parentAgentId: 'root-1', workerId: 'w2' }] })
+    await flushStream()
+    const entry = requestedEntry(state)
+    for (const topic of ['goal', 'tasks'] as const)
+      state.handles.find(handle => handle.workerId === 'w1')!.emit(rootPublication(topic, { replayId: entry.replayId }))
+    expect(state.chatStore.goal.get('root-1')).toBeUndefined()
+    expect(state.chatStore.backgroundTasks.get('root-1')).toEqual([])
+  })
+
+  it.each(['demoted', 'removed', 'replaced', 'completed'] as const)('refuses a %s child receipt beside an active sibling with the same original ID', async (change) => {
+    const state = mountReplay({ agentId: 'child-1', parentAgentId: 'root-1', rootAgentId: 'root-1', relatedAgents: [{ id: 'child-2', parentAgentId: 'root-1', rootAgentId: 'root-1', visible: true }] })
+    await flushStream()
+    const entry = requestedEntry(state)
+    const sibling = requestedEntry(state, 'child-2')
+    expect(entry.replayId).toBe(sibling.replayId)
+    if (change === 'completed') {
+      state.handles[0]!.emit(receivedEvent({ agentId: 'child-1', replay: true, replayId: entry.replayId, event: { case: 'catchUpComplete', value: { latestSeq: 0n } } }))
+    }
+    else if (change === 'removed') {
+      emitRemoveTab(TabType.AGENT, 'child-1')
+    }
+    else {
+      state.addAgent('replacement-1', { workerId: 'w1' })
+    }
+    await flushStream()
+    if (change === 'replaced') {
+      state.selection.setActiveById(TabType.AGENT, 'child-1')
+      await flushStream()
+      expect(requestedEntry(state).replayId).not.toBe(entry.replayId)
+    }
+    for (const topic of ['goal', 'tasks'] as const)
+      state.handles[0]!.emit(rootPublication(topic, { replayId: entry.replayId }))
+    expect(state.chatStore.goal.get('root-1')).toBeUndefined()
+    expect(state.chatStore.backgroundTasks.get('root-1')).toEqual([])
+    expect(state.agentSessionStore.acceptsReplay('child-2', sibling.replayId)).toBe(true)
+    for (const topic of ['goal', 'tasks'] as const)
+      state.handles[0]!.emit(rootPublication(topic, { origin: 'child-2', replayId: sibling.replayId }))
+    expect(state.chatStore.goal.get('root-1')?.nativeId).toBe('replayed-goal')
+    expect(state.chatStore.backgroundTasks.get('root-1').map(task => task.rowKey)).toEqual(['replayed-task'])
+  })
+
+  it('refuses a closed stream listener after a replacement stream opens', async () => {
+    const state = mountReplay({ agentId: 'child-1', parentAgentId: 'root-1', rootAgentId: 'root-1' })
+    await flushStream()
+    const old = state.handles[0]!
+    const oldEntry = requestedEntry(state)
+    old.end()
+    await vi.advanceTimersByTimeAsync(1000)
+    await flushStream()
+    const current = requestedEntry(state)
+    expect(current.replayId).not.toBe(oldEntry.replayId)
+    for (const topic of ['goal', 'tasks'] as const)
+      old.emit(rootPublication(topic, { replayId: current.replayId }))
+    expect(state.chatStore.goal.get('root-1')).toBeUndefined()
+    expect(state.chatStore.backgroundTasks.get('root-1')).toEqual([])
+    state.handles[1]!.emit(rootPublication('tasks', { replayId: current.replayId }))
+    expect(state.chatStore.backgroundTasks.get('root-1').map(task => task.rowKey)).toEqual(['replayed-task'])
+  })
+
+  it('accepts the transmitted FULL lifetime before its desired demotion sends', async () => {
+    const state = mountReplay({ agentId: 'child-1', parentAgentId: 'root-1', rootAgentId: 'root-1' })
+    await flushStream()
+    const entry = requestedEntry(state)
+    state.addAgent('replacement-1', { workerId: 'w1' })
+    for (const topic of ['goal', 'tasks'] as const)
+      state.handles[0]!.emit(rootPublication(topic, { replayId: entry.replayId }))
+    expect(state.agentSessionStore.acceptsReplay('child-1', entry.replayId)).toBe(true)
+    expect(state.chatStore.goal.get('root-1')?.nativeId).toBe('replayed-goal')
+    expect(state.chatStore.backgroundTasks.get('root-1').map(task => task.rowKey)).toEqual(['replayed-task'])
+  })
+
+  it.each(['catchUpStart', 'catchUpComplete', 'statusChange', 'controlRequest', 'todosChanged', 'inputQueueChanged'] as const)('refuses a projected %s event', async (kind) => {
+    const state = mountReplay({ agentId: 'child-1', parentAgentId: 'root-1', rootAgentId: 'root-1', relatedAgents: [{ id: 'root-1' }] })
+    await flushStream()
+    const entry = requestedEntry(state)
+    const events: Record<typeof kind, AgentEvent['event']> = {
+      catchUpStart: create(AgentEventSchema, { event: { case: 'catchUpStart', value: { latestSeq: 99n, activityState: AgentActivityState.WORKING } } }).event,
+      catchUpComplete: create(AgentEventSchema, { event: { case: 'catchUpComplete', value: { latestSeq: 99n } } }).event,
+      statusChange: create(AgentEventSchema, { event: { case: 'statusChange', value: { agentId: 'root-1', status: AgentStatus.INACTIVE } } }).event,
+      controlRequest: create(AgentEventSchema, { event: { case: 'controlRequest', value: { agentId: 'root-1', requestId: 'foreign-request', responseState: ControlResponseState.READY, payload: new TextEncoder().encode('{}') } } }).event,
+      todosChanged: create(AgentEventSchema, { event: { case: 'todosChanged', value: { agentId: 'root-1', todos: [create(TodoItemSchema, { id: 'foreign-todo', content: 'Foreign todo', status: TodoStatus.IN_PROGRESS })] } } }).event,
+      inputQueueChanged: create(AgentEventSchema, { event: { case: 'inputQueueChanged', value: { snapshot: { agentId: 'root-1', revision: 99n } } } }).event,
+    }
+    const reconcile = vi.spyOn(state.chatStore, 'reconcileAuthoritativeTail')
+    state.handles[0]!.emit(receivedEvent({ agentId: 'root-1', replay: true, replayId: entry.replayId, event: events[kind] }, 'child-1'))
+    expect(reconcile).not.toHaveBeenCalled()
+    expect(state.agentActivityStore.isBusy('root-1')).toBe(false)
+    expect(state.view.getAgentTab('root-1')?.agentStatus).toBe(AgentStatus.ACTIVE)
+    expect(state.controlStore.getRequests('root-1')).toEqual([])
+    expect(state.chatStore.todos.get('root-1')).toEqual([])
+    expect(state.agentInputQueueStore.get('root-1')).toBeUndefined()
+    expect(state.agentSessionStore.acceptsReplay('child-1', entry.replayId)).toBe(true)
+  })
+
+  it.each(['root', 'child'] as const)('keeps live root goal capabilities against an equal-time %s replay', async (origin) => {
+    const state = mountReplay(origin === 'root' ? { agentId: 'root-1' } : { agentId: 'child-1', parentAgentId: 'root-1', rootAgentId: 'root-1' })
+    await flushStream()
+    const entry = requestedEntry(state)
+    state.handles[0]!.emit(rootPublication('goal', { replay: false, value: 'live' }))
+    state.handles[0]!.emit(rootPublication('goal', { origin: state.agentId, replayId: entry.replayId }))
+    expect(state.chatStore.goal.get('root-1')?.nativeId).toBe('live-goal')
+    expect(state.chatStore.goal.supportedActions('root-1')).toEqual(['pause'])
+  })
+
+  it.each([
+    { origin: 'root', empty: false },
+    { origin: 'root', empty: true },
+    { origin: 'child', empty: false },
+    { origin: 'child', empty: true },
+  ] as const)('keeps a live root task list with empty=$empty against a $origin replay', async ({ origin, empty }) => {
+    const state = mountReplay(origin === 'root' ? { agentId: 'root-1' } : { agentId: 'child-1', parentAgentId: 'root-1', rootAgentId: 'root-1' })
+    await flushStream()
+    const entry = requestedEntry(state)
+    state.handles[0]!.emit(rootPublication('tasks', { replay: false, value: 'live', empty }))
+    const current = state.chatStore.backgroundTasks.get('root-1')
+    state.handles[0]!.emit(rootPublication('tasks', { origin: state.agentId, replayId: entry.replayId }))
+    expect(state.chatStore.backgroundTasks.get('root-1')).toEqual(current)
+    expect(state.chatStore.backgroundTasks.get('root-1').map(task => task.rowKey)).toEqual(empty ? [] : ['live-task'])
+  })
+
+  it.each(['goal', 'tasks'] as const)('restores an unclaimed root %s topic beside another live topic', async (topic) => {
+    const state = mountReplay({ agentId: 'child-1', parentAgentId: 'root-1', rootAgentId: 'root-1' })
+    await flushStream()
+    const entry = requestedEntry(state)
+    const claimed = topic === 'goal' ? 'tasks' : 'goal'
+    state.handles[0]!.emit(rootPublication(claimed, { replay: false, value: 'live' }))
+    state.handles[0]!.emit(rootPublication(topic, { replayId: entry.replayId }))
+    expect(rootState(state, topic)).toMatchObject(topic === 'goal' ? { goal: { nativeId: 'replayed-goal' } } : [{ rowKey: 'replayed-task' }])
+    expect(rootState(state, claimed)).toMatchObject(claimed === 'goal' ? { goal: { nativeId: 'live-goal' }, actions: ['pause'] } : [{ rowKey: 'live-task' }])
+  })
+
+  it('makes no root goal claim for a refused stale live publication', async () => {
+    const state = mountReplay({ agentId: 'child-1', parentAgentId: 'root-1', rootAgentId: 'root-1' })
+    await flushStream()
+    const entry = requestedEntry(state)
+    const known = rootPublication('goal', { value: 'known' })
+    if (known.event.case !== 'goalChanged')
+      throw new Error('The fixture requires a goal publication.')
+    const goal = known.event.value
+    state.chatStore.goal.replace('root-1', goal.goal, goal.supportedActions, goal.goalUpdatedAt)
+    state.handles[0]!.emit(rootPublication('goal', { replay: false, empty: true, stamp: '2026-10-09T00:00:01.000Z' }))
+    state.handles[0]!.emit(rootPublication('goal', { replayId: entry.replayId, stamp: '2026-10-09T00:00:04.000Z' }))
+    expect(state.chatStore.goal.get('root-1')?.nativeId).toBe('replayed-goal')
+    expect(state.chatStore.goal.supportedActions('root-1')).toEqual(['clear'])
+  })
+
+  it('starts a replacement lifetime with unclaimed root topics', async () => {
+    const state = mountReplay({ agentId: 'child-1', parentAgentId: 'root-1', rootAgentId: 'root-1' })
+    await flushStream()
+    const old = requestedEntry(state)
+    for (const topic of ['goal', 'tasks'] as const)
+      state.handles[0]!.emit(rootPublication(topic, { replay: false, value: 'live' }))
+    state.addAgent('replacement-1', { workerId: 'w1' })
+    await flushStream()
+    state.selection.setActiveById(TabType.AGENT, 'child-1')
+    await flushStream()
+    const current = requestedEntry(state)
+    expect(current.replayId).not.toBe(old.replayId)
+    for (const topic of ['goal', 'tasks'] as const)
+      state.handles[0]!.emit(rootPublication(topic, { replayId: current.replayId, stamp: '2026-10-09T00:00:04.000Z' }))
+    expect(state.chatStore.goal.get('root-1')?.nativeId).toBe('replayed-goal')
+    expect(state.chatStore.backgroundTasks.get('root-1').map(task => task.rowKey)).toEqual(['replayed-task'])
+  })
+
+  it('keeps tail reconciliation when a live activity claim refuses the old baseline', async () => {
+    const state = mountReplay({ seq: 7n })
+    await flushStream()
+    const entry = requestedEntry(state)
+    const reconcile = vi.spyOn(state.chatStore, 'reconcileAuthoritativeTail')
+    emitActivity(state, AgentActivityState.WORKING)
+    state.handles[0]!.emit(receivedEvent({ agentId: state.agentId, replay: true, replayId: entry.replayId, event: { case: 'catchUpStart', value: { latestSeq: 9n, activityState: AgentActivityState.IDLE } } }))
+    expect(state.agentActivityStore.isBusy(state.agentId)).toBe(true)
+    expect(reconcile).toHaveBeenCalledExactlyOnceWith(state.agentId, 9n, 7n)
+    expect(state.settled).not.toHaveBeenCalled()
+  })
+
+  it('lets a cold baseline restore after an unspecified live activity report', async () => {
+    const state = mountReplay()
+    await flushStream()
+    emitActivity(state, AgentActivityState.UNSPECIFIED)
+    emitActivity(state, AgentActivityState.WORKING, true)
+    expect(state.agentActivityStore.isBusy(state.agentId)).toBe(true)
+    expect(state.settled).not.toHaveBeenCalled()
+  })
+
+  it.each([AgentActivityState.UNSPECIFIED, -1, 99])('refuses invalid live activity %s without claiming the replay baseline', async (level) => {
+    const state = mountReplay()
+    await flushStream()
+    state.agentActivityStore.seedPublished(state.agentId, AgentActivityState.WORKING)
+    emitActivity(state, level)
+    expect(state.agentActivityStore.publishedState(state.agentId)).toBe(AgentActivityState.WORKING)
+    expect(state.agentActivityStore.isBusy(state.agentId)).toBe(true)
+    expect(state.settled).not.toHaveBeenCalled()
+    emitActivity(state, AgentActivityState.IDLE, true)
+    expect(state.agentActivityStore.publishedState(state.agentId)).toBe(AgentActivityState.IDLE)
+    expect(state.agentActivityStore.isBusy(state.agentId)).toBe(false)
+    expect(state.settled).not.toHaveBeenCalled()
+  })
+
+  it.each([AgentActivityState.UNSPECIFIED, -1, 99])('refuses invalid replay activity %s while retaining tail reconciliation', async (level) => {
+    const state = mountReplay({ seq: 7n })
+    await flushStream()
+    state.agentActivityStore.seedPublished(state.agentId, AgentActivityState.WORKING)
+    const entry = requestedEntry(state)
+    const reconcile = vi.spyOn(state.chatStore, 'reconcileAuthoritativeTail')
+    state.handles[0]!.emit(receivedEvent({ agentId: state.agentId, replay: true, replayId: entry.replayId, event: { case: 'catchUpStart', value: { latestSeq: 9n, activityState: level } } }))
+    expect(state.agentActivityStore.publishedState(state.agentId)).toBe(AgentActivityState.WORKING)
+    expect(reconcile).toHaveBeenCalledExactlyOnceWith(state.agentId, 9n, 7n)
+    expect(state.settled).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { label: 'empty origin', origin: '', wrongId: false },
+    { label: 'another origin', origin: 'unsent-agent', wrongId: false },
+    { label: 'unsent lifetime', origin: 'a1', wrongId: true },
+  ])('retains replay transcript bytes but refuses effects for $label', async ({ origin, wrongId }) => {
+    const state = mountReplay({ cost: 1 })
+    await flushStream()
+    const entry = requestedEntry(state)
+    state.agentSessionStore.applyProgress('a1', { revision: 10, thinkingTokens: 17 })
+    state.chatStore.applyToolProgress('a1', { ...TOOL_A, outputTail: 'current output' })
+    const row = state.emitMessage({ type: 'result', total_cost_usd: 9 }, { replay: true, replayId: wrongId ? entry.replayId + 1n : entry.replayId, origin })
+    expect(state.agentSessionStore.getInfo('a1').totalCostUsd).toBe(1)
+    expect(state.agentSessionStore.getProgress('a1').thinkingTokens).toBe(17)
+    expect(state.chatStore.getToolProgress('a1', TOOL_A)?.outputTail).toBe('current output')
+    expect(state.chatStore.getMessages('a1')[0]?.id).toBe(row.id)
+    expect(new TextDecoder().decode(row.content)).toBe('{"type":"result","total_cost_usd":9}')
+    expect(row.transcriptOnly).toBe(false)
+  })
+
+  it.each([9007199254740993n, (1n << 64n) - 1n])('refuses unsent receipt %s even when a direct store caller opens it', async (unsentId) => {
+    const state = mountReplay({ cost: 1 })
+    await flushStream()
+    state.agentSessionStore.beginReplay('a1', unsentId)
+    const row = state.emitMessage({ type: 'result', total_cost_usd: 9 }, { replay: true, replayId: unsentId })
+    expect(state.agentSessionStore.getInfo('a1').totalCostUsd).toBe(1)
+    expect(state.chatStore.getMessages('a1')[0]?.id).toBe(row.id)
+    expect(row.transcriptOnly).toBe(false)
+  })
+
+  async function replaceReplay(state: ReturnType<typeof mountReplay>) {
+    state.addAgent('lifetime-replacement', { workerId: 'w1' })
+    await flushStream()
+    state.selection.setActiveById(TabType.AGENT, state.agentId)
+    await flushStream()
+    return requestedEntry(state).replayId
+  }
+
+  describe('controlRequest guard for inactive agents', () => {
+    function emitRequest(tabs: ReturnType<typeof mountReplay>, replay = false) {
+      const current = tabs.handles.at(-1)
+      const entry = tabs.transmitted.at(-1)?.agents.find(candidate => candidate.agentId === tabs.agentId)
+      if (!current || !entry)
+        throw new Error('The request requires its actual transmitted watch entry.')
+      current.emit(receivedEvent({
+        agentId: tabs.agentId,
+        replay,
+        replayId: replay ? entry.replayId : 0n,
+        event: { case: 'controlRequest', value: {
+          agentId: tabs.agentId,
+          requestId: 'r1',
+          claimToken: 'tok-r1',
+          responseState: ControlResponseState.READY,
+          payload: new TextEncoder().encode(JSON.stringify({ method: 'item/commandExecution/requestApproval' })),
+        } },
+      }))
+    }
+
+    function emitStatus(tabs: ReturnType<typeof mountReplay>, status: AgentStatus, replay = false) {
+      const current = tabs.handles.at(-1)
+      const entry = tabs.transmitted.at(-1)?.agents.find(candidate => candidate.agentId === tabs.agentId)
+      if (!current || !entry)
+        throw new Error('The status requires its actual transmitted watch entry.')
+      current.emit(receivedEvent({
+        agentId: tabs.agentId,
+        replay,
+        replayId: replay ? entry.replayId : 0n,
+        event: { case: 'statusChange', value: { agentId: tabs.agentId, status, workerOnline: true } },
+      }))
+    }
+
+    it('should not add catch-up control request when agent is INACTIVE', async () => {
+      const tabs = mountReplay({ agentId: 'agent-1', status: AgentStatus.INACTIVE })
+      const controlStore = tabs.controlStore
+      await flushStream()
+      emitRequest(tabs, true)
+      expect(controlStore.getRequests('agent-1')).toHaveLength(0)
+    })
+
+    it('should revive stale INACTIVE state and add live control request', async () => {
+      const tabs = mountReplay({ agentId: 'agent-1', status: AgentStatus.INACTIVE })
+      const controlStore = tabs.controlStore
+      await flushStream()
+      emitRequest(tabs)
+      expect(tabs.view.getAgentTab('agent-1')?.agentStatus).toBe(AgentStatus.ACTIVE)
+      expect(controlStore.getRequests('agent-1')).toHaveLength(1)
+    })
+
+    it('should add control request when agent is ACTIVE', async () => {
+      const tabs = mountReplay({ agentId: 'agent-1', status: AgentStatus.ACTIVE })
+      const controlStore = tabs.controlStore
+      await flushStream()
+      emitRequest(tabs, true)
+      expect(controlStore.getRequests('agent-1')).toHaveLength(1)
+    })
+
+    it('should clear control requests when agent becomes INACTIVE', async () => {
+      const tabs = mountReplay({ agentId: 'agent-1', status: AgentStatus.ACTIVE })
+      const controlStore = tabs.controlStore
+      await flushStream()
+      emitRequest(tabs)
+      expect(controlStore.getRequests('agent-1')).toHaveLength(1)
+      emitStatus(tabs, AgentStatus.INACTIVE)
+      expect(controlStore.getRequests('agent-1')).toHaveLength(0)
+    })
+
+    it('should preserve pending control requests across short connection blips', async () => {
+      const tabs = mountReplay({ agentId: 'agent-1', status: AgentStatus.ACTIVE })
+      const controlStore = tabs.controlStore
+      await flushStream()
+      emitRequest(tabs)
+      expect(controlStore.getRequests('agent-1')).toHaveLength(1)
+      tabs.handles[0]!.end()
+      expect(controlStore.getRequests('agent-1')).toHaveLength(1)
+    })
+
+    it('should clear control requests on worker restart because agent processes stop', async () => {
+      const tabs = mountReplay({ agentId: 'agent-1', status: AgentStatus.ACTIVE })
+      const controlStore = tabs.controlStore
+      await flushStream()
+      emitRequest(tabs)
+      expect(controlStore.getRequests('agent-1')).toHaveLength(1)
+      tabs.handles[0]!.end()
+      await vi.advanceTimersByTimeAsync(1000)
+      await flushStream()
+      expect(tabs.handles).toHaveLength(2)
+      emitStatus(tabs, AgentStatus.INACTIVE, true)
+      expect(controlStore.getRequests('agent-1')).toHaveLength(0)
+      emitRequest(tabs, true)
+      expect(controlStore.getRequests('agent-1')).toHaveLength(0)
+    })
+
+    it('should preserve pending control requests across WatchEvents stream restarts', async () => {
+      const tabs = mountReplay({ agentId: 'agent-1', status: AgentStatus.ACTIVE })
+      const controlStore = tabs.controlStore
+      await flushStream()
+      emitRequest(tabs)
+      expect(controlStore.getRequests('agent-1')).toHaveLength(1)
+      tabs.handles[0]!.end()
+      await vi.advanceTimersByTimeAsync(1000)
+      await flushStream()
+      expect(tabs.handles).toHaveLength(2)
+      emitStatus(tabs, AgentStatus.ACTIVE, true)
+      emitRequest(tabs, true)
+      expect(controlStore.getRequests('agent-1')).toHaveLength(1)
+    })
+  })
+
+  it('restores a cold unknown root goal through the actual child replay listener', async () => {
+    const state = mountReplay({ agentId: 'child-1', parentAgentId: 'root-1', rootAgentId: 'root-1' })
+    await flushStream()
+    const entry = requestedEntry(state)
+    state.handles[0]!.emit(receivedEvent({ agentId: 'root-1', replay: true, replayId: entry.replayId, event: { case: 'goalChanged', value: {
+      agentId: 'root-1',
+      goal: create(AgentGoalSchema, { nativeId: 'unknown-root-goal', objective: 'Keep the root objective', status: AgentGoalStatus.UNKNOWN, statusDetail: 'native-future-state', createdAt: '2026-10-09T00:00:00.000Z' }),
+      supportedActions: [AgentGoalAction.SET, AgentGoalAction.CLEAR],
+      goalUpdatedAt: '2026-10-09T00:00:01.000Z',
+    } } }, 'child-1'))
+    expect(state.chatStore.goal.get('root-1')).toMatchObject({ nativeId: 'unknown-root-goal', objective: 'Keep the root objective', status: 'unknown', statusDetail: 'native-future-state' })
+    expect(state.chatStore.goal.supportedActions('root-1')).toEqual(['set', 'clear'])
+    expect(state.chatStore.goal.progress('root-1')).toEqual({})
+  })
+
+  it('keeps an accepted live unknown root goal and its progress ahead of the child replay baseline', async () => {
+    const state = mountReplay({ agentId: 'child-1', parentAgentId: 'root-1', rootAgentId: 'root-1', relatedAgents: [{ id: 'root-1', visible: true }] })
+    await flushStream()
+    const entry = requestedEntry(state, 'child-1')
+    expect(requestedEntry(state, 'root-1').mode).toBe(WatchMode.FULL)
+    const current = create(AgentGoalSchema, { nativeId: 'same-root-goal', objective: 'Keep the root objective', createdAt: '2026-10-09T00:00:00.000Z', status: AgentGoalStatus.ACTIVE })
+    state.chatStore.goal.replace('root-1', current, [AgentGoalAction.PAUSE], '2026-10-09T00:00:01.000Z')
+    state.chatStore.goal.setProgress('root-1', { tokensUsed: 150, iterations: 3 })
+    state.handles[0]!.emit(receivedEvent({ agentId: 'root-1', event: { case: 'goalChanged', value: {
+      agentId: 'root-1',
+      goal: create(AgentGoalSchema, { ...current, status: AgentGoalStatus.UNKNOWN, statusDetail: 'native-future-state' }),
+      supportedActions: [AgentGoalAction.SET, AgentGoalAction.CLEAR],
+      goalUpdatedAt: '2026-10-09T00:00:01.000Z',
+    } } }))
+    state.handles[0]!.emit(receivedEvent({ agentId: 'root-1', replay: true, replayId: entry.replayId, event: { case: 'goalChanged', value: {
+      agentId: 'root-1',
+      goal: current,
+      supportedActions: [AgentGoalAction.PAUSE],
+      goalUpdatedAt: '2026-10-09T00:00:01.000Z',
+    } } }, 'child-1'))
+    expect(state.chatStore.goal.get('root-1')).toMatchObject({ nativeId: 'same-root-goal', status: 'unknown', statusDetail: 'native-future-state' })
+    expect(state.chatStore.goal.progress('root-1')).toEqual({ tokensUsed: 150, iterations: 3 })
+    expect(state.chatStore.goal.supportedActions('root-1')).toEqual(['set', 'clear'])
+  })
+
+  it('opens metadata ownership before the actual transport call', async () => {
+    const state = mountReplay({ cost: 1 })
+    await flushStream()
+    expect(state.ownershipAtTransport).toEqual([true])
+    state.emitMessage({ type: 'result', total_cost_usd: 2 }, { replay: true })
+    expect(state.agentSessionStore.getInfo('a1').totalCostUsd).toBe(2)
+  })
+
+  it.each(['replacement', 'clear'] as const)('keeps an accepted live goal %s clear when an older progress snapshot arrives', async (change) => {
+    const state = mountReplay()
+    await flushStream()
+    const oldGoal = create(AgentGoalSchema, { nativeId: 'old-goal', objective: 'Old goal', createdAt: '2026-10-08T00:00:00.000Z', status: AgentGoalStatus.ACTIVE })
+    const nextGoal = change === 'clear' ? undefined : create(AgentGoalSchema, { nativeId: 'new-goal', objective: 'New goal', createdAt: '2026-10-08T00:00:02.000Z', status: AgentGoalStatus.ACTIVE })
+    state.chatStore.goal.replace('a1', oldGoal, [AgentGoalAction.CLEAR], '2026-10-08T00:00:01.000Z')
+    state.chatStore.goal.setProgress('a1', { tokensUsed: 150 })
+    state.handles[0]!.emit(receivedEvent({ agentId: 'a1', event: { case: 'goalChanged', value: {
+      agentId: 'a1',
+      goal: nextGoal,
+      supportedActions: [AgentGoalAction.SET],
+      goalUpdatedAt: '2026-10-08T00:00:03.000Z',
+    } } }))
+    expect(state.chatStore.goal.progress('a1')).toEqual({})
+    const replayId = state.transmitted[0]?.agents.find(entry => entry.agentId === 'a1')?.replayId
+    if (replayId === undefined)
+      throw new Error('The goal snapshot requires the actual opening replay identity.')
+    state.handles[0]!.emit(receivedEvent({ agentId: 'a1', replay: true, replayId, event: { case: 'goalChanged', value: {
+      agentId: 'a1',
+      goal: oldGoal,
+      supportedActions: [AgentGoalAction.CLEAR],
+      goalUpdatedAt: '2026-10-08T00:00:01.000Z',
+    } } }))
+    state.emitMessage({ type: 'agent_session_info', info: { goal_progress: { tokens_used: 100, iterations: 3 } } }, { seq: -1n, replay: true, replayId })
+    expect(state.chatStore.goal.progress('a1')).toEqual({})
+    expect(state.chatStore.goal.get('a1')?.nativeId).toBe(change === 'clear' ? undefined : 'new-goal')
+    expect(state.chatStore.goal.supportedActions('a1')).toEqual(['set'])
+  })
+
+  it('makes no live progress clear claim for a refused stale goal event', async () => {
+    const state = mountReplay()
+    await flushStream()
+    const current = create(AgentGoalSchema, { nativeId: 'current-goal', objective: 'Current goal', createdAt: '2026-10-08T00:00:02.000Z', status: AgentGoalStatus.ACTIVE })
+    state.chatStore.goal.replace('a1', current, [AgentGoalAction.CLEAR], '2026-10-08T00:00:03.000Z')
+    state.handles[0]!.emit(receivedEvent({ agentId: 'a1', event: { case: 'goalChanged', value: {
+      agentId: 'a1',
+      supportedActions: [],
+      goalUpdatedAt: '2026-10-08T00:00:01.000Z',
+    } } }))
+    state.emitMessage({ type: 'agent_session_info', info: { goal_progress: { tokens_used: 100 } } }, { seq: -1n, replay: true })
+    expect(state.chatStore.goal.get('a1')?.nativeId).toBe('current-goal')
+    expect(state.chatStore.goal.progress('a1').tokensUsed).toBe(100)
+    expect(state.chatStore.goal.supportedActions('a1')).toEqual(['clear'])
+  })
+
+  it('keeps equal-timestamp capabilities and permits unclaimed cold goal progress', async () => {
+    const state = mountReplay()
+    await flushStream()
+    const current = create(AgentGoalSchema, { nativeId: 'current-goal', objective: 'Current goal', createdAt: '2026-10-08T00:00:02.000Z', status: AgentGoalStatus.ACTIVE })
+    state.chatStore.goal.replace('a1', current, [AgentGoalAction.SET], '2026-10-08T00:00:03.000Z')
+    state.chatStore.goal.setProgress('a1', { tokensUsed: 150 })
+    state.handles[0]!.emit(receivedEvent({ agentId: 'a1', event: { case: 'goalChanged', value: {
+      agentId: 'a1',
+      goal: current,
+      supportedActions: [AgentGoalAction.CLEAR],
+      goalUpdatedAt: '2026-10-08T00:00:03.000Z',
+    } } }))
+    state.emitMessage({ type: 'agent_session_info', info: { goal_progress: { iterations: 3 } } }, { seq: -1n, replay: true })
+    expect(state.chatStore.goal.progress('a1')).toEqual({ tokensUsed: 150, iterations: 3 })
+    expect(state.chatStore.goal.supportedActions('a1')).toEqual(['clear'])
+  })
+
+  it('passes exact replay IDs while retaining superseded transcript rows', async () => {
+    const state = mountReplay()
+    await flushStream()
+    const earlierId = requestedEntry(state).replayId
+    const currentId = await replaceReplay(state)
+    expect(currentId).not.toBe(earlierId)
+    state.emitMessage({ type: 'result', total_cost_usd: 9 }, { replay: true, replayId: earlierId })
+    state.emitMessage({ type: 'result', total_cost_usd: 2 }, { replay: true, replayId: currentId })
+    expect(state.agentSessionStore.getInfo('a1').totalCostUsd).toBe(2)
+    expect(state.chatStore.getMessages('a1').map(message => message.id)).toEqual(['wire-message-1', 'wire-message-2'])
+  })
+
+  it('compares stored history with live sequences on the same request', async () => {
+    const state = mountReplay()
+    await flushStream()
+    state.agentSessionStore.beginReplay('a1', state.handles[0]!.requestId())
+    state.emitMessage({ type: 'assistant', total_cost_usd: 3 }, { seq: 30n })
+    state.emitMessage({ type: 'result', total_cost_usd: 2 }, { seq: 20n, replay: true })
+    expect(state.agentSessionStore.getInfo('a1').totalCostUsd).toBe(3)
+    state.emitMessage({ type: 'result', total_cost_usd: 4 }, { seq: 40n, replay: true })
+    expect(state.agentSessionStore.getInfo('a1').totalCostUsd).toBe(4)
+  })
+
+  it('keeps ephemeral usage when replay starts after that live update', async () => {
+    const state = mountReplay()
+    await flushStream()
+    const requestId = state.handles[0]!.requestId()
+    state.agentSessionStore.beginReplay('a1', requestId)
+    state.emitMessage({ type: 'agent_session_info', info: { total_cost_usd: 0, context_usage: { input_tokens: 50 } } }, { seq: -1n })
+    state.handles[0]!.emit(receivedEvent({ agentId: 'a1', replay: true, replayId: requestId, event: { case: 'catchUpStart', value: { latestSeq: 0n, activityState: AgentActivityState.WORKING } } }))
+    state.emitMessage({ type: 'result', total_cost_usd: 8, context_usage: { input_tokens: 10 } }, { seq: 40n, replay: true })
+    expect(state.agentSessionStore.getInfo('a1').totalCostUsd).toBe(0)
+    expect(state.agentSessionStore.getInfo('a1').contextUsage?.inputTokens).toBe(50)
+  })
+
+  it('closes only the replay that the completion frame identifies', async () => {
+    const state = mountReplay()
+    await flushStream()
+    const currentId = await replaceReplay(state)
+    state.agentSessionStore.beginReplay('a1', currentId)
+    state.chatStore.setCatchingUp('a1', true)
+    const complete = (replayId: bigint) => state.handles[0]!.emit(receivedEvent({ agentId: 'a1', replay: true, replayId, event: { case: 'catchUpComplete', value: { latestSeq: 0n } } }))
+    complete(currentId - 1n)
+    expect(state.chatStore.state.catchingUp.a1).toBe(true)
+    expect(state.agentSessionStore.acceptsReplay('a1', currentId)).toBe(true)
+    complete(currentId)
+    expect(state.chatStore.state.catchingUp.a1).toBe(false)
+    expect(state.agentSessionStore.acceptsReplay('a1', currentId)).toBe(false)
+    state.emitMessage({ type: 'result', total_cost_usd: 9 }, { replay: true, replayId: currentId })
+    expect(state.agentSessionStore.getInfo('a1').totalCostUsd).toBeUndefined()
+    expect(state.chatStore.getMessages('a1').some(message => message.id === 'wire-message-1')).toBe(true)
+  })
+
+  it('ignores an old catch-up activity baseline and session snapshot', async () => {
+    const state = mountReplay()
+    await flushStream()
+    const currentId = await replaceReplay(state)
+    state.agentSessionStore.beginReplay('a1', currentId)
+    state.agentActivityStore.seedPublished('a1', AgentActivityState.WORKING)
+    state.agentSessionStore.applyProgress('a1', { revision: 2, thinkingTokens: 30 })
+    state.chatStore.applyToolProgress('a1', { ...TOOL_A, outputTail: 'current output' })
+    state.handles[0]!.emit(receivedEvent({ agentId: 'a1', replay: true, replayId: currentId - 1n, event: { case: 'catchUpStart', value: { latestSeq: 0n, activityState: AgentActivityState.IDLE } } }))
+    state.emitMessage({ type: 'agent_session_info', info: { generation_progress_revision: 3, thinking_tokens: 0, running_tool: { span_id: TOOL_A.spanId, agent_session_id: TOOL_A.agentSessionId, output_tail: 'old output' } } }, { seq: -1n, replay: true, replayId: currentId - 1n })
+    expect(state.agentActivityStore.isBusy('a1')).toBe(true)
+    expect(state.agentSessionStore.getProgress('a1').thinkingTokens).toBe(30)
+    expect(state.chatStore.getToolProgress('a1', TOOL_A)?.outputTail).toBe('current output')
+  })
+
+  it('keeps a transcript-only live row from reviving an inactive tab', async () => {
+    const state = mountReplay({ status: AgentStatus.INACTIVE })
+    await flushStream()
+    state.emitMessage({ type: 'assistant', total_cost_usd: 9 }, { transcriptOnly: true })
+    expect(state.view.getAgentTab('a1')?.agentStatus).toBe(AgentStatus.INACTIVE)
+    expect(state.metadata.liveStatusEpoch('a1')).toBe(0)
+    expect(state.agentSessionStore.getInfo('a1').totalCostUsd).toBeUndefined()
+    expect(state.chatStore.getMessages('a1')).toHaveLength(1)
+  })
+
+  it('retains current live activation and divider cleanup', async () => {
+    const state = mountReplay({ status: AgentStatus.INACTIVE })
+    await flushStream()
+    state.agentSessionStore.applyProgress('a1', { revision: 2, thinkingTokens: 30, output: { bytes: 8, minimum: false } })
+    state.chatStore.applyToolProgress('a1', { ...TOOL_A, outputTail: 'current output' })
+    state.emitMessage({ type: 'result', subtype: 'success', total_cost_usd: 2 })
+    expect(state.view.getAgentTab('a1')?.agentStatus).toBe(AgentStatus.ACTIVE)
+    expect(state.metadata.liveStatusEpoch('a1')).toBe(1)
+    expect(state.agentSessionStore.getInfo('a1').totalCostUsd).toBe(2)
+    expect(state.agentSessionStore.getProgress('a1').thinkingTokens).toBeUndefined()
+    expect(state.agentSessionStore.getProgress('a1').output).toBeUndefined()
+    expect(state.chatStore.getToolProgress('a1', TOOL_A)).toBeUndefined()
+  })
+
+  it('retains the transmitted cursor when live rows precede the ACK', async () => {
+    const state = mountReplay({ seq: 7n })
+    await flushStream()
+    const reconcile = vi.spyOn(state.chatStore, 'reconcileAuthoritativeTail')
+    state.emitMessage({ type: 'assistant' }, { seq: 8n })
+    // The acknowledgement can arrive after the live row. The transmitted cursor still remains seven.
+    const handle = state.handles[0]!
+    const emitResponse = vi.mocked(handle.handle.onEvent).mock.calls[0]?.[0]
+    // Deliver through the actual registered transport handler.
+    expect(emitResponse).toBeDefined()
+    const transmitted = state.transmitted.at(-1)
+    if (!transmitted)
+      throw new Error('The acknowledgment requires the actual transmitted request.')
+    emitResponse?.(create(WatchEventsResponseSchema, { event: { case: 'updateAck', value: { updateId: handle.requestId(), agentStates: transmitted.agents.map(entry => ({ agentId: entry.agentId, mode: entry.mode, replayId: entry.replayId })) } } }))
+    handle.emit(receivedEvent({ agentId: 'a1', replay: true, replayId: handle.requestId(), event: { case: 'catchUpStart', value: { latestSeq: 7n } } }))
+    expect(reconcile).toHaveBeenLastCalledWith('a1', 7n, 7n)
+    expect(state.chatStore.getMessages('a1').some(message => message.seq === 8n)).toBe(true)
+  })
+
+  it('keeps a completed replay closed when a coalesced FULL request receives its ACK', async () => {
+    const state = mountReplay()
+    await flushStream()
+    const handle = state.handles[0]!
+    const replayId = handle.requestId()
+    state.agentSessionStore.beginReplay('a1', replayId)
+    state.chatStore.setCatchingUp('a1', true)
+    state.addAgent('a2', { workerId: 'w1' }, { activate: false })
+    await flushStream()
+    const acknowledgedId = handle.requestId()
+    expect(acknowledgedId).not.toBe(replayId)
+    handle.emit(receivedEvent({ agentId: 'a1', replay: true, replayId, event: { case: 'catchUpComplete', value: { latestSeq: 0n } } }))
+    expect(state.chatStore.state.catchingUp.a1).toBe(false)
+    const listener = vi.mocked(handle.handle.onEvent).mock.calls[0]?.[0]
+    const transmitted = state.transmitted.at(-1)
+    if (!transmitted)
+      throw new Error('The acknowledgment requires the actual transmitted request.')
+    listener?.(create(WatchEventsResponseSchema, { event: { case: 'updateAck', value: { updateId: acknowledgedId, agentStates: transmitted.agents.map(entry => ({ agentId: entry.agentId, mode: entry.mode, replayId: entry.replayId })) } } }))
+    expect(state.chatStore.state.catchingUp.a1).toBe(false)
+  })
+
+  it('restores metadata from the coalesced transmitted lifetime without clearing live progress', async () => {
+    const state = mountReplay({ cost: 1, seq: 7n })
+    await flushStream()
+    const first = state.transmitted[0]
+    if (!first)
+      throw new Error('The test requires the transmitted opening request.')
+    state.emitMessage({ type: 'assistant' }, { seq: 8n })
+    state.agentSessionStore.applyProgress('a1', { revision: 2, thinkingTokens: 30 })
+    state.chatStore.applyToolProgress('a1', { ...TOOL_A, outputTail: 'current output' })
+    state.addAgent('a2', { workerId: 'w1' }, { activate: false })
+    await flushStream()
+    const accepted = state.transmitted.at(-1)
+    const entry = accepted?.agents.find(candidate => candidate.agentId === 'a1')
+    if (!accepted || !entry)
+      throw new Error('The coalesced request must contain the root agent.')
+    expect(accepted.updateId).not.toBe(first.updateId)
+    expect(entry.replayId).toBe(first.updateId)
+    expect(entry.cursorSeq).toBe(7n)
+    expect(entry.windowTailSeq).toBe(7n)
+    const handle = state.handles[0]!
+    handle.emit(receivedEvent({ agentId: 'a1', replay: true, replayId: entry.replayId, event: { case: 'catchUpStart', value: { latestSeq: 9n, activityState: AgentActivityState.WORKING } } }))
+    state.emitMessage({ type: 'result', total_cost_usd: 2 }, { seq: 9n, replay: true, replayId: entry.replayId })
+    expect(state.agentSessionStore.getInfo('a1').totalCostUsd).toBe(2)
+    expect(state.agentSessionStore.getProgress('a1').thinkingTokens).toBe(30)
+    expect(state.chatStore.getToolProgress('a1', TOOL_A)?.outputTail).toBe('current output')
+    expect(state.chatStore.getMessages('a1').some(message => message.seq === 8n)).toBe(true)
+  })
+
+  it('uses the new transmitted lifetime after a skipped demotion and ignores the earlier replay metadata', async () => {
+    const state = mountReplay({ cost: 1, seq: 7n })
+    await flushStream()
+    const first = state.transmitted[0]
+    if (!first)
+      throw new Error('The test requires the transmitted opening request.')
+    state.handles[0]!.emit(receivedEvent({ agentId: 'a1', replay: true, replayId: first.updateId, event: { case: 'catchUpComplete', value: { latestSeq: 7n } } }))
+    state.addAgent('a2', { workerId: 'w1' })
+    await flushStream()
+    const demoted = state.transmitted.at(-1)?.agents.find(entry => entry.agentId === 'a1')
+    expect(demoted?.mode).toBe(WatchMode.NOTIFY)
+    expect(demoted?.replayId).toBe(0n)
+    state.selection.setActiveById(TabType.AGENT, 'a1')
+    await flushStream()
+    const resumed = state.transmitted.at(-1)
+    const entry = resumed?.agents.find(candidate => candidate.agentId === 'a1')
+    if (!resumed || !entry)
+      throw new Error('The resumed request must contain the root agent.')
+    expect(entry.replayId).toBe(resumed.updateId)
+    expect(entry.replayId).not.toBe(first.updateId)
+    state.agentSessionStore.applyProgress('a1', { revision: 2, thinkingTokens: 30 })
+    state.emitMessage({ type: 'result', total_cost_usd: 2 }, { seq: 8n, replay: true, replayId: entry.replayId })
+    state.emitMessage({ type: 'result', total_cost_usd: 99 }, { seq: 9n, replay: true, replayId: first.updateId })
+    state.emitMessage({ type: 'result', total_cost_usd: 99 }, { seq: 99n, replay: true, replayId: first.updateId })
+    expect(state.agentSessionStore.getInfo('a1').totalCostUsd).toBe(2)
+    expect(state.agentSessionStore.getProgress('a1').thinkingTokens).toBe(30)
+    expect(state.chatStore.getMessages('a1').some(message => message.seq === 9n)).toBe(true)
+    // The window guard keeps a non-contiguous frame outside the loaded window.
+    expect(state.chatStore.getMessages('a1').some(message => message.seq === 99n)).toBe(false)
+    expect(state.chatStore.liveTail.get('a1')).toBe(99n)
+  })
+
+  it('clears catch-up ownership when a coalesced opening never reaches registration', async () => {
+    const state = mountReplay()
+    await flushStream()
+    const openingId = state.handles[0]!.requestId()
+    state.addAgent('a2', { workerId: 'w1' }, { activate: false })
+    await flushStream()
+    const handle = state.handles[0]!
+    expect(handle.requestId()).not.toBe(openingId)
+    const listener = vi.mocked(handle.handle.onEvent).mock.calls[0]?.[0]
+    if (!listener)
+      throw new Error('The test requires the actual registered response handler.')
+    listener(create(WatchEventsResponseSchema, { event: { case: 'updateAck', value: {
+      updateId: handle.requestId(),
+      rejectedAgents: ['a1', 'a2'].map(entityId => ({ entityId, reason: WatchRejectionReason.LOOKUP_FAILED })),
+      agentStates: [],
+    } } }))
+    expect(state.agentSessionStore.acceptsReplay('a1', openingId)).toBe(false)
+    expect(state.chatStore.state.catchingUp.a1).toBe(false)
+    await vi.advanceTimersByTimeAsync(500)
+    await flushStream()
+    const retried = state.transmitted.at(-1)
+    const entry = retried?.agents.find(candidate => candidate.agentId === 'a1')
+    if (!retried || !entry)
+      throw new Error('The retry must contain the root agent.')
+    expect(entry.replayId).not.toBe(openingId)
+    expect(state.agentSessionStore.acceptsReplay('a1', entry.replayId)).toBe(true)
+  })
+
+  it('opens a fresh receipt after reconnect restores missed history', async () => {
+    const state = mountReplay({ cost: 1 })
+    await flushStream()
+    const old = state.handles[0]!
+    old.end()
+    await vi.advanceTimersByTimeAsync(1000)
+    await flushStream()
+    const current = state.handles[1]!
+    expect(current.requestId()).not.toBe(old.requestId())
+    expect(state.agentSessionStore.acceptsReplay('a1', old.requestId())).toBe(false)
+    expect(state.agentSessionStore.acceptsReplay('a1', current.requestId())).toBe(true)
+    state.emitMessage({ type: 'result', total_cost_usd: 2 }, { replay: true })
+    expect(state.agentSessionStore.getInfo('a1').totalCostUsd).toBe(2)
   })
 })

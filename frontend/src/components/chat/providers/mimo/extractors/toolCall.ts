@@ -34,13 +34,14 @@ import { mimoToolFinished, mimoToolImages } from './toolCommon'
 /**
  * Everything one MiMo call states, collected once before any reader runs.
  *
- * MiMo writes the whole call state on every update of a tool part, so the row reads
- * the LATEST frame it holds: the paired result when that landed, else its own frame.
- * The request half of the call comes from that same frame, because every frame states
- * the call's input.
+ * MiMo writes the complete call state on each part update.
+ * The row uses its paired final result when that result exists.
+ * Otherwise, the row uses its own frame.
+ * The request uses the same frame because each frame states the input.
  */
 export interface MiMoToolFacts {
   part: MiMoToolPart
+  registryKey?: string
   /** The kind this call takes, after {@link mimoCallKind}. */
   kind: ToolKind
   /** The words the call answered with: its output, or its failure. */
@@ -48,13 +49,13 @@ export interface MiMoToolFacts {
   /** True when the call reached a final frame: it completed or it ended in an error. */
   answered: boolean
   /**
-   * True for the last update of a call that the turn cut short. The worker keeps that
-   * update as the call's final row, and it states what the call did before the cut.
+   * True when the Worker retains the last update of a call that did not answer.
+   * That update becomes the final row and preserves the call's recorded activity.
    */
   retained: boolean
-  /** True for a call that ended in an error MiMo did not attribute to the reader. */
+  /** True for an error that MiMo did not attribute to the user's refusal or an interruption. */
   failed: boolean
-  /** True for a call the reader refused, so it never ran. */
+  /** True for a call that the user refused before it ran. */
   declined: boolean
   /** True for a call that an abort cut short. */
   aborted: boolean
@@ -67,6 +68,7 @@ export interface MiMoToolFacts {
 export interface MiMoToolRow {
   /** The row's own tool part. */
   own: MiMoToolPart
+  registryKey?: string
   /** The final frame of the same call, when the span holds one beside this row. */
   result?: MiMoToolPart
   /** LeapMux's own reading of how the row ended. */
@@ -78,9 +80,9 @@ export interface MiMoToolRow {
 /** One MiMo tool call, as the kind-discriminated pair. */
 export function mimoToolCall(row: MiMoToolRow): ToolCall {
   const part = row.result && mimoToolFinished(row.result) ? row.result : row.own
-  const facts = mimoToolFacts(part, part === row.own && retainedRowIsFinal(row.completion))
+  const facts = mimoToolFacts(part, part === row.own && retainedRowIsFinal(row.completion), row.registryKey)
   const envelope: ToolCallEnvelope = {
-    id: part.callId,
+    id: part.partId,
     name: part.tool,
     lifecycle: {
       frameStatus: frameStatus(part.status),
@@ -126,22 +128,22 @@ function providerOutcome(facts: MiMoToolFacts): ProviderToolOutcome | null {
 /**
  * Collect every fact one frame states, and settle the kind the call takes.
  *
- * `cut` states that the row's completion marks the frame as the last update of a call
- * that the turn cut short.
+ * `retainedFinal` identifies the last update that the Worker retains for a call that did not answer.
  */
-export function mimoToolFacts(part: MiMoToolPart, cut = false): MiMoToolFacts {
-  const errored = part.status === MIMO_TOOL_STATUS.Error
-  const declined = errored && MIMO_DECLINED_ERRORS.some(sentence => part.error.includes(sentence))
-  const aborted = errored && !declined && (part.error.includes(MIMO_ABORTED_TOOL_ERROR) || pickBoolean(part.metadata, 'interrupted') === true)
+export function mimoToolFacts(part: MiMoToolPart, retainedFinal = false, registryKey?: string): MiMoToolFacts {
+  const hasErrorStatus = part.status === MIMO_TOOL_STATUS.Error
+  const declined = hasErrorStatus && MIMO_DECLINED_ERRORS.some(sentence => part.error.includes(sentence))
+  const aborted = hasErrorStatus && !declined && (part.error.includes(MIMO_ABORTED_TOOL_ERROR) || pickBoolean(part.metadata, 'interrupted') === true)
   const answered = mimoToolFinished(part)
-  const read = answered && !errored && (part.tool === MIMO_TOOL.Read) ? parseMiMoRead(part.output) : null
+  const read = answered && !hasErrorStatus && (part.tool === MIMO_TOOL.Read) ? parseMiMoRead(part.output) : null
   const facts: MiMoToolFacts = {
     part,
+    ...(registryKey ? { registryKey } : {}),
     kind: mimoToolKind(part.tool),
-    text: errored ? part.error || 'Tool call failed' : part.output,
+    text: hasErrorStatus ? part.error || 'Tool call failed' : part.output,
     answered,
-    retained: cut && !answered,
-    failed: errored && !declined && !aborted,
+    retained: retainedFinal && !answered,
+    failed: hasErrorStatus && !declined && !aborted,
     declined,
     aborted,
     images: mimoToolImages(part),
@@ -153,16 +155,20 @@ export function mimoToolFacts(part: MiMoToolPart, cut = false): MiMoToolFacts {
 /**
  * The kind one call takes, after the moves its operation or its answer states.
  *
- * Three tools hold several operations under one name. Each move below states the
- * input that causes it:
+ * Three tools contain multiple operations. Their input or result selects the kind.
+ * Actor operations use these kinds:
+ * - A spawn or run uses `agent`.
+ * - A send uses `message`.
+ * - A status request uses `task`.
+ * - A wait uses `task`.
+ * - A cancel uses `task`.
+ * - A model list uses `task`.
  *
- *   - An `actor` call that sends a message takes `message`, and one that reads, waits
- *     for or stops a subagent takes `task`. Only a spawn or a run is an `agent` call.
- *   - A `read` whose answer is a directory listing takes `list`. MiMo's `read` reads
- *     a file or a directory, and only its answer says which.
- *   - A file change that names no file, and a to-do or actor call whose operation
- *     this build cannot read, take the generic card: the arguments are then the only
- *     record of what the call asked for.
+ * A `read` result that contains a directory listing uses `list`.
+ * The result distinguishes a file read from a directory read.
+ * A file change that specifies no file uses the generic card.
+ * An unreadable to-do or actor operation uses that card also.
+ * In these cases, the arguments supply the only record of the request.
  */
 export function mimoCallKind(facts: MiMoToolFacts): ToolKind {
   const { part } = facts
@@ -239,19 +245,32 @@ const MIMO_CRON_TRIGGER_ACTIONS: ReadonlyMap<string, TriggerRequest['action']> =
 /**
  * The kinds MiMo reads DIFFERENTLY from the shared table, and nothing else.
  *
- * Each entry reads a fact the shared entry cannot: the operation that MiMo nests under
- * `operation`, the tool name, or the snake-case keys of MiMo's own tools. Every other
- * kind MiMo produces -- `read`, `glob`, `grep`, `fetch`, `web_search`, `search`,
- * `skill`, `memory`, `agents`, `list`, `other` -- takes `DEFAULT_TOOL_REQUESTS`.
+ * Each entry reads provider facts that the shared entry cannot read:
+ * - The nested `operation`.
+ * - The tool name.
+ * - MiMo's snake-case keys.
  *
- * EVERY entry declares its own return type, for the reason `DEFAULT_TOOL_REQUESTS`
- * gives: a contextual signature is not an annotated position, so an un-annotated entry
- * takes a stray key without a word.
+ * These other kinds use `DEFAULT_TOOL_REQUESTS`:
+ * - `read`.
+ * - `glob`.
+ * - `grep`.
+ * - `fetch`.
+ * - `web_search`.
+ * - `search`.
+ * - `skill`.
+ * - `memory`.
+ * - `agents`.
+ * - `list`.
+ * - `other`.
+ *
+ * Each entry declares its return type, as `DEFAULT_TOOL_REQUESTS` requires.
+ * A contextual signature does not supply an annotated position.
+ * Without that annotation, an entry can accept an unknown key.
  */
 export const MIMO_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<MiMoToolFacts> = {
-  // The launch, which MiMo nests under `operation`, and the registry row the worker
-  // keys by the spawn call's own id.
-  agent: (args, facts): ToolRequestByKind['agent'] => ({ ...mimoActorRequest(args), registryKey: facts.part.callId }),
+  // MiMo nests the launch under `operation`.
+  // The Worker uses the native spawn part ID as its registry key.
+  agent: (args, facts): ToolRequestByKind['agent'] => ({ ...mimoActorRequest(args), ...(facts.registryKey ? { registryKey: facts.registryKey } : {}) }),
   // The recipient and the words of an `actor send`, nested under `operation`.
   message: (args): ToolRequestByKind['message'] => {
     const operation = mimoActorOperation(args)
@@ -294,18 +313,18 @@ export const MIMO_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<MiMoToolFacts> = 
       ...(schedule ? { schedule } : {}),
     }
   },
-  // The mode a plan approval moves the session to, which is always MiMo's build agent,
-  // and the words the header states when the reader sent the plan back. A call outside
-  // plan mode moves the session nowhere, so it states no mode, and the header states
-  // MiMo's own title.
+  // A plan approval selects MiMo's build agent.
+  // The header states when the user sends the plan back.
+  // Outside plan mode, the call changes no mode and keeps MiMo's title.
   switch_mode: (_args, facts): ToolRequestByKind['switch_mode'] =>
     mimoPlanExitOutsidePlanMode(facts) ? {} : { mode: 'build', declinedTitle: 'Plan sent back' },
 }
 
 /**
- * True for a `plan_exit` call that ran outside plan mode. MiMo then asks nobody and
- * answers that plan mode is not active, with `switched: false` as for a plan that the
- * reader sent back, so its title is the one word that separates the two.
+ * True for a `plan_exit` call outside plan mode.
+ * MiMo asks no question and reports that plan mode is inactive.
+ * It returns `switched: false`, as it does when the user sends a plan back.
+ * The native title distinguishes these cases.
  */
 function mimoPlanExitOutsidePlanMode(facts: MiMoToolFacts): boolean {
   return facts.answered && facts.part.title === MIMO_PLAN_EXIT_OUTSIDE_PLAN_TITLE
@@ -392,13 +411,14 @@ function endedBadly(facts: MiMoToolFacts): boolean {
 /**
  * One reader for each kind, each checked against its OWN kind's request and result.
  *
- * Total over `ToolKind` by the mapped type, so a new kind is a compile error here. The
- * kinds MiMo never produces answer the declared request and the words the call printed,
- * which is the right answer if a later MiMo release ever reaches one.
+ * The mapped type requires an entry for every `ToolKind`.
+ * A new kind therefore causes a compile error here.
+ * Kinds that MiMo does not produce return the declared request and output text.
+ * Those entries remain valid if a later release produces such a kind.
  *
- * EVERY entry declares its own return type, and that annotation is the second half of
- * the check: without it the object loses its freshness before any property is checked,
- * and a specification could carry an unread key.
+ * Every entry declares its return type also.
+ * Without the annotation, the object loses freshness before the property check.
+ * A specification could then carry an unread key.
  */
 export const MIMO_TOOL_READERS: ToolCallSpecReaderTable<MiMoToolFacts> = {
   execute: (facts): ToolCallSpecVariant<'execute'> => {
@@ -446,8 +466,8 @@ export const MIMO_TOOL_READERS: ToolCallSpecReaderTable<MiMoToolFacts> = {
         },
       }
     }
-    // An image, a PDF, a media file: the words say what the model received, and the
-    // picture rides beside them.
+    // The text describes the returned image or PDF. It describes other media also.
+    // The row shows each image beside that text.
     return { kind: 'read', request, images, result: unparsedResult(facts.text) }
   },
   list: (facts): ToolCallSpecVariant<'list'> => {
@@ -552,8 +572,12 @@ export const MIMO_TOOL_READERS: ToolCallSpecReaderTable<MiMoToolFacts> = {
       return { kind: 'search', request }
     if (endedBadly(facts))
       return { kind: 'search', request, result: failureOf(facts) }
-    // These searches query a corpus that holds no files -- code snippets, skills, the
-    // tool registry, the history -- so the matches are the words the tool printed.
+    // These search corpora contain no files:
+    // - Code snippets.
+    // - Skills.
+    // - The tool registry.
+    // - History.
+    // The result therefore contains the output text.
     return {
       kind: 'search',
       request,
@@ -577,7 +601,7 @@ export const MIMO_TOOL_READERS: ToolCallSpecReaderTable<MiMoToolFacts> = {
       return { kind: 'agent', request, title, result: failureOf(facts) }
     const run = mimoActorRun(facts.part)
     if (run)
-      return { kind: 'agent', request, title, result: { agents: [{ ...run, registryKey: facts.part.callId }] } }
+      return { kind: 'agent', request, title, result: { agents: [{ ...run, ...(facts.registryKey ? { registryKey: facts.registryKey } : {}) }] } }
     return { kind: 'agent', request, title, result: unparsedResult(facts.text) }
   },
   message: (facts): ToolCallSpecVariant<'message'> => {
@@ -654,8 +678,8 @@ export const MIMO_TOOL_READERS: ToolCallSpecReaderTable<MiMoToolFacts> = {
     // A call outside plan mode asked nobody, so nothing was approved or sent back.
     if (mimoPlanExitOutsidePlanMode(facts))
       return { kind: 'switch_mode', request, title, result: proseResult(facts.text) }
-    // A plan the reader sent back is an ANSWER: the call completed, and the session
-    // stays in plan mode with the feedback the reader gave.
+    // Sending a plan back answers the call.
+    // The session stays in plan mode and retains the user's feedback.
     if (pickBoolean(facts.part.metadata, 'switched') === false && facts.part.metadata.feedback !== undefined) {
       const feedback = pickString(facts.part.metadata, 'feedback')
       return { kind: 'switch_mode', request, title, result: proseResult(feedback || facts.text), statusOverride: 'declined' }
@@ -714,12 +738,12 @@ export const MIMO_TOOL_READERS: ToolCallSpecReaderTable<MiMoToolFacts> = {
   },
   // The generic card: `invalid`, and a tool from a later MiMo release.
   other: (facts): ToolCallSpecVariant<'other'> => ({ kind: 'other', request: mimoRequestFor('other', facts), ...mimoGenericResult(facts) }),
-  // UNREACHABLE for a stored row, which always names its tool. The table is total, so
-  // the entry states the same card at its own kind.
+  // A stored row always identifies its tool, so it cannot use this kind.
+  // The complete table still supplies the same card for this entry.
   unspecified: (facts): ToolCallSpecVariant<'unspecified'> => ({ kind: 'unspecified', request: mimoRequestFor('unspecified', facts), ...mimoGenericResult(facts) }),
-  // UNREACHABLE: no MiMo tool takes this kind. MiMo names an MCP server's tool
-  // `<server>_<tool>`, and nothing on the wire separates the two halves, so such a tool
-  // takes `other`. The table is total, so the entry states the same card here.
+  // No MiMo tool uses this kind.
+  // MiMo identifies an MCP tool as `<server>_<tool>` without separate server and tool fields.
+  // That tool therefore uses `other`. The complete table still supplies the same card here.
   mcp: (facts): ToolCallSpecVariant<'mcp'> => ({ kind: 'mcp', request: mimoRequestFor('mcp', facts), ...mimoGenericResult(facts) }),
   chart: mimoArgumentsOnly('chart'),
   delete: mimoArgumentsOnly('delete'),

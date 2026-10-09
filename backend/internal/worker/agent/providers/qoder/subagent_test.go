@@ -51,7 +51,7 @@ func TestQoderWorkflowUserCompletionClosesExactZeroChildRun(t *testing.T) {
 			a.HandleOutput(notification)
 			workflow, exists := sink.BackgroundTask("workflow:session-1:run-workflow")
 			require.True(t, exists)
-			expected := bgtask.StatusCompleted
+			expected := bgtask.StatusSucceeded
 			if status == "failed" {
 				expected = bgtask.StatusFailed
 			}
@@ -160,7 +160,7 @@ func TestQoderWorkflowUserCompletionReplayKeepsClosedRowAndOriginalBytes(t *test
 	a.HandleOutput(notification)
 	workflow, exists := sink.BackgroundTask("workflow:session-1:run-workflow")
 	require.True(t, exists)
-	assert.Equal(t, bgtask.StatusCompleted, workflow.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, workflow.Status)
 	assert.Len(t, sink.BackgroundTasks(), 1)
 	assert.Empty(t, a.workflows)
 	rows := sink.Messages()
@@ -287,7 +287,7 @@ func TestQoderChildTaskLifecycleRoutesItsTranscript(t *testing.T) {
 	a.HandleOutput([]byte(qoderChildFinished))
 	row, ok = sink.BackgroundTask("spawn-1")
 	require.True(t, ok)
-	assert.Equal(t, bgtask.StatusCompleted, row.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
 	assert.Empty(t, sink.Messages(), "task bookends belong to the registry")
 }
 
@@ -458,7 +458,7 @@ func TestQoderChildTaskFinalStatus(t *testing.T) {
 		name   string
 		status bgtask.Status
 	}{
-		{name: "completed", status: bgtask.StatusCompleted},
+		{name: "completed", status: bgtask.StatusSucceeded},
 		{name: "failed", status: bgtask.StatusFailed},
 		{name: "stopped", status: bgtask.StatusStopped},
 		{name: "cancelled", status: bgtask.StatusStopped},

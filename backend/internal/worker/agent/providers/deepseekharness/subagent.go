@@ -132,26 +132,33 @@ func (a *Agent) bindChildResult(stream *sessionStream, callID string, raw []byte
 func (a *Agent) childTurnState(id string, active bool, completion agent.MessageCompletion) error {
 	a.Mu.Lock()
 	child := a.children[id]
-	if child != nil {
-		child.active = active
-	}
-	a.Mu.Unlock()
 	if child == nil {
+		a.Mu.Unlock()
 		return nil
 	}
+	status := bgtask.StatusRunning
+	if !active {
+		switch completion {
+		case agent.MessageCompletionComplete:
+			status = bgtask.StatusSucceeded
+		case agent.MessageCompletionError:
+			status = bgtask.StatusFailed
+		case agent.MessageCompletionInterrupted:
+			status = bgtask.StatusInterrupted
+		case agent.MessageCompletionFinished:
+			status = bgtask.StatusEndedWithUnknownOutcome
+		default:
+			a.Mu.Unlock()
+			return fmt.Errorf("DeepSeek Harness has an invalid child completion %q", completion)
+		}
+	}
+	child.active = active
+	a.Mu.Unlock()
 	if active {
 		if err := a.sink.ReviveBackgroundTask(id); err != nil {
 			return err
 		}
 		return a.sink.UpdateBackgroundTaskStatus(id, bgtask.StatusRunning, "")
-	}
-	status := bgtask.StatusCompleted
-	switch completion {
-	case agent.MessageCompletionComplete:
-	case agent.MessageCompletionError:
-		status = bgtask.StatusFailed
-	case agent.MessageCompletionInterrupted:
-		status = bgtask.StatusInterrupted
 	}
 	return a.sink.CloseBackgroundTask(id, status)
 }

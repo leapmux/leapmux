@@ -103,7 +103,7 @@ func TestKimiTaskStatus(t *testing.T) {
 		status bgtask.Status
 		final  bool
 	}{
-		"completed": {bgtask.StatusCompleted, true},
+		"completed": {bgtask.StatusSucceeded, true},
 		"failed":    {bgtask.StatusFailed, true},
 		"timed_out": {bgtask.StatusFailed, true},
 		"lost":      {bgtask.StatusFailed, true},
@@ -125,7 +125,7 @@ func TestKimiWireTaskStatus(t *testing.T) {
 		status bgtask.Status
 		final  bool
 	}{
-		"completed": {bgtask.StatusCompleted, true},
+		"completed": {bgtask.StatusSucceeded, true},
 		"failed":    {bgtask.StatusFailed, true},
 		"cancelled": {bgtask.StatusStopped, true},
 		"running":   {bgtask.StatusRunning, false},
@@ -165,6 +165,6 @@ func TestKimiReconcileTasksSkipsATaskThatEnded(t *testing.T) {
 		{ID: "bash-1", Kind: kimiWireTaskKindBash, Status: kimiWireStatusFailed, Command: "make", StartedAt: time.Now().UTC().Format(time.RFC3339Nano)},
 		{ID: "../x", Kind: kimiWireTaskKindBash, Status: kimiWireStatusRunning, StartedAt: time.Now().UTC().Format(time.RFC3339Nano)},
 	})
-	assert.Equal(t, []bgtask.Status{bgtask.StatusRunning, bgtask.StatusCompleted}, rig.sink.BackgroundTaskStatuses("session_1/task/bash-1"))
+	assert.Equal(t, []bgtask.Status{bgtask.StatusRunning, bgtask.StatusSucceeded}, rig.sink.BackgroundTaskStatuses("session_1/task/bash-1"))
 	assert.Len(t, rig.sink.BackgroundTasks(), 1, "an id that Kimi Code does not issue gets no row")
 }

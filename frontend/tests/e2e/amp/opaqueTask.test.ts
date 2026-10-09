@@ -91,7 +91,7 @@ vi.mock('../helpers/ui', async importOriginal => ({
   },
   messageContents: () => ({
     filter: ({ hasText }: { hasText: string }) => ({
-      first: () => ({ probe: true, count: fake.row.attributes['data-status'] === 'completed' && hasText === fake.childReport ? 1 : 0, attributes: {} }),
+      first: () => ({ probe: true, count: fake.row.attributes['data-status'] === 'succeeded' && hasText === fake.childReport ? 1 : 0, attributes: {} }),
     }),
   }),
   waitForSettingsHydrated: async (_page: Page, groupId: string) => {
@@ -133,7 +133,7 @@ function fakeContext(): ManagedNativeScenarioContext {
     },
     releaseGateIfHeld: async () => {
       fake.log.push('release')
-      fake.row.attributes['data-status'] = 'completed'
+      fake.row.attributes['data-status'] = 'succeeded'
       return true
     },
     status: async () => status(),
@@ -160,7 +160,7 @@ describe('exerciseOpaqueAmpTaskLimit', () => {
     fake.failFinish = false
     fake.row = { probe: true, count: 1, attributes: { 'data-status': 'running', 'data-child-agent-id': '', 'aria-disabled': 'true' } }
     fake.runningTasks = [{ kind: BackgroundTaskKind.SUBAGENT, status: BackgroundTaskStatus.RUNNING, childAgentId: '' }]
-    fake.savedTasks = [{ kind: BackgroundTaskKind.SUBAGENT, status: BackgroundTaskStatus.COMPLETED, childAgentId: '' }]
+    fake.savedTasks = [{ kind: BackgroundTaskKind.SUBAGENT, status: BackgroundTaskStatus.SUCCEEDED, childAgentId: '' }]
   })
 
   it('runs the proof while the task runs, then finishes the task and proves the saved task after a reload', async () => {
@@ -209,14 +209,14 @@ describe('exerciseOpaqueAmpTaskLimit', () => {
   })
 
   it('fails when the saved task links a child agent', async () => {
-    fake.savedTasks = [{ kind: BackgroundTaskKind.SUBAGENT, status: BackgroundTaskStatus.COMPLETED, childAgentId: 'amp-child' }]
+    fake.savedTasks = [{ kind: BackgroundTaskKind.SUBAGENT, status: BackgroundTaskStatus.SUCCEEDED, childAgentId: 'amp-child' }]
     // Playwright's `expect` fails with the values that it compared: the child link must be empty.
     await expect(exerciseOpaqueAmpTaskLimit(fakeContext(), async () => {})).rejects.toMatchObject({ matcherResult: { actual: 'amp-child', expected: '' } })
     expect(fake.log).toEqual([...OPEN_LOG, ...FINISH_LOG, ...RELOAD_LOG])
   })
 
   it('fails when the registry saves more than one task', async () => {
-    fake.savedTasks = [...fake.savedTasks, { kind: BackgroundTaskKind.SUBAGENT, status: BackgroundTaskStatus.COMPLETED, childAgentId: '' }]
+    fake.savedTasks = [...fake.savedTasks, { kind: BackgroundTaskKind.SUBAGENT, status: BackgroundTaskStatus.SUCCEEDED, childAgentId: '' }]
     await expect(exerciseOpaqueAmpTaskLimit(fakeContext(), async () => {})).rejects.toMatchObject({ matcherResult: { name: 'toHaveLength', pass: false } })
     expect(fake.log).toEqual([...OPEN_LOG, ...FINISH_LOG, ...RELOAD_LOG])
   })

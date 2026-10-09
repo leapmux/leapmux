@@ -18,6 +18,18 @@ func raw(t *testing.T, v interface{}) json.RawMessage {
 	return data
 }
 
+func TestNotificationBatchConsolidationPreservesVisibleSettingsFields(t *testing.T) {
+	t.Parallel()
+	first := json.RawMessage(`{"type":"settings_changed","extra":null,"changes":{"mode":{"old":"A","new":"B","old_label":"","new_label":"Beta","label":"Mode","extra":1.00e+0}}}`)
+	second := json.RawMessage(`{"type":"settings_changed","extra":{"kept":true},"changes":{"mode":{"old":"B","new":"C","old_label":"Beta","new_label":"Gamma","label":"Current mode","extra":false}}}`)
+	result := consolidateNotificationThread([]json.RawMessage{first}, nil)
+	require.Len(t, result, 1)
+	assert.JSONEq(t, string(first), string(result[0]))
+	result = consolidateNotificationThread([]json.RawMessage{first, second}, nil)
+	require.Len(t, result, 1)
+	assert.JSONEq(t, `{"type":"settings_changed","extra":{"kept":true},"changes":{"mode":{"old":"A","new":"C","old_label":"","new_label":"Gamma","label":"Current mode","extra":false}}}`, string(result[0]))
+}
+
 // helper: parse a json.RawMessage back into a map.
 func parseRaw(t *testing.T, r json.RawMessage) map[string]interface{} {
 	t.Helper()

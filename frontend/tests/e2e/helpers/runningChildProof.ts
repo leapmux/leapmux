@@ -418,9 +418,9 @@ export async function expectRunningChildCompletes(child: RunningNativeChild, opt
     await expect(child.row).toHaveAttribute('data-status', 'running')
     expect(child.childId, 'the child runs as an agent of its own').not.toBe(child.parentId)
   }, child.finish)
-  await expect(child.row).toHaveAttribute('data-status', 'completed')
+  await expect(child.row).toHaveAttribute('data-status', 'succeeded')
   if (options.reload) {
     await child.row.page().reload()
-    await expect(child.row).toHaveAttribute('data-status', 'completed')
+    await expect(child.row).toHaveAttribute('data-status', 'succeeded')
   }
 }

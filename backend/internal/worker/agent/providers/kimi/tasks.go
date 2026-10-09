@@ -63,7 +63,7 @@ func kimiTaskRowKey(sessionID, taskID string) string {
 func kimiTaskStatus(status string) (bgtask.Status, bool) {
 	switch status {
 	case kimiTaskStatusCompleted:
-		return bgtask.StatusCompleted, true
+		return bgtask.StatusSucceeded, true
 	case kimiTaskStatusFailed, kimiTaskStatusTimedOut, kimiTaskStatusLost:
 		return bgtask.StatusFailed, true
 	case kimiTaskStatusKilled:
@@ -101,7 +101,7 @@ type kimiTaskItem struct {
 func kimiWireTaskStatus(status string) (bgtask.Status, bool) {
 	switch status {
 	case kimiWireStatusCompleted:
-		return bgtask.StatusCompleted, true
+		return bgtask.StatusSucceeded, true
 	case kimiWireStatusFailed:
 		return bgtask.StatusFailed, true
 	case kimiWireStatusCancelled:

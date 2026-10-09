@@ -3,6 +3,7 @@ package tooltranscript
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -99,6 +100,7 @@ func TestToolTranscriptSkipsALocationThatIsNotReady(t *testing.T) {
 func TestToolTranscriptKeepsAPendingResultTheRowRefused(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}
+	sink.UpdateSessionID("session-1")
 	var passes atomic.Int64
 	transcript, _ := newTestToolTranscript(t, agent.NewProviderServices(sink), func(pending map[string]agent.MessageContent, _ bool) map[string][]byte {
 		if len(pending) == 0 {
@@ -108,10 +110,12 @@ func TestToolTranscriptKeepsAPendingResultTheRowRefused(t *testing.T) {
 		return map[string][]byte{"call": []byte(`{"recovered":true}`)}
 	})
 	// The row does not exist yet, so the first pass cannot enrich it.
-	require.NoError(t, transcript.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
-		agent.MessageContent{Original: []byte(`{"toolCallId":"call"}`)}, agent.SpanInfo{SpanID: "other", Closing: true}))
+	span := agent.SpanInfo{SpanID: "other", Closing: true}
+	content := transcript.CaptureMessage(agent.MessageContent{Original: []byte(`{"toolCallId":"call"}`), WriteReceipt: agent.NewTranscriptWriteReceipt()}, span)
+	require.NoError(t, transcript.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, span))
 	transcript.mu.Lock()
-	transcript.pending["call"] = pendingToolRow{content: agent.MessageContent{Original: []byte(`{"toolCallId":"call"}`)}}
+	transcript.nextPendingEpoch++
+	transcript.pending["call"] = pendingToolRow{content: content, epoch: transcript.nextPendingEpoch, sourceGeneration: transcript.sourceState.toolSourceGeneration}
 	transcript.mu.Unlock()
 	transcript.UpdateSessionID("session-1")
 	assert.Equal(t, []string{"call"}, transcript.PendingSpanIDsForTest(),
@@ -529,13 +533,35 @@ func TestToolTranscriptChildUserWritesAreUnaffectedByTheDecorator(t *testing.T) 
 // hook before the first message, because the supplement worker also reads them.
 type testToolSource struct {
 	SourceDefaults
-	locateHook func(sessionID string) Location
-	readHook   func(ctx context.Context, pending map[string]agent.MessageContent, final bool) map[string][]byte
-	callIDHook func(original []byte) string
-	childHook  func(string, agent.ProviderServices) Source
+	locateHook  func(sessionID string) Location
+	readHook    func(ctx context.Context, pending map[string]agent.MessageContent, final bool) map[string][]byte
+	callIDHook  func(original []byte) string
+	childHook   func(string, agent.ProviderServices) Source
+	initialHook func([]byte) []byte
+	observeHook func(agent.MessageContent)
+	finishHook  func()
 }
 
 func (t *testToolSource) ProviderName() string { return "Test" }
+
+func (source *testToolSource) InitialSupplement(_ context.Context, _ string, original []byte, _ agent.SpanInfo) ([]byte, error) {
+	if source.initialHook == nil {
+		return nil, nil
+	}
+	return source.initialHook(original), nil
+}
+
+func (source *testToolSource) ObserveMessage(content agent.MessageContent, _ agent.SpanInfo) {
+	if source.observeHook != nil {
+		source.observeHook(content)
+	}
+}
+
+func (source *testToolSource) FinishTurn() {
+	if source.finishHook != nil {
+		source.finishHook()
+	}
+}
 
 func (t *testToolSource) Locate(sessionID string) Location {
 	return t.locateHook(sessionID)
@@ -557,6 +583,131 @@ func (t *testToolSource) NewChild(childID string, services agent.ProviderService
 		return nil
 	}
 	return t.childHook(childID, services)
+}
+
+func TestToolTranscriptOldReadCannotEnrichAReplacementPendingEntry(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var reads atomic.Int64
+	source := &testToolSource{
+		locateHook: func(sessionID string) Location { return Location{SessionKey: sessionID, Ready: true} },
+		readHook: func(_ context.Context, pending map[string]agent.MessageContent, _ bool) map[string][]byte {
+			if reads.Add(1) != 1 {
+				return nil
+			}
+			assert.JSONEq(t, `{"record":"old"}`, string(pending["call"].Original))
+			close(entered)
+			<-release
+			return map[string][]byte{"call": []byte(`{"stored_result":"old result"}`)}
+		},
+	}
+	transcript := New(t.Context(), agent.NewProviderServices(sink), source)
+	transcript.UpdateSessionID("native-session")
+	span := agent.SpanInfo{SpanID: "call", Closing: true}
+	require.NoError(t, transcript.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		agent.MessageContent{Original: []byte(`{"record":"old"}`)}, span))
+	require.NoError(t, transcript.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		agent.MessageContent{Original: []byte(`{"record":"pass trigger"}`)}, agent.SpanInfo{}))
+	<-entered
+	require.NoError(t, transcript.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		agent.MessageContent{Original: []byte(`{"record":"replacement"}`)}, span))
+	close(release)
+	transcript.WaitForSupplementsForTest()
+	rows := sink.Messages()
+	require.Len(t, rows, 3)
+	assert.Empty(t, rows[2].SupplementalContent, "an old provider read must not supply a replacement entry's result")
+	assert.Equal(t, []string{"call"}, transcript.PendingSpanIDsForTest())
+}
+
+type rejectingTranscriptWrite struct {
+	agent.ProviderServices
+	messageAttempts int
+	dividerAttempts int
+}
+
+func (writer *rejectingTranscriptWrite) PersistMessage(source leapmuxv1.MessageSource, content agent.MessageContent, span agent.SpanInfo) error {
+	writer.messageAttempts++
+	if writer.messageAttempts == 1 {
+		return errors.New("the message write failed")
+	}
+	return writer.ProviderServices.PersistMessage(source, content, span)
+}
+
+func (writer *rejectingTranscriptWrite) PersistTurnEnd(content agent.MessageContent, span agent.SpanInfo) error {
+	writer.dividerAttempts++
+	if writer.dividerAttempts == 1 {
+		return errors.New("the divider write failed")
+	}
+	return writer.ProviderServices.PersistTurnEnd(content, span)
+}
+
+func TestCapturedToolTranscriptFreezesTheInitialSupplementBeforeItsFirstAttempt(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	delegate := &rejectingTranscriptWrite{ProviderServices: agent.NewProviderServices(sink)}
+	var reads, observations int
+	source := &testToolSource{
+		locateHook:  func(session string) Location { return Location{SessionKey: session, Ready: true} },
+		readHook:    func(context.Context, map[string]agent.MessageContent, bool) map[string][]byte { return nil },
+		initialHook: func([]byte) []byte { reads++; return []byte(`{"initial":1}`) },
+		observeHook: func(agent.MessageContent) { observations++ },
+	}
+	transcript := New(t.Context(), delegate, source)
+	transcript.UpdateSessionID("native")
+	record := agent.CaptureTranscript(transcript, agent.MessageContent{Original: []byte(`{"record":"result"}`)}, agent.SpanInfo{SpanID: "call", Closing: true})
+	assert.Equal(t, 1, reads)
+	require.ErrorContains(t, record.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT), "message write failed")
+	require.NoError(t, record.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT))
+	assert.Equal(t, 1, reads)
+	assert.Equal(t, 1, observations)
+	rows := sink.Messages()
+	require.Len(t, rows, 1)
+	assert.Equal(t, []byte(`{"initial":1}`), rows[0].SupplementalContent)
+}
+
+func TestCapturedToolTranscriptOldMessageCannotReplaceCurrentPendingState(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	source := &testToolSource{
+		locateHook: func(session string) Location { return Location{SessionKey: session, Ready: true} },
+		readHook:   func(context.Context, map[string]agent.MessageContent, bool) map[string][]byte { return nil },
+	}
+	transcript := New(t.Context(), agent.NewProviderServices(sink), source)
+	transcript.UpdateSessionID("native")
+	transcript.SetTurnState(agent.TurnState{Active: true}, 1)
+	span := agent.SpanInfo{SpanID: "call", Closing: true}
+	old := agent.CaptureTranscript(transcript, agent.MessageContent{Original: []byte(`{"record":"old"}`)}, span)
+	transcript.SetTurnState(agent.TurnState{}, 2)
+	transcript.SetTurnState(agent.TurnState{Active: true}, 3)
+	require.NoError(t, transcript.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"record":"current"}`)}, span))
+	require.NoError(t, old.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT))
+	transcript.mu.Lock()
+	assert.Equal(t, []byte(`{"record":"current"}`), transcript.pending["call"].content.Original)
+	transcript.mu.Unlock()
+}
+
+func TestCapturedToolTranscriptRejectedDividerKeepsItsSourceAndPendingEntry(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	delegate := &rejectingTranscriptWrite{ProviderServices: agent.NewProviderServices(sink), messageAttempts: 1}
+	var finished int
+	source := &testToolSource{
+		locateHook: func(session string) Location { return Location{SessionKey: session, Ready: true} },
+		readHook:   func(context.Context, map[string]agent.MessageContent, bool) map[string][]byte { return nil },
+		finishHook: func() { finished++ },
+	}
+	transcript := New(t.Context(), delegate, source)
+	transcript.UpdateSessionID("native")
+	require.NoError(t, transcript.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"record":"result"}`)}, agent.SpanInfo{SpanID: "call", Closing: true}))
+	record := agent.CaptureTranscript(transcript, agent.MessageContent{Original: []byte(`{"record":"divider"}`)}, agent.SpanInfo{})
+	require.ErrorContains(t, record.PersistTurnEnd(), "divider write failed")
+	assert.Equal(t, []string{"call"}, transcript.PendingSpanIDsForTest())
+	assert.Zero(t, finished)
+	require.NoError(t, record.PersistTurnEnd())
+	assert.Empty(t, transcript.PendingSpanIDsForTest())
+	assert.Equal(t, 1, finished)
 }
 
 func TestToolTranscriptChildSourceReadsItsOwnDelegateForAReusedSpan(t *testing.T) {
@@ -605,4 +756,469 @@ func TestToolTranscriptChildSourceReadsItsOwnDelegateForAReusedSpan(t *testing.T
 	require.NoError(t, json.Unmarshal(rows[1].SupplementalContent, &extra))
 	assert.Equal(t, "child", extra["lookupOwner"], "the child source must read the child span when the root holds the same native call ID")
 	assert.Empty(t, sink.Messages()[0].SupplementalContent, "the child pass must not enrich the root row")
+}
+
+type reentrantToolWriter struct {
+	agent.ProviderServices
+	messageHook func()
+	enrichHook  func()
+	messageOnce sync.Once
+	enrichOnce  sync.Once
+}
+
+func (writer *reentrantToolWriter) PersistMessage(source leapmuxv1.MessageSource, content agent.MessageContent, span agent.SpanInfo) error {
+	err := writer.ProviderServices.PersistMessage(source, content, span)
+	if err == nil && writer.messageHook != nil {
+		// Do not hold sync.Once through a handler that enters the same writer.
+		invoke := false
+		writer.messageOnce.Do(func() { invoke = true })
+		if invoke {
+			writer.messageHook()
+		}
+	}
+	return err
+}
+
+func (writer *reentrantToolWriter) EnrichMessage(change agent.MessageEnrichment) (bool, error) {
+	written, err := writer.ProviderServices.EnrichMessage(change)
+	if written && err == nil && writer.enrichHook != nil {
+		invoke := false
+		writer.enrichOnce.Do(func() { invoke = true })
+		if invoke {
+			writer.enrichHook()
+		}
+	}
+	return written, err
+}
+
+func TestCapturedToolTranscriptMessageObserverCanStartAReplacementTurn(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	writer := &reentrantToolWriter{ProviderServices: agent.NewProviderServices(sink)}
+	transcript, _ := newTestToolTranscript(t, writer, func(map[string]agent.MessageContent, bool) map[string][]byte { return nil })
+	transcript.SetTurnState(agent.TurnState{Active: true}, 1)
+	span := agent.SpanInfo{SpanID: "call", Closing: true}
+	callbackResult := make(chan error, 1)
+	nestedFinished := make(chan struct{})
+	writer.messageHook = func() {
+		transcript.SetTurnState(agent.TurnState{}, 2)
+		transcript.SetTurnState(agent.TurnState{Active: true}, 3)
+		nestedResult := make(chan error, 1)
+		go func() {
+			nestedResult <- transcript.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+				agent.MessageContent{Original: []byte(`{"record":"replacement"}`)}, span)
+			close(nestedFinished)
+		}()
+		select {
+		case err := <-nestedResult:
+			callbackResult <- err
+		case <-time.After(30 * time.Second):
+			callbackResult <- errors.New("the message observer holds the transcript state lock across reentry")
+		}
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- transcript.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+			agent.MessageContent{Original: []byte(`{"record":"old"}`)}, span)
+	}()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(60 * time.Second):
+		t.Fatal("the message observer blocked when it started a replacement turn")
+	}
+	select {
+	case <-nestedFinished:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the nested message did not finish after the observer returned")
+	}
+	assert.NoError(t, <-callbackResult)
+	transcript.mu.Lock()
+	current := transcript.pending["call"]
+	transcript.mu.Unlock()
+	assert.Equal(t, []byte(`{"record":"replacement"}`), current.content.Original)
+	assert.Len(t, sink.Messages(), 2)
+}
+
+func TestCapturedToolTranscriptEnrichmentObserverCanFinishTheSameTurn(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	writer := &reentrantToolWriter{ProviderServices: agent.NewProviderServices(sink)}
+	transcript, _ := newTestToolTranscript(t, writer, func(pending map[string]agent.MessageContent, final bool) map[string][]byte {
+		result := make(map[string][]byte, len(pending))
+		for id := range pending {
+			if final {
+				result[id] = []byte(`{"final":true}`)
+			} else {
+				result[id] = []byte(`{"interim":true}`)
+			}
+		}
+		return result
+	})
+	callbackResult := make(chan error, 1)
+	nestedFinished := make(chan struct{})
+	writer.enrichHook = func() {
+		nestedResult := make(chan error, 1)
+		go func() {
+			nestedResult <- transcript.PersistTurnEnd(agent.MessageContent{Original: []byte(`{"done":true}`)}, agent.SpanInfo{})
+			close(nestedFinished)
+		}()
+		select {
+		case err := <-nestedResult:
+			callbackResult <- err
+		case <-time.After(30 * time.Second):
+			callbackResult <- errors.New("the enrichment observer waits for its own supplement pass")
+		}
+	}
+	require.NoError(t, transcript.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		agent.MessageContent{Original: []byte(`{"toolCallId":"call"}`)}, agent.SpanInfo{SpanID: "call", Closing: true}))
+	require.NoError(t, transcript.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		agent.MessageContent{Original: []byte(`{"trigger":true}`)}, agent.SpanInfo{}))
+	var callbackErr error
+	select {
+	case callbackErr = <-callbackResult:
+	case <-time.After(60 * time.Second):
+		t.Fatal("the enrichment observer blocked when it finished the same turn")
+	}
+	select {
+	case <-nestedFinished:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the nested divider did not finish after the observer returned")
+	}
+	assert.NoError(t, callbackErr)
+	transcript.WaitForSupplementsForTest()
+	rows := sink.Messages()
+	require.Len(t, rows, 3)
+	assert.JSONEq(t, `{"interim":true,"final":true}`, string(rows[0].SupplementalContent))
+	assert.Empty(t, transcript.PendingSpanIDsForTest())
+}
+
+type observationEnrichmentWriter struct {
+	agent.ProviderServices
+	before     func(agent.MessageEnrichment)
+	after      func(agent.MessageEnrichment, bool, error) (bool, error)
+	beforeOnce atomic.Bool
+	afterOnce  atomic.Bool
+	fail       atomic.Bool
+}
+
+func (writer *observationEnrichmentWriter) EnrichMessage(change agent.MessageEnrichment) (bool, error) {
+	if writer.before != nil && writer.beforeOnce.CompareAndSwap(false, true) {
+		writer.before(change)
+	}
+	if writer.fail.Load() {
+		return false, errors.New("the observation enrichment failed")
+	}
+	written, err := writer.ProviderServices.EnrichMessage(change)
+	if writer.after != nil && writer.afterOnce.CompareAndSwap(false, true) {
+		return writer.after(change, written, err)
+	}
+	return written, err
+}
+
+func newObservationTranscript(t *testing.T) (*Transcript, *agenttest.Sink, *observationEnrichmentWriter) {
+	t.Helper()
+	sink := &agenttest.Sink{}
+	sink.UpdateSessionID("native")
+	writer := &observationEnrichmentWriter{ProviderServices: agent.NewProviderServices(sink)}
+	transcript, _ := newTestToolTranscript(t, writer, func(map[string]agent.MessageContent, bool) map[string][]byte { return nil })
+	return transcript, sink, writer
+}
+
+func TestToolTranscriptDistinctObservationWinsAnUncommittedStoreAttempt(t *testing.T) {
+	t.Parallel()
+	transcript, sink := newHookedToolTranscript(t, []byte(`{"store":"record"}`))
+	var built int
+	sink.hook = func() {
+		written, err := transcript.EnrichToolSpan("call", func([]byte) ([]byte, error) {
+			built++
+			return []byte(`{"frame":"once"}`), nil
+		})
+		assert.NoError(t, err)
+		assert.True(t, written)
+	}
+	persistClosingToolRow(t, transcript, []byte(`{"toolCallId":"call"}`))
+	transcript.UpdateSessionID("session-1")
+	transcript.WaitForSupplementsForTest()
+	assert.Equal(t, 1, built)
+	assert.JSONEq(t, `{"frame":"once"}`, string(sink.Messages()[0].SupplementalContent))
+	assert.Equal(t, []string{"call"}, transcript.PendingSpanIDsForTest())
+}
+
+func TestToolTranscriptIdenticalInFlightAttemptCanRetryAfterFailure(t *testing.T) {
+	t.Parallel()
+	transcript, sink, writer := newObservationTranscript(t)
+	persistClosingToolRow(t, transcript, []byte(`{"toolCallId":"call"}`))
+	var built int
+	build := func([]byte) ([]byte, error) { built++; return []byte(`{"frame":"once"}`), nil }
+	writer.fail.Store(true)
+	writer.before = func(agent.MessageEnrichment) {
+		written, err := transcript.EnrichToolSpan("call", build)
+		assert.NoError(t, err)
+		assert.False(t, written)
+	}
+	written, err := transcript.EnrichToolSpan("call", build)
+	require.ErrorContains(t, err, "observation enrichment failed")
+	assert.False(t, written)
+	assert.Equal(t, 2, built, "each native observation builds its bytes before identical-attempt admission")
+	writer.fail.Store(false)
+	written, err = transcript.EnrichToolSpan("call", build)
+	require.NoError(t, err)
+	assert.True(t, written)
+	assert.JSONEq(t, `{"frame":"once"}`, string(sink.Messages()[0].SupplementalContent))
+}
+
+func loseExternalObservationCAS(t *testing.T, sink *agenttest.Sink, writer *observationEnrichmentWriter) {
+	t.Helper()
+	writer.before = func(change agent.MessageEnrichment) {
+		change.SupplementalContent = []byte(`{"winner":"stored"}`)
+		change.WriteReceipt = nil
+		written, err := sink.EnrichMessage(change)
+		assert.NoError(t, err)
+		assert.True(t, written, "the competing stored revision must commit")
+	}
+}
+
+func TestToolTranscriptRetainsAnExternalObservationAfterCASLoss(t *testing.T) {
+	t.Parallel()
+	transcript, sink, writer := newObservationTranscript(t)
+	persistClosingToolRow(t, transcript, []byte(`{"toolCallId":"call"}`))
+	loseExternalObservationCAS(t, sink, writer)
+	written, err := transcript.EnrichToolSpan("call", func([]byte) ([]byte, error) { return []byte(`{"frame":"acknowledged"}`), nil })
+	require.NoError(t, err)
+	assert.False(t, written)
+	assert.JSONEq(t, `{"winner":"stored"}`, string(sink.Messages()[0].SupplementalContent))
+	require.NoError(t, transcript.PersistTurnEnd(agent.MessageContent{Original: []byte(`{"done":true}`)}, agent.SpanInfo{}))
+	assert.JSONEq(t, `{"winner":"stored","frame":"acknowledged"}`, string(sink.Messages()[0].SupplementalContent))
+	assert.Empty(t, transcript.PendingSpanIDsForTest())
+}
+
+func TestToolTranscriptAcceptedInnerEnrichmentSurvivesOuterFailure(t *testing.T) {
+	t.Parallel()
+	transcript, sink, writer := newObservationTranscript(t)
+	persistClosingToolRow(t, transcript, []byte(`{"toolCallId":"call"}`))
+	writer.after = func(_ agent.MessageEnrichment, written bool, err error) (bool, error) {
+		assert.True(t, written)
+		assert.NoError(t, err)
+		return false, errors.New("the outer enrichment failed")
+	}
+	written, err := transcript.EnrichToolSpan("call", func([]byte) ([]byte, error) { return []byte(`{"first":true}`), nil })
+	require.ErrorContains(t, err, "outer enrichment failed")
+	assert.False(t, written)
+	assert.Equal(t, int64(1), sink.Messages()[0].SupplementalRevision)
+	written, err = transcript.EnrichToolSpan("call", func([]byte) ([]byte, error) { return []byte(`{"second":true}`), nil })
+	require.NoError(t, err)
+	assert.True(t, written)
+	assert.Equal(t, int64(2), sink.Messages()[0].SupplementalRevision)
+	assert.JSONEq(t, `{"first":true,"second":true}`, string(sink.Messages()[0].SupplementalContent))
+}
+
+func TestToolTranscriptRetainedObservationUsesItsOriginalStoredSequence(t *testing.T) {
+	t.Parallel()
+	transcript, sink, writer := newObservationTranscript(t)
+	original := []byte(`{"toolCallId":"call","same":true}`)
+	persistClosingToolRow(t, transcript, original)
+	loseExternalObservationCAS(t, sink, writer)
+	written, err := transcript.EnrichToolSpan("call", func([]byte) ([]byte, error) { return []byte(`{"old_frame":true}`), nil })
+	require.NoError(t, err)
+	assert.False(t, written)
+	persistClosingToolRow(t, transcript, original)
+	require.NoError(t, transcript.PersistTurnEnd(agent.MessageContent{Original: []byte(`{"done":true}`)}, agent.SpanInfo{}))
+	rows := sink.Messages()
+	require.Len(t, rows, 3)
+	assert.JSONEq(t, `{"winner":"stored","old_frame":true}`, string(rows[0].SupplementalContent))
+	assert.Empty(t, rows[1].SupplementalContent, "equal bytes do not identify the newer stored row")
+}
+
+func TestToolTranscriptEqualBytesDoNotReplaceCommittedRowIdentity(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	writer := &reentrantToolWriter{ProviderServices: agent.NewProviderServices(sink)}
+	transcript, _ := newTestToolTranscript(t, writer, func(map[string]agent.MessageContent, bool) map[string][]byte { return nil })
+	original := []byte(`{"toolCallId":"call","same":true}`)
+	writer.messageHook = func() { persistClosingToolRow(t, transcript, original) }
+	persistClosingToolRow(t, transcript, original)
+	written, err := transcript.EnrichToolSpan("call", func([]byte) ([]byte, error) { return []byte(`{"new_frame":true}`), nil })
+	require.NoError(t, err)
+	assert.True(t, written)
+	rows := sink.Messages()
+	require.Len(t, rows, 2)
+	assert.Empty(t, rows[0].SupplementalContent)
+	assert.JSONEq(t, `{"new_frame":true}`, string(rows[1].SupplementalContent))
+	transcript.mu.Lock()
+	sequence, committed := transcript.pending["call"].content.WriteReceipt.StoredMessageSequence()
+	transcript.mu.Unlock()
+	assert.True(t, committed)
+	assert.Equal(t, int64(2), sequence, "the delayed first return must not replace the newer pending row")
+}
+
+func TestToolTranscriptSettledObservationCapturesOwnershipBeforeBuild(t *testing.T) {
+	t.Parallel()
+	transcript, sink, _ := newObservationTranscript(t)
+	original := []byte(`{"toolCallId":"call","same":true}`)
+	persistClosingToolRow(t, transcript, original)
+	require.NoError(t, transcript.PersistTurnEnd(agent.MessageContent{Original: []byte(`{"done":true}`)}, agent.SpanInfo{}))
+	written, err := transcript.EnrichToolSpan("call", func(received []byte) ([]byte, error) {
+		assert.Equal(t, original, received)
+		transcript.UpdateSessionID("replacement")
+		persistClosingToolRow(t, transcript, original)
+		return []byte(`{"old_frame":true}`), nil
+	})
+	require.NoError(t, err)
+	assert.True(t, written)
+	rows := sink.Messages()
+	require.Len(t, rows, 3)
+	assert.JSONEq(t, `{"old_frame":true}`, string(rows[0].SupplementalContent))
+	assert.Empty(t, rows[2].SupplementalContent)
+	assert.Equal(t, "replacement", rows[2].AgentSessionID)
+}
+
+func TestToolTranscriptLaterAcceptedRevisionControlsCleanup(t *testing.T) {
+	t.Parallel()
+	transcript, sink, writer := newObservationTranscript(t)
+	persistClosingToolRow(t, transcript, []byte(`{"toolCallId":"call"}`))
+	writer.after = func(_ agent.MessageEnrichment, written bool, err error) (bool, error) {
+		assert.True(t, written)
+		assert.NoError(t, err)
+		newer, nextErr := transcript.EnrichToolSpan("call", func([]byte) ([]byte, error) { return []byte(`{"newer":true}`), nil })
+		assert.NoError(t, nextErr)
+		assert.True(t, newer)
+		return written, err
+	}
+	written, err := transcript.EnrichToolSpan("call", func([]byte) ([]byte, error) { return []byte(`{"earlier":true}`), nil })
+	require.NoError(t, err)
+	assert.True(t, written)
+	assert.Equal(t, int64(2), sink.Messages()[0].SupplementalRevision)
+	assert.JSONEq(t, `{"earlier":true,"newer":true}`, string(sink.Messages()[0].SupplementalContent))
+	require.NoError(t, transcript.PersistTurnEnd(agent.MessageContent{Original: []byte(`{"done":true}`)}, agent.SpanInfo{}))
+	assert.Empty(t, transcript.PendingSpanIDsForTest())
+	assert.Equal(t, int64(2), sink.Messages()[0].SupplementalRevision)
+}
+
+func TestToolTranscriptFinalBoundaryKeepsAnUnresolvedExternalObservation(t *testing.T) {
+	t.Parallel()
+	transcript, sink, writer := newObservationTranscript(t)
+	persistClosingToolRow(t, transcript, []byte(`{"toolCallId":"call"}`))
+	loseExternalObservationCAS(t, sink, writer)
+	written, err := transcript.EnrichToolSpan("call", func([]byte) ([]byte, error) { return []byte(`{"retained":true}`), nil })
+	require.NoError(t, err)
+	assert.False(t, written)
+	writer.fail.Store(true)
+	boundary := agent.CaptureTranscript(transcript, agent.MessageContent{Original: []byte(`{"done":true}`)}, agent.SpanInfo{})
+	assert.ErrorContains(t, boundary.PersistTurnEnd(), "observation enrichment failed")
+	assert.Len(t, sink.Messages(), 1, "a refused preparation must not store the divider")
+	writer.fail.Store(false)
+	require.NoError(t, boundary.PersistTurnEnd())
+	assert.JSONEq(t, `{"winner":"stored","retained":true}`, string(sink.Messages()[0].SupplementalContent))
+	assert.Empty(t, transcript.PendingSpanIDsForTest())
+}
+
+type heldObservationReader struct {
+	agent.ProviderServices
+	entered chan struct{}
+	release <-chan struct{}
+	reads   atomic.Int64
+}
+
+func (reader *heldObservationReader) ReadToolResultBySeq(sequence int64) (*agent.StoredMessage, error) {
+	if reader.reads.Add(1) == 1 {
+		close(reader.entered)
+		<-reader.release
+	}
+	return reader.ProviderServices.ReadToolResultBySeq(sequence)
+}
+
+func TestToolTranscriptConcurrentFlushClaimsEachObservationOnce(t *testing.T) {
+	t.Parallel()
+	transcript, sink, writer := newObservationTranscript(t)
+	persistClosingToolRow(t, transcript, []byte(`{"toolCallId":"call"}`))
+	loseExternalObservationCAS(t, sink, writer)
+	written, err := transcript.EnrichToolSpan("call", func([]byte) ([]byte, error) { return []byte(`{"frame":"retained"}`), nil })
+	require.NoError(t, err)
+	assert.False(t, written)
+	release := make(chan struct{})
+	var once sync.Once
+	finishRead := func() { once.Do(func() { close(release) }) }
+	defer finishRead()
+	reader := &heldObservationReader{ProviderServices: writer.ProviderServices, entered: make(chan struct{}), release: release}
+	writer.ProviderServices = reader
+	first := make(chan error, 1)
+	go func() { first <- transcript.flushObservations() }()
+	select {
+	case <-reader.entered:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the observation read did not start")
+	}
+	second := make(chan error, 1)
+	go func() { second <- transcript.flushObservations() }()
+	var secondError error
+	select {
+	case secondError = <-second:
+	case <-time.After(30 * time.Second):
+		finishRead()
+		secondError = <-second
+		t.Error("the second observation flush waited for the first read")
+	}
+	finishRead()
+	select {
+	case err = <-first:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the first observation flush did not finish after release")
+	}
+	assert.NoError(t, err)
+	assert.ErrorContains(t, secondError, "in flight")
+	assert.Equal(t, int64(1), reader.reads.Load())
+	assert.JSONEq(t, `{"winner":"stored","frame":"retained"}`, string(sink.Messages()[0].SupplementalContent))
+}
+
+type failingObservationReader struct {
+	agent.ProviderServices
+	failed atomic.Bool
+}
+
+func (reader *failingObservationReader) ReadToolResultBySeq(sequence int64) (*agent.StoredMessage, error) {
+	if reader.failed.CompareAndSwap(false, true) {
+		return nil, errors.New("the retained observation read failed")
+	}
+	return reader.ProviderServices.ReadToolResultBySeq(sequence)
+}
+
+func TestToolTranscriptObservationReadFailureReleasesItsClaim(t *testing.T) {
+	t.Parallel()
+	transcript, sink, writer := newObservationTranscript(t)
+	persistClosingToolRow(t, transcript, []byte(`{"toolCallId":"call"}`))
+	loseExternalObservationCAS(t, sink, writer)
+	written, err := transcript.EnrichToolSpan("call", func([]byte) ([]byte, error) { return []byte(`{"retained":true}`), nil })
+	require.NoError(t, err)
+	assert.False(t, written)
+	writer.ProviderServices = &failingObservationReader{ProviderServices: writer.ProviderServices}
+	require.ErrorContains(t, transcript.flushObservations(), "retained observation read failed")
+	assert.JSONEq(t, `{"winner":"stored"}`, string(sink.Messages()[0].SupplementalContent))
+	require.NoError(t, transcript.flushObservations())
+	assert.JSONEq(t, `{"winner":"stored","retained":true}`, string(sink.Messages()[0].SupplementalContent))
+	transcript.mu.Lock()
+	assert.Empty(t, transcript.observations)
+	transcript.mu.Unlock()
+}
+
+func TestToolTranscriptRetainedObservationReceiptAllowsFinalBoundaryReentry(t *testing.T) {
+	t.Parallel()
+	transcript, sink, writer := newObservationTranscript(t)
+	persistClosingToolRow(t, transcript, []byte(`{"toolCallId":"call"}`))
+	loseExternalObservationCAS(t, sink, writer)
+	written, err := transcript.EnrichToolSpan("call", func([]byte) ([]byte, error) { return []byte(`{"retained":true}`), nil })
+	require.NoError(t, err)
+	assert.False(t, written)
+	writer.after = func(_ agent.MessageEnrichment, written bool, err error) (bool, error) {
+		assert.True(t, written)
+		assert.NoError(t, err)
+		assert.NoError(t, transcript.PersistTurnEnd(agent.MessageContent{Original: []byte(`{"done":true}`)}, agent.SpanInfo{}))
+		return written, err
+	}
+	require.NoError(t, transcript.flushObservations())
+	rows := sink.Messages()
+	require.Len(t, rows, 2)
+	assert.JSONEq(t, `{"winner":"stored","retained":true}`, string(rows[0].SupplementalContent))
+	assert.Equal(t, int64(2), rows[0].SupplementalRevision)
+	assert.Empty(t, transcript.PendingSpanIDsForTest())
 }

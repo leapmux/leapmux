@@ -100,7 +100,7 @@ diracTest.describe('Dirac subagent transcript', () => {
 
       await expandBackgroundTasksSection(page)
       const row = backgroundTaskRows(page, { kind: 'subagent' }).filter({ hasText: run.description }).first()
-      await expect(row).toHaveAttribute('data-status', 'completed')
+      await expect(row).toHaveAttribute('data-status', 'succeeded')
       // `openChildTabFromRow` requires the row to link a child agent, and returns that agent.
       const childID = await openChildTabFromRow(page, row)
       if (previousChildID)

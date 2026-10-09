@@ -84,7 +84,7 @@ func TestQwenForegroundSubagentLifecycle(t *testing.T) {
 
 	row, _ = sink.BackgroundTask("call_32d1939343")
 	assert.Equal(t, "Child probe", row.Title, "the progress frame gives the row its title")
-	assert.Equal(t, bgtask.StatusCompleted, row.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
 	assert.Equal(t, []string{"reasoning:Child thinking.", "text:Child will list.", "text:Child done: listed."}, childTexts(child))
 	childTool := spanRows(child.Messages(), "call_cf768dc6c7")
 	require.Len(t, childTool, 2, "the child's tool call opens and closes in the child's tab")
@@ -219,7 +219,7 @@ func TestQwenBackgroundSubagentStreamsItsTranscript(t *testing.T) {
 	a.HandleOutput(backgroundDone(t, "completed"))
 
 	row, _ = sink.BackgroundTask("call_686a7e3e21")
-	assert.Equal(t, bgtask.StatusCompleted, row.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
 	assert.Equal(t, []string{"reasoning:Child thinking.", "text:Child will list.", "text:Child done: listed."}, childTexts(child),
 		"the records written before the notice all reach the tab, the last ones by the final read")
 	assert.Len(t, spanRows(child.Messages(), "call_22ab86821a"), 2)
@@ -323,7 +323,7 @@ func TestQwenWorkflowRunKeepsARow(t *testing.T) {
 	assert.Equal(t, bgtask.StatusRunning, row.Status)
 	a.HandleOutput(rawUpdate(t, `{"sessionUpdate":"tool_call_update","toolCallId":"call_wf","status":"completed"}`))
 	row, _ = sink.BackgroundTask("call_wf")
-	assert.Equal(t, bgtask.StatusCompleted, row.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
 }
 
 func TestQwenWorkflowTitleFallsBack(t *testing.T) {
@@ -556,7 +556,7 @@ func TestQwenCompletedSpawnWithNoResultReportsItsContent(t *testing.T) {
 	a.HandleOutput(rawUpdate(t, `{"sessionUpdate":"tool_call_update","toolCallId":"call_32d1939343","status":"completed","content":[{"type":"content","content":{"type":"text","text":"Plain answer."}}]}`))
 
 	row, _ = sink.BackgroundTask("call_32d1939343")
-	assert.Equal(t, bgtask.StatusCompleted, row.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
 	assert.Equal(t, []string{"Plain answer."}, reportTexts(child))
 }
 
@@ -786,7 +786,7 @@ func TestQwenStopOfAChildChangesNoOtherVerdict(t *testing.T) {
 	require.NoError(t, childInterrupter(t, a).InterruptChild("call_1", agent.StopContext{}))
 	a.HandleOutput(rawUpdate(t, `{"sessionUpdate":"tool_call_update","toolCallId":"call_1","status":"completed","rawOutput":{"type":"task_execution","executionMode":"foreground","status":"completed","result":"Done."}}`))
 	row, _ := sink.BackgroundTask("call_1")
-	assert.Equal(t, bgtask.StatusCompleted, row.Status, "the work finished before the stop")
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status, "the work finished before the stop")
 
 	openForegroundSpawn(t, a, "call_9")
 	a.HandleOutput(abortedForegroundResult(t, "call_9"))

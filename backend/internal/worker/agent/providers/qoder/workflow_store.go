@@ -211,7 +211,7 @@ func readQoderWorkflowArchiveWithOpener(opts agent.Options, sessionID string, ev
 func qoderArchiveChildStatus(state string) (bgtask.Status, bool) {
 	switch state {
 	case "done":
-		return bgtask.StatusCompleted, true
+		return bgtask.StatusSucceeded, true
 	case "error":
 		return bgtask.StatusFailed, true
 	case "stopped", "cancelled":
@@ -271,7 +271,7 @@ func qoderArchiveMessages(history []byte, sessionID, toolID, agentID, workingDir
 	if err := scanner.Err(); err != nil {
 		return nil, "", fmt.Errorf("scan a Qoder workflow child transcript: %w", err)
 	}
-	if prompt == "" || (status == bgtask.StatusCompleted && !answer) {
+	if prompt == "" || (status == bgtask.StatusSucceeded && !answer) {
 		return nil, "", qoderIncompleteArchive(errors.New("the Qoder workflow child transcript lacks a prompt or answer"))
 	}
 	return messages, prompt, nil

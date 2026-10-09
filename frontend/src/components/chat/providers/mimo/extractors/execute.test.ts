@@ -5,7 +5,7 @@ import { mimoExecOutcome, mimoExecuteRequest, mimoExecuteResult } from './execut
 
 /** One finished execution call. */
 function executePart(tool: string, fields: Partial<MiMoToolPart>): MiMoToolPart {
-  return { callId: 'call-1', tool, status: 'completed', input: {}, output: '', error: '', title: '', metadata: {}, attachments: [], ...fields }
+  return { partId: 'prt_call-1', messageId: 'msg_1', sessionId: 'ses_test', callId: 'call-1', tool, status: 'completed', input: {}, output: '', error: '', title: '', metadata: {}, attachments: [], ...fields }
 }
 
 describe('mimoExecuteRequest', () => {

@@ -57,10 +57,10 @@ describe('createBackgroundTaskStore', () => {
     const store = createBackgroundTaskStore()
     store.replace('a1', [proto('t1', BackgroundTaskStatus.RUNNING), proto('t2', BackgroundTaskStatus.RUNNING)])
 
-    store.replace('a1', [proto('t2', BackgroundTaskStatus.COMPLETED), proto('t3', BackgroundTaskStatus.PENDING)])
+    store.replace('a1', [proto('t2', BackgroundTaskStatus.SUCCEEDED), proto('t3', BackgroundTaskStatus.PENDING)])
 
     expect(store.get('a1').map(t => t.rowKey)).toEqual(['t2', 't3'])
-    expect(store.get('a1').map(t => t.status)).toEqual(['completed', 'pending'])
+    expect(store.get('a1').map(t => t.status)).toEqual(['succeeded', 'pending'])
   })
 
   // A reconcile writes THROUGH the store proxy, and an agent with no rows holds

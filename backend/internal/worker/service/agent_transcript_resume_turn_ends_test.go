@@ -24,7 +24,7 @@ func TestResumeKeepsNativeCompletionReceiptsForTheRootAndSuppressedChildDivider(
 	require.NoError(t, err)
 	child := root.ChildSink(childID)
 	child.UpdateSessionID("native-child-session")
-	require.NoError(t, root.CloseBackgroundTask("native-child", bgtask.StatusCompleted))
+	require.NoError(t, root.CloseBackgroundTask("native-child", bgtask.StatusSucceeded))
 	childContent := agent.MessageContent{Original: []byte(`{"type":"result","duration_ms":12}`), AgentSessionID: "native-child-session", IdempotencyKey: "child-turn:1"}
 	require.NoError(t, child.PersistTurnEnd(childContent, agent.SpanInfo{}))
 	for _, id := range []string{childID, "old-root"} {

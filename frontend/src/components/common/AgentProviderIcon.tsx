@@ -20,7 +20,7 @@
 import type { JSX } from 'solid-js'
 import type { NativeProviderMark } from './nativeProviderMarks'
 import Bot from 'lucide-solid/icons/bot'
-import { createUniqueId, For, Match, Switch } from 'solid-js'
+import { createUniqueId, For, Match, Show, Switch } from 'solid-js'
 import { PROVIDER_DISPLAY_NAME } from '~/generated/contracts/providers'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { iconStyle } from './iconStyle'
@@ -569,19 +569,35 @@ export interface AgentProviderIconProps {
 
 /** Draw a trusted project SVG asset with the same size and class contract as the existing marks. */
 function NativeProviderIcon(props: { mark: NativeProviderMark, size: number, class?: string }): JSX.Element {
+  const gradientPrefix = createUniqueId()
+  const paint = (attributes: Record<string, string>): Record<string, string> => {
+    const local = attributes.fill && /^url\(#(.+)\)$/.exec(attributes.fill)
+    return local ? { ...attributes, fill: `url(#${gradientPrefix}-${local[1]})` } : attributes
+  }
   return (
     <svg
       width={props.size}
       height={props.size}
       viewBox={props.mark.viewBox}
-      fill={props.mark.fill}
+      fill={paint({ fill: props.mark.fill ?? '' }).fill || undefined}
       xmlns="http://www.w3.org/2000/svg"
       class={props.class}
       style={iconStyle(props.size)}
     >
       <For each={props.mark.elements}>
-        {element => element.type === 'path' ? <path {...element.attributes} /> : <image {...element.attributes} />}
+        {element => element.type === 'path' ? <path {...paint(element.attributes)} /> : <image {...element.attributes} />}
       </For>
+      <Show when={props.mark.linearGradients}>
+        <defs>
+          <For each={props.mark.linearGradients}>
+            {gradient => (
+              <linearGradient {...gradient.attributes} id={`${gradientPrefix}-${gradient.id}`}>
+                <For each={gradient.stops}>{stop => <stop {...stop} />}</For>
+              </linearGradient>
+            )}
+          </For>
+        </defs>
+      </Show>
     </svg>
   )
 }
@@ -679,6 +695,9 @@ export function AgentProviderIcon(props: AgentProviderIconProps): JSX.Element {
       </Match>
       <Match when={props.provider === AgentProvider.GEMINI_CLI}>
         <NativeProviderIcon mark={NATIVE_PROVIDER_MARKS.geminiCli} size={props.size} {...classProps()} />
+      </Match>
+      <Match when={props.provider === AgentProvider.MUSE_CODE}>
+        <NativeProviderIcon mark={NATIVE_PROVIDER_MARKS.museCode} size={props.size} {...classProps()} />
       </Match>
     </Switch>
   )

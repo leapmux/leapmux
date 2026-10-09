@@ -87,10 +87,10 @@ qoderTest.describe('native workflow grouping', () => {
     await expect.poll(async () => (await modelScript.status()).ruleMatches['the second workflow child answers'] ?? 0).toBe(1)
     await expect(assistantBubbles(page).filter({ hasText: 'The Qoder workflow result arrived.' }).first()).toBeVisible()
     await expectRowBecomesFinal(page, workflow)
-    await expect(workflow).toHaveAttribute('data-status', 'completed')
+    await expect(workflow).toHaveAttribute('data-status', 'succeeded')
     const secondChild = backgroundTaskRows(page, { kind: 'subagent' }).filter({ hasText: `Reply with ${SECOND_ANSWER}` }).first()
-    await expect(firstChild).toHaveAttribute('data-status', 'completed')
-    await expect(secondChild).toHaveAttribute('data-status', 'completed')
+    await expect(firstChild).toHaveAttribute('data-status', 'succeeded')
+    await expect(secondChild).toHaveAttribute('data-status', 'succeeded')
     await expectRowsInWorkflowGroup([workflow, firstChild, secondChild], WORKFLOW_NAME)
     // The completed first child keeps the link to its exact transcript. `openChildTabFromRow` below proves the link
     // of the second.

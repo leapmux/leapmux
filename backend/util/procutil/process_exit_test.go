@@ -25,6 +25,12 @@ type fixtureProcessExitSystem struct {
 	onCreated  func()
 }
 
+type processExitObserverFunc func(context.Context, ProcessIdentity, error) error
+
+func (observe processExitObserverFunc) ObserveExit(ctx context.Context, identity ProcessIdentity, nativeErr error) error {
+	return observe(ctx, identity, nativeErr)
+}
+
 func (s *fixtureProcessExitSystem) open(int) (*processExitWatch, error) { return s.watch, s.openErr }
 func (s *fixtureProcessExitSystem) created(context.Context, int) (int64, error) {
 	s.reads++
@@ -177,14 +183,13 @@ func TestProcessOwnerCloseSharesOneCompletedResult(t *testing.T) {
 	child := startWaitingProcess(t)
 	identity, identified := IdentifyProcess(child.cmd.Process.Pid)
 	require.True(t, identified)
-	owner, err := OwnStartedProcess(identity)
-	require.NoError(t, err)
 	entered, release := make(chan struct{}), make(chan struct{})
 	var releaseOnce sync.Once
 	defer releaseOnce.Do(func() { close(release) })
 	failure := errors.New("completion receipt failed")
 	var calls atomic.Int32
-	owner.SetExitReceiptForTest(func(ctx context.Context, observed ProcessIdentity) error {
+	observer := processExitObserverFunc(func(ctx context.Context, observed ProcessIdentity, nativeErr error) error {
+		assert.NoError(t, nativeErr)
 		if observed != identity {
 			return errors.New("the completion receipt identifies another process")
 		}
@@ -197,6 +202,8 @@ func TestProcessOwnerCloseSharesOneCompletedResult(t *testing.T) {
 			return ctx.Err()
 		}
 	})
+	owner, err := OwnStartedProcessWithExitObserver(identity, observer)
+	require.NoError(t, err)
 	results := make(chan error, 2)
 	go func() { results <- owner.Close() }()
 	select {
@@ -206,6 +213,10 @@ func TestProcessOwnerCloseSharesOneCompletedResult(t *testing.T) {
 	case <-testutil.DeadlineContext(t).Done():
 		t.Fatal("the owner did not wait for native completion")
 	}
+	completed, err := openProcessExitWatch(testutil.DeadlineContext(t), identity)
+	require.NoError(t, err)
+	require.True(t, completed.completed, "the native watch must prove exit before the observer returns its error")
+	require.NoError(t, completed.close())
 	go func() { results <- owner.Close() }()
 	select {
 	case <-results:
@@ -227,5 +238,107 @@ func TestProcessOwnerCloseSharesOneCompletedResult(t *testing.T) {
 	require.Same(t, first, second, "every Close caller receives the same completed result")
 	require.EqualValues(t, 1, calls.Load())
 	require.ErrorIs(t, owner.Err(), failure)
+	require.NoError(t, owner.Capture(t.Context()))
+	require.Same(t, first, owner.Err(), "capture after completion must keep the immutable termination result")
 	child.waitExit(t)
+}
+
+func TestProcessOwnerExitObserverPermitsStateReads(t *testing.T) {
+	child := startWaitingProcess(t)
+	identity, identified := IdentifyProcess(child.cmd.Process.Pid)
+	require.True(t, identified)
+	var owner *ProcessOwner
+	stateReadErr := errors.New("process owner state reads did not complete before the exit observer")
+	observer := processExitObserverFunc(func(ctx context.Context, observed ProcessIdentity, nativeErr error) error {
+		if nativeErr != nil {
+			return nil
+		}
+		if observed != identity {
+			return errors.New("the exit observer received another creation identity")
+		}
+		type stateRead struct {
+			pid int
+			err error
+		}
+		read := make(chan stateRead, 1)
+		go func() { read <- stateRead{pid: owner.PID(), err: owner.Err()} }()
+		select {
+		case result := <-read:
+			if result.pid != identity.PID {
+				return errors.New("the owner state changed its captured process identity")
+			}
+			return result.err
+		case <-ctx.Done():
+			return stateReadErr
+		}
+	})
+	owner, err := OwnStartedProcessWithExitObserver(identity, observer)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = owner.Close() })
+	require.NoError(t, owner.Close(), "the exit observer must read owner state without a mutex deadlock")
+	child.waitExit(t)
+}
+
+func TestProcessExitObservationRetainsNativeObserverAndResourceErrors(t *testing.T) {
+	nativeFailure := errors.New("native observation failed")
+	observerFailure := errors.New("the exit observer failed")
+	resourceFailure := errors.New("the native watch release failed")
+	identity := ProcessIdentity{PID: math.MaxInt32 - 1, StartTime: 7}
+	for _, scenario := range []struct {
+		name           string
+		nativeErr      error
+		observerErr    error
+		releaseErr     error
+		absentObserver bool
+	}{
+		{name: "successful observation"},
+		{name: "native error with successful observer", nativeErr: nativeFailure},
+		{name: "observer error after native completion", observerErr: observerFailure},
+		{name: "all errors", nativeErr: nativeFailure, observerErr: observerFailure, releaseErr: resourceFailure},
+		{name: "absent observer", nativeErr: nativeFailure, releaseErr: resourceFailure, absentObserver: true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			var order []string
+			watch := &processExitWatch{
+				identity: identity,
+				poll: func(time.Duration) (bool, error) {
+					order = append(order, "native")
+					return scenario.nativeErr == nil, scenario.nativeErr
+				},
+				release: func() error {
+					order = append(order, "release")
+					return scenario.releaseErr
+				},
+			}
+			var observer ProcessExitObserver
+			if !scenario.absentObserver {
+				observer = processExitObserverFunc(func(_ context.Context, observed ProcessIdentity, nativeErr error) error {
+					order = append(order, "observer")
+					assert.Equal(t, identity, observed)
+					assert.Equal(t, scenario.nativeErr, nativeErr)
+					assert.Equal(t, scenario.nativeErr == nil, watch.completed)
+					return scenario.observerErr
+				})
+			}
+			err := observeProcessExit(t.Context(), watch, observer)
+			for _, cause := range []error{scenario.nativeErr, scenario.observerErr, scenario.releaseErr} {
+				if cause != nil {
+					require.ErrorIs(t, err, cause)
+				}
+			}
+			if scenario.nativeErr == nil && scenario.observerErr == nil && scenario.releaseErr == nil {
+				require.NoError(t, err)
+			}
+			if scenario.absentObserver {
+				assert.Equal(t, []string{"native", "release"}, order)
+			} else {
+				assert.Equal(t, []string{"native", "observer", "release"}, order)
+			}
+			beforeClose := append([]string(nil), order...)
+			assert.Equal(t, scenario.releaseErr, watch.close())
+			assert.Equal(t, beforeClose, order, "a repeated close must not release the native watch again")
+		})
+	}
+	var absentContext context.Context
+	require.ErrorContains(t, observeProcessExit(absentContext, nil, nil), "watch is absent")
 }

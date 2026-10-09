@@ -9,6 +9,7 @@
     "_readme",
     "events",
     "statusTypes",
+    "errorNames",
     "partTypes",
     "toolStatuses",
     "toolNames",
@@ -74,7 +75,7 @@
       }
     },
     "structs": {
-      "description": "Go structs generated from this domain. Each states its field list once and takes every json tag from a named table, so a rename in the table reaches the struct.",
+      "description": "The generator creates Go structs from this domain. Each struct declares its fields once and takes every JSON tag from a specified table. A table rename therefore reaches the struct.",
       "type": "object",
       "minProperties": 1,
       "propertyNames": {
@@ -143,6 +144,9 @@
     "statusTypes": {
       "$ref": "#/$defs/table"
     },
+    "errorNames": {
+      "$ref": "#/$defs/table"
+    },
     "partTypes": {
       "$ref": "#/$defs/table"
     },
@@ -171,7 +175,7 @@
       "$ref": "#/$defs/table"
     },
     "defaultMode": {
-      "description": "The key in `modes` a fresh MiMo session runs on. A key, not a literal, so it cannot name a mode the table does not carry -- the generator checks the membership.",
+      "description": "This key selects a value in `modes` for a new MiMo session. The generator checks that the table contains the key.",
       "type": "string",
       "pattern": "^[A-Z][A-Za-z0-9]*$"
     },

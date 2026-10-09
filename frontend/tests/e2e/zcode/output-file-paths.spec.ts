@@ -2,8 +2,8 @@ import { randomUUID } from 'node:crypto'
 import { expect } from '@playwright/test'
 import { BackgroundTaskKind, BackgroundTaskStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { pickObject } from '../../../src/lib/jsonPick'
-import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
 import { readNativeMessageSnapshot } from '../helpers/nativeMessages'
+import { assertPrivateNativePath } from '../helpers/nativePrivatePath'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
 import { runNativeToolTurn, waitForNativeToolSteps } from '../helpers/nativeToolExecution'
@@ -39,7 +39,7 @@ zcodeTest('keeps a native workflow output path and exact inline preview after re
   await retryUntilPass(async () => {
     const tasks = (await readNativeSidebarSnapshot(native, agent.id)).backgroundTasks.filter(task => task.id === launchId && task.kind === BackgroundTaskKind.WORKFLOW)
     expect(tasks.map(task => task.status), 'the Worker holds one task row of the native ZCode output path workflow, and the row completed')
-      .toEqual([BackgroundTaskStatus.COMPLETED])
+      .toEqual([BackgroundTaskStatus.SUCCEEDED])
   })
   const callId = `native-output-path-read-${randomUUID()}`
   const { resultRequest } = await runNativeToolTurn(native, {

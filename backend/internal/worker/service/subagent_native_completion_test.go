@@ -23,6 +23,7 @@ func TestSubagentNativeCompletionSurvivesEveryRegistryOrder(t *testing.T) {
 			childID, err := root.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: "native-child", Title: "Read the source"})
 			require.NoError(t, err)
 			child := root.ChildSink(childID)
+			child.UpdateSessionID("native-session")
 			content := agent.MessageContent{
 				Original:       []byte(`{"type":"result","subtype":"error_during_execution","duration_ms":5100,"is_error":true,"errors":["The child could not read its assigned file."]}`),
 				AgentSessionID: "native-session", IdempotencyKey: "native-turn:1",
@@ -77,7 +78,7 @@ func TestSubagentNativeCompletionSurvivesEveryRegistryOrder(t *testing.T) {
 
 func TestSubagentRegistryCompletionDoesNotInventTranscriptMessages(t *testing.T) {
 	t.Parallel()
-	for _, status := range []bgtask.Status{bgtask.StatusCompleted, bgtask.StatusFailed, bgtask.StatusStopped, bgtask.StatusInterrupted} {
+	for _, status := range []bgtask.Status{bgtask.StatusSucceeded, bgtask.StatusFailed, bgtask.StatusStopped, bgtask.StatusInterrupted, bgtask.StatusEndedWithUnknownOutcome} {
 		t.Run(bgtask.StatusWire(status), func(t *testing.T) {
 			t.Parallel()
 			svc, root := setupRootSink(t, "root-1")
@@ -90,6 +91,20 @@ func TestSubagentRegistryCompletionDoesNotInventTranscriptMessages(t *testing.T)
 			assert.False(t, row.EndedAt.IsZero())
 		})
 	}
+}
+
+func TestFinishedChildClearsReportedActivityWithoutInventingTranscript(t *testing.T) {
+	t.Parallel()
+	svc, root := setupRootSink(t, "root-1")
+	childID, err := root.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: "native-child", Title: "Read the source"})
+	require.NoError(t, err)
+	require.NoError(t, root.UpdateBackgroundTaskStatus("native-child", bgtask.StatusRunning, "Read the source"))
+	assert.Equal(t, int32(1), countActiveBackgroundTasks(svc.Output.backgroundTaskRows("root-1"), childID))
+	require.NoError(t, root.CloseBackgroundTask("native-child", bgtask.StatusEndedWithUnknownOutcome))
+	assert.Zero(t, countActiveBackgroundTasks(svc.Output.backgroundTaskRows("root-1"), childID))
+	assert.Zero(t, svc.Output.AgentActivitySnapshot(childID, "root-1").ActiveTasks)
+	assert.Empty(t, transcriptMessages(t, svc, childID))
+	assertChildTaskOutcome(t, svc, "root-1", "native-child", childID, bgtask.StatusEndedWithUnknownOutcome)
 }
 
 // assertChildTaskOutcome checks both the displayed status and the stored status.
@@ -108,7 +123,7 @@ func assertChildTaskOutcome(t *testing.T, svc *Service, rootID, rowKey, childID 
 
 func TestFinalBackgroundTaskUpsertKeepsTheSameEndTimeInColdAndWarmReads(t *testing.T) {
 	t.Parallel()
-	for _, status := range []bgtask.Status{bgtask.StatusCompleted, bgtask.StatusFailed, bgtask.StatusStopped, bgtask.StatusInterrupted} {
+	for _, status := range []bgtask.Status{bgtask.StatusSucceeded, bgtask.StatusFailed, bgtask.StatusStopped, bgtask.StatusInterrupted, bgtask.StatusEndedWithUnknownOutcome} {
 		for _, startsActive := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/starts_active_%t", bgtask.StatusWire(status), startsActive), func(t *testing.T) {
 				t.Parallel()

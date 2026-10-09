@@ -180,7 +180,7 @@ func TestACP_GooseSubagentFromToolCallUpdate_FinalClosesRow(t *testing.T) {
 	obs := gooseSubagentFromToolCallUpdate(tcu)
 	if assert.NotNil(t, obs, "final update closes the registry row") {
 		assert.True(t, obs.CloseRow)
-		assert.Equal(t, bgtask.StatusCompleted, obs.Status)
+		assert.Equal(t, bgtask.StatusSucceeded, obs.Status)
 		assert.Equal(t, "tc-x", obs.RowKey)
 	}
 }

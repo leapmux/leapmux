@@ -2,19 +2,21 @@ import type { TodoItem } from '~/models/todo'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 /// <reference types="vitest/globals" />
 import type { GoalAction, GoalProgress, SessionGoal } from '~/stores/chatGoal'
+import { create } from '@bufbuild/protobuf'
 import { fireEvent, render } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
+import { AgentGoalSchema, AgentGoalStatus } from '~/generated/proto/leapmux/v1/agent_pb'
+import { protoGoalToStore } from '~/stores/chatGoal'
 import { motion } from '~/styles/tokens'
 import { ThinkingIndicator } from './ThinkingIndicator'
 
-// The token-count <Show> gates on BOTH `visible` and a positive estimate, so the
-// count's presence is asserted against the visibility it is meant to track.
+// The token count requires a positive estimate and a visible indicator.
 //
-// Rendering visible=true normally drives the expand-tick rAF loop, which the
-// synchronous test rAF stub would recurse into forever; `renderVisible` stubs
-// rAF to a no-op for the render and passes paused=true so the compass sim and
-// verb-rotation interval stay idle. Hidden cases render visible=false directly.
+// A visible render starts the expansion requestAnimationFrame loop.
+// The synchronous test stub would call that loop recursively.
+// renderVisible supplies a no-op animation handler and pauses the simulation and verb interval.
+// Hidden cases render visible=false directly.
 function renderVisible(thinkingTokens?: number, outputBytes?: number, outputBytesMinimum?: boolean) {
   const realRaf = globalThis.requestAnimationFrame
   globalThis.requestAnimationFrame = (() => 0) as typeof globalThis.requestAnimationFrame
@@ -47,9 +49,8 @@ describe('thinking indicator token count', () => {
   })
 
   it('does not render the count while hidden, even with a positive estimate', () => {
-    // The estimate's clear is event-driven, so a stale value can briefly outlive
-    // the indicator; gating the count on `visible` keeps it from rendering (and
-    // running its roll effects) inside a collapsed, invisible row.
+    // An event clears the estimate, so its old value can briefly remain after the indicator hides.
+    // The visible condition prevents the hidden row from displaying or updating that count.
     const { getByTestId, queryByText } = render(() => (
       <ThinkingIndicator visible={false} thinkingTokens={1234} />
     ))
@@ -97,13 +98,13 @@ describe('thinking indicator token count', () => {
       expect(queryByText('500 tokens')).toBeInTheDocument()
       expect(queryByText('1.5 KB')).toBeInTheDocument()
 
-      // The indicator hides (turn end). The count must NOT pop — it stays
-      // mounted (frozen on its last value) to fade out with the collapsing row.
+      // At turn end, retain the last count while the row fades.
+      // Removing the count immediately would change the row before its fade ends.
       setVisible(false)
       expect(queryByText('500 tokens')).toBeInTheDocument()
       expect(queryByText('1.5 KB')).toBeInTheDocument()
 
-      // Once the wrapper's opacity fade (ROW_FADE_MS) elapses, it unmounts.
+      // Remove the count after the wrapper's ROW_FADE_MS opacity transition ends.
       vi.advanceTimersByTime(motion.medium)
       expect(queryByText('500 tokens')).toBeNull()
       expect(queryByText('1.5 KB')).toBeNull()
@@ -176,7 +177,7 @@ describe('thinking indicator chips', () => {
     }
   }
 
-  /** N running rows, the shape that makes the chip read "N background tasks". */
+  /** Create N running rows for the background-task count. */
   function running(n: number): BackgroundTaskItem[] {
     return Array.from({ length: n }, (_, i) => bgTask({ rowKey: `r${i}`, status: 'running' }))
   }
@@ -192,9 +193,9 @@ describe('thinking indicator chips', () => {
     onGoalAction?: (action: GoalAction) => void
     goalSupported?: boolean
   }) {
-    // `goal` and its companions are destructured out: they shape the
-    // `GoalSurface` this helper assembles below rather than pass through.
-    // eslint-disable-next-line solid/reactivity -- plain fixture object, not a reactive proxy; the one-time read is the intent.
+    // Separate the goal fields to construct GoalSurface below.
+    // Read the plain fixture once rather than forwarding those fields as component props.
+    // eslint-disable-next-line solid/reactivity -- The fixture is a plain object. Read it once.
     const { goal, goalProgress, goalActions, onGoalAction, goalSupported, ...rest } = props
     globalThis.requestAnimationFrame = (() => 0) as typeof globalThis.requestAnimationFrame
     try {
@@ -237,23 +238,21 @@ describe('thinking indicator chips', () => {
     expect(queryByTestId('thinking-bg-tasks-chip')).toBeNull()
   })
 
-  // A caller that has no registry to report at all (a tab whose root has none)
-  // omits the prop entirely; the count must read 0, not throw.
+  // A caller with no registry can omit the prop.
+  // The absent registry must report a zero count without throwing.
   it('hides the bg-tasks chip when no registry is supplied', () => {
     const { queryByTestId } = renderChips({})
     expect(queryByTestId('thinking-bg-tasks-chip')).toBeNull()
   })
 
-  // The count is the work IN PROGRESS, not the size of the registry. Finished
-  // rows stay in the list -- the popover is where a user reads what a subagent
-  // did -- so counting them left the chip saying "3 background tasks" beside a
-  // registry where nothing ran.
+  // Count pending and running work rather than every retained registry row.
+  // Completed rows remain available for inspection in the popover.
   it('counts only pending and running rows', () => {
     const { getByTestId } = renderChips({
       backgroundTasks: [
         bgTask({ rowKey: 'a', status: 'running' }),
         bgTask({ rowKey: 'b', status: 'pending' }),
-        bgTask({ rowKey: 'c', status: 'completed' }),
+        bgTask({ rowKey: 'c', status: 'succeeded' }),
         bgTask({ rowKey: 'd', status: 'failed' }),
         bgTask({ rowKey: 'e', status: 'stopped' }),
         bgTask({ rowKey: 'f', status: 'interrupted' }),
@@ -265,20 +264,20 @@ describe('thinking indicator chips', () => {
   it('hides the bg-tasks chip once every row has finished', () => {
     const { queryByTestId } = renderChips({
       backgroundTasks: [
-        bgTask({ rowKey: 'a', status: 'completed' }),
+        bgTask({ rowKey: 'a', status: 'succeeded' }),
         bgTask({ rowKey: 'b', status: 'interrupted' }),
       ],
     })
     expect(queryByTestId('thinking-bg-tasks-chip')).toBeNull()
   })
 
-  // The chip and the popover read ONE list, so a positive count can never open
-  // an empty popover -- the failure a separate count prop invited.
+  // The chip and popover read the same list.
+  // A positive count must therefore open a populated popover.
   it('opens a popover holding every row the registry carries, finished included', () => {
     const { getByTestId } = renderChips({
       backgroundTasks: [
         bgTask({ rowKey: 'a', status: 'running', title: 'Still going' }),
-        bgTask({ rowKey: 'b', status: 'completed', title: 'Already done' }),
+        bgTask({ rowKey: 'b', status: 'succeeded', title: 'Already done' }),
       ],
     })
     const popover = getByTestId('bg-tasks-popover')
@@ -286,10 +285,9 @@ describe('thinking indicator chips', () => {
     expect(popover.querySelectorAll('[data-testid="bg-task-row"]')).toHaveLength(2)
   })
 
-  // A menu closes on any click inside it, because every click in a menu is an
-  // activation. This popover holds a kind tab bar, where a click is part of
-  // READING the list -- so the popover would dismiss itself on the very click
-  // that filters it, and the filter would be unusable.
+  // A menu treats an inside click as an activation and closes.
+  // The kind filter only changes the displayed list.
+  // The card popover must remain open so the user can read that list.
   it('stays open when the user picks a kind tab', async () => {
     const { getByTestId } = renderChips({ backgroundTasks: running(2) })
     const popover = getByTestId('bg-tasks-popover')
@@ -301,8 +299,8 @@ describe('thinking indicator chips', () => {
     expect(getByTestId('bg-task-filter-shell')).toHaveAttribute('aria-selected', 'true')
   })
 
-  // Opening a subagent IS an activation: its tab takes over, so a popover left
-  // open would cover the transcript the click just opened.
+  // Opening a subagent selects its tab.
+  // Close the popover so it does not cover the selected transcript.
   it('closes when the user opens a subagent from a row', async () => {
     const onOpenSubagent = vi.fn()
     const { getByTestId, container } = renderChips({
@@ -320,10 +318,8 @@ describe('thinking indicator chips', () => {
   })
 
   /**
-   * The list renders a subagent row as a BUTTON on the strength of the handler
-   * being present, so the popover must pass one only when its own host did.
-   * Wrapping unconditionally gave a host that supplies nothing a row that looks
-   * clickable, dismisses the popover, and does nothing.
+   * The list creates a button only when the host supplies an open handler.
+   * An unconditional wrapper would create a clickable row that closes the popover but opens nothing.
    */
   it('renders a static row when the host supplies no way to open a subagent', () => {
     const { container } = renderChips({
@@ -333,10 +329,8 @@ describe('thinking indicator chips', () => {
     expect(row.tagName).toBe('DIV')
   })
 
-  // SET opens a modal dialog on top of this popover, and `as="card"` keeps a
-  // popover open on an inside click on purpose -- so without the dismiss the
-  // panel stays open underneath the dialog and is still there when the dialog
-  // closes.
+  // Set opens a modal above this popover.
+  // The card popover stays open on inside clicks, so the Set handler must close it explicitly.
   it('closes the to-dos popover when the user starts to set a goal', async () => {
     const onGoalAction = vi.fn()
     const { getByTestId } = renderChips({
@@ -348,10 +342,9 @@ describe('thinking indicator chips', () => {
     const popover = getByTestId('todo-list-popover')
     const hide = vi.spyOn(popover, 'hidePopover')
 
-    // Through the `...` menu, which is where every verb of an EXISTING goal
-    // lives. jsdom does not enforce a closed popover's `display: none`, so a
-    // direct click on the item passes here while failing in a real browser --
-    // it would prove nothing about the trigger being wired at all.
+    // Open the actual menu trigger before selecting an existing goal's action.
+    // jsdom permits a click on hidden menu content.
+    // That direct click would not prove that a browser user can open the menu.
     await fireEvent.click(getByTestId('goal-actions-trigger'))
     await fireEvent.click(getByTestId('goal-action-set'))
 
@@ -359,8 +352,12 @@ describe('thinking indicator chips', () => {
     expect(onGoalAction).toHaveBeenCalledWith('set')
   })
 
-  // The other three act IN PLACE and their result shows in this panel, so
-  // dismissing on them would hide the change the user asked for.
+  // The following actions change the goal within this panel:
+  // - Clear.
+  // - Pause.
+  // - Resume.
+  //
+  // Keep the panel open so the user can see that result.
   it('keeps the to-dos popover open for an action that acts in place', async () => {
     const onGoalAction = vi.fn()
     const { getByTestId } = renderChips({
@@ -379,10 +376,12 @@ describe('thinking indicator chips', () => {
     expect(onGoalAction).toHaveBeenCalledWith('pause')
   })
 
-  // The popover rebuilds the surface to wrap that one handler, so the other
-  // three fields have to pass through it untouched. A spread that dropped one
-  // would draw a card with no counters, or with every control disabled, and
-  // neither reads as a bug in the wrapper that caused it.
+  // The popover wraps the action handler and preserves the rest of GoalSurface:
+  // - The current goal.
+  // - The reported counters.
+  // - The supported actions.
+  //
+  // Omitting one field would remove content or disable controls.
   it('passes the rest of the goal surface through to the card', () => {
     const { getByTestId } = renderChips({
       todos: [{ rowKey: 'a', content: 'Run tests', status: 'pending', activeForm: '' }],
@@ -398,9 +397,8 @@ describe('thinking indicator chips', () => {
     expect(getByTestId('goal-action-pause')).toBeInTheDocument()
   })
 
-  // The card renders its verb buttons on the strength of the handler being
-  // present, so a wrapper that was always defined would offer controls for a
-  // host that supplies no way to act on them.
+  // Preserve an absent host handler.
+  // An unconditional wrapper would offer controls that have no action handler.
   it('offers no goal controls when the host supplies no handler', () => {
     const { queryByTestId } = renderChips({
       todos: [{ rowKey: 'a', content: 'Run tests', status: 'pending', activeForm: '' }],
@@ -441,25 +439,32 @@ describe('thinking indicator chips', () => {
     expect(queryByTestId('thinking-todos-chip')).toBeNull()
   })
 
+  it('reports an unknown goal through the actual chip and silent popover', () => {
+    const current = protoGoalToStore(create(AgentGoalSchema, { objective: 'Keep the objective', status: AgentGoalStatus.UNKNOWN, statusDetail: 'future-state' }))
+    const { getByTestId, container } = renderChips({ todos: [], goal: current, goalProgress: { iterations: 3 } })
+    expect(getByTestId('goal-objective')).toHaveTextContent('Keep the objective')
+    expect(getByTestId('goal-status-detail')).toHaveTextContent('future-state')
+    expect(getByTestId('goal-progress')).toHaveTextContent('3 turns')
+    expect(container.querySelectorAll('[role="status"][aria-live="polite"]')).toHaveLength(0)
+    expect(getByTestId('thinking-todos-chip').textContent).toBe('Goal: unknown')
+    expect(getByTestId('goal-status-dot')).toHaveAttribute('data-status', 'unknown')
+  })
+
   /**
-   * The chip opens the Goals & To-dos popover, so EITHER half can open it.
-   *
-   * A to-do count alone left an agent with a goal and no list with no goal
-   * surface in the transcript at all -- the goal's own chip is gone, and the
-   * sidebar section can be collapsed or on another tab.
+   * A stored goal or a to-do list can open the shared popover.
+   * A goal-only agent still needs a transcript surface when its sidebar section is closed or elsewhere.
    */
   it('shows the chip for a goal with no to-do list, naming its status', () => {
     const { getByTestId } = renderChips({
       todos: [],
       goal: { objective: 'every test passes', status: 'blocked' },
     })
-    // The goal's status word, not "0/0 to-dos" -- a count would describe the
-    // half of the popover that has nothing in it.
+    // Display the goal status when the popover has no to-do list to count.
     expect(getByTestId('thinking-todos-chip').textContent).toBe('Goal: needs attention')
   })
 
-  // A list present: the count wins, because that is what the chip counts and
-  // the goal is one card inside the popover it opens.
+  // An undeleted to-do row makes the chip display its to-do count.
+  // The popover still displays the goal card.
   it('shows the to-do count when a list exists beside a goal', () => {
     const todos: TodoItem[] = [
       { rowKey: 'a', content: 'a', status: 'completed', activeForm: '' },
@@ -473,11 +478,8 @@ describe('thinking indicator chips', () => {
   })
 
   /**
-   * The stored GOAL decides, not the surface.
-   *
-   * A surface also carries "this agent can be given a goal", which is true of
-   * every goal-capable agent alive -- so testing the surface would put a chip
-   * on all of them with nothing to report.
+   * The stored goal controls the chip's presence.
+   * An empty capable surface supports Set but supplies no goal status to display.
    */
   it('hides the chip for a goal-capable agent that has no goal yet', () => {
     const { queryByTestId } = renderChips({ todos: [], goalSupported: true, goalActions: ['set'] })
@@ -502,10 +504,8 @@ describe('thinking indicator chips', () => {
   })
 
   /**
-   * The FIRST-RUN state, and the one every other case here skips by supplying a
-   * stored goal: a goal-capable agent that has no goal yet. The host passes a
-   * surface with no `current`, and the popover has to offer the route to a
-   * first goal rather than an empty box.
+   * A capable agent can have no current goal.
+   * The popover must retain its route to the first Set action.
    */
   it('offers the empty card and its Set route for a goal-capable agent with no goal', () => {
     const todos: TodoItem[] = [{ rowKey: 'a', content: 'Run tests', status: 'pending', activeForm: '' }]
@@ -519,9 +519,8 @@ describe('thinking indicator chips', () => {
     expect(getByTestId('goal-action-set')).not.toBeNull()
   })
 
-  // The row reads "<verb>... <background tasks> · <to-dos> · <tokens>": the
-  // rotating verb leads, and the counters trail it, middot-separated. The verb
-  // is outside the separator chain, so leading it adds no middot of its own.
+  // The rotating verb precedes the counter row.
+  // Separate adjacent counters with a middle dot, without adding one after the verb.
   it('draws two separators when all three counters show', () => {
     const todos: TodoItem[] = [{ rowKey: 'a', content: 'a', status: 'pending', activeForm: '' }]
     const { getByTestId } = renderChips({ thinkingTokens: 500, backgroundTasks: running(2), todos })
@@ -547,22 +546,21 @@ describe('thinking indicator chips', () => {
     expect(dots).toBe(2)
   })
 
-  // Tokens sits LAST in the chain now, so it owns the separator that its
-  // predecessor would otherwise dangle when the middle counter is absent.
+  // Tokens is the last counter.
+  // Its separator requires a visible preceding counter.
   it('draws one separator between the two counters that remain', () => {
     const { getByTestId } = renderChips({ thinkingTokens: 500, backgroundTasks: running(2) })
     const dots = (getByTestId('thinking-indicator').textContent ?? '').split('·').length - 1
     expect(dots).toBe(1)
   })
 
-  // The last counter in the chain must still draw nothing when it is alone --
-  // the case a "separator before every counter but the first" rule gets wrong.
+  // An isolated last counter displays no separator.
   it('draws no separator when only the token count is present', () => {
     const { getByTestId } = renderChips({ thinkingTokens: 500 })
     expect(getByTestId('thinking-indicator').textContent).not.toContain('·')
   })
 
-  // A missing neighbour must not leave a dangling separator.
+  // An absent adjacent counter must not leave a separator.
   it('draws no separator when only one counter is present', () => {
     const { getByTestId } = renderChips({ backgroundTasks: running(2) })
     expect(getByTestId('thinking-indicator').textContent).not.toContain('\u00B7')

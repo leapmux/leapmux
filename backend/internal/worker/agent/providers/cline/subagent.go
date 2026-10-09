@@ -16,39 +16,30 @@ import (
 
 // Subagents.
 //
-// Cline runs a subagent as the `spawn_agent` tool call of its parent: the call
-// starts a child agent with the call's `task`, waits for it, and ends with the
-// child's answer. The child runs its tools with no approval, which the approval
-// card of the call states.
+// Cline's parent spawn_agent call starts a child with task, waits for it, and returns the child's answer.
+// The child runs tools without approval, as the call's approval card states.
 //
-// Cline states no agent on the output of a child: the child's iterations, text,
-// reasoning and tool calls arrive among the parent's, between the call's
-// tool.started and its tool.finished. The worker attributes that output by what
-// it saw before it:
+// The child's iterations and text have no agent identity, as do its reasoning and tool calls.
+// They arrive in the parent stream between tool.started and tool.finished.
+// The worker resolves ownership from the preceding events:
+//   - The parent waits while its child runs, so the first iteration after the spawn call starts belongs to the child.
+//   - Subsequent unlinked output and new tool calls belong to that child. A nested spawn_agent applies the same rule recursively.
+//   - Each tool-call ID retains the transcript in which that call starts.
 //
-//   - The parent waits inside its tool calls while a child runs, so the first
-//     iteration that starts after the call started is the child's.
-//   - From then on, output that no tool call id routes is the child's, and so
-//     is a new tool call. A child's own spawn_agent call nests the same rule.
-//   - A tool call keeps the transcript it started in, by its id.
+// Cline can run multiple spawn calls from one model step concurrently.
+// Their untagged output interleaves and cannot be assigned safely, so the worker writes none of it live.
+// After each child ends, Cline stores its conversation under <root>__<agentId>.
+// startBackfill copies that stored session into the child's transcript.
+// The session identifies its task but no spawning call, so match it by task and start time.
 //
-// When two children of one parent run at once -- the model can start several
-// calls in one step, and Cline runs them in parallel -- their output
-// interleaves with nothing that tells it apart. The worker then writes none of
-// it live. When each such child ends, Cline stores the child's conversation as
-// a session of its own (`<root>__<agentId>`), and the worker writes the child's
-// transcript from that session instead (startBackfill). The stored session
-// states the child's task but not the call, so the worker matches it by the
-// task and by the time it started.
-//
-// Each call gets a registry row, keyed by the call's id, that links the child
-// transcript. The row closes with the call, and the child's answer ends the
-// child transcript as its report.
+// Each call's ID identifies one registry row linked to its child transcript.
+// The row closes with the call, and the child's answer becomes the final transcript report.
 
-// spawnTitleFallback titles a subagent whose task states nothing.
+// spawnTitleFallback supplies the title for a child whose task is empty.
 const spawnTitleFallback = "Cline subagent"
 
-// spawnCall is one spawn_agent call that runs. Guarded by Agent.Mu.
+// spawnCall represents one running spawn_agent call.
+// Agent.Mu protects its state.
 type spawnCall struct {
 	id   string
 	task string
@@ -69,8 +60,7 @@ type spawnCall struct {
 	ambiguous bool
 }
 
-// markAmbiguous marks the call, and every call below it, as one whose child
-// transcript comes from Cline's store.
+// markAmbiguous marks this call and every descendant for transcript reconstruction from Cline's store.
 func (s *spawnCall) markAmbiguous() {
 	s.ambiguous = true
 	if s.child == nil {
@@ -81,11 +71,11 @@ func (s *spawnCall) markAmbiguous() {
 	}
 }
 
-// startsSubagent reports whether a tool runs a child agent whose output
-// arrives untagged among the lead's: spawn_agent, and a configured agent of
-// `.cline/agents/`, whose tool is `subagent_<name>_<hash>`
-// (configured-agent-tool.ts of Cline 3.0.64). Both return the same result, and
-// both run the child's tools with no approval.
+// startsSubagent identifies a tool whose untagged child output arrives in the lead stream.
+// It accepts these native tools from Cline 3.0.64's configured-agent-tool.ts:
+//   - spawn_agent.
+//   - A .cline/agents/ tool with the shape subagent_<name>_<hash>.
+// Both return the same result shape and run the child's tools without approval.
 func startsSubagent(toolName string) bool {
 	return toolName == contracts.ClineToolSpawnAgent || strings.HasPrefix(toolName, contracts.ClineToolPrefixConfiguredAgent)
 }
@@ -111,13 +101,12 @@ type spawnOutput struct {
 	FinishReason string `json:"finishReason"`
 }
 
-// routeContent returns the transcript that one output event without an agent
-// belongs to, or nil when the worker cannot tell and the event reaches no
-// transcript. The caller holds dispatchMu.
+// routeContent returns the transcript for one output event without an agent ID.
+// Return nil when its owner is unresolved, so the worker writes it to no transcript.
+// The caller holds dispatchMu.
 //
-// Output that arrives with no turn running is either a teammate's, while a
-// teammate run is active (team.go), or the start of a lead run that Cline
-// began by itself.
+// Output outside a running lead turn belongs to an active teammate run or a lead run that Cline starts independently.
+// See team.go for teammate routing.
 func (a *Agent) routeContent() *transcript {
 	a.Mu.Lock()
 	active, teamBusy := a.turn.active, a.team.busy()
@@ -138,8 +127,7 @@ func (a *Agent) routeContent() *transcript {
 		case 1:
 			s := t.spawns[0]
 			if !s.started {
-				// The call runs, and its child has not begun: the output is still
-				// the parent's.
+				// The child iteration starts after its spawn call, so preceding output still belongs to the parent.
 				return t
 			}
 			if s.ambiguous || s.child == nil {
@@ -155,9 +143,8 @@ func (a *Agent) routeContent() *transcript {
 	}
 }
 
-// handleIterationStarted records the start of a child's first iteration. An
-// iteration that starts while one call of a transcript runs, and its child has
-// not begun, is that child's.
+// handleIterationStarted records a child's first iteration.
+// An iteration belongs to that child when its transcript has exactly one active spawn call whose child does not yet start.
 func (a *Agent) handleIterationStarted() {
 	a.Mu.Lock()
 	active, teamBusy := a.turn.active, a.team.busy()
@@ -257,9 +244,9 @@ func (a *Agent) closeSpawn(s *spawnCall, call toolEvent) {
 	a.finishSpawn(s, status, report)
 }
 
-// spawnStatus maps a subagent's end onto its row's final status. A call that
-// Cline reports with an error failed. A child that the abort of the run ended
-// stopped.
+// spawnStatus maps the child's call outcome to its registry status.
+// A native call error means failure.
+// A run abort that ends the child means stopped.
 func spawnStatus(finishReason, callError string) bgtask.Status {
 	switch {
 	case finishReason == contracts.ClineRunReasonAborted:
@@ -269,17 +256,17 @@ func spawnStatus(finishReason, callError string) bgtask.Status {
 	case finishReason == contracts.ClineRunReasonError, finishReason == contracts.ClineRunReasonMistakeLimit:
 		return bgtask.StatusFailed
 	default:
-		return bgtask.StatusCompleted
+		return bgtask.StatusSucceeded
 	}
 }
 
-// spawnCompletions states how the text and the open tool calls of a child end
-// when its call ends with status. A child that completed wrote its text in
-// full, and a tool call it still held open did not finish. A child that
-// failed ends both with the error, and every other end is a stop.
+// spawnCompletions selects completions for child text and open tools when the call ends with status.
+// A successful child completes its text, while any tool it leaves open fails.
+// A failed child ends both text and tools with an error.
+// Every other outcome interrupts both.
 func spawnCompletions(status bgtask.Status) (text, tools agent.MessageCompletion) {
 	switch status {
-	case bgtask.StatusCompleted:
+	case bgtask.StatusSucceeded:
 		return agent.MessageCompletionComplete, agent.MessageCompletionError
 	case bgtask.StatusFailed:
 		return agent.MessageCompletionError, agent.MessageCompletionError
@@ -288,9 +275,12 @@ func spawnCompletions(status bgtask.Status) (text, tools agent.MessageCompletion
 	}
 }
 
-// finishSpawn ends one call: its children first, then its own child
-// transcript, its report and its row. A child whose output the worker could
-// not attribute gets its transcript from Cline's store first.
+// finishSpawn closes one call in this order:
+//   - End its nested calls.
+//   - Complete its own child transcript.
+//   - Write its report.
+//   - Close its registry row.
+// If live ownership is ambiguous, first reconstruct that child's transcript from Cline's store.
 func (a *Agent) finishSpawn(s *spawnCall, status bgtask.Status, report string) {
 	a.Mu.Lock()
 	if _, open := a.out.spawns[s.id]; !open {
@@ -307,8 +297,7 @@ func (a *Agent) finishSpawn(s *spawnCall, status bgtask.Status, report string) {
 	a.Mu.Unlock()
 
 	for _, n := range nested {
-		// A call cannot end before the calls its child made; one that did was
-		// cut short with it.
+		// If a parent call ends with active nested calls, those nested calls end with it because they cannot continue independently.
 		a.finishSpawn(n, stoppedWith(status), "")
 	}
 	parentSink := a.sinkFor(s.parent)
@@ -393,23 +382,21 @@ func firstLine(text string) string {
 
 // Child transcripts from Cline's store.
 //
-// Cline stores each finished subagent and each finished teammate task as a
-// session of its own, a moment after it ends: `<root>__<agentId>` for a
-// subagent and `<root>__teamtask__<agentId>__<suffix>` for a teammate task.
-// Its session.list row states the root session, the agent and the task. The
-// worker reads the finished session and writes its conversation into the
-// child transcript, after what reached the transcript live.
+// Cline stores each ended child or teammate task in its own session shortly after completion:
+//   - <root>__<agentId> for a subagent.
+//   - <root>__teamtask__<agentId>__<suffix> for a teammate task.
+// session.list supplies the root session, agent ID, and task.
+// The worker appends the stored conversation after any live output already written to the child transcript.
 
-// backfillWaits are the waits before each read of Cline's store. Cline writes a
-// finished child's session on its own schedule, so the first reads can find it
-// still running.
+// backfillWaits specifies each wait before reading Cline's store.
+// Cline independently schedules its final session write, so an early read can still report a running child.
 var backfillWaits = []time.Duration{0, 250 * time.Millisecond, 500 * time.Millisecond, time.Second, 2 * time.Second, 4 * time.Second}
 
 // backfillListLimit caps the rows of one session.list. The list is newest
 // first, and the child ended a moment ago.
 const backfillListLimit = 200
 
-// storedStatusRunning is the status of a stored session that has not ended.
+// storedStatusRunning identifies a stored session that remains active.
 const storedStatusRunning = "running"
 
 // storedSession is one row of session.list that a backfill reads.
@@ -430,17 +417,14 @@ type backfillJob struct {
 	target *transcript
 	// match selects the stored sessions that can be the child's.
 	match func(storedSession) bool
-	// notBefore is when the child started, in milliseconds since the Unix
-	// epoch, or 0 when that is not known. A stored session created earlier is
-	// not the child's.
+	// notBefore supplies the child start time in milliseconds since the Unix epoch, or zero when unknown.
+	// An earlier session cannot belong to that child.
 	notBefore int64
-	// prompt writes the stored session's first message as the child's prompt,
-	// through parent, the sink that created the child. A teammate's task
-	// reaches the worker only there.
+	// prompt writes the stored first message through parent, which is the sink that creates the child.
+	// A teammate's task reaches the worker only through this stored prompt.
 	prompt bool
 	parent agent.ProviderServices
-	// finalize runs after the worker wrote the transcript, or after it gave up:
-	// it writes the report and closes the row.
+	// finalize writes the report and closes the row after transcript reconstruction succeeds or stops attempting reads.
 	finalize func()
 	label    string
 }
@@ -460,8 +444,8 @@ func spawnSessionMatch(s *spawnCall) func(storedSession) bool {
 // goroutine of its own.
 func (a *Agent) startBackfill(job backfillJob) {
 	if a.ctx.Err() != nil {
-		// The agent ends: no hub is left to read the child from, and a goroutine
-		// would change the rows after Stop or Wait returned.
+		// The agent already ends, so no native hub remains to supply the transcript.
+		// Starting another goroutine would mutate rows after Stop or Wait returns.
 		job.finalize()
 		return
 	}
@@ -506,9 +490,9 @@ func (a *Agent) backfill(job backfillJob) {
 	slog.Info("cline stored no finished session for a child", "agent_id", a.AgentID(), "child", job.label)
 }
 
-// findStoredChild returns the earliest stored session that job matches and no
-// other child took, and whether it finished. A child takes a session only once
-// it finished.
+// findStoredChild selects the earliest session that matches job and belongs to no other child.
+// It also reports whether that session ends.
+// A child claims the session only after it ends.
 func (a *Agent) findStoredChild(job backfillJob) (storedSession, bool, error) {
 	ctx, cancel := a.requestContext()
 	defer cancel()
@@ -530,8 +514,8 @@ func (a *Agent) findStoredChild(job backfillJob) (storedSession, bool, error) {
 		if a.out.claimed[stored.SessionID] || !job.match(*stored) {
 			continue
 		}
-		// The daemon creates the child's session a moment after it publishes the
-		// start of the call; the slack covers clocks that round differently.
+		// The daemon creates a child session shortly after publishing the call start.
+		// This tolerance accommodates clocks with different rounding.
 		if job.notBefore > 0 && stored.CreatedAt > 0 && stored.CreatedAt < job.notBefore-backfillClockSlack {
 			continue
 		}
@@ -581,12 +565,13 @@ func (m storedMessage) blocks() []storedBlock {
 	return blocks
 }
 
-// writeStoredConversation writes a stored conversation into the child
-// transcript of job, in Cline's live event shapes: `reasoning.finished`,
-// `assistant.finished`, `tool.started` and `tool.finished`. What reached the
-// transcript live stays: the first texts and reasonings it counted, and every
-// tool call it showed. The first user message is the task, which the
-// transcript opens with already.
+// writeStoredConversation reconstructs job's child transcript through these live Cline event shapes:
+//   - reasoning.finished.
+//   - assistant.finished.
+//   - tool.started.
+//   - tool.finished.
+// Preserve previously counted live text and reasoning, as well as every tool call already displayed.
+// The first user message is the task that already opens the transcript.
 func (a *Agent) writeStoredConversation(job backfillJob, sessionID string, raw json.RawMessage) {
 	var messages []storedMessage
 	if err := json.Unmarshal(raw, &messages); err != nil {

@@ -31,11 +31,11 @@ func TestClaudeControlPublicationFailureReturnsProtocolError(t *testing.T) {
 	assert.Empty(t, sink.PublishedControls())
 }
 
-// outputTestSink extends Sink with permission mode and plan updates. It
-// deliberately does NOT override OpenSpan or CloseSpan: Sink already records
-// both AND mirrors the real SpanTracker's active set and its span types, so an
-// override here would leave both stale -- which is what it did, until every
-// assertion that read them through this double had become vacuous.
+// outputTestSink adds permission-mode and plan updates to Sink.
+// It intentionally preserves Sink's OpenSpan and CloseSpan methods.
+// Sink records both operations and mirrors the real SpanTracker's active set and span types.
+// An override would leave both mirrors stale.
+// The preceding override did that and made assertions through this fake pass without checking actual span state.
 type outputTestSink struct {
 	agenttest.Sink
 
@@ -74,9 +74,9 @@ func (s *outputTestSink) PlanCalls() []planUpdateCall {
 	return append([]planUpdateCall(nil), s.planCalls...)
 }
 
-// outputTestSink must behave exactly like the double it extends. It shadowed the
-// span methods before, so its active set stayed empty and every assertion that
-// read one through this double held no matter what the code did.
+// outputTestSink must retain the behavior of its underlying fake.
+// Its preceding span-method overrides left the active set empty.
+// Assertions through that fake then passed regardless of the provider's actual span behavior.
 func TestOutputTestSink_MirrorsTheSpanBookkeepingItExtends(t *testing.T) {
 	t.Parallel()
 
@@ -126,9 +126,8 @@ func TestHandleOutput_AssistantToolUse(t *testing.T) {
 	sink := &outputTestSink{}
 	agent := newTestAgent(agent.NewProviderServices(sink))
 
-	// A message carrying parent_tool_use_id is a FORWARDED subagent envelope
-	// (--forward-subagent-text) and routes into the child transcript, not the
-	// parent's. The parent transcript is left untouched.
+	// A parent_tool_use_id identifies a forwarded subagent envelope from --forward-subagent-text.
+	// Route it into the child transcript and preserve the parent transcript.
 	content := []byte(`{
 		"type": "assistant",
 		"parent_tool_use_id": "parent-123",
@@ -167,13 +166,11 @@ func TestHandleOutput_AssistantToolUse(t *testing.T) {
 	assert.Equal(t, 0, agent.TurnToolUses)
 }
 
-// A subagent's tool_use row must persist BEFORE its own span opens, exactly as
-// the parent transcript does (handlePersistableMessage persists, then
-// processAssistantBlocks opens). The sink derives span_lines from the spans open
-// at persist time, so opening first stamps the tool_use row with an "active"
-// line for the span it is itself announcing -- the row renders one column too
-// deep and draws a rail segment with nothing above it. The paired tool_result
-// must persist while the span IS open, so it closes the rail with connector_end.
+// Persist a subagent's tool_use row before opening its own span, as the parent transcript does.
+// handlePersistableMessage persists first, and processAssistantBlocks then opens the span.
+// The sink derives span_lines from the spans open during persistence.
+// Opening first would give the announcing row its own active line, an extra depth column, and a rail with no preceding segment.
+// Persist the matching tool_result while the span remains open, so connector_end closes that rail.
 func TestRouteSubagentMessage_ToolUsePersistsBeforeItsSpanOpens(t *testing.T) {
 	t.Parallel()
 
@@ -224,14 +221,12 @@ func TestRouteSubagentMessage_ToolUsePersistsBeforeItsSpanOpens(t *testing.T) {
 	assert.Equal(t, []string{"tu-bash"}, child.ClosedSpans())
 }
 
-// A FOREGROUND Task echoes its own spawn prompt back as a forwarded user
-// envelope, and `PersistChildPrompt` already wrote that prompt at task_started.
-// Persisting the echo too opened the transcript on two identical prompts.
+// A foreground Task forwards its spawn prompt as a user envelope after PersistChildPrompt writes that prompt at task_started.
+// Persisting the forwarded copy would open the transcript with two identical prompts.
 //
-// The CLI emits the echo only on its synchronous path: before the run loop it
-// yields one extra progress event whose whole purpose is to hand the prompt to
-// its own UI. A backgrounded Task takes the async path and emits nothing of the
-// kind, which is why only a foreground subagent showed the duplicate.
+// The synchronous CLI path emits that copy as a progress event before the run loop for its own UI.
+// The asynchronous background Task path emits no such event.
+// Only a foreground subagent therefore displayed the duplicate prompt.
 func TestRouteSubagentMessage_DropsTheEchoedSpawnPrompt(t *testing.T) {
 	t.Parallel()
 
@@ -253,9 +248,8 @@ func TestRouteSubagentMessage_DropsTheEchoedSpawnPrompt(t *testing.T) {
 		"the spawn prompt is written once, at task_started, not again from the echo")
 }
 
-// ...and the filter must not swallow a real one. Every genuine forwarded user
-// envelope carries the child's own tool_result, because inside its run loop the
-// CLI forwards a message only when it holds a tool_use or a tool_result block.
+// The filter must retain a genuine forwarded user envelope with the child's tool_result.
+// Within its run loop, the CLI forwards only messages with a tool_use or tool_result block.
 func TestRouteSubagentMessage_KeepsAUserEnvelopeCarryingAToolResult(t *testing.T) {
 	t.Parallel()
 
@@ -286,9 +280,8 @@ func TestRouteSubagentMessage_KeepsAUserEnvelopeCarryingAToolResult(t *testing.T
 	assert.True(t, msgs[1].Closing, "the tool_result still closes its span")
 }
 
-// A subagent's plain assistant text carries no span of its own, so it must
-// persist with the child's currently-open spans intact: an in-flight tool span
-// keeps drawing its rail past the text row.
+// Plain child assistant text owns no span and must preserve every currently open child span when persisted.
+// A running tool's rail therefore continues past that text row.
 func TestRouteSubagentMessage_TextPersistsUnderAnOpenSpan(t *testing.T) {
 	t.Parallel()
 
@@ -321,10 +314,9 @@ func TestRouteSubagentMessage_TextPersistsUnderAnOpenSpan(t *testing.T) {
 	assert.Equal(t, "tu-1", msgs[1].SpansOpenAtPersist[0].SpanID)
 }
 
-// One forwarded assistant message can carry parallel tool calls. Every block
-// must open a span on the child tracker, because the user envelope that follows
-// closes every tool_result block; opening only the first leaves the others'
-// rails undrawn while their results still try to close them.
+// One forwarded assistant message can contain parallel tool calls.
+// Open a child span for every block because the next user envelope closes every tool_result block.
+// Opening only the first span would omit the other rails while their results still attempt to close them.
 func TestRouteSubagentMessage_ParallelToolUsesAllOpenAndClose(t *testing.T) {
 	t.Parallel()
 
@@ -399,9 +391,8 @@ func TestHandleOutput_UserToolResult(t *testing.T) {
 	sink := &outputTestSink{}
 	agent := newTestAgent(agent.NewProviderServices(sink))
 
-	// A user envelope carrying parent_tool_use_id is the subagent's OWN
-	// tool_result (forwarded), so it routes into the child transcript and
-	// closes the child span there.
+	// A forwarded user envelope with parent_tool_use_id carries the child's own tool_result.
+	// Route it to the child transcript and close its span there.
 	content := []byte(`{
 		"type": "user",
 		"parent_tool_use_id": "parent-123",
@@ -547,8 +538,8 @@ func TestClaudeRateLimitEvent_SchedulesResumeWhenBlocked(t *testing.T) {
 	assert.Equal(t, time.Unix(1893456000, 0).UTC(), schedule.DueAt)
 	assert.JSONEq(t, `{"rateLimitType":"five_hour","status":"rejected","resetsAt":1893456000}`, string(schedule.SourcePayload))
 
-	// Persists raw rate_limit_event verbatim as AGENT (no longer
-	// synthesizes a stripped-down {type:"rate_limit",rate_limit_info}).
+	// Persist the exact raw rate_limit_event as AGENT.
+	// Do not replace it with a reduced {type:"rate_limit",rate_limit_info} payload.
 	require.Equal(t, 1, sink.NotificationCount())
 	last := sink.LastNotification()
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, last.Source,
@@ -557,10 +548,9 @@ func TestClaudeRateLimitEvent_SchedulesResumeWhenBlocked(t *testing.T) {
 		"raw envelope must be preserved verbatim so future fields flow through")
 }
 
-// TestClaudeRateLimitEvent_BroadcastsSnakeCaseWire locks in the wire
-// translation: Claude's SDK emits camelCase rate_limit_info, but the
-// broadcast `rate_limits` map exposes a snake_case tier shape so all
-// providers (Claude / Codex) deliver the same field names to the frontend.
+// TestClaudeRateLimitEvent_BroadcastsSnakeCaseWire verifies the rate-limit field conversion.
+// Claude's SDK supplies camelCase rate_limit_info, while the broadcast rate_limits map uses snake_case tier fields.
+// Claude and Codex therefore supply the same frontend field names.
 func TestClaudeRateLimitEvent_BroadcastsSnakeCaseWire(t *testing.T) {
 	t.Parallel()
 
@@ -606,11 +596,10 @@ func TestClaudeRateLimitEvent_AllowedCancelsResume(t *testing.T) {
 	assert.Equal(t, 0, sink.AutoScheduleCount())
 }
 
-// TestClaudeRateLimitEvent_AllowedWarningCancelsResume guards the bug where an
-// "allowed_warning" status -- a served, heads-up event in which the request was
-// NOT blocked -- scheduled a spurious auto-continue. Only a hard "rejected"
-// status is an actual block; a warning must cancel any pending resume, exactly
-// like "allowed".
+// TestClaudeRateLimitEvent_AllowedWarningCancelsResume prevents an incorrect automatic continuation after allowed_warning.
+// That event warns about a served request without blocking it.
+// Only rejected blocks the request.
+// A warning must cancel a pending resume, as allowed does.
 func TestClaudeRateLimitEvent_AllowedWarningCancelsResume(t *testing.T) {
 	t.Parallel()
 
@@ -632,10 +621,9 @@ func TestClaudeRateLimitEvent_AllowedWarningCancelsResume(t *testing.T) {
 	assert.Equal(t, agent.AutoContinueReasonRateLimit, sink.LastAutoCancel())
 }
 
-// TestClaudeRateLimitEvent_OverageAbsorbsRejected verifies the overage carve-out:
-// while on overage, a "rejected" base window is absorbed by the overage
-// allowance (overageStatus still served), so there is no block to wait out and
-// any pending resume is cancelled.
+// TestClaudeRateLimitEvent_OverageAbsorbsRejected verifies that an active overage allowance accepts a request despite a rejected base window.
+// overageStatus still permits the request, so no block requires waiting.
+// Cancel any pending resume.
 func TestClaudeRateLimitEvent_OverageAbsorbsRejected(t *testing.T) {
 	t.Parallel()
 
@@ -658,9 +646,8 @@ func TestClaudeRateLimitEvent_OverageAbsorbsRejected(t *testing.T) {
 	require.Equal(t, 1, sink.AutoCancelCount())
 }
 
-// TestClaudeRateLimitEvent_OverageRejectedSchedulesAtOverageReset verifies that a
-// hard block while on overage (the overage itself is "rejected") schedules a
-// resume at overageResetsAt -- not the base resetsAt.
+// TestClaudeRateLimitEvent_OverageRejectedSchedulesAtOverageReset verifies a block that rejects the overage allowance itself.
+// Schedule the resume at overageResetsAt instead of the base resetsAt.
 func TestClaudeRateLimitEvent_OverageRejectedSchedulesAtOverageReset(t *testing.T) {
 	t.Parallel()
 
@@ -683,10 +670,9 @@ func TestClaudeRateLimitEvent_OverageRejectedSchedulesAtOverageReset(t *testing.
 	assert.Equal(t, time.Unix(1893460000, 0).UTC(), sink.LastAutoSchedule().DueAt)
 }
 
-// TestClaudeRateLimitEvent_RejectedWithoutResetLeavesScheduleIntact verifies that
-// a "rejected" event carrying no resetsAt is a block we can't date: it neither
-// schedules (no time to wait until) nor cancels (must not drop a legitimate
-// pending resume from a prior well-formed event).
+// TestClaudeRateLimitEvent_RejectedWithoutResetLeavesScheduleIntact verifies rejected without resetsAt.
+// The event confirms a block but supplies no reset time, so it schedules no new resume.
+// It also preserves a legitimate pending resume from an earlier event with a valid reset time.
 func TestClaudeRateLimitEvent_RejectedWithoutResetLeavesScheduleIntact(t *testing.T) {
 	t.Parallel()
 
@@ -702,12 +688,10 @@ func TestClaudeRateLimitEvent_RejectedWithoutResetLeavesScheduleIntact(t *testin
 	assert.Equal(t, 0, sink.AutoCancelCount())
 }
 
-// The command-line interface reports an interrupted turn as
-// `subtype: error_during_execution` with `is_error: true`, and its `errors` array
-// carries its own diagnostics. The reader pressed Stop, so the row read "Error during
-// execution (12s) [ede_diagnostic] result_type=user ..." where every other provider
-// said the turn was interrupted. LeapMux knows what happened, because LeapMux asked
-// for the stop, so its own completion column states it.
+// The CLI reports an interrupted turn through subtype: error_during_execution with is_error: true and its own errors diagnostics.
+// The reader selected Stop, but the row formerly displayed "Error during execution (12s) [ede_diagnostic] result_type=user ...".
+// Other providers reported that turn as interrupted.
+// LeapMux requested the stop and therefore records the known interruption in its own completion column.
 func TestClaudeResult_AnInterruptedTurnStatesTheInterruption(t *testing.T) {
 	t.Parallel()
 
@@ -744,32 +728,34 @@ func TestClaudeResult_AFailureAfterAnInterruptedTurnStaysAFailure(t *testing.T) 
 	assert.Empty(t, messages[len(messages)-1].Completion, "the second turn was not interrupted")
 }
 
-// These `result` frames are real. Claude Code 2.1.289 wrote them in a probe against a
-// local mock model. Each frame keeps the fields that state its outcome (`subtype`,
-// `is_error`, `terminal_reason`, `errors`) and omits the usage objects.
+// Claude Code 2.1.289 wrote these actual result frames against a local mock model.
+// Retain the outcome fields and omit the usage objects:
+//   - subtype.
+//   - is_error.
+//   - terminal_reason.
+//   - errors.
 //
-// The CLI states in `terminal_reason` how the turn ended. Its `subtype` and `is_error`
-// cannot tell an abort from a failure: an abort and a failed tool both use
-// `error_during_execution`, and an API failure uses `subtype: success` with
-// `is_error: true`.
+// terminal_reason identifies how the turn ends.
+// subtype and is_error alone cannot distinguish an abort from a failure.
+// An abort and a failed tool both use error_during_execution.
+// An API failure uses subtype: success with is_error: true.
 const (
 	// The stop took effect while the model streamed.
 	claudeResultAbortedStreaming = `{"type":"result","subtype":"error_during_execution","is_error":true,"duration_ms":5850,"num_turns":2,"stop_reason":null,"terminal_reason":"aborted_streaming","errors":["[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null"]}`
 	// The stop took effect while a tool ran.
 	claudeResultAbortedTools = `{"type":"result","subtype":"error_during_execution","is_error":true,"duration_ms":3065,"num_turns":3,"stop_reason":"tool_use","terminal_reason":"aborted_tools","errors":["[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=tool_use"]}`
-	// The turn finished before the CLI read the stop. The probe sent the stop right
-	// after the answer frame, and the CLI acknowledged it and still ended the turn
-	// with this frame.
+	// The turn finished before the CLI read the stop request.
+	// The probe sent Stop immediately after the answer frame.
+	// The CLI acknowledged it but still ended the turn with this frame.
 	claudeResultFinished = `{"type":"result","subtype":"success","is_error":false,"duration_ms":1197,"num_turns":1,"stop_reason":"end_turn","terminal_reason":"completed","api_error_status":null,"result":"QUICK ANSWER"}`
 	// The turn failed on its own before the CLI read the stop.
 	claudeResultAPIError = `{"type":"result","subtype":"success","is_error":true,"duration_ms":52,"num_turns":1,"stop_reason":"stop_sequence","terminal_reason":"api_error","api_error_status":400,"result":"API Error: 400 NATIVE ERROR MARKER"}`
 )
 
-// A stop request marks the turn end as interrupted only when the `result` states that
-// the stop took effect. A turn that ended before the CLI read the stop keeps its own
-// outcome, because the stop came too late to change it. Before this rule, the note of
-// the stop marked each `result`, and the divider read "Turn interrupted" for a turn
-// that finished or failed on its own.
+// Report an interrupted turn only when result confirms that the stop affected it.
+// A turn that ends before the CLI reads Stop keeps its original outcome because that stop arrives too late.
+// The preceding implementation marked every result after a stop request.
+// It therefore displayed "Turn interrupted" for a turn that independently finished or failed.
 func TestClaudeResult_ATurnThatEndedBeforeTheStopKeepsItsOutcome(t *testing.T) {
 	t.Parallel()
 
@@ -928,10 +914,10 @@ func TestClaudeResult_BareOverloadedSchedulesAPIErrorAutoContinue(t *testing.T) 
 	sink := &outputTestSink{}
 	ag := newTestAgent(agent.NewProviderServices(sink))
 
-	// Claude Code emits overloads (Anthropic HTTP 529) both as
-	// "API Error: 529 Overloaded" and, as seen in the wild, the bare
-	// "API Error: Overloaded" with no numeric code. The bare form must still
-	// auto-continue even though the 5xx code matcher cannot see a code.
+	// Claude Code reports an Anthropic HTTP 529 overload through either of these messages:
+	//   - "API Error: 529 Overloaded".
+	//   - "API Error: Overloaded".
+	// The second form must still continue automatically although the 5xx matcher finds no numeric code.
 	payload := []byte(`{
 		"type":"result",
 		"is_error":true,
@@ -960,11 +946,11 @@ func TestHandleOutput_MalformedJSON(t *testing.T) {
 	sink := &outputTestSink{}
 	agent := newTestAgent(agent.NewProviderServices(sink))
 
-	// Completely invalid JSON — should not panic.
+	// Completely invalid JSON must not cause a panic.
 	agent.HandleOutput([]byte(`not json at all`))
 	assert.Empty(t, sink.Messages())
 
-	// Valid outer type but malformed message body — early return from envelope parse.
+	// Return early when the outer type is valid but the message body fails envelope parsing.
 	agent.HandleOutput([]byte(`{"type":"assistant","message":INVALID}`))
 	assert.Empty(t, sink.Messages())
 }
@@ -1084,13 +1070,13 @@ func TestHandleOutput_MultipleToolUses(t *testing.T) {
 	assert.Equal(t, "tu-a", msgs[0].SpanID)
 	assert.Equal(t, "Read", msgs[0].SpanType)
 
-	// Both tool_use blocks should open spans.
+	// Both tool_use blocks open spans.
 	spans := sink.OpenSpans()
 	require.Len(t, spans, 2)
 	assert.Equal(t, "tu-a", spans[0].SpanID)
 	assert.Equal(t, "tu-b", spans[1].SpanID)
 
-	// Tool use counter should reflect both.
+	// The tool-use count includes both calls.
 	assert.Equal(t, 2, agent.TurnToolUses)
 }
 
@@ -1100,8 +1086,8 @@ func TestHandleOutput_TopLevelAssistantBroadcastsContextUsage(t *testing.T) {
 	sink := &outputTestSink{}
 	agent := newTestAgent(agent.NewProviderServices(sink))
 
-	// A top-level assistant message (no parent_tool_use_id) with usage should
-	// broadcast context usage via session info.
+	// A main-session assistant message with usage broadcasts context usage through session information.
+	// It carries no parent_tool_use_id.
 	agent.HandleOutput([]byte(`{
 		"type": "assistant",
 		"message": {
@@ -1111,8 +1097,8 @@ func TestHandleOutput_TopLevelAssistantBroadcastsContextUsage(t *testing.T) {
 		}
 	}`))
 
-	// Force a result message to trigger the broadcast (assistant messages are
-	// debounced, but result messages always broadcast).
+	// Send a result message to trigger the broadcast.
+	// Assistant messages debounce this update, but result messages always broadcast it.
 	agent.HandleOutput([]byte(`{
 		"type": "result",
 		"subtype": "success"
@@ -1134,10 +1120,9 @@ func TestHandleOutput_ThinkingTokensBroadcastNotPersisted(t *testing.T) {
 	sink := &outputTestSink{}
 	agent := newTestAgent(agent.NewProviderServices(sink))
 
-	// A `system`/`thinking_tokens` line is live telemetry: it must be
-	// broadcast over the ephemeral agent_session_info channel and never
-	// persisted to the timeline. Its per-delta session_id must NOT re-fire
-	// session-init side effects.
+	// A system/thinking_tokens line supplies live telemetry.
+	// Broadcast it through the temporary agent_session_info channel and never persist it in the timeline.
+	// Its delta-specific session_id must not repeat session-initialization effects.
 	agent.HandleOutput([]byte(`{
 		"type": "system",
 		"subtype": "thinking_tokens",
@@ -1173,10 +1158,9 @@ func TestHandleOutput_ThinkingTokensZeroEstimateStillSwallowed(t *testing.T) {
 	sink := &outputTestSink{}
 	ag := newTestAgent(agent.NewProviderServices(sink))
 
-	// A thinking_tokens line with no estimated_tokens yet (the first delta of a
-	// turn can report 0) must still be intercepted: it is broadcast-only and
-	// must never reach the timeline, even though the count is zero. The
-	// frontend's own `> 0` gate decides whether to render it.
+	// Intercept a thinking_tokens line even when estimated_tokens is absent or zero, as the first turn delta can be.
+	// Broadcast it without timeline persistence.
+	// The frontend's > 0 condition decides whether to display the count.
 	ag.HandleOutput([]byte(`{
 		"type": "system",
 		"subtype": "thinking_tokens",
@@ -1196,12 +1180,9 @@ func TestHandleOutput_ThinkingTokensFractionalEstimateStillSwallowed(t *testing.
 	sink := &outputTestSink{}
 	agent := newTestAgent(agent.NewProviderServices(sink))
 
-	// A thinking_tokens line whose estimated_tokens arrives in a fractional or
-	// exponent form must still be intercepted. estimated_tokens is decoded as
-	// float64, so `230.0`/`1.5e4` parse cleanly; an int64 field would make the
-	// unmarshal error and let the line fall through to persistence -- the exact
-	// timeline bloat the interception prevents. The count is truncated to int64
-	// for the broadcast.
+	// Intercept thinking_tokens when estimated_tokens uses a fractional or exponent form.
+	// The inner float64 parse accepts 230.0 and 1.5e4, and the broadcast truncates that count to int64.
+	// A directly typed int64 field would fail decoding and let the telemetry line enter the timeline.
 	agent.HandleOutput([]byte(`{
 		"type": "system",
 		"subtype": "thinking_tokens",
@@ -1221,13 +1202,10 @@ func TestHandleOutput_ThinkingTokensMalformedEstimateStillSwallowed(t *testing.T
 	sink := &outputTestSink{}
 	ag := newTestAgent(agent.NewProviderServices(sink))
 
-	// A thinking_tokens line whose estimated_tokens arrives in an unexpected
-	// wire form -- here a JSON string instead of a number -- must STILL be
-	// intercepted. estimated_tokens is captured as RawMessage, so the subtype
-	// match does not depend on the count parsing; the count is parsed leniently
-	// and a failure broadcasts 0. A typed-number field would error on the
-	// outer unmarshal, return false, and let the line fall through to
-	// session-init + persistence -- the exact timeline bloat this prevents.
+	// Intercept thinking_tokens even when estimated_tokens uses an unexpected type, such as a JSON string instead of a number.
+	// Capture that value as RawMessage, so matching the subtype does not depend on parsing the count.
+	// A failed count parse broadcasts zero.
+	// A typed numeric field could fail the outer decode and return false, letting the line initialize a session and persist telemetry.
 	ag.HandleOutput([]byte(`{
 		"type": "system",
 		"subtype": "thinking_tokens",
@@ -1248,9 +1226,9 @@ func TestHandleOutput_ThinkingTokensOverflowEstimateStillSwallowed(t *testing.T)
 	sink := &outputTestSink{}
 	ag := newTestAgent(agent.NewProviderServices(sink))
 
-	// An estimated_tokens that overflows float64 (1e400) makes the lenient
-	// inner parse error; it must still be swallowed (broadcast 0, not
-	// persisted) and must not produce a NaN/Inf -> int64 conversion.
+	// The estimated_tokens value 1e400 overflows float64 and fails the inner count parse.
+	// Still consume the line and broadcast zero without persisting it.
+	// Never convert NaN or infinity into int64.
 	ag.HandleOutput([]byte(`{
 		"type": "system",
 		"subtype": "thinking_tokens",
@@ -1271,9 +1249,9 @@ func TestHandleOutput_ThinkingTokensNegativeEstimateClampedToZero(t *testing.T) 
 	sink := &outputTestSink{}
 	ag := newTestAgent(agent.NewProviderServices(sink))
 
-	// A running token estimate is non-negative by definition. A negative wire
-	// value must be clamped to 0 at the source (still swallowed, never
-	// persisted) so no consumer ever sees a negative count.
+	// A running token estimate cannot be negative.
+	// Clamp a negative native value to zero before broadcasting it, consume the line, and never persist it.
+	// No consumer then receives a negative count.
 	ag.HandleOutput([]byte(`{
 		"type": "system",
 		"subtype": "thinking_tokens",
@@ -1294,11 +1272,9 @@ func TestHandleOutput_ThinkingTokensFiniteHugeEstimateClampedToZero(t *testing.T
 	sink := &outputTestSink{}
 	ag := newTestAgent(agent.NewProviderServices(sink))
 
-	// A finite but absurd estimate (1e300) parses cleanly into float64 -- unlike
-	// 1e400, it does NOT overflow the inner unmarshal -- yet it is far above
-	// math.MaxInt64, so int64(1e300) would saturate to a garbage ~9.2-quintillion
-	// count. It must be treated as out of range like 1e400 and broadcast 0, not a
-	// nonsense count, so the two huge-input paths agree.
+	// The finite value 1e300 parses as float64, while 1e400 overflows that parse.
+	// Both exceed math.MaxInt64 and must produce the same zero broadcast without timeline persistence.
+	// Converting 1e300 directly to int64 can produce an invalid count near the integer limit instead of the reported estimate.
 	ag.HandleOutput([]byte(`{
 		"type": "system",
 		"subtype": "thinking_tokens",
@@ -1350,9 +1326,8 @@ func TestHandleOutput_NonThinkingSystemMessageStillPersists(t *testing.T) {
 	sink := &outputTestSink{}
 	agent := newTestAgent(agent.NewProviderServices(sink))
 
-	// A plain `system` message that is neither a thinking_tokens line nor a
-	// notification-threaded subtype falls through to persistence unchanged —
-	// the thinking_tokens interception must not swallow other system lines.
+	// Persist an ordinary system message unchanged when it is neither thinking_tokens nor a notification-threaded subtype.
+	// The telemetry filter must not discard other system lines.
 	agent.HandleOutput([]byte(`{
 		"type": "system",
 		"subtype": "init",
@@ -1472,8 +1447,8 @@ func TestHandleOutput_ResultModelUsagePicksPrimaryContextWindow(t *testing.T) {
 		}
 	}`))
 
-	// A result message with modelUsage containing two models — haiku (200k)
-	// and opus[1m] (1M). The primary model (opus[1m]) should be selected.
+	// The result's modelUsage contains haiku with a 200k context and opus[1m] with a 1M context.
+	// Select the primary model, opus[1m].
 	agent.HandleOutput([]byte(`{
 		"type": "result",
 		"subtype": "success",
@@ -1495,12 +1470,10 @@ func TestHandleOutput_ResultModelUsageLegacyOpusResolvesTo1M(t *testing.T) {
 
 	sink := &outputTestSink{}
 	agent := newTestAgent(agent.NewProviderServices(sink))
-	// A legacy bare "opus" now collapses to "opus[1m]" (Opus is 1M-only), so it must
-	// resolve to the 1M window. Even if modelUsage carries BOTH a standard-context
-	// "claude-opus-4-6" and a 1M "claude-opus-4-6[1m]" key -- a shape the current CLI
-	// does not emit -- both normalize to "opus[1m]", and findPrimaryContextWindow's
-	// max-among-matches tie-break deterministically picks the 1M window regardless of
-	// map iteration order.
+	// The bare opus alias normalizes to opus[1m] because this Opus selection uses a 1M context only.
+	// modelUsage can contain both claude-opus-4-6 and claude-opus-4-6[1m], although the current CLI does not emit that combination.
+	// Both normalize to opus[1m].
+	// findPrimaryContextWindow selects the largest matching context, so it chooses 1M regardless of map order.
 	agent.model = "opus"
 
 	agent.HandleOutput([]byte(`{
@@ -1535,7 +1508,7 @@ func TestHandleOutput_SubagentResultDoesNotOverwriteContextWindow(t *testing.T) 
 	agent := newTestAgent(agent.NewProviderServices(sink))
 	agent.model = "opus[1m]"
 
-	// Top-level assistant message establishes usage baseline.
+	// The main-session assistant message sets the usage baseline.
 	agent.HandleOutput([]byte(`{
 		"type": "assistant",
 		"message": {
@@ -1545,7 +1518,7 @@ func TestHandleOutput_SubagentResultDoesNotOverwriteContextWindow(t *testing.T) 
 		}
 	}`))
 
-	// Top-level result sets the context window to 1M.
+	// The main-session result sets the context window to 1M.
 	agent.HandleOutput([]byte(`{
 		"type": "result",
 		"subtype": "success",
@@ -1563,8 +1536,7 @@ func TestHandleOutput_SubagentResultDoesNotOverwriteContextWindow(t *testing.T) 
 
 	prevCount := sink.SessionInfoCount()
 
-	// A subagent result with parent_tool_use_id should NOT overwrite the
-	// context window even though its modelUsage only contains haiku (200k).
+	// A child result with parent_tool_use_id does not replace the main context window even when its modelUsage contains only haiku with 200k.
 	agent.HandleOutput([]byte(`{
 		"type": "result",
 		"parent_tool_use_id": "agent-tu-1",
@@ -1574,7 +1546,7 @@ func TestHandleOutput_SubagentResultDoesNotOverwriteContextWindow(t *testing.T) 
 		}
 	}`))
 
-	// Force a broadcast via a new top-level assistant + result cycle.
+	// Send another main-session assistant message and result to trigger a broadcast.
 	agent.HandleOutput([]byte(`{
 		"type": "assistant",
 		"message": {
@@ -1603,7 +1575,7 @@ func TestHandleOutput_SubagentResultWithoutParentIDDoesNotOverwriteContextWindow
 	agent := newTestAgent(agent.NewProviderServices(sink))
 	agent.model = "opus[1m]"
 
-	// Top-level assistant message establishes usage baseline.
+	// The main-session assistant message sets the usage baseline.
 	agent.HandleOutput([]byte(`{
 		"type": "assistant",
 		"message": {
@@ -1613,7 +1585,7 @@ func TestHandleOutput_SubagentResultWithoutParentIDDoesNotOverwriteContextWindow
 		}
 	}`))
 
-	// Top-level result sets the context window to 1M.
+	// The main-session result sets the context window to 1M.
 	agent.HandleOutput([]byte(`{
 		"type": "result",
 		"subtype": "success",
@@ -1631,10 +1603,9 @@ func TestHandleOutput_SubagentResultWithoutParentIDDoesNotOverwriteContextWindow
 
 	prevCount := sink.SessionInfoCount()
 
-	// A subagent result that is MISSING parent_tool_use_id (defense-in-depth
-	// scenario). Its modelUsage only contains haiku — the primary model
-	// (opus[1m]) is absent, so findPrimaryContextWindow returns 0 and the
-	// context window is NOT overwritten.
+	// This child result intentionally omits parent_tool_use_id to test the additional protection.
+	// Its modelUsage contains only haiku and omits the primary opus[1m] model.
+	// findPrimaryContextWindow therefore returns zero and preserves the current context window.
 	agent.HandleOutput([]byte(`{
 		"type": "result",
 		"subtype": "success",
@@ -1643,7 +1614,7 @@ func TestHandleOutput_SubagentResultWithoutParentIDDoesNotOverwriteContextWindow
 		}
 	}`))
 
-	// Force a broadcast via a new assistant + result cycle.
+	// Send another assistant message and result to trigger a broadcast.
 	agent.HandleOutput([]byte(`{
 		"type": "assistant",
 		"message": {
@@ -1665,12 +1636,10 @@ func TestHandleOutput_SubagentResultWithoutParentIDDoesNotOverwriteContextWindow
 		"subagent result without parent_tool_use_id must not overwrite context window")
 }
 
-// TestGetOrCreateUsageSnapshot_SeedsFromDynamicCatalog verifies the context-usage
-// snapshot seeds its window from the per-agent dynamic catalog (effortCatalog),
-// not the static catalog alone. A model discovered only from the live CLI -- the
-// whole point of dynamic discovery -- is absent from claudeCodeAvailableModels, so
-// a static-only seed would report no window until the first result message; the
-// dynamic seed reports the [1m]-inferred window immediately.
+// TestGetOrCreateUsageSnapshot_SeedsFromDynamicCatalog verifies that effortCatalog supplies the initial context window from each agent's dynamic catalog.
+// A model discovered only through the live CLI is absent from claudeCodeAvailableModels.
+// Using only the static catalog would report no window until a result message arrives.
+// The dynamic catalog immediately supplies the window inferred from [1m].
 func TestGetOrCreateUsageSnapshot_SeedsFromDynamicCatalog(t *testing.T) {
 	t.Parallel()
 
@@ -1687,8 +1656,8 @@ func TestGetOrCreateUsageSnapshot_SeedsFromDynamicCatalog(t *testing.T) {
 		{Value: "mythos", DisplayName: "Mythos", SupportsEffort: true, SupportedEffortLevels: []string{"high", "xhigh"}},
 	}, nil)
 
-	// An assistant usage message seeds the snapshot (getOrCreateUsageSnapshot); the
-	// result message (no modelUsage) broadcasts the seeded window without overwriting it.
+	// The assistant usage message initializes the snapshot through getOrCreateUsageSnapshot.
+	// The result has no modelUsage and broadcasts the initialized window without replacing it.
 	agent.HandleOutput([]byte(`{
 		"type": "assistant",
 		"message": {
@@ -1706,13 +1675,10 @@ func TestGetOrCreateUsageSnapshot_SeedsFromDynamicCatalog(t *testing.T) {
 		"window seeded from the dynamic catalog entry (mythos, no [1m] suffix -> 200K)")
 }
 
-// TestExtractAndBroadcastUsage_WindowFallsBackToStaticCatalog verifies that a model the
-// live CLI dropped from its dynamic list -- but that the session is still running and
-// the static catalog still knows -- reports its real context window via the
-// effortResolver's static fallback, the same per-entry fallback effort/ultracode
-// resolution uses. Before the fix the window resolved over the dynamic catalog alone (a
-// whole-list swap with no per-entry fallback), so such a model reported "unknown" until
-// a result message supplied a window -- diverging from how its effort still resolved.
+// TestExtractAndBroadcastUsage_WindowFallsBackToStaticCatalog covers a current model missing from the live CLI's dynamic list but present in the static catalog.
+// effortResolver supplies its actual context window through the same individual-model fallback used for effort and ultracode.
+// The preceding window lookup replaced the whole static list with the dynamic list and missed this model.
+// It reported an unknown window until a result supplied one, although effort resolution already found the model through the fallback.
 func TestExtractAndBroadcastUsage_WindowFallsBackToStaticCatalog(t *testing.T) {
 	t.Parallel()
 
@@ -1723,9 +1689,8 @@ func TestExtractAndBroadcastUsage_WindowFallsBackToStaticCatalog(t *testing.T) {
 	sink := &outputTestSink{}
 	ag := newTestAgent(agent.NewProviderServices(sink))
 	ag.model = "opus[1m]"
-	// The live CLI reported a dynamic list that does NOT include opus[1m] (e.g. it
-	// dropped the model the resumed session is still running). effortCatalog returns
-	// this list verbatim, so a dynamic-only window lookup would miss.
+	// The native dynamic list omits opus[1m], although the resumed session can still use that model.
+	// effortCatalog returns the list exactly, so a dynamic-only lookup misses its context window.
 	ag.availableModels = convertClaudeModels([]claudeCodeModelInfo{
 		{Value: "sonnet", DisplayName: "Sonnet", SupportsEffort: true, SupportedEffortLevels: []string{"high"}},
 	}, nil)
@@ -1742,12 +1707,10 @@ func TestExtractAndBroadcastUsage_WindowFallsBackToStaticCatalog(t *testing.T) {
 		"window resolved from the static fallback (opus[1m] = 1M), not reported unknown")
 }
 
-// TestGetOrCreateUsageSnapshot_SentinelWindowIsUnknown verifies a session stuck on the
-// unresolved account-default sentinel ("default") reports NO context window. The
-// sentinel catalog entry is a placeholder with no concrete window, and we deliberately
-// do not fabricate one: the broadcast omits context_window so the indicator shows
-// "unknown" (matching the frontend) until the sentinel resolves to a concrete model or
-// a result message supplies the real window.
+// TestGetOrCreateUsageSnapshot_SentinelWindowIsUnknown covers the unresolved account-default sentinel, default.
+// Its catalog entry supplies no actual context window.
+// Omit context_window from the broadcast instead of inventing a value, so the indicator displays unknown as the frontend does.
+// The window remains unknown until the sentinel resolves to a concrete model or a result supplies the actual window.
 func TestGetOrCreateUsageSnapshot_SentinelWindowIsUnknown(t *testing.T) {
 	t.Parallel()
 
@@ -1777,11 +1740,10 @@ func TestGetOrCreateUsageSnapshot_SentinelWindowIsUnknown(t *testing.T) {
 		"unresolved sentinel reports no context window (unknown), not a fabricated value")
 }
 
-// TestExtractAndBroadcastUsage_ReseedsWindowOnModelChange covers the usage snapshot
-// outliving a model change: a session that starts on the unresolved account-default
-// sentinel reports no window (unknown), and once the sentinel resolves to a concrete
-// 1M-context model the window is re-seeded from the catalog -- not left unknown until a
-// result message with matching modelUsage happens to refresh it.
+// TestExtractAndBroadcastUsage_ReseedsWindowOnModelChange verifies that an existing usage snapshot follows a changed model.
+// The unresolved account-default sentinel initially reports no window.
+// When it resolves to a model with a 1M context, update the window immediately from the catalog.
+// Do not require a later result with matching modelUsage to correct the unknown value.
 func TestExtractAndBroadcastUsage_ReseedsWindowOnModelChange(t *testing.T) {
 	t.Parallel()
 
@@ -1809,13 +1771,10 @@ func TestExtractAndBroadcastUsage_ReseedsWindowOnModelChange(t *testing.T) {
 		"window re-seeded from the catalog when the model resolves off the sentinel")
 }
 
-// TestExtractAndBroadcastUsage_ReseedsDownwardOnModelDowngrade locks the re-seed's
-// DOWNGRADE direction. The re-seed comment claims it rescues a session that began on
-// "a smaller-window model", but the only other re-seed test goes the other way
-// (200K sentinel -> 1M). The more dangerous direction is a session on a 1M model that
-// live-switches to a 200K model: if the re-seed regressed, the indicator would keep
-// over-reporting 1M (showing far more headroom than real) until a result message with
-// matching modelUsage happened to correct it.
+// TestExtractAndBroadcastUsage_ReseedsDownwardOnModelDowngrade verifies a context reduction from 1M to 200K after a live model change.
+// The other initialization test covers the opposite direction, from the 200K sentinel setup to 1M.
+// If the downward update fails, the indicator reports more available context than the model actually supports.
+// That incorrect 1M estimate would remain until a result with matching modelUsage corrects it.
 func TestExtractAndBroadcastUsage_ReseedsDownwardOnModelDowngrade(t *testing.T) {
 	t.Parallel()
 
@@ -1832,7 +1791,7 @@ func TestExtractAndBroadcastUsage_ReseedsDownwardOnModelDowngrade(t *testing.T) 
 	require.True(t, ok)
 	require.Equal(t, int64(1_000_000), usage["context_window"], "opus[1m] seeds the 1M window")
 
-	// Live-switch to Sonnet (200K): the window must re-seed DOWN, not stay at 1M.
+	// Switch to Sonnet with a 200K context and require the window to decrease from 1M.
 	agent.model = "sonnet"
 	agent.HandleOutput([]byte(assistant))
 	agent.HandleOutput([]byte(result))
@@ -1842,14 +1801,11 @@ func TestExtractAndBroadcastUsage_ReseedsDownwardOnModelDowngrade(t *testing.T) 
 		"window re-seeded down to 200K on a 1M->Sonnet downgrade")
 }
 
-// TestExtractAndBroadcastUsage_ClearsWindowOnSwitchToUnknownModel verifies that
-// switching to a model unknown to BOTH catalogs (e.g. a resumed session running a model
-// the live CLI dropped into unavailable_models, so it is in neither the dynamic list
-// nor the static fallback) CLEARS the window to "unknown" rather than continuing to
-// over-report the previous model's larger window. The catalog lookup returns 0 for such
-// a model, and the re-seed fires on the model change even though the new window is 0, so
-// the broadcast omits context_window. A result message's modelUsage supplies the real
-// window once one arrives.
+// TestExtractAndBroadcastUsage_ClearsWindowOnSwitchToUnknownModel verifies a current model absent from both catalogs.
+// A resumed model can move into unavailable_models and leave both the dynamic list and static fallback.
+// The catalog then returns zero, and the model change must clear the preceding window even though the replacement window is zero.
+// Omit context_window instead of continuing to report the preceding model's larger context.
+// A later result's modelUsage supplies the actual window when available.
 func TestExtractAndBroadcastUsage_ClearsWindowOnSwitchToUnknownModel(t *testing.T) {
 	t.Parallel()
 
@@ -1881,12 +1837,9 @@ func TestExtractAndBroadcastUsage_ClearsWindowOnSwitchToUnknownModel(t *testing.
 		"switching to a model unknown to both catalogs clears the stale 1M window to unknown")
 }
 
-// TestExtractAndBroadcastUsage_ResultWindowSurvivesReseed verifies the authoritative
-// window from a result message's modelUsage is NOT clobbered by the catalog re-seed on a
-// later turn for the SAME model. The re-seed runs every turn now (it must, to clear a
-// stale window when the model switches to an unknown one), so the windowModel guard is
-// the only thing protecting a CLI-reported window from being overwritten by the coarser
-// catalog estimate.
+// TestExtractAndBroadcastUsage_ResultWindowSurvivesReseed verifies that the result's modelUsage window survives later turns on the same model.
+// The catalog initialization runs every turn so it can clear a stale window after a change to an unknown model.
+// windowModel prevents that initialization from replacing the CLI's confirmed window with a less precise catalog estimate.
 func TestExtractAndBroadcastUsage_ResultWindowSurvivesReseed(t *testing.T) {
 	t.Parallel()
 
@@ -1907,8 +1860,7 @@ func TestExtractAndBroadcastUsage_ResultWindowSurvivesReseed(t *testing.T) {
 	require.Equal(t, int64(500000), usage["context_window"],
 		"result modelUsage is authoritative (500K, not the 1M catalog estimate)")
 
-	// A later turn on the SAME model: the always-running catalog re-seed must not
-	// overwrite the authoritative 500K with the 1M estimate.
+	// On a later turn with the same model, preserve the confirmed 500K window instead of replacing it with the catalog's 1M estimate.
 	agent.HandleOutput([]byte(assistant))
 	agent.HandleOutput([]byte(resultNoUsage))
 	usage, ok = sink.LastSessionInfo()["context_usage"].(map[string]interface{})
@@ -1936,11 +1888,10 @@ func TestFindPrimaryContextWindow(t *testing.T) {
 			expected: 1000000,
 		},
 		{
-			// Opus is 1M-only: a legacy bare "opus" collapses to "opus[1m]", so it
-			// matches BOTH a standard "claude-opus-4-6" and a 1M "claude-opus-4-6[1m]"
-			// key. The max-among-matches tie-break returns the 1M window deterministically
-			// (map iteration order must not change the result). The current CLI does not
-			// emit both keys; this guards the collision path regardless.
+			// The bare opus alias normalizes to opus[1m] because this Opus selection uses a 1M context only.
+			// It matches both claude-opus-4-6 and claude-opus-4-6[1m].
+			// Select the largest matching context so map order cannot change the 1M result.
+			// The current CLI does not emit both keys, but this test still protects that duplicate-normalization case.
 			name:  "legacy opus picks the max window across colliding keys",
 			model: "opus",
 			usage: map[string]json.RawMessage{
@@ -1974,9 +1925,9 @@ func TestFindPrimaryContextWindow(t *testing.T) {
 			expected: 0,
 		},
 		{
-			// S6: the normalized-equality match rejects an unrelated family whose API id
-			// merely contains "opus" as a substring (e.g. a hypothetical "opusplus"),
-			// where the old substring scan would have false-matched it.
+			// S6 requires equality after normalization.
+			// An unrelated API family such as opusplus must not match merely because its ID contains opus.
+			// The preceding substring scan incorrectly accepted that case.
 			name:  "opus does not match an unrelated opusplus family",
 			model: "opus",
 			usage: map[string]json.RawMessage{
@@ -1986,8 +1937,8 @@ func TestFindPrimaryContextWindow(t *testing.T) {
 			expected: 200000,
 		},
 		{
-			// S6: normalization lowercases, so a "[1M]" spelling matches "opus[1m]" --
-			// the old case-sensitive suffix Contains would have missed it (returned 0).
+			// S6 verifies lowercase normalization: [1M] matches opus[1m].
+			// The preceding case-sensitive suffix search returned zero for that spelling.
 			name:  "uppercase [1M] suffix still matches opus[1m]",
 			model: "opus[1m]",
 			usage: map[string]json.RawMessage{
@@ -2020,11 +1971,9 @@ func TestFindPrimaryContextWindow(t *testing.T) {
 	}
 }
 
-// TestContextUsageSnapshot_BuildBroadcast exercises the debounce and window-omission
-// rules of buildBroadcast directly. The integration tests (HandleOutput) cover the
-// result-message path, but the 10s debounce for non-result messages and the
-// LastBroadcast stamping were previously only reachable through a real clock; passing
-// `now` in makes them deterministic.
+// TestContextUsageSnapshot_BuildBroadcast directly exercises buildBroadcast's debounce and omitted-window rules.
+// HandleOutput integration tests cover the result-message path.
+// Supplying now makes the 10-second debounce for other messages and LastBroadcast updates deterministic without a real clock.
 func TestContextUsageSnapshot_BuildBroadcast(t *testing.T) {
 	t.Parallel()
 
@@ -2080,9 +2029,8 @@ func TestContextUsageSnapshot_BuildBroadcast(t *testing.T) {
 	})
 }
 
-// TestHandleOutput_SystemSessionStateChangedConsumed verifies a Claude
-// session_state_changed system line is consumed silently (not persisted into
-// the transcript and not driving the registry).
+// TestHandleOutput_SystemSessionStateChangedConsumed verifies that a Claude session_state_changed system line updates neither the transcript nor the registry.
+// Consume that line without persistence.
 func TestHandleOutput_SystemSessionStateChangedConsumed(t *testing.T) {
 	t.Parallel()
 
@@ -2096,9 +2044,8 @@ func TestHandleOutput_SystemSessionStateChangedConsumed(t *testing.T) {
 	assert.Empty(t, sink.BackgroundTasks(), "session_state_changed must not create a registry row")
 }
 
-// TestClaudeHandleTaskStarted_FallsBackToPromptFirstLine verifies that when
-// task_started omits description but carries a spawn prompt, the registry row
-// title falls back to the first line of the prompt (probe-verified shape).
+// TestClaudeHandleTaskStarted_FallsBackToPromptFirstLine covers task_started without a description but with a spawn prompt.
+// The registry title uses the prompt's first line, matching the captured native shape.
 func TestClaudeHandleTaskStarted_FallsBackToPromptFirstLine(t *testing.T) {
 	t.Parallel()
 
@@ -2131,9 +2078,10 @@ func TestClaudeHandleTaskStarted_PrefersDescriptionOverPrompt(t *testing.T) {
 		"description must win over prompt when both are present")
 }
 
-// TestClaudeHandleTaskProgress_PrefersDescriptionOverLastToolName verifies the
-// activity line derives from description first (probe-verified order), then
-// last_tool_name, then usage counts.
+// TestClaudeHandleTaskProgress_PrefersDescriptionOverLastToolName verifies the captured activity selection order:
+//   - description.
+//   - last_tool_name.
+//   - Usage counts.
 func TestClaudeHandleTaskProgress_PrefersDescriptionOverLastToolName(t *testing.T) {
 	t.Parallel()
 
@@ -2154,10 +2102,8 @@ func TestClaudeHandleTaskProgress_PrefersDescriptionOverLastToolName(t *testing.
 		"progress activity prefers description over last_tool_name")
 }
 
-// TestHandleOutput_TaskStartedUpsertsSubagentRegistryAndChild verifies that a
-// task_started for a Task subagent (local_agent with a tool_use_id) upserts a
-// Running registry row keyed by task_id AND pre-creates the child transcript
-// via EnsureChildAgent.
+// TestHandleOutput_TaskStartedUpsertsSubagentRegistryAndChild covers task_started for a local_agent with tool_use_id.
+// Upsert a Running row under task_id and create its child transcript through EnsureChildAgent.
 func TestHandleOutput_TaskStartedUpsertsSubagentRegistryAndChild(t *testing.T) {
 	t.Parallel()
 
@@ -2167,7 +2113,7 @@ func TestHandleOutput_TaskStartedUpsertsSubagentRegistryAndChild(t *testing.T) {
 	content := []byte(`{"type":"system","subtype":"task_started","task_id":"task-sub-1","tool_use_id":"tu-spawn-1","task_type":"local_agent","description":"research the codebase"}`)
 	agent.HandleOutput(content)
 
-	// One registry row, keyed by task_id, Running, titled by the description.
+	// The task_id identifies one Running row, and its description supplies the title.
 	tasks := sink.BackgroundTasks()
 	require.Len(t, tasks, 1)
 	row := tasks[0]
@@ -2176,19 +2122,17 @@ func TestHandleOutput_TaskStartedUpsertsSubagentRegistryAndChild(t *testing.T) {
 	assert.Equal(t, "research the codebase", row.Title)
 	assert.Equal(t, bgtask.KindSubagent, row.Kind, "local_agent maps to a Subagent-kind row")
 
-	// EnsureChildAgent was invoked keyed by the spawn tool_use id, so the child
-	// transcript exists under the synthetic id that EnsureChildAgent produced
-	// (child-of-<spawnSpanID>). Read the list before any Child call, because Child
-	// creates a sink for an id that EnsureChildAgent never created.
+	// EnsureChildAgent uses the spawn tool_use ID and creates the child-of-<spawnSpanID> transcript identity.
+	// Read the created-child list before calling Child.
+	// Child can create a sink even when EnsureChildAgent never creates that child, which would hide a missing creation.
 	require.Contains(t, sink.ChildAgentIDs(), "child-of-tu-spawn-1",
 		"EnsureChildAgent must have created a child keyed by the spawn span")
 	// The child registry row also carries the child agent id and title.
 	assert.Equal(t, "child-of-tu-spawn-1", row.ChildAgentID)
 }
 
-// TestHandleOutput_TaskStartedLocalBashUpsertsShellNoChild verifies that a
-// task_started for a background shell (local_bash) upserts a Shell-kind registry
-// row and does NOT pre-create a child transcript (shells have no transcript).
+// TestHandleOutput_TaskStartedLocalBashUpsertsShellNoChild covers task_started for a local_bash command.
+// Create a shell registry row without a child transcript because shell rows own no transcript.
 func TestHandleOutput_TaskStartedLocalBashUpsertsShellNoChild(t *testing.T) {
 	t.Parallel()
 
@@ -2205,16 +2149,14 @@ func TestHandleOutput_TaskStartedLocalBashUpsertsShellNoChild(t *testing.T) {
 	assert.Equal(t, bgtask.KindShell, row.Kind, "local_bash maps to a Shell-kind row")
 	assert.Equal(t, bgtask.StatusRunning, row.Status)
 	assert.Equal(t, "long build", row.Title)
-	// Claude identifies a background shell by its COMMAND (verified against 2.1.220:
-	// task_started ships description="sleep 2 && echo BG-MARKER"), so the command
-	// is already the title. Copying it into Description too rendered the row's
-	// secondary line as a verbatim echo of its own title.
+	// Claude Code 2.1.220 reports a background shell command as its task_started description, such as "sleep 2 && echo BG-MARKER".
+	// The command already supplies the title.
+	// Copying it to Description also repeated that title in the row's secondary line.
 	assert.Empty(t, row.Description, "description must not echo the title")
-	// NOT a command, although this row IS a shell. BashTool sends
-	// `description || command`, so the title is the model's prose whenever it
-	// wrote any and the raw command when it did not -- and task_started forwards
-	// only that one resolved string, so nothing on the wire says which. Claiming
-	// "command" here would set prose in the monospace face.
+	// The shell kind alone does not prove that this title is a command.
+	// BashTool selects description || command, so a model description takes precedence over the raw command.
+	// task_started forwards only that selected string and supplies no discriminator.
+	// Marking it as a command would incorrectly display model prose in monospace.
 	assert.False(t, row.TitleIsCommand, "Claude cannot tell its shell title from prose")
 	// No child transcript pre-created for a shell.
 	assert.Equal(t, "", row.ChildAgentID, "local_bash must not EnsureChildAgent")
@@ -2291,7 +2233,7 @@ func TestHandleOutput_TaskNotificationClosesRegistryEntry(t *testing.T) {
 		wireStatus string
 		wantStatus bgtask.Status
 	}{
-		{"completed", "completed", bgtask.StatusCompleted},
+		{"completed", "completed", bgtask.StatusSucceeded},
 		{"failed", "failed", bgtask.StatusFailed},
 		{"stopped", "stopped", bgtask.StatusStopped},
 	}
@@ -2318,10 +2260,9 @@ func TestHandleOutput_TaskNotificationClosesRegistryEntry(t *testing.T) {
 	}
 }
 
-// TestHandleOutput_TaskNotificationUnknownStatusLeavesRowRunning verifies that a
-// task_notification carrying a status the map does not recognize does NOT
-// give a final status to the row. An unrecognized status must not close a running task
-// (the zero-value StatusPending would otherwise write an active+ended row).
+// TestHandleOutput_TaskNotificationUnknownStatusLeavesRowRunning verifies that an unknown task_notification status leaves the task open.
+// Reject an unknown mapping rather than treating its zero value as a chosen outcome.
+// StatusUnspecified is zero; StatusPending is a separate explicit status.
 func TestHandleOutput_TaskNotificationUnknownStatusLeavesRowRunning(t *testing.T) {
 	t.Parallel()
 
@@ -2342,9 +2283,8 @@ func TestHandleOutput_TaskNotificationUnknownStatusLeavesRowRunning(t *testing.T
 	assert.True(t, tasks[0].EndedAt.IsZero(), "unknown status must not stamp ended_at")
 }
 
-// TestHandleOutput_DuplicateTaskStartedIsIdempotent verifies that replaying the
-// same task_started line leaves exactly one registry row (the upsert is keyed by
-// row_key, so the second call merges into the first).
+// TestHandleOutput_DuplicateTaskStartedIsIdempotent verifies that replaying task_started leaves exactly one registry row.
+// The shared row_key makes the second upsert merge into the first.
 func TestHandleOutput_DuplicateTaskStartedIsIdempotent(t *testing.T) {
 	t.Parallel()
 
@@ -2362,10 +2302,8 @@ func TestHandleOutput_DuplicateTaskStartedIsIdempotent(t *testing.T) {
 	assert.Equal(t, "once is enough", tasks[0].Title)
 }
 
-// TestHandleOutput_SubagentAssistantRoutesToChildTranscript verifies that after
-// a task_started registers the spawn tool_use id, a forwarded assistant envelope
-// carrying parent_tool_use_id routes into the CHILD transcript and never touches
-// the parent transcript.
+// TestHandleOutput_SubagentAssistantRoutesToChildTranscript first registers the spawning tool_use ID through task_started.
+// A forwarded assistant envelope with parent_tool_use_id then enters only the child transcript and preserves the parent transcript.
 func TestHandleOutput_SubagentAssistantRoutesToChildTranscript(t *testing.T) {
 	t.Parallel()
 
@@ -2403,10 +2341,8 @@ func TestHandleOutput_SubagentAssistantRoutesToChildTranscript(t *testing.T) {
 	assert.Equal(t, "Read", msgs[0].SpanType)
 }
 
-// TestHandleOutput_SubagentResultRoutesAsChildTurnEnd verifies that a forwarded
-// subagent result message (parent_tool_use_id set) routes into the child
-// transcript as a PersistTurnEnd divider (not a regular PersistMessage) and
-// closes the registry row.
+// TestHandleOutput_SubagentResultRoutesAsChildTurnEnd covers a forwarded child result with parent_tool_use_id.
+// Persist its turn-end divider through PersistTurnEnd instead of an ordinary PersistMessage, and close its registry row.
 func TestHandleOutput_SubagentResultRoutesAsChildTurnEnd(t *testing.T) {
 	t.Parallel()
 
@@ -2433,15 +2369,17 @@ func TestHandleOutput_SubagentResultRoutesAsChildTurnEnd(t *testing.T) {
 	require.Len(t, msgs, 1)
 	assert.True(t, msgs[0].TurnEnd, "forwarded result routes through PersistTurnEnd into the child transcript")
 
-	// The registry row is closed (Completed for a non-error result).
+	// The registry row closes as Succeeded for a result without an error.
 	tasks := sink.BackgroundTasks()
 	require.Len(t, tasks, 1)
-	assert.Equal(t, bgtask.StatusCompleted, tasks[0].Status, "subagent result closes the registry row")
+	assert.Equal(t, bgtask.StatusSucceeded, tasks[0].Status, "subagent result closes the registry row")
 }
 
-// claudeSpanForEnvelope is the one place both transcripts resolve which span a
-// Claude envelope belongs to. An envelope with no tool block belongs to none --
-// plain assistant text, a result, and an unknown type all persist unattached.
+// claudeSpanForEnvelope resolves envelope spans for both transcripts.
+// An envelope without a tool block attaches to no span, including these cases:
+//   - Plain assistant text.
+//   - A result.
+//   - An unknown type.
 func TestClaudeSpanForEnvelope(t *testing.T) {
 	t.Parallel()
 
@@ -2514,9 +2452,8 @@ func TestClaudeSpanForEnvelope(t *testing.T) {
 	})
 }
 
-// `/clear` and the plan exit both start a new conversation and keep the session.
-// LeapMux states that boundary with the neutral `context_cleared` notice every
-// other provider writes, so one transcript rule draws it.
+// /clear and plan exit start a new conversation while retaining the session.
+// LeapMux reports that boundary through the shared context_cleared notice, so the same transcript rule renders it for every provider.
 func TestHandleOutput_ConversationResetPersistsContextCleared(t *testing.T) {
 	t.Parallel()
 

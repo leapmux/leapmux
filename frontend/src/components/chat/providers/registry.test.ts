@@ -167,6 +167,12 @@ describe('provider registration', () => {
 // The Worker keeps its last frame and records the outcome in the completion column.
 // Every provider uses the same completion rule.
 describe('retainedOutcome', () => {
+  it('keeps a final row without inventing an outcome for finished completion', () => {
+    const completion = MessageCompletion.FINISHED
+    expect(retainedRowIsFinal(completion)).toBe(true)
+    expect(retainedOutcome(completion)).toBeNull()
+  })
+
   it.each([
     [MessageCompletion.COMPLETE, 'succeeded'],
     [MessageCompletion.INTERRUPTED, 'interrupted'],
@@ -183,7 +189,7 @@ describe('retainedOutcome', () => {
   })
 
   // Both helpers read the same completion column.
-  it('agrees with retainedRowIsFinal on every completion', () => {
+  it('derives finality for known outcomes and absent metadata', () => {
     for (const completion of [undefined, MessageCompletion.UNSPECIFIED, MessageCompletion.COMPLETE, MessageCompletion.INTERRUPTED, MessageCompletion.ERROR]) {
       expect(retainedRowIsFinal(completion)).toBe(retainedOutcome(completion) !== null)
     }

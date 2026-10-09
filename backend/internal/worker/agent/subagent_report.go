@@ -16,6 +16,7 @@ type SubagentReport struct {
 
 // SubagentReportWrite identifies one report independently from its content.
 // ReportID is stable across protocol replays.
+// Each accepted identity keeps its exact bytes. A whitespace-only identity is invalid.
 type SubagentReportWrite struct {
 	ReportID string
 	Report   SubagentReport
@@ -29,8 +30,7 @@ type ChildSubagentReportWrite struct {
 
 // NotificationPayload returns the normalized LeapMux notification envelope.
 func (w SubagentReportWrite) NotificationPayload() (map[string]any, error) {
-	w.ReportID = strings.TrimSpace(w.ReportID)
-	if w.ReportID == "" {
+	if strings.TrimSpace(w.ReportID) == "" {
 		return nil, errors.New("subagent report has no identity")
 	}
 	if strings.TrimSpace(w.Report.Text) == "" {

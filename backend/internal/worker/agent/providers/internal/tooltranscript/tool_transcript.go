@@ -1,10 +1,12 @@
 package tooltranscript
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -13,75 +15,36 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
-// Source supplies the provider half of a tool transcript.
+// Source supplies the provider data that a tool transcript needs.
+// sourceMu serializes these operations:
+//   - Preparation.
+//   - Observation.
+//   - Reset.
+//   - Child creation.
 //
-// The transcript owns what every provider shares: the pending tool calls, the session
-// key, and the child transcripts. The source owns what one provider needs to build a
-// supplement, and it holds that state in its own FIELDS.
-//
-// A source embeds SourceDefaults and then implements only the methods its
-// provider needs. Four methods stay outside that embedded set, so the compiler asks
-// every source for them: ProviderName, Locate, ToolCallID and ReadSupplements. A
-// source that supplied none of them would recover nothing.
-//
-// The transcript calls every method under its own mutex, with ONE exception that
-// ReadSupplements states. See the serialization rule at Transcript.
+// passMu serializes native reads. ProviderName returns a stable label.
 type Source interface {
 	// ProviderName identifies the provider in a log line.
 	ProviderName() string
-
-	// ToolCallID reports the tool call one message closes, or "" for a message that
-	// closes none.
+	// ToolCallID identifies the tool call that this message closes. Empty means no call.
 	ToolCallID(original []byte) string
-
-	// Locate states where the provider keeps the records of one session. The
-	// transcript passes the session ID the provider reported, which a source that
-	// tracks its own session identity ignores.
+	// Locate returns the native record location for the supplied session.
 	Locate(sessionID string) Location
-
-	// ReadSupplements reads the provider's stored records and builds the supplement of
-	// every pending tool call it can answer. path is the location's path, and final
-	// states whether another pass can still recover what this one misses.
-	//
-	// THIS IS THE ONE METHOD THE TRANSCRIPT CALLS WITH NO LOCK HELD. It runs on the
-	// supplement worker, so a source whose fields it touches must guard those fields
-	// itself.
+	// ReadSupplements reads data for the exact pending rows without the state mutex.
 	ReadSupplements(ctx context.Context, path string, pending map[string]agent.MessageContent, final bool) (map[string][]byte, error)
-
-	// InitialSupplement builds what the provider can supply for a message that the
-	// transcript is about to persist, before the row exists. A source with nothing
-	// to add returns (nil, nil), which the noop below already does.
-	//
-	// There is deliberately NO companion predicate. One existed, and it defaulted to
-	// false on the noop, so a source that implemented this method and forgot the
-	// predicate was skipped in silence -- a mistake no compiler and no test could
-	// catch, because neither asked for the pair to agree. What it bought was one
-	// context.WithTimeout per agent message for a source with no supplement, in a
-	// function that already runs a store write.
+	// InitialSupplement prepares data before the original row commits.
 	InitialSupplement(ctx context.Context, path string, original []byte, span agent.SpanInfo) ([]byte, error)
-
-	// ResetRecords drops what the source cached for a session that ended.
+	// ResetRecords clears the native record cache.
 	ResetRecords()
-
-	// ObserveMessage takes what a message states about a tool call that a later
-	// record read needs.
+	// ObserveMessage retains data that a later native read needs.
 	ObserveMessage(content agent.MessageContent, span agent.SpanInfo)
-
-	// FinishTurn drops what the source holds for the turn that ended.
+	// FinishTurn clears source data after an accepted final boundary.
 	FinishTurn()
-
-	// NewChild builds the source of a child transcript. A provider whose subagents
-	// need no transcript of their own returns nil, and the wrapped sink then serves
-	// the child directly.
+	// NewChild constructs a child source. Nil leaves the exact child undecorated.
 	NewChild(childAgentID string, services agent.ProviderServices) Source
 }
 
-// SourceDefaults supplies the default of every OPTIONAL method of
-// Source.
-//
-// A source embeds it, so the transcript calls each method directly and needs no nil
-// check. Eight function fields held this before, five of which the transcript tested
-// for nil at each call.
+// SourceDefaults implements each optional Source method with no additional data or operation.
 type SourceDefaults struct{}
 
 func (SourceDefaults) InitialSupplement(context.Context, string, []byte, agent.SpanInfo) ([]byte, error) {
@@ -96,85 +59,130 @@ func (SourceDefaults) FinishTurn() {}
 
 func (SourceDefaults) NewChild(_ string, _ agent.ProviderServices) Source { return nil }
 
-// Transcript recovers fields that a provider omits from tool notifications.
-// Results reach the transcript immediately. Later transcript boundaries can enrich them.
+// Transcript recovers fields that native tool notifications omit.
+// It retains exact committed rows and observed supplemental bytes.
+// The output reader never waits for an interim native read.
 //
-// # Serialization
-//
-// Two goroutines drive one transcript.
-//
-//   - The READER goroutine drains the provider's stdout. It calls UpdateSessionID,
-//     PersistMessage and PersistTurnEnd, in the order the provider sent them.
-//   - The SUPPLEMENT WORKER runs each interim enrichment pass. That pass reads a store
-//     the provider owns and can hold busy, and the reader goroutine must never wait
-//     for it: the wait becomes back-pressure on the provider's pipe.
-//
-// mu guards the fields of this struct AND every call into source, with one exception:
-// source.ReadSupplements runs with NO lock held, because it is the slow call that the
-// worker exists to move off the reader goroutine. A source whose fields
-// ReadSupplements touches must therefore guard those fields itself.
-//
-// passMu serializes one enrichment pass against another. The worker holds it for an
-// interim pass and the turn end holds it for the final pass, so the two never read the
-// provider's store at the same time.
-//
-// The lock order is passMu, then mu. No path takes mu and then passMu.
+// mu protects transcript state. sourceMu serializes source preparation and mutation.
+// passMu serializes native reads only.
+// No delegate or watcher call holds a wrapper mutex.
+// Preparation takes sourceMu before mu. Native reads hold neither mutex.
 type Transcript struct {
 	agent.ProviderServices
 	ctx    context.Context
 	source Source
 
-	passMu sync.Mutex
+	passMu   sync.Mutex
+	sourceMu sync.Mutex
 
 	mu sync.Mutex
-	// work wakes the supplement worker. idle reports that no interim pass waits or
-	// runs. Both wait on mu.
+	// work wakes the worker. idle reports that all interim work finished. Both use mu.
 	work     *sync.Cond
 	idle     *sync.Cond
 	children map[string]*Transcript
-	// retired holds a child transcript that CleanupChildAgent detached and that still
-	// owes a final pass. finishPending drains it beside the live children.
-	retired    []*Transcript
-	sessionKey string
-	sessionID  string
-	pending    map[string]pendingToolRow
-	// nextPendingEpoch stamps each entry that pending takes. It never restarts, not
-	// even for a new session, so no two entries of one transcript share a value.
+	// retired retains detached children until a successful final boundary completes their enrichment.
+	retired      []*Transcript
+	sessionKey   string
+	sessionID    string
+	pending      map[string]pendingToolRow
+	observations []*toolObservation
+	sourceState  *toolSourceState
+	// nextPendingEpoch never resets, so replacement entries cannot share an epoch.
 	nextPendingEpoch uint64
-	// stopWatch cancels the context watch that ends the worker. closeSupplementWorker
-	// calls it, so a child transcript that the caller cleaned up leaves nothing
-	// attached to the agent's context.
+	// stopWatch cancels the context callback when the worker closes.
 	stopWatch func() bool
-	// queued reports that a message asked for a pass the worker has not started.
-	queued bool
+	// queued retains the exact pending entries of the next interim pass.
+	queued *toolSupplementRequest
 	// running reports that the worker runs a pass now.
 	running bool
-	// started reports that the worker goroutine exists. The first pass starts it, so
-	// a transcript that never enriches anything costs no goroutine.
+	// started reports whether the lazily created worker exists.
 	started bool
-	// closed stops the worker for good. A closed transcript still enriches at the turn
-	// end, because the final pass runs on the caller's goroutine.
+	// closed prevents more interim work. A final boundary can still read native records.
 	closed bool
 }
 
-// pendingToolRow is one persisted tool result that still waits for a supplement.
-//
-// revision is the row's supplemental revision as THIS transcript last left it. The
-// store pass sends it back with its own write, so a supplement that EnrichToolSpan
-// wrote out of band does not make the pass stale -- EnrichMessage refuses a write
-// whose PreviousRevision no longer matches the row, and a refused pass would drop
-// the store output for good, because finishPending clears what is left at the turn
-// end.
-//
-// epoch identifies THIS entry, and no replacement ever repeats one. Every writer
-// releases mu for its store round trip and then compares what it read against what
-// pending holds. The revision alone cannot make that comparison: a second row that
-// closes the same tool call enters at revision 0, which is the revision the first
-// one started at, so the compare would take the replacement for the entry it read.
+// pendingToolRow identifies one committed result row and its cached supplemental revision.
+// Its write receipt supplies the exact sequence before any outer callback can replace the pending entry.
+// epoch identifies this pending entry. A replacement never repeats it.
+// Accepted enrichment receipts advance the cached revision before a synchronous observer returns.
+// Distinct attempts use the stored compare-and-swap. Identical in-flight attempts return without waiting.
 type pendingToolRow struct {
-	content  agent.MessageContent
-	revision int64
+	content          agent.MessageContent
+	revision         int64
+	epoch            uint64
+	sourceGeneration *toolSourceGeneration
+	attempts         []*toolEnrichmentAttempt
+}
+
+type toolEnrichmentAttempt struct {
+	receipt          *agent.MessageEnrichmentReceipt
+	previousRevision int64
+	supplemental     []byte
+	inFlight         bool
+}
+
+// toolObservation keeps a once-observed supplement until its exact row stores it.
+type toolObservation struct {
+	spanID   string
+	sequence int64
 	epoch    uint64
+	content  agent.MessageContent
+	extra    []byte
+	attempt  *toolEnrichmentAttempt
+	inFlight bool
+}
+
+type toolSourceGeneration struct {
+	owner agent.TranscriptOwner
+}
+
+type toolSourceState struct {
+	*toolSourceGeneration
+	location Location
+}
+
+// toolSupplementRequest freezes the source and pending epochs before the worker starts.
+type toolSupplementRequest struct {
+	state   *toolSourceState
+	pending map[string]pendingToolRow
+}
+
+type toolBoundary struct {
+	state            *toolSourceState
+	pending          map[string]pendingToolRow
+	children         map[string]*Transcript
+	retired          []*Transcript
+	preparedChildren map[*Transcript]toolBoundary
+}
+
+func (row pendingToolRow) snapshot() pendingToolRow {
+	row = row.effective()
+	row.content = row.content.Clone()
+	row.attempts = nil
+	return row
+}
+
+func (row pendingToolRow) effective() pendingToolRow {
+	for _, attempt := range row.attempts {
+		previous, revision, supplemental, committed := attempt.receipt.CommittedEnrichment()
+		if committed && previous == row.revision {
+			row.revision = revision
+			row.content.Supplemental = supplemental
+		}
+	}
+	return row
+}
+
+func (row pendingToolRow) compact() pendingToolRow {
+	row = row.effective()
+	retained := make([]*toolEnrichmentAttempt, 0, len(row.attempts))
+	for _, attempt := range row.attempts {
+		if attempt.inFlight {
+			retained = append(retained, attempt)
+		}
+	}
+	row.attempts = retained
+	return row
 }
 
 // matches reports whether other is the same entry at the same revision.
@@ -182,41 +190,22 @@ func (r pendingToolRow) matches(other pendingToolRow) bool {
 	return r.epoch == other.epoch && r.revision == other.revision
 }
 
-// Location states where one provider keeps the records of one session.
-//
-// ready is what the guards test, not path. A provider whose records need no path (Pi
-// reads the message bytes alone) reports ready with an empty path, and it no longer
-// has to invent one to pass a guard that tested the path.
+// Location supplies the native record location. Ready admits a read, even when Path is empty.
 type Location struct {
 	SessionKey string
 	Path       string
 	Ready      bool
 }
 
-// toolSupplementReadBudget caps the provider reads of one INTERIM transcript pass.
-//
-// The read waits on a store the provider owns and can hold busy. An interim pass is a
-// retry: the next pass and the turn end read again, so a pass that runs out of time
-// costs nothing except the wait. The supplement worker pays that wait, and the
-// goroutine that drains the provider's stdout no longer pays it.
+// toolSupplementReadBudget sets the maximum duration of an interim native read.
+// A later pass can recover an unfinished interim result.
 const toolSupplementReadBudget = 100 * time.Millisecond
 
-// toolSupplementFinalReadBudget caps the provider reads of the FINAL transcript pass.
-//
-// The final pass is the last chance. The turn end clears what is left, so a record
-// that this pass does not read is provider output that the reader never sees. It
-// therefore gets ten times the interim budget, and it ignores a cancelled agent
-// context for the same reason.
-//
-// The turn end runs this pass on the goroutine that drains the provider's stdout, so
-// this budget is what that goroutine waits at a turn boundary. Each interim pass moved
-// to the supplement worker, and a child that CleanupChildAgent retires waits for the
-// same turn end, so a turn boundary is the only point where a provider read stops the
-// reader.
+// toolSupplementFinalReadBudget sets the maximum duration of a final native read.
+// A final read ignores agent-context cancellation, so process exit does not discard stored native results.
 const toolSupplementFinalReadBudget = time.Second
 
-// New wraps services in a transcript. source supplies the provider half,
-// and ctx is the agent's context, which ends the supplement worker.
+// New decorates the exact provider services with a source. The agent context controls the interim worker lifetime.
 func New(ctx context.Context, services agent.ProviderServices, source Source) *Transcript {
 	s := &Transcript{ProviderServices: services, ctx: ctx, source: source}
 	s.work = sync.NewCond(&s.mu)
@@ -225,59 +214,122 @@ func New(ctx context.Context, services agent.ProviderServices, source Source) *T
 }
 
 func (s *Transcript) Reset() {
+	s.sourceMu.Lock()
 	s.mu.Lock()
-	s.sessionKey = ""
-	s.sessionID = ""
-	s.pending = nil
 	children := make([]*Transcript, 0, len(s.children)+len(s.retired))
 	for _, child := range s.children {
 		children = append(children, child)
 	}
 	children = append(children, s.retired...)
+	s.sessionKey = ""
+	s.sessionID = ""
+	s.pending = nil
+	s.queued = nil
 	s.children = nil
 	s.retired = nil
-	s.source.ResetRecords()
+	s.sourceState = nil
 	s.mu.Unlock()
-	retireToolTranscripts(children)
+	s.source.ResetRecords()
+	s.sourceMu.Unlock()
+	s.retainRetired(retireToolTranscripts(children))
 }
 
-// adoptLocation preserves replay results until the first session ID arrives.
-// A different session clears pending results. A new path within that session keeps them.
-// It reports the location's path and whether that location can be read.
-//
-// A session change orphans every child transcript of the old session, and this returns
-// them rather than dropping them. The caller holds mu, which finishPending needs, so
-// the caller must pass them to retireToolTranscripts AFTER it releases mu. Dropping
-// them here lost each child's last supplement and stranded its worker goroutine and
-// its context watch for the life of the agent.
-//
-// The caller holds mu.
+// adoptLocation reads the provider location under sourceMu.
+// It preserves pending entries until a nonempty session key changes.
 func (s *Transcript) adoptLocation() (string, bool, []*Transcript) {
+	s.mu.Lock()
+	sessionID := s.sessionID
+	s.mu.Unlock()
+	location := s.source.Locate(sessionID)
+	s.mu.Lock()
 	var orphans []*Transcript
-	location := s.source.Locate(s.sessionID)
-	if location.SessionKey != s.sessionKey {
-		if s.sessionKey != "" {
-			s.pending = nil
-			for _, child := range s.children {
-				orphans = append(orphans, child)
-			}
-			orphans = append(orphans, s.retired...)
-			s.children = nil
-			s.retired = nil
-			s.source.ResetRecords()
+	reset := location.SessionKey != s.sessionKey && s.sessionKey != ""
+	if reset {
+		s.pending = nil
+		for _, child := range s.children {
+			orphans = append(orphans, child)
 		}
-		s.sessionKey = location.SessionKey
+		orphans = append(orphans, s.retired...)
+		s.children = nil
+		s.retired = nil
 	}
+	s.sessionKey = location.SessionKey
 	if s.pending == nil {
 		s.pending = make(map[string]pendingToolRow)
+	}
+	if s.sourceState != nil && s.sourceState.location != location {
+		s.sourceState = &toolSourceState{toolSourceGeneration: s.sourceState.toolSourceGeneration, location: location}
+	}
+	s.mu.Unlock()
+	if reset {
+		s.source.ResetRecords()
 	}
 	return location.Path, location.Ready, orphans
 }
 
-// supplementContext caps one pass of provider reads.
-//
-// A FINAL pass ignores a cancelled agent context. The provider already stored those
-// results, so a process that stops must not discard them.
+// adoptSource keeps the first current owner of one source generation.
+// The caller holds sourceMu.
+func (s *Transcript) adoptSource(content agent.MessageContent) (*toolSourceState, []*Transcript) {
+	if content.Publication == nil || content.Publication.Owner() == nil || !content.Publication.Owner().IsCurrent() {
+		return nil, nil
+	}
+	s.mu.Lock()
+	previous := s.sourceState
+	s.mu.Unlock()
+	keep := previous != nil && previous.owner.IsCurrent()
+	var orphans []*Transcript
+	if !keep {
+		s.mu.Lock()
+		for _, child := range s.children {
+			orphans = append(orphans, child)
+		}
+		orphans = append(orphans, s.retired...)
+		s.children = nil
+		s.retired = nil
+		s.sessionID = content.AgentSessionID
+		s.sourceState = &toolSourceState{toolSourceGeneration: &toolSourceGeneration{owner: content.Publication.Owner()}}
+		s.mu.Unlock()
+		if previous != nil {
+			s.source.ResetRecords()
+		}
+	}
+	_, _, locationOrphans := s.adoptLocation()
+	orphans = append(orphans, locationOrphans...)
+	s.mu.Lock()
+	state := s.sourceState
+	s.mu.Unlock()
+	return state, orphans
+}
+
+func (s *Transcript) CaptureMessage(content agent.MessageContent, span agent.SpanInfo) agent.MessageContent {
+	if content.Publication != nil {
+		return content.Clone()
+	}
+	content = s.ProviderServices.CaptureMessage(content, span)
+	s.sourceMu.Lock()
+	state, orphans := s.adoptSource(content)
+	if state != nil && state.location.Ready {
+		ctx, cancel := s.supplementContext(false)
+		extra, err := s.source.InitialSupplement(ctx, state.location.Path, append([]byte(nil), content.Original...), span)
+		cancel()
+		if err != nil {
+			slog.Warn("Read initial tool supplement", "provider", s.source.ProviderName(), "error", err)
+		}
+		if len(extra) > 0 {
+			combined, err := MergeSupplements(content.Supplemental, extra)
+			if err != nil {
+				slog.Warn("Merge initial tool supplement", "provider", s.source.ProviderName(), "error", err)
+			} else {
+				content.Supplemental = combined
+			}
+		}
+	}
+	s.sourceMu.Unlock()
+	s.retainRetired(retireToolTranscripts(orphans))
+	return content
+}
+
+// supplementContext selects the native read deadline. Final reads ignore agent-context cancellation.
 func (s *Transcript) supplementContext(final bool) (context.Context, context.CancelFunc) {
 	if final {
 		return context.WithTimeout(context.WithoutCancel(s.ctx), toolSupplementFinalReadBudget)
@@ -292,18 +344,16 @@ func (s *Transcript) startSupplementWorkerLocked() {
 		return
 	}
 	s.started = true
-	// The worker waits on a condition variable, so the agent's context ending is what
-	// wakes it to exit.
+	// Context cancellation wakes the worker through its close operation.
 	s.stopWatch = context.AfterFunc(s.ctx, s.closeSupplementWorker)
 	go s.runSupplementWorker()
 }
 
-// closeSupplementWorker ends the worker. The agent's context ending calls it, and so
-// does the cleanup of the child that the transcript serves.
+// closeSupplementWorker permanently stops interim work and releases the context callback.
 func (s *Transcript) closeSupplementWorker() {
 	s.mu.Lock()
 	s.closed = true
-	s.queued = false
+	s.queued = nil
 	stop := s.stopWatch
 	s.stopWatch = nil
 	s.work.Broadcast()
@@ -317,17 +367,18 @@ func (s *Transcript) closeSupplementWorker() {
 func (s *Transcript) runSupplementWorker() {
 	s.mu.Lock()
 	for {
-		for !s.queued && !s.closed {
+		for s.queued == nil && !s.closed {
 			s.work.Wait()
 		}
 		if s.closed {
 			s.mu.Unlock()
 			return
 		}
-		s.queued = false
+		request := s.queued
+		s.queued = nil
 		s.running = true
 		s.mu.Unlock()
-		s.runSupplementPass(false)
+		s.runSupplementRequest(request, false)
 		s.mu.Lock()
 		s.running = false
 		s.idle.Broadcast()
@@ -336,14 +387,14 @@ func (s *Transcript) runSupplementWorker() {
 
 // requestSupplementPass wakes the supplement worker. The caller holds mu.
 //
-// A pass that already waits absorbs this one. The worker reads whatever is pending
-// when it starts, so one pass covers every message that arrived before it.
+// A later request replaces a queued request with its exact newer snapshot.
+// A row that enters pending after that request needs its own later pass.
 func (s *Transcript) requestSupplementPass() {
 	if s.closed {
 		return
 	}
 	s.startSupplementWorkerLocked()
-	s.queued = true
+	s.queued = s.snapshotSupplementRequestLocked()
 	s.work.Signal()
 }
 
@@ -353,26 +404,20 @@ func (s *Transcript) WaitForSupplementsForTest() {
 	s.waitForSupplements()
 }
 
-// waitForSupplements blocks until no interim pass waits or runs.
-//
-// The turn end calls it, so the final pass never overlaps an interim one. A test calls
-// it to observe the result of a pass that the test caused.
+// waitForSupplements waits for complete interim work for external test observation.
+// A final boundary never waits here because an enrichment observer can call that boundary itself.
 func (s *Transcript) waitForSupplements() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for s.queued || s.running {
+	for s.queued != nil || s.running {
 		s.idle.Wait()
 	}
 }
 
-// SourceForTest returns the provider source that the transcript reads, so a
-// test can reach what that source owns: a provider's database handle, for one.
-// The source is set at construction and never changes, so the read takes no lock.
+// SourceForTest returns the immutable provider source, including its test-only store controls.
 func (s *Transcript) SourceForTest() Source { return s.source }
 
-// PendingSpanIDsForTest reports the tool calls that the transcript still waits
-// for, sorted. It joins the supplement worker first, so the read sees the finished
-// state of every pass.
+// PendingSpanIDsForTest joins interim work and returns the remaining span IDs in order.
 func (s *Transcript) PendingSpanIDsForTest() []string {
 	s.waitForSupplements()
 	s.mu.Lock()
@@ -387,146 +432,221 @@ func (s *Transcript) PendingSpanIDsForTest() []string {
 
 func (s *Transcript) UpdateSessionID(sessionID string) {
 	s.ProviderServices.UpdateSessionID(sessionID)
-	// Registered before the unlock, so LIFO runs it after the unlock:
-	// retireToolTranscripts takes each orphan's own mu through finishPending.
-	var orphans []*Transcript
-	defer func() { retireToolTranscripts(orphans) }()
+	content := s.ProviderServices.CaptureMessage(agent.MessageContent{}, agent.SpanInfo{})
+	s.sourceMu.Lock()
+	state, orphans := s.adoptSource(content)
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.sessionID = sessionID
-	_, ready, orphans := s.adoptLocation()
-	if ready && len(s.pending) > 0 {
+	if state != nil && state.location.Ready && len(s.pending) > 0 {
 		s.requestSupplementPass()
 	}
+	s.mu.Unlock()
+	s.sourceMu.Unlock()
+	s.retainRetired(retireToolTranscripts(orphans))
 }
 
 func (s *Transcript) PersistMessage(source leapmuxv1.MessageSource, content agent.MessageContent, span agent.SpanInfo) error {
 	if source != leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT {
 		return s.ProviderServices.PersistMessage(source, content, span)
 	}
-	// Registered before the unlock, so LIFO runs it after the unlock:
-	// retireToolTranscripts takes each orphan's own mu through finishPending.
-	var orphans []*Transcript
-	defer func() { retireToolTranscripts(orphans) }()
+	if content.WriteReceipt == nil {
+		content.WriteReceipt = agent.NewTranscriptWriteReceipt()
+	}
+	content = s.CaptureMessage(content, span)
+	s.sourceMu.Lock()
+	state, orphans := s.adoptSource(content)
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	path, ready, orphans := s.adoptLocation()
-	if ready && len(s.pending) > 0 {
-		// The supplement worker reads the provider's store. This goroutine drains the
-		// provider's stdout, so it must not wait for that read.
+	if state != nil && state.location.Ready && len(s.pending) > 0 {
 		s.requestSupplementPass()
 	}
-	// The initial supplement stays on THIS goroutine, because it enriches the message
-	// that this call is about to persist. The worker cannot supply it, because the row
-	// does not exist yet.
-	if ready {
-		ctx, cancel := s.supplementContext(false)
-		extra, err := s.source.InitialSupplement(ctx, path, content.Original, span)
-		cancel()
-		if err != nil {
-			// A supplement that never arrives is output the reader does not see, so
-			// this is a failure and not a trace.
-			slog.Warn("Read initial tool supplement", "provider", s.source.ProviderName(), "error", err)
-		}
-		if len(extra) > 0 {
-			combined, err := MergeSupplements(content.Supplemental, extra)
-			if err != nil {
-				slog.Warn("Merge initial tool supplement", "provider", s.source.ProviderName(), "error", err)
-			} else {
-				content.Supplemental = combined
-			}
-		}
-	}
+	s.mu.Unlock()
 	toolCallID := ""
-	if span.Closing && span.SpanID != "" {
+	if state != nil && span.Closing && span.SpanID != "" {
 		toolCallID = s.source.ToolCallID(content.Original)
 	}
+	s.sourceMu.Unlock()
+	s.retainRetired(retireToolTranscripts(orphans))
 	if err := s.ProviderServices.PersistMessage(source, content, span); err != nil {
 		return err
 	}
-	s.source.ObserveMessage(content, span)
-	if toolCallID != "" && toolCallID == span.SpanID {
-		saved := content
-		saved.Original = append([]byte(nil), content.Original...)
-		saved.Supplemental = append([]byte(nil), content.Supplemental...)
-		// A row this call just persisted carries revision 0: PersistMessage writes the
-		// supplement WITH the row, and only EnrichMessage increments the revision.
-		s.nextPendingEpoch++
-		s.pending[toolCallID] = pendingToolRow{content: saved, epoch: s.nextPendingEpoch}
+	if state == nil || !content.WriteReceipt.ClaimSourceObservation() {
+		return nil
 	}
+	s.sourceMu.Lock()
+	s.mu.Lock()
+	same := s.sourceState == state
+	s.mu.Unlock()
+	if same && state.owner.IsCurrent() {
+		sequence, committed := content.WriteReceipt.StoredMessageSequence()
+		s.mu.Lock()
+		newer := false
+		if previous, exists := s.pending[toolCallID]; exists && toolCallID != "" {
+			previousSequence, known := previous.content.WriteReceipt.StoredMessageSequence()
+			newer = committed && known && previousSequence > sequence
+		}
+		s.mu.Unlock()
+		if newer {
+			s.sourceMu.Unlock()
+			return nil
+		}
+		s.source.ObserveMessage(content.Clone(), span)
+		if toolCallID != "" && toolCallID == span.SpanID {
+			s.mu.Lock()
+			s.nextPendingEpoch++
+			s.pending[toolCallID] = pendingToolRow{content: content.Clone(), epoch: s.nextPendingEpoch, sourceGeneration: state.toolSourceGeneration}
+			s.mu.Unlock()
+		}
+	}
+	s.sourceMu.Unlock()
 	return nil
 }
 
-func (s *Transcript) PersistTurnEnd(content agent.MessageContent, span agent.SpanInfo) error {
-	s.finishPending()
-	return s.ProviderServices.PersistTurnEnd(content, span)
-}
-
-func (s *Transcript) finishPending() {
-	// The final pass supersedes an interim pass that only waits: it reads the same
-	// entries with a longer budget. Drop that one, then join a pass that already runs.
-	//
-	// The reader goroutine is the only one that asks for a pass, and it is the
-	// goroutine that runs this function, so no pass can queue between the two steps.
+func (s *Transcript) prepareBoundary() (toolBoundary, error) {
+	if err := s.flushObservations(); err != nil {
+		return toolBoundary{}, err
+	}
 	s.mu.Lock()
-	s.queued = false
+	s.queued = nil
+	boundary := toolBoundary{state: s.sourceState, pending: make(map[string]pendingToolRow, len(s.pending)), children: make(map[string]*Transcript, len(s.children)), retired: append([]*Transcript(nil), s.retired...)}
+	for id, entry := range s.pending {
+		boundary.pending[id] = entry.snapshot()
+	}
+	for id, child := range s.children {
+		boundary.children[id] = child
+	}
 	s.mu.Unlock()
-	s.waitForSupplements()
 	s.runSupplementPass(true)
 	s.mu.Lock()
-	clear(s.pending)
-	s.source.FinishTurn()
-	children := make([]*Transcript, 0, len(s.children))
-	for _, child := range s.children {
-		children = append(children, child)
+	for id, original := range boundary.pending {
+		if current, exists := s.pending[id]; exists && current.epoch == original.epoch {
+			boundary.pending[id] = current.snapshot()
+		}
 	}
-	retired := s.retired
-	s.retired = nil
 	s.mu.Unlock()
-	for _, child := range children {
-		child.finishPending()
+	boundary.preparedChildren = make(map[*Transcript]toolBoundary, len(boundary.children)+len(boundary.retired))
+	for _, child := range boundary.children {
+		prepared, err := child.prepareBoundary()
+		if err != nil {
+			return toolBoundary{}, err
+		}
+		boundary.preparedChildren[child] = prepared
 	}
-	retireToolTranscripts(retired)
+	for _, child := range boundary.retired {
+		prepared, err := child.prepareBoundary()
+		if err != nil {
+			return toolBoundary{}, err
+		}
+		boundary.preparedChildren[child] = prepared
+	}
+	return boundary, nil
 }
 
-// retireToolTranscripts drains each transcript, then ends its worker.
-//
-// The order is the point, and it is the same order for each of the three paths that
-// drop a child: CleanupChildAgent, reset and adoptLocation. Dropping without the drain
-// loses every supplement the child still holds, and dropping without the close strands
-// the child's worker goroutine and the context watch that would have ended it, both for
-// the life of the agent.
-//
-// The caller must NOT hold mu, because finishPending takes it.
-func retireToolTranscripts(children []*Transcript) {
+func (s *Transcript) completeBoundary(boundary toolBoundary) {
+	s.sourceMu.Lock()
+	s.mu.Lock()
+	if s.sourceState != boundary.state {
+		s.mu.Unlock()
+		s.sourceMu.Unlock()
+		return
+	}
+	for id, expected := range boundary.pending {
+		if current, exists := s.pending[id]; exists && current.effective().matches(expected) {
+			delete(s.pending, id)
+		}
+	}
+	children := make([]*Transcript, 0, len(boundary.children))
+	for id, child := range boundary.children {
+		if s.children[id] == child {
+			children = append(children, child)
+		}
+	}
+	retired := make([]*Transcript, 0, len(boundary.retired))
+	for _, expected := range boundary.retired {
+		for index, current := range s.retired {
+			if current == expected {
+				retired = append(retired, current)
+				s.retired = append(s.retired[:index], s.retired[index+1:]...)
+				break
+			}
+		}
+	}
+	finished := len(s.pending) == 0
+	s.mu.Unlock()
+	if finished && (boundary.state == nil || boundary.state.owner.IsCurrent()) {
+		s.source.FinishTurn()
+	}
+	s.sourceMu.Unlock()
 	for _, child := range children {
-		child.finishPending()
+		child.completeBoundary(boundary.preparedChildren[child])
+	}
+	for _, child := range retired {
+		child.completeBoundary(boundary.preparedChildren[child])
 		child.closeSupplementWorker()
 	}
 }
 
-// CleanupChildAgent drains the child transcript, then drops it with the child.
-//
-// This wrapper is the only holder of that transcript, and nothing else prunes the map
-// within a session. Without the override the cleanup reached the wrapped sink alone, so
-// every later finishPending still walked the dead child and re-ran its whole turn-end
-// pass.
-//
-// It DRAINS before it drops, and that order is the point. Dropping alone loses every
-// supplement the child still holds: nothing calls PersistChildTurnEnd anywhere, so
-// the three paths here are the only end a child transcript reaches, and the row the
-// child was enriching keeps the bare content its provider first forwarded. A
-// subagent's LAST tool call is always the one at risk, because PersistMessage asks
-// for its pass before it adds the entry -- so the entry is never covered by a pass
-// already running, and closeSupplementWorker also clears one that is merely queued.
-//
-// The drain waits for the turn end rather than running here. This method runs on the
-// goroutine that drains the provider's stdout, and it runs each time ONE subagent
-// finishes, so a final pass here stops the whole tab's output for up to
-// toolSupplementFinalReadBudget per subagent -- which the doc on Source
-// forbids. The retired list moves that cost to the turn boundary, where finishPending
-// already pays it once for every live child. The child keeps its worker until then,
-// so its interim passes go on enriching in the meantime.
+func (s *Transcript) PersistTurnEnd(content agent.MessageContent, span agent.SpanInfo) error {
+	if content.WriteReceipt == nil {
+		content.WriteReceipt = agent.NewTranscriptWriteReceipt()
+	}
+	content = s.CaptureMessage(content, span)
+	var boundary toolBoundary
+	current := content.Publication != nil && content.Publication.Owner().IsCurrent()
+	if current {
+		var err error
+		boundary, err = s.prepareBoundary()
+		if err != nil {
+			return err
+		}
+	}
+	if err := s.ProviderServices.PersistTurnEnd(content, span); err != nil {
+		return err
+	}
+	if current && content.Publication.Owner().IsCurrent() && content.WriteReceipt.ClaimSourceObservation() {
+		s.completeBoundary(boundary)
+	}
+	return nil
+}
+
+func (s *Transcript) finishPending() error {
+	boundary, err := s.prepareBoundary()
+	if err != nil {
+		return err
+	}
+	s.completeBoundary(boundary)
+	return nil
+}
+
+// retireToolTranscripts attempts final enrichment before closing each worker.
+// It returns unresolved children for retention. The caller holds no wrapper mutex.
+func retireToolTranscripts(children []*Transcript) []*Transcript {
+	var unresolved []*Transcript
+	for _, child := range children {
+		if err := child.finishPending(); err != nil {
+			slog.Warn("Retain the child tool observations after final enrichment failed", "provider", child.source.ProviderName(), "error", err)
+			unresolved = append(unresolved, child)
+		}
+		child.closeSupplementWorker()
+	}
+	return unresolved
+}
+
+func (s *Transcript) retainRetired(children []*Transcript) {
+	if len(children) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, child := range children {
+		if !slices.Contains(s.retired, child) {
+			s.retired = append(s.retired, child)
+		}
+	}
+}
+
+// CleanupChildAgent detaches the child and retains it for the next final boundary.
+// Its interim worker stays available until that boundary finishes.
+// No native read delays the provider output reader during this cleanup.
+// A failed final enrichment retains the child for another boundary.
 func (s *Transcript) CleanupChildAgent(childAgentID string) {
 	s.mu.Lock()
 	if child := s.children[childAgentID]; child != nil {
@@ -549,26 +669,31 @@ func (s *Transcript) ChildSink(childAgentID string) agent.ProviderServices {
 	if delegate == nil {
 		return nil
 	}
+	s.sourceMu.Lock()
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if child = s.children[childAgentID]; child != nil {
+	child = s.children[childAgentID]
+	s.mu.Unlock()
+	if child != nil {
+		s.sourceMu.Unlock()
 		return child
 	}
 	source := s.source.NewChild(childAgentID, delegate)
 	if source == nil {
+		s.sourceMu.Unlock()
 		return delegate
 	}
 	child = New(s.ctx, delegate, source)
+	s.mu.Lock()
 	if s.children == nil {
 		s.children = make(map[string]*Transcript)
 	}
 	s.children[childAgentID] = child
+	s.mu.Unlock()
+	s.sourceMu.Unlock()
 	return child
 }
 
-// Only the AGENT-source child writes are overridden. See the ChildServices doc on
-// PersistChildMessage for why PersistChildPrompt and PersistChildUserMessage are
-// not, and what a future USER-source interception would have to change.
+// Agent-source child writes require this decorator. User-source child writes use the exact undecorated child route.
 func (s *Transcript) PersistChildMessage(childAgentID string, source leapmuxv1.MessageSource, content []byte, span agent.SpanInfo) error {
 	child := s.ChildSink(childAgentID)
 	if child == nil {
@@ -585,200 +710,306 @@ func (s *Transcript) PersistChildTurnEnd(childAgentID string, content agent.Mess
 	return child.PersistTurnEnd(content, span)
 }
 
-// runSupplementPass reads the provider's records once and enriches every stored row
-// that the read answered.
-//
-// It takes mu to copy the pending set and releases mu for the read. applySupplements
-// then takes mu for the bookkeeping of one record at a time. Neither the provider
-// read nor a store write runs under mu, so the reader goroutine waits for neither.
+// runSupplementPass prepares a current final-read snapshot. Interim workers use their exact queued snapshot.
 func (s *Transcript) runSupplementPass(final bool) {
-	s.passMu.Lock()
-	defer s.passMu.Unlock()
-	s.mu.Lock()
-	path, ready, orphans := s.adoptLocation()
-	protocol := make(map[string]agent.MessageContent, len(s.pending))
-	for id, entry := range s.pending {
-		protocol[id] = entry.content
+	s.runSupplementRequest(nil, final)
+}
+
+// snapshotSupplementRequestLocked keeps each row in its original source generation.
+// The caller holds mu. A stale generation remains pending until an accepted final boundary removes it.
+func (s *Transcript) snapshotSupplementRequestLocked() *toolSupplementRequest {
+	request := &toolSupplementRequest{state: s.sourceState, pending: make(map[string]pendingToolRow)}
+	if request.state == nil {
+		return request
 	}
+	for id, entry := range s.pending {
+		if entry.sourceGeneration == request.state.toolSourceGeneration {
+			request.pending[id] = entry.snapshot()
+		}
+	}
+	return request
+}
+
+func (s *Transcript) runSupplementRequest(request *toolSupplementRequest, final bool) {
+	if err := s.flushObservations(); err != nil {
+		slog.Warn("Retain the tool observations after enrichment failed", "provider", s.source.ProviderName(), "error", err)
+	}
+	s.sourceMu.Lock()
+	path, ready, orphans := s.adoptLocation()
+	s.mu.Lock()
+	if request == nil {
+		request = s.snapshotSupplementRequestLocked()
+	}
+	current := s.sourceState == request.state
 	s.mu.Unlock()
-	retireToolTranscripts(orphans)
-	if !ready || len(protocol) == 0 {
+	s.sourceMu.Unlock()
+	s.retainRetired(retireToolTranscripts(orphans))
+	if !current || !ready || len(request.pending) == 0 {
 		return
 	}
+	protocol := make(map[string]agent.MessageContent, len(request.pending))
+	for id, entry := range request.pending {
+		protocol[id] = entry.content.Clone()
+	}
+	s.passMu.Lock()
 	ctx, cancel := s.supplementContext(final)
 	records, err := s.source.ReadSupplements(ctx, path, protocol, final)
 	cancel()
+	s.passMu.Unlock()
 	if err != nil {
-		// A supplement that never arrives is output the reader does not see, so this is
-		// a failure and not a trace. `final` states whether another pass can still
-		// recover it: an interim failure keeps its entry, and the turn end is the last
-		// chance.
 		slog.Warn("Read stored tool records", "provider", s.source.ProviderName(), "final", final, "error", err)
 	}
-	s.applySupplements(records)
+	s.mu.Lock()
+	current = s.sourceState == request.state
+	s.mu.Unlock()
+	if current {
+		s.applySupplements(records, request.pending)
+	}
 }
 
-// applySupplements writes each supplement the pass read into its stored row.
-//
-// It takes mu for the bookkeeping of ONE record and releases it for that record's
-// write. Each write is a SELECT and an UPDATE, so a turn with N pending rows
-// serialized N round trips under one acquisition, and every frame the reader
-// goroutine had waited for all of them. The caller must NOT hold mu.
-func (s *Transcript) applySupplements(records map[string][]byte) {
-	for id, enriched := range records {
-		s.mu.Lock()
-		entry, found := s.pending[id]
+// enrichPending admits one write to the exact pending epoch and revision.
+// The delegate runs without a wrapper mutex.
+func (s *Transcript) enrichPending(id string, expected pendingToolRow, extra []byte, remove bool, observation *toolObservation) (bool, error) {
+	combined, err := MergeSupplements(expected.content.Supplemental, slices.Clone(extra))
+	if err != nil {
+		return false, fmt.Errorf("merge tool supplement: %w", err)
+	}
+	attempt := &toolEnrichmentAttempt{receipt: agent.NewMessageEnrichmentReceipt(), previousRevision: expected.revision, supplemental: slices.Clone(combined), inFlight: true}
+	s.mu.Lock()
+	if expected.epoch != 0 {
+		current, exists := s.pending[id]
+		if !exists || !current.effective().matches(expected) {
+			s.mu.Unlock()
+			return false, nil
+		}
+		current = current.compact()
+		for _, running := range current.attempts {
+			_, _, _, committed := running.receipt.CommittedEnrichment()
+			if running.inFlight && !committed && running.previousRevision == expected.revision && agent.JSONCanonicalEqual(running.supplemental, combined) {
+				if observation != nil {
+					observation.attempt = running
+				}
+				s.mu.Unlock()
+				return false, nil
+			}
+		}
+		current.attempts = append(current.attempts, attempt)
+		s.pending[id] = current
+	}
+	if observation != nil {
+		observation.attempt = attempt
+	}
+	s.mu.Unlock()
+	sequence, _ := expected.content.WriteReceipt.StoredMessageSequence()
+	if observation != nil {
+		sequence = observation.sequence
+	}
+	_, written, err := s.writeSupplement(agent.MessageEnrichment{Publication: expected.content.Publication, AgentSessionID: expected.content.AgentSessionID,
+		Seq: sequence, SpanID: id, OriginalContent: slices.Clone(expected.content.Original), PreviousRevision: expected.revision, WriteReceipt: attempt.receipt}, nil, combined)
+	s.mu.Lock()
+	attempt.inFlight = false
+	_, revision, _, committed := attempt.receipt.CommittedEnrichment()
+	if observation != nil {
+		if committed {
+			s.removeObservationLocked(observation)
+		}
+	}
+	if current, exists := s.pending[id]; exists && expected.epoch != 0 && current.epoch == expected.epoch {
+		current = current.compact()
+		if remove && err == nil && written && committed && current.revision == revision && !s.hasObservationLocked(sequence) {
+			delete(s.pending, id)
+		} else {
+			s.pending[id] = current
+		}
+	}
+	s.mu.Unlock()
+	return written, err
+}
+
+func (s *Transcript) removeObservationLocked(observation *toolObservation) {
+	s.observations = slices.DeleteFunc(s.observations, func(current *toolObservation) bool { return current == observation })
+}
+
+func (s *Transcript) hasObservationLocked(sequence int64) bool {
+	for _, observation := range s.observations {
+		if observation.sequence == sequence {
+			return true
+		}
+	}
+	return false
+}
+
+// flushObservations retries frozen bytes against their exact committed rows.
+// It never resolves an old observation through the latest row of a reused span.
+func (s *Transcript) flushObservations() error {
+	s.mu.Lock()
+	observations := append([]*toolObservation(nil), s.observations...)
+	s.mu.Unlock()
+	for _, observation := range observations {
+		if err := s.flushObservation(observation); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// flushObservation claims the exact observation before its first delegated read.
+// An accepted receipt remains visible during synchronous final-boundary reentry.
+func (s *Transcript) flushObservation(observation *toolObservation) error {
+	s.mu.Lock()
+	_, _, _, committed := observation.attemptReceipt().CommittedEnrichment()
+	if committed || !slices.Contains(s.observations, observation) {
+		s.removeObservationLocked(observation)
 		s.mu.Unlock()
-		if !found {
+		return nil
+	}
+	if observation.inFlight {
+		s.mu.Unlock()
+		return fmt.Errorf("the tool observation is in flight")
+	}
+	observation.inFlight = true
+	s.mu.Unlock()
+	defer s.releaseObservation(observation)
+
+	stored, err := s.ReadToolResultBySeq(observation.sequence)
+	if err != nil {
+		return err
+	}
+	if stored == nil || stored.Content.AgentSessionID != observation.content.AgentSessionID || !bytes.Equal(stored.Content.Original, observation.content.Original) {
+		return fmt.Errorf("the stored tool row does not match its retained observation")
+	}
+	combined, err := MergeSupplements(stored.Content.Supplemental, observation.extra)
+	if err != nil {
+		return fmt.Errorf("merge the retained tool observation: %w", err)
+	}
+	if agent.JSONCanonicalEqual(stored.Content.Supplemental, combined) {
+		s.mu.Lock()
+		s.removeObservationLocked(observation)
+		s.mu.Unlock()
+		return nil
+	}
+	expected := pendingToolRow{content: observation.content.Clone(), revision: stored.Revision}
+	expected.content.Supplemental = slices.Clone(stored.Content.Supplemental)
+	s.mu.Lock()
+	if current, exists := s.pending[observation.spanID]; exists && current.epoch == observation.epoch {
+		sequence, known := current.content.WriteReceipt.StoredMessageSequence()
+		current = current.compact()
+		if known && sequence == observation.sequence && current.revision <= stored.Revision {
+			current.revision = stored.Revision
+			current.content.Supplemental = slices.Clone(stored.Content.Supplemental)
+			s.pending[observation.spanID] = current
+			expected = current.snapshot()
+		}
+	}
+	s.mu.Unlock()
+	written, err := s.enrichPending(observation.spanID, expected, observation.extra, false, observation)
+	if err != nil {
+		return err
+	}
+	if !written {
+		s.mu.Lock()
+		_, _, _, accepted := observation.attemptReceipt().CommittedEnrichment()
+		s.mu.Unlock()
+		if !accepted {
+			return fmt.Errorf("the stored tool row refused its retained observation")
+		}
+	}
+	return nil
+}
+
+func (s *Transcript) releaseObservation(observation *toolObservation) {
+	s.mu.Lock()
+	observation.inFlight = false
+	s.mu.Unlock()
+}
+
+func (observation *toolObservation) attemptReceipt() *agent.MessageEnrichmentReceipt {
+	if observation.attempt == nil {
+		return nil
+	}
+	return observation.attempt.receipt
+}
+
+func (s *Transcript) applySupplements(records map[string][]byte, requested map[string]pendingToolRow) {
+	for id, enriched := range records {
+		entry, exists := requested[id]
+		if !exists {
 			continue
 		}
-		_, enrichedRow, err := s.writeSupplement(agent.MessageEnrichment{
-			SpanID: id, OriginalContent: entry.content.Original,
-			PreviousRevision: entry.revision,
-		}, entry.content.Supplemental, enriched)
+		written, err := s.enrichPending(id, entry, enriched, true, nil)
 		if err != nil {
-			// ONE bad record never stops the pass: the other rows of the same turn
-			// still take their supplements.
 			slog.Warn("Enrich tool result", "provider", s.source.ProviderName(), "error", err)
 			continue
 		}
-		if !enrichedRow {
-			// No row took the supplement. Keep the entry, so a later pass of the same
-			// turn can write it once the row exists. Dropping it here lost the result
-			// for good, because finishPending clears what is left at the turn end.
+		if !written {
 			slog.Debug("Stored tool row refused the supplement", "provider", s.source.ProviderName(), "span_id", id)
-			continue
 		}
-		// A compare-and-set, because mu was free while the write ran. An out-of-band
-		// EnrichToolSpan can have raised the entry's revision in the meantime, and
-		// that entry then describes a supplement this write does not carry. Dropping
-		// it would leave the next pass nothing to merge on top of.
-		s.mu.Lock()
-		if current, still := s.pending[id]; still && current.matches(entry) {
-			delete(s.pending, id)
-		}
-		s.mu.Unlock()
 	}
 }
 
-// EnrichToolSpan merges one out-of-band supplement into the row of a tool call.
+// EnrichToolSpan stores an observed supplement on its exact tool result row.
+// Cursor sends each extension frame once and acknowledges it even when the immediate write fails.
+// This transcript therefore retains the built bytes after a compare-and-swap refusal.
+// A later pass or final boundary merges those bytes over the actual stored supplement.
 //
-// A provider calls this when it recovers a field OUTSIDE the store pass. Cursor is
-// the caller today: its `cursor/*` extension frames arrive on the stdout reader, one
-// per finished call, right after the update that completed the same toolCallId.
-//
-// It goes through the transcript because the transcript is the SINGLE WRITER of a
-// row's supplemental content. A direct EnrichMessage would raise the row's revision
-// under the store pass, and EnrichMessage refuses a write whose PreviousRevision no
-// longer matches the row. That refusal is permanent -- finishPending clears what is
-// left at the turn end -- so the store output, which is the whole diff or the whole
-// search result, would never reach the row.
-//
-// `build` takes the row's ORIGINAL frame and answers the bytes to merge. A caller
-// that must identify the frame it enriches -- so a later resolve can check that the
-// supplement belongs to this row -- cannot build those bytes before the transcript
-// resolves the row, and the transcript is the only holder of the frame in both the
-// pending and the settled case. It answers nil bytes to write nothing.
-//
-// It reports whether a row took the supplement.
+// build receives a clone of the original frame. It runs outside every wrapper mutex.
+// A nil result requests no write. The return value reports an immediate stored change.
 func (s *Transcript) EnrichToolSpan(spanID string, build func(original []byte) ([]byte, error)) (bool, error) {
 	if spanID == "" || build == nil {
 		return false, nil
 	}
-	// mu guards the map read ALONE. Both paths below make TWO database round trips,
-	// a SELECT and an UPDATE, and mu guards neither of them: the reader goroutine
-	// must never wait for a store query, because the wait becomes back-pressure on
-	// the provider's pipe. Holding mu across those queries stalled every frame that
-	// goroutine had for the length of both.
-	//
-	// passMu is not the answer either. Taking it here would make the reader wait for
-	// the supplement worker's read of the PROVIDER's store, which the doc on
-	// Source forbids.
-	//
-	// A racing writer costs this call its write rather than the row its content,
-	// because EnrichMessage refuses a write whose PreviousRevision no longer matches.
 	s.mu.Lock()
 	entry, waiting := s.pending[spanID]
+	entry = entry.snapshot()
 	s.mu.Unlock()
 	if !waiting {
-		// The span left `pending`, so no entry describes it and the ROW's own
-		// revision is the record. enrichSettledToolSpan reads it back.
 		return s.enrichSettledToolSpan(spanID, build)
 	}
-	extra, err := build(entry.content.Original)
+	sequence, committed := entry.content.WriteReceipt.StoredMessageSequence()
+	if !committed {
+		return false, fmt.Errorf("the pending tool row has no committed sequence")
+	}
+	extra, err := build(slices.Clone(entry.content.Original))
 	if err != nil || len(extra) == 0 {
 		return false, err
 	}
-	combined, written, err := s.writeSupplement(agent.MessageEnrichment{
-		SpanID: spanID, OriginalContent: entry.content.Original,
-		PreviousRevision: entry.revision,
-	}, entry.content.Supplemental, extra)
-	if err != nil || !written {
-		return written, err
-	}
-	// The entry STAYS pending, with the supplement and the revision this write left.
-	// The store pass then merges its records ON TOP of this supplement rather than
-	// over it, and its own write states a revision the row still carries.
-	//
-	// A compare-and-set, because mu was free while the write ran: the store pass can
-	// have taken the entry and dropped it in the meantime, and the turn end can have
-	// cleared it. A row that this transcript no longer tracks still took the write,
-	// so the report stays true either way.
+	observation := &toolObservation{spanID: spanID, sequence: sequence, epoch: entry.epoch, content: entry.content.Clone(), extra: slices.Clone(extra), inFlight: true}
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	current, stillWaiting := s.pending[spanID]
-	if !stillWaiting || !current.matches(entry) {
-		return true, nil
-	}
-	current.content.Supplemental = combined
-	current.revision++
-	s.pending[spanID] = current
-	return true, nil
+	s.observations = append(s.observations, observation)
+	s.mu.Unlock()
+	defer s.releaseObservation(observation)
+	return s.enrichPending(spanID, entry, extra, false, observation)
 }
 
-// enrichSettledToolSpan writes a supplement onto a row the transcript no longer
-// tracks.
-//
-// The supplement worker runs between two frames of the reader goroutine, so a pass
-// that answered this call already enriched its row and dropped the entry. The row
-// itself is then the only record of the revision, which is why this reads it back.
-//
-// It reads the LAST row of the span. The transcript enriches the row that CLOSES a
-// tool call, which ReadToolRequest -- the first row of the span -- is not.
-//
-// The caller holds NO lock: this reads the row and writes it back, and mu guards
-// neither. See EnrichToolSpan for why that is safe.
+// enrichSettledToolSpan captures the original owner and native session before it reads a settled result.
+// The first read fixes the exact sequence before build runs.
+// Later attempts use that sequence and cannot select a replacement row through the same span.
 func (s *Transcript) enrichSettledToolSpan(spanID string, build func(original []byte) ([]byte, error)) (bool, error) {
-	stored, err := s.ReadToolResult(spanID)
+	captured := s.ProviderServices.CaptureMessage(agent.MessageContent{}, agent.SpanInfo{SpanID: spanID})
+	stored, err := s.ReadToolResultForSession(spanID, captured.AgentSessionID)
 	if err != nil {
 		return false, err
 	}
 	if stored == nil {
 		return false, nil
 	}
-	extra, err := build(stored.Content.Original)
+	captured.Original = slices.Clone(stored.Content.Original)
+	captured.Supplemental = slices.Clone(stored.Content.Supplemental)
+	captured.Metadata = slices.Clone(stored.Content.Metadata)
+	extra, err := build(slices.Clone(captured.Original))
 	if err != nil || len(extra) == 0 {
 		return false, err
 	}
-	_, written, err := s.writeSupplement(agent.MessageEnrichment{
-		Seq: stored.Seq, SpanID: spanID, OriginalContent: stored.Content.Original,
-		PreviousRevision: stored.Revision,
-	}, stored.Content.Supplemental, extra)
-	return written, err
+	observation := &toolObservation{spanID: spanID, sequence: stored.Seq, content: captured.Clone(), extra: slices.Clone(extra), inFlight: true}
+	s.mu.Lock()
+	s.observations = append(s.observations, observation)
+	s.mu.Unlock()
+	defer s.releaseObservation(observation)
+	return s.enrichPending(spanID, pendingToolRow{content: captured, revision: stored.Revision}, extra, false, observation)
 }
 
-// writeSupplement merges `extra` over `base` and writes the result onto one row.
-//
-// The ONE merge-then-write in this file. Three callers reach it -- the store pass, the
-// out-of-band frame, and the settled row -- and each keeps its own bookkeeping
-// afterwards: the pass drops its entry, the out-of-band write keeps one with the new
-// revision, and the settled row has no entry at all. What they share is this: the
-// merge order, the wording of a merge failure, and the rule that `SupplementalContent`
-// on the enrichment is always the MERGED bytes. Three copies spelled all three, and
-// the merge-failure message differed in two of them.
-//
-// It answers the merged bytes as well, because a caller that keeps an entry must store
-// what it wrote rather than merge a second time.
+// writeSupplement merges the supplied bytes and delegates one exact row update.
+// It returns the merged bytes beside the delegate result.
 func (s *Transcript) writeSupplement(enrichment agent.MessageEnrichment, base, extra []byte) ([]byte, bool, error) {
 	combined, err := MergeSupplements(base, extra)
 	if err != nil {
@@ -789,13 +1020,8 @@ func (s *Transcript) writeSupplement(enrichment agent.MessageEnrichment, base, e
 	return combined, written, err
 }
 
-// MergeSupplements preserves initial data when native records arrive later.
-//
-// The merged envelope's own keys come out SORTED, because it re-encodes through a map,
-// while a producer that marshals a struct keeps its declaration order. Each payload
-// inside passes through as raw bytes, so the agent's own frame is never re-encoded --
-// but the two envelopes then differ by key order for the same content, which is why
-// every caller that asks "did this change anything?" uses JSONCanonicalEqual.
+// MergeSupplements retains prior fields and replaces matching fields with later values.
+// JSONCanonicalEqual compares object values without treating key order as a change.
 func MergeSupplements(initial, later []byte) ([]byte, error) {
 	if len(initial) == 0 {
 		return later, nil

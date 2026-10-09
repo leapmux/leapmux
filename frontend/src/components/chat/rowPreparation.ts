@@ -10,9 +10,9 @@ import { classifyMessage, toClassificationInput } from './messageClassifier'
 import { resolvedSpanRole, resolveMessageForRendering } from './providers/registry'
 import { extractChatRow } from './rowExtraction'
 
-// Message preparation supplies one route from stored bytes to the row model.
+// Message preparation supplies one route from received rendering bytes to the row model.
 // Every reader follows the same order:
-// 1. Parse the stored bytes.
+// 1. Parse the received bytes.
 // 2. Resolve the provider supplement.
 // 3. Classify the resolved payload.
 // Classification can change after resolution. Classifying raw bytes and extracting
@@ -21,20 +21,20 @@ import { extractChatRow } from './rowExtraction'
 
 /**
  * Keep both the original parse and the resolved payload.
- * The Raw JSON view requires the stored bytes. Every display reads the resolved payload.
+ * The Raw JSON view requires the received bytes. Every display reads the resolved payload.
  * One field cannot satisfy both requirements.
  */
 export interface PreparedMessage {
   message: AgentChatMessage
-  /** The stored bytes, exactly as the Raw JSON view shows them. */
+  /** The unmerged parse of received bytes that the Raw JSON view shows. */
   original: ParsedMessageContent
-  /** `original` with the provider's supplemental content merged in. Every display reads this. */
+  /** Resolve original with the provider's supplemental content. Every display reads this. */
   resolved: ResolvedMessageContent
   /** The category, decided from {@link PreparedMessage.resolved}. */
   category: MessageCategory
 }
 
-/** What a caller already holds, so preparation repeats none of it. */
+/** Reuse values that the caller already holds. */
 export interface PrepareMessageOptions extends ClassificationContext {
   /**
    * Reuse the caller's original parse.
@@ -49,7 +49,7 @@ export interface PrepareMessageOptions extends ClassificationContext {
   resolved?: ResolvedMessageContent
 }
 
-/** What reading a prepared message into a row needs beyond the message itself. */
+/** Supply additional data that row extraction requires. */
 export interface PreparedRowOptions {
   /**
    * The request and result of this row's tool span, already resolved.
@@ -97,7 +97,7 @@ export function prepareMessage(message: AgentChatMessage, options: PrepareMessag
  * Read a prepared message into the row model.
  *
  * The prepared message supplies the span ID and span type. It supplies completion also.
- * Callers cannot override these stored values with metadata from another row.
+ * Callers cannot override these received values with metadata from another row.
  */
 export function extractPreparedRow(prepared: PreparedMessage, options: PreparedRowOptions = {}): ChatRowExtraction {
   return extractChatRow(prepared.message.agentProvider, prepared.resolved, prepared.category, {
@@ -109,11 +109,8 @@ export function extractPreparedRow(prepared: PreparedMessage, options: PreparedR
 }
 
 /**
- * Prepare a message and read its row in one call.
- *
- * The scroll rail and image tab use this combined operation.
- * The transcript prepares each message once and caches extraction separately.
- * It calls the two operations separately.
+ * Prepare a message and read its row in one call. The scroll rail uses this combined
+ * operation. The transcript and image tab call preparation and extraction separately.
  */
 export function prepareChatRow(
   message: AgentChatMessage,

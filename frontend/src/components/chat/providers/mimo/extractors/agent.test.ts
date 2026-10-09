@@ -6,6 +6,9 @@ import { mimoActorAction, mimoActorOperation, mimoActorRequest, mimoActorRun, mi
 /** One finished `actor` call. */
 function actorPart(fields: Partial<MiMoToolPart>): MiMoToolPart {
   return {
+    partId: 'prt_call-1',
+    messageId: 'msg_1',
+    sessionId: 'ses_test',
     callId: 'call-1',
     tool: MIMO_TOOL.Actor,
     status: 'completed',

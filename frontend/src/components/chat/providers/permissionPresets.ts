@@ -17,6 +17,7 @@ import { kimiPermissionPresets } from './kimi/permissionPresets'
 import { kiroPermissionPresets } from './kiro/permissionPresets'
 import { lettaPermissionPresets } from './letta/permissionPresets'
 import { mimoPermissionPresets } from './mimo/permissionPresets'
+import { musePermissionPresets } from './muse/permissionPresets'
 import { ohMyPiPermissionPresets } from './ohmypi/permissionPresets'
 import { qoderPermissionPresets } from './qoder/permissionPresets'
 import { qwenPermissionPresets } from './qwen/permissionPresets'
@@ -54,6 +55,7 @@ export const PROVIDER_PERMISSION_PRESETS = {
   [AgentProvider.COMMAND_CODE]: commandCodePermissionPresets,
   [AgentProvider.DEEPSEEK_HARNESS]: deepseekHarnessPermissionPresets,
   [AgentProvider.GEMINI_CLI]: geminiPermissionPresets,
+  [AgentProvider.MUSE_CODE]: musePermissionPresets,
   [AgentProvider.FAST_AGENT]: undefined,
 } satisfies Record<AgentProvider, ProviderPermissionPresets | undefined>
 

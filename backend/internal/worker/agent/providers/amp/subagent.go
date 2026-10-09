@@ -11,18 +11,18 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
-// This file keeps the background-task registry rows of two kinds of call: the
-// subagent calls, and the shell commands that go on in the background.
+// This file maintains registry rows for subagent calls and background shell commands.
 //
-// Amp runs four tools as subagents on its server: `Task` starts a general
-// subagent, `oracle` asks a second model for advice, `librarian` researches
-// code on GitHub, and `finder` searches the workspace.
+// Amp runs these tools as server subagents:
+//   - Task starts a general subagent.
+//   - oracle requests advice from another model.
+//   - librarian researches code on GitHub.
+//   - finder searches the workspace.
 //
-// Each call becomes a subagent row in the background-task registry, open while
-// the call runs. The row carries no child transcript, and that is Amp's limit,
-// not a gap here: stream-JSON mode drops every message that carries a parent
-// tool id, so only the call and its final result reach stdout. The call's own
-// card in the transcript shows the prompt and the report.
+// Each call opens one subagent registry row for its duration.
+// Amp's stream-JSON mode omits messages with a parent tool ID, so only the call and its final result reach stdout.
+// The protocol therefore supplies no child transcript.
+// The call's own transcript card displays the prompt and report.
 
 // isSubagentTool reports whether Amp runs the tool as a subagent.
 func isSubagentTool(name string) bool {
@@ -45,17 +45,16 @@ type subagentInput struct {
 	Context     string `json:"context"`
 }
 
-// taskTitleFallback titles a Task call that states no description and no
-// prompt.
+// taskTitleFallback supplies the title for a Task call with neither a description nor a prompt.
 const taskTitleFallback = "Subagent"
 
-// subagentRow is the title and the description of one call's registry row. The
-// transcript card of the call takes the same title, and
-// testdata/amp_subagent_title_conformance.json holds the two to one rule.
+// subagentRow supplies a call's registry title and description.
+// The call's transcript card uses the same title.
+// testdata/amp_subagent_title_conformance.json verifies that shared rule.
 //
-// A Task call states a short description beside its prompt. The three
-// specialists state their request alone, so their title gives the specialist
-// before the request, and a reader can tell an oracle from a search.
+// A Task call supplies a short description beside its prompt.
+// The three specialist tools supply only their request, so their titles identify the specialist before the request.
+// A reader can therefore distinguish an oracle call from a search.
 func subagentRow(name string, raw json.RawMessage) (title, description string) {
 	var input subagentInput
 	_ = json.Unmarshal(raw, &input)
@@ -101,7 +100,7 @@ func subagentStatus(isError bool) bgtask.Status {
 	if isError {
 		return bgtask.StatusFailed
 	}
-	return bgtask.StatusCompleted
+	return bgtask.StatusSucceeded
 }
 
 // labeled puts a specialist's name before its request.
@@ -134,34 +133,33 @@ func joinNonEmpty(parts ...string) string {
 	return strings.Join(kept, "\n\n")
 }
 
-// Amp moves a shell command to the background when the command outlives its
-// call: the `shell_command` result states `running: true` and the command's
-// PID, and the command goes on in a process group of its own. The model then
-// reads the command with `shell_command_status` and stops it with
-// `shell_command_kill`, both by PID.
+// Amp backgrounds a command that outlives its shell_command call.
+// The result supplies running: true and the process ID (PID), and the command continues in a separate process group.
+// The model reads it through shell_command_status and stops it through shell_command_kill, both using that PID.
 //
-// Each such command becomes a shell row in the background-task registry. A
-// status or a kill that states the end of the command closes the row. So does
-// the exit of the Amp process: as stopped after an orderly shutdown, because
-// Amp then stops every command that it started, and as interrupted after a
-// crash, which the command can outlive. Amp states nothing when a command ends
-// by itself, so the row of a command that no status call reads stays open until
-// the process exits.
+// Each command opens a shell registry row.
+// A status or kill result that confirms its end closes the row.
+// Amp process exit also closes it with the corresponding status:
+//   - Stopped after orderly shutdown, because Amp stops every command that it starts.
+//   - Interrupted after a crash, which the command can survive.
+// Amp sends no event when a command ends independently.
+// A command with no later status read therefore keeps its row open until Amp exits.
 
 // shellCommandInput takes the command of a `shell_command` call.
 type shellCommandInput struct {
 	Command string `json:"command"`
 }
 
-// shellRowKey is the registry row of the background command that one
-// `shell_command` call started. The key takes the call's id, which is unique,
-// and not the PID, which the system can give to a later process.
+// shellRowKey identifies the registry row for one shell_command call's background command.
+// Use the unique call ID instead of its PID, which the system can reuse for a later process.
 func shellRowKey(toolUseID string) string { return "amp-shell:" + toolUseID }
 
-// noteShellResult follows a background command through the result of one call
-// of a shell tool. text is the text of the result. A result that is not Amp's
-// record -- a refusal, a failure, or the text of another tool -- changes
-// nothing.
+// noteShellResult processes one shell-tool result for a background command.
+// text contains that result's text.
+// A result outside Amp's record shape changes nothing, including these cases:
+//   - A refusal.
+//   - A failure.
+//   - Another tool's text.
 func (a *Agent) noteShellResult(tool *openTool, text string) {
 	var record contracts.AmpShellResult
 	if json.Unmarshal([]byte(text), &record) != nil || record.PID <= 0 {
@@ -227,9 +225,8 @@ func (a *Agent) closeShellRow(pid int, status bgtask.Status) {
 	}
 }
 
-// closeAllShellRows closes the row of every background command with status,
-// when the process that ran the commands ends. It takes the rows under the
-// lock, so a second call closes none of them again.
+// closeAllShellRows closes every background command row with status when the owning process ends.
+// Remove the rows under the lock, so another call cannot close them again.
 func (a *Agent) closeAllShellRows(status bgtask.Status) {
 	a.mu.Lock()
 	rowKeys := make([]string, 0, len(a.shells))
@@ -244,13 +241,12 @@ func (a *Agent) closeAllShellRows(status bgtask.Status) {
 	}
 }
 
-// shellEndStatus is the final status of a background command that a status
-// call found ended: completed for exit code 0, and failed for any other code
-// or none. Amp answers a PID that it no longer tracks with exit code 1, so such
-// a row closes as failed.
+// shellEndStatus selects the final registry status when a status call finds an ended command.
+// Exit code zero means success. Any other code or an absent code means failure.
+// Amp returns exit code 1 for a PID that it no longer tracks, so that row also closes as failed.
 func shellEndStatus(record contracts.AmpShellResult) bgtask.Status {
 	if record.ExitCode != nil && *record.ExitCode == 0 {
-		return bgtask.StatusCompleted
+		return bgtask.StatusSucceeded
 	}
 	return bgtask.StatusFailed
 }

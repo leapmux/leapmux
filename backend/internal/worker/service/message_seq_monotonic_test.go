@@ -96,11 +96,12 @@ func TestMessageSeq_ReseqUsesHighWater(t *testing.T) {
 
 	// Reseq n1 to the tail: it must land at high-water+1 == 4, above the freed seq 3.
 	newSeq, err := svc.Queries.UpdateNotificationThread(ctx, db.UpdateNotificationThreadParams{
-		ID:                 "n1",
-		AgentID:            "agent-1",
-		Content:            []byte("{}"),
-		ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
-		SpanLines:          "[]",
+		ID:                             "n1",
+		AgentID:                        "agent-1",
+		Content:                        []byte("{}"),
+		ContentCompression:             leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
+		SupplementalContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
+		SpanLines:                      "[]",
 	})
 	require.NoError(t, err)
 	assert.Equal(t, int64(4), newSeq, "reseq must allocate above the high-water, never reuse a freed seq")

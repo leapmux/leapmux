@@ -44,7 +44,7 @@ clineTest.describe('Cline subagent registry', () => {
     await waitForAgentIdle(page)
 
     await expectRowBecomesFinal(page, row)
-    await expect(row).toHaveAttribute('data-status', 'completed')
+    await expect(row).toHaveAttribute('data-status', 'succeeded')
     await expectSectionPersists(page)
     expect((await modelScript.status()).ruleMatches['the child answers its one-word task']).toBe(1)
     await expect(assistantBubbles(page).filter({ hasText: 'The subagent reported PONG.' })).toBeVisible()
@@ -94,7 +94,7 @@ clineTest.describe('Cline subagent registry', () => {
     const bravo = await expectRegistryRow(page, { titleContains: 'Answer bravo' })
     for (const row of [alpha, bravo]) {
       await expectRowBecomesFinal(page, row)
-      await expect(row).toHaveAttribute('data-status', 'completed')
+      await expect(row).toHaveAttribute('data-status', 'succeeded')
     }
     const status = await modelScript.status()
     expect(status.ruleMatches['the first child answers']).toBe(1)

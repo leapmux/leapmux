@@ -40,6 +40,308 @@ func assertNoTimer(t *testing.T, clock *quartz.Mock, message string) {
 	assert.False(t, pending, message)
 }
 
+type heldAbortReply struct {
+	arrived chan struct{}
+	reply   chan int
+}
+
+func holdAbortReplies(t *testing.T, server *fakeServer, count int) []heldAbortReply {
+	t.Helper()
+	gates := make([]heldAbortReply, count)
+	for i := range gates {
+		gates[i] = heldAbortReply{arrived: make(chan struct{}), reply: make(chan int)}
+		t.Cleanup(func() { close(gates[i].reply) })
+	}
+	var requests atomic.Int32
+	server.handle("POST /session/ses_test/abort", func(w http.ResponseWriter, _ *http.Request, _ []byte) {
+		index := int(requests.Add(1)) - 1
+		if index >= len(gates) {
+			writeJSON(w, http.StatusInternalServerError, `{"error":"unexpected abort"}`)
+			return
+		}
+		gate := gates[index]
+		close(gate.arrived)
+		status, present := <-gate.reply
+		if !present {
+			status = http.StatusInternalServerError
+		}
+		if status == http.StatusOK {
+			writeJSON(w, status, `true`)
+			return
+		}
+		writeJSON(w, status, `{"error":"the controlled abort failed"}`)
+	})
+	return gates
+}
+
+func awaitAbortArrival(t *testing.T, gate heldAbortReply) {
+	t.Helper()
+	select {
+	case <-gate.arrived:
+	case <-testutil.DeadlineContext(t).Done():
+		t.Fatal("The controlled abort did not arrive.")
+	}
+}
+
+func startInterrupt(a *Agent) <-chan error {
+	result := make(chan error, 1)
+	go func() { result <- a.Interrupt(agent.StopContext{}) }()
+	return result
+}
+
+func awaitInterrupt(t *testing.T, result <-chan error) error {
+	t.Helper()
+	select {
+	case err := <-result:
+		return err
+	case <-testutil.DeadlineContext(t).Done():
+		t.Fatal("The controlled interrupt did not return.")
+		return nil
+	}
+}
+
+func beginPartialAnswer(t *testing.T, a *Agent, messageID, partID, text string) {
+	t.Helper()
+	feed(a, statusEvent(t, contracts.MiMoStatusTypeBusy),
+		messageEvent(t, messageID, roleAssistant, mainActorID, false),
+		textPartEvent(t, partTypeText, partID, messageID, "", false),
+		deltaEvent(t, partID, messageID, text))
+}
+
+func nativeAbortMarker(t *testing.T, kind, messageID string) []byte {
+	t.Helper()
+	errorBody := map[string]any{"name": contracts.MiMoErrorNameAborted, "data": map[string]any{"message": "Aborted"}}
+	if kind == "session" {
+		return eventJSON(t, contracts.MiMoEventSessionError, map[string]any{"sessionID": testSessionID, "error": errorBody})
+	}
+	return eventJSON(t, eventMessageUpdated, map[string]any{"sessionID": testSessionID, "info": map[string]any{
+		"id": messageID, "sessionID": testSessionID, "role": roleAssistant, "agentID": mainActorID, "error": errorBody,
+	}})
+}
+
+func TestFailedInterruptsKeepNaturalTextAndTurnComplete(t *testing.T) {
+	t.Parallel()
+	a, sink, server := newSinkTestAgent(t)
+	beginPartialAnswer(t, a, "msg_normal", "part_normal", "The complete answer.")
+	feed(a, textPartEvent(t, partTypeReasoning, "part_reasoning", "msg_normal", "The complete reasoning.", false))
+	gates := holdAbortReplies(t, server, 2)
+	first := startInterrupt(a)
+	awaitAbortArrival(t, gates[0])
+	second := startInterrupt(a)
+	awaitAbortArrival(t, gates[1])
+	feed(a, textPartEvent(t, partTypeText, "part_normal", "msg_normal", "The complete answer.", true),
+		textPartEvent(t, partTypeReasoning, "part_reasoning", "msg_normal", "The complete reasoning.", true),
+		statusEvent(t, contracts.MiMoStatusTypeIdle))
+	for i, result := range []<-chan error{first, second} {
+		gates[i].reply <- http.StatusInternalServerError
+		require.ErrorContains(t, awaitInterrupt(t, result), "abort the MiMo turn")
+	}
+	rows := sink.Messages()
+	require.Len(t, rows, 3)
+	for _, row := range rows[:2] {
+		_, _, completion := assembledText(t, row.Content)
+		assert.Equal(t, string(agent.MessageCompletionComplete), completion)
+	}
+	assert.Equal(t, agent.MessageCompletionComplete, rows[2].Completion)
+	assert.Empty(t, a.interruptRequests)
+}
+
+func TestNativeAbortMarkerSurvivesFailedAcknowledgement(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{"session", "message"} {
+		t.Run(kind, func(t *testing.T) {
+			t.Parallel()
+			a, sink, server := newSinkTestAgent(t)
+			beginPartialAnswer(t, a, "msg_cut", "part_cut", "The actual partial answer.")
+			gate := holdAbortReplies(t, server, 1)[0]
+			result := startInterrupt(a)
+			awaitAbortArrival(t, gate)
+			feed(a, nativeAbortMarker(t, kind, "msg_cut"))
+			gate.reply <- http.StatusInternalServerError
+			require.Error(t, awaitInterrupt(t, result))
+			feed(a, textPartEvent(t, partTypeText, "part_cut", "msg_cut", "The actual partial answer.", true),
+				nativeAbortMarker(t, "message", "msg_cut"),
+				statusEvent(t, contracts.MiMoStatusTypeIdle))
+			rows := sink.Messages()
+			require.Len(t, rows, 2)
+			_, text, completion := assembledText(t, rows[0].Content)
+			assert.Equal(t, "The actual partial answer.", text)
+			assert.Equal(t, string(agent.MessageCompletionInterrupted), completion)
+			assert.Equal(t, agent.MessageCompletionInterrupted, rows[1].Completion)
+		})
+	}
+}
+
+func TestAcceptedInterruptBeforeEndMarksTextAndTurn(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newSinkTestAgent(t)
+	beginPartialAnswer(t, a, "msg_cut", "part_cut", "The cut answer.")
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
+	feed(a, textPartEvent(t, partTypeText, "part_cut", "msg_cut", "The cut answer.", true), statusEvent(t, contracts.MiMoStatusTypeIdle))
+	rows := sink.Messages()
+	require.Len(t, rows, 2)
+	_, _, completion := assembledText(t, rows[0].Content)
+	assert.Equal(t, string(agent.MessageCompletionInterrupted), completion)
+	assert.Equal(t, agent.MessageCompletionInterrupted, rows[1].Completion)
+}
+
+func TestAcceptedAcknowledgementAfterNativeEndKeepsItsEvidence(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{"session", "message"} {
+		t.Run(kind, func(t *testing.T) {
+			t.Parallel()
+			a, sink, server := newSinkTestAgent(t)
+			beginPartialAnswer(t, a, "msg_cut", "part_cut", "The native cut answer.")
+			gate := holdAbortReplies(t, server, 1)[0]
+			result := startInterrupt(a)
+			awaitAbortArrival(t, gate)
+			feed(a, nativeAbortMarker(t, kind, "msg_cut"),
+				textPartEvent(t, partTypeText, "part_cut", "msg_cut", "The native cut answer.", true),
+				nativeAbortMarker(t, "message", "msg_cut"),
+				statusEvent(t, contracts.MiMoStatusTypeIdle))
+			rows := sink.Messages()
+			require.Len(t, rows, 2, "the native evidence publishes before HTTP resolves")
+			_, _, completion := assembledText(t, rows[0].Content)
+			assert.Equal(t, string(agent.MessageCompletionInterrupted), completion)
+			assert.Equal(t, agent.MessageCompletionInterrupted, rows[1].Completion)
+			gate.reply <- http.StatusOK
+			require.NoError(t, awaitInterrupt(t, result))
+			assert.Empty(t, a.interruptRequests)
+		})
+	}
+}
+
+func TestConcurrentAbortsKeepTheAcceptedAttempt(t *testing.T) {
+	t.Parallel()
+	for _, failFirst := range []bool{false, true} {
+		t.Run(map[bool]string{false: "accept before failure", true: "failure before acceptance"}[failFirst], func(t *testing.T) {
+			t.Parallel()
+			a, sink, server := newSinkTestAgent(t)
+			beginPartialAnswer(t, a, "msg_cut", "part_cut", "The accepted cut.")
+			gates := holdAbortReplies(t, server, 2)
+			first := startInterrupt(a)
+			awaitAbortArrival(t, gates[0])
+			second := startInterrupt(a)
+			awaitAbortArrival(t, gates[1])
+			if failFirst {
+				gates[0].reply <- http.StatusInternalServerError
+				require.Error(t, awaitInterrupt(t, first))
+			}
+			gates[1].reply <- http.StatusOK
+			require.NoError(t, awaitInterrupt(t, second))
+			if !failFirst {
+				gates[0].reply <- http.StatusInternalServerError
+				require.Error(t, awaitInterrupt(t, first))
+			}
+			feed(a, textPartEvent(t, partTypeText, "part_cut", "msg_cut", "The accepted cut.", true), statusEvent(t, contracts.MiMoStatusTypeIdle))
+			rows := sink.Messages()
+			require.Len(t, rows, 2)
+			_, _, completion := assembledText(t, rows[0].Content)
+			assert.Equal(t, string(agent.MessageCompletionInterrupted), completion)
+			assert.Equal(t, agent.MessageCompletionInterrupted, rows[1].Completion)
+		})
+	}
+}
+
+func TestOldAbortReplyDoesNotMarkAReplacementTurn(t *testing.T) {
+	t.Parallel()
+	for _, status := range []int{http.StatusOK, http.StatusInternalServerError} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			t.Parallel()
+			a, sink, server := newSinkTestAgent(t)
+			beginPartialAnswer(t, a, "msg_old", "part_old", "The old complete answer.")
+			gate := holdAbortReplies(t, server, 1)[0]
+			result := startInterrupt(a)
+			awaitAbortArrival(t, gate)
+			feed(a, textPartEvent(t, partTypeText, "part_old", "msg_old", "The old complete answer.", true), statusEvent(t, contracts.MiMoStatusTypeIdle))
+			beginPartialAnswer(t, a, "msg_new", "part_new", "The replacement answer.")
+			gate.reply <- status
+			if status == http.StatusOK {
+				require.NoError(t, awaitInterrupt(t, result))
+			} else {
+				require.Error(t, awaitInterrupt(t, result))
+			}
+			feed(a, textPartEvent(t, partTypeText, "part_new", "msg_new", "The replacement answer.", true), statusEvent(t, contracts.MiMoStatusTypeIdle))
+			rows := sink.Messages()
+			require.Len(t, rows, 4)
+			for _, index := range []int{0, 2} {
+				_, _, completion := assembledText(t, rows[index].Content)
+				assert.Equal(t, string(agent.MessageCompletionComplete), completion)
+				assert.Equal(t, agent.MessageCompletionComplete, rows[index+1].Completion)
+			}
+		})
+	}
+}
+
+func TestIdleResolvesFinalPartsWithoutCompletionMetadata(t *testing.T) {
+	t.Parallel()
+	for _, accepted := range []bool{false, true} {
+		t.Run(map[bool]string{false: "unconfirmed", true: "accepted"}[accepted], func(t *testing.T) {
+			t.Parallel()
+			a, sink, server := newSinkTestAgent(t)
+			beginPartialAnswer(t, a, "msg_fallback", "part_z", "The first prefix.")
+			feed(a, textPartEvent(t, partTypeReasoning, "part_a", "msg_fallback", "The reasoning prefix.", false))
+			gate := holdAbortReplies(t, server, 1)[0]
+			result := startInterrupt(a)
+			awaitAbortArrival(t, gate)
+			if accepted {
+				gate.reply <- http.StatusOK
+				require.NoError(t, awaitInterrupt(t, result))
+			}
+			feed(a, textPartEvent(t, partTypeText, "part_z", "msg_fallback", "The first full final.", true),
+				textPartEvent(t, partTypeReasoning, "part_a", "msg_fallback", "The second full final.", true))
+			assert.Empty(t, sink.Messages(), "final parts wait while the message outcome remains unknown")
+			feed(a, statusEvent(t, contracts.MiMoStatusTypeIdle))
+			if !accepted {
+				gate.reply <- http.StatusInternalServerError
+				require.Error(t, awaitInterrupt(t, result))
+			}
+			rows := sink.Messages()
+			require.Len(t, rows, 3)
+			_, text, completion := assembledText(t, rows[0].Content)
+			assert.Equal(t, "The first full final.", text)
+			want := agent.MessageCompletionComplete
+			if accepted {
+				want = agent.MessageCompletionInterrupted
+			}
+			assert.Equal(t, string(want), completion)
+			_, text, completion = assembledText(t, rows[1].Content)
+			assert.Equal(t, "The second full final.", text)
+			assert.Equal(t, string(want), completion)
+			assert.Equal(t, want, rows[2].Completion)
+		})
+	}
+}
+
+func TestEmptyFinalPartsCompleteTheirProgressAfterAttribution(t *testing.T) {
+	t.Parallel()
+	for _, text := range []string{"", " \n\t "} {
+		t.Run(text, func(t *testing.T) {
+			t.Parallel()
+			a, sink, server := newSinkTestAgent(t)
+			beginPartialAnswer(t, a, "msg_empty", "part_empty", "")
+			gate := holdAbortReplies(t, server, 1)[0]
+			result := startInterrupt(a)
+			awaitAbortArrival(t, gate)
+			feed(a, textPartEvent(t, partTypeText, "part_empty", "msg_empty", text, true))
+			for _, progress := range sink.ProgressUpdates() {
+				assert.NotEqual(t, agent.ProgressModelComplete, progress.Operation)
+			}
+			feed(a, messageEvent(t, "msg_empty", roleAssistant, mainActorID, true))
+			completions := 0
+			for _, progress := range sink.ProgressUpdates() {
+				if progress.Operation == agent.ProgressModelComplete {
+					completions++
+				}
+			}
+			assert.Equal(t, 1, completions)
+			assert.Empty(t, assembledRows(sink))
+			gate.reply <- http.StatusInternalServerError
+			require.Error(t, awaitInterrupt(t, result))
+		})
+	}
+}
+
 func TestInterruptWithoutATurnSendsNothing(t *testing.T) {
 	t.Parallel()
 	a, server := newTestAgent(t, nil)
@@ -105,7 +407,8 @@ func TestInterruptMarksTheTextThatTheAbortCut(t *testing.T) {
 		deltaEvent(t, "prt_t", "msg_1", "Half a sen"),
 	)
 	server.handle("POST /session/ses_test/abort", func(w http.ResponseWriter, _ *http.Request, _ []byte) {
-		feed(a, textPartEvent(t, partTypeText, "prt_t", "msg_1", "Half a sen", true))
+		feed(a, nativeAbortMarker(t, "session", "msg_1"), textPartEvent(t, partTypeText, "prt_t", "msg_1", "Half a sen", true),
+			nativeAbortMarker(t, "message", "msg_1"))
 		writeJSON(w, http.StatusOK, `true`)
 	})
 
@@ -178,6 +481,7 @@ func TestFailedInterruptLeavesTheLaterTurnInterruptIntact(t *testing.T) {
 	feed(a, textPartEvent(t, partTypeText, "prt_t2", "msg_2", "Second partial answer", true), statusEvent(t, contracts.MiMoStatusTypeIdle))
 	messages := sink.Messages()
 	require.Len(t, messages, 3)
+	assert.Equal(t, agent.MessageCompletionComplete, messages[0].Completion, "the old turn ended naturally before its abort failed")
 	_, text, completion := assembledText(t, messages[1].Content)
 	assert.Equal(t, "Second partial answer", text)
 	assert.Equal(t, string(agent.MessageCompletionInterrupted), completion)
@@ -245,25 +549,25 @@ func assertUnfinishedTurnClosed(t *testing.T, sink *agenttest.Sink, completion a
 	t.Helper()
 	messages := sink.Messages()
 	require.Len(t, messages, 5, "the spawn call's two rows, the command's opener, the unfinished text, the command's closer")
-	assert.Equal(t, "call-1", messages[2].SpanID)
+	assert.Equal(t, "prt_1", messages[2].SpanID)
 	assert.False(t, messages[2].Closing)
 	_, text, textCompletion := assembledText(t, messages[3].Content)
 	assert.Equal(t, "Half a sen", text)
 	assert.Equal(t, string(completion), textCompletion)
-	assert.Equal(t, "call-1", messages[4].SpanID)
+	assert.Equal(t, "prt_1", messages[4].SpanID)
 	assert.True(t, messages[4].Closing)
 	assert.Equal(t, completion, messages[4].Completion)
-	assert.NotContains(t, sink.OpenSpans(), "call-1")
+	assert.Contains(t, sink.ClosedSpans(), "prt_1")
 
-	childRows := sink.Child("child-of-" + spawnCallID).Messages()
+	childRows := sink.Child("child-of-" + spawnSpanID).Messages()
 	require.Len(t, childRows, 4, "the prompt, the command's opener, the unfinished text, the command's closer")
 	_, text, textCompletion = assembledText(t, childRows[2].Content)
 	assert.Equal(t, "Sub half", text)
 	assert.Equal(t, string(completion), textCompletion)
-	assert.Equal(t, "call-sub-01", childRows[3].SpanID)
+	assert.Equal(t, "prt_c3", childRows[3].SpanID)
 	assert.True(t, childRows[3].Closing)
 	assert.Equal(t, completion, childRows[3].Completion)
-	assert.Equal(t, status, backgroundTask(t, sink, spawnCallID).Status)
+	assert.Equal(t, status, backgroundTask(t, sink, spawnSpanID).Status)
 
 	active, published := sink.LastTurnActive()
 	require.True(t, published)
@@ -306,10 +610,10 @@ func TestWaitAfterStopFinishesNothingTwice(t *testing.T) {
 	feedUnfinishedTurn(t, a)
 
 	a.Stop()
-	rows, childRows := len(sink.Messages()), len(sink.Child("child-of-"+spawnCallID).Messages())
+	rows, childRows := len(sink.Messages()), len(sink.Child("child-of-"+spawnSpanID).Messages())
 	require.NoError(t, a.Wait())
 	assert.Len(t, sink.Messages(), rows)
-	assert.Len(t, sink.Child("child-of-"+spawnCallID).Messages(), childRows)
+	assert.Len(t, sink.Child("child-of-"+spawnSpanID).Messages(), childRows)
 }
 
 // A failure that the turn end would state as its divider has no turn end when
@@ -326,7 +630,7 @@ func TestExitPersistsAFailureThatNoTurnEndReported(t *testing.T) {
 	require.NoError(t, a.Wait())
 	require.Equal(t, 1, sink.NotificationCount())
 	assert.JSONEq(t, string(failure), string(sink.LastNotification().Content))
-	assert.Nil(t, a.unattributed)
+	assert.Empty(t, a.pendingFailures)
 	assert.Equal(t, []bool{true, false}, sink.TurnActives())
 }
 

@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { isAbsolute, join, resolve } from 'node:path'
 import { isObject } from '../../../src/lib/jsonPick'
-import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
+import { assertPrivateNativePath } from '../helpers/nativePrivatePath'
 
 export interface LettaConversationIdentity {
   conversationId: string

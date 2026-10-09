@@ -293,7 +293,7 @@ func TestDiracArchiveWaitsForAFileAfterPromptEnd(t *testing.T) {
 	a.hydrateSubagentArchives(nil, false)
 	row, ok = sink.BackgroundTask(spawn.RowKey)
 	require.True(t, ok)
-	assert.Equal(t, bgtask.StatusCompleted, row.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
 	messages := sink.Child(row.ChildAgentID).Messages()
 	require.Len(t, messages, 5)
 	assert.Contains(t, string(messages[1].Content), "ARCHIVED_CHILD_TEXT")
@@ -326,7 +326,7 @@ func TestDiracArchiveKeepsItsRouteAndReplayPositionAfterAnInvalidEvent(t *testin
 	a.hydrateSubagentArchives(nil, false)
 	row, ok = sink.BackgroundTask(spawn.RowKey)
 	require.True(t, ok)
-	assert.Equal(t, bgtask.StatusCompleted, row.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
 	messages := sink.Child(row.ChildAgentID).Messages()
 	require.Len(t, messages, 5, "a retry must not duplicate the earlier archive text")
 	var content strings.Builder

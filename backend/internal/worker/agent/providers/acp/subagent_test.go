@@ -26,7 +26,7 @@ func TestACPSpanOnlyChildObservationCreatesThePromptBeforeItsNativeKey(t *testin
 	b.hooks.SubagentFromToolCallUpdate = func(tc ToolCallUpdateEnvelope) *SubagentObservation {
 		return &SubagentObservation{
 			RowKey: "native-child", RenameFrom: "registry-launch", ChildSpawnSpanID: tc.ToolCallID,
-			ChildAgentKey: "native-child", Status: bgtask.StatusCompleted, CloseRow: true, Mode: ModeCloseOnly,
+			ChildAgentKey: "native-child", Status: bgtask.StatusSucceeded, CloseRow: true, Mode: ModeCloseOnly,
 			ReportID: tc.ToolCallID, Report: agent.SubagentReport{Text: ToolCallText(tc.Content)},
 		}
 	}
@@ -94,7 +94,7 @@ func TestACPChildIdentityRefusalStopsObservationWrites(t *testing.T) {
 	require.True(t, found)
 	b.ApplySubagentObservation(&SubagentObservation{
 		RowKey: "call-spawn", ChildAgentKey: "call-spawn", ChildAgentSessionID: "native-new",
-		Title: "Rejected replacement", Prompt: "Rejected prompt.", Status: bgtask.StatusCompleted,
+		Title: "Rejected replacement", Prompt: "Rejected prompt.", Status: bgtask.StatusSucceeded,
 		ChildTranscriptPayload: []byte(`{"content":"Rejected payload."}`),
 		ReportID:               "rejected-report", Report: agent.SubagentReport{Text: "Rejected report."}, CloseRow: true,
 	})
@@ -116,7 +116,7 @@ func TestACPChildIdentityRefusalStopsRegistryReportAndCloseRecovery(t *testing.T
 			row, found := sink.BackgroundTask("call-spawn")
 			require.True(t, found)
 			services.resetWrites()
-			obs := &SubagentObservation{RowKey: "call-spawn", Status: bgtask.StatusCompleted, Mode: ModeCloseOnly}
+			obs := &SubagentObservation{RowKey: "call-spawn", Status: bgtask.StatusSucceeded, Mode: ModeCloseOnly}
 			if operation == "report" {
 				obs.ReportID, obs.Report = "late-report", agent.SubagentReport{Text: "Rejected report."}
 			} else {
@@ -168,14 +168,14 @@ func TestACPChildIdentityValidationKeepsOrdinaryClosingWrites(t *testing.T) {
 	validateRefusalChild(b, "call-spawn", "native-old")
 	require.True(t, b.FeedChildUpdate("call-spawn", json.RawMessage(`{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Accepted answer."}}`)))
 	b.ApplySubagentObservation(&SubagentObservation{
-		RowKey: "call-spawn", Status: bgtask.StatusCompleted, CloseRow: true, Mode: ModeCloseOnly,
+		RowKey: "call-spawn", Status: bgtask.StatusSucceeded, CloseRow: true, Mode: ModeCloseOnly,
 		ReportID: "accepted-report", Report: agent.SubagentReport{Text: "Accepted report."},
 	})
 	assert.Equal(t, []string{"text:Accepted answer."}, assembledTexts(t, child.Messages()))
 	assert.Equal(t, []string{"report", "close", "cleanup"}, services.recordedWrites())
 	row, found := sink.BackgroundTask("call-spawn")
 	require.True(t, found)
-	assert.Equal(t, bgtask.StatusCompleted, row.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
 	assert.False(t, b.FeedChildUpdate("call-spawn", childRefusalPlan(t, "Late step.")))
 }
 
@@ -229,20 +229,21 @@ func TestACPChildIdentityRestorationUsesTheDirectNestedDelegate(t *testing.T) {
 }
 
 func TestACP_FinalStatusMap(t *testing.T) {
-	assert.Equal(t, bgtask.StatusCompleted, FinalStatus("completed"))
+	assert.Equal(t, bgtask.StatusSucceeded, FinalStatus("completed"))
 	assert.Equal(t, bgtask.StatusFailed, FinalStatus("failed"))
 	assert.Equal(t, bgtask.StatusStopped, FinalStatus("cancelled"))
 	assert.Equal(t, bgtask.StatusStopped, FinalStatus("unknown"))
 }
 
-// TestACPEnvelopesDecodeTheWireFieldNames decodes REAL ACP wire payloads (the
-// inner `update` object) through the envelope structs.
+// TestACPEnvelopesDecodeTheWireFieldNames decodes actual ACP update payloads through the envelope structures.
 //
-// A test that constructs the structs directly cannot see a JSON-tag mismatch (for
-// example `json:"input"` against the wire's `rawInput`). That exact bug left
-// OpenCode, Kilo, Reasonix and Cursor subagent detection inert at runtime while
-// every struct-construction test passed. Each provider's own wire-decode test
-// then runs its detector on a payload decoded the same way.
+// Direct structure construction cannot detect a JSON-tag mismatch, such as json:"input" for the native rawInput field.
+// That mismatch disabled subagent detection for these providers while every direct structure test passed:
+//   - OpenCode.
+//   - Kilo.
+//   - Reasonix.
+//   - Cursor.
+// Each provider's decode test also runs its detector on a payload decoded through this same path.
 func TestACPEnvelopesDecodeTheWireFieldNames(t *testing.T) {
 	t.Parallel()
 
@@ -267,11 +268,9 @@ func TestACPEnvelopesDecodeTheWireFieldNames(t *testing.T) {
 	assert.JSONEq(t, `{"vendor":{}}`, string(tcu.Meta))
 }
 
-// TestACP_ApplySubagentObservation_RenameFromCollapsesToOneFinalRow
-// verifies the rename path: a spawn opens a row under the toolCallId, then a
-// final update re-keys it to the child session id via RenameFrom. One row
-// tracks the lifecycle and ends final; the original spawn key is gone (not
-// leaked as a separate Running row).
+// TestACP_ApplySubagentObservation_RenameFromCollapsesToOneFinalRow verifies the complete rename lifecycle.
+// A spawn opens a row under toolCallId, and RenameFrom moves it to the child session ID on the final update.
+// One final row remains, and the original spawn key leaves no separate Running row.
 func TestACP_ApplySubagentObservation_RenameFromCollapsesToOneFinalRow(t *testing.T) {
 	sink := &agenttest.Sink{}
 	b := &Base{sink: agent.NewProviderServices(sink)}
@@ -289,21 +288,19 @@ func TestACP_ApplySubagentObservation_RenameFromCollapsesToOneFinalRow(t *testin
 	b.ApplySubagentObservation(&SubagentObservation{
 		RowKey:     "sess-abc",
 		RenameFrom: "call-123",
-		Status:     bgtask.StatusCompleted,
+		Status:     bgtask.StatusSucceeded,
 		CloseRow:   true,
 	})
 
-	// One row under the renamed key, final. The spawn key is gone.
+	// Only one final row remains under the new key. The spawn key identifies no row.
 	tasks := sink.BackgroundTasks()
 	require.Len(t, tasks, 1, "rename + close collapsed the lifecycle to one row")
 	assert.Equal(t, "sess-abc", tasks[0].RowKey)
 	assert.True(t, tasks[0].Status.IsFinished(), "renamed row is final")
 }
 
-// TestACP_ApplySubagentObservation_CloseOnlyModeSkipsUpsert verifies that an
-// observation with Mode == ModeCloseOnly closes an existing row WITHOUT
-// first upserting one (the detector sets the Mode explicitly instead of relying
-// on which fields happen to be empty).
+// TestACP_ApplySubagentObservation_CloseOnlyModeSkipsUpsert verifies that ModeCloseOnly closes an existing row without an upsert.
+// The detector sets Mode explicitly instead of inferring it from empty descriptive fields.
 func TestACP_ApplySubagentObservation_CloseOnlyModeSkipsUpsert(t *testing.T) {
 	sink := &agenttest.Sink{}
 	b := &Base{sink: agent.NewProviderServices(sink)}
@@ -318,7 +315,7 @@ func TestACP_ApplySubagentObservation_CloseOnlyModeSkipsUpsert(t *testing.T) {
 	// Close-only: closes the existing row, does NOT upsert.
 	b.ApplySubagentObservation(&SubagentObservation{
 		RowKey:   "call-1",
-		Status:   bgtask.StatusCompleted,
+		Status:   bgtask.StatusSucceeded,
 		CloseRow: true,
 		Mode:     ModeCloseOnly,
 	})
@@ -327,10 +324,8 @@ func TestACP_ApplySubagentObservation_CloseOnlyModeSkipsUpsert(t *testing.T) {
 	assert.True(t, tasks[0].Status.IsFinished(), "existing row reached a final status")
 }
 
-// TestACP_ApplySubagentObservation_UpsertModeWithCloseDoesBoth verifies that an
-// observation with Mode == ModeUpsert (default) and CloseRow upserts THEN
-// closes — the behavior when a final observation also carries descriptive
-// fields (e.g. a Cursor background task with an activity line).
+// TestACP_ApplySubagentObservation_UpsertModeWithCloseDoesBoth verifies that ModeUpsert with CloseRow upserts the row before closing it.
+// This default mode permits descriptive fields on a final observation, such as a Cursor background task's activity line.
 func TestACP_ApplySubagentObservation_UpsertModeWithCloseDoesBoth(t *testing.T) {
 	sink := &agenttest.Sink{}
 	b := &Base{sink: agent.NewProviderServices(sink)}
@@ -339,7 +334,7 @@ func TestACP_ApplySubagentObservation_UpsertModeWithCloseDoesBoth(t *testing.T) 
 		RowKey:   "call-bg",
 		Title:    "bg task",
 		Activity: "background task",
-		Status:   bgtask.StatusCompleted,
+		Status:   bgtask.StatusSucceeded,
 		CloseRow: true,
 		// Mode defaults to ModeUpsert (zero value).
 	})
@@ -349,10 +344,9 @@ func TestACP_ApplySubagentObservation_UpsertModeWithCloseDoesBoth(t *testing.T) 
 	assert.True(t, tasks[0].Status.IsFinished(), "the close gave the row a final status")
 }
 
-// The spawn payload carries the prompt, but the child transcript that should
-// open with it is created LATER, on a different observation (Goose learns its
-// child only from the first forwarded tool request). applySubagentObservation
-// holds the prompt across that gap.
+// The spawn payload supplies the prompt before another observation creates the child transcript.
+// Goose learns its child from the first forwarded tool request.
+// applySubagentObservation retains the prompt until that child exists, so the transcript can open with it.
 func TestACPSubagentPrompt_HeldFromSpawnUntilTheChildExists(t *testing.T) {
 	t.Parallel()
 
@@ -368,7 +362,7 @@ func TestACPSubagentPrompt_HeldFromSpawnUntilTheChildExists(t *testing.T) {
 	})
 	assert.Equal(t, "Review the diff.", b.subagentPrompts.PeekForTest("tc-1"))
 
-	// 2. The observation that links the child spends it.
+	// 2. The observation that links the child consumes the retained prompt.
 	b.ApplySubagentObservation(&SubagentObservation{
 		RowKey:        "tc-1",
 		ChildAgentKey: "tc-1",
@@ -395,17 +389,14 @@ func TestACPSubagentPrompt_DroppedWhenTheRowClosesWithNoChild(t *testing.T) {
 	require.Equal(t, 1, b.subagentPrompts.CountForTest())
 
 	b.ApplySubagentObservation(&SubagentObservation{
-		RowKey: "tc-1", Status: bgtask.StatusCompleted, CloseRow: true, Mode: ModeCloseOnly,
+		RowKey: "tc-1", Status: bgtask.StatusSucceeded, CloseRow: true, Mode: ModeCloseOnly,
 	})
 	assert.Zero(t, b.subagentPrompts.CountForTest())
 }
 
-// A closing observation that RE-KEYS the row must drop the prompt under the
-// key the spawn used, not under the new one. A provider that learns the child's
-// stable id only on the closing update (OpenCode, Kilo) arrives here with
-// RowKey = the new key and RenameFrom = the spawn key, so forgetting only
-// RowKey deletes an entry that was never inserted and leaves the spawn's own to
-// accumulate for the life of the agent process.
+// A closing observation that renames a row must remove the prompt under the original spawn key.
+// OpenCode and Kilo learn the stable child ID on the closing update and supply it as RowKey, with the spawn key in RenameFrom.
+// Removing only RowKey would address an entry that never existed and retain the original prompt for the agent process's lifetime.
 func TestACPSubagentPrompt_DroppedUnderTheSpawnKeyAfterARename(t *testing.T) {
 	t.Parallel()
 
@@ -418,16 +409,16 @@ func TestACPSubagentPrompt_DroppedUnderTheSpawnKeyAfterARename(t *testing.T) {
 	b.ApplySubagentObservation(&SubagentObservation{
 		RowKey:     "ses-child",
 		RenameFrom: "call-1",
-		Status:     bgtask.StatusCompleted,
+		Status:     bgtask.StatusSucceeded,
 		CloseRow:   true,
 		Mode:       ModeCloseOnly,
 	})
 	assert.Zero(t, b.subagentPrompts.CountForTest(), "the entry sits under the SPAWN key, not the renamed one")
 }
 
-// Replacing the session drops every unspent prompt: those rows belong to the
-// outgoing session and no closing observation will ever arrive for them, so
-// without this they are held for the life of the agent process.
+// Replacing the session removes every unconsumed spawn prompt.
+// Those rows belong to the outgoing session, which supplies no later closing observation.
+// Otherwise the prompts would remain for the agent process's lifetime.
 func TestACPSubagentPrompt_ClearedWhenTheSessionIsReplaced(t *testing.T) {
 	t.Parallel()
 
@@ -467,7 +458,7 @@ func TestACP_SubagentReportLookupFailureWritesNoUnverifiedReport(t *testing.T) {
 
 	sink.LookupErr = errors.New("registry read failed")
 	b.ApplySubagentObservation(&SubagentObservation{
-		RowKey: "task-call", Status: bgtask.StatusCompleted, CloseRow: true,
+		RowKey: "task-call", Status: bgtask.StatusSucceeded, CloseRow: true,
 		Mode: ModeCloseOnly, ReportID: "call-1", Report: agent.SubagentReport{Text: "Unverified report"},
 	})
 
@@ -492,15 +483,13 @@ func TestACP_ObservationIsSpawn(t *testing.T) {
 	}))
 }
 
-// The shell case now lives in TestACP_OnlyTheSpawnDetectorsClaimASpawn, which
-// asserts it over the REAL Cursor hook: the backgrounded-shell arm never claims
-// a spawn. The kind of a row no longer decides, so a struct built by hand can no
-// longer state the case.
+// TestACP_OnlyTheSpawnDetectorsClaimASpawn exercises the shell case through the actual Cursor hook.
+// The background-shell branch never identifies a spawn.
+// A row's kind no longer determines this result, so a directly constructed observation cannot represent that case.
 
-// A spawn owns no span: the base opens none for it and reserves no color, but it
-// still records the span type for the closing update. An ordinary tool call keeps
-// its span. The stub detector claims one call; each provider pins that its own
-// detector claims its spawn payload and nothing else.
+// A spawn owns no span and reserves no color, but the base still records its span type for the closing update.
+// An ordinary tool call keeps its span.
+// The stub detector identifies one call, and each provider verifies that its detector accepts only its actual spawn payloads.
 func TestACP_SpawnToolCallOpensNoSpan(t *testing.T) {
 	t.Parallel()
 
@@ -525,8 +514,8 @@ func TestACP_SpawnToolCallOpensNoSpan(t *testing.T) {
 	assert.Equal(t, "call-plain", open[0].SpanID)
 	assert.Equal(t, []string{"call-plain"}, sink.ReservedColorSpans())
 
-	// The spawn row was persisted before the plain call, so it drew no rail; the
-	// plain row persists before its own span opens, so it draws none either.
+	// The spawn row persists before the ordinary call and therefore draws no rail.
+	// The ordinary row also persists before its own span opens, so it draws no rail either.
 	msgs := sink.Messages()
 	require.Len(t, msgs, 2)
 	assert.Empty(t, msgs[0].SpansOpenAtPersist)

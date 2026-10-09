@@ -41,7 +41,7 @@ func handleCodexOutput(a *Agent, line *providerkit.ParsedLine) {
 	slog.Debug("codex HandleOutput", "agent_id", a.AgentID(), "method", line.Method, "len", len(line.Raw))
 
 	if _, ok := codexSystemMetadataMethods[line.Method]; ok {
-		if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, line.Raw); err != nil {
+		if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: line.Raw}); err != nil {
 			slog.Error("codex persist system metadata", "agent_id", a.AgentID(), "method", line.Method, "error", err)
 		}
 		return
@@ -322,7 +322,7 @@ func (a *Agent) handleCodexItemStartedForSink(
 			}
 			a.Mu.Unlock()
 		}
-		if _, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, event.raw); err != nil {
+		if _, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: event.raw}); err != nil {
 			slog.Error("codex persist compacting notification", "agent_id", agentID, "error", err)
 		}
 	case contracts.CodexItemTypeCommandExecution, contracts.CodexItemTypeFileChange, contracts.CodexItemTypeMcpToolCall, contracts.CodexItemTypeDynamicToolCall, contracts.CodexItemTypeImageGeneration, contracts.CodexItemTypeImageView, contracts.CodexItemTypeReasoning:
@@ -452,7 +452,7 @@ func (a *Agent) handleCodexItemCompletedForSink(
 	case contracts.CodexItemTypeReasoning:
 		a.persistCompletedReasoningItem(sink, event, agentID)
 	case contracts.CodexItemTypeContextCompaction:
-		if _, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, event.raw); err != nil {
+		if _, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: event.raw}); err != nil {
 			slog.Error("codex persist contextCompaction/completed", "agent_id", agentID, "error", err)
 		}
 	default:
@@ -812,7 +812,7 @@ func (a *Agent) persistCodexThreadFailure(threadID string, kind codexPendingChil
 }
 
 func (a *Agent) persistCodexFailureForSink(sink agent.ProviderServices, agentID string, kind codexPendingChildEventKind, content json.RawMessage) {
-	if _, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content); err != nil {
+	if _, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: content}); err != nil {
 		slog.Error("codex persist failure notification", "agent_id", agentID, "kind", kind, "error", err)
 	}
 }

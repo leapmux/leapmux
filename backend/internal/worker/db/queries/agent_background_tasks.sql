@@ -65,7 +65,7 @@ ORDER BY seq DESC LIMIT ?;
 -- uninterruptible. A linked row is retained for the life of its root agent,
 -- which is what ON DELETE CASCADE from agents(id) already gives the transcript
 -- it points at.
--- min_final_status is BACKGROUND_TASK_STATUS_COMPLETED, the lowest FINAL
+-- min_final_status is BACKGROUND_TASK_STATUS_SUCCEEDED, the lowest FINAL
 -- ordinal. Every query below splits the pool on it rather than listing the four
 -- final words, so a renumbered enum propagates through the binding instead of
 -- leaving a stale literal behind. bgtask.MinFinalStatus is the one Go spelling,

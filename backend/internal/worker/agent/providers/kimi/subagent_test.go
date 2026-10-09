@@ -86,7 +86,7 @@ func TestKimiSubagentTranscript(t *testing.T) {
 	assert.Equal(t, bgtask.KindSubagent, row.Kind)
 	assert.Equal(t, "Reviewer", row.Title)
 	assert.Equal(t, "explore", row.Description)
-	assert.Equal(t, bgtask.StatusCompleted, row.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
 
 	spawnSpan, err := rig.sink.ChildSpawnSpan(row.ChildAgentID)
 	require.NoError(t, err)
@@ -137,7 +137,7 @@ func TestKimiSubagentEndStatus(t *testing.T) {
 		extra  map[string]any
 		status bgtask.Status
 	}{
-		{contracts.KimiEventSubagentCompleted, nil, bgtask.StatusCompleted},
+		{contracts.KimiEventSubagentCompleted, nil, bgtask.StatusSucceeded},
 		{contracts.KimiEventSubagentFailed, map[string]any{"error": map[string]any{"message": "provider exploded"}}, bgtask.StatusFailed},
 		{contracts.KimiEventSubagentFailed, map[string]any{"error": "plain failure"}, bgtask.StatusFailed},
 		{contracts.KimiEventSubagentCancelled, nil, bgtask.StatusStopped},
@@ -250,7 +250,7 @@ func TestKimiSwarmMemberThatTheRateLimitSuspends(t *testing.T) {
 	rig.feed(t, map[string]any{"type": contracts.KimiEventSubagentCompleted, "subagentId": "agent-0", "resultSummary": "Package A is clean."})
 	statuses := rig.sink.BackgroundTaskStatuses("session_1/agent-0")
 	require.NotEmpty(t, statuses)
-	assert.Equal(t, bgtask.StatusCompleted, statuses[len(statuses)-1], "the member that completed reads Completed")
+	assert.Equal(t, bgtask.StatusSucceeded, statuses[len(statuses)-1], "the member that completed reads Completed")
 	assert.NotContains(t, statuses, bgtask.StatusFailed, "the rate-limited turn never closed the row")
 }
 
@@ -485,7 +485,7 @@ func TestKimiChildRouting(t *testing.T) {
 func TestKimiChildTurnStatus(t *testing.T) {
 	t.Parallel()
 
-	assert.Equal(t, bgtask.StatusCompleted, kimiChildTurnStatus(contracts.KimiTurnEndCompleted))
+	assert.Equal(t, bgtask.StatusSucceeded, kimiChildTurnStatus(contracts.KimiTurnEndCompleted))
 	assert.Equal(t, bgtask.StatusStopped, kimiChildTurnStatus(contracts.KimiTurnEndCancelled))
 	assert.Equal(t, bgtask.StatusFailed, kimiChildTurnStatus(contracts.KimiTurnEndFailed))
 	assert.Equal(t, bgtask.StatusFailed, kimiChildTurnStatus(contracts.KimiTurnEndBlocked))

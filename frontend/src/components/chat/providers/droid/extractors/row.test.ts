@@ -1,6 +1,6 @@
 import type { ToolSpanContext } from '~/components/chat/rowExtractionTypes'
 import { describe, expect, it } from 'vitest'
-import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { isGenericToolResult } from '../../../model/tools/generic'
 import { resolveMessageForRendering } from '../../registry'
 import { classifyDroidMessage } from '../classification'
@@ -11,6 +11,20 @@ function resolvedDroidFrame(frame: Record<string, unknown>) {
 }
 
 describe('droidExtractRow', () => {
+  it.each([
+    [MessageCompletion.ERROR, 'failed'],
+    [MessageCompletion.INTERRUPTED, 'cancelled'],
+    [MessageCompletion.FINISHED, 'incomplete'],
+  ])('preserves retained completion %s without inventing a successful tool result', (completion, status) => {
+    const request = { ...resolvedDroidFrame({ type: 'tool_call', toolUse: { id: 'native-call', name: 'Read', input: { file_path: '/repo/file.txt' } } }), completion }
+    const span: ToolSpanContext = { request, result: undefined, role: 'result', visibleRows: { request: false, result: true } }
+    const row = droidExtractRow({ resolved: request, category: { kind: 'tool_result' }, span })
+    if (row?.kind !== 'tool')
+      throw new Error('The retained native Droid call requires a tool row.')
+    expect(row.call.status).toBe(status)
+    expect(row.call.result).toBeUndefined()
+  })
+
   it('normalizes a native TodoWrite request before the typed renderer reads it', () => {
     const request = resolvedDroidFrame({
       type: 'tool_call',

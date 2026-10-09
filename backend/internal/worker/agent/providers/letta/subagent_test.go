@@ -102,7 +102,7 @@ func TestLettaChildDeltasStayInTheirChildTranscript(t *testing.T) {
 
 	row, ok := sink.BackgroundTask(lettaTestChildID)
 	require.True(t, ok)
-	assert.Equal(t, bgtask.StatusCompleted, row.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
 	var childContents []string
 	for _, message := range sink.Child(childID).Messages() {
 		childContents = append(childContents, string(message.Content))
@@ -263,7 +263,7 @@ func TestLettaChildCompletionFlushesItsBufferedAnswer(t *testing.T) {
 
 	completed, ok := sink.BackgroundTask(lettaTestChildID)
 	require.True(t, ok)
-	assert.Equal(t, bgtask.StatusCompleted, completed.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, completed.Status)
 	var matches int
 	for _, message := range sink.Child(row.ChildAgentID).Messages() {
 		if strings.Contains(string(message.Content), "LETTA_FINAL_IN_STREAM") {
@@ -284,7 +284,7 @@ func TestLettaChildCompletionUsesTheReportWhenTheStreamHasNoFinalMessage(t *test
 
 	completed, ok := sink.BackgroundTask(lettaTestChildID)
 	require.True(t, ok)
-	assert.Equal(t, bgtask.StatusCompleted, completed.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, completed.Status)
 	var childText []string
 	for _, message := range sink.Child(row.ChildAgentID).Messages() {
 		childText = append(childText, string(message.Content))
@@ -315,7 +315,7 @@ func TestLettaEchoOfTheReadersMessageClosesNoChild(t *testing.T) {
 	a.HandleOutput(lettaChildTaskNotification(t, "task_1", "FROM_LETTA_CODE"))
 	row, ok = sink.BackgroundTask(lettaTestChildID)
 	require.True(t, ok)
-	assert.Equal(t, bgtask.StatusCompleted, row.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
 }
 
 func TestLettaChildCompletionRejectsAnotherTaskID(t *testing.T) {

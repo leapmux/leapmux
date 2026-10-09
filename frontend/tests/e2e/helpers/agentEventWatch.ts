@@ -1,10 +1,9 @@
 /**
- * The Worker's live event subscription for one agent, which several proofs watch.
- *
- * Each watch sends one `WatchEvents` request, waits for the Worker to acknowledge
- * it, and keeps the events that its selector picks. This module owns the steps
- * that every watch shares: the request, the acknowledgement, a refusal, a stream
- * error, a stream end, and the cancel on failure.
+ * Subscribe to the Worker's live events for one agent.
+ * Send one WatchEvents request and require its exact registered FULL replay identity.
+ * Keep the events that the selector chooses.
+ * Cancel the stream if subscription fails.
+ * Preserve a refusal or stream failure for the test's next assertion.
  */
 import type { AgentEvent } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
 import type { ServerInfo } from '../fixtures'
@@ -25,7 +24,7 @@ export function agentWatchRequest(agentId: string): Uint8Array {
   if (!agentId.trim())
     throw new Error('An agent event watch requires an agent ID.')
   return toBinary(WatchEventsRequestSchema, create(WatchEventsRequestSchema, {
-    agents: [{ agentId, mode: WatchMode.FULL, replay: WatchReplayMode.LATEST, cursorSeq: 0n }],
+    agents: [{ agentId, mode: WatchMode.FULL, replay: WatchReplayMode.LATEST, cursorSeq: 0n, replayId: AGENT_WATCH_UPDATE_ID }],
     updateId: AGENT_WATCH_UPDATE_ID,
   }))
 }
@@ -33,7 +32,7 @@ export function agentWatchRequest(agentId: string): Uint8Array {
 /**
  * What one `WatchEvents` frame means to a watch of one agent.
  *
- * - `acknowledged`: the Worker accepted the subscription.
+ * - `acknowledged`: the Worker registered the requested FULL replay identity.
  * - `event`: an event of the watched agent.
  * - `ignored`: any other frame, such as an acknowledgement of another update or
  *   an event of another agent.
@@ -46,8 +45,11 @@ export type AgentWatchFrame
 /**
  * Decode one `WatchEvents` frame for a watch of `agentId`.
  *
- * Throws when the bytes are not a frame, and when the Worker refuses the
- * subscription. `label` names the watch in those messages.
+ * Reject these failures:
+ * - Malformed bytes.
+ * - A refused subscription.
+ * - An incorrect registered identity.
+ * Include the watch label in each error message.
  */
 export function readAgentWatchFrame(payload: Uint8Array, agentId: string, label: string): AgentWatchFrame {
   let response
@@ -63,23 +65,30 @@ export function readAgentWatchFrame(payload: Uint8Array, agentId: string, label:
       return { kind: 'ignored' }
     if (acknowledgement.rejectedAgents.length > 0)
       throw new Error(`The Worker refused the ${label}: ${JSON.stringify(acknowledgement.rejectedAgents)}`)
+    const registered = acknowledgement.agentStates.filter(state => state.agentId === agentId)
+    if (registered.length !== 1 || registered[0]?.mode !== WatchMode.FULL || registered[0]?.replayId !== AGENT_WATCH_UPDATE_ID)
+      throw new Error(`The Worker did not register the ${label} with its requested FULL replay identity.`)
     return { kind: 'acknowledged' }
   }
   if (response.event.case !== 'agentEvent' || response.event.value.agentId !== agentId)
     return { kind: 'ignored' }
-  return { kind: 'event', event: response.event.value }
+  const event = response.event.value
+  if (event.replay && (event.replayAgentId !== agentId || event.replayId !== AGENT_WATCH_UPDATE_ID))
+    return { kind: 'ignored' }
+  return { kind: 'event', event }
 }
 
 /**
- * Pick the value that a watch keeps from one event of its agent, or undefined to
- * skip the event. A thrown error fails the watch with that error.
+ * Return the value that the watch keeps, or undefined to skip the event.
+ * A thrown error becomes the watch's failure.
  */
 export type AgentEventSelector<T> = (event: AgentEvent) => T | undefined
 
 /**
- * The state of one watch: the acknowledgement, the selected items, and the first
- * failure. A stream callback hands each frame to `accept`, which never throws, so
- * the failure reaches the test through `assertHealthy`.
+ * Retain the acknowledgement and selected items for one watch.
+ * Retain its first failure also.
+ * The stream callback passes each frame to accept, which never throws.
+ * assertHealthy delivers the failure to the test.
  */
 export class AgentEventCollector<T> {
   readonly items: T[] = []
@@ -115,7 +124,7 @@ export class AgentEventCollector<T> {
     }
   }
 
-  /** Record a failure. The first one wins, because a later stream end only follows it. */
+  /** Keep the first failure. A later error must not replace its cause. */
   fail(error: unknown): void {
     this.failure ??= error instanceof Error ? error : new Error(String(error))
   }
@@ -133,9 +142,9 @@ export interface AgentEventWatch<T> {
 }
 
 /**
- * Subscribe to the live events of one agent, and resolve once the Worker
- * acknowledges the subscription. A refusal, a stream error, or a stream end
- * before the acknowledgement rejects, and cancels the stream.
+ * Subscribe to one agent's live events.
+ * Resolve after the Worker confirms the exact registered identity.
+ * Cancel the stream if subscription fails before that confirmation.
  */
 export async function watchAgentEvents<T>(
   server: AgentWatchServer,
@@ -151,7 +160,7 @@ export async function watchAgentEvents<T>(
   watch.onError(error => collector.fail(error))
   watch.onEnd(() => collector.fail(new Error(`The ${options.label} ended before its assertion.`)))
   try {
-    // A thrown read ends `expect.poll` at once, so a refusal fails here with its own message.
+    // A thrown read ends expect.poll immediately, so a refusal retains its own error message.
     await expect.poll(() => {
       collector.assertHealthy()
       return collector.subscribed

@@ -24,9 +24,9 @@ import (
 	"github.com/leapmux/leapmux/util/validate"
 )
 
-// Default retained output size when terminal/create omits outputByteLimit.
-// Matches Reasonix's host-terminal cap (1 MiB). Explicit 0 means retain
-// nothing (still reports truncated when any bytes were produced).
+// This retained-output limit applies when terminal/create omits outputByteLimit.
+// It matches Reasonix's host-terminal limit of 1 mebibyte (MiB).
+// An explicit zero retains no output and still reports truncation when the process produces any bytes.
 const acpDefaultOutputByteLimit = 1 << 20
 
 // The provider can request a smaller retained tail, but it cannot reserve an
@@ -34,9 +34,9 @@ const acpDefaultOutputByteLimit = 1 << 20
 const acpMaxOutputByteLimit = 8 << 20
 const acpMaxTerminalsPerPrompt = 32
 
-// How long release/Stop waits for a killed terminal's wait goroutine before
-// giving up. Tree-kill should make this unnecessary; the bound keeps Stop
-// from hanging the agent lifecycle if a descendant still refuses to die.
+// This duration limits how long release and Stop wait for a killed terminal's waiter goroutine.
+// Stopping the process tree should end that wait promptly.
+// The limit prevents Stop from blocking the agent lifecycle indefinitely when a descendant refuses to exit.
 const acpTerminalReleaseWait = 10 * time.Second
 
 // acpTerminalEnvVar is one ACP EnvVariable entry on terminal/create.
@@ -59,9 +59,9 @@ type acpTerminalIDParams struct {
 	TerminalID string `json:"terminalId"`
 }
 
-// acpTerminalSession is one host-run ACP terminal command. It is not a
-// LeapMux interactive PTY tab — just a process + retained output buffer
-// that agents poll via terminal/output and wait_for_exit.
+// acpTerminalSession holds one ACP command process and its retained output buffer.
+// It represents no interactive LeapMux pseudoterminal (PTY) tab.
+// Agents read the process output through terminal/output and wait for its exit through wait_for_exit.
 type acpTerminalSession struct {
 	id      string
 	command string
@@ -78,16 +78,20 @@ type acpTerminalSession struct {
 	exitCode       *int
 	signal         *string
 	registryClosed bool
-	// killed is set when the host intentionally terminates the process
-	// (terminal/kill, release, Stop, ClearContext, a stopped prompt). Registry
-	// status then becomes StatusStopped rather than Failed.
+	// killed records that the host intentionally stops the process through one of these paths:
+	//   - terminal/kill.
+	//   - release.
+	//   - Stop.
+	//   - ClearContext.
+	//   - A stopped prompt.
+	// The registry then reports StatusStopped instead of StatusFailed.
 	killed bool
 	// awaited counts the terminal/wait_for_exit requests that have no reply
 	// yet. A pending wait marks the command as the foreground work of a tool
 	// call, which a stopped prompt ends (see releaseAwaitedTerminals).
 	awaited int
 
-	// done is closed once the process has exited and exit fields are set.
+	// The waiter closes done after the process exits and the exit fields receive their values.
 	done chan struct{}
 }
 
@@ -196,15 +200,12 @@ func (s *acpTerminalSession) appendOutput(p []byte) {
 	s.bufSize += len(p)
 }
 
-// snapshot copies the retained tail out of the ring buffer.
+// snapshot copies the retained ring-buffer suffix into an independent string.
+// The string must not retain the ring buffer because appendOutput overwrites its bytes on the next read.
 //
-// It COPIES on purpose: the returned string must not hold the ring buffer, whose
-// bytes appendOutput overwrites on the next read.
-//
-// The ring keeps the last byteLimit bytes, so its oldest byte can be a
-// continuation byte of a rune whose leading byte the ring already dropped. ACP
-// requires a cut at a character boundary, so the loop below discards that partial
-// rune and reports the loss.
+// The ring retains only the last byteLimit bytes.
+// Its oldest byte can therefore continue a rune whose first byte already left the ring.
+// ACP requires a character boundary, so discard that incomplete rune and report the lost bytes.
 func (s *acpTerminalSession) snapshot() (output string, truncated bool, exitCode *int, signal *string, exited bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -242,9 +243,8 @@ func exitStatusFromProcessState(ps *os.ProcessState) (exitCode *int, signal *str
 		c := code
 		return &c, nil
 	}
-	// Negative ExitCode means the process was stopped by a signal (Unix) or
-	// never produced a normal exit code. Report a signal token so agents can
-	// tell timeout/kill apart from a numeric failure.
+	// A negative ExitCode means a Unix signal stopped the process or no normal exit code exists.
+	// Report a signal token so the agent can distinguish a timeout or kill from a numeric failure.
 	sig := "terminated"
 	return nil, &sig
 }
@@ -326,15 +326,16 @@ func (b *acpTerminalHost) handleTerminalMethod(line *providerkit.ParsedLine) {
 	}
 }
 
-// terminalError and terminalOK are the two funnels for every terminal reply, and
-// both hand the frame to the stdin writer WITHOUT waiting for it.
+// terminalError and terminalOK send every terminal response through the stdin writer without waiting for the write.
 //
-// terminal/create, terminal/output and terminal/kill are all answered from the
-// goroutine that drains the child's stdout. Waiting for the write there is the
-// deadlock the reply exists to prevent: a child that is not reading its stdin
-// blocks the write, its unread stdout backs up against it, and neither side moves
-// again. The frames stay in order behind one writer, so nothing that follows a
-// reply can overtake it.
+// The goroutine that drains the child's stdout answers each of these requests:
+//   - terminal/create.
+//   - terminal/output.
+//   - terminal/kill.
+// Waiting for the write there can deadlock.
+// A child that reads no stdin blocks that write, while its unread stdout fills the output pipe and blocks the child.
+// Neither side can then continue.
+// One writer preserves frame order, so a later frame cannot overtake the response.
 func (b *Base) terminalError(id json.RawMessage, code int, message string) {
 	b.SendErrorResponseDetached(id, code, message, "terminal error")
 }
@@ -365,11 +366,14 @@ func (b *acpTerminalHost) getTerminal(terminalID string) (*acpTerminalSession, b
 	return s, ok
 }
 
-// terminalBaseEnv returns the environment the host command should inherit.
-// Prefer the agent process env (already FinalizeAgentEnv + AppImage-scrubbed
-// at launch) so GIT_OPTIONAL_LOCKS, LEAPMUX_WORKER, ExtraEnv, and identity
-// scrubbing match the agent. Fall back to FinalizeAgentEnv(os.Environ())
-// when no agent cmd is attached (unit tests).
+// terminalBaseEnv returns the host command's inherited environment.
+// Prefer the agent process environment, which already runs through FinalizeAgentEnv and removes AppImage-specific variables at launch.
+// These environment rules then match the agent:
+//   - GIT_OPTIONAL_LOCKS.
+//   - LEAPMUX_WORKER.
+//   - ExtraEnv.
+//   - Identity-variable removal.
+// When no agent command exists, as in unit tests, use FinalizeAgentEnv(os.Environ()).
 func (b *Base) terminalBaseEnv() []string {
 	var base []string
 	if b.Cmd() != nil {
@@ -489,19 +493,14 @@ func (b *acpTerminalHost) terminalCreate(id json.RawMessage, rawParams json.RawM
 	b.terminals[termID] = sess
 	b.terminalsMu.Unlock()
 
-	// Upsert before starting the waiters/reply so CloseBackgroundTask on a
-	// fast-exiting command cannot land before the Running row exists.
-	// terminal/create carries the command and nothing else -- there is no
-	// description field for it to be confused with -- so this title IS the
-	// command, and the client can set it as code. The "shell" fallback is not,
-	// which is why the flag tracks the branch rather than the row's kind.
+	// Upsert before starting waiters or sending the response.
+	// A quickly exiting command must not close its row before that Running row exists.
+	// terminal/create supplies the command without a description, so the title is a verbatim command that the client can display as code.
+	// The shell fallback is prose, so TitleIsCommand follows that selection rather than the row kind.
 	//
-	// CleanName runs HERE and not only at the sink, because the registry
-	// applies the same name rule to every title. A command that holds nothing
-	// but the characters that the rule strips would reach the row blank and
-	// skip the "shell" fallback below, which leaves the row with no label at
-	// all. CleanName is idempotent, so the sink's own call changes nothing
-	// after this one.
+	// Clean the command here before selecting the shell fallback, even though the sink also applies the same title rule.
+	// A command containing only stripped characters otherwise becomes an empty stored title after bypassing that fallback.
+	// CleanName is idempotent, so the sink's later call preserves this cleaned title.
 	title := validate.CleanName(bgtask.FirstLine(params.Command))
 	titleIsCommand := title != ""
 	if title == "" {
@@ -535,9 +534,9 @@ func (b *acpTerminalHost) terminalCreate(id json.RawMessage, rawParams json.RawM
 			slog.Warn("close owned ACP terminal processes", "terminal_id", sess.id, "error", closeErr)
 		}
 		sess.recordExit(processStateFromWait(waitErr, owner.ProcessState()))
-		// The registry row reaches its final status BEFORE done closes.
-		// terminal/wait_for_exit replies off done, so the opposite order lets
-		// the client read its own terminal's row and still see RUNNING.
+		// Set the registry row's final status before closing done.
+		// terminal/wait_for_exit replies when done closes.
+		// The opposite order would let the client receive the exit response and still read Running from its own terminal row.
 		b.closeTerminalRegistry(sess)
 		b.rememberCompletedTerminal(sess)
 		b.services().ReportProgress(agent.CompleteOutputProgress("terminal:" + sess.id))
@@ -601,16 +600,16 @@ func (b *acpTerminalHost) takeCompletedTerminal(terminalID string) (contracts.AC
 	return result, ok
 }
 
-// terminalResultFor gives the output a stored row carries for one terminal.
+// terminalResultFor returns the output that a stored tool row uses for one terminal.
 //
-// A terminal that EXITED is taken from the completed set, which spends it. One that is
-// still RUNNING is read where it stands, because LeapMux owns that process and holds
-// every byte it printed: a stop cuts the turn, the agent sends its final tool update at
-// once, and the process is alive when that row is stored. Without this the row said
-// `[output unavailable]` for output LeapMux had in hand.
+// For an exited process, read and consume its retained result from the completed set.
+// For a running process, read its current output without removing it.
+// LeapMux owns that process and retains every produced byte.
+// After a stopped turn, the agent can immediately send its final tool update while the process still runs.
+// Without this live read, the row would report `[output unavailable]` despite retained output.
 //
-// A terminal LeapMux no longer holds returns false, and the row states that nothing can
-// be read for it. That is the one case "unavailable" describes.
+// Return false only when LeapMux no longer holds the process or its retained result.
+// The row then correctly reports that its output is unavailable.
 func (b *acpTerminalHost) terminalResultFor(terminalID string) (contracts.ACPTerminalResult, bool) {
 	if result, present := b.takeCompletedTerminal(terminalID); present {
 		return result, true
@@ -656,7 +655,7 @@ func (b *acpTerminalHost) closeTerminalRegistry(sess *acpTerminalSession) {
 	killed := sess.killed
 	sess.mu.Unlock()
 
-	status := bgtask.StatusCompleted
+	status := bgtask.StatusSucceeded
 	switch {
 	case killed:
 		status = bgtask.StatusStopped
@@ -772,9 +771,8 @@ func (b *acpTerminalHost) terminalRelease(id json.RawMessage, rawParams json.Raw
 		return
 	}
 
-	// Kill + wait off the read loop so a still-running command cannot stall
-	// further agent→client requests. Response fires once resources are free
-	// (or the limited wait expires).
+	// Kill and wait outside the read loop so a running command cannot block later agent-to-client requests.
+	// Send the response after releasing resources or reaching the wait limit.
 	go func() {
 		b.releaseTerminal(sess)
 		b.sendOK(id, map[string]interface{}{})
@@ -788,27 +786,24 @@ func (b *acpTerminalHost) releaseTerminal(sess *acpTerminalSession) {
 	b.services().ReportProgress(agent.CompleteOutputProgress("terminal:" + sess.id))
 }
 
-// releaseAwaitedTerminals kills and forgets each terminal whose command still
-// runs while the agent waits for its exit. finishPromptRequest calls it for a
-// prompt that the reader stopped.
+// releaseAwaitedTerminals kills and removes each running terminal whose agent waits for its exit.
+// finishPromptRequest calls it when the reader stops a prompt.
 //
-// ACP asks the agent to abort each tool call before it answers a cancel, and to
-// release each terminal that it no longer needs. fast-agent 0.10.42 does
-// neither: its terminal runtime catches only Exception, and the
-// asyncio.CancelledError of a cancel is a BaseException. Its
-// terminal/wait_for_exit then outlives the `cancelled` reply, nothing releases
-// the terminal, and the Running row keeps the agent working after the stop.
+// ACP requires the agent to abort each tool call before answering a cancel and release every terminal that it no longer needs.
+// fast-agent 0.10.42 does neither.
+// Its terminal runtime catches only Exception, while cancellation raises asyncio.CancelledError, which inherits BaseException.
+// Its terminal/wait_for_exit therefore survives the cancelled reply, and nothing releases the terminal.
+// The retained Running row keeps the agent active after the stop.
 //
-// A pending wait marks the command as the foreground work of a cut tool call.
-// A terminal with no pending wait can be background work that the agent reads
-// later, so it stays. The pending wait still gets its reply, which states the
-// kill.
+// A pending wait identifies foreground work from an interrupted tool call.
+// A terminal without a pending wait can hold background work for a later read, so preserve it.
+// Each pending wait still receives a response that reports the kill.
 //
-// It does not take lifecycleMu, because a release can wait for the kill, and
-// each terminal request on the read loop takes that lock. terminalsMu alone
-// makes the removal exclusive: terminal/release and the session release take
-// a terminal out of the same map under it, and only the one that takes it out
-// releases it.
+// Do not acquire lifecycleMu here.
+// Release can wait for the kill, and each terminal request on the reader acquires that lock.
+// terminalsMu alone serializes removal from the shared map.
+// terminal/release and session release remove the same map entry under that mutex.
+// Only the operation that removes the entry releases its terminal.
 func (b *acpTerminalHost) releaseAwaitedTerminals() {
 	var awaited []*acpTerminalSession
 	b.terminalsMu.Lock()
@@ -824,18 +819,17 @@ func (b *acpTerminalHost) releaseAwaitedTerminals() {
 	}
 }
 
-// releaseAllTerminals kills and forgets every host terminal and latches the
-// store closed so a racing terminal/create cannot re-seed orphans after Stop.
-// Called from Stop and Wait (agent crash / natural exit).
+// releaseAllTerminals kills and removes every host terminal, then closes the store against new entries.
+// A concurrent terminal/create therefore cannot leave orphaned processes after Stop.
+// Stop and Wait call it for intentional stops, crashes, and natural process exits.
 func (b *acpTerminalHost) releaseAllTerminals() {
 	b.lifecycleMu.Lock()
 	defer b.lifecycleMu.Unlock()
 	b.releaseTerminals(true)
 }
 
-// releaseSessionTerminals kills host terminals bound to the outgoing ACP
-// session without latching the store closed — ClearContext may create new
-// terminals under the replacement sessionId.
+// releaseSessionTerminals kills host terminals attached to the outgoing ACP session without closing the store.
+// ClearContext can then create terminals under the replacement sessionId.
 func (b *acpTerminalHost) releaseSessionTerminals() {
 	b.lifecycleMu.Lock()
 	defer b.lifecycleMu.Unlock()
@@ -868,9 +862,9 @@ func (b *acpTerminalHost) releaseTerminals(closeLatch bool) {
 	}
 }
 
-// buildACPTerminalCmd builds the process for a terminal/create request.
-// Agents typically pass a full shell string with empty args; ACP also
-// allows an argv-style command+args pair.
+// buildACPTerminalCmd builds the process for terminal/create.
+// Agents usually supply a complete shell command string with empty args.
+// ACP also permits a command and separate argument array.
 func buildACPTerminalCmd(ctx context.Context, command string, args []string) *exec.Cmd {
 	if len(args) == 0 {
 		if runtime.GOOS == "windows" {
@@ -885,8 +879,8 @@ func mergeACPTerminalEnv(base []string, overrides []acpTerminalEnvVar) []string 
 	if len(overrides) == 0 {
 		return base
 	}
-	// Pin each override so a duplicate inherited key is replaced rather than
-	// layered (exec last-wins, but tests and introspection see one entry).
+	// Set each override explicitly so it replaces a duplicate inherited key rather than appending another entry.
+	// exec uses the last value, but tests and inspection must see only one entry.
 	assignments := make([]string, 0, len(overrides))
 	for _, o := range overrides {
 		if o.Name == "" {

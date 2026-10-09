@@ -8,7 +8,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -47,9 +49,40 @@ func TestKeyedTodoReplaySurvivesRemovalOfItsCanonicalTask(t *testing.T) {
 	for _, content := range []agent.MessageContent{
 		{Original: updateResult, AgentSessionID: "native-session"},
 		{Original: updateResult, AgentSessionID: "native-session", IdempotencyKey: "another-record"},
-		{Original: updateResult, AgentSessionID: "another-session", IdempotencyKey: "native-update"},
 	} {
 		require.ErrorContains(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, content, span), "unknown task")
+	}
+	writer := &testResponseWriter{channelID: "historical-keyed-todo"}
+	registerAgentWatch(svc, writer.channelID, ownerID, leapmuxv1.WatchMode_WATCH_MODE_FULL, writer)
+	sink.ReportProgress(agent.NativeTokenProgress("current-model", 17))
+	sink.ReportProgress(agent.OutputDeltaProgress("current-tool", 8))
+	before := requireRootOutputSink(t, svc.Output, ownerID).progress.snapshotInfo()
+	historical := agent.MessageContent{Original: updateResult, AgentSessionID: "another-session", IdempotencyKey: "native-update"}
+	require.NoError(t, agent.NewModelProgressResetSink(sink).PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, historical, span))
+	rows, err = svc.Queries.ListAllMessagesByAgentID(t.Context(), db.ListAllMessagesByAgentIDParams{AgentID: ownerID})
+	require.NoError(t, err)
+	require.Len(t, rows, 5)
+	stored := rows[4]
+	assert.Equal(t, historical.AgentSessionID, stored.AgentSessionID)
+	assert.Equal(t, historical.IdempotencyKey, stored.IdempotencyKey)
+	assert.True(t, stored.TranscriptOnly)
+	content, err := msgcodec.Decompress(stored.Content, stored.ContentCompression)
+	require.NoError(t, err)
+	assert.Equal(t, historical.Original, content)
+	todos, err := svc.Output.LoadTodos(t.Context(), ownerID)
+	require.NoError(t, err)
+	assert.Empty(t, todos)
+	after := requireRootOutputSink(t, svc.Output, ownerID).progress.snapshotInfo()
+	assert.Equal(t, before[contracts.SessionInfoKeyThinkingTokens], after[contracts.SessionInfoKeyThinkingTokens])
+	assert.Equal(t, before[contracts.SessionInfoKeyOutputBytes], after[contracts.SessionInfoKeyOutputBytes])
+	for _, stream := range writer.streamsSnapshot() {
+		event := decodeWatchAgentEvent(t, stream)
+		assert.Nil(t, event.GetTurnEnd())
+		assert.Nil(t, event.GetTodosChanged())
+		if message := event.GetAgentMessage(); message != nil {
+			assert.Equal(t, stored.ID, message.Id)
+			assert.True(t, message.TranscriptOnly)
+		}
 	}
 }
 
@@ -131,7 +164,7 @@ func TestKeyedChildTurnEndReplayKeepsTheNativeResultAndOneCompletion(t *testing.
 	child.UpdateSessionID("native-child-session")
 	writer := &testResponseWriter{channelID: "native-child-turn-replay"}
 	registerAgentWatch(svc, writer.channelID, childID, leapmuxv1.WatchMode_WATCH_MODE_FULL, writer)
-	require.NoError(t, root.CloseBackgroundTask("native-child", bgtask.StatusCompleted))
+	require.NoError(t, root.CloseBackgroundTask("native-child", bgtask.StatusSucceeded))
 	content := agent.MessageContent{Original: []byte(`{"type":"result","duration_ms":12}`), IdempotencyKey: "native-turn:1"}
 	for range 2 {
 		require.NoError(t, child.PersistTurnEnd(content, agent.SpanInfo{}))
@@ -157,11 +190,13 @@ func TestKeyedNativeTurnEndReplaySurvivesSinkReplacementAndKeepsSessionsSeparate
 	svc, sink, ownerID, _ := setupBgTaskTestWithService(t)
 	writer := &testResponseWriter{channelID: "native-durable-turn-replay"}
 	registerAgentWatch(svc, writer.channelID, ownerID, leapmuxv1.WatchMode_WATCH_MODE_FULL, writer)
+	sink.UpdateSessionID("native-session-a")
 	content := agent.MessageContent{Original: []byte(`{"type":"result"}`), AgentSessionID: "native-session-a", IdempotencyKey: "native-turn:0"}
 	require.NoError(t, sink.PersistTurnEnd(content, agent.SpanInfo{}))
 	replacement := svc.Output.NewSink(ownerID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	require.NoError(t, replacement.PersistTurnEnd(content, agent.SpanInfo{}))
 	content.AgentSessionID = "native-session-b"
+	replacement.UpdateSessionID(content.AgentSessionID)
 	require.NoError(t, replacement.PersistTurnEnd(content, agent.SpanInfo{}))
 	var turns int
 	for _, stream := range writer.streamsSnapshot() {
@@ -180,6 +215,7 @@ func TestFailedNativeTurnEndClaimPublishesNoCompletionAndAcceptsTheNextValidAtte
 	svc, sink, ownerID, _ := setupBgTaskTestWithService(t)
 	writer := &testResponseWriter{channelID: "native-failed-turn-claim"}
 	registerAgentWatch(svc, writer.channelID, ownerID, leapmuxv1.WatchMode_WATCH_MODE_FULL, writer)
+	sink.UpdateSessionID("native")
 	_, err := svc.Output.db.ExecContext(t.Context(), `CREATE TRIGGER refuse_native_turn_end BEFORE INSERT ON agent_turn_ends BEGIN SELECT RAISE(FAIL, 'the store refused the native completion'); END`)
 	require.NoError(t, err)
 	content := agent.MessageContent{Original: []byte(`{"type":"result"}`), AgentSessionID: "native", IdempotencyKey: "native-turn:0"}
@@ -208,10 +244,10 @@ func TestProviderMessageReplayDoesNotSplitAnAdjacentNotificationThread(t *testin
 	sink.UpdateSessionID("native-session")
 	content := agent.MessageContent{Original: []byte(`{"type":"assistant"}`), IdempotencyKey: "native-record"}
 	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{}))
-	_, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, []byte(`{"type":"context_cleared"}`))
+	_, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, agent.MessageContent{Original: []byte(`{"type":"context_cleared"}`)})
 	require.NoError(t, err)
 	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{}))
-	_, err = sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, []byte(`{"type":"interrupted"}`))
+	_, err = sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, agent.MessageContent{Original: []byte(`{"type":"interrupted"}`)})
 	require.NoError(t, err)
 	rows, err := svc.Queries.ListAllMessagesByAgentID(context.Background(), db.ListAllMessagesByAgentIDParams{AgentID: ownerID})
 	require.NoError(t, err)

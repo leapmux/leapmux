@@ -154,7 +154,8 @@ func TestPersistSettingsRefresh_CASPreservesConcurrentWrite(t *testing.T) {
 	}))
 
 	sink := requireRootOutputSink(t, f.svc.Output, "agent-1")
-	settled, wrote, err := sink.casPersistOptions(stale.Options, map[string]string{agent.OptionIDEffort: "low"})
+	result, err := sink.casPersistOptions(stale.Options, map[string]string{agent.OptionIDEffort: "low"})
+	settled, wrote := result.options, result.wrote
 	require.NoError(t, err)
 	require.True(t, wrote)
 
@@ -198,7 +199,8 @@ func TestPersistSettingsRefresh_CASStaleClearDoesNotClobberConcurrentSet(t *test
 	// Our refresh CLEARS permissionMode -- but our snapshot never held it, so the clear is a no-op
 	// against the snapshot and therefore stale relative to the concurrent set.
 	sink := requireRootOutputSink(t, f.svc.Output, "agent-1")
-	settled, wrote, err := sink.casPersistOptions(stale.Options, map[string]string{agent.OptionIDPermissionMode: ""})
+	result, err := sink.casPersistOptions(stale.Options, map[string]string{agent.OptionIDPermissionMode: ""})
+	settled, wrote := result.options, result.wrote
 	require.NoError(t, err)
 	assert.False(t, wrote, "a stale clear of a key absent from our snapshot is a no-op, not a write")
 
@@ -233,7 +235,8 @@ func TestPersistSettingsRefresh_CASReassertStillAppliesOverConcurrentClear(t *te
 	// Our refresh re-asserts effort=high. Against our snapshot it is a no-op (effort already high),
 	// but against the live row (effort cleared) it must re-apply.
 	sink := requireRootOutputSink(t, f.svc.Output, "agent-1")
-	settled, wrote, err := sink.casPersistOptions(stale.Options, map[string]string{agent.OptionIDEffort: "high"})
+	result, err := sink.casPersistOptions(stale.Options, map[string]string{agent.OptionIDEffort: "high"})
+	settled, wrote := result.options, result.wrote
 	require.NoError(t, err)
 	assert.True(t, wrote, "the re-assert is applied over the concurrent clear")
 	assert.Equal(t, "high", parseOptions(settled)[agent.OptionIDEffort])
@@ -274,10 +277,11 @@ func TestPersistSettingsRefresh_CASMixedSetAndStaleClearDoesNotClobber(t *testin
 	// Our refresh pairs a GENUINE set (effort high->low) with a STALE clear of permissionMode (a
 	// key our snapshot never held). The set forces the CAS retry path; the clear must be ignored.
 	sink := requireRootOutputSink(t, f.svc.Output, "agent-1")
-	settled, wrote, err := sink.casPersistOptions(stale.Options, map[string]string{
+	result, err := sink.casPersistOptions(stale.Options, map[string]string{
 		agent.OptionIDEffort:         "low",
 		agent.OptionIDPermissionMode: "",
 	})
+	settled, wrote := result.options, result.wrote
 	require.NoError(t, err)
 	require.True(t, wrote, "the genuine effort change is a real write")
 
@@ -309,10 +313,11 @@ func TestPersistSettingsRefresh_CASGenuineClearAlongsideSetStillApplies(t *testi
 
 	// Our snapshot holds permissionMode=plan, so clearing it is genuine; pair it with an effort set.
 	sink := requireRootOutputSink(t, f.svc.Output, "agent-1")
-	settled, wrote, err := sink.casPersistOptions(stale.Options, map[string]string{
+	result, err := sink.casPersistOptions(stale.Options, map[string]string{
 		agent.OptionIDEffort:         "low",
 		agent.OptionIDPermissionMode: "",
 	})
+	settled, wrote := result.options, result.wrote
 	require.NoError(t, err)
 	require.True(t, wrote)
 

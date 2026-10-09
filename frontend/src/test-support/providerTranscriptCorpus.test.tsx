@@ -7,9 +7,11 @@ import { geminiNativeCommittedEdit } from '~/components/chat/providers/gemini/to
 import { MIMO_TASK_ACTION, MIMO_TASK_STATUS, MIMO_TOOL, MIMO_TOOL_STATUS } from '~/generated/contracts/mimo-protocol'
 import { ALL_PROVIDERS } from '~/generated/contracts/providers'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
+import { copilotToolStart } from '~/test-support/copilotFixtures'
 import { kimiToolResult, kimiToolStart } from '~/test-support/kimiFixtures'
 import { makeTranscriptMessage } from '~/test-support/messageFactory'
 import { openingFrame, toolFrame } from '~/test-support/mimoFixtures'
+import { providerRow } from '~/test-support/toolCallFixture'
 import { createTranscriptScenario } from '~/test-support/transcriptScenario'
 import '~/components/chat/providers/testMocks'
 
@@ -122,6 +124,26 @@ function retainedCompletionFrames(provider: AgentProvider): TranscriptFrame[] {
 }
 
 describe('retained tool completion renders from the separate message field', () => {
+  it.each([
+    [AgentProvider.CLAUDE_CODE, { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'finished-call', name: 'Bash', input: { command: 'printf native' } }] } }],
+    [AgentProvider.CODEBUDDY, { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'finished-call', name: 'Bash', input: { command: 'printf native' } }] } }],
+    [AgentProvider.GITHUB_COPILOT, copilotToolStart('finished-call', 'bash', { command: 'printf native' })],
+    [AgentProvider.DROID, { type: 'tool_call', toolUse: { id: 'finished-call', name: 'Execute', input: { command: 'printf native' } } }],
+  ] as const)('renders finality without an invented outcome or result for provider %s', async (provider, native) => {
+    const completion = MessageCompletion.FINISHED
+    const row = providerRow(provider, native, { completion })
+    expect(row?.kind).toBe('tool')
+    if (row?.kind !== 'tool')
+      throw new Error('The retained native request requires a tool row.')
+    expect(row.call.status).toBe('incomplete')
+    expect(row.call.result).toBeUndefined()
+    const scenario = createTranscriptScenario({ archive: messages(frame('finished-result', provider, 'finished-call', undefined, native, { completion })) })
+    const text = await bubbleText(scenario, 'finished-result')
+    expect(text).toContain('Incomplete')
+    expect(text).not.toContain('Failed')
+    expect(text).not.toContain('Interrupted')
+  })
+
   for (const provider of RETAINED_COMPLETION_PROVIDERS) {
     it(`keeps the retained body and the interrupted outcome (${provider})`, async () => {
       const scenario = createTranscriptScenario({ archive: messages(...retainedCompletionFrames(provider)) })

@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest'
 import * as styles from '~/components/backgroundtasks/BackgroundTaskList.css'
 import { BackgroundTaskPanel } from '~/components/backgroundtasks/BackgroundTaskPanel'
 import { BackgroundTaskKind, BackgroundTaskStatus } from '~/generated/proto/leapmux/v1/agent_pb'
+import { protoBackgroundTaskToStore } from '~/stores/chatBackgroundTasks'
 import { createBackgroundTaskStore } from '~/stores/chatBackgroundTaskStore'
 import { clippedText } from '~/styles/shared.css'
 import * as statusDotStyles from '~/styles/statusDot.css'
@@ -83,8 +84,23 @@ function secondaries(container: HTMLElement): HTMLElement[] {
 }
 
 describe('BackgroundTaskList', () => {
+  it('shows unknown-outcome finality with a static muted dot and a retained transcript link', () => {
+    const open = vi.fn()
+    const native = { ...protoTask('finished', 'Native child', ''), status: BackgroundTaskStatus.ENDED_WITH_UNKNOWN_OUTCOME, childAgentId: 'child' }
+    const { container } = renderList({ tasks: [protoBackgroundTaskToStore(native)], onOpenSubagent: open })
+    const task = container.querySelector<HTMLElement>('[data-testid="bg-task-row"]')!
+    const dot = task.querySelector('[data-testid="bg-task-status-dot"]')!
+    expect(task.dataset.status).toBe('ended_with_unknown_outcome')
+    expect(dot.getAttribute('aria-label')).toBe('Ended with unknown outcome')
+    expect(classes(dot)).toContain(statusDotStyles.statusDotMuted)
+    expect(classes(dot)).not.toContain(statusDotStyles.statusDotActive)
+    expect(classes(dot)).not.toContain(statusDotStyles.statusDotSuccess)
+    expect(secondaries(container)[0]).toHaveTextContent('Ended with unknown outcome')
+    fireEvent.click(task)
+    expect(open).toHaveBeenCalledWith(expect.objectContaining({ rowKey: 'finished', childAgentId: 'child' }))
+  })
   it.each([
-    ['completed', 'Completed'],
+    ['succeeded', 'Succeeded'],
     ['failed', 'Failed'],
     ['stopped', 'Stopped'],
     ['interrupted', 'Interrupted'],
@@ -339,7 +355,7 @@ describe('BackgroundTaskList', () => {
     const statuses: BackgroundTaskItem['status'][] = [
       'pending',
       'running',
-      'completed',
+      'succeeded',
       'failed',
       'stopped',
       'interrupted',
@@ -371,6 +387,25 @@ describe('BackgroundTaskList', () => {
       tasks: [row({ rowKey: 'sh', kind: 'shell', status: 'running', title: 'npm test', description: 'npm test' })],
     })
     expect(rowsText(container)).toBe('npm test')
+  })
+
+  it.each(['Completed', ' \u200BCompleted\u202E '])('keeps the exact status on the dot when the cleaned title %j suppresses the repeated end line', (title) => {
+    const native = { ...protoTask('same-final-label', title, ''), status: BackgroundTaskStatus.COMPLETED }
+    const { container } = renderList({ tasks: [protoBackgroundTaskToStore(native)] })
+    expect(titles(container)[0]?.textContent).toBe('Completed')
+    expect(secondaries(container)).toHaveLength(0)
+    expect(container.querySelector('[data-testid="bg-task-status-dot"]')).toHaveAttribute('aria-label', 'Completed')
+    expect(rowsText(container)).toBe('Completed')
+    expect(container.querySelector('[data-testid="bg-task-title"]')?.textContent).toBe('Completed')
+    expect(container.querySelector('[data-testid="bg-task-secondary"]')).toBeNull()
+  })
+
+  it('exposes separate title and secondary fields for final-row verification', () => {
+    const native = { ...protoTask('separate-final-label', 'Review the diff', ''), status: BackgroundTaskStatus.COMPLETED }
+    const { container } = renderList({ tasks: [protoBackgroundTaskToStore(native)] })
+    expect(container.querySelector('[data-testid="bg-task-title"]')?.textContent).toBe('Review the diff')
+    expect(container.querySelector('[data-testid="bg-task-secondary"]')?.textContent).toBe('Completed')
+    expect(container.querySelector('[data-testid="bg-task-status-dot"]')).toHaveAttribute('aria-label', 'Completed')
   })
 
   it('keeps a secondary line that adds something the title does not say', () => {
@@ -708,10 +743,10 @@ describe('BackgroundTaskList in-place updates', () => {
     const rowBefore = container.querySelector<HTMLElement>('[data-testid="bg-task-row"]')!
     const dotBefore = container.querySelector<HTMLElement>('[data-testid="bg-task-status-dot"]')!
 
-    setTasks(0, 'status', 'completed')
+    setTasks(0, 'status', 'succeeded')
 
     expect(container.querySelector('[data-testid="bg-task-row"]')).toBe(rowBefore)
-    expect(rowBefore.dataset.status).toBe('completed')
+    expect(rowBefore.dataset.status).toBe('succeeded')
     expect(classes(rowBefore)).toContain(styles.taskStruck)
     expect(container.querySelector('[data-testid="bg-task-status-dot"]')).toBe(dotBefore)
     expect(classes(dotBefore)).toContain(statusDotStyles.statusDotSuccess)
@@ -824,12 +859,12 @@ describe('BackgroundTaskList in-place updates', () => {
     expect(rowsBefore).toHaveLength(2)
 
     // Finish the second row. The first row remains unchanged.
-    setTasks(1, 'status', 'completed')
+    setTasks(1, 'status', 'succeeded')
 
     const rowsAfter = [...container.querySelectorAll('[data-testid="bg-task-row"]')]
     expect(rowsAfter[0]).toBe(rowsBefore[0])
     expect([...container.querySelectorAll('[data-testid="bg-task-status-dot"]')][0]).toBe(dotsBefore[0])
-    expect(rowsAfter.map(el => (el as HTMLElement).dataset.status)).toEqual(['running', 'completed'])
+    expect(rowsAfter.map(el => (el as HTMLElement).dataset.status)).toEqual(['running', 'succeeded'])
   })
 
   it('keeps a hovered tooltip on a grouped row across a rebroadcast', () => {
@@ -896,5 +931,26 @@ describe('BackgroundTaskList in-place updates', () => {
     store.replace('a1', [protoTask('t1', 'Review the diff', 'writing')])
 
     expect(container.querySelector('[data-testid="bg-task-status-dot"]')).toBe(dot)
+  })
+})
+
+describe('background task canonical outcome display', () => {
+  it.each([
+    { wire: BackgroundTaskStatus.SUCCEEDED, token: 'succeeded', label: 'Succeeded', dotClass: statusDotStyles.statusDotSuccess },
+    { wire: BackgroundTaskStatus.ENDED_WITH_UNKNOWN_OUTCOME, token: 'ended_with_unknown_outcome', label: 'Ended with unknown outcome', dotClass: statusDotStyles.statusDotMuted },
+  ])('renders the explicit $token outcome and retains its native transcript link', ({ wire, token, label, dotClass }) => {
+    const open = vi.fn()
+    const native = { ...protoTask('native-outcome', 'Native child', 'old activity'), status: wire, childAgentId: 'native-child' }
+    const { container } = renderList({ tasks: [protoBackgroundTaskToStore(native)], onOpenSubagent: open })
+    const task = container.querySelector<HTMLElement>('[data-testid="bg-task-row"]')!
+    const dot = task.querySelector('[data-testid="bg-task-status-dot"]')!
+    expect(classes(dot)).toContain(dotClass)
+    expect(classes(dot)).not.toContain(statusDotStyles.statusDotActive)
+    expect(task.dataset.status).toBe(token)
+    expect(dot.getAttribute('aria-label')).toBe(label)
+    expect(secondaries(container)[0]).toHaveTextContent(label)
+    expect(secondaries(container)[0]).not.toHaveTextContent('old activity')
+    fireEvent.click(task)
+    expect(open).toHaveBeenCalledWith(expect.objectContaining({ rowKey: 'native-outcome', childAgentId: 'native-child' }))
   })
 })

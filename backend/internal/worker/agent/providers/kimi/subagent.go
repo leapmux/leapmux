@@ -283,7 +283,7 @@ func (a *Agent) handleSubagentEnded(event kimiEvent) {
 	if !event.decode(&payload) || payload.SubagentID == "" {
 		return
 	}
-	status := bgtask.StatusCompleted
+	status := bgtask.StatusSucceeded
 	switch event.Type {
 	case contracts.KimiEventSubagentFailed:
 		status = bgtask.StatusFailed
@@ -309,7 +309,7 @@ func (a *Agent) endSubagent(subagentID string, status bgtask.Status, summary, fa
 	// A subagent that completed before the cancel reached it keeps its
 	// completion. The mark is spent here so only one closer uses it.
 	interrupted := child.interrupted
-	if interrupted && status != bgtask.StatusCompleted {
+	if interrupted && status != bgtask.StatusSucceeded {
 		status = bgtask.StatusInterrupted
 	}
 	completion := agent.MessageCompletionInterrupted
@@ -452,7 +452,7 @@ func (a *Agent) reconcileSubagents(roster []kimiRosterSubagent, tasks []kimiTask
 		// The preview is the report of a subagent that completed, and the error of
 		// one that failed.
 		var summary, failure string
-		if status == bgtask.StatusCompleted {
+		if status == bgtask.StatusSucceeded {
 			summary = entry.OutputPreview
 		}
 		if status == bgtask.StatusFailed {
@@ -644,7 +644,7 @@ func (a *Agent) handleChildTurnEnded(run *kimiRun, payload kimiTurnEnded) {
 func kimiChildTurnStatus(reason string) bgtask.Status {
 	switch reason {
 	case contracts.KimiTurnEndCompleted:
-		return bgtask.StatusCompleted
+		return bgtask.StatusSucceeded
 	case contracts.KimiTurnEndCancelled:
 		return bgtask.StatusStopped
 	default:

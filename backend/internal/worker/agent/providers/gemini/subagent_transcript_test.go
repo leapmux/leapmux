@@ -130,7 +130,7 @@ func TestGeminiChildTranscriptKeepsNativeUUIDAndStoresLiveRowsBeforeCompletion(t
 	transcript.flush(true, agent.MessageCompletionComplete)
 	row, found = sink.BackgroundTask(geminiNativeChildID)
 	require.True(t, found)
-	assert.Equal(t, bgtask.StatusCompleted, row.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
 	assert.Len(t, child.Messages(), 6)
 }
 

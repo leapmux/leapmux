@@ -35,7 +35,7 @@ func TestCodebuddyWorkflowTaskGroupsItsChildAgent(t *testing.T) {
 	a.HandleOutput([]byte(`{"type":"system","subtype":"task_notification","task_id":"workflow-1","status":"completed","summary":"The child answered."}`))
 	workflow, ok = sink.BackgroundTask("workflow-1")
 	require.True(t, ok)
-	assert.Equal(t, bgtask.StatusCompleted, workflow.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, workflow.Status)
 }
 
 func TestCodebuddyAgentTaskLinksAndClosesItsChild(t *testing.T) {
@@ -54,7 +54,7 @@ func TestCodebuddyAgentTaskLinksAndClosesItsChild(t *testing.T) {
 	a.HandleOutput([]byte(`{"type":"system","subtype":"task_notification","task_id":"child-task","status":"completed","summary":"Found the owner."}`))
 	child, ok = sink.BackgroundTask("child-task")
 	require.True(t, ok)
-	assert.Equal(t, bgtask.StatusCompleted, child.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, child.Status)
 }
 
 func TestCodebuddyForegroundAgentRoutesItsForwardedChildTranscript(t *testing.T) {
@@ -77,5 +77,5 @@ func TestCodebuddyForegroundAgentRoutesItsForwardedChildTranscript(t *testing.T)
 	a.HandleOutput([]byte(`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"spawn-1","content":"CHILD_OUTPUT"}]}}`))
 	child, ok = sink.BackgroundTask("spawn-1")
 	require.True(t, ok)
-	assert.Equal(t, bgtask.StatusCompleted, child.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, child.Status)
 }

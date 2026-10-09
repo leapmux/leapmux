@@ -820,6 +820,94 @@ describe('exerciseInterruptTurn', () => {
       .toThrow('A held model turn position applies to an interrupted model request, not to an interrupted tool.')
   })
 
+  it('refuses tool reasoning on a held model turn before it accesses the context', async () => {
+    // @ts-expect-error Only the tool turn accepts completed reasoning.
+    await expect(exerciseInterruptTurn({} as ManagedNativeScenarioContext, { kind: 'model', reasoning: 'The tool reasoning.' }))
+      .rejects
+      .toThrow('Completed reasoning before a held tool requires a tool turn.')
+  })
+
+  it('awaits the inspection after the actual hold and before the interrupt', async () => {
+    vi.resetAllMocks()
+    resume.events.length = 0
+    const held = deferred()
+    const release = deferred()
+    const directory = '/controlled/native-inspection-project'
+    resume.send.mockResolvedValue({ protocol: 'openai-responses', path: '/v1/responses', body: {} })
+    resume.current.mockResolvedValue(create(AgentInfoSchema, {
+      id: 'inspection-agent',
+      agentProvider: AgentProvider.CODEX,
+      workingDir: directory,
+      agentSessionId: resume.priorSessionId,
+    }))
+    const context: ManagedNativeScenarioContext = {
+      page: {} as Page,
+      provider: AgentProvider.CODEX,
+      providerAgent: CODEX,
+      workspaceId: 'inspection-workspace',
+      leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'controlled-token', workerId: 'inspection-worker' },
+      modelScript: {
+        prompt: (text: string) => text,
+        queue: async () => 0,
+        allowUnconsumed: () => undefined,
+        waitForGate: async () => { resume.events.push('actual-hold') },
+        releaseGateIfHeld: async () => {
+          resume.events.push('release-hold')
+          return true
+        },
+      } as unknown as ModelScript,
+    }
+    const result = exerciseInterruptTurn(context, {
+      kind: 'model',
+      beforeInterrupt: async () => {
+        resume.events.push('inspect-held-operation')
+        held.resolve()
+        await release.promise
+        throw new Error('The controlled inspection ended.')
+      },
+    })
+    const rejected = expect(result).rejects.toThrow('The controlled inspection ended.')
+    await held.promise
+    expect(resume.events).toEqual(['send:Run the held native interruption probe.', 'actual-hold', 'inspect-held-operation'])
+    expect(resume.events).not.toContain('click:interrupt-button')
+    release.resolve()
+    await rejected
+    expect(resume.events).toEqual(['send:Run the held native interruption probe.', 'actual-hold', 'inspect-held-operation', 'release-hold'])
+  })
+
+  it.each([undefined, 'The completed native thought.'])('keeps the tool script and optional reasoning together: %j', async (reasoning) => {
+    vi.resetAllMocks()
+    const directories: string[] = []
+    const directory = scratchRun(directories, 'native-tool-reasoning-')
+    const queued: MockModelStep[] = []
+    const failure = new Error('The controlled queue stops before the native tool runs.')
+    resume.send.mockResolvedValue({ protocol: 'openai-responses', path: '/v1/responses', body: {} })
+    resume.current.mockResolvedValue(create(AgentInfoSchema, { workingDir: directory, agentSessionId: resume.priorSessionId }))
+    const context = {
+      page: {} as Page,
+      provider: AgentProvider.CODEX,
+      modelScript: {
+        queue: async (step: MockModelStep) => {
+          queued.push(step)
+          throw failure
+        },
+      },
+    } as unknown as ManagedNativeScenarioContext
+    try {
+      await expect(exerciseInterruptTurn(context, { kind: 'tool', ...(reasoning === undefined ? {} : { reasoning }) })).rejects.toBe(failure)
+      expect(queued).toHaveLength(1)
+      expect(queued[0]?.toolCalls).toHaveLength(1)
+      if (reasoning === undefined)
+        expect(queued[0]).not.toHaveProperty('reasoning')
+      else
+        expect(queued[0]?.reasoning).toBe(reasoning)
+    }
+    finally {
+      for (const path of directories)
+        rmSync(path, { recursive: true, force: true })
+    }
+  })
+
   it('types the model options for a model turn only', () => {
     // The type checker reads these checks. They do nothing at run time.
     expectTypeOf<{ kind: 'model', holdModelTurn: 'after-first-chunk', heldModelTurnEnd: 'after-answer' }>().toExtend<InterruptTurnOptions>()
@@ -827,6 +915,8 @@ describe('exerciseInterruptTurn', () => {
     expectTypeOf<{ kind: 'tool', prompt: string, divider: RegExp }>().toExtend<InterruptTurnOptions>()
     expectTypeOf<{ kind: 'tool', holdModelTurn: 'after-first-chunk' }>().not.toExtend<InterruptTurnOptions>()
     expectTypeOf<{ kind: 'tool', heldModelTurnEnd: 'while-held' }>().not.toExtend<InterruptTurnOptions>()
+    expectTypeOf<{ kind: 'tool', reasoning: string }>().toExtend<InterruptTurnOptions>()
+    expectTypeOf<{ kind: 'model', reasoning: string }>().not.toExtend<InterruptTurnOptions>()
   })
 
   it('types a kind that holds either value, as a spec that loops over both kinds passes it', () => {

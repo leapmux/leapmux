@@ -1,12 +1,48 @@
 package service
 
 import (
+	"database/sql"
 	"sync/atomic"
 	"testing"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude/claudetest"
+	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+func TestDeliveredStopKeepsDistinctClaimsThatReuseOneRequestID(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := setupTestService(t)
+	const agentID = "distinct-stop-claims"
+	createClaimTestAgent(t, svc, agentID)
+	sink := svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	_, err := svc.Agents.StartAgentWith(t.Context(), agent.Options{AgentID: agentID, WorkingDir: t.TempDir()}, sink, claudetest.StartSilent)
+	require.NoError(t, err)
+	sink.SetTurnState(agent.TurnState{Active: true}, 1)
+	require.NoError(t, sink.PublishControlRequest(agent.ControlRequest{RequestID: "same", Payload: []byte(`{"native":"first request"}`)}))
+	first, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: agentID, RequestID: "same"})
+	require.NoError(t, err)
+	stop := svc.Output.NoteAgentStopRequested(agentID, agentID)
+	svc.Output.WaitActivityRefreshes()
+	require.NoError(t, sink.PublishControlRequest(agent.ControlRequest{RequestID: "same", Payload: []byte(`{"native":"second request"}`)}))
+	second, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: agentID, RequestID: "same"})
+	require.NoError(t, err)
+	require.NotEqual(t, first.ClaimToken, second.ClaimToken)
+	writer := &controlPublicationWriter{mockResponseWriter: mockResponseWriter{channelID: "distinct-stop-claims-wire"}}
+	registerAgentWatch(svc, writer.ChannelID(), agentID, leapmuxv1.WatchMode_WATCH_MODE_FULL, writer)
+	target, err := svc.Agents.CaptureStopTarget(agentID)
+	require.NoError(t, err)
+	stop.Delivered(target)
+	_, err = svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: agentID, RequestID: "same"})
+	assert.ErrorIs(t, err, sql.ErrNoRows)
+	cancellations := writer.cancellationSnapshot()
+	require.Len(t, cancellations, 1)
+	assert.Equal(t, "same", cancellations[0].RequestId)
+	assert.Equal(t, second.ClaimToken, cancellations[0].ClaimToken)
+}
 
 func TestStopAttemptFailureAndIgnoredReportsPreserveOtherAttempts(t *testing.T) {
 	for _, report := range []string{"failed", "ignored"} {

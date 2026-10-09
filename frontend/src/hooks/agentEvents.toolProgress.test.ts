@@ -1,10 +1,11 @@
 import type { AgentControlRequest, AgentStatusChange } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { MessageSpanIdentity } from '~/lib/messageSpan'
 /// <reference types="vitest/globals" />
+import { create } from '@bufbuild/protobuf'
 import { createRoot } from 'solid-js'
 import { describe, expect, it } from 'vitest'
-import { AgentProvider, ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
-import { applyNotificationMetadata, dropFinishedToolProgress, handleAgentInactive, handleAgentSessionInfo, handleControlRequest, handleResultDivider, wireRunningToolToUpdate } from '~/hooks/agentEvents'
+import { AgentChatMessageSchema, AgentProvider, ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
+import { applyNotificationMetadata, dropFinishedToolProgress, handleAgentInactive, handleAgentMessage, handleAgentSessionInfo, handleControlRequest, handleResultDivider, wireRunningToolToUpdate } from '~/hooks/agentEvents'
 import { parseMessageContent } from '~/lib/messageParser'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore } from '~/stores/chat.store'
@@ -29,17 +30,17 @@ function span(spanId: string, agentSessionId: string = SESSION): MessageSpanIden
   return { spanId, agentSessionId }
 }
 
-function agentMessage(content: unknown, overrides: Partial<{ spanId: string, agentSessionId: string, source: MessageSource }> = {}) {
-  return {
+function agentMessage(content: unknown, overrides: Partial<{ spanId: string, agentSessionId: string, source: MessageSource, agentProvider: AgentProvider }> = {}) {
+  return create(AgentChatMessageSchema, {
     id: 'm1',
     source: overrides.source ?? MessageSource.AGENT,
     content: new TextEncoder().encode(JSON.stringify(content)),
     contentCompression: ContentCompression.NONE,
     seq: 1n,
-    agentProvider: AgentProvider.CLAUDE_CODE,
+    agentProvider: overrides.agentProvider ?? AgentProvider.CLAUDE_CODE,
     spanId: overrides.spanId ?? '',
     agentSessionId: overrides.agentSessionId ?? SESSION,
-  } as Parameters<ReturnType<typeof createChatStore>['addMessage']>[1]
+  })
 }
 
 function sessionInfoMessage(info: unknown) {
@@ -59,8 +60,8 @@ describe('wireRunningToolToUpdate', () => {
       .toBe('other-session')
   })
 
-  // The live output of a running call. An EMPTY tail is a real state -- a command
-  // that has printed nothing yet -- so the key's presence decides, not its text.
+  // A command can produce no output while it runs.
+  // Its empty output tail remains a real value, so check the key's presence.
   it('reads the output tail and its truncation flag', () => {
     expect(wireRunningToolToUpdate({ span_id: 'toolu_A', agent_session_id: SESSION, output_tail: 'building...\n', output_truncated: true }))
       .toEqual({ ...span('toolu_A'), outputTail: 'building...\n', outputTruncated: true })
@@ -68,15 +69,16 @@ describe('wireRunningToolToUpdate', () => {
       .toEqual({ ...span('toolu_A'), outputTail: '', outputTruncated: false })
   })
 
-  // A heartbeat states no tail, and it must leave the one the last output frame
-  // reported alone -- the two families report disjoint facts about one call.
+  // A heartbeat supplies no output tail. Retain the tail from the last output frame because the
+  // two event types report different fields.
+
   it('leaves the tail off an update that states none', () => {
     expect(wireRunningToolToUpdate({ span_id: 'toolu_A', agent_session_id: SESSION, elapsed_seconds: 30 }))
       .toEqual({ ...span('toolu_A'), elapsedSeconds: 30 })
   })
 
-  // A payload that states no session reads as '', which is also what
-  // messageSpanKey gives a row that carries none. The two still meet at one key.
+  // An absent session becomes an empty string, as it does in messageSpanKey.
+  // The progress update and its row therefore use the same key.
   it('reads a missing or unusable agent session as an empty string', () => {
     for (const value of [undefined, null, 42, {}]) {
       expect(wireRunningToolToUpdate({ span_id: 'toolu_A', agent_session_id: value, elapsed_seconds: 30 })?.agentSessionId)
@@ -94,9 +96,9 @@ describe('wireRunningToolToUpdate', () => {
     })).toEqual({ ...span('toolu_A'), retry: RETRY })
   })
 
-  // The badge renders neither the tool's name nor the subagent's type -- the
-  // card already has both from the tool_use row -- so the translation drops them
-  // rather than storing a value nothing can observe.
+  // The tool row supplies the tool name and subagent type. The progress badge uses neither
+  // field, so the translation omits them.
+
   it('drops the tool name and the subagent type, which no reader wants', () => {
     const update = wireRunningToolToUpdate({
       span_id: 'toolu_A',
@@ -124,18 +126,17 @@ describe('wireRunningToolToUpdate', () => {
   })
 
   it('drops an elapsed time that is not a usable number', () => {
-    // NaN and Infinity would reach formatDuration and render as "NaNs" on the
-    // card; a negative elapsed time is not a duration at all.
+    // Without validation, NaN and Infinity reach formatDuration and produce an invalid label on the card.
+    // A negative elapsed time is not a duration.
     for (const elapsed of [Number.NaN, Number.POSITIVE_INFINITY, -5, '30', null]) {
       const update = wireRunningToolToUpdate({ span_id: 'toolu_A', agent_session_id: SESSION, tool_name: 'Bash', elapsed_seconds: elapsed })
       expect(update && 'elapsedSeconds' in update).toBe(false)
     }
   })
 
-  // A retry this cannot read leaves the key OFF the update, so a live badge
-  // keeps its last attempt. Only an explicit null clears one. A shape change on
-  // the wire must not erase what the user is looking at, and a partial badge
-  // would read "Retrying 0/0".
+  // An unreadable retry leaves the key absent and retains the last attempt. Only explicit null
+  // clears it. A partial badge must not display an invented 0/0 count.
+
   it('omits a retry it cannot read, so a live badge survives an unknown shape', () => {
     for (const retry of [{ attempt: 2 }, { max_retries: 5 }, { attempt: '2', max_retries: 5 }, 'x', 42, [], undefined]) {
       const update = wireRunningToolToUpdate({ span_id: 'toolu_A', agent_session_id: SESSION, retry })
@@ -148,8 +149,9 @@ describe('wireRunningToolToUpdate', () => {
   })
 
   it('forwards a zero elapsed time -- the badge, not this, decides it shows nothing', () => {
-    // The worker never sends 0 for a heartbeat (the first tick is 30), but the
-    // translation must not silently swallow a number the agent did report.
+    // A zero elapsed time is still a supplied value. The translator must preserve it even when a
+    // normal heartbeat reports a positive value.
+
     expect(wireRunningToolToUpdate({ span_id: 'toolu_A', agent_session_id: SESSION, tool_name: 'Bash', elapsed_seconds: 0 }))
       .toEqual({ ...span('toolu_A'), elapsedSeconds: 0 })
   })
@@ -175,20 +177,24 @@ describe('handleAgentSessionInfo running_tool', () => {
     })
   })
 
-  // It is ephemeral: the whole point of intercepting it is that it never becomes
-  // a timeline row.
+  // The worker does not persist this session-info message.
+  // The handler consumes it without creating a transcript row.
   it('never adds the payload to the message window', () => {
     createRoot((dispose) => {
-      const s = stores()
+      installTestBridge({ workspaceId: 'tool-progress-messages' })
+      const s = { ...stores(), ...createTestTabStores('tool-progress-messages'), getActiveWorkspaceId: () => 'tool-progress-messages' }
       const msg = sessionInfoMessage({
         thinking_tokens: 42,
         output_bytes: 2048,
         output_bytes_minimum: true,
         running_tool: { span_id: 'toolu_A', agent_session_id: SESSION, tool_name: 'Bash', elapsed_seconds: 30 },
       })
-      handleAgentSessionInfo('a1', parseMessageContent(msg), s)
+      handleAgentMessage('a1', msg, s, 'live')
       expect(s.chatStore.getMessages('a1')).toHaveLength(0)
       expect(s.chatStore.getMessageVersion('a1')).toBe(0)
+      handleAgentMessage('a1', agentMessage({ type: 'assistant', message: { content: [{ type: 'text', text: 'A real transcript row.' }] } }), s, 'live')
+      expect(s.chatStore.getMessages('a1')).toHaveLength(1)
+      expect(s.chatStore.getMessageVersion('a1')).toBeGreaterThan(0)
       dispose()
     })
   })
@@ -226,8 +232,8 @@ describe('handleAgentSessionInfo running_tool', () => {
     })
   })
 
-  // The APPLY path keys by the pair, so a heartbeat of one session cannot
-  // attach to the row of another that reuses the span id.
+  // The store uses the session ID and span ID together.
+  // A heartbeat must not update another session that reuses the span ID.
   it('keeps the entries of two provider sessions apart', () => {
     createRoot((dispose) => {
       const s = stores()
@@ -259,8 +265,8 @@ describe('handleAgentSessionInfo running_tool', () => {
       s.chatStore.applyToolProgress('a1', { ...span('toolu_A'), elapsedSeconds: 30 })
       for (const value of [null, 'x', 42, {}])
         handleAgentSessionInfo('a1', parseMessageContent(sessionInfoMessage({ running_tool: value })), s)
-      // The entry that WAS running is left exactly as it was -- a malformed
-      // payload must not clear a live badge.
+      // A malformed payload must preserve the current progress badge.
+
       expect(s.chatStore.getToolProgress('a1', span('toolu_A'))).toEqual({ elapsedSeconds: 30 })
       dispose()
     })
@@ -280,13 +286,13 @@ describe('handleAgentSessionInfo running_tool', () => {
   })
 })
 
-// The per-span drop above covers the ordinary end of a tool. These four cover
-// the boundaries that reclaim EVERY span -- the backstop for a tool whose result
-// row never arrives, which is why no provider sends an end message.
+// The per-span cleanup handles a normal tool result. Lifecycle cleanup removes remaining spans
+// when their result rows never arrive.
+
 describe('tool progress is cleared at every turn and agent boundary', () => {
   const WS = 'ws-1'
 
-  /** The stores bag each boundary handler takes, with two spans already running. */
+  /** Supply the stores that each boundary handler requires, with two spans that run. */
   function boundaryStores() {
     const harness = installTestBridge({ workspaceId: WS })
     void harness
@@ -295,9 +301,8 @@ describe('tool progress is cleared at every turn and agent boundary', () => {
     chatStore.applyToolProgress('a1', { ...span('toolu_A'), elapsedSeconds: 30 })
     chatStore.applyToolProgress('a1', { ...span('toolu_B'), elapsedSeconds: 60 })
     const agentSessionStore = createAgentSessionStore()
-    // The thinking counter is the OTHER live per-turn indicator, and it has to
-    // go at exactly the same boundaries. Seeded here so each case below can
-    // assert the pair, not just the badges.
+    // The thinking counter and tool badges both describe the live turn.
+    // Seed both so each boundary test checks that the handler clears them together.
     agentSessionStore.applyProgress('a1', {
       revision: 1,
       thinkingTokens: 500,
@@ -321,15 +326,11 @@ describe('tool progress is cleared at every turn and agent boundary', () => {
   }
 
   /**
-   * Every TURN-ENDING boundary drops both live per-turn indicators, or neither.
-   *
-   * A lost connection can omit the Worker's explicit counter clear. The
-   * frontend lifecycle cleanup must clear every live field, or it leaves an
-   * indicator frozen for the rest of the session. That is the failure mode
-   * clearPerTurnLiveState exists to make impossible, and this is what pins it:
-   * a future boundary that calls only `clearToolProgress` fails here.
-   *
-   * A control request is deliberately NOT one of these; see its own case below.
+   * Each turn-end boundary must clear both live indicators or retain both.
+   * A lost connection can omit the worker's explicit counter clear.
+   * The lifecycle handler must clear every live field. Otherwise, an indicator stays stale for the rest of the session.
+   * A handler that calls only clearToolProgress fails these checks.
+   * A control request clears neither indicator. Its separate case checks that rule.
    */
   function expectNothingLive(s: ReturnType<typeof boundaryStores>) {
     expect(running(s.chatStore)).toHaveLength(0)
@@ -342,7 +343,7 @@ describe('tool progress is cleared at every turn and agent boundary', () => {
       const s = boundaryStores()
       expect(running(s.chatStore)).toHaveLength(2)
       const msg = agentMessage({ type: 'result', subtype: 'success' })
-      handleResultDivider('a1', msg, parseMessageContent(msg), s)
+      handleResultDivider('a1', msg, parseMessageContent(msg), s, 'live')
       expectNothingLive(s)
       dispose()
     })
@@ -404,7 +405,7 @@ describe('tool progress is cleared at every turn and agent boundary', () => {
       const s = boundaryStores()
       s.chatStore.applyToolProgress('a2', { ...span('toolu_A'), elapsedSeconds: 30 })
       const msg = agentMessage({ type: 'result', subtype: 'success' })
-      handleResultDivider('a1', msg, parseMessageContent(msg), s)
+      handleResultDivider('a1', msg, parseMessageContent(msg), s, 'live')
       expect(running(s.chatStore)).toHaveLength(0)
       expect(s.chatStore.getToolProgress('a2', span('toolu_A'))?.elapsedSeconds).toBe(30)
       dispose()
@@ -433,25 +434,27 @@ describe('dropFinishedToolProgress', () => {
     })
   })
 
-  // The drop reads the role of the RESOLVED parse, so a result whose bytes only
-  // the merge exposes still clears the entry a reader was watching.
+  // Resolve the payload before reading its result role. A result that only the supplement
+  // establishes must still clear its progress.
+
   it('drops the span from the resolved result role', () => {
     createRoot((dispose) => {
       const chatStore = seeded()
       const msg = agentMessage(
-        { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_A', content: 'ok' }] }, tool_use_result: { stdout: 'recovered' } },
-        { spanId: 'toolu_A' },
+        { id: 'native-result', role: 'result', seq: 3, content: { sessionUpdate: 'tool_call_update', toolCallId: 'toolu_A', status: 'completed', content: [] } },
+        { spanId: 'toolu_A', agentProvider: AgentProvider.OPENCODE },
       )
       const parsed = parseMessageContent(msg)
+      expect(parsed.parentObject).not.toHaveProperty('sessionUpdate')
       dropFinishedToolProgress('a1', msg, parsed, chatStore)
       expect(chatStore.getToolProgress('a1', span('toolu_A'))).toBeUndefined()
       dispose()
     })
   })
 
-  // The DROP path must key exactly as the apply path does. A result row of
-  // another provider session addresses another tool, so it must leave this
-  // entry alone -- and the matching row must still reclaim it.
+  // The cleanup key must match the progress key. Another native session can reuse the span ID
+  // and must retain its own progress.
+
   it('drops nothing for a result row of another provider session', () => {
     createRoot((dispose) => {
       const chatStore = seeded()

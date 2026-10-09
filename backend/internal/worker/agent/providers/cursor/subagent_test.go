@@ -45,7 +45,7 @@ func TestACP_CursorSubagentFromToolCallUpdate_FinalCloses(t *testing.T) {
 	obs := cursorSubagentFromToolCallUpdate(tcu, false)
 	if assert.NotNil(t, obs) {
 		assert.True(t, obs.CloseRow)
-		assert.Equal(t, bgtask.StatusCompleted, obs.Status)
+		assert.Equal(t, bgtask.StatusSucceeded, obs.Status)
 		assert.Empty(t, obs.Activity, "isBackground false -> no activity note")
 	}
 }
@@ -252,7 +252,7 @@ func TestACP_CursorBackgroundTaskWithoutInputStaysASubagent(t *testing.T) {
 		"the spawn's note outranks an absent rawInput")
 	assert.Equal(t, "build the feature", tasks[0].Title,
 		"the closing update must not overwrite the spawn's trimmed title")
-	assert.Equal(t, bgtask.StatusCompleted, tasks[0].Status)
+	assert.Equal(t, bgtask.StatusSucceeded, tasks[0].Status)
 }
 
 // A backgrounded SHELL with no rawInput is still a shell: the spawn hook left
@@ -357,7 +357,7 @@ func TestACP_CursorTaskRowStaysASubagentThroughItsClose(t *testing.T) {
 	assert.Equal(t, bgtask.KindSubagent, tasks[0].Kind)
 	assert.Equal(t, "build the feature", tasks[0].Title,
 		"the closing update must not overwrite the spawn's trimmed title")
-	assert.Equal(t, bgtask.StatusCompleted, tasks[0].Status)
+	assert.Equal(t, bgtask.StatusSucceeded, tasks[0].Status)
 }
 
 // TestCursorSubagentDetectorsClaimOnlyTheSpawn pins that the detector claims its own spawn payload, and no ordinary

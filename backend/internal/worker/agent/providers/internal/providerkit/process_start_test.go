@@ -12,6 +12,9 @@ import (
 	"sync"
 	"testing"
 
+	"bytes"
+	"errors"
+
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/stretchr/testify/assert"
@@ -149,4 +152,89 @@ func TestZeroProcessCompletesARefusedStart(t *testing.T) {
 	}
 	process.Stop()
 	require.Error(t, process.Wait())
+}
+
+func TestProcessFormatStartupErrorPreservesItsCausesAndExactDiagnostics(t *testing.T) {
+	t.Parallel()
+	first := errors.New("native setup refused")
+	second := &fs.PathError{Op: "close", Path: "owned-host", Err: fs.ErrPermission}
+	for _, tc := range []struct {
+		label    string
+		cause    error
+		stderr   string
+		preamble []string
+		want     string
+	}{
+		{label: "single cause", cause: first, want: "initialize: native setup refused"},
+		{label: "joined causes", cause: errors.Join(first, second), want: "initialize: native setup refused\nclose owned-host: permission denied"},
+		{label: "stderr and shell preamble", cause: first, stderr: " \n native stderr\n ", preamble: []string{" ", "shell output", " "}, want: "initialize: native setup refused; stderr: native stderr; shell preamble: shell output"},
+		{label: "blank diagnostics", cause: first, stderr: " \t\n", preamble: []string{" ", "\t"}, want: "initialize: native setup refused"},
+	} {
+		t.Run(tc.label, func(t *testing.T) {
+			t.Parallel()
+			drained := make(chan struct{})
+			close(drained)
+			process := &Process{stderrDone: drained, stderrBuf: *bytes.NewBufferString(tc.stderr), preambleOutput: tc.preamble}
+			result := process.FormatStartupError("initialize", tc.cause)
+			require.EqualError(t, result, tc.want)
+			assert.ErrorIs(t, result, first)
+			if tc.label == "joined causes" {
+				assert.ErrorIs(t, result, fs.ErrPermission)
+				var pathError *fs.PathError
+				require.ErrorAs(t, result, &pathError)
+				assert.Same(t, second, pathError)
+			}
+		})
+	}
+}
+
+func TestProcessFormatStartupErrorReportsReadableNilDetails(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		label    string
+		phase    string
+		stderr   string
+		preamble []string
+		want     string
+	}{
+		{label: "empty diagnostics", phase: "initialize", want: "initialize: no error details"},
+		{label: "empty phase", want: "no error details"},
+		{label: "all diagnostics", phase: "initialize", stderr: "native stderr", preamble: []string{"shell output"}, want: "initialize: no error details; stderr: native stderr; shell preamble: shell output"},
+	} {
+		t.Run(tc.label, func(t *testing.T) {
+			t.Parallel()
+			drained := make(chan struct{})
+			close(drained)
+			process := &Process{stderrDone: drained, stderrBuf: *bytes.NewBufferString(tc.stderr), preambleOutput: tc.preamble}
+			result := process.FormatStartupError(tc.phase, nil)
+			require.EqualError(t, result, tc.want)
+			assert.Nil(t, errors.Unwrap(result))
+		})
+	}
+}
+
+type customStartupDiagnosticCause struct{}
+
+func (*customStartupDiagnosticCause) Error() string { return "the native fallback diagnostic" }
+
+func (*customStartupDiagnosticCause) Format(state fmt.State, verb rune) {
+	if verb == 's' {
+		_, _ = io.WriteString(state, "the native string diagnostic")
+		return
+	}
+	_, _ = io.WriteString(state, "the native value diagnostic")
+}
+
+func TestProcessFormatStartupErrorPreservesTheOriginalStringFormatter(t *testing.T) {
+	t.Parallel()
+	drained := make(chan struct{})
+	close(drained)
+	cause := &customStartupDiagnosticCause{}
+	process := &Process{stderrDone: drained}
+	result := process.FormatStartupError("initialize", cause)
+	require.EqualError(t, result, "initialize: the native string diagnostic")
+	assert.ErrorIs(t, result, cause)
+	var typedCause *customStartupDiagnosticCause
+	require.ErrorAs(t, result, &typedCause)
+	assert.Same(t, cause, typedCause)
 }

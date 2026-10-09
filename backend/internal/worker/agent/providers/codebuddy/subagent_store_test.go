@@ -161,13 +161,11 @@ func awaitCodebuddyChildClose(t *testing.T, ctx context.Context, closed <-chan s
 	}
 }
 
-// settledCodebuddyArchive waits until every archive retry of the agent
-// returned, and then copies the two ownership maps under their lock.
+// settledCodebuddyArchive waits for every archive retry goroutine to return, then copies both ownership maps under their lock.
 //
-// A read at the close signal alone races the retry. The retry closes a child
-// first and releases the child's ownership after that, on its own goroutine, so
-// an unlocked read there is a data race, and a locked read can still see the
-// child.
+// The close signal alone precedes ownership removal and therefore cannot prove completion.
+// The retry closes the child before removing its ownership.
+// An unlocked map read there races that goroutine, and even a locked read can still find the child.
 func settledCodebuddyArchive(t *testing.T, a *Agent) (jobs, childJobs map[string]*codebuddyArchiveJob) {
 	t.Helper()
 	settled := make(chan struct{})
@@ -371,7 +369,7 @@ func TestCodebuddyWorkflowDuplicateFinalKeepsTheFirstOutcome(t *testing.T) {
 
 	workflow, found := sink.BackgroundTask(codebuddyTestWorkflowID)
 	require.True(t, found)
-	assert.Equal(t, bgtask.StatusCompleted, workflow.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, workflow.Status)
 	assert.Equal(t, "First summary", workflow.ActiveForm)
 	child, found := sink.BackgroundTask(codebuddyTestChildKey)
 	require.True(t, found)
@@ -382,7 +380,7 @@ func TestCodebuddyWorkflowDuplicateFinalKeepsTheFirstOutcome(t *testing.T) {
 	a.HandleOutput([]byte(`{"type":"system","subtype":"task_notification","task_id":"run-1","status":"failed","summary":"Conflicting duplicate"}`))
 	workflow, found = sink.BackgroundTask(codebuddyTestWorkflowID)
 	require.True(t, found)
-	assert.Equal(t, bgtask.StatusCompleted, workflow.Status, "a duplicate cannot replace the first final status")
+	assert.Equal(t, bgtask.StatusSucceeded, workflow.Status, "a duplicate cannot replace the first final status")
 	assert.Equal(t, "First summary", workflow.ActiveForm, "a duplicate cannot erase the first summary")
 	assert.Len(t, sink.Child(child.ChildAgentID).Messages(), 2, "a duplicate cannot replay child history")
 }
@@ -395,7 +393,7 @@ func TestCodebuddyWorkflowLateProgressCannotOpenARunningChild(t *testing.T) {
 	finishCodebuddyWorkflowFixture(a)
 	workflow, found := sink.BackgroundTask(codebuddyTestWorkflowID)
 	require.True(t, found)
-	require.Equal(t, bgtask.StatusCompleted, workflow.Status)
+	require.Equal(t, bgtask.StatusSucceeded, workflow.Status)
 
 	a.HandleOutput([]byte(`{"type":"system","subtype":"task_progress","task_id":"run-1","workflow_progress":[{"type":"workflow_agent","agentId":"v2:late-child","state":"start","label":"Late child"}]}`))
 	_, found = sink.BackgroundTask("v2:late-child")
@@ -432,7 +430,7 @@ func TestCodebuddyWorkflowArchiveRetryAfterMissingFirstRead(t *testing.T) {
 
 	workflow, found := sink.BackgroundTask(codebuddyTestWorkflowID)
 	require.True(t, found)
-	assert.Equal(t, bgtask.StatusCompleted, workflow.Status, "the native completion closes the parent")
+	assert.Equal(t, bgtask.StatusSucceeded, workflow.Status, "the native completion closes the parent")
 	child, found := sink.BackgroundTask(codebuddyTestChildKey)
 	require.True(t, found)
 	assert.Equal(t, bgtask.StatusRunning, child.Status, "the child waits for its saved transcript")
@@ -444,7 +442,7 @@ func TestCodebuddyWorkflowArchiveRetryAfterMissingFirstRead(t *testing.T) {
 	a.HandleOutput([]byte(`{"type":"system","subtype":"task_notification","task_id":"run-1","status":"completed"}`))
 	child, found = sink.BackgroundTask(codebuddyTestChildKey)
 	require.True(t, found)
-	assert.Equal(t, bgtask.StatusCompleted, child.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, child.Status)
 	require.NotEmpty(t, child.ChildAgentID)
 	require.Len(t, sink.Child(child.ChildAgentID).Messages(), 2)
 }
@@ -464,7 +462,7 @@ func TestCodebuddyWorkflowArchiveRetryKeepsOriginalSessionID(t *testing.T) {
 	a.HandleOutput([]byte(`{"type":"system","subtype":"task_notification","task_id":"run-1","status":"completed"}`))
 	child, found = sink.BackgroundTask(codebuddyTestChildKey)
 	require.True(t, found)
-	assert.Equal(t, bgtask.StatusCompleted, child.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, child.Status)
 	require.NotEmpty(t, child.ChildAgentID)
 	rows := sink.Child(child.ChildAgentID).Messages()
 	require.Len(t, rows, 2, "the saved child history still belongs to parent session 1")
@@ -491,10 +489,10 @@ func TestCodebuddyPendingWorkflowChildNotificationWaitsForArchive(t *testing.T) 
 	a.HandleOutput([]byte(`{"type":"system","subtype":"task_notification","task_id":"run-1","status":"completed"}`))
 	child, found = sink.BackgroundTask(codebuddyTestChildKey)
 	require.True(t, found)
-	assert.Equal(t, bgtask.StatusCompleted, child.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, child.Status)
 	require.NotEmpty(t, child.ChildAgentID)
 	assert.Len(t, sink.Child(child.ChildAgentID).Messages(), 2)
-	assert.Equal(t, []bgtask.Status{bgtask.StatusRunning, bgtask.StatusCompleted}, sink.BackgroundTaskStatuses(codebuddyTestChildKey),
+	assert.Equal(t, []bgtask.Status{bgtask.StatusRunning, bgtask.StatusSucceeded}, sink.BackgroundTaskStatuses(codebuddyTestChildKey),
 		"the child reaches a final status once, after the saved messages arrive")
 	_, childJobs := settledCodebuddyArchive(t, a)
 	assert.Empty(t, childJobs, "the completed retry releases child ownership")
@@ -526,7 +524,7 @@ func TestCodebuddyWorkflowArchiveRetryKeepsPartialRoutesDistinct(t *testing.T) {
 	require.True(t, found)
 	second, found = sink.BackgroundTask("v2:child-two")
 	require.True(t, found)
-	assert.Equal(t, bgtask.StatusCompleted, first.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, first.Status)
 	assert.Equal(t, bgtask.StatusFailed, second.Status, "the child keeps its own native outcome")
 	require.NotEmpty(t, second.ChildAgentID)
 	assert.Len(t, sink.Child(first.ChildAgentID).Messages(), 2, "retry must not duplicate the first child's history")
@@ -557,7 +555,7 @@ func TestCodebuddyWorkflowArchiveRetryUsesTheProcessClock(t *testing.T) {
 	_, _ = settledCodebuddyArchive(t, a)
 	child, found := sink.BackgroundTask(codebuddyTestChildKey)
 	require.True(t, found)
-	assert.Equal(t, bgtask.StatusCompleted, child.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, child.Status)
 	require.NotEmpty(t, child.ChildAgentID)
 	assert.Len(t, sink.Child(child.ChildAgentID).Messages(), 2)
 }
@@ -584,7 +582,7 @@ func TestCodebuddyWorkflowArchiveRetryEndsAtTheDeadline(t *testing.T) {
 	_, childJobs := settledCodebuddyArchive(t, a)
 	child, found := sink.BackgroundTask(codebuddyTestChildKey)
 	require.True(t, found)
-	assert.Equal(t, bgtask.StatusCompleted, child.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, child.Status)
 	assert.Empty(t, child.ChildAgentID, "missing history cannot open an empty tab")
 	assert.NotEmpty(t, sink.LeapMuxNotifications())
 	assert.Empty(t, childJobs, "the retry deadline releases child ownership")
@@ -628,7 +626,7 @@ func TestCodebuddyWorkflowArchiveRetryRefusesAnUnsafePathImmediately(t *testing.
 	finishCodebuddyWorkflowFixture(a)
 	child, found := sink.BackgroundTask(codebuddyTestChildKey)
 	require.True(t, found)
-	assert.Equal(t, bgtask.StatusCompleted, child.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, child.Status)
 	assert.Empty(t, child.ChildAgentID)
 	jobs, _ := settledCodebuddyArchive(t, a)
 	assert.Empty(t, jobs, "an unsafe path must not enter the retry queue")

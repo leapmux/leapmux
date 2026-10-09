@@ -1,12 +1,15 @@
 import { create } from '@bufbuild/protobuf'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
+import { createSignal } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as workerRpc from '~/api/workerRpc'
 import { NewAgentDialog } from '~/components/shell/NewAgentDialog'
+import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { WorkerSchema } from '~/generated/proto/leapmux/v1/worker_pb'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 /// <reference types="vitest/globals" />
 import { withPreferences } from '~/test-support/preferencesProvider'
+import '~/components/chat/providers'
 
 // The agent dialog's own guard wiring, mirroring the terminal twin: the
 // parent computes the reason (AppShellDialogs suite), but THIS component
@@ -89,6 +92,51 @@ describe('NewAgentDialog tab-placement guard', () => {
       expect(await findCreateButton()).not.toBeDisabled()
     })
     expect(screen.queryByTestId('new-tab-blocked-reason')).toBeNull()
+  })
+})
+
+describe('NewAgentDialog startup options', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  function mountMuseDialog() {
+    const [providers, setProviders] = createSignal([AgentProvider.MUSE_CODE])
+    render(withPreferences(() => (
+      <NewAgentDialog
+        defaultWorkerId="w-1"
+        defaultWorkingDir="/native/workspace"
+        availableProviders={providers()}
+        onCreated={() => {}}
+        onClose={() => {}}
+        repoGitStore={createRepoGitStore()}
+      />
+    )))
+    return setProviders
+  }
+
+  it('sends the selected startup trust with the exact native provider', async () => {
+    mountMuseDialog()
+    await fireEvent.click(await screen.findByRole('radio', { name: 'Trust for this agent' }))
+    const createButton = await findCreateButton()
+    await waitFor(() => expect(createButton).not.toBeDisabled())
+    await fireEvent.click(createButton)
+    await waitFor(() => expect(openAgentMock).toHaveBeenCalledOnce())
+    expect(openAgentMock).toHaveBeenCalledWith('w-1', expect.objectContaining({
+      agentProvider: AgentProvider.MUSE_CODE,
+      options: expect.objectContaining({ workspaceTrust: 'agent' }),
+    }))
+  })
+
+  it('resets a startup choice after each provider change', async () => {
+    const setProviders = mountMuseDialog()
+    await fireEvent.click(await screen.findByRole('radio', { name: 'Trust for this agent' }))
+    expect(screen.getByRole('radio', { name: 'Trust for this agent' })).toHaveAttribute('aria-checked', 'true')
+    setProviders([AgentProvider.CODEX])
+    await waitFor(() => expect(screen.queryByRole('radio', { name: 'Trust for this agent' })).toBeNull())
+    setProviders([AgentProvider.MUSE_CODE])
+    const choice = await screen.findByRole('radio', { name: 'Use native trust' })
+    expect(choice).toHaveAttribute('aria-checked', 'true')
   })
 })
 

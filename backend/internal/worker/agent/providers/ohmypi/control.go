@@ -73,7 +73,7 @@ func (a *Agent) handleExtensionUIRequest(raw []byte) {
 		// A notice the reader must see, and a URL the reader must open. omp sends
 		// the second only for a `login` command, which LeapMux never sends, so it
 		// persists rather than disappearing if a later build sends it for more.
-		if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw); err != nil {
+		if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw}); err != nil {
 			slog.Error("omp persist extension notification", "agent_id", a.AgentID(), "method", head.Method, "error", err)
 		}
 	case contracts.OhMyPiExtensionMethodSetStatus, contracts.OhMyPiExtensionMethodSetWidget,
@@ -84,7 +84,7 @@ func (a *Agent) handleExtensionUIRequest(raw []byte) {
 	default:
 		// A method this build does not know. It reaches the transcript as an
 		// inspectable card rather than disappearing.
-		if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw); err != nil {
+		if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw}); err != nil {
 			slog.Error("omp persist unknown extension request", "agent_id", a.AgentID(), "method", head.Method, "error", err)
 		}
 	}

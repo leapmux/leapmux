@@ -584,7 +584,7 @@ function toolOutcomeEntries(v) {
   ]
 }
 
-export function checkWorkerVocab(v) {
+export function checkWorkerVocab(v, backgroundTaskEnumValues) {
   const entries = Object.entries(v.notificationTypes)
   const tokens = entries.map(([, token]) => token)
   mustBe(new Set(tokens).size === tokens.length, 'worker-vocab.json', 'two notification types share one wire token')
@@ -621,6 +621,21 @@ export function checkWorkerVocab(v) {
   // The outcome note is a metadata FIELD, so its key must exist there. Without it the
   // worker would write a note under a name the browser never reads.
   mustBe(v.messageMetadataFields.ToolOutcome != null, 'worker-vocab.json', 'messageMetadataFields must hold ToolOutcome, the field the tool-outcome note is stored under')
+  const backgroundTokens = Object.values(v.backgroundTaskStatusTokens)
+  mustBe(new Set(backgroundTokens).size === backgroundTokens.length, 'worker-vocab.json', 'two background-task statuses share one wire token')
+  mustBe(v.backgroundTaskStatusTokens.Unspecified === '', 'worker-vocab.json', 'backgroundTaskStatusTokens.Unspecified must be the empty token')
+  mustBe(Array.isArray(backgroundTaskEnumValues) && backgroundTaskEnumValues.length > 0, 'worker-vocab.json', 'BackgroundTaskStatus enum values must be present')
+  const backgroundEntries = new Map(Object.keys(v.backgroundTaskStatusTokens).map(key => [
+    `BACKGROUND_TASK_STATUS_${key.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toUpperCase()}`,
+    key,
+  ]))
+  for (const enumValue of backgroundTaskEnumValues) {
+    mustBe(backgroundEntries.has(enumValue), 'worker-vocab.json', `${enumValue} has no backgroundTaskStatusTokens entry`)
+  }
+  const enumSet = new Set(backgroundTaskEnumValues)
+  for (const [enumValue, key] of backgroundEntries) {
+    mustBe(enumSet.has(enumValue), 'worker-vocab.json', `backgroundTaskStatusTokens.${key} matches no BackgroundTaskStatus enum value`)
+  }
   return {}
 }
 
@@ -629,6 +644,8 @@ export function emitGoWorkerVocab(v) {
     .map(([key, token]) => ({ name: `NotificationType${key}`, value: jsonString(token) })))
   const goalStatusBlock = goConstBlock(Object.entries(v.goalStatusTokens)
     .map(([key, token]) => ({ name: `GoalStatusToken${key}`, value: jsonString(token) })))
+  const backgroundStatusBlock = goConstBlock(Object.entries(v.backgroundTaskStatusTokens)
+    .map(([key, token]) => ({ name: `BackgroundTaskStatusToken${key}`, value: jsonString(token) })))
   const goalTransitionBlock = goConstBlock(Object.entries(v.goalTransitions)
     .map(([key, token]) => ({ name: `GoalTransition${key}`, value: jsonString(token) })))
   const assembledMessageBlock = goConstBlock(assembledMessageEntries(v.assembledMessage)
@@ -687,6 +704,11 @@ const (
 ${goalStatusBlock}
 )
 
+// BackgroundTaskStatusToken* identifies neutral background-task payload states.
+const (
+${backgroundStatusBlock}
+)
+
 // GoalTransition* name what a goal change DID. The applier holds the row from
 // before the write, so it is the only place that can tell a resume from a fresh
 // set -- both end with the status "active".
@@ -725,6 +747,9 @@ export function emitTsWorkerVocab(v) {
     .map(key => `  ${jsonString(v.notificationTypes[key])},`)
     .join('\n')
   const goalStatusEntries = Object.entries(v.goalStatusTokens)
+    .map(([key, token]) => `  ${key}: ${jsonString(token)},`)
+    .join('\n')
+  const backgroundStatusEntries = Object.entries(v.backgroundTaskStatusTokens)
     .map(([key, token]) => `  ${key}: ${jsonString(token)},`)
     .join('\n')
   const goalTransitionEntries = Object.entries(v.goalTransitions)
@@ -782,9 +807,16 @@ export const CODEX_RATE_LIMIT_REACHED_TIME_WINDOW = ${jsonString(v.codexRateLimi
 /** Stable session-info member for a Codex billing or workspace block. */
 export const CODEX_RATE_LIMIT_ACCOUNT_BLOCK_KEY = ${jsonString(v.codexRateLimitAccountBlockKey)} as const
 
+/** Neutral background-task status tokens in payloads. Storage uses enum ordinals. */
+export const BACKGROUND_TASK_STATUS_TOKEN = {
+${backgroundStatusEntries}
+} as const
+
+export type BackgroundTaskStatusToken = typeof BACKGROUND_TASK_STATUS_TOKEN[keyof typeof BACKGROUND_TASK_STATUS_TOKEN]
+
 /**
- * The tokens the worker ships in the goal_updated payload. The empty token
- * means "no goal". The agents row stores an ordinal, not one of these.
+ * The worker sends these tokens in goal_updated payloads.
+ * The empty token means "no goal". The agents row stores an ordinal.
  */
 export const GOAL_STATUS_TOKEN = {
 ${goalStatusEntries}
@@ -2339,6 +2371,7 @@ export const PROVIDER_PROTOCOLS = [
     tables: [
       { key: 'events', frameKind: 'name', goTable: 'Event', tsTable: 'EVENT', tsType: 'MiMoEvent', doc: 'event types the worker persists verbatim and the browser reads' },
       { key: 'statusTypes', goTable: 'StatusType', tsTable: 'STATUS_TYPE', tsType: 'MiMoStatusType', doc: '`status.type` words of `session.status`' },
+      { key: 'errorNames', goTable: 'ErrorName', tsTable: 'ERROR_NAME', tsType: 'MiMoErrorName', doc: 'native error names that both readers use for a turn outcome' },
       { key: 'partTypes', goTable: 'PartType', tsTable: 'PART_TYPE', tsType: 'MiMoPartType', doc: 'message part types the browser draws' },
       { key: 'toolStatuses', goTable: 'ToolStatus', tsTable: 'TOOL_STATUS', tsType: 'MiMoToolStatus', doc: '`state.status` words of a tool part' },
       { key: 'toolNames', goTable: 'Tool', tsTable: 'TOOL', tsType: 'MiMoTool', doc: 'tool ids' },
@@ -2876,6 +2909,35 @@ export const PROVIDER_PROTOCOLS = [
       { key: 'modes', goTable: 'Mode', tsTable: 'MODE', tsType: 'FastagentMode', doc: 'session modes, carried on LeapMux\'s permission-mode axis' },
     ],
   },
+  {
+    name: 'muse-protocol',
+    goPrefix: 'Muse',
+    tsPrefix: 'MUSE',
+    title: 'Muse Code',
+    preamble: [
+      'Muse Code owns the Muse Session Protocol (MSP) vocabulary below.',
+      'The Worker and browser read these native values from one contract.',
+      'Native log records supply separate result data without changing the item view.',
+    ].join('\n// '),
+    tables: [
+      { key: 'methods', frameKind: 'name', goTable: 'Method', tsTable: 'METHOD', tsType: 'MuseMethod', doc: 'native notification and server request methods' },
+      { key: 'itemKinds', goTable: 'ItemKind', tsTable: 'ITEM_KIND', tsType: 'MuseItemKind', doc: 'native transcript item kinds' },
+      { key: 'itemStatuses', goTable: 'ItemStatus', tsTable: 'ITEM_STATUS', tsType: 'MuseItemStatus', doc: 'native item status values' },
+      { key: 'todoStatuses', goTable: 'TodoStatus', tsTable: 'TODO_STATUS', tsType: 'MuseTodoStatus', doc: 'statuses of a native to-do list' },
+      { key: 'turnOutcomes', goTable: 'TurnOutcome', tsTable: 'TURN_OUTCOME', tsType: 'MuseTurnOutcome', doc: 'native turn completion outcomes' },
+      { key: 'approvalModes', goTable: 'ApprovalMode', tsTable: 'APPROVAL_MODE', tsType: 'MuseApprovalMode', doc: 'native approval modes' },
+      { key: 'approvalDecisions', goTable: 'ApprovalDecision', tsTable: 'APPROVAL_DECISION', tsType: 'MuseApprovalDecision', doc: 'native approval decisions' },
+      { key: 'choiceScopes', goTable: 'ChoiceScope', tsTable: 'CHOICE_SCOPE', tsType: 'MuseChoiceScope', doc: 'native approval choice scopes' },
+      { key: 'questionSelectionModes', goTable: 'QuestionSelectionMode', tsTable: 'QUESTION_SELECTION_MODE', tsType: 'MuseQuestionSelectionMode', doc: 'native question selection modes' },
+      { key: 'inputOutcomes', goTable: 'InputOutcome', tsTable: 'INPUT_OUTCOME', tsType: 'MuseInputOutcome', doc: 'native question settlement outcomes', readers: ['ts'], readersWhy: 'The Worker retains the native settlement frame. The browser reads each outcome word for display.' },
+      { key: 'compactionOutcomes', goTable: 'CompactionOutcome', tsTable: 'COMPACTION_OUTCOME', tsType: 'MuseCompactionOutcome', doc: 'native compaction outcomes' },
+      { key: 'logEvents', goTable: 'LogEvent', tsTable: 'LOG_EVENT', tsType: 'MuseLogEvent', doc: 'native log events that supply structured results' },
+      { key: 'supplementFields', goTable: 'SupplementField', tsTable: 'SUPPLEMENT_FIELD', tsType: 'MuseSupplementField', owner: 'LeapMux chose these', doc: 'separate native records and recovery failures' },
+      { key: 'streamKinds', goTable: 'StreamKind', tsTable: 'STREAM_KIND', tsType: 'MuseStreamKind', doc: 'native raw log stream kinds that both sides inspect' },
+      { key: 'optionIds', goTable: 'OptionID', tsTable: 'OPTION_ID', tsType: 'MuseOptionID', owner: 'LeapMux chose these', doc: 'startup option identifiers' },
+      { key: 'workspaceTrust', goTable: 'WorkspaceTrust', tsTable: 'WORKSPACE_TRUST', tsType: 'MuseWorkspaceTrust', owner: 'LeapMux chose these', doc: 'workspace trust choices for a host launch' },
+    ],
+  },
 ]
 
 /**
@@ -3079,11 +3141,12 @@ export function checkProviderProtocol(spec, p) {
     if (t.frameKind != null)
       mustBe(FRAME_KIND_MATCHES.has(t.frameKind), file, `table ${t.key} states frameKind ${JSON.stringify(t.frameKind)}, which is not one of ${[...FRAME_KIND_MATCHES].join(', ')}`)
   }
-  const present = Object.keys(p).filter(k => !k.startsWith('_') && k !== 'structs' && typeof p[k] === 'object')
+  const present = Object.keys(p).filter(k => !k.startsWith('_') && k !== 'structs' && k !== 'startupOptionGroups' && typeof p[k] === 'object')
   for (const key of declared)
     mustBe(p[key] != null && Object.keys(p[key]).length > 0, file, `${key} is missing or empty`)
   for (const key of present)
     mustBe(declared.includes(key), file, `table ${key} is not declared in PROVIDER_PROTOCOLS -- a new table must be registered in the same change, or it is never emitted`)
+  checkStartupOptionGroups(spec, p)
   // `emitGoProviderProtocol` emits `var <Prefix><Table>Keys` beside the constants of
   // a goSlice table, so a key called Keys emits a const and a var of one name.
   for (const t of spec.tables) {
@@ -3173,6 +3236,66 @@ function checkUnreadKeys(spec, p) {
   }
 }
 
+/** Validate startup axes before either language receives a default or option list. */
+export function checkStartupOptionGroups(spec, p) {
+  const file = `${spec.name}.json`
+  const groups = p.startupOptionGroups
+  if (groups === undefined)
+    return
+  mustBe(groups !== null && typeof groups === 'object' && !Array.isArray(groups), file, 'startupOptionGroups must be an object')
+  mustBe(spec.tables.some(table => table.key === 'optionIds'), file, 'startupOptionGroups requires a declared optionIds table')
+  const ids = new Set()
+  for (const [key, group] of Object.entries(groups)) {
+    mustBe(group !== null && typeof group === 'object' && !Array.isArray(group), file, `startupOptionGroups.${key} must be an object`)
+    const id = Object.hasOwn(p.optionIds ?? {}, group.id) ? p.optionIds[group.id] : undefined
+    mustBe(typeof id === 'string' && id.trim() !== '', file, `startupOptionGroups.${key} gives no optionIds key`)
+    mustBe(!ids.has(id), file, `startupOptionGroups.${key} repeats an option ID`)
+    ids.add(id)
+    const table = spec.tables.find(table => table.key === group.valuesTable)
+    mustBe(table !== undefined, file, `startupOptionGroups.${key} gives no declared values table`)
+    mustBe(typeof group.label === 'string' && group.label.trim() !== '', file, `startupOptionGroups.${key} needs a label`)
+    mustBe(typeof group.readOnlyReason === 'string' && group.readOnlyReason.trim() !== '', file, `startupOptionGroups.${key} needs a read-only reason`)
+    mustBe(Array.isArray(group.options) && group.options.length > 0, file, `startupOptionGroups.${key} needs options`)
+    const values = new Set()
+    for (const option of group.options) {
+      mustBe(option !== null && typeof option === 'object' && !Array.isArray(option), file, `startupOptionGroups.${key} contains an invalid option`)
+      const vocabulary = p[group.valuesTable]
+      const value = vocabulary && Object.hasOwn(vocabulary, option.value) ? vocabulary[option.value] : undefined
+      mustBe(typeof value === 'string' && value.trim() !== '', file, `startupOptionGroups.${key} contains an unknown option value`)
+      mustBe(!values.has(value), file, `startupOptionGroups.${key} repeats an option value`)
+      mustBe(typeof option.label === 'string' && option.label.trim() !== '', file, `startupOptionGroups.${key} contains an empty option label`)
+      mustBe(option.description === undefined || (typeof option.description === 'string' && option.description.trim() !== ''), file, `startupOptionGroups.${key} contains an invalid option description`)
+      values.add(value)
+    }
+    mustBe(values.has(p[group.valuesTable]?.[group.defaultValue]), file, `startupOptionGroups.${key} default is outside its options`)
+  }
+}
+
+function emitGoStartupOptionGroups(spec, p) {
+  if (p.startupOptionGroups === undefined)
+    return ''
+  const prefix = spec.goPrefix
+  const rows = Object.values(p.startupOptionGroups).map((group) => {
+    const table = spec.tables.find(table => table.key === group.valuesTable)
+    const value = key => `${prefix}${table.goTable}${key}`
+    const options = group.options.map(option => `\t\t{Value: ${value(option.value)}, Label: ${jsonString(option.label)}, Description: ${jsonString(option.description ?? '')}},`).join('\n')
+    return `\t{\n\t\tID: ${prefix}OptionID${group.id}, Label: ${jsonString(group.label)}, DefaultValue: ${value(group.defaultValue)},\n\t\tReadOnlyReason: ${jsonString(group.readOnlyReason)},\n\t\tOptions: []${prefix}StartupOption{\n${options}\n\t\t},\n\t},`
+  }).join('\n')
+  return `\n// ${prefix}StartupOption is one choice that a new agent accepts.\ntype ${prefix}StartupOption struct {\n\tValue string\n\tLabel string\n\tDescription string\n}\n\n// ${prefix}StartupOptionGroup supplies one launch axis and its default.\ntype ${prefix}StartupOptionGroup struct {\n\tID string\n\tLabel string\n\tDefaultValue string\n\tReadOnlyReason string\n\tOptions []${prefix}StartupOption\n}\n\n// ${prefix}StartupOptionGroups comes from the shared axis definition in its stated order.\nvar ${prefix}StartupOptionGroups = []${prefix}StartupOptionGroup{\n${rows}\n}\n`
+}
+
+function emitTsStartupOptionGroups(spec, p) {
+  if (p.startupOptionGroups === undefined)
+    return ''
+  const rows = Object.entries(p.startupOptionGroups).map(([key, group]) => {
+    const table = spec.tables.find(table => table.key === group.valuesTable)
+    const value = key => `${spec.tsPrefix}_${table.tsTable}.${key}`
+    const options = group.options.map(option => `      { value: ${value(option.value)}, label: ${jsonString(option.label)}${option.description === undefined ? '' : `, description: ${jsonString(option.description)}`} },`).join('\n')
+    return `  ${key}: {\n    id: ${spec.tsPrefix}_OPTION_ID.${group.id}, label: ${jsonString(group.label)}, defaultValue: ${value(group.defaultValue)},\n    readOnlyReason: ${jsonString(group.readOnlyReason)},\n    options: [\n${options}\n    ],\n  },`
+  }).join('\n')
+  return `\n/** Startup axes and defaults from the shared contract. */\nexport const ${spec.tsPrefix}_STARTUP_OPTION_GROUPS = {\n${rows}\n} as const\n`
+}
+
 export function emitGoProviderProtocol(spec, p) {
   const blocks = spec.tables.flatMap((t) => {
     const decls = Object.entries(p[t.key])
@@ -3202,7 +3325,7 @@ ${imports}
 // ${preamble}
 
 ${declarations}
-${extra}`
+${extra}${emitGoStartupOptionGroups(spec, p)}`
 }
 
 export function emitTsProviderProtocol(spec, p) {
@@ -3223,7 +3346,7 @@ export function emitTsProviderProtocol(spec, p) {
 // ${preamble}
 
 ${blocks.join('\n\n')}
-${extra}`
+${extra}${emitTsStartupOptionGroups(spec, p)}`
 }
 
 /**
@@ -3922,9 +4045,11 @@ const DOMAINS = [
   },
   {
     name: 'worker-vocab',
-    emit(out, read) {
+    requiresDescriptor: true,
+    emit(out, read, descriptorSet) {
       const v = read('worker-vocab')
-      checkWorkerVocab(v)
+      const backgroundTaskEnumValues = enumValues(descriptorSet, 'leapmux/v1/agent.proto', 'BackgroundTaskStatus')
+      checkWorkerVocab(v, backgroundTaskEnumValues)
       out['backend/generated/contracts/worker-vocab.go'] = emitGoWorkerVocab(v)
       out['frontend/src/generated/contracts/worker-vocab.ts'] = emitTsWorkerVocab(v)
     },

@@ -30,7 +30,7 @@ mimoTest.describe('MiMo Code subagent registry', () => {
       childWhen: mimoChildTurn(childTask),
       childTask,
       parentTask: 'Delegate the live child file read.',
-      toolProof: { read: { workingDir } },
+      toolProof: { read: { workingDir, expandResult: true } },
     })
   })
 })

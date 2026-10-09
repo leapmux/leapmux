@@ -1,18 +1,11 @@
-/**
- * The agent-event pipeline, as module-level units.
- *
- * Every handler here takes its stores as an explicit deps bag rather than
- * closing over the connection hook -- which is what makes the branches of
- * `agentMessage` independently testable, and what let this move out of a
- * 1700-line module without changing a line of behaviour.
- */
+/** Each agent-event handler receives explicit stores and runs independently of the connection hook. */
 import type { AgentActivityState, AgentChatMessage, AgentControlCancelRequest, AgentControlRequest, AgentStatusChange, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import type { AgentSettledEventDetail } from '~/lib/agentSettledEvent'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { RateLimitInfo, RateLimitUpdate } from '~/models/agentSession'
 import type { AgentActivityStore } from '~/stores/agentActivity.store'
-import type { createAgentSessionStore, LiveGenerationProgress } from '~/stores/agentSession.store'
+import type { createAgentSessionStore, LiveGenerationProgress, SessionMetadataDelivery } from '~/stores/agentSession.store'
 import type { createChatStore } from '~/stores/chat.store'
 import type { GoalProgress } from '~/stores/chatGoal'
 import type { ToolProgressRetry, ToolProgressUpdate } from '~/stores/chatToolProgress'
@@ -49,10 +42,9 @@ const log = createLogger('agentEvents')
 const TEXT_DECODER = new TextDecoder()
 
 /**
- * Translate a snake_case `rate_limits` broadcast payload to the camelCase
- * `RateLimitInfo` shape that the agent-session store and rate-limit utils
- * consume. The wire format is provider-agnostic snake_case (Claude/Codex
- * both emit it that way); the frontend keeps idiomatic camelCase types.
+ * Translate the neutral snake_case rate-limit payload into camelCase RateLimitInfo values.
+ * The agent session store and rate-limit helpers consume those values.
+ * Claude and Codex both emit this neutral wire shape.
  */
 function wireRateLimitsToCamel(value: unknown): Record<string, RateLimitInfo> | undefined {
   if (!isObject(value))
@@ -61,17 +53,12 @@ function wireRateLimitsToCamel(value: unknown): Record<string, RateLimitInfo> | 
   for (const [key, tier] of Object.entries(value)) {
     if (!isObject(tier))
       continue
-    // One checked line per field. Each picker states the type it accepts, and
-    // `assignDefined` leaves the key ABSENT when the tier omits it or carries the
-    // wrong type -- which matters beyond tidiness: agentSession.store compares a
-    // tier with `shallowEqual`, which reads key COUNTS first. A form that wrote
-    // all eight keys, with `undefined` for the ones the payload omits, would
-    // compare unequal against the STORED copy on every broadcast, because the
-    // two are not built the same way: the stored one is whatever the serializer
-    // left behind, and this one is whatever the payload carried.
-    //
-    // Every picker's fallback is an explicit `undefined`, so a field's type still
-    // comes from RateLimitInfo and a mismatched picker fails to compile.
+    // Each typed picker validates one field. assignDefined omits absent or invalid fields.
+    // RateLimitInfo has eight fields, and shallowEqual compares the key count before the values.
+    // The serializer omits absent keys from a stored tier.
+    // Writing those keys as undefined here would make each broadcast compare unequal to that stored tier.
+    // An explicit undefined fallback keeps the destination field's RateLimitInfo type.
+    // The type checker rejects a picker whose return type differs from that field.
     const info: RateLimitInfo = {}
     assignDefined(info, 'rateLimitType', pickString(tier, RATE_LIMIT_FIELD.RateLimitType, undefined))
     assignDefined(info, 'status', pickString(tier, RATE_LIMIT_FIELD.Status, undefined))
@@ -87,12 +74,11 @@ function wireRateLimitsToCamel(value: unknown): Record<string, RateLimitInfo> | 
 }
 
 /**
- * Translate an `agent_session_info` wire payload (provider-agnostic snake_case)
- * into the store's camelCase `AgentSessionInfo` updates. Each field carries its
- * own predicate + transform and is included only when present/valid, so a
- * provider that omits keys (or sends a dropped-only payload) produces an empty
- * object and the caller skips the store write. Pure and exported so the
- * wire->camel boundary can be unit-tested directly without a live connection.
+ * Translate the neutral session-info payload into camelCase updates for AgentSessionInfo.
+ * Each field has its own validation and conversion.
+ * An omitted or invalid field stays absent from the result.
+ * If no field remains, the caller skips the store write.
+ * The exported pure function permits direct tests without a live connection.
  */
 export function wireSessionInfoToUpdates(
   info: Record<string, unknown> | undefined,
@@ -100,16 +86,12 @@ export function wireSessionInfoToUpdates(
   const updates: Record<string, unknown> = {}
   if (!info)
     return updates
-  // Each value binds to a local ONCE. A `typeof` guard on `info[K]` does not
-  // narrow a SECOND read of the same index expression -- element-access
-  // narrowing needs a literal or a `const` key, and a property of an `as const`
-  // table is neither -- so a guard-then-index form would assign `unknown` and
-  // the type checker would stop catching a mismatch here.
-  //
-  // wireRateLimitsToCamel solves the same problem the other way, with a picker
-  // per field. These five keep the inline guards because each lands on a
-  // differently-typed field of an untyped `updates` record, where a picker buys
-  // nothing.
+  // Read each indexed value once before checking its type.
+  // The local value lets TypeScript retain the type that the guard establishes.
+  // A repeated read through these generated table properties does not retain that narrower type.
+  // wireRateLimitsToCamel instead uses a typed picker for each field.
+  // These two fields use local validation because updates accepts unknown values.
+  // That target record does not check each field's semantic type.
   const totalCostUsd = info[SESSION_INFO_KEY.TotalCostUsd]
   if (typeof totalCostUsd === 'number')
     updates.totalCostUsd = totalCostUsd
@@ -154,24 +136,18 @@ function wireGenerationProgress(info: Record<string, unknown> | undefined): Live
 }
 
 /**
- * Translate one `running_tool` broadcast into the span-keyed update the chat
- * store merges. Pure and exported so the shape rules are unit-testable at the
- * wire boundary, the role wireSessionInfoToUpdates plays for the scalar keys.
+ * Translate a running_tool broadcast into the chat store's accumulating span state.
+ * The exported pure function permits direct wire-boundary tests.
+ * wireSessionInfoToUpdates handles scalar AgentSessionInfo fields separately.
  *
- * It deliberately does NOT go through wireSessionInfoToUpdates: that function
- * returns scalar `AgentSessionInfo` fields, and this is span-keyed accumulating
- * state that lives in the chat store.
+ * The span ID and native session ID together identify the tool row.
+ * Other fields can be absent because heartbeat and retry events report different facts.
+ * The retry field has three outcomes:
+ * - An absent or unreadable value retains the current retry.
+ * - An object supplies a retry update.
+ * - An explicit null clears the retry.
  *
- * `span_id` and `agent_session_id` together address the tool_use row, and the
- * store keys the entry by that pair. Every other field is optional, because the
- * worker forwards two families that report disjoint facts (see
- * chatToolProgress). `retry` keeps its three states: absent leaves the entry's
- * retry alone, an object sets it, and an explicit null clears it -- the agent's
- * only "the retry resolved" signal.
- *
- * It carries ONLY what the badge renders. The payload also states the tool's
- * name and a subagent's type, and the card already has both from the tool_use
- * row, so this drops them rather than storing a value nothing reads.
+ * Retain only the badge's fields. The tool row already supplies the tool name and subagent type.
  */
 export function wireRunningToolToUpdate(value: unknown): ToolProgressUpdate | undefined {
   if (!isObject(value))
@@ -180,24 +156,23 @@ export function wireRunningToolToUpdate(value: unknown): ToolProgressUpdate | un
   if (spanId === '')
     return undefined
 
-  // An absent session reads as '', which messageSpanKey also gives a row that
-  // carries none. The two therefore still meet at one key.
+  // An absent session becomes an empty string, as it does in messageSpanKey.
+  // The progress update and its row therefore use the same key.
   const update: ToolProgressUpdate = { spanId, agentSessionId: pickString(value, RUNNING_TOOL_FIELD.AgentSessionId) }
-  // pickCounter, not a bare pickNumber: a NaN or an Infinity reaches the
-  // duration formatter and renders as "NaNs" on the card, and a negative
-  // elapsed time is not a duration at all.
+  // Use a finite, non-negative elapsed time.
+  // A non-finite value produces an invalid duration label, and a negative value is not a duration.
   const elapsed = pickCounter(value, RUNNING_TOOL_FIELD.ElapsedSeconds)
   if (elapsed !== undefined)
     update.elapsedSeconds = elapsed
   if (RUNNING_TOOL_FIELD.Retry in value) {
     const retry = wireRunningToolRetry(value[RUNNING_TOOL_FIELD.Retry])
-    // An unreadable retry leaves `retry` OFF the update, so the entry keeps
-    // whatever it held. Only an explicit null reaches the store as a clear.
+    // Omit an unreadable retry so the store retains its current value.
+    // Only an explicit null clears the retry.
     if (retry !== undefined)
       update.retry = retry
   }
-  // The live output of the call. An EMPTY string is a real value -- a command
-  // that has printed nothing yet -- so the key's presence decides, not its text.
+  // An empty output tail is a real value for a command that produced no output.
+  // Check the field's presence and type instead of its truthiness.
   if (RUNNING_TOOL_FIELD.OutputTail in value && typeof value[RUNNING_TOOL_FIELD.OutputTail] === 'string') {
     update.outputTail = value[RUNNING_TOOL_FIELD.OutputTail] as string
     update.outputTruncated = value[RUNNING_TOOL_FIELD.OutputTruncated] === true
@@ -206,17 +181,10 @@ export function wireRunningToolToUpdate(value: unknown): ToolProgressUpdate | un
 }
 
 /**
- * The `goal_progress` payload as the goal store holds it, or undefined when the
- * broadcast carried no readable counter.
- *
- * Each field is read INDEPENDENTLY and omitted when absent. No two providers
- * report the same set -- Codex has no iteration count, ZCode and Claude Code no
- * token usage -- so a missing field must stay missing: a zero here renders as
- * "0 tokens used", a number the provider never gave.
- *
- * Finite and non-negative for the same reason the running-tool elapsed time is:
- * a NaN reaches the formatter and renders as "NaN", and a negative count is not
- * a count.
+ * Read the supplied goal_progress counters, or return undefined when none is valid.
+ * Read each counter independently because providers can supply different subsets.
+ * An absent counter stays absent. An invented zero would report a value that the provider did not supply.
+ * Require finite, non-negative numbers so the card shows no invalid count or duration.
  */
 export function wireGoalProgressToUpdate(value: unknown): GoalProgress | undefined {
   if (!isObject(value))
@@ -230,14 +198,10 @@ export function wireGoalProgressToUpdate(value: unknown): GoalProgress | undefin
 }
 
 /**
- * The `retry` member of a running_tool update, or undefined when the payload
- * carries a retry this cannot read.
- *
- * The three answers are distinct on purpose. `null` is the agent's resolved
- * signal and CLEARS the badge. An object sets it. `undefined` leaves the badge
- * alone -- a payload whose shape changed must not erase a live retry, and a
- * partial badge would read "Retrying 0/0", which is worse than the last known
- * attempt.
+ * Read the retry field of a running_tool update.
+ * An explicit null clears the badge. An object updates it.
+ * An unreadable value returns undefined and retains the last known retry.
+ * A partial or changed wire shape must not erase a live badge or display an invented attempt count.
  */
 function wireRunningToolRetry(value: unknown): ToolProgressRetry | null | undefined {
   if (value === null)
@@ -258,9 +222,8 @@ function wireRunningToolRetry(value: unknown): ToolProgressRetry | null | undefi
 }
 
 /**
- * The hook-scoped stores the agentMessage sub-handlers below write to. Passed
- * explicitly so each handler is a module-level unit (no closure over the hook), which
- * is what makes the three concerns of the agentMessage case independently testable.
+ * Supply explicit stores to the module-level message handlers.
+ * Each handler can then run independently without a closure over the connection hook.
  */
 export interface AgentMessageStores {
   agentSessionStore: ReturnType<typeof createAgentSessionStore>
@@ -272,162 +235,146 @@ export interface AgentMessageStores {
 }
 
 /**
- * Intercept an ephemeral agent_session_info message (broadcast by the Worker without
- * persisting). The broadcast wire is snake_case across all providers; translate to the
- * frontend store's camelCase shape at this boundary so JS consumers (RateLimitInfo,
- * ContextUsageInfo, AgentSessionInfo) can stay idiomatic without forcing snake_case
- * identifiers throughout the frontend. Returns true when it consumed the message, so
- * the agentMessage case breaks before the persisted-message processing below.
+ * Consume an ephemeral agent_session_info message that the worker does not persist.
+ * Translate the neutral snake_case payload into the frontend stores' camelCase fields at this boundary.
+ * Return true after this handler consumes the message, including when its replay receipt refuses effects.
+ * The caller then skips the persisted-message path.
  */
 export function handleAgentSessionInfo(
   agentId: string,
   parsed: ParsedMessageContent,
   stores: Pick<AgentMessageStores, 'agentSessionStore' | 'chatStore'>,
+  delivery: SessionMetadataDelivery = { phase: 'live' },
+  transcriptOnly = false,
 ): boolean {
   if (!(parsed.topLevel !== null && !parsed.wrapper && parsed.topLevel.type === NOTIFICATION_TYPE.AgentSessionInfo))
     return false
   const { agentSessionStore, chatStore } = stores
+  if (transcriptOnly || (delivery.phase === 'replay' && !agentSessionStore.acceptsReplay(agentId, delivery.replayId ?? 0n)))
+    return true
   const info = parsed.topLevel.info as Record<string, unknown> | undefined
   const updates = wireSessionInfoToUpdates(info)
   const rateLimits = wireRateLimitUpdateFromSessionInfo(info)
   const generationProgress = wireGenerationProgress(info)
   if (generationProgress)
     agentSessionStore.applyProgress(agentId, generationProgress)
-  // running_tool is span-keyed accumulating state, not an AgentSessionInfo field,
-  // so it goes to the chat store rather than through
-  // wireSessionInfoToUpdates.
+  // running_tool accumulates per-span state in the chat store.
+  // Keep it outside the scalar AgentSessionInfo translation.
   const runningTool = wireRunningToolToUpdate(info?.[SESSION_INFO_KEY.RunningTool])
   if (runningTool)
     chatStore.applyToolProgress(agentId, runningTool)
-  // goal_progress is the VOLATILE half of the session goal and belongs beside
-  // the goal itself in the chat store, not among the scalar AgentSessionInfo
-  // fields -- same reason running_tool takes its own path above. It rides this
-  // channel rather than AgentGoalChanged because Codex advances these counters
-  // after every completed tool call, and the goal event fires only on a real
-  // transition.
+  // Keep goal_progress beside the goal in the chat store.
+  // Its ephemeral updates can occur after each tool call without a goal transition.
+  // AgentGoalChanged carries the goal and supported actions separately.
   const goalProgress = wireGoalProgressToUpdate(info?.[SESSION_INFO_KEY.GoalProgress])
-  if (goalProgress)
-    chatStore.goal.setProgress(agentId, goalProgress)
+  if (goalProgress) {
+    const accepted: GoalProgress = {}
+    for (const field of Object.keys(goalProgress) as (keyof GoalProgress)[]) {
+      if (agentSessionStore.claimGoalProgressWrite(agentId, field, delivery))
+        assignDefined(accepted, field, goalProgress[field])
+    }
+    if (Object.keys(accepted).length > 0)
+      chatStore.goal.setProgress(agentId, accepted)
+  }
   if (rateLimits)
     updates.rateLimits = rateLimits.values
-  // Pi (and any future provider) may broadcast session_info payloads whose keys are all
-  // dropped here -- skip the store write so reactive consumers aren't woken for nothing.
+  // Skip the scalar store write when no translated field remains.
+  // This avoids a reactive update for unsupported or unrelated session-info keys.
   if (Object.keys(updates).length > 0) {
-    agentSessionStore.updateInfo(agentId, updates, rateLimits
-      ? { rateLimits: { mode: rateLimits.mode } }
-      : {})
+    agentSessionStore.updateInfo(agentId, updates, {
+      delivery,
+      ...(rateLimits ? { rateLimits: { mode: rateLimits.mode } } : {}),
+    })
   }
   return true
 }
 
-/**
- * Pull notification metadata out of any message regardless of source -- Codex
- * token-usage / rate-limit notifications arrive as AGENT, while LeapMux-injected
- * settings_changed / context_cleared arrive as LEAPMUX. Each branch self-gates so an
- * unrelated message (e.g. a Pi assistant message) falls through cheaply: the
- * context_cleared / settings_changed / plan branches match on the inner type, the
- * provider usage/rate-limit hooks return null for a frame they don't recognize, the
- * compaction scan dispatches through the row's own provider
- * (`compactionBoundaryFromMessage` via `compactionContextTokens`), returning
- * undefined for a provider that supplies none -- four of the ten plugins supply it
- * (Claude, Codex, Pi and Copilot), so the scan answers nothing for the other six -- and
- * usage folding additionally requires an AGENT-source row.
- */
-/**
- * Whether an agent event is being delivered LIVE or replayed during catch-up.
- *
- * Every imperative side effect in this module depends on it: replaying a
- * historical `plan_updated` used to re-apply the plan-derived title on each
- * page load, silently overwriting a tab the user had renamed by hand. It is a
- * REQUIRED parameter everywhere rather than one defaulting to 'live', so a
- * caller that forgets to thread it fails to compile instead of reintroducing
- * exactly that bug.
- */
+/** The explicit delivery phase controls live effects. Replay must preserve a manually edited tab title. */
 export type CatchUpPhase = 'catchingUp' | 'live'
 
-export function applyNotificationMetadata(agentId: string, msg: AgentChatMessage, parsed: ParsedMessageContent, stores: AgentMessageStores, catchUpPhase: CatchUpPhase): void {
-  if (parsed.topLevel === null)
+function messageMetadataDelivery(msg: AgentChatMessage, phase: CatchUpPhase, replayId: bigint): SessionMetadataDelivery {
+  return { phase: phase === 'live' ? 'live' : 'replay', replayId, seq: msg.seq }
+}
+
+/**
+ * Read notification metadata independently of the message's source.
+ * Neutral notifications match their explicit type, and provider hooks refuse frames that they do not recognize.
+ * The compaction scan asks the row's provider for its boundary and returns undefined when none exists.
+ * Usage extraction additionally requires an AGENT-source row.
+ */
+export function applyNotificationMetadata(agentId: string, msg: AgentChatMessage, parsed: ParsedMessageContent, stores: AgentMessageStores, catchUpPhase: CatchUpPhase, replayId = 0n): void {
+  if (msg.transcriptOnly || parsed.topLevel === null)
     return
   const { agentSessionStore, chatStore, metadata } = stores
+  const delivery = messageMetadataDelivery(msg, catchUpPhase, replayId)
   const plugin = providerFor(msg.agentProvider)
   const innerMsg = getInnerMessage(parsed)
   const innerType = innerMsg?.type as string | undefined
 
   if (innerType === NOTIFICATION_TYPE.ContextCleared) {
-    agentSessionStore.clearContextUsage(agentId)
-    chatStore.todos.clear(agentId)
-    // The conversation was wiped, so every live indicator on it goes too. The
-    // Worker also publishes counter clears. This local clear covers a lost or
-    // delayed frame, and the tool rows that held the running badges are gone.
-    clearPerTurnLiveState(agentId, stores)
+    agentSessionStore.clearContextUsage(agentId, delivery)
+    // A live clear removes indicators whose rows no longer exist.
+    // Replay restores scalar history through receipts and retains canonical to-dos.
+    if (catchUpPhase === 'live') {
+      chatStore.todos.clear(agentId)
+      clearPerTurnLiveState(agentId, stores)
+    }
   }
 
-  // Rate limits and Codex token usage self-gate in the provider plugin (they return null for a
-  // frame they don't recognize), so no rate_limit_event / account-rateLimits / tokenUsage wire
-  // token is matched here.
+  // Let the provider hook identify its rate-limit frame.
+  // This shared handler reads no provider-specific wire token.
   const rls = plugin?.session?.rateLimitsFromMessage?.(parsed)
   if (rls) {
     agentSessionStore.updateInfo(agentId, { rateLimits: rls.values }, {
+      delivery,
       rateLimits: { mode: rls.mode },
     })
   }
 
-  // Usage metadata (context usage + cumulative cost) for every AGENT-source message, in one pass:
-  // the neutral wrapper owns the subagent-skip / cost / normalized-context_usage guards and delegates
-  // the raw per-provider shape (Codex tokenUsage notification, Claude/Pi message.usage) to the plugin.
-  // This is the sole call site, so a provider implements contextUsageFromMessage once and the guards
-  // never live in a plugin. The AGENT-source gate is authoritative: every provider's usage frame
-  // (Claude assistant, Pi message_end, Codex thread/tokenUsage/updated) is persisted AGENT-source, so
-  // a USER/LEAPMUX row that happens to carry total_cost_usd / context_usage / message.usage must not
-  // fold -- the same guard the old applyAgentLifecycleAndUsage enforced before this extraction moved.
+  // Extract context usage and cumulative cost once for an AGENT-source row.
+  // The neutral extractor validates cost and context usage and excludes child usage.
+  // The provider hook reads its own native usage shape.
+  // The source guard prevents a USER or LEAPMUX row from changing usage through similar fields.
   if (msg.source === MessageSource.AGENT) {
     const resolved = resolveMessageForRendering(parsed, msg.agentProvider)
     const usage = extractContextUsage(resolved, p => plugin?.session?.contextUsageFromMessage?.(p) ?? null)
     if (usage)
-      agentSessionStore.updateInfo(agentId, usage)
+      agentSessionStore.updateInfo(agentId, usage, { delivery })
   }
 
-  // A completed compaction boundary makes the prior context-usage reading stale: the
-  // grid would keep showing the pre-compaction size until the next assistant/result
-  // message overwrites it. Refresh it straight from the boundary's post-compaction
-  // token count (post_tokens, or pre - tokens_saved), and reset the component fields
-  // since the boundary carries no input/cache breakdown -- contextTokens is
-  // authoritative for the grid. Preserve the known context window so the percentage
-  // denominator survives. The scan asks the row's OWN provider what a boundary is, and
-  // returns undefined (a no-op) for the common assistant message that carries none.
+  // Use a completed compaction boundary's post-compaction count to replace stale context usage.
+  // The boundary can supply the count directly or through the provider's saved-token calculation.
+  // Reset the input and cache fields because the boundary supplies no breakdown.
+  // Retain the known context window so the usage percentage keeps its denominator.
+  // The row's provider identifies the boundary. An unrelated message supplies no count.
   const postTokens = compactionContextTokens(parsed, msg.agentProvider)
   if (postTokens !== undefined) {
     const existing = agentSessionStore.getInfo(agentId).contextUsage
     agentSessionStore.updateInfo(agentId, {
       contextUsage: compactionContextUsage(postTokens, existing),
-    })
+    }, { delivery })
   }
 
-  if (innerType === NOTIFICATION_TYPE.SettingsChanged) {
+  if (catchUpPhase === 'live' && innerType === NOTIFICATION_TYPE.SettingsChanged) {
     const sc = extractSettingsChanges(parsed)
     if (sc)
       emitSettingsChanged(sc)
   }
 
-  // plan_execution / plan_updated may also appear inside a notification wrapper that
-  // holds multiple message types, so wrapper messages always run the walk; non-wrapper
-  // messages gate on the inner type to skip the call entirely.
+  // A notification wrapper can contain plan_execution or plan_updated beside other types.
+  // Scan every wrapper. For an unwrapped message, scan only the matching inner type.
   if (parsed.wrapper !== null || innerType === NOTIFICATION_TYPE.PlanExecution) {
     const planFile = extractPlanFilePath(parsed)
     if (planFile)
-      agentSessionStore.updateInfo(agentId, { planFilePath: planFile })
+      agentSessionStore.updateInfo(agentId, { planFilePath: planFile }, { delivery })
   }
   if (parsed.wrapper !== null || innerType === NOTIFICATION_TYPE.PlanUpdated) {
     const planUpdate = extractPlanUpdated(parsed)
     if (planUpdate) {
       if (planUpdate.planFilePath)
-        agentSessionStore.updateInfo(agentId, { planFilePath: planUpdate.planFilePath })
-      // Live only. The tab title is USER-EDITABLE, and this is the one branch
-      // here that writes over a user's own choice: replaying history on reload
-      // re-applied the plan's title and silently undid a manual rename. Every
-      // other side effect in this function is derived state that catch-up
-      // should restore, which is why only this one is restricted. (planFilePath
-      // above is derived, so it still restores.)
+        agentSessionStore.updateInfo(agentId, { planFilePath: planUpdate.planFilePath }, { delivery })
+      // A live plan can update the tab title. Replay must preserve a manual title.
+      // The plan file path restores independently through the scalar receipt.
       if (catchUpPhase === 'live' && planUpdate.updateAgentTitle && planUpdate.planTitle)
         metadata.patch(agentId, { title: planUpdate.planTitle })
     }
@@ -435,73 +382,65 @@ export function applyNotificationMetadata(agentId: string, msg: AgentChatMessage
 }
 
 /**
- * Handle a turn-end result divider (the caller gates on category.kind ===
- * 'result_divider'). Clears live per-turn state and rehydrates
- * contextWindow / total_cost_usd. Turn-end sound and tab badging are owned by
- * the worker's busy -> idle edge (`handleAgentSettled`), not this divider — leaving
- * both would ring a visible tab twice.
- *
- * Each provider plugin classifies its FINAL envelope (Claude type:"result",
- * Codex turn/completed, ACP stopReason, Pi agent_end) as `result_divider`, so
- * this is provider-agnostic.
+ * Handle a row that the provider plugin classifies as result_divider.
+ * Clear live per-turn indicators only for live delivery.
+ * Restore scalar result metadata through the exact delivery receipt during live delivery and replay.
+ * The worker's activity transition controls the alert and badge through handleAgentSettled.
+ * A separate divider alert would notify twice or report completion while a subagent still runs.
  */
 export function handleResultDivider(
   agentId: string,
   msg: AgentChatMessage,
   parsed: ParsedMessageContent,
   stores: AgentMessageStores,
+  catchUpPhase: CatchUpPhase,
+  replayId = 0n,
 ): void {
+  if (msg.transcriptOnly)
+    return
   const { agentSessionStore, view } = stores
-  // Clear every live indicator on the turn-end divider itself, not just via the
-  // per-message clear above. The divider is the structural turn boundary for every
-  // provider; a clear that depended on message source or status would miss a FINAL envelope
-  // whose source is not AGENT, or a catch-up replay where the INACTIVE-driven
-  // cleanup is skipped. It is also the backstop for a tool whose result row never
-  // arrived (an interrupt, a crashed CLI), whose badge would otherwise stay on that
-  // card for the rest of the session.
-  clearPerTurnLiveState(agentId, stores)
-  // Resolve the context-window hint from the CONFIRMED catalog current value, not the
-  // optimistic optionValues: a result divider is post-relaunch ground truth for a turn
-  // that already ran, so a mid-switch optimistic value (the "default" sentinel, or a
-  // not-yet-relaunched id) would mis-key the primary-model lookup. The confirmed
-  // currentValue is the model the completed turn actually used.
+  const delivery = messageMetadataDelivery(msg, catchUpPhase, replayId)
+  // A current live divider clears every indicator, regardless of its source.
+  // This includes a tool whose result never arrived after interruption or process failure.
+  // Historical dividers retain the replacement turn's indicators.
+  if (catchUpPhase === 'live')
+    clearPerTurnLiveState(agentId, stores)
+  // Use the confirmed catalog model to resolve the context-window hint.
+  // An optimistic model value can still identify the default sentinel or a model whose relaunch did not occur.
+  // That value could select the wrong context window for the completed turn.
   const modelId = optionGroup(view.getAgentTab(agentId)?.optionGroups, OPTION_ID_MODEL)?.currentValue
-  // No alert is raised from here, whatever the turn-end frame says. The Worker owns
-  // that, from its busy -> idle edge (handleAgentSettled): a divider is a turn
-  // boundary, and a turn that leaves a subagent running has not settled the agent.
-  const meta = extractResultMetadata(parsed, modelId)
+  // handleAgentSettled owns the activity alert.
+  // A turn divider does not establish that every subagent stopped.
+  const meta = extractResultMetadata(resolveMessageForRendering(parsed, msg.agentProvider), modelId)
   if (!meta)
     return
   if (meta.contextUsage) {
-    agentSessionStore.updateInfo(agentId, { contextUsage: meta.contextUsage })
+    agentSessionStore.updateInfo(agentId, { contextUsage: meta.contextUsage }, { delivery })
   }
   else if (meta.contextWindow !== undefined) {
     const existingUsage = agentSessionStore.getInfo(agentId).contextUsage
     if (existingUsage) {
       agentSessionStore.updateInfo(agentId, {
         contextUsage: { ...existingUsage, contextWindow: meta.contextWindow },
-      })
+      }, { delivery })
     }
   }
   if (meta.totalCostUsd !== undefined) {
-    agentSessionStore.updateInfo(agentId, { totalCostUsd: meta.totalCostUsd })
+    agentSessionStore.updateInfo(agentId, { totalCostUsd: meta.totalCostUsd }, { delivery })
   }
 }
 
 /**
- * Drop a span's live tool progress once its RESULT row lands: the tool finished,
- * so its card must stop showing an elapsed time.
+ * Clear a tool's live progress when its result row arrives.
+ * For example, Claude Code sends periodic heartbeats without a separate progress-clear event when the tool stops.
+ * Use the provider plugin's spanRole hook to identify the result row.
+ * This keeps provider parsing at the browser's extraction boundary.
  *
- * The frontend owns this because the worker cannot see it. Claude Code emits a
- * heartbeat every 30 seconds while a tool runs and NOTHING when it stops -- the
- * CLI just clears its own timer -- so a provider has no end message to forward.
- *
- * The result row is identified by the plugin's existing `spanRole` hook rather
- * than by any provider's own envelope shape, so this stays provider-neutral.
- * It runs for a row OUTSIDE the loaded window too: an entry whose row was
- * trimmed still has to be reclaimed, and the badge it feeds is not rendered
- * there anyway. Turn end / agent-inactive / context-cleared clear whatever this
- * misses.
+ * Clear progress even when the loaded window excludes or removed the result row.
+ * These events remove any remaining progress:
+ * - Turn completion.
+ * - INACTIVE status.
+ * - A context clear.
  */
 export function dropFinishedToolProgress(
   agentId: string,
@@ -511,9 +450,7 @@ export function dropFinishedToolProgress(
 ): void {
   if (!msg.spanId)
     return
-  // messageSpanIdentity, not the bare span id: the store keys an entry by the
-  // session and the span together, so this path must key it the same way the
-  // apply path and the read path do.
+  // Use both the native session ID and span ID, as the progress writer and reader do.
   if (resolvedSpanRole(parsed, msg.agentProvider) === 'result')
     chatStore.dropToolProgress(agentId, messageSpanIdentity(msg))
 }
@@ -533,42 +470,47 @@ export function clearPerTurnLiveState(
 }
 
 /**
- * Process one persisted `agentMessage` frame as a sequence of named steps: the ephemeral
- * session-info short-circuit, notification metadata, the windowed append,
- * background trim, tool-progress cleanup, and the turn-end result divider. Extracted from the
- * switch case so the pipeline matches the sibling extractions (handleAgentSessionInfo /
- * applyNotificationMetadata / handleResultDivider) instead of one case that dwarfs the rest.
- * The caller marks the agent live BEFORE this (that step is shared with the other cases).
+ * Process an agentMessage frame through these steps:
+ * - Consume ephemeral session info.
+ * - Apply notification metadata.
+ * - Append the stored message and trim background history.
+ * - Clear completed tool progress for live delivery.
+ * - Apply result-divider metadata and live cleanup.
+ * The caller marks live activity before this handler, except for transcript-only delivery.
+ * retain-transcript preserves the received row and its bytes without effects on current state.
+ * Ephemeral session info still creates no transcript row.
  */
 export function handleAgentMessage(
   agentId: string,
   msg: AgentChatMessage,
   stores: AgentMessageStores,
   catchUpPhase: CatchUpPhase,
+  replayId = 0n,
+  effectMode: 'apply-current-state' | 'retain-transcript' = 'apply-current-state',
 ): void {
   const { chatStore, view, selection } = stores
+  const applyCurrentState = effectMode === 'apply-current-state' && !msg.transcriptOnly
 
-  // Single decompress-and-parse pass shared across the metadata, span-cleanup,
-  // assistant-usage, and result-divider branches below. parseMessageContent never throws
-  // — failures yield EMPTY_PARSED (topLevel null), which causes each branch to no-op cleanly.
+  // Parse the received bytes once and share the result across the message handlers.
+  // A parse failure yields an empty parsed value, so handlers that require a JSON object do nothing.
   const parsed = parseMessageContent(msg)
 
-  // Ephemeral agent_session_info: translated + applied, then short-circuit (it is
-  // never persisted, so none of the message processing below applies).
-  if (handleAgentSessionInfo(agentId, parsed, stores))
+  // Consume ephemeral agent_session_info before the persisted-message path.
+  // That payload creates no transcript row.
+  if (handleAgentSessionInfo(agentId, parsed, stores, messageMetadataDelivery(msg, catchUpPhase, replayId), !applyCurrentState))
     return
 
-  // Notification metadata (context_cleared / rate_limit / token-usage / compaction
-  // / settings_changed / plan), independent of the persisted-message handling.
-  applyNotificationMetadata(agentId, msg, parsed, stores, catchUpPhase)
+  // Apply notification metadata independently of transcript storage and display.
+  if (applyCurrentState)
+    applyNotificationMetadata(agentId, msg, parsed, stores, catchUpPhase, replayId)
 
   chatStore.addMessage(agentId, msg)
-  // A tool's result row means it stopped running, so its badge goes with it.
-  dropFinishedToolProgress(agentId, msg, parsed, chatStore)
-  // Trim only tabs the user is NOT looking at. This must compare against THIS
-  // agent's own key: `activeKeyForTile` returns whichever tab the tile has
-  // active, so a bare truthiness test is true for any tile holding any tab —
-  // including this one — and the cap would never apply to anything.
+  // A tool's result row means that the tool stopped. Clear its live progress and badge.
+  if (applyCurrentState && catchUpPhase === 'live')
+    dropFinishedToolProgress(agentId, msg, parsed, chatStore)
+  // Trim history only when this agent is not its tile's selected tab.
+  // Compare the selected key with this agent's exact key.
+  // A truthiness check would treat every tile with any selected tab as visible and disable the history limit.
   if (
     selection.activeKeyForTile(view.getAgentTab(agentId)?.tileId ?? '')
     !== tabKey({ type: TabType.AGENT, id: agentId })
@@ -576,26 +518,24 @@ export function handleAgentMessage(
   ) {
     chatStore.trimOldestEnd(agentId, MAX_BACKGROUND_CHAT_MESSAGES)
   }
-  // Classify once and reuse across the per-message gates below.
+  if (!applyCurrentState)
+    return
+
+  // Classify the row before its result-divider decision.
   const category = classifyAgentMessage(msg)
 
-  // Rehydrate contextWindow / total_cost_usd from a result divider. Turn-end sound
-  // and tab badging are handled elsewhere, by the worker's busy -> idle edge. Each
-  // provider plugin classifies its final envelope (Claude type:"result", Codex
-  // turn/completed, ACP stopReason, Pi agent_end) as `result_divider`, so this
-  // branch is provider-agnostic.
+  // Restore scalar result metadata and clear live indicators through handleResultDivider.
+  // The provider plugin supplies result_divider classification.
+  // The worker's activity transition controls the alert and badge separately.
   if (category.kind === 'result_divider')
-    handleResultDivider(agentId, msg, parsed, stores)
+    handleResultDivider(agentId, msg, parsed, stores, catchUpPhase, replayId)
 }
 
 /**
- * For each axis the agent is ACTIVELY changing (pendingAxes), keep the tab's
- * OPTIMISTIC optionValue rather than absorbing the server's (in-flight-stale) one;
- * every other axis takes the server value. A pending axis ABSENT from `prevValues`
- * is an in-flight CLEAR (useAgentOperations deletes a cleared key before marking the
- * axis pending), so it stays absent rather than re-absorbing the server value.
- * Returns `serverValues` unchanged (same reference) when nothing is pending, so the
- * caller's downstream ref-reuse check can short-circuit. Pure.
+ * Retain the optimistic value for each pending settings axis. Use the server value for every other axis.
+ * A pending axis absent from prevValues is a local clear and must remain absent.
+ * useAgentOperations deletes that key before it marks the axis pending.
+ * Return the serverValues object unchanged when no axis is pending or no previous values exist.
  */
 export function applyPendingAxisSuppression(
   serverValues: Record<string, string>,
@@ -616,23 +556,15 @@ export function applyPendingAxisSuppression(
 }
 
 /**
- * Reconcile a status push's option-group catalog into the per-axis tab fields,
- * preserving reference stability and the user's in-flight optimistic edits:
- *  - derive the catalog + current values from the reported groups (empty groups =
- *    "unchanged", so an empty push returns {} and leaves the existing fields intact);
- *  - reuse each unchanged group's previous reference (mergeStableOptionGroupRefs) so a
- *    re-broadcast of the full catalog doesn't churn the settings popover's rows;
- *  - keep the optimistic value for each pending axis (applyPendingAxisSuppression).
+ * Reconcile a reported settings catalog into the tab's per-axis fields:
+ * - An empty catalog supplies no update.
+ * - Reuse each unchanged group's reference through mergeStableOptionGroupRefs.
+ * - Retain optimistic values for pending axes through applyPendingAxisSuppression.
  *
- * Suppressing an equal-but-fresh optionValues is deliberately NOT done here:
- * `tabMetadata.patch` compares every object-valued field against what is stored
- * (see `sameStoredValue`) and drops the write, which covers this producer, the
- * other ones, and any written later. mergeStableOptionGroupRefs stays because it
- * is not that rule -- it stabilizes each ELEMENT inside a changed array, which a
- * whole-value compare at the write point cannot do.
- *
- * Pure: the label-cache priming side effect (updateSettingsLabelCache) stays at the
- * call site -- it is the data-ingestion boundary, not part of deriving the tab fields.
+ * tabMetadata.patch suppresses a complete object write when its value is unchanged.
+ * The group helper also preserves unchanged elements inside an array that contains a changed group.
+ * That separate responsibility prevents unchanged settings rows from losing their identity.
+ * The caller updates the label cache at the ingestion boundary. This helper has no side effect.
  */
 export function resolveSettingsTabFields(
   prev: AgentTab | undefined,
@@ -642,30 +574,25 @@ export function resolveSettingsTabFields(
   if (optionGroups.length === 0)
     return {}
   const fields = deriveOptionGroupTabFields(optionGroups)
-  // The worker re-broadcasts the full catalog on every status push, re-decoded into
-  // fresh proto objects; reuse each unchanged group's prior reference (per group, so a
-  // single changed group like effort doesn't churn the untouched model list either).
+  // Reuse each unchanged group's previous reference after decoding fresh protobuf objects.
+  // A changed effort group must preserve an unchanged model group's identity.
   if (fields.optionGroups && prev?.optionGroups)
     fields.optionGroups = mergeStableOptionGroupRefs(fields.optionGroups, prev.optionGroups)
-  // The catalog (optionGroups) is never optimistic and always applies; the per-axis
-  // current values keep the user's in-flight optimistic edits (see the helper).
+  // Apply the confirmed catalog and retain pending optimistic values separately.
   if (fields.optionValues)
     fields.optionValues = applyPendingAxisSuppression(fields.optionValues, prev?.optionValues, pendingAxes)
   return fields
 }
 
 /**
- * Assemble the single consolidated tab update for an agent statusChange: status +
- * session id (only when status is SET, so a git-only push can't overwrite valid state
- * with proto3's UNSPECIFIED default and make the agent unwatchable), the startupError /
- * startupMessage transitions, the already-reconciled per-axis settings fields, and the
- * git fields. Pure; the caller applies the whole set in ONE `metadata.patch` so a status
- * push is a single write (vs. the historical split that walked the tab list twice).
+ * Build one tab update for a statusChange event.
+ * Include status and native session ID only when the event supplies a non-UNSPECIFIED status.
+ * This prevents a git-only update from replacing valid state with protobuf defaults.
+ * Apply startup transitions and the previously reconciled settings fields. Include the reported repository identity also.
  *
- * Takes no pre-update tab, and none of the groups below compares against one. The
- * worker re-ships its whole payload on every push, so an unchanged field does arrive
- * as an equal-but-fresh object -- but suppressing that write is `tabMetadata.patch`'s
- * job now, at the single write point (see `sameStoredValue`), not each producer's.
+ * The caller writes this complete update once.
+ * tabMetadata.patch suppresses unchanged object values at the shared write boundary.
+ * This pure helper requires no previous tab or per-producer equality checks.
  */
 export function buildAgentStatusTabUpdate(
   sc: AgentStatusChange,
@@ -675,20 +602,18 @@ export function buildAgentStatusTabUpdate(
   return {
     ...(hasStatus ? { agentStatus: sc.status, agentSessionId: sc.agentSessionId } : {}),
     ...(hasStatus ? { supportsSteering: sc.supportsSteering, supportsPreemption: sc.supportsPreemption } : {}),
-    // Carry startupError alongside status transitions so the in-tab error view can
-    // render the server-formatted message; only on the failed/cleared transitions, so
-    // an unrelated status (e.g. INACTIVE from turn end) leaves it alone.
+    // Set the server's startup error on STARTUP_FAILED and clear it on ACTIVE.
+    // Other status values retain the existing error.
     ...(sc.status === AgentStatus.STARTUP_FAILED ? { startupError: sc.startupError } : {}),
     ...(sc.status === AgentStatus.ACTIVE ? { startupError: '' } : {}),
-    // Carry startupMessage while STARTING so the startup panel shows the current phase;
-    // clear it on any final transition; ignore status-less events (catch-up
-    // sentinels, git-only updates) so an unrelated event doesn't wipe a live label.
+    // Show the startup phase while the status is STARTING.
+    // Clear it on another explicit status. Retain it when the event supplies no status.
     ...(sc.status === AgentStatus.STARTING
       ? { startupMessage: sc.startupMessage }
       : hasStatus ? { startupMessage: '' } : {}),
-    // The reconciled catalog (never optimistic) + per-axis-suppressed current values.
+    // Include the confirmed catalog and the current values after pending-axis suppression.
     ...settingsFields,
-    // Repo identity only on the tab; full git state lives in repoGitStore.
+    // The tab stores repository identity. repoGitStore stores the complete git state.
     ...(sc.gitStatus?.toplevel ? { gitToplevel: sc.gitStatus.toplevel } : {}),
   }
 }
@@ -698,21 +623,14 @@ export function handleAgentInactive(
   agentId: string,
   sc: AgentStatusChange,
   catchUpPhase: CatchUpPhase,
-  // The shared message-stores bag plus the controlStore only this handler needs --
-  // reuse AgentMessageStores rather than re-spelling its three members inline.
+  // Reuse the message stores and add the control store that this handler requires.
   stores: AgentMessageStores & { controlStore: ReturnType<typeof createControlStore> },
 ): void {
   stores.controlStore.clearProviderRequests(agentId)
   clearPerTurnLiveState(agentId, stores)
-  // No alert here: a process exit drives the Worker's busy state to false, and
-  // handleAgentSettled owns every settle. See its doc comment.
-  //
-  // No git refresh here either. The refresh belongs to the TURN boundary, which
-  // `onTurnEndRefresh` owns, and an INACTIVE status change is not one: the two
-  // live broadcasters of this status are an archive teardown and a failed
-  // startup relaunch, and both pass a nil gitStatus (see
-  // broadcastAgentInactive). Neither ran the agent, so neither changed the
-  // working tree.
+  // A process exit changes the worker's activity state. handleAgentSettled owns the resulting alert.
+  // An INACTIVE status does not establish a turn boundary.
+  // onTurnEndRefresh owns the git and directory-tree refresh after a turn ends.
 }
 
 /** Cancel the provider prompt without discarding a delivered response that still needs recording. */
@@ -738,11 +656,12 @@ export function handleControlRequest(
     || cr.responseState === ControlResponseState.PENDING || cr.responseState === ControlResponseState.UNCERTAIN
   if (catchUpPhase !== 'live' && agentEntry?.agentStatus === AgentStatus.INACTIVE && !hasSavedResponse)
     return
-  // A payload LeapMux cannot read is still a request the agent BLOCKS on. Keeping it is
-  // what gives the reader a question to see, a way to answer it, and the banner's stop;
-  // dropping it left a turn that never ended and no trace on screen (RL-002). The payload
-  // stays EMPTY rather than guessing a shape a provider plugin would then read, and the
-  // fault says why, so the banner can state it instead of rendering a blank question.
+  // Retain an unreadable control request because the provider still waits for its answer.
+  // The view must show these items:
+  // - The request.
+  // - Its failure reason.
+  // - The Stop control.
+  // Use an empty decoded payload and preserve the original bytes instead of inventing a provider shape.
   let payload: Record<string, unknown> = {}
   let payloadFault: ControlPayloadFault | undefined
   try {
@@ -761,28 +680,20 @@ export function handleControlRequest(
   }
   controlStore.addRequest(cr.agentId, { requestId: cr.requestId, agentId: cr.agentId, agentSessionId: cr.agentSessionId, payload, ...(payloadFault ? { payloadFault } : {}), originalPayload: cr.payload, agentProvider: cr.agentProvider, claimToken: cr.claimToken, sourceSeq: cr.sourceSeq, responseState: cr.responseState })
   if (catchUpPhase === 'live') {
-    // Light up the tab badge so a user looking at a sibling tab knows the background
-    // agent is now waiting on them. Match FULL's on-screen rule (tile-active).
+    // Set the hidden tab's badge when its agent needs an answer.
+    // Use the same tile visibility rule as FULL watch mode.
     if (!isAgentTabOnScreen(cr.agentId, view, selection, getActiveWorkspaceId))
       metadata.patch(cr.agentId, { hasNotification: true })
-    // No alert here. A pending control request drives the Worker's busy state to
-    // false, so handleAgentSettled raises it from the one edge -- and raising it
-    // in both places rang twice for one pause.
-    //
-    // No git / directory-tree refresh either, which this site used to trigger as
-    // a side effect of the same call. That refresh now belongs to the TURN
-    // boundary alone (onTurnEndRefresh): a prompt arrives mid-turn, so the tree
-    // it would show is half-written, and the turn end that follows refreshes it
-    // for real.
+    // A control request can change WORKING to WAITING_FOR_USER.
+    // handleAgentSettled plays that alert once.
+    // onTurnEndRefresh refreshes git and the directory tree after the turn ends.
+    // Let the activity handler send the alert. Let the turn-end handler request the refresh.
   }
 }
 
 /**
- * Whether this agent's tab is the one the user is looking at: it exists, it is
- * in the active workspace, and it is the selected tab of its tile.
- *
- * "On screen" is a property of the TILE's selection, not of the tab alone --
- * a tab in a background tile is mounted and invisible.
+ * Require an existing agent tab in the active workspace and its tile's selected key.
+ * A mounted tab can remain hidden behind another tab in the same tile.
  */
 export function isAgentTabOnScreen(
   agentId: string,
@@ -803,7 +714,7 @@ export function isAgentTabOnScreen(
  */
 export function handleActivityChanged(
   agentId: string,
-  // `numToolUses | undefined` mirrors the proto message this is fed from.
+  // The proto message supplies an optional numToolUses field.
   value: { state: AgentActivityState, numToolUses?: number | undefined },
   stores: Pick<AgentMessageStores, 'metadata' | 'selection' | 'getActiveWorkspaceId' | 'view'> & {
     agentActivityStore: AgentActivityStore
@@ -822,30 +733,17 @@ export function handleActivityChanged(
 }
 
 /**
- * The agent settled: badge an off-screen tab and play the turn-end sound.
+ * Set the hidden tab's badge and invoke the activity alert after the worker reports that the agent settled.
+ * A turn can end while a subagent still runs, so a turn-end event alone must not trigger this alert.
+ * A prompt or process exit can produce a transition out of WORKING.
  *
- * Driven by the WORKER's busy -> idle edge, not by a turn end. Those differ, and
- * the difference is the point: a turn that spawns a subagent ends while the
- * subagent keeps working, and ringing there told the user their agent was done
- * while it was still running. A settle means the turn ended AND no background
- * task of this agent's is still going.
+ * numToolUses identifies the completed turn's tool count when the provider supplies it.
+ * An absent count permits an alert.
+ * A prompt or process exit can omit the count. A provider can also omit it.
+ * An explicit zero lets the sound callback suppress an alert for a turn with no tool use.
  *
- * This one edge also subsumes the two alerts that used to be raised separately.
- * A pending control request drives busy to false, so a permission prompt still
- * rings; a process exit drives it to false, so a crash still rings.
- *
- * `numToolUses` is the count of the turn this settle completes, when a turn
- * completed it and the provider reported one. Unset means "ring" -- a settle
- * caused by a prompt or an exit carries no count, and neither does a provider
- * that cannot report one. Explicit 0 means the turn did nothing worth
- * interrupting the user for.
- *
- * Runs in every catch-up phase, because its one caller only reaches it on a
- * transition. The phase test that used to stand here dropped a settle that
- * merely RACED a replay, such as a background task ending while the
- * burst drained. That settle is the one the user waits for. The baseline the phase test
- * existed to silence no longer arrives as a transition at all: it rides
- * CatchUpStart, and AgentActivityStore.seedPublished raises nothing for it.
+ * The caller reaches this handler only after a live activity transition, including while replay occurs.
+ * CatchUpStart supplies the replay baseline through AgentActivityStore.seedPublished without an alert.
  */
 export function handleAgentSettled(
   agentId: string,
@@ -863,17 +761,18 @@ export function handleAgentSettled(
 }
 
 /**
- * The `statusChange` case: apply a worker status snapshot to the agent tab. Skips a
- * payload-less catch-up sentinel; otherwise reconciles the reported option-group
- * catalog into the tab (with per-axis optimistic suppression), consolidates every field
- * into ONE metadata patch, stops the aggregate settings spinner when nothing's pending, and
- * runs the INACTIVE turn-end cleanup. The worker-online flag is authoritative only on a
- * full status snapshot. Orchestration over the already-extracted pure helpers
- * (resolveSettingsTabFields / buildAgentStatusTabUpdate / handleAgentInactive);
- * `setWorkerOnline` is the hook's signal setter.
+ * Apply the worker's status snapshot to the agent tab:
+ * - Reconcile the confirmed settings catalog and pending optimistic values.
+ * - Apply one consolidated metadata update.
+ * - Stop the settings spinner when this agent has no pending change.
+ * - Clear live turn state after INACTIVE status.
  *
- * A STARTING->ACTIVE transition no longer drains anything here. The Worker owns the
- * durable input queue, so it dispatches a queued input itself once the agent runs.
+ * Only an explicit status makes workerOnline authoritative.
+ * Ignore an event that supplies none of these fields:
+ * - An explicit status.
+ * - Git data.
+ * - Settings groups.
+ * The worker owns the durable input queue and dispatches its queued input when the provider becomes ready.
  */
 export function handleAgentStatusChange(
   agentId: string,
@@ -885,21 +784,23 @@ export function handleAgentStatusChange(
   streamWorkerId = '',
 ): void {
   const hasStatus = sc.status !== AgentStatus.UNSPECIFIED
-  // `workerOnline` is only authoritative on full status snapshots. Status-less partial
-  // updates may carry proto3's default `false` from older backends or sparse producers.
+  // Only an explicit status makes workerOnline authoritative.
+  // A sparse event can contain protobuf's default false without a connectivity report.
   if (hasStatus)
     setWorkerOnline(sc.workerOnline)
 
-  // Skip events that carry no status, git, or settings payload -- they only surface as
-  // catch-up sentinels (the forward-fill they used to drive now runs from the continuous
-  // reconcileLaggingTails effect) and would otherwise allocate a full updates object and
-  // iterate every reactive reader for a no-op.
+  // Skip an event that supplies none of these fields:
+  // - An explicit status.
+  // - Git data.
+  // - Settings groups.
+  // Continuous reconcileLaggingTails handles catch-up independently.
+  // An empty status event must not allocate an update or notify reactive readers.
   const hasPayload = hasStatus || sc.gitStatus !== undefined || sc.optionGroups.length > 0
   if (!hasPayload)
     return
 
-  // Whether THIS agent has any settings change in flight -- gates only the aggregate
-  // spinner stop below; the optimistic-value suppression is per-AXIS (pendingAxes).
+  // Stop the aggregate settings spinner only when this agent has no pending change.
+  // The separate pendingAxes set protects optimistic values for each axis.
   const pendingSettings = settingsLoading.isPending(sc.agentId)
   applyAgentStatusTabUpdate(sc, stores, settingsLoading, streamWorkerId)
   if (!pendingSettings)
@@ -909,7 +810,8 @@ export function handleAgentStatusChange(
 }
 
 /**
- * Everything a status push writes onto an agent's tab row.
+ * Apply the status event's settings and repository data.
+ * Apply its tab fields in the same metadata update.
  */
 function applyAgentStatusTabUpdate(
   sc: AgentStatusChange,
@@ -929,13 +831,11 @@ function applyAgentStatusTabUpdate(
     ? { migrateErrorHintFrom: migrateHint }
     : {})
   const settingsFields = resolveSettingsTabFields(prev, sc.optionGroups, settingsLoading.pendingAxes(sc.agentId))
-  // Consolidate every per-status field into one patch so the row is written once.
-  //
-  // An event that carries a status, and an event that carries a catalog, are each
-  // counted: a `ListAgents` reply that was pending meanwhile holds an older answer
-  // and must not replace what the event wrote. See `TabMetadataStore.liveStatusEpoch`
-  // and `TabMetadataStore.liveCatalogEpoch`. A git-only event carries neither, so it
-  // counts nothing.
+  // Write the consolidated tab update once.
+  // Record live status and catalog writes in their respective epochs.
+  // A pending ListAgents response then cannot replace the newer live fields.
+  // A git-only event changes neither epoch.
+  // See TabMetadataStore.liveStatusEpoch and TabMetadataStore.liveCatalogEpoch.
   const hasStatus = sc.status !== AgentStatus.UNSPECIFIED
   const update = buildAgentStatusTabUpdate(sc, hasStatus, settingsFields)
   const writes: LiveWrite[] = []

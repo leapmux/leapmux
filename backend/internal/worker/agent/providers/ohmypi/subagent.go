@@ -150,7 +150,7 @@ func (a *Agent) handleSubagentLifecycle(raw []byte) {
 	case subagentStatusStarted:
 		a.startSubagent(payload)
 	case subagentStatusCompleted:
-		a.endSubagent(payload.ID, bgtask.StatusCompleted)
+		a.endSubagent(payload.ID, bgtask.StatusSucceeded)
 	case subagentStatusFailed:
 		a.endSubagent(payload.ID, bgtask.StatusFailed)
 	case subagentStatusAborted:
@@ -289,22 +289,25 @@ func (a *Agent) closeSubagents(status bgtask.Status) {
 	}
 }
 
-// subagentStatusForCompletion is the row status of a subagent that the end of its
-// session ended.
+// subagentStatusForCompletion returns the registry status when a subagent session ends.
 func subagentStatusForCompletion(completion agent.MessageCompletion) bgtask.Status {
 	switch completion {
 	case agent.MessageCompletionError:
 		return bgtask.StatusFailed
 	case agent.MessageCompletionComplete:
-		return bgtask.StatusCompleted
+		return bgtask.StatusSucceeded
+	case agent.MessageCompletionFinished:
+		return bgtask.StatusEndedWithUnknownOutcome
 	default:
 		return bgtask.StatusStopped
 	}
 }
 
-// completionForStatus is the completion of the output a subagent left unfinished
-// when it ended with a status.
+// completionForStatus returns the completion for a subagent's unfinished output.
 func completionForStatus(status bgtask.Status) agent.MessageCompletion {
+	if status == bgtask.StatusEndedWithUnknownOutcome {
+		return agent.MessageCompletionFinished
+	}
 	if status == bgtask.StatusFailed {
 		return agent.MessageCompletionError
 	}
@@ -589,7 +592,7 @@ func (a *Agent) closeDeliveredShells(details json.RawMessage) {
 		delete(a.shells, job.JobID)
 		a.Mu.Unlock()
 		if ok {
-			providerkit.LogRegistryRefusal("ohmypi", "close", a.sink.CloseBackgroundTask(rowKey, bgtask.StatusCompleted))
+			providerkit.LogRegistryRefusal("ohmypi", "close", a.sink.CloseBackgroundTask(rowKey, bgtask.StatusSucceeded))
 		}
 	}
 }

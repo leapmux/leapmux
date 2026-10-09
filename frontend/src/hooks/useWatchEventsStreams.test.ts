@@ -1,7 +1,10 @@
-import type { WatchEventsResponse } from '~/generated/proto/leapmux/v1/workspace_pb'
+import type { UseWatchEventsStreamsOpts } from './useWatchEventsStreams'
+import type { WatchEventsRequest, WatchEventsResponse } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { create, fromBinary, toBinary } from '@bufbuild/protobuf'
 import { batch, createMemo, createRoot, createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { TabType, WatchMode, WatchRejectionReason } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { WatchReplayMode } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentEventSchema, TabType, WatchAgentStateSchema, WatchEventsRequestSchema, WatchEventsResponseSchema, WatchMode, WatchRejectionReason } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { ChannelError } from '~/lib/channel'
 import { emitAddTab } from '~/stores/tabOps'
 import { installTestBridge } from '~/test-support/crdtBridge'
@@ -13,9 +16,9 @@ vi.mock('~/components/common/Toast', () => ({
 
 vi.mock('~/api/workerRpc', () => ({
   watchEventsViaChannel: vi.fn(),
-  // scheduleReconnect asks the relay whether it has latched a terminal close,
-  // so that a caller with no error in hand (onEnd) still parks. Null here is
-  // "dialable", which is what every case below assumes.
+  // Return no fatal relay refusal by default. A fatal-latch test supplies the refusal
+  // explicitly.
+
   channelManager: { fatalCloseInfo: vi.fn(() => null) },
 }))
 
@@ -32,21 +35,48 @@ interface FakeHandle {
   _emit: (resp: WatchEventsResponse) => void
   _end: () => void
   _error: (err: Error) => void
+  _requestId: () => bigint
 }
 
-function makeHandle(): FakeHandle {
+function makeHandle(initialId = 0n, opening?: Parameters<typeof watchEventsViaChannel>[1]): FakeHandle {
+  let requestId = initialId
+  const requests = new Map<bigint, WatchEventsRequest>()
+  let registered = new Map<string, { agentId: string, mode: WatchMode, replayId: bigint }>()
+  if (opening)
+    requests.set(initialId, create(WatchEventsRequestSchema, opening))
   let onEvent: ((resp: WatchEventsResponse) => void) | undefined
   let onEnd: (() => void) | undefined
   let onErr: ((err: Error) => void) | undefined
   return {
-    update: vi.fn(),
+    update: vi.fn((request: Parameters<typeof watchEventsViaChannel>[1]) => {
+      requestId = request.updateId ?? 0n
+      requests.set(requestId, create(WatchEventsRequestSchema, request))
+    }),
     close: vi.fn(),
     onEvent: (cb) => { onEvent = cb },
     onEnd: (cb) => { onEnd = cb },
     onError: (cb) => { onErr = cb },
-    _emit: resp => onEvent?.(resp),
+    _emit: (resp) => {
+      if (resp.event.case === 'updateAck' && !Object.hasOwn(resp.event.value, 'agentStates')) {
+        const ack = resp.event.value
+        const applied = requests.get(ack.updateId)
+        // Model the Worker registry. A failed agent lookup keeps its prior state.
+        if (applied && !ack.rejectedAgents.some(entry => entry.reason === WatchRejectionReason.LOOKUP_FAILED)) {
+          const refused = new Set(ack.rejectedAgents.map(entry => entry.entityId))
+          registered = new Map(applied.agents.filter(entry => !refused.has(entry.agentId)).map(entry => [entry.agentId, {
+            agentId: entry.agentId,
+            mode: entry.mode,
+            replayId: entry.replayId,
+          }]))
+        }
+        onEvent?.(create(WatchEventsResponseSchema, { event: { case: 'updateAck', value: { ...ack, agentStates: [...registered.values()].map(state => create(WatchAgentStateSchema, state)) } } }))
+        return
+      }
+      onEvent?.(resp)
+    },
     _end: () => onEnd?.(),
     _error: err => onErr?.(err),
+    _requestId: () => requestId,
   }
 }
 
@@ -61,12 +91,12 @@ describe('useWatchEventsStreams', () => {
     handles = []
     disposeRoot?.()
     disposeRoot = undefined
-    // Module mocks are shared across the file; without this a toast raised by an
-    // earlier test would satisfy a later test's call assertion.
+    // Module mocks are shared across this file. Clear their calls before each case.
+    // Otherwise, an earlier toast could satisfy a later case's assertion.
     vi.mocked(showWarnToastWithLoggedCause).mockClear()
     vi.mocked(watchEventsViaChannel).mockReset()
-    vi.mocked(watchEventsViaChannel).mockImplementation(async () => {
-      const h = makeHandle()
+    vi.mocked(watchEventsViaChannel).mockImplementation(async (_workerId, request) => {
+      const h = makeHandle(request.updateId, request)
       handles.push(h)
       return h as never
     })
@@ -85,15 +115,11 @@ describe('useWatchEventsStreams', () => {
     await Promise.resolve()
   }
 
-  function mount(plansFn: () => Map<string, { agents: never[], terminals: never[], terminalResync: Set<string> }>, opts: Partial<{
-    onEvent: (workerId: string, resp: unknown) => void
-    onWorkerOnline: (workerId: string, online: boolean) => void
-    onPromoted: (workerId: string, agentIds: string[]) => void
-  }> = {}) {
-    const harness = installTestBridge({ workspaceId: WS })
-    const stores = createTestTabStores(WS)
-    createRoot((dispose) => {
+  function mount(plansFn: () => Map<string, { agents: never[], terminals: never[], terminalResync: Set<string> }>, opts: Partial<Pick<UseWatchEventsStreamsOpts, 'onEvent' | 'onWorkerOnline' | 'onPromoted' | 'onReplayRequested' | 'onReplayRetired'>> = {}) {
+    return createRoot((dispose) => {
       disposeRoot = dispose
+      const harness = installTestBridge({ workspaceId: WS })
+      const stores = createTestTabStores(WS)
       const plans = createMemo(plansFn)
       useWatchEventsStreams({
         view: stores.view,
@@ -101,9 +127,11 @@ describe('useWatchEventsStreams', () => {
         onEvent: opts.onEvent ?? (() => {}),
         onWorkerOnline: opts.onWorkerOnline ?? (() => {}),
         onPromoted: opts.onPromoted ?? (() => {}),
+        ...(opts.onReplayRequested ? { onReplayRequested: opts.onReplayRequested } : {}),
+        ...(opts.onReplayRetired ? { onReplayRetired: opts.onReplayRetired } : {}),
       })
+      return { harness, stores, dispose }
     })
-    return { harness, stores }
   }
 
   it('opens one stream per worker', async () => {
@@ -115,6 +143,446 @@ describe('useWatchEventsStreams', () => {
     emitAddTab({ type: TabType.AGENT, id: 'a2', tileId: harness.rootTileId, position: '2', workerId: 'w2' })
     await flush()
     expect(watchEventsViaChannel).toHaveBeenCalledTimes(2)
+  })
+
+  it('requests replay ownership before the open reaches the transport', async () => {
+    const order: string[] = []
+    const requested = vi.fn(() => order.push('requested'))
+    vi.mocked(watchEventsViaChannel).mockImplementation(async () => {
+      order.push('transport')
+      const handle = makeHandle()
+      handles.push(handle)
+      return handle as never
+    })
+    mount(() => new Map([
+      ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL, cursorSeq: 17n, replay: WatchReplayMode.AFTER_CURSOR_OR_NONE } as never], terminals: [], terminalResync: new Set<string>() }],
+    ]), { onReplayRequested: requested })
+    await flush()
+    expect(order).toEqual(['requested', 'transport'])
+    const request = vi.mocked(watchEventsViaChannel).mock.calls[0]?.[1]
+    const entry = request?.agents?.[0]
+    if (!request || !entry)
+      throw new Error('The opening request must contain its agent entry.')
+    expect(entry.cursorSeq).toBe(17n)
+    expect(requested).toHaveBeenCalledWith('w1', request.updateId, [expect.objectContaining({ agentId: 'a1', cursorSeq: entry.cursorSeq, replay: WatchReplayMode.AFTER_CURSOR_OR_NONE })])
+  })
+
+  it('requests promotion replay before the update reaches the transport', async () => {
+    const order: string[] = []
+    const [mode, setMode] = createSignal(WatchMode.NOTIFY)
+    mount(() => new Map([
+      ['w1', { agents: [{ agentId: 'a1', mode: mode() } as never], terminals: [], terminalResync: new Set<string>() }],
+    ]), { onReplayRequested: () => order.push('requested') })
+    await flush()
+    expect(order).toEqual([])
+    handles[0]!.update.mockImplementation(() => order.push('transport'))
+    setMode(WatchMode.FULL)
+    await flush()
+    expect(order).toEqual(['requested', 'transport'])
+  })
+
+  it('keeps the real in-flight replay when a later request still asks for FULL', async () => {
+    const requested = vi.fn()
+    const [includeOther, setIncludeOther] = createSignal(false)
+    mount(() => new Map([
+      ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never, ...(includeOther() ? [{ agentId: 'a2', mode: WatchMode.NOTIFY } as never] : [])], terminals: [], terminalResync: new Set<string>() }],
+    ]), { onReplayRequested: requested })
+    await flush()
+    expect(requested).toHaveBeenCalledTimes(1)
+    setIncludeOther(true)
+    await flush()
+    expect(handles[0]!.update).toHaveBeenCalledTimes(1)
+    expect(requested).toHaveBeenCalledTimes(1)
+  })
+
+  it('carries the first replay identity and fixed cursors through a coalesced FULL request', async () => {
+    const requested = vi.fn()
+    const [cursor, setCursor] = createSignal(7n)
+    const [tail, setTail] = createSignal(6n)
+    const [includeOther, setIncludeOther] = createSignal(false)
+    mount(() => new Map([
+      ['w1', {
+        agents: [
+          { agentId: 'a1', mode: WatchMode.FULL, replay: WatchReplayMode.AFTER_CURSOR_OR_NONE, cursorSeq: cursor(), windowTailSeq: tail() } as never,
+          ...(includeOther() ? [{ agentId: 'a2', mode: WatchMode.NOTIFY } as never] : []),
+        ],
+        terminals: [],
+        terminalResync: new Set<string>(),
+      }],
+    ]), { onReplayRequested: requested })
+    await flush()
+    const opening = vi.mocked(watchEventsViaChannel).mock.calls[0]?.[1]
+    if (!opening)
+      throw new Error('The test requires a transmitted opening request.')
+    const first = fromBinary(WatchEventsRequestSchema, toBinary(WatchEventsRequestSchema, create(WatchEventsRequestSchema, opening)))
+    expect(first.agents[0]?.replayId).toBe(first.updateId)
+    expect(first.agents[0]?.cursorSeq).toBe(7n)
+    expect(first.agents[0]?.windowTailSeq).toBe(6n)
+    batch(() => {
+      setCursor(8n)
+      setTail(7n)
+    })
+    await flush()
+    expect(handles[0]!.update).not.toHaveBeenCalled()
+    setIncludeOther(true)
+    await flush()
+    expect(handles[0]!.update).toHaveBeenCalledTimes(1)
+    const update = handles[0]!.update.mock.calls[0]?.[0]
+    if (!update)
+      throw new Error('The changed interest must reach the transport.')
+    const latest = fromBinary(WatchEventsRequestSchema, toBinary(WatchEventsRequestSchema, create(WatchEventsRequestSchema, update)))
+    expect(latest.updateId).not.toBe(first.updateId)
+    expect(latest.agents.find(entry => entry.agentId === 'a1')).toMatchObject({ replayId: first.updateId, cursorSeq: 7n, windowTailSeq: 6n })
+    expect(latest.agents.find(entry => entry.agentId === 'a2')?.replayId).toBe(0n)
+    expect(requested).toHaveBeenCalledTimes(1)
+  })
+
+  it('gives a later FULL lifetime its own transmitted identity when the demotion is skipped', async () => {
+    const [mode, setMode] = createSignal(WatchMode.FULL)
+    mount(() => new Map([
+      ['w1', { agents: [{ agentId: 'a1', mode: mode(), cursorSeq: 7n } as never], terminals: [], terminalResync: new Set<string>() }],
+    ]))
+    await flush()
+    const firstId = vi.mocked(watchEventsViaChannel).mock.calls[0]?.[1].updateId
+    setMode(WatchMode.NOTIFY)
+    await flush()
+    setMode(WatchMode.FULL)
+    await flush()
+    expect(handles[0]!.update).toHaveBeenCalledTimes(2)
+    const demoted = fromBinary(WatchEventsRequestSchema, toBinary(WatchEventsRequestSchema, create(WatchEventsRequestSchema, handles[0]!.update.mock.calls[0]?.[0])))
+    const resumed = fromBinary(WatchEventsRequestSchema, toBinary(WatchEventsRequestSchema, create(WatchEventsRequestSchema, handles[0]!.update.mock.calls[1]?.[0])))
+    expect(demoted.agents[0]?.replayId).toBe(0n)
+    expect(resumed.agents[0]?.replayId).toBe(resumed.updateId)
+    expect(resumed.agents[0]?.replayId).not.toBe(firstId)
+  })
+
+  it('retires a skipped pending replay when the exact later ACK confirms no registration', async () => {
+    const retired = vi.fn()
+    const [includeOther, setIncludeOther] = createSignal(false)
+    const { harness } = mount(() => new Map([
+      ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never, ...(includeOther() ? [{ agentId: 'a2', mode: WatchMode.NOTIFY } as never] : [])], terminals: [], terminalResync: new Set<string>() }],
+    ]), { onReplayRetired: retired })
+    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+    await flush()
+    const openingId = vi.mocked(watchEventsViaChannel).mock.calls[0]?.[1].updateId
+    setIncludeOther(true)
+    await flush()
+    const latestId = handles[0]!._requestId()
+    expect(latestId).not.toBe(openingId)
+    handles[0]!._emit(create(WatchEventsResponseSchema, { event: { case: 'updateAck', value: {
+      updateId: latestId,
+      rejectedAgents: [{ entityId: 'a1', reason: WatchRejectionReason.LOOKUP_FAILED }],
+      agentStates: [],
+    } } }))
+    expect(retired).toHaveBeenCalledWith('w1', openingId, ['a1'], 'rejected')
+  })
+
+  it('opens a new replay receipt after reconnect and ignores old handle closure', async () => {
+    const requested = vi.fn()
+    const retired = vi.fn()
+    mount(() => new Map([
+      ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }],
+    ]), { onReplayRequested: requested, onReplayRetired: retired })
+    await flush()
+    const previous = handles[0]!
+    const firstId = vi.mocked(watchEventsViaChannel).mock.calls[0]?.[1].updateId
+    previous._end()
+    await vi.advanceTimersByTimeAsync(1000)
+    await flush()
+    const secondId = vi.mocked(watchEventsViaChannel).mock.calls[1]?.[1].updateId
+    expect(requested).toHaveBeenCalledTimes(2)
+    expect(firstId).not.toBe(secondId)
+    expect(retired).toHaveBeenCalledWith('w1', firstId, ['a1'], 'closed')
+    retired.mockClear()
+    previous._end()
+    previous._error(new Error('old handle'))
+    expect(retired).not.toHaveBeenCalled()
+  })
+
+  it.each(['demoted', 'removed'] as const)('retires the exact replay when its agent is %s', async (reason) => {
+    const retired = vi.fn()
+    const [present, setPresent] = createSignal(true)
+    const [mode, setMode] = createSignal(WatchMode.FULL)
+    mount(() => new Map([
+      ['w1', { agents: present() ? [{ agentId: 'a1', mode: mode() } as never] : [], terminals: [], terminalResync: new Set<string>() }],
+    ]), { onReplayRetired: retired })
+    await flush()
+    const requestId = vi.mocked(watchEventsViaChannel).mock.calls[0]?.[1].updateId
+    if (reason === 'demoted')
+      setMode(WatchMode.NOTIFY)
+    else
+      setPresent(false)
+    await flush()
+    expect(retired).toHaveBeenCalledWith('w1', requestId, ['a1'], reason)
+  })
+
+  it('retires a rejected replay request without affecting another agent', async () => {
+    const retired = vi.fn()
+    mount(() => new Map([
+      ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never, { agentId: 'a2', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }],
+    ]), { onReplayRetired: retired })
+    await flush()
+    const requestId = vi.mocked(watchEventsViaChannel).mock.calls[0]?.[1].updateId
+    handles[0]!._emit({ event: { case: 'updateAck', value: {
+      updateId: requestId,
+      rejectedAgents: [{ entityId: 'a1', reason: WatchRejectionReason.NOT_FOUND }],
+      rejectedTerminals: [],
+    } } } as unknown as WatchEventsResponse)
+    expect(retired).toHaveBeenCalledWith('w1', requestId, ['a1'], 'rejected')
+    expect(retired).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps request IDs unique when a worker leaves and returns', async () => {
+    const [present, setPresent] = createSignal(true)
+    mount(() => present()
+      ? new Map([
+          ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }],
+        ])
+      : new Map())
+    await flush()
+    const firstId = vi.mocked(watchEventsViaChannel).mock.calls[0]?.[1].updateId
+    setPresent(false)
+    await flush()
+    setPresent(true)
+    await flush()
+    const secondId = vi.mocked(watchEventsViaChannel).mock.calls[1]?.[1].updateId
+    expect(firstId).not.toBe(secondId)
+  })
+
+  it.each([2n, 9007199254740993n])('ignores an acknowledgment for unsent request %s', async (updateId) => {
+    const promoted = vi.fn()
+    mount(() => new Map([
+      ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }],
+    ]), { onPromoted: promoted })
+    await flush()
+    handles[0]!._emit({ event: { case: 'updateAck', value: { updateId, rejectedAgents: [], rejectedTerminals: [] } } } as unknown as WatchEventsResponse)
+    expect(promoted).not.toHaveBeenCalled()
+  })
+
+  it('copies each requested replay entry before the transport runs', async () => {
+    const entry = { agentId: 'a1', mode: WatchMode.FULL, cursorSeq: 17n } as never
+    const requested = vi.fn()
+    mount(() => new Map([
+      ['w1', { agents: [entry], terminals: [], terminalResync: new Set<string>() }],
+    ]), { onReplayRequested: requested })
+    await flush()
+    const transmitted = vi.mocked(watchEventsViaChannel).mock.calls[0]?.[1]
+    const copied = requested.mock.calls[0]?.[2]
+    expect(copied).toEqual(transmitted?.agents)
+    expect(copied).not.toBe(transmitted?.agents)
+    expect(copied?.[0]).not.toBe(entry)
+  })
+
+  it('retires a failed open before another request can begin', async () => {
+    const order: string[] = []
+    const requested = vi.fn<NonNullable<UseWatchEventsStreamsOpts['onReplayRequested']>>(() => {
+      order.push('requested')
+    })
+    const retired = vi.fn(() => order.push('retired'))
+    vi.mocked(watchEventsViaChannel).mockRejectedValueOnce(new Error('open refused'))
+    mount(() => new Map([
+      ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }],
+    ]), { onReplayRequested: requested, onReplayRetired: retired })
+    await flush()
+    const firstId = vi.mocked(watchEventsViaChannel).mock.calls[0]?.[1].updateId
+    expect(retired).toHaveBeenCalledWith('w1', firstId, ['a1'], 'closed')
+    expect(order).toEqual(['requested', 'retired'])
+    await vi.advanceTimersByTimeAsync(1000)
+    await flush()
+    expect(order).toEqual(['requested', 'retired', 'requested'])
+    expect(requested.mock.calls[1]?.[1]).not.toBe(firstId)
+  })
+
+  it('retires only the new promotion when an update send fails', async () => {
+    const requested = vi.fn()
+    const retired = vi.fn()
+    const [mode, setMode] = createSignal(WatchMode.NOTIFY)
+    mount(() => new Map([
+      ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never, { agentId: 'a2', mode: mode() } as never], terminals: [], terminalResync: new Set<string>() }],
+    ]), { onReplayRequested: requested, onReplayRetired: retired })
+    await flush()
+    const handle = handles[0]!
+    handle.update.mockImplementationOnce(() => {
+      throw new Error('The update failed.')
+    })
+    setMode(WatchMode.FULL)
+    await flush()
+    expect(retired).toHaveBeenCalledTimes(1)
+    const promotionId = requested.mock.calls[1]?.[1]
+    expect(retired).toHaveBeenCalledWith('w1', promotionId, ['a2'], 'rejected')
+    expect(requested.mock.calls[0]?.[2]).toEqual([expect.objectContaining({ agentId: 'a1' })])
+    expect(requested.mock.calls[2]?.[2]).toEqual([expect.objectContaining({ agentId: 'a2' })])
+    expect(requested.mock.calls[2]?.[1]).not.toBe(promotionId)
+  })
+
+  it('keeps an earlier replay when another request rejects an unchanged FULL entry', async () => {
+    const requested = vi.fn()
+    const retired = vi.fn()
+    const onEvent = vi.fn()
+    const [includeOther, setIncludeOther] = createSignal(false)
+    mount(() => new Map([
+      ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never, ...(includeOther() ? [{ agentId: 'a2', mode: WatchMode.NOTIFY } as never] : [])], terminals: [], terminalResync: new Set<string>() }],
+    ]), { onReplayRequested: requested, onReplayRetired: retired, onEvent })
+    await flush()
+    const replayId = handles[0]!._requestId()
+    const completed = create(WatchEventsResponseSchema, { event: { case: 'agentEvent', value: create(AgentEventSchema, {
+      agentId: 'a1',
+      replay: true,
+      replayId,
+      event: { case: 'catchUpComplete', value: { latestSeq: 0n } },
+      replayAgentId: 'a1',
+    }) } })
+    handles[0]!._emit(completed)
+    expect(onEvent).toHaveBeenCalledWith('w1', completed)
+    setIncludeOther(true)
+    await flush()
+    handles[0]!._emit({ event: { case: 'updateAck', value: {
+      updateId: handles[0]!._requestId(),
+      rejectedAgents: [{ entityId: 'a1', reason: WatchRejectionReason.NOT_FOUND }],
+      rejectedTerminals: [],
+    } } } as unknown as WatchEventsResponse)
+    expect(requested).toHaveBeenCalledTimes(1)
+    expect(retired).not.toHaveBeenCalled()
+    // NOT_FOUND removes the worker's registration. A later real revision promotes again.
+    setIncludeOther(false)
+    await flush()
+    expect(requested).toHaveBeenCalledTimes(2)
+    expect(requested).toHaveBeenLastCalledWith('w1', handles[0]!._requestId(), [expect.objectContaining({ agentId: 'a1' })])
+  })
+
+  it.each([
+    { label: 'the exact origin', origin: 'a1', wrongLifetime: false, completed: true },
+    { label: 'an empty origin', origin: '', wrongLifetime: false, completed: false },
+    { label: 'another origin', origin: 'a2', wrongLifetime: false, completed: false },
+    { label: 'another lifetime', origin: 'a1', wrongLifetime: true, completed: false },
+  ])('accepts completion only from its current FULL origin: $label', async ({ origin, wrongLifetime, completed }) => {
+    const retired = vi.fn()
+    const [includeOther, setIncludeOther] = createSignal(false)
+    mount(() => new Map([
+      ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never, ...(includeOther() ? [{ agentId: 'a2', mode: WatchMode.NOTIFY } as never] : [])], terminals: [], terminalResync: new Set<string>() }],
+    ]), { onReplayRetired: retired })
+    await flush()
+    const handle = handles[0]!
+    const replayId = handle._requestId()
+    handle._emit(create(WatchEventsResponseSchema, { event: { case: 'agentEvent', value: create(AgentEventSchema, {
+      agentId: 'a1',
+      replay: true,
+      replayId: wrongLifetime ? replayId + 1n : replayId,
+      event: { case: 'catchUpComplete', value: { latestSeq: 0n } },
+      replayAgentId: origin,
+    }) } }))
+    setIncludeOther(true)
+    await flush()
+    handle._emit(create(WatchEventsResponseSchema, { event: { case: 'updateAck', value: {
+      updateId: handle._requestId(),
+      rejectedAgents: [{ entityId: 'a1', reason: WatchRejectionReason.NOT_FOUND }],
+      agentStates: [],
+    } } }))
+    if (completed)
+      expect(retired).not.toHaveBeenCalled()
+    else
+      expect(retired).toHaveBeenCalledExactlyOnceWith('w1', replayId, ['a1'], 'rejected')
+  })
+
+  it('groups teardown by each replay request and ignores late open resolution', async () => {
+    const requested = vi.fn()
+    const retired = vi.fn()
+    const [mode, setMode] = createSignal(WatchMode.NOTIFY)
+    mount(() => new Map([
+      ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never, { agentId: 'a2', mode: mode() } as never], terminals: [], terminalResync: new Set<string>() }],
+    ]), { onReplayRequested: requested, onReplayRetired: retired })
+    await flush()
+    setMode(WatchMode.FULL)
+    await flush()
+    disposeRoot?.()
+    disposeRoot = undefined
+    expect(retired.mock.calls).toEqual([
+      ['w1', requested.mock.calls[0]?.[1], ['a1'], 'closed'],
+      ['w1', requested.mock.calls[1]?.[1], ['a2'], 'closed'],
+    ])
+    expect(handles[0]!.close).toHaveBeenCalledOnce()
+
+    let resolveOpen!: (handle: FakeHandle) => void
+    vi.mocked(watchEventsViaChannel).mockImplementationOnce(() => new Promise<FakeHandle>((resolve) => {
+      resolveOpen = resolve
+    }) as never)
+    const second = mount(() => new Map([
+      ['w1', { agents: [{ agentId: 'a3', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }],
+    ]), { onReplayRequested: requested, onReplayRetired: retired })
+    await flush()
+    const lastRequestId = vi.mocked(watchEventsViaChannel).mock.calls.at(-1)?.[1].updateId
+    second.dispose()
+    disposeRoot = undefined
+    const lateHandle = makeHandle()
+    resolveOpen(lateHandle)
+    await flush()
+    expect(retired).toHaveBeenLastCalledWith('w1', lastRequestId, ['a3'], 'closed')
+    expect(lateHandle.close).toHaveBeenCalledOnce()
+  })
+
+  it('removes each exact receipt when the worker leaves the plan', async () => {
+    const retired = vi.fn()
+    const [present, setPresent] = createSignal(true)
+    mount(() => present()
+      ? new Map([
+          ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }],
+        ])
+      : new Map(), { onReplayRetired: retired })
+    await flush()
+    const requestId = handles[0]!._requestId()
+    setPresent(false)
+    await flush()
+    expect(retired).toHaveBeenCalledWith('w1', requestId, ['a1'], 'removed')
+    expect(retired).toHaveBeenCalledOnce()
+  })
+
+  it('ignores a failed old open after the worker leaves and returns', async () => {
+    let rejectOldOpen!: (error: unknown) => void
+    vi.mocked(watchEventsViaChannel).mockImplementationOnce(() => new Promise<Awaited<ReturnType<typeof watchEventsViaChannel>>>((_resolve, reject) => {
+      rejectOldOpen = reject
+    }))
+    const online = vi.fn()
+    const [present, setPresent] = createSignal(true)
+    mount(() => present()
+      ? new Map([
+          ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }],
+        ])
+      : new Map(), { onWorkerOnline: online })
+    await flush()
+    setPresent(false)
+    await flush()
+    setPresent(true)
+    await flush()
+    expect(handles).toHaveLength(1)
+    expect(online).toHaveBeenCalledWith('w1', true)
+    online.mockClear()
+    rejectOldOpen(new ChannelError('transport', 'The old open failed.'))
+    await flush()
+    expect(online).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1000)
+    await flush()
+    expect(watchEventsViaChannel).toHaveBeenCalledTimes(2)
+    expect(handles[0]!.close).not.toHaveBeenCalled()
+  })
+
+  it.each([0n, 9007199254740993n])('keeps the rejection retry cap after invalid settled ACK %s', async (invalidId) => {
+    const { harness } = mount(() => new Map([
+      ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }],
+    ]))
+    emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
+    await flush()
+    const handle = handles[0]!
+    for (let i = 0; i < 10; i++) {
+      handle._emit({ event: { case: 'updateAck', value: {
+        updateId: handle._requestId(),
+        rejectedAgents: [{ entityId: 'a1', reason: WatchRejectionReason.LOOKUP_FAILED }],
+        rejectedTerminals: [],
+      } } } as unknown as WatchEventsResponse)
+      handle._emit({ event: { case: 'updateAck', value: { updateId: invalidId, rejectedAgents: [], rejectedTerminals: [] } } } as unknown as WatchEventsResponse)
+      await vi.advanceTimersByTimeAsync(20_000)
+      await flush()
+    }
+    expect(handle.update).toHaveBeenCalledTimes(8)
   })
 
   it('ignores events and closure callbacks from a replaced stream', async () => {
@@ -243,13 +711,9 @@ describe('useWatchEventsStreams', () => {
     expect(vi.mocked(watchEventsViaChannel).mock.calls.length).toBeGreaterThanOrEqual(2)
   })
 
-  // A fatal close must still run the offline transition. Its only reader is
-  // useWorkspaceConnection's cleanup effect -- READY terminals to DISCONNECTED,
-  // ACTIVE agents back to INACTIVE, streaming text cleared -- and after a fatal
-  // close nothing will ever reconnect and finish a half-streamed message. The
-  // TOAST is the only thing suppressed: the relay has latched, so
-  // "reconnecting..." would be a lie and the shell's sticky toast already names
-  // the real cause.
+  // A fatal close still marks the worker offline and clears live indicators. It schedules no
+  // reconnect timer or reconnect toast.
+
   it('a fatal relay close marks the worker offline without a reconnecting toast', async () => {
     const online: boolean[] = []
     const { harness } = mount(
@@ -265,9 +729,9 @@ describe('useWatchEventsStreams', () => {
     expect(showWarnToastWithLoggedCause).not.toHaveBeenCalled()
   })
 
-  // The mobile case this whole gate exists for: the socket dies while the user
-  // is in another app, and the redial succeeds the moment they come back. The
-  // user must never learn that happened.
+  // A brief mobile connection loss can recover on the first reconnect. Show no outage toast when
+  // that reconnect succeeds.
+
   it('says nothing about a drop the first redial repairs', async () => {
     const { harness } = mount(
       () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }]]),
@@ -278,7 +742,7 @@ describe('useWatchEventsStreams', () => {
     await flush()
     expect(showWarnToastWithLoggedCause, 'the loss itself is never announced').not.toHaveBeenCalled()
 
-    // The first redial reopens, which is the whole outage.
+    // The first reconnect succeeds and ends this outage.
     await vi.advanceTimersByTimeAsync(1000)
     await flush()
     expect(watchEventsViaChannel).toHaveBeenCalledTimes(2)
@@ -287,8 +751,7 @@ describe('useWatchEventsStreams', () => {
     expect(showWarnToastWithLoggedCause).not.toHaveBeenCalled()
   })
 
-  // An outage that the redials cannot repair still has to reach the user -- the
-  // silence above is a grace period, not a mute.
+  // Report the outage after the quiet reconnect attempts fail.
   it('announces an outage once the quiet redials are spent', async () => {
     const { harness } = mount(
       () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }]]),
@@ -301,23 +764,23 @@ describe('useWatchEventsStreams', () => {
     handles[0]!._error(new ChannelError('transport', 'channel disconnected'))
     await flush()
 
-    // Redial 1 fails at ~1s: still inside the grace period.
+    // The first reconnect fails after about one second. Keep that first failure quiet.
     await vi.advanceTimersByTimeAsync(1000)
     await flush()
     expect(showWarnToastWithLoggedCause).not.toHaveBeenCalled()
 
-    // Redial 2 fails at ~2s more. Two quiet retries are spent, so the user
-    // finally hears about it.
+    // The second reconnect fails after about two more seconds.
+    // Both quiet attempts failed, so report the outage.
     await vi.advanceTimersByTimeAsync(2000)
     await flush()
     expect(showWarnToastWithLoggedCause).toHaveBeenCalledTimes(1)
-    // The app's own sentence, not the drained channel's. Rendering err.message
-    // is what put "channel disconnected" on a user's screen.
+    // Show the caller's connection message. Keep the transport diagnostic in the log.
+
     expect(vi.mocked(showWarnToastWithLoggedCause).mock.calls[0]![0]).toContain('Connection to worker lost')
   })
 
-  // The E2E spec of the announcement waits on this event: each failed redial
-  // after the announcement is a chance to announce the same outage again.
+  // The end-to-end test waits for this event after each failed reconnect.
+  // Each failure permits another attempt to report the same outage.
   it('reports the loss and each failed redial in a dev build, after the announcement decided', async () => {
     vi.stubEnv('LEAPMUX_DEV', '1')
     const reports: unknown[] = []
@@ -375,8 +838,8 @@ describe('useWatchEventsStreams', () => {
     }
   })
 
-  // The user reported TWO toasts for one drop. The redial loop must not add a
-  // third, fourth and fifth as the backoff climbs.
+  // Report the continuing outage with one toast.
+  // Later reconnect failures must not add more outage toasts.
   it('announces a continuing outage only once', async () => {
     const { harness } = mount(
       () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }]]),
@@ -394,7 +857,7 @@ describe('useWatchEventsStreams', () => {
     expect(showWarnToastWithLoggedCause).toHaveBeenCalledTimes(1)
   })
 
-  // One hub blip drops every worker at once, and the user has one connection.
+  // One Hub outage can disconnect several workers. Show one outage toast.
   it('announces one outage, not one per worker', async () => {
     const { harness } = mount(() => new Map([
       ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }],
@@ -446,8 +909,7 @@ describe('useWatchEventsStreams', () => {
     expect(showWarnToastWithLoggedCause).toHaveBeenCalledTimes(1)
   })
 
-  // The latch must die with the outage it described, or a second, genuinely new
-  // outage an hour later is announced nowhere.
+  // Clear the toast state when the outage ends. A later outage must report its own toast.
   it('announces a second outage after the link came back', async () => {
     const { harness } = mount(
       () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }]]),
@@ -465,8 +927,9 @@ describe('useWatchEventsStreams', () => {
     await flush()
     expect(showWarnToastWithLoggedCause).toHaveBeenCalledTimes(1)
 
-    // Let it reconnect, and let the reopened stream carry an event -- that is
-    // what resets the backoff, so the next outage starts its grace period over.
+    // Deliver an event through the reopened stream. That event resets the reconnect delay and
+    // starts a new quiet period for the next outage.
+
     vi.mocked(watchEventsViaChannel).mockImplementation(async () => {
       const h = makeHandle()
       handles.push(h)
@@ -487,10 +950,9 @@ describe('useWatchEventsStreams', () => {
     expect(showWarnToastWithLoggedCause).toHaveBeenCalledTimes(2)
   })
 
-  // A failed open used to re-drain itself on the next microtask, because
-  // openStream's finally could not tell a plan parked BY the failure path from
-  // one that arrived during the open. Every scheduled delay was skipped and the
-  // client redialed as fast as the hub could refuse.
+  // A failed open must retain its retry delay. A pending plan in finally would instead schedule
+  // another immediate drain.
+
   it('honours the backoff between redials instead of looping on microtasks', async () => {
     vi.mocked(watchEventsViaChannel).mockImplementation(async () => {
       throw new ChannelError('transport', 'channel disconnected')
@@ -504,7 +966,7 @@ describe('useWatchEventsStreams', () => {
       await Promise.resolve()
     expect(watchEventsViaChannel).toHaveBeenCalledTimes(1)
 
-    // 1s -> the second, 2s more -> the third. The doubling sequence, not a spin.
+    // The second open waits one second. The third waits two more seconds.
     await vi.advanceTimersByTimeAsync(1000)
     await flush()
     expect(watchEventsViaChannel).toHaveBeenCalledTimes(2)
@@ -516,9 +978,9 @@ describe('useWatchEventsStreams', () => {
     expect(watchEventsViaChannel).toHaveBeenCalledTimes(3)
   })
 
-  // Once ChannelRelay latches, every later dial rejects with the same error
-  // before it reaches the network -- so a reconnect timer here is a wakeup every
-  // 30s for the life of the page that can never succeed.
+  // A fatal relay refusal rejects another open before network access. Schedule no repeated
+  // reconnect while that refusal remains.
+
   it('a fatal stream error arms no reconnect timer', async () => {
     const { harness } = mount(
       () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }]]),
@@ -532,9 +994,9 @@ describe('useWatchEventsStreams', () => {
     expect(watchEventsViaChannel).toHaveBeenCalledTimes(1)
   })
 
-  // The closed cycle: a latched relay throws out of the open itself, so the
-  // catch arm is the one that used to re-arm the timer that produced the next
-  // identical throw.
+  // An open can fail with the fatal relay refusal. The catch branch must not schedule the next
+  // reconnect.
+
   it('a fatal open failure does not retry forever', async () => {
     vi.mocked(watchEventsViaChannel).mockImplementation(async () => {
       throw new ChannelError('transport', 'too many places', { fatal: true })
@@ -579,7 +1041,7 @@ describe('useWatchEventsStreams', () => {
     const h = makeHandle()
     resolveOpen(h)
     await flush()
-    // Pending FULL plan drained after open completes — in-place update, no re-open.
+    // Send the pending FULL plan after the stream opens. Update that stream without opening another stream.
     expect(h.update).toHaveBeenCalled()
     expect(watchEventsViaChannel).toHaveBeenCalledTimes(1)
   })
@@ -654,6 +1116,7 @@ describe('useWatchEventsStreams', () => {
       event: {
         case: 'updateAck',
         value: {
+          updateId: handles[0]!._requestId(),
           rejectedAgents: [{ entityId: 'a1', reason: WatchRejectionReason.LOOKUP_FAILED }],
           rejectedTerminals: [],
         },
@@ -675,6 +1138,7 @@ describe('useWatchEventsStreams', () => {
       event: {
         case: 'updateAck',
         value: {
+          updateId: handles[0]!._requestId(),
           rejectedAgents: [{ entityId: 'a1', reason: WatchRejectionReason.NOT_FOUND }],
           rejectedTerminals: [],
         },
@@ -690,12 +1154,13 @@ describe('useWatchEventsStreams', () => {
       () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }]]),
     )
     await flush()
-    // No emitAddTab — the plan mentions a1 but no local tab exists.
+    // The plan includes a1, but no emitAddTab call places its local tab.
     handles[0]!.update.mockClear()
     handles[0]!._emit({
       event: {
         case: 'updateAck',
         value: {
+          updateId: handles[0]!._requestId(),
           rejectedAgents: [{ entityId: 'a1', reason: WatchRejectionReason.LOOKUP_FAILED }],
           rejectedTerminals: [],
         },
@@ -713,13 +1178,14 @@ describe('useWatchEventsStreams', () => {
     emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
     await flush()
     handles[0]!.update.mockClear()
-    // Each ack schedules one retry; wait for it to fire before emitting the next
-    // so the pending-timer guard does not collapse the sequence.
+    // Each acknowledgement schedules one retry. Wait for that retry before sending the next acknowledgement.
+    // Otherwise, the pending timer merges those retries.
     for (let i = 0; i < 12; i++) {
       handles[0]!._emit({
         event: {
           case: 'updateAck',
           value: {
+            updateId: handles[0]!._requestId(),
             rejectedAgents: [{ entityId: 'a1', reason: WatchRejectionReason.LOOKUP_FAILED }],
             rejectedTerminals: [],
           },
@@ -728,7 +1194,7 @@ describe('useWatchEventsStreams', () => {
       await vi.advanceTimersByTimeAsync(20_000)
       await flush()
     }
-    // REJECTION_RETRY_MAX is 8.
+    // EVENTS_REJECTION_RETRY.maxAttempts is 8.
     expect(handles[0]!.update.mock.calls.length).toBe(8)
   })
 
@@ -755,7 +1221,7 @@ describe('useWatchEventsStreams', () => {
     expect(promoted).toEqual([])
     setMode(WatchMode.FULL)
     await flush()
-    // Promotion is ack-gated — wire update alone must not fire onPromoted.
+    // Promotion requires the exact acknowledgement. Transmission alone must not call onPromoted.
     expect(promoted).toEqual([])
     handles[0]!._emit({
       event: {
@@ -786,10 +1252,9 @@ describe('useWatchEventsStreams', () => {
     expect(online.at(-1)).toBe(true)
   })
 
-  // A stream that ends on its own has no error to hand scheduleReconnect, so a
-  // guard reading only that argument let onEnd arm a timer the fatal latch never
-  // saw. The timer then woke 30s later purely to have openChannelUncached throw
-  // the refusal that was already latched when it was armed.
+  // onEnd supplies no error argument. Read fatalCloseInfo also so an existing relay refusal
+  // prevents another reconnect timer.
+
   it('does not arm a reconnect when the relay has latched, even with no error to pass', async () => {
     const { harness } = mount(
       () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }]]),
@@ -810,8 +1275,9 @@ describe('useWatchEventsStreams', () => {
   })
 
   it('resets LOOKUP_FAILED retry budget after a settled updateAck', async () => {
+    const [includeOther, setIncludeOther] = createSignal(false)
     const { harness } = mount(
-      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }]]),
+      () => new Map([['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never, ...(includeOther() ? [{ agentId: 'a2', mode: WatchMode.NOTIFY } as never] : [])], terminals: [], terminalResync: new Set<string>() }]]),
     )
     emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '1', workerId: 'w1' })
     await flush()
@@ -822,6 +1288,7 @@ describe('useWatchEventsStreams', () => {
         event: {
           case: 'updateAck',
           value: {
+            updateId: handles[0]!._requestId(),
             rejectedAgents: [{ entityId: 'a1', reason: WatchRejectionReason.LOOKUP_FAILED }],
             rejectedTerminals: [],
           },
@@ -832,14 +1299,17 @@ describe('useWatchEventsStreams', () => {
     }
     expect(handles[0]!.update.mock.calls.length).toBe(3)
 
-    // Settled ack resets the rejection budget.
+    // A settled acknowledgement resets the rejection count.
     handles[0]!._emit({
       event: {
         case: 'updateAck',
-        value: { rejectedAgents: [], rejectedTerminals: [] },
+        value: { updateId: handles[0]!._requestId(), rejectedAgents: [], rejectedTerminals: [] },
       },
     } as unknown as WatchEventsResponse)
     await flush()
+    setIncludeOther(true)
+    await flush()
+    expect(handles[0]!.update).toHaveBeenCalledTimes(4)
     handles[0]!.update.mockClear()
 
     for (let i = 0; i < 12; i++) {
@@ -847,6 +1317,7 @@ describe('useWatchEventsStreams', () => {
         event: {
           case: 'updateAck',
           value: {
+            updateId: handles[0]!._requestId(),
             rejectedAgents: [{ entityId: 'a1', reason: WatchRejectionReason.LOOKUP_FAILED }],
             rejectedTerminals: [],
           },
@@ -881,8 +1352,8 @@ describe('useWatchEventsStreams', () => {
     expect(handles).toHaveLength(2)
     const opensBefore = vi.mocked(watchEventsViaChannel).mock.calls.length
 
-    // End w1's stream so a reconnect is scheduled; then drop w2 from the plan.
-    // Cancelling w2 must not wipe w1's pending reconnect timer.
+    // End w1's stream to schedule its reconnect. Then remove w2 from the plan.
+    // Cancelling w2 must retain w1's pending reconnect timer.
     handles[0]!._end()
     setPlans(new Map([
       ['w1', { agents: [{ agentId: 'a1', mode: WatchMode.FULL } as never], terminals: [], terminalResync: new Set<string>() }],

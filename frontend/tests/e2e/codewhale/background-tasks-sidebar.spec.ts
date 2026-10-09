@@ -44,7 +44,7 @@ codewhaleTest.describe('Codewhale subagent registry', () => {
     // older runtime states it to the model alone.
     if (CODEWHALE_SERVES_JOB_ROUTES) {
       await expectRowBecomesFinal(page, row)
-      await expect(row).toHaveAttribute('data-status', 'completed')
+      await expect(row).toHaveAttribute('data-status', 'succeeded')
     }
   })
 })

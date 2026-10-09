@@ -19,16 +19,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// claudeInterruptRig wires an Agent to an in-memory pipe
-// pair so the test can capture the interrupt control_request and
-// hand the matching control_response back through stdout. Claude's
-// sendControlAndWait blocks until the agent responds; without the
-// echo this test would deadlock.
+// claudeInterruptRig connects an Agent to an in-memory pipe pair.
+// The test captures an interrupt control_request and returns its matching control_response through stdout.
+// sendControlAndWait blocks until that response arrives, so omitting the response would deadlock.
 //
-// The rig also runs the agent's own output handling for every line the pending-
-// control handler does not consume, exactly as readOutputLoop does. That is what
-// lets a case state the ORDER the CLI speaks in: `beforeAck` writes lines that
-// reach the reader before the acknowledgement does.
+// The fixture also runs normal output handling for every line that the pending-control handler does not consume, as readOutputLoop does.
+// beforeAck supplies lines before the acknowledgement, so a case can verify the native event order.
 type claudeInterruptRig struct {
 	agent    *Agent
 	sink     *outputTestSink
@@ -77,9 +73,8 @@ func claudeControlSuccessResponse(rec recordedClaudeControl) map[string]any {
 	}
 }
 
-// newClaudeInterruptRigResponding builds the rig the type above describes.
-// respond constructs the control_response the fake CLI returns for each
-// captured control request; beforeAck lines reach the reader first.
+// newClaudeInterruptRigResponding creates the fixture described by claudeInterruptRig.
+// respond constructs each captured request's control_response, and beforeAck lines reach the reader first.
 func newClaudeInterruptRigResponding(t *testing.T, beforeAck []string, respond func(recordedClaudeControl) map[string]any) *claudeInterruptRig {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -142,10 +137,8 @@ func newClaudeInterruptRigResponding(t *testing.T, beforeAck []string, respond f
 		}
 	}()
 
-	// Drive the agent's read loop from the fake stdout. Mirrors
-	// piTestRig — we don't call Process.ReadOutput because it
-	// ends with cmd.Wait() which would nil-deref without an
-	// exec.Cmd.
+	// Drive the agent read loop from the fake stdout, as piTestRig does.
+	// Do not call Process.ReadOutput here because it calls cmd.Wait() and would dereference nil without an exec.Cmd.
 	go func() {
 		scanner := bufio.NewScanner(stdoutReader)
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -200,17 +193,13 @@ func TestClaudeCodeAgent_Interrupt_SendsControlRequest(t *testing.T) {
 		"Claude Code interrupt must use the {subtype:'interrupt'} control_request")
 }
 
-// The note that tells an interrupted turn from a failed one is taken BEFORE the
-// request goes out, so the `result` of the aborted turn cannot overtake it.
+// Record the interruption note before sending the request, so an aborted turn's result cannot arrive before the note.
 //
-// The reader goroutine hands the acknowledgement to the waiting Interrupt and
-// reads the next line at once. Taking the note after that wait raced the
-// takeInterruptRequest that spends it, and lost whenever the reader won -- the
-// stopped turn then read as the failure its `error_during_execution` subtype
-// claims, in the danger colour, for a stop the reader asked for.
+// The reader delivers the acknowledgement to Interrupt and immediately reads the next line.
+// Recording the note after that wait races takeInterruptRequest, which consumes it.
+// When the reader wins, the stopped turn incorrectly keeps its error_during_execution failure state and danger color despite the reader-requested stop.
 //
-// This case pins the losing order: the abort's `result` reaches the reader
-// before the acknowledgement does.
+// This case forces that order by delivering the abort result before the acknowledgement.
 func TestClaudeCodeAgent_Interrupt_TheAbortedTurnStatesTheStop(t *testing.T) {
 	t.Parallel()
 
@@ -230,10 +219,10 @@ func TestClaudeCodeAgent_Interrupt_TheAbortedTurnStatesTheStop(t *testing.T) {
 		"the turn end states the stop the reader asked for, not the subtype's failure")
 }
 
-// The CLI can end the turn before it reads the stop. The `result` then states a
-// finished turn (the probe in output_test.go shows this order with Claude Code 2.1.289),
-// and the divider must not read "Turn interrupted" for it. This case sends the stop
-// through Interrupt and hands the finished frame to the reader before the acknowledgement.
+// The CLI can finish a turn before it reads the stop request.
+// The result then describes a finished turn, as the output_test.go probe verifies for Claude Code 2.1.289.
+// Its divider must not say "Turn interrupted".
+// This case calls Interrupt and delivers the finished frame before the acknowledgement.
 func TestClaudeCodeAgent_Interrupt_ATurnThatFinishedFirstIsNotInterrupted(t *testing.T) {
 	t.Parallel()
 
@@ -280,9 +269,8 @@ func TestClaudeCodeAgent_Interrupt_AfterStopErrors(t *testing.T) {
 	assert.Contains(t, err.Error(), "stopped")
 }
 
-// InterruptChild addresses the CLI's task registry by the registry row key,
-// which IS the task_id. The child is registered the way a live run is: a
-// task_started event puts it in the task index.
+// InterruptChild addresses the CLI task registry through the row key, which equals task_id.
+// A task_started event registers the child in the task index, as it does during a live run.
 func TestClaudeCodeAgent_InterruptChild_SendsStopTaskRequest(t *testing.T) {
 	t.Parallel()
 
@@ -308,9 +296,8 @@ func TestClaudeCodeAgent_InterruptChild_SendsStopTaskRequest(t *testing.T) {
 		"stop_task names the CLI's own task id, which the registry row key carries")
 }
 
-// A stop_task the CLI refuses surfaces to the caller unchanged. It is a
-// provider-side failure, not a missing route and not a missing capability, so
-// the two sentinels must not mask the reason.
+// A native stop_task refusal reaches the caller unchanged.
+// Neither the missing-route sentinel nor the missing-capability sentinel must hide this provider failure.
 func TestClaudeCodeAgent_InterruptChild_TheStopTaskErrorSurfaces(t *testing.T) {
 	t.Parallel()
 
@@ -330,10 +317,9 @@ func TestClaudeCodeAgent_InterruptChild_TheStopTaskErrorSurfaces(t *testing.T) {
 		"a rejected stop_task must not change a later stop into a user interrupt")
 }
 
-// A stop WE asked for is a user interrupt, not a plain stop: the closing row
-// reports StatusInterrupted and the divider reads "Subagent interrupted". A
-// `stopped` notification that no interrupt asked for keeps the plain stop
-// word, so the two readings stay apart.
+// A reader-requested stop reports StatusInterrupted and displays "Subagent interrupted".
+// A stopped notification without an interrupt request keeps the ordinary stopped outcome.
+// The registry and divider therefore preserve that distinction.
 func TestClaudeCodeAgent_InterruptChild_TheClosingRowSaysInterrupted(t *testing.T) {
 	t.Parallel()
 
@@ -349,13 +335,11 @@ func TestClaudeCodeAgent_InterruptChild_TheClosingRowSaysInterrupted(t *testing.
 		"a stop InterruptChild asked for closes as interrupted, not a plain stop")
 }
 
-// The CLI can close a subagent before it reads stop_task. It still acknowledges the
-// request with a success (a probe of Claude Code 2.1.289 sent stop_task right after
-// the child's answer, and the CLI answered `success` and closed the task with
-// `status: completed`). The stop did not take effect, so the mark that InterruptChild
-// set must not outlive that closing notification. A stale mark would turn a later
-// `stopped` notification of a restarted run into "Subagent interrupted", although
-// nobody asked LeapMux for that stop.
+// The CLI can close a subagent before reading stop_task and still acknowledge the request with success.
+// A Claude Code 2.1.289 probe sent stop_task immediately after the child's answer.
+// The CLI acknowledged success and closed the task with status: completed.
+// The stop did not affect that run, so InterruptChild's mark must end with the closing notification.
+// A retained mark would incorrectly label a later restarted run's stopped notification as "Subagent interrupted" without a corresponding reader request.
 func TestClaudeCodeAgent_InterruptChild_AStopThatLostTheRaceLeavesNoMark(t *testing.T) {
 	t.Parallel()
 
@@ -366,7 +350,7 @@ func TestClaudeCodeAgent_InterruptChild_AStopThatLostTheRaceLeavesNoMark(t *test
 	a.HandleOutput([]byte(`{"type":"system","subtype":"task_notification","task_id":"task-1","tool_use_id":"tu-spawn","status":"completed","summary":"done"}`))
 	_, status, found, _ := rig.sink.LookupBackgroundTask("task-1")
 	require.True(t, found)
-	require.Equal(t, bgtask.StatusCompleted, status, "the child finished before the stop took effect")
+	require.Equal(t, bgtask.StatusSucceeded, status, "the child finished before the stop took effect")
 
 	// The parent restarts the child, and the child stops by itself.
 	sendMessageTo(a, "tu-send", "task-1")
@@ -379,13 +363,12 @@ func TestClaudeCodeAgent_InterruptChild_AStopThatLostTheRaceLeavesNoMark(t *test
 		"the first run ended before the stop, so its mark ended with it and this stop is a plain stop")
 }
 
-// A forwarded child `result` follows the same rule as the root's: the child turn
-// end is interrupted only when the frame states that the stop took effect.
+// A forwarded child result follows the root rule: report an interrupted turn only when the frame confirms that the stop affected it.
 //
-// Claude Code 2.1.289 forwards no `result` of a subagent (the probes of a
-// foreground child, a background child, and a stopped child showed a
-// `task_notification` and nothing else). The path serves a CLI that does forward
-// one, and the frames below carry the shapes of the root's `result`.
+// Claude Code 2.1.289 forwards no child result.
+// Probes of foreground, background, and stopped children received only task_notification.
+// This path supports a CLI that forwards a child result.
+// The test frames therefore use the root result shapes.
 func TestClaudeCodeAgent_InterruptChild_AChildResultThatFinishedFirstIsNotInterrupted(t *testing.T) {
 	t.Parallel()
 
@@ -401,7 +384,7 @@ func TestClaudeCodeAgent_InterruptChild_AChildResultThatFinishedFirstIsNotInterr
 		"the child finished before the stop took effect, so its turn end keeps its outcome")
 	tasks := rig.sink.BackgroundTasks()
 	require.Len(t, tasks, 1)
-	assert.Equal(t, bgtask.StatusCompleted, tasks[0].Status)
+	assert.Equal(t, bgtask.StatusSucceeded, tasks[0].Status)
 }
 
 func TestClaudeCodeAgent_InterruptChild_AChildResultThatStatesTheAbortIsInterrupted(t *testing.T) {

@@ -12,22 +12,19 @@ import * as styles from './GoalCard.css'
 import { GoalObjective } from './GoalObjective'
 
 export interface GoalCardProps {
-  /** The goal, its counters, the live actions and their handler. */
+  /** The complete goal surface. */
   goal: GoalSurface
   /**
-   * Whether THIS card owns the live region that announces a status change.
-   *
-   * Two cards can be on screen at once: the sidebar section and an open
-   * ThinkingIndicator popover render the same content. A live region in each
-   * announces one goal change twice, so exactly one instance sets this.
+   * Whether this card owns the live region for goal changes.
+   * The sidebar and an open ThinkingIndicator popover can display the same goal.
+   * The sidebar supplies one announcement. The popover displays the card silently.
    */
   announce?: boolean
 }
 
 function statusDotClass(goal: SessionGoal): string {
   switch (goal.status) {
-    // statusDotActive carries the pulse keyframe, which is what marks a goal
-    // still being worked on.
+    // The active palette supplies the pulse animation.
     case 'active':
       return statusDotStyles.statusDotActive
     case 'paused':
@@ -36,52 +33,43 @@ function statusDotClass(goal: SessionGoal): string {
       return statusDotStyles.statusDotSuccess
     case 'blocked':
       return statusDotStyles.statusDotDanger
-    // A dormant goal is WAITING, not failing: no live process pursues it, so
-    // the muted dot says "nothing is happening here" without the alarm a
-    // danger dot raises.
+    // A dormant goal has no live process.
+    // An unknown goal has no recognized active or blocked status.
+    // Both use the existing muted palette without a pulse or danger color.
     case 'dormant':
+    case 'unknown':
       return statusDotStyles.statusDotMuted
   }
 }
 
 /**
- * GoalCard shows the session goal -- the standing objective the agent keeps
- * working toward until a per-turn check says the condition holds.
+ * Display one agent's session goal and its reported counters.
  *
- * There is at most one per agent, so this is a card and not a list.
+ * Render the reported time without a timer.
+ * A local timer could increase the counter while the provider waits for approval.
+ * The next provider report could then reduce that displayed value.
  *
- * It renders the reported elapsed time and NEVER runs a timer. Two reasons, and
- * the second is the decisive one: `ToolRunningBadge` already made this call for
- * the same hazard ("there is deliberately no timer here"), and Codex's
- * `timeUsedSeconds` is BUDGET CONSUMED rather than wall clock -- so ticking it
- * would assert the agent is spending while it waits on an approval, and the
- * number would jump backwards when the real value lands.
- *
- * The objective and the verbs each live in their own component --
- * `./GoalObjective` and `./GoalActionsMenu` -- because each owns a rule this
- * card must not restate: the clamp and its two routes back, and the three-way
- * hidden / enabled / refused state of every verb.
+ * GoalObjective owns the objective clamp and its expansion controls.
+ * GoalActionsMenu owns the state of each action.
+ * The card forwards the complete surface to that menu.
  */
 export const GoalCard: Component<GoalCardProps> = (props) => {
-  // One string, rebuilt only when a field it reads changes, so the live region
-  // holds ONE stable text node. A `<Show>` that swapped nodes would make a
-  // screen reader re-announce on every rebuild.
+  // Keep one stable text node in the live region.
+  // Replace its text when a reported field changes.
+  // Swapping nodes could cause an additional screen-reader announcement.
   const announcement = createMemo(() => {
     const goal = props.goal.current
     if (!goal)
       return 'No session goal'
     const detail = goal.statusDetail ? `, ${goal.statusDetail}` : ''
-    // The objective is markdown SOURCE, and `./GoalObjective` renders it. A
-    // screen reader given the source reads the syntax -- "ship the asterisk
-    // asterisk auth refactor asterisk asterisk" -- so strip the marks to the
-    // words the card actually shows. `GoalObjective` refuses to hand the source
-    // to `Tooltip`'s `text` for the same reason.
+    // GoalObjective renders the Markdown source.
+    // The live region needs the visible words without Markdown syntax.
+    // GoalObjective uses the same plain text rule for its tooltip.
     return `Session goal ${goalStatusLabel(goal.status).toLowerCase()}${detail}: ${markdownToPlainText(goal.objective)}`
   })
 
-  // Only the counters the provider actually reported. An absent counter is left
-  // out rather than shown as zero: no two providers report the same set, and a
-  // "0 tokens" row would state a number nobody gave.
+  // Display only the counters that the provider reports.
+  // Keep an absent counter distinct from a reported zero.
   const metaParts = createMemo(() => {
     const p = props.goal.progress
     const parts: string[] = []
@@ -97,7 +85,7 @@ export const GoalCard: Component<GoalCardProps> = (props) => {
     return parts
   })
 
-  /** Whether the empty state may offer its call to action. */
+  /** Report whether the empty card can offer Set. */
   const canSetFirstGoal = () =>
     props.goal.onAction !== undefined
     && goalActionState(props.goal, 'set').kind === 'enabled'
@@ -105,31 +93,21 @@ export const GoalCard: Component<GoalCardProps> = (props) => {
   return (
     <div class={styles.card} data-testid="goal-card">
       <div class={styles.headerRow}>
-        {/* The section header above this card is the user-renameable
-            `section.name`, so it may say anything at all -- the card cannot
-            borrow it to say what it is. */}
+        {/* The user can rename the section header through section.name.
+            The card therefore supplies its own fixed heading. */}
         <div class={styles.heading}>Session goal</div>
-        {/* No menu in the empty state. `set` is the only verb that applies with
-            no goal, and the empty state offers it as its own call to action --
-            a first goal must not be one click deeper than the concept it
-            introduces.
-            That state is the only half the CARD owns. Whether any verb can run
-            is the menu's own decision, which it makes from the same surface. */}
+        {/* The empty state offers Set directly and displays no menu.
+            GoalActionsMenu owns the decision about each existing goal's actions. */}
         <Show when={props.goal.current}>
           <GoalActionsMenu goal={props.goal} />
         </Show>
       </div>
-      {/* Offscreen rather than hidden: `display: none` and `visibility: hidden`
-          both take a live region out of the accessibility tree, so nothing is
-          announced. `srOnly` is the shared spelling of that.
+      {/* srOnly places the live region off screen but retains it in the accessibility tree.
+          display: none or visibility: hidden would suppress its announcement.
 
-          Always mounted with changing text -- see `announcement`.
-
-          ONLY when `announce` is set. Up to two cards can be on screen at once
-          (the sidebar section and an open ThinkingIndicator popover render the
-          same content), and a live region in each announces one goal change
-          twice. The sidebar owns the announcement; the popover renders the same
-          card silently. */}
+          Keep its text node mounted while the reported goal changes.
+          Render the region only when announce is set.
+          The sidebar owns the announcement. The popover displays the same card silently. */}
       <Show when={props.announce}>
         <div class={srOnly} role="status" aria-live="polite">{announcement()}</div>
       </Show>

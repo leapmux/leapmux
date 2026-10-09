@@ -30,7 +30,7 @@ func TestNativeForegroundChildKeepsItsPromptAndReport(t *testing.T) {
 	assert.Contains(t, reports[0]["text"], "Exact native child report.")
 	row, exists := sink.BackgroundTask(childRowKey("native-session", "spawn"))
 	require.True(t, exists)
-	assert.Equal(t, bgtask.StatusCompleted, row.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
 	assert.Empty(t, a.children)
 }
 
@@ -41,7 +41,7 @@ func TestNativeBackgroundChildCanFinishBeforeItsLaunchReply(t *testing.T) {
 	feedEvent(t, a, map[string]any{"type": "tool_completed", "toolCallId": "spawn", "toolName": "agent", "result": []map[string]string{{"type": "text", "text": "Background agent launched.\nagent_id: native-child\nThe agent is working in the background."}}})
 	row, exists := sink.BackgroundTask(childRowKey("native-session", "native-child"))
 	require.True(t, exists)
-	assert.Equal(t, bgtask.StatusCompleted, row.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
 	assert.Empty(t, a.children)
 }
 

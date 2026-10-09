@@ -11,27 +11,21 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
-// This file routes the session updates of a subagent into the transcript of
-// that subagent. An agent reports the work of a subagent in one of two ways:
+// This file routes each subagent's session updates to its own transcript.
+// An agent can report a subagent's work through either route:
 //
-//   - In the SAME session, with a tag on each update. Qwen Code tags the update
-//     of a subagent with the id of the tool call that spawned it. The provider
-//     states the tag through Hooks.ChildUpdateRoute.
-//   - In a session of its OWN, which the agent opens beside the main one. Grok
-//     Build streams each subagent under the id of its child session. The
-//     provider links that session to a registry row through AttachChildSession.
+//   - The main session tags each update.
+//     Qwen Code supplies the spawning tool-call ID, and Hooks.ChildUpdateRoute identifies that tag.
+//   - A separate child session supplies its own updates.
+//     Grok Build streams under the child session ID, and AttachChildSession links that session to a registry row.
 //
-// Either way the update reaches a child conversation, which renders it with the
-// same code as the main conversation. A provider that reads a subagent from a
-// store instead of the stream feeds the updates that it builds through
-// FeedChildUpdate.
-//
-// Each registry row that carries a child transcript identifies at most one child
-// conversation, and the row key is the key of every map below.
+// Both routes reach a child conversation that uses the same rendering code as the main conversation.
+// A provider that reads a subagent from storage instead of the stream constructs updates and passes them through FeedChildUpdate.
+// Each registry row identifies at most one child conversation.
+// Its row key identifies the corresponding entries in every map below.
 
-// childAgentRef is the child agent that EnsureChildAgent created for one row,
-// and the sink that created it. A subagent of a subagent is created through
-// the sink of its parent subagent, so its transcript opens through that sink.
+// childAgentRef holds the child that EnsureChildAgent creates for one row and the sink that creates it.
+// A nested subagent uses its parent subagent's sink, so that same sink opens its transcript.
 type childAgentRef struct {
 	id     string
 	parent agent.ProviderServices
@@ -48,16 +42,14 @@ type acpChildren struct {
 	active map[string]*childConversation
 	// sessions maps a child session id to the registry row key of its subagent.
 	sessions map[string]string
-	// closed holds the row keys whose subagent finished: a row that this process
-	// closed, and a finished row that the registry reported. Such a row routes
-	// no update, and no chunk reads the registry again. Without an identity refusal,
-	// a late tagged update stays in the parent. A row that this process opens through
-	// rememberChildAgent leaves it.
+	// closed holds row keys that this process closes or that the registry reports as finished.
+	// Those rows route no update, and later chunks do not read the registry again.
+	// Without an identity refusal, a late tagged update stays in the parent transcript.
+	// rememberChildAgent removes a row from this set when this process opens it again.
 	//
-	// It holds no row that the registry does not know. A provider can create a
-	// row later through a route that the base does not see (Qwen Code reads a
-	// background subagent from its store), and a kept miss would lose that
-	// child's transcript.
+	// Do not retain a row that the registry does not know.
+	// A provider can create it later through a path outside the base, such as Qwen Code's background-subagent store reader.
+	// Retaining that earlier miss would discard the child's later transcript.
 	closed map[string]struct{}
 	// refused holds rows whose explicit child validation rejected the stored identity.
 	// Only a later successful validation removes a row.
@@ -72,17 +64,17 @@ const (
 	childRouteAccepted
 )
 
-// childConversation is one child conversation and the lock that serializes its
-// updates. The reader goroutine renders the stream, and a provider can feed a
-// child from a goroutine of its own, so every write to one child takes feedMu.
+// childConversation holds one child conversation and the lock that serializes its updates.
+// The reader handles stream updates, and a provider can feed a child from a separate goroutine.
+// Every child write therefore holds feedMu.
 type childConversation struct {
 	feedMu sync.Mutex
 	conversation
 	// parent is the sink that created the child agent, which owns the child's
 	// transcript primitives.
 	parent agent.ProviderServices
-	// prompted records that a message of the agent opened the transcript.
-	// Guarded by feedMu.
+	// prompted records that an agent message opens the transcript.
+	// feedMu protects the field.
 	prompted bool
 }
 
@@ -146,13 +138,11 @@ func (b *Base) childRouteCurrent(rowKey string, child *childConversation) bool {
 	return !b.childRouteUnavailableLocked(rowKey) && b.children.active[rowKey] == child
 }
 
-// childFor returns the child conversation of a row, and opens it on the first
-// update. It returns nil for a row that identifies no child transcript.
+// childFor returns the row's child conversation and opens it on the first update.
+// Return nil when the row identifies no child transcript.
 //
-// A row that this process did not create -- the subagent of a process that
-// ran before a worker restart -- resolves through the registry, which keeps
-// the child link across restarts. A row whose subagent finished routes
-// nothing (see acpChildren.closed).
+// A row from a process before a worker restart resolves through the registry, which retains its child link across restarts.
+// A row whose subagent already finished routes no updates. See acpChildren.closed.
 func (b *Base) childFor(rowKey string) *childConversation {
 	if rowKey == "" {
 		return nil
@@ -169,8 +159,8 @@ func (b *Base) childFor(rowKey string) *childConversation {
 	ref, known := b.children.agents[rowKey]
 	b.children.mu.Unlock()
 	if !known {
-		// The registry read runs outside the lock: it is a database read, and
-		// the reader goroutine must not hold the lock of every child across it.
+		// Read the registry outside the lock.
+		// The database read must not make the reader goroutine hold every child's shared lock across I/O.
 		childAgentID, status, found, err := b.sink.LookupBackgroundTask(rowKey)
 		if err != nil {
 			slog.Warn("acp child route lookup failed", "provider", b.ProviderName(), "agent_id", b.AgentID(), "row_key", rowKey, "error", err)
@@ -257,20 +247,20 @@ func (b *Base) routeToChild(rowKey string, header acpUpdateHeader, update json.R
 		child.persistAgentMessage(header.Content)
 		return childRouteAccepted
 	}
-	// A child renders its conversation and nothing else: the mode, the model,
-	// the command set and the usage of the session belong to the main one, so
-	// an update that states them is dropped rather than applied to the parent.
+	// A child renders conversation updates only.
+	// The session's mode and model belong to the main conversation, as do its command set and usage.
+	// Discard an update that reports those fields instead of applying it to the parent.
 	child.handleUpdate(header, update)
 	return childRouteAccepted
 }
 
-// persistAgentMessage writes a message that the agent gave its subagent into
-// the child transcript (Hooks.ChildUserMessages). The caller holds feedMu.
+// persistAgentMessage writes the agent's message to its subagent's transcript through Hooks.ChildUserMessages.
+// The caller holds feedMu.
 //
-// The first one opens the transcript as its prompt, which is a no-op for a
-// transcript that already holds a message -- a spawn whose prompt opened it.
-// Each later one is a message in the middle of the conversation. The text the
-// child assembled before it is stored first, so the transcript keeps its order.
+// The first message opens the transcript as its prompt.
+// A transcript already opened by a spawn prompt keeps that existing prompt instead.
+// Each later message becomes an ordinary conversation message.
+// Persist the child's previously assembled text first to preserve transcript order.
 func (c *childConversation) persistAgentMessage(content json.RawMessage) {
 	text := c.b.extractACPChunkText(content, contracts.ACPUpdateUserMessageChunk)
 	if strings.TrimSpace(text) == "" {
@@ -290,10 +280,9 @@ func (c *childConversation) persistAgentMessage(content json.RawMessage) {
 	}
 }
 
-// FeedChildUpdate renders one session update into the transcript of the child
-// that owns rowKey. A provider that reads the work of a subagent from its own
-// store rather than from the stream calls it with the update that the agent
-// itself would send for that record. It reports false for an unknown or refused route.
+// FeedChildUpdate renders one session update in the child transcript that owns rowKey.
+// A provider with a stored transcript constructs the update that its agent would send for each record and calls this method.
+// Return false for an unknown or refused route.
 func (b *Base) FeedChildUpdate(rowKey string, update json.RawMessage) bool {
 	var header acpUpdateHeader
 	if err := json.Unmarshal(update, &header); err != nil {
@@ -303,9 +292,8 @@ func (b *Base) FeedChildUpdate(rowKey string, update json.RawMessage) bool {
 	return b.routeToChild(rowKey, header, update) == childRouteAccepted
 }
 
-// FinishChildTurn stores the text that the child of rowKey assembled so far,
-// because its turn ended. The child stays open: a subagent that the agent
-// continues later renders its next turn into the same transcript.
+// FinishChildTurn persists the text that rowKey's child assembled before its turn ended.
+// The child transcript stays open, so a later resumed turn renders in that same transcript.
 func (b *Base) FinishChildTurn(rowKey string) {
 	b.children.mu.Lock()
 	child := b.children.active[rowKey]
@@ -322,9 +310,8 @@ func (b *Base) FinishChildTurn(rowKey string) {
 	child.flushAssistantBuffer()
 }
 
-// AttachChildSession routes each update of the session sessionID into the
-// transcript of the subagent that owns rowKey. An agent that runs a subagent
-// in a session of its own calls it once it links that session to its row.
+// AttachChildSession routes sessionID updates to the subagent transcript that owns rowKey.
+// An agent with a separate child session calls it after linking that session to its row.
 func (b *Base) AttachChildSession(sessionID, rowKey string) {
 	if sessionID == "" || rowKey == "" {
 		return
@@ -388,13 +375,12 @@ func (b *Base) ApplySubagentObservationForSession(sessionID string, observation 
 	return true
 }
 
-// OpenToolSink returns the services of the transcript that holds the tool call
-// toolCallID open in the session sessionID: the agent's own for the current
-// session, and the child's for a subagent session that a registry row routes.
-// ok is false for a call that no such transcript holds open. A provider whose
-// agent reports the live output of a call outside the updates of that call --
-// Kiro's content chunks -- reports it through these services, so the output
-// reaches the row that the call draws, in whichever tab that row is.
+// OpenToolSink returns the transcript services that hold toolCallID open in sessionID.
+// The current session uses the agent's own services.
+// A subagent session uses the child services linked by its registry row.
+// Return ok=false when neither transcript holds that call open.
+// A provider can report live output outside tool-call updates, as Kiro does through content chunks.
+// These services route that output to the correct tool row and tab.
 func (b *Base) OpenToolSink(sessionID, toolCallID string) (agent.ProviderServices, bool) {
 	if toolCallID == "" {
 		return nil, false
@@ -409,16 +395,15 @@ func (b *Base) OpenToolSink(sessionID, toolCallID string) (agent.ProviderService
 	return child.childSink, child.out.holdsOpenTool(toolCallID)
 }
 
-// withOpenToolConversation runs fn on the conversation that holds the tool call
-// toolCallID open in the session sessionID. The conversation is one of two:
+// withOpenToolConversation runs fn in the conversation that holds toolCallID open in sessionID.
+// It selects one of these conversations:
 //
-//   - The main conversation, for the current session. A request that states no
-//     session also uses it, as ServesSession admits such a request.
-//   - The conversation of a child, for a subagent session that a registry row
-//     routes. Then fn runs under the feedMu of the child, as every write to a
-//     child does.
+//   - The main conversation for the current session.
+//     A request with no session also uses it, as ServesSession permits.
+//   - The child conversation linked by a registry row for a subagent session.
+//     Hold that child's feedMu while fn runs, as every child write does.
 //
-// fn does not run when no such conversation holds the call open.
+// Do not call fn when neither conversation holds that tool call open.
 func (b *Base) withOpenToolConversation(sessionID, toolCallID string, fn func(*conversation)) {
 	if toolCallID == "" {
 		return
@@ -478,14 +463,13 @@ func (c *childConversation) finish(status bgtask.Status) {
 	c.persistIncompleteTools(turn.incompleteTools, toolCompletion)
 }
 
-// childCloseCompletions states how the text and the open tool calls of a child
-// end when its row closes with status. A subagent that completed wrote its
-// text in full, and a tool call it still held open did not finish -- the same
-// verdict a main turn gives such a call. A subagent that failed ends both with
-// the error, and every other close is a stop.
+// childCloseCompletions selects completions for a child's text and open tools when its row closes with status.
+// A successful subagent completes its text, but any tool it leaves open fails, as it does at a main turn's end.
+// A failed subagent ends both text and tools with an error.
+// Every other final status interrupts both.
 func childCloseCompletions(status bgtask.Status) (text, tools agent.MessageCompletion) {
 	switch status {
-	case bgtask.StatusCompleted:
+	case bgtask.StatusSucceeded:
 		return agent.MessageCompletionComplete, agent.MessageCompletionError
 	case bgtask.StatusFailed:
 		return agent.MessageCompletionError, agent.MessageCompletionError
@@ -494,8 +478,7 @@ func childCloseCompletions(status bgtask.Status) (text, tools agent.MessageCompl
 	}
 }
 
-// finishAllChildConversations ends every child conversation, because the
-// process that fed them stopped.
+// finishAllChildConversations ends every child conversation because its supplying process stopped.
 func (b *Base) finishAllChildConversations() {
 	for _, rowKey := range b.childRows() {
 		b.children.mu.Lock()
@@ -526,8 +509,8 @@ func (b *Base) childRows() []string {
 	return rowKeys
 }
 
-// renameChildConversation moves the child state of a row that a provider
-// re-keyed, so the renamed row keeps the transcript that the old key opened.
+// renameChildConversation moves child state when a provider changes the row key.
+// The new key retains the transcript that the preceding key opened.
 func (b *Base) renameChildConversation(from, to string) {
 	b.children.mu.Lock()
 	defer b.children.mu.Unlock()
@@ -550,10 +533,9 @@ func (b *Base) renameChildConversation(from, to string) {
 	}
 }
 
-// forgetChild drops every route to the subagent of a closed row. A late
-// update of its session then reaches no transcript, which is the answer the
-// base gives for any session it does not serve, and a late update with its tag
-// stays in the parent unless identity validation refused that row.
+// forgetChild removes every route to a closed row's subagent.
+// A later session update reaches no transcript, as for any session that the base does not serve.
+// A later tagged update stays in the parent unless identity validation refuses that row.
 func (b *Base) forgetChild(rowKey string) {
 	b.children.mu.Lock()
 	defer b.children.mu.Unlock()
@@ -566,18 +548,16 @@ func (b *Base) forgetChild(rowKey string) {
 	b.markChildClosedLocked(rowKey)
 }
 
-// forgetChildSessions drops the route of every subagent session, because the
-// session that ran those subagents is gone. A late update of one then reaches
-// no transcript, and ServesSession refuses a late control request of one.
+// forgetChildSessions removes every subagent-session route because the session that ran those subagents ended.
+// A later child update reaches no transcript, and ServesSession refuses a later child control request.
 func (b *Base) forgetChildSessions() {
 	b.children.mu.Lock()
 	defer b.children.mu.Unlock()
 	b.children.sessions = nil
 }
 
-// cleanupChildAgent releases the per-agent service state of the child agent
-// that this process created for rowKey, through the sink that created it. The
-// transcript of the child survives.
+// cleanupChildAgent releases the child service state that this process created for rowKey.
+// It uses the sink that created the child, and the child's transcript survives.
 func (b *Base) cleanupChildAgent(rowKey string) {
 	b.children.mu.Lock()
 	if _, refused := b.children.refused[rowKey]; refused {

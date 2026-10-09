@@ -133,7 +133,7 @@ func (a *Agent) replayDiracChild(state *diracChildState) *acp.SubagentObservatio
 	}
 	status := state.finalStatus
 	if status == bgtask.StatusUnspecified {
-		status = bgtask.StatusCompleted
+		status = bgtask.StatusSucceeded
 	}
 	return &acp.SubagentObservation{
 		RowKey: state.rowKey, Status: status, CloseRow: true, Mode: acp.ModeCloseOnly,

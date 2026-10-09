@@ -29,8 +29,7 @@ func TestCodexControlPublicationFailureReturnsProtocolError(t *testing.T) {
 	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	a.SetStdinForTest(agenttest.NopStdin(output))
 	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"jsonrpc":"2.0","id":37,"method":"item/tool/requestUserInput","params":{"threadId":"main-thread","questions":[]}}`)))
-	// handleCodexOutput runs on the goroutine that drains Codex's stdout, so the
-	// failure reply is QUEUED rather than written before it returns.
+	// handleCodexOutput drains Codex stdout, so queue the failure response and return before waiting for the stdin write.
 	var answer string
 	require.Eventually(t, func() bool {
 		answer = output.String()
@@ -147,9 +146,8 @@ func TestHandleCodexOutput_TurnStartedOpensTheTurn(t *testing.T) {
 	assert.Equal(t, "turn-42", turnID, "interrupts and steering target this turn")
 	assert.Equal(t, []bool{true}, sink.TurnActives(),
 		"turn/started opens the Worker's activity state AND its input queue's turn")
-	// The turn id used to ride an ephemeral session-info frame as well, for a
-	// browser-side working-state heuristic that no longer exists. Nothing reads
-	// it now, so nothing sends it.
+	// The preceding browser activity heuristic also used a temporary session-info turn ID.
+	// No current reader consumes that ID, so the provider sends no additional frame for it.
 	assert.Equal(t, 0, sessionInfoCount, "turn/started broadcasts no session info")
 }
 
@@ -159,8 +157,8 @@ func TestHandleCodexOutput_TurnStartedFallbackIsNoop(t *testing.T) {
 	sink := &agenttest.ControlSink{}
 	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
-	// turn/started with no turn.id has no per-turn state to broadcast;
-	// git status now refreshes at turn-end via the sink layer.
+	// turn/started without turn.id supplies no turn-specific state to broadcast.
+	// The sink refreshes git status at turn end.
 	input := `{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"t1"}}`
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(input)))
 
@@ -185,7 +183,7 @@ func TestHandleCodexOutput_RequestUserInput(t *testing.T) {
 	rec := sink.LastPublishedControl()
 	assert.Equal(t, "jsonrpc:42", rec.RequestID)
 
-	// Verify payload is the original content.
+	// Verify that the payload preserves the original content.
 	var parsed struct {
 		Method string `json:"method"`
 		ID     int    `json:"id"`
@@ -194,7 +192,7 @@ func TestHandleCodexOutput_RequestUserInput(t *testing.T) {
 	assert.Equal(t, "item/tool/requestUserInput", parsed.Method)
 	assert.Equal(t, 42, parsed.ID)
 
-	// Should NOT be persisted as a regular message.
+	// The handler does not persist an ordinary message.
 	assert.Equal(t, 0, sink.MessageCount())
 }
 
@@ -527,9 +525,9 @@ func TestHandleCodexOutput_RateLimitExceededSchedulesResume(t *testing.T) {
 	assert.Zero(t, sink.NotificationCount(), "account state must not become transcript history")
 }
 
-// Codex reports the account rate limits after EVERY model call, so one ordinary turn
-// with a tool call wrote the same sentence to the transcript twice. The snapshot is a
-// state, not an event: an unchanged one states nothing the previous row did not.
+// Codex reports account rate limits after every model call.
+// One turn with a tool call formerly persisted the same rate-limit sentence twice.
+// A repeated unchanged snapshot supplies no new state and therefore needs no transcript row.
 func TestHandleCodexOutput_RateLimitsStayOutOfTheTranscript(t *testing.T) {
 	t.Parallel()
 
@@ -550,10 +548,8 @@ func TestHandleCodexOutput_RateLimitsStayOutOfTheTranscript(t *testing.T) {
 	assert.Equal(t, 3, sink.SessionInfoCount(), "every report refreshes the popover")
 }
 
-// TestHandleCodexOutput_RateLimitBroadcastsSnakeCaseWire locks in the
-// snake_case wire shape for Codex's session-info `rate_limits` payload.
-// Both Codex and Claude broadcast the same tier shape so the frontend
-// can consume one format regardless of provider.
+// TestHandleCodexOutput_RateLimitBroadcastsSnakeCaseWire verifies the snake_case rate_limits shape in Codex session information.
+// Codex and Claude broadcast the same tier fields, so the frontend reads one format.
 func TestHandleCodexOutput_RateLimitBroadcastsSnakeCaseWire(t *testing.T) {
 	t.Parallel()
 
@@ -596,9 +592,8 @@ func TestHandleCodexOutput_RateLimitClearCancelsResume(t *testing.T) {
 	require.Equal(t, agentapi.AutoContinueReasonRateLimit, sink.LastAutoCancel())
 }
 
-// TestHandleCodexOutput_ReachedTypeRateLimitReachedSchedules verifies that newer
-// Codex builds that emit the authoritative rateLimitReachedType schedule a resume
-// when a time-windowed rate limit is reached.
+// TestHandleCodexOutput_ReachedTypeRateLimitReachedSchedules covers a native rateLimitReachedType that confirms a timed rate-limit window.
+// Schedule a resume when that window blocks the request.
 func TestHandleCodexOutput_ReachedTypeRateLimitReachedSchedules(t *testing.T) {
 	t.Parallel()
 
@@ -612,9 +607,8 @@ func TestHandleCodexOutput_ReachedTypeRateLimitReachedSchedules(t *testing.T) {
 	assert.True(t, sink.LastAutoSchedule().DueAt.Equal(time.Unix(1893456000, 0).UTC()))
 }
 
-// TestHandleCodexOutput_ReachedTypeCreditsDepletedCancels is the key carve-out:
-// a credit-depletion block does NOT reset on the rolling-window timer, so even at
-// 100% usage it must cancel rather than schedule a doomed-to-re-hit resume.
+// TestHandleCodexOutput_ReachedTypeCreditsDepletedCancels verifies that credit depletion has no rolling-window reset.
+// Cancel automatic resume even at 100% usage because another timed attempt cannot restore those credits.
 func TestHandleCodexOutput_ReachedTypeCreditsDepletedCancels(t *testing.T) {
 	t.Parallel()
 
@@ -638,8 +632,8 @@ func TestHandleCodexOutput_ReachedTypeCreditsDepletedCancels(t *testing.T) {
 	assert.Equal(t, "exceeded", accountBlock["status"])
 }
 
-// TestHandleCodexOutput_ReachedTypeUsageLimitReachedCancels verifies a usage cap
-// (admin-set, not time-windowed) is treated like credit depletion: no resume.
+// TestHandleCodexOutput_ReachedTypeUsageLimitReachedCancels verifies an administrator's usage cap without a timed reset.
+// As with credit depletion, schedule no resume.
 func TestHandleCodexOutput_ReachedTypeUsageLimitReachedCancels(t *testing.T) {
 	t.Parallel()
 
@@ -653,10 +647,8 @@ func TestHandleCodexOutput_ReachedTypeUsageLimitReachedCancels(t *testing.T) {
 	require.Equal(t, 1, sink.AutoCancelCount())
 }
 
-// TestHandleCodexOutput_ReachedTypeRoundingElevatesAndSchedules covers the case
-// where the authoritative reached-type fires but integer-rounded usedPercent has
-// not ticked to 100. The most-utilized window must both bind the resume time and
-// surface as "exceeded" in the popover broadcast.
+// TestHandleCodexOutput_ReachedTypeRoundingElevatesAndSchedules covers a confirmed native rate limit while rounded usedPercent remains below 100.
+// Use the window with highest usage to determine resume time and mark that window exceeded in the popover broadcast.
 func TestHandleCodexOutput_ReachedTypeRoundingElevatesAndSchedules(t *testing.T) {
 	t.Parallel()
 
@@ -680,19 +672,17 @@ func TestHandleCodexOutput_ReachedTypeRoundingElevatesAndSchedules(t *testing.T)
 	assert.Equal(t, "exceeded", primary["status"], "binding window must show as exceeded despite 99%%")
 }
 
-// TestHandleCodexOutput_ReachedTypeBindingWindowMissingResetFallsBack covers a
-// time-windowed block whose most-utilized (binding) window carries NO resetsAt
-// while a sibling window does. The resume must fall back to the sibling's reset
-// rather than cancel and strand a block that WILL lift on the rolling-window timer.
+// TestHandleCodexOutput_ReachedTypeBindingWindowMissingResetFallsBack covers a timed block whose highest-usage window omits resetsAt while another window supplies it.
+// Use the other window's reset instead of cancelling resume for a limit that still resets on its timer.
 func TestHandleCodexOutput_ReachedTypeBindingWindowMissingResetFallsBack(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
 	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
-	// primary (five_hour) is the most-utilized window (binds the resume) but reports
-	// no resetsAt; secondary (seven_day) carries one. Before the fallback the nil
-	// binding reset cancelled the resume entirely.
+	// primary, the five_hour window, has highest usage but no resetsAt.
+	// secondary, the seven_day window, supplies a reset.
+	// The preceding implementation cancelled resume when the selected window's reset was absent.
 	input := `{"method":"account/rateLimits/updated","params":{"rateLimits":{"rateLimitReachedType":"rate_limit_reached","primary":{"usedPercent":99,"windowDurationMins":300},"secondary":{"usedPercent":20,"windowDurationMins":10080,"resetsAt":1894000000}}}}`
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(input)))
 
@@ -702,9 +692,8 @@ func TestHandleCodexOutput_ReachedTypeBindingWindowMissingResetFallsBack(t *test
 		"resume falls back to the latest available window reset")
 }
 
-// TestSummarizeCodexRateLimits_ResumeFallsBackToLatestReset exercises the pure
-// summarizer's elevate + resume edges directly (no agent), covering the
-// binding-window-without-reset fallback that the handler test drives end to end.
+// TestSummarizeCodexRateLimits_ResumeFallsBackToLatestReset directly exercises status elevation and resume selection without an agent.
+// It covers the missing selected-window reset that the handler test exercises through output handling.
 func TestSummarizeCodexRateLimits_ResumeFallsBackToLatestReset(t *testing.T) {
 	t.Parallel()
 
@@ -723,16 +712,15 @@ func TestSummarizeCodexRateLimits_ResumeFallsBackToLatestReset(t *testing.T) {
 	require.NotNil(t, resume, "must resume via the sibling reset, not cancel")
 	assert.True(t, resume.Equal(time.Unix(resetSecondary, 0).UTC()))
 
-	// The rounding elevate still surfaces the most-utilized window as exceeded.
+	// The rounded-limit correction still marks the highest-usage window exceeded.
 	five, ok := s.rateLimits["five_hour"].(map[string]interface{})
 	require.True(t, ok)
 	assert.Equal(t, "exceeded", five["status"])
 }
 
-// TestSummarizeCodexRateLimits_ExceededWindowGatesElevate locks the elevate gate to
-// the per-window status (any window at >=100% suppresses the elevate), matching the
-// frontend replay path so the popover and the live broadcast can't disagree. The
-// already-exceeded window keeps its status; a low sibling is never lifted.
+// TestSummarizeCodexRateLimits_ExceededWindowPreventsElevation verifies that any window at or above 100% suppresses additional elevation.
+// The frontend replay applies the same rule, keeping its popover consistent with live broadcasts.
+// Preserve the already-exceeded window's status and never raise a lower-usage sibling's status.
 func TestSummarizeCodexRateLimits_ExceededWindowGatesElevate(t *testing.T) {
 	t.Parallel()
 
@@ -851,11 +839,12 @@ func TestHandleCodexOutput_TurnCompletedSuccessCancelsAPIError(t *testing.T) {
 	require.Equal(t, agentapi.AutoContinueReasonAPIError, sink.LastAutoCancel())
 }
 
-// Current Codex models select Multi-Agent V2. That protocol does not emit a
-// spawnAgent collab item. The parent receives a subAgentActivity pair first,
-// then the child thread's own lifecycle, then a completed activity pair.
-// Replaying that exact order must create one readable child, keep its output
-// out of the parent transcript, and close its registry row.
+// Current Codex models use Multi-Agent V2 without a spawnAgent collaboration item.
+// The parent first receives subAgentActivity, followed by the child's lifecycle and a completed activity pair.
+// Replay that order and require these results:
+//   - Create one readable child transcript.
+//   - Keep child output outside the parent transcript.
+//   - Close the child registry row.
 func TestHandleCodexOutput_MultiAgentV2LifecycleOwnsTheChildTranscript(t *testing.T) {
 	t.Parallel()
 
@@ -906,7 +895,7 @@ func TestHandleCodexOutput_MultiAgentV2LifecycleOwnsTheChildTranscript(t *testin
 
 	rows = sink.BackgroundTasks()
 	require.Len(t, rows, 1)
-	assert.Equal(t, bgtask.StatusCompleted, rows[0].Status)
+	assert.Equal(t, bgtask.StatusSucceeded, rows[0].Status)
 }
 
 func TestCodexChildRouteReusesTheResolvedSink(t *testing.T) {
@@ -971,7 +960,7 @@ func TestHandleCodexOutput_MultiAgentV2CompletedActivityClosesWithoutATurnEnd(t 
 
 	rows := sink.BackgroundTasks()
 	require.Len(t, rows, 1)
-	assert.Equal(t, bgtask.StatusCompleted, rows[0].Status)
+	assert.Equal(t, bgtask.StatusSucceeded, rows[0].Status)
 	assert.Empty(t, agent.childTurnID("child-thread"), "the final activity clears steering state")
 	child := sink.Child("child-of-call-spawn")
 	assert.Equal(t, []bool{true, false}, child.TurnActives())
@@ -999,8 +988,42 @@ func TestHandleCodexOutput_MultiAgentV2DuplicateCompletionRetriesARegistryFailur
 	_, status, found, err = sink.LookupBackgroundTask("child-thread")
 	require.NoError(t, err)
 	require.True(t, found)
-	assert.Equal(t, bgtask.StatusCompleted, status, "the duplicate completion retries the close")
+	assert.Equal(t, bgtask.StatusSucceeded, status, "the duplicate completion retries the close")
 	assert.Equal(t, 2, sink.closeAttempts)
+}
+
+func TestHandleCodexOutput_MultiAgentV2CompletionRetryKeepsTheFailedOutcome(t *testing.T) {
+	t.Parallel()
+
+	sink := &transientCodexCloseFailureSink{
+		Sink:          &agenttest.Sink{},
+		closeFailures: 1,
+	}
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"call-spawn","kind":"started","agentThreadId":"child-thread","agentPath":"/root/failing_child"}}}`)))
+	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"turn/started","params":{"threadId":"child-thread","turn":{"id":"child-turn"}}}`)))
+	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"turn/completed","params":{"threadId":"child-thread","turn":{"id":"child-turn","status":"failed","items":[],"error":{"message":"child failed"}}}}`)))
+
+	_, status, found, err := sink.LookupBackgroundTask("child-thread")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, bgtask.StatusRunning, status, "the failed first close leaves the row open")
+	require.Equal(t, 1, sink.closeAttempts)
+	child := sink.Child("child-of-call-spawn")
+	beforeRetry := child.Messages()
+	require.Len(t, beforeRetry, 1)
+	require.True(t, beforeRetry[0].TurnEnd)
+
+	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"child-completed","kind":"completed","agentThreadId":"child-thread","agentPath":"/root/failing_child"}}}`)))
+
+	_, status, found, err = sink.LookupBackgroundTask("child-thread")
+	require.NoError(t, err)
+	require.True(t, found)
+	assert.Equal(t, bgtask.StatusFailed, status, "the completed activity must preserve the failed child outcome")
+	assert.Equal(t, 2, sink.closeAttempts)
+	assert.Equal(t, beforeRetry, child.Messages(), "the registry retry must not repeat transcript finalization")
+	assert.Equal(t, []bool{true, false}, child.TurnActives())
+	assert.Len(t, sink.BackgroundTasks(), 1)
 }
 
 func TestHandleCodexOutput_MultiAgentV2LateDuplicateStartDoesNotReviveCompletedRun(t *testing.T) {
@@ -1017,7 +1040,7 @@ func TestHandleCodexOutput_MultiAgentV2LateDuplicateStartDoesNotReviveCompletedR
 	_, status, found, err := sink.LookupBackgroundTask("child-thread")
 	require.NoError(t, err)
 	require.True(t, found)
-	assert.Equal(t, bgtask.StatusCompleted, status)
+	assert.Equal(t, bgtask.StatusSucceeded, status)
 	assert.Empty(t, sink.RevivedTasks(), "a duplicate spawn activity cannot start a second run")
 }
 
@@ -1057,7 +1080,7 @@ func TestHandleCodexOutput_MultiAgentV2CompletionBeforeStartStillClosesTheRun(t 
 
 	rows := sink.BackgroundTasks()
 	require.Len(t, rows, 1)
-	assert.Equal(t, bgtask.StatusCompleted, rows[0].Status,
+	assert.Equal(t, bgtask.StatusSucceeded, rows[0].Status,
 		"the authoritative start must apply a completion that arrived first")
 	assert.Equal(t, "child-of-spawn-call", rows[0].ChildAgentID)
 }
@@ -1192,7 +1215,7 @@ func TestHandleCodexOutput_MultiAgentV2ReusesTheChildTranscript(t *testing.T) {
 	rows := sink.BackgroundTasks()
 	require.Len(t, rows, 1)
 	assert.Equal(t, "child-of-call-spawn", rows[0].ChildAgentID)
-	assert.Equal(t, bgtask.StatusCompleted, rows[0].Status)
+	assert.Equal(t, bgtask.StatusSucceeded, rows[0].Status)
 }
 
 func TestHandleCodexOutput_MultiAgentV2NestedChildUsesItsDirectParent(t *testing.T) {
@@ -1227,11 +1250,9 @@ func TestHandleCodexOutput_MultiAgentV2NestedChildUsesItsDirectParent(t *testing
 	assert.Contains(t, string(grandchild.Messages()[0].Content), "NESTED_DONE")
 }
 
-// A spawnAgent tool call owns NO span: the subagent's output lives in its own
-// child transcript, so a rail held open for the whole run would only push every
-// concurrent tool one column right. The row still carries the span id (the
-// frontend pairs the started and completed rows by it) and the span type (which
-// item/completed reads back).
+// A spawnAgent call owns no span because child output belongs to its separate transcript.
+// Keeping its rail through the run would move concurrent tools one additional column right.
+// The row still retains its span ID for frontend pairing and its span type for item/completed.
 func TestHandleCodexOutput_SpawnAgentStartedOpensNoSpan(t *testing.T) {
 	t.Parallel()
 
@@ -1272,10 +1293,9 @@ func TestHandleCodexOutput_SpawnAgentCompletedLeavesNoSpan(t *testing.T) {
 	assert.Empty(t, messages[1].SpansOpenAtPersist, "and it draws no rail")
 }
 
-// A collab child that runs again after its row went final. The upsert absorbs a
-// non-final status against a final row -- deliberately, because a replayed
-// snapshot cannot prove a restart -- so without the revive the sidebar row and
-// the tab chip read "finished" for the whole second run.
+// A collaboration child can start another run after its row becomes final.
+// An upsert deliberately preserves that final state because a replayed snapshot proves no restart.
+// Explicit revival is therefore required to show the second run as active in the sidebar and tab chip.
 func TestHandleCodexOutput_ARerunCollabChildReopensItsRow(t *testing.T) {
 	t.Parallel()
 
@@ -1284,9 +1304,8 @@ func TestHandleCodexOutput_ARerunCollabChildReopensItsRow(t *testing.T) {
 
 	started := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{}}}}`
 	completed := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{"child-1":{"status":"completed","message":"done"}}}}}`
-	// The root resumes the finished child: item/started re-registers the receiver,
-	// which is the proof a replayed snapshot never carries. The child's own
-	// turn/started then reports it working again.
+	// The root resumes the ended child through item/started, which registers the receiver again and supplies proof absent from a replayed snapshot.
+	// The child's turn/started then reports active work.
 	resumed := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn2","item":{"type":"collabAgentToolCall","id":"call-2","tool":"resumeAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"more work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{}}}}`
 	childTurn := `{"method":"turn/started","params":{"threadId":"child-1","turn":{"id":"turn-c2"}}}`
 
@@ -1326,7 +1345,7 @@ func TestHandleCodexOutput_AReplayedRunningStateWaitsForALiveChildTurn(t *testin
 	assert.Empty(t, sink.RevivedTasks(), "a snapshot alone cannot prove a restart")
 	_, status, ok, _ := sink.LookupBackgroundTask("child-1")
 	require.True(t, ok)
-	assert.Equal(t, bgtask.StatusCompleted, status, "the row keeps its final status")
+	assert.Equal(t, bgtask.StatusSucceeded, status, "the row keeps its final status")
 
 	liveTurn := `{"method":"turn/started","params":{"threadId":"child-1","turn":{"id":"turn-c9"}}}`
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(liveTurn)))
@@ -1336,8 +1355,7 @@ func TestHandleCodexOutput_AReplayedRunningStateWaitsForALiveChildTurn(t *testin
 	assert.Equal(t, bgtask.StatusRunning, status)
 }
 
-// A subagent spawn that starts while an unrelated command is running draws that
-// command's rail and nothing more -- one column, not two.
+// A spawn during another active command draws only that command's rail, with one column rather than two.
 func TestHandleCodexOutput_SpawnInsideOpenCommandDrawsOneColumn(t *testing.T) {
 	t.Parallel()
 
@@ -1380,8 +1398,8 @@ func TestHandleCodexOutput_WaitIsAFlatToolSpan(t *testing.T) {
 	require.Equal(t, "", messages[1].ParentSpanID, "wait started is flat")
 	require.Equal(t, "", messages[2].ParentSpanID, "wait completed is flat")
 
-	// Only the spawn loses its span. wait blocks on the subagent but stays an
-	// ordinary tool span, so it opens one and closes it at completion.
+	// Only the spawn releases its span.
+	// wait blocks for the child but retains an ordinary tool span until its own completion.
 	open := sink.OpenSpans()
 	require.Len(t, open, 1, "the spawn opens nothing; wait opens one span")
 	assert.Equal(t, "call-2", open[0].SpanID)
@@ -1429,8 +1447,8 @@ func TestHandleCodexOutput_SpawnAgentCompletedClosesSpawnSpan(t *testing.T) {
 	completed := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{"child-1":{"status":"running","message":null}}}}}`
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(completed)))
 
-	// The spawn span CLOSES at spawn completion (children route to their own
-	// transcripts; they no longer nest under it).
+	// The spawn span closes when the spawn call completes.
+	// Child output belongs to its separate transcript and does not nest under that span.
 	require.Contains(t, sink.ClosedSpans(), "call-1")
 }
 
@@ -1455,8 +1473,7 @@ func TestHandleCodexOutput_SpawnAgentCompletedRegistersLateReceiverThreads(t *te
 	child := sink.Child("child-of-call-1")
 	childMessages := child.Messages()
 	require.Len(t, childMessages, 2, "child transcript opens on the spawn prompt, then the command")
-	// The transcript opens on the instruction the subagent was given, so the tab
-	// shows what was asked rather than starting mid-work.
+	// The child transcript opens on its instruction so the reader sees the assigned task before the child's reply.
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, childMessages[0].Source)
 	assert.JSONEq(t, `{"content":"do work"}`, string(childMessages[0].Content))
 	assert.Equal(t, "cmd-1", childMessages[1].SpanID, "then the child's own command")
@@ -1473,9 +1490,12 @@ func TestHandleCodexOutput_WaitCompletedClosesFinalSubagentSpan(t *testing.T) {
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(started)))
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(completed)))
 
-	// wait is a flat tool span that CLOSES at completion (like every other collab
-	// tool). The old code ran CloseSpan only for `collab.Tool == "spawnAgent"`,
-	// leaving wait/sendInput/resumeAgent/closeAgent spans open until turn reset.
+	// wait closes its ordinary tool span at completion, as every collaboration tool does.
+	// The preceding code closed only spawnAgent and left these spans open until turn reset:
+	//   - wait.
+	//   - sendInput.
+	//   - resumeAgent.
+	//   - closeAgent.
 	require.Contains(t, sink.ClosedSpans(), "call-2", "wait span closes at completion")
 }
 
@@ -1485,9 +1505,9 @@ func TestHandleCodexOutput_WaitCompletedDoesNotAffectSpawnSpan(t *testing.T) {
 	sink := &agenttest.Sink{}
 	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
-	// A wait completion with a non-final agent state must close the WAIT
-	// tool span (its own lifecycle) but must NOT touch a spawn span. There is no
-	// spawn here, so ClosedSpans contains only the wait span.
+	// A wait result closes its own tool span even when the reported child state remains non-final.
+	// It must close no spawn span.
+	// This fixture opens no spawn span, so ClosedSpans contains only wait.
 	input := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-2","tool":"wait","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1","child-2"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{"child-1":{"status":"running","message":null}}}}}`
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(input)))
 
@@ -1522,8 +1542,8 @@ func TestHandleCodexOutput_WaitCompletedClosesOnlyFinalReceivers(t *testing.T) {
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(started)))
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(completed)))
 
-	// The collab span closes at completion regardless of which receivers are
-	// finished -- the span lifecycle is about the tool_call, not the children.
+	// Close the collaboration tool span when that call completes, regardless of receiver state.
+	// Its lifecycle belongs to the tool call independently of the children.
 	require.Contains(t, sink.ClosedSpans(), "call-4", "wait span closes at completion")
 }
 
@@ -1655,10 +1675,9 @@ func TestHandleCodexOutput_FileChangeOutputDelta(t *testing.T) {
 	require.Equal(t, 0, sink.MessageCount())
 }
 
-// Both image items are ordinary tool items and take the ordinary tool path.
-// They used to fall to handleItemCompleted's default branch instead: the completed
-// row persisted with a span id that nothing had opened and nothing then closed,
-// so the transcript drew a rail that stayed open for the rest of the turn.
+// Both image item types use the ordinary tool path.
+// The preceding handleItemCompleted default persisted their results without opening or closing the corresponding span.
+// The transcript then displayed a rail that remained open through the turn.
 func TestHandleCodexOutput_ImageItemsOpenAndCloseASpan(t *testing.T) {
 	t.Parallel()
 
@@ -1702,8 +1721,8 @@ func TestHandleCodexOutput_ImageItemsOpenAndCloseASpan(t *testing.T) {
 			require.Len(t, messages, 2)
 			assert.False(t, messages[0].Closing)
 			assert.True(t, messages[1].Closing)
-			// The tool_use row persists BEFORE its own span opens, and the
-			// result row WHILE it is open -- that is what draws the connector.
+			// Persist tool_use before opening its span and persist the result while that span remains open.
+			// That order produces the correct connector.
 			assert.Empty(t, messages[0].SpansOpenAtPersist)
 			require.Len(t, messages[1].SpansOpenAtPersist, 1)
 			assert.Equal(t, tc.id, messages[1].SpansOpenAtPersist[0].SpanID)
@@ -1719,7 +1738,7 @@ func TestHandleCodexOutput_ApprovalWithoutID(t *testing.T) {
 	sink := &agenttest.ControlSink{}
 	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
-	// Missing "id" field — should be ignored (logged as warning).
+	// Ignore a missing id and log the warning.
 	input := `{"method":"item/tool/requestUserInput","params":{"questions":[]}}`
 
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(input)))
@@ -1803,9 +1822,8 @@ func TestHandleCodexOutput_UnsuccessfulHookCompletionPersists(t *testing.T) {
 	}
 }
 
-// Codex reports a cache WRITE beside the cache read, and it reached nothing: the
-// breakdown showed a flat zero for it on every Codex turn while every other provider
-// reported one.
+// Codex reports cache writes as well as reads.
+// The preceding mapping omitted writes, so every Codex turn displayed zero cache-write usage while other providers supplied a value.
 func TestHandleCodexOutput_TokenUsageCarriesTheCacheWrite(t *testing.T) {
 	t.Parallel()
 
@@ -1823,8 +1841,8 @@ func TestHandleCodexOutput_TokenUsageCarriesTheCacheWrite(t *testing.T) {
 	assert.Equal(t, int64(140), usage["context_tokens"])
 }
 
-// The session's CUMULATIVE spend grows past the context window and answers a
-// different question than the live occupancy, so the gauge must never read it.
+// Cumulative session usage can exceed the context window and does not measure live occupancy.
+// The context gauge must never use that cumulative value.
 func TestHandleCodexOutput_TokenUsageIgnoresTheCumulativeTotal(t *testing.T) {
 	t.Parallel()
 
@@ -1902,11 +1920,9 @@ func TestHandleCodexOutput_TurnCompletedIgnoresSubagentThreads(t *testing.T) {
 	require.Equal(t, 0, sink.SessionInfoCount())
 }
 
-// TestHandleCodexOutput_TurnCompletedChildPersistsChildTurnEnd verifies a
-// registered child thread's turn/completed persists a turn-end divider into the
-// CHILD transcript (mirrors the main-thread PersistTurnEnd), rather than being
-// a silent no-op. The child must be registered first via a spawnAgent
-// item/started so the route can resolve the child agent ID.
+// TestHandleCodexOutput_TurnCompletedChildPersistsChildTurnEnd verifies a registered child thread's turn/completed boundary.
+// Persist the turn-end divider in its child transcript through the same PersistTurnEnd behavior as the main thread.
+// First register the child through spawnAgent item/started so its route can resolve the child agent ID.
 func TestHandleCodexOutput_TurnCompletedChildPersistsChildTurnEnd(t *testing.T) {
 	t.Parallel()
 
@@ -1932,9 +1948,8 @@ func TestHandleCodexOutput_TurnCompletedChildPersistsChildTurnEnd(t *testing.T) 
 	}
 	assert.Equal(t, 1, turnEnds,
 		"child turn/completed must persist a turn-end divider into the child transcript")
-	// publishTurnActive covers the MAIN thread alone, so a collab child's turn
-	// is published against the CHILD's sink -- which is what the child tab's
-	// own input queue follows.
+	// publishTurnActive handles only the main thread.
+	// Publish the collaboration child's turn through its own sink, which supplies the child tab's input queue.
 	assert.Equal(t, []bool{true, false}, child.TurnActives(),
 		"the child's own turn opens and releases the child input queue")
 	assert.Equal(t, []leapmuxv1.AgentInputKind{
@@ -2015,9 +2030,8 @@ func TestHandleCodexOutput_InterruptedTurnPersistsIncompleteCommandOutput(t *tes
 	require.GreaterOrEqual(t, sink.MessageCount(), 3)
 	result := sink.Messages()[1]
 	assert.True(t, result.Closing)
-	// The row is the agent's own item/started frame, byte for byte. The output is a
-	// run of delta events that LeapMux joined, so the joined text is recovered
-	// provider data and rides in the supplement.
+	// The row preserves the exact item/started frame.
+	// LeapMux assembles output deltas into recovered provider text and stores that text in the supplement.
 	assert.JSONEq(t, `{
 		"threadId":"main-thread",
 		"turnId":"turn-1",
@@ -2230,10 +2244,9 @@ func TestHandleCodexOutput_TurnCompletedPlanModePersistsRealPlanAndPrompts(t *te
 	require.Equal(t, 1, sink.PublishedControlCount())
 }
 
-// Two plan turns share ONE stored plan, because UpdatePlan replaces it. The card
-// is keyed by TURN, so a second plan turn leaves two cards open -- and the composer
-// renders the OLDEST, so the newer one is invisible. Approving the card the reader
-// can see would then execute the plan it never showed.
+// UpdatePlan replaces one stored plan across multiple plan turns.
+// Keying approval cards by turn formerly left two cards open, while the composer displayed only the oldest.
+// Approving that visible card could then execute the newer plan without showing it.
 func TestHandleCodexOutput_ASecondPlanPromptRetiresTheFirst(t *testing.T) {
 	t.Parallel()
 
@@ -2310,8 +2323,8 @@ func TestHandleCodexOutput_AgentMessageDeltaAccumulatesThinkingTokens(t *testing
 	sink := &agenttest.Sink{}
 	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
-	// 8-char delta -> 8/4 = 2 tokens; a second 8-char delta accumulates to
-	// 16/4 = 4. The estimate climbs cumulatively across deltas of the same phase.
+	// An eight-character delta estimates two tokens through 8/4.
+	// A second delta increases the same phase's cumulative estimate to four tokens through 16/4.
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"item/agentMessage/delta","params":{"delta":"abcdefgh"}}`)))
 	assert.Equal(t, int64(2), sink.LastThinkingTokens())
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"item/agentMessage/delta","params":{"delta":"ijklmnop"}}`)))
@@ -2353,9 +2366,9 @@ func TestHandleCodexOutput_ReasoningSummaryAndRawCountOncePerItem(t *testing.T) 
 	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	agent.threadID = "main-thread"
 
-	// Codex can stream BOTH a summary and the raw reasoning for one reasoning item
-	// (same itemId, same generation surfaced twice). The summary arrives first and
-	// locks item r1 onto "summary" (8 chars -> 2 tokens).
+	// Codex can report summary text and raw reasoning for the same item and generation.
+	// The first summary selects the summary source for r1.
+	// Its eight characters estimate two tokens.
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"item/reasoning/summaryTextDelta","params":{"itemId":"r1","delta":"abcdefgh","threadId":"main-thread"}}`)))
 	require.Equal(t, int64(2), sink.LastThinkingTokens())
 
@@ -2609,7 +2622,7 @@ func TestCodexCollabStatusToRegistry_ResumableInterrupted(t *testing.T) {
 	}{
 		{"running", bgtask.StatusRunning, false, false},
 		{"pendingInit", bgtask.StatusRunning, false, false},
-		{"completed", bgtask.StatusCompleted, true, false},
+		{"completed", bgtask.StatusSucceeded, true, false},
 		{"errored", bgtask.StatusFailed, true, false},
 		{"notFound", bgtask.StatusFailed, true, false},
 		{"shutdown", bgtask.StatusStopped, true, false},
@@ -2642,7 +2655,7 @@ func TestCodexChildTurnRegistryStatus(t *testing.T) {
 		wantFinished   bool
 		wantActivity   string
 	}{
-		{providerStatus: "completed", wantStatus: bgtask.StatusCompleted, wantFinished: true},
+		{providerStatus: "completed", wantStatus: bgtask.StatusSucceeded, wantFinished: true},
 		{providerStatus: "failed", wantStatus: bgtask.StatusFailed, wantFinished: true},
 		{providerStatus: "cancelled", wantStatus: bgtask.StatusPaused, wantActivity: "paused"},
 		{providerStatus: "canceled", wantStatus: bgtask.StatusPaused, wantActivity: "paused"},

@@ -19,9 +19,10 @@ const mimoStreamStopWait = 5 * time.Second
 
 // Interrupt aborts the main agent's running turn. It is a no-op with no turn.
 //
-// The server answers the abort at once and ends the turn on the event stream:
-// an aborted-message error, then idle. A timer then compares the turn with the
-// server's own status, so a turn whose idle never arrives still ends.
+// The server ends an aborted turn with an error event, then idle.
+// These events can arrive before the HTTP reply. Exact message evidence or an
+// accepted reply confirms the interruption. The timer checks the server's own
+// status so a turn whose idle never arrives still ends.
 func (a *Agent) Interrupt(stop agent.StopContext) error {
 	a.Mu.Lock()
 	stopped, active, sessionID := a.StoppedLocked(), a.turnActive, a.sessionID
@@ -36,51 +37,76 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 	if !active || sessionID == "" {
 		return nil
 	}
-	// The event stream can finish the cut text before the abort request returns.
-	// Record the stop before the request leaves.
+	// Record the pending attempt before the request leaves. Native abort events
+	// can confirm the interruption before this request returns.
 	if err := a.rpc.abort(a.Context(), sessionID); err != nil {
 		a.Mu.Lock()
 		delete(a.interruptRequests, attempt)
 		a.Mu.Unlock()
 		return fmt.Errorf("abort the MiMo turn: %w", err)
 	}
+	a.Mu.Lock()
+	a.confirmInterruptLocked(attempt)
+	a.Mu.Unlock()
 	a.clock.AfterFunc(mimoAbortGrace, a.reconcileTurn, mimoAbortGraceTimerTag)
 	return nil
 }
 
-// noteInterruptLocked records a stop against the current turn.
+// noteInterruptLocked records a pending stop attempt against the current turn.
 // The caller holds a.Mu. Attempt IDs continue across turns, so an old failure
 // cannot remove a later turn's stop.
 func (a *Agent) noteInterruptLocked() uint64 {
 	a.interruptAttempt++
 	if a.interruptRequests == nil {
-		a.interruptRequests = make(map[uint64]struct{})
+		a.interruptRequests = make(map[uint64]bool)
 	}
-	a.interruptRequests[a.interruptAttempt] = struct{}{}
+	a.interruptRequests[a.interruptAttempt] = false
 	return a.interruptAttempt
+}
+
+// confirmInterruptLocked confirms only an attempt that still belongs to this turn.
+// The caller holds a.Mu. An ended turn removes its attempts before a replacement starts.
+func (a *Agent) confirmInterruptLocked(attempt uint64) {
+	if _, current := a.interruptRequests[attempt]; current {
+		a.interruptRequests[attempt] = true
+	}
+}
+
+// noteNativeAbortLocked records independent evidence that the native turn stopped.
+// The caller holds a.Mu. A transport failure cannot remove this native evidence.
+func (a *Agent) noteNativeAbortLocked() {
+	a.confirmInterruptLocked(a.noteInterruptLocked())
+}
+
+// hasConfirmedInterruptLocked derives the outcome from confirmed attempts alone.
+// The caller holds a.Mu. A pending request states no completed outcome.
+func (a *Agent) hasConfirmedInterruptLocked() bool {
+	for _, confirmed := range a.interruptRequests {
+		if confirmed {
+			return true
+		}
+	}
+	return false
 }
 
 // Stop ends the server and every process below it, and then finishes what the
 // turn left unfinished, as interrupted.
 //
-// `mimo` is a Node script that runs the real binary as a child and forwards no
-// signal to it, so a signal to the script alone leaves the server running as
-// an orphan. The process group holds both, and SIGTERM to the group ends the
-// server at once: it closes on SIGTERM, and it does not end when its stdin
-// closes. Process.Stop sends that signal (mimoStopSignal), then closes stdin
-// and waits for the exit, and its fallback kills whatever the group still
-// holds.
+// mimo is a Node script that starts the native binary as a child.
+// It forwards no signal. A signal to that script alone leaves the server as an orphan.
+// On Unix, the process group holds both processes. SIGTERM to that group ends the server.
+// The native server does not exit when stdin closes.
+// Process.Stop sends mimoStopSignal, closes stdin, then waits for exit.
+// Its fallback kills every process that the owner still holds.
 //
-// Process.Stop records the process tree BEFORE the signal. MiMo runs each bash
-// command in a session of its own and leaves it running when the server ends,
-// so the group signal never reaches the command, and after the server exits
-// only that record ties the command to this agent. A signal sent ahead of
-// Process.Stop would end the server before the record, and the command would
-// outlive the agent.
+// Process.Stop records the process tree before the signal.
+// MiMo runs each bash command in a separate session and leaves it live after server exit.
+// The group signal cannot reach that command. The captured process identity permits cleanup after server exit.
+// A signal before Process.Stop would end the server before its children enter that record.
+// The command would then outlive this agent.
 //
-// The stream is cancelled BEFORE the signal, so it does not connect again to a
-// server that is going away. Thus no idle event can end the turn, and
-// finishOutput ends it instead.
+// Stop cancels the stream before the signal. The stream cannot reconnect to the stopped server.
+// No later idle event can end the turn. finishOutput ends it instead.
 func (a *Agent) Stop() {
 	a.NoteIntentionalStop()
 	if a.streamCancel != nil {
@@ -123,11 +149,13 @@ func (a *Agent) awaitEventStream() {
 	}
 }
 
-// finishOutput persists what the process left unfinished when it ended, with
-// completion: the text that each actor streamed, the tool calls that each actor
-// never finished, and a failure that no turn end reported. It closes the rows
-// of the subagents and the workflow runs, and then clears the turn and the live
-// progress.
+// finishOutput persists unfinished native output with completion:
+//
+//   - Retained text from each actor.
+//   - Unfinished tool calls from each actor.
+//   - A failure that no turn end reported.
+//
+// It closes subagent and workflow rows, then clears the turn and live progress.
 //
 // It holds dispatchMu, so an event that the stream goroutine still dispatches
 // cannot come between two of its steps. Stop and Wait both call it, and the
@@ -141,9 +169,10 @@ func (a *Agent) finishOutput(completion agent.MessageCompletion) {
 	a.closeSessionWorkflows(status)
 
 	a.Mu.Lock()
-	held := a.takeUnreportedFailureLocked()
+	a.readyUnreportedFailuresLocked()
 	a.turnActive = false
 	a.interruptRequests = nil
+	a.awaitingAbortOutcome = false
 	a.sessionSwitching = false
 	a.compactionAck = nil
 	a.manualCompactionID = ""
@@ -151,11 +180,10 @@ func (a *Agent) finishOutput(completion agent.MessageCompletion) {
 	a.manualFollowupSending = false
 	a.manualFollowupBusy = false
 	a.Mu.Unlock()
-	if held != nil {
-		// No turn end persists this failure now, and it can be the reason why the
-		// process ended.
-		a.persistFailureRow(held)
-	}
+	// A rejected notification remains available to the next Stop or Wait call.
+	a.flushFailureNotifications()
 	a.sink.ReportProgress(agent.ResetProgress())
+	// Process completion ends live spans even when a native closing row waits for persistence.
+	a.sink.ResetSpans()
 	a.PublishTurnActive()
 }

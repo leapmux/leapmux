@@ -109,7 +109,7 @@ func TestFailedChildNativeResultWriteAcceptsTheNextValidAttempt(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, child.PersistTurnEnd(content, agent.SpanInfo{}))
 	assert.Len(t, transcriptMessages(t, svc, childID), 1, "the next valid write must store its native result")
-	require.NoError(t, root.CloseBackgroundTask("native-child", bgtask.StatusCompleted))
+	require.NoError(t, root.CloseBackgroundTask("native-child", bgtask.StatusSucceeded))
 	assert.Len(t, transcriptMessages(t, svc, childID), 1)
 }
 

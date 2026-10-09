@@ -79,6 +79,7 @@ describe('providerRow', () => {
     MessageCompletion.COMPLETE,
     MessageCompletion.INTERRUPTED,
     MessageCompletion.ERROR,
+    MessageCompletion.FINISHED,
   ])('supplies completion metadata to classification and extraction: %s', (completion) => {
     const plugin = providerFor(AgentProvider.CLAUDE_CODE)
     if (!plugin)

@@ -23,43 +23,34 @@ import (
 
 // Codewhale's subagents and workflows.
 //
-// The model starts a subagent with the `agent` tool (`action: start`), and the
-// call returns at once with the child's `agent_id` while the child runs in the
-// background. The runtime HAS `agent.spawned`, `agent.progress` and
-// `agent.completed` events, and it drops every one of them before it reaches a
-// runtime thread: the monitor keeps an `agent.*` event only when the child's
-// owner session equals the thread id, and a runtime engine runs under a random
-// session id. So the thread's own stream says nothing about a child after its
-// start call.
+// The model starts a background child through the agent tool with action: start.
+// The result immediately supplies agent_id while the child continues.
+// The runtime defines these child events:
+//   - agent.spawned.
+//   - agent.progress.
+//   - agent.completed.
+// Its monitor retains them only when the child's owner session equals the runtime thread ID.
+// The runtime engine uses a random session ID, so the thread stream drops those events and supplies no later child lifecycle.
 //
-// Two other sources say everything:
+// The worker therefore reads two sources:
+//   - <workspace>/.codewhale/state/subagent-transcripts/<sha256(agent_id)>.jsonl supplies each content block as the runtime writes it.
+//     The worker reads this file without modifying it and persists the blocks in the child transcript.
+//   - GET /v1/agent-runs/{agent_id} supplies run status and final summary.
+//     agentRunRecord.liveStatus removes the route's artificial restart verdict for a child that remains live.
 //
-//   - The runtime writes each child's transcript, message by message, to
-//     `<workspace>/.codewhale/state/subagent-transcripts/<sha256(agent_id)>.jsonl`.
-//     The worker reads it READ-ONLY and persists each content block of it as a
-//     row of the child transcript.
-//   - GET /v1/agent-runs/{agent_id} states the child's status and its final
-//     summary. For a live child, it states a restart interruption that did not
-//     occur, and agentRunRecord.liveStatus removes it.
+// One watcher per child reads both sources until the child ends.
+// The parent's agent wait result identifies settled children and wakes their watchers immediately.
 //
-// One watcher goroutine for each child reads both until the child ends. The
-// parent's `agent` wait call also states which children settled, and that
-// wakes the watcher at once.
-//
-// A `workflow` call starts children of its own. The runtime states its run id
-// and status on each workflow call's result, and those become one workflow row
-// in the registry. Its children get no transcript tab, for the reason the
-// Claude provider gives its workflow runs none: nothing ties a workflow child
-// to a spawn row of its own in this transcript.
+// A workflow starts its own children and reports its run ID and status in each result.
+// Those values identify one workflow registry row.
+// Its children get no transcript tab because no native linkage associates each workflow child with an individual spawn row here.
 
-// Watcher timing. The transcript is a local file, so reading it often is cheap;
-// the run status is a request, so it is read less often.
+// The watcher reads the inexpensive local transcript more often than the status API.
 const (
 	childTailInterval = 500 * time.Millisecond
 	childPollEvery    = 4
-	// childMissingLimit is how many consecutive status reads may miss the run
-	// before the watcher gives up on it. A just-started child can miss once;
-	// a run the ledger never had misses for good.
+	// childMissingLimit caps consecutive status reads that find no run before the watcher closes it.
+	// A just-started child can be temporarily absent, while an unrecorded run remains absent.
 	childMissingLimit = 30
 	// childReadChunk limits one read of a transcript file.
 	childReadChunk = 4 << 20
@@ -86,8 +77,9 @@ func newCodewhaleChildren(ctx context.Context) *codewhaleChildren {
 	return &codewhaleChildren{ctx: ctx, cancel: cancel, byID: make(map[string]*codewhaleChild)}
 }
 
-// codewhaleChild is one subagent. The watcher goroutine owns every field below
-// `nudge`; the rest is set once, before the watcher starts.
+// codewhaleChild represents one subagent.
+// The watcher goroutine owns every field below nudge.
+// Startup sets the earlier fields once before starting the watcher.
 type codewhaleChild struct {
 	agentID   string
 	childID   string
@@ -215,10 +207,9 @@ func toolSpawnsSubagent(name string, input json.RawMessage) bool {
 	return json.Unmarshal(input, &parsed) == nil && parsed.Action == contracts.CodewhaleAgentActionStart
 }
 
-// agentToolResult is the part of an `agent` result that the provider reads:
-// the start receipt's id, and a wait's settled children. The metadata states
-// the id as well, and a result carries whichever the runtime put there.
-// contract_tags_test.go pins its tags, and those of settledRun, to the contract.
+// agentToolResult contains the native start receipt ID and the settled children from a wait result.
+// Metadata can also supply that ID, and the decoder accepts the native source that the runtime returns.
+// contract_tags_test.go verifies its tags and settledRun's tags against the contract.
 type agentToolResult struct {
 	AgentID string       `json:"agent_id"`
 	Settled []settledRun `json:"settled"`
@@ -262,8 +253,10 @@ func (a *Agent) observeAgentToolResult(env codewhaleEnvelope, payload itemEventP
 	}
 }
 
-// subagentTitle labels a child: its name, else its type, else its prompt's
-// first line.
+// subagentTitle selects the first available child label in this order:
+//   - Name.
+//   - Type.
+//   - The prompt's first line.
 func subagentTitle(input agentToolInput) string {
 	for _, candidate := range []string{input.Name, input.Type, bgtask.FirstLine(input.Prompt)} {
 		if strings.TrimSpace(candidate) != "" {
@@ -273,8 +266,7 @@ func subagentTitle(input agentToolInput) string {
 	return ""
 }
 
-// startChild opens a child transcript and a registry row for one subagent, and
-// starts its watcher.
+// startChild creates the child transcript and registry row, then starts its watcher.
 func (a *Agent) startChild(agentID, spawnSpan, title, prompt string) {
 	childID, err := a.sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: spawnSpan, ProviderChildKey: agentID, Title: title})
 	if err != nil {
@@ -320,21 +312,17 @@ type agentRunEvent struct {
 	Message string `json:"message"`
 }
 
-// liveStatus returns the status word of the run, without the restart verdict
-// that the route adds to a live run.
+// liveStatus returns the run's actual status without the route's artificial restart verdict for a live run.
 //
-// Codewhale 0.10.0 answers the route from a fresh load of its run ledger. That
-// load marks every live run as interrupted by a process restart
-// (SubAgentManager::load_state calls reconcile_orphaned_workers_after_restart).
-// It also appends one event that states the interruption. The ledger on disk
-// keeps the live status.
+// Codewhale 0.10.0 loads its ledger again for each route read.
+// SubAgentManager::load_state calls reconcile_orphaned_workers_after_restart, marks live runs interrupted, and appends that verdict to their event history.
+// The stored ledger still retains their live status.
 //
-// The verdict never describes a child that a watcher follows. The agent starts a
-// watcher only for a start that its own runtime reports live. The event stream
-// begins after the latest event of the thread. The stop of the agent ends every
-// watcher. So the event before the verdict states the status of the run. A
-// record with no such event states a run that has no later status than its
-// start, which is running.
+// A watcher follows only a child that this runtime starts as live.
+// The thread event stream begins after its latest existing event, and agent stop ends every watcher.
+// The route's load-time verdict therefore describes no restart of that watched child.
+// Use the event before that verdict as its actual run status.
+// If no earlier event exists, the run retains its initial Running state.
 func (r agentRunRecord) liveStatus() string {
 	if r.Status != agentRunStatusInterrupted || r.LatestMessage != agentRunRestartReason {
 		return r.Status
@@ -349,9 +337,9 @@ func (r agentRunRecord) liveStatus() string {
 	return agentRunStatusRunning
 }
 
-// agentRunStatus maps a ledger status onto the registry. An interrupted child
-// can resume from its checkpoint, so its row stays open. Unknown words stay
-// open too: a final registry status cannot return to Running.
+// agentRunStatus maps ledger state to registry state.
+// An interrupted child can resume from its checkpoint, so preserve its open row.
+// An unknown native word also leaves the row open because a chosen final state cannot return to Running.
 func agentRunStatus(word string) (status bgtask.Status, final bool) {
 	switch word {
 	case "queued", "starting":
@@ -359,7 +347,7 @@ func agentRunStatus(word string) (status bgtask.Status, final bool) {
 	case "waiting_for_user", agentRunStatusInterrupted:
 		return bgtask.StatusPaused, false
 	case agentRunStatusCompleted:
-		return bgtask.StatusCompleted, true
+		return bgtask.StatusSucceeded, true
 	case agentRunStatusFailed:
 		return bgtask.StatusFailed, true
 	case agentRunStatusCancelled:
@@ -396,8 +384,9 @@ func (a *Agent) watchChild(ctx context.Context, child *codewhaleChild) {
 	}
 }
 
-// pollChild reads the child's run status, and finishes the child when the run
-// ended. It reports whether the child is finished. ctx is the watcher's.
+// pollChild reads native run status and closes a child whose run ends.
+// It returns whether the child finishes.
+// ctx belongs to the watcher.
 func (a *Agent) pollChild(ctx context.Context, sink agent.ProviderServices, child *codewhaleChild) bool {
 	var record agentRunRecord
 	if err := a.readAgentRun(ctx, child.agentID, &record); err != nil {
@@ -413,8 +402,8 @@ func (a *Agent) pollChild(ctx context.Context, sink agent.ProviderServices, chil
 		if child.missing < childMissingLimit {
 			return false
 		}
-		// The run ledger does not know the child, and it never learned of it. The
-		// transcript is all there is, and the child is not coming back.
+		// The ledger remains unavailable after childMissingLimit consecutive not-found responses.
+		// Close the monitoring attempt as failed, preserving any child transcript already received.
 		a.finishChild(sink, child, bgtask.StatusFailed, "")
 		return true
 	}
@@ -434,15 +423,15 @@ func (a *Agent) pollChild(ctx context.Context, sink agent.ProviderServices, chil
 		}
 		return false
 	}
-	// The last messages land before the status turns final, so one more read
-	// takes whatever arrived since the last tick.
+	// Native finality follows the last message write.
+	// Read the transcript once more to include every message after the preceding watcher tick.
 	a.tailChildTranscript(sink, child)
 	a.finishChild(sink, child, status, record.ResultSummary)
 	return true
 }
 
-// finishChild closes one child's registry row, reports its summary into the
-// PARENT transcript, and releases its transcript state.
+// finishChild closes the child's registry row and writes its summary in the parent transcript.
+// It then releases the child's transcript state.
 func (a *Agent) finishChild(sink agent.ProviderServices, child *codewhaleChild, status bgtask.Status, summary string) {
 	closeChildTools(sink, child)
 	providerkit.LogRegistryRefusal(codewhaleProviderName, "close", a.sink.CloseBackgroundTask(child.agentID, status))
@@ -478,12 +467,10 @@ func closeChildTools(sink agent.ProviderServices, child *codewhaleChild) {
 
 // --- the transcript file ---
 
-// tailChildTranscript reads what the runtime appended to the child's
-// transcript since the last read, and persists each complete record.
+// tailChildTranscript reads data appended after its preceding read and persists each complete record.
 //
-// The file is in the user's workspace, which the worker does not own, so the
-// read refuses anything but a regular file: the path is statted without
-// following a link, and the file that opens must be that same file.
+// The user owns the workspace file, so accept only a regular file.
+// Inspect the path without following a symbolic link, and require the opened file to match that inspected file.
 func (a *Agent) tailChildTranscript(sink agent.ProviderServices, child *codewhaleChild) {
 	info, err := os.Lstat(child.path)
 	if err != nil || !info.Mode().IsRegular() {
@@ -557,10 +544,9 @@ type transcriptBlock struct {
 	Text      string `json:"text"`
 }
 
-// childBlockRow is the row the worker persists for ONE content block. It keeps
-// the record's own shape -- `kind`, `index` and a `message` whose content holds
-// the one block -- and adds the block's position, so a row never states an
-// event the runtime did not write.
+// childBlockRow preserves one native content block in a worker row.
+// Keep the original kind and index, plus a message containing only that block.
+// Add the block position so the row still represents an event that the runtime actually writes.
 type childBlockRow struct {
 	Kind    string          `json:"kind"`
 	Index   int             `json:"index"`
@@ -573,11 +559,10 @@ type childRowMessage struct {
 	Content []json.RawMessage `json:"content"`
 }
 
-// persistChildRecord persists one transcript record.
+// persistChildRecord persists one native transcript record.
 //
-// The first message is the child's assignment, which PersistChildPrompt already
-// wrote as the transcript's first row. A later user text is a message the
-// parent sent the child, and it lands as a user message.
+// PersistChildPrompt already records the child's first assignment as its opening row.
+// Later user text represents a message from the parent and enters the transcript as an ordinary user message.
 func (a *Agent) persistChildRecord(sink agent.ProviderServices, child *codewhaleChild, line []byte) {
 	var record transcriptRecord
 	if err := json.Unmarshal(line, &record); err != nil {
@@ -672,18 +657,18 @@ type workflowToolInput struct {
 type workflowResultMetadata struct {
 	RunID  string `json:"run_id"`
 	Status string `json:"status"`
-	// Ended is the runtime's `terminal` flag: the run ended, whatever its
-	// status word states.
+	// Ended reads the native terminal flag, which states finality independently of the status word.
 	Ended bool `json:"terminal"`
 }
 
-// workflowRunStatus maps a run status onto the registry. A degraded run
-// returned a value, but one of its stages failed. A word this build does not
-// know reads as running, which a later summary of the ended run corrects.
+// workflowRunStatus maps native workflow state to registry state.
+// A degraded run returns a value but includes at least one failed stage.
+// Return Running for an unknown word.
+// The result observer separately applies the native Ended flag, including an end without a known outcome.
 func workflowRunStatus(word string) bgtask.Status {
 	switch word {
 	case contracts.CodewhaleWorkflowStatusCompleted:
-		return bgtask.StatusCompleted
+		return bgtask.StatusSucceeded
 	case contracts.CodewhaleWorkflowStatusDegraded, contracts.CodewhaleWorkflowStatusFailed:
 		return bgtask.StatusFailed
 	case contracts.CodewhaleWorkflowStatusCancelled:
@@ -693,8 +678,8 @@ func workflowRunStatus(word string) bgtask.Status {
 	}
 }
 
-// observeWorkflowToolResult keeps one registry row for each workflow run. Every
-// workflow call that states a run -- start, run and status -- updates it.
+// observeWorkflowToolResult maintains one registry row per workflow run.
+// A start, run, or status result updates that row whenever it identifies the run.
 func (a *Agent) observeWorkflowToolResult(env codewhaleEnvelope, payload itemEventPayload, _ string, input json.RawMessage) {
 	if env.Event != contracts.CodewhaleEventItemCompleted {
 		return
@@ -711,7 +696,9 @@ func (a *Agent) observeWorkflowToolResult(env codewhaleEnvelope, payload itemEve
 	}
 	status := workflowRunStatus(metadata.Status)
 	if metadata.Ended && !status.IsFinished() {
-		status = bgtask.StatusCompleted
+		// The native end flag includes failed and cancelled runs.
+		// An unknown status supplies no successful outcome.
+		status = bgtask.StatusEndedWithUnknownOutcome
 	}
 	providerkit.LogRegistryRefusal(codewhaleProviderName, "upsert", a.sink.UpsertBackgroundTask(bgtask.Upsert{
 		RowKey:     metadata.RunID,
@@ -723,29 +710,22 @@ func (a *Agent) observeWorkflowToolResult(env codewhaleEnvelope, payload itemEve
 	}))
 }
 
-// --- background shells ---
+// --- Background shells ---
 //
-// A shell job that runs in the background: a `task_shell_start` call, or a
-// `bash` call that ran past its foreground wait and moved to the background.
-// The call's result states the job in its metadata -- `task_id`, `backgrounded`
-// and the status `Running` -- and the job becomes a shell row in the registry.
-// The row key is the launching call's span, so the row leads to the call that
-// started the job.
+// A background shell starts through task_shell_start or a bash call that exceeds its foreground wait.
+// Its result metadata supplies task_id and backgrounded with status Running.
+// Create a shell registry row under the launching call's span, so the row identifies its originating call.
 //
-// The runtime reports the job's end to the MODEL, as a runtime event at the
-// start of the next turn, and never on the thread's event stream. Three sources
-// end the row instead:
-//
-//   - A later tool result that states the job's `task_id` and a final status:
-//     `task_shell_wait`, or a `bash` wait.
-//   - From 0.10.0, GET /v1/threads/{id}/jobs/{job_id}, which a poller reads
-//     for each job while it runs. 0.9.13 has no jobs routes, and the poller
-//     stops for the life of the agent, so there a job that the model never
-//     waits for keeps a running row until the process exits.
-//   - The process exit, which ends every job the runtime started.
+// The runtime reports completion to the model at the next turn's start, without a thread-stream event.
+// The worker closes the row through one of these sources:
+//   - A later task_shell_wait or bash wait result with task_id and a final status.
+//   - GET /v1/threads/{id}/jobs/{job_id}, available from Codewhale 0.10.0 and polled for each active job.
+//   - Process exit, which ends every job that the runtime starts.
+// Codewhale 0.9.13 has no jobs routes, so its poller stops for the process lifetime.
+// Without a later model wait, that version retains the Running row until process exit.
 
-// Shell job status words, the runtime's ShellStatus. The browser reads none of
-// them, so they are not in the contract.
+// These ShellStatus words belong to Codewhale's native shell protocol.
+// The browser does not interpret them, so they need no shared contract table.
 const (
 	shellStatusRunning   = "Running"
 	shellStatusCompleted = "Completed"
@@ -754,15 +734,15 @@ const (
 	shellStatusTimedOut  = "TimedOut"
 )
 
-// Shell job poll timing. The jobs route is a local request, and a job that ended
-// shows as running for at most one interval.
+// shellPollInterval controls checks of the local jobs API.
+// The next successful read observes an ended job; failed reads can delay that observation.
 const shellPollInterval = 2 * time.Second
 
 // shellPollTimerTag labels the poller's timer for a test's clock trap.
 const shellPollTimerTag = "codewhale-shell-poll"
 
-// codewhaleShells indexes the background shell jobs that run, by task id. The
-// caller holds Mu.
+// codewhaleShells indexes active shell jobs by task ID.
+// The caller holds Mu.
 type codewhaleShells struct {
 	// rowKeys maps a job's task id to its registry row key.
 	rowKeys map[string]string
@@ -820,13 +800,12 @@ type shellJob struct {
 	Status string `json:"status"`
 }
 
-// shellJobStatus maps a job status onto the registry. final is false for a job
-// that runs, and for a word this build does not know, because a final status
-// is absorbing.
+// shellJobStatus maps a native job status to registry state.
+// Return final=false for Running or an unknown word because a chosen final registry state cannot return to Running.
 func shellJobStatus(word string) (status bgtask.Status, final bool) {
 	switch word {
 	case shellStatusCompleted:
-		return bgtask.StatusCompleted, true
+		return bgtask.StatusSucceeded, true
 	case shellStatusFailed, shellStatusTimedOut:
 		return bgtask.StatusFailed, true
 	case shellStatusKilled:
@@ -836,11 +815,10 @@ func shellJobStatus(word string) (status bgtask.Status, final bool) {
 	}
 }
 
-// observeShellResult opens a shell row for a job that a call started, and closes
-// the row of a job whose end a call reports.
+// observeShellResult opens a shell row for a launched job and closes it when a later result confirms its end.
 //
-// Only a call whose input states a command opens a row. A wait on a job that
-// still runs also reports it as backgrounded and running, and it starts nothing.
+// Open a row only when the call input supplies a command.
+// A wait on an existing running job can repeat backgrounded and Running without starting another job.
 func (a *Agent) observeShellResult(payload itemEventPayload, spanID string, input json.RawMessage) {
 	var metadata shellResultMetadata
 	if json.Unmarshal(payload.Item.Metadata, &metadata) != nil || metadata.TaskID == "" {
@@ -895,14 +873,14 @@ func (a *Agent) finishShell(taskID string, status bgtask.Status) {
 	providerkit.LogRegistryRefusal(codewhaleProviderName, "close", a.sink.CloseBackgroundTask(rowKey, status))
 }
 
-// pollShellJobs reads each job that runs, until no job runs, the jobs routes
-// turn out to be missing, or ctx ends.
+// pollShellJobs reads active jobs until none remain, the jobs routes are unavailable, or ctx ends.
 //
-// It reads each job by its own route and never by the list. The runtime's list
-// first drops every finished job that started more than an hour ago, and only
-// then states the rest (`list_jobs`), so a list never states the end of a job
-// that ran that long. A read of one job drops nothing. The list serves once, to
-// learn whether the runtime has the jobs routes at all.
+// Use each individual job route instead of repeatedly listing jobs.
+// In Codewhale 0.10.1, list_jobs runs cleanup before constructing its result.
+// That cleanup expires final records by finished_at and enforces record and retained-byte limits.
+// inspect_job performs no cleanup, so an individual read does not itself discard the final record before inspection.
+// Other runtime operations can already remove a record; the per-job not-found path handles that missing outcome.
+// Use the list once to determine whether jobs routes exist.
 func (a *Agent) pollShellJobs(ctx context.Context) {
 	for {
 		a.Mu.Lock()
@@ -936,10 +914,9 @@ func (a *Agent) pollShellJobs(ctx context.Context) {
 	}
 }
 
-// probeJobsRoutes asks the list route whether the runtime serves the jobs
-// routes, and records the answer. It reports whether the poller goes on: false
-// for a missing route, and for a stop. An answer that establishes nothing is
-// asked again at the next tick.
+// probeJobsRoutes reads the list endpoint and records whether the runtime supports jobs routes.
+// Return false for a missing route or a stopped context.
+// Retry an inconclusive response on the next tick.
 func (a *Agent) probeJobsRoutes(ctx context.Context, threadID string) bool {
 	err := a.listThreadJobs(ctx, threadID)
 	if ctx.Err() != nil {
@@ -962,8 +939,8 @@ func (a *Agent) probeJobsRoutes(ctx context.Context, threadID string) bool {
 	}
 }
 
-// pollShellJob reads one job, and closes its row when the job ended. It reports
-// whether the poller goes on, which is false only for a stop.
+// pollShellJob reads one job and closes its row when the job ends.
+// Return whether the poller continues, which is false only after a stop.
 func (a *Agent) pollShellJob(ctx context.Context, threadID, taskID string) bool {
 	job, err := a.readThreadJob(ctx, threadID, taskID)
 	if ctx.Err() != nil {
@@ -971,11 +948,9 @@ func (a *Agent) pollShellJob(ctx context.Context, threadID, taskID string) bool 
 	}
 	switch {
 	case providerkit.IsHTTPStatus(err, httpStatusNotFound):
-		// The runtime drops a job only after it ended, so a job that it no longer
-		// knows ended between two reads. Its outcome went with it, and the row
-		// closes as completed: a row that stays running would state a job that
-		// no longer exists.
-		a.finishShell(taskID, bgtask.StatusCompleted)
+		// The runtime can remove a job after any final outcome.
+		// A missing known job ended, but the missing result supplies no successful outcome.
+		a.finishShell(taskID, bgtask.StatusEndedWithUnknownOutcome)
 	case err != nil:
 		slog.Debug("codewhale read a shell job", "agent_id", a.AgentID(), "task_id", taskID, "error", err)
 	default:
@@ -986,9 +961,8 @@ func (a *Agent) pollShellJob(ctx context.Context, threadID, taskID string) bool 
 	return true
 }
 
-// closeOpenShells closes the row of every job that still runs, when the process
-// exits: the runtime ends every job with the session that started it. Call it
-// after children.stopAll, which stops the poller.
+// closeOpenShells closes every active job row at process exit because the runtime ends jobs with their owning session.
+// Call it after children.stopAll stops the poller.
 func (a *Agent) closeOpenShells() {
 	a.Mu.Lock()
 	rowKeys := a.shells.rowKeys

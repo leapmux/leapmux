@@ -22,15 +22,16 @@ import (
 	"github.com/leapmux/leapmux/util/procutil"
 )
 
-// maxStderrSize is the maximum amount of stderr to buffer.
-const maxStderrSize = 1 << 20 // 1MB
+// maxStderrSize caps the captured stderr at one mebibyte.
+const maxStderrSize = 1 << 20
 
-// Process contains the shared process lifecycle state and methods.
-// claude.Agent embeds it directly; ACP agents (opencode.Agent, cursor.Agent)
-// and codex.Agent embed it via JSONRPCProcess which adds JSON-RPC request plumbing.
+// Process contains the shared lifecycle state and methods.
+// claude.Agent embeds it directly.
+// opencode.Agent and cursor.Agent use the Agent Client Protocol (ACP).
+// Those agents and codex.Agent embed it through JSONRPCProcess, which adds JSON-RPC transport.
 type Process struct {
 	agentID      string
-	providerName string // e.g. "claude", "codex", "copilot" — used in log and error messages
+	providerName string // Log and error messages use the provider's process name.
 	stdin        io.WriteCloser
 
 	cmd           *exec.Cmd
@@ -48,7 +49,7 @@ type Process struct {
 	// One Process permits one start attempt. A repeated call must keep the original child intact.
 	startMu        sync.Mutex
 	startAttempted bool
-	// clock times the waits of the process (AwaitResponse). See Clock.
+	// clock supplies the timers for process waits, including AwaitResponse. See Clock.
 	clock quartz.Clock
 
 	stderrBuf  bytes.Buffer
@@ -65,44 +66,36 @@ type Process struct {
 	// Wait can then classify retained content while Stop still owns that request.
 	intentionalStop atomic.Bool
 
-	// TurnSeq issues the ordering token that rides every publish of this
-	// provider's turn flag. It lives here so every provider gets it from one
-	// embed and a new one cannot forget it, and because Mu -- the lock that makes
-	// the token atomic with the flag read -- lives here too.
+	// TurnSeq supplies the ordering token for each published turn flag.
+	// Each provider receives this token through its embedded Process.
+	// Mu protects both the token and the provider's turn flag.
 	TurnSeq
 
-	// stdinMu guards the write queue below. It is NOT held across a Write, so a
-	// slow stdin (a full kernel pipe buffer, for example while a large inline
-	// image attachment ships) cannot stall state operations or Stop. It is never
-	// held together with p.Mu, so callers must check `stopped` separately.
+	// stdinMu protects the write queue below.
+	// Queue callers release it before Write, so a full pipe cannot block state operations or Stop.
+	// A large inline image can fill that pipe.
+	// No caller holds stdinMu with p.Mu. Check stopped separately.
 	stdinMu sync.Mutex
-	// stdinQueue carries every outbound frame to ONE writer goroutine, which is
-	// what serializes the writes.
+	// stdinQueue sends every outbound frame to one writer goroutine, which serializes writes.
+	// Base.Interrupt and codex.Agent.Interrupt send an answer before a cancel.
+	// A cancel that precedes its answer can leave the native request blocked.
+	// First-in, first-out (FIFO) order preserves this requirement for both synchronous and detached writes.
 	//
-	// Order is the reason it is one goroutine and not a pool. A cancel that
-	// overtook the answer it follows would re-open the hang the answer exists to
-	// end: Base.Interrupt and codex.Agent.Interrupt both send their answers
-	// FIRST and then cancel, and each says so at its own site. FIFO keeps that
-	// true whether the caller waits for its write or not.
-	//
-	// It also caps what an unresponsive child costs. A reply written from the read
-	// loop had to be moved off it -- the loop must keep draining the child's
-	// stdout, and the reply is a write to a stdin the child may not be reading --
-	// and a goroutine for each one made that cost unlimited. A frame holds its
-	// bytes; a goroutine held an 8 KiB stack as well.
+	// The queue also caps the cost of an unresponsive child.
+	// A reply cannot block the stdout reader on a child that does not read stdin.
+	// A separate goroutine for each reply would permit unlimited stacks.
+	// Each queued frame holds its bytes. Each former goroutine also held an 8 KiB stack.
 	stdinQueue chan stdinFrame
-	// stdinClosed ends the writer. Stop closes it, after it closes stdin.
-	//
-	// It is never set back to nil, and stdinClosedOnce is what makes the close
-	// idempotent instead. A nil channel blocks a select arm FOREVER, so clearing it
-	// left the next WriteStdin waiting on a queue whose writer had already exited
-	// and on a `closed` arm that could never fire -- a permanent hang, not an error.
+	// stdinClosed ends the writer. Stop closes it after it closes stdin.
+	// stdinClosedOnce prevents a repeated close. Keep the channel after closure.
+	// A nil channel never selects its case.
+	// Clearing this channel would leave WriteStdin blocked after the writer exits.
 	stdinClosed     chan struct{}
 	stdinClosedOnce bool
 
 	discardOutput atomic.Bool
 
-	// Preamble handling (from shell wrapper).
+	// The shell wrapper supplies the preamble.
 	preambleDelimiter  string            // if set, skipPreamble skips lines until this delimiter
 	preambleMetaPrefix string            // prefix for metadata lines (before delimiter)
 	preambleMeta       map[string]string // parsed key=value metadata from preamble
@@ -138,21 +131,18 @@ func (p *Process) ClearCumulativeOutput(scopeID string) {
 	p.Mu.Unlock()
 }
 
-// ResetCumulativeOutput drops all cumulative-broadcast bookkeeping, used at
-// turn boundaries to recover from aborted streams that never sent a
-// terminating event. Caller must NOT hold p.Mu.
+// ResetCumulativeOutput clears cumulative output state at a turn boundary.
+// This clears streams that end without a final event. The caller must not hold p.Mu.
 func (p *Process) ResetCumulativeOutput() {
 	p.Mu.Lock()
 	clear(p.cumulativeOutput)
 	p.Mu.Unlock()
 }
 
-// stdinQueueDepth caps the frames one unresponsive child can hold.
-//
-// A child that stops reading its stdin blocks the writer, and the queue then
-// fills. 256 frames is far above any real burst and far below a memory cost that
-// matters. The ASYNC path refuses beyond it, which loses a reply to a child that
-// is not reading its stdin -- a child that would not have read that reply either.
+// stdinQueueDepth caps the frames that an unresponsive child can retain.
+// A child that does not read stdin blocks the writer and fills this queue.
+// The detached path refuses a frame when all 256 positions are occupied.
+// Refusal keeps the stdout reader available when the queue cannot accept another frame.
 const stdinQueueDepth = 256
 
 // errStdinClosed refuses a frame for a process whose stdin is gone.
@@ -161,23 +151,22 @@ var errStdinClosed = errors.New("agent stdin is closed")
 // stdinFrame is one outbound write waiting for the process's stdin.
 type stdinFrame struct {
 	data []byte
-	// done carries the write's error back to a caller that waits for it. A nil
-	// done means the caller does not wait, and the writer logs a failure instead.
+	// done carries the write error to a caller that waits.
+	// With nil done, the writer logs a failure because the caller does not wait.
 	done chan error
-	// describe labels a frame with no waiter in that log line.
+	// describe identifies a detached frame in the failure log.
 	describe string
 }
 
-// stdinWriterLocked returns the queue, starting the writer on first use. The
-// caller holds stdinMu.
-//
-// Lazily, because a Process is built in several places and a test assigns
-// `stdin` after construction. A process that never writes costs no goroutine.
+// stdinWriterLocked returns the queue and starts the writer on first use.
+// The caller holds stdinMu.
+// Some tests assign stdin after construction, so construction cannot start the writer.
+// A process that never writes needs no writer goroutine.
 func (p *Process) stdinWriterLocked() (chan stdinFrame, chan struct{}) {
-	// The close signal FIRST, and reused rather than replaced. Stop may have created
-	// and closed it already, with no write ever asked for -- the writer then starts
-	// here, sees it closed at once, answers this frame and exits, instead of running
-	// for the life of the worker with nothing able to end it.
+	// Create the close signal first, and reuse an existing signal.
+	// Stop can close it before the first write.
+	// The new writer then answers the frame and exits through that closed signal.
+	// Replacing the signal would leave the writer without a shutdown signal.
 	if p.stdinClosed == nil {
 		p.stdinClosed = make(chan struct{})
 	}
@@ -204,8 +193,7 @@ func (p *Process) runStdinWriter(queue chan stdinFrame, closed chan struct{}) {
 		case frame := <-queue:
 			deliver(frame, p.writeStdinNow(frame.data))
 		case <-closed:
-			// Answer what is already queued rather than abandoning it, so no caller
-			// waits on a `done` that never arrives.
+			// Answer each queued frame so that no caller waits for an absent result.
 			for {
 				select {
 				case frame := <-queue:
@@ -219,18 +207,13 @@ func (p *Process) runStdinWriter(queue chan stdinFrame, closed chan struct{}) {
 }
 
 // writeStdinNow performs one Write.
-//
-// The writer goroutine is the caller while the writer runs, which is what serializes
-// the syscalls. The two paths that run once Stop ended the writer call it directly,
-// and by then stdin is closed, so those writes fail at once and cannot overlap
-// anything.
-//
-// A failed write that transferred bytes has an uncertain delivery outcome. The
-// returned error retains the writer's error for callers that inspect it.
+// The writer goroutine serializes these calls while it runs.
+// After Stop ends the writer, the two closed-channel paths call this function directly.
+// Their writes fail through the closed stdin.
+// A failed write that transfers bytes has an uncertain delivery outcome.
+// The returned error retains the original write error.
 func (p *Process) writeStdinNow(data []byte) error {
-	// The writer runs on its OWN goroutine, so a nil stdin has to be an error here.
-	// A panic on a bare goroutine takes down the whole worker process, where the
-	// same panic used to reach the caller that asked for the write.
+	// Return an error for nil stdin. A panic in the writer would stop the whole Worker.
 	if p.stdin == nil {
 		return errStdinClosed
 	}
@@ -245,20 +228,16 @@ func (p *Process) writeStdinNow(data []byte) error {
 }
 
 // WriteStdin queues one frame and waits for its write.
-//
-// It never acquires p.Mu, so state operations and Stop stay available during a
-// slow write. Callers must check stopped when they need a specific
-// stopped-process error.
+// It never acquires p.Mu, so a slow write does not block state operations or Stop.
+// Callers must check stopped when they need an error for a stopped process.
 func (p *Process) WriteStdin(data []byte) error {
 	p.stdinMu.Lock()
 	queue, closed := p.stdinWriterLocked()
 	p.stdinMu.Unlock()
 	select {
 	case <-closed:
-		// The writer is gone, so write INLINE rather than refuse. Stop closed stdin
-		// already, so this fails at once and cannot block -- and a caller that asks
-		// for a write after Stop still gets the real error rather than a
-		// substituted one.
+		// Write directly after the writer exits. Stop closes stdin before this signal.
+		// The caller then receives the original error from the closed stdin.
 		return p.writeStdinNow(data)
 	default:
 	}
@@ -276,26 +255,19 @@ func (p *Process) WriteStdin(data []byte) error {
 	}
 }
 
-// writeStdinDetached queues one frame and returns WITHOUT waiting for its write.
-//
-// For a caller on the goroutine that drains the child's stdout. A reply is a write
-// to a stdin the child may not be reading, and waiting for it there stops the loop
-// that has to keep draining the child's stdout -- which is the deadlock the reply
-// was meant to prevent. `describe` labels the frame in the failure log, because no
-// caller is left to report it.
-//
-// It refuses rather than blocks when the queue is full. A child that has not read
-// 256 frames is not going to read this one either, and blocking here would put the
-// read loop back where this exists to take it out of.
+// writeStdinDetached queues one frame and returns without waiting for its write.
+// The stdout reader uses this path because a child can stop reading stdin.
+// Waiting for that write would prevent the same reader from draining stdout.
+// describe identifies the frame in the failure log because its caller does not wait.
+// A full queue rejects the frame so that the stdout reader cannot block.
 func (p *Process) writeStdinDetached(data []byte, describe string) {
 	p.stdinMu.Lock()
 	queue, closed := p.stdinWriterLocked()
 	p.stdinMu.Unlock()
 	select {
 	case <-closed:
-		// The writer is gone, so write INLINE. Stop closed stdin already, so the
-		// write fails at once and cannot stall this goroutine -- and a request that
-		// arrives during tear-down still draws its refusal instead of vanishing.
+		// Write directly after the writer exits. Stop already closed stdin.
+		// Log the write refusal for a request that arrives during shutdown.
 		if err := p.writeStdinNow(data); err != nil {
 			slog.Debug("write to a closed agent stdin", "agent_id", p.agentID, "frame", describe, "error", err)
 		}
@@ -309,8 +281,7 @@ func (p *Process) writeStdinDetached(data []byte, describe string) {
 	}
 }
 
-// SendRawInput writes raw bytes directly to the process's stdin without
-// wrapping. Ensures a trailing newline.
+// SendRawInput writes raw bytes without an envelope and ensures a trailing newline.
 func (p *Process) SendRawInput(data []byte, stop agent.StopContext) error {
 	p.Mu.Lock()
 	stopped := p.stopped
@@ -328,12 +299,11 @@ func (p *Process) SendRawInput(data []byte, stop agent.StopContext) error {
 	return nil
 }
 
-// Stop terminates the process gracefully. It captures the process tree, sends
-// the stop signal of the provider when it has one, closes stdin, and gives the
-// process a short grace period to exit on its own. If the grace period
-// elapses, the process tree is torn down: on Windows via the job object
-// (kills orphaned grandchildren too), then via context cancellation as a
-// fallback (SIGTERM + WaitDelay).
+// Stop captures the owned process tree and sends the provider's configured stop signal.
+// It then closes stdin and gives the process a grace period to exit.
+// After that period, the process owner terminates the captured tree.
+// The Windows owner uses its job object, which includes orphaned grandchildren.
+// Context cancellation supplies the fallback through SIGTERM and WaitDelay.
 func (p *Process) Stop() {
 	p.NoteIntentionalStop()
 	p.Mu.Lock()
@@ -392,12 +362,11 @@ func (p *Process) Stop() {
 	<-p.processDone
 }
 
-// sendStopSignal sends the stop signal of the provider to the process group.
-//
-// It must run after the capture in Stop. A command that a provider starts in a
-// session of its own is outside the group, so the signal does not reach it, and
-// the process that the signal ends no longer holds it in the tree. Only a
-// capture that ran before the signal can then find it and end it.
+// sendStopSignal sends the provider's stop signal to the process group.
+// Run it after Stop captures the process tree.
+// A child in its own session sits outside the group and does not receive this signal.
+// Its parent can exit before a later tree read identifies that child.
+// The earlier ownership capture retains the child for cleanup.
 func (p *Process) sendStopSignal() {
 	if p.stopSignal == 0 {
 		return
@@ -455,10 +424,9 @@ func (p *Process) APITimeout() time.Duration {
 
 func (p *Process) ClearContext() (string, error) { return "", agent.ErrContextClearUnsupported }
 
-// DiscardOutput marks the process so that the ReadOutput loop silently
-// drops all remaining lines. Use this before stopping an agent that will
-// be restarted (e.g. plan execution) to avoid persisting spurious error
-// messages from closed streams.
+// DiscardOutput makes ReadOutput drop all remaining lines.
+// Call it before stopping an agent that will restart, including plan execution.
+// This prevents closed-stream errors from entering that agent's transcript.
 func (p *Process) DiscardOutput() {
 	p.discardOutput.Store(true)
 }
@@ -478,19 +446,17 @@ func (p *Process) AgentID() string {
 	return p.agentID
 }
 
-// ProviderName returns the provider's process name, e.g. "claude", which log
-// lines and error messages identify the provider by.
+// ProviderName returns the process name that log and error messages use, such as "claude".
 func (p *Process) ProviderName() string {
 	return p.providerName
 }
 
-// Context returns the context the process runs under. Stop cancels it.
+// Context returns the process context. Stop cancels it after its grace period expires.
 func (p *Process) Context() context.Context {
 	return p.ctx
 }
 
-// Cmd returns the command the process runs, for a caller that must read its
-// environment or its process id.
+// Cmd returns the command so that a caller can read its environment or process ID.
 func (p *Process) Cmd() *exec.Cmd {
 	return p.cmd
 }
@@ -508,7 +474,7 @@ func (p *Process) ProcessDone() <-chan struct{} {
 	return p.processDone
 }
 
-// HasStdin reports whether the process was given a stdin pipe.
+// HasStdin reports whether the process has a stdin writer.
 func (p *Process) HasStdin() bool {
 	return p.stdin != nil
 }
@@ -524,15 +490,14 @@ func (p *Process) ProcessExitedLocked() bool {
 	return p.processExited
 }
 
-// IntentionalStopRequested reports whether a graceful stop was requested, so a
-// provider can tell an exit it asked for from a crash.
+// IntentionalStopRequested distinguishes a requested graceful stop from a native crash.
 func (p *Process) IntentionalStopRequested() bool {
 	return p.intentionalStop.Load()
 }
 
-// SkipStderr records that the process has no stderr to drain, so Stderr does
-// not wait for a drain that will never run. A caller that wires a process
-// without DrainStderr calls it once, before the process starts.
+// SkipStderr records that this process has no stderr reader.
+// A caller that omits DrainStderr calls it once before the process starts.
+// Stderr then need not wait for an absent reader.
 func (p *Process) SkipStderr() {
 	close(p.stderrDone)
 }
@@ -560,46 +525,47 @@ func (p *Process) ProcessExitError() error {
 	return fmt.Errorf("agent process exited unexpectedly")
 }
 
-// FormatStartupError returns a descriptive error including stderr and
-// preamble output for frontend diagnostics.
+type startupDiagnosticError struct {
+	message string
+	cause   error
+}
+
+func (e *startupDiagnosticError) Error() string { return e.message }
+func (e *startupDiagnosticError) Unwrap() error { return e.cause }
+
+// FormatStartupError preserves the cause and adds stderr and shell diagnostics.
 func (p *Process) FormatStartupError(phase string, err error) error {
-	parts := []string{fmt.Sprintf("%s: %s", phase, err)}
+	details := "no error details"
+	if err != nil {
+		details = fmt.Sprintf("%s: %s", phase, err)
+	} else if phase != "" {
+		details = phase + ": " + details
+	}
+	parts := []string{details}
 	if stderr := strings.TrimSpace(p.Stderr()); stderr != "" {
 		parts = append(parts, "stderr: "+stderr)
 	}
 	if preamble := strings.TrimSpace(p.PreambleOutput()); preamble != "" {
 		parts = append(parts, "shell preamble: "+preamble)
 	}
-	return fmt.Errorf("%s", strings.Join(parts, "; "))
+	return &startupDiagnosticError{message: strings.Join(parts, "; "), cause: err}
 }
 
-// ResumeFailedError reports that the agent refused to reopen a stored session,
-// and states the one command that recovers the tab.
-//
-// A resume that fails is FATAL for every provider, and that uniformity is the
-// point. The alternative -- open a fresh session, write a warning to the log,
-// and report success -- discards the conversation that the user asked to
-// continue. The tab comes up with no history, the agent has no memory of the
-// work, and the only record is a log line on the worker that nobody reads. A
-// user who wants a fresh session asks for one with `/clear`, which restarts
-// with no resume handle and clears the stored one.
-//
-// A visible failure also keeps the stored handle, so a resume that fails for a
-// reason that passes -- an app-server that is not ready yet, a worktree that a
-// later step mounts -- succeeds on the next start.
+// ResumeFailedError reports a refused stored session and the command that recovers the tab.
+// Every provider must report a failed resume as a startup failure.
+// A fresh session would discard the conversation that the user asked to continue.
+// The visible failure preserves the stored resume handle for another start.
+// A later start can succeed after a transient host or worktree failure ends.
+// The user can send /clear to restart without that handle and clear its stored value.
 func ResumeFailedError(sessionID string, err error) error {
 	return fmt.Errorf("could not resume session %q: %w (send /clear to start a fresh session)", sessionID, err)
 }
 
-// skipPreamble reads lines from the scanner until the preamble delimiter is
-// found. Shell login preamble (motd, .zshrc output, etc.) appears before the
-// agent's JSONL stream. Metadata lines (key=value pairs prefixed with
-// preambleMetaPrefix) are parsed and stored; other preamble lines are captured
-// for diagnostics. This is a no-op if preambleDelimiter is empty.
-//
-// Writes to preambleMeta and preambleOutput are guarded by p.Mu so concurrent
-// readers (e.g. AvailableModels called from the hub goroutine) observe
-// consistent state.
+// skipPreamble reads the shell login output before the agent's JSON Lines (JSONL) stream.
+// It stops at preambleDelimiter and returns immediately when that delimiter is empty.
+// Lines with preambleMetaPrefix supply stored key=value metadata.
+// Other lines remain available for startup diagnostics, including motd and .zshrc output.
+// p.Mu protects metadata and captured output from concurrent readers, including AvailableModels.
 func (p *Process) skipPreamble(scanner *bufio.Scanner) {
 	if p.preambleDelimiter == "" {
 		return
@@ -667,15 +633,14 @@ func NewProcess(opts agent.Options, launch ProcessLaunch, pipes *ProcessPipes, c
 	return NewProcessFrom(ProcessConfig{AgentID: opts.AgentID, ProviderName: launch.ProviderName, Ctx: ctx, Cancel: cancel, APITimeout: opts.EffectiveAPITimeout(), PreambleDelimiter: launch.PreambleDelimiter, PreambleMetaPrefix: launch.PreambleMetaPrefix, pipes: pipes, shutdownGrace: launch.ShutdownGrace, stopSignal: launch.StopSignal})
 }
 
-// ProcessConfig states everything a Process starts with. Every field is
-// optional: a zero field leaves that part of the process unset, which a test
-// that stands a fake process in relies on.
+// ProcessConfig supplies the initial Process state.
+// Each field is optional. A zero value leaves that part unset for a controlled test process.
 type ProcessConfig struct {
 	pipes         *ProcessPipes
 	shutdownGrace time.Duration
 	stopSignal    syscall.Signal
 	AgentID       string
-	ProviderName  string // e.g. "claude"; used in log and error messages
+	ProviderName  string // Log and error messages use this name, such as "claude".
 	Cmd           *exec.Cmd
 	Stdin         io.WriteCloser
 	Ctx           context.Context
@@ -683,9 +648,8 @@ type ProcessConfig struct {
 	// APITimeout is the timeout for JSON-RPC requests. Zero leaves the process
 	// on DefaultAPITimeout.
 	APITimeout time.Duration
-	// ProcessDone and StderrDone close when the process exits and when its
-	// stderr is drained. nil makes a fresh channel; a caller that must close one
-	// itself -- a test that stands a fake process in -- passes its own.
+	// ProcessDone closes after process exit. StderrDone closes after the stderr reader ends.
+	// A nil value creates a fresh channel. A controlled test can supply its own channel.
 	ProcessDone        chan struct{}
 	StderrDone         chan struct{}
 	PreambleDelimiter  string
@@ -698,8 +662,8 @@ type ProcessConfig struct {
 	Clock quartz.Clock
 }
 
-// NewProcessFrom builds a Process from c. It returns a fresh value,
-// so assigning the result to an embedded Process copies no held lock.
+// NewProcessFrom builds a fresh Process from c.
+// Assigning it to an embedded Process copies no held mutex.
 func NewProcessFrom(c ProcessConfig) Process {
 	processDone := c.ProcessDone
 	if processDone == nil {
@@ -742,9 +706,8 @@ func NewProcessFrom(c ProcessConfig) Process {
 // realClock is the clock of a process that states none.
 var realClock = quartz.NewReal()
 
-// Clock returns the clock of the process: the one that its config stated, or
-// the real clock. A provider takes its own timers from it, so one clock drives
-// every wait of the agent, and a test that states a mock controls all of them.
+// Clock returns the configured clock or the real clock.
+// Provider timers use this same clock, so a mock clock controls all agent waits.
 func (p *Process) Clock() quartz.Clock {
 	if p.clock == nil {
 		return realClock
@@ -782,17 +745,12 @@ func (p *Process) StartCmd() error {
 	return startErr
 }
 
-// ParsedLine holds the JSON-parsed superset of all agent output envelope
-// fields. Raw is the original bytes; the typed fields are populated by a
-// single json.Unmarshal in ReadOutput so downstream consumers never need to
-// re-parse the envelope.
-//
-// ID is a json.RawMessage rather than a typed integer/string because
-// providers disagree on the wire format: JSON-RPC 2.0 (Codex, ACP) uses
-// integer ids, while Pi uses opaque string ids. Capturing the raw bytes
-// avoids unmarshal errors that would otherwise wipe out the rest of the
-// envelope when the form does not match a typed field. Use IDInt64 /
-// IDString to interpret the value at the point of use.
+// ParsedLine holds the shared fields of an agent output envelope.
+// Raw retains the original bytes. ReadOutput decodes the envelope once with json.Unmarshal.
+// Consumers then read those fields without another envelope decode.
+// ID retains json.RawMessage because providers can use integers or opaque strings.
+// A fixed ID type would reject a different native ID and discard the envelope fields.
+// Use IDInt64 or IDString to read the native ID at its consumption site.
 type ParsedLine struct {
 	Raw    []byte
 	ID     json.RawMessage `json:"id"`
@@ -808,8 +766,8 @@ func (p *ParsedLine) HasID() bool {
 	return len(p.ID) > 0 && string(p.ID) != "null"
 }
 
-// IDInt64 returns the line's id parsed as an int64. Returns false when the
-// id is missing, null, or not numeric.
+// IDInt64 reads the line's ID as an int64.
+// It returns false for an absent or null ID. An unreadable or noninteger number also returns false.
 func (p *ParsedLine) IDInt64() (int64, bool) {
 	if !p.HasID() {
 		return 0, false
@@ -825,9 +783,9 @@ func (p *ParsedLine) IDInt64() (int64, bool) {
 	return v, true
 }
 
-// IDString returns the line's id as a string. For string-form ids it returns
-// the unquoted contents; for numeric ids it returns the canonical string
-// form (e.g. "42"). Returns "" when the id is missing or null.
+// IDString returns the unquoted contents of a string ID.
+// For another nonnull value, it returns its trimmed JSON bytes, such as "42" for a numeric ID.
+// It returns an empty string for an absent or null ID.
 func (p *ParsedLine) IDString() string {
 	if !p.HasID() {
 		return ""
@@ -839,8 +797,8 @@ func (p *ParsedLine) IDString() string {
 	return strings.TrimSpace(string(p.ID))
 }
 
-// ParseLine creates a ParsedLine from raw bytes. Used by HandleOutput methods
-// that accept []byte (e.g. for tests) to bridge into the single-parse pipeline.
+// ParseLine creates a ParsedLine from raw bytes.
+// HandleOutput methods that accept []byte use it to enter the shared envelope decoder, including tests.
 func ParseLine(content []byte) *ParsedLine {
 	line := &ParsedLine{Raw: content}
 	if err := json.Unmarshal(content, line); err != nil {
@@ -849,17 +807,15 @@ func ParseLine(content []byte) *ParsedLine {
 	return line
 }
 
-// outputInterceptor is a function that inspects a parsed line before it is
-// forwarded to HandleOutput. If it returns true, the line is consumed (not
-// forwarded).
+// outputInterceptor checks a parsed line before HandleOutput receives it.
+// A true result consumes the line and prevents that dispatch.
 type outputInterceptor func(line *ParsedLine) bool
 
 // LineHandler processes a single parsed output line from the agent process.
 type LineHandler func(line *ParsedLine)
 
-// ReadOutput reads JSONL lines from stdout, JSON-parses them once into a
-// ParsedLine, optionally intercepts responses, then forwards remaining lines
-// to the output handler.
+// ReadOutput reads JSONL lines from stdout and decodes each envelope once.
+// The interceptor consumes responses that it handles. The output handler receives every other line.
 func (p *Process) ReadOutput(scanner *bufio.Scanner, intercept outputInterceptor, handle LineHandler) {
 	p.ReadLines(scanner, func(line []byte) {
 		parsed := &ParsedLine{Raw: line}

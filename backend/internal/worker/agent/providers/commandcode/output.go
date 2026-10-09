@@ -52,7 +52,7 @@ func (a *Agent) handleMethod(line *providerkit.ParsedLine) {
 			}
 		}
 	case "protocol_error":
-		_, _ = a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, line.Raw)
+		_, _ = a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: line.Raw})
 	}
 }
 
@@ -122,9 +122,9 @@ func (a *Agent) handleEvent(raw []byte) {
 		a.compacting = true
 		a.Mu.Unlock()
 		a.PublishTurnActive()
-		_, _ = a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw)
+		_, _ = a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw})
 	case contracts.CommandCodeEventCompactionDone:
-		_, _ = a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw)
+		_, _ = a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw})
 		a.Mu.Lock()
 		a.compacting = false
 		if event.Trigger == "manual" && a.manualCompaction != nil {
@@ -139,9 +139,9 @@ func (a *Agent) handleEvent(raw []byte) {
 			a.manualCompaction.outcome = event.Outcome
 		}
 		a.Mu.Unlock()
-		_, _ = a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw)
+		_, _ = a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw})
 	case contracts.CommandCodeEventNotice, contracts.CommandCodeEventApiRetry, contracts.CommandCodeEventRunError:
-		_, _ = a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw)
+		_, _ = a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw})
 	case contracts.CommandCodeEventSubagentStart, contracts.CommandCodeEventSubagentStop, contracts.CommandCodeEventSubagentProgress:
 		a.observeChild(raw, event)
 	case contracts.CommandCodeEventPermissionModeChanged:

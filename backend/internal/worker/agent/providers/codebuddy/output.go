@@ -39,7 +39,7 @@ func (a *Agent) handleOutput(line *providerkit.ParsedLine) {
 	case string(MessageTypeControlCancelRequest):
 		a.handleInboundControlCancel(line.Raw)
 	case contracts.CodebuddyFrameKindConversationReset:
-		if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, line.Raw); err != nil {
+		if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, agent.MessageContent{Original: line.Raw}); err != nil {
 			slog.Debug("codebuddy: persist notification", "agent_id", a.AgentID(), "error", err)
 		}
 	default:

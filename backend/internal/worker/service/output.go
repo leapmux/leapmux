@@ -13,11 +13,11 @@ import (
 	"log/slog"
 	"os"
 	"slices"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"google.golang.org/protobuf/encoding/protojson"
 
@@ -25,10 +25,10 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
-	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/util/timefmt"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/gitutil"
 	"github.com/leapmux/leapmux/internal/worker/spantrack"
@@ -80,9 +80,11 @@ func resolveConnectorSpanID(spanID, connectorSpanID, parentSpanID string, closin
 // adjacent USER↔AGENT↔LEAPMUX flips just open a new thread and never
 // touch sqlite or zstd.
 type notifThreadRef struct {
-	msgID  string
-	seq    int64
-	source leapmuxv1.MessageSource
+	msgID     string
+	seq       int64
+	source    leapmuxv1.MessageSource
+	sessionID string
+	provider  leapmuxv1.AgentProvider
 }
 
 // notifThreadWrapperType is the constant value of the wrapper's `type`
@@ -107,7 +109,13 @@ func wrapNotifContent(rawJSON []byte) []byte {
 		Type:     notifThreadWrapperType,
 		Messages: []json.RawMessage{rawJSON},
 	}
-	data, err := json.Marshal(w)
+	var data []byte
+	var err error
+	if utf8.Valid(rawJSON) && json.Valid(rawJSON) {
+		data, err = json.Marshal(w)
+	} else {
+		err = errors.New("the notification payload is not valid UTF-8 JSON")
+	}
 	if err != nil {
 		slog.Warn("marshal notification wrapper", "error", err)
 		// A hand-written copy of the envelope, because the fallback must not depend on
@@ -181,6 +189,7 @@ type OutputHandler struct {
 	// Per-agent notification threading state (concurrent access).
 	notifMu         sync.Map // agentID -> *sync.Mutex
 	lastNotifThread sync.Map // agentID -> *notifThreadRef
+	transcriptMu    sync.Map // root agent ID -> *sync.RWMutex
 
 	// Per-agent session-goal mutex. The goal applier is a read-modify-write
 	// over the agents row (compare the stored goal, write only the difference),
@@ -191,6 +200,11 @@ type OutputHandler struct {
 	// notifMu so a goal write never waits on notification threading for an
 	// unrelated message.
 	goalMu sync.Map // agentID -> *sync.Mutex
+
+	// Goal publication queues retain immutable records until each stage succeeds.
+	// Root replacement and runtime cleanup preserve pending captured notifications.
+	goalPublicationMu sync.Mutex
+	goalPublications  map[string]*goalPublicationQueue
 
 	// Per-agent span tracking. The registry records whether each tracker
 	// belongs to a root main agent or a virtual child, so cleanup and the
@@ -321,7 +335,7 @@ type OutputHandler struct {
 	// The queue's dispatch guard must follow the SAME signal that SendInput
 	// reads, and a wiring that sets one edge and not the other is the exact
 	// fault this callback exists to prevent.
-	turnState func(agentID string, state agent.TurnState)
+	turnState func(agentID string, admission agent.TurnStateAdmission)
 	// requeueDroppedInput queues input that a provider dropped as the reader's
 	// next message, and reports whether this call added it. Set via
 	// SetRequeueDroppedInputFunc in service.New. nil in a test that builds an
@@ -439,7 +453,7 @@ func (h *OutputHandler) SetAgentClosingFunc(fn func(agentID string) bool) {
 
 // SetTurnStateFunc wires the input queue's turn state to the turn flag every
 // provider publishes. Call it before any agent output is processed.
-func (h *OutputHandler) SetTurnStateFunc(fn func(agentID string, state agent.TurnState)) {
+func (h *OutputHandler) SetTurnStateFunc(fn func(agentID string, admission agent.TurnStateAdmission)) {
 	h.turnState = fn
 }
 
@@ -452,52 +466,43 @@ func (h *OutputHandler) SetRequeueDroppedInputFunc(fn func(agentID, dropID, cont
 // CleanupAgent removes all per-agent state from the handler's maps.
 // Call this when an agent is permanently closed.
 func (h *OutputHandler) CleanupAgent(agentID string) {
-	h.notifMu.Delete(agentID)
-	h.lastNotifThread.Delete(agentID)
-	h.trackers.delete(agentID)
-	h.todos.Delete(agentID)
-	// Activity is subprocess-scoped state (the provider's turn flag and the
-	// prompts it was blocked on), so it goes with the subprocess. Losing the
-	// "already published" mark can make the next change republish a value a
-	// client already holds, which is why the client rings on an observed
-	// TRANSITION rather than on the arrival of an event.
-	h.ForgetActivity(agentID)
-	// bgtasks is keyed by ROOT owner id; a child id keys no entry here (its
-	// rows live under the root), so this delete is a safe no-op for children.
-	// A root close reaps the root's own registry cache.
-	h.bgtasks.Delete(agentID)
-	// goalMu is keyed by ROOT id for the same reason: agentOutputSink.ownsGoal
-	// refuses a child sink's goal write, so no child ever mints an entry. Every
-	// agent that reported or cleared a goal leaves one mutex here, and this is
-	// the only place that reclaims it.
-	h.goalMu.Delete(agentID)
-	// Prune the child-sink cache so a closed child's SpanTracker + sink ref are
-	// not retained for the parent's lifetime. A root id is its own root: clear
-	// its whole childSinks map (every child dies with the root). A child id is
-	// pruned from whichever root sink cached it.
-	unlockRootSinks := h.lockRootSinkMutation()
-	root, removed := h.rootSinks.LoadAndDelete(agentID)
-	unlockRootSinks()
-	if removed {
-		agentIDs := root.(*agentOutputSink).closeProgressTree()
-		for _, id := range agentIDs {
-			h.sinksByAgent.Delete(id)
-		}
-		h.clearProgressFor(agentIDs)
-	} else {
-		h.sinksByAgent.Delete(agentID)
-		h.rootSinks.Range(func(_, v any) bool {
-			if child := v.(*agentOutputSink).detachChildSink(agentID); child != nil {
-				h.clearProgressFor(child.closeProgressTree())
-				return false
-			}
-			return true
-		})
+	target := h.sinkForAgent(agentID)
+	rootID := h.resolveRoot(agentID, "")
+	if target != nil {
+		rootID = target.rootAgentID
 	}
-	h.cleanupAutoContinue(agentID)
-	// The control-response answer claims are DURABLE rows (control_response_answers), not in-memory
-	// state, so there is nothing to reclaim here -- a reused request_id is deduped per INSTANCE by its
-	// claim_token (no release needed) and rows are cleaned up in bulk with the agent via ON DELETE CASCADE.
+	mutation := h.transcriptMutationMutex(rootID)
+	for {
+		removal := h.prepareActivityRemoval(agentID)
+		mutation.Lock()
+		if h.sinkForAgent(agentID) != target {
+			mutation.Unlock()
+			return
+		}
+		if !h.cleanupChildMapsLocked(agentID, removal) {
+			mutation.Unlock()
+			continue
+		}
+		h.bgtasks.Delete(agentID)
+		h.goalMu.Delete(agentID)
+		var retiredIDs []string
+		unlockRootSinks := h.lockRootSinkMutation()
+		root, removed := h.rootSinks.LoadAndDelete(agentID)
+		unlockRootSinks()
+		if removed {
+			retiredIDs = root.(*agentOutputSink).retireRegisteredTree()
+		} else if target != nil {
+			if root, present := h.rootSinks.Load(rootID); present {
+				root.(*agentOutputSink).detachChildSink(agentID)
+			}
+			retiredIDs = target.retireRegisteredTree()
+		}
+		h.enqueueProgressClears(retiredIDs)
+		mutation.Unlock()
+		h.watcher.DrainAgentEvents(agentID)
+		h.drainProgressClears(retiredIDs)
+		return
+	}
 }
 
 // CleanupChildAgents prunes per-child state for a set of descendants in one
@@ -517,23 +522,49 @@ func (h *OutputHandler) CleanupChildAgents(childIDs []string) {
 // child's closing update driven from a provider's ProviderServices). Does NOT touch
 // rootSinks/bgtasks: those are keyed by root owner and are reaped on root close.
 func (h *OutputHandler) cleanupChildMaps(childID string) {
+	target := h.sinkForAgent(childID)
+	rootID := h.resolveRoot(childID, "")
+	if target != nil {
+		rootID = target.rootAgentID
+	}
+	mutation := h.transcriptMutationMutex(rootID)
+	for {
+		removal := h.prepareActivityRemoval(childID)
+		mutation.Lock()
+		if h.sinkForAgent(childID) != target {
+			mutation.Unlock()
+			return
+		}
+		if !h.cleanupChildMapsLocked(childID, removal) {
+			mutation.Unlock()
+			continue
+		}
+		mutation.Unlock()
+		h.watcher.DrainAgentEvents(childID)
+		return
+	}
+}
+
+// cleanupChildMapsLocked removes data before the current child's sink detaches.
+func (h *OutputHandler) cleanupChildMapsLocked(childID string, removal *activityRemoval) bool {
+	if !h.removeActivityLocked(removal) {
+		return false
+	}
 	h.notifMu.Delete(childID)
 	h.lastNotifThread.Delete(childID)
 	h.trackers.delete(childID)
 	h.todos.Delete(childID)
-	// A child owns an activity entry exactly like a root, because a subagent tab
-	// shows its own spinner and its own Interrupt button. CleanupAgent only ever
-	// runs for a root, and TrackedAgentIDs never ranges the activity map, so
-	// without this every subagent a worker ever spawned keeps its entry for the
-	// life of the process.
-	h.ForgetActivity(childID)
 	h.cleanupAutoContinue(childID)
+	return true
 }
 
 // ForgetChildSinks clears a root's entire cached childSinks map. Called on
 // root teardown alongside CleanupChildAgents so no closed child sink outlives
 // the root. No-op when the root has no cached sink.
 func (h *OutputHandler) ForgetChildSinks(rootID string) {
+	mutation := h.transcriptMutationMutex(rootID)
+	mutation.Lock()
+	var retiredIDs []string
 	if root, ok := h.rootSinks.Load(rootID); ok {
 		rootSink := root.(*agentOutputSink)
 		rootSink.childMu.Lock()
@@ -544,13 +575,12 @@ func (h *OutputHandler) ForgetChildSinks(rootID string) {
 		rootSink.childSinks = nil
 		rootSink.childMu.Unlock()
 		for _, child := range children {
-			agentIDs := child.closeProgressTree()
-			for _, id := range agentIDs {
-				h.sinksByAgent.Delete(id)
-			}
-			h.clearProgressFor(agentIDs)
+			retiredIDs = append(retiredIDs, child.retireRegisteredTree()...)
 		}
 	}
+	h.enqueueProgressClears(retiredIDs)
+	mutation.Unlock()
+	h.drainProgressClears(retiredIDs)
 }
 
 // claimControlResponseAnswer reserves one request instance before delivery.
@@ -606,16 +636,34 @@ func (h *OutputHandler) TrackedAgentIDs() []string {
 	return ids
 }
 
-// broadcastControlCancel fans out a single AgentControlCancelRequest to
-// any registered watchers. Shared by ClearAgentRuntimeState and the
-// per-agent sink so the envelope shape lives in one place.
-func (h *OutputHandler) broadcastControlCancel(agentID, requestID, claimToken string) {
-	h.noteControlRequestsRemoved(agentID, "", controlRequestInstance{RequestID: requestID, ClaimToken: claimToken})
-	state, err := controlResponseState(h.queries, agentID, requestID, claimToken)
+type controlPublicationFailure struct {
+	message    string
+	attributes []any
+}
+
+// controlPublication retains local effects until the control mutation releases.
+type controlPublication struct {
+	activityChanged bool
+	failures        []controlPublicationFailure
+}
+
+func (publication *controlPublication) recordFailure(message string, attributes ...any) {
+	publication.failures = append(publication.failures, controlPublicationFailure{message: message, attributes: slices.Clone(attributes)})
+}
+
+func (publication *controlPublication) enqueueCancellation(handler *OutputHandler, agentID, requestID, claimToken string) {
+	changed, err := handler.enqueueControlCancel(agentID, requestID, claimToken)
+	publication.activityChanged = changed || publication.activityChanged
 	if err != nil {
-		slog.Error("could not read response state after control cancellation", "agent_id", agentID, "request_id", requestID, "error", err)
+		publication.recordFailure("could not read response state after control cancellation", "agent_id", agentID, "request_id", requestID, "error", err)
 	}
-	h.watcher.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
+}
+
+// enqueueControlCancel records and queues one exact cancellation without watcher delivery or logging.
+func (h *OutputHandler) enqueueControlCancel(agentID, requestID, claimToken string) (bool, error) {
+	changed := h.recordControlRequestsRemoved(agentID, "", controlRequestInstance{RequestID: requestID, ClaimToken: claimToken})
+	state, err := controlResponseState(h.queries, agentID, requestID, claimToken)
+	h.watcher.EnqueueAgentEvent(agentID, &leapmuxv1.AgentEvent{
 		AgentId: agentID,
 		Event: &leapmuxv1.AgentEvent_ControlCancel{
 			ControlCancel: &leapmuxv1.AgentControlCancelRequest{
@@ -626,6 +674,19 @@ func (h *OutputHandler) broadcastControlCancel(agentID, requestID, claimToken st
 			},
 		},
 	})
+	return changed, err
+}
+
+// finishControlPublication releases the mutation before logging, external reads, or watcher delivery.
+func (h *OutputHandler) finishControlPublication(agentID, rootAgentID string, publication controlPublication, release func()) {
+	release()
+	for _, failure := range publication.failures {
+		slog.Error(failure.message, failure.attributes...)
+	}
+	if publication.activityChanged {
+		h.refreshActivity(agentID, rootAgentID)
+	}
+	h.watcher.DrainAgentEvents(agentID)
 }
 
 // ClearPendingControlRequests drops the agent's pending control_requests from the
@@ -645,17 +706,18 @@ func (h *OutputHandler) broadcastControlCancel(agentID, requestID, claimToken st
 // per instance by its fresh claim_token rather than by clearing the prior claim.
 func (h *OutputHandler) ClearPendingControlRequests(agentID string) {
 	_, _, release := h.lockControlMutation(agentID, "")
-	defer release()
+	publication := controlPublication{}
+	defer func() { h.finishControlPublication(agentID, "", publication, release) }()
 	deleted, err := h.queries.DeleteControlRequestsByAgentID(bgCtx(), agentID)
 	if err != nil {
-		slog.Error("clear runtime state: delete control requests", "agent_id", agentID, "error", err)
+		publication.recordFailure("clear runtime state: delete control requests", "agent_id", agentID, "error", err)
 	}
 	for _, request := range deleted {
-		h.broadcastControlCancel(agentID, request.RequestID, request.ClaimToken)
+		publication.enqueueCancellation(h, agentID, request.RequestID, request.ClaimToken)
 	}
 	// Clears every prompt, not only the deleted ids: this runs when the
 	// subprocess owning them went away, so nothing it was blocked on survives.
-	h.noteControlRequestsRemoved(agentID, "")
+	publication.activityChanged = h.recordControlRequestsRemoved(agentID, "") || publication.activityChanged
 }
 
 // ClearAgentRuntimeState tears down the state tied to a dying SUBPROCESS: pending
@@ -721,8 +783,10 @@ func (h *OutputHandler) NewSink(agentID string, agentProvider leapmuxv1.AgentPro
 		rootAgentID:   agentID,
 		agentProvider: agentProvider,
 		plugin:        h.agents.Registry().Plugin(agentProvider),
-		tracker:       h.rootTracker(agentID),
 	}
+	mutation := h.transcriptMutationMutex(agentID)
+	mutation.Lock()
+	s.tracker = h.rootTracker(agentID)
 	s.restoreMessageSession()
 	s.progress = newGenerationProgressPublisher(func(info map[string]interface{}) {
 		h.broadcastAgentSessionInfo(agentID, info)
@@ -731,15 +795,13 @@ func (h *OutputHandler) NewSink(agentID string, agentProvider leapmuxv1.AgentPro
 	h.sinksByAgent.Store(agentID, s)
 	previous, replaced := h.rootSinks.Swap(agentID, s)
 	unlockRootSinks()
+	var retiredIDs []string
 	if replaced {
-		agentIDs := previous.(*agentOutputSink).closeProgressTree()
-		for _, id := range agentIDs {
-			if id != agentID {
-				h.sinksByAgent.Delete(id)
-			}
-		}
-		h.clearProgressFor(agentIDs)
+		retiredIDs = append([]string{agentID}, previous.(*agentOutputSink).retireRegisteredTree()...)
 	}
+	h.enqueueProgressClears(retiredIDs)
+	mutation.Unlock()
+	h.drainProgressClears(retiredIDs)
 	return agent.NewProviderServices(s)
 }
 
@@ -754,9 +816,18 @@ func (h *OutputHandler) lockRootSinkMutation() func() {
 	}
 }
 
-func (h *OutputHandler) clearProgressFor(agentIDs []string) {
+// enqueueProgressClears fixes retirement revisions before the root lease releases.
+func (h *OutputHandler) enqueueProgressClears(agentIDs []string) {
 	for _, agentID := range agentIDs {
-		h.broadcastAgentSessionInfo(agentID, progressInfo(agent.ProgressSnapshot{}, generationProgressRevision.Add(1)))
+		if event := sessionInfoEvent(agentID, progressInfo(agent.ProgressSnapshot{}, generationProgressRevision.Add(1))); event != nil {
+			h.watcher.EnqueueAgentEvent(agentID, event)
+		}
+	}
+}
+
+func (h *OutputHandler) drainProgressClears(agentIDs []string) {
+	for _, agentID := range agentIDs {
+		h.watcher.DrainAgentEvents(agentID)
 	}
 }
 
@@ -783,6 +854,34 @@ func (s *agentOutputSink) closeProgressTree() []string {
 		agentIDs = append(agentIDs, child.closeProgressTree()...)
 	}
 	return agentIDs
+}
+
+// retireRegisteredTree closes the original tree and deletes only its exact registrations.
+// The caller holds the root mutation lease.
+func (s *agentOutputSink) retireRegisteredTree() []string {
+	sinks := s.originalSinkTree()
+	s.closeProgressTree()
+	agentIDs := make([]string, 0, len(sinks))
+	for _, sink := range sinks {
+		if sink.h.sinksByAgent.CompareAndDelete(sink.agentID, sink) {
+			agentIDs = append(agentIDs, sink.agentID)
+		}
+	}
+	return agentIDs
+}
+
+func (s *agentOutputSink) originalSinkTree() []*agentOutputSink {
+	s.childMu.Lock()
+	children := make([]*agentOutputSink, 0, len(s.childSinks))
+	for _, child := range s.childSinks {
+		children = append(children, child)
+	}
+	s.childMu.Unlock()
+	sinks := []*agentOutputSink{s}
+	for _, child := range children {
+		sinks = append(sinks, child.originalSinkTree()...)
+	}
+	return sinks
 }
 
 func (s *agentOutputSink) detachChildSink(agentID string) *agentOutputSink {
@@ -831,6 +930,8 @@ type agentOutputSink struct {
 	// progressClosed prevents a replaced process from caching a new child
 	// publisher after closeProgressTree detached its old children.
 	progressClosed bool
+	// historicalActivity belongs only to this retired sink's captures.
+	historicalActivity *agentActivity
 
 	// sessionInfoMu guards lastSessionInfo against concurrent
 	// BroadcastSessionInfo calls. Agent handlers may broadcast from
@@ -846,17 +947,13 @@ type agentOutputSink struct {
 	lastSessionInfo map[string][]byte
 	progress        *generationProgressPublisher
 
-	// catalogMu serializes the read-build-persist of the option-group catalog in
-	// BroadcastStatusActive. Every BroadcastStatusActive for an agent runs on this one
-	// per-agent sink, but from several goroutines -- the reader goroutine folding a
-	// config_option_update, the ClearContext RPC, Pi's multi-handler fan-out. Without
-	// serialization two callers can read the same stale row, each capture a DIFFERENT live
-	// catalog, and blind-write, last-writer-wins persisting an OLDER catalog over a newer one.
-	// Holding catalogMu across the row read + status build (which captures the freshest live
-	// catalog) + write makes the last writer always persist the most recent live state.
-	catalogMu        sync.Mutex
-	messageSessionMu sync.RWMutex
-	messageSessionID string
+	// catalogMu protects comparison identity and final catalog admission.
+	// A nested no-op replaces the identity without storing another catalog value.
+	// Provider samples, configured callbacks, logs, and transport run outside this mutex.
+	catalogMu         sync.Mutex
+	catalogComparison *catalogComparisonIdentity
+	messageSessionMu  sync.RWMutex
+	messageSession    *nativeSessionFact
 	// turnEndMu keeps message publication before its completion event during concurrent replay.
 	turnEndMu sync.Mutex
 }
@@ -864,19 +961,28 @@ type agentOutputSink struct {
 // --- Provider-service facets ---
 
 func (s *agentOutputSink) PersistMessage(source leapmuxv1.MessageSource, content agent.MessageContent, span agent.SpanInfo) error {
-	// A closing row ends the call's live tail. The browser draws the result and
-	// drops its own live entry, so a tail broadcast after this row revives an entry
-	// the reader watched finish.
-	//
-	// The drop sits at the SINK rather than in each provider. A provider that
-	// reports an output completion already loses its tail there. Copilot reports
-	// none at all, and its spawn path writes this row and then skips CloseSpan
-	// below. Both hooks are needed, and together they cover every provider, so no
-	// provider has to remember.
-	if span.Closing && span.SpanID != "" {
-		s.progress.dropTail(span.SpanID)
+	if content.WriteReceipt == nil {
+		content.WriteReceipt = agent.NewTranscriptWriteReceipt()
 	}
-	return s.h.persistAndBroadcast(s.agentID, s.agentProvider, source, s.scopeMessage(content), span, s.tracker)
+	content = s.CaptureMessage(content, span)
+	owner, err := s.capturedOwner(content)
+	if err != nil {
+		return err
+	}
+	todoEvent, err := s.h.prepareMessageTodo(s.agentID, s.agentProvider, content, span)
+	if err != nil {
+		return err
+	}
+	mutation := s.h.transcriptMutationMutex(s.rootAgentID)
+	mutation.RLock()
+	result, err := s.h.persistPreparedMessage(s.agentID, s.agentProvider, source, s.scopeMessage(content), span, s.tracker, todoEvent)
+	if err == nil && span.Closing && span.SpanID != "" && content.WriteReceipt.ClaimOutputCompletion() {
+		owner.dropOutputTail(span.SpanID)
+	}
+	mutation.RUnlock()
+	logTodoPersistenceFailure(s.agentID, span.SpanType, result.todoError)
+	s.h.watcher.DrainAgentEvents(s.agentID)
+	return err
 }
 
 // PersistTurnEnd stores the provider's turn-end envelope and publishes completion.
@@ -890,9 +996,33 @@ func (s *agentOutputSink) PersistMessage(source leapmuxv1.MessageSource, content
 // A native key permits only one completion event in its exact agent and session.
 // BroadcastGitStatus runs in a goroutine, so database reads and git commands do not block the provider's stdout reader.
 func (s *agentOutputSink) PersistTurnEnd(content agent.MessageContent, span agent.SpanInfo) error {
+	if content.WriteReceipt == nil {
+		content.WriteReceipt = agent.NewTranscriptWriteReceipt()
+	}
+	content = s.CaptureMessage(content, span)
+	owner, err := s.capturedOwner(content)
+	if err != nil {
+		return err
+	}
+	count, countKnown := s.plugin.TurnEndToolUses(agent.ResolveMessageContent(s.plugin, content))
+	todoEvent, err := s.h.prepareMessageTodo(s.agentID, s.agentProvider, content, span)
+	if err != nil {
+		return err
+	}
+	mutation := s.h.transcriptMutationMutex(s.rootAgentID)
+	mutation.RLock()
 	s.turnEndMu.Lock()
-	defer s.turnEndMu.Unlock()
-	content = s.scopeMessage(content)
+	published := false
+	var result messagePersistenceResult
+	defer func() {
+		s.turnEndMu.Unlock()
+		mutation.RUnlock()
+		logTodoPersistenceFailure(s.agentID, span.SpanType, result.todoError)
+		s.h.watcher.DrainAgentEvents(s.agentID)
+		if published {
+			go s.BroadcastGitStatus()
+		}
+	}()
 	if content.IdempotencyKey != "" {
 		stored, err := s.h.queries.HasAgentTurnEnd(bgCtx(), db.HasAgentTurnEndParams{
 			AgentID: s.agentID, AgentSessionID: content.AgentSessionID, IdempotencyKey: content.IdempotencyKey,
@@ -904,9 +1034,8 @@ func (s *agentOutputSink) PersistTurnEnd(content agent.MessageContent, span agen
 			return nil
 		}
 	}
-	// Native completion messages retain their complete duration and error details.
-	// Registry status describes the child lifecycle without replacing provider output.
-	if err := s.h.persistAndBroadcast(s.agentID, s.agentProvider, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, span, s.tracker); err != nil {
+	result, err = s.h.persistPreparedMessage(s.agentID, s.agentProvider, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, span, s.tracker, todoEvent)
+	if err != nil {
 		return err
 	}
 	if content.IdempotencyKey != "" {
@@ -920,18 +1049,21 @@ func (s *agentOutputSink) PersistTurnEnd(content agent.MessageContent, span agen
 			return nil
 		}
 	}
-	provider := s.plugin
-	count, ok := provider.TurnEndToolUses(agent.ResolveMessageContent(provider, content))
-	// Record the tool count before the provider clears its turn flag.
-	// The activity latch uses it on the busy-to-idle transition. A running child can postpone that transition after this turn ends.
-	// Every provider must clear its turn flag after PersistTurnEnd returns, never before.
-	// An earlier clear settles the agent without its count and causes a completion sound for a turn that used no tool.
-	s.h.noteTurnEnded(s.agentID, s.rootAgentID, count, ok)
-	s.h.watcher.BroadcastAgentEvent(s.agentID, &leapmuxv1.AgentEvent{
-		AgentId: s.agentID,
-		Event:   &leapmuxv1.AgentEvent_TurnEnd{TurnEnd: turnEndEvent(count, ok)},
-	})
-	go s.BroadcastGitStatus()
+	content.WriteReceipt.RecordStoredWrite(true)
+	owner.activity.mu.Lock()
+	if owner.currentLocked() {
+		if countKnown {
+			value := count
+			owner.activity.settledToolUses = &value
+		} else {
+			owner.activity.settledToolUses = nil
+		}
+		s.h.watcher.EnqueueAgentEvent(s.agentID, &leapmuxv1.AgentEvent{
+			AgentId: s.agentID, Event: &leapmuxv1.AgentEvent_TurnEnd{TurnEnd: turnEndEvent(count, countKnown)},
+		})
+		published = true
+	}
+	owner.activity.mu.Unlock()
 	return nil
 }
 
@@ -956,12 +1088,22 @@ func (s *agentOutputSink) SetTurnState(state agent.TurnState, seq uint64) {
 	// of the same state. A child publishes through its own sink, so the test
 	// keys on this sink's agent id but identifies the publisher by the ROOT
 	// sink, which is what a launch adopts.
-	if !s.h.acceptTurnPublish(s.agentID, s.rootAgentID, s.turnPublisher(), seq) {
+	mutation := s.h.transcriptMutationMutex(s.rootAgentID)
+	mutation.Lock()
+	if !s.registeredCurrent() || !s.h.acceptTurnPublish(s.agentID, s.rootAgentID, s.turnPublisher(), seq) {
+		mutation.Unlock()
 		return
 	}
-	s.h.setTurnActive(s.agentID, s.rootAgentID, state.Active)
+	change := s.h.recordTurnActive(s.agentID, s.rootAgentID, state.Active)
+	change.activity.mu.Lock()
+	change.activity.turnSteerable = state.Steerable
+	admission := &providerTurnAdmission{sink: s, activity: change.activity, scope: s.h.scopeLocked(change.activity, s.rootAgentID),
+		publisher: s.turnPublisherSink(), session: s.currentMessageSessionFact(), sequence: seq, state: state}
+	change.activity.mu.Unlock()
+	mutation.Unlock()
+	s.h.finishTurnActive(change)
 	if s.h.turnState != nil {
-		s.h.turnState(s.agentID, state)
+		s.h.turnState(s.agentID, admission)
 	}
 }
 
@@ -1011,7 +1153,11 @@ func turnEndEvent(count int32, ok bool) *leapmuxv1.AgentTurnEnd {
 	return &leapmuxv1.AgentTurnEnd{NumToolUses: &count}
 }
 
-func (s *agentOutputSink) PersistNotification(source leapmuxv1.MessageSource, content []byte) (bool, error) {
+func (s *agentOutputSink) PersistNotification(source leapmuxv1.MessageSource, content agent.MessageContent) (bool, error) {
+	content = s.CaptureMessage(content, agent.SpanInfo{})
+	if _, err := s.capturedOwner(content); err != nil {
+		return false, err
+	}
 	return s.h.persistNotificationThreaded(s.agentID, s.agentProvider, s.plugin, source, content)
 }
 
@@ -1061,7 +1207,8 @@ func (s *agentOutputSink) PublishControlRequest(request agent.ControlRequest) er
 		return nil
 	}
 	st, scope, release := s.h.lockControlMutation(s.agentID, s.rootAgentID)
-	defer release()
+	publication := controlPublication{}
+	defer func() { s.h.finishControlPublication(s.agentID, s.rootAgentID, publication, release) }()
 	st.mu.Lock()
 	if scope.controlsStopped {
 		st.mu.Unlock()
@@ -1111,15 +1258,17 @@ func (s *agentOutputSink) PublishControlRequest(request agent.ControlRequest) er
 	}
 	st.pendingControl[requestID] = ownedControlRequest{claimToken: stored.ClaimToken, scope: scope}
 	st.mu.Unlock()
-	if !known || previous.claimToken != stored.ClaimToken {
-		s.h.refreshActivity(s.agentID, s.rootAgentID)
-	}
+	publication.activityChanged = !known || previous.claimToken != stored.ClaimToken
 	request.SourceSeq = stored.SourceSeq
 	request.AgentSessionID = stored.AgentSessionID
-	s.h.watcher.BroadcastAgentEvent(s.agentID, &leapmuxv1.AgentEvent{
+	prepared, stateErr := buildAgentControlRequest(s.h.queries, s.agentID, s.agentProvider, request, stored.ClaimToken)
+	if stateErr != nil {
+		publication.recordFailure("could not read the control response state", "agent_id", s.agentID, "request_id", requestID, "error", stateErr)
+	}
+	s.h.watcher.EnqueueAgentEvent(s.agentID, &leapmuxv1.AgentEvent{
 		AgentId: s.agentID,
 		Event: &leapmuxv1.AgentEvent_ControlRequest{
-			ControlRequest: buildAgentControlRequest(s.h.queries, s.agentID, s.agentProvider, request, stored.ClaimToken),
+			ControlRequest: prepared,
 		},
 	})
 	return nil
@@ -1127,7 +1276,8 @@ func (s *agentOutputSink) PublishControlRequest(request agent.ControlRequest) er
 
 func (s *agentOutputSink) CancelControlRequest(requestID string) {
 	_, _, release := s.h.lockControlMutation(s.agentID, s.rootAgentID)
-	defer release()
+	publication := controlPublication{}
+	defer func() { s.h.finishControlPublication(s.agentID, s.rootAgentID, publication, release) }()
 	if !s.ownsControlPublisher() {
 		return
 	}
@@ -1136,20 +1286,40 @@ func (s *agentOutputSink) CancelControlRequest(requestID string) {
 		return
 	}
 	if err != nil {
-		slog.Error("cancel control request", "agent_id", s.agentID, "request_id", requestID, "error", err)
+		publication.recordFailure("cancel control request", "agent_id", s.agentID, "request_id", requestID, "error", err)
 		return
 	}
-	s.h.broadcastControlCancel(s.agentID, request.RequestID, request.ClaimToken)
+	publication.enqueueCancellation(s.h, s.agentID, request.RequestID, request.ClaimToken)
 }
 
 func (s *agentOutputSink) UpdateSessionID(sessionID string) {
+	mutation := s.h.transcriptMutationMutex(s.rootAgentID)
+	mutation.Lock()
+	var failureMessage string
+	var failure error
+	var sessionChanged bool
+	defer func() {
+		mutation.Unlock()
+		if failure != nil {
+			slog.Error(failureMessage, "agent_id", s.agentID, "error", failure)
+		} else if sessionChanged {
+			slog.Info("agent session ID updated", "agent_id", s.agentID, "session_id", sessionID)
+		}
+	}()
+	if !s.registeredCurrent() {
+		return
+	}
+	activity := s.h.activityFor(s.agentID, s.rootAgentID)
+	activity.mu.Lock()
 	s.messageSessionMu.Lock()
-	s.messageSessionID = sessionID
+	if s.messageSession == nil || s.messageSession.id != sessionID {
+		s.messageSession = &nativeSessionFact{id: sessionID}
+	}
 	s.messageSessionMu.Unlock()
+	activity.mu.Unlock()
 	existingAgent, err := s.h.queries.GetAgentByID(bgCtx(), s.agentID)
 	if err != nil {
-		slog.Error("failed to fetch agent for session ID comparison",
-			"agent_id", s.agentID, "error", err)
+		failureMessage, failure = "failed to fetch agent for session ID comparison", err
 		return
 	}
 
@@ -1158,54 +1328,11 @@ func (s *agentOutputSink) UpdateSessionID(sessionID string) {
 			AgentSessionID: sessionID,
 			ID:             s.agentID,
 		}); err != nil {
-			slog.Error("failed to store agent session ID",
-				"agent_id", s.agentID, "error", err)
+			failureMessage, failure = "failed to store agent session ID", err
 			return
 		}
 
-		slog.Info("agent session ID updated",
-			"agent_id", s.agentID, "session_id", sessionID)
-	}
-}
-
-// buildStatusChange constructs an AgentStatusChange from the given DB agent.
-// Fields that are always the same across callers (agentID, workerOnline,
-// agentProvider, gitStatus) are filled in automatically. The option groups are
-// projected straight from the row's persisted options -- every caller writes the
-// new selections into the row before calling, so no per-axis override is needed.
-func (s *agentOutputSink) buildStatusChange(
-	dbAgent db.Agent,
-	status leapmuxv1.AgentStatus,
-	sessionID string,
-) *leapmuxv1.AgentStatusChange {
-	// Late settings and handshake replies cannot make a closed tab active. The
-	// row answers for a close that finished. The close admission answers for a
-	// close in progress: that close stamps closed_at only after it stopped the
-	// process, so the row of a late process that pushes ACTIVE inside that
-	// window still reads open. The admission belongs to the root, which owns
-	// the process.
-	if status == leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE &&
-		(dbAgent.ClosedAt.Valid || (s.h.agentClosing != nil && s.h.agentClosing(s.rootAgentID))) {
-		status = leapmuxv1.AgentStatus_AGENT_STATUS_INACTIVE
-	}
-	supportsSteering := false
-	if s.h.supportsSteering != nil {
-		supportsSteering = s.h.supportsSteering(s.agentID)
-	}
-	supportsPreemption := false
-	if s.h.supportsPreemption != nil {
-		supportsPreemption = s.h.supportsPreemption(s.agentID)
-	}
-	return &leapmuxv1.AgentStatusChange{
-		AgentId:            s.agentID,
-		Status:             status,
-		AgentSessionId:     sessionID,
-		WorkerOnline:       true,
-		GitStatus:          gitutil.GetGitStatus(bgCtx(), dbAgent.WorkingDir),
-		AgentProvider:      s.agentProvider,
-		OptionGroups:       optionGroupsView(s.h.agents, &dbAgent, nil),
-		SupportsSteering:   supportsSteering,
-		SupportsPreemption: supportsPreemption,
+		sessionChanged = true
 	}
 }
 
@@ -1220,10 +1347,12 @@ func (s *agentOutputSink) UpdatePermissionMode(mode string) {
 		// UpdateAgentSettings landing effort, or a PersistSettingsRefresh) could otherwise
 		// have its change clobbered when our full-map write replays the stale snapshot --
 		// the exact race casPersistOptions exists to prevent.
-		if settled, wrote, err := s.casPersistOptions(dbAgent.Options, map[string]string{agent.OptionIDPermissionMode: mode}); err != nil {
+		settled, err := s.casPersistOptions(dbAgent.Options, map[string]string{agent.OptionIDPermissionMode: mode})
+		settled.report(s.agentID)
+		if err != nil {
 			slog.Warn("failed to persist permission mode", "agent_id", s.agentID, "error", err)
-		} else if wrote {
-			dbAgent.Options = settled
+		} else if settled.wrote {
+			dbAgent.Options = settled.options
 		}
 	}
 
@@ -1283,45 +1412,6 @@ func (s *agentOutputSink) NotifyPermissionModeChanged(oldMode, newMode string) {
 	})
 }
 
-func (s *agentOutputSink) PersistSettingsRefresh(refresh optionmap.Map) {
-	settlement, accepted := s.settleSettingsRefresh(refresh)
-	if !accepted {
-		return
-	}
-	if !settlement.optionsChanged {
-		if !settlement.startupWindow {
-			s.broadcastChangedCatalog()
-		}
-		return
-	}
-	if !s.isCurrentSettingsSource() {
-		return
-	}
-	sc := s.buildStatusChange(settlement.row, leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE, settlement.row.AgentSessionID)
-
-	// A config update can change an option and extend the catalog in the same event.
-	// That event takes this path instead of BroadcastStatusActive.
-	// Persist its groups also, so the offline picker keeps the discovered choices.
-	// persistLiveCatalog shares the catalog lock and the no-op and empty-catalog guards.
-	// Startup leaves this write to the final handoff, which preserves the user's pending choice.
-	if !settlement.startupWindow {
-		s.persistLiveCatalog(sc.GetOptionGroups())
-	}
-	if !s.isCurrentSettingsSource() {
-		return
-	}
-	s.h.watcher.BroadcastAgentEvent(s.agentID, &leapmuxv1.AgentEvent{
-		AgentId: s.agentID,
-		Event:   &leapmuxv1.AgentEvent_StatusChange{StatusChange: sc},
-	})
-}
-
-type settingsRefreshSettlement struct {
-	row            db.Agent
-	startupWindow  bool
-	optionsChanged bool
-}
-
 // currentSettingsSource reads the source identity while rootSinkMu stays locked.
 func (s *agentOutputSink) currentSettingsSource() bool {
 	current, registered := s.h.rootSinks.Load(s.rootAgentID)
@@ -1334,501 +1424,10 @@ func (s *agentOutputSink) isCurrentSettingsSource() bool {
 	return s.currentSettingsSource()
 }
 
-// settleSettingsRefresh serializes the options read and write with source replacement.
-// Release rootSinkMu before taking catalogMu or calling providers or watchers.
-// A catalog write takes catalogMu first, then rootSinkMu, to keep one lock order.
-func (s *agentOutputSink) settleSettingsRefresh(refresh optionmap.Map) (settingsRefreshSettlement, bool) {
-	s.h.rootSinkMu.RLock()
-	defer s.h.rootSinkMu.RUnlock()
-	if !s.currentSettingsSource() {
-		return settingsRefreshSettlement{}, false
-	}
-	dbAgent, err := s.h.queries.GetAgentByID(bgCtx(), s.agentID)
-	if err != nil {
-		slog.Error("failed to fetch agent for settings broadcast",
-			"agent_id", s.agentID, "error", err)
-		return settingsRefreshSettlement{}, false
-	}
-
-	// Fold the refreshed values into the persisted options map using the wire
-	// merge contract (mergeOptions): a key present with a non-empty value is set,
-	// a key present with an empty value is deleted, and an ABSENT key is preserved.
-	// This single uniform policy replaces the old scalar-vs-options split:
-	//   - A provider that can't report an axis OMITS it so the stored value
-	//     survives -- Claude omits permissionMode (keeps a startup-time
-	//     set_permission_mode), ACP omits effort, ACP primary-agent providers omit
-	//     model when the server advertises none.
-	//   - A provider that cleared an option sends it as an empty value so the key
-	//     is removed (e.g. an ACP option the agent stopped surfacing).
-	// Every provider reports concrete values for its managed axes.
-	// The merge treats every axis the same.
-	//
-	// The merge-and-no-op-detect happens in exactly ONE place per path: the running-agent
-	// path delegates it to casPersistAgentOptions (which returns wrote=false on a no-op);
-	// only the startup-window path, which skips that CAS, merges inline for its broadcast.
-	var newOptions string
-	startupWindow := s.h.agentStarting != nil && s.h.agentStarting(s.agentID)
-	if !startupWindow {
-		// Persist via a compare-and-swap so two concurrent refreshes -- the ACP reader
-		// goroutine folding a server-initiated config_option_update and an RPC-driven
-		// UpdateSettings -- can't lose each other's option writes.
-		// The registry read lock does not serialize option writers.
-		// The RPC writer does not take it. Each writer merges onto its own snapshot.
-		// A CAS that misses (the row
-		// moved on between read and write) re-reads, re-merges, and retries instead of
-		// overwriting the other writer's keys with a stale full-map blob.
-		//
-		// casPersistOptions also owns the no-op detection: it returns wrote=false when the
-		// merge leaves the row unchanged -- the refresh just re-confirms the stored values
-		// (refreshes fire after UpdateSettings, and startup readbacks often confirm the
-		// row), or a concurrent writer already landed an equivalent merge and broadcast it.
-		// Either way there is no value to persist or broadcast. The catalog that goes with
-		// the values can still be new, so broadcastChangedCatalog decides that half.
-		settled, wrote, err := s.casPersistOptions(dbAgent.Options, refresh)
-		if err != nil {
-			slog.Error("failed to persist refreshed settings",
-				"agent_id", s.agentID, "error", err)
-			return settingsRefreshSettlement{}, false
-		}
-		if !wrote {
-			dbAgent.Options = settled
-			return settingsRefreshSettlement{row: dbAgent}, true
-		}
-		newOptions = settled
-	} else {
-		// This refresh fires from the agent's first init message, which arrives
-		// while the agent is still inside startAgent's provider handshake -- before
-		// runAgentStartup's final settings handoff. A settings change made during
-		// that startup window is written to the DB by UpdateAgentSettings but can't
-		// be applied to the not-yet-ready agent, so persisting the confirmed LAUNCH
-		// settings here would clobber the user's choice (e.g. overwrite a model
-		// switched to during startup with the launch model). runAgentStartup's final
-		// handoff persists the confirmed settings with that change preserved (and
-		// relaunches to apply it), so skip the DB write while startup is in progress
-		// and only broadcast the early ACTIVE/status event.
-		//
-		// DELIBERATE startup-window divergence: the in-memory patch + broadcast below
-		// advertises the merged options even though the row on disk still holds the prior
-		// options. This is intentional, not a bug -- the early ACTIVE/status event must
-		// reflect the provider's just-confirmed catalog so the frontend isn't stuck on
-		// stale launch values, while the DB write is deferred (above) precisely so a
-		// mid-startup user change isn't clobbered. The transient where a concurrent DB read
-		// sees the older options is reconciled at runAgentStartup's handoff.
-		// Keep this broadcast independent of a DB write.
-		// A write here would replace the user's startup choice.
-		stored := parseOptions(dbAgent.Options)
-		newOptions = marshalOptions(mergeOptions(stored, refresh))
-		// Skip the broadcast when the refresh is a no-op (the startup readback often just
-		// confirms the stored row), sparing a pointless frontend reactivity tick. Compare
-		// canonicalized forms on both sides so key ordering can't read as a change.
-		if newOptions == marshalOptions(stored) {
-			return settingsRefreshSettlement{row: dbAgent, startupWindow: true}, true
-		}
-	}
-
-	// Patch the fetched row in-memory to reflect the values we just persisted (or, in the
-	// startup window, would persist), avoiding a second GetAgentByID round-trip before we
-	// build the status-change event below.
-	dbAgent.Options = newOptions
-	return settingsRefreshSettlement{row: dbAgent, startupWindow: startupWindow, optionsChanged: true}, true
-}
-
-// broadcastChangedCatalog persists and broadcasts a changed live catalog when the row already holds the refreshed values.
-// UpdateAgentSettings stores the requested values before the provider applies them.
-// The provider's confirmation can match those values while its model supplies a new effort ladder.
-// The RPC response contains option values only.
-// A model catalog can omit effort subgroups, so only this broadcast supplies its new ladder to the browser.
-// Without the broadcast, the browser keeps the previous model's levels.
-//
-// A stopped agent supplies no live catalog, so this path changes nothing for it.
-// catalogMu serializes the comparison and the write with persistCatalogAndBuildStatus.
-// A concurrent BroadcastStatusActive thus cannot replace this catalog with an older one.
-// The network broadcast runs outside that lock and carries no lifecycle status.
-func (s *agentOutputSink) broadcastChangedCatalog() {
-	if s.h.agents == nil {
-		return
-	}
-	sc := s.buildChangedCatalogStatus()
-	if sc == nil || !s.isCurrentSettingsSource() {
-		return
-	}
-	s.h.watcher.BroadcastAgentEvent(s.agentID, &leapmuxv1.AgentEvent{
-		AgentId: s.agentID,
-		Event:   &leapmuxv1.AgentEvent_StatusChange{StatusChange: sc},
-	})
-}
-
-// buildChangedCatalogStatus persists a changed live catalog and returns a catalog-only status change.
-// It returns nil for an unchanged catalog, a closed tab, or an ended process.
-// It returns nil when the row read fails also.
-// One live sample supplies both the comparison and the published catalog.
-func (s *agentOutputSink) buildChangedCatalogStatus() *leapmuxv1.AgentStatusChange {
-	if s.h.agents == nil || !s.isCurrentSettingsSource() {
-		return nil
-	}
-	s.catalogMu.Lock()
-	defer s.catalogMu.Unlock()
-
-	existing, err := s.h.queries.GetAgentByID(bgCtx(), s.agentID)
-	if err != nil {
-		slog.Error("The Worker failed to read the agent for the catalog broadcast.",
-			"agent_id", s.agentID, "error", err)
-		return nil
-	}
-	if existing.ClosedAt.Valid {
-		return nil
-	}
-	current := resolveProviderDefaults(s.h.agents.Registry(), parseOptions(existing.Options), existing.AgentProvider)
-	live := overlayOptionGroupCurrents(s.h.agents.LiveOptionGroups(s.agentID, existing.AgentProvider), current)
-	s.h.rootSinkMu.RLock()
-	defer s.h.rootSinkMu.RUnlock()
-	if !s.currentSettingsSource() {
-		return nil
-	}
-	if len(live) == 0 || optionGroupsEqual(parseOptionGroups(existing.OptionGroups), live) {
-		return nil
-	}
-	sc := &leapmuxv1.AgentStatusChange{
-		AgentId:       s.agentID,
-		AgentProvider: s.agentProvider,
-		WorkerOnline:  true,
-		OptionGroups:  live,
-	}
-	s.persistCatalogIfChanged(existing, sc.GetOptionGroups())
-	return sc
-}
-
-// persistLiveCatalog persists the live option-group catalog to this agent's row when it has
-// grown/changed beyond the stored copy, re-reading the row under catalogMu so a concurrent
-// BroadcastStatusActive can't last-writer-wins an older catalog over a newer one. Shares the
-// persistCatalogIfChanged no-op/never-truncate guards. Used by PersistSettingsRefresh, whose
-// value-change broadcast does not flow through BroadcastStatusActive yet can still carry a
-// freshly grown catalog. The catalog passed in is the same one just broadcast, so the persisted
-// row matches the event that the caller will broadcast.
-func (s *agentOutputSink) persistLiveCatalog(live []*leapmuxv1.AvailableOptionGroup) {
-	s.catalogMu.Lock()
-	defer s.catalogMu.Unlock()
-	s.h.rootSinkMu.RLock()
-	defer s.h.rootSinkMu.RUnlock()
-	if !s.currentSettingsSource() {
-		return
-	}
-
-	existing, err := s.h.queries.GetAgentByID(bgCtx(), s.agentID)
-	if err != nil {
-		slog.Error("failed to fetch agent for catalog persist",
-			"agent_id", s.agentID, "error", err)
-		return
-	}
-	s.persistCatalogIfChanged(existing, live)
-}
-
-// optionsCASMaxAttempts caps the PersistSettingsRefresh compare-and-swap retry loop.
-// Each lost race is another concurrent writer winning; in practice at most a couple
-// contend, so this is a generous ceiling that still fails loudly rather than spinning.
-const optionsCASMaxAttempts = 8
-
 // casPersistOptions persists a settings refresh for this sink's agent via the shared
 // compare-and-swap helper. See casPersistAgentOptions for the contract.
-func (s *agentOutputSink) casPersistOptions(expected string, refresh map[string]string) (string, bool, error) {
+func (s *agentOutputSink) casPersistOptions(expected string, refresh map[string]string) (optionsCASResult, error) {
 	return casPersistAgentOptions(bgCtx(), s.h.queries, s.agentID, expected, refresh)
-}
-
-// withoutStaleClears returns refresh with every STALE clear removed -- an empty-valued (clear)
-// entry whose key is ABSENT from snapshot. Such a clear is a no-op against snapshot, so it
-// carries no intent for THIS snapshot; re-applying it to a newer row (re-read after a lost CAS,
-// or in the final last-writer-wins merge) would instead DELETE a value a concurrent writer set
-// on that key. A clear of a key the snapshot DOES hold is genuine -- it removes a value the
-// snapshot saw -- and is kept, so it still applies. Returns m unchanged (no allocation) when it
-// holds no stale clear, the common case. Called against each CAS iteration's own base snapshot so
-// a clear that turns stale only after a re-read is dropped on the next pass.
-func withoutStaleClears(refresh, snapshot map[string]string) map[string]string {
-	hasStale := false
-	for k, v := range refresh {
-		if v == "" {
-			if _, ok := snapshot[k]; !ok {
-				hasStale = true
-				break
-			}
-		}
-	}
-	if !hasStale {
-		return refresh
-	}
-	out := make(map[string]string, len(refresh))
-	for k, v := range refresh {
-		if v == "" {
-			if _, ok := snapshot[k]; !ok {
-				continue // stale clear: snapshot never held this key
-			}
-		}
-		out[k] = v
-	}
-	return out
-}
-
-// narrowedOptionDelta canonicalizes one compare-and-swap attempt's inputs against the `expected`
-// snapshot: it drops any STALE clear from `delta` (an empty-value key absent from `expected`, which
-// carries no intent against this base and would clobber a concurrent writer's value of that key on a
-// lost CAS), and returns the narrowed delta, the canonical base (the snapshot re-marshaled, the value
-// the CAS compares against), and the canonical merge of the narrowed delta onto it. The three CAS
-// sites (casPersistAgentOptions' loop body and last-writer-wins tail, casPersistConfirmedSettings'
-// loop body) share this one "narrow, canonicalize, merge" contract -- and parse `expected` ONCE here
-// instead of three times each -- so a change to the contract lands in one place. A genuine clear (a
-// key present in `expected`) is kept and still applies.
-func narrowedOptionDelta(expected string, delta map[string]string) (narrowed map[string]string, base, merged string) {
-	snapshot := parseOptions(expected)
-	narrowed = withoutStaleClears(delta, snapshot)
-	base = marshalOptions(snapshot)
-	merged = marshalOptions(mergeOptions(snapshot, narrowed))
-	return narrowed, base, merged
-}
-
-// casPersistAgentOptions merges `refresh` onto the agent's stored options and writes the
-// result via SetAgentOptionsIfUnchanged (compare-and-swap), re-reading and re-merging
-// when a concurrent writer moves the row between the read and the write. `expected` is
-// the caller's already-read options snapshot, tried first to avoid a redundant fetch.
-// Returns (settled, true, nil) with the marshaled options actually persisted, or
-// (snapshot, false, nil) when the merge is a no-op -- the delta changes nothing against the
-// snapshot it was decided against (the caller's `expected` on the first try, or the row
-// re-read after a lost CAS). `snapshot` is that marshaled map, so the caller can broadcast it
-// without a re-fetch; on the common uncontended path it IS the current row.
-//
-// Shared by every options writer that holds no common lock: the ACP/RPC settings-refresh
-// sink (PersistSettingsRefresh, on the agent reader goroutine) and the service-layer
-// option-change setters (applyOptionChanges / applySettingsLive, on the RPC dispatcher).
-// The per-agent lifecycle lock does NOT serialize against the reader-goroutine writer (it
-// never takes the lock), so a blind full-map write could drop a key a refresh had just
-// merged in. Merging only each writer's own delta under CAS makes the two converge instead.
-func casPersistAgentOptions(ctx context.Context, q *db.Queries, agentID, expected string, refresh map[string]string) (string, bool, error) {
-	for attempt := 0; attempt < optionsCASMaxAttempts; attempt++ {
-		// Narrow stale clears, canonicalize the base, and merge -- against the re-read `expected` each
-		// iteration, so a clear that turns stale only after a concurrent delete is dropped too. The
-		// narrowed `refresh` is carried forward (monotonic narrowing across attempts).
-		var base, newOptions string
-		refresh, base, newOptions = narrowedOptionDelta(expected, refresh)
-		if newOptions == base {
-			// The refresh changes nothing against `expected` -- but `expected` is the caller's
-			// snapshot, which a concurrent writer may have moved on. Decide the no-op against the
-			// LIVE row, not the stale snapshot: re-read and re-merge so a refresh that WOULD
-			// re-assert the agent's confirmed value over a key another writer just cleared isn't
-			// silently skipped (which would leave the row diverged from the running agent until
-			// the next refresh). Still a no-op against the live row -> settled; otherwise fall
-			// through to the CAS below with the live row as the new base. (The next iteration's
-			// withoutStaleClears narrows `refresh` against that live row.)
-			dbAgent, err := q.GetAgentByID(ctx, agentID)
-			if err != nil {
-				return "", false, err
-			}
-			// Reaching the no-op branch means `refresh` is a no-op against `expected`: every SET
-			// equals the stored value and -- after the top-of-loop narrowing -- it holds no clear
-			// (a genuine clear of a key in `expected` would have changed base; a stale clear was
-			// dropped). So merge it directly against the live row; the next iteration re-narrows.
-			live := marshalOptions(parseOptions(dbAgent.Options))
-			if marshalOptions(mergeOptions(parseOptions(dbAgent.Options), refresh)) == live {
-				return live, false, nil
-			}
-			expected = dbAgent.Options
-			continue
-		}
-		changed, err := q.SetAgentOptionsIfUnchanged(ctx, db.SetAgentOptionsIfUnchangedParams{
-			Options: newOptions,
-			ID:      agentID,
-			// Compare against the CANONICAL form of the snapshot, the same value the no-op check
-			// above decided against -- not the raw `expected` string. Every options write goes
-			// through marshalOptions, so the stored column is always canonical; matching it with the
-			// canonical `base` keeps the expected-value representation consistent within this function
-			// rather than relying on the caller's snapshot already being canonical.
-			ExpectedOptions: base,
-		})
-		if err != nil {
-			return "", false, err
-		}
-		if changed > 0 {
-			return newOptions, true, nil
-		}
-		// The row changed between read and write; re-read and re-merge onto the new value.
-		dbAgent, err := q.GetAgentByID(ctx, agentID)
-		if err != nil {
-			return "", false, err
-		}
-		expected = dbAgent.Options
-	}
-	// Sustained contention lost every CAS attempt. Rather than DROP the write (which would
-	// silently strand the settled options), do a final last-writer-wins merge: re-read, merge
-	// only this writer's own delta onto the latest row, and write unconditionally. Merging
-	// (not blind-overwriting) still preserves other writers' keys; the only loss window is a
-	// write landing between this read and write -- the same window a single CAS iteration has,
-	// so this is strictly better than dropping the delta entirely.
-	dbAgent, err := q.GetAgentByID(ctx, agentID)
-	if err != nil {
-		return "", false, err
-	}
-	// Narrow stale clears against this final re-read too, so the unconditional write below can't
-	// delete a key a concurrent writer set that this delta never legitimately cleared. This is the
-	// final attempt, so the narrowed delta isn't carried forward -- only its merge is written.
-	_, base, newOptions := narrowedOptionDelta(dbAgent.Options, refresh)
-	if newOptions == base {
-		return base, false, nil
-	}
-	if err := q.SetAgentOptions(ctx, db.SetAgentOptionsParams{Options: newOptions, ID: agentID}); err != nil {
-		return "", false, err
-	}
-	slog.Warn("options CAS exhausted; applied final last-writer-wins merge",
-		"agent_id", agentID, "attempts", optionsCASMaxAttempts)
-	return newOptions, true, nil
-}
-
-// casPersistConfirmedSettings atomically persists the confirmed option DELTA and the provider
-// option-group catalog in ONE statement per attempt (UpdateAgentConfirmedSettings), so a concurrent
-// options writer can't land BETWEEN two separate column writes and leave the row showing this
-// handoff's options beside a foreign catalog. The options column merges only `delta` (preserving a
-// concurrent writer's other keys) under a CAS-with-retry on `expectedOptions`; the option_groups
-// column rides the SAME statement, written only on the successful options CAS so the two columns
-// move together-or-neither. `expectedCatalog`/`catalog` are the catalog CAS pair (the catalog
-// snapshot the row carried when this handoff began, and the new catalog); pass both "" to leave the
-// catalog untouched (e.g. when its marshal failed). Returns the settled row for the broadcast.
-func casPersistConfirmedSettings(ctx context.Context, q *db.Queries, agentID, expectedOptions string, delta map[string]string, expectedCatalog, catalog string) (db.Agent, error) {
-	for attempt := 0; attempt < optionsCASMaxAttempts; attempt++ {
-		// Drop stale clears against this base, exactly as casPersistAgentOptions does, so a delta
-		// pairing a set with a clear of a key a concurrent writer set can't clobber it on a retry.
-		var base, newOptions string
-		delta, base, newOptions = narrowedOptionDelta(expectedOptions, delta)
-		row, err := q.UpdateAgentConfirmedSettings(ctx, db.UpdateAgentConfirmedSettingsParams{
-			ExpectedOptions:      base,
-			Options:              newOptions,
-			ExpectedOptionGroups: expectedCatalog,
-			OptionGroups:         catalog,
-			ID:                   agentID,
-		})
-		if err != nil {
-			return db.Agent{}, err
-		}
-		// The options column equals newOptions iff our CAS hit -- OR a concurrent writer landed the
-		// identical blob. Our CAS hit when the options CASE matched (options = expected_options at
-		// statement time, so options = base = newOptions's source); then the conditional option_groups CASE
-		// also took the THEN branch and rode the same statement. But the concurrent writer that landed
-		// the identical blob could be the options-only path (casPersistAgentOptions via
-		// PersistSettingsRefresh/applyOptionChanges), which NEVER writes option_groups: it left
-		// options = newOptions but option_groups = expected_option_groups, so our options CASE saw
-		// options != base, took ELSE, and the conditional option_groups CASE took ELSE too -- dropping the
-		// catalog this handoff discovered. Re-assert the catalog with a standalone CAS so a richer one
-		// we found still lands. The CAS is a no-op (keeping the richer one) if a running provider grew
-		// the catalog past expectedCatalog in the meantime, mirroring the in-statement gate.
-		if row.Options == newOptions {
-			if catalog != "" && row.OptionGroups != catalog && row.OptionGroups == expectedCatalog {
-				updated, err := q.SetAgentOptionGroupsIfUnchanged(ctx, db.SetAgentOptionGroupsIfUnchangedParams{
-					OptionGroups:         catalog,
-					ExpectedOptionGroups: expectedCatalog,
-					ID:                   agentID,
-				})
-				if err != nil {
-					return db.Agent{}, err
-				}
-				if updated > 0 {
-					row.OptionGroups = catalog
-				}
-			}
-			return row, nil
-		}
-		// Lost the options CAS: the conditional catalog CASE wrote nothing either, so re-merge the delta
-		// onto the live row and retry -- both columns stay atomic.
-		expectedOptions = row.Options
-	}
-	// Sustained contention lost every atomic attempt. Fall back to the (non-atomic) options-then-
-	// catalog writes: options via the guaranteed-landing CAS helper, then the standalone catalog CAS.
-	// This reintroduces the brief two-write window ONLY after optionsCASMaxAttempts failed atomic
-	// tries -- far rarer than the window the atomic path closes -- and still lands the confirmation.
-	slog.Warn("confirmed-settings atomic CAS exhausted; applied non-atomic fallback",
-		"agent_id", agentID, "attempts", optionsCASMaxAttempts)
-	if _, _, err := casPersistAgentOptions(ctx, q, agentID, expectedOptions, delta); err != nil {
-		return db.Agent{}, err
-	}
-	if catalog != "" || expectedCatalog != "" {
-		if _, err := q.SetAgentOptionGroupsIfUnchanged(ctx, db.SetAgentOptionGroupsIfUnchangedParams{
-			OptionGroups:         catalog,
-			ExpectedOptionGroups: expectedCatalog,
-			ID:                   agentID,
-		}); err != nil {
-			return db.Agent{}, err
-		}
-	}
-	return q.GetAgentByID(ctx, agentID)
-}
-
-func (s *agentOutputSink) BroadcastStatusActive(sessionID string) {
-	sc := s.persistCatalogAndBuildStatus(sessionID)
-	if sc == nil {
-		return
-	}
-	s.h.watcher.BroadcastAgentEvent(s.agentID, &leapmuxv1.AgentEvent{
-		AgentId: s.agentID,
-		Event:   &leapmuxv1.AgentEvent_StatusChange{StatusChange: sc},
-	})
-}
-
-// persistCatalogAndBuildStatus reads the row, builds the ACTIVE status change (capturing the
-// freshest live catalog), and persists that catalog -- all under catalogMu so concurrent
-// BroadcastStatusActive callers on this one per-agent sink can't read the same stale row and
-// blind-write different live catalogs, last-writer-wins persisting an older catalog over a newer
-// one. The network broadcast is left to the caller so it runs OUTSIDE the lock. Returns nil (no
-// broadcast) when the row read fails.
-func (s *agentOutputSink) persistCatalogAndBuildStatus(sessionID string) *leapmuxv1.AgentStatusChange {
-	s.catalogMu.Lock()
-	defer s.catalogMu.Unlock()
-
-	existingAgent, err := s.h.queries.GetAgentByID(bgCtx(), s.agentID)
-	if err != nil {
-		slog.Error("failed to fetch agent for status broadcast",
-			"agent_id", s.agentID, "error", err)
-		return nil
-	}
-	// A late provider handshake cannot revive a tab that the Worker already closed.
-	if existingAgent.ClosedAt.Valid {
-		return nil
-	}
-
-	sc := s.buildStatusChange(existingAgent, leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE, sessionID)
-
-	// Persist the live catalog when it has grown/changed beyond the row's copy, so the
-	// post-exit offline read reflects options the running agent discovered AFTER the
-	// startup handoff already persisted a narrower catalog -- e.g. an ACP dynamic-model
-	// provider (Copilot/OpenCode/Goose) whose model list arrives only via a post-handshake
-	// config_option_update, which broadcasts through here. option_groups is a column separate
-	// from options, so this never races the options-value CAS. catalogMu (held here) serializes
-	// this against the OTHER BroadcastStatusActive calls on this one per-agent sink, so two
-	// concurrent broadcasts can't read the same row and blind-write divergent live catalogs,
-	// last-writer-wins persisting an older one. It does NOT serialize against the dispatcher/
-	// startup paths, which persist the catalog via SetAgentOptionGroupsIfUnchanged (a CAS on the
-	// same column, off this lock); the blind write here is still correct because `live` is the
-	// authoritative manager catalog (optionGroupsView -> Manager.OptionGroups for the running
-	// agent), which every catalog change re-broadcasts, so the row converges to the freshest live
-	// catalog on the next push regardless of interleaving. The proto.Equal diff keeps the common
-	// (unchanged-catalog) broadcast from writing on every push.
-	s.persistCatalogIfChanged(existingAgent, sc.GetOptionGroups())
-	return sc
-}
-
-// persistCatalogIfChanged writes the live option-group catalog to the row when it differs
-// from the stored one. Never overwrites a populated catalog with an empty one (a transient
-// empty live read must not wipe the persisted options), nor with a TRUNCATED one when a group
-// fails to marshal -- a partial catalog would never compare equal and so would re-write every push.
-func (s *agentOutputSink) persistCatalogIfChanged(existing db.Agent, live []*leapmuxv1.AvailableOptionGroup) {
-	if len(live) == 0 || optionGroupsEqual(parseOptionGroups(existing.OptionGroups), live) {
-		return
-	}
-	marshaled, err := marshalOptionGroups(live)
-	if err != nil {
-		slog.Warn("skipping discovered option-group catalog persist; marshal failed",
-			"agent_id", s.agentID, "error", err)
-		return
-	}
-	if err := s.h.queries.SetAgentOptionGroups(bgCtx(), db.SetAgentOptionGroupsParams{
-		OptionGroups: marshaled,
-		ID:           s.agentID,
-	}); err != nil {
-		slog.Warn("failed to persist discovered option-group catalog", "agent_id", s.agentID, "error", err)
-	}
 }
 
 // BroadcastGitStatus emits a partial AgentStatusChange carrying the
@@ -1964,15 +1563,10 @@ func (s *agentOutputSink) PersistSubagentReport(write agent.SubagentReportWrite)
 	if err != nil {
 		return false, fmt.Errorf("marshal subagent report: %w", err)
 	}
-	sum := sha256.Sum256([]byte(strings.TrimSpace(write.ReportID)))
+	sum := sha256.Sum256([]byte(write.ReportID))
 	idempotencyKey := fmt.Sprintf("subagent-report:%x", sum)
-	mu := s.h.notifMutex(s.agentID)
-	mu.Lock()
-	defer mu.Unlock()
-	return s.h.createNotificationStandaloneWithIdempotencyKey(
-		s.agentID, s.agentProvider, leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX,
-		contentJSON, idempotencyKey,
-	)
+	content := s.CaptureMessage(agent.MessageContent{Original: contentJSON, IdempotencyKey: idempotencyKey}, agent.SpanInfo{})
+	return s.h.writeNotification(s.agentID, s.agentProvider, s.plugin, leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, content, notificationReport)
 }
 
 func (s *agentOutputSink) PersistChildSubagentReport(write agent.ChildSubagentReportWrite) (bool, error) {
@@ -2028,13 +1622,16 @@ func (h *OutputHandler) notifMutex(agentID string) *sync.Mutex {
 
 // clearNotifThread clears the current notification thread boundary so
 // that the next notification starts a new wrapper.
-func (h *OutputHandler) clearNotifThread(agentID string) {
-	if _, ok := h.lastNotifThread.Load(agentID); !ok {
-		return
-	}
+func (h *OutputHandler) clearNotifThread(agentID string, owner *transcriptOwner) {
 	mu := h.notifMutex(agentID)
 	mu.Lock()
 	defer mu.Unlock()
+	if owner != nil {
+		if !owner.IsCurrent() {
+			return
+		}
+		owner.thread.reference = nil
+	}
 	h.lastNotifThread.Delete(agentID)
 }
 
@@ -2057,19 +1654,17 @@ func createMessageRow(ctx context.Context, q *db.Queries, params db.CreateMessag
 		len(params.SupplementalContent) == 0 {
 		params.SupplementalContentCompression = leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE
 	}
-	switch params.MarkType {
-	case leapmuxv1.MarkType_MARK_TYPE_UNSPECIFIED,
-		leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE,
-		leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE:
-	default:
-		return 0, fmt.Errorf("refusing to persist message %q for agent %q with unknown mark_type %d", params.ID, params.AgentID, params.MarkType)
+	if params.Source < leapmuxv1.MessageSource_MESSAGE_SOURCE_USER || params.Source > leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX {
+		return 0, fmt.Errorf("message %q has an unknown source %d", params.ID, params.Source)
 	}
-	if params.AssembledKind < int64(leapmuxv1.AssembledMessageKind_ASSEMBLED_MESSAGE_KIND_UNSPECIFIED) ||
-		params.AssembledKind > int64(leapmuxv1.AssembledMessageKind_ASSEMBLED_MESSAGE_KIND_PLAN) {
-		return 0, fmt.Errorf("refusing to persist message %q with unknown assembled kind %d", params.ID, params.AssembledKind)
+	if params.MarkType != nil && (*params.MarkType < leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE || *params.MarkType > leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE) {
+		return 0, fmt.Errorf("message %q has an unknown mark_type %d", params.ID, *params.MarkType)
+	}
+	if params.AssembledKind != nil && (*params.AssembledKind < leapmuxv1.AssembledMessageKind_ASSEMBLED_MESSAGE_KIND_TEXT || *params.AssembledKind > leapmuxv1.AssembledMessageKind_ASSEMBLED_MESSAGE_KIND_PLAN) {
+		return 0, fmt.Errorf("message %q has an unknown assembled kind %d", params.ID, *params.AssembledKind)
 	}
 	if params.Completion < int64(leapmuxv1.MessageCompletion_MESSAGE_COMPLETION_UNSPECIFIED) ||
-		params.Completion > int64(leapmuxv1.MessageCompletion_MESSAGE_COMPLETION_ERROR) {
+		params.Completion > int64(leapmuxv1.MessageCompletion_MESSAGE_COMPLETION_FINISHED) {
 		return 0, fmt.Errorf("refusing to persist message %q with unknown completion %d", params.ID, params.Completion)
 	}
 	return q.CreateMessage(ctx, params)
@@ -2079,11 +1674,12 @@ func createMessageRow(ctx context.Context, q *db.Queries, params db.CreateMessag
 type messageWrite struct {
 	params  db.CreateMessageParams
 	message *leapmuxv1.AgentChatMessage
+	owner   *transcriptOwner
 }
 
 // prepareMessage keeps one field mapping for ordinary writes and transactional writes.
 func (h *OutputHandler) prepareMessage(agentID string, agentProvider leapmuxv1.AgentProvider, source leapmuxv1.MessageSource, content agent.MessageContent, span agent.SpanInfo, tracker *SpanTracker) messageWrite {
-	if content.AgentSessionID == "" {
+	if content.AgentSessionID == "" && content.Publication == nil {
 		content.AgentSessionID = h.messageSessionID(agentID)
 	}
 	contentJSON := content.Original
@@ -2100,6 +1696,14 @@ func (h *OutputHandler) prepareMessage(agentID string, agentProvider leapmuxv1.A
 	}
 	connectorSpanID := resolveConnectorSpanID(span.SpanID, span.ConnectorSpanID, span.ParentSpanID, span.Closing)
 	depth, spanLines, connectorColor := tracker.Snapshot(span.ParentSpanID, connectorSpanID, span.Closing)
+	var owner *transcriptOwner
+	if content.Publication != nil {
+		owner, _ = content.Publication.Owner().(*transcriptOwner)
+		if owner != nil {
+			span = owner.span
+			depth, spanLines, connectorColor = owner.depth, owner.spanLines, owner.spanColor
+		}
+	}
 
 	// Resolve span color: if the span is already active (e.g. tool_result
 	// inside an open span), use the connector color from the snapshot.
@@ -2123,7 +1727,9 @@ func (h *OutputHandler) prepareMessage(agentID string, agentProvider leapmuxv1.A
 	supplemental, supplementalCompression := msgcodec.Compress(supplementalJSON)
 	now := nowMillis()
 
+	transcriptOnly := owner != nil && !owner.IsCurrent()
 	params := db.CreateMessageParams{
+		TranscriptOnly:                 transcriptOnly,
 		ID:                             msgID,
 		AgentID:                        agentID,
 		AgentSessionID:                 content.AgentSessionID,
@@ -2140,12 +1746,13 @@ func (h *OutputHandler) prepareMessage(agentID string, agentProvider leapmuxv1.A
 		SpanColor:                      int64(spanColor),
 		SpanLines:                      spanLines,
 		AgentProvider:                  agentProvider,
-		MarkType:                       span.MarkType,
-		AssembledKind:                  int64(assembledKind),
-		Completion:                     int64(completion),
+		MarkType:                       workerdb.OptionalStorageEnum(span.MarkType),
+		AssembledKind:                  workerdb.OptionalStorageEnum(assembledKind),
+		Completion:                     workerdb.OptionalStorageEnum(completion),
 		CreatedAt:                      sqltime.NewSQLiteTime(now),
 	}
 	message := &leapmuxv1.AgentChatMessage{
+		TranscriptOnly:                 transcriptOnly,
 		Id:                             msgID,
 		Source:                         source,
 		Content:                        compressed,
@@ -2165,36 +1772,131 @@ func (h *OutputHandler) prepareMessage(agentID string, agentProvider leapmuxv1.A
 		AssembledKind:                  assembledKind,
 		Completion:                     completion,
 	}
-	return messageWrite{params: params, message: message}
+	return messageWrite{params: params, message: message, owner: owner}
 }
 
 // persistAndBroadcast stores the message before it broadcasts the event.
 // A nil tracker uses the agent's current span snapshot.
 func (h *OutputHandler) persistAndBroadcast(agentID string, agentProvider leapmuxv1.AgentProvider, source leapmuxv1.MessageSource, content agent.MessageContent, span agent.SpanInfo, tracker *SpanTracker) error {
+	err := h.persistAndEnqueue(agentID, agentProvider, source, content, span, tracker)
+	h.watcher.DrainAgentEvents(agentID)
+	return err
+}
+
+func (h *OutputHandler) persistAndEnqueue(agentID string, agentProvider leapmuxv1.AgentProvider, source leapmuxv1.MessageSource, content agent.MessageContent, span agent.SpanInfo, tracker *SpanTracker) error {
+	if content.Publication == nil {
+		if sink := h.sinkForAgent(agentID); sink != nil {
+			content = sink.CaptureMessage(content, span)
+		}
+	}
+	if content.AgentSessionID == "" && content.Publication == nil {
+		content.AgentSessionID = h.messageSessionID(agentID)
+	}
+	event, err := h.prepareMessageTodo(agentID, agentProvider, content, span)
+	if err != nil {
+		return err
+	}
+	rootID := h.resolveRoot(agentID, "")
+	if content.Publication != nil {
+		rootID = content.Publication.Owner().(*transcriptOwner).sink.rootAgentID
+	}
+	mutation := h.transcriptMutationMutex(rootID)
+	mutation.RLock()
+	var result messagePersistenceResult
+	defer func() {
+		mutation.RUnlock()
+		logTodoPersistenceFailure(agentID, span.SpanType, result.todoError)
+	}()
+	result, err = h.persistPreparedMessage(agentID, agentProvider, source, content, span, tracker, event)
+	return err
+}
+
+// prepareMessageTodo reads provider data before storage admission starts.
+func (h *OutputHandler) prepareMessageTodo(agentID string, agentProvider leapmuxv1.AgentProvider, content agent.MessageContent, span agent.SpanInfo) (*todoevents.Event, error) {
+	if err := agent.ValidateMessageCompletion(content); err != nil {
+		return nil, err
+	}
+	if err := agent.ValidateIncomingMessageMetadata(content.Metadata); err != nil {
+		return nil, err
+	}
+	if content.Publication != nil {
+		owner, err := readCapturedOwner(content)
+		if err != nil {
+			return nil, err
+		}
+		if owner.sink.h != h || owner.sink.agentID != agentID || owner.sink.agentProvider != agentProvider {
+			return nil, errors.New("the captured transcript owner does not match its destination")
+		}
+		if !owner.IsCurrent() {
+			return nil, nil
+		}
+	}
 	provider := h.agents.Registry().Plugin(agentProvider)
-	resolved := agent.ResolveMessageContent(provider, content)
-	event, hasTodoEvent := provider.ExtractTodoEvent(span.SpanType, resolved, h.pairedToolUseLookup(agentID, span))
-	if hasTodoEvent {
-		return h.persistMessageWithTodoEvent(agentID, agentProvider, source, content, span, tracker, event)
+	resolved := agent.ResolveMessageContent(provider, content.Clone())
+	event, present := provider.ExtractTodoEvent(span.SpanType, slices.Clone(resolved), h.pairedToolUseLookup(agentID, content.AgentSessionID, span))
+	if !present {
+		return nil, nil
+	}
+	frozen := cloneTodoEvent(event)
+	return &frozen, nil
+}
+
+func cloneTodoEvent(event todoevents.Event) todoevents.Event {
+	event.Items = slices.Clone(event.Items)
+	event.Snapshot = slices.Clone(event.Snapshot)
+	event.Patch.Content = cloneValuePointer(event.Patch.Content)
+	event.Patch.ActiveForm = cloneValuePointer(event.Patch.ActiveForm)
+	event.Patch.Description = cloneValuePointer(event.Patch.Description)
+	event.Patch.Status = cloneValuePointer(event.Patch.Status)
+	return event
+}
+
+func cloneValuePointer[T any](pointer *T) *T {
+	if pointer == nil {
+		return nil
+	}
+	value := *pointer
+	return &value
+}
+
+// messagePersistenceResult retains a post-commit failure until the admission lease releases.
+type messagePersistenceResult struct{ todoError error }
+
+func logTodoPersistenceFailure(agentID, spanType string, err error) {
+	if err != nil {
+		slog.Warn("apply todo event", "agent_id", agentID, "span_type", spanType, "error", err)
+	}
+}
+
+// persistPreparedMessage stores a frozen provider result under the caller's root lease.
+func (h *OutputHandler) persistPreparedMessage(agentID string, agentProvider leapmuxv1.AgentProvider, source leapmuxv1.MessageSource, content agent.MessageContent, span agent.SpanInfo, tracker *SpanTracker, event *todoevents.Event) (messagePersistenceResult, error) {
+	if event != nil && (content.Publication == nil || content.Publication.Owner().IsCurrent()) {
+		return h.persistMessageWithTodoEvent(agentID, agentProvider, source, content, span, tracker, *event)
 	}
 	write := h.prepareMessage(agentID, agentProvider, source, content, span, tracker)
 	seq, err := createMessageRow(bgCtx(), h.queries, write.params)
 	if errors.Is(err, sql.ErrNoRows) && content.IdempotencyKey != "" {
-		return nil
+		return messagePersistenceResult{}, nil
 	}
 	if err != nil {
-		return err
+		return messagePersistenceResult{}, err
 	}
+	content.WriteReceipt.RecordStoredMessage(seq)
+	content.WriteReceipt.RecordStoredWrite(true)
 	h.publishMessageWrite(write, seq)
-	return nil
+	return messagePersistenceResult{}, nil
 }
 
 // publishMessageWrite runs only after the database commits the message.
 func (h *OutputHandler) publishMessageWrite(write messageWrite, seq int64) {
 	agentID := write.params.AgentID
-	h.clearNotifThread(agentID)
+	h.clearNotifThread(agentID, write.owner)
 	write.message.Seq = seq
-	h.broadcastMessage(agentID, write.message)
+	if write.owner != nil {
+		write.owner.enqueueMessage(write.message)
+	} else {
+		h.enqueueMessage(agentID, write.message)
+	}
 }
 
 // persistMessageWithTodoEvent stores one provider message and applies its extracted
@@ -2208,14 +1910,14 @@ func (h *OutputHandler) persistMessageWithTodoEvent(
 	span agent.SpanInfo,
 	tracker *SpanTracker,
 	event todoevents.Event,
-) error {
+) (messagePersistenceResult, error) {
 	ctx := bgCtx()
 	cache := h.todoCache(agentID)
 	cache.Mu.Lock()
 	reg := cache.on(h.queries, agentID)
 	if err := reg.ensureSeededLocked(ctx); err != nil {
 		cache.Mu.Unlock()
-		return err
+		return messagePersistenceResult{}, err
 	}
 	var updateMutation todoUpdateMutation
 	if event.Kind == todoevents.KindUpdate {
@@ -2227,22 +1929,22 @@ func (h *OutputHandler) persistMessageWithTodoEvent(
 				})
 				if err != nil {
 					cache.Mu.Unlock()
-					return fmt.Errorf("read immutable message key: %w", err)
+					return messagePersistenceResult{}, fmt.Errorf("read immutable message key: %w", err)
 				}
 				if stored {
 					cache.Mu.Unlock()
-					return nil
+					return messagePersistenceResult{}, nil
 				}
 			}
 			cache.Mu.Unlock()
-			return fmt.Errorf("cannot persist TaskUpdate snapshot for unknown task %q", event.ID)
+			return messagePersistenceResult{}, fmt.Errorf("cannot persist TaskUpdate snapshot for unknown task %q", event.ID)
 		}
 		updateMutation = mutation
 		var err error
 		content, err = withTodoSnapshot(content, mutation.item)
 		if err != nil {
 			cache.Mu.Unlock()
-			return err
+			return messagePersistenceResult{}, err
 		}
 	}
 
@@ -2250,11 +1952,11 @@ func (h *OutputHandler) persistMessageWithTodoEvent(
 	seq, err := createMessageRow(ctx, h.queries, write.params)
 	if errors.Is(err, sql.ErrNoRows) && content.IdempotencyKey != "" {
 		cache.Mu.Unlock()
-		return nil
+		return messagePersistenceResult{}, nil
 	}
 	if err != nil {
 		cache.Mu.Unlock()
-		return err
+		return messagePersistenceResult{}, err
 	}
 	var (
 		items   []todoevents.Item
@@ -2268,15 +1970,16 @@ func (h *OutputHandler) persistMessageWithTodoEvent(
 	}
 	cache.Mu.Unlock()
 
+	content.WriteReceipt.RecordStoredMessage(seq)
+	content.WriteReceipt.RecordStoredWrite(true)
 	h.publishMessageWrite(write, seq)
 	if todoErr != nil {
-		slog.Warn("apply todo event", "agent_id", agentID, "span_type", span.SpanType, "error", todoErr)
-		return nil
+		return messagePersistenceResult{todoError: todoErr}, nil
 	}
 	if mutated {
-		h.broadcastTodoChange(agentID, items)
+		h.enqueueTodoChange(agentID, items)
 	}
-	return nil
+	return messagePersistenceResult{}, nil
 }
 
 type todoUpdateMutation struct {
@@ -2323,28 +2026,8 @@ func withTodoSnapshot(content agent.MessageContent, item todoevents.Item) (agent
 	return content, nil
 }
 
-// applyExtractedTodoEvent applies one to-do event the CALLER already extracted, and
-// broadcasts AgentTodosChanged when it moved the list.
-//
-// Split from the function above for the enrichment path, which must extract the
-// event itself: it compares what the new supplement yields against what the row had
-// already yielded, so it holds the event before it decides to apply it. Handing the
-// bytes back would make a third extraction of one row, with a second database read
-// for the paired tool_use behind it.
-func (h *OutputHandler) applyExtractedTodoEvent(agentID string, ev todoevents.Event) error {
-	items, mutated, err := h.applyTodoEvent(agentID, ev)
-	if err != nil {
-		return err
-	}
-	if !mutated {
-		return nil
-	}
-	h.broadcastTodoChange(agentID, items)
-	return nil
-}
-
-func (h *OutputHandler) broadcastTodoChange(agentID string, items []todoevents.Item) {
-	h.watcher.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
+func (h *OutputHandler) enqueueTodoChange(agentID string, items []todoevents.Item) {
+	h.watcher.EnqueueAgentEvent(agentID, &leapmuxv1.AgentEvent{
 		AgentId: agentID,
 		Event: &leapmuxv1.AgentEvent_TodosChanged{
 			TodosChanged: &leapmuxv1.AgentTodosChanged{
@@ -2370,8 +2053,7 @@ func (h *OutputHandler) broadcastTodoChange(agentID string, items []todoevents.I
 // read that failed, both mean the same thing to the caller, which is that it builds
 // the less detailed row instead of none at all. The nil is memoized too, so a miss
 // costs one query rather than one per parser.
-func (h *OutputHandler) pairedToolUseLookup(agentID string, span agent.SpanInfo) func() []byte {
-	sessionID := h.messageSessionID(agentID)
+func (h *OutputHandler) pairedToolUseLookup(agentID, sessionID string, span agent.SpanInfo) func() []byte {
 	return sync.OnceValue(func() []byte {
 		message, err := h.readToolRequest(agentID, sessionID, span.SpanID)
 		if err != nil {
@@ -2768,213 +2450,8 @@ func todoItemsEqual(rows []cachedTodo, other []todoevents.Item) bool {
 	return true
 }
 
-// persistNotificationThreaded persists a notification message, appending it
-// to the current notification thread if one exists. It reports whether the
-// notification produced a frontend-visible broadcast (false when a flapping
-// notification collapses byte-identically into the existing thread tail and the
-// broadcast is skipped).
-func (h *OutputHandler) persistNotificationThreaded(agentID string, agentProvider leapmuxv1.AgentProvider, plugin agent.Provider, source leapmuxv1.MessageSource, contentJSON []byte) (bool, error) {
-	if h.wakeLock != nil {
-		h.wakeLock.RecordActivity()
-	}
-	mu := h.notifMutex(agentID)
-	mu.Lock()
-	defer mu.Unlock()
-
-	if ref, ok := h.lastNotifThread.Load(agentID); ok {
-		threadRef := ref.(*notifThreadRef)
-		broadcast, err := h.appendToNotificationThread(agentID, agentProvider, plugin, threadRef, source, contentJSON)
-		if err == nil {
-			return broadcast, nil
-		}
-		// errSourceMismatch is the documented fall-through signal — start a
-		// fresh standalone thread silently. Any other error is a real failure
-		// (DB read/write, decompress, marshal); log it but still fall through
-		// so the notification reaches users via a new standalone row.
-		if !errors.Is(err, errSourceMismatch) {
-			slog.Error("append to notification thread failed; creating standalone", "agent_id", agentID, "error", err)
-		}
-	}
-
-	return h.createNotificationStandalone(agentID, agentProvider, source, contentJSON)
-}
-
-// errSourceMismatch is returned by appendToNotificationThread when the
-// existing thread's source does not match the incoming notification's.
-// It is a normal fall-through signal, not a failure — the caller starts
-// a fresh standalone thread.
-var errSourceMismatch = errors.New("notification thread source mismatch")
-
-// appendToNotificationThread appends a message to an existing notification thread.
-// Returns whether a frontend-visible broadcast was emitted (false when the
-// notification collapses byte-identically into the existing tail), and an error
-// if the thread's source does not match the new notification's source — adjacent
-// cross-source notifications must produce separate threads so that the persisted
-// source remains a truthful per-thread provenance signal. The caller treats the
-// error as a normal "fall through to a new standalone thread" signal, not as a
-// failure.
-func (h *OutputHandler) appendToNotificationThread(agentID string, agentProvider leapmuxv1.AgentProvider, plugin agent.Provider, threadRef *notifThreadRef, source leapmuxv1.MessageSource, contentJSON []byte) (bool, error) {
-	// Short-circuit cross-source flips before the DB hit — the in-memory
-	// threadRef carries the source that was persisted when the thread
-	// opened, so we don't need to fetch + decompress the row to learn it.
-	if threadRef.source != source {
-		return false, errSourceMismatch
-	}
-
-	parentRow, err := h.queries.GetMessageByAgentAndID(bgCtx(), db.GetMessageByAgentAndIDParams{
-		ID:      threadRef.msgID,
-		AgentID: agentID,
-	})
-	if err != nil {
-		return false, err
-	}
-
-	parentData, err := msgcodec.Decompress(parentRow.Content, parentRow.ContentCompression)
-	if err != nil {
-		return false, err
-	}
-
-	wrapper, err := unwrapNotifContent(parentData)
-	if err != nil {
-		return false, err
-	}
-
-	// If a repeated ProviderScoped notification collapses into the existing
-	// tail and produces a byte-identical slice, skip the DB write and broadcast.
-	// The false return tells the reset decorator that no visible row arrived.
-	// It must not reset the live progress counters in that case.
-	oldMessages := wrapper.Messages
-	nextMessages := append(slices.Clone(oldMessages), contentJSON)
-	nextMessages = consolidateNotificationThread(nextMessages, plugin)
-	if rawMessageSlicesEqual(oldMessages, nextMessages) {
-		return false, nil
-	}
-
-	wrapper.Messages = nextMessages
-	wrapper.OldSeqs = append(wrapper.OldSeqs, parentRow.Seq)
-	if len(wrapper.OldSeqs) > 16 {
-		wrapper.OldSeqs = wrapper.OldSeqs[len(wrapper.OldSeqs)-16:]
-	}
-
-	merged, err := json.Marshal(wrapper)
-	if err != nil {
-		return false, fmt.Errorf("marshal notification thread: %w", err)
-	}
-
-	mergedCompressed, mergedCompType := msgcodec.Compress(merged)
-
-	// Re-snapshot active spans at append time. The thread row's seq is
-	// bumped to the latest position, so its span_lines must reflect the
-	// spans active *now* — not whatever was active when the thread was
-	// originally created.
-	spanLines := h.snapshotPassthroughSpanLines(agentID)
-
-	newSeq, err := h.queries.UpdateNotificationThread(bgCtx(), db.UpdateNotificationThreadParams{
-		Content:            mergedCompressed,
-		ContentCompression: mergedCompType,
-		SpanLines:          spanLines,
-		ID:                 parentRow.ID,
-		AgentID:            agentID,
-	})
-	if err != nil {
-		return false, err
-	}
-
-	threadRef.seq = newSeq
-	h.lastNotifThread.Store(agentID, threadRef)
-
-	h.broadcastMessage(agentID, &leapmuxv1.AgentChatMessage{
-		Id:                 parentRow.ID,
-		Source:             parentRow.Source,
-		Content:            mergedCompressed,
-		ContentCompression: mergedCompType,
-		Seq:                newSeq,
-		AgentProvider:      agentProvider,
-		CreatedAt:          timefmt.Format(parentRow.CreatedAt.Time),
-		Depth:              0,
-		SpanLines:          spanLines,
-		// Carry the row's scroll-rail mark so this MOVE broadcast matches what a
-		// refetch (messageToProto) would report. UpdateNotificationThread leaves
-		// mark_type untouched, so parentRow.MarkType is still authoritative. Today
-		// threaded rows are unmarked (0), but a future marked-and-threaded row would
-		// otherwise show its dot only after a reload.
-		MarkType: parentRow.MarkType,
-		// This broadcast is a MOVE: the consolidated thread row jumped from its old
-		// seq (parentRow.Seq, read before UpdateNotificationThread) to newSeq. Mark it
-		// so consumers reconcile by id instead of treating it as a new message. Only set
-		// here -- the persisted row + replays carry no previous_seq (0).
-		PreviousSeq: parentRow.Seq,
-	})
-
-	return true, nil
-}
-
-// createNotificationStandalone creates a new standalone notification message.
-// It always broadcasts on success, so it reports broadcast=true.
-func (h *OutputHandler) createNotificationStandalone(agentID string, agentProvider leapmuxv1.AgentProvider, source leapmuxv1.MessageSource, contentJSON []byte) (bool, error) {
-	return h.createNotificationStandaloneWithIdempotencyKey(agentID, agentProvider, source, contentJSON, "")
-}
-
-func (h *OutputHandler) createNotificationStandaloneWithIdempotencyKey(agentID string, agentProvider leapmuxv1.AgentProvider, source leapmuxv1.MessageSource, contentJSON []byte, idempotencyKey string) (bool, error) {
-	msgID := id.Generate()
-	wrapped := wrapNotifContent(contentJSON)
-	compressed, compressionType := msgcodec.Compress(wrapped)
-	now := nowMillis()
-
-	// Capture currently-active spans so the notification renders with
-	// passthrough vertical bars instead of breaking the column.
-	spanLines := h.snapshotPassthroughSpanLines(agentID)
-	agentSessionID := ""
-	if idempotencyKey != "" {
-		agentSessionID = h.messageSessionID(agentID)
-	}
-
-	seq, err := createMessageRow(bgCtx(), h.queries, db.CreateMessageParams{
-		ID:                 msgID,
-		AgentID:            agentID,
-		AgentSessionID:     agentSessionID,
-		Source:             source,
-		Content:            compressed,
-		ContentCompression: compressionType,
-		IdempotencyKey:     idempotencyKey,
-		Depth:              0,
-		SpanID:             "",
-		ParentSpanID:       "",
-		SpanLines:          spanLines,
-		SpanColor:          0,
-		AgentProvider:      agentProvider,
-		CreatedAt:          sqltime.NewSQLiteTime(now),
-	})
-	if errors.Is(err, sql.ErrNoRows) && idempotencyKey != "" {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-
-	h.lastNotifThread.Store(agentID, &notifThreadRef{
-		msgID:  msgID,
-		seq:    seq,
-		source: source,
-	})
-
-	h.broadcastMessage(agentID, &leapmuxv1.AgentChatMessage{
-		Id:                 msgID,
-		Source:             source,
-		Content:            compressed,
-		ContentCompression: compressionType,
-		Seq:                seq,
-		AgentProvider:      agentProvider,
-		CreatedAt:          timefmt.Format(now),
-		Depth:              0,
-		SpanLines:          spanLines,
-	})
-	return true, nil
-}
-
-// broadcastMessage broadcasts a single agent message event to all watchers.
-func (h *OutputHandler) broadcastMessage(agentID string, msg *leapmuxv1.AgentChatMessage) {
-	h.watcher.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
+func (h *OutputHandler) enqueueMessage(agentID string, msg *leapmuxv1.AgentChatMessage) {
+	h.watcher.EnqueueAgentEvent(agentID, &leapmuxv1.AgentEvent{
 		AgentId: agentID,
 		Event: &leapmuxv1.AgentEvent_AgentMessage{
 			AgentMessage: msg,
@@ -3066,7 +2543,7 @@ func (h *OutputHandler) PersistLeapMuxNotification(agentID string, agentProvider
 		slog.Warn("marshal notification content", "agent_id", agentID, "error", err)
 		return
 	}
-	if _, err := h.persistNotificationThreaded(agentID, agentProvider, h.agents.Registry().Plugin(agentProvider), leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, contentJSON); err != nil {
+	if _, err := h.persistNotificationThreaded(agentID, agentProvider, h.agents.Registry().Plugin(agentProvider), leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, agent.MessageContent{Original: contentJSON}); err != nil {
 		slog.Warn("failed to persist notification", "agent_id", agentID, "error", err)
 	}
 }
@@ -3200,223 +2677,4 @@ func (h *OutputHandler) updatePlan(agentID string, compressed []byte, compressio
 		payload[contracts.NotificationFieldUpdateAgentTitle] = true
 	}
 	h.PersistLeapMuxNotification(agentID, agentRow.AgentProvider, payload)
-}
-
-// indexedRaw bundles a message's original index, raw bytes, and (optional)
-// classification so downstream sort-and-emit can reconstruct the persisted
-// thread in original order. idx == -1 marks an empty slot.
-type indexedRaw struct {
-	idx  int
-	raw  json.RawMessage
-	kind agent.NotificationKind
-}
-
-// rawMessageSlicesEqual reports whether two slices of raw JSON messages have
-// identical bytes at every position. Used to short-circuit no-op writes in
-// the notification-thread append path.
-func rawMessageSlicesEqual(a, b []json.RawMessage) bool {
-	return slices.EqualFunc(a, b, func(x, y json.RawMessage) bool {
-		return bytes.Equal(x, y)
-	})
-}
-
-// consolidateNotificationThread consolidates a notification thread's messages.
-// Service-owned LeapMux notification types are merged centrally, while
-// provider-owned raw payloads are classified through the injected plugin.
-// Ordering is preserved by the last occurrence index of each retained entry.
-func consolidateNotificationThread(messages []json.RawMessage, plugin agent.Provider) []json.RawMessage {
-	if plugin == nil {
-		plugin = agent.ProviderDefaults{}
-	}
-
-	type settingsChange struct {
-		Old string `json:"old"`
-		New string `json:"new"`
-	}
-
-	type envelope struct {
-		Type    string                    `json:"type"`
-		Subtype string                    `json:"subtype"`
-		Changes map[string]settingsChange `json:"changes,omitempty"`
-		RLInfo  *struct {
-			RateLimitType string `json:"rateLimitType"`
-		} `json:"rate_limit_info,omitempty"`
-	}
-
-	// Last-by-index slots: each holds the most recent occurrence of one
-	// notification class. settings is special — its raw payload is rebuilt
-	// at emit time from mergedChanges so the persisted entry reflects only
-	// the net effective diff across the thread.
-	settings := indexedRaw{idx: -1}
-	contextCleared := indexedRaw{idx: -1}
-	interrupted := indexedRaw{idx: -1}
-	// stop_ignored folds like interrupted: keep the latest. Every occurrence
-	// says the same thing -- the accepted stop changed nothing, press again --
-	// and the newest one is the one whose turn is still running.
-	stopIgnored := indexedRaw{idx: -1}
-	planExec := indexedRaw{idx: -1}
-	planUpdated := indexedRaw{idx: -1}
-	status := indexedRaw{idx: -1}
-	apiRetry := indexedRaw{idx: -1}
-
-	mergedChanges := map[string]settingsChange{}
-
-	rateLimitByType := map[string]indexedRaw{}
-	providerEntries := map[string]indexedRaw{}
-
-	var keepAll []indexedRaw
-
-	for i, raw := range messages {
-		var env envelope
-		if err := json.Unmarshal(raw, &env); err != nil {
-			slog.Warn("consolidate notification unmarshal failed", "error", err)
-			keepAll = append(keepAll, indexedRaw{idx: i, raw: raw})
-			continue
-		}
-
-		switch env.Type {
-		case contracts.NotificationTypeSettingsChanged:
-			for key, val := range env.Changes {
-				if existing, ok := mergedChanges[key]; ok {
-					mergedChanges[key] = settingsChange{Old: existing.Old, New: val.New}
-				} else {
-					mergedChanges[key] = val
-				}
-			}
-			settings.idx = i
-
-		case contracts.NotificationTypeContextCleared:
-			contextCleared = indexedRaw{idx: i, raw: raw}
-			keepAll = slices.DeleteFunc(keepAll, func(ir indexedRaw) bool {
-				return ir.kind == agent.NotificationKindCompactionBoundary
-			})
-
-		case contracts.NotificationTypePlanExecution:
-			planExec = indexedRaw{idx: i, raw: raw}
-
-		case contracts.NotificationTypePlanUpdated:
-			// Multiple plan_updated entries within one notification thread
-			// fold to the most recent — same pattern as plan_execution. The
-			// frontend extractor already prefers the latest, but keeping
-			// only the most recent in the persisted thread also keeps the
-			// chat readable when an agent iterates on a plan title.
-			planUpdated = indexedRaw{idx: i, raw: raw}
-
-		// goal_updated and goal_cleared have NO case here, and the omission is
-		// deliberate: they fall to `default:`, where no Classify recognizes
-		// them, and every entry is kept.
-		//
-		// Folding them to the latest -- the obvious move, because plan_updated
-		// right above does exactly that -- destroys the rows this feature
-		// exists to write. The applier already writes one row per TRANSITION
-		// and nothing per progress report, so each surviving entry is a real
-		// change, and two of them land adjacent precisely when the user drove
-		// both: a goal set and then paused, or the same objective restarted
-		// with a fresh created_at. Keeping only the last one reports "Goal
-		// paused: X" for a goal the reader never saw arrive, and reports one
-		// "Goal set: X" for a restart the transition test went out of its way
-		// to detect.
-		//
-		// A plan title iterating toward its final wording is the opposite case,
-		// which is why the two are treated differently.
-
-		case contracts.NotificationTypeInterrupted:
-			interrupted = indexedRaw{idx: i, raw: raw}
-
-		case contracts.NotificationTypeStopIgnored:
-			stopIgnored = indexedRaw{idx: i, raw: raw}
-
-		case contracts.NotificationTypeRateLimit:
-			key := "unknown"
-			if env.RLInfo != nil && env.RLInfo.RateLimitType != "" {
-				key = env.RLInfo.RateLimitType
-			}
-			rateLimitByType[key] = indexedRaw{idx: i, raw: raw}
-
-		case contracts.NotificationTypeCompacting:
-			status = indexedRaw{idx: i, raw: raw, kind: agent.NotificationKindStatus}
-
-		default:
-			class := plugin.Classify(raw)
-			switch class.Kind {
-			case agent.NotificationKindStatus:
-				status = indexedRaw{idx: i, raw: raw, kind: class.Kind}
-			case agent.NotificationKindAPIRetry:
-				apiRetry = indexedRaw{idx: i, raw: raw, kind: class.Kind}
-			case agent.NotificationKindCompactionBoundary:
-				status = indexedRaw{idx: -1}
-				if contextCleared.idx >= 0 && i > contextCleared.idx {
-					contextCleared = indexedRaw{idx: -1}
-				}
-				keepAll = append(keepAll, indexedRaw{idx: i, raw: raw, kind: class.Kind})
-			case agent.NotificationKindProviderScoped:
-				prev, ok := providerEntries[class.Key]
-				if ok {
-					merged, err := plugin.Merge(class, prev.raw, raw)
-					if err != nil {
-						slog.Warn("consolidate provider notification merge failed", "key", class.Key, "error", err)
-						merged = raw
-					}
-					providerEntries[class.Key] = indexedRaw{idx: i, raw: merged, kind: class.Kind}
-				} else {
-					providerEntries[class.Key] = indexedRaw{idx: i, raw: raw, kind: class.Kind}
-				}
-			default:
-				keepAll = append(keepAll, indexedRaw{idx: i, raw: raw})
-			}
-		}
-	}
-
-	var entries []indexedRaw
-
-	// Settings is rebuilt at emit time so the persisted payload reflects only
-	// effective net changes; intermediate flips that cancel out are dropped.
-	if settings.idx >= 0 {
-		effective := map[string]settingsChange{}
-		for key, val := range mergedChanges {
-			if val.Old != val.New {
-				effective[key] = val
-			}
-		}
-		if len(effective) > 0 {
-			entry := map[string]interface{}{
-				contracts.NotificationFieldType:    contracts.NotificationTypeSettingsChanged,
-				contracts.NotificationFieldChanges: effective,
-			}
-			if data, err := json.Marshal(entry); err == nil {
-				entries = append(entries, indexedRaw{idx: settings.idx, raw: data})
-			}
-		}
-	}
-
-	for _, slot := range []indexedRaw{contextCleared, planExec, planUpdated, interrupted, stopIgnored, status, apiRetry} {
-		if slot.idx >= 0 {
-			entries = append(entries, slot)
-		}
-	}
-
-	for _, rateLimit := range rateLimitByType {
-		entries = append(entries, rateLimit)
-	}
-
-	for _, providerEntry := range providerEntries {
-		entries = append(entries, providerEntry)
-	}
-
-	entries = append(entries, keepAll...)
-
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].idx < entries[j].idx
-	})
-
-	result := make([]json.RawMessage, 0, len(entries))
-	for _, e := range entries {
-		result = append(result, e.raw)
-	}
-
-	if len(result) == 0 {
-		return []json.RawMessage{}
-	}
-
-	return result
 }

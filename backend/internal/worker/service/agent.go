@@ -14,6 +14,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/agentlabels"
 	"github.com/leapmux/leapmux/internal/util/id"
+	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/util/ptrconv"
 	"github.com/leapmux/leapmux/internal/util/timefmt"
@@ -21,6 +22,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/leapmux/leapmux/internal/worker/channel"
+	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/gitutil"
 	"github.com/leapmux/leapmux/internal/worker/inputqueue"
@@ -559,7 +561,13 @@ func registerAgentHandlers(d registrar, svc *Service) {
 
 			protoMessages := make([]*leapmuxv1.AgentChatMessage, 0, len(dbMessages))
 			for i := range dbMessages {
-				protoMessages = append(protoMessages, messageToProto(&dbMessages[i]))
+				message, err := messageToProto(&dbMessages[i])
+				if err != nil {
+					slog.Error("prepare the listed transcript message", "agent_id", agentID, "message_id", dbMessages[i].ID, "error", err)
+					sendInternalError(sender, "failed to prepare transcript message")
+					return
+				}
+				protoMessages = append(protoMessages, message)
 			}
 
 			// The authoritative live-tail seq, so the --follow CLI can resolve a resume
@@ -628,7 +636,13 @@ func registerAgentHandlers(d registrar, svc *Service) {
 				return
 			}
 
-			sendProtoResponse(sender, &leapmuxv1.GetAgentMessageResponse{Message: messageToProto(&row)})
+			message, err := messageToProto(&row)
+			if err != nil {
+				slog.Error("prepare the requested transcript message", "agent_id", agentID, "message_id", row.ID, "error", err)
+				sendInternalError(sender, "failed to prepare transcript message")
+				return
+			}
+			sendProtoResponse(sender, &leapmuxv1.GetAgentMessageResponse{Message: message})
 		})
 
 	registerAgentGuarded(d, contracts.RPCMethodGetAgentSpanMessages, leapmuxv1.Scope_SCOPE_AGENT_READ,
@@ -651,7 +665,13 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			}
 			messages := make([]*leapmuxv1.AgentChatMessage, 0, len(rows))
 			for _, row := range rows {
-				messages = append(messages, messageToProto(&row))
+				message, err := messageToProto(&row)
+				if err != nil {
+					slog.Error("prepare the related transcript message", "agent_id", agentRow.ID, "message_id", row.ID, "error", err)
+					sendInternalError(sender, "failed to prepare transcript message")
+					return
+				}
+				messages = append(messages, message)
 			}
 			sendProtoResponse(sender, &leapmuxv1.GetAgentSpanMessagesResponse{Messages: messages})
 		})
@@ -693,7 +713,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			}
 			marks := make([]*leapmuxv1.MessageMark, 0, len(rows))
 			for i := range rows {
-				marks = append(marks, &leapmuxv1.MessageMark{Seq: rows[i].Seq, Type: rows[i].MarkType})
+				marks = append(marks, &leapmuxv1.MessageMark{Seq: rows[i].Seq, Type: workerdb.StorageEnumValue(rows[i].MarkType)})
 			}
 
 			// Two endpoint seeks for the whole-history bounds. min/max are left UNSET on error
@@ -816,8 +836,9 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			// that the provider confirms. Persist only the axes that this edit
 			// changes, via compare-and-swap, so a concurrent server-initiated PersistSettingsRefresh
 			// (no shared lock) can't be clobbered by a stale full-map blob and vice versa.
-			optimistic, _, err := casPersistAgentOptions(bgCtx(), svc.Queries, agentID, dbAgent.Options,
+			optimistic, err := casPersistAgentOptions(bgCtx(), svc.Queries, agentID, dbAgent.Options,
 				optionsChangeDelta(oldOptions, newOptions))
+			optimistic.report(agentID)
 			if err != nil {
 				slog.Error("failed to update agent settings", "agent_id", agentID, "error", err)
 				sendInternalError(sender, "failed to update agent settings")
@@ -827,7 +848,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			// corrective CAS starts from the current row rather than the pre-write snapshot --
 			// otherwise its first compare-and-swap is guaranteed to miss (the row already moved)
 			// and burns an extra re-read before converging.
-			dbAgent.Options = optimistic
+			dbAgent.Options = optimistic.options
 
 			// Apply each confirmed correction to the requested options. Keep a requested
 			// value when the agent is offline or the provider cannot confirm its readback.
@@ -1362,7 +1383,7 @@ func (svc *Service) replayAgentCatchUp(
 	// each genuine settle that raced
 	// the replay.
 	replayStartTail := svc.maxSeqOrNil(agentID, "failed to read max seq for catch-up start")
-	broadcastReplayAgentEvent(sink, &leapmuxv1.AgentEvent{
+	broadcastReplayAgentEvent(sink, agentID, &leapmuxv1.AgentEvent{
 		AgentId: agentID,
 		Event: &leapmuxv1.AgentEvent_CatchUpStart{
 			CatchUpStart: &leapmuxv1.CatchUpStart{
@@ -1417,17 +1438,24 @@ func (svc *Service) replayAgentCatchUp(
 		}
 		if replayErr != nil {
 			slog.Error("failed to list messages for replay", "agent_id", agentID, "error", replayErr)
-		} else {
-			for j := range replayMessages {
-				broadcastReplayAgentEvent(sink, &leapmuxv1.AgentEvent{
-					AgentId: agentID,
-					// Sequence values increase monotonically. A deleted value stays
-					// unused, so cursor dedup removes only replay duplicates.
-					Event: &leapmuxv1.AgentEvent_AgentMessage{
-						AgentMessage: messageToProto(&replayMessages[j]),
-					},
-				})
+			sink.fail(replayErr)
+			return
+		}
+		for j := range replayMessages {
+			message, err := messageToProto(&replayMessages[j])
+			if err != nil {
+				slog.Error("prepare the replayed transcript message", "agent_id", agentID, "message_id", replayMessages[j].ID, "error", err)
+				sink.fail(err)
+				return
 			}
+			broadcastReplayAgentEvent(sink, agentID, &leapmuxv1.AgentEvent{
+				AgentId: agentID,
+				// Sequence values increase monotonically. A deleted value stays
+				// unused, so cursor dedup removes only replay duplicates.
+				Event: &leapmuxv1.AgentEvent_AgentMessage{
+					AgentMessage: message,
+				},
+			})
 		}
 	}
 
@@ -1447,7 +1475,7 @@ func (svc *Service) replayAgentCatchUp(
 	if todoItems, todoErr := svc.Output.LoadTodos(bgCtx(), agentID); todoErr != nil {
 		slog.Warn("failed to load agent_todos for replay", "agent_id", agentID, "error", todoErr)
 	} else {
-		broadcastReplayAgentEvent(sink, &leapmuxv1.AgentEvent{
+		broadcastReplayAgentEvent(sink, agentID, &leapmuxv1.AgentEvent{
 			AgentId: agentID,
 			Event: &leapmuxv1.AgentEvent_TodosChanged{
 				TodosChanged: &leapmuxv1.AgentTodosChanged{
@@ -1468,7 +1496,7 @@ func (svc *Service) replayAgentCatchUp(
 	if bgItems, bgErr := svc.Output.LoadBackgroundTasks(bgCtx(), rootID); bgErr != nil {
 		slog.Warn("failed to load agent_background_tasks for replay", "agent_id", agentID, "error", bgErr)
 	} else {
-		broadcastReplayAgentEvent(sink, &leapmuxv1.AgentEvent{
+		broadcastReplayAgentEvent(sink, agentID, &leapmuxv1.AgentEvent{
 			AgentId: rootID,
 			Event: &leapmuxv1.AgentEvent_BackgroundTasksChanged{
 				BackgroundTasksChanged: &leapmuxv1.AgentBackgroundTasksChanged{
@@ -1499,7 +1527,8 @@ func (svc *Service) replayAgentCatchUp(
 		}
 		goal = loaded
 	}
-	broadcastReplayAgentEvent(sink, svc.Output.GoalChangedEvent(rootID, goal.Goal, goal.UpdatedAt))
+	supportedGoalActions := svc.Output.SupportedGoalActions(rootID)
+	broadcastReplayAgentEvent(sink, agentID, GoalChangedEvent(rootID, goal, supportedGoalActions))
 
 	if !sink.alive() {
 		return
@@ -1516,7 +1545,7 @@ func (svc *Service) replayAgentCatchUp(
 	// Each child sink owns its own generation counters. Replay the sink for the
 	// subscribed agent; the goal above remains root-owned.
 	if event := svc.Output.SessionInfoReplayEvent(agentID); event != nil {
-		broadcastReplayAgentEvent(sink, event)
+		broadcastReplayAgentEvent(sink, agentID, event)
 		if !sink.alive() {
 			return
 		}
@@ -1553,14 +1582,14 @@ func (svc *Service) replayAgentCatchUp(
 	default:
 		statusChange = buildAgentInactiveStatus(&dbAgent, gitStatus)
 	}
-	broadcastReplayAgentEvent(sink, &leapmuxv1.AgentEvent{
+	broadcastReplayAgentEvent(sink, agentID, &leapmuxv1.AgentEvent{
 		AgentId: agentID,
 		Event:   &leapmuxv1.AgentEvent_StatusChange{StatusChange: statusChange},
 	})
 	if queueSnapshot, queueErr := svc.InputQueue.Snapshot(bgCtx(), agentID); queueErr != nil {
 		slog.Warn("failed to load agent input queue for replay", "agent_id", agentID, "error", queueErr)
 	} else {
-		broadcastReplayAgentEvent(sink, &leapmuxv1.AgentEvent{
+		broadcastReplayAgentEvent(sink, agentID, &leapmuxv1.AgentEvent{
 			AgentId: agentID,
 			Event: &leapmuxv1.AgentEvent_InputQueueChanged{
 				InputQueueChanged: &leapmuxv1.AgentInputQueueChanged{Snapshot: queueSnapshotProto(queueSnapshot)},
@@ -1580,10 +1609,14 @@ func (svc *Service) replayAgentCatchUp(
 	} else {
 		for _, cr := range controlReqs {
 			replayedControls[controlRequestInstance{RequestID: cr.RequestID, ClaimToken: cr.ClaimToken}] = struct{}{}
-			broadcastReplayAgentEvent(sink, &leapmuxv1.AgentEvent{
+			request, stateErr := buildAgentControlRequest(svc.Queries, agentID, dbAgent.AgentProvider, agent.ControlRequest{RequestID: cr.RequestID, Payload: cr.Payload, SourceSeq: cr.SourceSeq, AgentSessionID: cr.AgentSessionID}, cr.ClaimToken)
+			if stateErr != nil {
+				slog.Error("could not read the control response state", "agent_id", agentID, "request_id", cr.RequestID, "error", stateErr)
+			}
+			broadcastReplayAgentEvent(sink, agentID, &leapmuxv1.AgentEvent{
 				AgentId: agentID,
 				Event: &leapmuxv1.AgentEvent_ControlRequest{
-					ControlRequest: buildAgentControlRequest(svc.Queries, agentID, dbAgent.AgentProvider, agent.ControlRequest{RequestID: cr.RequestID, Payload: cr.Payload, SourceSeq: cr.SourceSeq, AgentSessionID: cr.AgentSessionID}, cr.ClaimToken),
+					ControlRequest: request,
 				},
 			})
 		}
@@ -1600,12 +1633,15 @@ func (svc *Service) replayAgentCatchUp(
 			if _, exists := replayedControls[controlRequestInstance{RequestID: answer.RequestID, ClaimToken: answer.ClaimToken}]; exists {
 				continue
 			}
-			broadcastReplayAgentEvent(sink, &leapmuxv1.AgentEvent{
+			request, stateErr := buildAgentControlRequest(svc.Queries, agentID, answer.AgentProvider, agent.ControlRequest{
+				RequestID: answer.RequestID, Payload: answer.RequestPayload, SourceSeq: answer.SourceSeq, AgentSessionID: answer.AgentSessionID,
+			}, answer.ClaimToken)
+			if stateErr != nil {
+				slog.Error("could not read the control response state", "agent_id", agentID, "request_id", answer.RequestID, "error", stateErr)
+			}
+			broadcastReplayAgentEvent(sink, agentID, &leapmuxv1.AgentEvent{
 				AgentId: agentID,
-				Event: &leapmuxv1.AgentEvent_ControlRequest{ControlRequest: buildAgentControlRequest(svc.Queries, agentID,
-					answer.AgentProvider, agent.ControlRequest{
-						RequestID: answer.RequestID, Payload: answer.RequestPayload, SourceSeq: answer.SourceSeq, AgentSessionID: answer.AgentSessionID,
-					}, answer.ClaimToken)},
+				Event:   &leapmuxv1.AgentEvent_ControlRequest{ControlRequest: request},
 			})
 		}
 	}
@@ -1620,7 +1656,7 @@ func (svc *Service) replayAgentCatchUp(
 	// spurious 0 would wrongly wipe a populated one -- an unset field tells the
 	// client "couldn't determine, skip reconciliation".
 	catchUpLatestSeq := svc.maxSeqOrNil(agentID, "failed to read max seq for catch-up complete")
-	broadcastReplayAgentEvent(sink, &leapmuxv1.AgentEvent{
+	broadcastReplayAgentEvent(sink, agentID, &leapmuxv1.AgentEvent{
 		AgentId: agentID,
 		Event: &leapmuxv1.AgentEvent_CatchUpComplete{
 			// start_tail_seq = the tail when replay began (CatchUpStart's value),
@@ -2781,7 +2817,9 @@ func (svc *Service) applySettingsLive(dbAgent db.Agent, newOptions OptionMap) (O
 	// server-initiated PersistSettingsRefresh holding no lifecycle lock can't be clobbered --
 	// the CAS converges rather than letting a stale full-map write win.
 	if delta := optionsChangeDelta(newOptions, settledOptions); len(delta) > 0 {
-		if _, _, err := casPersistAgentOptions(bgCtx(), svc.Queries, agentID, dbAgent.Options, delta); err != nil {
+		settled, err := casPersistAgentOptions(bgCtx(), svc.Queries, agentID, dbAgent.Options, delta)
+		settled.report(agentID)
+		if err != nil {
 			slog.Warn("failed to persist settled options after live update", "agent_id", agentID, "error", err)
 		}
 	}
@@ -4204,21 +4242,18 @@ func (svc *Service) restartPlanContextLocked(agentID, targetMode string, dbAgent
 // watchers). The WatchEvents replay loop emits several agent events this way, so
 // routing them through one helper keeps the four-level envelope from being
 // re-spelled (and the AgentId mis-filled) per event.
-func broadcastReplayAgentEvent(sink *replaySink, event *leapmuxv1.AgentEvent) {
-	// The one place a replayed frame is marked. A client registers its live
-	// watch before this burst runs and both write the same stream, so arrival
-	// order cannot tell a live frame from a replayed one. See AgentEvent.replay.
+func broadcastReplayAgentEvent(sink *replaySink, replayAgentID string, event *leapmuxv1.AgentEvent) {
+	// The watched agent owns the replay lifetime, including projected root state.
 	event.Replay = true
+	event.ReplayId = sink.replayID
+	event.ReplayAgentId = replayAgentID
 	sink.send(&leapmuxv1.WatchEventsResponse{
 		Event: &leapmuxv1.WatchEventsResponse_AgentEvent{AgentEvent: event},
 	})
 }
 
-func buildAgentControlRequest(queries *db.Queries, agentID string, provider leapmuxv1.AgentProvider, request agent.ControlRequest, claimToken string) *leapmuxv1.AgentControlRequest {
+func buildAgentControlRequest(queries *db.Queries, agentID string, provider leapmuxv1.AgentProvider, request agent.ControlRequest, claimToken string) (*leapmuxv1.AgentControlRequest, error) {
 	state, err := controlResponseState(queries, agentID, request.RequestID, claimToken)
-	if err != nil {
-		slog.Error("could not read the control response state", "agent_id", agentID, "request_id", request.RequestID, "error", err)
-	}
 	return &leapmuxv1.AgentControlRequest{
 		ResponseState:  state,
 		AgentSessionId: request.AgentSessionID,
@@ -4230,7 +4265,7 @@ func buildAgentControlRequest(queries *db.Queries, agentID string, provider leap
 		// The per-instance token the frontend echoes in its answer so the idempotency claim can dedup
 		// a reused request_id per INSTANCE (see AgentControlRequest.claim_token).
 		ClaimToken: claimToken,
-	}
+	}, err
 }
 
 // messagePageMode is the DB scan resolveMessagePage selects for an anchor.
@@ -4370,16 +4405,46 @@ func reverseMessages(msgs []db.Message) {
 }
 
 // messageToProto converts a DB Message to a proto AgentChatMessage.
-func messageToProto(m *db.Message) *leapmuxv1.AgentChatMessage {
+func messageToProto(m *db.Message) (*leapmuxv1.AgentChatMessage, error) {
+	var rendering []byte
+	compression := leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE
+	if len(m.SupplementalContent) != 0 {
+		stored, err := msgcodec.Decompress(m.SupplementalContent, m.SupplementalContentCompression)
+		if err != nil {
+			return nil, fmt.Errorf("decode the stored supplement of message %q: %w", m.ID, err)
+		}
+		parsed, err := agent.ParseStoredMessageSupplement(stored)
+		if err != nil {
+			return nil, err
+		}
+		messageCount := 0
+		if parsed.HasNotificationReduction() {
+			content, err := msgcodec.Decompress(m.Content, m.ContentCompression)
+			if err != nil {
+				return nil, err
+			}
+			wrapper, err := unwrapNotifContent(content)
+			if err != nil || wrapper.Type != notifThreadWrapperType {
+				return nil, errors.New("the stored notification reduction has no matching thread")
+			}
+			messageCount = len(wrapper.Messages)
+		}
+		rendering, err = parsed.Project(messageCount)
+		if err != nil {
+			return nil, fmt.Errorf("project the stored supplement of message %q: %w", m.ID, err)
+		}
+		rendering, compression = compressOptionalSupplement(rendering)
+	}
 	return &leapmuxv1.AgentChatMessage{
+		TranscriptOnly:                 m.TranscriptOnly,
 		Id:                             m.ID,
 		AgentSessionId:                 m.AgentSessionID,
 		Source:                         m.Source,
 		Content:                        m.Content,
 		Seq:                            m.Seq,
 		ContentCompression:             leapmuxv1.ContentCompression(m.ContentCompression),
-		SupplementalContent:            m.SupplementalContent,
-		SupplementalContentCompression: leapmuxv1.ContentCompression(m.SupplementalContentCompression),
+		SupplementalContent:            rendering,
+		SupplementalContentCompression: compression,
 		SupplementalRevision:           m.SupplementalRevision,
 		AgentProvider:                  m.AgentProvider,
 		CreatedAt:                      timefmt.Format(m.CreatedAt.Time),
@@ -4389,10 +4454,10 @@ func messageToProto(m *db.Message) *leapmuxv1.AgentChatMessage {
 		SpanType:                       m.SpanType,
 		SpanColor:                      int32(m.SpanColor),
 		SpanLines:                      m.SpanLines,
-		MarkType:                       m.MarkType,
-		AssembledKind:                  leapmuxv1.AssembledMessageKind(m.AssembledKind),
-		Completion:                     leapmuxv1.MessageCompletion(m.Completion),
-	}
+		MarkType:                       workerdb.StorageEnumValue(m.MarkType),
+		AssembledKind:                  workerdb.StorageEnumValue(m.AssembledKind),
+		Completion:                     workerdb.StorageEnumValue(m.Completion),
+	}, nil
 }
 
 // tabTypeReadScope returns the scope that governs the facts a tab of this kind

@@ -5,7 +5,7 @@ import { mimoLandedChanges, mimoRequestedChanges } from './fileEdit'
 
 /** One finished file tool call. */
 function filePart(tool: string, metadata: Record<string, unknown>): MiMoToolPart {
-  return { callId: 'call-1', tool, status: 'completed', input: {}, output: '', error: '', title: '', metadata, attachments: [] }
+  return { partId: 'prt_call-1', messageId: 'msg_1', sessionId: 'ses_test', callId: 'call-1', tool, status: 'completed', input: {}, output: '', error: '', title: '', metadata, attachments: [] }
 }
 
 /** A unified diff of one line of one file. */

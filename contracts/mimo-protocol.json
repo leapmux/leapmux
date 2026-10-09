@@ -1,30 +1,30 @@
 {
-  "_readme": "The MiMo Code wire values that both the Go provider and the TypeScript plugin spell. MiMo runs as `mimo serve`, a local HTTP server with a server-sent event stream. The Worker preserves selected events verbatim. The browser dispatches on the same native values. events holds only the events that the Worker stores and the browser reads:\n- message.part.updated for a tool part.\n- session.status for turn completion.\n- session.error for turn failure.\n- permission.asked for the stored permission request. The other event types (message deltas, the actor, task, goal, workflow and inbox events) stay in the Go provider, because the browser never receives them. A question and its answer envelope use the OpenCode vocabulary in `opencode-protocol.json`, because MiMo sends the same shapes. `statusTypes` holds the `status.type` words of `session.status`. `partTypes` holds the part `type` words the browser draws; the text and reasoning parts become assembled messages in the worker and stay in Go. `toolStatuses` holds the `state.status` words of a tool part. `toolNames` holds the tool ids: on MiMo, `task` is the work-item tracker and `actor` starts a subagent, which is the opposite of upstream OpenCode. `actorActions`, `taskActions` and `taskStatuses` are the operation and status words those two tools carry. modes holds the primary agents that LeapMux declares. LeapMux uses its permission-mode axis for them, which supplies the same plan-mode and plan-approval controls as other providers. The server can offer more agents. defaultMode selects the primary agent for a new session. LeapMux owns options and permissionPolicies. MiMo supplies no permission-mode enumeration. LeapMux offers one axis with three values. Each value sets the native skip-all and auto-approve-delete switches. `permissionReplies` holds the answers a permission reply carries. `controlFields` holds the field that LeapMux adds to a stored plan-approval payload. actorStatuses holds a subagent status. actorOutcomes holds the outcome of its last turn. Native `actor wait` and `actor status` report that outcome as lastOutcome.\n\nThe browser owns native HTTP part and output path fields in its provider protocol module. The Worker preserves the original event. The browser shows the path beside the original preview. LeapMux reads no output file.",
+  "_readme": "This contract holds the MiMo Code wire values that the Go provider and the TypeScript plugin both consume. MiMo runs as `mimo serve`, a local HTTP server with a server-sent event stream. The worker preserves selected events verbatim. The browser dispatches on the same native values.\n\n`events` holds only the events that the worker stores and the browser reads:\n- `message.part.updated` for a tool part.\n- `session.status` for turn completion.\n- `session.error` for turn failure.\n- `permission.asked` for the stored permission request.\n\nThe other event types stay in Go because the browser never receives them:\n- Message deltas.\n- Actor events.\n- Task events.\n- Goal events.\n- Workflow events.\n- Inbox events.\n\nA question and its answer envelope use the vocabulary in `opencode-protocol.json`. MiMo sends the same shapes.\n\nEach table holds one native vocabulary:\n- `statusTypes` holds the `status.type` words of `session.status`.\n- `errorNames` holds the error names that both readers use to select a turn outcome.\n- `partTypes` holds the part `type` words that the browser draws. Text and reasoning become assembled worker messages, so their native types stay in Go.\n- `toolStatuses` holds the `state.status` words of a tool part.\n- `toolNames` holds the tool IDs. MiMo uses `task` to track work items and `actor` to start a subagent. Upstream OpenCode uses the opposite assignment.\n- `actorActions` holds the operation words of the actor tool.\n- `taskActions` holds the operation words of the task tool.\n- `taskStatuses` holds the status words of the task tool.\n- `modes` holds the primary agents that LeapMux declares. LeapMux uses its permission-mode axis for them. This axis supplies the same plan-mode and plan-approval controls as other providers. The server can offer more agents.\n- `defaultMode` selects the primary agent for a new session.\n- `options` and `permissionPolicies` hold LeapMux-owned values. MiMo supplies no permission-mode enumeration. LeapMux offers one axis with three values. Each value sets the native skip-all and auto-approve-delete switches.\n- `permissionReplies` holds the answers that a permission reply carries.\n- `controlFields` holds the field that LeapMux adds to a stored plan-approval payload.\n- `actorStatuses` holds a subagent status.\n- `actorOutcomes` holds the outcome of its last turn. Native `actor wait` and `actor status` report that outcome as `lastOutcome`.\n\nThe browser owns native HTTP part and output path fields in its provider protocol module. The worker preserves the original event. The browser shows the path beside the original preview. LeapMux reads no output file.",
   "_unread": {
     "actorStatuses": {
       "Pending": {
         "sides": [
           "go"
         ],
-        "why": "the worker opens and closes a subagent row on `running` and `idle` alone, because MiMo publishes only those two in `actor.status`; the browser reads the other words from the result of an `actor wait` or `actor status` call"
+        "why": "MiMo publishes only `running` and `idle` in `actor.status`. The worker uses those two values to open and close subagent rows. The browser reads the other values from `actor wait` and `actor status` results."
       },
       "Timeout": {
         "sides": [
           "go"
         ],
-        "why": "the worker opens and closes a subagent row on `running` and `idle` alone, because MiMo publishes only those two in `actor.status`; the browser reads the other words from the result of an `actor wait` or `actor status` call"
+        "why": "MiMo publishes only `running` and `idle` in `actor.status`. The worker uses those two values to open and close subagent rows. The browser reads the other values from `actor wait` and `actor status` results."
       },
       "Cancelled": {
         "sides": [
           "go"
         ],
-        "why": "the worker opens and closes a subagent row on `running` and `idle` alone, because MiMo publishes only those two in `actor.status`; the browser reads the other words from the result of an `actor wait` or `actor status` call"
+        "why": "MiMo publishes only `running` and `idle` in `actor.status`. The worker uses those two values to open and close subagent rows. The browser reads the other values from `actor wait` and `actor status` results."
       },
       "Unknown": {
         "sides": [
           "go"
         ],
-        "why": "the worker opens and closes a subagent row on `running` and `idle` alone, because MiMo publishes only those two in `actor.status`; the browser reads the other words from the result of an `actor wait` or `actor status` call"
+        "why": "MiMo publishes only `running` and `idle` in `actor.status`. The worker uses those two values to open and close subagent rows. The browser reads the other values from `actor wait` and `actor status` results."
       }
     }
   },
@@ -38,6 +38,9 @@
     "Busy": "busy",
     "Idle": "idle",
     "Retry": "retry"
+  },
+  "errorNames": {
+    "Aborted": "MessageAbortedError"
   },
   "partTypes": {
     "Tool": "tool",

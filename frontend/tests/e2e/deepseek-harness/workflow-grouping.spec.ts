@@ -51,7 +51,7 @@ deepseekHarnessTest('groups two actual one-shot children under their native work
     expect(status.ruleMatches['the second native workflow child']).toBe(1)
     await expect(assistantBubbles(page).filter({ hasText: 'The actual native workflow completed.' }).first()).toBeVisible()
     for (const row of await children.all())
-      await expect(row).toHaveAttribute('data-status', 'completed')
+      await expect(row).toHaveAttribute('data-status', 'succeeded')
     await page.reload()
     await expandBackgroundTasksSection(page)
     await expect(children).toHaveCount(2)

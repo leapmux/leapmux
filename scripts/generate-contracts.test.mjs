@@ -60,6 +60,7 @@ import {
   emitTsHeaders,
   emitTsListen,
   emitTsProviderFrameKinds,
+  emitTsProviderProtocol,
   emitTsProviders,
   emitTsRetry,
   emitTsSessionInfo,
@@ -81,6 +82,7 @@ import {
   WIRE_GO_NAMES,
   WIRE_TS_NAMES,
 } from './generate-contracts.mjs'
+import { buildAjv } from './validate-json.mjs'
 
 const ROOT = resolve(import.meta.dirname, '..')
 
@@ -94,6 +96,13 @@ function contractScratchDirectory(prefix) {
 const DESCRIPTOR = bufDescriptor(ROOT)
 
 const readContract = name => JSON.parse(readFileSync(join(ROOT, 'contracts', `${name}.json`), 'utf8'))
+
+function museTodoContract() {
+  const contract = readContract('muse-protocol')
+  contract.methods.TodoListChanged = 'session/todoListChanged'
+  contract.todoStatuses = { Pending: 'pending', InProgress: 'inProgress', Completed: 'completed', Cancelled: 'cancelled' }
+  return contract
+}
 
 const WIRE = readContract('wire')
 const HEADERS = readContract('headers')
@@ -598,6 +607,93 @@ describe('checkProviderProtocol', () => {
   })
 })
 
+describe('muse native to-do vocabulary', () => {
+  const spec = PROVIDER_PROTOCOLS.find(spec => spec.name === 'muse-protocol')
+
+  it('admits the exact native list method and its separate status table', () => {
+    expect(checkProviderProtocol(spec, museTodoContract())).toEqual({})
+  })
+
+  it('requires the native status table before either language emits it', () => {
+    const contract = museTodoContract()
+    delete contract.todoStatuses
+    expectContractError(() => checkProviderProtocol(spec, contract), 'todoStatuses is missing or empty')
+  })
+
+  it('emits all four native event statuses in both languages', () => {
+    const contract = museTodoContract()
+    const go = emitGoProviderProtocol(spec, contract)
+    const ts = emitTsProviderProtocol(spec, contract)
+    for (const [key, value] of Object.entries(contract.todoStatuses)) {
+      expect(go).toMatch(new RegExp(`MuseTodoStatus${key}\\s+=\\s+"${value}"`))
+      expect(ts).toContain(`${key}: "${value}"`)
+    }
+    expect(go).toMatch(/MuseMethodTodoListChanged\s+=\s+"session\/todoListChanged"/)
+    expect(ts).toContain('export const MUSE_TODO_STATUS = {')
+    expect(ts).not.toContain('InProgress: "in_progress"')
+  })
+
+  it('rejects duplicate native event status values', () => {
+    const contract = museTodoContract()
+    contract.todoStatuses.Cancelled = contract.todoStatuses.Completed
+    expectContractError(() => checkProviderProtocol(spec, contract), 'repeats the literal')
+  })
+
+  it('requires the native status table in the stored contract schema', () => {
+    const schema = readContract('muse-protocol.schema')
+    const validate = buildAjv().compile(schema)
+    const contract = museTodoContract()
+    expect(validate(contract)).toBe(true)
+    delete contract.todoStatuses
+    expect(validate(contract)).toBe(false)
+  })
+})
+
+describe('muse native question selection vocabulary', () => {
+  const spec = PROVIDER_PROTOCOLS.find(spec => spec.name === 'muse-protocol')
+  const selectionModes = { Single: 'single', Multiple: 'multiple' }
+  const valid = () => ({ ...readContract('muse-protocol'), questionSelectionModes: { ...selectionModes } })
+
+  it('stores the exact closed native selection vocabulary', () => {
+    expect(readContract('muse-protocol').questionSelectionModes).toEqual(selectionModes)
+  })
+
+  it('admits the native selection table before generation', () => {
+    expect(checkProviderProtocol(spec, valid())).toEqual({})
+  })
+
+  it('emits both native selection modes for each language', () => {
+    const contract = valid()
+    const go = emitGoProviderProtocol(spec, contract)
+    const ts = emitTsProviderProtocol(spec, contract)
+    for (const [key, value] of Object.entries(selectionModes)) {
+      expect(go).toMatch(new RegExp(`MuseQuestionSelectionMode${key}\\s+=\\s+"${value}"`))
+      expect(ts).toContain(`${key}: "${value}"`)
+    }
+    expect(ts).toContain('export const MUSE_QUESTION_SELECTION_MODE = {')
+  })
+
+  it('requires the selection table before generation', () => {
+    const contract = valid()
+    delete contract.questionSelectionModes
+    expectContractError(() => checkProviderProtocol(spec, contract), 'questionSelectionModes is missing or empty')
+  })
+
+  it('refuses duplicate native selection words', () => {
+    const contract = valid()
+    contract.questionSelectionModes.Multiple = contract.questionSelectionModes.Single
+    expectContractError(() => checkProviderProtocol(spec, contract), 'repeats the literal')
+  })
+
+  it('requires the native selection table in the stored schema', () => {
+    const validate = buildAjv().compile(readContract('muse-protocol.schema'))
+    const contract = valid()
+    expect(validate(contract)).toBe(true)
+    delete contract.questionSelectionModes
+    expect(validate(contract)).toBe(false)
+  })
+})
+
 describe('emitTsProviderFrameKinds', () => {
   const first = {
     spec: { name: 'first-protocol', tables: [{ key: 'events', frameKind: 'name' }, { key: 'modes' }, { key: 'families', frameKind: 'prefix' }] },
@@ -907,6 +1003,7 @@ describe('generate', () => {
       'backend/generated/contracts/listen.go',
       'backend/generated/contracts/mcp-elicitation.go',
       'backend/generated/contracts/mimo-protocol.go',
+      'backend/generated/contracts/muse-protocol.go',
       'backend/generated/contracts/ohmypi-protocol.go',
       'backend/generated/contracts/opencode-protocol.go',
       'backend/generated/contracts/pi-protocol.go',
@@ -958,6 +1055,7 @@ describe('generate', () => {
       'frontend/src/generated/contracts/listen.ts',
       'frontend/src/generated/contracts/mcp-elicitation.ts',
       'frontend/src/generated/contracts/mimo-protocol.ts',
+      'frontend/src/generated/contracts/muse-protocol.ts',
       'frontend/src/generated/contracts/ohmypi-protocol.ts',
       'frontend/src/generated/contracts/opencode-protocol.ts',
       'frontend/src/generated/contracts/pi-protocol.ts',
@@ -1741,19 +1839,21 @@ describe('checkSessionInfo', () => {
 })
 
 describe('checkWorkerVocab / checkDesktop', () => {
+  const backgroundTaskEnumValues = enumValues(DESCRIPTOR, 'leapmux/v1/agent.proto', 'BackgroundTaskStatus')
   const workerVocab = overrides => ({
+    backgroundTaskStatusTokens: readContract('worker-vocab').backgroundTaskStatusTokens,
     notificationTypes: { AgentError: 'agent_error' },
     workerWrittenNotificationTypes: ['AgentError'],
     goalStatusTokens: { None: '', Running: 'running' },
     goalTransitions: { GoalCreated: 'goal_created', GoalUpdated: 'goal_updated' },
-    messageMetadataFields: { DurationMs: 'duration_ms', ToolUses: 'num_tool_uses' },
+    messageMetadataFields: { DurationMs: 'duration_ms', ToolUses: 'num_tool_uses', ToolOutcome: 'tool_outcome' },
     messageSupplementFields: { Provider: 'provider', Metadata: 'metadata' },
     notificationFields: { PlanTitle: 'plan_title', PlanFilePath: 'plan_file_path' },
     assembledMessage: {
       fields: { Type: 'type', Kind: 'kind', Text: 'text', Completion: 'completion' },
       types: { Assembled: 'assembled_message' },
       kinds: { Text: 'text', Reasoning: 'reasoning', Plan: 'plan' },
-      completions: { Complete: 'complete', Interrupted: 'interrupted', Error: 'error' },
+      completions: { Complete: 'complete', Interrupted: 'interrupted', Error: 'error', Finished: 'finished' },
     },
     notificationThreadWrapperType: 'notification_thread',
     codexRateLimitReachedTimeWindow: 'rate_limit_reached',
@@ -1816,14 +1916,14 @@ describe('checkWorkerVocab / checkDesktop', () => {
   it('rejects a worker-written type that is not a notification type', () => {
     expectContractError(() => checkWorkerVocab(workerVocab({
       workerWrittenNotificationTypes: ['NotAType'],
-    })), 'not a notificationTypes key')
+    }), backgroundTaskEnumValues), 'not a notificationTypes key')
   })
 
   it('rejects two notification types sharing one token', () => {
     expectContractError(() => checkWorkerVocab(workerVocab({
       notificationTypes: { A: 'same_token', B: 'same_token' },
       workerWrittenNotificationTypes: ['A'],
-    })), 'share one wire token')
+    }), backgroundTaskEnumValues), 'share one wire token')
   })
 
   it('rejects a thread-wrapper token that collides with a notification type', () => {
@@ -1831,19 +1931,19 @@ describe('checkWorkerVocab / checkDesktop', () => {
     // equal notification token would enter the wrong processing case.
     expectContractError(() => checkWorkerVocab(workerVocab({
       notificationTypes: { AgentError: 'notification_thread' },
-    })), 'collides with a notificationTypes token')
+    }), backgroundTaskEnumValues), 'collides with a notificationTypes token')
   })
 
   it('rejects model sentinels that collide', () => {
     expectContractError(() => checkWorkerVocab(workerVocab({
       modelSentinels: { accountDefaultModel: 'same', effortAuto: 'same' },
-    })), 'sentinels must be distinct')
+    }), backgroundTaskEnumValues), 'sentinels must be distinct')
   })
 
   it('rejects duplicate notification fields', () => {
     expectContractError(() => checkWorkerVocab(workerVocab({
       notificationFields: { PlanTitle: 'same', PlanFilePath: 'same' },
-    })), 'two notification fields share one wire token')
+    }), backgroundTaskEnumValues), 'two notification fields share one wire token')
   })
 
   it('rejects duplicate assembled-message tokens', () => {
@@ -1853,13 +1953,26 @@ describe('checkWorkerVocab / checkDesktop', () => {
         ...assembledMessage,
         kinds: { Text: 'same', Reasoning: 'same', Plan: 'plan' },
       },
-    })), 'assembled-message kinds entries share one wire token')
+    }), backgroundTaskEnumValues), 'assembled-message kinds entries share one wire token')
   })
 
   it('emits assembled-message constants for Go and TypeScript', () => {
     const vocab = readContract('worker-vocab')
     expect(emitGoWorkerVocab(vocab)).toContain('AssembledMessageCompletionInterrupted = "interrupted"')
     expect(emitTsWorkerVocab(vocab)).toContain('CompletionInterrupted: "interrupted"')
+    expect(emitGoWorkerVocab(vocab)).toMatch(/^\tAssembledMessageCompletionFinished\s+= "finished"$/m)
+    expect(emitTsWorkerVocab(vocab)).toContain('CompletionFinished: "finished"')
+  })
+
+  it('requires the finished completion in the worker vocabulary schema', () => {
+    const schema = JSON.parse(readFileSync(join(ROOT, 'contracts/worker-vocab.schema.json'), 'utf8'))
+    const validate = buildAjv().compile(schema)
+    const vocab = readContract('worker-vocab')
+    vocab.assembledMessage.completions.Finished = 'finished'
+    expect(validate(vocab)).toBe(true)
+    delete vocab.assembledMessage.completions.Finished
+    expect(validate(vocab)).toBe(false)
+    expect(validate.errors).toContainEqual(expect.objectContaining({ keyword: 'required', params: { missingProperty: 'Finished' } }))
   })
 
   it('rejects two Tauri events sharing one name', () => {
@@ -2234,7 +2347,119 @@ describe('emitGoExternalApps and emitTsExternalApps', () => {
   })
 
   it('is deterministic', () => {
-    expect(emitGoExternalApps(c)).toBe(emitGoExternalApps(c))
-    expect(emitTsExternalApps(c)).toBe(emitTsExternalApps(c))
+    const first = structuredClone(c)
+    const second = structuredClone(c)
+    const firstBefore = structuredClone(first)
+    const secondBefore = structuredClone(second)
+    const go = emitGoExternalApps(first)
+    const ts = emitTsExternalApps(second)
+    expect(go).toBe(emitGoExternalApps(second))
+    expect(ts).toBe(emitTsExternalApps(first))
+    expect(go).toContain(`var ExternalAppIDsByOS = map[string][]string{
+	"darwin": {
+		"file-manager",
+		"vscode",
+		"xcode",
+	},
+	"linux": {
+		"file-manager",
+		"vscode",
+	},
+	"windows": {
+		"file-manager",
+		"vscode",
+	},
+}`)
+    expect(ts).toContain(`export const SUPPORTED_EXTERNAL_APP_IDS = [
+  "file-manager",
+  "vscode",
+  "xcode",
+] as const`)
+    expect(ts).toContain(`export const EXTERNAL_APP_KIND_BY_ID: Record<ExternalAppId, ExternalAppKind> = {
+  "file-manager": "EXTERNAL_APP_KIND_FILE_MANAGER",
+  "vscode": "EXTERNAL_APP_KIND_EDITOR",
+  "xcode": "EXTERNAL_APP_KIND_EDITOR",
+}`)
+    expect(first).toEqual(firstBefore)
+    expect(second).toEqual(secondBefore)
+  })
+})
+
+describe('background-task status vocabulary', () => {
+  const tokens = {
+    Unspecified: '',
+    Pending: 'pending',
+    Running: 'running',
+    Paused: 'paused',
+    Succeeded: 'succeeded',
+    Failed: 'failed',
+    Stopped: 'stopped',
+    Interrupted: 'interrupted',
+    EndedWithUnknownOutcome: 'ended_with_unknown_outcome',
+  }
+  const enumNames = [
+    'BACKGROUND_TASK_STATUS_UNSPECIFIED',
+    'BACKGROUND_TASK_STATUS_PENDING',
+    'BACKGROUND_TASK_STATUS_RUNNING',
+    'BACKGROUND_TASK_STATUS_PAUSED',
+    'BACKGROUND_TASK_STATUS_SUCCEEDED',
+    'BACKGROUND_TASK_STATUS_FAILED',
+    'BACKGROUND_TASK_STATUS_STOPPED',
+    'BACKGROUND_TASK_STATUS_INTERRUPTED',
+    'BACKGROUND_TASK_STATUS_ENDED_WITH_UNKNOWN_OUTCOME',
+  ]
+  const vocabulary = () => ({ ...readContract('worker-vocab'), backgroundTaskStatusTokens: { ...tokens } })
+
+  it('emits the distinct success and unknown-outcome tokens for Go and TypeScript', () => {
+    const vocab = vocabulary()
+    const go = emitGoWorkerVocab(vocab)
+    const ts = emitTsWorkerVocab(vocab)
+    expect(go).toMatch(/^\tBackgroundTaskStatusTokenSucceeded\s+= "succeeded"$/m)
+    expect(go).toMatch(/^\tBackgroundTaskStatusTokenEndedWithUnknownOutcome\s+= "ended_with_unknown_outcome"$/m)
+    expect(ts).toContain('export const BACKGROUND_TASK_STATUS_TOKEN = {')
+    expect(ts).toContain('Succeeded: "succeeded"')
+    expect(ts).toContain('EndedWithUnknownOutcome: "ended_with_unknown_outcome"')
+    expect(ts).toContain('export type BackgroundTaskStatusToken =')
+  })
+
+  it('accepts the complete enum vocabulary without changing assembled-message finality', () => {
+    const vocab = vocabulary()
+    expect(() => checkWorkerVocab(vocab, enumNames)).not.toThrow()
+    expect(emitGoWorkerVocab(vocab)).toMatch(/^\tAssembledMessageCompletionFinished\s+= "finished"$/m)
+    expect(emitTsWorkerVocab(vocab)).toContain('CompletionFinished: "finished"')
+  })
+
+  it('rejects two background-task states that share one token', () => {
+    const vocab = vocabulary()
+    vocab.backgroundTaskStatusTokens.EndedWithUnknownOutcome = vocab.backgroundTaskStatusTokens.Succeeded
+    expectContractError(() => checkWorkerVocab(vocab, enumNames), 'two background-task statuses share one wire token')
+  })
+
+  it('rejects an unspecified background-task token that claims an outcome', () => {
+    const vocab = vocabulary()
+    vocab.backgroundTaskStatusTokens.Unspecified = 'unspecified'
+    expectContractError(() => checkWorkerVocab(vocab, enumNames), 'backgroundTaskStatusTokens.Unspecified must be the empty token')
+  })
+
+  it('rejects a missing background-task enum entry', () => {
+    const vocab = vocabulary()
+    delete vocab.backgroundTaskStatusTokens.EndedWithUnknownOutcome
+    expectContractError(() => checkWorkerVocab(vocab, enumNames), 'BACKGROUND_TASK_STATUS_ENDED_WITH_UNKNOWN_OUTCOME has no backgroundTaskStatusTokens entry')
+  })
+
+  it('rejects a background-task entry that the enum does not declare', () => {
+    const vocab = vocabulary()
+    vocab.backgroundTaskStatusTokens.Invented = 'invented'
+    expectContractError(() => checkWorkerVocab(vocab, enumNames), 'backgroundTaskStatusTokens.Invented matches no BackgroundTaskStatus enum value')
+  })
+
+  it('requires the complete background-task table in the Worker vocabulary schema', () => {
+    const schema = JSON.parse(readFileSync(join(ROOT, 'contracts/worker-vocab.schema.json'), 'utf8'))
+    const validate = buildAjv().compile(schema)
+    const vocab = vocabulary()
+    expect(validate(vocab)).toBe(true)
+    delete vocab.backgroundTaskStatusTokens
+    expect(validate(vocab)).toBe(false)
+    expect(validate.errors).toContainEqual(expect.objectContaining({ keyword: 'required', params: { missingProperty: 'backgroundTaskStatusTokens' } }))
   })
 })

@@ -1,8 +1,10 @@
+import type { WatchAgentState } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
 import { create, fromBinary, toBinary } from '@bufbuild/protobuf'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fakeChannelStream } from '~/test-support/channelStreamFake'
 import { AgentInputKind, AgentInputQueueSnapshotSchema, AgentInputState, ListAgentInputQueueRequestSchema, ListAgentInputQueueResponseSchema, WatchReplayMode } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { WatchEventsRequestSchema, WatchEventsResponseSchema, WatchMode } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
+import { WatchAgentStateSchema, WatchEventsRequestSchema, WatchEventsResponseSchema, WatchMode, WatchRejectionReason } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
+import { AGENT_WATCH_UPDATE_ID } from './agentEventWatch'
 import { NativeInputQueueIdleCollector, readNativeInputQueue, waitForNativeInputQueueIdle } from './nativeInputQueueIdle'
 import { WAIT_REPORT_MARGIN_MS } from './testDeadline'
 
@@ -17,11 +19,13 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
-function acknowledgement(updateId = 1n, rejectedAgent?: string): Uint8Array {
+function acknowledgement(updateId = AGENT_WATCH_UPDATE_ID, rejectedAgent?: string, options: { agentId?: string, agentStates?: WatchAgentState[] } = {}): Uint8Array {
+  const agentId = options.agentId ?? 'agent-1'
+  const agentStates = options.agentStates ?? (rejectedAgent === agentId ? [] : [create(WatchAgentStateSchema, { agentId, mode: WatchMode.FULL, replayId: AGENT_WATCH_UPDATE_ID })])
   return toBinary(WatchEventsResponseSchema, create(WatchEventsResponseSchema, {
     event: {
       case: 'updateAck',
-      value: { updateId, rejectedAgents: rejectedAgent === undefined ? [] : [{ entityId: rejectedAgent }] },
+      value: { updateId, rejectedAgents: rejectedAgent === undefined ? [] : [{ entityId: rejectedAgent, reason: WatchRejectionReason.NOT_FOUND }], agentStates },
     },
   }))
 }
@@ -51,6 +55,22 @@ function queueFrame(agentId: string, options: { revision?: bigint, active?: bool
 }
 
 describe('NativeInputQueueIdleCollector', () => {
+  const fullState = () => create(WatchAgentStateSchema, { agentId: 'agent-1', mode: WatchMode.FULL, replayId: AGENT_WATCH_UPDATE_ID })
+
+  it.each([
+    { label: 'absent registration', states: () => [] },
+    { label: 'duplicate registration', states: () => [fullState(), fullState()] },
+    { label: 'another agent', states: () => [create(WatchAgentStateSchema, { agentId: 'agent-2', mode: WatchMode.FULL, replayId: AGENT_WATCH_UPDATE_ID })] },
+    { label: 'another mode', states: () => [create(WatchAgentStateSchema, { agentId: 'agent-1', mode: WatchMode.NOTIFY, replayId: AGENT_WATCH_UPDATE_ID })] },
+    { label: 'another replay ID', states: () => [create(WatchAgentStateSchema, { agentId: 'agent-1', mode: WatchMode.FULL, replayId: AGENT_WATCH_UPDATE_ID + 1n })] },
+  ])('refuses $label before an idle snapshot can complete the subscription', ({ states }) => {
+    const collector = new NativeInputQueueIdleCollector('agent-1')
+    collector.accept(queueFrame('agent-1', { active: false }))
+    expect(() => collector.accept(acknowledgement(AGENT_WATCH_UPDATE_ID, undefined, { agentStates: states() }))).toThrow('requested FULL replay identity')
+    expect(collector.subscribed).toBe(false)
+    expect(collector.idleSnapshot).toBeUndefined()
+  })
+
   it('requires both the matching acknowledgement and a real idle snapshot', () => {
     const collector = new NativeInputQueueIdleCollector('agent-1')
     collector.accept(queueFrame('agent-1', { active: false, revision: 0n }))
@@ -407,8 +427,8 @@ describe('waitForNativeInputQueueIdle', () => {
     const firstWait = waitForNativeInputQueueIdle(server, 'agent-1', testDeadline)
     const secondWait = waitForNativeInputQueueIdle(server, 'agent-2', testDeadline)
     await Promise.all([first.ready, second.ready])
-    for (const stream of [first, second])
-      stream.message(acknowledgement())
+    first.message(acknowledgement(AGENT_WATCH_UPDATE_ID, undefined, { agentId: 'agent-1' }))
+    second.message(acknowledgement(AGENT_WATCH_UPDATE_ID, undefined, { agentId: 'agent-2' }))
     first.message(queueFrame('agent-2', { active: false }))
     second.message(queueFrame('agent-1', { active: false }))
     expect(first.cancel).not.toHaveBeenCalled()

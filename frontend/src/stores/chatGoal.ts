@@ -4,31 +4,24 @@ import { GOAL_STATUS_TOKEN } from '~/generated/contracts/worker-vocab'
 import { AgentGoalAction, AgentGoalStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { assignDefined } from '~/lib/jsonPick'
 
-// ---------------------------------------------------------------------------
-// Provider-neutral session-goal model + conversions
+// Provider-neutral session goals and their conversions.
 //
-// A session goal is a standing objective the agent works toward, re-checked at
-// the end of every turn until the condition holds. Codex, ZCode, Claude Code,
-// Reasonix and MiMo Code each report one in their own wire shape. The worker
-// normalizes them, so this module sees one shape and the UI has one renderer.
+// A session goal holds one standing objective for the agent.
+// The worker normalizes each provider's native goal into the shared message.
+// The frontend stores one optional goal for each agent.
 //
-// There is at most ONE goal per agent -- every CLI with the feature enforces
-// that itself -- so this is a single value, not a list.
-//
-// A leaf module: it imports only the generated proto types, so the chat store,
-// the Goals & To-dos surfaces share one shape without routing
-// conversions through the window store.
-// ---------------------------------------------------------------------------
+// This module keeps the goal model and conversions separate from the window store.
+// It also reads generated worker tokens and the shared JSON helper.
 
 /**
- * The neutral status.
+ * The neutral goal status.
  *
- * `blocked` means "stopped and needs you". `dormant` means "the objective is
- * stored and no live process pursues it" -- the worker DERIVES it, from whether
- * a process serves the agent, and no provider ever reports it. It is therefore
- * the one status no row holds.
+ * `blocked` means that the goal needs attention.
+ * `unknown` preserves a goal whose native status has no recognized neutral state.
+ * The worker derives `dormant` when no live process serves an agent with a stored goal.
+ * The database keeps the last reported status and never stores `dormant`.
  */
-export type GoalStatus = 'active' | 'paused' | 'blocked' | 'done' | 'dormant'
+export type GoalStatus = 'active' | 'paused' | 'blocked' | 'done' | 'dormant' | 'unknown'
 
 /** One goal action, in the spelling the UI and the RPC share. */
 export type GoalAction = 'set' | 'clear' | 'pause' | 'resume'
@@ -38,24 +31,20 @@ export interface SessionGoal {
   objective: string
   status: GoalStatus
   /**
-   * The provider's OWN status word ("usageLimited", "notSatisfied",
-   * "verifying", "budget_spend"), or its last-check reason. `status` decides
-   * what the card offers; this says why, and it is the only place the
-   * precision lost by mapping five vocabularies onto four values survives.
+   * The provider's native status word or its last-check reason.
+   * Examples include `usageLimited` and `notSatisfied`.
+   * The neutral status controls the state-dependent actions.
+   * This field preserves detail that the neutral status cannot express.
    */
   statusDetail?: string
   createdAt?: string
 }
 
 /**
- * The volatile half of the goal, delivered on the ephemeral session-info
- * channel rather than with the goal itself.
- *
- * Every field is optional because no two providers report the same counters:
- * Codex sends tokens and seconds but no iteration count, ZCode sends seconds
- * and an iteration but no tokens, Claude Code sends only an iteration count.
- * An absent field must render as absent -- a zero here would state a number the
- * provider never gave.
+ * The optional counters from the ephemeral session-info channel.
+ * The stored goal and these counters arrive through separate messages.
+ * Providers report different counter sets.
+ * An absent field stays absent because zero would state a value that the provider did not report.
  */
 export interface GoalProgress {
   tokensUsed?: number
@@ -65,20 +54,15 @@ export interface GoalProgress {
 }
 
 /**
- * One agent's session goal, as a component receives it: the stored goal, the
- * volatile counters beside it, what the running agent can do with it, and the
- * way to ask for one of those things.
+ * The complete goal surface that a component receives:
+ * - The stored goal.
+ * - The reported counters.
+ * - The supported actions.
+ * - The optional action handler.
  *
- * The four travel TOGETHER because none of them renders the card alone. The
- * counters measure the goal, the actions decide which controls are live, and
- * the handler is what makes them do anything -- so a component that holds three
- * of the four draws a card that is wrong rather than incomplete.
- *
- * One parameter object rather than four props, because these cross several
- * component interfaces under different naming schemes. Four separate props
- * made every hop restate all four, and a hop could drop one silently. An
- * omitted optional prop is not a type error, and the symptom is a control that
- * never arms. One field cannot be partly forwarded.
+ * One object carries these fields through each component interface.
+ * Separate optional props could omit a field without a type error.
+ * That omission could remove counters or controls from a visible goal.
  */
 export interface GoalSurface {
   /** The stored goal, or undefined when the agent has none. */
@@ -86,15 +70,10 @@ export interface GoalSurface {
   /** The volatile counters. Empty rather than absent, so the card reads fields. */
   progress: GoalProgress
   /**
-   * What the RUNNING agent can do. Empty when no process is running, or when
-   * the provider reports a goal but cannot change one -- either way every
-   * control is disabled with the reason on it.
-   *
-   * Apart from `current` because it must exist when a goal does not: the empty
-   * state's "Set a goal" button asks exactly this question. A goal also SURVIVES
-   * a restart -- the projection reads it as dormant and keeps the objective --
-   * so the card can still say what the agent attempted while nothing can act on
-   * it.
+   * The actions that the running agent supports.
+   * An empty list hides each unsupported control.
+   * The list stays separate from `current` so the empty state can offer Set.
+   * A stored goal can remain visible after the process stops and its actions disappear.
    */
   actions: GoalAction[]
   /** Perform one action. Absent makes the surface read-only. */
@@ -102,19 +81,11 @@ export interface GoalSurface {
 }
 
 /**
- * Whether this agent has a goal surface at all: a goal to show, or the ability
- * to be given one.
- *
- * The running agent's supported actions decide whether the FEATURE exists; this
- * decides whether the card can hold anything. Both are needed. A surface built
- * from the actions alone draws a card reading "No session goal." with no button,
- * for the whole life of an Oh My Pi tab, of a stopped agent, of a Claude Code
- * build older than 2.1.139, and of a Goose or Copilot process that has not yet
- * advertised its command -- because `goalActionState` reports `set` as hidden
- * for an empty action list, and the button is the only route to a first goal.
- *
- * The rule lives HERE, beside the surface it describes, because both surface
- * builders ask it and a rule spelled twice can be spelled two ways.
+ * Report whether the agent has a stored goal or supports Set.
+ * Supported actions alone cannot determine whether there is a goal to display.
+ * A read-only goal still needs a surface.
+ * An empty surface without Set would offer no route to a first goal.
+ * Both surface builders use this shared rule.
  */
 export function hasGoalSurface(surface: GoalSurface): boolean {
   return surface.current !== undefined || surface.actions.includes('set')
@@ -133,11 +104,9 @@ export function protoGoalToStore(g: ProtoAgentGoal): SessionGoal {
 }
 
 /**
- * The actions the running agent can perform, from the wire enum.
- *
- * Kept apart from the goal itself because it must exist when a goal does NOT:
- * "this agent can set a goal" is exactly what the empty state needs to know,
- * and a capability hanging off an absent goal could never say it.
+ * Convert the running agent's supported actions from the wire enum.
+ * Keep the actions separate from the optional goal.
+ * The empty state needs the Set capability before a goal exists.
  */
 export function goalActionsFromProto(actions: AgentGoalAction[]): GoalAction[] {
   return actions.map(goalActionFromProto).filter((a): a is GoalAction => a !== undefined)
@@ -149,35 +118,28 @@ function goalStatusFromProto(s: AgentGoalStatus): GoalStatus {
       return 'active'
     case AgentGoalStatus.PAUSED:
       return 'paused'
+    // The explicit zero value retains its existing blocked behavior.
+    case AgentGoalStatus.UNSPECIFIED:
+    case AgentGoalStatus.BLOCKED:
+      return 'blocked'
     case AgentGoalStatus.DONE:
       return 'done'
     case AgentGoalStatus.DORMANT:
       return 'dormant'
-    // UNSPECIFIED reaches here only for a status token this build does not
-    // know, which today means a goal stored by a NEWER worker. Reading it as
-    // `blocked` keeps the card honest: it says the goal is not progressing, and
-    // it never offers Pause for a state nothing can act on.
-    //
-    // A goal waiting for its session to resume does NOT arrive here -- it
-    // carries `dormant`, its own state, precisely so it is not reported as a
-    // fault.
+    // Preserve an unrecognized status without assigning active or blocked behavior.
+    // Dormant uses its own declared status and never reaches this fallback.
+    case AgentGoalStatus.UNKNOWN:
     default:
-      return 'blocked'
+      return 'unknown'
   }
 }
 
 /**
- * The status from the token the worker PERSISTS, as opposed to the proto enum
- * it broadcasts.
- *
- * The transcript renderer reads a stored `goal_status` string out of a
- * notification payload, and this is the only place that vocabulary is spelled,
- * so a token renamed on the Go side fails here instead of silently degrading
- * every transcript row. `subagentEndedEntry` narrows its sibling payload the
- * same way and for the same reason.
- *
- * An unknown token answers undefined rather than guessing, so the caller can
- * fall back rather than assert something the worker did not say.
+ * Read the generated status token from a stored notification payload.
+ * The token vocabulary differs from the proto enum that the worker broadcasts.
+ * Use the generated constants so the shared contract remains the source of truth.
+ * An absent or unrecognized token returns undefined.
+ * The caller then chooses its explicit fallback.
  */
 export function goalStatusFromWire(token: string | undefined): GoalStatus | undefined {
   switch (token) {
@@ -191,6 +153,8 @@ export function goalStatusFromWire(token: string | undefined): GoalStatus | unde
       return 'done'
     case GOAL_STATUS_TOKEN.Dormant:
       return 'dormant'
+    case GOAL_STATUS_TOKEN.Unknown:
+      return 'unknown'
     default:
       return undefined
   }
@@ -238,22 +202,19 @@ export function goalStatusLabel(status: GoalStatus): string {
       return 'Needs attention'
     case 'dormant':
       return 'Not running'
+    case 'unknown':
+      return 'Unknown'
   }
 }
 
 /**
- * What the UI should do with one goal action, right now.
+ * The shared result for a goal action:
+ * - Hide an action that the provider does not support.
+ * - Enable an action that the current goal permits.
+ * - Disable a supported action when the current goal refuses it.
  *
- * ONE question, because the card previously asked two and they could disagree:
- * a control's enabled state came from one predicate and its tooltip from
- * another, both re-deriving the same rules over the same two inputs.
- *
- * The three answers are distinct situations, and each deserves its own
- * treatment. A provider's gap is PERMANENT -- Claude Code has no pause or
- * resume, and Oh My Pi can report a goal but never change one -- so a control
- * for it would never light up and is better absent than dead. A control the
- * current goal state refuses comes BACK, so it holds its place and says why. A
- * disabled control with no explanation is what this exists to avoid.
+ * The disabled result carries the reason for the tooltip.
+ * The control and its tooltip must use the same result.
  */
 export type GoalActionState
   = | { kind: 'hidden' }
@@ -261,15 +222,10 @@ export type GoalActionState
     | { kind: 'disabled', reason: string }
 
 /**
- * Whether one verb is hidden, live, or refused for a goal surface.
- *
- * It takes the SURFACE, not a goal and an action list side by side. The two
- * fields travel together for a reason -- they describe one agent -- and two
- * parameters let a caller pair one agent's goal with another agent's verbs,
- * which is exactly the split `GoalSurface` exists to remove. `Pick` rather than
- * the whole surface, because the answer never depends on the counters or the
- * handler, and a test that had to build a `progress` field this never reads
- * would say otherwise.
+ * Report an action's state from one goal surface.
+ * The goal and supported actions describe the same agent.
+ * Separate arguments could pair one agent's goal with another agent's actions.
+ * This rule reads neither the counters nor the handler, so its type requires only the fields that it reads.
  */
 export function goalActionState(
   surface: Pick<GoalSurface, 'current' | 'actions'>,
@@ -278,15 +234,13 @@ export function goalActionState(
   const goal = surface.current
   if (!surface.actions.includes(action))
     return { kind: 'hidden' }
-  // Setting a goal is the one action that does not need one to exist -- it is
-  // how the first one arrives.
+  // Set creates the first goal and therefore requires no current goal.
   if (action === 'set')
     return { kind: 'enabled' }
   if (!goal)
     return { kind: 'disabled', reason: 'This session has no goal' }
-  // Pause and resume are opposites, so only one of them applies at a time
-  // however capable the provider is. Offering both would leave one that does
-  // nothing on a goal already in that state.
+  // Pause requires an active goal. Resume requires a paused goal.
+  // Keep a refused supported action visible with its reason.
   if (action === 'pause' && goal.status !== 'active')
     return { kind: 'disabled', reason: 'Only an active goal can be paused' }
   if (action === 'resume' && goal.status !== 'paused')
@@ -295,22 +249,14 @@ export function goalActionState(
 }
 
 /**
- * Whether the Goals & To-dos section belongs on screen.
+ * Report whether the Goals & To-dos section has content to display.
+ * A to-do list keeps the section visible without a goal surface.
+ * A goal surface keeps the section visible even when its current goal is absent.
+ * That empty card can offer the route to a first goal.
  *
- * A to-do keeps the section visible. This is the complete rule for a provider
- * without a session goal. A goal surface keeps the section visible even when
- * the list and the current goal are empty. The empty card is the route to a
- * first goal.
- *
- * It takes the SURFACE the section will render, never a boolean about the
- * provider. A visible section can then never hold nothing: the surface is
- * absent exactly when the card could show no goal and offer no way to set one
- * (see {@link hasGoalSurface}).
- *
- * It lives beside the surface it reads rather than with the to-do model. The
- * model is provider-neutral and knows nothing about a goal; this rule is the
- * one place the two vocabularies meet, and it belongs on the goal side because
- * the goal is what makes an empty list worth drawing.
+ * The caller supplies the surface that the section renders.
+ * The surface builders use hasGoalSurface to omit a card with no goal and no Set capability.
+ * This rule belongs beside the goal model because the goal can keep an empty to-do section visible.
  */
 export function shouldShowGoalsAndTodosSection(
   todos: TodoItem[],

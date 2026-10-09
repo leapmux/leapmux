@@ -3,7 +3,6 @@ package service
 import (
 	"database/sql"
 	"errors"
-	"log/slog"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -13,9 +12,10 @@ import (
 // activityScope owns one turn between changed turn publications or process changes.
 // agentActivity.mu guards every field. Repeated turn publications keep the scope.
 type activityScope struct {
-	publisher       any
-	attempts        map[*stopAttempt]struct{}
-	controlsStopped bool
+	publisher         any
+	attempts          map[*stopAttempt]struct{}
+	controlsStopped   bool
+	transcriptThreads map[transcriptOwnerKey]*transcriptThread
 }
 
 type stopDisposition uint8
@@ -161,7 +161,8 @@ func (r *agentStopRequest) Delivered(target agent.StopTarget) {
 		return
 	}
 	st, _, release := r.h.lockControlMutation(r.agentID, r.rootAgentID)
-	defer release()
+	publication := controlPublication{}
+	defer func() { r.h.finishControlPublication(r.agentID, r.rootAgentID, publication, release) }()
 	r.activity.mu.Lock()
 	if r.attempt.disposition == stopIgnored || r.attempt.disposition == stopFailed {
 		r.activity.mu.Unlock()
@@ -178,7 +179,12 @@ func (r *agentStopRequest) Delivered(target agent.StopTarget) {
 		}
 	}
 	st.mu.Unlock()
+	seen := make(map[controlRequestInstance]struct{}, len(controls))
 	for _, control := range controls {
+		if _, repeated := seen[control]; repeated {
+			continue
+		}
+		seen[control] = struct{}{}
 		request, err := r.h.queries.DeleteControlRequestInstance(bgCtx(), db.DeleteControlRequestInstanceParams{
 			AgentID: r.agentID, RequestID: control.RequestID, ClaimToken: control.ClaimToken,
 		})
@@ -186,9 +192,9 @@ func (r *agentStopRequest) Delivered(target agent.StopTarget) {
 			continue
 		}
 		if err != nil {
-			slog.Error("cancel the stopped turn's control request", "agent_id", r.agentID, "request_id", control.RequestID, "error", err)
+			publication.recordFailure("cancel the stopped turn's control request", "agent_id", r.agentID, "request_id", control.RequestID, "error", err)
 			continue
 		}
-		r.h.broadcastControlCancel(r.agentID, request.RequestID, request.ClaimToken)
+		publication.enqueueCancellation(r.h, r.agentID, request.RequestID, request.ClaimToken)
 	}
 }

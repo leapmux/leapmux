@@ -40,6 +40,20 @@ export interface AttachmentCapabilities {
   binary: boolean
 }
 
+export interface StartupOption {
+  readonly value: string
+  readonly label: string
+  readonly description?: string
+}
+
+export interface StartupOptionGroup {
+  readonly id: string
+  readonly label: string
+  readonly defaultValue: string
+  readonly readOnlyReason: string
+  readonly options: readonly StartupOption[]
+}
+
 export interface ProviderAskUserQuestion {
   isRequest: (payload: Record<string, unknown>) => boolean
   extractQuestions: (payload: Record<string, unknown>, source?: ParsedMessageContent) => ControlQuestion[]
@@ -442,6 +456,8 @@ export interface ProviderSessionCapability {
  * default options, the plan toggle, and child-agent capabilities.
  */
 export interface ProviderConfigurationCapability {
+  /** Choices that the user selects before a native host starts. */
+  startupOptionGroups?: readonly StartupOptionGroup[]
   /** Attachment support for the provider. */
   attachments?: AttachmentCapabilities
 

@@ -53,7 +53,7 @@ piTest('runs a native two-stage workflow without workflow grouping or stage rows
     await modelScript.releaseGate(gate)
     await retryUntilPass(async () => {
       expect((await readNativeSidebarSnapshot(native)).backgroundTasks.find(task => task.id === taskId)?.status, 'the Worker completes the workflow task')
-        .toBe(BackgroundTaskStatus.COMPLETED)
+        .toBe(BackgroundTaskStatus.SUCCEEDED)
     })
     await expect.poll(async () => (await modelScript.status()).ruleMatches['the parent receives the actual workflow completion'] ?? 0).toBeGreaterThan(0)
     const completed = await modelScript.status()
@@ -70,12 +70,12 @@ piTest('runs a native two-stage workflow without workflow grouping or stage rows
       expect(snapshot.backgroundTasks).toHaveLength(1)
       const task = snapshot.backgroundTasks[0]
       expect(task?.id).toBe(taskId)
-      expect(task?.status).toBe(BackgroundTaskStatus.COMPLETED)
+      expect(task?.status).toBe(BackgroundTaskStatus.SUCCEEDED)
       expect(task?.kind).toBe(BackgroundTaskKind.SUBAGENT)
       expect(task?.groupKey).toBe('')
       expect(task?.groupLabel).toBe('')
       expect(task?.childAgentId).toBe('')
-      await expect(row).toHaveAttribute('data-status', 'completed')
+      await expect(row).toHaveAttribute('data-status', 'succeeded')
       expect(await workflowGroupHeading(row)).toBe('')
     }
     await inspect()

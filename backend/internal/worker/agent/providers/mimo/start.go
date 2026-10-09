@@ -29,14 +29,13 @@ const mimoStopSignal = syscall.SIGTERM
 // worker gave it. The worker pins the credential in the process environment, and
 // only a login shell profile that exports the same variables can replace it
 // after that.
-var errCredentialRefused = errors.New("MiMo refused LeapMux's server credential; a shell profile that exports " +
-	envServerPassword + " or " + envServerUsername + " replaces the credential LeapMux sets, so remove the export")
+var errCredentialRefused = errors.New("MiMo refused LeapMux's server credential. A shell profile replaces that credential when it exports " +
+	envServerPassword + " or " + envServerUsername + ". Remove that export")
 
 // Start starts `mimo serve` and opens one session on it.
 //
-// The order matters. The event stream opens before the session exists, so no
-// event of the session can be lost; the catalog loads before the settings
-// resolve, because a requested model is checked against it.
+// The event stream opens before the session exists, so it can receive every session event.
+// The catalog loads before settings resolve because the catalog validates a requested model.
 func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
 	ctx, cancel := context.WithCancel(ctx)
 
@@ -68,7 +67,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		return nil, err
 	}
 	stdout, stderrPipe := pipes.Stdout(), pipes.Stderr()
-	a := newAgentState(agent.NewModelProgressResetSink(sink), mimoRPC{timeout: opts.EffectiveAPITimeout()}, opts.WorkingDir, quartz.NewReal())
+	a := newAgentState(sink, mimoRPC{timeout: opts.EffectiveAPITimeout()}, opts.WorkingDir, quartz.NewReal())
 	a.Process = providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: mimoBinaryName, ShutdownGrace: registration.ShutdownGrace, PreambleDelimiter: preambleDelimiter, PreambleMetaPrefix: metaPrefix, StopSignal: mimoStopSignal}, pipes, ctx, cancel)
 	if err := a.StartCmd(); err != nil {
 		return nil, err
@@ -137,8 +136,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 }
 
 // checkCredential asks the server for its health with the worker's credential.
-// A refusal here is the one failure whose cause the worker can name, and every
-// later request would fail with it.
+// The worker can identify this refusal's cause. Every later request would fail for the same reason.
 func (a *Agent) checkCredential(ctx context.Context) error {
 	health, err := a.rpc.health(ctx)
 	if providerkit.IsHTTPStatus(err, http.StatusUnauthorized) {
@@ -201,11 +199,11 @@ func (a *Agent) loadCatalog(ctx context.Context) error {
 // default, and the settings snapshot then reports the value that runs.
 //
 // The worker sets both permission switches for every policy, Ask included. MiMo
-// seeds its auto-approve-delete switch from two variables of its environment,
-// and the launch strips both (mimoStripEnvKeys), so the server starts with both
-// switches off, which is Ask. The requests for Ask still make the two switches
-// hold what LeapMux reports if a MiMo release seeds them from another source. A
-// policy that the server refuses falls back to Ask, which is the narrower one.
+// seeds its auto-approve-delete switch from two environment variables.
+// The launch removes both through mimoStripEnvKeys. The server starts with both switches off, which is Ask.
+// Requests still set both switches for Ask.
+// They keep the reported policy correct if MiMo changes its initial source.
+// A refused policy selects Ask because Ask requires permission.
 func (a *Agent) applyStartupSettings(ctx context.Context, opts agent.Options) {
 	a.Mu.Lock()
 	catalog := a.catalog

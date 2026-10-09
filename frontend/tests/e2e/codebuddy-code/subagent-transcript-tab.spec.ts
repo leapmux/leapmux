@@ -31,7 +31,7 @@ codebuddyTest.describe('CodeBuddy Code subagent registry', () => {
     await waitForAgentIdle(page)
 
     await expectRowBecomesFinal(page, row)
-    await expect(row).toHaveAttribute('data-status', 'completed')
+    await expect(row).toHaveAttribute('data-status', 'succeeded')
     expect((await modelScript.status()).ruleMatches['the child answers its one-word task']).toBe(1)
     await expect(assistantBubbles(page).filter({ hasText: 'The subagent reported PONG.' })).toBeVisible()
 

@@ -45,7 +45,7 @@ func TestWorkflowRun(t *testing.T) {
 func TestWorkflowStatus(t *testing.T) {
 	t.Parallel()
 	for status, want := range map[string]bgtask.Status{
-		workflowCompleted: bgtask.StatusCompleted,
+		workflowCompleted: bgtask.StatusSucceeded,
 		workflowFailed:    bgtask.StatusFailed,
 		workflowCancelled: bgtask.StatusStopped,
 		"":                bgtask.StatusStopped,
@@ -84,7 +84,7 @@ func TestActorJoinsTheOneWorkflowThatStillRuns(t *testing.T) {
 		actorRegisteredEvent(t, "reviewer-1", false),
 		actorStatusEvent(t, "reviewer-1", contracts.MiMoActorStatusRunning, "", 0, ""),
 	)
-	assert.Equal(t, bgtask.StatusCompleted, backgroundTask(t, sink, "mimo-workflow:wf_1").Status)
+	assert.Equal(t, bgtask.StatusSucceeded, backgroundTask(t, sink, "mimo-workflow:wf_1").Status)
 	row := backgroundTask(t, sink, testSessionID+"/reviewer-1")
 	assert.Equal(t, "mimo-workflow:wf_2", row.GroupKey)
 	assert.Equal(t, "two", row.GroupLabel)
@@ -100,13 +100,13 @@ func TestSpawnedActorDoesNotJoinARunningWorkflow(t *testing.T) {
 	feed(a, workflowEvent(t, eventWorkflowStarted, testSessionID, "wf_1", map[string]any{"name": "review"}))
 
 	spawnActor(t, a, contracts.MiMoActorActionSpawn, true)
-	row := backgroundTask(t, sink, spawnCallID)
+	row := backgroundTask(t, sink, spawnSpanID)
 	assert.Empty(t, row.GroupKey)
 	assert.Empty(t, row.GroupLabel)
 
 	feed(a, actorStatusEvent(t, actorID, contracts.MiMoActorStatusIdle, contracts.MiMoActorOutcomeSuccess, 1, ""),
 		actorStatusEvent(t, actorID, contracts.MiMoActorStatusRunning, "", 1, ""))
-	assert.Empty(t, backgroundTask(t, sink, spawnCallID).GroupKey, "a later turn keeps the row out of the workflow")
+	assert.Empty(t, backgroundTask(t, sink, spawnSpanID).GroupKey, "a later turn keeps the row out of the workflow")
 }
 
 func TestMiMoWorkflowLabel(t *testing.T) {

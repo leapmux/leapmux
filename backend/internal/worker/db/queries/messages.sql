@@ -3,7 +3,7 @@
 -- NOT MAX(live seq) + 1, so a deleted tail seq is never reused. The agent row is
 -- guaranteed to exist (messages.agent_id REFERENCES agents); the COALESCE is a
 -- defensive fallback. A trigger advances message_seq_hwm after the insert.
-INSERT INTO messages (id, agent_id, seq, agent_session_id, source, content, content_compression, supplemental_content, supplemental_content_compression, idempotency_key, depth, span_id, parent_span_id, span_type, span_lines, span_color, agent_provider, mark_type, assembled_kind, completion, created_at)
+INSERT INTO messages (id, agent_id, seq, agent_session_id, source, content, content_compression, supplemental_content, supplemental_content_compression, idempotency_key, depth, span_id, parent_span_id, span_type, span_lines, span_color, agent_provider, mark_type, assembled_kind, completion, transcript_only, created_at)
 VALUES (
   sqlc.arg(id),
   sqlc.arg(agent_id),
@@ -25,6 +25,7 @@ VALUES (
   sqlc.arg(mark_type),
 	sqlc.arg(assembled_kind),
 	sqlc.arg(completion),
+  sqlc.arg(transcript_only),
   sqlc.arg(created_at)
 )
 ON CONFLICT(agent_id, agent_session_id, idempotency_key) WHERE idempotency_key <> '' DO NOTHING
@@ -51,7 +52,7 @@ INSERT INTO messages (
   content_compression, supplemental_content,
   supplemental_content_compression, supplemental_revision, idempotency_key,
   depth, span_id, parent_span_id, span_type, span_lines, span_color,
-  agent_provider, mark_type, assembled_kind, completion, created_at
+  agent_provider, mark_type, assembled_kind, completion, transcript_only, created_at
 )
 SELECT
   CAST(sqlc.arg(target_agent_id) AS TEXT) || ':' || CAST(m.seq AS TEXT),
@@ -61,7 +62,7 @@ SELECT
   m.supplemental_content_compression, m.supplemental_revision,
   m.idempotency_key, m.depth, m.span_id, m.parent_span_id,
   m.span_type, m.span_lines, m.span_color, m.agent_provider,
-  m.mark_type, m.assembled_kind, m.completion, m.created_at
+  m.mark_type, m.assembled_kind, m.completion, m.transcript_only, m.created_at
 FROM messages AS m
 WHERE m.agent_id = sqlc.arg(source_agent_id)
 ORDER BY m.seq ASC;
@@ -125,12 +126,35 @@ UPDATE messages
 SET content = sqlc.arg(content),
     content_compression = sqlc.arg(content_compression),
     span_lines = sqlc.arg(span_lines),
+    transcript_only = sqlc.arg(transcript_only),
+    supplemental_content = COALESCE(CAST(sqlc.arg(supplemental_content) AS BLOB), X''),
+    supplemental_content_compression = sqlc.arg(supplemental_content_compression),
+    completion = sqlc.arg(completion),
     seq = (COALESCE((SELECT a.message_seq_hwm FROM agents a WHERE a.id = sqlc.arg(agent_id)), 0) + 1)
 WHERE messages.id = sqlc.arg(id) AND messages.agent_id = sqlc.arg(agent_id)
 RETURNING seq;
 
+-- name: UpdateNotificationJournal :execrows
+UPDATE messages
+SET supplemental_content = COALESCE(CAST(sqlc.arg(supplemental_content) AS BLOB), X''),
+    supplemental_content_compression = sqlc.arg(supplemental_content_compression),
+    transcript_only = sqlc.arg(transcript_only)
+WHERE id = sqlc.arg(id) AND agent_id = sqlc.arg(agent_id);
+
+-- name: ListMessageSupplementsByAgentAndSession :many
+SELECT id, agent_id, agent_session_id, source, agent_provider,
+       supplemental_content, supplemental_content_compression
+FROM messages
+WHERE agent_id = ? AND agent_session_id = ?
+ORDER BY seq ASC;
+
 -- name: GetLatestMessageByAgentID :one
 SELECT * FROM messages WHERE agent_id = ? ORDER BY seq DESC LIMIT 1;
+
+-- name: GetLatestMessageByAgentAndSession :one
+SELECT * FROM messages
+WHERE agent_id = ? AND agent_session_id = ?
+ORDER BY seq DESC LIMIT 1;
 
 -- name: HasUserMessages :one
 SELECT EXISTS(SELECT 1 FROM messages m JOIN agents a ON m.agent_id = a.id WHERE m.agent_id = ? AND m.source = 1 AND m.seq > a.session_start_seq) AS has_messages;
@@ -158,5 +182,5 @@ SELECT
 -- Marked seqs (scroll-rail jump targets) for one agent, ascending. Served from the
 -- partial covering index idx_messages_mark_type without touching the table.
 SELECT seq, mark_type FROM messages
-WHERE agent_id = ? AND mark_type <> 0
+WHERE agent_id = ? AND mark_type IS NOT NULL
 ORDER BY seq ASC;

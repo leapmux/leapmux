@@ -114,10 +114,9 @@ func newRetiringTestAgent(t *testing.T) (*testAgent, *agenttest.ControlSink, fun
 	return a, sink, requests
 }
 
-// syncTestPeer returns once the peer recorded every line that the agent wrote
-// before the call. The peer reads the lines in order and answers this request
-// only after it recorded each line before it, so a test that asserts that a
-// line is ABSENT does not pass only because the peer did not read it yet.
+// syncTestPeer returns after the peer records every line that the agent writes before this call.
+// The peer reads lines in order and answers this request only after recording each preceding line.
+// A test for an absent line therefore cannot pass merely because the peer did not read that line yet.
 func syncTestPeer(t *testing.T, a *testAgent) {
 	t.Helper()
 	_, err := a.SendRequest("test/sync", nil, 30*time.Second)
@@ -228,12 +227,13 @@ func sessionIDsOf(requests []agenttest.RecordedRequest, method string) []string 
 	return out
 }
 
-// A context clear abandons the outgoing session, whose turn can wait on a
-// control request that no reader can answer any more. The clear answers each
-// such request, retires its card, and cancels the turn, all BEFORE it opens
-// the new session. Without that, the turn stayed blocked, and a later stop of
-// the NEW session answered the old request and let the old turn go on where
-// nobody could see it.
+// A context clear abandons the outgoing session, whose turn can wait on a control request that no reader can answer.
+// Complete these operations before opening the new session:
+//   - Answer each such request.
+//   - Retire its card.
+//   - Cancel the turn.
+// Otherwise the old turn remains blocked until a later stop of the new session answers its request.
+// That answer would let the old turn continue without a visible transcript.
 func TestACPClearContextReleasesTheOutgoingTurnBeforeTheNewSession(t *testing.T) {
 	t.Parallel()
 	a, sink, requests := newRetiringTestAgent(t)
@@ -270,9 +270,9 @@ func TestACPClearContextReleasesTheOutgoingTurnBeforeTheNewSession(t *testing.T)
 	assert.Equal(t, indexOfAnswer(t, requests(), 30), indexOfAnswer(t, lines, 30), "no second answer reaches the old request")
 }
 
-// A clear of an idle session cancels no turn, because there is none. It still
-// answers each open control request: a subagent of the session can wait on one
-// while the main turn is idle, and nothing could answer it after the clear.
+// An idle session has no turn to cancel, so clearing it cancels none.
+// Still answer each open control request.
+// A subagent can wait on that request while the main turn is idle, and nothing can answer it after the clear.
 func TestACPClearContextOfAnIdleSessionAnswersItsRequestsAndCancelsNothing(t *testing.T) {
 	t.Parallel()
 	a, sink, requests := newRetiringTestAgent(t)
@@ -289,9 +289,8 @@ func TestACPClearContextOfAnIdleSessionAnswersItsRequestsAndCancelsNothing(t *te
 	assert.Empty(t, sessionIDsOf(requests(), MethodSessionCancel))
 }
 
-// A control request that the retired session raises after the clear never
-// reaches the reader. The base answers it at once with its cancel answer,
-// because its turn waits on the answer and no card could ever give one.
+// A retired session's new control request never reaches the reader.
+// The base immediately sends the request's cancel answer because the turn waits for it and no card can provide an answer.
 func TestACPRefusesAControlRequestOfARetiredSession(t *testing.T) {
 	t.Parallel()
 	a, sink, requests := newRetiringTestAgent(t)
@@ -309,9 +308,11 @@ func TestACPRefusesAControlRequestOfARetiredSession(t *testing.T) {
 	assert.Zero(t, a.OutstandingControlCountForTest(), "a refused request leaves no record for a later stop")
 }
 
-// The refusal applies to a session that the agent does not serve, and to no
-// other. The current session, a subagent session that a row routes, and a
-// request that states no session all reach the reader.
+// Refuse requests only for a session that the agent does not serve.
+// These requests still reach the reader:
+//   - A request for the current session.
+//   - A request for a subagent session routed by a row.
+//   - A request with no session.
 func TestACPPublishesTheControlRequestsOfTheSessionsThatItServes(t *testing.T) {
 	t.Parallel()
 	a, sink, requests := newRetiringTestAgent(t)
@@ -326,15 +327,13 @@ func TestACPPublishesTheControlRequestsOfTheSessionsThatItServes(t *testing.T) {
 	assert.Empty(t, agenttest.JSONRPCResultsByID(t, rawLinesOf(requests())), "the agent answers nothing on the reader's behalf")
 }
 
-// The worker accepts an answer only while the agent is in the session that it
-// stored with the request. The sink learns a new main session some time after
-// the base does: at the start, after the answer to session/new, and at a
-// context clear, after the swap. A request of the main session in that interval
-// took the session that the sink still held, so every answer to it was refused.
-// The base therefore stores a request of its main session under that session. A
-// request of a subagent session, and one that states no session, keep the
-// session that the sink holds, because the request does not state which main
-// session owns it.
+// The worker accepts an answer only while the agent's session matches the session stored with the request.
+// The sink learns a new main session after the base:
+//   - At startup, after the session/new response.
+//   - At a context clear, after the swap.
+// A main-session request in that interval formerly used the sink's old session, which caused every answer to be refused.
+// The base therefore stores a main-session request under its actual main session.
+// A subagent-session request or request without a session keeps the sink's session because neither identifies its owning main session.
 func TestACPStoresAControlRequestOfTheMainSessionUnderThatSession(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newRetiringTestAgent(t)
@@ -357,10 +356,8 @@ func TestACPStoresAControlRequestOfTheMainSessionUnderThatSession(t *testing.T) 
 	}, sessions)
 }
 
-// A context clear closes each registry row that the outgoing session opened,
-// because no later update of that session reaches the base. Without that, a
-// background subagent of the old session kept its row running until the
-// process exited.
+// A context clear closes every registry row that the outgoing session opens because no later update reaches the base.
+// Without that close, a background subagent's old row would remain running until process exit.
 func TestACPClearContextClosesTheRowsOfTheOutgoingSession(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newRetiringTestAgent(t)
@@ -374,7 +371,7 @@ func TestACPClearContextClosesTheRowsOfTheOutgoingSession(t *testing.T) {
 		RowKey: "call_done", ChildAgentKey: "call_done", Title: "Finished helper", Status: bgtask.StatusRunning,
 	})
 	a.ApplySubagentObservation(&SubagentObservation{
-		RowKey: "call_done", Status: bgtask.StatusCompleted, CloseRow: true, Mode: ModeCloseOnly,
+		RowKey: "call_done", Status: bgtask.StatusSucceeded, CloseRow: true, Mode: ModeCloseOnly,
 	})
 
 	_, err := a.ClearContext()
@@ -387,7 +384,7 @@ func TestACPClearContextClosesTheRowsOfTheOutgoingSession(t *testing.T) {
 	}
 	done, ok := sink.BackgroundTask("call_done")
 	require.True(t, ok)
-	assert.Equal(t, bgtask.StatusCompleted, done.Status, "a row that already ended keeps its own status")
+	assert.Equal(t, bgtask.StatusSucceeded, done.Status, "a row that already ended keeps its own status")
 }
 
 // The subagent sessions of the outgoing session go with it: a late update of
@@ -415,10 +412,14 @@ func TestACPClearContextForgetsTheChildSessionsOfTheOutgoingSession(t *testing.T
 	assert.JSONEq(t, `{"outcome":{"outcome":"cancelled"}}`, answers["60"])
 }
 
-// An agent that advertises session/close receives it for the outgoing session,
-// after the new session opened. Grok Build, Goose, OpenCode, Kilo and Reasonix
-// end the subagents and the background work of a session there, which
-// session/cancel leaves running.
+// An agent that advertises session/close receives it for the outgoing session after the new session opens.
+// These providers end the outgoing session's subagents and background work there:
+//   - Grok Build.
+//   - Goose.
+//   - OpenCode.
+//   - Kilo.
+//   - Reasonix.
+// session/cancel leaves that work running.
 func TestACPClearContextClosesTheOutgoingSessionWhenTheAgentAdvertisesIt(t *testing.T) {
 	t.Parallel()
 	a, _, requests := newRetiringTestAgent(t)
@@ -540,9 +541,9 @@ func answerlessRequest(t *testing.T, a *testAgent, id int) {
 	a.PublishSessionControlRequest(providerkit.ParseLine(frame), nil)
 }
 
-// By default a stop retires every open request, one with no cancel answer
-// included. Cursor's question is such a request: its turn owns it, and Cursor
-// defines no outcome for a withdrawn one, so the card retires with no answer.
+// A stop retires every open request by default, including a request with no cancel answer.
+// Cursor's question belongs to its turn and defines no withdrawal outcome.
+// Its card therefore retires without an answer.
 func TestACPInterruptRetiresAnAnswerlessRequestByDefault(t *testing.T) {
 	t.Parallel()
 	a, sink, requests := newRetiringTestAgent(t)
@@ -557,8 +558,8 @@ func TestACPInterruptRetiresAnAnswerlessRequestByDefault(t *testing.T) {
 	assert.Zero(t, a.OutstandingControlCountForTest())
 }
 
-// A provider whose answerless requests outlive the turn keeps them open across
-// a stop and across a context clear, and still answers the rest.
+// A provider can keep requests without cancel answers open beyond the turn.
+// Preserve those requests across a stop or context clear, and still answer every other request.
 func TestACPKeepsAnAnswerlessRequestThatOutlivesTheTurn(t *testing.T) {
 	t.Parallel()
 	for name, stop := range map[string]func(*testAgent) error{
@@ -612,9 +613,10 @@ func TestACPRefusesAnAnswerlessRequestOfARetiredSessionWithAnError(t *testing.T)
 	assert.Equal(t, acpStaleSessionRequestError, response.Error.Code)
 }
 
-// The copy of the open rows ignores a row with no key, moves a row that the
-// registry re-keyed only when both keys are real, and forgets what takeAll
-// returns.
+// The open-row copy applies these rules:
+//   - Ignore a row with no key.
+//   - Move a renamed row only when both keys are nonempty.
+//   - Remove the entries returned by takeAll.
 func TestACPOpenRows(t *testing.T) {
 	t.Parallel()
 	var rows acpOpenRows
@@ -634,9 +636,9 @@ func TestACPOpenRows(t *testing.T) {
 	assert.Empty(t, rows.takeAll(), "takeAll forgets what it returns")
 }
 
-// A context clear ends each row of the outgoing session with the transcript of
-// its child, and releases the child agent, as a close that the agent reported
-// does. The row routes nothing afterwards.
+// A context clear ends each outgoing session row and its child transcript, then releases the child agent.
+// An agent-reported close performs the same operations.
+// The row routes no later update.
 func TestACPClearContextReleasesTheChildAgentsOfTheOutgoingRows(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newRetiringTestAgent(t)
@@ -661,9 +663,8 @@ func TestACPClearContextReleasesTheChildAgentsOfTheOutgoingRows(t *testing.T) {
 		"the row of the retired session routes nothing")
 }
 
-// A child that the registry resolved, because a process before a worker restart
-// created its row, is in no open row of this agent. Its conversation still ends
-// with the session that fed it, as a stop.
+// A registry-resolved child can belong to a process before a worker restart and appear in none of this agent's open rows.
+// Its conversation still ends as interrupted when its supplying session ends.
 func TestACPClearContextEndsAChildThatTheRegistryResolved(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newRetiringTestAgent(t)
@@ -691,7 +692,7 @@ func TestACPClearContextClosesARowWhoseCloseFailed(t *testing.T) {
 	a.sink = probe
 	a.ApplySubagentObservation(&SubagentObservation{RowKey: "call_flaky", Title: "Flaky helper", Status: bgtask.StatusRunning})
 	probe.setFailClose(true)
-	a.ApplySubagentObservation(&SubagentObservation{RowKey: "call_flaky", Status: bgtask.StatusCompleted, CloseRow: true, Mode: ModeCloseOnly})
+	a.ApplySubagentObservation(&SubagentObservation{RowKey: "call_flaky", Status: bgtask.StatusSucceeded, CloseRow: true, Mode: ModeCloseOnly})
 	row, ok := sink.BackgroundTask("call_flaky")
 	require.True(t, ok)
 	require.Equal(t, bgtask.StatusRunning, row.Status, "the registry refused the close")
@@ -705,9 +706,8 @@ func TestACPClearContextClosesARowWhoseCloseFailed(t *testing.T) {
 	assert.Equal(t, bgtask.StatusStopped, row.Status)
 }
 
-// A row that the provider re-keyed closes under its new key at a context clear.
-// The old key identifies no row any more, so a close of it would change nothing
-// and leave the row running.
+// A context clear closes a renamed row through its new key.
+// The preceding key identifies no row, so closing through it would leave the actual row running.
 func TestACPClearContextClosesARenamedRowUnderItsNewKey(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newRetiringTestAgent(t)
@@ -723,9 +723,9 @@ func TestACPClearContextClosesARenamedRowUnderItsNewKey(t *testing.T) {
 	assert.Equal(t, bgtask.StatusStopped, row.Status)
 }
 
-// The provider reads each control request that passes BEFORE the reader sees
-// its card, so a withdrawal that follows the publication finds it recorded. A
-// request that the base refuses reaches neither.
+// The provider reads each accepted control request before the reader receives its card.
+// A withdrawal after publication therefore finds the recorded request.
+// A request refused by the base reaches neither the provider observer nor the reader.
 func TestACPControlRequestObserverReadsEachPublishedRequestFirst(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newRetiringTestAgent(t)
@@ -753,12 +753,10 @@ func TestACPControlRequestObserverReadsEachPublishedRequestFirst(t *testing.T) {
 	assert.Len(t, sink.PublishedControls(), 3)
 }
 
-// A control request is a chronology boundary, as a tool call is. The agent
-// waits on the answer, so the text that a session streamed before its request
-// is in the transcript of that session before the card reaches the reader: the
-// observer, which runs before the publication, already finds it. A request of a
-// session that the agent does not serve stores nothing, so the segment that it
-// interrupts stays open.
+// A control request establishes transcript order, as a tool call does.
+// The agent waits for its answer, so persist all preceding session text before publishing the request card.
+// The observer runs before publication and must already find that text in the session's transcript.
+// A request from an unserved session persists nothing and leaves the existing text segment open.
 func TestACPStoresTheTextBeforeAControlRequest(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newRetiringTestAgent(t)
@@ -793,8 +791,8 @@ func TestACPStoresTheTextBeforeAControlRequest(t *testing.T) {
 	assert.Equal(t, append(stored, "text:Keep streaming."), assembledTexts(t, sink.Messages()))
 }
 
-// A frame of a retired session that carries no id asks for no answer, so the
-// refusal writes nothing, and the reader sees no card.
+// A retired session's frame without a request ID requires no answer.
+// Refusing it writes nothing and displays no card.
 func TestACPRefusesANotificationOfARetiredSessionWithoutAnAnswer(t *testing.T) {
 	t.Parallel()
 	a, sink, requests := newRetiringTestAgent(t)
@@ -812,9 +810,11 @@ func TestACPRefusesANotificationOfARetiredSessionWithoutAnAnswer(t *testing.T) {
 	assert.Equal(t, "test/sync", written[0].Method)
 }
 
-// An agent whose handshake never opened a session has no outgoing session: the
-// clear cancels no turn, closes no session, and hands the provider nothing to
-// retire.
+// An agent whose handshake opens no session has no outgoing session.
+// A context clear then performs none of these operations:
+//   - Cancel a turn.
+//   - Close a session.
+//   - Give the provider a session to retire.
 func TestACPClearContextOfNoSessionRetiresNothing(t *testing.T) {
 	t.Parallel()
 	a, _, requests := newRetiringTestAgent(t)

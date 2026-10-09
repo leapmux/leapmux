@@ -1,6 +1,6 @@
 import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
 import type { NativeOutputReceipt } from '../helpers/nativeToolOutputFilePaths'
-import { pickObject } from '../../../src/lib/jsonPick'
+import { pickObject, pickString } from '../../../src/lib/jsonPick'
 import { isFilesystemPath } from '../../../src/lib/paths'
 import { readNativeToolOutputRecord } from '../helpers/nativeMessages'
 
@@ -8,7 +8,7 @@ import { readNativeToolOutputRecord } from '../helpers/nativeMessages'
 export function readMiMoNativeOutput(snapshot: NativeMessageSnapshot, callId: string): NativeOutputReceipt {
   const record = readNativeToolOutputRecord(snapshot, {
     callId,
-    spanId: callId,
+    spanId: frame => pickString(pickObject(pickObject(frame, 'properties'), 'part'), 'id'),
     accepts: (frame) => {
       const part = pickObject(pickObject(frame, 'properties'), 'part')
       return frame.type === 'message.part.updated' && part?.type === 'tool' && part.tool === 'bash' && typeof part.id === 'string' && part.id !== ''

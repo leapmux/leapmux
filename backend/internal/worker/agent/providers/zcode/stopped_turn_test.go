@@ -22,7 +22,7 @@ type failingZCodeNotificationSink struct {
 
 func (s *failingZCodeNotificationSink) PersistNotification(
 	leapmuxv1.MessageSource,
-	[]byte,
+	agent.MessageContent,
 ) (bool, error) {
 	return false, errors.New("notification store unavailable")
 }

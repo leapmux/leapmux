@@ -3,15 +3,23 @@ package streamevents
 import (
 	"context"
 	"log/slog"
+	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
+
+	"connectrpc.com/connect"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/tunnel"
+	"google.golang.org/protobuf/encoding/protowire"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 // capturingHandler is a slog.Handler that records emitted records so a test can
@@ -161,7 +169,7 @@ func TestChannelTransport_TeardownNotBlockedByInFlightFrame(t *testing.T) {
 // quiet -- or resubscribed into the same rejection forever -- with nothing to
 // diagnose from. The sibling path (crossworker.Client.StreamInner) surfaces the
 // identical envelope.
-func TestChannelTransport_LogsTerminalErrorEnvelope(t *testing.T) {
+func TestChannelTransport_LogsEndingErrorEnvelope(t *testing.T) {
 	fc := &fakeChannel{ctx: context.Background()}
 	h := &capturingHandler{}
 	tr := NewChannelTransport(fc, slog.New(h))
@@ -190,7 +198,7 @@ func TestChannelTransport_LogsTerminalErrorEnvelope(t *testing.T) {
 
 // A subscription the server ends CLEANLY (a non-error response) must not be
 // reported as a failure.
-func TestChannelTransport_CleanTerminalResponseIsNotLoggedAsError(t *testing.T) {
+func TestChannelTransport_CleanEndingResponseIsNotLoggedAsError(t *testing.T) {
 	fc := &fakeChannel{ctx: context.Background()}
 	h := &capturingHandler{}
 	tr := NewChannelTransport(fc, slog.New(h))
@@ -297,4 +305,157 @@ func TestChannelTransport_LogsMalformedFrame(t *testing.T) {
 	// The stream survived the bad frame: a subsequent valid frame still delivers.
 	fc.cb(&leapmuxv1.InnerStreamMessage{})
 	require.Equal(t, 1, frames, "a valid frame after a malformed one must still deliver")
+}
+
+type replayIdentityIPCHandler struct {
+	leapmuxv1connect.UnimplementedControlIPCServiceHandler
+	opening         chan *leapmuxv1.StreamInnerRequest
+	update          chan *leapmuxv1.UpdateStreamRequest
+	responsePayload []byte
+}
+
+func (handler *replayIdentityIPCHandler) StreamInner(ctx context.Context, request *connect.Request[leapmuxv1.StreamInnerRequest], stream *connect.ServerStream[leapmuxv1.StreamInnerEnvelope]) error {
+	handler.opening <- proto.Clone(request.Msg).(*leapmuxv1.StreamInnerRequest)
+	payload := handler.responsePayload
+	if payload == nil {
+		var err error
+		payload, err = proto.Marshal(&leapmuxv1.WatchEventsResponse{Event: &leapmuxv1.WatchEventsResponse_UpdateAck{UpdateAck: &leapmuxv1.WatchUpdateAck{UpdateId: 1}}})
+		if err != nil {
+			return err
+		}
+	}
+	if err := stream.Send(&leapmuxv1.StreamInnerEnvelope{Payload: payload}); err != nil {
+		return err
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func TestReplayOriginBothTransportsPreserveReceivedBytes(t *testing.T) {
+	const rootID = "projected-root"
+	const childID = "originating-child"
+	const replayID = ^uint64(0)
+	request := &leapmuxv1.WatchEventsRequest{UpdateId: 31, Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: childID, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: replayID}}}
+	eventBytes, err := proto.Marshal(&leapmuxv1.AgentEvent{AgentId: rootID, Replay: true, ReplayId: replayID, Event: &leapmuxv1.AgentEvent_GoalChanged{GoalChanged: &leapmuxv1.AgentGoalChanged{AgentId: rootID, Goal: &leapmuxv1.AgentGoal{Objective: "The root goal"}}}})
+	require.NoError(t, err)
+	eventBytes = protowire.AppendTag(eventBytes, 17, protowire.BytesType)
+	eventBytes = protowire.AppendString(eventBytes, childID)
+	var wireEvent leapmuxv1.AgentEvent
+	require.NoError(t, proto.Unmarshal(eventBytes, &wireEvent))
+	payload, err := proto.Marshal(&leapmuxv1.WatchEventsResponse{Event: &leapmuxv1.WatchEventsResponse_AgentEvent{AgentEvent: &wireEvent}})
+	require.NoError(t, err)
+	assertFrame := func(t *testing.T, frame *leapmuxv1.WatchEventsResponse) {
+		t.Helper()
+		event := frame.GetAgentEvent()
+		require.NotNil(t, event)
+		assert.Equal(t, rootID, event.GetAgentId())
+		assert.Equal(t, rootID, event.GetGoalChanged().GetAgentId())
+		assert.Equal(t, "The root goal", event.GetGoalChanged().GetGoal().GetObjective())
+		assert.True(t, event.GetReplay())
+		assert.Equal(t, replayID, event.GetReplayId())
+		message := event.ProtoReflect()
+		field := message.Descriptor().Fields().ByName("replay_agent_id")
+		var origin string
+		if field != nil && field.Kind() == protoreflect.StringKind {
+			origin = message.Get(field).String()
+		}
+		assert.Equal(t, childID, origin, "the actual generated received field must preserve the explicit origin")
+		received, err := proto.Marshal(frame)
+		require.NoError(t, err)
+		assert.Equal(t, payload, received, "both actual decoders must preserve the complete protobuf response")
+	}
+	t.Run("channel", func(t *testing.T) {
+		channel := &fakeChannel{ctx: context.Background(), streamOnSend: &leapmuxv1.InnerStreamMessage{Payload: payload}}
+		var received *leapmuxv1.WatchEventsResponse
+		handle, err := NewChannelTransport(channel, nil).OpenWatchEvents(t.Context(), request, func(frame *leapmuxv1.WatchEventsResponse) { received = frame })
+		require.NoError(t, err)
+		t.Cleanup(func() { handle.Cancel(); <-handle.Done() })
+		require.NotNil(t, received)
+		assertFrame(t, received)
+	})
+	t.Run("local IPC", func(t *testing.T) {
+		handler := &replayIdentityIPCHandler{opening: make(chan *leapmuxv1.StreamInnerRequest, 1), update: make(chan *leapmuxv1.UpdateStreamRequest, 1), responsePayload: payload}
+		_, serve := leapmuxv1connect.NewControlIPCServiceHandler(handler)
+		server := httptest.NewServer(serve)
+		t.Cleanup(server.Close)
+		client := leapmuxv1connect.NewControlIPCServiceClient(server.Client(), server.URL)
+		frames := make(chan *leapmuxv1.WatchEventsResponse, 1)
+		handle, err := NewLocalIPCTransport(client, "worker", nil).OpenWatchEvents(t.Context(), request, func(frame *leapmuxv1.WatchEventsResponse) { frames <- frame })
+		require.NoError(t, err)
+		t.Cleanup(func() { handle.Cancel(); <-handle.Done() })
+		ctx := testutil.DeadlineContext(t)
+		select {
+		case received := <-frames:
+			assertFrame(t, received)
+		case <-ctx.Done():
+			t.Fatal("the actual IPC decoder received no replay frame")
+		}
+	})
+}
+
+func (handler *replayIdentityIPCHandler) UpdateStream(_ context.Context, request *connect.Request[leapmuxv1.UpdateStreamRequest]) (*connect.Response[leapmuxv1.UpdateStreamResponse], error) {
+	handler.update <- proto.Clone(request.Msg).(*leapmuxv1.UpdateStreamRequest)
+	return connect.NewResponse(&leapmuxv1.UpdateStreamResponse{}), nil
+}
+
+func (*replayIdentityIPCHandler) Cancel(context.Context, *connect.Request[leapmuxv1.CancelRequest]) (*connect.Response[leapmuxv1.CancelResponse], error) {
+	return connect.NewResponse(&leapmuxv1.CancelResponse{}), nil
+}
+
+func TestSubscriptionReplayIdentityBothTransportsPreserveActualRequestBytes(t *testing.T) {
+	const identity = uint64(9007199254740995)
+	const cursor = int64(9007199254740993)
+	tail := int64(0)
+	request := &leapmuxv1.WatchEventsRequest{UpdateId: identity + 1, Agents: []*leapmuxv1.WatchAgentEntry{{
+		AgentId: "agent", Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: identity,
+		Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR, CursorSeq: cursor, WindowTailSeq: &tail,
+	}}}
+	assertPayload := func(t *testing.T, payload []byte) {
+		t.Helper()
+		var decoded leapmuxv1.WatchEventsRequest
+		require.NoError(t, proto.Unmarshal(payload, &decoded))
+		assert.True(t, proto.Equal(request, &decoded))
+		require.Len(t, decoded.Agents, 1)
+		assert.Equal(t, identity, decoded.Agents[0].ReplayId)
+		assert.Equal(t, cursor, decoded.Agents[0].CursorSeq)
+		require.NotNil(t, decoded.Agents[0].WindowTailSeq)
+		assert.Zero(t, *decoded.Agents[0].WindowTailSeq)
+	}
+	t.Run("channel", func(t *testing.T) {
+		channel := &replayIdentityChannel{fakeChannel: &fakeChannel{ctx: context.Background()}}
+		handle, err := NewChannelTransport(channel, nil).OpenWatchEvents(t.Context(), request, func(*leapmuxv1.WatchEventsResponse) {})
+		require.NoError(t, err)
+		t.Cleanup(func() { handle.Cancel(); <-handle.Done() })
+		assertPayload(t, channel.openings[0])
+		require.NoError(t, handle.Update(request))
+		assertPayload(t, channel.revisions[0])
+	})
+	t.Run("local IPC", func(t *testing.T) {
+		handler := &replayIdentityIPCHandler{opening: make(chan *leapmuxv1.StreamInnerRequest, 1), update: make(chan *leapmuxv1.UpdateStreamRequest, 1)}
+		_, serve := leapmuxv1connect.NewControlIPCServiceHandler(handler)
+		server := httptest.NewServer(serve)
+		t.Cleanup(server.Close)
+		client := leapmuxv1connect.NewControlIPCServiceClient(server.Client(), server.URL)
+		handle, err := NewLocalIPCTransport(client, "worker", nil).OpenWatchEvents(t.Context(), request, func(*leapmuxv1.WatchEventsResponse) {})
+		require.NoError(t, err)
+		t.Cleanup(func() { handle.Cancel(); <-handle.Done() })
+		ctx := testutil.DeadlineContext(t)
+		var opening *leapmuxv1.StreamInnerRequest
+		select {
+		case opening = <-handler.opening:
+		case <-ctx.Done():
+			t.Fatal("the IPC handler received no opening request")
+		}
+		assert.Equal(t, "worker.WatchEvents", opening.Method)
+		assert.Equal(t, "worker", opening.TargetWorkerId)
+		assertPayload(t, opening.Payload)
+		require.NoError(t, handle.Update(request))
+		select {
+		case update := <-handler.update:
+			assert.Equal(t, opening.ClientRequestId, update.ClientRequestId)
+			assertPayload(t, update.Payload)
+		case <-ctx.Done():
+			t.Fatal("the IPC handler received no update request")
+		}
+	})
 }

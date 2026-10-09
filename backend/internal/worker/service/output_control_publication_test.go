@@ -3,6 +3,9 @@ package service
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"io"
+	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,9 +18,271 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude/claudetest"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
+
+type controlFailureLogObserver struct {
+	slog.Handler
+	observe func(slog.Record)
+}
+
+func (observer controlFailureLogObserver) Handle(_ context.Context, record slog.Record) error {
+	observer.observe(record)
+	return nil
+}
+
+type failedControlMutationStore struct {
+	db.DBTX
+	queryRow func(context.Context, string, ...any) *sql.Row
+	query    func(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+func (store failedControlMutationStore) QueryRowContext(ctx context.Context, query string, arguments ...any) *sql.Row {
+	return store.queryRow(ctx, query, arguments...)
+}
+
+func (store failedControlMutationStore) QueryContext(ctx context.Context, query string, arguments ...any) (*sql.Rows, error) {
+	return store.query(ctx, query, arguments...)
+}
+
+func TestControlPublicationFailureLogsReleaseTheMutationBeforeCallbacks(t *testing.T) {
+	for _, boundary := range []string{"publication state read", "cancellation state read", "cancellation delete", "full clear delete", "stop instance delete"} {
+		t.Run(boundary, func(t *testing.T) {
+			svc, _, _ := setupTestService(t)
+			const agentID = "control-failure-log-reentry"
+			createClaimTestAgent(t, svc, agentID)
+			sink := svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+			if boundary == "stop instance delete" {
+				_, err := svc.Agents.StartAgentWith(t.Context(), agent.Options{AgentID: agentID, WorkingDir: t.TempDir()}, sink, claudetest.StartSilent)
+				require.NoError(t, err)
+			}
+			sink.SetTurnState(agent.TurnState{Active: true}, 1)
+			require.NoError(t, sink.PublishControlRequest(agent.ControlRequest{RequestID: "original", Payload: []byte(`{"native":"original request"}`)}))
+			original, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: agentID, RequestID: "original"})
+			require.NoError(t, err)
+			svc.Output.WaitActivityRefreshes()
+			svc.Output.queries = db.New(failedControlMutationStore{DBTX: svc.DB,
+				queryRow: func(ctx context.Context, query string, arguments ...any) *sql.Row {
+					fail := len(arguments) > 1 && arguments[1] == "original" && ((boundary == "publication state read" || boundary == "cancellation state read") && strings.Contains(query, "-- name: GetControlResponseAnswer :one") ||
+						boundary == "cancellation delete" && strings.Contains(query, "-- name: CancelControlRequest :one") ||
+						boundary == "stop instance delete" && strings.Contains(query, "-- name: DeleteControlRequestInstance :one"))
+					if fail {
+						return svc.DB.QueryRowContext(ctx, "SELECT missing_control_failure_column")
+					}
+					return svc.DB.QueryRowContext(ctx, query, arguments...)
+				},
+				query: func(ctx context.Context, query string, arguments ...any) (*sql.Rows, error) {
+					if boundary == "full clear delete" && strings.Contains(query, "-- name: DeleteControlRequestsByAgentID :many") {
+						return svc.DB.QueryContext(ctx, "SELECT missing_control_failure_column")
+					}
+					return svc.DB.QueryContext(ctx, query, arguments...)
+				},
+			})
+			activity := svc.Output.activityFor(agentID, agentID)
+			var logs int
+			var mutexFree bool
+			var callbackErr error
+			previousLogger := slog.Default()
+			slog.SetDefault(slog.New(controlFailureLogObserver{Handler: slog.NewTextHandler(io.Discard, nil), observe: func(record slog.Record) {
+				if record.Level != slog.LevelError {
+					return
+				}
+				belongs := false
+				record.Attrs(func(attribute slog.Attr) bool {
+					belongs = belongs || attribute.Key == "agent_id" && attribute.Value.String() == agentID
+					return true
+				})
+				if !belongs {
+					return
+				}
+				logs++
+				mutexFree = activity.controlMu.TryLock()
+				if !mutexFree {
+					return
+				}
+				activity.controlMu.Unlock()
+				if boundary == "stop instance delete" {
+					sink.SetTurnState(agent.TurnState{}, 2)
+					sink.SetTurnState(agent.TurnState{Active: true}, 3)
+				}
+				callbackErr = sink.PublishControlRequest(agent.ControlRequest{RequestID: "from-log", Payload: []byte(`{"native":"logger request"}`)})
+			}}))
+			defer slog.SetDefault(previousLogger)
+			switch boundary {
+			case "publication state read":
+				require.NoError(t, sink.PublishControlRequest(agent.ControlRequest{RequestID: "original", Payload: original.Payload}))
+			case "cancellation state read", "cancellation delete":
+				sink.CancelControlRequest("original")
+			case "full clear delete":
+				svc.Output.ClearPendingControlRequests(agentID)
+			case "stop instance delete":
+				target, err := svc.Agents.CaptureStopTarget(agentID)
+				require.NoError(t, err)
+				svc.Output.NoteAgentStopRequested(agentID, agentID).Delivered(target)
+				svc.Output.WaitActivityRefreshes()
+			}
+			assert.Equal(t, 1, logs, "retain the original failure report")
+			assert.True(t, mutexFree, "the configured logger must run after control mutation release")
+			if mutexFree {
+				require.NoError(t, callbackErr)
+				stored, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: agentID, RequestID: "from-log"})
+				require.NoError(t, err)
+				assert.NotEmpty(t, stored.ClaimToken)
+			}
+			after, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: agentID, RequestID: "original"})
+			if boundary == "cancellation state read" {
+				assert.ErrorIs(t, err, sql.ErrNoRows)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, original, after)
+			}
+		})
+	}
+}
+
+func TestControlPublicationWatcherCanPublishAnotherRequestSynchronously(t *testing.T) {
+	t.Parallel()
+	for _, operation := range []string{"publish", "cancel", "clear all", "stop", "finalize"} {
+		t.Run(operation, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
+			defer cancel()
+			svc, _, _ := setupTestService(t)
+			const agentID = "control-publication-reentry"
+			createClaimTestAgent(t, svc, agentID)
+			sink := svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+			if operation == "stop" {
+				_, err := svc.Agents.StartAgentWith(ctx, agent.Options{AgentID: agentID, WorkingDir: t.TempDir()}, sink, claudetest.StartSilent)
+				require.NoError(t, err)
+			}
+			sink.UpdateSessionID("native-session")
+			sink.SetTurnState(agent.TurnState{Active: true}, 1)
+			payload := []byte(`{"type":"control_request","request_id":"original","request":{"tool_name":"ExitPlanMode"}}`)
+			request := agent.ControlRequest{RequestID: "original", Payload: payload}
+			require.NoError(t, sink.PublishControlRequest(request))
+			original, err := svc.Queries.GetControlRequest(ctx, db.GetControlRequestParams{AgentID: agentID, RequestID: request.RequestID})
+			require.NoError(t, err)
+			var answer db.ControlResponseAnswer
+			if operation == "finalize" {
+				response := []byte(`{"response":{"request_id":"original","response":{"behavior":"deny","message":"Please revise the plan."}}}`)
+				claimed, err := svc.Output.claimControlResponseAnswer(db.ClaimControlResponseAnswerParams{
+					AgentID: agentID, RequestID: original.RequestID, ClaimToken: original.ClaimToken,
+					AgentSessionID: original.AgentSessionID, AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+					RequestPayload: original.Payload, ResponseContent: response, ResolvedContent: response,
+				})
+				require.NoError(t, err)
+				require.True(t, claimed)
+				rows, err := svc.Queries.SetControlResponseDeliveryState(ctx, db.SetControlResponseDeliveryStateParams{
+					AgentID: agentID, RequestID: original.RequestID, ClaimToken: original.ClaimToken,
+					State: storedStateDelivered, RequiredState: storedStatePending,
+				})
+				require.NoError(t, err)
+				require.Equal(t, int64(1), rows)
+				answer, err = svc.Queries.GetControlResponseAnswer(ctx, db.GetControlResponseAnswerParams{AgentID: agentID, RequestID: original.RequestID, ClaimToken: original.ClaimToken})
+				require.NoError(t, err)
+			}
+			var once sync.Once
+			nestedDone := make(chan struct{})
+			observerResult := make(chan error, 1)
+			var nestedErr error
+			writer := &turnAdmissionWatchingWriter{testResponseWriter: &testResponseWriter{channelID: "control-publication-reentry-wire"}}
+			writer.onEvent = func(event *leapmuxv1.AgentEvent) {
+				matches := event.GetControlCancel().GetRequestId() == request.RequestID
+				if operation == "publish" {
+					matches = event.GetControlRequest().GetRequestId() == request.RequestID
+				}
+				if !matches {
+					return
+				}
+				invoke := false
+				once.Do(func() { invoke = true })
+				if !invoke {
+					return
+				}
+				go func() {
+					defer close(nestedDone)
+					if operation == "stop" {
+						sink.SetTurnState(agent.TurnState{}, 2)
+						sink.SetTurnState(agent.TurnState{Active: true}, 3)
+					}
+					nestedErr = sink.PublishControlRequest(agent.ControlRequest{RequestID: "reentrant", Payload: []byte(`{"native":"replacement request"}`)})
+				}()
+				select {
+				case <-nestedDone:
+					observerResult <- nil
+				case <-time.After(30 * time.Second):
+					observerResult <- errors.New("the control watcher retained the mutation mutex during request reentry")
+				}
+			}
+			registerAgentWatch(svc, writer.channelID, agentID, leapmuxv1.WatchMode_WATCH_MODE_FULL, writer)
+			completed := make(chan error, 1)
+			go func() {
+				var err error
+				switch operation {
+				case "publish":
+					err = sink.PublishControlRequest(request)
+				case "cancel":
+					sink.CancelControlRequest(request.RequestID)
+				case "clear all":
+					svc.Output.ClearPendingControlRequests(agentID)
+				case "stop":
+					var target agent.StopTarget
+					target, err = svc.Agents.CaptureStopTarget(agentID)
+					if err == nil {
+						svc.Output.NoteAgentStopRequested(agentID, agentID).Delivered(target)
+					}
+				case "finalize":
+					err = svc.finalizeControlResponse(answer)
+				}
+				completed <- err
+			}()
+			select {
+			case err := <-completed:
+				require.NoError(t, err)
+			case <-ctx.Done():
+				t.Fatal("the control operation did not finish")
+			}
+			select {
+			case <-nestedDone:
+			case <-ctx.Done():
+				t.Fatal("the watcher did not finish its new request")
+			}
+			assert.NoError(t, nestedErr)
+			assert.NoError(t, <-observerResult)
+			stored, err := svc.Queries.GetControlRequest(ctx, db.GetControlRequestParams{AgentID: agentID, RequestID: "reentrant"})
+			require.NoError(t, err)
+			assert.NotEmpty(t, stored.ClaimToken)
+			assert.NotEqual(t, original.ClaimToken, stored.ClaimToken)
+			activity := svc.Output.activityFor(agentID, agentID)
+			activity.mu.Lock()
+			retained := activity.pendingControl["reentrant"]
+			activity.mu.Unlock()
+			assert.Equal(t, stored.ClaimToken, retained.claimToken)
+			var kinds []string
+			var replacementDelivered bool
+			for _, event := range decodeAgentEvents(writer.testResponseWriter) {
+				if control := event.GetControlRequest(); control != nil && control.RequestId == "reentrant" {
+					replacementDelivered = true
+					assert.Equal(t, stored.ClaimToken, control.ClaimToken)
+				}
+				if control := event.GetControlCancel(); control != nil && control.RequestId == request.RequestID {
+					kinds = append(kinds, "cancel")
+					assert.Equal(t, original.ClaimToken, control.ClaimToken)
+				}
+				if event.GetAgentMessage() != nil {
+					kinds = append(kinds, "message")
+				}
+			}
+			assert.True(t, replacementDelivered)
+			if operation == "finalize" {
+				require.GreaterOrEqual(t, len(kinds), 2)
+				assert.Equal(t, []string{"cancel", "message"}, kinds[:2])
+			}
+		})
+	}
+}
 
 type observedControlRead struct {
 	db.DBTX
@@ -400,7 +665,7 @@ func TestControlPublicationKeepsItsActivityEntryUntilTheStoreCompletes(t *testin
 		done <- sink.PublishControlRequest(agent.ControlRequest{RequestID: "child-control", Payload: []byte(`{"question":"Choose one"}`)})
 	}()
 	<-entered
-	require.NoError(t, root.CloseBackgroundTask("row-key-1", bgtask.StatusCompleted))
+	require.NoError(t, root.CloseBackgroundTask("row-key-1", bgtask.StatusSucceeded))
 	holdSettles(t, svc.Output).close()
 	svc.Output.refreshActivityFrom(childID, rootID, nil, svc.Output.activitySeq.Add(1), settleImmediate)
 	current, retained := svc.Output.activity.Load(childID)
@@ -468,7 +733,7 @@ func TestActivityRetirementKeepsATurnThatStartsDuringTheBroadcast(t *testing.T) 
 		entered:            make(chan struct{}), release: make(chan struct{}),
 	}
 	registerAgentWatch(svc, "retirement-test", childID, leapmuxv1.WatchMode_WATCH_MODE_FULL, writer)
-	require.NoError(t, root.CloseBackgroundTask("row-key-1", bgtask.StatusCompleted))
+	require.NoError(t, root.CloseBackgroundTask("row-key-1", bgtask.StatusSucceeded))
 	done := make(chan struct{})
 	go func() { defer close(done); holdSettles(t, svc.Output).close() }()
 	<-writer.entered

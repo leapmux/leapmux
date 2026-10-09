@@ -7,11 +7,14 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 )
 
-// Event types that only the worker reads. The browser never receives them: the
-// worker turns each one into a transcript row of another shape, a registry row,
-// a control request, or nothing. The types the worker persists verbatim, which
-// the browser reads too, are in contracts/mimo-protocol.json. The question
-// events are MiMo's copy of OpenCode's, and come from opencode-protocol.json.
+// These event types stay inside the worker. The worker converts them into:
+//   - Transcript rows of another shape.
+//   - Registry rows.
+//   - Control requests.
+//
+// Some events produce no output.
+// contracts/mimo-protocol.json defines the events that the worker persists verbatim for the browser.
+// opencode-protocol.json defines MiMo's question events, which use OpenCode's shapes.
 const (
 	eventServerConnected        = "server.connected"
 	eventServerHeartbeat        = "server.heartbeat"
@@ -30,8 +33,7 @@ const (
 )
 
 // mimoIgnoredEvents are the event types the worker reads and acts on nowhere.
-// Each is here for a stated reason, so a type the server adds later reaches the
-// default branch of dispatchEvent and is logged instead of vanishing silently.
+// Each entry states its reason. A new server event reaches dispatchEvent's default branch, which logs it.
 var mimoIgnoredEvents = map[string]string{
 	"session.idle":              "a deprecated repeat of session.status idle",
 	"session.created":           "the create route already returned the session",
@@ -76,10 +78,10 @@ var mimoIgnoredEvents = map[string]string{
 	"ide.installed":             "an IDE integration",
 	"mcp.tools.changed":         "the next tool call states the tool it runs",
 	"mcp.browser.open.failed":   "an OAuth flow LeapMux does not run",
-	"pty.created":               "a TUI terminal",
-	"pty.updated":               "a TUI terminal",
-	"pty.exited":                "a TUI terminal",
-	"pty.deleted":               "a TUI terminal",
+	"pty.created":               "MiMo's own terminal",
+	"pty.updated":               "MiMo's own terminal",
+	"pty.exited":                "MiMo's own terminal",
+	"pty.deleted":               "MiMo's own terminal",
 	"team.created":              "the actor events state each member",
 	"team.member.joined":        "the actor events state each member",
 	"worktree.ready":            "isolated worktrees are an orchestrator feature LeapMux does not drive",
@@ -143,6 +145,8 @@ type mimoMessageInfo struct {
 	ID        string `json:"id"`
 	SessionID string `json:"sessionID"`
 	Role      string `json:"role"`
+	// ParentID links an assistant reply to its native user message.
+	ParentID string `json:"parentID"`
 	// AgentID is the actor the message belongs to: "main" for the main agent,
 	// or a subagent's actor id. The first update of a user message can omit it.
 	AgentID string `json:"agentID"`
@@ -163,9 +167,9 @@ type mimoMessageInfo struct {
 	} `json:"time"`
 }
 
-// isCompactionSummary reports whether the message is the summary that a
-// compaction wrote. Its text is the new context, which the compaction row
-// already states, so the worker persists none of its parts.
+// isCompactionSummary identifies the summary that a compaction wrote.
+// The compaction row already states its text as the new context.
+// The worker persists none of the summary's parts.
 func (m mimoMessageInfo) isCompactionSummary() bool {
 	return string(m.Summary) == "true"
 }
@@ -266,15 +270,9 @@ type mimoErrorEvent struct {
 	Error     mimoError `json:"error"`
 }
 
-// Errors that do not fail a turn.
-const (
-	// errorNameAborted is the error a session reports for a turn that an abort
-	// ended. The worker asked for that abort, so it is no failure.
-	errorNameAborted = "MessageAbortedError"
-	// errorNameContextOverflow reports a context that no longer fits. MiMo
-	// compacts it and continues the same turn, and the compaction reports itself.
-	errorNameContextOverflow = "ContextOverflowError"
-)
+// errorNameContextOverflow reports a context that no longer fits. MiMo
+// compacts it and continues the same turn, and the compaction reports itself.
+const errorNameContextOverflow = "ContextOverflowError"
 
 // dispatchEvent routes one event of the stream. Only the stream goroutine calls
 // it, so two events never race each other.
@@ -291,7 +289,7 @@ func (a *Agent) dispatchEvent(data []byte) {
 	defer a.dispatchMu.Unlock()
 	switch event.Type {
 	case eventServerConnected, eventServerHeartbeat:
-		// The stream loop reads the first; the second only keeps the stream open.
+		// The stream loop reads the first. The second keeps the stream open.
 	case contracts.MiMoEventSessionStatus:
 		a.handleSessionStatus(event)
 	case contracts.MiMoEventSessionError:
@@ -317,7 +315,7 @@ func (a *Agent) dispatchEvent(data []byte) {
 	case eventBashInteractiveAsked:
 		a.handleBashInteractiveAsked(event.Properties)
 	case eventBashInteractiveReplied:
-		// The reply LeapMux sent; nothing is left to do.
+		// LeapMux sent this reply. No further action is required.
 	case eventActorRegistered:
 		a.handleActorRegistered(event)
 	case eventActorStatus:

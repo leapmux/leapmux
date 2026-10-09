@@ -107,7 +107,7 @@ mimoTest.describe('MiMo Code workflow', () => {
     const rows = [workflowRow, ...helperRows.map(({ row }) => row)]
     for (const row of rows) {
       await expectRowBecomesFinal(page, row)
-      await expect(row).toHaveAttribute('data-status', 'completed')
+      await expect(row).toHaveAttribute('data-status', 'succeeded')
     }
     await expectRowsInWorkflowGroup(rows, new RegExp(escapeRegExp(WORKFLOW_NAME)))
 

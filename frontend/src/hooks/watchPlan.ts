@@ -3,14 +3,6 @@ import type {
   WatchRejection,
   WatchTerminalEntry,
 } from '~/generated/proto/leapmux/v1/workspace_pb'
-/**
- * What this client asks each worker to watch, and how much of each entity's
- * traffic it wants.
- *
- * A WatchEvents request states the channel's WHOLE current interest. Modes
- * select content vs notification-class traffic so a background tab still
- * badges and rings without paying for chat deltas / terminal bytes.
- */
 import type { AgentTab, Tab } from '~/stores/tab.types'
 import { WatchReplayMode } from '~/generated/proto/leapmux/v1/agent_pb'
 import {
@@ -21,27 +13,26 @@ import {
 import { isSubagentTab, rootAgentIdFor } from '~/stores/tab.helpers'
 import { isPayloadBackedTabType } from '~/stores/tab.types'
 
+/**
+ * State the channel's complete current interest for one worker.
+ * FULL includes content. NOTIFY keeps notifications for a background tab without chat deltas or terminal bytes.
+ */
 export interface WatchPlan {
   agents: WatchAgentEntry[]
   terminals: WatchTerminalEntry[]
   /**
-   * Terminals whose next subscribe must force a full snapshot (the client
-   * lost bytes and an incremental catch-up cannot fill the hole). Kept beside
-   * the entries — never sent on the wire — so `watchPlanKey` can re-key the
-   * plan when the resync state flips; it is NOT part of the entries because
-   * those are serialized straight into the WatchEvents request.
+   * Terminals that need a full snapshot because incremental catch-up cannot restore missing bytes.
+   * Keep this local set outside the entries that the request serializes.
+   * watchPlanKey includes this set so a resync change sends a new request.
    */
   terminalResync: Set<string>
 }
 
 /**
- * FULL iff the tab's content is actually on screen: the tab is in the active
- * workspace and it is its tile's active tab. A split layout therefore feeds
- * every on-screen tile, and a background pane costs notifications only.
- *
- * Document visibility does NOT demote: hiding the window keeps FULL so
- * return-to-tab does not re-pay catch-up + git batch. Per-tab NOTIFY when a
- * tab is off-screen (other workspace / other tile key) is unchanged.
+ * Use FULL when the tab belongs to the active workspace and is its tile's active tab.
+ * Each visible tile receives content in a split layout. A background tab receives notifications only.
+ * Document visibility does not demote a tab. Returning to the window therefore requires no new catch-up or git batch.
+ * A tab in another workspace or behind another tile key still uses NOTIFY.
  */
 export function tabWatchMode(
   tab: Tab,
@@ -52,16 +43,11 @@ export function tabWatchMode(
 }
 
 /**
- * True when `tab`'s content is actually on screen: it is in the active
- * workspace, it has a tile placement, and it is its tile's active tab. This is
- * the single source of the "on-screen / FULL" rule that tabWatchMode,
- * isAgentTabOnScreen, and the terminal badge/notify paths all need — keep them
- * routed through here so they cannot drift (they had: the terminal path carried
- * an activeKeyForWorkspace fallback the agent path lacked).
+ * Require the active workspace and the active tab in its placed tile.
+ * tabWatchMode and isAgentTabOnScreen share this rule with the terminal notification handlers.
+ * A separate activeKeyForWorkspace fallback would let the terminal and agent decisions differ.
  */
-// Tab-shaped input keeps `| undefined` optionals: tab rows carry explicit
-// undefined for absent fields (see tab.types.ts), so the param admits a whole
-// Tab without per-call-site rebuilding.
+// Tab rows carry explicit undefined fields. Accept a complete Tab without rebuilding it at each caller.
 export function isTabOnScreen(
   tab: { tileId?: string | undefined, workspaceId?: string | undefined, type: TabType, id: string } | undefined,
   activeWorkspaceId: string | null,
@@ -75,11 +61,11 @@ export function isTabOnScreen(
 }
 
 /**
- * Build a WatchEvents agent entry from a resume cursor and mode. A resume seq
- * of 0n means nothing has been observed yet, so subscribe fresh (LATEST).
- * cursor/replay are only meaningful on the transition INTO FULL. windowTailSeq
- * declares the loaded window tail so the worker's skip decision measures the
- * gap from the same seq the browser re-anchors on (the cursor can lead it).
+ * Build a WatchEvents agent entry from its resume cursor and mode.
+ * A zero cursor requests LATEST.
+ * The worker uses cursor and replay for each new FULL lifetime.
+ * windowTailSeq gives the loaded window tail, which can precede the cursor.
+ * The worker measures the gap from that tail, which the browser uses to restore its position.
  */
 export function agentWatchEntry(
   agentId: string,
@@ -94,13 +80,9 @@ export function agentWatchEntry(
 }
 
 /**
- * A terminal that has no tab and therefore no placement: the quake shell
- * behind one working directory's panel.
- *
- * The MODE arrives already decided, because that decision needs the panel's own
- * open state and the focused tab's working directory -- two things the caller
- * holds and this module has no business learning. `buildWatchPlans` stays a
- * function of tabs and cursors.
+ * Describe a terminal with no tab placement, such as a quake shell in a working directory's panel.
+ * The caller selects its mode from the panel's open state and the focused tab's working directory.
+ * buildWatchPlans therefore needs only the supplied tabs and cursors.
  */
 export interface DetachedTerminalWatch {
   terminalId: string
@@ -109,21 +91,12 @@ export interface DetachedTerminalWatch {
 }
 
 /**
- * One plan per worker that hosts any placed tab. Excludes FILE tabs.
- *
- * A child agent tab (a subagent transcript with `parentAgentId` set) also
- * subscribes to its ROOT owner agent id with NOTIFY mode. The registry
- * (BackgroundTasksChanged) and the root's TodosChanged are broadcast under the
- * root id, so without this entry a child-only watcher never receives live
- * updates when the root spawns another subagent or its todo list changes.
- * NOTIFY is sufficient (both event types are notification-class) and avoids
- * the backend "last mode wins" dedup demoting a real on-screen root tab's FULL
- * entry.
- *
- * The optional inputs arrive as `opts`. They were positional, and six of the
- * nine parameters had defaults -- so a caller that wanted the last one wrote
- * five `undefined`s to reach it, and the two cursor callbacks, which share the
- * identical type `(agentId: string) => bigint`, could be transposed silently.
+ * Build one plan per worker with a placed tab or a detached terminal. Exclude payload-backed tabs.
+ * A child transcript also needs its root owner's BackgroundTasksChanged and TodosChanged notifications.
+ * Add a NOTIFY root entry when no actual root tab supplies an entry.
+ * An actual root tab supplies its own mode and cursors in either tab order.
+ * Keep one entry per agent because the worker accepts the first entry for each agent ID.
+ * Supply optional inputs through opts so callers cannot transpose positional cursor handlers that share one type.
  */
 export interface BuildWatchPlansOpts {
   agentResumeSeq?: (agentId: string) => bigint
@@ -131,14 +104,12 @@ export interface BuildWatchPlansOpts {
   terminalAfterOffset?: (terminalId: string) => bigint | number
   terminalNeedsResync?: (terminalId: string) => boolean
   /**
-   * Resolves a child agent to its root. Absent skips the root-entry logic,
-   * which is what a test that does not exercise the child path wants.
+   * Resolve a child agent to its root. An absent lookup disables the extra root entry.
    */
   getAgentTab?: (agentId: string) => AgentTab | undefined
   /**
-   * The terminals that have no tab at all -- the quake shells behind the
-   * panels. Without them a quake terminal is in no plan, so the worker
-   * sends it nothing and the panel stays blank while its shell runs.
+   * Include terminals with no tab placement, such as quake shells in panels.
+   * Without these entries, the worker sends no output and the panel stays blank while the shell runs.
    */
   detachedTerminals?: readonly DetachedTerminalWatch[]
 }
@@ -158,20 +129,10 @@ export function buildWatchPlans(
     detachedTerminals = [],
   } = opts
   const plans = new Map<string, WatchPlan>()
-  // Track which agent ids each worker's plan already watches, so a child-driven
-  // root entry is not duplicated when the root tab is itself placed (or when two
-  // children share a root). Keeps watchPlanKey stable and the wire update minimal.
-  const watchedAgentIds = new Map<string, Set<string>>()
-  const agentIdsFor = (workerId: string): Set<string> => {
-    let s = watchedAgentIds.get(workerId)
-    if (!s) {
-      s = new Set()
-      watchedAgentIds.set(workerId, s)
-    }
-    return s
-  }
+  // Index each worker's agent entries so an actual tab can replace an earlier child-derived root entry.
+  const agentIndices = new Map<string, Map<string, number>>()
   for (const tab of tabs) {
-    // A payload-backed tab runs no agent, so there is nothing to watch.
+    // A tab that holds a payload runs no agent and needs no watch.
     if (isPayloadBackedTabType(tab.type))
       continue
     if (!tab.workerId || !tab.tileId)
@@ -184,19 +145,26 @@ export function buildWatchPlans(
       plans.set(workerId, plan)
     }
     if (tab.type === TabType.AGENT) {
-      const seen = agentIdsFor(workerId)
-      plan.agents.push(agentWatchEntry(tab.id, agentResumeSeq(tab.id), agentWindowTailSeq(tab.id), mode))
-      seen.add(tab.id)
-      // A child tab also needs the root's notification-class events
-      // (BackgroundTasksChanged, the root's TodosChanged). These are broadcast
-      // under the root id, so subscribe to it with NOTIFY. Skip when the root
-      // is already watched (the root tab itself is placed, or a sibling child
-      // already added it).
+      let indices = agentIndices.get(workerId)
+      if (!indices) {
+        indices = new Map()
+        agentIndices.set(workerId, indices)
+      }
+      const entry = agentWatchEntry(tab.id, agentResumeSeq(tab.id), agentWindowTailSeq(tab.id), mode)
+      const index = indices.get(tab.id)
+      if (index === undefined) {
+        indices.set(tab.id, plan.agents.length)
+        plan.agents.push(entry)
+      }
+      else {
+        plan.agents[index] = entry
+      }
+      // A child needs the root's notifications. Reuse an actual root or an entry that another child supplied.
       if (getAgentTab && isSubagentTab(tab)) {
         const rootId = rootAgentIdFor(getAgentTab, tab.id)
-        if (rootId !== tab.id && !seen.has(rootId)) {
+        if (rootId !== tab.id && !indices.has(rootId)) {
+          indices.set(rootId, plan.agents.length)
           plan.agents.push(agentWatchEntry(rootId, 0n, 0n, WatchMode.NOTIFY))
-          seen.add(rootId)
         }
       }
     }
@@ -204,8 +172,7 @@ export function buildWatchPlans(
       pushTerminal(plan, tab.id, mode)
     }
   }
-  // Folded in AFTER the tab walk, and through the same push, so a quake shell
-  // resubscribes on a hole exactly as a placed terminal does.
+  // Add detached terminals after placed tabs. The shared helper applies the same recovery rules to both.
   for (const detached of detachedTerminals) {
     if (!detached.workerId || !detached.terminalId)
       continue
@@ -214,8 +181,7 @@ export function buildWatchPlans(
       plan = { agents: [], terminals: [], terminalResync: new Set() }
       plans.set(detached.workerId, plan)
     }
-    // A quake shell CAN already be in the plan: the caller's detached list and
-    // the tab walk are independent inputs.
+    // The independent detached list can include a terminal that the tab list already supplied.
     if (plan.terminals.some(t => t.terminalId === detached.terminalId))
       continue
     pushTerminal(plan, detached.terminalId, detached.mode)
@@ -223,13 +189,9 @@ export function buildWatchPlans(
   return plans
 
   /**
-   * Add one terminal to a plan, under the resync and cursor rules.
-   *
-   * ONE body for both loops. A flagged terminal subscribes cold (afterOffset
-   * 0), which the worker answers with a full snapshot -- the only thing that
-   * can rebuild a screen with a hole in it. Two copies of that rule would let a
-   * quake shell and a placed terminal recover from a hole differently, which is
-   * exactly what the detached loop's comment promises they do not.
+   * Add one terminal with the same resync and cursor rules for both loops.
+   * A terminal that needs resync requests afterOffset zero. The worker then sends the full snapshot that restores missing bytes.
+   * A separate rule for detached terminals could make a quake shell and a placed terminal recover differently.
    */
   function pushTerminal(plan: WatchPlan, terminalId: string, mode: WatchMode): void {
     const resync = terminalNeedsResync(terminalId)
@@ -245,11 +207,13 @@ export function buildWatchPlans(
 }
 
 /**
- * Change key for one plan: ids, modes, and forced-resync state — deliberately
- * NOT cursors. Cursors move on every message, and keying on them would re-send
- * an update per chat frame. The resync branch re-keys only when a terminal is
- * flagged or unflagged, so the plan carrying afterOffset 0 actually goes out
- * (and the plan that returns to the normal cursor goes out after it).
+ * Compare these interest fields:
+ * - Entity IDs.
+ * - Modes.
+ * - Terminal resync state.
+ * Exclude cursors because each message changes them.
+ * Including cursors would send an interest update for each chat frame.
+ * A resync change sends the plan with afterOffset zero, then sends the normal cursor when resync clears.
  */
 export function watchPlanKey(plan: WatchPlan): string {
   const agents = plan.agents
@@ -264,12 +228,9 @@ export function watchPlanKey(plan: WatchPlan): string {
 }
 
 /**
- * Retry a rejected entity only when the reason is TRANSIENT and a local tab
- * for it still exists. A durable rejection (or an unrecognized reason from a
- * newer worker) settles: the entry is dropped from the next plan and the next
- * genuine tab change re-states it if it ever comes back. Settling by default
- * is the safe direction -- a wrongly-settled entry costs one stale tab until
- * the next change, a wrongly-retried one loops forever.
+ * Retry LOOKUP_FAILED only while a local tab still exists.
+ * A durable or unknown rejection settles the request. A later real interest change can request that entity again.
+ * Settling an unknown reason can leave a stale tab until that change. Retrying it could repeat forever.
  */
 export function shouldRetryRejection(r: WatchRejection, tabExists: boolean): boolean {
   return tabExists && r.reason === WatchRejectionReason.LOOKUP_FAILED

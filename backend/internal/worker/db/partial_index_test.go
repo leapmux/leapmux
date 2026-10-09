@@ -80,6 +80,17 @@ func TestQueriesRepeatTheirPartialIndexPredicate(t *testing.T) {
 			},
 		},
 		{
+			name:  "ListMessageSupplementsByAgentAndSession",
+			index: "sqlite_autoindex_messages_2",
+			run: func(t *testing.T) {
+				rows, err := q.ListMessageSupplementsByAgentAndSession(t.Context(), queries.ListMessageSupplementsByAgentAndSessionParams{
+					AgentID: "agent", AgentSessionID: "native-session",
+				})
+				require.NoError(t, err)
+				assert.Empty(t, rows)
+			},
+		},
+		{
 			name:  "GetChildAgentByProviderKey",
 			index: "idx_agents_provider_child_key",
 			run: func(t *testing.T) {

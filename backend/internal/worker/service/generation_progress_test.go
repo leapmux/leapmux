@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"strings"
 	"sync"
 	"testing"
@@ -8,6 +9,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -59,6 +62,9 @@ func TestGenerationProgressPublisherSerializesAResetAfterAPendingSend(t *testing
 
 	positiveStarted := make(chan struct{})
 	releasePositive := make(chan struct{})
+	var releasePositiveOnce sync.Once
+	finishPositive := func() { releasePositiveOnce.Do(func() { close(releasePositive) }) }
+	defer finishPositive()
 	zeroStarted := make(chan struct{})
 	var positiveOnce sync.Once
 	var zeroOnce sync.Once
@@ -88,11 +94,17 @@ func TestGenerationProgressPublisherSerializesAResetAfterAPendingSend(t *testing
 		close(resetDone)
 	}()
 	select {
+	case <-resetDone:
+	case <-time.After(30 * time.Second):
+		finishPositive()
+		t.Fatal("the reset did not enter the publisher queue")
+	}
+	select {
 	case <-zeroStarted:
 		t.Fatal("the reset passed a pending positive send")
-	case <-time.After(50 * time.Millisecond):
+	default:
 	}
-	close(releasePositive)
+	finishPositive()
 
 	select {
 	case <-resetDone:
@@ -101,6 +113,110 @@ func TestGenerationProgressPublisherSerializesAResetAfterAPendingSend(t *testing
 	}
 	assert.Equal(t, int64(2), <-updates)
 	assert.Equal(t, int64(0), <-updates)
+}
+
+func TestGenerationProgressPublisherKeepsTailQueueSnapshotsSeparateFromLaterReports(t *testing.T) {
+	t.Parallel()
+	ctx := testutil.DeadlineContext(t)
+	const agentID = "tail-queue-owner"
+	svc, services := setupRootSink(t, agentID)
+	sink := requireRootOutputSink(t, svc.Output, agentID)
+	services.UpdateSessionID("session-a")
+	publisher := sink.progress
+	entered, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	releaseCounter := func() { releaseOnce.Do(func() { close(release) }) }
+	delivered := make(chan struct{})
+	var enteredOnce, deliveredOnce sync.Once
+	writer := &turnAdmissionWatchingWriter{testResponseWriter: &testResponseWriter{channelID: "tail-queue-wire"}}
+	writer.onEvent = func(event *leapmuxv1.AgentEvent) {
+		info, err := capturedTailSessionInfo(event)
+		if !assert.NoError(t, err) {
+			return
+		}
+		if value, present := info[contracts.SessionInfoKeyThinkingTokens]; present {
+			var tokens int64
+			if !assert.NoError(t, json.Unmarshal(value, &tokens)) {
+				return
+			}
+			switch tokens {
+			case 17:
+				enteredOnce.Do(func() { close(entered); <-release })
+			case 90:
+				deliveredOnce.Do(func() { close(delivered) })
+			}
+		}
+	}
+	registerAgentWatch(svc, writer.channelID, agentID, leapmuxv1.WatchMode_WATCH_MODE_FULL, writer)
+	defer func() { releaseCounter(); publisher.close(); <-publisher.done }()
+	services.ReportProgress(agent.NativeTokenProgress("model", 17))
+	stopCapturedProgressTimers(publisher)
+	publisher.flush()
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("the original counter did not reach its held sender")
+	}
+	first := services.CaptureMessage(agent.MessageContent{}, agent.SpanInfo{SpanID: "call"})
+	first.Publication.ReportProgress(agent.OutputTailProgress("call", "original tail", false))
+	stopCapturedProgressTimers(publisher)
+	publisher.flushTails()
+	publisher.mu.Lock()
+	firstQueue := append([]progressEmission(nil), publisher.tailQueue...)
+	publisher.mu.Unlock()
+	require.Len(t, firstQueue, 1)
+	assert.Same(t, first.Publication.Owner(), firstQueue[0].owner)
+	firstPayload, err := json.Marshal(firstQueue[0].info)
+	require.NoError(t, err)
+	services.UpdateSessionID("session-b")
+	second := services.CaptureMessage(agent.MessageContent{}, agent.SpanInfo{SpanID: "call"})
+	second.Publication.ReportProgress(agent.OutputTailProgress("call", "replacement tail", true))
+	stopCapturedProgressTimers(publisher)
+	publisher.flushTails()
+	publisher.mu.Lock()
+	queue := append([]progressEmission(nil), publisher.tailQueue...)
+	publisher.mu.Unlock()
+	require.Len(t, queue, 2)
+	assert.Same(t, first.Publication.Owner(), queue[0].owner)
+	assert.Same(t, second.Publication.Owner(), queue[1].owner)
+	assert.NotSame(t, queue[0].owner, queue[1].owner)
+	for index, expected := range []struct {
+		session string
+		text    string
+		clipped bool
+	}{{"session-a", "original tail", false}, {"session-b", "replacement tail", true}} {
+		tail := queue[index].info[contracts.SessionInfoKeyRunningTool].(map[string]interface{})
+		assert.Equal(t, "call", tail[contracts.RunningToolFieldSpanId])
+		assert.Equal(t, expected.session, tail[contracts.RunningToolFieldAgentSessionId])
+		assert.Equal(t, expected.text, tail[contracts.RunningToolFieldOutputTail])
+		assert.Equal(t, expected.clipped, tail[contracts.RunningToolFieldOutputTruncated])
+	}
+	laterPayload, err := json.Marshal(queue[0].info)
+	require.NoError(t, err)
+	assert.Equal(t, firstPayload, laterPayload, "a later report must preserve the original queued payload")
+	services.ReportProgress(agent.NativeTokenProgress("model", 90))
+	stopCapturedProgressTimers(publisher)
+	publisher.flush()
+	releaseCounter()
+	select {
+	case <-delivered:
+	case <-ctx.Done():
+		t.Fatal("the current counter did not follow the tail queue")
+	}
+	var tails []map[string]json.RawMessage
+	for _, event := range decodeAgentEvents(writer.testResponseWriter) {
+		info, err := capturedTailSessionInfo(event)
+		require.NoError(t, err)
+		if raw, present := info[contracts.SessionInfoKeyRunningTool]; present {
+			var tail map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal(raw, &tail))
+			tails = append(tails, tail)
+		}
+	}
+	require.Len(t, tails, 1, "only the current queued tail may reach the actual watcher")
+	assert.JSONEq(t, `"session-b"`, string(tails[0][contracts.RunningToolFieldAgentSessionId]))
+	assert.JSONEq(t, `"replacement tail"`, string(tails[0][contracts.RunningToolFieldOutputTail]))
+	assert.JSONEq(t, `true`, string(tails[0][contracts.RunningToolFieldOutputTruncated]))
 }
 
 func TestGenerationProgressPublisherIgnoresReportsAfterClose(t *testing.T) {

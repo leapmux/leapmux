@@ -6,7 +6,7 @@ import { promisify } from 'node:util'
 import { requireLoopbackHttpURL } from '../helpers/agentEnvironmentInputs'
 import { withCleanup } from '../helpers/cleanup'
 import { MODEL_KEY } from '../helpers/mockAgentEnvironment'
-import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
+import { assertPrivateNativePath } from '../helpers/nativePrivatePath'
 import { getGlobalState, hubSpawnEnv } from '../helpers/server'
 
 type PiMockServer = Pick<ServerInfo, 'mockModelUrl' | 'agentEnv'>

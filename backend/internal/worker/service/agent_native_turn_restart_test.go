@@ -118,6 +118,7 @@ func TestNativeTurnRestartKeepsQueuedInputForOneResumedProcess(t *testing.T) {
 	t.Parallel()
 	ctx := testutil.DeadlineContext(t)
 	svc, old, id := prepareNativeTurnRestart(t)
+	sink := requireRootOutputSink(t, svc.Output, id)
 	newAgent := newNativeRestartProbeAgent(id)
 	started := make(chan agent.Options, 2)
 	release := make(chan struct{})
@@ -135,7 +136,7 @@ func TestNativeTurnRestartKeepsQueuedInputForOneResumedProcess(t *testing.T) {
 			})
 	}
 
-	svc.Output.turnState(id, agent.TurnState{})
+	sink.SetTurnState(agent.TurnState{}, 2)
 	select {
 	case content := <-old.sent:
 		t.Fatalf("queued input reached the old process: %q", content)
@@ -145,7 +146,7 @@ func TestNativeTurnRestartKeepsQueuedInputForOneResumedProcess(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("the native turn did not start a session-preserving restart")
 	}
-	svc.Output.turnState(id, agent.TurnState{})
+	sink.SetTurnState(agent.TurnState{}, 3)
 	releaseStart()
 	select {
 	case content := <-newAgent.sent:
@@ -162,6 +163,93 @@ func TestNativeTurnRestartKeepsQueuedInputForOneResumedProcess(t *testing.T) {
 	}
 }
 
+func TestNativeTurnRestartChecksOwnershipAfterLifecycleWait(t *testing.T) {
+	t.Parallel()
+	for _, change := range []string{"identical ended", "changed steerable", "later active", "process replacement", "session change", "session A-B-A"} {
+		t.Run(change, func(t *testing.T) {
+			t.Parallel()
+			ctx := testutil.DeadlineContext(t)
+			svc, old, id := prepareNativeTurnRestart(t)
+			sink := requireRootOutputSink(t, svc.Output, id)
+			sink.SetTurnState(agent.TurnState{Active: true}, 1)
+			newAgent := newNativeRestartProbeAgent(id)
+			var starts atomic.Int32
+			svc.startAgentFn = func(ctx context.Context, opts agent.Options, next agent.ProviderServices) (map[string]string, error) {
+				starts.Add(1)
+				return svc.Agents.StartAgentWith(ctx, opts, next,
+					func(context.Context, agent.Options, agent.ProviderServices) (agent.Agent, error) {
+						return newAgent, nil
+					})
+			}
+			paused := make(chan struct{})
+			var pauseOnce sync.Once
+			writer := &turnAdmissionWatchingWriter{testResponseWriter: &testResponseWriter{channelID: "native-restart-lifecycle"}}
+			writer.onEvent = func(event *leapmuxv1.AgentEvent) {
+				if changed := event.GetInputQueueChanged(); changed != nil && changed.GetSnapshot().GetPaused() {
+					pauseOnce.Do(func() { close(paused) })
+				}
+			}
+			registerAgentWatch(svc, writer.channelID, id, leapmuxv1.WatchMode_WATCH_MODE_FULL, writer)
+			unlock := svc.Agents.LockAgent(id)
+			var unlockOnce sync.Once
+			release := func() { unlockOnce.Do(unlock) }
+			defer release()
+			sink.SetTurnState(agent.TurnState{}, 2)
+			select {
+			case <-paused:
+			case <-ctx.Done():
+				t.Fatal("the restart did not reserve its queue pause before the lifecycle wait")
+			}
+			switch change {
+			case "identical ended":
+				sink.SetTurnState(agent.TurnState{}, 3)
+			case "changed steerable":
+				sink.SetTurnState(agent.TurnState{Steerable: true}, 3)
+			case "later active":
+				sink.SetTurnState(agent.TurnState{Active: true}, 3)
+			case "process replacement":
+				svc.Output.NewSink(id, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEBUDDY)
+				svc.Output.NoteAgentProcessStarted(id)
+			case "session change":
+				sink.UpdateSessionID("native-session-2")
+			case "session A-B-A":
+				sink.UpdateSessionID("native-session-2")
+				sink.UpdateSessionID("native-session-1")
+			}
+			release()
+			finished := make(chan struct{})
+			go func() { svc.nativeTurnRestartWG.Wait(); close(finished) }()
+			select {
+			case <-finished:
+			case <-ctx.Done():
+				t.Fatal("the reserved restart did not finish after the lifecycle lock released")
+			}
+			if change == "identical ended" {
+				assert.Equal(t, int32(1), starts.Load(), "identical reports retain the one reserved restart")
+				select {
+				case content := <-newAgent.sent:
+					assert.Equal(t, "Present the revised plan.", content)
+				case <-ctx.Done():
+					t.Fatal("the one replacement did not receive the queued input")
+				}
+			} else {
+				assert.Zero(t, starts.Load(), "an expired restart must not launch another process")
+				assert.False(t, old.IsStopped(), "an expired restart must not stop the current process")
+				queue, err := svc.InputQueue.Snapshot(ctx, id)
+				require.NoError(t, err)
+				require.Len(t, queue.Items, 1, "an expired restart retains the queued input")
+				assert.Equal(t, "queued-next", queue.Items[0].ID)
+			}
+			select {
+			case content := <-old.sent:
+				t.Fatalf("the old process received queued input: %q", content)
+			default:
+			}
+			svc.Shutdown()
+		})
+	}
+}
+
 func TestNativeTurnRestartFailureKeepsTheQueuedInputPaused(t *testing.T) {
 	t.Parallel()
 	ctx := testutil.DeadlineContext(t)
@@ -172,7 +260,7 @@ func TestNativeTurnRestartFailureKeepsTheQueuedInputPaused(t *testing.T) {
 		return nil, errors.New("replacement refused")
 	}
 
-	svc.Output.turnState(id, agent.TurnState{})
+	requireRootOutputSink(t, svc.Output, id).SetTurnState(agent.TurnState{}, 2)
 	select {
 	case content := <-old.sent:
 		t.Fatalf("queued input reached the old process after a failed restart: %q", content)

@@ -186,7 +186,7 @@ func (a *Agent) handleNotification(env *droidEnvelope) string {
 
 // persistNotification stores a notification row verbatim.
 func (a *Agent) persistNotification(payload []byte, target droidOutputTarget) {
-	if _, err := target.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, payload); err != nil {
+	if _, err := target.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: payload}); err != nil {
 		slog.Debug("droid: persist notification failed", "agent_id", a.AgentID(), "error", err)
 	}
 }
@@ -408,7 +408,7 @@ func (a *Agent) onToolResult(payload []byte, target droidOutputTarget) {
 func (a *Agent) onAgentTurnCompleted(payload []byte, target droidOutputTarget) {
 	a.persistTurnEnd(payload, target)
 	if target.childSessionID != "" {
-		status := bgtask.StatusCompleted
+		status := bgtask.StatusSucceeded
 		var n struct {
 			Reason string `json:"reason"`
 		}

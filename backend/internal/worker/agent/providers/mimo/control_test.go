@@ -74,9 +74,104 @@ func decodePayload(t *testing.T, payload []byte) map[string]json.RawMessage {
 	return fields
 }
 
+func controlMessageResponse(t *testing.T, server *fakeServer, callID string) {
+	t.Helper()
+	server.respond("GET /session/ses_test/message/msg_1", http.StatusOK,
+		`{"info":{"id":"msg_1","sessionID":"ses_test","role":"assistant","agentID":"main"},"parts":[{"id":"part_control","messageID":"msg_1","sessionID":"ses_test","type":"tool","callID":"`+callID+`","state":{"status":"pending"}}]}`)
+}
+
+func TestControlToolIdentityUsesTheExactNativePart(t *testing.T) {
+	t.Parallel()
+	for _, scenario := range []string{"http", "cached", "ambiguous cached", "ambiguous http", "missing", "failed read", "foreign message", "foreign session", "empty part id"} {
+		t.Run(scenario, func(t *testing.T) {
+			t.Parallel()
+			a, _, server := newControlTestAgent(t)
+			feed(a, messageEvent(t, "msg_1", roleAssistant, actorID, false))
+			part := mimoPart{ID: "part_control", MessageID: "msg_1", SessionID: testSessionID, Type: contracts.MiMoPartTypeTool, CallID: "call_repeat"}
+			message := mimoMessageWithParts{Info: mimoMessageInfo{ID: "msg_1", SessionID: testSessionID, Role: roleAssistant, AgentID: actorID}, Parts: []mimoPart{part}}
+			want := "part_control"
+			switch scenario {
+			case "cached", "ambiguous cached":
+				feed(a, toolPartEvent(t, part.ID, part.MessageID, contracts.MiMoToolBash, part.CallID, toolState{Status: contracts.MiMoToolStatusRunning}))
+				if scenario == "ambiguous cached" {
+					feed(a, toolPartEvent(t, "part_other", part.MessageID, contracts.MiMoToolBash, part.CallID, toolState{Status: contracts.MiMoToolStatusRunning}))
+					want = ""
+				}
+			case "ambiguous http":
+				part.ID = "part_other"
+				message.Parts = append(message.Parts, part)
+				want = ""
+			case "missing":
+				message.Parts = nil
+				want = ""
+			case "failed read":
+				server.respond("GET /session/ses_test/message/msg_1", http.StatusInternalServerError, `{}`)
+				want = ""
+			case "foreign message":
+				message.Parts[0].MessageID = "msg_other"
+				want = ""
+			case "foreign session":
+				message.Parts[0].SessionID = "ses_other"
+				want = ""
+			case "empty part id":
+				message.Parts[0].ID = ""
+				want = ""
+			}
+			if scenario != "failed read" {
+				raw, err := json.Marshal(message)
+				require.NoError(t, err)
+				server.respond("GET /session/ses_test/message/msg_1", http.StatusOK, string(raw))
+			}
+			owner, spanID := a.requestActor(testSessionID, &mimoToolRef{MessageID: "msg_1", CallID: "call_repeat"})
+			assert.Equal(t, actorID, owner)
+			assert.Equal(t, want, spanID)
+			if strings.Contains(scenario, "cached") {
+				assert.Empty(t, server.requestsTo("GET /session/ses_test/message/msg_1"))
+			}
+		})
+	}
+}
+
+func TestReviewExactChildMetadataKeepsItsControlAtMainIdle(t *testing.T) {
+	t.Parallel()
+	for _, scenario := range []struct {
+		kind      string
+		sessionID string
+	}{{"question", testSessionID}, {"permission", testSessionID}, {"question", ""}, {"permission", ""}} {
+		kind, sessionID := scenario.kind, scenario.sessionID
+		t.Run(kind+"/"+sessionID, func(t *testing.T) {
+			t.Parallel()
+			a, sink, server := newControlTestAgent(t)
+			server.respond("GET /session/ses_test/message/msg_1", http.StatusInternalServerError, `{}`)
+			callID := "call-q"
+			if kind == "permission" {
+				callID = "call-1"
+			}
+			feed(a, statusEvent(t, contracts.MiMoStatusTypeBusy),
+				actorRegisteredEvent(t, actorID, true), actorStatusEvent(t, actorID, contracts.MiMoActorStatusRunning, "", 0, ""),
+				toolPartEvent(t, "part_child_control", "msg_1", contracts.MiMoToolBash, callID, toolState{Status: contracts.MiMoToolStatusRunning}))
+			requestID := questionRequestPrefix + "review-control"
+			if kind == "question" {
+				feed(a, questionAskedEvent(t, "review-control", sessionID))
+			} else {
+				requestID = permissionRequestPrefix + "review-control"
+				feed(a, permissionAskedEvent(t, "review-control", sessionID, "msg_1"))
+			}
+			require.Contains(t, a.controls, requestID)
+			feed(a, messageEvent(t, "msg_1", roleAssistant, actorID, false), statusEvent(t, contracts.MiMoStatusTypeIdle))
+			assert.Contains(t, a.controls, requestID, "parent idle must preserve a still-live native child control")
+			assert.Empty(t, sink.CanceledControls())
+			feed(a, actorStatusEvent(t, actorID, contracts.MiMoActorStatusIdle, contracts.MiMoActorOutcomeCancelled, 1, ""))
+			assert.NotContains(t, a.controls, requestID)
+			assert.Contains(t, sink.CanceledControls(), requestID)
+		})
+	}
+}
+
 func TestPermissionRequestIsPublished(t *testing.T) {
 	t.Parallel()
-	a, sink, _ := newControlTestAgent(t)
+	a, sink, server := newControlTestAgent(t)
+	controlMessageResponse(t, server, "call-1")
 	asked := permissionAskedEvent(t, "per_1", testSessionID, "msg_1")
 
 	feed(a, messageEvent(t, "msg_1", roleAssistant, mainActorID, false), asked)
@@ -88,7 +183,7 @@ func TestPermissionRequestIsPublished(t *testing.T) {
 	var event mimoEvent
 	require.NoError(t, json.Unmarshal(asked, &event))
 	assert.JSONEq(t, string(event.Properties), string(fields["properties"]), "the browser reads MiMo's own event")
-	assert.JSONEq(t, `{"tool_name":"bash","tool_use_id":"call-1","input":{"command":"rm -rf build"}}`, string(fields["request"]))
+	assert.JSONEq(t, `{"tool_name":"bash","tool_use_id":"part_control","input":{"command":"rm -rf build"}}`, string(fields["request"]))
 	assert.NotContains(t, fields, contracts.MiMoControlFieldPlan)
 }
 
@@ -152,7 +247,7 @@ func TestRequestWithoutAToolCallIsTheMainAgents(t *testing.T) {
 	}))
 	require.Contains(t, a.controls, "mimo-permission:per_1")
 	assert.Equal(t, mainActorID, a.controls["mimo-permission:per_1"].actorID, "a call with no message is taken as the main agent's")
-	assert.JSONEq(t, `{"tool_name":"webfetch","tool_use_id":"call-9"}`, string(decodePayload(t, sink.LastPublishedControl().Payload)["request"]))
+	assert.JSONEq(t, `{"tool_name":"webfetch"}`, string(decodePayload(t, sink.LastPublishedControl().Payload)["request"]))
 
 	feed(a, statusEvent(t, contracts.MiMoStatusTypeIdle))
 	assert.Equal(t, []string{"mimo-permission:per_1"}, sink.CanceledControls())
@@ -172,20 +267,22 @@ func TestFailedPublicationRefusesTheRequest(t *testing.T) {
 
 func TestQuestionIsPublished(t *testing.T) {
 	t.Parallel()
-	a, sink, _ := newControlTestAgent(t)
+	a, sink, server := newControlTestAgent(t)
+	controlMessageResponse(t, server, "call-q")
 
 	feed(a, messageEvent(t, "msg_1", roleAssistant, mainActorID, false), questionAskedEvent(t, "que_1", testSessionID))
 	published := sink.LastPublishedControl()
 	assert.Equal(t, "mimo-question:que_1", published.RequestID)
 	fields := decodePayload(t, published.Payload)
 	assert.JSONEq(t, `"question.asked"`, string(fields["type"]))
-	assert.JSONEq(t, `{"tool_name":"question","tool_use_id":"call-q"}`, string(fields["request"]))
+	assert.JSONEq(t, `{"tool_name":"question","tool_use_id":"part_control"}`, string(fields["request"]))
 	assert.Zero(t, sink.PlanUpdateCount())
 }
 
 func TestPlanApprovalCarriesThePlan(t *testing.T) {
 	t.Parallel()
-	a, sink, _ := newControlTestAgent(t)
+	a, sink, server := newControlTestAgent(t)
+	controlMessageResponse(t, server, "call-plan")
 	// MiMo states the plan's path relative to the worktree root, which can be an
 	// ancestor of the working directory.
 	root := a.workingDir
@@ -199,7 +296,7 @@ func TestPlanApprovalCarriesThePlan(t *testing.T) {
 	published := sink.LastPublishedControl()
 	assert.Equal(t, "mimo-question:que_2", published.RequestID)
 	fields := decodePayload(t, published.Payload)
-	assert.JSONEq(t, `{"tool_name":"plan_exit","tool_use_id":"call-plan"}`, string(fields["request"]))
+	assert.JSONEq(t, `{"tool_name":"plan_exit","tool_use_id":"part_control"}`, string(fields["request"]))
 	var stated string
 	require.NoError(t, json.Unmarshal(fields[contracts.MiMoControlFieldPlan], &stated))
 	assert.Equal(t, plan, stated)
@@ -332,7 +429,7 @@ func TestParseControlAnswer(t *testing.T) {
 			content: elicitationEnvelope("r1", contracts.MCPElicitationActionAccept), err: "answers only a question"},
 		{name: "an elicitation action does not answer a plan", kind: controlPlan,
 			content: elicitationEnvelope("r1", contracts.MCPElicitationActionAccept), err: "answers only a question"},
-		{name: "an answer that names no request is refused", kind: controlQuestion, content: []byte(`{"result":{"rejected":true}}`),
+		{name: "an answer that specifies no request is refused", kind: controlQuestion, content: []byte(`{"result":{"rejected":true}}`),
 			err: "states no request"},
 		{name: "bytes that are not JSON are refused", kind: controlQuestion, content: []byte(`nope`), err: "states no request"},
 	} {
@@ -581,4 +678,70 @@ func TestControlKindOfPayload(t *testing.T) {
 	assert.False(t, ok)
 	_, ok = controlKindOfPayload([]byte(`nope`))
 	assert.False(t, ok)
+}
+
+func TestLateUnresolvedChildControlSurvivesParentIdle(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{"question", "permission"} {
+		t.Run(kind, func(t *testing.T) {
+			t.Parallel()
+			a, sink, server := newControlTestAgent(t)
+			server.respond("GET /session/ses_test/message/msg_1", http.StatusInternalServerError, `{}`)
+			callID := "call-q"
+			if kind == "permission" {
+				callID = "call-1"
+			}
+			feed(a, statusEvent(t, contracts.MiMoStatusTypeBusy),
+				actorStatusEvent(t, actorID, contracts.MiMoActorStatusRunning, "", 0, ""),
+				toolPartEvent(t, "part_late_control", "msg_1", contracts.MiMoToolBash, callID, toolState{Status: contracts.MiMoToolStatusRunning}))
+			requestID := questionRequestPrefix + "late-owner"
+			if kind == "question" {
+				feed(a, questionAskedEvent(t, "late-owner", testSessionID))
+			} else {
+				requestID = permissionRequestPrefix + "late-owner"
+				feed(a, permissionAskedEvent(t, "late-owner", testSessionID, "msg_1"))
+			}
+			feed(a, statusEvent(t, contracts.MiMoStatusTypeIdle), messageEvent(t, "msg_1", roleAssistant, actorID, false))
+			assert.Contains(t, a.controls, requestID)
+			assert.Empty(t, sink.CanceledControls())
+			feed(a, actorStatusEvent(t, actorID, contracts.MiMoActorStatusIdle, contracts.MiMoActorOutcomeSuccess, 1, ""))
+			assert.NotContains(t, a.controls, requestID)
+			assert.Contains(t, sink.CanceledControls(), requestID)
+		})
+	}
+}
+
+func TestLateUnresolvedControlRetiresOnMainResolutionOrClear(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{"question", "permission"} {
+		for _, closure := range []string{"main metadata", "context clear"} {
+			t.Run(kind+"/"+closure, func(t *testing.T) {
+				t.Parallel()
+				a, sink, server := newControlTestAgent(t)
+				server.respond("GET /session/ses_test/message/msg_1", http.StatusInternalServerError, `{}`)
+				callID, requestID := "call-q", questionRequestPrefix+"late-main-owner"
+				if kind == "permission" {
+					callID = "call-1"
+					requestID = permissionRequestPrefix + "late-main-owner"
+				}
+				feed(a, statusEvent(t, contracts.MiMoStatusTypeBusy),
+					toolPartEvent(t, "part_main_control", "msg_1", contracts.MiMoToolBash, callID, toolState{Status: contracts.MiMoToolStatusRunning}))
+				if kind == "question" {
+					feed(a, questionAskedEvent(t, "late-main-owner", testSessionID))
+				} else {
+					feed(a, permissionAskedEvent(t, "late-main-owner", testSessionID, "msg_1"))
+				}
+				feed(a, statusEvent(t, contracts.MiMoStatusTypeIdle))
+				require.Contains(t, a.controls, requestID)
+				if closure == "main metadata" {
+					feed(a, messageEvent(t, "msg_1", roleAssistant, mainActorID, false))
+				} else {
+					_, err := a.ClearContext()
+					require.NoError(t, err)
+				}
+				assert.NotContains(t, a.controls, requestID)
+				assert.Contains(t, sink.CanceledControls(), requestID)
+			})
+		}
+	}
 }

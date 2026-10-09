@@ -1,7 +1,10 @@
 import type { TodoItem } from '~/models/todo'
 import type { GoalSurface } from '~/stores/chatGoal'
+import { create } from '@bufbuild/protobuf'
 import { fireEvent, render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
+import { AgentGoalSchema, AgentGoalStatus } from '~/generated/proto/leapmux/v1/agent_pb'
+import { protoGoalToStore } from '~/stores/chatGoal'
 import { classSelector } from '~/test-support/composedClass'
 import { GoalsAndTodos } from './GoalsAndTodos'
 import * as styles from './GoalsAndTodos.css'
@@ -15,9 +18,8 @@ const todo: TodoItem = {
   activeForm: '',
 }
 
-// A loose record, not `Partial<GoalSurface>`: a case below deliberately passes
-// `current: undefined` -- the key EXISTS, with no stored goal -- which
-// `exactOptionalPropertyTypes` keeps out of the typed shape.
+// Use an untyped record for the explicit current: undefined fixture.
+// exactOptionalPropertyTypes excludes that present key from Partial<GoalSurface>.
 function surface(over: Record<string, unknown> = {}): GoalSurface {
   const base: GoalSurface = { current: { objective: 'Ship the release', status: 'active' }, progress: {}, actions: ['set', 'clear'] }
   return Object.assign(base, over)
@@ -80,11 +82,9 @@ describe('GoalsAndTodos', () => {
   })
 
   /**
-   * The rule is `goal !== undefined && todos.length > 0`, and it deliberately
-   * does NOT consult `goal.current`: the empty card is still a card, and a list
-   * still follows it. Narrowing the condition to the stored goal would leave
-   * the empty card flush against the first to-do row, and every other case here
-   * would still pass, because each of them supplies a populated goal.
+   * The separator requires a goal surface and a nonempty to-do list.
+   * The surface's current goal can be absent because the empty card still occupies that position.
+   * Requiring goal.current would remove the gap before the first to-do row.
    */
   it('draws the separator under an empty card too', () => {
     const { getByTestId } = render(() => (
@@ -95,9 +95,9 @@ describe('GoalsAndTodos', () => {
   })
 
   /**
-   * `variant` has exactly one effect, and it is the cap that keeps a prose
-   * objective from stretching the DropdownMenu card to the viewport width.
-   * Without this case, inverting the comparison left every test green.
+   * The popover variant restricts the objective width.
+   * The sidebar variant applies no such maximum.
+   * This case detects an inverted variant condition.
    */
   it('caps the popover variant, and only that variant', () => {
     const popover = render(() => (
@@ -121,5 +121,25 @@ describe('GoalsAndTodos', () => {
       <GoalsAndTodos variant="popover" goal={surface()} todos={[]} />
     ))
     expect(silent.container.querySelectorAll('[role="status"][aria-live="polite"]')).toHaveLength(0)
+  })
+})
+
+describe('unknown goals on both hosts', () => {
+  it('retains the same unknown goal and only the sidebar announcement', () => {
+    const current = protoGoalToStore(create(AgentGoalSchema, { objective: 'Keep the native objective', status: AgentGoalStatus.UNKNOWN, statusDetail: 'native-future-state' }))
+    const shared = surface({ current })
+    const { container, getAllByTestId } = render(() => (
+      <>
+        <GoalsAndTodos variant="sidebar" goal={shared} todos={[todo]} announceGoal />
+        <GoalsAndTodos variant="popover" goal={shared} todos={[]} />
+      </>
+    ))
+    expect(getAllByTestId('goal-objective')).toHaveLength(2)
+    expect(getAllByTestId('goal-status-detail')).toHaveLength(2)
+    expect(getAllByTestId('goal-status-detail')[0]).toHaveTextContent('native-future-state')
+    expect(container.querySelectorAll('[role="status"][aria-live="polite"]')).toHaveLength(1)
+    expect(container.querySelectorAll('[data-testid="goal-card-separator"]')).toHaveLength(1)
+    for (const dot of getAllByTestId('goal-status-dot'))
+      expect(dot).toHaveAttribute('data-status', 'unknown')
   })
 })

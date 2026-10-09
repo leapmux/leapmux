@@ -14,6 +14,8 @@ WHERE id = sqlc.arg(id) AND agent_id = sqlc.arg(agent_id)
   AND content = sqlc.arg(original_content)
   AND content_compression = sqlc.arg(original_compression)
   AND supplemental_revision = sqlc.arg(previous_revision)
+  AND supplemental_content = COALESCE(CAST(sqlc.arg(previous_supplemental_content) AS BLOB), X'')
+  AND supplemental_content_compression = sqlc.arg(previous_supplemental_content_compression)
 RETURNING *;
 
 -- name: ListMessagesByAgentAndSpan :many

@@ -24,13 +24,18 @@ func (p *ProcessPipes) Stderr() io.ReadCloser { return p.stderr }
 
 // SetupProcessPipes closes opened pipes if a later setup step fails.
 func SetupProcessPipes(cmd *exec.Cmd, cancel func()) (*ProcessPipes, error) {
+	return SetupProcessPipesWithExitObserver(cmd, cancel, nil)
+}
+
+// SetupProcessPipesWithExitObserver fixes the observer when it constructs the command and owner.
+func SetupProcessPipesWithExitObserver(cmd *exec.Cmd, cancel func(), observer procutil.ProcessExitObserver) (*ProcessPipes, error) {
 	if cmd == nil {
 		if cancel != nil {
 			cancel()
 		}
 		return nil, errors.New("the process command is absent")
 	}
-	pipes := &ProcessPipes{cmd: cmd, owner: procutil.PrepareProcess(cmd)}
+	pipes := &ProcessPipes{cmd: cmd, owner: procutil.PrepareProcessWithExitObserver(cmd, observer)}
 	fail := func(cause error) (*ProcessPipes, error) {
 		if closeErr := pipes.Close(); closeErr != nil {
 			cause = errors.Join(cause, closeErr)

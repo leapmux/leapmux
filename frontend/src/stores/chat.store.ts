@@ -26,38 +26,32 @@ import { createTodoStore } from './chatTodoStore'
 import { createToolProgressStore } from './chatToolProgress'
 
 /**
- * Max number of loaded messages to keep for the visible agent tab window.
- * Derives from CATCH_UP_GAP_LIMIT on purpose: the browser drains at most a
- * window-sized gap before it re-anchors, because the window trims any older
- * drained rows (see contracts/chat-history.json). Note the reach of this
- * number: it also scales the 8x ceiling (MAX_LOADED_CHAT_MESSAGES_CEILING),
- * so a catch-up-gap change resizes the per-tab memory bound.
+ * Limit the loaded messages in a visible agent window.
+ * CATCH_UP_GAP_LIMIT supplies this limit and controls when reconciliation loads the latest page instead of draining a large gap.
+ * The window removes older rows while following the live tail. See contracts/chat-history.json.
+ * This value also sets the eight-times ceiling, so a catch-up limit change changes the maximum memory for each tab.
  */
 export const MAX_LOADED_CHAT_MESSAGES = Number(CATCH_UP_GAP_LIMIT)
 /**
- * Hard ceiling on the visible-tab window when a scrolled-up reader is being
- * protected from the live-tail trim (see trimOldestToViewport) AND when the
- * scroll hook is pre-fetching a visible-content buffer (loadOlderMessages /
- * loadNewerPage cap to this, not the base, so the window can hold ~3 screens of
- * VISIBLE rows beyond the viewport even when most messages are hidden -- hidden
- * rows have zero scroll height, so a hidden-heavy stretch needs far more RAW
- * messages loaded to stay smoothly scrollable). 8x the base bounds memory while
- * covering up to ~90%-hidden stretches; past that the "Show hidden" affordance is
- * the escape. The base (MAX_LOADED_CHAT_MESSAGES) still governs the live tail, so
- * a chat being followed at the tail stays lean -- the window only grows while
- * scrolled up.
+ * Limit the loaded window while the reader scrolls above the live tail or the scroll hook fetches visible content.
+ * loadOlderMessages and loadNewerPage use this ceiling instead of the base limit.
+ * Hidden rows have zero scroll height, so three screens of visible content can require many more received rows.
+ * Eight times the base limit accommodates stretches with approximately 90 percent hidden rows.
+ * The Show hidden control exposes the remaining content after this ceiling applies.
+ *
+ * The base limit still controls a window that follows the live tail.
+ * The larger window serves the reader above the tail.
  */
 export const MAX_LOADED_CHAT_MESSAGES_CEILING = 8 * MAX_LOADED_CHAT_MESSAGES
 /** Max number of loaded messages to keep for hidden/background agent tabs. */
 export const MAX_BACKGROUND_CHAT_MESSAGES = 50
 
 /**
- * Whether two messages are byte-identical across every field (incl. the `content`
- * payload). Used to short-circuit an identical same-seq re-delivery. Compares the
- * serialized forms rather than protobuf's `equals`, whose bytes compare relies on
- * `instanceof Uint8Array` and so silently under-reports equality whenever the two
- * arrays come from different JS realms (jsdom/SSR/worker boundaries) -- the binary
- * encoding is realm-independent and a future field can't bypass it.
+ * Compare every serialized message field, including its content bytes.
+ * An identical delivery requires no merge.
+ * The protobuf equals helper checks bytes through instanceof Uint8Array.
+ * That check can refuse equal arrays from different JavaScript execution environments, including jsdom and browser workers.
+ * Binary serialization compares those arrays without that type check and includes future schema fields.
  */
 function sameAgentMessage(a: AgentChatMessage, b: AgentChatMessage): boolean {
   const ba = toBinary(AgentChatMessageSchema, a)
@@ -71,9 +65,9 @@ function sameAgentMessage(a: AgentChatMessage, b: AgentChatMessage): boolean {
   return true
 }
 /**
- * The windowing core's reactive state. Orthogonal state such as to-dos and the
- * saved viewport scroll lives in composed stores. This interface holds only the
- * loaded message window and the pagination bookkeeping its invariants depend on.
+ * Keep the loaded window and its pagination state reactive.
+ * Separate stores own to-dos and saved viewport positions.
+ * This interface contains only the window and the flags that its rules require.
  */
 export interface ChatStoreState {
   messagesByAgent: Record<string, AgentChatMessage[]>
@@ -81,28 +75,28 @@ export interface ChatStoreState {
   /** Whether there are older messages available to fetch (per agent). */
   hasMoreOlder: Record<string, boolean>
   /**
-   * Whether there are newer messages beyond the in-memory window (per agent).
-   * Becomes true when we trim the newest end after loading older history;
-   * cleared once a forward fetch reaches the live tail (has_more === false).
+   * Record whether newer messages remain outside each agent window.
+   * Trimming the newest end sets this flag.
+   * loadNewerPage clears it only when the response reports no newer history and the window reaches the recorded live tail.
+   * A has_more=false response alone cannot establish that condition.
+   * Other window operations set it for their selected range or temporary fill state.
    */
   hasMoreNewer: Record<string, boolean>
   /**
-   * Whether a forward fill PARKED with an exhaustion-forced gap (per agent): the
-   * live tail outran the bounded fill (forwardFillToLiveTail's exhaustion branch),
-   * leaving hasMoreNewer set with a still-REACHABLE gap. Distinct from a plain
-   * scrolled-away hasMoreNewer: the continuous tail-reconcile resumes the fill for
-   * this case so a FOLLOWING reader's gap self-heals without a user scroll/jump or a
-   * reconnect. Cleared by any superseding user fetch (beginHistoryFetch) -- e.g. a
-   * scroll-up -- so the auto-fill stops once the reader leaves the tail.
+   * Record a reachable gap after forwardFillToLiveTail reaches its maximum attempt count.
+   * The fill still advances, so hasMoreNewer stays true and the recorded tail remains unchanged.
+   * Continuous tail reconciliation resumes this fill without a user action or reconnect.
+   * A history window that the user selects has no such deferral.
+   * beginHistoryFetch clears the deferral when a new user fetch supersedes the fill, including after the user scrolls upward.
    */
   tailFillDeferred: Record<string, boolean>
   /**
-   * Whether a reconnect catch-up is in flight for this agent (per agent): set when the
-   * client (re)subscribes via WatchEvents, cleared at CatchUpComplete. During catch-up
-   * CatchUpStart normally records the true server tail. An indeterminate (unset) tail
-   * tracks only loaded rows, so the live-append guard uses sequence contiguity while
-   * this is set. A non-contiguous frame is a live arrival past the unfilled replay
-   * gap. A contiguous frame is the next replay message. See beyondUnloadedNewerTail.
+   * Record an active WatchEvents replay for each agent.
+   * Subscription sets this flag and CatchUpComplete clears it.
+   * CatchUpStart normally supplies the authoritative tail. An absent tail leaves liveTail dependent on the received messages.
+   * The append guard therefore checks sequence contiguity while this flag is true.
+   * When hasMoreNewer is false, this replay check refuses a skipped sequence and accepts the next contiguous frame.
+   * See beyondUnloadedNewerTail.
    */
   catchingUp: Record<string, boolean>
   /** Whether a fetch for older messages is in progress (per agent). */
@@ -111,7 +105,10 @@ export interface ChatStoreState {
   fetchingNewer: Record<string, boolean>
   /** Whether initial load has completed for an agent. */
   initialLoadComplete: Record<string, boolean>
-  /** Monotonic counter incremented on every addMessage (including notification updates). */
+  /**
+   * Increase the counter when addMessage changes the loaded window, including a notification update.
+   * An identical or discarded duplicate leaves the counter unchanged.
+   */
   messageVersion: Record<string, number>
 }
 
@@ -129,8 +126,8 @@ export function createChatStore() {
     messageVersion: {},
   })
 
-  // Orthogonal per-concern slices, each its own composed sub-store.
-  // The window core reaches into them only for shared window mutations.
+  // Each composed store owns one concern.
+  // The window uses those stores only for shared window changes.
   const bumpMessageVersion = (agentId: string) => setState('messageVersion', agentId, (prev = 0) => prev + 1)
   const messageObservers = new Map<string, Set<(message: AgentChatMessage) => void>>()
   const notifyMessageObservers = (agentId: string, message: AgentChatMessage) => {
@@ -143,100 +140,89 @@ export function createChatStore() {
       }
     }
   }
-  // A tool-progress update changes only a badge inside an existing header. It must not bump the
-  // message version. That bump wakes the auto-scroll effect and the
-  // classified-entry cache, which would re-render the row -- the exact thing the
-  // badge is built to avoid, since replacing a row's nodes drops a text
-  // selection the user holds.
+  // A tool-progress update changes a badge in an existing header without increasing the message version.
+  // A version change would wake automatic scrolling and the classified-entry cache.
+  // Replacing the row could then discard the user's text selection.
   const toolProgress = createToolProgressStore()
   const todos = createTodoStore()
   const backgroundTasks = createBackgroundTaskStore()
   const goal = createGoalStore()
-  // Saved per-agent scroll position for tab-switch viewport restore. A pure
-  // get/set/clear slice with no domain logic, so it uses the per-agent spine
-  // directly rather than through a dedicated wrapper module.
+  // Retain the viewport position for each agent across tab switches.
+  // The value needs these methods:
+  // - get.
+  // - set.
+  // - clear.
+  // It has no additional domain logic, so use createPerAgentStore directly.
   const viewportScroll = createPerAgentStore<SavedViewportScroll | undefined>(undefined)
-  // The "true tail + caught-up" invariant: highest server seq observed (incl. messages
-  // dropped while scrolled away), with the bump/settle/delete rules in one tested unit.
+  // Track the highest observed server sequence, including messages outside the loaded window.
+  // createLiveTailTracker owns its increase, reconciliation, and removal rules.
   const liveTail = createLiveTailTracker()
-  // Scroll-rail jump marks: the seqs of notable messages (user inputs, control
-  // responses) + whole-history seq range. Seeded from ListMessageMarks, kept current
-  // from live add/delete. Recorded even for messages dropped beyond the window.
+  // Retain scroll-rail marks for notable messages and the complete history range.
+  // ListMessageMarks supplies the initial values. Live additions and removals update them.
+  // Record a mark even when its message stays outside the loaded window.
   const messageMarks = createMessageMarksStore()
-  // The seed-race machine that drives ListMessageMarks into `messageMarks`: epoch fencing,
-  // the immediate-retry loop, and the bounded delayed-reschedule chain that heal a seed that
-  // didn't stick. Its own tested unit (createMessageMarkSeeder), the sibling of the marks DATA
-  // above; the store keeps the public loadMessageMarks entry (delegating to markSeeder.load)
-  // and forgetAgent (calling markSeeder.forget).
+  // createMessageMarkSeeder reconciles ListMessageMarks responses with live mark changes.
+  // It checks epochs and controls immediate and delayed retries, each with a maximum count.
+  // loadMessageMarks delegates to its load method. forgetAgent calls its forget method.
+  // The separate messageMarks store owns the mark data.
   const markSeeder = createMessageMarkSeeder({ marks: messageMarks })
 
   /**
-   * Non-reactive index linking each tool span's request (tool_use) and result
-   * (tool_result) by spanId, plus the shared per-message parse cache. Owned by a
-   * dedicated module (createSpanIndex); the store only keeps it in step with the
-   * in-memory window via reindexSpans.
+   * createSpanIndex links each tool span's request and result through their span identity.
+   * It also uses the shared parse cache.
+   * reindexSpans keeps that non-reactive index consistent with the loaded window.
    */
   const spanIdx = createSpanIndex()
   /**
-   * In-flight history-fetch controller per agent. A new jump/load supersedes
-   * the prior one: starting a fetch aborts the previous controller so a slow or
-   * hung request can't leave fetchingOlder/fetchingNewer wedged and block all
-   * further pagination. The underlying RPC may still complete; superseded
-   * callers detect `signal.aborted` after their await and discard the result.
+   * Retain one controller for each agent's active history fetch.
+   * A new fetch aborts the previous controller so a delayed request cannot prevent further pagination.
+   * The remote procedure call can still finish. Its caller checks signal.aborted after awaiting the result and discards a superseded response.
    */
   const fetchAbort = new Map<string, AbortController>()
   const fetchWatchCleanup = new Map<string, () => void>()
 
   /**
-   * In-flight controller for the background reconnect catch-up loop
-   * (catchUpToTail), kept SEPARATE from fetchAbort: a user-driven history fetch
-   * aborts it (via beginHistoryFetch) so the two can't race on the window, but
-   * starting catch-up must NOT abort an unrelated cold-start / user fetch -- so
-   * catch-up never touches fetchAbort itself.
+   * Retain a separate controller for the background catchUpToTail loop.
+   * beginHistoryFetch aborts that loop when a user fetch takes control of the window.
+   * A background loop must not abort an unrelated initial or user fetch, so it does not change fetchAbort.
    */
   const catchUpAbort = new Map<string, AbortController>()
 
   /**
-   * Begin a superseding history fetch for `agentId`: abort any in-flight one
-   * (and any background catch-up loop), install a fresh controller, and reset
-   * both direction flags so a hung prior fetch can't leave them stuck (the caller
-   * sets its own flag immediately after). Returns the new controller's signal;
-   * the caller bails if it sees `signal.aborted` after an await, and clears its
-   * flag in `finally` only when NOT aborted (a superseding fetch already owns the
-   * flags by then).
+   * Start a new history fetch for agentId.
+   * Abort the previous history fetch and background catch-up loop.
+   * Install a new controller and reset both fetch-direction flags. The caller then sets its own flag.
+   * Return the new signal. The caller must discard a result after that signal aborts.
+   * runHistoryFetch clears the flag only while its controller still owns the fetch.
    *
-   * `watchSignal` (when given) ties the fetch to the CURRENT WatchEvents
-   * subscription, so a workspace switch / worker change that aborts the stream
-   * also aborts this fetch -- used by the reconcile-driven empty-window re-anchor
-   * (jumpToLatestMessages) so it can't leak a LATEST page into a navigated-away
-   * worker's window. A user-driven fetch omits it (already scoped to the active tab).
+   * An optional watchSignal ties this fetch to the current WatchEvents subscription.
+   * A workspace switch or worker change can then abort the reconciliation request for the latest page.
+   * A user fetch omits watchSignal because its active tab already supplies its scope.
    */
   function beginHistoryFetch(agentId: string, watchSignal?: AbortSignal): AbortSignal {
     fetchAbort.get(agentId)?.abort()
     fetchWatchCleanup.get(agentId)?.()
     fetchWatchCleanup.delete(agentId)
-    // A user-driven fetch also supersedes a background reconnect catch-up loop,
-    // aborting its in-flight request so the user's jump/scroll owns the tail.
+    // A user fetch supersedes background catch-up.
+    // Abort its pending request before the user's jump or scroll changes the window.
     catchUpAbort.get(agentId)?.abort()
     const controller = new AbortController()
     fetchAbort.set(agentId, controller)
     fetchWatchCleanup.set(agentId, linkWatchSignal(controller, watchSignal))
     setState('fetchingOlder', agentId, false)
     setState('fetchingNewer', agentId, false)
-    // A superseding user fetch (jump/scroll, incl. a scroll-up loadOlderMessages) owns
-    // the tail now, so cancel any pending exhaustion-forced auto-fill: the user's fetch
-    // resolves the tail (or, on a scroll-up, the reader has left it and shouldn't be
-    // auto-followed). forwardFillToLiveTail re-arms it only if its own fill re-parks.
+    // A user fetch clears any deferred automatic fill.
+    // Its result selects the window, or the user scrolls away from the tail.
+    // forwardFillToLiveTail sets the deferral again only if its own fill reaches the maximum attempt count while still advancing.
     setState('tailFillDeferred', agentId, false)
     return controller.signal
   }
 
   /**
-   * Run a superseding history fetch for `agentId`: begin (aborting any prior),
-   * mark `flag` in-flight, run `body(signal)`, then clear `flag` in `finally`
-   * only when this fetch wasn't itself superseded (a newer fetch already owns
-   * the flags by then). The body must bail early when it observes
-   * `signal.aborted` after an await, so a superseded result is discarded.
+   * Run a new history fetch for agentId and set its direction flag.
+   * Pass the new signal to body. The body must discard a result after signal.aborted becomes true.
+   * In finally, clear the flag only while this controller still owns the fetch.
+   * A superseding fetch owns its own flags.
    */
   async function runHistoryFetch(
     agentId: string,
@@ -250,16 +236,11 @@ export function createChatStore() {
       await body(signal)
     }
     finally {
-      // Clear the in-flight flag UNLESS a superseding fetch already owns it. A
-      // superseding beginHistoryFetch installs a FRESH controller (and resets both
-      // flags), so our controller no longer being the installed one means a newer
-      // fetch is in charge -- leave its flag be. The earlier `!signal.aborted` guard
-      // missed the case where `watchSignal` (the WatchEvents subscription) aborts us
-      // with NO superseding fetch: a workspace switch / worker change that tears the
-      // stream down mid-flight then stranded `fetchingNewer = true`, wedging
-      // loadNewerPage (and the empty-window re-anchor, both gated on the flag) for that
-      // agent until an unrelated user fetch reset it. Our controller stays installed
-      // in that case, so the identity check clears the flag.
+      // Clear the flag only while this controller still owns the fetch.
+      // A newer fetch installs another controller and resets both flags, so this request must leave those newer flags unchanged.
+      // An aborted watch signal can end a fetch without starting another fetch.
+      // This controller still owns the flag in that case, so clear it.
+      // Otherwise, fetchingNewer could remain true and prevent all newer pagination until another user fetch resets it.
       if (fetchAbort.get(agentId)?.signal === signal) {
         setState(flag, agentId, false)
         fetchWatchCleanup.get(agentId)?.()
@@ -268,23 +249,22 @@ export function createChatStore() {
     }
   }
   /**
-   * Rebuild the span index for an agent from its current in-memory window.
-   * Span lookups are window-scoped, so any structural change that drops or
-   * reorders messages (trim, prepend, window replace) must reindex: otherwise
-   * trimmed-away messages leak into the index (growing it unbounded and
-   * defeating the windowing's memory goal). createSpanIndex routes by message
-   * classification, so a re-fetched request cannot be misfiled as a result.
+   * Rebuild the span index from the current loaded window.
+   * Rebuild after each change that removes or reorders rows:
+   * - A trim.
+   * - A prepend.
+   * - A window replacement.
+   * Otherwise, the index could retain removed rows and grow beyond the window's memory limit.
+   * createSpanIndex uses message classification so a fetched request cannot occupy the result position.
    */
   function reindexSpans(agentId: string) {
     spanIdx.reindex(agentId, state.messagesByAgent[agentId] ?? [])
   }
 
-  // Per-message content-version counters (chatContentVersions): bumped on the rare
-  // in-place same-seq merge, which preserves the store proxy reference so neither <For>
-  // nor the classified-entry cache (which keys freshness on seq) would otherwise see
-  // the content swap. The entry cache folds the version into its freshness check and
-  // the off-screen height estimate folds it into its key, both reading it reactively so
-  // the bump wakes them to re-classify / re-estimate. See the slice for the full why.
+  // chatContentVersions tracks same-sequence content changes that preserve the store proxy.
+  // A sequence-based cache cannot detect that change through the sequence alone.
+  // The classified-entry cache and height estimate read the content version reactively.
+  // An increased version makes both readers calculate their values from the new content.
   const contentVersions = createContentVersionStore()
 
   /** Remove content versions for rows that left the window. */
@@ -300,31 +280,35 @@ export function createChatStore() {
   }
 
   /**
-   * Reclaim ALL per-agent state when an agent is closed for good. The windowing
-   * core and every composed sub-store only ever trim WITHIN a window or reclaim a
-   * row as it leaves -- none of them reclaims on agent close, so without this a
-   * long session that opens and closes many agents leaks one entry per agent
-   * across messagesByAgent, the pagination flags, the live tail, the span index, and the
-   * per-agent sub-stores. Mirrors useAgentOperations.handleAgentClose's existing
-   * controlStore/attachment cleanup for the chat slice it omitted.
+   * Remove all chat state when the agent closes.
+   * Window trims remove rows, but they do not remove the complete agent entry.
+   * Without this cleanup, repeated agent opens and closes would retain state in every composed store.
+   * Remove these entries together:
+   * - The loaded messages and pagination flags.
+   * - The live tail and span index.
+   * - Each composed store's agent value.
+   * useAgentOperations.handleAgentClose supplies the separate control and attachment cleanup.
    */
   function forgetAgent(agentId: string) {
     messageObservers.delete(agentId)
-    // Abort any in-flight history fetch / catch-up loop and drop their controllers
-    // so a hung request can't write back into the just-cleared window.
+    // Abort history fetches and background catch-up, then remove their controllers.
+    // A delayed response must not change the removed window.
     fetchAbort.get(agentId)?.abort()
     fetchAbort.delete(agentId)
     fetchWatchCleanup.get(agentId)?.()
     fetchWatchCleanup.delete(agentId)
     catchUpAbort.get(agentId)?.abort()
     catchUpAbort.delete(agentId)
-    // Remove content versions, tool progress, and span indexes for the agent.
+    // Remove the agent's row state:
+    // - Content versions.
+    // - Tool progress.
+    // - Span indexes.
     const rows = state.messagesByAgent[agentId] ?? []
     forgetContentVersions(rows.map(m => m.id))
     toolProgress.clearAgent(agentId)
     spanIdx.reindex(agentId, [])
-    // Delete (not blank) every per-agent key in the window core's records so a
-    // closed agent leaves no residue.
+    // Delete every agent key from the window records.
+    // An empty value would still retain an entry after the agent closes.
     setState(produce((s) => {
       delete s.messagesByAgent[agentId]
       delete s.hasMoreOlder[agentId]
@@ -340,9 +324,9 @@ export function createChatStore() {
     liveTail.forget(agentId)
     messageMarks.forget(agentId)
     markSeeder.forget(agentId)
-    // The rail's hover-preview cache is module-global (survives rail remounts), so it
-    // must be pruned explicitly here or it leaks -- and a stale entry would outlive a
-    // close/reopen of the same agentId. See chatMarkPreview.forgetMarkPreview.
+    // The hover-preview cache survives scroll-rail remounts because it belongs to the module.
+    // Remove the agent's entry explicitly so it cannot survive a close and reopen of that agent.
+    // See chatMarkPreview.forgetMarkPreview.
     forgetMarkPreview(agentId)
     todos.remove(agentId)
     backgroundTasks.remove(agentId)
@@ -351,14 +335,12 @@ export function createChatStore() {
   }
 
   /**
-   * Drop loaded transcript rows in the phantom band -- seq > latestSeq, except live arrivals
-   * exempted above reapCeilingSeq (broadcast during catch-up, so post-replay, not a
-   * deletion the client missed) -- reclaiming their per-id state and re-indexing
-   * the smaller window, exactly as a trim or delete does. It then
-   * recompute hasMoreNewer against the surviving tail. The "drop rows past the
-   * authoritative tail" half of reconcileAuthoritativeTail, split out so it can be
-   * reasoned about and tested apart from the indeterminate-probe / setAuthoritative
-   * decision. No-op when nothing loaded falls in the band.
+   * Remove loaded phantom rows above latestSeq, except rows above a supplied reapCeilingSeq.
+   * Those exempt rows can arrive live during replay.
+   * Reclaim each removed row's state and rebuild the span index, as a trim or delete does.
+   * Then compare the surviving window tail with latestSeq to set hasMoreNewer.
+   * This helper applies the row removal that reconcileAuthoritativeTail selects.
+   * Return without changes when no loaded row qualifies.
    */
   function reapPhantomRows(agentId: string, latestSeq: bigint, reapCeilingSeq?: bigint) {
     const prev = state.messagesByAgent[agentId]
@@ -366,14 +348,11 @@ export function createChatStore() {
       return
     const survivors = prev.filter(m => !isReapablePhantom(m.seq, latestSeq, reapCeilingSeq))
     if (survivors.length === prev.length)
-      return // nothing loaded in the phantom band -- window already consistent
-    // Drop the scroll-rail marks of the reaped rows -- rows the client held but the
-    // worker deleted while we were disconnected. Without this, a reaped marked row
-    // (a USER_MESSAGE / CONTROL_RESPONSE) strands its dot: the mark's seq now exceeds
-    // the lowered maxSeq, so the reseed's beyond-horizon preserve (seed's
-    // freshBeyondSnapshot) keeps it -- indistinguishable from a live send racing the
-    // reseed -- and it resurfaces as a ghost dot the moment a later append raises maxSeq
-    // past it. The mark store bumps its revision on each real drop.
+      return // No loaded row qualifies for removal.
+    // Remove each deleted row's scroll-rail mark also.
+    // A stale mark above the new maximum sequence could otherwise survive a concurrent marks response.
+    // A later append would then display a mark for a deleted row.
+    // The mark store increases its revision only after an actual removal.
     for (const m of prev) {
       if (isReapablePhantom(m.seq, latestSeq, reapCeilingSeq))
         messageMarks.remove(agentId, m.seq)
@@ -381,40 +360,28 @@ export function createChatStore() {
     reclaimDroppedRows(prev, survivors)
     spanIdx.reindex(agentId, survivors)
     setState('messagesByAgent', agentId, survivors)
-    // After the reap the window holds rows <= latestSeq PLUS any live arrivals
-    // exempted above reapCeilingSeq (whose seq can EXCEED latestSeq), so the
-    // surviving server tail is not bounded by latestSeq. hasMoreNewer is true only
-    // when that tail fell strictly BELOW the authoritative tail -- rows up to
-    // latestSeq remain unloaded; a surviving live arrival (tail > latestSeq) is the
-    // newest known row and correctly yields false.
+    // The window retains rows at or below latestSeq and any live rows above reapCeilingSeq.
+    // A surviving live row can therefore exceed latestSeq.
+    // Set hasMoreNewer only when the surviving window tail remains below the authoritative tail.
     setState('hasMoreNewer', agentId, (lastMessageSeq(survivors) ?? 0n) < latestSeq)
   }
 
   /**
-   * Reconcile the loaded window to the authoritative live-tail seq the worker reports
-   * at catch-up (CatchUpStart/Complete.latest_seq). It drops a loaded row whose
-   * sequence exceeds `latestSeq` and clamps its
-   * recorded live-tail -- so the "new messages below" affordance can't stay stuck past a
-   * now-shorter history. An UNSET (`undefined`) `latestSeq` means the worker couldn't
-   * determine the tail (query error); skip rather than trim against a value we don't trust.
+   * Reconcile the loaded window with the tail that CatchUpStart or CatchUpComplete reports.
+   * Remove rows above latestSeq, except rows above a supplied reapCeilingSeq.
+   * Reconcile the recorded live tail with the same exemption so the newer-message control cannot point past deleted history.
+   * An absent latestSeq means that the worker could not read the tail. Do not remove rows against that absent value.
    *
-   * `reapCeilingSeq` (CatchUpComplete.start_tail_seq -- the tail when replay BEGAN)
-   * exempts live arrivals from the reap: a row ABOVE it was broadcast DURING catch-up
-   * (its seq post-dates replay, so it can't be a deletion the client missed) and the
-   * worker registers the watcher before reading the tail, so such a frame can land
-   * BEFORE this one. Only the (latestSeq, reapCeilingSeq] band -- rows that existed at
-   * catch-up start and were deleted during replay -- is reaped. Omitted at CatchUpStart
-   * (no live arrival can be in the window yet), where every row beyond the tail is a
-   * phantom.
+   * The receipt cursor supplies reapCeilingSeq at CatchUpStart.
+   * At CatchUpComplete, the dispatcher uses start_tail_seq or falls back to that receipt cursor.
+   * A live frame can arrive before either baseline because the worker registers interest before replay.
+   * Only rows in the interval (latestSeq, reapCeilingSeq] qualify for removal when a ceiling exists.
+   * An omitted ceiling supplies no exemption.
    *
-   * `probeIndeterminate` (true only at CatchUpComplete, when the bounded replay is DONE)
-   * handles an indeterminate (unset) tail: the worker couldn't read its max seq, so liveTail
-   * was never raised and the continuous reconcile would read the loaded tail as caught up
-   * even though a bounded replay may have stopped short. Nudge the recorded live tail one
-   * past the loaded tail so the reconcile PROBES (caughtUpToLiveTail reads false) and
-   * catchUpToTail drains to the real tail; settleToWindow clamps the nudge back down if
-   * nothing's there. Skipped at CatchUpStart (the replay hasn't run, so a probe would
-   * race it).
+   * probeIndeterminate applies only after replay completes with an absent authoritative tail.
+   * Increase the recorded tail to one sequence beyond a nonempty window so continuous reconciliation requests another page.
+   * catchUpToTail then reads the actual tail. settleToWindow removes that increase when the server supplies no newer row.
+   * CatchUpStart does not request this probe because it would race the active replay.
    */
   function reconcileAuthoritativeTail(agentId: string, latestSeq: bigint | undefined, reapCeilingSeq?: bigint, probeIndeterminate = false) {
     if (latestSeq === undefined) {
@@ -430,10 +397,9 @@ export function createChatStore() {
   }
 
   /**
-   * Update a message already in the window (matched by id): a same-seq in-place
-   * merge or a reseq reinsert. The same-seq path uses the index path-setter so
-   * the store proxy reference is preserved. A new sequence removes the old entry
-   * and reinserts it so the visible order follows the sequence.
+   * Update the loaded message that matches this ID.
+   * A same-sequence update uses the indexed setter and preserves the store proxy.
+   * A new sequence removes the old row and inserts the new row in sequence order.
    */
   function updateExistingMessage(agentId: string, prev: AgentChatMessage[], existingIdx: number, message: AgentChatMessage): boolean {
     const existing = prev[existingIdx]
@@ -443,23 +409,17 @@ export function createChatStore() {
       const proxy = existing
       if (preferNewerSupplement(proxy, message) === proxy)
         return false
-      // A duplicate/replayed broadcast can re-deliver a byte-identical row (same id,
-      // same seq, same content) -- e.g. a reconnect replay or an at-least-once stream
-      // dupe overlapping the loaded window. Skip the whole merge then: the setState,
-      // the cache evictions, the version bump, AND the caller's O(window) reindexSpans
-      // are pure churn (re-classify, re-parse, re-estimate, re-index, wake auto-scroll)
-      // for content that didn't change. sameAgentMessage compares every field incl. the
-      // bytes content, so a real same-seq body change still falls through. unwrap() drops
-      // the solid store proxy first so the serializer reads the raw fields.
+      // An identical delivery needs no merge.
+      // Skip its state write and cache invalidation. The caller then skips the version increase and span-index rebuild also.
+      // Those operations would recalculate unchanged content and wake automatic scrolling.
+      // sameAgentMessage compares every serialized field, including content bytes. A changed body must still update.
+      // unwrap removes the Solid proxy before serialization reads the fields.
       if (sameAgentMessage(unwrap(proxy), message))
         return false
       setState('messagesByAgent', agentId, existingIdx, message)
-      // The merge keeps the store-proxy reference and seq, so the by-reference
-      // parse/classify caches (parseMessageContent, classifyAgentMessage, the span
-      // index) -- all built on the "a message is immutable" assumption -- would keep
-      // serving the pre-update derivation. Evict them for the mutated proxy, and bump
-      // the content version so the classified-entry cache + height estimate rebuild
-      // against the fresh content (seq alone can't reveal a same-seq body change).
+      // A same-sequence merge preserves the proxy, so caches that use its reference can retain old content.
+      // Invalidate the parse and classification caches for that proxy.
+      // Increase its content version so the classified-entry cache and height estimate read the new content.
       invalidateRenderedMessage(proxy)
       return true
     }
@@ -484,15 +444,12 @@ export function createChatStore() {
   }
 
   /**
-   * A reseq (notification consolidation assigns the next monotonic seq,
-   * message_seq_hwm+1) moved an existing row to a seq beyond the scrolled-away
-   * window tail. Reinserting it there would
-   * tear a [oldTail..newSeq) hole AND advance getLastSeq to newSeq, making
-   * caughtUpToLiveTail trivially true while history is still unloaded -- the
-   * forward-fetch cursor would then skip the gap and the tail could never be
-   * reached. Drop the moved row from its old position instead; latestLiveSeq
-   * (bumped by the caller) records the new tail, so loadNewerPage /
-   * jumpToLatestMessages re-fetch it contiguously when the user returns.
+   * A notification consolidation can move an existing row beyond the loaded tail.
+   * Inserting that new sequence across unloaded history would create a gap and advance the forward-paging cursor past it.
+   * The window could then incorrectly appear caught up.
+   * Remove the row from its old position instead.
+   * The caller records the new sequence in liveTail.
+   * loadNewerPage or jumpToLatestMessages later reads the missing range in sequence order.
    */
   function handleReseqMovedBeyondWindow(agentId: string, prev: AgentChatMessage[], existingIdx: number) {
     const dropped = prev[existingIdx]
@@ -513,8 +470,8 @@ export function createChatStore() {
   }
 
   /**
-   * Commit a trimmed window: install the kept rows, flag the side that now has
-   * more beyond the window, and re-index spans to the smaller window.
+   * Install the retained rows after a trim.
+   * Set the flag for the unloaded history on that side and rebuild the span index.
    */
   function commitTrim(
     agentId: string,
@@ -527,27 +484,23 @@ export function createChatStore() {
   }
 
   /**
-   * Merge a fetched page into the in-memory window, deduped by seq, and index
-   * its span ids:
-   *  - 'older': prepend the page before the window (older history).
-   *  - 'newer': insert the page in sequence order and advance the live tail.
+   * Merge a fetched page into the window and remove duplicate sequences.
+   * Rebuild its span index.
+   * An older page prepends history. A newer page inserts in sequence order and increases the recorded live tail.
    */
   function mergeFetchedMessages(agentId: string, fetched: AgentChatMessage[], side: 'older' | 'newer') {
     if (fetched.length === 0)
       return
     return batch(() => {
-    // Snapshot the previous window so the merge can reclaim dropped row state.
+      // Snapshot the previous window so the merge can reclaim dropped row state.
       const prevWindow = state.messagesByAgent[agentId] ?? []
-      // The pure window-merge (dedup / reseq-collision / seq-ordered insert / older
-      // prepend vs newer splice) lives in chatMessageOrder.mergeWindow so its rules are
-      // unit-testable on plain arrays; the reactive side effects below stay here.
+      // chatMessageOrder.mergeWindow owns the pure ordering rules for plain arrays.
+      // This store applies the reactive effects after that merge.
       const next = mergeWindow(prevWindow, fetched, side)
       invalidateNewSupplements(prevWindow, next)
       setState('messagesByAgent', agentId, next)
-      // Rebuild the span index over the merged, seq-ascending window rather than
-      // incrementally indexing only the fetched page: a prepended request whose
-      // result is already in the window would otherwise be misfiled, and the
-      // 'older' prepend never re-establishes request-first ordering on its own.
+      // Rebuild the span index from the entire merged window in sequence order.
+      // Indexing only the older page could assign a prepended request to the wrong position when its result already exists.
       reindexSpans(agentId)
       const merged = state.messagesByAgent[agentId] ?? []
       for (const message of fetched)
@@ -561,7 +514,9 @@ export function createChatStore() {
     })
   }
 
-  /** Shared implementation for setMessages / loadInitialMessages. */
+  /**
+   * Supply the shared window replacement for setMessages and loadInitialMessages.
+   */
   function applyMessages(agentId: string, messages: AgentChatMessage[], hasMore: boolean) {
     return batch(() => {
       const prevRows = state.messagesByAgent[agentId] ?? []
@@ -579,10 +534,9 @@ export function createChatStore() {
       for (const message of finalMessages)
         notifyMessageObservers(agentId, message)
       setState('hasMoreOlder', agentId, hasMore)
-      // Default to "at the live tail": initial load, reconnect snapshot, and
-      // jump-to-latest all land on the latest page, so there are no newer messages
-      // beyond the window. The one caller that seeds a NON-tail window
-      // (jumpToOldestMessages) overrides hasMoreNewer immediately after this returns.
+      // Default the replacement to the latest page, with no newer history outside the window.
+      // Initial load and a jump to the latest page use that default.
+      // jumpToOldestMessages immediately replaces hasMoreNewer with its response because it selects an older window.
       setState('hasMoreNewer', agentId, false)
       setState('initialLoadComplete', agentId, true)
       for (const msg of messages) {
@@ -622,25 +576,15 @@ export function createChatStore() {
     },
 
     /**
-     * Whether `seq` would land beyond the loaded tail (getLastSeq) while NEWER history
-     * is still unloaded there, so appending it would tear a gap. Three detectors:
-     *  - hasMoreNewer: the reader scrolled away from the tail.
-     *  - DURING a reconnect catch-up (state.catchingUp): seq-CONTIGUITY -- a frame more
-     *    than one past the loaded tail (seq > lastSeq + 1) is a live arrival past the
-     *    bounded replay's still-unfilled gap, so dropping it (recorded in liveTail) lets
-     *    the continuous reconcile forward-fill (lastSeq, seq] contiguously rather than
-     *    splice a hole; a CONTIGUOUS frame is the next in-order replay page, kept. This
-     *    branch is what makes catch-up robust when the worker can't report its tail
-     *    (latest_seq unset, a DB error): liveTail then only tracks the LOADED tail, so the
-     *    live-tail comparison below can't see a beyond-tail live frame.
-     *  - in the LIVE phase: the loaded tail provably lags a KNOWN higher live tail
-     *    (lastSeq < recordedLiveTail) and `seq` is beyond it (seq > recordedLiveTail).
-     *    Used here rather than contiguity so a message after a reconciled sequence gap
-     *    can splice into the window instead of forcing a needless re-fetch.
-     * An empty window has no sequence cursor and no gap to protect.
-     *
-     * `recordedLiveTail` is the live tail known BEFORE this message bumped it (so a live
-     * arrival is measured against the tail seen so far, not against itself).
+     * Decide whether seq would cross unloaded newer history beyond the current window.
+     * Return false for an empty window or a sequence at or below its loaded tail.
+     * Then apply these conditions in order:
+     * - hasMoreNewer requires refusal beyond that loaded tail.
+     * - Otherwise, during replay, seq > lastSeq + 1 requires refusal.
+     * - Otherwise, require both lastSeq < recordedLiveTail and seq > recordedLiveTail for refusal.
+     * When hasMoreNewer is false, replay accepts the next contiguous frame even when the worker supplies no authoritative tail.
+     * After replay, use the recorded tail instead of contiguity so a deleted sequence does not require an unnecessary fetch.
+     * recordedLiveTail identifies the observed tail before this message increases it.
      */
     beyondUnloadedNewerTail(agentId: string, seq: bigint, recordedLiveTail: bigint): boolean {
       const lastSeq = this.getLastSeq(agentId)
@@ -654,24 +598,13 @@ export function createChatStore() {
     },
 
     /**
-     * Whether a fresh (not-yet-present) message would tear a gap into the loaded
-     * window and so must be dropped rather than spliced in. True only for a
-     * persisted message that lands outside the contiguous window on a
-     * side that still has unloaded history:
-     *  - past the loaded tail (seq > lastSeq) while NEWER history is unloaded -- the
-     *    scrolled-away-from-tail case (hasMoreNewer) OR a bounded catch-up replay whose
-     *    gap toward the live tail isn't filled yet (see beyondUnloadedNewerTail).
-     *  - before the loaded head (seq < firstSeq) while OLDER history is unloaded
-     *    (hasMoreOlder): e.g. a connect-time WatchEvents replay of the OLDEST page
-     *    arriving in front of a freshly-loaded LATEST page -- this is what produced
-     *    the [seq 1 ... gap ... latest] window.
-     * An in-range gap-fill (firstSeq <= seq <= lastSeq) is allowed through.
-     * Dropped messages are not lost: latestLiveSeq
-     * records them and paging toward the edge (loadOlder/loadNewer/jump) re-fetches
-     * the range contiguously. An empty window has no gap to protect.
-     *
-     * `recordedLiveTail` is the live tail known BEFORE this message bumped it (passed
-     * through to beyondUnloadedNewerTail's live-phase comparison).
+     * Refuse a new message outside the loaded window when unloaded history separates it from that window.
+     * Check both sides:
+     * - beyondUnloadedNewerTail checks a newer message against the current replay or recorded tail.
+     * - hasMoreOlder and message.seq < firstSeq identify a message before unloaded older history.
+     * Accept a missing sequence within the loaded range. An empty window has no gap to protect.
+     * liveTail still records a refused message's sequence. Paging or a jump can later read its range contiguously.
+     * Pass recordedLiveTail from before this message increases the tail.
      */
     shouldDropBeyondWindow(agentId: string, message: AgentChatMessage, recordedLiveTail: bigint): boolean {
       const firstSeq = this.getFirstSeq(agentId)
@@ -681,13 +614,9 @@ export function createChatStore() {
     },
 
     /**
-     * Whether an EXISTING-row update is a reseq broadcast (notification consolidation
-     * marks the moved row with previous_seq > 0) whose NEW seq lands beyond the
-     * scrolled-away window's still-unfilled newer gap. Such a row must be DROPPED from
-     * its old position rather than reinserted at the new seq (handleReseqMovedBeyondWindow),
-     * which would tear a [oldTail..newSeq) hole and falsely advance getLastSeq. The third
-     * sibling of the beyond-window predicate family (beyondUnloadedNewerTail /
-     * shouldDropBeyondWindow): a method because it reads beyondUnloadedNewerTail.
+     * Identify an existing row that moves across an unloaded newer gap.
+     * previousSeq > 0 identifies the worker's explicit move. beyondUnloadedNewerTail checks the new position.
+     * The caller removes the old row instead of advancing the loaded tail past missing history.
      */
     isReseqMovedBeyondWindow(agentId: string, message: AgentChatMessage, recordedLiveTail: bigint): boolean {
       return message.previousSeq > 0n
@@ -695,18 +624,16 @@ export function createChatStore() {
     },
 
     /**
-     * The EXISTING-ROW arm of addMessage: a message whose id is already in the window
-     * (existingIdx). A reseq (notification consolidation assigns the next monotonic seq,
-     * message_seq_hwm+1) moves the row to the live tail, marked EXPLICITLY with
-     * previous_seq > 0 (the old seq). When the new seq lands in an unloaded gap beyond
-     * the window -- the reader scrolled away, OR a bounded catch-up replay hasn't filled
-     * the gap yet (beyondUnloadedNewerTail) -- drop the moved row from its old position
-     * (handleReseqMovedBeyondWindow; latestLiveSeq, bumped by addMessage, records the new
-     * tail). Otherwise update in place / reseq-reinsert (updateExistingMessage). Returns
-     * whether the id ends up in the window and whether the call mutated it (changed=false
-     * is an identical same-seq re-delivery -- a true no-op).
+     * Process a message whose ID already exists at existingIdx.
+     * previousSeq identifies a notification consolidation that moves the row to a new sequence.
+     * If that sequence crosses an unloaded newer gap, remove the old row through handleReseqMovedBeyondWindow.
+     * addMessage already records the new sequence in liveTail.
+     * Otherwise, update the row in place or insert it at its new sequence through updateExistingMessage.
+     *
+     * Return whether the row remains loaded and whether the window changes.
+     * An identical same-sequence delivery leaves changed false.
      */
-    updateExistingArm(agentId: string, messages: AgentChatMessage[], existingIdx: number, message: AgentChatMessage, recordedLiveTail: bigint): { inWindow: boolean, changed: boolean } {
+    applyExistingMessage(agentId: string, messages: AgentChatMessage[], existingIdx: number, message: AgentChatMessage, recordedLiveTail: bigint): { inWindow: boolean, changed: boolean } {
       const reseqMovedBeyondWindow = this.isReseqMovedBeyondWindow(agentId, message, recordedLiveTail)
       let inWindow: boolean
       let changed = true
@@ -718,32 +645,26 @@ export function createChatStore() {
         changed = updateExistingMessage(agentId, messages, existingIdx, message)
         inWindow = true
       }
-      // An in-place merge, reseq-reinsert, or beyond-window drop can leave a stale or
-      // misordered span entry, so rebuild from the seq-ascending window -- unless nothing
-      // changed (an identical same-seq re-delivery), where it's pure churn.
+      // Rebuild the span index after a changed row updates or leaves the window.
+      // A content or sequence change can invalidate the index. An unchanged identical delivery requires no rebuild.
       if (changed)
         reindexSpans(agentId)
       return { inWindow, changed }
     },
 
     /**
-     * The FRESH-INSERT arm of addMessage: a message whose id is NOT in the window.
-     * Inserts by sequence or discards a pure same-sequence duplicate
-     * under a different id) -- and incrementally indexes its span. applyFreshMessage
-     * returns the SAME array reference on a pure dedup-discard (nothing inserted, no
-     * dropped), so `changed` is false there; any real change yields a new array.
-     * Returns whether the id was actually inserted (inWindow) and whether the window
-     * mutated (changed).
+     * Process a message whose ID does not exist in the window.
+     * applyFreshMessage inserts it in sequence order or refuses a duplicate sequence under a different ID.
+     * It returns the same array for an unchanged duplicate, so changed remains false.
+     * A real window change returns a new array.
+     * Return whether the message enters the window and whether the window changes.
      */
-    freshInsertArm(agentId: string, messages: AgentChatMessage[], message: AgentChatMessage): { inWindow: boolean, changed: boolean } {
+    insertFreshMessage(agentId: string, messages: AgentChatMessage[], message: AgentChatMessage): { inWindow: boolean, changed: boolean } {
       const { next, inserted } = applyFreshMessage(messages, message)
       const changed = next !== messages
       setState('messagesByAgent', agentId, next)
-      // Index only a message that was actually inserted: the seq dedup can DISCARD it,
-      // and indexing a discarded message would point a span slot at a row absent from the
-      // window. The incremental index also falls back to a full rebuild when it would
-      // reassign a spanId to a different message id (a re-broadcast under a new id, with
-      // the old instance still in the window).
+      // Index only an inserted message. A discarded duplicate has no loaded row for its span entry.
+      // The incremental index requests a full rebuild if a span position would move to another message ID.
       if (inserted && spanIdx.index(agentId, message))
         reindexSpans(agentId)
       return { inWindow: inserted, changed }
@@ -752,48 +673,40 @@ export function createChatStore() {
     addMessage(agentId: string, message: AgentChatMessage): boolean {
       return batch(() => {
         notifyMessageObservers(agentId, message)
-        // The live tail known BEFORE this message bumps it: the live-append guard's
-        // live-phase comparison measures a beyond-tail arrival against the tail seen so far,
-        // not against its own seq -- see beyondUnloadedNewerTail.
+        // Read the recorded live tail before this message increases it.
+        // beyondUnloadedNewerTail compares a live arrival against that earlier tail.
         const recordedLiveTail = liveTail.get(agentId)
-        // Track the live tail seq even for messages we're about to drop, so
-        // jumpToLatestMessages knows where the true tail is.
+        // Record the live sequence even when the loaded window refuses the message.
+        // jumpToLatestMessages still needs that recorded tail.
         liveTail.bump(agentId, message.seq)
 
-        // Record the scroll-rail mark BEFORE any beyond-window drop, so a message the
-        // reader scrolled away from still gets its jump dot. The mark rides the proto
-        // set at write time by the worker.
-        // A reseq MOVE (previousSeq set) carries the mark to its new seq, so drop the
-        // stale mark at the vacated old seq first, or it strands a ghost dot. (Threaded
-        // rows are unmarked today, so this is latent -- but the worker now carries
-        // mark_type on the MOVE broadcast, so keep the two ends symmetric.) noteMark/remove
-        // bump the marks store's own seed-race revision only on a real change: an unmarked
-        // reseq MOVE (remove of a never-marked seq) or a re-broadcast of an already-noted
-        // mark are no-ops that must not perturb a concurrent loadMessageMarks.
+        // Record the scroll-rail mark before the window can refuse the message.
+        // The worker supplies markType in the protobuf message.
+        // A previousSeq move removes the old mark before recording the new one.
+        // Otherwise, the old sequence could retain a mark for a moved row.
+        // The mark store increases its revision only for a real change.
+        // An unmarked move or repeated identical mark therefore preserves a concurrent loadMessageMarks request.
         if (message.previousSeq !== 0n)
           messageMarks.remove(agentId, message.previousSeq)
         if (message.markType !== MarkType.UNSPECIFIED)
           messageMarks.noteMark(agentId, message.seq, message.markType)
 
-        // Notification thread update: LEAPMUX notification messages can be updated
-        // in-place when consolidating. Check if a message with this ID exists.
+        // Look for a loaded row with this ID before processing the message.
+        // A LEAPMUX notification can update or move its existing row during consolidation.
         const messages = state.messagesByAgent[agentId] ?? []
         const existingIdx = messages.findLastIndex(m => m.id === message.id)
 
-        // Live-append guard: drop a fresh transcript message that would tear a gap into the
-        // loaded window (see shouldDropBeyondWindow). In-place updates (existingIdx !== -1)
-        // are never dropped here.
+        // Refuse a new row that would cross unloaded history.
+        // An existing row uses its separate update path instead. See shouldDropBeyondWindow.
         if (existingIdx === -1 && this.shouldDropBeyondWindow(agentId, message, recordedLiveTail))
           return false
 
-        // Dispatch to the existing-row or fresh-insert path. `inWindow` is whether
-        // message.id actually ends up loaded (a reseq-beyond-window drop / seq-dedup
-        // discard leave it absent); `changed` is whether the window mutated (false on a
-        // pure dedup-discard or an identical same-seq re-delivery, where a version bump
-        // would only re-run the auto-scroll effect + entry cache for nothing).
+        // Select the existing-row or new-row method.
+        // inWindow reports whether message.id remains loaded. changed reports an actual window change.
+        // An unchanged duplicate requires no message-version increase or automatic-scroll update.
         const { inWindow, changed } = existingIdx !== -1
-          ? this.updateExistingArm(agentId, messages, existingIdx, message, recordedLiveTail)
-          : this.freshInsertArm(agentId, messages, message)
+          ? this.applyExistingMessage(agentId, messages, existingIdx, message, recordedLiveTail)
+          : this.insertFreshMessage(agentId, messages, message)
 
         if (changed)
           bumpMessageVersion(agentId)
@@ -807,11 +720,9 @@ export function createChatStore() {
     },
 
     /**
-     * The row's content version (see messageContentVersions): 0 until its first
-     * in-place same-seq body replacement, then incremented per replacement. Read
-     * REACTIVELY by the classified-entry cache (and folded into the height estimate
-     * key) so a same-seq content swap -- which keeps the id, seq, and proxy identity,
-     * and so wouldn't otherwise wake the cache's memo -- still invalidates them.
+     * Return the row's content version, initially zero. See chatContentVersions.
+     * A same-sequence content replacement increases it while retaining the row's ID and proxy.
+     * The classified-entry cache and height estimate read this value reactively to detect that replacement.
      */
     getMessageContentVersion(id: string): number {
       return contentVersions.get(id)
@@ -823,23 +734,24 @@ export function createChatStore() {
     },
 
     /**
-     * One span's live tool progress, or undefined when nothing is running there.
-     * Read through the row's render context, by a leaf component that subscribes
-     * on its own -- see ToolRunningBadge.
+     * Return the span's live tool progress, or undefined when no progress exists.
+     * ToolRunningBadge reads it through its row context and subscribes independently.
      */
     getToolProgress(agentId: string, identity: MessageSpanIdentity): ToolProgressEntry | undefined {
       return toolProgress.get(agentId, identity)
     },
 
-    /** Drop one span's tool progress -- its result row landed. */
+    /**
+     * Remove the span's progress after its result row arrives.
+     */
     dropToolProgress(agentId: string, identity: MessageSpanIdentity) {
       toolProgress.drop(agentId, identity)
     },
 
     /**
-     * Drop every span's tool progress for an agent. Called at the boundaries the
-     * WORKER cannot observe (turn end, agent inactive, context cleared), which is
-     * why no provider sends an end message for a running tool.
+     * Remove every live tool-progress entry for the agent.
+     * A lifecycle event or lost connection can omit a tool's result row.
+     * The frontend then removes its remaining badges.
      */
     clearToolProgress(agentId: string) {
       toolProgress.clearAgent(agentId)
@@ -881,16 +793,14 @@ export function createChatStore() {
     },
 
     /**
-     * Live-tail trim that protects a scrolled-up reader's viewport. Keeps at least
-     * `minKeepNewest` newest messages -- the rows from the reader's viewport-top
-     * anchor down to the tail, which the scroll hook computes so the oldest-end
-     * trim never drops a row the reader can see (the cause of a mid-read jump).
-     * Clamped to [MAX_LOADED_CHAT_MESSAGES, MAX_LOADED_CHAT_MESSAGES_CEILING]:
-     *  - while following the tail the hook passes 0, so this is the normal cap;
-     *  - scrolled up it floats the cap up to protect the viewport;
-     *  - past the ceiling memory wins and the oldest rows trim regardless, so a
-     *    reader pinned to the very oldest rows through a stream that long sees the
-     *    same jump strict bounding always had (now only in that extreme).
+     * Trim the oldest rows while protecting the reader's current viewport.
+     * minKeepNewest counts the rows from the viewport's top anchor through the tail.
+     * The scroll hook calculates it so a normal trim preserves visible rows.
+     * Use these limits:
+     * - At the tail, zero selects MAX_LOADED_CHAT_MESSAGES.
+     * - Above the tail, a larger count protects the viewport.
+     * - MAX_LOADED_CHAT_MESSAGES_CEILING remains the maximum even when the viewport needs more rows.
+     * At that maximum, the trim can remove visible oldest rows and move the reader's position.
      */
     trimOldestToViewport(agentId: string, minKeepNewest: number) {
       const target = Math.min(
@@ -901,28 +811,22 @@ export function createChatStore() {
     },
 
     /**
-     * Whether the loaded window has reached the highest live seq ever observed
-     * (latestLiveSeq), including messages dropped by the live-append guard while
-     * scrolled away. Reaching the persisted tail (has_more false) does not imply
-     * this -- a broadcast that landed mid-fetch can sit beyond the window -- so
-     * the forward-fetch paths gate the "at the live tail" decision on this, not
-     * on has_more alone. `0n` default means "no live seq seen", which any
-     * non-negative getLastSeq trivially satisfies.
+     * Compare the window tail with the highest observed live sequence, including refused window messages.
+     * A has_more=false response does not prove that a broadcast during the fetch also entered the window.
+     * Forward paging therefore checks this value before reporting the live tail.
+     * The default zero means that no live sequence exists and any non-negative window tail satisfies it.
      */
     caughtUpToLiveTail(agentId: string): boolean {
       return liveTail.caughtUp(agentId, this.getLastSeq(agentId))
     },
 
     /**
-     * The seq to resume a WatchEvents subscription from: the highest seq the
-     * client has observed, INCLUDING live messages dropped by the windowed
-     * live-append guard (latestLiveSeq). While scrolled away from the tail
-     * (hasMoreNewer) the window tail (getLastSeq) lags the live tail, so resuming
-     * from getLastSeq would make the worker replay the whole window->live gap --
-     * up to a full page of messages the live-append guard immediately drops
-     * again. Resuming from the live tail replays only genuinely-new messages; the
-     * skipped gap is re-fetched contiguously by loadNewerPage /
-     * jumpToLatestMessages when the user returns to the tail.
+     * Resume WatchEvents after the highest sequence that the client observes.
+     * Include live messages that the loaded window refuses.
+     * While the reader stays away from the tail, getLastSeq can remain below liveTail.
+     * Resuming from that window position would repeat a page that the append guard refuses again.
+     * Resume after the recorded live tail instead.
+     * loadNewerPage or jumpToLatestMessages later reads the skipped range contiguously when the reader returns.
      */
     getResumeAfterSeq(agentId: string): bigint {
       const lastSeq = this.getLastSeq(agentId)
@@ -945,39 +849,31 @@ export function createChatStore() {
     },
 
     /**
-     * Whether a forward fill parked with an exhaustion-forced (still-reachable) gap, so
-     * the continuous tail-reconcile should RESUME it rather than treat hasMoreNewer as a
-     * settled scrolled-away wall (see ChatStoreState.tailFillDeferred / resumeDeferredTailFill).
+     * Report a reachable deferred gap after forward fill reaches its maximum attempt count.
+     * Continuous reconciliation resumes that fill. It preserves a history window that the user selects without this flag.
+     * See tailFillDeferred and resumeDeferredTailFill.
      */
     isTailFillDeferred(agentId: string): boolean {
       return state.tailFillDeferred[agentId] ?? false
     },
 
     /**
-     * Mark a reconnect catch-up as in flight (true on WatchEvents (re)subscribe) or done
-     * (false at CatchUpComplete). While set, the live-append guard uses seq-contiguity
-     * instead of the recorded-live-tail comparison, so a beyond-tail live frame that
-     * races in during the bounded replay is dropped (and forward-filled) rather than
-     * spliced past the unfilled gap -- robust even when the worker's tail is indeterminate
-     * (see ChatStoreState.catchingUp / beyondUnloadedNewerTail).
+     * Record whether the WatchEvents replay remains active.
+     * Subscription sets true and CatchUpComplete sets false.
+     * During replay, the append guard uses sequence contiguity instead of the recorded-tail comparison.
+     * A frame beyond an unloaded gap stays outside the window and remains available through later paging.
+     * This check works even when the worker cannot report its tail.
      */
     setCatchingUp(agentId: string, value: boolean) {
       setState('catchingUp', agentId, value)
     },
 
     /**
-     * Whether the in-memory window comes within one page of the row ceiling, so the
-     * buffer-filler must stop the pre-fetch. A further page only moves the window: a
-     * prepend forces a trim at the newest end, and an append forces a trim at the
-     * oldest end. That trim drops the buffer on the other side, or, at the live tail,
-     * the pinned tail row.
-     *
-     * The threshold is CEILING - MESSAGE_PAGE_LIMIT, not the ceiling itself, on
-     * purpose. One 50-row page can take the window length from just under the ceiling
-     * (1199) to just over it (1249), and trimNewestEnd flips hasMoreNewer and drops
-     * the live tail only after the window length EXCEEDS the ceiling. A stop one full
-     * page early keeps the filler's last permitted fetch from crossing the ceiling and
-     * dropping the live tail.
+     * Stop visible-buffer fetches when the window comes within one page of its maximum row count.
+     * A further page could force a trim on the opposite side and remove the visible buffer or live tail.
+     * Use MAX_LOADED_CHAT_MESSAGES_CEILING - MESSAGE_PAGE_LIMIT as the threshold.
+     * Stopping at the ceiling itself could permit a final page to exceed it before trimNewestEnd sets hasMoreNewer.
+     * The one-page margin prevents that final fetch from removing the live tail.
      */
     atWindowCeiling(agentId: string): boolean {
       const msgs = state.messagesByAgent[agentId]
@@ -1001,12 +897,9 @@ export function createChatStore() {
     },
   }
 
-  // Wire the history paginator AFTER baseStore exists, threading its dependencies
-  // explicitly (the windowing-core closures + the cross-method store API) rather
-  // than via a `this`-bound spread. The store-method deps are arrow-wrapped so each
-  // runs with baseStore as its receiver (those methods use `this` to reach
-  // siblings). The paginator's methods are plain closures, so merging them in adds
-  // no `this` coupling of their own.
+  // Create the paginator after baseStore exists and supply its dependencies explicitly.
+  // Wrap each store method so baseStore remains its receiver for calls through this.
+  // The paginator supplies closures and adds no receiver dependency of its own.
   const paginator = createHistoryPaginator({
     state,
     setState,
@@ -1031,11 +924,9 @@ export function createChatStore() {
     markBackgroundTasksLoadFailed: backgroundTasks.markLoadFailed,
   })
 
-  // Expose the composed sub-stores directly so consumers reach a slice's own
-  // methods (chatStore.todos.replace, chatStore.goal.replace, ...) instead of
-  // a wall of one-line forwarders re-spelling each slice's API on the window store.
-  // liveTail is exposed the same way for the recorded-tail reads the store and its
-  // tests need. The window core still owns message CRUD / windowing / annotations.
+  // Expose each composed store directly, including liveTail for recorded-tail reads.
+  // Consumers call that store's canonical methods without forwarding aliases.
+  // The window core still owns message changes and window rules. It also supplies annotations.
   return Object.assign(baseStore, paginator, {
     forgetAgent,
     reconcileAuthoritativeTail,
@@ -1046,11 +937,12 @@ export function createChatStore() {
     goal,
     viewportScroll,
     /**
-     * Reactive scroll-rail data for an agent: the marked seqs, the window-aware whole-history
-     * seq range, and the loaded window's bounds. The range rule (seed vs live tail vs window
-     * head/tail) lives in the pure {@link resolveRailRange} so it is testable and can't drift
-     * from a second copy -- this selector just wires the reactive reads to it. Read inside a
-     * memo/JSX for reactivity (it tracks the marks store, the live tail, and the window).
+     * Return reactive scroll-rail data for this agent:
+     * - The marked sequences.
+     * - The complete history range for the current window.
+     * - The loaded window's first and last sequences.
+     * resolveRailRange owns the pure range rule. This selector supplies its reactive inputs.
+     * Read it inside a memo or JSX to track every supplied input.
      */
     getRailData(agentId: string): ChatRailData {
       const marks = messageMarks.get(agentId)
@@ -1068,59 +960,37 @@ export function createChatStore() {
       return { loaded: marks.loaded, minSeq, maxSeq, marks: marks.marks, windowFirstSeq, windowLastSeq }
     },
     /**
-     * Seed (or re-seed) an agent's scroll-rail marks from the worker. The public entry to
-     * the seed-race machine, which lives in its own tested unit (createMessageMarkSeeder);
-     * this just delegates. `watchSignal` ties the seed to the current WatchEvents
-     * subscription -- see markSeeder.load for the full fire-and-forget / retry / fencing
-     * contract. Kept as a method name here because the connection hook and the store tests
-     * drive the seed through `store.loadMessageMarks`.
+     * Load the agent's scroll-rail marks through createMessageMarkSeeder.
+     * watchSignal ties that request to the current WatchEvents subscription.
+     * markSeeder.load owns cancellation and retry rules.
+     * The connection hook and store tests use this canonical loadMessageMarks entry.
      */
     loadMessageMarks: markSeeder.load,
     /**
-     * The loaded message at `seq`, or undefined when it isn't in the current window.
-     * Used by the scroll rail's hover preview to extract a mark's preview WITHOUT a
-     * fetch when the marked message is already loaded.
-     *
-     * Non-reactive, and `untrack` is what MAKES it so rather than asking callers to
-     * be careful. The body walks `messagesByAgent`, so a caller inside a tracking
-     * scope would subscribe to every message of that agent and re-run on each row
-     * the agent appends. Both callers read imperatively -- the scroll rail's hover
-     * preview from an event handler, an IMAGE tab's resolve from an `on()` effect --
-     * but the second one reached here through an async function whose body runs
-     * synchronously as far as its first `await`, which is exactly how a "call it
-     * imperatively" contract gets broken without anybody writing a store read.
+     * Return the loaded message at seq, or undefined when it stays outside the window.
+     * The scroll-rail hover preview can extract it without a fetch.
+     * untrack prevents this lookup from adding message subscriptions to a reactive caller.
+     * The image-tab resolver can reach it synchronously before its first await, so an imperative-call convention alone is insufficient.
      */
     getLoadedMessageBySeq(agentId: string, seq: bigint): AgentChatMessage | undefined {
       return untrack(() => {
         const messages = state.messagesByAgent[agentId]
         if (!messages)
           return undefined
-        // Rows are ascending by unique sequence, so binary-search the window
-        // instead of a linear search. A marked message is usually outside the loaded window, so the
-        // old scan traversed the whole ~1200-row window fruitlessly for every hovered/scrubbed dot.
+        // Binary-search the window because its rows have unique ascending sequences.
+        // A missing mark message requires no scan through every loaded row.
         const idx = lowerBoundBySeq(messages, seq)
         const hit = messages[idx]
         return hit?.seq === seq ? hit : undefined
       })
     },
     /**
-     * Persist an agent's viewport scroll for the NEXT mount of the same chat window (a
-     * tile split/merge or workspace switch recreates ChatView over the still-live store
-     * -- see ChatView.onSaveViewportScroll -> restoreOnMount), but ONLY while the agent's
-     * chat window is still live. The unmount-save fires AFTER forgetAgent on an agent
-     * close (handleAgentClose reaps the store, removes the tab, THEN the tile teardown
-     * unmounts ChatView), so an unguarded set would resurrect a viewportScroll entry for
-     * a dead agent -- the very per-agent leak forgetAgent exists to prevent.
-     *
-     * Gate on the SAME store's load-state (initialLoadComplete, which forgetAgent
-     * clears) rather than a tab-liveness check. The two answer different questions:
-     * a tab outlives the chat window it was read in, so "the tab still exists" does
-     * not mean "this reader's position is still meaningful", and only forgetAgent
-     * knows the window is gone. (The tab check was also wrong for a second reason
-     * that no longer applies: tabs used to be scoped out of the active store on a
-     * workspace switch, so it dropped the switch-away save entirely. The join now
-     * spans every workspace and would answer -- the load-state gate is the right
-     * question either way.)
+     * Retain the viewport position for the next mount of this agent's live chat window.
+     * A tile change or workspace switch can recreate ChatView over that same store.
+     * Agent close calls forgetAgent before ChatView saves its position during unmount.
+     * An unconditional save could recreate state for the removed agent.
+     * Require this store's initialLoadComplete flag, which forgetAgent removes.
+     * A tab can outlive the particular chat window that supplied the position, so tab existence does not establish this condition.
      */
     saveViewportScrollForRemount(agentId: string, scroll: SavedViewportScroll) {
       if (state.initialLoadComplete[agentId])

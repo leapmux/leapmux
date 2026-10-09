@@ -58,16 +58,15 @@ type agentActivity struct {
 	// a prompt was answered.
 	rootAgentID string
 
-	// turnActive is what the provider last reported through
-	// ProviderServices.SetTurnState. The DERIVED state reads it for a root only:
-	// activityStateLocked answers a child from its background-task registry
-	// row, which IS the child's run.
-	//
-	// A child still publishes the flag, because the input queue follows the
-	// same signal and a collab child owns a queue of its own. So this field is
-	// written for a child and never read for one, and setTurnActive must keep
-	// every other effect of that publish away from a child entry.
+	// turnActive records the provider's last accepted SetTurnState value.
+	// activityStateLocked reads this flag only for a root.
+	// It derives a child's visible state from its background-task registry row.
+	// A child with native turns still publishes this flag for its own input queue.
+	// Retirement also reads the flag and retains its ordering token.
+	// setTurnActive keeps root count changes away from a child entry.
 	turnActive bool
+	// turnSteerable retains the accepted provider classification under mu.
+	turnSteerable bool
 
 	// turnSeq is the ordering token of the last publish this entry accepted. A
 	// provider reads its flag under a lock and calls the sink without one, so
@@ -421,9 +420,10 @@ func activityStateLocked(st *agentActivity, in activityInputs) leapmuxv1.AgentAc
 	if !in.processAlive {
 		return leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE
 	}
-	// A CHILD is never WAITING: a subagent owns no turn and no process, and its
-	// prompts are recorded against the root that feeds it. Its registry row IS
-	// its run, so it needs no turn-start signal of its own.
+	// A child's visible state uses only its registry task count.
+	// This derivation ignores the child's native turn flag and pending prompts.
+	// A registry-only child needs no turn-start signal.
+	// A child with native turns still retains that signal for its queue and retirement.
 	if in.childID != "" {
 		return idleOrWorking(in.activeTasks > 0)
 	}
@@ -534,54 +534,97 @@ func (h *OutputHandler) resolveRoot(agentID, rootAgentID string) string {
 	return agentID
 }
 
-// ForgetActivity drops an agent's activity entry. Called from the same cleanup
-// that prunes the other per-agent caches, so a closed agent leaves nothing
-// behind in the map.
-func (h *OutputHandler) ForgetActivity(agentID string) {
-	v, ok := h.activity.Load(agentID)
-	if !ok {
-		return
-	}
-	st := v.(*agentActivity)
+// activityRemoval retains one exact entry and its prepared held-settle inputs.
+type activityRemoval struct {
+	activity    *agentActivity
+	agentID     string
+	rootAgentID string
+	inputs      activityInputs
+	sequence    uint64
+	deliver     bool
+}
 
-	// DELIVER a held settle, do not drop it. A subagent's last registry row
-	// closes and the provider retires the child on the next line (see
-	// CleanupChildAgent), which lands inside the window that close opened.
-	// Cancelling there loses the settle for good. The entry goes away, so no later
-	// refresh can find the edge again, and the child's tab keeps a spinner and an
-	// armed Interrupt button on a run that ended.
-	st.mu.Lock()
-	if st.controlMutations > 0 {
-		st.mu.Unlock()
+// prepareActivityRemoval reads external inputs before a mutation lease begins.
+// It changes no activity field or timer.
+// An active control mutation retains the entry and refuses preparation.
+func (h *OutputHandler) prepareActivityRemoval(agentID string) *activityRemoval {
+	value, exists := h.activity.Load(agentID)
+	if !exists {
+		return nil
+	}
+	activity := value.(*agentActivity)
+	activity.mu.Lock()
+	if activity.controlMutations > 0 {
+		activity.mu.Unlock()
+		return nil
+	}
+	removal := &activityRemoval{activity: activity, agentID: agentID, rootAgentID: activity.rootAgentID, deliver: activity.settlePending}
+	activity.mu.Unlock()
+	if removal.rootAgentID == "" {
+		removal.rootAgentID = agentID
+	}
+	if removal.deliver {
+		removal.sequence = h.activitySeq.Add(1)
+		removal.inputs = h.externalActivityInputs(agentID, removal.rootAgentID, h.backgroundTaskRows(removal.rootAgentID))
+	}
+	return removal
+}
+
+// removeActivityLocked checks and removes only the prepared entry.
+// The caller holds the root mutation lease.
+// True means that this attempt completed or met a retention guard.
+// False requires fresh external preparation before any timer or map mutation.
+func (h *OutputHandler) removeActivityLocked(removal *activityRemoval) bool {
+	if removal == nil {
+		return true
+	}
+	activity := removal.activity
+	activity.mu.Lock()
+	current, exists := h.activity.Load(removal.agentID)
+	if !exists || current != activity || activity.controlMutations > 0 {
+		activity.mu.Unlock()
+		return true
+	}
+	if activity.settlePending && (!removal.deliver || removal.sequence < activity.publishedSeq) {
+		activity.mu.Unlock()
+		return false
+	}
+	activity.cancelSettleLocked(h)
+	activity.mu.Unlock()
+	if removal.deliver {
+		h.enqueueActivity(activity, removal.agentID, removal.rootAgentID, removal.inputs, removal.sequence, settleImmediate)
+	}
+	activity.mu.Lock()
+	if activity.controlMutations > 0 {
+		activity.mu.Unlock()
+		return true
+	}
+	removed := h.activity.CompareAndDelete(removal.agentID, activity)
+	activity.mu.Unlock()
+	if removed {
+		h.removeActivityIndex(removal.agentID, removal.rootAgentID, activity)
+	}
+	return true
+}
+
+// ForgetActivity removes an agent's exact activity entry during per-agent cleanup.
+// It prepares held-settle inputs outside the root lease and delivers after release.
+func (h *OutputHandler) ForgetActivity(agentID string) {
+	for {
+		removal := h.prepareActivityRemoval(agentID)
+		if removal == nil {
+			return
+		}
+		mutation := h.transcriptMutationMutex(removal.rootAgentID)
+		mutation.Lock()
+		completed := h.removeActivityLocked(removal)
+		mutation.Unlock()
+		if !completed {
+			continue
+		}
+		h.watcher.DrainAgentEvents(agentID)
 		return
 	}
-	deliver := st.settlePending
-	// Read the root from the entry rather than through resolveRoot, which takes
-	// this same lock. An entry no sink ever touched records none, and an agent is
-	// its own root.
-	rootAgentID := st.rootAgentID
-	st.cancelSettleLocked(h)
-	st.mu.Unlock()
-	if rootAgentID == "" {
-		rootAgentID = agentID
-	}
-	// Before the delete, so the refresh reaches THIS entry rather than minting a
-	// replacement that no cleanup would ever reap.
-	if deliver {
-		seq := h.activitySeq.Add(1)
-		h.refreshActivityIn(st, agentID, rootAgentID, h.backgroundTaskRows(rootAgentID), seq, settleImmediate)
-	}
-	st.mu.Lock()
-	if st.controlMutations > 0 {
-		st.mu.Unlock()
-		return
-	}
-	removed := h.activity.CompareAndDelete(agentID, st)
-	st.mu.Unlock()
-	if !removed {
-		return
-	}
-	h.removeActivityIndex(agentID, rootAgentID, st)
 }
 
 func (h *OutputHandler) removeActivityIndex(agentID, rootAgentID string, st *agentActivity) {
@@ -596,6 +639,7 @@ func (h *OutputHandler) removeActivityIndex(agentID, rootAgentID string, st *age
 
 // retireActivity rechecks automatic retirement after the activity broadcast.
 // A newer turn or control mutation can supersede the earlier idle decision.
+// CompareAndDelete preserves a replacement entry with the same agent ID.
 func (h *OutputHandler) retireActivity(agentID string, st *agentActivity) {
 	st.mu.Lock()
 	if !st.retirableLocked() || st.published == leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING {
@@ -921,13 +965,9 @@ func (h *OutputHandler) refreshActivity(agentID, rootAgentID string) {
 // settleImmediate. See settleDelay for what the window is worth and what it
 // costs.
 //
-// One residual, stated because it is not free to close: the broadcast runs after
-// the unlock, because BroadcastAgentEvent can block on a slow transport and
-// holding a lock across it would serialize every registry op for the root behind
-// the slowest watcher. So two publishes that BOTH survive the ticket can still
-// reach the wire out of order. The ticket removes the case that mattered -- a
-// stale reader overwriting a fresher answer, which the edge trigger then made
-// permanent -- and leaves only a reordering of two genuine transitions.
+// The activity decision and event enqueue share the activity mutex.
+// The per-agent FIFO therefore retains the order of accepted transitions.
+// Delivery starts after the mutex releases, so a slow watcher holds no activity lock.
 func (h *OutputHandler) refreshActivityFrom(agentID, rootAgentID string, rows []bgtask.Item, seq uint64, mode settleMode) {
 	h.refreshActivityIn(h.activityFor(agentID, rootAgentID), agentID, rootAgentID, rows, seq, mode)
 }
@@ -942,13 +982,21 @@ func (h *OutputHandler) refreshActivityIn(
 	st *agentActivity, agentID, rootAgentID string, rows []bgtask.Item, seq uint64, mode settleMode,
 ) {
 	in := h.externalActivityInputs(agentID, rootAgentID, rows)
+	retire := h.enqueueActivity(st, agentID, rootAgentID, in, seq, mode)
+	h.watcher.DrainAgentEvents(agentID)
+	if retire {
+		h.retireActivity(agentID, st)
+	}
+}
 
+// enqueueActivity records the activity decision without provider reads or watcher delivery.
+func (h *OutputHandler) enqueueActivity(st *agentActivity, agentID, rootAgentID string, in activityInputs, seq uint64, mode settleMode) bool {
 	st.mu.Lock()
 	if st.hasPublished && seq < st.publishedSeq {
 		// This refresh read its rows before the one that already published. Its
 		// answer is older, so it must not overwrite a fresher one.
 		st.mu.Unlock()
-		return
+		return false
 	}
 	if mode == settleImmediate {
 		// A process boundary supersedes any window in flight: no wake can follow a
@@ -967,7 +1015,7 @@ func (h *OutputHandler) refreshActivityIn(
 		// cannot cancel a window a fresher one opened.
 		st.voidHeldSettleLocked(h)
 		st.mu.Unlock()
-		return
+		return false
 	}
 	var toolUses *int32
 	working := leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING
@@ -981,7 +1029,7 @@ func (h *OutputHandler) refreshActivityIn(
 		if h.holdSettleLocked(st, agentID, rootAgentID) {
 			st.publishedSeq = seq
 			st.mu.Unlock()
-			return
+			return false
 		}
 		// Shutdown refused the window. Fall through and publish: the settle has
 		// nowhere else to come from once this process stops.
@@ -1000,9 +1048,9 @@ func (h *OutputHandler) refreshActivityIn(
 	st.published = state
 	st.hasPublished = true
 	st.publishedSeq = seq
-	// A subagent whose run ended, and whose end the client now knows, has nothing
-	// left to remember. Read the verdict here, under the lock that owns those
-	// fields; the retire itself runs after the broadcast below.
+	// A finished child can retire after its event enters the FIFO.
+	// Read this decision under the mutex that protects its activity fields.
+	// Retirement runs after the drain call and repeats the retention checks.
 	retire := in.childID != "" && state != working && in.activeTasks == 0
 	// The client learns the state below, so nothing is pending any more --
 	// whether this publish delivers a held settle or supersedes one.
@@ -1017,9 +1065,7 @@ func (h *OutputHandler) refreshActivityIn(
 	// An activity publication retires no stop attempt. It does not confirm native delivery.
 	// A changed turn publication retires the previous scope in setTurnActive.
 	retire = retire && st.retirableLocked()
-	st.mu.Unlock()
-
-	h.watcher.BroadcastAgentEvent(agentID, &leapmuxv1.AgentEvent{
+	h.watcher.EnqueueAgentEvent(agentID, &leapmuxv1.AgentEvent{
 		AgentId: agentID,
 		Event: &leapmuxv1.AgentEvent_ActivityChanged{
 			ActivityChanged: &leapmuxv1.AgentActivityChanged{
@@ -1028,34 +1074,17 @@ func (h *OutputHandler) refreshActivityIn(
 			},
 		},
 	})
-
-	// Drop the finished child here rather than waiting for a provider to retire
-	// it. Only Codex, ZCode and the ACP providers call CleanupChildAgent, so
-	// under Claude and Pi every subagent a session ever spawned kept an entry
-	// until the tab closed. Each of those then cost a point query per registry
-	// mutation once the display cap evicted its row.
-	//
-	// After the broadcast, so the settle it just published is not lost. A child
-	// that is still RUNNING publishes WORKING and keeps its entry, which is what
-	// the display cap needs. See retirableLocked for what else keeps one.
-	if retire {
-		h.retireActivity(agentID, st)
-	}
+	st.mu.Unlock()
+	return retire
 }
 
-// retirableLocked answers whether this entry holds nothing worth keeping.
-// Caller must hold st.mu.
-//
-// `published` alone is not worth keeping: a child that comes back mints a fresh
-// entry and publishes WORKING, which is a real transition. Everything else is,
-// and each field here is a way to lose something real. An unspent count belongs
-// to a turn end whose settle has not landed. A held settle has not reached the
-// client. A prompt is unanswered. A stop mark waits for the provider's answer.
-//
-// And a turn flag means a COLLAB child, whose own input queue follows that flag.
-// Its token also orders two publishes that can arrive out of order, so
-// re-minting would reset that token and let a stale publish latch a turn that is
-// over.
+// retirableLocked reports whether the entry retains no outstanding operation.
+// The caller must hold st.mu.
+// A published value alone needs no retention. A restarted child publishes a new transition.
+// An unspent count or held settle still belongs to an undelivered completion.
+// Pending prompts, stop attempts, and control mutations retain their original entry.
+// A child with native turns retains its turn flag and publication token for its queue.
+// Recreating that entry would reset the token and admit an older turn publication.
 func (st *agentActivity) retirableLocked() bool {
 	return !st.turnActive && st.turnSeq == 0 && len(st.pendingControl) == 0 &&
 		st.settledToolUses == nil && !st.settlePending && st.settleTimer == nil && !st.stopRequestedLocked() && st.controlMutations == 0
@@ -1132,13 +1161,23 @@ func (h *OutputHandler) treeChildIDs(rootAgentID string, rows []bgtask.Item) []s
 
 // setTurnActive records the provider's turn bookkeeping and republishes.
 // Providers reach it through ProviderServices.SetTurnState.
+type turnActiveChange struct {
+	activity                       *agentActivity
+	scope                          *activityScope
+	agentID, rootAgentID           string
+	root, active, changed, stopped bool
+}
+
 func (h *OutputHandler) setTurnActive(agentID, rootAgentID string, active bool) {
-	// The settle count belongs to the ROOT's turn. A child publishes this flag
-	// too, because the input queue follows it, but activityStateLocked answers
-	// a child from its registry row and never reads the flag -- so the refresh
-	// below cannot spend a child's count, and clearing it here would only
-	// destroy what PersistTurnEnd just recorded. The child's settle then
-	// reports no tool count at all.
+	mutation := h.transcriptMutationMutex(rootAgentID)
+	mutation.Lock()
+	change := h.recordTurnActive(agentID, rootAgentID, active)
+	mutation.Unlock()
+	h.finishTurnActive(change)
+}
+
+// recordTurnActive changes only activity inputs. The caller holds the root mutation lock.
+func (h *OutputHandler) recordTurnActive(agentID, rootAgentID string, active bool) turnActiveChange {
 	root := agentID == rootAgentID
 	st := h.activityFor(agentID, rootAgentID)
 	st.mu.Lock()
@@ -1147,6 +1186,7 @@ func (h *OutputHandler) setTurnActive(agentID, rootAgentID string, active bool) 
 	if changed {
 		previous := h.scopeLocked(st, rootAgentID)
 		st.scope = &activityScope{publisher: previous.publisher}
+		st.turnSteerable = false
 	}
 	scope := st.scope
 	st.turnActive = active
@@ -1156,17 +1196,23 @@ func (h *OutputHandler) setTurnActive(agentID, rootAgentID string, active bool) 
 		st.settledToolUses = nil
 	}
 	st.mu.Unlock()
-	if !changed {
+	return turnActiveChange{activity: st, scope: scope, agentID: agentID, rootAgentID: rootAgentID,
+		root: root, active: active, changed: changed, stopped: stopped}
+}
+
+// finishTurnActive publishes after the mutation lock is released.
+func (h *OutputHandler) finishTurnActive(change turnActiveChange) {
+	if !change.changed {
 		// A REPEAT publish reports the state the entry already holds, so it
 		// answers no stop and must spend no mark: see stopRequestedLocked.
 		return
 	}
-	if stopped {
-		h.refreshActivityTree(rootAgentID, settleImmediate)
+	if change.stopped {
+		h.refreshActivityTree(change.rootAgentID, settleImmediate)
 	} else {
-		h.refreshActivity(agentID, rootAgentID)
+		h.refreshActivity(change.agentID, change.rootAgentID)
 	}
-	if active || !root {
+	if change.active || !change.root {
 		return
 	}
 	// Only the settle that THIS clear produces may spend the count. When the
@@ -1183,11 +1229,11 @@ func (h *OutputHandler) setTurnActive(agentID, rootAgentID string, active bool) 
 	// apart. That settle IS the one this clear produced, and it still waits in
 	// its window. Its count is therefore still unspent. Clearing here would make
 	// every ordinary turn end ring, zero-tool turns included.
-	st.mu.Lock()
-	if st.scope == scope && !st.settlePending {
-		st.settledToolUses = nil
+	change.activity.mu.Lock()
+	if change.activity.scope == change.scope && !change.activity.settlePending {
+		change.activity.settledToolUses = nil
 	}
-	st.mu.Unlock()
+	change.activity.mu.Unlock()
 }
 
 // acceptTurnPublish answers whether one publish of the turn flag is current,
@@ -1235,9 +1281,12 @@ func (h *OutputHandler) acceptTurnPublish(agentID, rootAgentID string, publisher
 // the sink it registers is the one the new process publishes through, and every
 // later publish from the old process is answering for a turn that died with it.
 func (h *OutputHandler) adoptTurnPublisher(rootAgentID string, publisher any) {
-	h.turnPublisher.Store(rootAgentID, publisher)
+	mutation := h.transcriptMutationMutex(rootAgentID)
+	mutation.Lock()
+	defer mutation.Unlock()
 	st := h.activityFor(rootAgentID, rootAgentID)
 	st.mu.Lock()
+	h.turnPublisher.Store(rootAgentID, publisher)
 	st.turnSeq = 0
 	st.mu.Unlock()
 }
@@ -1247,8 +1296,8 @@ func (h *OutputHandler) adoptTurnPublisher(rootAgentID string, publisher any) {
 // the input queue's dispatch guard follows -- so a caller that must not run into
 // a turn asks here rather than deriving an answer of its own.
 //
-// It answers for a ROOT. A child owns no turn of its own: its run IS its
-// registry row.
+// The clear-context dispatch calls this method for a root.
+// A child can still publish its own turn flag for input queue admission.
 func (h *OutputHandler) TurnActive(agentID string) bool {
 	st := h.activityFor(agentID, agentID)
 	st.mu.Lock()
@@ -1303,6 +1352,13 @@ type controlRequestInstance struct {
 // noteControlRequestsRemoved removes only the supplied request instances.
 // An empty list clears all pending requests during process teardown.
 func (h *OutputHandler) noteControlRequestsRemoved(agentID, rootAgentID string, requests ...controlRequestInstance) {
+	if h.recordControlRequestsRemoved(agentID, rootAgentID, requests...) {
+		h.refreshActivity(agentID, rootAgentID)
+	}
+}
+
+// recordControlRequestsRemoved changes pending requests without external reads or publication.
+func (h *OutputHandler) recordControlRequestsRemoved(agentID, rootAgentID string, requests ...controlRequestInstance) bool {
 	st := h.activityFor(agentID, rootAgentID)
 	st.mu.Lock()
 	changed := false
@@ -1318,10 +1374,7 @@ func (h *OutputHandler) noteControlRequestsRemoved(agentID, rootAgentID string, 
 		}
 	}
 	st.mu.Unlock()
-	if !changed {
-		return
-	}
-	h.refreshActivity(agentID, rootAgentID)
+	return changed
 }
 
 // NoteAgentProcessExited forces the whole tree idle when the feeding process
@@ -1376,9 +1429,12 @@ func (h *OutputHandler) resetAgentActivity(rootAgentID string) {
 	if rootAgentID == "" {
 		return
 	}
+	mutation := h.transcriptMutationMutex(rootAgentID)
+	mutation.Lock()
 	st := h.activityFor(rootAgentID, rootAgentID)
 	st.mu.Lock()
 	st.turnActive = false
+	st.turnSteerable = false
 	st.pendingControl = nil
 	// A process boundary is not a completed turn. Drop any unspent count so the
 	// settle it produces alerts unconditionally, the way an agent going INACTIVE
@@ -1389,6 +1445,7 @@ func (h *OutputHandler) resetAgentActivity(rootAgentID string) {
 	publisher, _ := h.turnPublisher.Load(rootAgentID)
 	st.scope = &activityScope{publisher: publisher}
 	st.mu.Unlock()
+	mutation.Unlock()
 	// The field writes above run whatever the latch says, because
 	// AgentActivitySnapshot reads them and a process boundary must leave the
 	// entry truthful. Only the deferred refresh is refused: see publishStopMark.

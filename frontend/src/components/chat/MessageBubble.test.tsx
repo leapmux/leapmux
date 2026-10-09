@@ -1,5 +1,6 @@
-import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
+import { cleanup, fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import * as workerRpc from '~/api/workerRpc'
 import { codeCopyHostClass } from '~/components/chat/markdownEditor/markdownContent.css'
 import { MessageBubble } from '~/components/chat/MessageBubble'
 import { classifyAgentMessage } from '~/components/chat/messageClassifier'
@@ -139,6 +140,72 @@ async function copyRawJson(): Promise<Record<string, unknown>> {
   return JSON.parse(clipboardContent!)
 }
 
+interface ControlledCopyCallbacks {
+  runIdle: () => number
+  deliverMutations: (target: Node) => number
+}
+
+/** Run real mutation handlers and idle callbacks when the test explicitly requests them. */
+async function withControlledCopyCallbacks(run: (callbacks: ControlledCopyCallbacks) => Promise<void>): Promise<void> {
+  const idleCallbacks = new Map<number, IdleRequestCallback>()
+  let nextIdleId = 0
+  vi.stubGlobal('requestIdleCallback', (callback: IdleRequestCallback) => {
+    const id = ++nextIdleId
+    idleCallbacks.set(id, callback)
+    return id
+  })
+  vi.stubGlobal('cancelIdleCallback', (id: number) => idleCallbacks.delete(id))
+  const NativeMutationObserver = globalThis.MutationObserver
+  const observers: ControlledMutationObserver[] = []
+  class ControlledMutationObserver extends NativeMutationObserver {
+    readonly targets = new Set<Node>()
+    readonly records: MutationRecord[]
+    readonly callback: MutationCallback
+
+    constructor(callback: MutationCallback) {
+      const records: MutationRecord[] = []
+      super(batch => records.push(...batch))
+      this.records = records
+      this.callback = callback
+      observers.push(this)
+    }
+
+    override observe(target: Node, options?: MutationObserverInit): void {
+      this.targets.add(target)
+      super.observe(target, options)
+    }
+  }
+  vi.stubGlobal('MutationObserver', ControlledMutationObserver)
+  try {
+    await run({
+      runIdle: () => {
+        const pending = [...idleCallbacks.values()]
+        idleCallbacks.clear()
+        for (const callback of pending)
+          callback({ didTimeout: false, timeRemaining: () => 50 })
+        return pending.length
+      },
+      deliverMutations: (target) => {
+        let delivered = 0
+        for (const observer of observers) {
+          if (!observer.targets.has(target))
+            continue
+          const records = [...observer.records.splice(0), ...observer.takeRecords()]
+          if (records.length === 0)
+            continue
+          delivered += records.length
+          observer.callback(records, observer)
+        }
+        return delivered
+      },
+    })
+  }
+  finally {
+    cleanup()
+    vi.unstubAllGlobals()
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Helper: build AskUserQuestion thread messages
 // ---------------------------------------------------------------------------
@@ -205,9 +272,9 @@ describe('askUserQuestion thread rendering', () => {
     ))
 
     const bubble = screen.getByTestId('message-content')
-    // The row leads with the FIRST question's header; the body lists them all.
+    // The row starts with the first question's header. The body includes both questions.
     expect(bubble).toHaveTextContent('Auth')
-    expect(bubble).toHaveTextContent('Auth')
+    expect(bubble).toHaveTextContent('Question about Auth?')
     expect(bubble).toHaveTextContent('Database')
   })
 })
@@ -238,10 +305,9 @@ describe('result_divider dispatch', () => {
   })
 
   it('marks a result-divider error <pre> (non-markdown) so its copy button positions top-right', async () => {
-    // The error detail renders in a bare <pre class={resultErrorDetail}> OUTSIDE
-    // `.markdownContent`. injectCopyButtons still adds a copy button to it; the fix is the
-    // `code-copy-host` marker, which carries the absolute top-right positioning + relative
-    // anchor so the button no longer falls inline at the end of the error text.
+    // The result error uses a pre element outside markdownContent. The code-copy-host class
+    // positions its injected Copy button at the top right.
+
     const msg = makeMsg({
       source: MessageSource.AGENT,
       agentProvider: AgentProvider.CLAUDE_CODE,
@@ -274,15 +340,14 @@ describe('result_divider dispatch', () => {
 })
 
 // ---------------------------------------------------------------------------
-// unsupported provider (loud-bug surface)
+// Unsupported provider display
 // ---------------------------------------------------------------------------
 
 describe('unsupported_provider rendering', () => {
   it('surfaces a loud error (not a guessed Claude render) for an UNSPECIFIED-provider message', () => {
-    // classifyMessage no longer guesses Claude for an unspecified/unregistered
-    // provider: the message is classified unsupported_provider and shown as a
-    // visible error plus raw JSON, never silently rendered through Claude's
-    // renderers. So a `result` envelope here must NOT become a turn-end divider.
+    // An unknown provider displays the unsupported-provider error and Raw JSON. A result-shaped
+    // payload must not become a Claude turn divider.
+
     const msg = makeMsg({
       source: MessageSource.AGENT,
       agentProvider: AgentProvider.UNSPECIFIED,
@@ -296,15 +361,16 @@ describe('unsupported_provider rendering', () => {
     ))
 
     const bubble = screen.getByTestId('message-content')
-    // The banner names the provider via agentProviderLabel ("Unknown" for the
-    // proto-0 default) alongside the numeric value, not just the bare number.
+    // agentProviderLabel supplies Unknown for the zero provider enum. The banner includes that
+    // label and the numeric value.
+
     expect(bubble).toHaveTextContent('Unsupported agent provider: Unknown (0)')
     expect(bubble).not.toHaveTextContent('Turn ended (1.1s)')
   })
 
   it('labels an UNSPECIFIED-source message as "unknown" rather than masquerading as agent', () => {
-    // sourceLabel no longer silently relabels a proto-0 source as 'agent'; an
-    // UNSPECIFIED row is a persistence bug and gets a visibly anomalous data-role.
+    // An UNSPECIFIED source indicates a persistence defect.
+    // sourceLabel must display an anomalous data-role instead of reporting it as agent.
     const msg = makeMsg({
       source: MessageSource.UNSPECIFIED,
       content: rawContent({ type: 'assistant', message: { content: [{ type: 'text', text: 'hi' }] } }),
@@ -380,9 +446,8 @@ describe('thinking message toolbar buttons', () => {
       </PreferencesProvider>
     ))
 
-    // One order for every left-to-right row -- a tool header and an agent
-    // message row used to disagree, which moved the same two buttons between
-    // rows depending on which row was above.
+    // Agent rows and tool rows share one left-to-right action order.
+
     const toolbar = screen.getByTestId('message-toolbar')
     const ids = [...toolbar.querySelectorAll('[data-testid]')].map(el => el.getAttribute('data-testid'))
     expect(ids).toEqual(['message-copy-json', 'message-copy-markdown', 'message-quote'])
@@ -394,9 +459,9 @@ describe('thinking message toolbar buttons', () => {
   })
 
   it('keeps the mirrored order on a user row: Quote first, then the timestamp', () => {
-    // A user bubble is right-aligned and its toolbar is laid out right-to-left
-    // beside it, so Quote leads in the DOM to land nearest the bubble. The agent
-    // rows' order change must NOT reach this row.
+    // A user row reverses its toolbar order. Quote stays closest to its bubble. Preserve that
+    // order independently of the agent row.
+
     const msg = makeMsg({
       source: MessageSource.USER,
       content: rawContent({ content: 'ping' }),
@@ -429,8 +494,9 @@ describe('thinking message toolbar buttons', () => {
       return cls
     }
 
-    // The band's own strip -- background, borders, full bleed -- belongs to the
-    // ROW, so the element inside it carries no bubble chrome at all.
+    // The row owns the band's background and borders. Its content element carries no bubble
+    // decoration.
+
     const thought = bandContent({ type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'hmm' }] } })
     const text = bandContent({ type: 'assistant', message: { content: [{ type: 'text', text: 'hello' }] } })
     expect(text).toContain(chatStyles.bandMessage)
@@ -598,6 +664,43 @@ describe('thinking message expansion preference', () => {
 // ---------------------------------------------------------------------------
 
 describe('messageBubble rawJson', () => {
+  it('copies consolidated content and received metadata without a history request', async () => {
+    const history = [
+      vi.spyOn(workerRpc, 'listAgentMessages').mockRejectedValue(new Error('Copy must not request message history.')),
+      vi.spyOn(workerRpc, 'getAgentMessage').mockRejectedValue(new Error('Copy must not request a stored message.')),
+      vi.spyOn(workerRpc, 'getAgentSpanMessages').mockRejectedValue(new Error('Copy must not request a stored span.')),
+    ]
+    const contentText = '{"type":"notification_thread","old_seqs":[5,8],"messages":[{"type":"settings_changed","changes":{"model":{"old":"A","new":"B"}}},{"type":"interrupted"}]}'
+    const supplementText = '{"provider":{"notification_entries":"provider-owned","native_literal":9007199254740993},"metadata":{"duration_ms":0,"opaque_records":[{"data_base64":"AP+A"}],"unrelated":{"key":"first","key":"second"}}}'
+    try {
+      const msg = makeMsg({
+        source: MessageSource.LEAPMUX,
+        content: new TextEncoder().encode(contentText),
+        supplementalContent: new TextEncoder().encode(supplementText),
+        supplementalRevision: 9007199254740993n,
+      })
+      render(() => <PreferencesProvider><MessageBubble message={msg} /></PreferencesProvider>)
+      expect(screen.getByTestId('message-content')).toHaveTextContent('Model (A → B)')
+      expect(screen.getByTestId('message-content')).toHaveTextContent('Interrupted')
+      const envelope = await copyRawJson()
+      expect(envelope.content).toEqual(JSON.parse(contentText))
+      expect(envelope.supplemental_content).toEqual(JSON.parse(supplementText))
+      expect(envelope.supplemental_revision).toBe('9007199254740993')
+      expect(clipboardContent).toMatch(/"native_literal"\s*:\s*9007199254740993(?=[,\s}])/)
+      expect(clipboardContent).toContain('provider-owned')
+      expect(clipboardContent).toMatch(/"data_base64"\s*:\s*"AP\+A"/)
+      expect(clipboardContent?.match(/"key"\s*:/g)).toHaveLength(2)
+      expect(clipboardContent).toMatch(/"key"\s*:\s*"first"/)
+      expect(clipboardContent).toMatch(/"key"\s*:\s*"second"/)
+      for (const request of history)
+        expect(request).not.toHaveBeenCalled()
+    }
+    finally {
+      for (const request of history)
+        request.mockRestore()
+    }
+  })
+
   it('includes content as object for non-LEAPMUX messages', async () => {
     const innerMsg = {
       type: 'assistant',
@@ -645,11 +748,9 @@ describe('messageBubble rawJson', () => {
   })
 
   it('renders the raw JSON block without crashing when span_lines is malformed', async () => {
-    // span_lines is backend-generated and normally valid JSON, but this envelope
-    // also backs the raw-JSON debug surface (hidden / unsupported_provider rows),
-    // whose whole purpose is to show the bytes when something is wrong. A corrupt
-    // span_lines must degrade to its raw string, not throw into the ErrorBoundary
-    // and hide the JSON. A `hidden` system-init message renders that block.
+    // The backend normally supplies valid span_lines JSON. The debug view must still show a
+    // corrupt value without a render error. A hidden system-init row exercises that view.
+
     const msg = makeMsg({
       source: MessageSource.AGENT,
       content: rawContent({ type: 'system', subtype: 'init', cwd: '/repo' }),
@@ -663,7 +764,7 @@ describe('messageBubble rawJson', () => {
     ))
 
     const content = screen.getByTestId('message-content')
-    // The raw-JSON block rendered (as token spans), not the ErrorBoundary's failure fallback.
+    // Require the Raw JSON token spans. The ErrorBoundary failure view must remain absent.
     expect(content.querySelector(`.${chatStyles.hiddenMessageJson}`)).toBeInTheDocument()
     expect(content).not.toHaveTextContent('Failed to render message')
 
@@ -673,49 +774,56 @@ describe('messageBubble rawJson', () => {
   })
 
   it('uses toolbar copy for hidden raw JSON instead of injecting an inline pre copy button', async () => {
-    const msg = makeMsg({
-      source: MessageSource.AGENT,
-      content: rawContent({ type: 'system', subtype: 'init', cwd: '/repo' }),
+    await withControlledCopyCallbacks(async (callbacks) => {
+      const msg = makeMsg({
+        source: MessageSource.AGENT,
+        content: rawContent({ type: 'system', subtype: 'init', cwd: '/repo' }),
+      })
+
+      render(() => (
+        <PreferencesProvider>
+          <MessageBubble message={msg} />
+        </PreferencesProvider>
+      ))
+
+      const content = screen.getByTestId('message-content')
+      expect(content.querySelector(`.${chatStyles.hiddenMessageJson}`)).toBeInTheDocument()
+
+      const toolbar = screen.getByTestId('message-toolbar')
+      expect(toolbar.querySelector('[data-testid="message-copy-json"]')).toBeInTheDocument()
+
+      // Raw JSON uses token spans. Run both injection paths before checking that no code button appears.
+      expect(callbacks.runIdle()).toBeGreaterThan(0)
+      content.appendChild(document.createTextNode(''))
+      expect(callbacks.deliverMutations(content)).toBeGreaterThan(0)
+      expect(callbacks.runIdle()).toBeGreaterThan(0)
+      expect(content.querySelector('.copy-code-button')).not.toBeInTheDocument()
+      expect(content.querySelector(`.${codeCopyHostClass}`)).not.toBeInTheDocument()
     })
-
-    render(() => (
-      <PreferencesProvider>
-        <MessageBubble message={msg} />
-      </PreferencesProvider>
-    ))
-
-    const content = screen.getByTestId('message-content')
-    expect(content.querySelector(`.${chatStyles.hiddenMessageJson}`)).toBeInTheDocument()
-
-    const toolbar = screen.getByTestId('message-toolbar')
-    expect(toolbar.querySelector('[data-testid="message-copy-json"]')).toBeInTheDocument()
-
-    // The raw JSON renders as token <span>s, not a <pre>, so the copy-button injector
-    // (which only targets <pre> elements) never augments it. Injection is deferred to
-    // idle, so advance PAST idle to prove no inline copy button or positioning marker
-    // appears on the JSON block.
-    await new Promise(resolve => setTimeout(resolve, 20))
-    expect(content.querySelector('.copy-code-button')).not.toBeInTheDocument()
-    expect(content.querySelector(`.${codeCopyHostClass}`)).not.toBeInTheDocument()
   })
 
   it('does not inject a partial-copy button into a large plain-text Markdown display', async () => {
-    const msg = makeMsg({
-      source: MessageSource.AGENT,
-      content: rawContent({ type: 'assistant', message: { content: [{ type: 'text', text: `MARKDOWN_HEAD${'x'.repeat(100_000)}MARKDOWN_TAIL` }] } }),
+    await withControlledCopyCallbacks(async (callbacks) => {
+      const msg = makeMsg({
+        source: MessageSource.AGENT,
+        content: rawContent({ type: 'assistant', message: { content: [{ type: 'text', text: `MARKDOWN_HEAD${'x'.repeat(100_000)}MARKDOWN_TAIL` }] } }),
+      })
+
+      render(() => (
+        <PreferencesProvider>
+          <MessageBubble message={msg} />
+        </PreferencesProvider>
+      ))
+
+      const content = screen.getByTestId('message-content')
+      expect(content.querySelector('pre[data-large-text-display]')).toBeInTheDocument()
+      expect(callbacks.runIdle()).toBeGreaterThan(0)
+      content.appendChild(document.createTextNode(''))
+      expect(callbacks.deliverMutations(content)).toBeGreaterThan(0)
+      expect(callbacks.runIdle()).toBeGreaterThan(0)
+      expect(content.querySelector('.copy-code-button')).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Copy Markdown', hidden: true })).toBeInTheDocument()
     })
-
-    render(() => (
-      <PreferencesProvider>
-        <MessageBubble message={msg} />
-      </PreferencesProvider>
-    ))
-
-    const content = screen.getByTestId('message-content')
-    expect(content.querySelector('pre[data-large-text-display]')).toBeInTheDocument()
-    await new Promise(resolve => setTimeout(resolve, 20))
-    expect(content.querySelector('.copy-code-button')).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Copy Markdown', hidden: true })).toBeInTheDocument()
   })
 
   it('re-injects the copy button after the content re-renders (async highlight swap)', async () => {
@@ -739,8 +847,9 @@ describe('messageBubble rawJson', () => {
       return p!
     })
 
-    // Simulate the async highlight swap: the worker's highlighted HTML replaces the
-    // placeholder's innerHTML, wiping the injected button. The observer must re-inject it.
+    // Replace the code block with highlighted HTML. The actual mutation observer must restore the
+    // injected Copy button.
+
     const mdBody = pre.parentElement!
     mdBody.innerHTML = '<pre class="shiki"><code class="language-js">const x = 1</code></pre>'
     expect(content.querySelector('.copy-code-button')).not.toBeInTheDocument()
@@ -753,31 +862,34 @@ describe('messageBubble rawJson', () => {
   })
 
   it('does not re-inject the copy button when it is clicked (so its "Copied" state survives)', async () => {
-    const msg = makeMsg({
-      source: MessageSource.AGENT,
-      content: rawContent({ type: 'assistant', message: { content: [{ type: 'text', text: '```js\nconst x = 1\n```' }] } }),
+    await withControlledCopyCallbacks(async (callbacks) => {
+      const msg = makeMsg({
+        source: MessageSource.AGENT,
+        content: rawContent({ type: 'assistant', message: { content: [{ type: 'text', text: '```js\nconst x = 1\n```' }] } }),
+      })
+
+      render(() => (
+        <PreferencesProvider>
+          <MessageBubble message={msg} />
+        </PreferencesProvider>
+      ))
+
+      const content = screen.getByTestId('message-content')
+      expect(callbacks.runIdle()).toBeGreaterThan(0)
+      const btn = await waitFor(() => {
+        const b = content.querySelector('.copy-code-button')
+        expect(b).toBeInTheDocument()
+        return b!
+      })
+
+      // Deliver the actual Copy-to-Check mutation. The handler must preserve the button and its feedback.
+      fireEvent.click(btn)
+      await waitFor(() => expect(btn).toHaveAccessibleName('Copied'))
+      expect(callbacks.deliverMutations(content)).toBeGreaterThan(0)
+      expect(callbacks.runIdle()).toBe(0)
+      expect(content.querySelector('.copy-code-button')).toBe(btn)
+      expect(btn).toHaveAccessibleName('Copied')
     })
-
-    render(() => (
-      <PreferencesProvider>
-        <MessageBubble message={msg} />
-      </PreferencesProvider>
-    ))
-
-    const content = screen.getByTestId('message-content')
-    const btn = await waitFor(() => {
-      const b = content.querySelector('.copy-code-button')
-      expect(b).toBeInTheDocument()
-      return b!
-    })
-
-    // Clicking copy flips the IconButton's icon (Copy -> Check): a subtree mutation under
-    // contentRef. The observer must IGNORE button-internal mutations -- re-injecting would
-    // dispose this button mid-click and wipe its transient "Copied" checkmark.
-    fireEvent.click(btn)
-    await new Promise(resolve => setTimeout(resolve, 20)) // past the idle debounce
-    // SAME node still in place -> no re-injection fired for the button's own mutation.
-    expect(content.querySelector('.copy-code-button')).toBe(btn)
   })
 })
 
@@ -798,16 +910,14 @@ describe('notification rendering', () => {
 
     const bubble = screen.getByTestId('message-content')
     expect(bubble).toHaveTextContent('Model')
-    // The label rendered, not the raw payload.
+    // Require the notification label instead of the raw payload.
     expect(bubble).not.toHaveTextContent('settings_changed')
   })
 
   it('falls back to the last-resort card when a notification produces no renderable entries', () => {
-    // settings_changed with no actual changes yields zero thread entries. Rather
-    // than render an empty bubble, MessageBubble surfaces the row through the
-    // last-resort renderer so the message never silently vanishes. That card states
-    // the absence and keeps the frame in a body the expand control opens; it used to
-    // print the frame itself, which is the raw-JSON row the shared standard forbids.
+    // An empty settings change produces no notification entry. The fallback card must preserve
+    // that row and expose its frame through Expand.
+
     const parent = { type: 'settings_changed', changes: {} }
     const msg = makeMsg({ source: MessageSource.AGENT, content: rawContent(parent) })
 
@@ -823,7 +933,7 @@ describe('notification rendering', () => {
   })
 
   it('renders a consolidated notification thread, then falls back only when empty', () => {
-    // A multi-message wrapper renders every recognized entry...
+    // A wrapper with several messages renders every recognized entry.
     const msg = makeMsg({
       source: MessageSource.LEAPMUX,
       content: wrapContent([{ type: 'interrupted' }, { type: 'context_cleared' }]),
@@ -902,7 +1012,7 @@ describe('todoWrite collapse/expand', () => {
     ))
 
     const bubble = screen.getByTestId('message-content')
-    // Tasks are always visible (alwaysVisible=true)
+    // alwaysVisible keeps the tasks visible.
     expect(bubble).toHaveTextContent('Task A')
     expect(bubble).toHaveTextContent('Task B')
   })
@@ -946,8 +1056,18 @@ describe('todoWrite collapse/expand', () => {
       </PreferencesProvider>
     ))
 
-    // Expand button should not exist since alwaysVisible hides it
+    // alwaysVisible hides the Expand button.
     expect(screen.queryByRole('button', { name: 'Expand 1 tool result' })).not.toBeInTheDocument()
+    expect(screen.queryAllByRole('button', { name: /^(?:Expand|Collapse)(?:\s|$)/u, hidden: true })).toHaveLength(0)
+    cleanup()
+    const control = makeMsg({
+      agentProvider: AgentProvider.CODEX,
+      source: MessageSource.AGENT,
+      spanId: 'expand-control',
+      content: rawContent({ item: { id: 'expand-control', type: 'mcpToolCall', status: 'completed', server: 'docs', tool: 'lookup', arguments: {}, result: { content: [{ type: 'text', text: Array.from({ length: 8 }, (_, index) => `Line ${index}`).join('\n') }] } } }),
+    })
+    render(() => <PreferencesProvider><MessageBubble message={control} /></PreferencesProvider>)
+    expect(screen.getByRole('button', { name: /^Expand(?:\s|$)/u, hidden: true })).toBeInTheDocument()
   })
 
   it('body has left border (always visible)', () => {
@@ -965,7 +1085,7 @@ describe('todoWrite collapse/expand', () => {
       </PreferencesProvider>
     ))
 
-    // Body should have left border without needing to expand
+    // The body displays its left border before expansion.
     const bodyWrapper = container.querySelector(`.${toolBodyContent}`)
     expect(bodyWrapper).toBeInTheDocument()
   })
@@ -1081,7 +1201,7 @@ describe('header-only renderers', () => {
     ))
 
     const bubble = screen.getByTestId('message-content')
-    // The kind's own word: the mode the session takes, under the kind's label.
+    // Display the session mode with the row kind's own label.
     expect(bubble).toHaveTextContent('plan')
   })
 
@@ -1239,7 +1359,7 @@ describe('agent stats summary', () => {
     const bubble = screen.getByTestId('message-content')
     expect(bubble).toHaveTextContent('Search files')
     expect(bubble).toHaveTextContent('Explore')
-    // Without child result, stats and "Complete" should not appear
+    // An absent child result supplies no statistics or Complete label.
     expect(bubble).not.toHaveTextContent('Complete')
     expect(bubble).not.toHaveTextContent('tokens')
     expect(bubble).not.toHaveTextContent('tool uses')
@@ -1275,9 +1395,8 @@ describe('agent stats summary', () => {
 
 describe('plan execution bubble', () => {
   /**
-   * The shape the worker persists when the user approves a plan: a USER-source row
-   * carrying the plan text under a `planExecution` flag. See
-   * `initiatePlanExecution` in backend/internal/worker/service/agent.go.
+   * Plan approval enqueues PLAN_EXECUTION input. inputqueue.transcriptContent writes its
+   * USER-source content with planExecution set to true.
    */
   function planExecutionMsg(id = 'plan-1') {
     return makeMsg({
@@ -1298,9 +1417,9 @@ describe('plan execution bubble', () => {
   }
 
   it('wears its own dashed card and runs it to the right panel edge', () => {
-    // The regression: the flush-right marker was chosen by testing the bubble class
-    // against `userMessage`, so this card -- the only other one a mirrored row can
-    // hold -- stopped a whole gutter short inside a row already widened for it.
+    // The plan card uses a mirrored user row also. Its flush-right class must reach the panel edge
+    // without another gutter.
+
     const { view } = renderPlanExecution()
     const bubble = view.getByTestId('message-bubble')
     expect(bubble).toHaveClass(chatStyles.planExecutionMessage)
@@ -1316,8 +1435,8 @@ describe('plan execution bubble', () => {
   })
 
   it('reaches the edge exactly as a typed user message does', () => {
-    // One rule governs both cards. Asserting the pair together is what would catch
-    // a change that moves one of them and leaves the other behind.
+    // Both cards use the same layout rule. Check both cards together.
+    // A change to only one card must fail these assertions.
     const { view } = renderPlanExecution('plan-3')
     const planBubble = view.getByTestId('message-bubble')
     const planFlushes = planBubble.classList.contains(chatStyles.bubbleFlushRight)
@@ -1418,9 +1537,16 @@ describe('edit/write tool_use rendering', () => {
       </PreferencesProvider>
     ))
 
-    // No diff view should be rendered for empty content without child result
+    // Empty content without a child result supplies no diff view.
     const diffView = container.querySelector('[data-diff-view]')
     expect(diffView).not.toBeInTheDocument()
+    expect(container.querySelector('[data-file-diff]')).not.toBeInTheDocument()
+    expect(screen.getByTestId('message-content')).toHaveTextContent('new-file.ts')
+    expect(screen.getByTestId('message-content')).not.toHaveTextContent('Failed to render message')
+    cleanup()
+    const nonempty = makeMsg({ source: MessageSource.AGENT, content: rawContent(writeToolUse('export const control = true')) })
+    const positive = render(() => <PreferencesProvider><MessageBubble message={nonempty} /></PreferencesProvider>)
+    expect(positive.container.querySelector('[data-file-diff]')).toBeInTheDocument()
   })
 
   describe('row context menu', () => {
@@ -1464,12 +1590,12 @@ describe('edit/write tool_use rendering', () => {
       const menu = screen.getByTestId('message-context-menu')
       const menuIds = [...menu.querySelectorAll('[data-testid]')]
         .map(el => el.getAttribute('data-testid')!.replace('message-menu-', ''))
-        // The info block is the menu's form of the toolbar's leading timestamp,
-        // which is a plain element there and carries no test id; asserted below.
+        // The menu's information block supplies the toolbar's timestamp.
+        // The toolbar uses a plain element without a test ID. Check its text below.
         .filter(id => id !== 'info')
 
-      // The menu is the same set, so a touch user reaches every action the mouse
-      // user reaches on hover. Order is each surface's own concern.
+      // The touch menu and mouse toolbar must expose the same actions.
+      // Each view controls its own action order.
       expect([...menuIds].sort()).toEqual([...toolbarIds].sort())
 
       // Both surfaces carry the send time.
@@ -1527,9 +1653,9 @@ describe('edit/write tool_use rendering', () => {
 // ---------------------------------------------------------------------------
 
 describe('tool row toolbar labels', () => {
-  // A command that printed nothing leaves the COMMAND as the only thing Copy can
-  // write, and the kind words that button "Copy Command". The bubble's outer toolbar
-  // dropped every word a kind states, so this row offered the command under "Copy".
+  // An empty command output leaves the command as the copyable text. The outer toolbar must
+  // display Copy Command.
+
   it('states the kind\'s own words on the outer toolbar Copy button', () => {
     const msg = makeMsg({
       agentProvider: AgentProvider.CODEX,
@@ -1554,7 +1680,7 @@ describe('tool row toolbar labels', () => {
 // ---------------------------------------------------------------------------
 
 describe('tool row quote', () => {
-  /** Render one bubble, click its Quote button, and answer what it wrote. */
+  /** Return the text that Quote supplies after the test renders and clicks one bubble. */
   function quoteOf(msg: ReturnType<typeof makeMsg>): string[] {
     const quoted: string[] = []
     render(() => (
@@ -1566,8 +1692,9 @@ describe('tool row quote', () => {
     return quoted
   }
 
-  // A running TodoWrite draws its whole checklist with no result behind it. The row
-  // carried NO button at all: `resultMeta` never ran, so nothing was copyable.
+  // A running TodoWrite row already supplies a checklist. Offer Copy and Quote before its result
+  // arrives.
+
   it('offers Quote and Copy on a running to-do row', () => {
     const msg = makeMsg({
       source: MessageSource.AGENT,
@@ -1611,9 +1738,9 @@ describe('tool row quote', () => {
     expect(quoteOf(msg)).toEqual(['> src/a.ts:1:hit\n> src/b.ts:2:hit\n\n'])
   })
 
-  // The scroll rail's `previewText` answers a file-change row with the file PATHS.
-  // Quoting a list of paths into the composer states nothing about the change, so
-  // Quote must read `copyableContent` and never that snippet.
+  // The preview supplies file paths. Quote must supply the diff from copyableContent instead.
+
+  // The preview supplies file paths. Quote must supply the diff from copyableContent instead.
   it('quotes a file-change row with the diff rather than the file path', () => {
     const msg = makeMsg({
       source: MessageSource.AGENT,

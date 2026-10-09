@@ -23,5 +23,5 @@ codexTest('shows and restores the actual running child row and its completed sta
   finally {
     await child.finish()
   }
-  await expect(child.row).toHaveAttribute('data-status', 'completed')
+  await expect(child.row).toHaveAttribute('data-status', 'succeeded')
 })

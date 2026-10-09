@@ -22,14 +22,15 @@ func TestStatusOrdinalsMatchTheProtoEnum(t *testing.T) {
 	t.Parallel()
 
 	for status, want := range map[Status]leapmuxv1.BackgroundTaskStatus{
-		StatusUnspecified: leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_UNSPECIFIED,
-		StatusPending:     leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_PENDING,
-		StatusRunning:     leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_RUNNING,
-		StatusPaused:      leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_PAUSED,
-		StatusCompleted:   leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_COMPLETED,
-		StatusFailed:      leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_FAILED,
-		StatusStopped:     leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_STOPPED,
-		StatusInterrupted: leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_INTERRUPTED,
+		StatusUnspecified:             leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_UNSPECIFIED,
+		StatusPending:                 leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_PENDING,
+		StatusRunning:                 leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_RUNNING,
+		StatusPaused:                  leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_PAUSED,
+		StatusSucceeded:               leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_SUCCEEDED,
+		StatusFailed:                  leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_FAILED,
+		StatusStopped:                 leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_STOPPED,
+		StatusInterrupted:             leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_INTERRUPTED,
+		StatusEndedWithUnknownOutcome: leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_ENDED_WITH_UNKNOWN_OUTCOME,
 	} {
 		assert.Equal(t, want, leapmuxv1.BackgroundTaskStatus(status), "status %s", status)
 		assert.Equal(t, status, Status(want), "status %s, back again", status)
@@ -51,7 +52,7 @@ func TestKindOrdinalsMatchTheProtoEnum(t *testing.T) {
 }
 
 // The queries split open from final with `status >= min_final_status` rather
-// than by listing the four final words, which holds only while the final
+// than by listing final status words, which holds only while the final
 // statuses occupy the TOP of the ordinal range. Nothing in proto enforces that,
 // so this is the check that does -- over every value the enum declares, not
 // only the ones this package names.
@@ -75,7 +76,7 @@ func TestBackgroundTaskFinalStatusesAreTheTopOfTheRange(t *testing.T) {
 
 func TestBackgroundTaskWorkingStatuses(t *testing.T) {
 	t.Parallel()
-	for _, status := range []Status{StatusUnspecified, StatusPending, StatusRunning, StatusPaused, StatusCompleted, StatusFailed, StatusStopped, StatusInterrupted} {
+	for _, status := range []Status{StatusUnspecified, StatusPending, StatusRunning, StatusPaused, StatusSucceeded, StatusFailed, StatusStopped, StatusInterrupted, StatusEndedWithUnknownOutcome} {
 		want := status == StatusPending || status == StatusRunning
 		assert.Equal(t, want, status.IsWorking(), "status %s", status)
 	}
@@ -94,17 +95,18 @@ func TestKindBucketsAreTheKindOrdinals(t *testing.T) {
 
 // StatusWire supplies the child-report status vocabulary that the browser reads.
 // These literal expectations verify the cross-language agreement.
-func TestStatusWireNamesTheTokensTheBrowserReads(t *testing.T) {
+func TestStatusWireReturnsTheTokensTheBrowserReads(t *testing.T) {
 	t.Parallel()
 
 	for status, want := range map[Status]string{
-		StatusPending:     "pending",
-		StatusRunning:     "running",
-		StatusPaused:      "paused",
-		StatusCompleted:   "completed",
-		StatusFailed:      "failed",
-		StatusStopped:     "stopped",
-		StatusInterrupted: "interrupted",
+		StatusPending:                 "pending",
+		StatusRunning:                 "running",
+		StatusPaused:                  "paused",
+		StatusSucceeded:               "succeeded",
+		StatusFailed:                  "failed",
+		StatusStopped:                 "stopped",
+		StatusInterrupted:             "interrupted",
+		StatusEndedWithUnknownOutcome: "ended_with_unknown_outcome",
 	} {
 		assert.Equal(t, want, StatusWire(status), "status %s", status)
 	}
@@ -118,7 +120,7 @@ func TestStatusWireLeavesUnspecifiedBlank(t *testing.T) {
 }
 
 func TestStatusIsFinished(t *testing.T) {
-	finished := []Status{StatusCompleted, StatusFailed, StatusStopped, StatusInterrupted}
+	finished := []Status{StatusSucceeded, StatusFailed, StatusStopped, StatusInterrupted, StatusEndedWithUnknownOutcome}
 	active := []Status{StatusPending, StatusRunning}
 	for _, s := range finished {
 		assert.True(t, s.IsFinished(), "%d should be final", s)
@@ -126,6 +128,18 @@ func TestStatusIsFinished(t *testing.T) {
 	for _, s := range active {
 		assert.False(t, s.IsFinished(), "%d should NOT be final", s)
 	}
+}
+
+func TestFinishedWithoutOutcomeIsFinalAndInactive(t *testing.T) {
+	t.Parallel()
+	status := StatusEndedWithUnknownOutcome
+	assert.True(t, status.IsFinished())
+	assert.False(t, status.IsWorking())
+	assert.Equal(t, "ended_with_unknown_outcome", StatusWire(status))
+	assert.NotEqual(t, StatusSucceeded, status)
+	assert.NotEqual(t, StatusFailed, status)
+	assert.NotEqual(t, StatusStopped, status)
+	assert.NotEqual(t, StatusInterrupted, status)
 }
 
 // NormalizeRowKey is total: it answers every refusal ValidateRowKey states, so
@@ -226,10 +240,10 @@ func TestItemToProto(t *testing.T) {
 	assert.Empty(t, p.GetEndedAt(), "zero EndedAt renders as empty")
 
 	// Shell kind + final status.
-	shell := Item{RowKey: "sh-1", Kind: KindShell, Status: StatusCompleted, EndedAt: now}
+	shell := Item{RowKey: "sh-1", Kind: KindShell, Status: StatusSucceeded, EndedAt: now}
 	sp := shell.ToProto()
 	assert.Equal(t, leapmuxv1.BackgroundTaskKind_BACKGROUND_TASK_KIND_SHELL, sp.GetKind())
-	assert.Equal(t, leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_COMPLETED, sp.GetStatus())
+	assert.Equal(t, leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_SUCCEEDED, sp.GetStatus())
 	assert.NotEmpty(t, sp.GetEndedAt())
 }
 
@@ -738,4 +752,24 @@ func TestUpsertCleanKeepsALineBreakInALabel(t *testing.T) {
 	// reorder what the sidebar shows.
 	reordered := Upsert{ActiveForm: "safe\u202ereversed\x00"}.Clean()
 	assert.Equal(t, "safereversed", reordered.ActiveForm)
+}
+
+func TestBackgroundTaskWireNamesDistinguishSuccessFromUnknownOutcome(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name    string
+		status  Status
+		ordinal int32
+		token   string
+	}{
+		{name: "success", status: StatusSucceeded, ordinal: 4, token: "succeeded"},
+		{name: "unknown outcome", status: StatusEndedWithUnknownOutcome, ordinal: 8, token: "ended_with_unknown_outcome"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			assert.Equal(t, test.ordinal, int32(test.status))
+			assert.True(t, test.status.IsFinished())
+			assert.False(t, test.status.IsWorking())
+			assert.Equal(t, test.token, StatusWire(test.status))
+		})
+	}
 }

@@ -1,18 +1,9 @@
-// Package streamevents holds the cursor + subscription primitives the
-// CLI uses to consume worker `WatchEvents` streams. It is shared
-// between `agent messages --follow` (single-tab consumer) and `events
-// --include agent,terminal` (multi-worker fan-out consumer) so the
-// resume-on-reconnect logic only lives in one place.
-//
-// `WatchEvents` differs from `WatchWorkerPrivateEvents`: its
-// request pins a closed list of `(agent_id, replay, cursor_seq)` and
-// `(terminal_id, after_offset)` entries, and the worker only delivers
-// events for those specific tabs. New tabs that appear after the
-// subscription is live are silently dropped. So any caller that
-// outlives the snapshot it subscribed under has to cancel and
-// re-subscribe with an updated entry list — and to be lossless across
-// that gap, the new request must carry the per-tab cursor forward.
-// That cursor map is what `AgentCursor` and `TerminalCursor` own.
+// Package streamevents supplies cursors and subscriptions for worker WatchEvents streams.
+// The agent messages and events commands share its resume logic.
+// Each request lists the exact agents and terminals that the caller wants.
+// Update replaces that interest on the existing stream.
+// An unchanged FULL agent keeps its replay identity and fixed replay cursor.
+// A fresh stream uses the current cursor and a new replay identity.
 package streamevents
 
 import (

@@ -238,7 +238,7 @@ func handlePiOutputObserved(a *Agent, line *providerkit.ParsedLine, observedAt t
 		// Each states that a summary failed and Pi waits before another attempt.
 		// The reader needs that explanation for the delay.
 		// They reached the `default` branch before, so each one drew a raw JSON row.
-		if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, line.Raw); err != nil {
+		if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: line.Raw}); err != nil {
 			slog.Error("pi persist notification", "agent_id", a.AgentID(), "type", line.Type, "error", err)
 		}
 	case contracts.PiEventThinkingLevelChanged:
@@ -1200,7 +1200,7 @@ func (a *Agent) handlePiExtensionUIRequest(raw []byte) {
 		// Persist the raw extension_ui_request envelope as AGENT. The
 		// frontend's Pi notification renderer derives level/message from
 		// `notifyType`/`message` on the raw payload — no synthesis needed.
-		if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw); err != nil {
+		if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw}); err != nil {
 			slog.Error("pi persist notify", "agent_id", a.AgentID(), "error", err)
 		}
 	// No browser code reads pi_status, pi_widget, pi_terminal_title or
@@ -1243,7 +1243,7 @@ func (a *Agent) handlePiExtensionUIRequest(raw []byte) {
 	default:
 		// Unknown extension UI method — record so the user can see it.
 		// Pi-emitted, so AGENT source.
-		if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw); err != nil {
+		if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw}); err != nil {
 			slog.Error("pi persist unknown extension_ui_request",
 				"agent_id", a.AgentID(), "method", head.Method, "error", err)
 		}

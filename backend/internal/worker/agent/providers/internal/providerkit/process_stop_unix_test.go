@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -103,6 +104,11 @@ type detachedLifetimeFixture struct {
 
 func startDetachedLifetimeFixture(t *testing.T, home string, stopSignal syscall.Signal) *detachedLifetimeFixture {
 	t.Helper()
+	return startDetachedLifetimeFixtureWithExitObserver(t, home, stopSignal, nil)
+}
+
+func startDetachedLifetimeFixtureWithExitObserver(t *testing.T, home string, stopSignal syscall.Signal, observer procutil.ProcessExitObserver) *detachedLifetimeFixture {
+	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = listener.Close() })
@@ -110,7 +116,7 @@ func startDetachedLifetimeFixture(t *testing.T, home string, stopSignal syscall.
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestHelperDetachedProcessLifetime$")
 	cmd.Env = append(os.Environ(), "HOME="+home, detachedLifetimeRole+"=relay", detachedLifetimeAddress+"="+listener.Addr().String())
 	procutil.DetachFromTerminal(cmd)
-	pipes, err := SetupProcessPipes(cmd, cancel)
+	pipes, err := SetupProcessPipesWithExitObserver(cmd, cancel, observer)
 	require.NoError(t, err)
 	stdout, stderr := pipes.Stdout(), pipes.Stderr()
 	process := NewProcess(agent.Options{AgentID: "detached-lifetime"}, ProcessLaunch{ProviderName: "kiro-fixture", ShutdownGrace: 0, PreambleDelimiter: "", PreambleMetaPrefix: "", StopSignal: stopSignal}, pipes, ctx, cancel)
@@ -179,6 +185,12 @@ func startDetachedLifetimeFixture(t *testing.T, home string, stopSignal syscall.
 		t.Fatal("the relay fixture did not report readiness")
 	}
 	return fixture
+}
+
+type fixtureExitObserver func(context.Context, procutil.ProcessIdentity, error) error
+
+func (observe fixtureExitObserver) ObserveExit(ctx context.Context, identity procutil.ProcessIdentity, nativeErr error) error {
+	return observe(ctx, identity, nativeErr)
 }
 
 func (f *detachedLifetimeFixture) requirePong(t *testing.T) {
@@ -250,11 +262,15 @@ func TestProcessStopEndsOnlyItsDetachedEngineAfterEOF(t *testing.T) {
 	second.requirePong(t)
 }
 
-// A stop signal ends the relay at once, and the relay never closes the engine's
-// stdin or waits for it. The engine leads a session of its own, so the signal
-// to the relay's group does not reach it, and after the relay exits nothing in
-// the tree points at it. Stop must capture the tree before it sends the signal,
-// so that the owner still ends the engine.
+// A stop signal ends the relay at once.
+// The relay never closes the engine's stdin.
+// The relay never waits for the engine.
+//
+// The engine owns a separate session.
+// The relay's group signal cannot reach it.
+// No tree link identifies the engine after the relay exits.
+// Stop must capture the tree before it sends the signal.
+// The owner then ends the engine.
 func TestProcessStopSignalEndsTheDetachedEngineThatItsRelayLeaves(t *testing.T) {
 	home := t.TempDir()
 	first := startDetachedLifetimeFixture(t, home, syscall.SIGTERM)
@@ -277,21 +293,20 @@ func TestProcessStopSignalEndsTheDetachedEngineThatItsRelayLeaves(t *testing.T) 
 
 func TestProcessStopWaitsForItsKilledDescendantCompletion(t *testing.T) {
 	home := t.TempDir()
-	first := startDetachedLifetimeFixture(t, home, syscall.SIGTERM)
-	second := startDetachedLifetimeFixture(t, home, 0)
-	first.requirePong(t)
-	second.requirePong(t)
 	entered, release := make(chan struct{}), make(chan struct{})
 	var releaseOnce sync.Once
 	var deadlines []time.Time
 	defer releaseOnce.Do(func() { close(release) })
-	first.process.owner.SetExitReceiptForTest(func(ctx context.Context, identity procutil.ProcessIdentity) error {
+	var target atomic.Pointer[procutil.ProcessIdentity]
+	observer := fixtureExitObserver(func(ctx context.Context, identity procutil.ProcessIdentity, nativeErr error) error {
+		assert.NoError(t, nativeErr)
 		deadline, present := ctx.Deadline()
 		if !present {
 			return errors.New("the process tree completion has no deadline")
 		}
 		deadlines = append(deadlines, deadline)
-		if identity != first.engine {
+		owned := target.Load()
+		if owned == nil || identity != *owned {
 			return nil
 		}
 		close(entered)
@@ -302,6 +317,12 @@ func TestProcessStopWaitsForItsKilledDescendantCompletion(t *testing.T) {
 			return ctx.Err()
 		}
 	})
+	first := startDetachedLifetimeFixtureWithExitObserver(t, home, syscall.SIGTERM, observer)
+	engine := first.engine
+	target.Store(&engine)
+	second := startDetachedLifetimeFixture(t, home, 0)
+	first.requirePong(t)
+	second.requirePong(t)
 	finished := make(chan struct{})
 	go func() { defer close(finished); first.process.Stop() }()
 	select {
@@ -331,15 +352,19 @@ func TestProcessStopWaitsForItsKilledDescendantCompletion(t *testing.T) {
 }
 
 func TestProcessWaitReportsCleanupOnceAndKeepsTheNativeExitCode(t *testing.T) {
-	fixture := startDetachedLifetimeFixture(t, t.TempDir(), 0)
-	require.NoError(t, fixture.process.owner.Capture(t.Context()))
 	cleanupErr := errors.New("the owned child completion failed")
-	fixture.process.owner.SetExitReceiptForTest(func(_ context.Context, identity procutil.ProcessIdentity) error {
-		if identity == fixture.engine {
+	var target atomic.Pointer[procutil.ProcessIdentity]
+	observer := fixtureExitObserver(func(_ context.Context, identity procutil.ProcessIdentity, nativeErr error) error {
+		assert.NoError(t, nativeErr)
+		if owned := target.Load(); owned != nil && identity == *owned {
 			return cleanupErr
 		}
 		return nil
 	})
+	fixture := startDetachedLifetimeFixtureWithExitObserver(t, t.TempDir(), 0, observer)
+	engine := fixture.engine
+	target.Store(&engine)
+	require.NoError(t, fixture.process.owner.Capture(t.Context()))
 	sent, err := fixture.engine.Kill()
 	require.NoError(t, err)
 	require.True(t, sent)
@@ -355,4 +380,17 @@ func TestProcessWaitReportsCleanupOnceAndKeepsTheNativeExitCode(t *testing.T) {
 	require.Equal(t, 1, strings.Count(err.Error(), cleanupErr.Error()))
 	require.EqualError(t, fixture.process.ProcessExitError(), "agent process exited with code 7")
 	require.Equal(t, agent.MessageCompletionError, fixture.process.ProcessExitCompletion())
+}
+
+func TestProcessPipesExitObserverRejectsAnAbsentCommand(t *testing.T) {
+	cancelled, observed := 0, 0
+	observer := fixtureExitObserver(func(context.Context, procutil.ProcessIdentity, error) error {
+		observed++
+		return nil
+	})
+	pipes, err := SetupProcessPipesWithExitObserver(nil, func() { cancelled++ }, observer)
+	require.ErrorContains(t, err, "command is absent")
+	require.Nil(t, pipes)
+	require.Equal(t, 1, cancelled)
+	require.Zero(t, observed)
 }

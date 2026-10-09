@@ -29,3 +29,5 @@ import './fastagent/plugin'
 import './commandcode/plugin'
 import './deepseekharness/plugin'
 import './gemini/plugin'
+
+import './muse/plugin'

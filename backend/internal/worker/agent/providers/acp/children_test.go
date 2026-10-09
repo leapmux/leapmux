@@ -15,9 +15,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// newChildRouteBase is a bare base whose provider tags each update of a
-// subagent with `_meta.parentToolCallId`, and whose spawn detector claims a
-// tool call titled "spawn".
+// newChildRouteBase creates a bare base whose provider tags subagent updates through _meta.parentToolCallId.
+// Its spawn detector accepts a tool call titled "spawn".
 func newChildRouteBase(t *testing.T) (*Base, *agenttest.Sink) {
 	t.Helper()
 	sink := &agenttest.Sink{}
@@ -52,9 +51,9 @@ func sessionUpdate(t *testing.T, sessionID, update string) json.RawMessage {
 	return params
 }
 
-// registryProbeSink wraps the services of a test agent. It records each child
-// agent that the base releases, and it fails the registry writes that the test
-// selects. The test sink records no release and fails no rename or close.
+// registryProbeSink wraps a test agent's services and records each child that the base releases.
+// It fails the registry writes that the test selects.
+// The underlying test sink records no release and fails neither rename nor close.
 type registryProbeSink struct {
 	agent.ProviderServices
 	mu         sync.Mutex
@@ -105,8 +104,8 @@ func (s *registryProbeSink) releasedChildren() []string {
 	return append([]string(nil), s.released...)
 }
 
-// lookupBarrierSink holds each registry read until waiters reads arrived, and
-// then lets every read pass. A later read passes at once.
+// lookupBarrierSink holds registry reads until the number of arrived reads reaches waiters.
+// It then releases every read, and later reads proceed immediately.
 type lookupBarrierSink struct {
 	agent.ProviderServices
 	mu      sync.Mutex
@@ -386,7 +385,7 @@ func TestChildIdentityRefusalFinishesEarlierAcceptedOutputAtProcessEnd(t *testin
 			require.True(t, b.FeedChildUpdate("call-spawn", json.RawMessage(`{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Accepted partial."}}`)))
 			validateRefusalChild(b, "call-spawn", "native-new")
 			b.ApplySubagentObservation(&SubagentObservation{
-				RowKey: "call-spawn", Status: bgtask.StatusCompleted, CloseRow: true, Mode: ModeCloseOnly,
+				RowKey: "call-spawn", Status: bgtask.StatusSucceeded, CloseRow: true, Mode: ModeCloseOnly,
 			})
 			assert.Empty(t, assembledTexts(t, child.Messages()), "a refused close must not finish earlier accepted output")
 			assert.False(t, b.FeedChildUpdate("call-spawn", json.RawMessage(`{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Refused suffix."}}`)))
@@ -451,8 +450,8 @@ func TestChildRoute_TaggedUpdatesReachTheChildTranscript(t *testing.T) {
 	}
 
 	child := sink.Child(childID)
-	// The child's text is assembled into one row per segment, in its OWN
-	// transcript, and its tool call opens and closes a span there.
+	// The child assembles one text row for each segment in its own transcript.
+	// Its tool call opens and closes a span there.
 	assert.Equal(t, []string{"thought:Child thinks.", "text:Child answers."}, assembledTexts(t, child.Messages()))
 	var childToolRows []agenttest.Message
 	for _, message := range child.Messages() {
@@ -476,8 +475,8 @@ func TestChildRoute_AnUnknownTagStaysInTheMainTranscript(t *testing.T) {
 	t.Parallel()
 	b, sink := newChildRouteBase(t)
 
-	// The tag names a tool call that spawned nothing this agent knows, so the
-	// registry has no child for it. The update stays where the reader can see it.
+	// The tag identifies a tool call that spawns no child known to this agent.
+	// The registry therefore has no child for it, and the update stays where the reader can see it.
 	b.HandleSessionUpdateForTest(sessionUpdate(t, "session-1", `{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"orphan"},"_meta":{"parentToolCallId":"call-unknown"}}`))
 
 	assert.Equal(t, "orphan", b.TurnAssistantTextForTest().String())
@@ -553,9 +552,8 @@ func TestChildRoute_TheCloseStoresWhatTheChildStillHeld(t *testing.T) {
 	assert.NotContains(t, assembledTexts(t, child.Messages()), "text:late")
 }
 
-// A tool call that spawned a subagent and never ended closes its row at the end
-// of the turn. The row has no route left afterwards, as after a close that the
-// agent reported.
+// A subagent tool call that never ends closes its row at the turn's end.
+// The row then has no route, as after an agent-reported close.
 func TestChildRoute_AnIncompleteSpawnLeavesNoRoute(t *testing.T) {
 	t.Parallel()
 	b, _ := newChildRouteBase(t)
@@ -572,9 +570,9 @@ func TestChildRoute_AnIncompleteSpawnLeavesNoRoute(t *testing.T) {
 	assert.False(t, reopened)
 }
 
-// A spawn that the turn left open closes its row at the turn end. The base then
-// releases the child agent, as it does for a row that the agent closed, so a
-// root that cycles many subagents keeps no service state of a closed child.
+// A spawn that remains open closes its row at the turn's end.
+// The base releases its child agent, as for an agent-reported row close.
+// A root that repeatedly starts subagents therefore retains no closed child's service state.
 func TestChildRoute_AnIncompleteSpawnReleasesItsChildAgent(t *testing.T) {
 	t.Parallel()
 	b, sink := newChildRouteBase(t)
@@ -599,15 +597,15 @@ func TestChildRoute_AnIncompleteSpawnReleasesItsChildAgent(t *testing.T) {
 	assert.Equal(t, agent.MessageCompletionInterrupted, completion, "the child text ends with the stop")
 }
 
-// The registry keeps a finished row and its child id. A tag of that row must
-// not open a transcript that nothing ever finishes, and the answer is kept, so
-// each streamed chunk does not read the registry again.
+// The registry retains a finished row and its child ID.
+// A tag for that row must not open a transcript that nothing later finishes.
+// Remember that result so each streamed chunk does not read the registry again.
 func TestChildRoute_AFinishedRegistryRowOpensNoChild(t *testing.T) {
 	t.Parallel()
 	b, sink := newChildRouteBase(t)
-	// A row of a process that ran before, which finished with its child link.
+	// This finished row retains its child link from an earlier process.
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: "call-old", Kind: bgtask.KindSubagent, ChildAgentID: "child-old", Status: bgtask.StatusRunning}))
-	require.NoError(t, sink.CloseBackgroundTask("call-old", bgtask.StatusCompleted))
+	require.NoError(t, sink.CloseBackgroundTask("call-old", bgtask.StatusSucceeded))
 
 	for range 3 {
 		b.HandleSessionUpdateForTest(sessionUpdate(t, "session-1", `{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"x"},"_meta":{"parentToolCallId":"call-old"}}`))
@@ -618,10 +616,9 @@ func TestChildRoute_AFinishedRegistryRowOpensNoChild(t *testing.T) {
 	assert.Equal(t, 1, sink.LookupBackgroundTaskCalls("call-old"), "one registry read answers every later chunk")
 }
 
-// A tag whose row the registry does not hold yet is read again on the next
-// update. A provider can create the row later through a route that the base
-// does not see (Qwen Code reads a background subagent from its store), and a
-// kept miss would lose that child's transcript.
+// Read an absent tagged row again on the next update.
+// A provider can create it later through a path outside the base, such as Qwen Code's background-subagent store reader.
+// Retaining the preceding miss would discard that child's transcript.
 func TestChildRoute_AnUnknownRowIsReadAgain(t *testing.T) {
 	t.Parallel()
 	b, sink := newChildRouteBase(t)
@@ -717,7 +714,7 @@ func TestChildCloseCompletions(t *testing.T) {
 		status      bgtask.Status
 		text, tools agent.MessageCompletion
 	}{
-		{bgtask.StatusCompleted, agent.MessageCompletionComplete, agent.MessageCompletionError},
+		{bgtask.StatusSucceeded, agent.MessageCompletionComplete, agent.MessageCompletionError},
 		{bgtask.StatusFailed, agent.MessageCompletionError, agent.MessageCompletionError},
 		{bgtask.StatusStopped, agent.MessageCompletionInterrupted, agent.MessageCompletionInterrupted},
 		{bgtask.StatusInterrupted, agent.MessageCompletionInterrupted, agent.MessageCompletionInterrupted},
@@ -743,7 +740,7 @@ func TestChildSession_UpdatesOfAnAttachedSessionReachTheChild(t *testing.T) {
 	assert.Empty(t, b.TurnAssistantTextForTest().String(), "a session this agent does not serve renders nowhere")
 
 	// The close drops the route with the row.
-	b.ApplySubagentObservation(&SubagentObservation{RowKey: "call-spawn", Status: bgtask.StatusCompleted, CloseRow: true, Mode: ModeCloseOnly})
+	b.ApplySubagentObservation(&SubagentObservation{RowKey: "call-spawn", Status: bgtask.StatusSucceeded, CloseRow: true, Mode: ModeCloseOnly})
 	assert.Empty(t, b.childSessionRow("child-session"))
 }
 
@@ -766,9 +763,8 @@ func TestFeedChildUpdate_AFedChildSerializesWithTheReader(t *testing.T) {
 	b := &Base{sink: agent.NewProviderServices(sink), sessionID: "session-1"}
 	b.ApplySubagentObservation(&SubagentObservation{RowKey: "call-bg", ChildAgentKey: "call-bg", Status: bgtask.StatusRunning})
 
-	// A provider feeds a background child from a goroutine of its own while the
-	// reader closes the row. Every write takes the lock of that child, so the
-	// race detector sees no unguarded state and each fed segment lands once.
+	// A provider feeds a background child from a separate goroutine while the reader closes its row.
+	// Every write holds that child's lock, so the race detector finds no unprotected state and each supplied segment appears once.
 	var wg sync.WaitGroup
 	for i := range 20 {
 		wg.Add(1)
@@ -778,7 +774,7 @@ func TestFeedChildUpdate_AFedChildSerializesWithTheReader(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	b.ApplySubagentObservation(&SubagentObservation{RowKey: "call-bg", Status: bgtask.StatusCompleted, CloseRow: true, Mode: ModeCloseOnly})
+	b.ApplySubagentObservation(&SubagentObservation{RowKey: "call-bg", Status: bgtask.StatusSucceeded, CloseRow: true, Mode: ModeCloseOnly})
 
 	closing := 0
 	for _, message := range sink.Child("child-of-call-bg").Messages() {
@@ -805,8 +801,8 @@ func TestChildRoute_ARegistryReadFailureRoutesNothing(t *testing.T) {
 	sink := &agenttest.Sink{LookupErr: assert.AnError}
 	b := &Base{sink: agent.NewProviderServices(sink), sessionID: "session-1"}
 
-	// The row is not one this process created, so the base asks the registry,
-	// and a registry it cannot read is not a miss it may route on.
+	// This process did not create the row, so the base reads the registry.
+	// A failed registry read must not count as a missing child that can route to the parent.
 	assert.False(t, b.FeedChildUpdate("call-restarted", json.RawMessage(`{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"x"}}`)))
 }
 
@@ -825,8 +821,8 @@ func TestChildRoute_ARowFromBeforeARestartResolvesThroughTheRegistry(t *testing.
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, messages[0].Source)
 }
 
-// Stop and the exit of the process run this through Stop and Wait
-// (TestAgentTurn_StopClosesTheToolsOfBothTurns). This pins the helper alone.
+// Stop and Wait exercise this path when stopping the process. See TestAgentTurn_StopClosesTheToolsOfBothTurns.
+// This test exercises the helper independently.
 func TestFinishAllChildConversations_EndsEveryChildAsAStop(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}
@@ -844,11 +840,15 @@ func TestFinishAllChildConversations_EndsEveryChildAsAStop(t *testing.T) {
 	assert.Equal(t, agent.MessageCompletionInterrupted, completion)
 }
 
-// A child renders its conversation and nothing else. An update that states the
-// mode, the options, the command set, the usage or the session information
-// belongs to the main session, so a tagged one changes nothing of the parent
-// and writes no row anywhere. An update type that the base does not know is
-// conversation, and it lands in the child transcript.
+// A child renders conversation updates only.
+// These updates belong to the main session:
+//   - Mode.
+//   - Options.
+//   - Command set.
+//   - Usage.
+//   - Session information.
+// A tagged update of any listed type changes no parent state and writes no transcript row.
+// An unrecognized update type counts as conversation content and enters the child transcript.
 func TestChildRoute_ASessionStateUpdateOfAChildChangesNothing(t *testing.T) {
 	t.Parallel()
 	b, sink := newChildRouteBase(t)
@@ -885,11 +885,10 @@ func TestChildRoute_ASessionStateUpdateOfAChildChangesNothing(t *testing.T) {
 	assert.Equal(t, parentRows, sink.MessageCount())
 }
 
-// The reader and a provider that feeds a child from its own goroutine can open
-// the conversation of one row at the same time. The row resolves through the
-// registry outside the lock, so both read it. The first conversation wins and
-// every update renders into it: the close then finds each tool call that any
-// update opened.
+// The reader and a provider's separate goroutine can open one row's child conversation concurrently.
+// Registry reads occur outside the lock, so both can read the same row.
+// Keep the first opened conversation and render every update into it.
+// The close then finds every tool call opened by any update.
 func TestChildRoute_ConcurrentFirstUpdatesShareOneConversation(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}
@@ -898,8 +897,8 @@ func TestChildRoute_ConcurrentFirstUpdatesShareOneConversation(t *testing.T) {
 	_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "call-old", ProviderChildKey: "call-old", Title: "old helper"})
 	require.NoError(t, err)
 	const feeds = 20
-	// Each update waits after its registry read until every update read, so all
-	// of them reach the step that opens the conversation with none open yet.
+	// Hold each update after its registry read until every update finishes that read.
+	// All updates then reach the conversation-creation step while no conversation exists.
 	barrier := &lookupBarrierSink{ProviderServices: agent.NewProviderServices(sink), waiters: feeds, release: make(chan struct{})}
 	b := &Base{sink: barrier, sessionID: "session-1"}
 
@@ -923,9 +922,9 @@ func TestChildRoute_ConcurrentFirstUpdatesShareOneConversation(t *testing.T) {
 	assert.Equal(t, feeds, closing, "the close finds each tool call that any update opened")
 }
 
-// A provider that learns the stable id of a subagent late re-keys its row. The
-// row keeps its transcript and the route of its session under the new key, and
-// the close under the new key ends the route.
+// A provider can learn the stable subagent ID late and change the row key.
+// The new key retains the transcript and child-session route.
+// A close through the new key ends that route.
 func TestChildSession_ARenamedRowKeepsItsTranscriptAndItsSessionRoute(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}
@@ -943,17 +942,17 @@ func TestChildSession_ARenamedRowKeepsItsTranscriptAndItsSessionRoute(t *testing
 		"one conversation continues across the rename")
 	assert.Equal(t, []string{"child-of-call-spawn"}, sink.ChildAgentIDs(), "the rename opens no second transcript")
 
-	b.ApplySubagentObservation(&SubagentObservation{RowKey: "ses-child", Status: bgtask.StatusCompleted, CloseRow: true, Mode: ModeCloseOnly})
+	b.ApplySubagentObservation(&SubagentObservation{RowKey: "ses-child", Status: bgtask.StatusSucceeded, CloseRow: true, Mode: ModeCloseOnly})
 
 	row, ok := sink.BackgroundTask("ses-child")
 	require.True(t, ok)
-	assert.Equal(t, bgtask.StatusCompleted, row.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
 	assert.Empty(t, b.childSessionRow("child-session"), "the close under the new key ends the route")
 }
 
-// A rename that the registry refuses leaves the row under its old key, so the
-// transcript and the session route stay with the old key too. A child under the
-// new key would split one subagent in two.
+// A refused registry rename keeps the row under its preceding key.
+// The transcript and session route must stay under that key also.
+// Creating a child under the requested new key would split one subagent across two identities.
 func TestChildSession_AFailedRenameKeepsTheRouteOfTheOldRow(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}
@@ -971,8 +970,8 @@ func TestChildSession_AFailedRenameKeepsTheRouteOfTheOldRow(t *testing.T) {
 	assert.Equal(t, []string{"call-spawn"}, agenttest.RowKeys(sink))
 }
 
-// An empty session id or row key identifies nothing, so it attaches no route,
-// and the end of a turn of a row with no conversation writes nothing.
+// An empty session ID or row key identifies nothing and attaches no route.
+// Ending a turn for a row with no conversation writes nothing.
 func TestAttachChildSession_AnEmptySessionOrRowAttachesNothing(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}
@@ -988,10 +987,12 @@ func TestAttachChildSession_AnEmptySessionOrRowAttachesNothing(t *testing.T) {
 	assert.Zero(t, sink.MessageCount())
 }
 
-// OpenToolSink finds the transcript that holds a running call: the main one for
-// the current session, and the child's for a routed subagent session. A call
-// that ended, a call that never opened and a session that no row routes find
-// none.
+// OpenToolSink finds the transcript that holds a running call.
+// The current session uses the main transcript, and a routed subagent session uses its child transcript.
+// Return no transcript in each of these cases:
+//   - The call ended.
+//   - The call never opened.
+//   - No row routes the session.
 func TestOpenToolSink_FindsTheTranscriptOfARunningCall(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}

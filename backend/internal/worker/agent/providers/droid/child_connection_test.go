@@ -153,7 +153,7 @@ func newDroidProcessFixture(t *testing.T, model string, extraEnv ...string) droi
 	require.NoError(t, err)
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
 		RowKey: droidChildConnectionSessionID, Kind: bgtask.KindSubagent, ChildAgentID: childID,
-		ParentAgentID: a.AgentID(), Title: "Inspect the note", Status: bgtask.StatusCompleted,
+		ParentAgentID: a.AgentID(), Title: "Inspect the note", Status: bgtask.StatusSucceeded,
 	}))
 	return droidProcessFixture{root: a, sink: sink, home: home, logPath: logPath}
 }
@@ -202,7 +202,7 @@ func TestChildProcessSinkLeavesChatRowsToTheArchive(t *testing.T) {
 	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
 		agent.MessageContent{Original: []byte(`{"type":"assembled","text":"duplicate"}`)}, agent.SpanInfo{}))
 	require.NoError(t, sink.PersistTurnEnd(agent.MessageContent{Original: []byte(`{"type":"agent_turn_completed"}`)}, agent.SpanInfo{}))
-	_, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, []byte(`{"type":"settings_updated"}`))
+	_, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"type":"settings_updated"}`)})
 	require.NoError(t, err)
 	assert.Empty(t, recorder.Messages(), "the archive remains the only chat writer")
 	assert.Len(t, recorder.PersistedNotifications(), 1, "status notifications still reach the child")
@@ -264,7 +264,7 @@ func TestChildLoadFailureReleasesTheConnectionSlot(t *testing.T) {
 	assert.Equal(t, 0, countDroidProcessCalls(calls, droidMethodAddUserMessage))
 	row, ok := fixture.sink.BackgroundTask(droidChildConnectionSessionID)
 	require.True(t, ok)
-	assert.Equal(t, bgtask.StatusCompleted, row.Status, "a failed send does not revive a finished child")
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status, "a failed send does not revive a finished child")
 }
 
 func TestChildProcessExitClosesTheRunningRegistryRow(t *testing.T) {

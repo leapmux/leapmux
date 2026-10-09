@@ -1,11 +1,12 @@
 import { createRoot } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
-import { localStorageLoad, localStorageStore, PREFIX_AGENT_SESSION } from '~/lib/browserStorage'
+import * as browserStorage from '~/lib/browserStorage'
+import { localStorageLoad, localStorageStore, PREFIX_AGENT_SESSION, setStorageAccountForTests } from '~/lib/browserStorage'
+import { deferred } from '~/test-support/async'
 import { useTestStorage } from '~/test-support/persistentStorage'
 import { compactionContextUsage, createAgentSessionStore } from './agentSession.store'
 
-// The asynchronous storage tier has no in-memory mirror, so these round-trips
-// need a database to round-trip through.
+// The asynchronous storage tier needs a database for these persistence checks.
 useTestStorage()
 
 describe('createAgentSessionStore', () => {
@@ -31,10 +32,10 @@ describe('createAgentSessionStore', () => {
     createRoot((dispose) => {
       const store = createAgentSessionStore()
       store.updateInfo('agent-1', { totalCostUsd: 2.5 })
-      // Wire-shaped data can surface an explicitly-undefined field; build the
-      // partial through fromEntries so the type stays honest about the store's
-      // runtime contract (a present-undefined key must not clobber the value).
+      // fromEntries permits an explicit undefined value without a type assertion.
+      // A present undefined value must not replace the stored value.
       store.updateInfo('agent-1', Object.fromEntries([['totalCostUsd', undefined]]))
+      store.updateInfo('agent-1', Object.fromEntries([['totalCostUsd', null]]))
       const info = store.getInfo('agent-1')
       expect(info.totalCostUsd).toBe(2.5)
       dispose()
@@ -60,19 +61,16 @@ describe('createAgentSessionStore', () => {
     })
   })
 
-  // An agent id OF ITS OWN, because this is the one case that asserts the exact
-  // stored document. A store defers its write behind the agent's hydrating read
-  // and keeps no handle to cancel it, so a sibling case that disposed its root
-  // while a read was outstanding still writes `agent-1` afterwards -- into
-  // whichever database `useTestStorage` has installed by then.
+  // Use a separate agent ID for the exact stored-document assertion.
+  // A disposed store can finish its pending write while the account stays unchanged.
+  // That write can reach the next test's database for the same account.
   it('should persist after updateInfo', async () => {
     createRoot((dispose) => {
       const store = createAgentSessionStore()
       store.updateInfo('agent-persist', { totalCostUsd: 1.5 })
       dispose()
     })
-    // Polled: the store defers a write until the agent's stored row has been
-    // read and merged, so the value lands an IndexedDB round trip later.
+    // The write follows hydration through IndexedDB. Wait for the stored value.
     await vi.waitFor(async () => {
       expect(await localStorageLoad<{ totalCostUsd: number }>(`${PREFIX_AGENT_SESSION}agent-persist`))
         .toEqual({ totalCostUsd: 1.5 })
@@ -82,11 +80,9 @@ describe('createAgentSessionStore', () => {
   it('should load persisted info on first getInfo call', async () => {
     localStorageStore(`${PREFIX_AGENT_SESSION}agent-1`, { totalCostUsd: 3.0 })
 
-    const dispose = createRoot(d => d)
-    const store = createAgentSessionStore()
-    // `getInfo` stays synchronous, so the FIRST read answers before the row
-    // arrives -- it is the store's reactive update that carries it. Polling is
-    // what a component does by re-rendering.
+    const { store, dispose } = createRoot(dispose => ({ store: createAgentSessionStore(), dispose }))
+    // getInfo returns before the stored row arrives.
+    // The reactive update supplies the hydrated value to the next render.
     store.getInfo('agent-1')
     await vi.waitFor(() => expect(store.getInfo('agent-1').totalCostUsd).toBe(3.0))
     dispose()
@@ -283,11 +279,20 @@ describe('agentSessionStore thinkingTokens', () => {
     })
   })
 
+  it('clears an explicit zero thinking count without changing other progress', () => {
+    createRoot((dispose) => {
+      const store = createAgentSessionStore()
+      store.applyProgress('zero-thinking', { revision: 1, thinkingTokens: 0, output: { bytes: 8, minimum: false } })
+      store.clearThinkingTokens('zero-thinking')
+      expect(store.getProgress('zero-thinking')).toEqual({ revision: 1, output: { bytes: 8, minimum: false } })
+      dispose()
+    })
+  })
+
   it('clearThinkingTokens on an untouched agent is a safe no-op', () => {
     createRoot((dispose) => {
       const store = createAgentSessionStore()
-      // The turn-end clear fires for every provider, including agents whose
-      // session info was never loaded or never carried a thinking estimate.
+      // Every provider clears at turn end, including an agent with no loaded estimate.
       expect(() => store.clearThinkingTokens('a-untouched')).not.toThrow()
       expect(store.getInfo('a-untouched')).toEqual({})
       dispose()
@@ -303,8 +308,7 @@ describe('agentSessionStore thinkingTokens', () => {
       dispose()
     })
 
-    // What a fresh store rehydrates: the cleared estimate must not come back
-    // while the surviving keys do.
+    // A fresh store must recover the surviving fields without the cleared estimate.
     await vi.waitFor(async () => {
       expect(await localStorageLoad(`${PREFIX_AGENT_SESSION}a-persist`))
         .toEqual({ totalCostUsd: 0.5 })
@@ -320,30 +324,28 @@ describe('agentSessionStore thinkingTokens', () => {
         output: { bytes: 2048, minimum: true },
       })
 
-      // The estimate is live in the reactive store...
+      // The reactive store retains the live estimate and output count.
       expect(store.getProgress('a-eph-only').thinkingTokens).toBe(500)
       expect(store.getProgress('a-eph-only').output?.bytes).toBe(2048)
       dispose()
     })
-    // ...but an estimate-only update skips the write entirely (no entry is even
-    // created), so live progress never causes a storage write.
+    // Live progress must create no stored entry.
     expect(await localStorageLoad(`${PREFIX_AGENT_SESSION}a-eph-only`)).toBeUndefined()
   })
 
   it('never persists thinkingTokens, even when set alongside a persisted key', async () => {
     createRoot((dispose) => {
       const store = createAgentSessionStore()
-      // A single update carrying both a persisted key and the ephemeral
-      // estimate: the estimate is live in memory but must never reach disk.
+      // Separate updates supply persisted info and an ephemeral estimate.
+      // The estimate must stay in memory when the info reaches storage.
       store.updateInfo('a-ephemeral', { totalCostUsd: 0.5 })
       store.applyProgress('a-ephemeral', { revision: 1, thinkingTokens: 230 })
       expect(store.getProgress('a-ephemeral').thinkingTokens).toBe(230)
       dispose()
     })
 
-    // Asserted against the STORED ROW rather than a second store: a store reads
-    // an agent's row exactly once, so polling `getInfo` on one could never
-    // observe a write that landed after that read.
+    // Read the stored row directly. A store hydrates an agent once per account.
+    // Its getInfo cannot observe a later write from another store.
     await vi.waitFor(async () => {
       expect(await localStorageLoad(`${PREFIX_AGENT_SESSION}a-ephemeral`))
         .toEqual({ totalCostUsd: 0.5 })
@@ -357,6 +359,7 @@ describe('agentSessionStore clearContextUsage', () => {
       const store = createAgentSessionStore()
       store.updateInfo('agent-1', {
         totalCostUsd: 2.5,
+        planFilePath: '/clear-context-sibling',
         contextUsage: {
           inputTokens: 50000,
           cacheCreationInputTokens: 0,
@@ -367,12 +370,19 @@ describe('agentSessionStore clearContextUsage', () => {
       store.clearContextUsage('agent-1')
       dispose()
     })
-    await vi.waitFor(() => {
-      const store = createAgentSessionStore()
-      const info = store.getInfo('agent-1')
-      expect(info.contextUsage).toBeUndefined()
-      expect(info.totalCostUsd).toBeUndefined()
-    })
+    const { store, dispose } = createRoot(dispose => ({ store: createAgentSessionStore(), dispose }))
+    try {
+      store.getInfo('agent-1')
+      await vi.waitFor(() => {
+        const info = store.getInfo('agent-1')
+        expect(info.planFilePath).toBe('/clear-context-sibling')
+        expect(info.contextUsage).toBeUndefined()
+        expect(info.totalCostUsd).toBeUndefined()
+      })
+    }
+    finally {
+      dispose()
+    }
     // The stored row must not carry them either.
     await vi.waitFor(async () => {
       const stored = await localStorageLoad<Record<string, unknown>>(`${PREFIX_AGENT_SESSION}agent-1`)
@@ -383,7 +393,7 @@ describe('agentSessionStore clearContextUsage', () => {
   })
 
   it('preserves sibling keys when clearing a not-yet-loaded agent', async () => {
-    // Persist an agent with context usage AND unrelated keys.
+    // Persist context usage beside unrelated fields.
     createRoot((dispose) => {
       const store = createAgentSessionStore()
       store.updateInfo('a-unhydrated', {
@@ -398,36 +408,29 @@ describe('agentSessionStore clearContextUsage', () => {
       dispose()
     })
 
-    // Let the first store's write reach disk before the second store opens.
-    // A reload -- which is what the second store stands for -- necessarily
-    // happens after it, and without the wait the second store reads an empty
-    // row and there is nothing for the clear to act on.
+    // A reload follows the first write. Wait for that write before the second store reads.
+    // An earlier read could return an empty row and test no stored clear.
     await vi.waitFor(async () => {
       expect(await localStorageLoad(`${PREFIX_AGENT_SESSION}a-unhydrated`)).toBeDefined()
     })
 
-    // A fresh store has 'a-unhydrated' on disk but not in memory. Clearing
-    // context usage before any getInfo/updateInfo must hydrate first, so it
-    // does not persist a bare object over the stored rateLimits.
+    // The new store knows no in-memory fields for this agent.
+    // The clear must retain stored rate limits when it persists after hydration.
     createRoot((dispose) => {
       const store = createAgentSessionStore()
       store.clearContextUsage('a-unhydrated')
       dispose()
     })
 
-    // The stored row is what a later reload would read, and one equality states
-    // the whole invariant: context usage and cost gone, rateLimits intact.
+    // A later reload reads this row. Context usage and cost are absent, and rate limits remain.
     await vi.waitFor(async () => {
       expect(await localStorageLoad(`${PREFIX_AGENT_SESSION}a-unhydrated`))
         .toEqual({ rateLimits: { five_hour: { status: 'allowed' } } })
     })
   })
 
-  // THE MERGE ORDER, which only an asynchronous read can get wrong. `ensureLoaded`
-  // spreads `{...stored, ...prev}` -- `prev` LAST -- because a live update can
-  // land while the read is in flight (a token count off the socket, a clear),
-  // and the stored snapshot is older than any of them by construction. The
-  // synchronous read this replaced could not race, so nothing pinned the order.
+  // Hydration reads an older snapshot while a live update can change memory.
+  // The merge must retain the live value for each field that the live update supplies.
   it('lets a live update that landed during the read win over the stored row', async () => {
     createRoot((dispose) => {
       const store = createAgentSessionStore()
@@ -440,16 +443,14 @@ describe('agentSessionStore clearContextUsage', () => {
 
     await createRoot(async (dispose) => {
       const store = createAgentSessionStore()
-      // Starts the read for this agent and answers from the still-empty entry.
+      // Start the read while the in-memory entry stays empty.
       expect(store.getInfo('a-racing')).toEqual({})
-      // The live update lands BEFORE the read resolves. With the spread the
-      // other way round, the stored `/from-disk` would overwrite it a moment
-      // later and the user would watch the value revert.
+      // Update before the read resolves. Reversed merge order would restore the older stored path.
       store.updateInfo('a-racing', { planFilePath: '/from-the-socket' })
       expect(store.getInfo('a-racing').planFilePath).toBe('/from-the-socket')
 
       await vi.waitFor(() => {
-        // The read has landed once a key only the stored row carries appears.
+        // This field arrives only from the stored row and proves that hydration completed.
         expect(store.getInfo('a-racing').totalCostUsd).toBe(1)
       })
       expect(
@@ -461,7 +462,7 @@ describe('agentSessionStore clearContextUsage', () => {
   })
 
   it('is a no-op that preserves siblings when there is no context usage to clear', async () => {
-    // Persist an agent that never carried contextUsage/cost, only rateLimits.
+    // Persist rate limits without context usage or cost.
     createRoot((dispose) => {
       const store = createAgentSessionStore()
       store.updateInfo('a-nocontext', { rateLimits: { five_hour: { status: 'allowed' } } })
@@ -472,8 +473,7 @@ describe('agentSessionStore clearContextUsage', () => {
       expect(await localStorageLoad(`${PREFIX_AGENT_SESSION}a-nocontext`)).toBeDefined()
     })
 
-    // Clearing context usage when neither key is present must short-circuit
-    // without writing a bare object over the stored rateLimits.
+    // An absent clear must preserve the stored rate limits.
     createRoot((dispose) => {
       const store = createAgentSessionStore()
       store.clearContextUsage('a-nocontext')
@@ -520,10 +520,356 @@ describe('compactionContextUsage', () => {
   })
 
   it('drops the stated fill of the reading before the compaction', () => {
-    // The fill described the context that the compaction replaced. Kept beside a
-    // post-compaction count of zero, it would draw as the whole reading again.
+    // The percentage describes the old context.
+    // Keeping it beside a post-compaction zero would display the old percentage again.
     const result = compactionContextUsage(0, { inputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, usagePercent: 88 })
     expect('usagePercent' in result).toBe(false)
     expect(result.contextTokens).toBe(0)
+  })
+})
+
+describe('createAgentSessionStore account and hydration ownership', () => {
+  it('clears the outgoing account info and progress before the next read', () => {
+    createRoot((dispose) => {
+      const store = createAgentSessionStore()
+      store.updateInfo('account-agent', { totalCostUsd: 99, planFilePath: '/old-account' })
+      store.applyProgress('account-agent', { revision: 7, thinkingTokens: 40 })
+
+      setStorageAccountForTests('replacement-account')
+
+      expect(store.getInfo('account-agent')).toEqual({})
+      expect(store.getProgress('account-agent')).toEqual({ revision: 0 })
+      dispose()
+    })
+  })
+
+  it('rejects the outgoing account hydration and its deferred write', async () => {
+    const pending = deferred<{ totalCostUsd: number }>()
+    const load = vi.spyOn(browserStorage, 'localStorageLoad').mockReturnValueOnce(pending.promise)
+    const save = vi.spyOn(browserStorage, 'localStorageStore')
+    const { store, dispose } = createRoot(dispose => ({ store: createAgentSessionStore(), dispose }))
+    try {
+      store.getInfo('account-read-agent')
+      store.updateInfo('account-read-agent', { totalCostUsd: 98 })
+
+      setStorageAccountForTests('incoming-account')
+      store.updateInfo('account-read-agent', { planFilePath: '/incoming-account' })
+      pending.resolve({ totalCostUsd: 99 })
+
+      await vi.waitFor(() => expect(save).toHaveBeenCalled())
+      expect(store.getInfo('account-read-agent')).toEqual({ planFilePath: '/incoming-account' })
+      for (const [key, value] of save.mock.calls) {
+        if (key === `${PREFIX_AGENT_SESSION}account-read-agent`)
+          expect(value).toEqual({ planFilePath: '/incoming-account' })
+      }
+    }
+    finally {
+      pending.resolve({ totalCostUsd: 99 })
+      dispose()
+      load.mockRestore()
+      save.mockRestore()
+    }
+  })
+
+  it('preserves a live reading that follows a clear before hydration ends', async () => {
+    const pending = deferred<{ totalCostUsd: number, planFilePath: string }>()
+    const load = vi.spyOn(browserStorage, 'localStorageLoad').mockReturnValueOnce(pending.promise)
+    const save = vi.spyOn(browserStorage, 'localStorageStore')
+    const { store, dispose } = createRoot(dispose => ({ store: createAgentSessionStore(), dispose }))
+    try {
+      store.clearContextUsage('clear-read-agent')
+      store.updateInfo('clear-read-agent', {
+        totalCostUsd: 5,
+        contextUsage: { inputTokens: 20, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 },
+      })
+      pending.resolve({ totalCostUsd: 1, planFilePath: '/retained-plan' })
+
+      await vi.waitFor(() => expect(save).toHaveBeenCalled())
+      expect(store.getInfo('clear-read-agent')).toEqual({
+        totalCostUsd: 5,
+        contextUsage: { inputTokens: 20, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 },
+        planFilePath: '/retained-plan',
+      })
+    }
+    finally {
+      pending.resolve({ totalCostUsd: 1, planFilePath: '/retained-plan' })
+      dispose()
+      load.mockRestore()
+      save.mockRestore()
+    }
+  })
+
+  it('rejects an outgoing deferred write after the store owner closes', async () => {
+    const pending = deferred<{ totalCostUsd: number }>()
+    const load = vi.spyOn(browserStorage, 'localStorageLoad').mockReturnValueOnce(pending.promise)
+    const save = vi.spyOn(browserStorage, 'localStorageStore')
+    const { store: outgoing, dispose: disposeOutgoing } = createRoot(dispose => ({ store: createAgentSessionStore(), dispose }))
+    outgoing.updateInfo('closed-account-agent', { totalCostUsd: 98 })
+    disposeOutgoing()
+    setStorageAccountForTests('account-after-close')
+
+    const { store: incoming, dispose: disposeIncoming } = createRoot(dispose => ({ store: createAgentSessionStore(), dispose }))
+    try {
+      incoming.updateInfo('closed-account-agent', { totalCostUsd: 7 })
+      pending.resolve({ totalCostUsd: 99 })
+
+      await vi.waitFor(() => expect(save).toHaveBeenCalledWith(`${PREFIX_AGENT_SESSION}closed-account-agent`, { totalCostUsd: 7 }))
+      for (const [key, value] of save.mock.calls) {
+        if (key === `${PREFIX_AGENT_SESSION}closed-account-agent`)
+          expect(value).toEqual({ totalCostUsd: 7 })
+      }
+    }
+    finally {
+      pending.resolve({ totalCostUsd: 99 })
+      disposeIncoming()
+      load.mockRestore()
+      save.mockRestore()
+    }
+  })
+})
+
+describe('createAgentSessionStore replay ownership', () => {
+  it('keeps goal counter ownership separate from other counters and scalar fields', () => {
+    createRoot((dispose) => {
+      try {
+        const store = createAgentSessionStore()
+        store.beginReplay('goal-fields', 1n)
+        store.claimGoalProgressWrite('goal-fields', 'tokensUsed', { phase: 'live' })
+        expect(store.claimGoalProgressWrite('goal-fields', 'tokensUsed', { phase: 'replay', replayId: 1n })).toBe(false)
+        expect(store.claimGoalProgressWrite('goal-fields', 'iterations', { phase: 'replay', replayId: 1n })).toBe(true)
+        store.updateInfo('goal-fields', { totalCostUsd: 2 }, { delivery: { phase: 'replay', replayId: 1n } })
+        expect(store.getInfo('goal-fields')).toEqual({ totalCostUsd: 2 })
+      }
+      finally {
+        dispose()
+      }
+    })
+  })
+
+  it.each(['tokensUsed', 'tokenBudget', 'timeUsedSeconds', 'iterations'] as const)('protects an absent %s after an accepted live goal clear', (field) => {
+    createRoot((dispose) => {
+      try {
+        const store = createAgentSessionStore()
+        store.beginReplay('goal-clear', 1n)
+        store.claimGoalProgressClear('goal-clear', { phase: 'live' })
+        expect(store.claimGoalProgressWrite('goal-clear', field, { phase: 'replay', replayId: 1n, seq: 50n })).toBe(false)
+        expect(store.claimGoalProgressWrite('goal-clear', field, { phase: 'live' })).toBe(true)
+      }
+      finally {
+        dispose()
+      }
+    })
+  })
+
+  it('restores unclaimed goal counters only for a fresh active receipt', () => {
+    createRoot((dispose) => {
+      try {
+        const store = createAgentSessionStore()
+        store.beginReplay('goal-receipt', 1n)
+        store.claimGoalProgressWrite('goal-receipt', 'tokensUsed', { phase: 'live' })
+        store.retireReplay('goal-receipt', 1n)
+        expect(store.claimGoalProgressWrite('goal-receipt', 'iterations', { phase: 'replay', replayId: 1n })).toBe(false)
+        store.beginReplay('goal-receipt', 2n)
+        expect(store.claimGoalProgressWrite('goal-receipt', 'tokensUsed', { phase: 'replay', replayId: 2n })).toBe(true)
+        expect(store.claimGoalProgressWrite('goal-receipt', 'tokensUsed', { phase: 'replay', replayId: 1n, seq: 99n })).toBe(false)
+      }
+      finally {
+        dispose()
+      }
+    })
+  })
+
+  it('preserves an ephemeral goal claim after a later sequenced live write', () => {
+    createRoot((dispose) => {
+      try {
+        const store = createAgentSessionStore()
+        store.beginReplay('goal-ephemeral', 1n)
+        store.claimGoalProgressWrite('goal-ephemeral', 'tokensUsed', { phase: 'live' })
+        store.claimGoalProgressWrite('goal-ephemeral', 'tokensUsed', { phase: 'live', seq: 30n })
+        expect(store.claimGoalProgressWrite('goal-ephemeral', 'tokensUsed', { phase: 'replay', replayId: 1n, seq: 40n })).toBe(false)
+      }
+      finally {
+        dispose()
+      }
+    })
+  })
+
+  it('clears goal receipt ownership when the storage account changes', () => {
+    createRoot((dispose) => {
+      try {
+        const store = createAgentSessionStore()
+        store.beginReplay('goal-account', 1n)
+        store.claimGoalProgressClear('goal-account', { phase: 'live' })
+        setStorageAccountForTests('goal-replacement-account')
+        expect(store.claimGoalProgressWrite('goal-account', 'tokensUsed', { phase: 'replay', replayId: 1n })).toBe(false)
+        store.beginReplay('goal-account', 2n)
+        expect(store.claimGoalProgressWrite('goal-account', 'tokensUsed', { phase: 'replay', replayId: 2n })).toBe(true)
+      }
+      finally {
+        dispose()
+      }
+    })
+  })
+
+  it('restores cold history independently for each scalar field', () => {
+    createRoot((dispose) => {
+      const store = createAgentSessionStore()
+      const delivery = { phase: 'replay' as const, replayId: 0n, seq: 20n }
+      store.updateInfo('cold-history', {
+        totalCostUsd: 2,
+        contextUsage: { inputTokens: 10, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 },
+        rateLimits: { daily: { utilization: 0.5 } },
+        planFilePath: '/history-plan',
+      }, { delivery })
+      expect(store.getInfo('cold-history')).toEqual({
+        totalCostUsd: 2,
+        contextUsage: { inputTokens: 10, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 },
+        rateLimits: { daily: { utilization: 0.5 } },
+        planFilePath: '/history-plan',
+      })
+      dispose()
+    })
+  })
+
+  it.each([0n, 1n, (1n << 64n) - 3n])('replaces old ownership after request ID %s', (previousId) => {
+    createRoot((dispose) => {
+      const store = createAgentSessionStore()
+      const agentId = `request-after-${previousId}`
+      if (previousId > 0n)
+        store.beginReplay(agentId, previousId)
+      store.updateInfo(agentId, { totalCostUsd: 1 })
+      store.beginReplay(agentId, previousId + 1n)
+      store.updateInfo(agentId, { totalCostUsd: 2 }, { delivery: { phase: 'replay', replayId: previousId + 1n, seq: 20n } })
+      expect(store.getInfo(agentId).totalCostUsd).toBe(2)
+      store.updateInfo(agentId, { totalCostUsd: 3 })
+      store.beginReplay(agentId, previousId + 2n)
+      store.updateInfo(agentId, { totalCostUsd: 4 }, { delivery: { phase: 'replay', replayId: previousId + 2n, seq: 40n } })
+      expect(store.getInfo(agentId).totalCostUsd).toBe(4)
+      dispose()
+    })
+  })
+
+  it.each([19n, 20n, 21n])('compares history sequence %s with the exact live sequence', (historySeq) => {
+    createRoot((dispose) => {
+      const store = createAgentSessionStore()
+      store.beginReplay('ordered-history', 1n)
+      store.updateInfo('ordered-history', { totalCostUsd: 3 }, { delivery: { phase: 'live', seq: 20n } })
+      store.updateInfo('ordered-history', { totalCostUsd: 2 }, { delivery: { phase: 'replay', replayId: 1n, seq: historySeq } })
+      expect(store.getInfo('ordered-history').totalCostUsd).toBe(historySeq > 20n ? 2 : 3)
+      dispose()
+    })
+  })
+
+  it('protects an ephemeral value through later durable updates in the same replay', () => {
+    createRoot((dispose) => {
+      const store = createAgentSessionStore()
+      store.beginReplay('ephemeral-history', 1n)
+      store.updateInfo('ephemeral-history', { totalCostUsd: 3 })
+      store.updateInfo('ephemeral-history', { totalCostUsd: 4 }, { delivery: { phase: 'live', seq: 30n } })
+      store.updateInfo('ephemeral-history', { totalCostUsd: 2 }, { delivery: { phase: 'replay', replayId: 1n, seq: 40n } })
+      expect(store.getInfo('ephemeral-history').totalCostUsd).toBe(4)
+      dispose()
+    })
+  })
+
+  it('protects a live zero without blocking another history field', () => {
+    createRoot((dispose) => {
+      const store = createAgentSessionStore()
+      store.beginReplay('zero-history', 1n)
+      store.updateInfo('zero-history', { totalCostUsd: 0 })
+      store.updateInfo('zero-history', { totalCostUsd: 2, planFilePath: '/history-plan' }, { delivery: { phase: 'replay', replayId: 1n, seq: 40n } })
+      expect(store.getInfo('zero-history')).toEqual({ totalCostUsd: 0, planFilePath: '/history-plan' })
+      dispose()
+    })
+  })
+
+  it('protects an absent field that a live context clear owns', () => {
+    createRoot((dispose) => {
+      const store = createAgentSessionStore()
+      store.beginReplay('clear-history', 1n)
+      store.clearContextUsage('clear-history')
+      store.updateInfo('clear-history', {
+        totalCostUsd: 2,
+        contextUsage: { inputTokens: 10, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 },
+        planFilePath: '/history-plan',
+      }, { delivery: { phase: 'replay', replayId: 1n, seq: 40n } })
+      expect(store.getInfo('clear-history')).toEqual({ planFilePath: '/history-plan' })
+      dispose()
+    })
+  })
+
+  it('rejects an old request and retires only the exact completed request', () => {
+    createRoot((dispose) => {
+      const store = createAgentSessionStore()
+      store.beginReplay('replaced-history', 1n)
+      store.beginReplay('replaced-history', 2n)
+      store.retireReplay('replaced-history', 1n)
+      store.removeReplay('replaced-history', 1n)
+      store.updateInfo('replaced-history', { totalCostUsd: 9 }, { delivery: { phase: 'replay', replayId: 1n, seq: 90n } })
+      store.updateInfo('replaced-history', { totalCostUsd: 2 }, { delivery: { phase: 'replay', replayId: 2n, seq: 20n } })
+      expect(store.getInfo('replaced-history').totalCostUsd).toBe(2)
+      store.retireReplay('replaced-history', 2n)
+      store.updateInfo('replaced-history', { totalCostUsd: 8 }, { delivery: { phase: 'replay', replayId: 2n, seq: 80n } })
+      expect(store.getInfo('replaced-history').totalCostUsd).toBe(2)
+      expect(store.acceptsReplay('replaced-history', 2n)).toBe(false)
+      dispose()
+    })
+  })
+
+  it('retains live ownership when the same requested replay repeats', () => {
+    createRoot((dispose) => {
+      const store = createAgentSessionStore()
+      store.beginReplay('same-history', 1n)
+      store.updateInfo('same-history', { totalCostUsd: 3 })
+      store.beginReplay('same-history', 1n)
+      store.updateInfo('same-history', { totalCostUsd: 2 }, { delivery: { phase: 'replay', replayId: 1n, seq: 20n } })
+      expect(store.getInfo('same-history').totalCostUsd).toBe(3)
+      dispose()
+    })
+  })
+
+  it('does not replace a newer receipt with an older request', () => {
+    createRoot((dispose) => {
+      const store = createAgentSessionStore()
+      store.beginReplay('older-request', 2n)
+      store.beginReplay('older-request', 1n)
+      expect(store.acceptsReplay('older-request', 2n)).toBe(true)
+      expect(store.acceptsReplay('older-request', 1n)).toBe(false)
+      dispose()
+    })
+  })
+
+  it('keeps request and sequence values above the safe numeric integer limit exact', () => {
+    createRoot((dispose) => {
+      const store = createAgentSessionStore()
+      const replayId = 9007199254740993n
+      const seq = 9007199254740995n
+      store.beginReplay('large-history', replayId)
+      store.updateInfo('large-history', { totalCostUsd: 3 }, { delivery: { phase: 'live', seq } })
+      store.updateInfo('large-history', { totalCostUsd: 2 }, { delivery: { phase: 'replay', replayId, seq: seq - 1n } })
+      expect(store.getInfo('large-history').totalCostUsd).toBe(3)
+      store.updateInfo('large-history', { totalCostUsd: 4 }, { delivery: { phase: 'replay', replayId, seq: seq + 1n } })
+      expect(store.getInfo('large-history').totalCostUsd).toBe(4)
+      dispose()
+    })
+  })
+
+  it.each([0n, -1n, 1n << 64n])('rejects invalid replay request ID %s', (replayId) => {
+    createRoot((dispose) => {
+      const store = createAgentSessionStore()
+      expect(() => store.beginReplay('invalid-history', replayId)).toThrow('positive uint64')
+      expect(store.acceptsReplay('invalid-history', 0n)).toBe(true)
+      dispose()
+    })
+  })
+
+  it('accepts the largest uint64 request ID', () => {
+    createRoot((dispose) => {
+      const store = createAgentSessionStore()
+      const replayId = (1n << 64n) - 1n
+      store.beginReplay('largest-history', replayId)
+      expect(store.acceptsReplay('largest-history', replayId)).toBe(true)
+      dispose()
+    })
   })
 })

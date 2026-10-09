@@ -53,6 +53,114 @@ func newTestWatcher(channelID string) *mockResponseWriter {
 	return &mockResponseWriter{channelID: channelID}
 }
 
+func TestWatchReplayIdentityRegistryKeepsAnImmutableTupleAndRejectsBeforeReplacement(t *testing.T) {
+	t.Parallel()
+	manager := NewWatcherManager()
+	writer := newTestWatcher("tuple-channel")
+	session := manager.BeginSession(writer.channelID)
+	tuple := agentReplayTuple{replayID: 9007199254740995, replayMode: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR, cursorSeq: -1, windowTailSet: true}
+	entries := []watchEntry{{id: "agent", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, replay: tuple}, {id: "notify", mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}}
+	previous, current, owned, err := manager.ApplyAgentWatchesForSession(writer.channelID, session, entries, true, writer)
+	require.NoError(t, err)
+	require.True(t, owned)
+	assert.Empty(t, previous)
+	assert.Equal(t, tuple, current["agent"].replay)
+	current["agent"] = watchEntry{}
+	entries[0].replay.cursorSeq = 8
+	previous, current, owned, err = manager.ApplyAgentWatchesForSession(writer.channelID, session, entries, false, writer)
+	require.NoError(t, err)
+	require.True(t, owned)
+	assert.Equal(t, tuple, previous["agent"].replay)
+	assert.Equal(t, previous, current)
+	registrations := manager.agents.snapshot("agent")
+	require.Len(t, registrations, 1)
+	nextWriter := newTestWatcher(writer.channelID)
+	previous, current, owned, err = manager.ApplyAgentWatchesForSession(writer.channelID, session, entries[:1], true, nextWriter)
+	require.Error(t, err)
+	require.True(t, owned)
+	assert.Equal(t, previous, current)
+	assert.Equal(t, registrations, manager.agents.snapshot("agent"))
+	assert.Equal(t, leapmuxv1.WatchMode_WATCH_MODE_NOTIFY, manager.AgentModesForChannel(writer.channelID)["notify"])
+	manager.BroadcastAgentEvent("agent", testAgentEvent("agent"))
+	assert.Equal(t, int64(1), writer.streamCount.Load())
+	assert.Zero(t, nextWriter.streamCount.Load())
+	entries[0].replay.replayID++
+	_, current, owned, err = manager.ApplyAgentWatchesForSession(writer.channelID, session, entries[:1], true, nextWriter)
+	require.NoError(t, err)
+	require.True(t, owned)
+	assert.Equal(t, entries[0].replay, current["agent"].replay)
+	assert.NotContains(t, current, "notify")
+}
+
+func TestWatchReplayIdentityRegistryProtectsASuccessorFromAnOlderInvalidRequest(t *testing.T) {
+	t.Parallel()
+	manager := NewWatcherManager()
+	writer := newTestWatcher("replaced-channel")
+	first := manager.BeginSession(writer.channelID)
+	second := manager.BeginSession(writer.channelID)
+	entry := watchEntry{id: "successor", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, replay: agentReplayTuple{replayID: 8}}
+	require.NoError(t, manager.SetAgentWatchesForSession(writer.channelID, second, []watchEntry{entry}, writer))
+	previous, current, owned, err := manager.ApplyAgentWatchesForSession(writer.channelID, first, []watchEntry{{id: "invalid", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, true, writer)
+	require.NoError(t, err)
+	assert.False(t, owned)
+	assert.Nil(t, previous)
+	assert.Nil(t, current)
+	manager.UnwatchSession(writer.channelID, first)
+	_, current, owned, err = manager.ApplyAgentWatchesForSession(writer.channelID, second, nil, false, writer)
+	require.NoError(t, err)
+	require.True(t, owned)
+	assert.Equal(t, map[string]watchEntry{"successor": entry}, current)
+	manager.BroadcastAgentEvent("successor", testAgentEvent("successor"))
+	assert.Equal(t, int64(1), writer.streamCount.Load())
+}
+
+func TestWatchReplayIdentityRegistryRetiresOnlyTheFailedTupleGeneration(t *testing.T) {
+	t.Parallel()
+	manager := NewWatcherManager()
+	first := newTestWatcher("generation-channel")
+	session := manager.BeginSession(first.channelID)
+	entry := watchEntry{id: "agent", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, replay: agentReplayTuple{replayID: 1}}
+	require.NoError(t, manager.SetAgentWatchesForSession(first.channelID, session, []watchEntry{entry}, first))
+	second := newTestWatcher(first.channelID)
+	entry.replay.replayID = 2
+	first.failSends(channel.ErrTransportGone)
+	replace := func() {
+		assert.NoError(t, manager.SetAgentWatchesForSession(first.channelID, session, []watchEntry{entry}, second))
+	}
+	first.onSend.Store(&replace)
+	manager.BroadcastAgentEvent("agent", testAgentEvent("agent"))
+	_, current, owned, err := manager.ApplyAgentWatchesForSession(first.channelID, session, nil, false, second)
+	require.NoError(t, err)
+	require.True(t, owned)
+	assert.Equal(t, entry, current["agent"])
+	manager.BroadcastAgentEvent("agent", testAgentEvent("agent"))
+	assert.Equal(t, int64(1), second.streamCount.Load())
+}
+
+func TestCapturedWatcherPanicReleasesTheFIFOClaimWithoutLosingLaterEvents(t *testing.T) {
+	t.Parallel()
+	manager := NewWatcherManager()
+	writer := newTestWatcher("panic-queue-watcher")
+	manager.agents.setWatches(writer.channelID, []watchEntry{{id: "agent-panic", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, writer)
+	panicDuringSend := func() {
+		manager.EnqueueAgentEvent("agent-panic", testAgentEvent("agent-panic"))
+		panic("the watcher failed during delivery")
+	}
+	writer.onSend.Store(&panicDuringSend)
+	assert.PanicsWithValue(t, "the watcher failed during delivery", func() {
+		manager.BroadcastAgentEvent("agent-panic", testAgentEvent("agent-panic"))
+	})
+	writer.onSend.Store(nil)
+	manager.DrainAgentEvents("agent-panic")
+	assert.Equal(t, int64(1), writer.streamCount.Load(), "the next drain must deliver the retained event")
+	manager.BroadcastAgentEvent("agent-panic", testAgentEvent("agent-panic"))
+	assert.Equal(t, int64(2), writer.streamCount.Load(), "a watcher panic must not hold the publication claim")
+	manager.publicationMu.Lock()
+	_, retained := manager.publications["agent-panic"]
+	manager.publicationMu.Unlock()
+	assert.False(t, retained, "the completed queue must release its event bodies")
+}
+
 // failSends arms the mock to return err from SendStream. Pass nil to clear.
 func (m *mockResponseWriter) failSends(err error) {
 	if err == nil {
@@ -146,6 +254,28 @@ func TestBroadcastAgentEvent_DeduplicatesWithinWatchers(t *testing.T) {
 	m.BroadcastAgentEvent("agent-1", testAgentEvent("agent-1"))
 
 	assert.Equal(t, int64(1), mock.streamCount.Load())
+}
+
+func TestBroadcastAgentEventQueuesSynchronousReentry(t *testing.T) {
+	t.Parallel()
+	manager := NewWatcherManager()
+	writer := newTestWatcher("reentrant-agent-event")
+	manager.agents.setWatches(writer.channelID, []watchEntry{{id: "agent", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, writer)
+	var entered, reentered, nested atomic.Bool
+	callback := func() {
+		if !entered.CompareAndSwap(false, true) {
+			reentered.Store(true)
+			return
+		}
+		defer entered.Store(false)
+		if nested.CompareAndSwap(false, true) {
+			manager.BroadcastAgentEvent("agent", testAgentEvent("agent"))
+		}
+	}
+	writer.onSend.Store(&callback)
+	manager.BroadcastAgentEvent("agent", testAgentEvent("agent"))
+	assert.False(t, reentered.Load(), "a callback must enqueue the next event without entering the active send")
+	assert.Equal(t, int64(2), writer.streamCount.Load())
 }
 
 func TestBroadcastTerminalEvent_DistinctWatchersAllReceive(t *testing.T) {
@@ -282,12 +412,12 @@ func TestUnwatchSession_DoesNotWipeSuccessor(t *testing.T) {
 	second := newTestWatcher("ch-1")
 
 	sid1 := m.BeginSession("ch-1")
-	m.SetAgentWatchesForSession("ch-1", sid1, []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, first)
+	require.NoError(t, m.SetAgentWatchesForSession("ch-1", sid1, []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, replay: agentReplayTuple{replayID: 1}}}, first))
 
 	sid2 := m.BeginSession("ch-1")
 	// BeginSession clears predecessor watches so promotion starts clean.
 	assert.Equal(t, 0, m.agents.count("agent-1"))
-	m.SetAgentWatchesForSession("ch-1", sid2, []watchEntry{{id: "agent-2", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, second)
+	require.NoError(t, m.SetAgentWatchesForSession("ch-1", sid2, []watchEntry{{id: "agent-2", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, replay: agentReplayTuple{replayID: 1}}}, second))
 
 	// Predecessor teardown must not clear the successor's registrations.
 	m.UnwatchSession("ch-1", sid1)
@@ -305,7 +435,7 @@ func TestBeginSession_ClearsPredecessorWatches(t *testing.T) {
 	m := NewWatcherManager()
 	first := newTestWatcher("ch-1")
 	sid1 := m.BeginSession("ch-1")
-	m.SetAgentWatchesForSession("ch-1", sid1, []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, first)
+	require.NoError(t, m.SetAgentWatchesForSession("ch-1", sid1, []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, replay: agentReplayTuple{replayID: 1}}}, first))
 	require.Equal(t, leapmuxv1.WatchMode_WATCH_MODE_FULL, m.AgentModesForChannel("ch-1")["agent-1"])
 
 	_ = m.BeginSession("ch-1")
@@ -348,9 +478,9 @@ func TestSetAgentWatchesForSession_IgnoresSupersededSession(t *testing.T) {
 
 	sid1 := m.BeginSession("ch-1")
 	sid2 := m.BeginSession("ch-1")
-	m.SetAgentWatchesForSession("ch-1", sid2, []watchEntry{{id: "agent-2", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, second)
+	require.NoError(t, m.SetAgentWatchesForSession("ch-1", sid2, []watchEntry{{id: "agent-2", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, replay: agentReplayTuple{replayID: 1}}}, second))
 	// Late apply from the cancelled session must not re-register.
-	m.SetAgentWatchesForSession("ch-1", sid1, []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, first)
+	require.NoError(t, m.SetAgentWatchesForSession("ch-1", sid1, []watchEntry{{id: "agent-1", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, replay: agentReplayTuple{replayID: 1}}}, first))
 
 	assert.Equal(t, 0, m.agents.count("agent-1"))
 	assert.Equal(t, 1, m.agents.count("agent-2"))
@@ -945,7 +1075,7 @@ func TestReplaySink_StopsSendingOnceTheTransportDies(t *testing.T) {
 	t.Parallel()
 
 	w := newDeadTransportWriter("ch-1")
-	sink := newReplaySink(w)
+	sink := newReplaySink(w, 0)
 
 	for i := 0; i < 10; i++ {
 		sink.send(&leapmuxv1.WatchEventsResponse{
@@ -967,7 +1097,7 @@ func TestReplaySink_KeepsGoingWhenOneMessageIsRejected(t *testing.T) {
 
 	w := newTestWatcher("ch-1")
 	w.failSends(fmt.Errorf("message too large: %w", channel.ErrMessageRejected))
-	sink := newReplaySink(w)
+	sink := newReplaySink(w, 0)
 
 	for i := 0; i < 5; i++ {
 		sink.send(&leapmuxv1.WatchEventsResponse{
@@ -1049,7 +1179,7 @@ func TestReplaySink_KeepsGoingWhenOneEventCannotBeMarshalled(t *testing.T) {
 	t.Parallel()
 
 	w := newTestWatcher("ch-1")
-	sink := newReplaySink(w)
+	sink := newReplaySink(w, 0)
 
 	unencodable := &leapmuxv1.AgentEvent{
 		AgentId: string([]byte{0x80}),

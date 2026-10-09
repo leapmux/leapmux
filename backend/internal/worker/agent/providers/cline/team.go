@@ -15,37 +15,32 @@ import (
 
 // Agent teams.
 //
-// With agent teams on, the lead can start teammates and hand each one a task
-// to run in the background (`team_run_task`). Cline reports every change of
-// the team with `team.progress`: a summary of the team, and the lifecycle event
-// that changed it. The run events carry the run's id, its teammate and its
-// task.
+// With teams enabled, the lead starts teammates and assigns background work through team_run_task.
+// team.progress carries the team summary and the lifecycle event for each change.
+// Each run event supplies the run ID, teammate, and task.
 //
-// Each teammate run becomes a workflow row, grouped under its team, from the
-// moment that Cline queues it until it ends. When it ends, Cline stores the teammate's
-// conversation as a session of its own (`<root>__teamtask__<agent>__...`),
-// and the worker writes the run's transcript from it (subagent.go).
+// Each teammate run owns one workflow row grouped under its team from queueing through completion.
+// Cline then stores its conversation as <root>__teamtask__<agent>__....
+// The worker reconstructs its transcript from that session. See subagent.go.
 //
-// Cline states no agent on a teammate's live output either. While the lead
-// runs a turn, the teammates' output reaches the lead's stream among the
-// lead's, as it does in Cline's own CLI, and the worker cannot tell it apart:
-// it stays in the lead's transcript. While no lead turn runs, the output of a
-// stream with an active run is a teammate's, and the worker drops it live; the
-// run's own transcript holds it once the run ends. A run's lifecycle events
-// reach the lead's transcript as notices.
+// Teammate live output also supplies no agent identity.
+// During a lead turn, it arrives among lead output and remains in the lead transcript, as in Cline's own CLI.
+// Outside a lead turn, an active teammate run identifies the untagged output as teammate work.
+// Discard that live output until the stored run transcript becomes available after completion.
+// The run's lifecycle notices still reach the lead transcript.
 
 // teamTaskSessionMarker is the part of a stored session id that marks a
 // teammate task's session.
 const teamTaskSessionMarker = "__teamtask__"
 
-// teamRowPrefix and teamGroupPrefix key the registry rows of teammate runs and
-// their group.
+// teamRowPrefix identifies teammate-run registry rows, and teamGroupPrefix identifies their team groups.
 const (
 	teamRowPrefix   = "cline-team-run:"
 	teamGroupPrefix = "cline-team:"
 )
 
-// teamState follows the teammate runs of the session. Guarded by Agent.Mu.
+// teamState tracks this session's teammate runs.
+// Agent.Mu protects its state.
 type teamState struct {
 	runs map[string]*teamRun
 }
@@ -90,8 +85,8 @@ type teamProgress struct {
 	} `json:"lastEvent"`
 }
 
-// teamRunStatus maps a run event onto the row's status, and reports whether
-// the event is one of a run's lifecycle.
+// teamRunStatus maps a recognized run-lifecycle event to its registry status.
+// It also reports whether the event belongs to that lifecycle.
 func teamRunStatus(eventType string) (bgtask.Status, bool) {
 	switch eventType {
 	case contracts.ClineTeamRunEventRunQueued:
@@ -99,7 +94,7 @@ func teamRunStatus(eventType string) (bgtask.Status, bool) {
 	case contracts.ClineTeamRunEventRunStarted:
 		return bgtask.StatusRunning, true
 	case contracts.ClineTeamRunEventRunCompleted:
-		return bgtask.StatusCompleted, true
+		return bgtask.StatusSucceeded, true
 	case contracts.ClineTeamRunEventRunFailed:
 		return bgtask.StatusFailed, true
 	case contracts.ClineTeamRunEventRunCancelled:
@@ -111,9 +106,8 @@ func teamRunStatus(eventType string) (bgtask.Status, bool) {
 	}
 }
 
-// handleTeamProgress keeps the rows of the teammate runs, and persists each run
-// event as a notice of the lead's transcript. Every other team event -- a
-// message between teammates, each teammate's output -- changes no row.
+// handleTeamProgress maintains teammate-run registry rows and persists each run event as a lead-transcript notice.
+// Other team events, including teammate messages and output, change no registry row.
 func (a *Agent) handleTeamProgress(event hubEvent) {
 	var progress teamProgress
 	if json.Unmarshal(event.Payload, &progress) != nil {
@@ -144,7 +138,7 @@ func (a *Agent) handleTeamProgress(event hubEvent) {
 		a.endTeamRun(run, status)
 	}
 	if !a.IsDiscardingOutput() {
-		if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, event.Raw); err != nil {
+		if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: event.Raw}); err != nil {
 			slog.Error("cline persist team progress", "agent_id", a.AgentID(), "error", err)
 		}
 	}
@@ -173,8 +167,8 @@ func (a *Agent) teamRunFor(event hubEvent, runID, agentID, teamName string) *tea
 	if title == "" {
 		title = "Teammate"
 	}
-	// A run starts from no tool call the worker can name, so its transcript
-	// hangs off a span of its own: the run's row key.
+	// No worker-visible tool call starts this run.
+	// Its row key therefore supplies its independent transcript span.
 	childID, err := a.sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: run.rowKey(), ProviderChildKey: run.rowKey(), Title: title})
 	if err != nil {
 		slog.Warn("cline teammate ensure child failed", "agent_id", a.AgentID(), "run_id", runID, "error", err)
@@ -225,8 +219,7 @@ func (a *Agent) endTeamRun(run *teamRun, status bgtask.Status) {
 	})
 }
 
-// closeTeamRuns closes the row of every run that is still active, with status,
-// because the process that ran it ended or the session changed.
+// closeTeamRuns closes each active run row with status when the owning process ends or its session changes.
 func (a *Agent) closeTeamRuns(status bgtask.Status) {
 	a.Mu.Lock()
 	var open []*teamRun

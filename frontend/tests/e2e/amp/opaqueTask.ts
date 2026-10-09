@@ -86,7 +86,7 @@ export async function openOpaqueAmpTask(context: ManagedNativeScenarioContext, o
         await waitForAgentIdle(context.page)
         expect((await ampToolResultReader(context)(request, callId)).text).toContain(report)
         await expect(messageContents(context.page).filter({ hasText: report }).first()).toBeVisible()
-        await expect(row).toHaveAttribute('data-status', 'completed')
+        await expect(row).toHaveAttribute('data-status', 'succeeded')
         finished = true
       },
     }

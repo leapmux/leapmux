@@ -43,7 +43,7 @@ func TestKiloFamilyHooksKeepNativeChildIdentityAcrossRename(t *testing.T) {
 	require.Len(t, rows, 1)
 	assert.Equal(t, "ses-kilo-native", rows[0].RowKey)
 	assert.Equal(t, initial.ChildAgentID, rows[0].ChildAgentID)
-	assert.Equal(t, bgtask.StatusCompleted, rows[0].Status)
+	assert.Equal(t, bgtask.StatusSucceeded, rows[0].Status)
 	assert.Equal(t, []string{initial.ChildAgentID}, sink.ChildAgentIDs())
 	assert.Equal(t, before, child.Messages())
 	reports := child.LeapMuxNotifications()

@@ -249,7 +249,7 @@ func (transcript *geminiChildTranscript) persist(session geminiSession) error {
 		}
 	}
 	if complete {
-		if err := transcript.services.CloseBackgroundTask(session.SessionID, bgtask.StatusCompleted); err != nil {
+		if err := transcript.services.CloseBackgroundTask(session.SessionID, bgtask.StatusSucceeded); err != nil {
 			return err
 		}
 		transcript.services.CleanupChildAgent(childID)

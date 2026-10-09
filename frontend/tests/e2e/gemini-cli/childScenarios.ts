@@ -85,7 +85,7 @@ export async function finishGeminiChildWithReload(
   options: { beforeReload?: () => void | Promise<void> } = {},
 ): Promise<void> {
   await child.finish()
-  await expect(child.row).toHaveAttribute('data-status', 'completed')
+  await expect(child.row).toHaveAttribute('data-status', 'succeeded')
   await openChildTabFromRow(context.page, child.row)
   await expect(messageContents(context.page).filter({ hasText: child.finalReply }).first()).toBeVisible()
   await options.beforeReload?.()

@@ -48,6 +48,7 @@ var providerDirs = map[leapmuxv1.AgentProvider]string{
 	leapmuxv1.AgentProvider_AGENT_PROVIDER_FAST_AGENT:       "fastagent",
 	leapmuxv1.AgentProvider_AGENT_PROVIDER_COMMAND_CODE:     "commandcode",
 	leapmuxv1.AgentProvider_AGENT_PROVIDER_DEEPSEEK_HARNESS: "deepseekharness",
+	leapmuxv1.AgentProvider_AGENT_PROVIDER_MUSE_CODE:        "muse",
 	leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI:       "gemini",
 }
 
@@ -61,6 +62,7 @@ var providerDirs = map[leapmuxv1.AgentProvider]string{
 // the base implements those rules for all eight of them. OpenCode also runs the
 // busy refusal over its own agent type.
 var requiredSuites = map[string][]string{
+	"muse": {"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens", "AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions", "AssertPreservesTheResponseWithoutARequest", "AssertWithholdsTheResponseForAMalformedRequest", "AssertTokenResumeRule", "AssertChildCapabilities", "RunSupplementConformance"},
 
 	"commandcode": {
 		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",

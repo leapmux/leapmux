@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1263,4 +1264,203 @@ func TestManagerRepeatedTurnEndRestartsADrainAStoreErrorStopped(t *testing.T) {
 	}, eventuallyWait, 10*time.Millisecond)
 	assert.Equal(t, []string{"one"}, dispatcher.dispatches(),
 		"the repeated clear restarted the loop the store error stopped")
+}
+
+type reentryQueueObserver struct {
+	NopObserver
+	changed  func(Snapshot)
+	accepted func(AcceptedTranscript)
+}
+
+func (observer *reentryQueueObserver) QueueChanged(snapshot Snapshot) {
+	if observer.changed != nil {
+		observer.changed(snapshot)
+	}
+}
+
+func (observer *reentryQueueObserver) InputAccepted(transcript AcceptedTranscript) {
+	if observer.accepted != nil {
+		observer.accepted(transcript)
+	}
+}
+
+func TestManagerObserversCanReadCommittedQueueStateDuringReentry(t *testing.T) {
+	t.Parallel()
+	for _, operation := range []string{"enqueue", "pause", "manual pause", "retry", "steer", "drain", "restart begin", "restart finish"} {
+		t.Run(operation, func(t *testing.T) {
+			t.Parallel()
+			_, store := newStoreFixture(t)
+			ctx := t.Context()
+			input := NewItem{ID: "one", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "one"}
+			if operation == "enqueue" {
+				_, _, err := store.TurnStarted(ctx, "agent-1", false)
+				require.NoError(t, err)
+			}
+			if operation == "retry" || operation == "steer" || operation == "drain" {
+				_, err := store.Enqueue(ctx, input)
+				require.NoError(t, err)
+			}
+			if operation == "retry" {
+				prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
+				require.NoError(t, err)
+				require.NotNil(t, prepared)
+				_, err = store.FailDispatch(ctx, "agent-1", "one", assert.AnError, false)
+				require.NoError(t, err)
+			}
+			if operation == "steer" {
+				_, _, err := store.TurnStarted(ctx, "agent-1", true)
+				require.NoError(t, err)
+			}
+			observer := &reentryQueueObserver{}
+			manager := NewManager(store, &recordingDispatcher{steering: true}, observer)
+			var restart *PlannedRestart
+			if operation == "restart finish" {
+				var err error
+				restart, err = manager.BeginPlannedRestart(ctx, "agent-1")
+				require.NoError(t, err)
+			}
+			var entered atomic.Bool
+			observed := make(chan error, 1)
+			nestedFinished := make(chan struct{})
+			observer.changed = func(committed Snapshot) {
+				if !entered.CompareAndSwap(false, true) {
+					return
+				}
+				nestedResult := make(chan error, 1)
+				go func() {
+					current, err := manager.Snapshot(ctx, "agent-1")
+					if err == nil && current.Revision < committed.Revision {
+						err = fmt.Errorf("the observer read revision %d before committed revision %d", current.Revision, committed.Revision)
+					}
+					nestedResult <- err
+					close(nestedFinished)
+				}()
+				select {
+				case err := <-nestedResult:
+					observed <- err
+				case <-time.After(eventuallyWait):
+					observed <- errors.New("the queue observer holds the coordinator lock across reentry")
+				}
+			}
+			completed := make(chan error, 1)
+			go func() {
+				var err error
+				switch operation {
+				case "enqueue":
+					_, err = manager.Enqueue(ctx, input)
+				case "pause":
+					_, err = manager.Pause(ctx, "agent-1", leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED)
+				case "manual pause":
+					_, err = manager.SetPaused(ctx, "agent-1", true)
+				case "retry":
+					_, err = manager.Retry(ctx, "agent-1", "one", false)
+				case "steer":
+					_, err = manager.Steer(ctx, "agent-1", "one")
+				case "drain":
+					manager.NotifyDependencyReady("agent-1")
+				case "restart begin":
+					var hold *PlannedRestart
+					hold, err = manager.BeginPlannedRestart(ctx, "agent-1")
+					if err == nil {
+						err = hold.Finish(ctx, false, true)
+					}
+				case "restart finish":
+					err = restart.Finish(ctx, false, true)
+				}
+				completed <- err
+			}()
+			var observerErr error
+			select {
+			case observerErr = <-observed:
+			case <-time.After(2 * eventuallyWait):
+				t.Fatal("the queue observer blocked when it read the committed queue")
+			}
+			select {
+			case err := <-completed:
+				require.NoError(t, err)
+			case <-time.After(eventuallyWait):
+				t.Fatal("the queue operation did not finish after observer reentry")
+			}
+			select {
+			case <-nestedFinished:
+			case <-time.After(eventuallyWait):
+				t.Fatal("the queue read did not finish after the observer returned")
+			}
+			manager.StopAndWait()
+			assert.NoError(t, observerErr)
+		})
+	}
+}
+
+type afterAcceptDispatcher struct {
+	recordingDispatcher
+	afterAccept func()
+}
+
+func (dispatcher *afterAcceptDispatcher) Dispatch(item DispatchItem) (DispatchResult, error) {
+	result, err := dispatcher.recordingDispatcher.Dispatch(item)
+	result.AfterAccept = dispatcher.afterAccept
+	return result, err
+}
+
+func TestManagerAfterAcceptCanReconcileTheNextTurnInOrder(t *testing.T) {
+	t.Parallel()
+	_, store := newStoreFixture(t)
+	ctx := t.Context()
+	_, err := store.Enqueue(ctx, NewItem{ID: "one", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "one"})
+	require.NoError(t, err)
+	observer := &reentryQueueObserver{}
+	dispatcher := &afterAcceptDispatcher{}
+	manager := NewManager(store, dispatcher, observer)
+	var orderMu sync.Mutex
+	var order []string
+	appendOrder := func(value string) {
+		orderMu.Lock()
+		order = append(order, value)
+		orderMu.Unlock()
+	}
+	observer.accepted = func(AcceptedTranscript) { appendOrder("accepted") }
+	observer.changed = func(snapshot Snapshot) {
+		if len(snapshot.Items) == 0 {
+			appendOrder("accepted snapshot")
+		}
+	}
+	completed := make(chan error, 1)
+	nestedFinished := make(chan struct{})
+	dispatcher.afterAccept = func() {
+		appendOrder("after accept")
+		nestedResult := make(chan error, 1)
+		go func() {
+			_, err := manager.TurnStarted(ctx, "agent-1", true)
+			nestedResult <- err
+			close(nestedFinished)
+		}()
+		select {
+		case err := <-nestedResult:
+			completed <- err
+		case <-time.After(eventuallyWait):
+			completed <- errors.New("the accepted-input handler holds the coordinator lock across reentry")
+		}
+	}
+	manager.NotifyDependencyReady("agent-1")
+	var callbackErr error
+	select {
+	case callbackErr = <-completed:
+	case <-time.After(2 * eventuallyWait):
+		t.Fatal("the accepted-input handler blocked when it reconciled the next turn")
+	}
+	select {
+	case <-nestedFinished:
+	case <-time.After(eventuallyWait):
+		t.Fatal("the next turn did not finish after the accepted-input handler returned")
+	}
+	manager.StopAndWait()
+	assert.NoError(t, callbackErr)
+	orderMu.Lock()
+	assert.Equal(t, []string{"accepted", "accepted snapshot", "after accept", "accepted snapshot"}, order)
+	orderMu.Unlock()
+	snapshot, err := store.Snapshot(ctx, "agent-1")
+	require.NoError(t, err)
+	assert.True(t, snapshot.ActiveTurn)
+	assert.True(t, snapshot.ActiveTurnSteerable)
 }

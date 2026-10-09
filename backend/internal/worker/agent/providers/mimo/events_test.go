@@ -94,3 +94,15 @@ func TestMiMoToolStateFinal(t *testing.T) {
 		assert.Equal(t, want, (&mimoToolState{Status: status}).final(), "status %q", status)
 	}
 }
+
+func TestLateMessageInfoDecodesTheNativeParentLink(t *testing.T) {
+	t.Parallel()
+	var info mimoMessageInfo
+	require.NoError(t, json.Unmarshal([]byte(`{"id":"msg_child_answer","sessionID":"ses_test","role":"assistant","agentID":"child","parentID":"msg_child_user"}`), &info))
+	assert.Equal(t, "msg_child_user", info.ParentID)
+	assert.Equal(t, "child", info.AgentID)
+	require.NoError(t, json.Unmarshal([]byte(`{"id":"msg_root_answer","role":"assistant"}`), &info))
+	var omitted mimoMessageInfo
+	require.NoError(t, json.Unmarshal([]byte(`{"id":"msg_root_answer","role":"assistant"}`), &omitted))
+	assert.Empty(t, omitted.ParentID)
+}

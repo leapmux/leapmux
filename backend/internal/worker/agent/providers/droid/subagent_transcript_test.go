@@ -300,7 +300,7 @@ func TestDroidFinishedChildAnnouncementDoesNotRestartTail(t *testing.T) {
 	advanceDroidArchive(t, clock)
 	testutil.RequireEventually(t, func() bool {
 		row, found := sink.BackgroundTask(archiveChildID)
-		return found && row.Status == bgtask.StatusCompleted
+		return found && row.Status == bgtask.StatusSucceeded
 	}, "the archive closes the first child turn")
 	a.tailMu.Lock()
 	finished := a.childTails[archiveChildID]
@@ -329,7 +329,7 @@ func TestDroidChildAnnouncementRejectsReusedSessionWithDifferentTool(t *testing.
 	advanceDroidArchive(t, clock)
 	testutil.RequireEventually(t, func() bool {
 		row, found := sink.BackgroundTask(archiveChildID)
-		return found && row.Status == bgtask.StatusCompleted
+		return found && row.Status == bgtask.StatusSucceeded
 	}, "the first child announcement reaches its final result")
 	row, found := sink.BackgroundTask(archiveChildID)
 	require.True(t, found)
@@ -343,7 +343,7 @@ func TestDroidChildAnnouncementRejectsReusedSessionWithDifferentTool(t *testing.
 	require.True(t, found)
 	assert.Equal(t, row.ChildAgentID, updated.ChildAgentID,
 		"a different Task call cannot claim the old native child session")
-	assert.Equal(t, bgtask.StatusCompleted, updated.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, updated.Status)
 	a.tailMu.Lock()
 	assert.Same(t, firstTail, a.childTails[archiveChildID])
 	a.tailMu.Unlock()
@@ -662,7 +662,7 @@ func TestDroidChildArchiveProjectsLiveRows(t *testing.T) {
 	advanceDroidArchive(t, clock)
 	testutil.RequireEventually(t, func() bool {
 		item, exists := sink.BackgroundTask(archiveChildID)
-		return exists && item.Status == bgtask.StatusCompleted && archiveRowsContain(childArchiveRows(sink, archiveChildID), "ARCHIVE_CHILD_FINAL")
+		return exists && item.Status == bgtask.StatusSucceeded && archiveRowsContain(childArchiveRows(sink, archiveChildID), "ARCHIVE_CHILD_FINAL")
 	}, "the final native record closes only the child")
 }
 

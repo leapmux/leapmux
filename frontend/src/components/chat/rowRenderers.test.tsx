@@ -14,6 +14,14 @@ function drawnText(row: ChatRow, completion: MessageCompletion | null): string {
 const INTERRUPTED_DIVIDER: ChatRow = { kind: 'divider', divider: { label: 'Turn interrupted (1.2s)' } }
 
 describe('renderExtractedRow', () => {
+  it('draws the finality marker without an error or interruption claim', () => {
+    const text = drawnText({ kind: 'assistant-text', text: 'Native partial text' }, 'finished')
+    expect(text).toContain('Native partial text')
+    expect(text).toContain('Text ended without a known outcome.')
+    expect(text).not.toContain(ERROR_MARKER)
+    expect(text).not.toContain(INTERRUPTION_MARKER)
+  })
+
   it('draws the interruption marker under the text that a stop cut', () => {
     const text = drawnText({ kind: 'assistant-text', text: 'Half a sen' }, 'interrupted')
     expect(text).toContain('Half a sen')

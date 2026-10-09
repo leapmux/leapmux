@@ -482,7 +482,7 @@ func TestKimiResyncRestoresSubagentsAndTasks(t *testing.T) {
 		status     bgtask.Status
 		completion agent.MessageCompletion
 	}{
-		"completed": {wire: "completed", preview: "All good.", status: bgtask.StatusCompleted, completion: agent.MessageCompletionInterrupted},
+		"completed": {wire: "completed", preview: "All good.", status: bgtask.StatusSucceeded, completion: agent.MessageCompletionInterrupted},
 		"failed":    {wire: "failed", preview: "provider exploded", status: bgtask.StatusFailed, completion: agent.MessageCompletionError},
 		"cancelled": {wire: "cancelled", status: bgtask.StatusStopped, completion: agent.MessageCompletionInterrupted},
 	} {
@@ -511,7 +511,7 @@ func TestKimiResyncRestoresSubagentsAndTasks(t *testing.T) {
 				}
 			}
 			assert.True(t, text, "the text the subagent streamed before the gap is kept")
-			if tc.status == bgtask.StatusCompleted {
+			if tc.status == bgtask.StatusSucceeded {
 				assert.NotEmpty(t, child.LeapMuxNotifications(), "the report the server states reaches the child transcript")
 			}
 			if tc.status == bgtask.StatusFailed {
@@ -560,7 +560,7 @@ func TestKimiResyncRestoresSubagentsAndTasks(t *testing.T) {
 
 		waitFor(t, rowStatus(rig, "session_1/agent-2"), "the row opens and closes")
 		row, _ := childOf(t, rig.sink, "session_1/agent-2")
-		assert.Equal(t, bgtask.StatusCompleted, row.Status)
+		assert.Equal(t, bgtask.StatusSucceeded, row.Status)
 		assert.Equal(t, bgtask.KindSubagent, row.Kind)
 	})
 
@@ -675,7 +675,7 @@ func TestKimiResyncRestoresSubagentsAndTasks(t *testing.T) {
 		require.NoError(t, rig.agent.InterruptChild("session_1/agent-9", agent.StopContext{}), "its task is what stops it")
 		assert.Len(t, rig.fake.requestsTo("POST "+kimiItemPath("session_1", "tasks", "agent-task-9", kimiActionCancel)), 1)
 		ended, _ := childOf(t, rig.sink, "session_1/agent-1")
-		assert.Equal(t, bgtask.StatusCompleted, ended.Status, "the background subagent that ended during the gap closes")
+		assert.Equal(t, bgtask.StatusSucceeded, ended.Status, "the background subagent that ended during the gap closes")
 	})
 
 	t.Run("a subagent in a follow-up turn of its own is left to that turn", func(t *testing.T) {

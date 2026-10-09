@@ -41,7 +41,7 @@ grokTest.describe('Grok Build workflow grouping', () => {
     await expandBackgroundTasksSection(page)
     const workflow = backgroundTaskRows(page, { kind: 'workflow' }).first()
     await expectRowBecomesFinal(page, workflow)
-    await expect(workflow).toHaveAttribute('data-status', 'completed')
+    await expect(workflow).toHaveAttribute('data-status', 'succeeded')
     expect((await modelScript.status()).ruleMatches['the workflow child answers']).toBe(1)
 
     const child = backgroundTaskRows(page, { kind: 'subagent' }).filter({ hasText: 'Probe child' }).first()

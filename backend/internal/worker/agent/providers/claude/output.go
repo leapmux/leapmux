@@ -192,7 +192,7 @@ func (a *Agent) handleClaudeOutput(content []byte, msgType string) {
 		if msgType == contracts.NotificationTypeInterrupted {
 			a.sink.ResetSpans()
 		}
-		if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, content); err != nil {
+		if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, agent.MessageContent{Original: content}); err != nil {
 			slog.Error("persist agent notification", "agent_id", a.AgentID(), "type", msgType, "error", err)
 		}
 
@@ -237,7 +237,7 @@ func (a *Agent) claudeHandleConversationReset() {
 		slog.Error("build claude context-cleared notice", "agent_id", a.AgentID(), "error", err)
 		return
 	}
-	if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, notice); err != nil {
+	if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, agent.MessageContent{Original: notice}); err != nil {
 		slog.Error("persist agent notification", "agent_id", a.AgentID(), "type", contracts.NotificationTypeContextCleared, "error", err)
 	}
 }
@@ -584,7 +584,7 @@ func (a *Agent) handlePersistableMessage(content []byte, msgType string) {
 			// threaded subtypes — the renderer extracts `subtype`/`status`
 			// from the raw envelope so future fields like `tokensBefore`/
 			// `durationMs` don't get discarded.
-			if _, err := a.sink.PersistNotification(source, content); err != nil {
+			if _, err := a.sink.PersistNotification(source, agent.MessageContent{Original: content}); err != nil {
 				slog.Error("persist notification-threaded system message", "agent_id", a.AgentID(), "error", err)
 			}
 			return
@@ -1131,7 +1131,7 @@ func (a *Agent) claudeCodeHandleRateLimitEvent(content []byte) {
 	// (providers/claude/extractors/notification.ts) read `rate_limit_info` from this raw
 	// Claude-native shape (camelCase) -- the persisted side stays in the SDK's
 	// format so notification rendering remains a passthrough.
-	if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content); err != nil {
+	if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: content}); err != nil {
 		slog.Error("persist rate_limit notification", "agent_id", a.AgentID(), "error", err)
 	}
 

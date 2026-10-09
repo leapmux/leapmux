@@ -77,7 +77,7 @@ func TestPathSegment(t *testing.T) {
 	}
 }
 
-// Every request names the agent's directory and carries the credential. The
+// Every request specifies the agent's directory and carries the credential. The
 // server scopes a session to a directory, so a request without the header
 // would reach the server's own working directory.
 func TestRPCSendsTheDirectoryAndTheCredential(t *testing.T) {
@@ -105,10 +105,32 @@ func TestRPCRefusesAnUnsafeIDWithoutARequest(t *testing.T) {
 	assert.ErrorContains(t, err, "not a MiMo session id")
 	_, err = a.rpc.message(ctx, testSessionID, "msg/1")
 	assert.ErrorContains(t, err, "not a MiMo message id")
+	_, err = a.rpc.messageWithParts(ctx, testSessionID, "msg/1")
+	assert.ErrorContains(t, err, "not a MiMo message id")
+	_, err = a.rpc.messageWithParts(ctx, "../session", "msg_1")
+	assert.ErrorContains(t, err, "not a MiMo session id")
 	assert.ErrorContains(t, a.rpc.replyPermission(ctx, "per 1", mimoPermissionReplyBody{Reply: "once"}), "not a MiMo permission id")
 	assert.ErrorContains(t, a.rpc.rejectQuestion(ctx, "que/1"), "not a MiMo question id")
 	assert.ErrorContains(t, a.rpc.replyBashInteractive(ctx, "", mimoBashReplyBody{}), "not a MiMo interactive command id")
 	assert.Empty(t, server.allRequests(), "a refused id sends nothing")
+}
+
+func TestRPCCompleteMessagePreservesItsNativeParts(t *testing.T) {
+	t.Parallel()
+	a, server := newTestAgent(t, nil)
+	controlMessageResponse(t, server, "model-call")
+	message, err := a.rpc.messageWithParts(context.Background(), testSessionID, "msg_1")
+	require.NoError(t, err)
+	assert.Equal(t, "msg_1", message.Info.ID)
+	require.Len(t, message.Parts, 1)
+	assert.Equal(t, "part_control", message.Parts[0].ID)
+	assert.Equal(t, "model-call", message.Parts[0].CallID)
+	info, err := a.rpc.message(context.Background(), testSessionID, "msg_1")
+	require.NoError(t, err)
+	assert.Equal(t, message.Info, info)
+	server.respond("GET /session/ses_test/message/msg_1", http.StatusInternalServerError, `{}`)
+	_, err = a.rpc.messageWithParts(context.Background(), testSessionID, "msg_1")
+	assert.ErrorContains(t, err, "500 Internal Server Error")
 }
 
 func TestRPCRoutes(t *testing.T) {
@@ -164,4 +186,54 @@ func TestRPCReadsSessionStatuses(t *testing.T) {
 	statuses, err = a.rpc.sessionStatuses(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, map[string]mimoStatus{"ses_test": {Type: "retry", Attempt: 2, Message: "overloaded", Next: 17}}, statuses)
+}
+
+func TestLateCompleteMessageRejectsForeignOrMissingIdentity(t *testing.T) {
+	t.Parallel()
+	for _, body := range []string{
+		`{}`, `{"info":{}}`,
+		`{"info":{"id":"other","sessionID":"ses_test","role":"assistant"}}`,
+		`{"info":{"id":"msg_invalid_info","sessionID":"other","role":"assistant"}}`,
+		`{"info":{"id":"msg_invalid_info","role":"assistant"}}`,
+		`{"info":{"id":"msg_invalid_info","sessionID":"ses_test"}}`,
+		`{"info":{"id":"msg_invalid_info","sessionID":"ses_test","role":"tool"}}`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			t.Parallel()
+			a, sink, server := newSinkTestAgent(t)
+			server.respond("GET /session/ses_test/message/msg_invalid_info", http.StatusOK, body)
+			_, err := a.rpc.messageWithParts(context.Background(), testSessionID, "msg_invalid_info")
+			assert.Error(t, err)
+			feed(a, textPartEvent(t, partTypeText, "part_invalid_info", "msg_invalid_info", "The real text survives the invalid read.", true))
+			rows := assembledRows(sink)
+			require.Len(t, rows, 1)
+			_, text, _ := assembledText(t, rows[0].Content)
+			assert.Equal(t, "The real text survives the invalid read.", text)
+			assert.Equal(t, testSessionID, rows[0].AgentSessionID)
+		})
+	}
+}
+
+func TestLateCompleteMessageKeepsOptionalNativeMetadata(t *testing.T) {
+	t.Parallel()
+	for _, body := range []string{
+		`{"info":{"id":"msg_optional_info","sessionID":"ses_test","role":"user"}}`,
+		`{"info":{"id":"msg_optional_info","sessionID":"ses_test","role":"assistant","summary":true,"parentID":"msg_native_parent"},"parts":[]}`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			t.Parallel()
+			a, server := newTestAgent(t, nil)
+			server.respond("GET /session/ses_test/message/msg_optional_info", http.StatusOK, body)
+			result, err := a.rpc.messageWithParts(context.Background(), testSessionID, "msg_optional_info")
+			require.NoError(t, err)
+			assert.Equal(t, "msg_optional_info", result.Info.ID)
+			assert.Equal(t, testSessionID, result.Info.SessionID)
+			if result.Info.Role == roleUser {
+				assert.Empty(t, result.Info.AgentID)
+			} else {
+				assert.True(t, result.Info.isCompactionSummary())
+				assert.Equal(t, "msg_native_parent", result.Info.ParentID)
+			}
+		})
+	}
 }

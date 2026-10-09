@@ -29,12 +29,10 @@ const (
 	routeBashInteractive = "/bash-interactive"
 )
 
-// directoryHeader states the directory a request belongs to. The server keeps
-// one instance for each directory, and the event stream of one instance carries
-// only that instance's sessions, so every request names the agent's working
-// directory rather than relying on the server's own working directory. A login
-// shell profile that changes the directory would otherwise move every session
-// to the wrong project.
+// directoryHeader identifies the request's working directory.
+// The server keeps one instance per directory. Its event stream carries only its sessions.
+// Every request specifies the agent's working directory.
+// A login shell profile can change the server's working directory and select the wrong project.
 const directoryHeader = "x-mimocode-directory"
 
 // serverUser is the Basic-auth user name. MiMo reads it from
@@ -64,9 +62,9 @@ type mimoPromptPart struct {
 	Filename string
 }
 
-// MarshalJSON writes the fields of the part's own type and no other. A text
-// part states its text even when it is empty, because the server requires the
-// field, and a file part carries no text field at all.
+// MarshalJSON writes only the fields of the part's own type.
+// A text part states its text even when empty. The server requires that field.
+// A file part carries no text field.
 func (p mimoPromptPart) MarshalJSON() ([]byte, error) {
 	if p.Type == promptPartFile {
 		return json.Marshal(struct {
@@ -91,10 +89,14 @@ const (
 
 // mimoPromptRequest is the body of POST /session/:id/prompt_async.
 //
-// The client states the agent, the model and the variant on EVERY prompt: the
-// server keeps no current selection for a session, and a prompt that omits one
-// falls back to the configuration's default rather than to the previous prompt's
-// choice. AgentID addresses a subagent; empty addresses the main agent.
+// Every prompt specifies these selections:
+//   - The agent.
+//   - The model.
+//   - The variant.
+//
+// The server keeps no current selection per session.
+// An omitted selection uses the configuration's default, not the previous prompt's choice.
+// AgentID addresses a subagent. An empty AgentID addresses the main agent.
 type mimoPromptRequest struct {
 	Parts   []mimoPromptPart `json:"parts"`
 	Agent   string           `json:"agent,omitempty"`
@@ -155,13 +157,10 @@ func (r mimoRPC) do(ctx context.Context, method, path string, body, out any) err
 	return r.endpoint.Do(ctx, method, path, body, out)
 }
 
-// idPattern matches an id that is safe as one path segment as it stands: every
-// id the server issues does (`ses_…`, `msg_…`, `per_…`, `que_…`), and so does
-// every generated id of MiMo's own ID scheme.
-//
-// An id is checked rather than escaped. HTTPEndpoint escapes the path that it
-// builds, so an escape here would be escaped a second time, and an id with a
-// slash or a dot segment would address another route.
+// idPattern matches a native ID that is safe as one path segment.
+// MiMo's generated IDs satisfy this pattern.
+// HTTPEndpoint escapes the complete path. Escaping here would escape the ID twice.
+// An ID with a slash or a dot segment can address another route, so validation rejects it.
 var idPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
 // pathSegment returns id as one path segment, or an error that states kind
@@ -247,9 +246,8 @@ func (r mimoRPC) abort(ctx context.Context, sessionID string) error {
 	return r.do(ctx, http.MethodPost, path, nil, nil)
 }
 
-// summarize runs a compaction. The server answers only after the compaction
-// and the turn that follows it finish, so a caller runs it on its own goroutine
-// with a context that outlives one API timeout.
+// summarize runs a compaction. The server answers after compaction and its next turn finish.
+// The caller uses its own goroutine and a context that outlives one API timeout.
 func (r mimoRPC) summarize(ctx context.Context, sessionID string, model mimoModelRef) error {
 	path, err := sessionPath(sessionID, "summarize")
 	if err != nil {
@@ -278,7 +276,7 @@ func (r mimoRPC) sessionStatuses(ctx context.Context) (map[string]mimoStatus, er
 
 // messages returns the main agent's messages of a session. A subagent's
 // messages are in another slice, which the route returns only when a query
-// names the actor.
+// identifies the actor.
 func (r mimoRPC) messages(ctx context.Context, sessionID string) ([]mimoMessageWithParts, error) {
 	path, err := sessionPath(sessionID, "message")
 	if err != nil {
@@ -291,19 +289,29 @@ func (r mimoRPC) messages(ctx context.Context, sessionID string) ([]mimoMessageW
 
 // message returns one message of a session, from any actor's slice.
 func (r mimoRPC) message(ctx context.Context, sessionID, messageID string) (mimoMessageInfo, error) {
+	message, err := r.messageWithParts(ctx, sessionID, messageID)
+	return message.Info, err
+}
+
+// messageWithParts returns the complete message for exact tool ownership.
+func (r mimoRPC) messageWithParts(ctx context.Context, sessionID, messageID string) (mimoMessageWithParts, error) {
 	segment, err := pathSegment("message", messageID)
 	if err != nil {
-		return mimoMessageInfo{}, err
+		return mimoMessageWithParts{}, err
 	}
 	path, err := sessionPath(sessionID, "message", segment)
 	if err != nil {
-		return mimoMessageInfo{}, err
+		return mimoMessageWithParts{}, err
 	}
 	var message mimoMessageWithParts
 	if err := r.do(ctx, http.MethodGet, path, nil, &message); err != nil {
-		return mimoMessageInfo{}, err
+		return mimoMessageWithParts{}, err
 	}
-	return message.Info, nil
+	if message.Info.ID != messageID || message.Info.SessionID != sessionID ||
+		(message.Info.Role != roleUser && message.Info.Role != roleAssistant) {
+		return mimoMessageWithParts{}, fmt.Errorf("the native MiMo message does not match the requested identity")
+	}
+	return message, nil
 }
 
 func (r mimoRPC) configProviders(ctx context.Context) (mimoConfigProviders, error) {
@@ -383,9 +391,8 @@ func (r mimoRPC) replyBashInteractive(ctx context.Context, requestID string, bod
 }
 
 // splitModelID splits a LeapMux model id, `<provider>/<model>`, into the pair a
-// prompt carries. The model half may hold more slashes (an OpenRouter model id
-// does), so the split is at the FIRST slash. ok is false for an id without a
-// provider or without a model.
+// prompt carries. An OpenRouter model ID can hold more slashes.
+// The split uses the first slash. An ID without a provider or model returns false.
 func splitModelID(id string) (mimoModelRef, bool) {
 	provider, model, found := strings.Cut(id, "/")
 	if !found || provider == "" || model == "" {

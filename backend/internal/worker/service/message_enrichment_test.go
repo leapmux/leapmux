@@ -3,9 +3,12 @@ package service
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -14,8 +17,110 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
+
+func TestCapturedEnrichmentProviderPreparationCanReplaceItsPublisher(t *testing.T) {
+	t.Parallel()
+	for _, stage := range []string{"resolve", "extract", "paired"} {
+		t.Run(stage, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
+			defer cancel()
+			providerID := leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
+			provider := &reentrantTranscriptProvider{Provider: testRegistry.Plugin(providerID), stage: stage}
+			svc, _, _ := setupTestService(t, withRegistry(registryWithPlugin(t, providerID, provider)))
+			const ownerID = "enrichment-preparation-owner"
+			require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{ID: ownerID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: providerID}))
+			sink := svc.Output.NewSink(ownerID, providerID)
+			sink.UpdateSessionID("original-session")
+			sink.SetTurnState(agent.TurnState{Active: true}, 1)
+			require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+				agent.MessageContent{Original: []byte(`{"text":"paired-request"}`)}, agent.SpanInfo{SpanID: "paired-span"}))
+			span := agent.SpanInfo{SpanID: "paired-span", Closing: true}
+			content := sink.CaptureMessage(agent.MessageContent{Original: []byte(`{"text":"retained native bytes"}`)}, span)
+			require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, span))
+			callbackResult := make(chan error, 1)
+			replacementFinished := make(chan struct{})
+			var once sync.Once
+			provider.reenter = func() {
+				invoke := false
+				once.Do(func() { invoke = true })
+				if !invoke {
+					return
+				}
+				go func() {
+					replacement := svc.Output.NewSink(ownerID, providerID)
+					svc.Output.NoteAgentProcessStarted(ownerID)
+					replacement.SetTurnState(agent.TurnState{Active: true}, 1)
+					close(replacementFinished)
+				}()
+				select {
+				case <-replacementFinished:
+					callbackResult <- nil
+				case <-time.After(30 * time.Second):
+					callbackResult <- errors.New("enrichment preparation holds the root mutation lease across replacement")
+				}
+			}
+			writer := &testResponseWriter{channelID: "enrichment-preparation-watcher"}
+			registerAgentWatch(svc, writer.channelID, ownerID, leapmuxv1.WatchMode_WATCH_MODE_FULL, writer)
+			provider.armed.Store(true)
+			receipt := agent.NewMessageEnrichmentReceipt()
+			written, err := sink.EnrichMessage(agent.MessageEnrichment{Publication: content.Publication, AgentSessionID: content.AgentSessionID,
+				SpanID: span.SpanID, OriginalContent: content.Original, SupplementalContent: []byte(`{"native_enrichment":true}`), WriteReceipt: receipt})
+			require.NoError(t, err)
+			require.True(t, written)
+			select {
+			case <-replacementFinished:
+			case <-ctx.Done():
+				t.Fatal("the enrichment replacement did not finish after preparation returned")
+			}
+			assert.NoError(t, <-callbackResult)
+			_, revision, supplemental, committed := receipt.CommittedEnrichment()
+			assert.True(t, committed)
+			assert.Equal(t, int64(1), revision)
+			assert.Equal(t, []byte(`{"native_enrichment":true}`), supplemental)
+			var enrichedMessages int
+			for _, stream := range writer.streamsSnapshot() {
+				message := decodeWatchAgentEvent(t, stream).GetAgentMessage()
+				if message != nil && message.GetSupplementalRevision() == 1 {
+					enrichedMessages++
+					assert.True(t, message.GetTranscriptOnly(), "expired enrichment must publish as historical rendering")
+				}
+			}
+			assert.Equal(t, 1, enrichedMessages)
+		})
+	}
+}
+
+func TestEnrichmentReceiptPrecedesWatcherPublication(t *testing.T) {
+	t.Parallel()
+	svc, sink := setupRootSink(t, "enrichment-receipt-owner")
+	original := []byte(`{"native":"result"}`)
+	span := agent.SpanInfo{SpanID: "call", Closing: true}
+	content := sink.CaptureMessage(agent.MessageContent{Original: original}, span)
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, span))
+	receipt := agent.NewMessageEnrichmentReceipt()
+	var inspected int
+	writer := &turnAdmissionWatchingWriter{testResponseWriter: &testResponseWriter{channelID: "enrichment-receipt-watch"}}
+	writer.onEvent = func(event *leapmuxv1.AgentEvent) {
+		if message := event.GetAgentMessage(); message != nil && message.SupplementalRevision == 1 {
+			inspected++
+			previous, revision, supplemental, committed := receipt.CommittedEnrichment()
+			assert.True(t, committed)
+			assert.Zero(t, previous)
+			assert.Equal(t, message.SupplementalRevision, revision)
+			assert.Equal(t, []byte(`{"overlay":0}`), supplemental)
+		}
+	}
+	registerAgentWatch(svc, writer.channelID, "enrichment-receipt-owner", leapmuxv1.WatchMode_WATCH_MODE_FULL, writer)
+	written, err := sink.EnrichMessage(agent.MessageEnrichment{Publication: content.Publication, AgentSessionID: content.AgentSessionID,
+		SpanID: span.SpanID, OriginalContent: original, SupplementalContent: []byte(`{"overlay":0}`), WriteReceipt: receipt})
+	require.NoError(t, err)
+	assert.True(t, written)
+	assert.Equal(t, 1, inspected)
+}
 
 // countingDBTX counts the single-row queries that run through it, by the sqlc name
 // that opens each statement (`-- name: GetAgentMessageBySpanIDAndSource :one`).
@@ -77,12 +182,14 @@ func TestPersistMessageStoresOriginalAndSupplementTogether(t *testing.T) {
 	decodedSupplement, err := agent.DecodeMessageSupplement(storedOriginal, storedSupplemental)
 	require.NoError(t, err)
 	assert.JSONEq(t, string(supplemental), string(decodedSupplement.Supplemental))
-	assert.Equal(t, int64(leapmuxv1.MessageCompletion_MESSAGE_COMPLETION_INTERRUPTED), row.Completion)
+	assert.Equal(t, leapmuxv1.MessageCompletion_MESSAGE_COMPLETION_INTERRUPTED, workerdb.StorageEnumValue(row.Completion))
 	assert.Equal(t, int64(0), row.SupplementalRevision)
 	assert.Equal(t, before+1, writer.count(), "the first broadcast must contain both sources")
 	broadcasts := messages.snapshot()
 	require.Len(t, broadcasts, 1)
-	assert.True(t, proto.Equal(messageToProto(&row), broadcasts[0]), "the first broadcast must match the stored row")
+	message, err := messageToProto(&row)
+	require.NoError(t, err)
+	assert.True(t, proto.Equal(message, broadcasts[0]), "the first broadcast must match the stored row")
 }
 
 func TestPairedToolUseLookupResolvesSupplementalInput(t *testing.T) {
@@ -93,7 +200,7 @@ func TestPairedToolUseLookupResolvesSupplementalInput(t *testing.T) {
 	supplemental := []byte(`{"type":"tool.updated","payload":{"kind":"scheduled","toolCallId":"call","input":{"file_path":"/project/recovered.ts"}}}`)
 	span := agent.SpanInfo{SpanID: "call", SpanType: "Read"}
 	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: original, Supplemental: supplemental}, span))
-	resolved := sink.h.pairedToolUseLookup(sink.agentID, span)()
+	resolved := sink.h.pairedToolUseLookup(sink.agentID, sink.currentMessageSessionID(), span)()
 	assert.JSONEq(t, `{"type":"tool.updated","payload":{"kind":"scheduled","toolCallId":"call","toolName":"Read","inputOmitted":true,"input":{"file_path":"/project/recovered.ts"}}}`, string(resolved))
 	row, err := sink.h.queries.GetLatestMessageByAgentID(t.Context(), sink.agentID)
 	require.NoError(t, err)
@@ -177,7 +284,8 @@ func TestEnrichMessagePreservesIdentityAndRejectsStaleContent(t *testing.T) {
 	require.NoError(t, err)
 	assert.JSONEq(t, string(enriched), string(decodedSupplement.Supplemental))
 	assert.Equal(t, broadcasts+1, writer.count())
-	message := messageToProto(&after)
+	message, err := messageToProto(&after)
+	require.NoError(t, err)
 	assert.Equal(t, after.Content, message.Content)
 	assert.Equal(t, after.SupplementalContent, message.SupplementalContent)
 
@@ -268,6 +376,8 @@ func TestUnreadableSupplementRefusesTheEnrichment(t *testing.T) {
 		OriginalContent: row.Content, OriginalCompression: row.ContentCompression,
 		PreviousRevision:    row.SupplementalRevision,
 		SupplementalContent: damaged, SupplementalContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
+		PreviousSupplementalContent:            row.SupplementalContent,
+		PreviousSupplementalContentCompression: row.SupplementalContentCompression,
 	})
 	require.NoError(t, err)
 	broadcasts := writer.count()
@@ -283,6 +393,54 @@ func TestUnreadableSupplementRefusesTheEnrichment(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, corrupted, after, "the row must stay exactly as it was, so a repair is still possible")
 	assert.Equal(t, broadcasts, writer.count(), "a refused enrichment broadcasts nothing")
+}
+
+func TestNotificationEnrichmentPreservesPreparationErrorClasses(t *testing.T) {
+	t.Parallel()
+	for _, scenario := range []struct {
+		label       string
+		supplement  []byte
+		compression leapmuxv1.ContentCompression
+		private     bool
+	}{
+		{label: "unreadable compression", supplement: []byte("invalid zstd"), compression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_ZSTD},
+		{label: "malformed envelope", supplement: []byte(`{"provider":`), compression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE},
+		{label: "corrupt journal", supplement: []byte(`{"metadata":{"notification_entries":null}}`), compression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE, private: true},
+		{label: "corrupt reduction", supplement: []byte(`{"metadata":{"notification_reduction":{"provider_slots":{"group":0}}}}`), compression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE, private: true},
+		{label: "shadowed private journal", supplement: []byte(`{"metadata":{"notification_entries":[]},"metadata":{"duration_ms":0}}`), compression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE, private: true},
+		{label: "repeated private journal", supplement: []byte(`{"metadata":{"notification_entries":null,"notification_entries":[]}}`), compression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE, private: true},
+		{label: "shadowed private reduction", supplement: []byte(`{"metadata":{"notification_reduction":{}},"metadata":{}}`), compression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE, private: true},
+	} {
+		t.Run(scenario.label, func(t *testing.T) {
+			t.Parallel()
+			sink, writer := newGitStatusFixture(t)
+			original := []byte(`{"native":"unchanged"}`)
+			require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: original, Metadata: []byte(`{"duration_ms":0}`)}, agent.SpanInfo{SpanID: "call"}))
+			row, err := sink.h.queries.GetLatestMessageByAgentID(t.Context(), sink.agentID)
+			require.NoError(t, err)
+			corrupted, err := sink.h.queries.EnrichMessageContent(t.Context(), db.EnrichMessageContentParams{
+				ID: row.ID, AgentID: sink.agentID, OriginalContent: row.Content, OriginalCompression: row.ContentCompression,
+				PreviousRevision: row.SupplementalRevision, PreviousSupplementalContent: row.SupplementalContent, PreviousSupplementalContentCompression: row.SupplementalContentCompression,
+				SupplementalContent: scenario.supplement, SupplementalContentCompression: scenario.compression,
+			})
+			require.NoError(t, err)
+			broadcasts := writer.count()
+			receipt := agent.NewMessageEnrichmentReceipt()
+			changed, err := sink.EnrichMessage(agent.MessageEnrichment{SpanID: "call", OriginalContent: original, PreviousRevision: corrupted.SupplementalRevision, SupplementalContent: []byte(`{"replacement":true}`), WriteReceipt: receipt})
+			if scenario.private {
+				assert.ErrorIs(t, err, agent.ErrInvalidNotificationStorage)
+			} else {
+				require.NoError(t, err)
+			}
+			assert.False(t, changed)
+			_, _, _, committed := receipt.CommittedEnrichment()
+			assert.False(t, committed)
+			after, err := sink.h.queries.GetLatestMessageByAgentID(t.Context(), sink.agentID)
+			require.NoError(t, err)
+			assert.Equal(t, corrupted, after)
+			assert.Equal(t, broadcasts, writer.count())
+		})
+	}
 }
 
 // ReadToolRequest resolves the FIRST row of a span and ReadToolResult the LAST, so
@@ -383,4 +541,78 @@ func TestEnrichmentReadsThePairedToolUseOnce(t *testing.T) {
 	require.True(t, written)
 	assert.Equal(t, 1, counter.count("GetAgentMessageBySpanIDAndSource"),
 		"both extractions of one enrichment share one paired read")
+}
+
+func TestNotificationEnrichmentCASRejectsAConcurrentInvisibleJournalAppend(t *testing.T) {
+	t.Parallel()
+	svc, _, ownerID, _ := setupBgTaskTestWithService(t)
+	sink := svc.Output.NewSink(ownerID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	payload := raw(t, codexStartupStatus("codex_apps", "ready", nil))
+	_, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		agent.MessageContent{Original: payload, IdempotencyKey: "first"})
+	require.NoError(t, err)
+	before, err := svc.Queries.GetLatestMessageByAgentID(t.Context(), ownerID)
+	require.NoError(t, err)
+	previous, err := msgcodec.Decompress(before.SupplementalContent, before.SupplementalContentCompression)
+	require.NoError(t, err)
+	fields := make(map[string]json.RawMessage)
+	if len(previous) > 0 {
+		require.NoError(t, json.Unmarshal(previous, &fields))
+	}
+	fields["provider"] = json.RawMessage(`{"enriched":true}`)
+	next, err := json.Marshal(fields)
+	require.NoError(t, err)
+	compressed, compression := msgcodec.Compress(next)
+	broadcast, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		agent.MessageContent{Original: payload, IdempotencyKey: "second"})
+	require.NoError(t, err)
+	assert.False(t, broadcast)
+	appended, err := svc.Queries.GetLatestMessageByAgentID(t.Context(), ownerID)
+	require.NoError(t, err)
+	assert.Equal(t, before.Content, appended.Content)
+	assert.Equal(t, before.Seq, appended.Seq)
+	assert.Equal(t, before.SupplementalRevision, appended.SupplementalRevision)
+	_, err = svc.Queries.EnrichMessageContent(t.Context(), db.EnrichMessageContentParams{
+		ID: before.ID, AgentID: ownerID, OriginalContent: before.Content, OriginalCompression: before.ContentCompression,
+		PreviousRevision: before.SupplementalRevision, SupplementalContent: compressed, SupplementalContentCompression: compression,
+		PreviousSupplementalContent:            before.SupplementalContent,
+		PreviousSupplementalContentCompression: before.SupplementalContentCompression,
+	})
+	require.ErrorIs(t, err, sql.ErrNoRows, "the prior supplement must not overwrite a journal append at the same revision")
+	after, err := svc.Queries.GetLatestMessageByAgentID(t.Context(), ownerID)
+	require.NoError(t, err)
+	assert.Equal(t, appended, after)
+	assert.Len(t, readStoredNotificationEntries(t, after), 2)
+}
+
+func TestCapturedEnrichmentUsesItsOriginalSessionAfterReplacement(t *testing.T) {
+	t.Parallel()
+	svc, sink, ownerID, _ := setupBgTaskTestWithService(t)
+	original := []byte(`{"type":"tool_result","text":"same native bytes"}`)
+	span := agent.SpanInfo{SpanID: "call", Closing: true}
+	sink.UpdateSessionID("original-session")
+	captured := sink.CaptureMessage(agent.MessageContent{Original: original}, span)
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, captured, span))
+	sink.UpdateSessionID("replacement-session")
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: original}, span))
+	updated, err := sink.EnrichMessage(agent.MessageEnrichment{
+		Publication: captured.Publication, AgentSessionID: captured.AgentSessionID,
+		SpanID: "call", OriginalContent: original, SupplementalContent: []byte(`{"original_result":true}`),
+	})
+	require.NoError(t, err)
+	require.True(t, updated)
+	rows, err := svc.Queries.ListAllMessagesByAgentID(t.Context(), db.ListAllMessagesByAgentIDParams{AgentID: ownerID})
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+	for index, row := range rows {
+		encoded, err := msgcodec.Decompress(row.SupplementalContent, row.SupplementalContentCompression)
+		require.NoError(t, err)
+		decoded, err := agent.DecodeMessageSupplement(original, encoded)
+		require.NoError(t, err)
+		if index == 0 {
+			assert.JSONEq(t, `{"original_result":true}`, string(decoded.Supplemental))
+		} else {
+			assert.Empty(t, decoded.Supplemental, "a captured enrichment must not update an identical span in a replacement session")
+		}
+	}
 }

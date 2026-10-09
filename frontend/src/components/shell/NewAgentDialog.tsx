@@ -1,11 +1,13 @@
 import type { Component } from 'solid-js'
 import type { AgentInfo, AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { createRepoGitStore } from '~/stores/repoGit.store'
-import { createMemo, Show } from 'solid-js'
+import { createMemo, createSignal, Show } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
-import { openAgentRequestOptions } from '~/components/chat/providers/registry'
+import { openAgentRequestOptions, providerFor } from '~/components/chat/providers/registry'
+import { resolveStartupOptionValues } from '~/components/chat/providers/startupOptions'
 import { DialogColumns, DialogTopRow, DialogTopSection } from '~/components/common/Dialog'
 import { AgentProviderSelector } from '~/components/shell/AgentProviderSelector'
+import { AgentStartupOptions } from '~/components/shell/AgentStartupOptions'
 import { BlockedReasonNotice } from '~/components/shell/BlockedReasonNotice'
 import { isAgentCreateDisabled } from '~/components/shell/dialogValidation'
 import { DirectorySelector } from '~/components/shell/DirectorySelector'
@@ -65,6 +67,21 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
     () => props.availableProviders,
   )
 
+  const [startupChoice, setStartupChoice] = createSignal<{ provider: AgentProvider, values: Record<string, string> }>()
+  const startupGroups = createMemo(() => {
+    const provider = agentProvider()
+    return provider === undefined ? [] : providerFor(provider)?.configuration?.startupOptionGroups ?? []
+  })
+  const startupValues = () => {
+    const choice = startupChoice()
+    return choice && choice.provider === agentProvider() ? choice.values : {}
+  }
+  const setStartupValue = (id: string, value: string) => {
+    const provider = agentProvider()
+    if (provider !== undefined)
+      setStartupChoice({ provider, values: { ...startupValues(), [id]: value } })
+  }
+
   const sessionId = createSessionIdState(agentProvider)
   const title = createTitleState(randomAgentTitle)
 
@@ -110,6 +127,7 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
       workerId: worker.workerId(),
       workingDir: worker.workingDir(),
       ...openAgentRequestOptions(provider),
+      options: { ...openAgentRequestOptions(provider).options, ...resolveStartupOptionValues(startupGroups(), startupValues()) },
       ...gitMode.toGitFields(),
       ...(sessionId.trimmed() ? { agentSessionId: sessionId.trimmed() } : {}),
     })
@@ -149,6 +167,7 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
           />
         </DialogTopRow>
         <TitleInput state={title} />
+        <AgentStartupOptions groups={startupGroups()} selected={startupValues()} onChange={setStartupValue} disabled={submitting.loading()} />
       </DialogTopSection>
       <BlockedReasonNotice reason={blockedReason()} />
       <DialogColumns

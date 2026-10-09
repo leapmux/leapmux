@@ -17,25 +17,25 @@ import (
 
 // MiMo's subagents.
 //
-// A subagent is an ACTOR that runs inside the parent's own session. The model
-// starts one with the `actor` tool: `spawn` returns at once and runs the actor
-// in the background, and `run` blocks until it finishes. Each message the actor
-// writes names it in `agentID`, which is how its parts reach a child transcript
-// rather than the parent's (output.go routes them).
+// Each subagent is an actor in the parent's session. The actor tool starts that actor.
+// spawn returns immediately and runs the actor in the background.
+// run waits for the actor to finish. Each native message identifies its actor through agentID.
+// output.go routes its parts to that actor's child transcript.
 //
 // The spawn call and the actor meet on the call's running update, whose
-// `metadata.actorId` names the actor. That update arrives before the actor's
+// `metadata.actorId` identifies the actor. That update arrives before the actor's
 // first message, so the child transcript exists by the time its rows do. An
 // actor that no call started -- one a workflow spawned -- gets its transcript on
 // its first row instead.
 //
-// actor.status reports each turn that the actor tool runs: running opens (or
-// reopens) the registry row, and idle closes it with the outcome. A message to a
-// running actor joins its turn. A message that wakes an IDLE actor runs a turn
-// that no actor.status reports: the parent's `actor send` does that, and so
-// would LeapMux's own child input, which sendChildInput therefore refuses. The
-// rows of such a turn still reach the actor's transcript, because each message
-// names its actor, but its registry row stays closed.
+// actor.status reports turns that the actor tool starts.
+// Running opens or reopens the registry row. Idle closes that row with its outcome.
+// A message to a running actor joins its turn.
+//
+// A message to an idle actor starts a turn without actor.status events.
+// The parent's actor send command can start that turn. LeapMux child input refuses that case.
+// Output still reaches the actor's transcript because native messages identify the actor.
+// The actor's registry row stays closed without native turn events.
 
 // actorModeMain is the mode of the session's own actor.
 const actorModeMain = "main"
@@ -46,12 +46,15 @@ type mimoActor struct {
 	description string
 	agentType   string
 	background  bool
-	// rowKey is the registry row key and the child key: the spawn call's id when
-	// a call started the actor, else the session and the actor id.
+	// rowKey identifies the registry row and child transcript.
+	// A spawn call supplies its native part ID.
+	// An actor with no spawn call uses its session and actor IDs.
 	rowKey      string
-	spawnCallID string
+	spawnSpanID string
 	// childAgentID is the child transcript, once it exists.
 	childAgentID string
+	// pendingSpawnPrompt holds only the original native spawn instruction.
+	pendingSpawnPrompt string
 	// running is true while the actor runs a turn.
 	running bool
 	// closed is true while the registry row holds a final status.
@@ -63,8 +66,10 @@ type mimoActor struct {
 	workflowRunID string
 }
 
-// title labels the actor's tab and its registry row: its description, else its
-// agent type, else its id.
+// title selects the first nonempty value for the actor's tab and registry row:
+//   - Its description.
+//   - Its agent type.
+//   - Its ID.
 func (actor *mimoActor) title() string {
 	for _, candidate := range []string{actor.description, actor.agentType, actor.id} {
 		if trimmed := strings.TrimSpace(candidate); trimmed != "" {
@@ -86,8 +91,8 @@ func (a *Agent) runningActorsLocked() int {
 	return running
 }
 
-// actorLocked returns the actor record for id, creating it on first sight. The
-// caller holds a.Mu.
+// actorLocked returns the actor record and creates it on the first observation.
+// The caller holds a.Mu.
 func (a *Agent) actorLocked(actorID string) *mimoActor {
 	actor := a.actors[actorID]
 	if actor == nil {
@@ -130,8 +135,8 @@ func isSpawnCall(part mimoPart) bool {
 
 // mimoReturnFormatMarker opens the instruction that MiMo appends to the first
 // message of a general subagent (actor/spawn.ts, RETURN_FORMAT_INSTRUCTION), at
-// v0.1.14 and at HEAD. It asks the subagent for a report header. It is MiMo's
-// own text, not the task that the subagent was given.
+// v0.1.14 and v0.1.15. It asks the subagent for a report header.
+// MiMo appends this format instruction after the user's task.
 const mimoReturnFormatMarker = "\n\n---\n\n## Return format (required)"
 
 // subagentInstruction is the task in an actor's first user message: the text
@@ -142,6 +147,36 @@ func subagentInstruction(text string) string {
 		text = text[:index]
 	}
 	return strings.TrimSpace(text)
+}
+
+// persistUserInstruction keeps one native instruction on its captured child transcript.
+// The service adds only the first prompt. A failed write leaves the part available for retry.
+func (a *Agent) persistUserInstruction(record *mimoMessageRecord, part mimoPart) error {
+	if record.role != roleUser || part.Type != partTypeText || part.Synthetic || part.Ignored {
+		return nil
+	}
+	if !record.actorKnown {
+		return fmt.Errorf("the native MiMo instruction owner remains unresolved")
+	}
+	if record.actorID == mainActorID {
+		// The worker already stores the confirmed main user's instruction.
+		return nil
+	}
+	if record.actor == nil {
+		return fmt.Errorf("the captured MiMo instruction actor is absent")
+	}
+	instruction := subagentInstruction(part.Text)
+	if instruction == "" {
+		return nil
+	}
+	childID, ok := a.ensureActorRecordTranscript(record.actor, record.sessionID)
+	if !ok || a.actorSpawnPromptPending(record.actor) {
+		return fmt.Errorf("create the captured MiMo instruction transcript")
+	}
+	if err := a.sink.PersistChildPrompt(childID, instruction); err != nil {
+		return fmt.Errorf("persist the captured MiMo instruction: %w", err)
+	}
+	return nil
 }
 
 // spawnPrompt reads the instruction a spawn gave its subagent, which opens the
@@ -197,92 +232,146 @@ func (a *Agent) handleActorRegistered(event mimoEvent) {
 	}
 	actor.agentType = payload.Agent
 	actor.background = payload.Background
-	// The registration states no workflow, so an actor that registers while one
-	// run is active is taken as that run's. A spawn call's actor registers before
-	// the call's update names it, so linkSpawn undoes this guess for it.
-	if actor.workflowRunID == "" && actor.spawnCallID == "" {
+	// The registration supplies no workflow ID.
+	// An actor that registers during one active workflow initially belongs to that workflow.
+	// linkSpawn removes that derived workflow when a native call identifies the actor.
+	if actor.workflowRunID == "" && actor.spawnSpanID == "" {
 		actor.workflowRunID = a.soleRunningWorkflowLocked()
 	}
 	a.Mu.Unlock()
 }
 
 // linkSpawn records that a spawn call started an actor, and gives the actor its
-// child transcript. The call's id becomes the actor's row key, because it is the
+// child transcript. The native part ID becomes the actor's row key. It is the
 // one identifier both the call and the actor's registry row can carry.
-func (a *Agent) linkSpawn(callID, actorID, title string) {
-	if callID == "" || actorID == "" || actorID == mainActorID {
+func (a *Agent) linkSpawn(spanID, actorID, title, prompt string) {
+	if spanID == "" || actorID == "" || actorID == mainActorID {
 		return
 	}
 	a.Mu.Lock()
 	actor := a.actorLocked(actorID)
-	if actor.spawnCallID == "" {
-		actor.spawnCallID = callID
+	if actor.spawnSpanID == "" {
+		actor.spawnSpanID = spanID
+		actor.pendingSpawnPrompt = prompt
 		if actor.rowKey == "" {
-			actor.rowKey = callID
+			actor.rowKey = spanID
 		}
 		// A workflow's actor has no spawn call, so an actor that a call started
 		// is the main agent's own, whichever workflow ran when it registered.
 		actor.workflowRunID = ""
-		a.spawnActors[callID] = actorID
+		a.spawnActors[spanID] = actorID
 	}
 	if actor.description == "" {
 		actor.description = strings.TrimSpace(title)
 	}
+	a.retainSpawnPromptLocked(actor, a.sessionID)
 	a.Mu.Unlock()
 	a.ensureActorTranscript(actorID)
 }
 
-// ensureActorTranscript returns the child transcript of an actor, creating it,
-// its registry row and its opening prompt on first sight. It reports false when
-// the worker could not create the transcript.
+// retainSpawnPromptLocked keeps the captured actor alive while its native instruction waits.
+// The actor holds the text. This observation holds only its lifetime and order.
+func (a *Agent) retainSpawnPromptLocked(actor *mimoActor, sessionID string) {
+	if actor.pendingSpawnPrompt == "" {
+		return
+	}
+	id := "mimo-spawn-prompt:" + sessionID + ":" + actor.spawnSpanID
+	if a.messages[id] != nil {
+		return
+	}
+	record := &mimoMessageRecord{
+		role: roleUser, actorID: actor.id, actor: actor, identityKnown: true, actorKnown: true,
+		sessionID: sessionID, turnEpoch: a.turnEpoch, completed: true,
+	}
+	a.messages[id] = record
+	a.appendPendingPartLocked(record, &mimoPendingPart{kind: mimoPendingSpawnPrompt, partID: id})
+}
+
+// ensureActorTranscript returns the actor's child transcript.
+// The first observation creates its transcript, registry row, and opening prompt.
+// It returns false when the worker cannot create the transcript.
 func (a *Agent) ensureActorTranscript(actorID string) (string, bool) {
 	a.Mu.Lock()
 	actor := a.actorLocked(actorID)
-	if actor.childAgentID != "" {
-		childID := actor.childAgentID
-		a.Mu.Unlock()
-		return childID, true
-	}
+	sessionID := a.sessionID
+	a.Mu.Unlock()
+	return a.ensureActorRecordTranscript(actor, sessionID)
+}
+
+// ensureActorRecordTranscript keeps the original actor across a session change.
+func (a *Agent) ensureActorRecordTranscript(actor *mimoActor, sessionID string) (string, bool) {
+	a.Mu.Lock()
 	if actor.rowKey == "" {
-		// No call started this actor, so it gets a key of its own. The session id
-		// keeps an actor id that a later session reuses apart from this one.
-		actor.rowKey = a.sessionID + "/" + actorID
+		// The native session separates actors that reuse the same ID.
+		actor.rowKey = sessionID + "/" + actor.id
 	}
-	rowKey, spawnSpan, title := actor.rowKey, actor.spawnCallID, actor.title()
+	rowKey, spawnSpan, title, childID := actor.rowKey, actor.spawnSpanID, actor.title(), actor.childAgentID
 	if spawnSpan == "" {
 		spawnSpan = rowKey
 	}
 	a.Mu.Unlock()
-
-	childID, err := a.sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: spawnSpan, ProviderChildKey: rowKey, Title: title})
-	if err != nil {
-		slog.Warn("mimo subagent ensure child failed", "agent_id", a.AgentID(), "actor_id", actorID, "error", err)
-		return "", false
-	}
-	a.Mu.Lock()
-	actor = a.actorLocked(actorID)
-	first := actor.childAgentID == ""
-	actor.childAgentID = childID
-	closed := actor.closed
-	a.Mu.Unlock()
-	if !first {
-		return childID, true
-	}
-	if prompt := a.spawnPrompts.Take(spawnSpan); prompt != "" {
-		if err := a.sink.PersistChildPrompt(childID, prompt); err != nil {
-			slog.Warn("mimo subagent persist prompt failed", "agent_id", a.AgentID(), "child", childID, "error", err)
+	created := childID == ""
+	if created {
+		var err error
+		childID, err = a.sink.EnsureChildAgent(agent.ChildAgentSpec{
+			SpawnSpanID: spawnSpan, ProviderChildKey: rowKey, AgentSessionID: sessionID, Title: title,
+		})
+		if err != nil {
+			slog.Warn("mimo subagent ensure child failed", "agent_id", a.AgentID(), "actor_id", actor.id, "error", err)
+			return "", false
+		}
+		a.Mu.Lock()
+		actor.childAgentID = childID
+		closed, running := actor.closed, actor.running
+		a.Mu.Unlock()
+		if !closed {
+			a.upsertActorRow(actor, sessionID, bgtask.StatusRunning)
+			if running {
+				a.publishChildTurn(actor, sessionID)
+			}
 		}
 	}
-	if !closed {
-		a.upsertActorRow(actorID, bgtask.StatusRunning)
+	// The durable child and its native activity remain visible while the prompt waits.
+	if err := a.persistActorSpawnPrompt(actor, childID); err != nil {
+		slog.Warn("mimo subagent persist prompt failed", "agent_id", a.AgentID(), "child", childID, "error", err)
 	}
 	return childID, true
 }
 
-// upsertActorRow writes the actor's registry row with status.
-func (a *Agent) upsertActorRow(actorID string, status bgtask.Status) {
+func (a *Agent) actorSpawnPromptPending(actor *mimoActor) bool {
+	if actor == nil {
+		return false
+	}
 	a.Mu.Lock()
-	actor := a.actorLocked(actorID)
+	defer a.Mu.Unlock()
+	return actor.pendingSpawnPrompt != ""
+}
+
+func (a *Agent) persistActorSpawnPrompt(actor *mimoActor, childID string) error {
+	a.Mu.Lock()
+	prompt := actor.pendingSpawnPrompt
+	a.Mu.Unlock()
+	if prompt == "" {
+		return nil
+	}
+	if err := a.sink.PersistChildPrompt(childID, prompt); err != nil {
+		return err
+	}
+	a.Mu.Lock()
+	if actor.pendingSpawnPrompt == prompt {
+		actor.pendingSpawnPrompt = ""
+	}
+	a.Mu.Unlock()
+	return nil
+}
+
+// upsertActorRow writes the actor's registry row with status.
+func (a *Agent) upsertActorRow(actor *mimoActor, sessionID string, status bgtask.Status) {
+	a.Mu.Lock()
+	if a.actors[actor.id] != actor || a.sessionID != sessionID {
+		a.Mu.Unlock()
+		return
+	}
 	upsert := bgtask.Upsert{
 		RowKey:       actor.rowKey,
 		Kind:         bgtask.KindSubagent,
@@ -344,38 +433,33 @@ func (a *Agent) handleActorStatus(event mimoEvent) {
 	}
 }
 
-// startActorTurn opens the actor's registry row for a turn. A row that a
-// previous turn closed is revived: a running status after an idle one is the
-// positive proof of a restart that ReviveBackgroundTask requires.
+// startActorTurn opens the actor's registry row.
+// A native running status after idle confirms a new turn.
+// ReviveBackgroundTask requires that proof before it reopens a finished row.
 func (a *Agent) startActorTurn(actorID string, wasRunning, wasClosed bool) {
 	a.Mu.Lock()
 	actor := a.actorLocked(actorID)
-	actor.running = true
-	actor.closed = false
-	rowKey := actor.rowKey
+	actor.running, actor.closed = true, false
+	rowKey, sessionID, hadChild := actor.rowKey, a.sessionID, actor.childAgentID != ""
 	a.Mu.Unlock()
-	if wasRunning {
-		return
-	}
-	if _, ok := a.ensureActorTranscript(actorID); !ok {
+	if _, ok := a.ensureActorRecordTranscript(actor, sessionID); !ok || wasRunning || !hadChild {
 		return
 	}
 	if wasClosed && rowKey != "" {
 		providerkit.LogRegistryRefusal("mimo", "revive", a.sink.ReviveBackgroundTask(rowKey))
 	} else {
-		a.upsertActorRow(actorID, bgtask.StatusRunning)
+		a.upsertActorRow(actor, sessionID, bgtask.StatusRunning)
 	}
-	a.publishChildTurn(actorID)
+	a.publishChildTurn(actor, sessionID)
 }
 
 // publishChildTurn reports an actor's turn on its own tab, from the running flag
 // that the caller wrote. The tab's input queue then holds a message while the
 // turn runs, and offers it as a steer, which a running actor takes. The token
 // comes from the same critical section as the flag.
-func (a *Agent) publishChildTurn(actorID string) {
+func (a *Agent) publishChildTurn(actor *mimoActor, sessionID string) {
 	a.Mu.Lock()
-	actor := a.actors[actorID]
-	if actor == nil || actor.childAgentID == "" {
+	if actor == nil || a.actors[actor.id] != actor || a.sessionID != sessionID || actor.childAgentID == "" {
 		a.Mu.Unlock()
 		return
 	}
@@ -385,9 +469,8 @@ func (a *Agent) publishChildTurn(actorID string) {
 	providerkit.PublishSteerableTurnActiveTo(a.sink.ChildSink(childID), active, seq)
 }
 
-// endActorTurn closes one turn of an actor: what it left unfinished is
-// persisted, its registry row takes the turn's outcome, and a background actor
-// reports its last text to the parent.
+// endActorTurn persists unfinished output and updates the actor's registry outcome.
+// A background actor also reports its last text to the parent.
 func (a *Agent) endActorTurn(payload mimoActorStatus) {
 	status, completion := actorOutcomeStatus(payload.LastOutcome)
 	a.flushActorText(payload.ActorID, completion)
@@ -398,17 +481,17 @@ func (a *Agent) endActorTurn(payload mimoActorStatus) {
 	actor := a.actorLocked(payload.ActorID)
 	actor.running = false
 	actor.closed = true
-	rowKey, title, background, report := actor.rowKey, actor.title(), actor.background, actor.lastText
+	rowKey, title, background, report, sessionID := actor.rowKey, actor.title(), actor.background, actor.lastText, a.sessionID
 	actor.lastText = ""
 	a.Mu.Unlock()
 	a.retireActorControls(payload.ActorID)
 
-	if ok && payload.Error != "" {
-		a.persistChildText(childID, payload.Error, agent.MessageCompletionError)
+	if payload.Error != "" {
+		a.retainActorFailure(payload, actor)
 	}
 	// The turn ends on the subagent's tab after its last row, and before the
 	// caches of the tab go.
-	a.publishChildTurn(payload.ActorID)
+	a.publishChildTurn(actor, sessionID)
 	if background && strings.TrimSpace(report) != "" && rowKey != "" {
 		providerkit.PersistSubagentReport(a.sink, agent.SubagentReportWrite{
 			ReportID: "mimo-report:" + rowKey + ":" + strconv.Itoa(payload.TurnCount),
@@ -440,53 +523,51 @@ func actorOutcomeStatus(outcome string) (bgtask.Status, agent.MessageCompletion)
 	case contracts.MiMoActorOutcomeCancelled:
 		return bgtask.StatusStopped, agent.MessageCompletionInterrupted
 	case contracts.MiMoActorOutcomeSuccess, "":
-		return bgtask.StatusCompleted, agent.MessageCompletionComplete
+		return bgtask.StatusSucceeded, agent.MessageCompletionComplete
 	default:
 		// An outcome this build does not know still ended the turn. Completed is
 		// the reading that claims no failure the actor did not report.
 		slog.Debug("mimo unknown actor outcome", "outcome", outcome)
-		return bgtask.StatusCompleted, agent.MessageCompletionComplete
+		return bgtask.StatusSucceeded, agent.MessageCompletionComplete
 	}
 }
 
-// persistChildText writes one line of text into a child transcript.
-func (a *Agent) persistChildText(childID, text string, completion agent.MessageCompletion) {
-	raw, err := agent.MarshalAssembledMessage(agent.AssembledMessageKindText, text, completion)
-	if err != nil {
-		slog.Warn("mimo subagent text marshal failed", "agent_id", a.AgentID(), "error", err)
-		return
-	}
-	if err := a.sink.PersistChildMessage(childID, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw, agent.SpanInfo{}); err != nil {
-		slog.Warn("mimo subagent text persist failed", "agent_id", a.AgentID(), "error", err)
-	}
-}
-
-// rememberActorText keeps an actor's last finished text for its report.
-func (a *Agent) rememberActorText(actorID, text string) {
+// retainActorFailure keeps the native error on its captured actor until persistence succeeds.
+func (a *Agent) retainActorFailure(payload mimoActorStatus, actor *mimoActor) {
 	a.Mu.Lock()
-	defer a.Mu.Unlock()
-	if actor := a.actors[actorID]; actor != nil {
-		actor.lastText = text
+	sessionID := payload.SessionID
+	if sessionID == "" {
+		sessionID = a.sessionID
 	}
+	// Native message IDs cannot contain a colon. This identity stays stable on retry.
+	id := fmt.Sprintf("mimo-actor-failure:%d", a.pendingPartOrder)
+	record := &mimoMessageRecord{
+		role: roleAssistant, actorID: payload.ActorID, identityKnown: true, actorKnown: true,
+		sessionID: sessionID, actor: actor, turnEpoch: a.turnEpoch, completed: true,
+	}
+	a.messages[id] = record
+	a.appendPendingPartLocked(record, &mimoPendingPart{kind: mimoPendingActorFailure, partID: id, actorFailure: &payload})
+	a.Mu.Unlock()
+	a.flushPendingMessage(id, "")
 }
 
-// actorStatusForCompletion is the registry status of a subagent that the end of
-// its session or of its process ended, for the completion of that end.
+// actorStatusForCompletion returns the registry status when a subagent session or its process ends.
 func actorStatusForCompletion(completion agent.MessageCompletion) bgtask.Status {
 	switch completion {
 	case agent.MessageCompletionError:
 		return bgtask.StatusFailed
 	case agent.MessageCompletionComplete:
-		return bgtask.StatusCompleted
+		return bgtask.StatusSucceeded
+	case agent.MessageCompletionFinished:
+		return bgtask.StatusEndedWithUnknownOutcome
 	default:
 		return bgtask.StatusStopped
 	}
 }
 
-// closeSessionActors ends every actor, with status: at a session this agent
-// leaves, and at the end of the process. No later event can close their rows:
-// the events of a session the agent left name a session that it no longer
-// reads, and an ended process sends none.
+// closeSessionActors ends every actor with status when its session or process ends.
+// The worker no longer reads events from a previous session.
+// An ended process sends no further events. No later native event can close these registry rows.
 func (a *Agent) closeSessionActors(status bgtask.Status) {
 	type open struct {
 		rowKey, childID string
@@ -497,11 +578,14 @@ func (a *Agent) closeSessionActors(status bgtask.Status) {
 	a.Mu.Lock()
 	var rows []open
 	for _, actor := range a.actors {
-		if actor.rowKey == "" || actor.closed {
+		wasRunning, wasClosed := actor.running, actor.closed
+		actor.running = false
+		actor.closed = true
+		if actor.rowKey == "" || wasClosed {
 			continue
 		}
 		row := open{rowKey: actor.rowKey, childID: actor.childAgentID}
-		if actor.running && actor.childAgentID != "" {
+		if wasRunning && actor.childAgentID != "" {
 			row.turnSeq = a.NextTurnSeq()
 		}
 		rows = append(rows, row)
@@ -532,7 +616,7 @@ func (a *Agent) restoreActorLinks(messages []mimoMessageWithParts) {
 	defer a.Mu.Unlock()
 	for _, message := range messages {
 		for _, part := range message.Parts {
-			if part.Type != contracts.MiMoPartTypeTool || part.CallID == "" || !isSpawnCall(part) {
+			if part.Type != contracts.MiMoPartTypeTool || part.ID == "" || !isSpawnCall(part) {
 				continue
 			}
 			actorID := toolMetadata(part.State).ActorID
@@ -540,13 +624,15 @@ func (a *Agent) restoreActorLinks(messages []mimoMessageWithParts) {
 				continue
 			}
 			actor := a.actorLocked(actorID)
-			actor.spawnCallID = part.CallID
-			actor.rowKey = part.CallID
+			actor.spawnSpanID = part.ID
+			actor.pendingSpawnPrompt = spawnPrompt(part.State.Input)
+			a.retainSpawnPromptLocked(actor, a.sessionID)
+			actor.rowKey = part.ID
 			actor.closed = true
 			if actor.description == "" {
 				actor.description = spawnTitle(part)
 			}
-			a.spawnActors[part.CallID] = actorID
+			a.spawnActors[part.ID] = actorID
 		}
 	}
 }
@@ -559,20 +645,20 @@ var errSubagentIdle = errors.New("MiMo reports no turn that a message starts on 
 	"so LeapMux sends a message to a subagent only while the subagent runs")
 
 // actorForRowKey resolves a registry row key to its actor.
-func (a *Agent) actorForRowKey(rowKey string) (mimoActor, bool) {
+func (a *Agent) actorForRowKey(rowKey string) (mimoActor, string, bool) {
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
 	if actorID, ok := a.spawnActors[rowKey]; ok {
 		if actor := a.actors[actorID]; actor != nil {
-			return *actor, true
+			return *actor, a.sessionID, true
 		}
 	}
 	for _, actor := range a.actors {
 		if actor.rowKey == rowKey {
-			return *actor, true
+			return *actor, a.sessionID, true
 		}
 	}
-	return mimoActor{}, false
+	return mimoActor{}, "", false
 }
 
 // SendChildInput takes the message that the queue dispatches to a subagent, and
@@ -591,36 +677,42 @@ func (a *Agent) SteerChildInput(childKey, content string, attachments []*leapmux
 
 // ActiveChildTurnState classifies a subagent's turn after a refusal.
 func (a *Agent) ActiveChildTurnState(childKey string) agent.TurnState {
-	actor, ok := a.actorForRowKey(childKey)
+	actor, _, ok := a.actorForRowKey(childKey)
 	running := ok && actor.running
 	return agent.TurnState{Active: running, Steerable: running}
 }
 
-// sendChildInput sends one message to a subagent, as a steer into its running
-// turn.
+// sendChildInput sends input to a running actor as a steer.
 //
-// A subagent that runs no turn refuses input. This is a choice between two
-// designs, and the other design cannot be made correct:
+// It refuses input to an idle actor because MiMo supplies no lifecycle for that input:
 //
 //   - MiMo runs a message to an idle actor through the session loop directly
-//     (prompt_async, then SessionPrompt.loop, then ensureRunning). Only the
-//     turns that the actor tool starts publish actor.status, and the runner of
-//     a subagent publishes no session.status. So no event states the start or
-//     the end of that turn, and GET /session/:id/actors still reports "idle".
+//     (prompt_async, then SessionPrompt.loop, then ensureRunning).
+//     Only turns from the actor tool emit actor.status.
+//     Child runners emit no session.status. GET /session/:id/actors still reports idle.
+//     No native event identifies the new turn's start or end.
 //   - To follow that turn, the worker would have to copy the rules by which
 //     MiMo ends a loop (session/classify.ts and the steps of session/prompt.ts
-//     that continue by themselves). That copy ends the turn early each time
-//     MiMo continues on its own, and it goes stale with each MiMo release.
+//     that continue by themselves).
+//     MiMo can continue its loop without a new request.
+//     That classifier would end those turns early and diverge across native releases.
 //   - The synchronous route POST /session/:id/message does return at the end
-//     of the turn. But it refuses with 409 while the main agent runs, and it
-//     cancels the MAIN agent's turn when its connection closes.
+//     of the turn. It returns 409 while the parent runs.
+//     A closed connection also cancels the parent's turn.
 //
-// A running actor takes a message as a steer: MiMo joins it into the running
-// loop, and actor.status idle ends the turn. In a short window after the loop
-// ends and before its idle status arrives, MiMo still runs a steer as a new,
-// unreported turn. No event can close that window.
+// MiMo joins input to a running actor's loop. The native idle status ends that turn.
+// The loop can finish before its idle event arrives.
+// Input in that interval can start another unreported turn.
+// No native event can eliminate that interval.
 func (a *Agent) sendChildInput(childKey, content string, attachments []*leapmuxv1.Attachment, steer bool) error {
-	actor, ok := a.actorForRowKey(childKey)
+	return a.sendChildInputBuilt(childKey, steer, func() ([]mimoPromptPart, error) {
+		return buildPromptParts(content, attachments)
+	})
+}
+
+// sendChildInputBuilt separates prompt construction from the captured delivery target.
+func (a *Agent) sendChildInputBuilt(childKey string, steer bool, build func() ([]mimoPromptPart, error)) error {
+	actor, sessionID, ok := a.actorForRowKey(childKey)
 	if !ok {
 		return fmt.Errorf("MiMo holds no subagent for %q in this session", childKey)
 	}
@@ -633,7 +725,7 @@ func (a *Agent) sendChildInput(childKey, content string, attachments []*leapmuxv
 	if !steer {
 		return agent.ErrAgentBusy
 	}
-	parts, err := buildPromptParts(content, attachments)
+	parts, err := build()
 	if err != nil {
 		return err
 	}
@@ -642,7 +734,6 @@ func (a *Agent) sendChildInput(childKey, content string, attachments []*leapmuxv
 		a.Mu.Unlock()
 		return fmt.Errorf("agent is stopped")
 	}
-	sessionID := a.sessionID
 	request := a.promptRequestLocked(parts, actor.id)
 	a.Mu.Unlock()
 	if sessionID == "" {

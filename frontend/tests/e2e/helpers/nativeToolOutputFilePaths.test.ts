@@ -3,7 +3,7 @@ import type { NativeMessageSnapshot } from './nativeMessages'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
 import type { NativeToolOutputFilePathsOperations } from './nativeToolOutputFilePaths'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { assertPrivateNativePath } from './nativeCredentialIsolation'
+import { assertPrivateNativePath } from './nativePrivatePath'
 import { checkNativeOutputReceipt, expectUnchangedNativeRecord, nativeOutputPathsPrecedePreview, presentPreviewMarkers, proveNativeOutputReceipt, proveNativeToolOutputFilePaths, runNativeToolOutputFilePathsProof } from './nativeToolOutputFilePaths'
 
 /** The Worker state that the mocked agent and snapshot reads return. */
@@ -83,7 +83,7 @@ vi.mock('./nativeToolOutput', () => ({ copyNativeToolOutputPreview: vi.fn(async 
 
 vi.mock('./nativeResultView', () => ({ expandNativeResultView: vi.fn(async () => {}) }))
 
-vi.mock('./nativeCredentialIsolation', () => ({ assertPrivateNativePath: vi.fn() }))
+vi.mock('./nativePrivatePath', () => ({ assertPrivateNativePath: vi.fn() }))
 
 vi.mock('./server', () => ({ getGlobalState: () => ({ tmpDir: '/run' }) }))
 

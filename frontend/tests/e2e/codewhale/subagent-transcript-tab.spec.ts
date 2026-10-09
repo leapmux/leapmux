@@ -41,7 +41,7 @@ codewhaleTest.describe('Codewhale subagent registry', () => {
     const row = await requireRegistryRow(page)
     await expect(row).toContainText('ask_for_one_word')
     await expectRowBecomesFinal(page, row)
-    await expect(row).toHaveAttribute('data-status', 'completed')
+    await expect(row).toHaveAttribute('data-status', 'succeeded')
     await expectSectionPersists(page)
 
     // The child's summary reaches the parent transcript under the child's name.

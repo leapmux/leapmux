@@ -6,8 +6,8 @@ import { BackgroundTaskKind, BackgroundTaskStatus } from '../../../src/generated
 import { claudeTest } from '../claude-fixtures'
 import { withCleanup } from '../helpers/cleanup'
 import { openNativeCatalogTurn } from '../helpers/nativeCodeExecution'
-import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
 import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
+import { assertPrivateNativePath } from '../helpers/nativePrivatePath'
 import { currentNativeAgent, nativeModelToolNames } from '../helpers/nativeScenario'
 import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
 import { runNativeToolTurn } from '../helpers/nativeToolExecution'
@@ -111,7 +111,7 @@ claudeTest('executes native Workflow code and preserves the computed result and 
       await testInfo.attach(`claude-workflow-${failed ? 'error' : 'output'}-native`, { body: JSON.stringify(evidence, null, 2), contentType: 'application/json' })
       expect(task?.kind).toBe(BackgroundTaskKind.WORKFLOW)
       expect(initial.agentSessionId).toBe(agent.agentSessionId)
-      expect(task?.status).toBe(failed ? BackgroundTaskStatus.FAILED : BackgroundTaskStatus.COMPLETED)
+      expect(task?.status).toBe(failed ? BackgroundTaskStatus.FAILED : BackgroundTaskStatus.SUCCEEDED)
       expect(outcome.status).toBe(failed ? 'failed' : 'completed')
       if (failed)
         expect(outcome.summary).toContain(expected)
@@ -150,10 +150,10 @@ claudeTest('executes native Workflow code and preserves the computed result and 
   for (const run of runs) {
     const launch = reloaded.messages.map(nativeMessageBody).map(value => claudeWorkflowLaunch(value, run.launch.callId)).find(value => value !== undefined)
     expect(launch).toEqual(run.launch)
-    expect(tasks.find(task => task.id === run.launch.taskId)?.status).toBe(run.failed ? BackgroundTaskStatus.FAILED : BackgroundTaskStatus.COMPLETED)
+    expect(tasks.find(task => task.id === run.launch.taskId)?.status).toBe(run.failed ? BackgroundTaskStatus.FAILED : BackgroundTaskStatus.SUCCEEDED)
     const row = backgroundTaskRows(page, { kind: 'workflow', taskId: run.launch.taskId }).first()
     await expect(row).toBeVisible()
     await expect(row).toHaveAttribute('data-task-id', run.launch.taskId)
-    await expect(row).toHaveAttribute('data-status', run.failed ? 'failed' : 'completed')
+    await expect(row).toHaveAttribute('data-status', run.failed ? 'failed' : 'succeeded')
   }
 })

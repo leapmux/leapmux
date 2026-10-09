@@ -139,7 +139,7 @@ func lettaChildStatus(status string) (bgtask.Status, bool) {
 	case "running":
 		return bgtask.StatusRunning, true
 	case "completed":
-		return bgtask.StatusCompleted, true
+		return bgtask.StatusSucceeded, true
 	case "error", "failed":
 		return bgtask.StatusFailed, true
 	case "cancelled":
@@ -284,7 +284,7 @@ func (a *Agent) finishChildFromNotification(notice lettaTaskNotification) {
 	}
 	status := bgtask.StatusFailed
 	if notice.Status == "completed" {
-		status = bgtask.StatusCompleted
+		status = bgtask.StatusSucceeded
 	} else if notice.Status != "failed" {
 		return
 	}

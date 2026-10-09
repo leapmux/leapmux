@@ -55,7 +55,7 @@ func (a *Agent) workflowEvent(stream *sessionStream, kind string, raw []byte) er
 		if !exists || childID == "" {
 			return fmt.Errorf("DeepSeek Harness workflow completion has no owned work")
 		}
-		status := bgtask.StatusCompleted
+		status := bgtask.StatusSucceeded
 		switch data.Outcome {
 		case "completed":
 		case "cancelled":
@@ -74,7 +74,7 @@ func (a *Agent) workflowEvent(stream *sessionStream, kind string, raw []byte) er
 		if !exists {
 			return fmt.Errorf("DeepSeek Harness workflow completion has no owned run")
 		}
-		status := bgtask.StatusCompleted
+		status := bgtask.StatusSucceeded
 		if data.StopReason != "completed" {
 			status = bgtask.StatusFailed
 			if data.StopReason == "cancelled" {

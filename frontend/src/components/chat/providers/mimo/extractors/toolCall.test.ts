@@ -302,9 +302,19 @@ describe('mimoToolCall', () => {
   describe('subagents', () => {
     const spawn = { operation: { action: 'spawn', subagent_type: 'general', description: 'Helper', prompt: 'Work.' } }
 
+    it('keeps an absent Worker registry link absent on both actor models', () => {
+      const opening = running(MIMO_TOOL.Actor, spawn)
+      expect(opening.id).toBe('prt_call-1')
+      expect(opening.kind === 'agent' ? opening.request.registryKey : null).toBeUndefined()
+      const result = finished(MIMO_TOOL.Actor, spawn, { output: 'Background sub-session started. actor_id: general-1', metadata: { actorId: 'general-1' } })
+      const run = result.kind === 'agent' ? typedResult(result)?.agents[0] : undefined
+      expect(run).toBeDefined()
+      expect(run?.registryKey).toBeUndefined()
+    })
+
     it('states the launch and the registry row the worker keys by the call', () => {
-      const call = running(MIMO_TOOL.Actor, spawn)
-      expect(call.kind === 'agent' && call.request).toEqual({ description: 'Helper', agentType: 'general', prompt: 'Work.', registryKey: 'call-1' })
+      const call = running(MIMO_TOOL.Actor, spawn, { spanId: 'worker-spawn-span' })
+      expect(call.kind === 'agent' && call.request).toEqual({ description: 'Helper', agentType: 'general', prompt: 'Work.', registryKey: 'worker-spawn-span' })
       expect(call.title).toBe('Helper')
     })
 
@@ -312,9 +322,9 @@ describe('mimoToolCall', () => {
       const call = finished(MIMO_TOOL.Actor, spawn, {
         output: 'Background sub-session started. actor_id: general-1\nThe result will be delivered as a notification when complete.',
         metadata: { actorId: 'general-1', model: { modelID: 'alpha' } },
-      })
+      }, { spanId: 'worker-spawn-span' })
       const run = call.kind === 'agent' ? typedResult(call)?.agents[0] : undefined
-      expect(run).toMatchObject({ agentId: 'general-1', outcome: 'running', registryKey: 'call-1', body: 'Work.', bodyLabel: 'Prompt' })
+      expect(run).toMatchObject({ agentId: 'general-1', outcome: 'running', registryKey: 'worker-spawn-span', body: 'Work.', bodyLabel: 'Prompt' })
       expect(run?.metadata).toEqual([{ label: 'Agent ID', value: 'general-1' }, { label: 'Agent', value: 'general' }, { label: 'Model', value: 'alpha' }])
     })
 

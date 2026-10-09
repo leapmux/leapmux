@@ -346,7 +346,7 @@ func (a *Agent) childRowForSession(sessionID string) string {
 func grokSubagentStatus(status string) bgtask.Status {
 	switch status {
 	case "completed":
-		return bgtask.StatusCompleted
+		return bgtask.StatusSucceeded
 	case "failed":
 		return bgtask.StatusFailed
 	default:
@@ -387,7 +387,7 @@ func (a *Agent) handleSubagentFinished(update json.RawMessage) {
 	// closes as StatusInterrupted and the divider reads "Subagent interrupted".
 	// A subagent that completed before the cancel reached it keeps its
 	// completion.
-	if interrupted && status != bgtask.StatusCompleted {
+	if interrupted && status != bgtask.StatusSucceeded {
 		status = bgtask.StatusInterrupted
 	}
 	a.ApplySubagentObservation(&acp.SubagentObservation{
@@ -433,7 +433,7 @@ func (a *Agent) InterruptChild(childKey string, stop agent.StopContext) error {
 func grokWorkflowStatus(status string) bgtask.Status {
 	switch status {
 	case "complete":
-		return bgtask.StatusCompleted
+		return bgtask.StatusSucceeded
 	case "failed":
 		return bgtask.StatusFailed
 	case "cancelled", "interrupted":
@@ -496,12 +496,12 @@ func (a *Agent) handleWorkflowUpdated(update json.RawMessage) {
 	})
 	var report string
 	switch status {
-	case bgtask.StatusCompleted:
+	case bgtask.StatusSucceeded:
 		report = workflow.ResultSummary
 	case bgtask.StatusFailed:
 		report = workflow.PauseMessage
 	case bgtask.StatusUnspecified, bgtask.StatusPending, bgtask.StatusRunning, bgtask.StatusPaused,
-		bgtask.StatusStopped, bgtask.StatusInterrupted:
+		bgtask.StatusStopped, bgtask.StatusInterrupted, bgtask.StatusEndedWithUnknownOutcome:
 		return
 	}
 	if strings.TrimSpace(report) == "" {
@@ -597,7 +597,7 @@ func (a *Agent) handleTaskCompleted(update json.RawMessage) {
 	if id == "" {
 		return
 	}
-	status := bgtask.StatusCompleted
+	status := bgtask.StatusSucceeded
 	switch {
 	case snapshot.ExplicitlyKilled || snapshot.Signal != nil:
 		status = bgtask.StatusStopped

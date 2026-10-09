@@ -302,6 +302,12 @@ describe('extractChatRow assembled message', () => {
     completion,
   })
 
+  it('keeps unknown-outcome finality separate from the original text', () => {
+    const extraction = extractChatRow(AgentProvider.CLAUDE_CODE, parsed(envelope('text', 'finished')), { kind: 'assistant_text' }, { completion: MessageCompletion.FINISHED })
+    expect(extraction.completion).toBe('finished')
+    expect(rowOf(extraction)).toEqual({ kind: 'assistant-text', text: 'partial output' })
+  })
+
   it.each([
     ['assistant_text', 'text', 'assistant-text'],
     ['assistant_thinking', 'reasoning', 'assistant-thinking'],

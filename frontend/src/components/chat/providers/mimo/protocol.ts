@@ -30,16 +30,6 @@ export const MIMO_PART_FIELD = {
 } as const
 
 /**
- * The error names MiMo states in `session.error` that the divider words differently.
- *
- * An abort is the reader's own request, so the turn reads as interrupted rather than
- * failed.
- */
-export const MIMO_ERROR_NAME = {
-  Aborted: 'MessageAbortedError',
-} as const
-
-/**
  * The start of the sentence MiMo puts in a tool's `state.error` for a call that
  * never ran, because the reader refused it or dismissed it.
  *

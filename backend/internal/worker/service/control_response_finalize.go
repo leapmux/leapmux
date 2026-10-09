@@ -39,9 +39,8 @@ func controlResponsePlanFromAnswer(registry *agent.Registry, answer db.ControlRe
 		if err := protojson.Unmarshal(answer.PlanApprovalSettings, plan.settings); err != nil {
 			return controlResponsePlan{}, fmt.Errorf("read saved plan approval settings: %w", err)
 		}
-		// Keep the STORED bytes rather than re-encode the message. The transcript
-		// row must repeat what the claim row holds, and protojson gives a
-		// different byte string for each marshal of one message.
+		// Keep the stored bytes so the transcript row repeats the claim row exactly.
+		// Protobuf JSON output can differ across builds, even when the message is unchanged.
 		plan.settingsJSON = answer.PlanApprovalSettings
 	}
 	// Recovery must retain the actual prepared bytes, even if the provider encoder changes.
@@ -76,7 +75,12 @@ func (svc *Service) finalizeControlResponse(answer db.ControlResponseAnswer) err
 	}
 	ctx := bgCtx()
 	_, _, release := svc.Output.lockControlMutation(agentID, "")
-	defer release()
+	publication := controlPublication{}
+	defer func() {
+		if release != nil {
+			svc.Output.finishControlPublication(agentID, "", publication, release)
+		}
+	}()
 	var seq int64
 	var removed db.ControlRequest
 	apply := func(tx *sql.Tx) error {
@@ -135,10 +139,13 @@ func (svc *Service) finalizeControlResponse(answer db.ControlResponseAnswer) err
 		}
 	}
 	// Every subscriber must retire the response, even if its provider request disappeared earlier.
-	svc.Output.broadcastControlCancel(agentID, answer.RequestID, answer.ClaimToken)
+	publication.enqueueCancellation(svc.Output, agentID, answer.RequestID, answer.ClaimToken)
 	if write != nil {
 		svc.Output.publishMessageWrite(*write, seq)
 	}
+	unlock := release
+	release = nil
+	svc.Output.finishControlPublication(agentID, "", publication, unlock)
 	if answer.InputID != "" {
 		svc.InputQueue.NotifyDependencyReady(agentID)
 	}

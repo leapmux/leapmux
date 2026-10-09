@@ -78,21 +78,30 @@ func (m Map) Marshal() string {
 
 // Parse decodes the agents.options JSON column into a Map, dropping empty values. Never nil.
 func Parse(raw string) Map {
+	parsed, err := ParseWithError(raw)
+	if err != nil {
+		slog.Warn("invalid agent options payload; using empty object", "error", err)
+	}
+	return parsed
+}
+
+// ParseWithError decodes options without a logger callback.
+// It preserves the empty-map fallback and reports the original decode error.
+func ParseWithError(raw string) (Map, error) {
 	if raw == "" {
-		return Map{}
+		return Map{}, nil
 	}
 	var parsed Map
 	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
-		slog.Warn("invalid agent options payload; using empty object", "error", err)
-		return Map{}
+		return Map{}, err
 	}
 	if parsed == nil {
-		return Map{}
+		return Map{}, nil
 	}
 	for k, v := range parsed {
 		if v == "" {
 			delete(parsed, k)
 		}
 	}
-	return parsed
+	return parsed, nil
 }

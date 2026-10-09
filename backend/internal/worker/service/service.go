@@ -616,21 +616,19 @@ func New(cfg Config) *Service {
 	// The one turn flag every provider publishes. A queue that already closed
 	// admission refuses it, and a Worker shutdown stops every agent it runs --
 	// so that refusal is the expected end of the signal, not a fault to report.
-	svc.Output.SetTurnStateFunc(func(agentID string, state agent.TurnState) {
-		var err error
-		what := "turn end"
-		if state.Active {
-			what = "turn start"
-			_, err = svc.InputQueue.TurnStarted(bgCtx(), agentID, state.Steerable)
-		} else {
-			if svc.scheduleNativeTurnRestart(agentID) {
-				return
-			}
-			_, err = svc.InputQueue.TurnEnded(bgCtx(), agentID)
+	svc.Output.SetTurnStateFunc(func(agentID string, admission agent.TurnStateAdmission) {
+		state, lease := admission.Acquire()
+		if lease == nil {
+			return
 		}
+		lease.Release()
+		if !state.Active && svc.Agents.NativeTurnRestartRequired(agentID) && svc.scheduleNativeTurnRestart(agentID, admission) {
+			return
+		}
+		_, err := svc.InputQueue.ReconcileProviderTurn(bgCtx(), agentID, admission)
 		if err != nil && !errors.Is(err, inputqueue.ErrManagerStopped) {
 			slog.Warn("reconcile agent input queue with the provider's turn flag failed",
-				"agent_id", agentID, "edge", what, "error", err)
+				"agent_id", agentID, "error", err)
 		}
 	})
 	svc.Output.SetRequeueDroppedInputFunc(func(agentID, dropID, content string, attachments []*leapmuxv1.Attachment) (bool, error) {

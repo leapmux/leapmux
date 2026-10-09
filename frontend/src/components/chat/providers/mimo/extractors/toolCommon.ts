@@ -34,11 +34,18 @@ export function mimoPart(parsed: unknown): Record<string, unknown> | null {
 /**
  * One tool part, with every field the readers need already read.
  *
- * MiMo writes the whole call state on each update of the part, so ONE frame holds the
- * call's arguments whatever its status: the opening frame, a progress frame and the
- * final frame each state the input, and the final one adds the output and the metadata.
+ * MiMo writes the complete call state on each part update.
+ * One frame therefore supplies the arguments for its current status.
+ * These frames state the input:
+ * - The opening frame.
+ * - Each progress frame.
+ * - The final frame.
+ * The final frame also supplies the output and metadata.
  */
 export interface MiMoToolPart {
+  partId: string
+  messageId: string
+  sessionId: string
   callId: string
   tool: string
   /** `pending`, `running`, `completed` or `error`. */
@@ -50,7 +57,7 @@ export interface MiMoToolPart {
   error: string
   /** The one-line title MiMo wrote for the call, such as a file path. */
   title: string
-  /** The tool's own structured result: a diff, a count, an exit code. */
+  /** Structured results can include a diff or count. They can include an exit code also. */
   metadata: Record<string, unknown>
   /** The files the tool attached for the model, such as the image a read returned. */
   attachments: Record<string, unknown>[]
@@ -61,11 +68,17 @@ export function mimoToolPart(parsed: unknown): MiMoToolPart | null {
   const part = mimoPart(parsed)
   if (!part || pickString(part, 'type') !== MIMO_PART_TYPE.Tool)
     return null
+  const partId = pickString(part, 'id')
+  const messageId = pickString(part, 'messageID')
+  const sessionId = pickString(part, 'sessionID')
   const callId = pickString(part, 'callID')
   const state = pickObject(part, 'state')
-  if (!callId || !state)
+  if (!partId || !callId || !state)
     return null
   return {
+    partId,
+    messageId,
+    sessionId,
     callId,
     tool: pickString(part, 'tool'),
     status: pickString(state, 'status'),
@@ -86,10 +99,11 @@ export function mimoToolFinished(part: Pick<MiMoToolPart, 'status'>): boolean {
 /**
  * Where one tool row sits in its span.
  *
- * The worker persists a call's first RUNNING frame as the request and its final frame
- * as the result. A turn that ends while the call runs closes the span with the call's
- * last frame, which still reads as running, so LeapMux's own completion column decides
- * that row. A pending frame never reaches the transcript: it states no input yet.
+ * The Worker stores the first RUNNING frame as the request.
+ * It stores the final frame as the result.
+ * If the turn ends before the call completes, the Worker closes the span with the last frame.
+ * That frame still reports running. LeapMux's completion column determines its row role.
+ * A pending frame states no input and never enters the transcript.
  */
 export function mimoToolSpanRole(part: MiMoToolPart, completion: MessageCompletion | undefined): ToolSpanRole {
   if (mimoToolFinished(part) || retainedRowIsFinal(completion))
@@ -102,10 +116,11 @@ export function mimoToolSpanRole(part: MiMoToolPart, completion: MessageCompleti
 /**
  * The pictures a tool attached for the model.
  *
- * MiMo attaches a file as a part with a `data:` URL. A read of an image file and
- * `view_image` both answer this way, and the row shows the picture the model saw.
- * The attachment names its file by BASENAME alone, which the viewer cannot open, so
- * the reader of a read call supplies the path from the call's own arguments.
+ * MiMo attaches a file through a part with a `data:` URL.
+ * An image read and `view_image` both use this form.
+ * The row shows the image that the model received.
+ * The attachment identifies its file by basename only. The viewer cannot open that basename.
+ * The read reader therefore supplies the path from the call's arguments.
  */
 export function mimoToolImages(part: MiMoToolPart): ImageResultSource[] {
   return part.attachments.flatMap((attachment) => {

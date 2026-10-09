@@ -422,7 +422,7 @@ async function runNativeAgent(serverURL: string, parentPrompt: string, log: stri
       appendRow(PARENT_TAB, 'tool', content)
     childMessages.push(assistantMessage(answer), { role: 'tool', tool_call_id: readCall.id, content })
   }
-  browser.childStatus = 'completed'
+  browser.childStatus = 'succeeded'
 
   const report = await chat(serverURL, [
     { role: 'user', content: parentPrompt },
@@ -863,7 +863,7 @@ describe('expectChildToolOutputDeferred', () => {
       }),
       finish: async () => {
         browser.events.push('finish')
-        browser.childStatus = 'completed'
+        browser.childStatus = 'succeeded'
         if (options.restore)
           appendRow(CHILD_AGENT, 'tool', `${MARKER_FILE}\n${marker}`)
       },

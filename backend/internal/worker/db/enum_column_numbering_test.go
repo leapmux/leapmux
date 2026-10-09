@@ -1,6 +1,7 @@
 package db_test
 
 import (
+	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,13 +15,147 @@ import (
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 )
 
-// The worker migration is frozen history: it cannot take a query parameter the
-// way a query in `db/queries/` can, so every ordinal it spells is a copy of a
-// proto ordinal that nothing else moves. This file is what moves it.
-//
-// It mirrors internal/hub/store/enum_column_numbering_test.go, which does the
-// same for the hub's six enum columns.
+// The initial schema cannot bind a query parameter. These tests compare each
+// literal ordinal range with the proto enum that supplies its numbering.
+// The hub store checks its schema with the same method.
 const workerMigration = "migrations/00001_initial.sql"
+
+type integerEnumColumn struct {
+	label, update, read string
+	minimum, maximum    int64
+}
+
+func integerEnumColumns() []integerEnumColumn {
+	return []integerEnumColumn{
+		{"agents.agent_provider", "UPDATE agents SET agent_provider = ?", "SELECT typeof(agent_provider), agent_provider FROM agents", 1, int64(len(leapmuxv1.AgentProvider_name) - 1)},
+		{"agents.goal_status", "UPDATE agents SET goal_status = ?", "SELECT typeof(goal_status), goal_status FROM agents", 0, 5},
+		{"messages.content_compression", "UPDATE messages SET content_compression = ?", "SELECT typeof(content_compression), content_compression FROM messages", 1, 2},
+		{"messages.supplemental_content_compression", "UPDATE messages SET supplemental_content_compression = ?", "SELECT typeof(supplemental_content_compression), supplemental_content_compression FROM messages", 1, 2},
+		{"messages.agent_provider", "UPDATE messages SET agent_provider = ?", "SELECT typeof(agent_provider), agent_provider FROM messages", 1, int64(len(leapmuxv1.AgentProvider_name) - 1)},
+		{"agent_input_queue_items.kind", "UPDATE agent_input_queue_items SET kind = ?", "SELECT typeof(kind), kind FROM agent_input_queue_items", 1, 6},
+		{"agent_input_queue_items.state", "UPDATE agent_input_queue_items SET state = ?", "SELECT typeof(state), state FROM agent_input_queue_items", 1, 4},
+		{"control_response_answers.state", "UPDATE control_response_answers SET state = ?", "SELECT typeof(state), state FROM control_response_answers", 2, 5},
+		{"control_response_answers.agent_provider", "UPDATE control_response_answers SET agent_provider = ?", "SELECT typeof(agent_provider), agent_provider FROM control_response_answers", 1, int64(len(leapmuxv1.AgentProvider_name) - 1)},
+		{"agent_todos.status", "UPDATE agent_todos SET status = ?", "SELECT typeof(status), status FROM agent_todos", 1, 5},
+		{"agent_background_tasks.kind", "UPDATE agent_background_tasks SET kind = ?", "SELECT typeof(kind), kind FROM agent_background_tasks", 1, 3},
+		{"agent_background_tasks.status", "UPDATE agent_background_tasks SET status = ?", "SELECT typeof(status), status FROM agent_background_tasks", 1, 8},
+	}
+}
+
+func integerEnumStore(t *testing.T) *sql.DB {
+	t.Helper()
+	store, err := workerdb.Open(":memory:", sqlitedb.Config{})
+	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, store.Close()) })
+	require.NoError(t, workerdb.Migrate(t.Context(), store))
+	for _, statement := range []string{
+		"INSERT INTO agents (id) VALUES ('enum-owner')",
+		"INSERT INTO messages (id, agent_id, seq, source, content, content_compression) VALUES ('enum-message', 'enum-owner', 1, 1, X'7b7d', 1)",
+		"INSERT INTO agent_input_queue_items (id, agent_id, order_index, kind, state) VALUES ('enum-input', 'enum-owner', 1, 1, 1)",
+		"INSERT INTO control_response_answers (agent_id, request_id, claim_token, agent_provider) VALUES ('enum-owner', 'enum-request', 'enum-claim', 1)",
+		"INSERT INTO agent_todos (agent_id, row_key, seq, content, status) VALUES ('enum-owner', 'enum-todo', 1, 'todo', 1)",
+		"INSERT INTO agent_background_tasks (owner_agent_id, row_key, seq, kind, status) VALUES ('enum-owner', 'enum-task', 1, 1, 1)",
+	} {
+		_, err := store.ExecContext(t.Context(), statement)
+		require.NoError(t, err)
+	}
+	return store
+}
+
+func TestEnumColumnsRejectFractionalOrdinals(t *testing.T) {
+	t.Parallel()
+	for _, column := range integerEnumColumns() {
+		t.Run(column.label, func(t *testing.T) {
+			store := integerEnumStore(t)
+			for ordinal := column.minimum; ordinal <= column.maximum; ordinal++ {
+				_, err := store.ExecContext(t.Context(), column.update, ordinal)
+				assert.NoError(t, err, "every declared stored ordinal must remain valid")
+				if err != nil {
+					continue
+				}
+				var storageType string
+				var stored int64
+				require.NoError(t, store.QueryRowContext(t.Context(), column.read).Scan(&storageType, &stored))
+				assert.Equal(t, "integer", storageType)
+				assert.Equal(t, ordinal, stored)
+			}
+			_, err := store.ExecContext(t.Context(), column.update, column.minimum)
+			require.NoError(t, err)
+			for _, invalid := range []any{float64(max(column.minimum, 1)) + 0.5, column.minimum - 1, column.maximum + 1, int64(1 << 40), nil} {
+				_, err := store.ExecContext(t.Context(), column.update, invalid)
+				assert.Error(t, err, "a non-ordinal must fail at the actual storage boundary")
+				var storageType string
+				var stored any
+				require.NoError(t, store.QueryRowContext(t.Context(), column.read).Scan(&storageType, &stored))
+				assert.Equal(t, "integer", storageType)
+				assert.Equal(t, column.minimum, stored, "a refused value must leave the actual stored ordinal unchanged")
+				_, err = store.ExecContext(t.Context(), column.update, column.minimum)
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestEnumColumnIntegerChecksMatchTheirStorage(t *testing.T) {
+	t.Parallel()
+	statements := statementsOfMigration(t)
+	labels := make([]string, 0, len(integerEnumColumns())+6)
+	for _, column := range integerEnumColumns() {
+		labels = append(labels, column.label)
+	}
+	labels = append(labels, "messages.source", "messages.mark_type", "messages.assembled_kind", "messages.completion", "agent_input_queue_state.pause_reason", "agent_input_queue_state.pause_owner")
+	for _, label := range labels {
+		t.Run(label, func(t *testing.T) {
+			table, column, found := strings.Cut(label, ".")
+			require.True(t, found)
+			_, declaration, found := strings.Cut(statements, "CREATE TABLE "+table+" (")
+			require.True(t, found)
+			declaration, _, found = strings.Cut(declaration, "\n);")
+			require.True(t, found)
+			var columnDeclaration string
+			for _, line := range strings.Split(declaration, "\n") {
+				fields := strings.Fields(line)
+				if len(fields) > 1 && fields[0] == column {
+					columnDeclaration = strings.TrimSpace(line)
+					continue
+				}
+				if columnDeclaration == "" {
+					continue
+				}
+				if strings.HasPrefix(strings.TrimSpace(line), "CHECK (") {
+					columnDeclaration += " " + strings.TrimSpace(line)
+					continue
+				}
+				break
+			}
+			require.NotEmpty(t, columnDeclaration)
+			assert.Contains(t, columnDeclaration, "typeof("+column+") = 'integer'", "each actual range enum must reject fractions in its own column declaration")
+		})
+	}
+}
+
+func TestGoalUnknownStorageAcceptsFiveAndRejectsDerivedDormantSix(t *testing.T) {
+	t.Parallel()
+	sqlDB, err := workerdb.Open(":memory:", sqlitedb.Config{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	require.NoError(t, workerdb.Migrate(t.Context(), sqlDB))
+	_, err = sqlDB.ExecContext(t.Context(), "INSERT INTO agents (id) VALUES (?)", "unknown-goal-owner")
+	require.NoError(t, err)
+	for _, status := range []any{int64(0), int64(1), int64(2), int64(3), int64(4), int64(5)} {
+		_, writeErr := sqlDB.ExecContext(t.Context(), "UPDATE agents SET goal_status = ? WHERE id = ?", status, "unknown-goal-owner")
+		assert.NoError(t, writeErr, "each stored goal ordinal through Unknown must remain valid")
+		if writeErr == nil {
+			var stored int64
+			require.NoError(t, sqlDB.QueryRowContext(t.Context(), "SELECT goal_status FROM agents WHERE id = ?", "unknown-goal-owner").Scan(&stored))
+			assert.Equal(t, status, stored)
+		}
+	}
+	for _, status := range []any{int64(-1), int64(6), int64(7), int64(1 << 40), 1.5} {
+		_, writeErr := sqlDB.ExecContext(t.Context(), "UPDATE agents SET goal_status = ? WHERE id = ?", status, "unknown-goal-owner")
+		assert.Error(t, writeErr, "derived, fractional, negative, and undeclared statuses must not enter storage")
+	}
+}
 
 // Each enum column's CHECK range, and the proto enum it must match.
 //
@@ -53,19 +188,19 @@ func TestEnumColumnChecksMatchTheirProtoRanges(t *testing.T) {
 	}{
 		{
 			column:       "messages.assembled_kind",
-			check:        "CHECK (assembled_kind BETWEEN 0 AND 3)",
+			check:        "CHECK (assembled_kind BETWEEN 1 AND 3)",
 			lastAccepted: int32(leapmuxv1.AssembledMessageKind_ASSEMBLED_MESSAGE_KIND_PLAN),
 			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.AssembledMessageKind_name),
 		},
 		{
 			column:       "messages.completion",
-			check:        "CHECK (completion BETWEEN 0 AND 3)",
-			lastAccepted: int32(leapmuxv1.MessageCompletion_MESSAGE_COMPLETION_ERROR),
+			check:        "CHECK (completion BETWEEN 0 AND 4)",
+			lastAccepted: int32(leapmuxv1.MessageCompletion_MESSAGE_COMPLETION_FINISHED),
 			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.MessageCompletion_name),
 		},
 		{
 			column:       "agent_input_queue_state.pause_reason",
-			check:        "CHECK (pause_reason BETWEEN 0 AND 6)",
+			check:        "CHECK (pause_reason BETWEEN 1 AND 6)",
 			lastAccepted: int32(leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_STORE_FAULT),
 			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.AgentInputQueuePauseReason_name),
 		},
@@ -74,6 +209,24 @@ func TestEnumColumnChecksMatchTheirProtoRanges(t *testing.T) {
 			check:        "CHECK (kind BETWEEN 1 AND 6)",
 			lastAccepted: int32(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK),
 			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.AgentInputKind_name),
+		},
+		{
+			column:       "messages.source",
+			check:        "CHECK (source BETWEEN 1 AND 3)",
+			lastAccepted: int32(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX),
+			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.MessageSource_name),
+		},
+		{
+			column:       "messages.mark_type",
+			check:        "CHECK (mark_type BETWEEN 1 AND 2)",
+			lastAccepted: int32(leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE),
+			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.MarkType_name),
+		},
+		{
+			column:       "agent_input_queue_state.pause_owner",
+			check:        "CHECK (pause_owner BETWEEN 1 AND 6)",
+			lastAccepted: int32(leapmuxv1.AgentInputQueuePauseOwner_AGENT_INPUT_QUEUE_PAUSE_OWNER_RECOVERY),
+			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.AgentInputQueuePauseOwner_name),
 		},
 		{
 			column:       "agent_input_queue_items.state",
@@ -95,14 +248,14 @@ func TestEnumColumnChecksMatchTheirProtoRanges(t *testing.T) {
 		},
 		{
 			column:       "agent_background_tasks.status",
-			check:        "CHECK (status BETWEEN 1 AND 7)",
-			lastAccepted: int32(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_INTERRUPTED),
+			check:        "CHECK (status BETWEEN 1 AND 8)",
+			lastAccepted: int32(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_ENDED_WITH_UNKNOWN_OUTCOME),
 			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.BackgroundTaskStatus_name),
 		},
 		{
 			column:       "agents.goal_status",
-			check:        "CHECK (goal_status BETWEEN 0 AND 4)",
-			lastAccepted: int32(leapmuxv1.AgentGoalStatus_AGENT_GOAL_STATUS_DONE),
+			check:        "CHECK (goal_status BETWEEN 0 AND 5)",
+			lastAccepted: int32(leapmuxv1.AgentGoalStatus_AGENT_GOAL_STATUS_UNKNOWN),
 			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.AgentGoalStatus_name),
 			narrower: "DORMANT is derived from the running-agent map at read time and stored nowhere; " +
 				"the CHECK is what makes that unrepresentable rather than merely unwritten",
@@ -132,9 +285,9 @@ func TestEnumColumnChecksMatchTheirProtoRanges(t *testing.T) {
 			// control_response_answers each store the provider that produced
 			// the row.
 			column:       "agent_provider (agents, messages, control_response_answers)",
-			check:        "CHECK (agent_provider BETWEEN 1 AND 29)",
+			check:        "CHECK (agent_provider BETWEEN 1 AND 30)",
 			columns:      3,
-			lastAccepted: int32(leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI),
+			lastAccepted: int32(leapmuxv1.AgentProvider_AGENT_PROVIDER_MUSE_CODE),
 			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.AgentProvider_name),
 		},
 	} {
@@ -162,7 +315,7 @@ func TestEnumColumnChecksMatchTheirProtoRanges(t *testing.T) {
 func TestAgentProviderOrdinalsAreContiguous(t *testing.T) {
 	t.Parallel()
 
-	for ordinal := int32(1); ordinal <= int32(leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI); ordinal++ {
+	for ordinal := int32(1); ordinal <= int32(leapmuxv1.AgentProvider_AGENT_PROVIDER_MUSE_CODE); ordinal++ {
 		_, declared := leapmuxv1.AgentProvider_name[ordinal]
 		assert.Truef(t, declared,
 			"AgentProvider %d is a hole; the three agent_provider CHECKs state a plain range, so either close it by renumbering or narrow them", ordinal)
@@ -314,7 +467,7 @@ func TestAgentProviderColumnRefusesUnspecified(t *testing.T) {
 	// One past the last declared provider. The CHECK states a plain range now,
 	// so its ceiling is the only thing standing between an unset enum and a row
 	// nobody can read back.
-	beyondLast := leapmuxv1.AgentProvider(int32(leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI) + 1)
+	beyondLast := leapmuxv1.AgentProvider(int32(leapmuxv1.AgentProvider_AGENT_PROVIDER_MUSE_CODE) + 1)
 	assert.ErrorContains(t, createAgent("beyond-last-ordinal", beyondLast),
 		"CHECK constraint failed", "an ordinal past the last declared provider is refused")
 }

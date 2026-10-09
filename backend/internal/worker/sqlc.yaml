@@ -50,6 +50,27 @@ sql:
             go_type:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
               type: "MarkType"
+              pointer: true
+          - column: "messages.assembled_kind"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "AssembledMessageKind"
+              pointer: true
+          - column: "messages.completion"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "MessageCompletion"
+              pointer: true
+          - column: "agent_input_queue_state.pause_reason"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "AgentInputQueuePauseReason"
+              pointer: true
+          - column: "agent_input_queue_state.pause_owner"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "AgentInputQueuePauseOwner"
+              pointer: true
           # The enum columns that store a proto ordinal. Retyping them here is
           # what makes a mixed-up pair a COMPILE error: kind and status of
           # agent_background_tasks share one params struct, and as int64 each
@@ -87,6 +108,8 @@ sql:
           # 0/1 to *bool through driver.Bool, and a bool parameter back the
           # same way, so the retype is correct in both directions.
           - column: "terminals.is_quake"
+            go_type: "bool"
+          - column: "messages.transcript_only"
             go_type: "bool"
           - column: "terminals.workspace_archived"
             go_type: "bool"

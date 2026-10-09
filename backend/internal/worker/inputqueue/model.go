@@ -40,7 +40,8 @@ const (
 // that cause lifts it again. A pause writer always overwrites the owner, so
 // the newest cause owns the pause: an archive resume, or the end of a planned
 // restart, then leaves a pause that a later crash or the user created. The
-// values persist in agent_input_queue_state.pause_owner.
+// Real values persist in agent_input_queue_state.pause_owner.
+// The zero value means absence in memory and maps to SQL NULL.
 //
 // A DEFINED type over the proto enum, not an independent iota. The column is a
 // closed set, so its numbering comes from proto like every other enum column

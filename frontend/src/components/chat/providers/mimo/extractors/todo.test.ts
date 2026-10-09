@@ -6,6 +6,9 @@ import { mimoTaskRequest, mimoTaskResult, mimoTaskStatus } from './todo'
 /** One finished `task` call. */
 function taskPart(operation: unknown, fields: Partial<MiMoToolPart> = {}): MiMoToolPart {
   return {
+    partId: 'prt_call-1',
+    messageId: 'msg_1',
+    sessionId: 'ses_test',
     callId: 'call-1',
     tool: MIMO_TOOL.Task,
     status: 'completed',

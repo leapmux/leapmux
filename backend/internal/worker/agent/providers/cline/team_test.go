@@ -73,7 +73,7 @@ func TestAFinishedTeammateRunTakesItsTranscriptFromClinesStore(t *testing.T) {
 	row := teamRowPrefix + "run_1"
 	waitFor(t, func() bool {
 		item, _ := r.sink.BackgroundTask(row)
-		return item.Status == bgtask.StatusCompleted
+		return item.Status == bgtask.StatusSucceeded
 	}, "the row closes after the transcript")
 	child := r.childSink(t, row)
 	messages := child.Messages()
@@ -87,7 +87,7 @@ func TestTeamRunStatus(t *testing.T) {
 	for event, want := range map[string]bgtask.Status{
 		contracts.ClineTeamRunEventRunQueued:      bgtask.StatusPending,
 		contracts.ClineTeamRunEventRunStarted:     bgtask.StatusRunning,
-		contracts.ClineTeamRunEventRunCompleted:   bgtask.StatusCompleted,
+		contracts.ClineTeamRunEventRunCompleted:   bgtask.StatusSucceeded,
 		contracts.ClineTeamRunEventRunFailed:      bgtask.StatusFailed,
 		contracts.ClineTeamRunEventRunCancelled:   bgtask.StatusStopped,
 		contracts.ClineTeamRunEventRunInterrupted: bgtask.StatusInterrupted,
@@ -124,8 +124,7 @@ func TestTheProcessEndClosesTheTeammateRuns(t *testing.T) {
 	assert.Equal(t, bgtask.StatusInterrupted, item.Status, "a crash interrupts the run")
 }
 
-// A run event that states no teammate or no team still makes a row, with the
-// words that stand for them.
+// A run event without a team or teammate still creates a row with the corresponding fallback labels.
 func TestATeammateRunWithNoNamesTakesTheDefaults(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
@@ -176,8 +175,8 @@ func TestAnEndedTeammateRunClosesWithItsStatus(t *testing.T) {
 	}
 }
 
-// Cline can state a run's end twice, and the second end changes nothing: the
-// row closed and the transcript came from the store once.
+// A duplicate native run-end event changes nothing.
+// The first end closes the row and reads its stored transcript once.
 func TestARepeatedEndOfATeammateRunChangesNothing(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
@@ -193,7 +192,7 @@ func TestARepeatedEndOfATeammateRunChangesNothing(t *testing.T) {
 	r.feed(t, contracts.ClineEventTeamProgress, teamProgressPayload(root, contracts.ClineTeamRunEventRunFailed, "run_1", "researcher"))
 	r.agent.background.Wait()
 	item, _ := r.sink.BackgroundTask(teamRowPrefix + "run_1")
-	assert.Equal(t, bgtask.StatusCompleted, item.Status, "the first end decides")
+	assert.Equal(t, bgtask.StatusSucceeded, item.Status, "the first end decides")
 	assert.Len(t, r.hub.commandsNamed(commandSessionMessages), 1, "the transcript comes from the store once")
 	assert.Equal(t, []string{contracts.ClineEventAssistantFinished}, rowEvents(t, r.childSink(t, teamRowPrefix+"run_1")))
 }
@@ -210,13 +209,13 @@ func TestATeammateRunWithNoTranscriptClosesAtItsEnd(t *testing.T) {
 	assert.Empty(t, item.ChildAgentID)
 	r.feed(t, contracts.ClineEventTeamProgress, teamProgressPayload(root, contracts.ClineTeamRunEventRunCompleted, "run_1", "researcher"))
 	item, _ = r.sink.BackgroundTask(teamRowPrefix + "run_1")
-	assert.Equal(t, bgtask.StatusCompleted, item.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, item.Status)
 	assert.Empty(t, r.hub.commandsNamed(commandSessionList))
 }
 
-// A stop ends the teammate runs that still run as stopped, and a crash as
-// interrupted (TestTheProcessEndClosesTheTeammateRuns): only a crash can leave
-// a run in an unknown state.
+// A stop closes active teammate runs as stopped, while a crash closes them as interrupted.
+// See TestTheProcessEndClosesTheTeammateRuns.
+// Only the crash leaves their actual native state unknown.
 func TestTheStopClosesTheTeammateRuns(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)

@@ -56,7 +56,7 @@ fastAgentTest.describe('Fast Agent subagent transcript', () => {
 
       await expandBackgroundTasksSection(page)
       const row = backgroundTaskRows(page, { kind: 'subagent' }).filter({ hasText: run.description }).first()
-      await expect(row).toHaveAttribute('data-status', 'completed')
+      await expect(row).toHaveAttribute('data-status', 'succeeded')
       // `openChildTabFromRow` requires the row to link a child agent, and returns that agent.
       const childID = await openChildTabFromRow(page, row)
       if (previousChildID)
@@ -96,7 +96,7 @@ fastAgentTest.describe('Fast Agent subagent transcript', () => {
     await waitForAgentIdle(page)
     await expandBackgroundTasksSection(page)
     const firstRow = rows.first()
-    await expect(firstRow).toHaveAttribute('data-status', 'completed')
+    await expect(firstRow).toHaveAttribute('data-status', 'succeeded')
     // `openChildTabFromRow` requires the row to link a child agent, and returns that agent.
     const firstChildID = await openChildTabFromRow(page, firstRow)
     await expect(userBubbles(page).filter({ hasText: childPrompt }).first()).toBeVisible()
@@ -124,7 +124,7 @@ fastAgentTest.describe('Fast Agent subagent transcript', () => {
       return secondIndex
     }).toBeGreaterThanOrEqual(0)
     const secondRow = rows.nth(secondIndex)
-    await expect(secondRow).toHaveAttribute('data-status', 'completed')
+    await expect(secondRow).toHaveAttribute('data-status', 'succeeded')
     expect(await openChildTabFromRow(page, secondRow)).not.toBe(firstChildID)
     await expect(userBubbles(page).filter({ hasText: childPrompt }).first()).toBeVisible()
     await expect(assistantBubbles(page).filter({ hasText: 'FASTSAMECHILDTWO' }).first()).toBeVisible()

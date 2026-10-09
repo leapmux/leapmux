@@ -49,6 +49,14 @@ function item(over: Partial<BackgroundTaskItem> & { rowKey: string }): Backgroun
 }
 
 describe('protoBackgroundTaskToStore', () => {
+  it('keeps unknown-outcome finality without active work or a known result', () => {
+    const finished = protoBackgroundTaskToStore(proto({ id: 'finished', status: BackgroundTaskStatus.ENDED_WITH_UNKNOWN_OUTCOME }))
+    expect(finished.status).toBe('ended_with_unknown_outcome')
+    expect(isActiveBackgroundTaskStatus(finished.status)).toBe(false)
+    expect(isOpenBackgroundTaskStatus(finished.status)).toBe(false)
+    expect(backgroundTaskEndLabel(finished.status)).toBe('Ended with unknown outcome')
+    expect(backgroundTaskEndTooltip(finished.status)).toBe('The provider reports an end without a known outcome')
+  })
   it('maps enum statuses to the union', () => {
     expect(protoBackgroundTaskToStore(proto({ id: 'r1', status: BackgroundTaskStatus.RUNNING, title: 't', activeForm: 'a' })))
       .toMatchObject({ rowKey: 'r1', kind: 'subagent', status: 'running', activity: 'a' })
@@ -63,9 +71,9 @@ describe('protoBackgroundTaskToStore', () => {
   })
 
   it('maps shell kind', () => {
-    const got = protoBackgroundTaskToStore(proto({ id: 'r1', kind: BackgroundTaskKind.SHELL, status: BackgroundTaskStatus.COMPLETED }))
+    const got = protoBackgroundTaskToStore(proto({ id: 'r1', kind: BackgroundTaskKind.SHELL, status: BackgroundTaskStatus.SUCCEEDED }))
     expect(got.kind).toBe('shell')
-    expect(got.status).toBe('completed')
+    expect(got.status).toBe('succeeded')
   })
 
   it('maps workflow kind', () => {
@@ -96,7 +104,7 @@ describe('countActiveBackgroundTasks', () => {
     const items = [
       item({ rowKey: '1', status: 'running' }),
       item({ rowKey: '2', status: 'pending' }),
-      item({ rowKey: '3', status: 'completed' }),
+      item({ rowKey: '3', status: 'succeeded' }),
       item({ rowKey: '4', status: 'failed' }),
       item({ rowKey: '5', status: 'paused' }),
     ]
@@ -107,7 +115,7 @@ describe('countActiveBackgroundTasks', () => {
 describe('sortBackgroundTasks', () => {
   it('sorts running, pending, paused, and then finished', () => {
     const items = [
-      item({ rowKey: 'completed', status: 'completed' }),
+      item({ rowKey: 'completed', status: 'succeeded' }),
       item({ rowKey: 'pending', status: 'pending' }),
       item({ rowKey: 'paused', status: 'paused' }),
       item({ rowKey: 'running', status: 'running' }),
@@ -134,7 +142,7 @@ describe('groupBackgroundTasks', () => {
 
 describe('backgroundTaskEndLabel', () => {
   it('labels each finished status', () => {
-    expect(backgroundTaskEndLabel('completed')).toBe('Completed')
+    expect(backgroundTaskEndLabel('succeeded')).toBe('Succeeded')
     expect(backgroundTaskEndLabel('failed')).toBe('Failed')
     expect(backgroundTaskEndLabel('stopped')).toBe('Stopped')
     expect(backgroundTaskEndLabel('interrupted')).toBe('Interrupted')
@@ -148,7 +156,7 @@ describe('backgroundTaskEndTooltip', () => {
   })
 
   it('returns undefined for statuses whose label is self-explanatory', () => {
-    expect(backgroundTaskEndTooltip('completed')).toBeUndefined()
+    expect(backgroundTaskEndTooltip('succeeded')).toBeUndefined()
     expect(backgroundTaskEndTooltip('failed')).toBeUndefined()
     expect(backgroundTaskEndTooltip('stopped')).toBeUndefined()
     expect(backgroundTaskEndTooltip('running')).toBeUndefined()
@@ -164,11 +172,11 @@ describe('isActiveBackgroundTaskStatus', () => {
 
   it('keeps a paused row open', () => {
     expect(isOpenBackgroundTaskStatus('paused')).toBe(true)
-    expect(isOpenBackgroundTaskStatus('completed')).toBe(false)
+    expect(isOpenBackgroundTaskStatus('succeeded')).toBe(false)
   })
 
   it('every finished status is inactive', () => {
-    for (const status of ['completed', 'failed', 'stopped', 'interrupted'] as const)
+    for (const status of ['succeeded', 'failed', 'stopped', 'interrupted'] as const)
       expect(isActiveBackgroundTaskStatus(status)).toBe(false)
   })
 })
@@ -222,7 +230,7 @@ describe('backgroundTaskStatusLabel', () => {
   })
 
   it('reuses the final end labels', () => {
-    expect(backgroundTaskStatusLabel('completed')).toBe('Completed')
+    expect(backgroundTaskStatusLabel('succeeded')).toBe('Succeeded')
     expect(backgroundTaskStatusLabel('failed')).toBe('Failed')
     expect(backgroundTaskStatusLabel('stopped')).toBe('Stopped')
     expect(backgroundTaskStatusLabel('interrupted')).toBe('Interrupted')
@@ -282,7 +290,7 @@ describe('filterBackgroundTasksByKind', () => {
 describe('shouldShowBackgroundTasksSection', () => {
   it('shows the section for any row, finished ones included', () => {
     expect(shouldShowBackgroundTasksSection([item({ rowKey: 'a', status: 'running' })], false)).toBe(true)
-    expect(shouldShowBackgroundTasksSection([item({ rowKey: 'a', status: 'completed' })], false)).toBe(true)
+    expect(shouldShowBackgroundTasksSection([item({ rowKey: 'a', status: 'succeeded' })], false)).toBe(true)
   })
 
   it('hides the section for an empty registry that loaded fine', () => {
@@ -379,5 +387,24 @@ describe('createTabTaskScope', () => {
     // whose work a tab is running.
     expect(s.tasksForTab('child-1').map(t => t.rowKey)).toEqual(['mine'])
     expect(s.tasksForTab('root-1').map(t => t.rowKey)).toEqual(['self', 'mine'])
+  })
+})
+
+describe('background task canonical outcome names', () => {
+  it.each([
+    { wire: BackgroundTaskStatus.SUCCEEDED, token: 'succeeded', label: 'Succeeded' },
+    { wire: BackgroundTaskStatus.ENDED_WITH_UNKNOWN_OUTCOME, token: 'ended_with_unknown_outcome', label: 'Ended with unknown outcome' },
+  ])('maps wire status $wire to $token without active work', ({ wire, token, label }) => {
+    const task = protoBackgroundTaskToStore(proto({ id: 'native-outcome', status: wire }))
+    expect(isActiveBackgroundTaskStatus(task.status)).toBe(false)
+    expect(isOpenBackgroundTaskStatus(task.status)).toBe(false)
+    expect(task.status).toBe(token)
+    expect(backgroundTaskEndLabel(task.status)).toBe(label)
+    expect(backgroundTaskStatusLabel(task.status)).toBe(label)
+  })
+
+  it('explains an ended row without asserting success or failure', () => {
+    const task = protoBackgroundTaskToStore(proto({ id: 'unknown-result', status: BackgroundTaskStatus.ENDED_WITH_UNKNOWN_OUTCOME }))
+    expect(backgroundTaskEndTooltip(task.status)).toBe('The provider reports an end without a known outcome')
   })
 })

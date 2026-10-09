@@ -94,7 +94,7 @@ codexTest.describe('codex subagent lifecycle', () => {
 
     // 8. The completed child turn is an exact final signal. A generic final
     // status would let a failed child pass this happy-path regression.
-    await expect(row).toHaveAttribute('data-status', 'completed')
+    await expect(row).toHaveAttribute('data-status', 'succeeded')
   })
 })
 

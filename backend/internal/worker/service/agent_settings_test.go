@@ -740,8 +740,9 @@ func TestCASPersistAgentOptions_PreservesConcurrentKeyOnRetry(t *testing.T) {
 	}))
 
 	// Persist our edit against the STALE snapshot: the CAS must re-read and re-merge.
-	settled, wrote, err := casPersistAgentOptions(ctx, svc.Queries, "agent-1", stale,
+	result, err := casPersistAgentOptions(ctx, svc.Queries, "agent-1", stale,
 		map[string]string{agent.OptionIDModel: "sonnet"})
+	settled, wrote := result.options, result.wrote
 	require.NoError(t, err)
 	assert.True(t, wrote, "the delta changed the latest row, so a write lands")
 
@@ -776,8 +777,9 @@ func TestCASPersistAgentOptions_ReassertsOverConcurrentClear(t *testing.T) {
 	// Re-confirm the agent's snapshot (effort still high): a no-op against `stale`, but NOT against
 	// the cleared live row, so the CAS must re-assert effort rather than short-circuit on the stale
 	// snapshot.
-	settled, wrote, err := casPersistAgentOptions(ctx, svc.Queries, "agent-1", stale,
+	result, err := casPersistAgentOptions(ctx, svc.Queries, "agent-1", stale,
 		map[string]string{agent.OptionIDModel: "opus[1m]", agent.OptionIDEffort: "high"})
+	settled, wrote := result.options, result.wrote
 	require.NoError(t, err)
 	assert.True(t, wrote, "the refresh re-asserts effort over the concurrent clear (no-op decided against the live row)")
 	assert.Equal(t, "high", parseOptions(settled)[agent.OptionIDEffort],
@@ -800,8 +802,9 @@ func TestCASPersistAgentOptions_TrueNoOpAgainstLiveRow(t *testing.T) {
 		Options:       row,
 	}))
 
-	settled, wrote, err := casPersistAgentOptions(ctx, svc.Queries, "agent-1", row,
+	result, err := casPersistAgentOptions(ctx, svc.Queries, "agent-1", row,
 		map[string]string{agent.OptionIDModel: "opus[1m]", agent.OptionIDEffort: "high"})
+	settled, wrote := result.options, result.wrote
 	require.NoError(t, err)
 	assert.False(t, wrote, "a genuine no-op against the live row writes nothing")
 	assert.Equal(t, "high", parseOptions(settled)[agent.OptionIDEffort], "the live row is returned as settled")

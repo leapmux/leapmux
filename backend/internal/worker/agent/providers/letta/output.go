@@ -110,7 +110,7 @@ func (a *Agent) onStreamDelta(payload []byte, subagentID string) {
 		}
 	case contracts.LettaDeltaKindRetry, contracts.LettaDeltaKindLoopError:
 		// A retry and a loop error are events the reader may want to see.
-		if _, err := target.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, payload); err != nil {
+		if _, err := target.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: payload}); err != nil {
 			slog.Debug("letta: persist notification failed", "agent_id", a.AgentID(), "error", err)
 		}
 	case contracts.LettaDeltaKindUsageStatistics:

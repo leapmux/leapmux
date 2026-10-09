@@ -136,7 +136,7 @@ func TestKiroSubagentLifecycle(t *testing.T) {
 	a.HandleOutput(messageChunk(t, "Parent got the child result.", nil))
 
 	task, _ = sink.BackgroundTask(kiroSpawnCallID)
-	assert.Equal(t, bgtask.StatusCompleted, task.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, task.Status)
 	assert.Equal(t, []string{"child3 reading", "CHILD3 RESULT: hello world found"}, childTexts(t, child))
 	var childTool bool
 	for _, message := range child.Messages() {

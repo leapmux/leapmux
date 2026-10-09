@@ -21,9 +21,8 @@ const mainActorID = "main"
 
 // Agent manages one `mimo serve` process and the one session it drives.
 //
-// The process speaks no protocol on stdio. Its stdout carries the listen line
-// and log lines, which Process.ReadLines drains; the session runs over the REST
-// routes in rpc.go and the event stream that connection.go reads.
+// The process speaks no protocol on stdio. Process.ReadLines drains its listen line and log lines.
+// The session uses the REST routes in rpc.go and the event stream in connection.go.
 //
 // One goroutine reads the event stream and calls every handler in order, so
 // two events never race. Mu guards the state below it, because the worker's
@@ -49,11 +48,9 @@ type Agent struct {
 	// Production uses the real clock, and a test injects a mock. Each timer
 	// carries one of the tags below, so a test can catch it.
 	clock quartz.Clock
-	// dispatchMu serializes the event handlers with the two other paths that
-	// change the turn: the reconcile a timer runs after an abort, and the
-	// session switch of ClearContext. Each handler reads and writes state in
-	// several steps under a.Mu, and a second writer between two of them would
-	// see a half-applied turn.
+	// dispatchMu serializes event handlers with abort reconciliation and context clear.
+	// Each handler changes state in several steps under a.Mu.
+	// Another writer between those steps would see an incomplete state change.
 	dispatchMu sync.Mutex
 
 	// --- guarded by Mu ---
@@ -68,7 +65,7 @@ type Agent struct {
 
 	catalog mimoCatalog
 	// model is the `<provider>/<model>` every prompt states. Empty until the
-	// catalog names one, and then the server picks.
+	// catalog supplies one, and then the server picks.
 	model string
 	// effort is the variant every prompt states, or agent.EffortAuto for none.
 	effort string
@@ -78,27 +75,29 @@ type Agent struct {
 	permissionPolicy string
 
 	turnActive bool
-	// interruptRequests records the stop attempts of the current turn.
-	// A failed request removes only its own attempt.
-	interruptRequests map[uint64]struct{}
+	// interruptRequests records each stop attempt of the current turn.
+	// A true value confirms HTTP acceptance or native abort evidence.
+	// A failed request removes only its own pending attempt.
+	interruptRequests map[uint64]bool
 	interruptAttempt  uint64
-	// turnFailure holds the session.error that failed the running turn. The turn
-	// end persists it as the divider, which states the reason.
-	turnFailure []byte
-	// unattributed holds a session.error that no message has claimed yet. A
-	// subagent runs in the agent's own session, so its failure arrives as the
-	// session's, and only the failed message that follows says whose it is.
-	unattributed *mimoFailure
-	// lastTurnFailed marks that the last turn ended with a failure and that no
-	// input followed. MiMo repeats a failure's error after the turn ends, and
-	// this is how that repeat is told apart from a new failure.
-	lastTurnFailed bool
-
-	messages map[string]*mimoMessageRecord
-	parts    map[string]*mimoTextPart
-	tools    map[string]*mimoToolCall
+	// awaitingAbortOutcome keeps final text unready after an unowned session abort.
+	// Exact message metadata supplies its outcome. This flag confirms no main stop.
+	awaitingAbortOutcome bool
+	// turnEpoch associates native messages with the turn that first reports them.
+	turnEpoch uint64
+	// pendingFailures retains native failures in their original observation order.
+	// Each failure stays until its exact owner claims it or its write succeeds.
+	pendingFailures []*mimoFailure
+	// turnFailure selects one pending main failure for the current divider.
+	// Its bytes remain in pendingFailures until the divider write succeeds.
+	turnFailure *mimoFailure
+	messages    map[string]*mimoMessageRecord
+	parts       map[string]*mimoTextPart
+	tools       map[string]*mimoToolCall
 	// nextToolOrder orders the tool calls that a turn end closes.
 	nextToolOrder uint64
+	// pendingPartOrder preserves the observation order of retained native parts.
+	pendingPartOrder uint64
 	// compactions records the compaction parts already persisted, keyed by part
 	// id, with the phase each one reached.
 	compactions map[string]string
@@ -128,9 +127,6 @@ type Agent struct {
 	// buffers holds each actor's streamed text until its part ends. The map is
 	// guarded by Mu; each buffer has its own lock.
 	buffers map[string]*providerkit.GenerationBuffer
-	// spawnPrompts holds a spawn's prompt, keyed by its tool call, until the
-	// child transcript exists.
-	spawnPrompts providerkit.PendingPrompts
 }
 
 var (
@@ -165,8 +161,7 @@ const (
 // newAgentState returns an agent with its maps made and no process. Start and
 // the tests build every agent through it, and then assign the process.
 func newAgentState(sink agent.ProviderServices, rpc mimoRPC, workingDir string, clock quartz.Clock) *Agent {
-	return &Agent{
-		sink:        sink,
+	a := &Agent{
 		rpc:         rpc,
 		workingDir:  workingDir,
 		connected:   make(chan struct{}),
@@ -184,6 +179,8 @@ func newAgentState(sink agent.ProviderServices, rpc mimoRPC, workingDir string, 
 		buffers:     map[string]*providerkit.GenerationBuffer{},
 		mode:        mimoStaticModes[0].Id,
 	}
+	a.sink = agent.NewModelProgressResetSink(mimoRootProgressSink{ProviderServices: sink, owner: a})
+	return a
 }
 
 // SendInput delivers a user message to the main agent. It returns once the
@@ -210,11 +207,11 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 //
 // A plain send refuses while a turn runs, with ErrAgentBusy, so the queue holds
 // the message for the next turn. A steer requires a running turn. The server
-// takes both through the same route: a prompt that reaches a running loop
-// joins it, and one that reaches an idle session starts a turn.
+// takes both through the same route. A prompt that reaches a running loop joins it.
+// A prompt that reaches an idle session starts a turn.
 //
-// A steer whose turn ended between the check and the request is still
-// delivered: it starts a new turn, and the server holds its text. Reporting
+// A steer still reaches the server if its turn ends after the local check.
+// The server starts a new turn and keeps that text. Reporting
 // ErrNoActiveTurn there would make the queue send the same text a second time.
 func (a *Agent) sendInput(expected *string, content string, attachments []*leapmuxv1.Attachment, steer bool) error {
 	parts, err := buildPromptParts(content, attachments)
@@ -263,7 +260,7 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 	err = a.rpc.promptAsync(a.Context(), sessionID, request)
 	if manualFollowup {
 		// An event can report busy before prompt_async answers. The stream
-		// handler and this acceptance edge must apply in one order.
+		// handler and HTTP acceptance must apply in one order.
 		a.dispatchMu.Lock()
 		a.Mu.Lock()
 		a.inputSends[sessionID]--
@@ -278,7 +275,6 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 			a.manualFollowupBusy = false
 			if accepted {
 				a.manualCompactionReady = false
-				a.lastTurnFailed = false
 			}
 		}
 		a.Mu.Unlock()
@@ -292,11 +288,8 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 		if a.inputSends[sessionID] == 0 {
 			delete(a.inputSends, sessionID)
 		}
-		if err == nil && a.sessionID == sessionID {
-			a.lastTurnFailed = false
-			if !steer {
-				a.manualCompactionReady = false
-			}
+		if err == nil && a.sessionID == sessionID && !steer {
+			a.manualCompactionReady = false
 		}
 		a.Mu.Unlock()
 	}
@@ -306,9 +299,14 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 	return nil
 }
 
-// promptRequestLocked builds a prompt that states the current agent, model and
-// variant. actorID addresses a subagent; empty addresses the main agent, which
-// is the only one that the mode applies to. The caller holds a.Mu.
+// promptRequestLocked builds a prompt from the current settings:
+//
+//   - Agent.
+//   - Model.
+//   - Variant.
+//
+// actorID addresses a child. An empty actorID addresses the main actor.
+// Mode applies only to the main actor. The caller holds a.Mu.
 func (a *Agent) promptRequestLocked(parts []mimoPromptPart, actorID string) mimoPromptRequest {
 	request := mimoPromptRequest{Parts: parts, AgentID: actorID}
 	if actorID == "" {
@@ -323,20 +321,19 @@ func (a *Agent) promptRequestLocked(parts []mimoPromptPart, actorID string) mimo
 
 // errPromptRateLimited states MiMo's limit on its prompt route. See
 // classifyDeliveryError.
-var errPromptRateLimited = errors.New("MiMo accepts at most 20 messages a minute, steers and subagent messages included; " +
-	"send this message again when the minute ends")
+var errPromptRateLimited = errors.New("MiMo accepts at most 20 messages a minute, including steers and child messages. " +
+	"Send this message again when that window ends")
 
 // classifyDeliveryError separates a refusal from an unknown outcome.
 //
-// A status reply is the server's own answer, and a refused dial never sent the
-// request, so both are definite failures. Any other transport error can land
-// after the server read the request, so the delivery is uncertain, and the
-// queue must not send the same text again as if it never arrived.
+// A native status reply confirms refusal. A failed dial sent no request.
+// Both are definite failures. Another transport error can follow native request receipt.
+// Its delivery outcome is unknown. The queue must not send that text again automatically.
 //
-// A 429 is MiMo's rate limit on prompt_async: at most 20 requests in each fixed
-// 60-second window, for the whole server (server/rate-limit.ts, and the route
-// in server/routes/instance/session.ts). A prompt, a steer and a message to a
-// subagent all use that route. The refusal states the limit, and the queue
+// MiMo limits prompt_async to 20 requests per fixed 60-second window for the whole server.
+// See server/rate-limit.ts and server/routes/instance/session.ts.
+// The same route carries plain prompts, steers, and child messages.
+// The refusal states the limit, and the queue
 // records a failure that the user can send again. A retry inside the provider
 // is not possible:
 //
@@ -344,9 +341,8 @@ var errPromptRateLimited = errors.New("MiMo accepts at most 20 messages a minute
 //   - Retry-After runs to the end of MiMo's window, up to a minute. A dispatch
 //     or a steer that waits that long holds the agent's input queue.
 //
-// A busy refusal is wrong too. It waits for a turn end, and an idle agent
-// publishes one at once, so the queue would send the message again, into the
-// same limit, for the rest of the window.
+// A busy refusal would wait for settlement. An idle agent publishes settlement immediately.
+// The queue would send the same message into the same limit repeatedly until the window ends.
 func classifyDeliveryError(operation string, err error) error {
 	var status *providerkit.HTTPStatusError
 	if errors.As(err, &status) {

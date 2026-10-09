@@ -112,7 +112,7 @@ func (a *Agent) handleWorkflowEvent(event mimoEvent) {
 func workflowStatus(status string) bgtask.Status {
 	switch status {
 	case workflowCompleted:
-		return bgtask.StatusCompleted
+		return bgtask.StatusSucceeded
 	case workflowCancelled:
 		return bgtask.StatusStopped
 	case workflowFailed:

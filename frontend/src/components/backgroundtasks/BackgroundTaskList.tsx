@@ -1,3 +1,4 @@
+import { BACKGROUND_TASK_STATUS_TOKEN } from '~/generated/contracts/worker-vocab'
 import type { Component, JSX } from 'solid-js'
 import type { BackgroundTaskItem, BackgroundTaskKindFilter } from '~/stores/chatBackgroundTasks'
 import Bot from 'lucide-solid/icons/bot'
@@ -91,18 +92,19 @@ function secondaryTooltip(item: BackgroundTaskItem): string {
 /** Select the status color and shape. */
 function statusDotClass(status: BackgroundTaskItem['status']): string {
   switch (status) {
-    case 'completed':
+    case BACKGROUND_TASK_STATUS_TOKEN.Succeeded:
       return statusDotStyles.statusDotSuccess
     // A crash interrupts unfinished work. An explicit user stop stays muted.
-    case 'failed':
-    case 'interrupted':
+    case BACKGROUND_TASK_STATUS_TOKEN.Failed:
+    case BACKGROUND_TASK_STATUS_TOKEN.Interrupted:
       return statusDotStyles.statusDotDanger
-    case 'stopped':
-    case 'paused':
+    case BACKGROUND_TASK_STATUS_TOKEN.Stopped:
+    case BACKGROUND_TASK_STATUS_TOKEN.Paused:
+    case BACKGROUND_TASK_STATUS_TOKEN.EndedWithUnknownOutcome:
       return statusDotStyles.statusDotMuted
     // A queued task uses a hollow ring. Only a running task pulses.
     // Reduced motion removes the pulse, so shape must still distinguish the two states.
-    case 'pending':
+    case BACKGROUND_TASK_STATUS_TOKEN.Pending:
       return statusDotStyles.statusDotPending
     default:
       return statusDotStyles.statusDotActive
@@ -164,7 +166,7 @@ export const BackgroundTaskList: Component<BackgroundTaskListProps> = (props) =>
         </Switch>
         <div class={styles.taskBody}>
           <div class={styles.titleRow}>
-            <ClippedText text={title()} class={titleClass(item)} />
+            <ClippedText text={title()} class={titleClass(item)} testId="bg-task-title" />
             {/* Keep one status element at the title line's right edge.
                 Color and shape identify status. Running activity adds a pulse without a separate spinner.
                 The accessible name, tooltip, and data-status retain the exact state. */}
@@ -182,6 +184,7 @@ export const BackgroundTaskList: Component<BackgroundTaskListProps> = (props) =>
             <ClippedText
               text={secondaryText()}
               class={styles.taskSecondary}
+              testId="bg-task-secondary"
               detail={secondaryTooltip(item)}
             />
           </Show>

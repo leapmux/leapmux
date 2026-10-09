@@ -39,7 +39,7 @@ describe('exerciseMiMoShellToolExecution', () => {
 })
 
 /** A stored Worker message of the native session that holds `frame`. */
-function stored(frame: unknown, spanId = 'shell-call', agentSessionId = 'native-session'): AgentChatMessage {
+function stored(frame: unknown, spanId = 'shell-part', agentSessionId = 'native-session'): AgentChatMessage {
   return create(AgentChatMessageSchema, {
     id: `message-${Math.random()}`,
     content: new TextEncoder().encode(JSON.stringify(frame)),
@@ -53,7 +53,7 @@ function stored(frame: unknown, spanId = 'shell-call', agentSessionId = 'native-
 function bashPart(exit: unknown, output = 'SHELLERR77\n', status = 'completed', callID = 'shell-call') {
   return {
     type: 'message.part.updated',
-    properties: { part: { type: 'tool', tool: 'bash', callID, state: { status, input: { command: 'printf x >&2; exit 7' }, output, metadata: { output, exit, truncated: false } } } },
+    properties: { part: { id: 'shell-part', sessionID: 'native-session', messageID: 'native-message', type: 'tool', tool: 'bash', callID, state: { status, input: { command: 'printf x >&2; exit 7' }, output, metadata: { output, exit, truncated: false } } } },
   }
 }
 
@@ -83,6 +83,7 @@ describe('mimoShellOutcome', () => {
   it.each([
     ['no completed part', snapshot(stored(bashPart(7, 'SHELLERR77\n', 'running'))), 'one completed part'],
     ['two completed parts', snapshot(stored(bashPart(7)), stored(bashPart(7))), 'one completed part'],
+    ['a Worker span that uses the model CallID', snapshot(stored(bashPart(7), 'shell-call')), 'one completed part'],
     ['an exit that is not an integer', snapshot(stored(bashPart('7'))), 'safe integer exit code'],
     ['another output than the model request', snapshot(stored(bashPart(7, 'different\n'))), 'different output bytes'],
   ])('refuses %s', (_case, read, message) => {

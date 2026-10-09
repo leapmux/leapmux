@@ -67,7 +67,7 @@ func (a *Agent) handleFrame(line *providerkit.ParsedLine) {
 		// compaction, a retry, a notice, the output of a slash command, the
 		// reminder that starts a to-do continuation. omp sent them, so they are
 		// AGENT notifications.
-		if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, line.Raw); err != nil {
+		if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: line.Raw}); err != nil {
 			slog.Error("omp persist notification", "agent_id", a.AgentID(), "type", line.Type, "error", err)
 		}
 	case contracts.OhMyPiEventTurnStart, contracts.OhMyPiEventTurnEnd, contracts.OhMyPiEventMessageStart:

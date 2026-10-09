@@ -25,5 +25,5 @@ const frame = {
 }
 
 describe('readMiMoNativeOutput', () => {
-  runNativeOutputReaderCases({ read: readMiMoNativeOutput, frame, path, pointerError: 'The native MiMo result has no filesystem output pointer.' })
+  runNativeOutputReaderCases({ read: readMiMoNativeOutput, frame, path, spanId: 'part-current', pointerError: 'The native MiMo result has no filesystem output pointer.' })
 })

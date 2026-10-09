@@ -96,7 +96,7 @@ func childStatus(status string) bgtask.Status {
 	case "running":
 		return bgtask.StatusRunning
 	default:
-		return bgtask.StatusCompleted
+		return bgtask.StatusSucceeded
 	}
 }
 
@@ -161,7 +161,7 @@ func (a *Agent) finishChildTool(event nativeEvent, opening openTool) {
 		}
 		return
 	}
-	status := bgtask.StatusCompleted
+	status := bgtask.StatusSucceeded
 	if event.Type != contracts.CommandCodeEventToolCompleted || strings.HasPrefix(text, "[sub-agent stopped early:") {
 		status = bgtask.StatusFailed
 	}

@@ -1,6 +1,7 @@
 import type { ManagedNativeScenarioContext, NativeContextFixtures } from './helpers/nativeScenario'
 import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import ts from 'typescript'
 import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { cliSkipFixture } from './provider-fixture-factory'
@@ -60,6 +61,41 @@ interface ProviderTestObject {
   readonly providerName: string
 }
 
+function providerAgentMember(source: string, agentName: string): string | null {
+  const file = ts.createSourceFile('provider-agent.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const matches: Array<{ statement: ts.VariableStatement, declaration: ts.VariableDeclaration }> = []
+  for (const statement of file.statements) {
+    if (!ts.isVariableStatement(statement))
+      continue
+    for (const declaration of statement.declarationList.declarations) {
+      if (ts.isIdentifier(declaration.name) && declaration.name.text === agentName)
+        matches.push({ statement, declaration })
+    }
+  }
+  const match = matches[0]
+  if (matches.length !== 1 || !match)
+    return null
+  const { statement, declaration } = match
+  if (!(statement.declarationList.flags & ts.NodeFlags.Const) || !statement.modifiers?.some(modifier => modifier.kind === ts.SyntaxKind.ExportKeyword))
+    return null
+  const annotation = declaration.type
+  if (!annotation || !ts.isTypeReferenceNode(annotation) || !ts.isIdentifier(annotation.typeName) || annotation.typeName.text !== 'ProviderAgent' || annotation.typeArguments?.length)
+    return null
+  const initializer = declaration.initializer
+  if (!initializer || !ts.isObjectLiteralExpression(initializer))
+    return null
+  if (initializer.properties.some(property => ts.isSpreadAssignment(property) || (property.name && ts.isComputedPropertyName(property.name))))
+    return null
+  const providers = initializer.properties.filter(property => property.name && (ts.isIdentifier(property.name) || ts.isStringLiteral(property.name)) && property.name.text === 'provider')
+  const provider = providers[0]
+  if (providers.length !== 1 || !provider || !ts.isPropertyAssignment(provider))
+    return null
+  const value = provider.initializer
+  if (!ts.isPropertyAccessExpression(value) || value.questionDotToken || !ts.isIdentifier(value.expression) || value.expression.text !== 'AgentProvider' || !ts.isIdentifier(value.name))
+    return null
+  return value.name.text
+}
+
 /**
  * Read each provider test object from its source.
  *
@@ -92,10 +128,10 @@ function providerTestObjects(): ProviderTestObject[] {
     if (!scenarioNames.includes(workspace[1]!))
       throw new Error(`${file} opens ${nativeFixture[1]} with ${workspace[1]}, which it does not import from ${scenarioDirectory}/scenarios.ts`)
     const scenarioSource = readFileSync(join(import.meta.dirname, scenarioDirectory, 'scenarios.ts'), 'utf-8')
-    const agent = new RegExp(`^export const ${workspace[1]}: ProviderAgent = \\{ provider: AgentProvider\\.(\\w+),`, 'm').exec(scenarioSource)
-    if (!agent)
+    const providerName = providerAgentMember(scenarioSource, workspace[1]!)
+    if (!providerName)
       throw new Error(`${scenarioDirectory}/scenarios.ts declares no ProviderAgent named ${workspace[1]}`)
-    objects.push({ file, scenarioDirectory, nativeWorkspace: nativeFixture[1]!, agentName: workspace[1]!, providerName: agent[1]! })
+    objects.push({ file, scenarioDirectory, nativeWorkspace: nativeFixture[1]!, agentName: workspace[1]!, providerName })
   }
   return objects
 }
@@ -115,19 +151,16 @@ const UNIT_FIXTURES = {
 type ScenarioModule = Record<string, unknown> & { nativeContext: (fixtures: NativeContextFixtures) => Promise<ManagedNativeScenarioContext> }
 
 describe('provider test objects', () => {
-  const objects = providerTestObjects()
+  let objects: ProviderTestObject[] = []
   /** The scenario module of each test object, in the order of `objects`. */
   let scenarioModules: ScenarioModule[] = []
 
-  // The limit is explicit because the default limit does not fit the work.
-  //
-  // This hook imports the scenario module of each of the 29 providers. Each import
-  // transforms and runs the module and the shared helpers that it reads, which is
-  // CPU-bound work and the subject of the check. It takes about 1.4 seconds alone,
-  // and a full vitest run at a load average near 37 starved it past vitest's
-  // 5-second default. The hook starts the imports together, so their transforms
-  // overlap, and sixty seconds lets only a real hang reach the limit.
+  // Import every provider's scenario module and its shared helpers concurrently.
+  // Their transforms take about 1.4 seconds without competing tests.
+  // Heavy CPU load can exceed the default five-second limit.
+  // The sixty-second limit detects a stalled import without rejecting that load.
   beforeAll(async () => {
+    objects = providerTestObjects()
     scenarioModules = await Promise.all(objects.map(async object => await import(`./${object.scenarioDirectory}/scenarios.ts`) as ScenarioModule))
   }, 60_000)
 
@@ -155,5 +188,44 @@ describe('provider test objects', () => {
       expect(context.leapmuxServer, object.file).toBe(UNIT_FIXTURES.leapmuxServer)
       expect(context.workspaceId, object.file).toBe(UNIT_FIXTURES.workspaceId)
     }
+  })
+})
+
+describe('providerAgentMember', () => {
+  it('reads the current inline declaration', () => {
+    expect(providerAgentMember('export const SAMPLE_AGENT: ProviderAgent = { provider: AgentProvider.CODEX, prefix: \'sample\' }', 'SAMPLE_AGENT')).toBe('CODEX')
+  })
+
+  it('reads the actual multiline Muse declaration', () => {
+    const source = readFileSync(join(import.meta.dirname, 'muse-code/scenarios.ts'), 'utf8')
+    expect(providerAgentMember(source, 'MUSE_AGENT')).toBe('MUSE_CODE')
+  })
+
+  it('reads comments and whitespace around the initializer and provider', () => {
+    const source = 'export const SAMPLE_AGENT: ProviderAgent = /* initializer */ {\n  /* owner */ provider: /* enum */ AgentProvider.CODEX,\n  prefix: \'sample\',\n}'
+    expect(providerAgentMember(source, 'SAMPLE_AGENT')).toBe('CODEX')
+  })
+
+  it('reads the provider after an unrelated property', () => {
+    expect(providerAgentMember('export const SAMPLE_AGENT: ProviderAgent = { prefix: \'sample\', provider: AgentProvider.CODEX }', 'SAMPLE_AGENT')).toBe('CODEX')
+  })
+
+  it.each([
+    '',
+    'export const OTHER_AGENT: ProviderAgent = { provider: AgentProvider.CODEX, prefix: \'sample\' }',
+    'const SAMPLE_AGENT: ProviderAgent = { provider: AgentProvider.CODEX, prefix: \'sample\' }',
+    'export const SAMPLE_AGENT: OtherAgent = { provider: AgentProvider.CODEX, prefix: \'sample\' }',
+    'export const SAMPLE_AGENT: ProviderAgent = { provider: 1, prefix: \'sample\' }',
+    'export const SAMPLE_AGENT: ProviderAgent = { provider: OtherProvider.CODEX, prefix: \'sample\' }',
+    'export const SAMPLE_AGENT: ProviderAgent = { prefix: \'sample\' }',
+    'export const SAMPLE_AGENT: ProviderAgent = { provider: AgentProvider.CODEX, provider: AgentProvider.PI }',
+    'export const SAMPLE_AGENT: ProviderAgent = { provider: AgentProvider.CODEX, ...anotherAgent }',
+    'export let SAMPLE_AGENT: ProviderAgent = { provider: AgentProvider.CODEX }',
+    'export const SAMPLE_AGENT: ProviderAgent = anotherAgent',
+    'export const SAMPLE_AGENT: ProviderAgent = { provider: AgentProvider.CODEX, [key]: value }',
+    'export const SAMPLE_AGENT: ProviderAgent = { provider: AgentProvider.CODEX }; const SAMPLE_AGENT: ProviderAgent = { provider: AgentProvider.PI }',
+    'export const SAMPLE_AGENT: ProviderAgent = { provider: AgentProvider?.CODEX }',
+  ])('rejects an absent or ambiguous exact declaration: %s', (source) => {
+    expect(providerAgentMember(source, 'SAMPLE_AGENT')).toBeNull()
   })
 })

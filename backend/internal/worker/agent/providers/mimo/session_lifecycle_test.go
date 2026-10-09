@@ -1,6 +1,7 @@
 package mimo
 
 import (
+	"encoding/json"
 	"net/http"
 	"sync"
 	"testing"
@@ -11,10 +12,33 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestLateSpawnPromptSurvivesClearAndActorIDReuse(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newSinkTestAgent(t)
+	controlled := &controlledChildPromptSink{ProviderServices: a.sink}
+	controlled.failures.Store(10)
+	a.sink = controlled
+	spawnActor(t, a, contracts.MiMoActorActionSpawn, true)
+	oldID := a.actors[actorID].childAgentID
+	require.NotEmpty(t, oldID)
+	sessionID, err := a.ClearContext()
+	require.NoError(t, err)
+	controlled.failures.Store(0)
+	feed(a, eventWithSession(t, actorRegisteredEvent(t, actorID, true), sessionID),
+		eventWithSession(t, actorStatusEvent(t, actorID, contracts.MiMoActorStatusRunning, "", 0, ""), sessionID))
+	a.flushUnfinishedOutput(agent.MessageCompletionComplete)
+	rows := sink.Child(oldID).Messages()
+	require.Len(t, rows, 1)
+	assert.JSONEq(t, `{"content":"SUBAGENT-WORK please run one command"}`, string(rows[0].Content))
+	assert.NotEqual(t, oldID, a.actors[actorID].childAgentID)
+	assert.Empty(t, sink.Child(a.actors[actorID].childAgentID).Messages())
+}
 
 func TestOpenSession(t *testing.T) {
 	t.Parallel()
@@ -70,7 +94,7 @@ func TestClearContext(t *testing.T) {
 	assert.Equal(t, "ses_created", sink.LastSessionID())
 	assert.Equal(t, []string{"mimo-question:que_1"}, sink.CanceledControls())
 	waitFor(t, func() bool { return len(server.requestsTo("POST /question/que_1/reject")) == 1 }, "the old question is rejected")
-	assert.Equal(t, bgtask.StatusStopped, backgroundTask(t, &sink.Sink, spawnCallID).Status)
+	assert.Equal(t, bgtask.StatusStopped, backgroundTask(t, &sink.Sink, spawnSpanID).Status)
 	assert.Equal(t, bgtask.StatusStopped, backgroundTask(t, &sink.Sink, "mimo-workflow:wf_1").Status)
 	assert.Equal(t, []bool{false}, sink.GoalClearSnapshots(), "MiMo holds a goal per session")
 	last, published := sink.LastTurnActive()
@@ -96,6 +120,213 @@ func TestClearContext(t *testing.T) {
 	assert.Len(t, server.requestsTo("POST /session/ses_created/prompt_async"), 1)
 }
 
+func eventWithSession(t *testing.T, raw []byte, sessionID string) []byte {
+	t.Helper()
+	var event map[string]any
+	require.NoError(t, json.Unmarshal(raw, &event))
+	properties, ok := event["properties"].(map[string]any)
+	require.True(t, ok, "the native fixture requires an event properties object")
+	properties["sessionID"] = sessionID
+	for _, key := range []string{"info", "part"} {
+		if nested, ok := properties[key].(map[string]any); ok {
+			nested["sessionID"] = sessionID
+		}
+	}
+	updated, err := json.Marshal(event)
+	require.NoError(t, err)
+	return updated
+}
+
+func TestClearContextKeepsAnUnpersistedNativeFinalPart(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newSinkTestAgent(t)
+	controlled := &controlledPartSink{ProviderServices: a.sink, rejectText: "The old full final."}
+	a.sink = controlled
+	beginPartialAnswer(t, a, "msg_old", "part_old", "The old prefix.")
+	controlled.reject.Store(1)
+	feed(a, nativeAbortMarker(t, "session", "msg_old"),
+		textPartEvent(t, partTypeText, "part_old", "msg_old", "The old full final.", true))
+	_, err := a.ClearContext()
+	require.NoError(t, err)
+	controlled.reject.Store(0)
+	a.flushUnfinishedOutput(agent.MessageCompletionComplete)
+	rows := assembledRows(sink)
+	require.Len(t, rows, 1)
+	_, text, completion := assembledText(t, rows[0].Content)
+	assert.Equal(t, "The old full final.", text)
+	assert.Equal(t, string(agent.MessageCompletionInterrupted), completion)
+	assert.Equal(t, testSessionID, rows[0].AgentSessionID, "the retry retains the old native session")
+}
+
+func TestFailedPendingMessageDoesNotBlockTheCurrentStreamAtClear(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newSinkTestAgent(t)
+	controlled := &controlledPartSink{ProviderServices: a.sink, rejectText: "The old full final."}
+	a.sink = controlled
+	beginPartialAnswer(t, a, "msg_old", "part_old", "The old prefix.")
+	controlled.reject.Store(10)
+	feed(a, nativeAbortMarker(t, "session", "msg_old"),
+		textPartEvent(t, partTypeText, "part_old", "msg_old", "The old full final.", true),
+		messageEvent(t, "msg_old", roleAssistant, mainActorID, true),
+		messageEvent(t, "msg_new", roleAssistant, mainActorID, false),
+		textPartEvent(t, partTypeText, "part_new", "msg_new", "", false),
+		deltaEvent(t, "part_new", "msg_new", "The new streamed answer."))
+	_, err := a.ClearContext()
+	require.NoError(t, err)
+	rows := assembledRows(sink)
+	require.Len(t, rows, 1, "a different failed final must not prevent the current stream's own flush")
+	_, text, completion := assembledText(t, rows[0].Content)
+	assert.Equal(t, "The new streamed answer.", text)
+	assert.Equal(t, string(agent.MessageCompletionInterrupted), completion)
+	controlled.reject.Store(0)
+	a.flushUnfinishedOutput(agent.MessageCompletionComplete)
+	rows = assembledRows(sink)
+	require.Len(t, rows, 2)
+	_, text, completion = assembledText(t, rows[1].Content)
+	assert.Equal(t, "The old full final.", text)
+	assert.Equal(t, string(agent.MessageCompletionComplete), completion)
+}
+
+func TestClearContextKeepsAnUnpersistedStreamedPart(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newSinkTestAgent(t)
+	controlled := &controlledPartSink{ProviderServices: a.sink, rejectText: "The old streamed answer."}
+	a.sink = controlled
+	beginPartialAnswer(t, a, "msg_old_stream", "part_old_stream", "The old streamed answer.")
+	controlled.reject.Store(10)
+	_, err := a.ClearContext()
+	require.NoError(t, err)
+	assert.Empty(t, assembledRows(sink))
+	controlled.reject.Store(0)
+	a.flushUnfinishedOutput(agent.MessageCompletionComplete)
+	rows := assembledRows(sink)
+	require.Len(t, rows, 1, "the failed scope survives its session clear")
+	_, text, completion := assembledText(t, rows[0].Content)
+	assert.Equal(t, "The old streamed answer.", text)
+	assert.Equal(t, string(agent.MessageCompletionInterrupted), completion)
+	assert.Equal(t, testSessionID, rows[0].AgentSessionID)
+}
+
+func TestClearContextKeepsTheOldChildTargetForItsRetainedPart(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newSinkTestAgent(t)
+	controlled := &controlledPartSink{ProviderServices: a.sink, rejectText: "The old child full final."}
+	a.sink = controlled
+	spawnActor(t, a, contracts.MiMoActorActionSpawn, true)
+	feed(a, messageEvent(t, "msg_old_child", roleAssistant, actorID, false),
+		textPartEvent(t, partTypeText, "part_old_child", "msg_old_child", "", false),
+		deltaEvent(t, "part_old_child", "msg_old_child", "The old child prefix."))
+	controlled.reject.Store(3)
+	feed(a, nativeAbortMarker(t, "session", "msg_old_child"),
+		textPartEvent(t, partTypeText, "part_old_child", "msg_old_child", "The old child full final.", true),
+		actorAbortMessageEvent(t, "msg_old_child", actorID))
+	sessionID, err := a.ClearContext()
+	require.NoError(t, err)
+	controlled.reject.Store(0)
+	for _, event := range [][]byte{
+		statusEvent(t, contracts.MiMoStatusTypeBusy),
+		messageEvent(t, "msg_new_parent", roleAssistant, mainActorID, false),
+		actorRegisteredEvent(t, actorID, true),
+		toolPartEvent(t, "part_new_spawn", "msg_new_parent", contracts.MiMoToolActor, "call_new_spawn", toolState{
+			Status: contracts.MiMoToolStatusRunning, Input: spawnInputOf(contracts.MiMoActorActionSpawn, "New child", "The new task."),
+			Metadata: map[string]any{"actorId": actorID, "sessionId": sessionID},
+		}), actorStatusEvent(t, actorID, contracts.MiMoActorStatusRunning, "", 0, ""),
+		messageEvent(t, "msg_new_child", roleAssistant, actorID, false),
+		textPartEvent(t, partTypeText, "part_new_child", "msg_new_child", "The new child answer.", true),
+	} {
+		feed(a, eventWithSession(t, event, sessionID))
+	}
+	a.flushUnfinishedOutput(agent.MessageCompletionComplete)
+	old := assembledRows(sink.Child("child-of-" + spawnSpanID))
+	require.Len(t, old, 1)
+	_, text, completion := assembledText(t, old[0].Content)
+	assert.Equal(t, "The old child full final.", text)
+	assert.Equal(t, string(agent.MessageCompletionInterrupted), completion)
+	assert.Equal(t, testSessionID, old[0].AgentSessionID)
+	current := assembledRows(sink.Child("child-of-part_new_spawn"))
+	require.Len(t, current, 1)
+	_, text, completion = assembledText(t, current[0].Content)
+	assert.Equal(t, "The new child answer.", text)
+	assert.Equal(t, string(agent.MessageCompletionComplete), completion)
+	assert.Equal(t, "The new child answer.", a.actors[actorID].lastText, "the old retry must not change the new actor's report")
+}
+
+func TestRetainedToolCannotClaimTheNewSessionsRepeatedCallID(t *testing.T) {
+	t.Parallel()
+	for _, stage := range []string{"opening", "closing"} {
+		t.Run(stage, func(t *testing.T) {
+			t.Parallel()
+			a, sink, _ := newSinkTestAgent(t)
+			controlled := &controlledPartSink{ProviderServices: a.sink, rejectText: "part_old_tool"}
+			a.sink = controlled
+			feed(a, statusEvent(t, contracts.MiMoStatusTypeBusy), messageEvent(t, "msg_old_tool", roleAssistant, mainActorID, false))
+			if stage == "opening" {
+				controlled.reject.Store(10)
+			}
+			oldOpening := toolPartEvent(t, "part_old_tool", "msg_old_tool", contracts.MiMoToolBash, "call_repeat", toolState{
+				Status: contracts.MiMoToolStatusRunning, Input: map[string]any{"command": "printf old"},
+			})
+			feed(a, oldOpening)
+			controlled.reject.Store(10)
+			oldFinal := toolPartEvent(t, "part_old_tool", "msg_old_tool", contracts.MiMoToolBash, "call_repeat", toolState{
+				Status: contracts.MiMoToolStatusCompleted, Input: map[string]any{"command": "printf old"}, Output: "old",
+			})
+			feed(a, oldFinal)
+			sessionID, err := a.ClearContext()
+			require.NoError(t, err)
+			feed(a, eventWithSession(t, statusEvent(t, contracts.MiMoStatusTypeBusy), sessionID),
+				eventWithSession(t, messageEvent(t, "msg_new_tool", roleAssistant, mainActorID, false), sessionID))
+			newOpening := eventWithSession(t, toolPartEvent(t, "part_new_tool", "msg_new_tool", contracts.MiMoToolBash, "call_repeat", toolState{
+				Status: contracts.MiMoToolStatusRunning, Input: map[string]any{"command": "printf new"},
+			}), sessionID)
+			feed(a, newOpening)
+			var newRows []agenttest.Message
+			for _, row := range sink.Messages() {
+				if row.AgentSessionID == sessionID && !row.TurnEnd {
+					newRows = append(newRows, row)
+				}
+			}
+			require.Len(t, newRows, 1, "the new native part must open despite a repeated model CallID")
+			assert.JSONEq(t, string(newOpening), string(newRows[0].Content))
+			assert.Equal(t, "part_new_tool", newRows[0].SpanID)
+			controlled.reject.Store(0)
+			a.flushPendingMessage("msg_old_tool", agent.MessageCompletionComplete)
+			a.Mu.Lock()
+			newCall := a.tools["part_new_tool"]
+			var last []byte
+			if newCall != nil {
+				last = append([]byte(nil), newCall.lastFrame...)
+			}
+			a.Mu.Unlock()
+			require.NotNil(t, newCall)
+			assert.JSONEq(t, string(newOpening), string(last), "an old closing retry cannot clear the new native frame")
+			newFinal := eventWithSession(t, toolPartEvent(t, "part_new_tool", "msg_new_tool", contracts.MiMoToolBash, "call_repeat", toolState{
+				Status: contracts.MiMoToolStatusCompleted, Input: map[string]any{"command": "printf new"}, Output: "new",
+			}), sessionID)
+			feed(a, newFinal)
+			var oldFinalRows, newFinalRows []agenttest.Message
+			for _, row := range sink.Messages() {
+				if !row.Closing {
+					continue
+				}
+				switch row.AgentSessionID {
+				case testSessionID:
+					oldFinalRows = append(oldFinalRows, row)
+				case sessionID:
+					newFinalRows = append(newFinalRows, row)
+				}
+			}
+			require.Len(t, oldFinalRows, 1)
+			require.Len(t, newFinalRows, 1)
+			assert.JSONEq(t, string(oldFinal), string(oldFinalRows[0].Content))
+			assert.JSONEq(t, string(newFinal), string(newFinalRows[0].Content))
+			assert.Equal(t, "part_old_tool", oldFinalRows[0].SpanID)
+			assert.Equal(t, "part_new_tool", newFinalRows[0].SpanID)
+			assert.Equal(t, []agenttest.SpanOpen{{SpanID: "part_new_tool"}}, newFinalRows[0].SpansOpenAtPersist)
+		})
+	}
+}
+
 // A subagent of the old session can still stream when the context clears. Its
 // unfinished text and its open command stay in its own transcript, marked as
 // interrupted, as the main agent's do.
@@ -106,14 +337,14 @@ func TestClearContextFinishesTheSubagentsUnfinishedOutput(t *testing.T) {
 
 	_, err := a.ClearContext()
 	require.NoError(t, err)
-	childRows := sink.Child("child-of-" + spawnCallID).Messages()
+	childRows := sink.Child("child-of-" + spawnSpanID).Messages()
 	require.Len(t, childRows, 4, "the prompt, the command's opener, the unfinished text, the command's closer")
 	_, text, completion := assembledText(t, childRows[2].Content)
 	assert.Equal(t, "Sub half", text)
 	assert.Equal(t, string(agent.MessageCompletionInterrupted), completion)
 	assert.True(t, childRows[3].Closing)
 	assert.Equal(t, agent.MessageCompletionInterrupted, childRows[3].Completion)
-	assert.Equal(t, bgtask.StatusStopped, backgroundTask(t, sink, spawnCallID).Status)
+	assert.Equal(t, bgtask.StatusStopped, backgroundTask(t, sink, spawnSpanID).Status)
 }
 
 // An abort that fails leaves the old session's turn running on the server, but
@@ -159,7 +390,7 @@ func TestClearContextPersistsAFailureThatNoTurnEndReported(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, 1, sink.NotificationCount())
 		assert.JSONEq(t, string(failure), string(sink.LastNotification().Content))
-		assert.Nil(t, a.unattributed)
+		assert.Empty(t, a.pendingFailures)
 	})
 
 	t.Run("the failure of the running turn", func(t *testing.T) {
@@ -909,5 +1140,34 @@ func TestSubagentCompactionDoesNotConfirmTheMainOne(t *testing.T) {
 	)
 	assert.Equal(t, ack, a.compactionAck)
 	assert.Zero(t, sink.NotificationCount())
-	assert.Equal(t, 1, sink.Child("child-of-"+spawnCallID).NotificationCount(), "the notice goes to the subagent's transcript")
+	assert.Equal(t, 1, sink.Child("child-of-"+spawnSpanID).NotificationCount(), "the notice goes to the subagent's transcript")
+}
+
+func TestLateOmittedSessionCannotChangeARetainedOldPart(t *testing.T) {
+	t.Parallel()
+	for _, update := range []string{"delta", "final"} {
+		t.Run(update, func(t *testing.T) {
+			t.Parallel()
+			a, sink, _ := newSinkTestAgent(t)
+			controlled := &controlledPartSink{ProviderServices: a.sink, rejectText: "The original retained bytes."}
+			a.sink = controlled
+			beginPartialAnswer(t, a, "msg_old_omitted", "part_old_omitted", "The original retained bytes.")
+			controlled.reject.Store(10)
+			_, err := a.ClearContext()
+			require.NoError(t, err)
+			if update == "delta" {
+				feed(a, eventWithSession(t, deltaEvent(t, "part_old_omitted", "msg_old_omitted", " FOREIGN"), ""))
+			} else {
+				feed(a, eventWithSession(t, textPartEvent(t, partTypeText, "part_old_omitted", "msg_old_omitted", "A foreign current final.", true), ""))
+			}
+			controlled.reject.Store(0)
+			a.flushUnfinishedOutput(agent.MessageCompletionComplete)
+			rows := assembledRows(sink)
+			require.Len(t, rows, 1)
+			_, text, completion := assembledText(t, rows[0].Content)
+			assert.Equal(t, "The original retained bytes.", text)
+			assert.Equal(t, testSessionID, rows[0].AgentSessionID)
+			assert.Equal(t, string(agent.MessageCompletionInterrupted), completion)
+		})
+	}
 }

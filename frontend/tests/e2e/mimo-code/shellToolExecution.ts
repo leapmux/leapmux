@@ -21,13 +21,15 @@ export function mimoShellOutcome(snapshot: NativeMessageSnapshot, callId: string
     throw new Error('The native MiMo shell result requires an exact call ID and native session.')
   const outcomes: NativeToolOutcome[] = []
   for (const message of snapshot.messages) {
-    if (message.agentSessionId !== snapshot.agentSessionId || message.spanId !== callId)
+    if (message.agentSessionId !== snapshot.agentSessionId)
       continue
     const frame = nativeMessageBody(message)
     const part = isObject(frame) && frame.type === MIMO_EVENT.MessagePartUpdated ? pickObject(pickObject(frame, 'properties'), 'part') : undefined
     const state = pickObject(part, 'state')
-    if (part?.type !== MIMO_PART_TYPE.Tool || part.tool !== MIMO_TOOL.Bash || part.callID !== callId || state?.status !== MIMO_TOOL_STATUS.Completed)
+    if (typeof part?.id !== 'string' || part.id === '' || message.spanId !== part.id || part.sessionID !== snapshot.agentSessionId
+      || part.type !== MIMO_PART_TYPE.Tool || part.tool !== MIMO_TOOL.Bash || part.callID !== callId || state?.status !== MIMO_TOOL_STATUS.Completed) {
       continue
+    }
     const metadata = pickObject(state, 'metadata')
     const exitCode = metadata?.exit
     if (typeof exitCode !== 'number' || !Number.isSafeInteger(exitCode))

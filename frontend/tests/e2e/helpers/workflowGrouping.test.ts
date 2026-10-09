@@ -201,7 +201,7 @@ describe('expectNoWorkflowToolOffered', () => {
 
 describe('ungroupedChildTaskProblem', () => {
   function task(overrides: Partial<UngroupedChildTask> = {}): UngroupedChildTask {
-    return { kind: BackgroundTaskKind.SUBAGENT, status: BackgroundTaskStatus.COMPLETED, childAgentId: '', groupKey: '', groupLabel: '', ...overrides }
+    return { kind: BackgroundTaskKind.SUBAGENT, status: BackgroundTaskStatus.SUCCEEDED, childAgentId: '', groupKey: '', groupLabel: '', ...overrides }
   }
   const first = task({ childAgentId: 'first-child' })
   const second = task({ childAgentId: 'second-child' })
@@ -251,7 +251,7 @@ describe('exerciseUngroupedNativeChildren', () => {
         parentId: 'native-parent',
         finish: async () => {
           log.push(`finish ${slot.index}`)
-          row.attributes['data-status'] = 'completed'
+          row.attributes['data-status'] = 'succeeded'
         },
       }
     }

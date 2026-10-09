@@ -42,7 +42,7 @@ CREATE TABLE agents (
     -- CreateAgent binds the column, so the DEFAULT below is unreachable and the
     -- CHECK is the only guard.
     agent_provider   INTEGER NOT NULL DEFAULT 1
-        CHECK (agent_provider BETWEEN 1 AND 29),
+        CHECK (agent_provider BETWEEN 1 AND 30),
     -- Subagent linkage. parent_agent_id is set ONLY for virtual child agents
     -- (subagent transcripts fed by the parent provider's process; they never
     -- own a process). spawn_span_id is the tool_use span in the PARENT
@@ -79,14 +79,14 @@ CREATE TABLE agents (
     -- goal exists, and otherwise the last status the PROVIDER reported.
     -- Nothing else writes it.
     --
-    -- DORMANT (5) is deliberately outside the CHECK. It means "the objective is
+    -- DORMANT (6) is deliberately outside the CHECK. It means "the objective is
     -- stored and no live process pursues it", which the projection derives from
     -- the running-agent map at read time (see GoalSnapshotFrom). Storing it
     -- would put the same fact in two places, and the copy went stale the moment
     -- a process exited without the sweep that wrote it. The CHECK is what makes
     -- that unrepresentable rather than merely unwritten.
     goal_objective     TEXT NOT NULL DEFAULT '',
-    goal_status        INTEGER NOT NULL DEFAULT 0 CHECK (goal_status BETWEEN 0 AND 4),
+    goal_status        INTEGER NOT NULL DEFAULT 0 CHECK (typeof(goal_status) = 'integer') CHECK (goal_status BETWEEN 0 AND 5),
     -- The provider's OWN word for the status ('usageLimited', 'notSatisfied',
     -- 'verifying'). The neutral ordinal above branches the UI; this preserves
     -- the precision that mapping five vocabularies onto four values loses.
@@ -117,8 +117,8 @@ CREATE INDEX idx_agents_closed_native_session
     WHERE closed_at IS NOT NULL AND agent_session_id <> '' AND parent_agent_id IS NULL;
 -- Serves the agents leg of tab_locations, which the quake reference count
 -- reads on every agent close and every reconcile pass. The pair index above
--- cannot: working_dir is not its leftmost column, so that lookup scanned the
--- whole table. Partial over the open rows, because the view's agents leg
+-- cannot serve that lookup because working_dir is not its first column in the index. It scanned the
+-- whole table. The partial index covers open rows because the view's agents branch
 -- selects only those and closed rows stay for the retention window.
 CREATE INDEX idx_agents_open_working_dir ON agents(working_dir) WHERE closed_at IS NULL;
 -- One child row per spawning tool_use: makes EnsureChildAgent replay
@@ -146,7 +146,7 @@ CREATE TABLE messages (
     -- that failure to the write.
     seq                 INTEGER NOT NULL CHECK (seq >= 1),
     agent_session_id    TEXT NOT NULL DEFAULT '',
-    source              INTEGER NOT NULL,
+    source              INTEGER NOT NULL CHECK (typeof(source) = 'integer') CHECK (source BETWEEN 1 AND 3),
     content             BLOB NOT NULL,
     -- A ContentCompression ordinal, under the same CHECK as the supplemental
     -- sibling below. msgcodec.Decompress refuses an UNSPECIFIED 0, and every
@@ -156,7 +156,7 @@ CREATE TABLE messages (
     -- it answers ZSTD for every message, so only a writer that forgot the field
     -- reaches 0. The CHECK moves that failure to the write.
     content_compression INTEGER NOT NULL
-        CHECK (content_compression BETWEEN 1 AND 2),
+        CHECK (typeof(content_compression) = 'integer') CHECK (content_compression BETWEEN 1 AND 2),
     -- Supplemental rendering data never changes the original provider payload.
     --
     -- The compression is a ContentCompression ordinal. UNSPECIFIED (0) is
@@ -166,7 +166,7 @@ CREATE TABLE messages (
     -- supplement above, which is what a writer that sets neither column stores.
     supplemental_content BLOB NOT NULL DEFAULT X'',
     supplemental_content_compression INTEGER NOT NULL DEFAULT 1
-        CHECK (supplemental_content_compression BETWEEN 1 AND 2),
+        CHECK (typeof(supplemental_content_compression) = 'integer') CHECK (supplemental_content_compression BETWEEN 1 AND 2),
     supplemental_revision INTEGER NOT NULL DEFAULT 0
         CHECK (typeof(supplemental_revision) = 'integer' AND supplemental_revision >= 0),
     -- A non-empty key identifies a message-producing operation that must stay
@@ -184,7 +184,7 @@ CREATE TABLE messages (
     -- plain range; TestAgentProviderOrdinalsAreContiguous fails the suite if a
     -- hole appears.
     agent_provider      INTEGER NOT NULL DEFAULT 1
-        CHECK (agent_provider BETWEEN 1 AND 29),
+        CHECK (agent_provider BETWEEN 1 AND 30),
     -- Scroll-rail jump-mark classifier (0=none, see proto MarkType). Set at write
     -- time so the rail can list marked seqs without decompressing content.
     mark_type           INTEGER NOT NULL DEFAULT 0,
@@ -192,7 +192,7 @@ CREATE TABLE messages (
     -- (this message is not an assembled one, and it reports no completion), so both
     -- CHECKs start at 0. TestEnumColumnChecksMatchTheirProtoRanges pins both ranges.
     assembled_kind      INTEGER NOT NULL DEFAULT 0 CHECK (assembled_kind BETWEEN 0 AND 3),
-    completion          INTEGER NOT NULL DEFAULT 0 CHECK (completion BETWEEN 0 AND 3),
+    completion          INTEGER NOT NULL DEFAULT 0 CHECK (completion BETWEEN 0 AND 4),
     created_at          DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     UNIQUE(agent_id, seq)
 );
@@ -202,7 +202,7 @@ CREATE INDEX idx_messages_span_id ON messages(agent_id, agent_session_id, span_i
 -- Covering index for the scroll rail's ListMessageMarksByAgentID: SQLite serves
 -- the (agent_id, ORDER BY seq ASC) scan of marked rows from the index alone.
 -- Partial (only marked rows) so the far-more-numerous unmarked inserts skip it.
-CREATE INDEX idx_messages_mark_type ON messages(agent_id, seq, mark_type) WHERE mark_type <> 0;
+CREATE INDEX idx_messages_mark_type ON messages(agent_id, seq, mark_type) WHERE mark_type IS NOT NULL;
 CREATE UNIQUE INDEX idx_messages_idempotency_key
     ON messages(agent_id, agent_session_id, idempotency_key) WHERE idempotency_key <> '';
 
@@ -222,18 +222,17 @@ CREATE TABLE agent_input_queue_state (
     agent_id        TEXT PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE,
     revision        INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
     paused          INTEGER NOT NULL DEFAULT 0 CHECK (paused IN (0, 1)),
-    -- AgentInputQueuePauseReason ordinal. 0 is the real state "not paused", so this
-    -- CHECK starts at 0. TestEnumColumnChecksMatchTheirProtoRanges pins the range.
-    pause_reason    INTEGER NOT NULL DEFAULT 0 CHECK (pause_reason BETWEEN 0 AND 6),
+    -- Optional AgentInputQueuePauseReason ordinal. NULL means no pause reason.
+    -- TestEnumColumnChecksMatchTheirProtoRanges checks the positive range.
+    pause_reason    INTEGER CHECK (pause_reason IS NULL OR typeof(pause_reason) = 'integer') CHECK (pause_reason BETWEEN 1 AND 6),
     -- Which cause created the pause that still holds. Only that cause may lift
     -- it: an archive resume, or the end of a planned restart, matches its own
     -- owner and leaves a pause that a later crash or the user created. A pause
     -- writer always overwrites this column, so the newest cause owns the pause.
     -- See pauseOwner* in inputqueue/model.go for the values.
-    -- AgentInputQueuePauseOwner ordinal. 0 is the real state "nobody owns this
-    -- pause", so this CHECK starts at 0.
-    -- TestEnumColumnChecksMatchTheirProtoRanges pins the range.
-    pause_owner     INTEGER NOT NULL DEFAULT 0 CHECK (pause_owner BETWEEN 0 AND 6),
+    -- Optional AgentInputQueuePauseOwner ordinal. NULL means no pause owner.
+    -- TestEnumColumnChecksMatchTheirProtoRanges checks the positive range.
+    pause_owner     INTEGER CHECK (pause_owner IS NULL OR typeof(pause_owner) = 'integer') CHECK (pause_owner BETWEEN 1 AND 6),
     -- Set while the Worker replaces this agent's process. It answers a
     -- different question from pause_owner: not "who paused" but "is a write to
     -- the provider safe right now". Retry and steering refuse while it is set,
@@ -252,13 +251,13 @@ CREATE TABLE agent_input_queue_items (
     agent_id        TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
     order_index     INTEGER NOT NULL CHECK (order_index > 0),
     -- AgentInputKind ordinal. TestEnumColumnChecksMatchTheirProtoRanges pins the range.
-    kind            INTEGER NOT NULL CHECK (kind BETWEEN 1 AND 6),
+    kind            INTEGER NOT NULL CHECK (typeof(kind) = 'integer') CHECK (kind BETWEEN 1 AND 6),
     text            TEXT NOT NULL DEFAULT '',
     target_mode     TEXT NOT NULL DEFAULT '',
     prepare_context INTEGER NOT NULL DEFAULT 0 CHECK (prepare_context IN (0, 1)),
     reclassify_on_edit INTEGER NOT NULL DEFAULT 0 CHECK (reclassify_on_edit IN (0, 1)),
     -- AgentInputState ordinal. TestEnumColumnChecksMatchTheirProtoRanges pins the range.
-    state           INTEGER NOT NULL DEFAULT 1 CHECK (state BETWEEN 1 AND 4),
+    state           INTEGER NOT NULL DEFAULT 1 CHECK (typeof(state) = 'integer') CHECK (state BETWEEN 1 AND 4),
     error           TEXT NOT NULL DEFAULT '',
     edit_owner      TEXT NOT NULL DEFAULT '',
     version         INTEGER NOT NULL DEFAULT 1 CHECK (version > 0),
@@ -332,7 +331,7 @@ CREATE TABLE control_response_answers (
     -- controlResponseState derives from the control_requests table instead --
     -- so a row carrying one would describe a state its own existence
     -- contradicts, and the CHECK refuses it.
-    state INTEGER NOT NULL DEFAULT 2 CHECK (state BETWEEN 2 AND 5),
+    state INTEGER NOT NULL DEFAULT 2 CHECK (typeof(state) = 'integer') CHECK (state BETWEEN 2 AND 5),
     request_payload BLOB NOT NULL DEFAULT X'',
     response_content BLOB NOT NULL DEFAULT X'',
     resolved_content BLOB NOT NULL DEFAULT X'',
@@ -347,7 +346,7 @@ CREATE TABLE control_response_answers (
     -- that recorded 0 for a forgotten write would match an agent whose provider
     -- field was also unset.
     agent_provider INTEGER NOT NULL
-        CHECK (agent_provider BETWEEN 1 AND 29),
+        CHECK (agent_provider BETWEEN 1 AND 30),
     input_id TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (agent_id, request_id, claim_token)
 );
@@ -581,7 +580,7 @@ CREATE TABLE agent_todos (
     -- A TodoStatus ordinal (PENDING..BLOCKED). UNSPECIFIED (0) is outside the
     -- CHECK: every row a provider reports carries a real status, so a 0 here is
     -- an unset field rather than a state, and the CHECK refuses the write.
-    status      INTEGER NOT NULL CHECK (status BETWEEN 1 AND 5),
+    status      INTEGER NOT NULL CHECK (typeof(status) = 'integer') CHECK (status BETWEEN 1 AND 5),
     updated_at  DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     PRIMARY KEY (agent_id, row_key),
     -- Matches messages.UNIQUE(agent_id, seq) so a `nextSeq` collision
@@ -605,7 +604,7 @@ CREATE TABLE agent_background_tasks (
     owner_agent_id  TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE, -- ROOT main agent
     row_key         TEXT NOT NULL,  -- provider linkage key (tool_use id / thread id / session id / task id)
     seq             INTEGER NOT NULL,
-    kind            INTEGER NOT NULL CHECK (kind BETWEEN 1 AND 3), -- BackgroundTaskKind ordinal (SUBAGENT | SHELL | WORKFLOW)
+    kind            INTEGER NOT NULL CHECK (typeof(kind) = 'integer') CHECK (kind BETWEEN 1 AND 3), -- BackgroundTaskKind ordinal (SUBAGENT | SHELL | WORKFLOW)
     child_agent_id  TEXT NOT NULL DEFAULT '', -- set for subagent rows that own a transcript
     parent_agent_id TEXT NOT NULL DEFAULT '', -- immediate parent agent id ('' == the owner itself)
     group_key       TEXT NOT NULL DEFAULT '', -- workflow/phase grouping key
@@ -622,13 +621,13 @@ CREATE TABLE agent_background_tasks (
     -- storing a row no reader can classify.
     --
     -- The ordinals are ordered: PENDING (1) and RUNNING (2) are working,
-    -- PAUSED (3) is open but idle, and COMPLETED (4) through INTERRUPTED (7)
-    -- are final. The queries bind that boundary rather than listing four
+    -- PAUSED (3) is open but idle, and COMPLETED (4) through FINISHED (8)
+    -- are final. The queries bind that boundary rather than listing five
     -- values, and TestBackgroundTaskFinalStatusesAreTheTopOfTheRange pins the
     -- split against bgtask.Status.IsFinished, so a new status added on the
     -- wrong side of it fails the suite instead of silently joining the other
     -- pool.
-    status          INTEGER NOT NULL CHECK (status BETWEEN 1 AND 7),
+    status          INTEGER NOT NULL CHECK (status BETWEEN 1 AND 8),
     created_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     updated_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     ended_at        DATETIME,

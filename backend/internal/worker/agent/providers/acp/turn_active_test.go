@@ -42,12 +42,10 @@ func newACPTurnBase(t *testing.T, stdin io.WriteCloser) (*Base, *agenttest.Sink)
 func TestACPTurnActive_ThePublishFollowsALaterSinkWrap(t *testing.T) {
 	t.Parallel()
 
-	// Start wires the hook and startACPHandshake THEN replaces b.sink with
-	// thinkingResetSink. A hook that captured the raw sink would publish past
-	// every decorator for the life of the process -- and this flag is the input
-	// queue's only dispatch guard, so a decorator that ever overrode
-	// SetTurnState would silently hold every later message of every ACP
-	// provider.
+	// Start connects the hook before startACPHandshake replaces b.sink through NewModelProgressResetSink.
+	// A hook that captured the original sink would bypass every later decorator for the process's lifetime.
+	// The turn flag controls input-queue dispatch alongside other queue conditions.
+	// A decorator that changes SetTurnState must receive these calls, or later input can stay queued without a report.
 	var out bytes.Buffer
 	b, sink := newACPTurnBase(t, agenttest.NopStdin(&out))
 	b.sink = &swallowingSink{ProviderServices: agent.NewProviderServices(sink)}
@@ -133,10 +131,9 @@ func TestACPTurnActive_IssuesRisingOrderingTokens(t *testing.T) {
 	agenttest.AssertRisingTurnTokens(t, sink, b)
 }
 
-// swallowingSink stands in for a decorator that forgets to forward the turn
-// flag. thinkingResetSink promotes SetTurnState from the embedded interface
-// today, so only a type like this one can tell a hook that re-reads b.sink from
-// one that captured the sink it was wired with.
+// swallowingSink represents a decorator that does not forward the turn state.
+// NewModelProgressResetSink forwards TurnServices directly to its inner services.
+// This test decorator distinguishes a hook that reads b.sink again from one that captured the original sink.
 type swallowingSink struct {
 	agent.ProviderServices
 }

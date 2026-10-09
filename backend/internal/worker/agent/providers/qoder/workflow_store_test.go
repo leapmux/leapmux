@@ -268,7 +268,7 @@ func TestQoderWorkflowArchiveLinksDistinctChildTranscripts(t *testing.T) {
 	assert.Equal(t, []string{"child-task-1", "child-task-2"}, archive.order)
 	first := archive.children["child-task-1"]
 	second := archive.children["child-task-2"]
-	assert.Equal(t, bgtask.StatusCompleted, first.status)
+	assert.Equal(t, bgtask.StatusSucceeded, first.status)
 	assert.Equal(t, "Reply with FIRST.", first.prompt)
 	assert.Len(t, first.messages, 4)
 	assert.True(t, first.messages[0].initialPrompt)
@@ -289,13 +289,13 @@ func TestQoderWorkflowNotificationReplaysEachSavedChild(t *testing.T) {
 
 	workflow, exists := sink.BackgroundTask("workflow:session-1:run-workflow")
 	require.True(t, exists)
-	assert.Equal(t, bgtask.StatusCompleted, workflow.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, workflow.Status)
 	assert.Equal(t, "qoder-e2e-workflow", workflow.GroupLabel)
 	first, exists := sink.BackgroundTask("child-task-1")
 	require.True(t, exists)
 	second, exists := sink.BackgroundTask("child-task-2")
 	require.True(t, exists)
-	assert.Equal(t, bgtask.StatusCompleted, first.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, first.Status)
 	assert.Equal(t, first.Status, second.Status)
 	assert.Equal(t, workflow.GroupLabel, first.GroupLabel)
 	assert.Equal(t, workflow.GroupLabel, second.GroupLabel)
@@ -326,7 +326,7 @@ func TestQoderWorkflowArchiveRetryAfterMissingFirstRead(t *testing.T) {
 
 	workflow, found := sink.BackgroundTask("workflow:session-1:run-workflow")
 	require.True(t, found)
-	assert.Equal(t, bgtask.StatusCompleted, workflow.Status, "the native completion closes the parent")
+	assert.Equal(t, bgtask.StatusSucceeded, workflow.Status, "the native completion closes the parent")
 	first, found := sink.BackgroundTask("child-task-1")
 	require.True(t, found)
 	assert.Equal(t, bgtask.StatusRunning, first.Status, "a linked child must stay open until its saved transcript arrives")
@@ -336,7 +336,7 @@ func TestQoderWorkflowArchiveRetryAfterMissingFirstRead(t *testing.T) {
 	notifyQoderWorkflow(a, fixture.outputFile)
 	first, found = sink.BackgroundTask("child-task-1")
 	require.True(t, found)
-	assert.Equal(t, bgtask.StatusCompleted, first.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, first.Status)
 	assert.Len(t, sink.Child(first.ChildAgentID).Messages(), 4)
 }
 
@@ -361,7 +361,7 @@ func TestQoderWorkflowArchiveRetryKeepsOriginalSessionID(t *testing.T) {
 	notifyQoderWorkflow(a, fixture.outputFile)
 	first, found = sink.BackgroundTask("child-task-1")
 	require.True(t, found)
-	assert.Equal(t, bgtask.StatusCompleted, first.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, first.Status)
 	rows := sink.Child(first.ChildAgentID).Messages()
 	require.Len(t, rows, 4, "the saved child history still belongs to session 1")
 	assert.Contains(t, string(rows[3].Content), "FIRST")
@@ -380,7 +380,7 @@ func TestQoderWorkflowNewSessionKeepsBothRows(t *testing.T) {
 
 	oldWorkflow, found := sink.BackgroundTask("workflow:session-1:run-workflow")
 	require.True(t, found, "the first session keeps its workflow row")
-	assert.Equal(t, bgtask.StatusCompleted, oldWorkflow.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, oldWorkflow.Status)
 	newWorkflow, found := sink.BackgroundTask("workflow:session-2:run-workflow")
 	require.True(t, found, "the new session must not reuse the first workflow row")
 	assert.Equal(t, bgtask.StatusRunning, newWorkflow.Status)
@@ -438,7 +438,7 @@ func TestQoderWorkflowNewSessionKeepsBothArchiveJobs(t *testing.T) {
 	assert.Equal(t, 0, qoderArchiveJobCount(a), "both completed jobs leave the retry index")
 	newChild, found = sink.BackgroundTask("child-task-new")
 	require.True(t, found)
-	assert.Equal(t, bgtask.StatusCompleted, newChild.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, newChild.Status)
 	assert.Equal(t, "workflow:session-2:run-workflow", newChild.GroupKey)
 	newRows := sink.Child(newChild.ChildAgentID).Messages()
 	require.Len(t, newRows, 2)
@@ -471,8 +471,8 @@ func TestQoderWorkflowArchiveRetryDoesNotRoutePartOfTheArchive(t *testing.T) {
 	require.True(t, found)
 	second, found := sink.BackgroundTask("child-task-2")
 	require.True(t, found)
-	assert.Equal(t, bgtask.StatusCompleted, first.Status)
-	assert.Equal(t, bgtask.StatusCompleted, second.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, first.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, second.Status)
 	assert.Len(t, sink.Child(first.ChildAgentID).Messages(), 4)
 	assert.Len(t, sink.Child(second.ChildAgentID).Messages(), 2)
 	notifyQoderWorkflow(a, fixture.outputFile)
@@ -499,7 +499,7 @@ func TestQoderWorkflowArchiveRetryWaitsForEveryStartedChild(t *testing.T) {
 	notifyQoderWorkflow(a, fixture.outputFile)
 	workflow, found := sink.BackgroundTask("workflow:session-1:run-workflow")
 	require.True(t, found)
-	assert.Equal(t, bgtask.StatusCompleted, workflow.Status, "the native result closes the parent")
+	assert.Equal(t, bgtask.StatusSucceeded, workflow.Status, "the native result closes the parent")
 	for _, taskID := range []string{"child-task-1", "child-task-2"} {
 		child, found := sink.BackgroundTask(taskID)
 		require.True(t, found)
@@ -532,7 +532,7 @@ func TestQoderWorkflowArchiveRetryUsesTheProcessClock(t *testing.T) {
 	awaitQoderArchiveRetries(t, ctx, a)
 	first, found := sink.BackgroundTask("child-task-1")
 	require.True(t, found)
-	assert.Equal(t, bgtask.StatusCompleted, first.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, first.Status)
 	assert.Len(t, sink.Child(first.ChildAgentID).Messages(), 4)
 }
 
@@ -561,7 +561,7 @@ func TestQoderWorkflowArchiveRetryEndsAtTheDeadline(t *testing.T) {
 	awaitQoderArchiveRetries(t, ctx, a)
 	first, found := sink.BackgroundTask("child-task-1")
 	require.True(t, found)
-	assert.Equal(t, bgtask.StatusCompleted, first.Status, "the native result survives an archive timeout")
+	assert.Equal(t, bgtask.StatusSucceeded, first.Status, "the native result survives an archive timeout")
 	assert.Len(t, sink.Child(first.ChildAgentID).Messages(), 1, "missing history cannot produce a fabricated answer")
 	assert.NotEmpty(t, sink.LeapMuxNotifications(), "the user must see why the transcript is incomplete")
 }
@@ -587,7 +587,7 @@ func TestQoderWorkflowArchiveRetryStopsWhenTheProcessExits(t *testing.T) {
 	awaitQoderArchiveRetries(t, ctx, a)
 	first, found := sink.BackgroundTask("child-task-1")
 	require.True(t, found)
-	assert.Equal(t, bgtask.StatusCompleted, first.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, first.Status)
 	assert.NotEmpty(t, sink.LeapMuxNotifications())
 }
 
@@ -607,7 +607,7 @@ func TestQoderWorkflowArchiveRetryRefusesAnUnsafePathImmediately(t *testing.T) {
 	notifyQoderWorkflow(a, fixture.outputFile)
 	first, found := sink.BackgroundTask("child-task-1")
 	require.True(t, found)
-	assert.Equal(t, bgtask.StatusCompleted, first.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, first.Status)
 	assert.Zero(t, qoderArchiveJobCount(a), "an unsafe path must not enter the retry queue")
 	assert.NotEmpty(t, sink.LeapMuxNotifications())
 }
@@ -632,7 +632,7 @@ func TestQoderWorkflowArchiveWriteFailureKeepsRowsAndReportsFailure(t *testing.T
 	assert.Contains(t, string(firstRows[1].Content), `"tool_use"`)
 	second, found := sink.BackgroundTask("child-task-2")
 	require.True(t, found)
-	assert.Equal(t, bgtask.StatusCompleted, second.Status, "the other child keeps its native result")
+	assert.Equal(t, bgtask.StatusSucceeded, second.Status, "the other child keeps its native result")
 	assert.Len(t, sink.Child(second.ChildAgentID).Messages(), 2)
 	assert.NotEmpty(t, sink.LeapMuxNotifications(), "the reader needs a visible reason for the incomplete tab")
 }
@@ -654,7 +654,7 @@ func TestQoderWorkflowArchiveRecoversFailedLivePrompt(t *testing.T) {
 	assert.Equal(t, 2, failingSink.targetWrites, "archive replay must retry the live prompt")
 	first, found = sink.BackgroundTask("child-task-1")
 	require.True(t, found)
-	assert.Equal(t, bgtask.StatusCompleted, first.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, first.Status)
 	rows := sink.Child(first.ChildAgentID).Messages()
 	require.Len(t, rows, 4)
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, rows[0].Source)
@@ -680,7 +680,7 @@ func TestQoderWorkflowArchiveReportsFailedPromptReplay(t *testing.T) {
 	assert.Empty(t, sink.Child(first.ChildAgentID).Messages(), "a failed prompt blocks the rest of that child's replay")
 	second, found := sink.BackgroundTask("child-task-2")
 	require.True(t, found)
-	assert.Equal(t, bgtask.StatusCompleted, second.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, second.Status)
 	assert.Len(t, sink.Child(second.ChildAgentID).Messages(), 2)
 	assert.NotEmpty(t, sink.LeapMuxNotifications())
 }

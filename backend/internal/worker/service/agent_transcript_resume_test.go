@@ -16,7 +16,9 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/leapmux/leapmux/internal/worker/channel"
+	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -343,7 +345,7 @@ func TestCopiedWorkerRowsKeepOrderMetadataAndHighWater(t *testing.T) {
 			SpanColor:                      23,
 			Depth:                          2,
 			AgentProvider:                  provider,
-			MarkType:                       row.mark,
+			MarkType:                       workerdb.OptionalStorageEnum(row.mark),
 			CreatedAt:                      createdAt,
 		})
 		require.NoError(t, err)
@@ -378,7 +380,7 @@ func TestCopiedWorkerRowsKeepOrderMetadataAndHighWater(t *testing.T) {
 	assert.Equal(t, "native-key-1", rows[0].IdempotencyKey)
 	assert.Equal(t, int64(7), rows[0].SupplementalRevision)
 	assert.Equal(t, "span-1", rows[0].SpanID)
-	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE, rows[0].MarkType)
+	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE, workerdb.StorageEnumValue(rows[0].MarkType))
 	assert.Equal(t, []byte("second"), rows[1].Content)
 	assert.Equal(t, "native-key-2", rows[1].IdempotencyKey)
 
@@ -518,4 +520,98 @@ func TestResumeCopyFailureRollsBackTheNewAgent(t *testing.T) {
 	oldRows, err := svc.Queries.ListAllMessagesByAgentID(t.Context(), db.ListAllMessagesByAgentIDParams{AgentID: "source-agent", Seq: 0})
 	require.NoError(t, err)
 	assert.Len(t, oldRows, 1, "a failed copy leaves the source intact")
+}
+
+func TestEmbeddedNotificationJournalSurvivesRootNestedAndRepeatedResume(t *testing.T) {
+	t.Parallel()
+	svc, _ := transcriptResumeService(t)
+	workingDir := t.TempDir()
+	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_DIRAC
+	seedTranscriptSource(t, svc, "journal-old-root", workingDir, "native-root", provider, false)
+	seedArchivedChildForResume(t, svc, "journal-old-root", "journal-old-root", "journal-old-child", "first", 1, bgtask.StatusSucceeded)
+	seedArchivedChildForResume(t, svc, "journal-old-root", "journal-old-child", "journal-old-nested", "second", 2, bgtask.StatusSucceeded)
+	root := svc.Output.NewSink("journal-old-root", provider)
+	child := root.ChildSink("journal-old-child")
+	nested := child.ChildSink("journal-old-nested")
+	content := agent.MessageContent{
+		Original: []byte(" {\"type\":\"system\",\"text\":\"한😀\"}\n"), IdempotencyKey: "same-native-key",
+		Supplemental: []byte(` {"provider_extra":0} `), Metadata: []byte(` {"duration_ms":0} `), Completion: agent.MessageCompletionInterrupted,
+	}
+	oldIDs := map[string]string{"root": "journal-old-root", "first-span": "journal-old-child", "second-span": "journal-old-nested"}
+	for _, participant := range []struct {
+		sink    agent.ProviderServices
+		session string
+	}{
+		{root, "native-root"}, {child, "native-child"}, {nested, "native-nested"},
+	} {
+		participant.sink.UpdateSessionID(participant.session)
+		participant.sink.SetTurnState(agent.TurnState{Active: true}, 1)
+		captured := agent.CaptureTranscript(participant.sink, content, agent.SpanInfo{})
+		participant.sink.SetTurnState(agent.TurnState{}, 2)
+		_, err := captured.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT)
+		require.NoError(t, err)
+	}
+	previous := make(map[string]db.Message)
+	for key, id := range oldIDs {
+		row, err := svc.Queries.GetLatestMessageByAgentID(t.Context(), id)
+		require.NoError(t, err)
+		previous[key] = row
+		_, err = svc.Queries.CloseAgent(t.Context(), id)
+		require.NoError(t, err)
+	}
+	for iteration, target := range []string{"journal-first-resume", "journal-second-resume"} {
+		require.NoError(t, svc.createAgentRecordWithTranscript(t.Context(), db.CreateAgentParams{
+			ID: target, WorkingDir: workingDir, HomeDir: svc.HomeDir, AgentProvider: provider, Resumed: 1,
+		}, "native-root"))
+		require.NoError(t, svc.Queries.UpdateAgentSessionID(t.Context(), db.UpdateAgentSessionIDParams{ID: target, AgentSessionID: "native-root"}))
+		descendants, err := svc.Queries.ListAgentDescendantsForResume(t.Context(), sql.NullString{String: target, Valid: true})
+		require.NoError(t, err)
+		require.Len(t, descendants, 2)
+		currentIDs := map[string]string{"root": target}
+		for _, descendant := range descendants {
+			row, err := svc.Queries.GetAgentByID(t.Context(), descendant.ID)
+			require.NoError(t, err)
+			currentIDs[row.SpawnSpanID] = row.ID
+		}
+		resumedRoot := svc.Output.NewSink(target, provider)
+		for key, currentID := range currentIDs {
+			row, err := svc.Queries.GetLatestMessageByAgentID(t.Context(), currentID)
+			require.NoError(t, err)
+			prior := previous[key]
+			assert.Equal(t, prior.SupplementalContent, row.SupplementalContent)
+			assert.Equal(t, prior.SupplementalContentCompression, row.SupplementalContentCompression)
+			assert.Equal(t, prior.SupplementalRevision, row.SupplementalRevision)
+			assert.Equal(t, prior.AgentSessionID, row.AgentSessionID)
+			assert.Equal(t, prior.TranscriptOnly, row.TranscriptOnly)
+			assert.Equal(t, prior.Completion, row.Completion)
+			entries := readStoredNotificationEntries(t, row)
+			assert.Len(t, entries, 1)
+			if len(entries) == 1 {
+				assertNotificationEntryIdentity(t, content, row, entries[0])
+				assert.True(t, row.TranscriptOnly)
+			}
+			var replaySink = resumedRoot
+			if key != "root" {
+				replaySink = resumedRoot.ChildSink(currentID)
+			}
+			replay := agent.CaptureTranscript(replaySink, content, agent.SpanInfo{})
+			broadcast, err := replay.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT)
+			require.NoError(t, err)
+			assert.False(t, broadcast)
+			after, err := svc.Queries.GetLatestMessageByAgentID(t.Context(), currentID)
+			require.NoError(t, err)
+			assert.Equal(t, row, after)
+			previous[key] = row
+			_, err = svc.Queries.CloseAgent(t.Context(), currentID)
+			require.NoError(t, err)
+		}
+		// Fixed dates make the second resume choose this source without a clock wait.
+		_, err = svc.DB.ExecContext(t.Context(), "UPDATE agents SET closed_at = ? WHERE id = ?",
+			"2026-01-0"+strconv.Itoa(iteration+2)+"T00:00:00.000Z", target)
+		require.NoError(t, err)
+		if iteration == 0 {
+			_, err = svc.DB.ExecContext(t.Context(), "UPDATE agents SET closed_at = ? WHERE id = ?", "2026-01-01T00:00:00.000Z", "journal-old-root")
+			require.NoError(t, err)
+		}
+	}
 }

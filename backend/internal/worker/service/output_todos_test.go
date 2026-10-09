@@ -30,11 +30,13 @@ func TestOutputTodos_BlockedSnapshotPersistsAsUnfinishedWork(t *testing.T) {
 	t.Parallel()
 	svc, _, ownerID, _ := setupBgTaskTestWithService(t)
 	item := todoevents.Item{ID: "blocked", Content: "Request access", Status: todoevents.StatusBlocked}
-	require.NoError(t, svc.Output.persistMessageWithTodoEvent(ownerID,
+	result, err := svc.Output.persistMessageWithTodoEvent(ownerID,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
 		agent.MessageContent{Original: []byte(`{"type":"assistant"}`)}, agent.SpanInfo{}, svc.Output.rootTracker(ownerID),
-		todoevents.Event{Kind: todoevents.KindSnapshot, Snapshot: []todoevents.Item{item}}))
+		todoevents.Event{Kind: todoevents.KindSnapshot, Snapshot: []todoevents.Item{item}})
+	require.NoError(t, err)
+	assert.NoError(t, result.todoError)
 	rows, err := svc.Queries.ListAgentTodosNewestFirst(context.Background(), db.ListAgentTodosNewestFirstParams{AgentID: ownerID, Limit: 10})
 	require.NoError(t, err)
 	require.Len(t, rows, 1)
@@ -1493,7 +1495,7 @@ func TestPairedToolUseLookup_ReadsTheToolUseHalfOfTheSpan(t *testing.T) {
 		SpanID: "span-1", SpanType: "TaskCreate",
 	}))
 
-	read := svc.Output.pairedToolUseLookup("agent-1", agent.SpanInfo{SpanID: "span-1"})
+	read := svc.Output.pairedToolUseLookup("agent-1", svc.Output.messageSessionID("agent-1"), agent.SpanInfo{SpanID: "span-1"})
 	assert.JSONEq(t, string(body), string(read()))
 	assert.JSONEq(t, string(body), string(read()), "a second read answers from the memo")
 }
@@ -1503,9 +1505,9 @@ func TestPairedToolUseLookup_AnswersNilWhenThereIsNothingToRead(t *testing.T) {
 
 	svc, _, _ := setupTestService(t)
 
-	assert.Nil(t, svc.Output.pairedToolUseLookup("agent-1", agent.SpanInfo{})(),
+	assert.Nil(t, svc.Output.pairedToolUseLookup("agent-1", svc.Output.messageSessionID("agent-1"), agent.SpanInfo{})(),
 		"a message with no span has no tool_use half")
-	assert.Nil(t, svc.Output.pairedToolUseLookup("agent-1", agent.SpanInfo{SpanID: "never-persisted"})(),
+	assert.Nil(t, svc.Output.pairedToolUseLookup("agent-1", svc.Output.messageSessionID("agent-1"), agent.SpanInfo{SpanID: "never-persisted"})(),
 		"a rolled-up tool_use, or one this result raced, is absent rather than an error")
 }
 
@@ -1523,7 +1525,7 @@ func TestPairedToolUseLookup_MemoizesTheMiss(t *testing.T) {
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
-	read := svc.Output.pairedToolUseLookup("agent-1", agent.SpanInfo{SpanID: "span-1"})
+	read := svc.Output.pairedToolUseLookup("agent-1", svc.Output.messageSessionID("agent-1"), agent.SpanInfo{SpanID: "span-1"})
 	require.Nil(t, read())
 
 	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)

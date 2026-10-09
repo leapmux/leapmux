@@ -4,7 +4,7 @@ import type { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { isObject, pickString } from '~/lib/jsonPick'
 import { leapmuxPlanExecutionRow, leapmuxUserRow } from '../../../leapmuxRows'
 import { toolCallRow } from '../../../model/row'
-import { retainedOutcome } from '../../registry'
+import { retainedOutcome, retainedRowIsFinal } from '../../registry'
 import { storedFunctionArgs, storedFunctionCallID, storedFunctionFailed, storedFunctionOutputText } from '../storedFunction'
 import { codebuddyCommandOutput } from './execute'
 import { anthropicBlock, anthropicBlocks, anthropicBlockText, codebuddyCommandExit, codebuddyToolCall } from './toolCommon'
@@ -77,7 +77,7 @@ function storedFunctionToolRow(payload: Record<string, unknown>, span: RowExtrac
       frameStatus: isResult ? 'completed' : 'in_progress',
       providerOutcome: isError ? 'failed' : null,
       retainedOutcome: retainedOutcome(completion),
-      rowFinal: isResult || retainedOutcome(completion) !== null,
+      rowFinal: isResult || retainedRowIsFinal(completion),
       resultFrameLanded: isResult,
     },
   })
@@ -127,7 +127,7 @@ function toolSpanRow(
       frameStatus: result ? 'completed' : 'in_progress',
       providerOutcome: null,
       retainedOutcome: retainedOutcome(completion),
-      rowFinal: result !== undefined || retainedOutcome(completion) !== null,
+      rowFinal: result !== undefined || retainedRowIsFinal(completion),
       resultFrameLanded: result !== undefined,
     },
   })

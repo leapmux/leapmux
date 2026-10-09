@@ -74,6 +74,12 @@ function messageOf(content: Record<string, unknown>, agentProvider = AgentProvid
 afterEach(() => __resetMarkPreviewCacheForTest())
 
 describe('message mark preview text', () => {
+  it('keeps text that ended with no known outcome in the preview', () => {
+    const message = messageOf({ type: 'assembled_message', kind: 'text', text: 'Native partial text', completion: 'finished' }, AgentProvider.CLAUDE_CODE, MessageSource.AGENT)
+    message.completion = MessageCompletion.FINISHED
+    expect(messageMarkPreviewText(message)).toBe('Native partial text\n\nText ended without a known outcome.')
+  })
+
   it('resolves a user message through its provider plugin and the shared default', () => {
     expect(messageMarkPreviewText(messageOf({ content: 'jump here' }))).toBe('jump here')
   })

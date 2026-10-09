@@ -730,7 +730,7 @@ func (a *Agent) persistNotification(sink agent.ProviderServices, event kimiEvent
 	if sink == nil || a.IsDiscardingOutput() {
 		return
 	}
-	if _, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, event.Raw); err != nil {
+	if _, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: event.Raw}); err != nil {
 		slog.Error("kimi persist notification", "agent_id", a.AgentID(), "type", event.Type, "error", err)
 	}
 }

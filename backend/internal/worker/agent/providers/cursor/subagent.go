@@ -275,7 +275,7 @@ func (a *Agent) applyCursorSubagentLifecycle(parentSessionID string, owner agent
 	var status bgtask.Status
 	switch lifecycle.State {
 	case "completed":
-		status = bgtask.StatusCompleted
+		status = bgtask.StatusSucceeded
 	case "failed":
 		status = bgtask.StatusFailed
 	case "cancelled", "disconnected":

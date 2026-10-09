@@ -27,28 +27,24 @@ import (
 //
 //   - permission.asked: may a tool call run. It offers once, always and reject.
 //   - question.asked: the `question` tool's questions. A question keyed
-//     `plan_exit` is a plan approval, and one keyed `mcp_elicitation` is an MCP
-//     server's confirmation.
+//     plan_exit requests plan approval.
+//     mcp_elicitation requests a Model Context Protocol (MCP) server's confirmation.
 //   - bash.interactive.asked: a shell command that waits for keyboard input.
 //
-// The first two become LeapMux control requests. The stored payload is MiMo's
-// own event, `{type, properties}`, which the browser reads, plus the shared
-// `request` header that the service reads (tool name and tool call id). A plan
-// approval also carries the plan text, which LeapMux reads from the plan file.
+// Permission and question events become LeapMux control requests.
+// The stored payload keeps MiMo's original type and properties.
+// The shared request header supplies the tool name and native part ID.
+// Plan approval also carries the text from the plan file.
 //
-// The browser's answer comes back through ResolveControlResponse, which checks
-// it, and then SendRawInput, which sends it to MiMo. The answer keeps the shape
-// the browser wrote, because the persisted answer row shows it, and the browser
-// already knows how to label each shape. The browser answers an MCP server's
-// confirmation with the shared elicitation form, and the worker sends MiMo's own
-// word for the chosen action (parseElicitationAnswer).
+// ResolveControlResponse checks the browser answer. SendRawInput sends it to MiMo.
+// The answer keeps the browser's shape because the persisted answer row uses that shape.
+// parseElicitationAnswer converts the shared MCP action to MiMo's native answer.
 //
 // An interactive command is refused at once, and nothing about it is stored:
 // the event carries the whole shell environment of the command.
 
-// Control request id prefixes. The prefix keeps a MiMo id apart from every
-// other request of the same agent, and the answer path reads the kind from the
-// stored payload rather than from the prefix.
+// Control request ID prefixes keep each native request separate from other
+// requests of this agent. The answer path reads its kind from the stored payload.
 const (
 	permissionRequestPrefix = "mimo-permission:"
 	questionRequestPrefix   = "mimo-question:"
@@ -70,8 +66,10 @@ type mimoControl struct {
 	nativeID  string
 	sessionID string
 	// actorID is the actor whose tool call asked.
-	actorID string
-	payload []byte
+	actorID    string
+	actorKnown bool
+	messageID  string
+	payload    []byte
 }
 
 // mimoControlHeader is the shared request header of a stored payload. The
@@ -114,8 +112,8 @@ type mimoQuestionAsked struct {
 // request under the plan tool's name, and the browser dispatches on that name.
 const mimoQuestionKeyPlanExit = "plan_exit"
 
-// planPath is the plan file a plan approval names, or "" for a question that
-// is not one.
+// planPath returns the path that a plan approval specifies.
+// It returns false for other questions.
 func (q mimoQuestionAsked) planPath() (string, bool) {
 	if len(q.Questions) != 1 || q.Questions[0].Key != mimoQuestionKeyPlanExit {
 		return "", false
@@ -150,15 +148,15 @@ func (a *Agent) handlePermissionAsked(properties json.RawMessage) {
 		return
 	}
 	if !a.ownsSession(asked.SessionID) {
-		// A session this agent left still asks, and nobody can see it. Refusing
-		// frees its turn, where silence would block it for good.
+		// The previous session still waits for an answer.
+		// Refusal releases its turn because no user can see that session's control.
 		a.replyPermissionLater(asked.ID, mimoPermissionReplyBody{
 			Reply: contracts.MiMoPermissionReplyReject, Message: "LeapMux no longer shows this session.",
 		})
 		return
 	}
-	actorID, callID := a.requestActor(asked.SessionID, asked.Tool)
-	header := mimoControlHeader{ToolName: asked.Permission, ToolUseID: callID, Input: asked.Metadata}
+	actorID, spanID := a.requestActor(asked.SessionID, asked.Tool)
+	header := mimoControlHeader{ToolName: asked.Permission, ToolUseID: spanID, Input: asked.Metadata}
 	payload, err := controlPayload(contracts.MiMoEventPermissionAsked, properties, header, "")
 	if err != nil {
 		slog.Error("mimo marshal permission request", "agent_id", a.AgentID(), "error", err)
@@ -167,7 +165,7 @@ func (a *Agent) handlePermissionAsked(properties json.RawMessage) {
 	}
 	requestID := permissionRequestPrefix + asked.ID
 	a.publishControl(requestID, &mimoControl{
-		kind: controlPermission, nativeID: asked.ID, sessionID: asked.SessionID, actorID: actorID, payload: payload,
+		kind: controlPermission, nativeID: asked.ID, sessionID: asked.SessionID, actorID: actorID, messageID: controlMessageID(asked.Tool), payload: payload,
 	})
 }
 
@@ -181,9 +179,9 @@ func (a *Agent) handleQuestionAsked(properties json.RawMessage) {
 		a.rejectQuestionLater(asked.ID)
 		return
 	}
-	actorID, callID := a.requestActor(asked.SessionID, asked.Tool)
+	actorID, spanID := a.requestActor(asked.SessionID, asked.Tool)
 	requestID := questionRequestPrefix + asked.ID
-	kind, header, plan := controlQuestion, mimoControlHeader{ToolName: contracts.MiMoToolQuestion, ToolUseID: callID}, ""
+	kind, header, plan := controlQuestion, mimoControlHeader{ToolName: contracts.MiMoToolQuestion, ToolUseID: spanID}, ""
 	if path, ok := asked.planPath(); ok {
 		kind = controlPlan
 		header.ToolName = contracts.MiMoToolPlanExit
@@ -205,14 +203,21 @@ func (a *Agent) handleQuestionAsked(properties json.RawMessage) {
 		return
 	}
 	a.publishControl(requestID, &mimoControl{
-		kind: kind, nativeID: asked.ID, sessionID: asked.SessionID, actorID: actorID, payload: payload,
+		kind: kind, nativeID: asked.ID, sessionID: asked.SessionID, actorID: actorID, messageID: controlMessageID(asked.Tool), payload: payload,
 	})
 }
 
-// requestActor reads which actor's tool call asked, and the call's id. A
+func controlMessageID(tool *mimoToolRef) string {
+	if tool == nil {
+		return ""
+	}
+	return tool.MessageID
+}
+
+// requestActor reads the actor and exact native part that asked. A
 // request that states no call is taken as the main agent's, so the end of the
 // main agent's turn retires it.
-func (a *Agent) requestActor(sessionID string, tool *mimoToolRef) (actorID, callID string) {
+func (a *Agent) requestActor(sessionID string, tool *mimoToolRef) (actorID, spanID string) {
 	if tool == nil {
 		return mainActorID, ""
 	}
@@ -220,18 +225,63 @@ func (a *Agent) requestActor(sessionID string, tool *mimoToolRef) (actorID, call
 	if tool.MessageID != "" {
 		actorID = a.messageRecord(sessionID, tool.MessageID).actorID
 	}
-	return actorID, tool.CallID
+	if tool.MessageID == "" || tool.CallID == "" {
+		return actorID, ""
+	}
+	a.Mu.Lock()
+	if sessionID == "" {
+		sessionID = a.sessionID
+	}
+	matches := 0
+	for partID, call := range a.tools {
+		if call.sessionID == sessionID && call.messageID == tool.MessageID && call.callID == tool.CallID {
+			spanID = partID
+			matches++
+		}
+	}
+	a.Mu.Unlock()
+	if matches == 1 {
+		return actorID, spanID
+	}
+	if matches > 1 {
+		return actorID, ""
+	}
+	message, err := a.rpc.messageWithParts(a.Context(), sessionID, tool.MessageID)
+	if err != nil {
+		slog.Warn("mimo read the control tool identity", "agent_id", a.AgentID(), "message_id", tool.MessageID, "error", err)
+		return actorID, ""
+	}
+	if message.Info.ID != tool.MessageID || message.Info.SessionID != sessionID {
+		return actorID, ""
+	}
+	actorID = recordFromInfo(message.Info).actorID
+	for _, part := range message.Parts {
+		if part.Type == contracts.MiMoPartTypeTool && part.ID != "" && part.SessionID == sessionID && part.MessageID == tool.MessageID && part.CallID == tool.CallID {
+			spanID = part.ID
+			matches++
+		}
+	}
+	if matches != 1 {
+		spanID = ""
+	}
+	return actorID, spanID
 }
 
 // publishControl records a control request and publishes it.
 //
-// A request LeapMux already holds, with the same payload, is published again
-// as the same bytes: the reconnect path lists every pending request, and the
-// service keeps an identical request's claim token, so the user's open card
-// stays as it is. A request that cannot be published is refused, because MiMo
-// blocks on it and nobody can see it.
+// The reconnect path republishes each native pending request.
+// An identical payload keeps its claim token and the user's existing card.
+// A failed publication refuses the native request because MiMo waits for an
+// answer that no user can supply.
 func (a *Agent) publishControl(requestID string, control *mimoControl) {
 	a.Mu.Lock()
+	if control.sessionID == "" {
+		control.sessionID = a.sessionID
+	}
+	control.actorKnown = control.messageID == "" || control.actorID != mainActorID && control.actorID != ""
+	if record := a.messages[control.messageID]; record != nil && record.sessionID == control.sessionID {
+		control.actorKnown = control.actorKnown || record.identityKnown && record.actorKnown
+	}
 	if existing := a.controls[requestID]; existing != nil && bytes.Equal(existing.payload, control.payload) {
 		control = existing
 	} else {
@@ -283,13 +333,13 @@ func (a *Agent) retireSettled(event mimoEvent, prefix string) {
 
 // retireMainControls withdraws the main agent's requests when its turn ends.
 //
-// MiMo drops a pending permission at an abort with no event, and MiMo 0.1.14
-// leaves a pending question behind with no event either. A request of a turn
-// that ended can never be answered, so its card goes, and a question is also
-// rejected, which clears the one MiMo 0.1.14 keeps.
+// MiMo removes a pending permission without an event after abort.
+// MiMo 0.1.14 also keeps an unanswered question without an event.
+// The finished turn cannot accept an answer.
+// The worker withdraws its cards and rejects its remaining native questions.
 func (a *Agent) retireMainControls() {
 	a.retireControls(func(control *mimoControl) bool {
-		return control.actorID == mainActorID || control.actorID == ""
+		return control.actorKnown && (control.actorID == mainActorID || control.actorID == "")
 	})
 }
 
@@ -328,13 +378,14 @@ func (a *Agent) retireControls(match func(*mimoControl) bool) {
 // banner.
 const mimoMaxPlanBytes = 1 << 20
 
-// readPlan reads the plan file a plan approval names. MiMo states the path
-// relative to the project's worktree root, which is the working directory or
-// one of its ancestors, so the read tries each of them in turn.
+// readPlan reads the path that the approval specifies.
+// MiMo resolves that path from the project root.
+// The root can be the working directory or one of its ancestors.
+// The worker tries each directory in order.
 //
 // The read is limited to a Markdown file of limited size, because the path is
-// text from the agent's process. A plan that cannot be read leaves the
-// approval without its text; the transcript still holds the write that made it.
+// text from the agent's process. A failed read leaves the approval without plan text.
+// The transcript still holds the native write that produced the plan.
 func (a *Agent) readPlan(path string) string {
 	path = strings.TrimSpace(path)
 	if path == "" || !strings.EqualFold(filepath.Ext(path), ".md") {
@@ -378,8 +429,8 @@ func (a *Agent) readPlan(path string) string {
 // interactiveRefusal is the output MiMo's shell tool returns to the model for a
 // command that waits for keyboard input. It states why and what to do instead.
 const interactiveRefusal = "LeapMux cannot run an interactive command: no user can type into it here. " +
-	"Run the command without interactive set, and give it its input on the command line, through a file, " +
-	"or with a non-interactive flag such as --yes."
+	"Run the command without interactive mode. Supply input on the command line or through a file. " +
+	"Use a non-interactive flag such as --yes when the command supports it."
 
 // interactiveRefusalExitCode is the exit code of a refused interactive command.
 const interactiveRefusalExitCode = 1
@@ -392,9 +443,9 @@ type mimoBashAsked struct {
 	Description string `json:"description"`
 }
 
-// handleBashInteractiveAsked refuses an interactive command at once. The shell
-// tool blocks the turn until it gets an answer, so the refusal keeps the turn
-// going, and the model reads the reason in the tool's output.
+// handleBashInteractiveAsked refuses an interactive command immediately.
+// The shell tool waits for an answer.
+// Refusal releases that wait and returns its reason as native tool output.
 func (a *Agent) handleBashInteractiveAsked(properties json.RawMessage) {
 	var asked mimoBashAsked
 	if err := json.Unmarshal(properties, &asked); err != nil || asked.ID == "" {
@@ -413,8 +464,8 @@ func (a *Agent) handleBashInteractiveAsked(properties json.RawMessage) {
 
 // --- replies ---
 
-// replyPermissionLater and rejectQuestionLater answer MiMo off the stream
-// goroutine, so the stream keeps draining while the request is sent.
+// replyPermissionLater and rejectQuestionLater send native answers outside the stream goroutine.
+// The stream can read new events while the HTTP request waits.
 func (a *Agent) replyPermissionLater(permissionID string, body mimoPermissionReplyBody) {
 	go func() {
 		if err := a.rpc.replyPermission(a.Context(), permissionID, body); err != nil {
@@ -488,10 +539,9 @@ func readControlAnswer(kind mimoControlKind, payload, content []byte) (mimoAnswe
 	return answer, nil
 }
 
-// answerFitsRequest checks an answer against its request, beyond the answer's
-// shape. An elicitation answer is MiMo's own word for an MCP action, and only the
-// one question that offers that word can take it: an ordinary question would read
-// "Accept" as a choice that the reader never made.
+// answerFitsRequest checks the answer against its native request.
+// An elicitation answer can select only an MCP action that the question offers.
+// An ordinary question cannot interpret Accept as that action because the user did not select it.
 func answerFitsRequest(answer mimoAnswer, payload []byte) error {
 	if !answer.elicitation {
 		return nil
@@ -519,10 +569,10 @@ func answerFitsRequest(answer mimoAnswer, payload []byte) error {
 	return errors.New(agent.RefusalUnofferedOption(leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE, word))
 }
 
-// parseElicitationAnswer reads the answer that the browser's shared elicitation
-// form writes: the control envelope with the MCP action the reader chose. MiMo
-// asks an MCP server's confirmation as a question, so the action becomes MiMo's
-// own word for it. ok is false for an answer of another shape.
+// parseElicitationAnswer reads the shared elicitation envelope and its MCP action.
+// MiMo requests that confirmation as a question.
+// The handler converts the selected action to MiMo's native answer.
+// ok is false for other answer shapes.
 func parseElicitationAnswer(kind mimoControlKind, content []byte) (answer mimoAnswer, ok bool, err error) {
 	var envelope providerkit.MCPElicitationControlResponse
 	if json.Unmarshal(content, &envelope) != nil || envelope.Response.Response.Action == "" {
@@ -626,9 +676,8 @@ func parseControlAnswer(kind mimoControlKind, content []byte) (mimoAnswer, error
 }
 
 // planFeedback is the answer that rejects a plan: the user's feedback, or "No"
-// when the user gave none. Feedback that reads exactly as an option would be
-// taken as that option -- "Yes" would APPROVE the plan -- so it gains a period
-// and stays feedback.
+// when the user supplied none. Feedback that matches an option would select that option.
+// Yes would approve the plan. The added period keeps that text as feedback.
 func planFeedback(message string) string {
 	message = strings.TrimSpace(message)
 	switch message {

@@ -60,7 +60,7 @@ clineTest.describe('Cline workflow grouping', () => {
     for (const { agentId, run } of teammateRuns) {
       await expect(messageBubbles(page).filter({ hasText: `${agentId} started a run` }).first()).toBeVisible()
       await expectRowBecomesFinal(page, run)
-      await expect(run).toHaveAttribute('data-status', 'completed')
+      await expect(run).toHaveAttribute('data-status', 'succeeded')
     }
     // The team heading holds a suffix that the test cannot predict, so the check uses a pattern.
     await expectRowsInWorkflowGroup(teammateRuns.map(({ run }) => run), /^team-[\w-]{5}$/)

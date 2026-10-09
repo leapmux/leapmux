@@ -25,13 +25,28 @@ func (services *geminiOutputServices) UpdateSessionID(sessionID string) {
 // Gemini's prompt quota sums every request of the turn. The last native model
 // record states the current context, so only that record supplies this surface.
 func (services *geminiOutputServices) PersistTurnEnd(content agent.MessageContent, span agent.SpanInfo) error {
+	sessionID := content.AgentSessionID
+	if content.Publication == nil && services.currentSession != nil {
+		sessionID = services.currentSession()
+	}
+	if content.WriteReceipt == nil {
+		content.WriteReceipt = agent.NewTranscriptWriteReceipt()
+	}
+	content = services.CaptureMessage(content, span)
 	if err := services.ProviderServices.PersistTurnEnd(content, span); err != nil {
 		return err
 	}
-	if services.currentSession == nil {
+	if !content.WriteReceipt.ClaimContextUsage() {
 		return nil
 	}
-	path, err := locateGeminiSession(services.query, services.currentSession())
+	var owner agent.TranscriptOwner
+	if content.Publication != nil {
+		owner = content.Publication.Owner()
+		if owner != nil && !owner.IsCurrent() {
+			return nil
+		}
+	}
+	path, err := locateGeminiSession(services.query, sessionID)
 	if err != nil {
 		return nil
 	}
@@ -40,7 +55,12 @@ func (services *geminiOutputServices) PersistTurnEnd(content agent.MessageConten
 		return nil
 	}
 	if usage := geminiSessionUsage(session); usage != nil {
-		services.BroadcastSessionInfo(map[string]any{contracts.SessionInfoKeyContextUsage: usage})
+		info := map[string]any{contracts.SessionInfoKeyContextUsage: usage}
+		if owner != nil {
+			owner.PublishSessionInfo(info)
+		} else {
+			services.BroadcastSessionInfo(info)
+		}
 	}
 	return nil
 }

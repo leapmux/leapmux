@@ -25,6 +25,7 @@ import { createKiroEnvironment } from './kiroEnvironment'
 import { createLettaEnvironment } from './lettaEnvironment'
 import { writeMcpEchoServer } from './mcpEchoServer'
 import { createMimoEnvironment } from './mimoEnvironment'
+import { createMuseEnvironment } from './museEnvironment'
 import { createOhMyPiEnvironment, ohMyPiAgentDirectory } from './ohMyPiEnvironment'
 import { createOpenCodeEnvironment } from './openCodeEnvironment'
 import { createPiEnvironment, piAgentDirectory } from './piEnvironment'
@@ -105,6 +106,8 @@ export const MOCK_MODELS = {
   dirac: 'dirac-e2e',
   /** Fast Agent. */
   fastagent: 'fastagent-e2e',
+  /** Muse Code uses the native Responses provider. */
+  muse: 'muse-spark-1.2',
 } as const
 
 /**
@@ -377,6 +380,7 @@ export async function createMockAgentEnvironment(
       ...createFastAgentEnvironment({ homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, modelID: FAST_AGENT_MOCK_MODEL, zaiModelID: MOCK_MODELS.zai }),
       ...createCommandCodeEnvironment({ runDirectory: runDir, modelURL: origin, modelKey: MODEL_KEY, modelID: COMMAND_CODE_MODEL_ID, alternateModelID: COMMAND_CODE_ALT_MODEL_ID, reasoningModelID: COMMAND_CODE_REASONING_MODEL_ID, mcpServers }),
       ...createDeepseekHarnessEnvironment({ runDirectory: runDir, modelURL: origin, modelKey: MODEL_KEY, mcpServers }),
+      ...createMuseEnvironment({ runDirectory: runDir, homeDir, shimsDirectory: cliShimsDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, modelID: MOCK_MODELS.muse, mcpServers, searchPath: searchPathEnv.PATH ?? process.env.PATH ?? '' }),
       ...createGeminiEnvironment({ runDirectory: runDir, modelURL: origin, modelKey: MODEL_KEY, modelID: GEMINI_MODEL_ID, mcpServers }),
       ...credentialStoreShimEnv(cliShimsDir, searchPathEnv.PATH ?? process.env.PATH),
     },

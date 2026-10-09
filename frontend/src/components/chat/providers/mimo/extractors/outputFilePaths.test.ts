@@ -38,7 +38,7 @@ const frame = {
   },
 }
 const options = {
-  spanId: 'native-call',
+  spanId: 'part-native',
   spanType: 'bash',
   agentSessionId: 'native-session',
 }
@@ -49,7 +49,7 @@ describe('registered output file paths', () => {
     const call = providerToolCall(AgentProvider.MIMO_CODE, frame, options)
 
     expect(call).not.toBeNull()
-    expect(call?.id).toBe('native-call')
+    expect(call?.id).toBe('part-native')
     expect(call?.outputFilePaths).toEqual([path])
     expect(JSON.stringify(frame)).toBe(before)
   })
@@ -63,7 +63,7 @@ describe('native path ownership and preview preservation', () => {
 
   it('refuses another native call while the original call stays fixed', () => {
     const pathsFor = outputFilePathFixture(AgentProvider.MIMO_CODE, frame, options)
-    const foreign: unknown = JSON.parse(JSON.stringify(frame).replaceAll('native-call', 'foreign-call'))
+    const foreign: unknown = JSON.parse(JSON.stringify(frame).replaceAll('part-native', 'foreign-part'))
     expect(pathsFor(foreign)).toEqual([])
   })
 

@@ -1,6 +1,8 @@
 package agenttest
 
 import (
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
@@ -12,6 +14,149 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestCapturedTestSinkRejectsForeignOwnershipBeforeNativeKeyClaims(t *testing.T) {
+	t.Parallel()
+	for _, operation := range []string{"message", "divider"} {
+		t.Run(operation, func(t *testing.T) {
+			t.Parallel()
+			original, destination := &Sink{}, &Sink{}
+			original.UpdateSessionID("same-native-session")
+			destination.UpdateSessionID("same-native-session")
+			content := agent.MessageContent{Original: []byte(`{"native":"retained"}`), IdempotencyKey: "retained-key"}
+			foreign := original.CaptureMessage(content, agent.SpanInfo{})
+			if operation == "message" {
+				require.ErrorContains(t, destination.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, foreign, agent.SpanInfo{}), "owner")
+				require.NoError(t, destination.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, destination.CaptureMessage(content, agent.SpanInfo{}), agent.SpanInfo{}))
+			} else {
+				require.ErrorContains(t, destination.PersistTurnEnd(foreign, agent.SpanInfo{}), "owner")
+				require.NoError(t, destination.PersistTurnEnd(destination.CaptureMessage(content, agent.SpanInfo{}), agent.SpanInfo{}))
+			}
+			require.Len(t, destination.Messages(), 1, "a rejected foreign owner must not consume the destination's native key")
+			assert.Equal(t, content.Original, destination.Messages()[0].Content)
+		})
+	}
+}
+
+func TestCapturedTestSinkRejectsAnExplicitUnknownCompletionBeforeAdmission(t *testing.T) {
+	t.Parallel()
+	for _, operation := range []string{"message", "divider", "notification"} {
+		t.Run(operation, func(t *testing.T) {
+			t.Parallel()
+			sink := &Sink{}
+			sink.UpdateSessionID("native-session")
+			sink.ReportProgress(agent.NativeTokenProgress("current-model", 17))
+			beforeProgress := sink.ProgressUpdates()
+			original, err := agent.MarshalAssembledMessage(agent.AssembledMessageKindText, "exact native input", agent.MessageCompletionComplete)
+			require.NoError(t, err)
+			receipt := agent.NewTranscriptWriteReceipt()
+			content := agent.MessageContent{Original: original, IdempotencyKey: "same-native-key", Completion: "unknown-explicit-completion", WriteReceipt: receipt}
+			persist := func(content agent.MessageContent) error {
+				switch operation {
+				case "message":
+					return sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{})
+				case "divider":
+					return sink.PersistTurnEnd(content, agent.SpanInfo{})
+				default:
+					broadcast, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content)
+					if content.Completion == "unknown-explicit-completion" {
+						assert.False(t, broadcast)
+					}
+					return err
+				}
+			}
+			err = persist(content)
+			assert.ErrorContains(t, err, "unknown completion")
+			assert.Empty(t, sink.Messages())
+			assert.Empty(t, sink.PersistedNotifications())
+			assert.Empty(t, sink.TurnLifecycle())
+			assert.Equal(t, beforeProgress, sink.ProgressUpdates())
+			_, stored := receipt.StoredMessageSequence()
+			assert.False(t, stored)
+			assert.False(t, receipt.ClaimModelReset())
+			assert.False(t, receipt.ClaimSourceObservation())
+			assert.False(t, receipt.ClaimContextUsage())
+			assert.False(t, receipt.ClaimOutputCompletion())
+			if err != nil {
+				content.Completion = agent.MessageCompletionComplete
+				content.WriteReceipt = agent.NewTranscriptWriteReceipt()
+				require.NoError(t, persist(content))
+				if operation == "notification" {
+					assert.Len(t, sink.PersistedNotifications(), 1)
+				} else {
+					assert.Len(t, sink.Messages(), 1)
+				}
+			}
+		})
+	}
+}
+
+func TestCapturedTestSinkNotificationJournalRetainsExactIdentityAndMetadata(t *testing.T) {
+	t.Parallel()
+	sink := &Sink{}
+	sink.UpdateSessionID("journal-session")
+	content := agent.MessageContent{Original: []byte(" {\"type\":\"notice\",\"number\":1.0} "), Supplemental: []byte(" {\"native\":0} "), Metadata: []byte(" {\"duration_ms\":0} "), IdempotencyKey: "journal-key", Completion: agent.MessageCompletionComplete}
+	first := agent.CaptureTranscript(sink, content, agent.SpanInfo{})
+	broadcast, err := first.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT)
+	require.NoError(t, err)
+	require.True(t, broadcast)
+	replay := agent.CaptureTranscript(sink, content, agent.SpanInfo{})
+	broadcast, err = replay.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT)
+	require.NoError(t, err)
+	assert.False(t, broadcast)
+	rows := sink.PersistedNotifications()
+	require.Len(t, rows, 1)
+	stored, err := json.Marshal(map[string]json.RawMessage{"provider": rows[0].SupplementalContent, "metadata": rows[0].Metadata})
+	require.NoError(t, err)
+	entries, err := agent.DecodeNotificationJournal(stored)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, content.Original, rows[0].Content)
+	assert.JSONEq(t, string(content.Supplemental), string(rows[0].SupplementalContent))
+	assert.Equal(t, "journal-session", rows[0].AgentSessionID)
+	assert.Equal(t, "1f63967f5bd9b5a85cfa96701ec0dfb6bbca173cc39b9740ef60194f21deeee2", hex.EncodeToString(entries[0].Fingerprint[:]))
+	assert.Equal(t, "journal-key", entries[0].IdempotencyKey)
+	assert.Equal(t, agent.MessageCompletionComplete, rows[0].Completion)
+	assert.False(t, rows[0].TranscriptOnly)
+	var metadata map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(rows[0].Metadata, &metadata))
+	assert.Equal(t, "0", string(metadata["duration_ms"]))
+	changed := content.Clone()
+	changed.Metadata = []byte(`{"duration_ms":1}`)
+	_, err = sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, sink.CaptureMessage(changed, agent.SpanInfo{}))
+	require.ErrorContains(t, err, "identity conflict")
+	assert.Len(t, sink.PersistedNotifications(), 1)
+}
+
+func TestCapturedTestSinkNotificationKeepsAggregateProvenanceOnReplay(t *testing.T) {
+	t.Parallel()
+	sink := &Sink{}
+	sink.UpdateSessionID("native")
+	sink.SetTurnState(agent.TurnState{Active: true}, 1)
+	content := agent.MessageContent{Original: []byte(`{"type":"system","text":"retained"}`), IdempotencyKey: "first", Completion: agent.MessageCompletionInterrupted}
+	first := sink.CaptureMessage(content, agent.SpanInfo{})
+	_, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, first)
+	require.NoError(t, err)
+	before := sink.PersistedNotifications()
+	require.Len(t, before, 1)
+	assert.False(t, before[0].TranscriptOnly)
+	sink.SetTurnState(agent.TurnState{}, 2)
+	sink.SetTurnState(agent.TurnState{Active: true}, 3)
+	duplicate := agent.CaptureTranscript(sink, first, agent.SpanInfo{})
+	broadcast, err := duplicate.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT)
+	require.NoError(t, err)
+	assert.False(t, broadcast)
+	assert.Equal(t, before, sink.PersistedNotifications())
+	first.IdempotencyKey = "historical-second"
+	_, err = agent.CaptureTranscript(sink, first, agent.SpanInfo{}).PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT)
+	require.NoError(t, err)
+	rows := sink.PersistedNotifications()
+	require.Len(t, rows, 2)
+	assert.True(t, rows[1].TranscriptOnly)
+	assert.Equal(t, content.Completion, rows[1].Completion)
+	assert.Equal(t, content.Original, rows[1].Content)
+	assert.Equal(t, "native", rows[1].AgentSessionID)
+}
 
 func TestSinkSpanOnlyCreationStaysUnlinked(t *testing.T) {
 	t.Parallel()
@@ -205,6 +350,43 @@ func TestSinkMessageEnrichmentMatchesTheWorkerSessionAndSequenceRules(t *testing
 		require.NoError(t, err)
 		assert.False(t, changed)
 	}
+}
+
+func TestToolResultExactReadsKeepRecordedSequenceAndSession(t *testing.T) {
+	t.Parallel()
+	sink := &Sink{}
+	span := agent.SpanInfo{SpanID: "call", Closing: true}
+	original := []byte(`{"same":"bytes"}`)
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		agent.MessageContent{Original: original, Supplemental: []byte(`{"native":0}`), Metadata: []byte(`{"duration_ms":0}`)}, span))
+	sink.UpdateSessionID("replacement")
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: original}, span))
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: original}, span))
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: original}, agent.SpanInfo{}))
+	for _, sequence := range []int64{-1, 0, 3, 4, 9223372036854775807} {
+		row, err := sink.ReadToolResultBySeq(sequence)
+		require.NoError(t, err)
+		assert.Nil(t, row)
+	}
+	row, err := sink.ReadToolResultBySeq(1)
+	require.NoError(t, err)
+	require.NotNil(t, row)
+	assert.Equal(t, int64(1), row.Seq)
+	assert.Empty(t, row.Content.AgentSessionID)
+	assert.Equal(t, original, row.Content.Original)
+	row.Content.Original[0] = 'x'
+	row.Content.Supplemental[0] = 'x'
+	row.Content.Metadata[0] = 'x'
+	again, err := sink.ReadToolResultForSession("call", "")
+	require.NoError(t, err)
+	require.NotNil(t, again)
+	assert.Equal(t, int64(1), again.Seq)
+	assert.Equal(t, original, again.Content.Original)
+	assert.JSONEq(t, `{"native":0}`, string(again.Content.Supplemental))
+	assert.JSONEq(t, `{"duration_ms":0}`, string(again.Content.Metadata))
+	missing, err := sink.ReadToolResultForSession("", "replacement")
+	require.NoError(t, err)
+	assert.Nil(t, missing)
 }
 
 func TestSinkChildSpawnLookupRequiresTheDirectParent(t *testing.T) {
@@ -462,7 +644,7 @@ func TestSink_PersistNotificationReportsBroadcastChoice(t *testing.T) {
 			sink := &Sink{SuppressNotificationBroadcast: tc.suppress}
 			content := []byte(`{"type":"status"}`)
 
-			broadcast, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content)
+			broadcast, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: content})
 			require.NoError(t, err)
 			assert.Equal(t, tc.broadcast, broadcast)
 			content[0] = 'x'

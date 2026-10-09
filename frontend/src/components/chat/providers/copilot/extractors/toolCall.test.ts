@@ -51,6 +51,21 @@ function resultFacts(
 }
 
 describe('copilotToolRow', () => {
+  it('keeps an unknown final request without a native result', () => {
+    const row = copilotToolRow(copilotToolStart(CALL, COPILOT_TOOL.Bash, { command: 'printf native' }), { completion: MessageCompletion.FINISHED })
+    expect(row?.finished).toBe(true)
+    if (!row)
+      throw new Error('The retained Copilot request requires a tool row.')
+    const facts = copilotToolFacts(row)
+    expect(facts.answered).toBe(false)
+    for (const kind of TOOL_KINDS)
+      expect(COPILOT_TOOL_READERS[kind](facts).result, kind).toBeUndefined()
+    const call = copilotToolCall(row)
+    expect(call.status).toBe('incomplete')
+    expect(call.result).toBeUndefined()
+    expect(call.request).toMatchObject({ command: 'printf native' })
+  })
+
   const NATIVE_PATCH = '*** Begin Patch\n*** Update File: /project/native.ts\n@@\n-before\n+after\n*** End Patch'
 
   it('keeps raw native patch arguments on a running call', () => {
@@ -566,6 +581,28 @@ describe('copilot rich content', () => {
  * outcome the worker records never reached one.
  */
 describe('copilot retained rows', () => {
+  it.each([
+    [MessageCompletion.COMPLETE, 'incomplete'],
+    [MessageCompletion.INTERRUPTED, 'cancelled'],
+    [MessageCompletion.ERROR, 'failed'],
+    [MessageCompletion.FINISHED, 'incomplete'],
+  ])('keeps every native tool request without a result for retained completion %s', (completion, status) => {
+    for (const name of Object.values(COPILOT_TOOL)) {
+      const args = name === COPILOT_TOOL.ApplyPatch
+        ? '*** Begin Patch\n*** Update File: /project/native.ts\n@@\n-before\n+after\n*** End Patch'
+        : { path: '/project/native.ts', source: '/project/before.ts', command: 'printf native', file_text: 'native', pattern: 'native' }
+      const row = copilotToolRow(copilotToolStart(CALL, name, args), { completion })
+      if (!row)
+        throw new Error('The retained Copilot request requires a tool row.')
+      expect(row.finished, name).toBe(true)
+      const facts = copilotToolFacts(row)
+      expect(facts, name).toMatchObject({ hasResult: false, answered: false })
+      const call = copilotToolCall(row)
+      expect(call.status, name).toBe(status)
+      expect(call.result, name).toBeUndefined()
+    }
+  })
+
   it('reports a failed turn on the completion row', () => {
     const row = copilotToolRow(copilotToolComplete(CALL, { success: true, result: { content: 'ok' } }), { spanType: COPILOT_TOOL.Bash, request: parsed(copilotToolStart(CALL, COPILOT_TOOL.Bash, { command: 'ls' })), completion: MessageCompletion.ERROR })
     expect(row && deriveToolCallStatus(row.lifecycle, row.lifecycle.resultFrameLanded)).toBe('failed')

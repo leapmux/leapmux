@@ -20,7 +20,7 @@ async function expectNativeChildCompletion(context: Pick<ManagedNativeScenarioCo
   await retryUntilPass(async () => {
     const parent = await readNativeSidebarSnapshot(context, child.parentAgentId)
     expect(parent.backgroundTasks.find(task => task.childAgentId === child.id)?.status, 'the Worker completes the task of the child')
-      .toBe(BackgroundTaskStatus.COMPLETED)
+      .toBe(BackgroundTaskStatus.SUCCEEDED)
   })
   const snapshot = await readNativeMessageSnapshot(context, child.id)
   const answers = snapshot.messages.filter((message) => {

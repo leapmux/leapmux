@@ -13,9 +13,8 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
-// openSession creates a session, or resumes the one resumeID names. A resume
-// that fails is fatal, as it is for every provider: the alternative starts an
-// empty session under the name of the one the user asked to continue.
+// openSession creates a session or resumes the session that resumeID identifies.
+// A failed resume returns an error. Starting an empty session would discard the user's requested history.
 func (a *Agent) openSession(ctx context.Context, resumeID string) (mimoSession, error) {
 	if resumeID == "" {
 		return a.rpc.createSession(ctx)
@@ -30,9 +29,8 @@ func (a *Agent) openSession(ctx context.Context, resumeID string) (mimoSession, 
 	return session, nil
 }
 
-// restoreResumedSession reads what the worker keeps about a resumed session
-// that the new process does not report again: the subagents the session's own
-// spawn calls started, and the session's cost so far.
+// restoreResumedSession reads the session's earlier spawn links and accumulated cost.
+// The new process does not report these records again.
 //
 // Both are best effort. The session is open either way. A history that cannot
 // be read leaves each earlier subagent without its link, so a later row of one
@@ -58,8 +56,7 @@ func (a *Agent) restoreResumedSession(ctx context.Context, sessionID string) {
 
 // ClearContext starts a fresh session on the same server.
 //
-// These things of the old session end with it, because its events name a
-// session that this agent no longer reads, and nothing else would end them:
+// The agent stops reading the old session's events. ClearContext ends its remaining activity:
 //
 //   - Its running turn is aborted.
 //   - What each of its actors streamed and never finished is persisted as
@@ -106,16 +103,14 @@ func (a *Agent) ClearContext() (string, error) {
 	a.closeSessionActors(bgtask.StatusStopped)
 	a.closeSessionWorkflows(bgtask.StatusStopped)
 	a.Mu.Lock()
-	held := a.takeUnreportedFailureLocked()
+	a.readyUnreportedFailuresLocked()
 	a.sessionID = session.ID
 	a.sessionSwitching = false
 	a.turnActive = false
 	a.interruptRequests = nil
-	a.lastTurnFailed = false
+	a.awaitingAbortOutcome = false
 	a.TurnToolUses = 0
-	clear(a.messages)
-	clear(a.parts)
-	clear(a.tools)
+	a.keepPendingPartsLocked()
 	clear(a.compactions)
 	a.compactionAck = nil
 	a.manualCompactionID = ""
@@ -126,12 +121,8 @@ func (a *Agent) ClearContext() (string, error) {
 	a.usage = mimoUsage{}
 	a.goal = mimoGoalState{}
 	a.Mu.Unlock()
-	if held != nil {
-		// No turn end of the old session can persist this failure now, because
-		// the old session's events no longer reach the agent.
-		a.persistFailureRow(held)
-	}
-	a.spawnPrompts.Clear()
+	// A rejected write retains the old observation after the native session changes.
+	a.flushFailureNotifications()
 	a.ResetCumulativeOutput()
 	a.sink.ReportProgress(agent.ResetProgress())
 	a.sink.ResetSpans()
@@ -164,10 +155,10 @@ func (a *Agent) closeSessionWorkflows(status bgtask.Status) {
 // takes, so the call returns at its start, as Codex's does.
 const mimoCompactionStartWait = 30 * time.Second
 
-// CompactContext asks MiMo to compact the session. It returns once the
-// compaction started: the route answers only after the compaction and the turn
-// after it finish, so the request runs on its own goroutine, and the first
-// compaction part on the stream is the confirmation.
+// CompactContext asks MiMo to compact the session.
+// The first native compaction part confirms that compaction started and releases this call.
+// The route answers only after compaction and its next turn finish.
+// The HTTP request therefore runs on its own goroutine.
 func (a *Agent) CompactContext() error {
 	a.Mu.Lock()
 	if a.StoppedLocked() {
@@ -275,13 +266,13 @@ func (a *Agent) settleManualCompactionRoute(sessionID string, routeErr error) {
 		a.Mu.Unlock()
 		return
 	}
-	held := a.takeUnreportedFailureLocked()
+	held := a.readyUnreportedFailuresLocked()
 	a.manualCompactionID = ""
-	a.manualCompactionReady = routeErr == nil && readErr == nil && summarized && held == nil
+	a.manualCompactionReady = routeErr == nil && readErr == nil && summarized && !held
 	a.turnActive = false
 	a.Mu.Unlock()
-	if held != nil {
-		a.persistFailureRow(held)
+	if held {
+		a.flushFailureNotifications()
 	} else {
 		kind, message := contracts.NotificationTypeAgentStatus, "MiMo had no context to compact"
 		switch {

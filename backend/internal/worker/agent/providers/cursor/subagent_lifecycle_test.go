@@ -56,7 +56,7 @@ func TestCursorNativeSubagentRoutesProgressAndFinalContent(t *testing.T) {
 	assert.Contains(t, content.String(), "ACTUAL_CHILD_NATIVE_DELTA")
 	tasks = sink.BackgroundTasks()
 	require.Len(t, tasks, 1)
-	assert.Equal(t, bgtask.StatusCompleted, tasks[0].Status)
+	assert.Equal(t, bgtask.StatusSucceeded, tasks[0].Status)
 	assert.Equal(t, "Preserve the actual description", tasks[0].Title)
 }
 
@@ -65,7 +65,7 @@ func TestCursorNativeSubagentStateUsesTheActualFinishedOutcome(t *testing.T) {
 		native string
 		want   bgtask.Status
 	}{
-		{"completed", bgtask.StatusCompleted}, {"failed", bgtask.StatusFailed}, {"cancelled", bgtask.StatusStopped}, {"disconnected", bgtask.StatusStopped},
+		{"completed", bgtask.StatusSucceeded}, {"failed", bgtask.StatusFailed}, {"cancelled", bgtask.StatusStopped}, {"disconnected", bgtask.StatusStopped},
 	} {
 		t.Run(scenario.native, func(t *testing.T) {
 			sink := &agenttest.Sink{}
@@ -210,7 +210,7 @@ func TestCursorNativeSubagentLaterSessionRejectsOldUpdatesAndFinalState(t *testi
 	assert.NotContains(t, child.ProgressUpdates(), agent.ModelTextProgress("acp:agent_message_chunk", "STALE_NATIVE_CHILD_DELTA"))
 	a.HandleOutput(cursorNativeSessionFrame("cursor-new", cursorNativeLifecycleFrame("subagent_state_update", "native-child-session.2", "native-task", "completed")))
 	a.HandleOutput(cursorNativeSessionFrame("cursor-new", cursorNativeLifecycleFrame("subagent_state_update", "native-child-session.2", "native-task", "failed")))
-	assert.Equal(t, bgtask.StatusCompleted, sink.BackgroundTasks()[0].Status)
+	assert.Equal(t, bgtask.StatusSucceeded, sink.BackgroundTasks()[0].Status)
 	assert.Len(t, sink.BackgroundTasks(), 1)
 }
 

@@ -52,7 +52,7 @@ func TestNativeCopilotSubagentOpensItsOwnTranscript(t *testing.T) {
 	assert.Contains(t, string(child.Messages()[childBeforeCompletion].Content), contracts.CopilotEventSubagentCompleted)
 	row, ok = copilotBackgroundRow(t, sink, "agent-1")
 	require.True(t, ok)
-	assert.Equal(t, bgtask.StatusCompleted, row.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
 	assert.NotEmpty(t, child.ResetSpanCount(), "a finished subagent releases its spans")
 }
 
@@ -87,7 +87,7 @@ func TestNativeCopilotSubagentOutcomes(t *testing.T) {
 		data  map[string]any
 		want  bgtask.Status
 	}{
-		{"completed", contracts.CopilotEventSubagentCompleted, map[string]any{"toolCallId": "task-1"}, bgtask.StatusCompleted},
+		{"completed", contracts.CopilotEventSubagentCompleted, map[string]any{"toolCallId": "task-1"}, bgtask.StatusSucceeded},
 		{"cancelled", contracts.CopilotEventSubagentCompleted, map[string]any{"toolCallId": "task-1", "cancelled": true}, bgtask.StatusStopped},
 		{"failed", contracts.CopilotEventSubagentFailed, map[string]any{"toolCallId": "task-1", "error": "it broke"}, bgtask.StatusFailed},
 	} {

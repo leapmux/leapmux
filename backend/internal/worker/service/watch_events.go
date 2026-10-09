@@ -30,12 +30,13 @@ import (
 // NOT latch: the channel is healthy and the next event may well fit, so
 // treating it as fatal would abandon a replay over one oversized message.
 type replaySink struct {
-	sender channel.ResponseWriter
-	dead   error
+	sender   channel.ResponseWriter
+	replayID uint64
+	dead     error
 }
 
-func newReplaySink(sender channel.ResponseWriter) *replaySink {
-	return &replaySink{sender: sender}
+func newReplaySink(sender channel.ResponseWriter, replayID uint64) *replaySink {
+	return &replaySink{sender: sender, replayID: replayID}
 }
 
 // send emits one event, or does nothing once the transport is known dead.
@@ -57,6 +58,16 @@ func (s *replaySink) send(resp *leapmuxv1.WatchEventsResponse) {
 	if transportDead(err) {
 		s.dead = err
 	}
+}
+
+// fail reports a replay preparation error and stops this exact stream.
+// Fix the failure before delivery so synchronous reentry cannot continue the burst.
+func (s *replaySink) fail(err error) {
+	if err == nil || s.dead != nil {
+		return
+	}
+	s.dead = err
+	sendStreamError(s.sender, codes.Internal, "failed to prepare transcript replay")
 }
 
 // broadcastWatchEvent sends a WatchEventsResponse as a stream message.

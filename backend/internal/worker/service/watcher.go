@@ -4,8 +4,11 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
+
+	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/channel"
@@ -17,6 +20,7 @@ type registration struct {
 	channelID string
 	sender    channel.ResponseWriter
 	mode      leapmuxv1.WatchMode
+	replay    agentReplayTuple
 
 	// gen identifies this registration. Each registration receives a new generation, including registrations for a previously removed channel.
 	// broadcast copies the sender and generation before it sends outside the lock.
@@ -24,11 +28,20 @@ type registration struct {
 	gen uint64
 }
 
-// watchEntry is one entity a channel wants to watch, with the mode that
-// selects how much of its traffic the channel receives.
+// agentReplayTuple fixes the replay request for one registered FULL lifetime.
+type agentReplayTuple struct {
+	replayID      uint64
+	replayMode    leapmuxv1.WatchReplayMode
+	cursorSeq     int64
+	windowTailSeq int64
+	windowTailSet bool
+}
+
+// watchEntry states one entity's mode and its fixed replay request.
 type watchEntry struct {
-	id   string
-	mode leapmuxv1.WatchMode
+	id     string
+	mode   leapmuxv1.WatchMode
+	replay agentReplayTuple
 }
 
 // watcherRegistry stores entity ID -> channel ID -> registration for one entity kind.
@@ -48,14 +61,18 @@ func newWatcherRegistry() *watcherRegistry {
 // Replacement removes subscriptions for closed tabs because each request supplies the complete current interest.
 // Empty entries clear the subscriptions but leave the stream open. Cancellation or channel closure ends the stream.
 func (r *watcherRegistry) setWatches(channelID string, entries []watchEntry, sender channel.ResponseWriter) {
-	// For repeated entity IDs, keep the last requested mode.
-	keep := make(map[string]leapmuxv1.WatchMode, len(entries))
-	for _, e := range entries {
-		keep[e.id] = normalizeMode(e.mode)
-	}
-
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.replaceWatchesLocked(channelID, entries, sender)
+}
+
+func (r *watcherRegistry) replaceWatchesLocked(channelID string, entries []watchEntry, sender channel.ResponseWriter) {
+	// For repeated entity IDs, keep the last requested mode.
+	keep := make(map[string]watchEntry, len(entries))
+	for _, e := range entries {
+		e.mode = normalizeMode(e.mode)
+		keep[e.id] = e
+	}
 	// Go permits deletion from a map during iteration.
 	for entityID, byChannel := range r.byEntity {
 		if _, wanted := keep[entityID]; wanted {
@@ -66,7 +83,7 @@ func (r *watcherRegistry) setWatches(channelID string, entries []watchEntry, sen
 			delete(r.byEntity, entityID)
 		}
 	}
-	for entityID, mode := range keep {
+	for entityID, entry := range keep {
 		byChannel := r.byEntity[entityID]
 		if byChannel == nil {
 			byChannel = make(map[string]registration, 1)
@@ -76,10 +93,48 @@ func (r *watcherRegistry) setWatches(channelID string, entries []watchEntry, sen
 		byChannel[channelID] = registration{
 			channelID: channelID,
 			sender:    sender,
-			mode:      mode,
+			mode:      entry.mode,
+			replay:    entry.replay,
 			gen:       r.nextGen,
 		}
 	}
+}
+
+func (r *watcherRegistry) entriesForChannelLocked(channelID string) map[string]watchEntry {
+	entries := make(map[string]watchEntry)
+	for entityID, byChannel := range r.byEntity {
+		if registration, exists := byChannel[channelID]; exists {
+			entries[entityID] = watchEntry{id: entityID, mode: registration.mode, replay: registration.replay}
+		}
+	}
+	return entries
+}
+
+func (r *watcherRegistry) applyAgentWatches(channelID string, entries []watchEntry, apply bool, sender channel.ResponseWriter) (map[string]watchEntry, map[string]watchEntry, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	previous := r.entriesForChannelLocked(channelID)
+	if apply {
+		for _, entry := range entries {
+			mode := normalizeMode(entry.mode)
+			if mode != leapmuxv1.WatchMode_WATCH_MODE_FULL && mode != leapmuxv1.WatchMode_WATCH_MODE_NOTIFY {
+				return previous, previous, fmt.Errorf("agent %q has an invalid watch mode", entry.id)
+			}
+			if modeIsFull(mode) {
+				if entry.replay.replayID == 0 {
+					return previous, previous, fmt.Errorf("agent %q requires a positive FULL replay identity", entry.id)
+				}
+				prior, exists := previous[entry.id]
+				if exists && modeIsFull(prior.mode) && prior.replay.replayID == entry.replay.replayID && prior.replay != entry.replay {
+					return previous, previous, fmt.Errorf("agent %q changed its registered replay tuple", entry.id)
+				}
+			} else if entry.replay != (agentReplayTuple{}) {
+				return previous, previous, fmt.Errorf("agent %q requires an empty NOTIFY replay tuple", entry.id)
+			}
+		}
+		r.replaceWatchesLocked(channelID, entries, sender)
+	}
+	return previous, r.entriesForChannelLocked(channelID), nil
 }
 
 // unwatchAll drops every subscription held by channelID.
@@ -301,6 +356,14 @@ type WatcherManager struct {
 	ownerMu       sync.Mutex
 	channelOwners map[string]uint64 // channelID -> sessionID
 	nextSession   uint64
+	// publicationMu protects immutable queued events, not agent activity.
+	publicationMu sync.Mutex
+	publications  map[string]*agentEventQueue
+}
+
+type agentEventQueue struct {
+	events   []*leapmuxv1.AgentEvent
+	draining bool
 }
 
 // NewWatcherManager creates a new WatcherManager.
@@ -337,13 +400,20 @@ func (m *WatcherManager) ownsSessionLocked(channelID string, sessionID uint64) b
 }
 
 // SetAgentWatchesForSession replaces agent subscriptions only while this session owns the channel.
-func (m *WatcherManager) SetAgentWatchesForSession(channelID string, sessionID uint64, entries []watchEntry, sender channel.ResponseWriter) {
+func (m *WatcherManager) SetAgentWatchesForSession(channelID string, sessionID uint64, entries []watchEntry, sender channel.ResponseWriter) error {
+	_, _, _, err := m.ApplyAgentWatchesForSession(channelID, sessionID, entries, true, sender)
+	return err
+}
+
+// ApplyAgentWatchesForSession reads and replaces replay tuples under the same registry lock.
+func (m *WatcherManager) ApplyAgentWatchesForSession(channelID string, sessionID uint64, entries []watchEntry, apply bool, sender channel.ResponseWriter) (previous map[string]watchEntry, current map[string]watchEntry, owned bool, err error) {
 	m.ownerMu.Lock()
 	defer m.ownerMu.Unlock()
 	if !m.ownsSessionLocked(channelID, sessionID) {
-		return
+		return nil, nil, false, nil
 	}
-	m.agents.setWatches(channelID, entries, sender)
+	previous, current, err = m.agents.applyAgentWatches(channelID, entries, apply, sender)
+	return previous, current, true, err
 }
 
 // SetTerminalWatchesForSession replaces terminal subscriptions only while this session owns the channel.
@@ -390,11 +460,64 @@ func (m *WatcherManager) UnwatchSession(channelID string, sessionID uint64) {
 
 // BroadcastAgentEvent sends an AgentEvent to all watchers of the given agent.
 func (m *WatcherManager) BroadcastAgentEvent(agentID string, event *leapmuxv1.AgentEvent) {
-	m.agents.broadcast(agentID, &leapmuxv1.WatchEventsResponse{
-		Event: &leapmuxv1.WatchEventsResponse_AgentEvent{
-			AgentEvent: event,
-		},
-	}, agentEventClass(event))
+	m.EnqueueAgentEvent(agentID, event)
+	m.DrainAgentEvents(agentID)
+}
+
+// EnqueueAgentEvent copies one event without calling a watcher.
+func (m *WatcherManager) EnqueueAgentEvent(agentID string, event *leapmuxv1.AgentEvent) {
+	if event == nil {
+		return
+	}
+	snapshot := proto.Clone(event).(*leapmuxv1.AgentEvent)
+	m.publicationMu.Lock()
+	defer m.publicationMu.Unlock()
+	if m.publications == nil {
+		m.publications = make(map[string]*agentEventQueue)
+	}
+	queue := m.publications[agentID]
+	if queue == nil {
+		queue = &agentEventQueue{}
+		m.publications[agentID] = queue
+	}
+	queue.events = append(queue.events, snapshot)
+}
+
+// DrainAgentEvents sends queued events outside every publication lock.
+// A concurrent or reentrant caller returns while the current drainer continues.
+func (m *WatcherManager) DrainAgentEvents(agentID string) {
+	m.publicationMu.Lock()
+	queue := m.publications[agentID]
+	if queue == nil || queue.draining {
+		m.publicationMu.Unlock()
+		return
+	}
+	queue.draining = true
+	defer func() {
+		m.publicationMu.Lock()
+		if m.publications[agentID] == queue {
+			queue.draining = false
+			if len(queue.events) == 0 {
+				delete(m.publications, agentID)
+			}
+		}
+		m.publicationMu.Unlock()
+	}()
+	for {
+		if len(queue.events) == 0 {
+			delete(m.publications, agentID)
+			m.publicationMu.Unlock()
+			return
+		}
+		event := queue.events[0]
+		queue.events[0] = nil
+		queue.events = queue.events[1:]
+		m.publicationMu.Unlock()
+		m.agents.broadcast(agentID, &leapmuxv1.WatchEventsResponse{
+			Event: &leapmuxv1.WatchEventsResponse_AgentEvent{AgentEvent: event},
+		}, agentEventClass(event))
+		m.publicationMu.Lock()
+	}
 }
 
 // BroadcastTerminalEvent sends a TerminalEvent to all watchers of the given terminal.

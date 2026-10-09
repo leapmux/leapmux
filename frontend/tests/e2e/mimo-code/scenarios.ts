@@ -5,13 +5,14 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { managedNativeContext } from '../helpers/nativeScenario'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import { exerciseMiMoShellToolExecution } from './shellToolExecution'
+import { mimoToolRowIdResolver } from './toolRowId'
 
 /** How a MiMo Code agent opens. */
 export const MIMO_AGENT: ProviderAgent = { provider: AgentProvider.MIMO_CODE, prefix: 'mimo-e2e' }
 
-/** Build the scenario context of MiMo Code. Its native protocol needs no field beyond the provider. */
+/** Build the MiMo context with its provider-owned mapping from model calls to stored native part rows. */
 export async function nativeContext(fixtures: NativeContextFixtures): Promise<ManagedNativeScenarioContext> {
-  return managedNativeContext(fixtures, MIMO_AGENT)
+  return managedNativeContext(fixtures, MIMO_AGENT, { resolveToolRowId: mimoToolRowIdResolver(fixtures) })
 }
 
 /** Select the actual isolated executable and hold only its native runtime invocation. */

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "worker-vocab.schema.json",
   "title": "worker wire vocabulary contract",
-  "description": "Notification-type tokens, the notification-thread wrapper discriminator, the Codex time-window rate-limit token, and the model sentinels. The generator checks workerWrittenNotificationTypes names keys of notificationTypes and that the tokens are unique. It also holds the session goal's two payload vocabularies: goalStatusTokens (the neutral status the agents row stores, whose empty token means no goal) and goalTransitions (what a goal change did).",
+  "description": "This contract supplies the notification vocabulary and the model sentinels. The generator checks that each workerWrittenNotificationTypes entry identifies a notificationTypes key. It also requires unique tokens. goalStatusTokens supplies the goal status vocabulary for payloads, including Unknown. The agents.goal_status column stores the AgentGoalStatus ordinal. goalTransitions states the goal change, including an Updated transition with no known neutral status meaning.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -20,7 +20,8 @@
     "codexRateLimitReachedTimeWindow",
     "codexRateLimitAccountBlockKey",
     "modelSentinels",
-    "notificationFields"
+    "notificationFields",
+    "backgroundTaskStatusTokens"
   ],
   "properties": {
     "messageSupplementFields": {
@@ -225,7 +226,8 @@
           "required": [
             "Complete",
             "Interrupted",
-            "Error"
+            "Error",
+            "Finished"
           ],
           "properties": {
             "Complete": {
@@ -237,6 +239,10 @@
               "pattern": "^[a-z][a-z0-9_]*$"
             },
             "Error": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_]*$"
+            },
+            "Finished": {
               "type": "string",
               "pattern": "^[a-z][a-z0-9_]*$"
             }
@@ -340,6 +346,59 @@
       "additionalProperties": {
         "type": "string",
         "pattern": "^[a-z][a-z0-9_]*$"
+      }
+    },
+    "backgroundTaskStatusTokens": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "Unspecified",
+        "Pending",
+        "Running",
+        "Paused",
+        "Succeeded",
+        "Failed",
+        "Stopped",
+        "Interrupted",
+        "EndedWithUnknownOutcome"
+      ],
+      "properties": {
+        "Unspecified": {
+          "type": "string",
+          "pattern": "^([a-z][a-z0-9_]*)?$"
+        },
+        "Pending": {
+          "type": "string",
+          "pattern": "^([a-z][a-z0-9_]*)?$"
+        },
+        "Running": {
+          "type": "string",
+          "pattern": "^([a-z][a-z0-9_]*)?$"
+        },
+        "Paused": {
+          "type": "string",
+          "pattern": "^([a-z][a-z0-9_]*)?$"
+        },
+        "Succeeded": {
+          "type": "string",
+          "pattern": "^([a-z][a-z0-9_]*)?$"
+        },
+        "Failed": {
+          "type": "string",
+          "pattern": "^([a-z][a-z0-9_]*)?$"
+        },
+        "Stopped": {
+          "type": "string",
+          "pattern": "^([a-z][a-z0-9_]*)?$"
+        },
+        "Interrupted": {
+          "type": "string",
+          "pattern": "^([a-z][a-z0-9_]*)?$"
+        },
+        "EndedWithUnknownOutcome": {
+          "type": "string",
+          "pattern": "^([a-z][a-z0-9_]*)?$"
+        }
       }
     }
   }

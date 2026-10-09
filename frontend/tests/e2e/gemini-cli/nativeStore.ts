@@ -3,7 +3,7 @@ import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { isObject } from '../../../src/lib/jsonPick'
-import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
+import { assertPrivateNativePath } from '../helpers/nativePrivatePath'
 import { getGlobalState } from '../helpers/server'
 
 /** Verify the native registry and project marker before reading a session path. */

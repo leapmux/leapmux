@@ -151,6 +151,25 @@ function structsThatRead(contract, table, key) {
   return [...reached]
 }
 
+/** Follow each startup descriptor to its exact option-ID and value keys. */
+function startupGroupReaders(spec, table, contract, key, side, sources) {
+  const groups = Object.entries(contract.startupOptionGroups ?? {}).filter(([, group]) => {
+    if (table.key === 'optionIds')
+      return key === undefined || group.id === key
+    return group.valuesTable === table.key && (key === undefined || group.options.some(option => option.value === key))
+  })
+  if (groups.length === 0)
+    return []
+  const symbol = side === 'go' ? `contracts.${spec.goPrefix}StartupOptionGroups` : `${spec.tsPrefix}_STARTUP_OPTION_GROUPS`
+  return sources.filter((source) => {
+    if (side === 'go')
+      return new RegExp(`range\\s+${symbol.replaceAll('.', '\\.')}\\b`).test(source.text)
+    return tsLocalNames(source.text, symbol).some(local =>
+      new RegExp(`Object\\.values\\(\\s*${local}\\s*\\)`).test(source.text)
+      || groups.some(([group]) => wordPattern(`${local}.${group}`).test(source.text)))
+  }).map(source => source.path)
+}
+
 /** The Go files that read one key of one table. */
 function goKeyReaders(spec, table, contract, key) {
   const direct = mentions(goSources, `contracts.${spec.goPrefix}${table.goTable}${key}`)
@@ -163,7 +182,7 @@ function goKeyReaders(spec, table, contract, key) {
     if (iterated.length > 0)
       return iterated
   }
-  return structsThatRead(contract, table.key, key).flatMap(name => mentions(goSources, `contracts.${name}`))
+  return [...structsThatRead(contract, table.key, key).flatMap(name => mentions(goSources, `contracts.${name}`)), ...startupGroupReaders(spec, table, contract, key, 'go', goSources)]
 }
 
 /**
@@ -190,7 +209,7 @@ function tsKeyReaders(spec, table, key) {
 }
 
 function keyReaders(spec, table, contract, key, side) {
-  return side === 'go' ? goKeyReaders(spec, table, contract, key) : tsKeyReaders(spec, table, key)
+  return side === 'go' ? goKeyReaders(spec, table, contract, key) : [...tsKeyReaders(spec, table, key), ...startupGroupReaders(spec, table, contract, key, 'ts', tsSources)]
 }
 
 /**
@@ -211,11 +230,11 @@ function goReaders(spec, table, contract) {
     if (backedByTable)
       symbols.push(`contracts.${name}`)
   }
-  return symbols.flatMap(symbol => mentions(goSources, symbol))
+  return [...symbols.flatMap(symbol => mentions(goSources, symbol)), ...startupGroupReaders(spec, table, contract, undefined, 'go', goSources)]
 }
 
-function tsReaders(spec, table) {
-  return mentions(tsSources, `${spec.tsPrefix}_${table.tsTable}`)
+function tsReaders(spec, table, contract) {
+  return [...mentions(tsSources, `${spec.tsPrefix}_${table.tsTable}`), ...startupGroupReaders(spec, table, contract, undefined, 'ts', tsSources)]
 }
 
 /**
@@ -245,7 +264,7 @@ describe('every generated contract table has a reader on each side it declares',
     const readers = tableReaders(table)
     const found = {
       go: readers.includes('go') ? goReaders(spec, table, contract) : [],
-      ts: readers.includes('ts') ? tsReaders(spec, table) : [],
+      ts: readers.includes('ts') ? tsReaders(spec, table, contract) : [],
     }
     // A tag-pinned table's Go reader is a hand-written struct whose tags a reflection
     // test holds to this table. That test is not production code, so the sweep above
@@ -346,5 +365,30 @@ describe('a one-sided table states why', () => {
     // rather than the whole domain, and so the reason survives a generator refactor.
     expect(typeof table.readersWhy).toBe('string')
     expect(table.readersWhy.length).toBeGreaterThan(20)
+  })
+})
+
+
+describe('startupGroupReaders', () => {
+  const spec = { goPrefix: 'Probe', tsPrefix: 'PROBE' }
+  const contract = { startupOptionGroups: { Mode: { id: 'Mode', valuesTable: 'modes', options: [{ value: 'Native' }] } } }
+  const source = text => [{ path: 'consumer', text }]
+
+  it('follows real consumers in both languages', () => {
+    expect(startupGroupReaders(spec, { key: 'optionIds' }, contract, 'Mode', 'go', source('for _, group := range contracts.ProbeStartupOptionGroups {}'))).toEqual(['consumer'])
+    expect(startupGroupReaders(spec, { key: 'modes' }, contract, 'Native', 'ts', source('Object.values(PROBE_STARTUP_OPTION_GROUPS)'))).toEqual(['consumer'])
+    expect(startupGroupReaders(spec, { key: 'modes' }, contract, 'Native', 'ts', source('PROBE_STARTUP_OPTION_GROUPS.Mode'))).toEqual(['consumer'])
+  })
+
+  it('rejects an import without a consumer', () => {
+    expect(startupGroupReaders(spec, { key: 'modes' }, contract, 'Native', 'ts', source("import { PROBE_STARTUP_OPTION_GROUPS } from 'generated'"))).toEqual([])
+    expect(startupGroupReaders(spec, { key: 'modes' }, contract, 'Native', 'go', [])).toEqual([])
+  })
+
+  it('keeps unrelated axes and values separate', () => {
+    const sources = source('PROBE_STARTUP_OPTION_GROUPS.Other')
+    expect(startupGroupReaders(spec, { key: 'modes' }, contract, 'Native', 'ts', sources)).toEqual([])
+    expect(startupGroupReaders(spec, { key: 'modes' }, contract, 'Other', 'ts', source('Object.values(PROBE_STARTUP_OPTION_GROUPS)'))).toEqual([])
+    expect(startupGroupReaders(spec, { key: 'other' }, contract, 'Native', 'ts', source('Object.values(PROBE_STARTUP_OPTION_GROUPS)'))).toEqual([])
   })
 })

@@ -99,7 +99,7 @@ func TestASubagentsEventsReachItsTranscript(t *testing.T) {
 	assert.Equal(t, json.Number("1"), metadata[contracts.MessageMetadataFieldToolUses])
 
 	row := subagentRow(t, r, "Probe")
-	assert.Equal(t, bgtask.StatusCompleted, row.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
 	assert.Equal(t, []string{"tool_execution_start", "tool_execution_end"}, persistedTypes(r.sink.Messages()),
 		"the parent transcript holds its own task call and nothing of the subagent")
 	reports := subagentReports(r, childID)
@@ -160,7 +160,7 @@ func TestASubagentWithNoYieldWritesNoReport(t *testing.T) {
 func TestSubagentLifecycleStatuses(t *testing.T) {
 	t.Parallel()
 	for status, want := range map[string]bgtask.Status{
-		"completed": bgtask.StatusCompleted,
+		"completed": bgtask.StatusSucceeded,
 		"failed":    bgtask.StatusFailed,
 		"aborted":   bgtask.StatusStopped,
 	} {
@@ -210,7 +210,7 @@ func TestTheEndOfASubagentThisWorkerNeverSawClosesItsRow(t *testing.T) {
 	r.emit(frameCompleted)
 	row, ok := r.sink.BackgroundTask(rowKey)
 	require.True(t, ok)
-	assert.Equal(t, bgtask.StatusCompleted, row.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
 }
 
 func TestANestedSubagentSpawnsFromItsParentsTranscript(t *testing.T) {
@@ -454,7 +454,7 @@ func TestALabelForAnUnknownOrFinishedSubagentChangesNothing(t *testing.T) {
 
 	row := subagentRow(t, r, "Probe")
 	assert.Equal(t, probeTaskLine, row.Description)
-	assert.Equal(t, bgtask.StatusCompleted, row.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
 	upserts, statuses := sink.writes()
 	assert.Len(t, upserts, 1, "only the start wrote the row")
 	assert.Zero(t, statuses)
@@ -530,7 +530,7 @@ func TestABackgroundShellGetsARow(t *testing.T) {
 
 	r.emit(`{"type":"message_end","message":{"role":"custom","customType":"async-result","content":"Job bash-1 finished.","display":true,"details":{"jobs":[{"jobId":"bash-1"}]}}}`)
 	row, _ = r.sink.BackgroundTask(rowKey)
-	assert.Equal(t, bgtask.StatusCompleted, row.Status, "the delivered result closes the row")
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status, "the delivered result closes the row")
 }
 
 func TestAForegroundShellGetsNoRow(t *testing.T) {
@@ -593,7 +593,7 @@ func TestASubagentWithNoTranscriptStillGetsARow(t *testing.T) {
 				frameCompleted,
 			)
 			assert.Len(t, r.sink.Messages(), parentRows, "no event of the subagent reaches the parent transcript")
-			assert.Equal(t, bgtask.StatusCompleted, subagentRow(t, r, "Probe").Status)
+			assert.Equal(t, bgtask.StatusSucceeded, subagentRow(t, r, "Probe").Status)
 		})
 	}
 }
@@ -738,14 +738,59 @@ func TestAnAsyncResultClosesOnlyTheJobsItDelivers(t *testing.T) {
 	// A result that omp hides still closes the row of the job it delivers.
 	r.emit(`{"type":"message_end","message":{"role":"custom","customType":"async-result","content":"Job bash-1 done.","display":false,"details":{"jobs":[{"jobId":"bash-1"}]}}}`)
 	row, _ = r.sink.BackgroundTask(rowKey)
-	assert.Equal(t, bgtask.StatusCompleted, row.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
 }
 
 func TestSubagentStatusForCompletion(t *testing.T) {
 	t.Parallel()
 	assert.Equal(t, bgtask.StatusFailed, subagentStatusForCompletion(agent.MessageCompletionError))
-	assert.Equal(t, bgtask.StatusCompleted, subagentStatusForCompletion(agent.MessageCompletionComplete))
+	assert.Equal(t, bgtask.StatusSucceeded, subagentStatusForCompletion(agent.MessageCompletionComplete))
 	assert.Equal(t, bgtask.StatusStopped, subagentStatusForCompletion(agent.MessageCompletionInterrupted))
 	assert.Equal(t, agent.MessageCompletionError, completionForStatus(bgtask.StatusFailed))
 	assert.Equal(t, agent.MessageCompletionInterrupted, completionForStatus(bgtask.StatusStopped))
+}
+
+func TestSubagentCompletionMapperPreservesFinishedFinality(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		completion agent.MessageCompletion
+		status     bgtask.Status
+	}{
+		{agent.MessageCompletionComplete, bgtask.StatusSucceeded},
+		{agent.MessageCompletionError, bgtask.StatusFailed},
+		{agent.MessageCompletionInterrupted, bgtask.StatusStopped},
+		{agent.MessageCompletionFinished, bgtask.StatusEndedWithUnknownOutcome},
+		{"", bgtask.StatusStopped},
+		{"future", bgtask.StatusStopped},
+	} {
+		t.Run(string(tc.completion), func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.status, subagentStatusForCompletion(tc.completion))
+		})
+	}
+}
+
+func TestSubagentStatusMapperPreservesFinishedFinality(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		status     bgtask.Status
+		completion agent.MessageCompletion
+	}{
+		{"unspecified", bgtask.StatusUnspecified, agent.MessageCompletionInterrupted},
+		{"pending", bgtask.StatusPending, agent.MessageCompletionInterrupted},
+		{"running", bgtask.StatusRunning, agent.MessageCompletionInterrupted},
+		{"paused", bgtask.StatusPaused, agent.MessageCompletionInterrupted},
+		{"completed", bgtask.StatusSucceeded, agent.MessageCompletionInterrupted},
+		{"failed", bgtask.StatusFailed, agent.MessageCompletionError},
+		{"stopped", bgtask.StatusStopped, agent.MessageCompletionInterrupted},
+		{"interrupted", bgtask.StatusInterrupted, agent.MessageCompletionInterrupted},
+		{"finished", bgtask.StatusEndedWithUnknownOutcome, agent.MessageCompletionFinished},
+		{"unknown", bgtask.Status(99), agent.MessageCompletionInterrupted},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.completion, completionForStatus(tc.status))
+		})
+	}
 }

@@ -54,7 +54,7 @@ func TestResumeCopiesNestedChildTranscriptsAndRegistry(t *testing.T) {
 	workingDir := t.TempDir()
 	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_DIRAC
 	seedTranscriptSource(t, svc, "old-root", workingDir, "session-a1", provider, false)
-	seedArchivedChildForResume(t, svc, "old-root", "old-root", "old-child", "first", 1, bgtask.StatusCompleted)
+	seedArchivedChildForResume(t, svc, "old-root", "old-root", "old-child", "first", 1, bgtask.StatusSucceeded)
 	seedArchivedChildForResume(t, svc, "old-root", "old-child", "old-grandchild", "second", 2, bgtask.StatusInterrupted)
 	for _, id := range []string{"old-grandchild", "old-child", "old-root"} {
 		_, err := svc.Queries.CloseAgent(t.Context(), id)
@@ -79,7 +79,7 @@ func TestResumeCopiesNestedChildTranscriptsAndRegistry(t *testing.T) {
 	assert.NotEqual(t, "old-grandchild", grandchild.ChildAgentID)
 	assert.Empty(t, child.ParentAgentID)
 	assert.Equal(t, child.ChildAgentID, grandchild.ParentAgentID)
-	assert.Equal(t, leapmuxv1.BackgroundTaskStatus(bgtask.StatusCompleted), child.Status)
+	assert.Equal(t, leapmuxv1.BackgroundTaskStatus(bgtask.StatusSucceeded), child.Status)
 	assert.Equal(t, leapmuxv1.BackgroundTaskStatus(bgtask.StatusInterrupted), grandchild.Status)
 	assert.False(t, bgtask.Status(child.Status).IsWorking())
 	assert.False(t, bgtask.Status(grandchild.Status).IsWorking())
@@ -142,7 +142,7 @@ func TestResumeRejectsBrokenArchivedChildLinkWithoutCreatingARoot(t *testing.T) 
 	require.NoError(t, svc.Queries.UpsertAgentBackgroundTask(t.Context(), db.UpsertAgentBackgroundTaskParams{
 		OwnerAgentID: "old-root", RowKey: "broken", Seq: 1,
 		Kind:         leapmuxv1.BackgroundTaskKind(bgtask.KindSubagent),
-		ChildAgentID: "missing-child", Status: leapmuxv1.BackgroundTaskStatus(bgtask.StatusCompleted),
+		ChildAgentID: "missing-child", Status: leapmuxv1.BackgroundTaskStatus(bgtask.StatusSucceeded),
 		CreatedAt: stamp, UpdatedAt: stamp,
 	}))
 	_, err = svc.Queries.CloseAgent(t.Context(), "old-root")
@@ -163,7 +163,7 @@ func TestRepeatedResumeCopiesTheNewestChildTree(t *testing.T) {
 	workingDir := t.TempDir()
 	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_DIRAC
 	seedTranscriptSource(t, svc, "old-root", workingDir, "session-a1", provider, false)
-	seedArchivedChildForResume(t, svc, "old-root", "old-root", "old-child", "first", 1, bgtask.StatusCompleted)
+	seedArchivedChildForResume(t, svc, "old-root", "old-root", "old-child", "first", 1, bgtask.StatusSucceeded)
 	for _, id := range []string{"old-child", "old-root"} {
 		_, err := svc.Queries.CloseAgent(t.Context(), id)
 		require.NoError(t, err)
@@ -215,7 +215,7 @@ func TestResumeKeepsChildRegistryRowsPastTheDisplayCap(t *testing.T) {
 	seedTranscriptSource(t, svc, "old-root", workingDir, "session-a1", provider, false)
 	for seq := 1; seq <= bgtask.MaxTasks+1; seq++ {
 		childID := fmt.Sprintf("old-child-%03d", seq)
-		seedArchivedChildForResume(t, svc, "old-root", "old-root", childID, fmt.Sprintf("row-%03d", seq), int64(seq), bgtask.StatusCompleted)
+		seedArchivedChildForResume(t, svc, "old-root", "old-root", childID, fmt.Sprintf("row-%03d", seq), int64(seq), bgtask.StatusSucceeded)
 		_, err := svc.Queries.CloseAgent(t.Context(), childID)
 		require.NoError(t, err)
 	}

@@ -141,7 +141,7 @@ func TestQwenBackgroundNoticeOfARowIsConsumed(t *testing.T) {
 	for _, rowKey := range []string{"call_1", "shell:bg_1a2b"} {
 		row, ok := sink.BackgroundTask(rowKey)
 		require.True(t, ok)
-		assert.Equal(t, bgtask.StatusCompleted, row.Status, rowKey)
+		assert.Equal(t, bgtask.StatusSucceeded, row.Status, rowKey)
 	}
 }
 

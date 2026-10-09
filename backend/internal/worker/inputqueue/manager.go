@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
 type coordinator struct {
@@ -32,6 +34,125 @@ type coordinator struct {
 	// durable pause_owner column now carries what the mutex protected, so no
 	// lock spans a process stop.
 	plannedRestarts int
+	// publications retain committed data until unlocked observer delivery.
+	publications []queuePublication
+	publishing   bool
+}
+
+type queuePublication struct {
+	snapshot    Snapshot
+	accepted    *AcceptedTranscript
+	afterAccept func()
+	failure     *queuePublicationFailure
+}
+
+type queuePublicationFailure struct {
+	message    string
+	attributes []any
+}
+
+func cloneQueueSnapshot(snapshot Snapshot) Snapshot {
+	snapshot.Items = slices.Clone(snapshot.Items)
+	for index := range snapshot.Items {
+		snapshot.Items[index].Metadata = slices.Clone(snapshot.Items[index].Metadata)
+	}
+	return snapshot
+}
+
+// enqueueSnapshotLocked records the commit order. The caller holds c.mu.
+func (m *Manager) enqueueSnapshotLocked(c *coordinator, snapshot Snapshot) {
+	c.publications = append(c.publications, queuePublication{snapshot: cloneQueueSnapshot(snapshot)})
+}
+
+// enqueueFailureLocked retains the failure in drain order. The caller holds c.mu.
+func (m *Manager) enqueueFailureLocked(c *coordinator, message string, attributes ...any) {
+	c.publications = append(c.publications, queuePublication{failure: &queuePublicationFailure{
+		message: message, attributes: slices.Clone(attributes),
+	}})
+}
+
+func (m *Manager) unlockAndPublish(c *coordinator) {
+	c.mu.Unlock()
+	m.drainPublications(c)
+}
+
+// drainPublications calls observers outside the coordinator and admission leases.
+// Reentry leaves delivery to the current drainer.
+func (m *Manager) drainPublications(c *coordinator) {
+	c.mu.Lock()
+	if c.publishing || len(c.publications) == 0 {
+		c.mu.Unlock()
+		return
+	}
+	c.publishing = true
+	c.mu.Unlock()
+	claimed := true
+	defer func() {
+		if !claimed {
+			return
+		}
+		c.mu.Lock()
+		c.publishing = false
+		c.mu.Unlock()
+	}()
+	for {
+		c.mu.Lock()
+		if len(c.publications) == 0 {
+			c.publishing = false
+			claimed = false
+			c.mu.Unlock()
+			return
+		}
+		publication := c.publications[0]
+		c.publications[0] = queuePublication{}
+		c.publications = c.publications[1:]
+		c.mu.Unlock()
+		if publication.failure != nil {
+			slog.Error(publication.failure.message, publication.failure.attributes...)
+			continue
+		}
+		if publication.accepted != nil {
+			m.observer.InputAccepted(*publication.accepted)
+		}
+		m.observer.QueueChanged(publication.snapshot)
+		if publication.afterAccept != nil {
+			publication.afterAccept()
+		}
+	}
+}
+
+// ReconcileProviderTurn writes only while the original provider admission remains exact.
+func (m *Manager) ReconcileProviderTurn(ctx context.Context, agentID string, admission agent.TurnStateAdmission) (Snapshot, error) {
+	if !m.beginActivity() {
+		return Snapshot{}, ErrManagerStopped
+	}
+	defer m.endActivity()
+	if admission == nil {
+		return Snapshot{}, nil
+	}
+	state, lease := admission.Acquire()
+	if lease == nil {
+		return Snapshot{}, nil
+	}
+	defer lease.Release()
+	c := m.coordinator(agentID)
+	c.mu.Lock()
+	snapshot, changed, err := m.store.setTurnState(ctx, agentID, state.Active, state.Steerable)
+	if err == nil && changed {
+		m.enqueueSnapshotLocked(c, snapshot)
+	}
+	c.mu.Unlock()
+	lease.Release()
+	m.drainPublications(c)
+	if err != nil || state.Active {
+		return snapshot, err
+	}
+	if changed {
+		m.scheduleDrain(agentID)
+	} else {
+		m.drainIfReleased(agentID, snapshot)
+	}
+	return snapshot, nil
 }
 
 // PlannedRestart keeps explicit dispatch operations behind one agent restart.
@@ -88,9 +209,9 @@ func (m *Manager) mutateAndDrain(agentID string, mutate func() (Snapshot, bool, 
 	c.mu.Lock()
 	snapshot, changed, err := mutate()
 	if err == nil && changed {
-		m.observer.QueueChanged(snapshot)
+		m.enqueueSnapshotLocked(c, snapshot)
 	}
-	c.mu.Unlock()
+	m.unlockAndPublish(c)
 	if err != nil {
 		return snapshot, err
 	}
@@ -187,6 +308,12 @@ func (c *coordinator) stopRoundAndUnlock() bool {
 	return true
 }
 
+func (m *Manager) stopRoundAndPublish(c *coordinator) bool {
+	stopped := c.stopRoundAndUnlock()
+	m.drainPublications(c)
+	return stopped
+}
+
 func (m *Manager) coordinator(agentID string) *coordinator {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -226,10 +353,10 @@ func (m *Manager) mutateLocked(agentID string, mutate func() (Snapshot, bool, er
 	defer m.endActivity()
 	c := m.coordinator(agentID)
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	defer m.unlockAndPublish(c)
 	snapshot, changed, err := mutate()
 	if err == nil && changed {
-		m.observer.QueueChanged(snapshot)
+		m.enqueueSnapshotLocked(c, snapshot)
 	}
 	return snapshot, err
 }
@@ -344,9 +471,9 @@ func (m *Manager) SetPaused(ctx context.Context, agentID string, paused bool) (S
 	c.mu.Lock()
 	snapshot, err := m.store.SetPaused(ctx, agentID, paused, reason)
 	if err == nil {
-		m.observer.QueueChanged(snapshot)
+		m.enqueueSnapshotLocked(c, snapshot)
 	}
-	c.mu.Unlock()
+	m.unlockAndPublish(c)
 	if err == nil && !paused {
 		m.scheduleDrain(agentID)
 	}
@@ -425,26 +552,26 @@ func (m *Manager) Retry(ctx context.Context, agentID, inputID string, confirmUnc
 	c.mu.Lock()
 	snapshot, err := m.store.Retry(ctx, agentID, inputID, confirmUncertain)
 	if err != nil {
-		c.mu.Unlock()
+		m.unlockAndPublish(c)
 		return Snapshot{}, err
 	}
-	m.observer.QueueChanged(snapshot)
+	m.enqueueSnapshotLocked(c, snapshot)
 	prepared, snapshot, err := m.store.PrepareRetry(ctx, agentID)
 	if err != nil || prepared == nil {
-		c.mu.Unlock()
+		m.unlockAndPublish(c)
 		return snapshot, err
 	}
-	m.observer.QueueChanged(snapshot)
+	m.enqueueSnapshotLocked(c, snapshot)
 	// The store reserved the item as DISPATCHING, so no other caller can take
 	// it. Release the lock for the provider call: it can stop and relaunch the
 	// agent process, and the exit goroutine that a stop wakes needs this same
 	// lock to pause the queue.
-	c.mu.Unlock()
+	m.unlockAndPublish(c)
 	result, dispatchErr := m.dispatcher.Dispatch(prepared.Item)
 	c.mu.Lock()
 	if dispatchErr != nil {
-		snapshot, storeErr := m.recordDispatchFailure(ctx, *prepared, dispatchErr)
-		c.mu.Unlock()
+		snapshot, storeErr := m.recordDispatchFailure(c, ctx, *prepared, dispatchErr)
+		m.unlockAndPublish(c)
 		if storeErr != nil {
 			return snapshot, storeErr
 		}
@@ -454,12 +581,12 @@ func (m *Manager) Retry(ctx context.Context, agentID, inputID string, confirmUnc
 		m.drainIfReleased(agentID, snapshot)
 		return snapshot, nil
 	}
-	snapshot, _, err = m.acceptDispatch(ctx, *prepared, result)
+	snapshot, _, err = m.acceptDispatch(c, ctx, *prepared, result)
 	if err != nil {
-		c.mu.Unlock()
+		m.unlockAndPublish(c)
 		return Snapshot{}, err
 	}
-	c.mu.Unlock()
+	m.unlockAndPublish(c)
 	// Retry lifted the delivery pause, so the items behind the retried head
 	// must dispatch too. Without this the queue stalls with no visible reason.
 	m.scheduleDrain(agentID)
@@ -478,33 +605,33 @@ func (m *Manager) Steer(ctx context.Context, agentID, inputID string) (Snapshot,
 	c.mu.Lock()
 	prepared, snapshot, err := m.store.PrepareSteer(ctx, agentID, inputID)
 	if err != nil {
-		c.mu.Unlock()
+		m.unlockAndPublish(c)
 		return Snapshot{}, err
 	}
 	if prepared == nil {
-		c.mu.Unlock()
+		m.unlockAndPublish(c)
 		return snapshot, ErrTurnEnded
 	}
-	m.observer.QueueChanged(snapshot)
-	c.mu.Unlock()
+	m.enqueueSnapshotLocked(c, snapshot)
+	m.unlockAndPublish(c)
 
 	result, err := m.dispatcher.Steer(prepared.Item)
 	c.mu.Lock()
 	if errors.Is(err, ErrSteeringUnsupported) {
 		snapshot, storeErr := m.store.RequeuePrepared(ctx, agentID, inputID)
 		if storeErr != nil {
-			c.mu.Unlock()
+			m.unlockAndPublish(c)
 			return Snapshot{}, storeErr
 		}
-		m.observer.QueueChanged(snapshot)
-		c.mu.Unlock()
+		m.enqueueSnapshotLocked(c, snapshot)
+		m.unlockAndPublish(c)
 		m.drainIfReleased(agentID, snapshot)
 		return snapshot, ErrSteeringUnsupported
 	}
 	turnEnded := errors.Is(err, ErrTurnEnded)
 	if err != nil && !turnEnded {
-		snapshot, storeErr := m.recordDispatchFailure(ctx, *prepared, err)
-		c.mu.Unlock()
+		snapshot, storeErr := m.recordDispatchFailure(c, ctx, *prepared, err)
+		m.unlockAndPublish(c)
 		if storeErr != nil {
 			return snapshot, storeErr
 		}
@@ -514,7 +641,7 @@ func (m *Manager) Steer(ctx context.Context, agentID, inputID string) (Snapshot,
 	if !turnEnded {
 		current, storeErr := m.store.Snapshot(ctx, agentID)
 		if storeErr != nil {
-			c.mu.Unlock()
+			m.unlockAndPublish(c)
 			return Snapshot{}, storeErr
 		}
 		turnEnded = !current.ActiveTurn
@@ -522,22 +649,22 @@ func (m *Manager) Steer(ctx context.Context, agentID, inputID string) (Snapshot,
 	if turnEnded {
 		snapshot, storeErr := m.store.RequeuePrepared(ctx, agentID, inputID)
 		if storeErr != nil {
-			c.mu.Unlock()
+			m.unlockAndPublish(c)
 			return Snapshot{}, storeErr
 		}
-		m.observer.QueueChanged(snapshot)
-		c.mu.Unlock()
+		m.enqueueSnapshotLocked(c, snapshot)
+		m.unlockAndPublish(c)
 		m.drainIfReleased(agentID, snapshot)
 		return snapshot, nil
 	}
 	result.StartsTurn = true
 	result.Steering = true
-	snapshot, _, err = m.acceptDispatch(ctx, *prepared, result)
+	snapshot, _, err = m.acceptDispatch(c, ctx, *prepared, result)
 	if err != nil {
-		c.mu.Unlock()
+		m.unlockAndPublish(c)
 		return Snapshot{}, err
 	}
-	c.mu.Unlock()
+	m.unlockAndPublish(c)
 	m.drainIfReleased(agentID, snapshot)
 	return snapshot, nil
 }
@@ -620,10 +747,10 @@ func (m *Manager) BeginPlannedRestart(ctx context.Context, agentID string) (*Pla
 	if err == nil {
 		c.plannedRestarts++
 		if resumeQueue {
-			m.observer.QueueChanged(snapshot)
+			m.enqueueSnapshotLocked(c, snapshot)
 		}
 	}
-	c.mu.Unlock()
+	m.unlockAndPublish(c)
 	if err != nil {
 		m.endActivity()
 		return nil, err
@@ -640,6 +767,8 @@ func (r *PlannedRestart) Finish(ctx context.Context, oldTurnEnded, restartSuccee
 	if r == nil {
 		return nil
 	}
+	var snapshot Snapshot
+	var shouldDrain, finished bool
 	r.once.Do(func() {
 		r.coordinator.mu.Lock()
 		r.coordinator.plannedRestarts--
@@ -647,18 +776,24 @@ func (r *PlannedRestart) Finish(ctx context.Context, oldTurnEnded, restartSuccee
 		// its own process stop ahead of the queue.
 		last := r.coordinator.plannedRestarts == 0
 		resumeQueue := last && r.resumeQueue && (!oldTurnEnded || restartSucceeded)
-		snapshot, changed, err := r.manager.store.finishPlannedRestart(ctx, r.agentID, oldTurnEnded, resumeQueue)
+		var changed bool
+		var err error
+		snapshot, changed, err = r.manager.store.finishPlannedRestart(ctx, r.agentID, oldTurnEnded, resumeQueue)
 		if err == nil && changed {
-			r.manager.observer.QueueChanged(snapshot)
+			r.manager.enqueueSnapshotLocked(r.coordinator, snapshot)
 		}
-		shouldDrain := err == nil && changed
+		shouldDrain = err == nil && changed
 		r.coordinator.mu.Unlock()
-		r.manager.endActivity()
-		if shouldDrain {
-			r.manager.drainIfReleased(r.agentID, snapshot)
-		}
 		r.err = err
+		finished = true
 	})
+	if finished {
+		defer r.manager.endActivity()
+	}
+	r.manager.drainPublications(r.coordinator)
+	if shouldDrain {
+		r.manager.drainIfReleased(r.agentID, snapshot)
+	}
 	return r.err
 }
 
@@ -681,7 +816,10 @@ func (m *Manager) RecoverState(ctx context.Context) error {
 		return err
 	}
 	for i := range snapshots {
-		m.observer.QueueChanged(snapshots[i])
+		c := m.coordinator(snapshots[i].AgentID)
+		c.mu.Lock()
+		m.enqueueSnapshotLocked(c, snapshots[i])
+		m.unlockAndPublish(c)
 		if snapshots[i].Paused {
 			continue
 		}
@@ -774,7 +912,7 @@ func (m *Manager) drain(agentID string, c *coordinator) {
 		if m.isStopped() {
 			c.draining = false
 			c.drainAgain = false
-			c.mu.Unlock()
+			m.unlockAndPublish(c)
 			return
 		}
 		// The read below answers every drain request made so far, so a request
@@ -783,35 +921,35 @@ func (m *Manager) drain(agentID string, c *coordinator) {
 		c.drainAgain = false
 		prepared, snapshot, err := m.store.PrepareDispatch(context.Background(), agentID)
 		if err != nil {
-			slog.Error("agent input queue prepare failed", "agent_id", agentID, "error", err)
+			m.enqueueFailureLocked(c, "agent input queue prepare failed", "agent_id", agentID, "error", err)
 			c.draining = false
-			c.mu.Unlock()
+			m.unlockAndPublish(c)
 			return
 		}
 		if prepared == nil {
 			c.draining = false
-			c.mu.Unlock()
+			m.unlockAndPublish(c)
 			return
 		}
-		m.observer.QueueChanged(snapshot)
-		c.mu.Unlock()
+		m.enqueueSnapshotLocked(c, snapshot)
+		m.unlockAndPublish(c)
 
 		result, dispatchErr := m.dispatcher.Dispatch(prepared.Item)
 
 		c.mu.Lock()
 		if dispatchErr != nil {
-			if _, storeErr := m.recordDispatchFailure(context.Background(), *prepared, dispatchErr); storeErr != nil {
-				slog.Error("agent input queue failure persistence failed", "agent_id", agentID, "input_id", prepared.Item.ID, "error", storeErr)
+			if _, storeErr := m.recordDispatchFailure(c, context.Background(), *prepared, dispatchErr); storeErr != nil {
+				m.enqueueFailureLocked(c, "agent input queue failure persistence failed", "agent_id", agentID, "input_id", prepared.Item.ID, "error", storeErr)
 			}
-			if c.stopRoundAndUnlock() {
+			if m.stopRoundAndPublish(c) {
 				return
 			}
 			continue
 		}
-		snapshot, persisted, err := m.acceptDispatch(context.Background(), *prepared, result)
+		snapshot, persisted, err := m.acceptDispatch(c, context.Background(), *prepared, result)
 		if err != nil {
-			slog.Error("agent input queue acceptance persistence failed", "agent_id", agentID, "input_id", prepared.Item.ID, "error", err)
-			if c.stopRoundAndUnlock() {
+			m.enqueueFailureLocked(c, "agent input queue acceptance persistence failed", "agent_id", agentID, "input_id", prepared.Item.ID, "error", err)
+			if m.stopRoundAndPublish(c) {
 				return
 			}
 			continue
@@ -822,23 +960,21 @@ func (m *Manager) drain(agentID string, c *coordinator) {
 		// nothing -- so reading result.StartsTurn here left the queue holding
 		// the rest of its items with no turn to wait for.
 		if !persisted || snapshot.ActiveTurn {
-			if c.stopRoundAndUnlock() {
+			if m.stopRoundAndPublish(c) {
 				return
 			}
 			continue
 		}
-		c.mu.Unlock()
+		m.unlockAndPublish(c)
 	}
 }
 
-func (m *Manager) acceptDispatch(ctx context.Context, prepared PreparedDispatch, result DispatchResult) (Snapshot, bool, error) {
+func (m *Manager) acceptDispatch(c *coordinator, ctx context.Context, prepared PreparedDispatch, result DispatchResult) (Snapshot, bool, error) {
 	transcript, snapshot, err := m.store.Accept(ctx, prepared, result)
 	if err == nil {
-		m.observer.InputAccepted(transcript)
-		m.observer.QueueChanged(snapshot)
-		if result.AfterAccept != nil {
-			result.AfterAccept()
-		}
+		transcript.Content = slices.Clone(transcript.Content)
+		c.publications = append(c.publications, queuePublication{snapshot: cloneQueueSnapshot(snapshot),
+			accepted: &transcript, afterAccept: result.AfterAccept})
 		return snapshot, true, nil
 	}
 	uncertainErr := fmt.Errorf("provider accepted input but transcript persistence failed: %w", err)
@@ -846,14 +982,14 @@ func (m *Manager) acceptDispatch(ctx context.Context, prepared PreparedDispatch,
 	if failErr != nil {
 		return Snapshot{}, false, errors.Join(err, failErr)
 	}
-	m.observer.QueueChanged(snapshot)
+	m.enqueueSnapshotLocked(c, snapshot)
 	return snapshot, false, nil
 }
 
 // recordDispatchFailure stores the outcome of a dispatch that the provider
 // refused. DispatchOutcome states which of the four it was, and the switch is
 // exhaustive so a fifth cannot be added without answering for it here.
-func (m *Manager) recordDispatchFailure(ctx context.Context, prepared PreparedDispatch, dispatchErr error) (Snapshot, error) {
+func (m *Manager) recordDispatchFailure(c *coordinator, ctx context.Context, prepared PreparedDispatch, dispatchErr error) (Snapshot, error) {
 	item := prepared.Item
 	var record func() (Snapshot, error)
 	switch dispatchOutcome(dispatchErr) {
@@ -891,6 +1027,6 @@ func (m *Manager) recordDispatchFailure(ctx context.Context, prepared PreparedDi
 	if err != nil {
 		return Snapshot{}, err
 	}
-	m.observer.QueueChanged(snapshot)
+	m.enqueueSnapshotLocked(c, snapshot)
 	return snapshot, nil
 }

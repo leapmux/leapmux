@@ -164,7 +164,7 @@ func newTestWriter() *testResponseWriter {
 
 // registerAgentWatch installs sender as a watcher for agentID on channelID in
 // mode, bypassing session ownership. Handler tests use it so broadcasts reach a
-// capture writer; production always registers through SetAgentWatchesForSession.
+// capture writer. Production uses the atomic ApplyAgentWatchesForSession operation.
 func registerAgentWatch(svc *Service, channelID, agentID string, mode leapmuxv1.WatchMode, sender channel.ResponseWriter) {
 	svc.Watchers.agents.setWatches(channelID, []watchEntry{{id: agentID, mode: mode}}, sender)
 }

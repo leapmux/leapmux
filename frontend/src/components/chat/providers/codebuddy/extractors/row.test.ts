@@ -22,6 +22,20 @@ function nativeReplRows(stored: boolean, text: string, completion?: MessageCompl
 }
 
 describe('codebuddyExtractRow', () => {
+  it.each([false, true])('keeps an unknown final request without a result: stored=%s', (stored) => {
+    const frame = stored
+      ? { type: 'function_call', callId: 'retained-call', name: 'Read', arguments: '{"file_path":"/work/native.txt"}' }
+      : { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'retained-call', name: 'Read', input: { file_path: '/work/native.txt' } }] } }
+    const resolved = resolveMessageForRendering({ rawText: JSON.stringify(frame), topLevel: frame, parentObject: frame, wrapper: null }, AgentProvider.CODEBUDDY)
+    const category = classifyCodebuddyMessage({ ...resolved, agentProvider: AgentProvider.CODEBUDDY })
+    const row = codebuddyExtractRow({ resolved, category, completion: MessageCompletion.FINISHED, span: { ...NO_SIDES, role: 'result', visibleRows: { request: false, result: true } } })
+    expect(row?.kind).toBe('tool')
+    if (row?.kind !== 'tool')
+      throw new Error('The retained CodeBuddy request requires a tool row.')
+    expect(row.call.status).toBe('incomplete')
+    expect(row.call.result).toBeUndefined()
+  })
+
   it.each([
     { stored: false, side: 'request' },
     { stored: false, side: 'result' },

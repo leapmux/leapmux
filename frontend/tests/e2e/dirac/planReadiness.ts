@@ -3,7 +3,7 @@ import { isAbsolute, join } from 'node:path'
 import process from 'node:process'
 import { isObject } from '../../../src/lib/jsonPick'
 import { finishCleanup, withCleanup } from '../helpers/cleanup'
-import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
+import { assertPrivateNativePath } from '../helpers/nativePrivatePath'
 import { quotePosixShellArgument } from '../helpers/shellArguments'
 import { waitForFileSignal } from '../helpers/toolOutputControl'
 

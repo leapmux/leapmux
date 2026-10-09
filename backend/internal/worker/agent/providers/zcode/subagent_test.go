@@ -111,7 +111,7 @@ func TestZCodeSubagent_SpawnResultClosesTheRegistryRowAndTheChild(t *testing.T) 
 
 	rows := sink.BackgroundTasks()
 	require.Len(t, rows, 1)
-	assert.Equal(t, bgtask.StatusCompleted, rows[0].Status)
+	assert.Equal(t, bgtask.StatusSucceeded, rows[0].Status)
 	child := sink.Child(rows[0].ChildAgentID)
 	reports := child.LeapMuxNotifications()
 	require.Len(t, reports, 1)
@@ -220,7 +220,7 @@ func TestDecodeZCodeSubagentLifecycleTransition(t *testing.T) {
 	assert.Equal(t, "spawn-1", transition.rowKey)
 	assert.Equal(t, "Inspect the parser", transition.title)
 	assert.Equal(t, "Inspect.", transition.prompt)
-	assert.Equal(t, bgtask.StatusCompleted, transition.status)
+	assert.Equal(t, bgtask.StatusSucceeded, transition.status)
 	assert.True(t, transition.final)
 	assert.Equal(t, "Final report", transition.report.Text)
 	assert.Equal(t, zcodeFinalReportID("spawn-1"), transition.reportID)
@@ -259,7 +259,7 @@ func TestZCodeSubagent_FinalLifecycleClosesWithoutAnAgentResult(t *testing.T) {
 
 	rows := sink.BackgroundTasks()
 	require.Len(t, rows, 1)
-	assert.Equal(t, bgtask.StatusCompleted, rows[0].Status)
+	assert.Equal(t, bgtask.StatusSucceeded, rows[0].Status)
 	require.Len(t, sink.LeapMuxNotifications(), 1, "a background run has no later Agent result for the parent")
 }
 
@@ -460,7 +460,7 @@ func TestZCodeSubagent_AResumedSpawnResultStillClosesTheRow(t *testing.T) {
 
 	rows := sink.BackgroundTasks()
 	require.Len(t, rows, 1)
-	assert.Equal(t, bgtask.StatusCompleted, rows[0].Status,
+	assert.Equal(t, bgtask.StatusSucceeded, rows[0].Status,
 		"a row left Running pins the thinking indicator for the rest of the session")
 }
 

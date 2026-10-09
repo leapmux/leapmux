@@ -789,7 +789,7 @@ func TestHandleZCodeOutput_SubagentEndClosesTheRowTheBackgroundPathCreated(t *te
 	require.Len(t, tasks, 1, "one subagent must produce exactly one registry row")
 	assert.Equal(t, "spawn-1", tasks[0].RowKey)
 	assert.Equal(t, bgtask.KindSubagent, tasks[0].Kind)
-	assert.Equal(t, bgtask.StatusCompleted, tasks[0].Status)
+	assert.Equal(t, bgtask.StatusSucceeded, tasks[0].Status)
 	assert.NotEmpty(t, tasks[0].ChildAgentID, "the row the lifecycle closed is the one that carries the child linkage")
 }
 
@@ -970,7 +970,7 @@ func TestHandleZCodeOutput_DynamicWorkflowUsesAWorkflowRow(t *testing.T) {
 	tasks = sink.BackgroundTasks()
 	require.Len(t, tasks, 1)
 	assert.Equal(t, bgtask.KindWorkflow, tasks[0].Kind)
-	assert.Equal(t, bgtask.StatusCompleted, tasks[0].Status)
+	assert.Equal(t, bgtask.StatusSucceeded, tasks[0].Status)
 	assert.Equal(t, "Review pipeline", tasks[0].Title)
 	assert.Equal(t, "Review pipeline", tasks[0].Description)
 }
@@ -982,7 +982,7 @@ func TestZCodeBackgroundStatus(t *testing.T) {
 		want  bgtask.Status
 		final bool
 	}{
-		"completed":   {bgtask.StatusCompleted, true},
+		"completed":   {bgtask.StatusSucceeded, true},
 		"failed":      {bgtask.StatusFailed, true},
 		"spawn_error": {bgtask.StatusFailed, true},
 		"timed_out":   {bgtask.StatusFailed, true},

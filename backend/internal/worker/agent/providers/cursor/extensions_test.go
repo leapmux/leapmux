@@ -446,3 +446,72 @@ func cursorStoredTodoContent(t *testing.T, params string) []byte {
 		Supplemental: supplement,
 	})
 }
+
+type cursorObservationWriter struct {
+	agent.ProviderServices
+	before func(agent.MessageEnrichment)
+	fired  atomic.Bool
+}
+
+func (writer *cursorObservationWriter) EnrichMessage(change agent.MessageEnrichment) (bool, error) {
+	if writer.before != nil && writer.fired.CompareAndSwap(false, true) {
+		writer.before(change)
+	}
+	return writer.ProviderServices.EnrichMessage(change)
+}
+
+func TestCursorOnceAcknowledgedExtensionSurvivesAnInFlightStoreWrite(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	sink.UpdateSessionID("native")
+	writer := &cursorObservationWriter{ProviderServices: agent.NewProviderServices(sink)}
+	a, transcript := newCursorTranscriptAgent(t, writer, func(pending map[string]agent.MessageContent, _ bool) map[string][]byte {
+		if len(pending) == 0 {
+			return nil
+		}
+		return map[string][]byte{cursorProbeToolCallID: []byte(`{"rawOutput":{"content":[]}}`)}
+	})
+	output := &agenttest.Stdin{}
+	a.SetStdinForTest(agenttest.NopStdin(output))
+	writer.before = func(agent.MessageEnrichment) {
+		a.HandleOutput([]byte(`{"jsonrpc":"2.0","id":17,"method":"` + contracts.CursorMethodUpdateTodos + `","params":` + cursorProbeTodosParams + `}`))
+	}
+	persistCursorToolRow(t, transcript, cursorProbeToolCallID)
+	transcript.UpdateSessionID("native")
+	transcript.WaitForSupplementsForTest()
+	require.NoError(t, transcript.PersistTurnEnd(agent.MessageContent{Original: []byte(`{"done":true}`)}, agent.SpanInfo{}))
+	require.Eventually(t, func() bool { return output.String() != "" }, 30*time.Second, time.Millisecond)
+	assert.JSONEq(t, `{"jsonrpc":"2.0","id":17,"result":{}}`, output.String())
+	var supplement map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(sink.Messages()[0].SupplementalContent, &supplement))
+	assert.Contains(t, supplement, contracts.CursorSupplementExtension)
+	assert.Contains(t, supplement, "rawOutput")
+	assert.Empty(t, transcript.PendingSpanIDsForTest())
+}
+
+func TestCursorOnceAcknowledgedExtensionSurvivesCASLoss(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	sink.UpdateSessionID("native")
+	writer := &cursorObservationWriter{ProviderServices: agent.NewProviderServices(sink)}
+	a, transcript := newCursorTranscriptAgent(t, writer, nil)
+	output := &agenttest.Stdin{}
+	a.SetStdinForTest(agenttest.NopStdin(output))
+	writer.before = func(change agent.MessageEnrichment) {
+		change.WriteReceipt = nil
+		change.SupplementalContent = []byte(`{"rawOutput":{"content":[]}}`)
+		written, err := sink.EnrichMessage(change)
+		assert.NoError(t, err)
+		assert.True(t, written)
+	}
+	persistCursorToolRow(t, transcript, cursorProbeToolCallID)
+	a.HandleOutput([]byte(`{"jsonrpc":"2.0","id":17,"method":"` + contracts.CursorMethodUpdateTodos + `","params":` + cursorProbeTodosParams + `}`))
+	require.NoError(t, transcript.PersistTurnEnd(agent.MessageContent{Original: []byte(`{"done":true}`)}, agent.SpanInfo{}))
+	require.Eventually(t, func() bool { return output.String() != "" }, 30*time.Second, time.Millisecond)
+	assert.JSONEq(t, `{"jsonrpc":"2.0","id":17,"result":{}}`, output.String())
+	var supplement map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(sink.Messages()[0].SupplementalContent, &supplement))
+	assert.Contains(t, supplement, contracts.CursorSupplementExtension)
+	assert.Contains(t, supplement, "rawOutput")
+	assert.Empty(t, transcript.PendingSpanIDsForTest())
+}

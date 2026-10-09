@@ -1,7 +1,7 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute } from 'node:path'
 import { withCleanup } from './cleanup'
-import { assertPrivateNativePath } from './nativeCredentialIsolation'
+import { assertPrivateNativePath } from './nativePrivatePath'
 
 /**
  * Require the nearest existing entry at or above `path` to resolve inside the private run. Return that entry.

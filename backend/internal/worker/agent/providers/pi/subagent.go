@@ -121,13 +121,13 @@ func piSubagentFromDetails(details json.RawMessage, toolCallID, title string) *b
 func piFinalStatus(s string) (bgtask.Status, bool) {
 	switch s {
 	case "completed", "steered":
-		return bgtask.StatusCompleted, true
+		return bgtask.StatusSucceeded, true
 	case "error":
 		return bgtask.StatusFailed, true
 	case "stopped", "aborted":
 		return bgtask.StatusStopped, true
 	default:
-		return bgtask.StatusCompleted, false
+		return bgtask.StatusSucceeded, false
 	}
 }
 

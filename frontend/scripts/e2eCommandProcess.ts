@@ -16,8 +16,8 @@ export interface CommandProcessOwnership {
 
 const PROCESS_CHECK_INTERVAL_MS = 25
 
-function isMissingProcess(error: unknown): boolean {
-  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ESRCH'
+function isProcessError(error: unknown, code: string): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === code
 }
 
 function signalOwnedProcess(pid: number, signal: NodeJS.Signals | 0): boolean {
@@ -26,7 +26,7 @@ function signalOwnedProcess(pid: number, signal: NodeJS.Signals | 0): boolean {
     return true
   }
   catch (error) {
-    if (isMissingProcess(error))
+    if (isProcessError(error, 'ESRCH'))
       return false
     throw error
   }
@@ -54,6 +54,7 @@ function stopOwnedProcessGroup(child: ChildProcess, delay: number): Promise<void
     let finished = false
     let force = false
     let signaling = false
+    let pendingExitError: unknown
     let deadline = performance.now() + delay
     let timer: ReturnType<typeof setTimeout> | undefined
     const finish = (error?: unknown) => {
@@ -71,15 +72,29 @@ function stopOwnedProcessGroup(child: ChildProcess, delay: number): Promise<void
     }
     const terminate = (forced: boolean) => {
       signaling = true
-      void Promise.resolve().then(() => signalOwnedProcess(-groupId, forced ? 'SIGKILL' : 'SIGTERM')).then(() => {
+      void Promise.resolve().then(() => signalOwnedProcess(-groupId, forced ? 'SIGKILL' : 'SIGTERM')).then((sent) => {
         signaling = false
-        check()
+        check(sent)
       }, (error) => {
         signaling = false
-        finish(error)
+        handleSignalError(error)
       })
     }
-    function check() {
+    function handleSignalError(error: unknown, afterSuccessfulTermination = false) {
+      if (finished)
+        return
+      if (!ended && isProcessError(error, 'EPERM') && (afterSuccessfulTermination || child.stdout?.readableEnded)) {
+        // The group probe can return EPERM after termination before native exit.
+        // Wait for that exact event before signaling surviving descendants again.
+        pendingExitError ??= error
+        if (timer !== undefined)
+          clearTimeout(timer)
+        timer = setTimeout(finish, Math.max(0, deadline - performance.now()), pendingExitError)
+        return
+      }
+      finish(error)
+    }
+    function check(afterSuccessfulTermination = false) {
       if (finished || signaling)
         return
       if (timer !== undefined) {
@@ -101,14 +116,23 @@ function stopOwnedProcessGroup(child: ChildProcess, delay: number): Promise<void
           terminate(true)
           return
         }
-        timer = setTimeout(check, Math.min(PROCESS_CHECK_INTERVAL_MS, Math.max(1, deadline - performance.now())))
+        timer = setTimeout(check, Math.min(PROCESS_CHECK_INTERVAL_MS, Math.max(1, deadline - performance.now())), afterSuccessfulTermination)
       }
       catch (error) {
-        finish(error)
+        handleSignalError(error, afterSuccessfulTermination)
       }
     }
     function onExit() {
       ended = true
+      if (pendingExitError !== undefined) {
+        pendingExitError = undefined
+        if (timer !== undefined) {
+          clearTimeout(timer)
+          timer = undefined
+        }
+        terminate(force)
+        return
+      }
       check()
     }
     function onError(error: Error) {

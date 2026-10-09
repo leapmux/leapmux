@@ -72,7 +72,7 @@ func (a *Agent) handleSessionMetadata(updateType string, metadata map[string]jso
 func junieSubagentFinalStatus(state string) (bgtask.Status, bool) {
 	switch state {
 	case "completed":
-		return bgtask.StatusCompleted, true
+		return bgtask.StatusSucceeded, true
 	case "failed", "disconnected":
 		return bgtask.StatusFailed, true
 	case "cancelled":

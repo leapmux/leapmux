@@ -11,6 +11,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -83,7 +84,7 @@ func TestCreateMessageRow_RejectsUnknownMarkType(t *testing.T) {
 		Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
 		Content:       []byte(`{"type":"result"}`),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		MarkType:      leapmuxv1.MarkType(999),
+		MarkType:      workerdb.OptionalStorageEnum(leapmuxv1.MarkType(999)),
 		CreatedAt:     sqltime.NewSQLiteTime(time.Now()),
 	})
 	require.Error(t, err)
@@ -128,4 +129,40 @@ func TestCreateAgentRecord_RejectsUnspecifiedProvider(t *testing.T) {
 	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-ok")
 	require.NoError(t, err)
 	assert.Equal(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, dbAgent.AgentProvider)
+}
+
+func TestCreateMessageRowRetainsFinishedCompletionWithoutAnOutcome(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	svc, _, _ := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "agent-finished", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		Options:       marshalOptions(map[string]string{agent.OptionIDModel: "opus"}),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	raw := []byte(`{"method":"turn/completed","params":{"terminal":"futureFinal"}}`)
+	_, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{
+		ID: "message-finished", AgentID: "agent-finished", AgentSessionID: "native-session", Content: raw,
+		Source:             leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		AgentProvider:      leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
+		Completion:         int64(leapmuxv1.MessageCompletion_MESSAGE_COMPLETION_FINISHED), CreatedAt: sqltime.NewSQLiteTime(time.Now()),
+	})
+	require.NoError(t, err)
+	rows, err := svc.Queries.ListAllMessagesByAgentID(ctx, db.ListAllMessagesByAgentIDParams{AgentID: "agent-finished"})
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, int64(leapmuxv1.MessageCompletion_MESSAGE_COMPLETION_FINISHED), rows[0].Completion)
+	assert.Equal(t, raw, rows[0].Content)
+	assert.Equal(t, "native-session", rows[0].AgentSessionID)
+	for _, completion := range []int64{-1, 5, 9223372036854775807} {
+		_, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{
+			ID: "message-invalid", AgentID: "agent-finished", Content: raw,
+			Source:             leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+			AgentProvider:      leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+			ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
+			Completion:         completion, CreatedAt: sqltime.NewSQLiteTime(time.Now()),
+		})
+		require.ErrorContains(t, err, "unknown completion")
+	}
 }

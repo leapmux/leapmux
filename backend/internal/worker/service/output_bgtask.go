@@ -859,6 +859,9 @@ func (s *agentOutputSink) ensureRegistryRowLocked(cache *bgTaskCache, rowKey, ch
 //     tool-call spans run on the ROOT sink.
 //   - Pi: no child sink; child linkage is registry-only.
 func (s *agentOutputSink) ChildSink(childAgentID string) agent.ProviderServices {
+	mutation := s.h.transcriptMutationMutex(s.rootAgentID)
+	mutation.Lock()
+	defer mutation.Unlock()
 	s.childMu.Lock()
 	defer s.childMu.Unlock()
 	if s.childSinks != nil {
@@ -866,21 +869,30 @@ func (s *agentOutputSink) ChildSink(childAgentID string) agent.ProviderServices 
 			return agent.NewProviderServices(c)
 		}
 	}
-	child := &agentOutputSink{
-		h:             s.h,
-		root:          s.turnPublisherSink(),
-		agentID:       childAgentID,
-		rootAgentID:   s.rootAgentID,
-		agentProvider: s.agentProvider,
-		plugin:        s.plugin,
-		tracker:       s.h.childTracker(childAgentID),
+	current := s.registeredCurrent() && !s.progressClosed
+	tracker := &SpanTracker{}
+	if current {
+		tracker = s.h.childTracker(childAgentID)
 	}
-	child.restoreMessageSession()
+	child := &agentOutputSink{
+		h:              s.h,
+		root:           s.turnPublisherSink(),
+		agentID:        childAgentID,
+		rootAgentID:    s.rootAgentID,
+		agentProvider:  s.agentProvider,
+		plugin:         s.plugin,
+		tracker:        tracker,
+		messageSession: &nativeSessionFact{},
+	}
+	if current {
+		child.restoreMessageSession()
+	}
 	child.progress = newGenerationProgressPublisher(func(info map[string]interface{}) {
 		s.h.broadcastAgentSessionInfo(childAgentID, info)
 	}, child.currentMessageSessionID)
-	if s.progressClosed {
+	if !current {
 		child.progress.close()
+		child.progressClosed = true
 		return agent.NewProviderServices(child)
 	}
 	if s.childSinks == nil {
@@ -980,15 +992,94 @@ func (s *agentOutputSink) PersistChildUserMessage(childAgentID, text string) err
 //
 // Idempotent; a no-op when the child was never cached.
 func (s *agentOutputSink) CleanupChildAgent(childAgentID string) {
-	s.h.cleanupChildMaps(childAgentID)
-	if child := s.detachChildSink(childAgentID); child != nil {
-		agentIDs := child.closeProgressTree()
-		for _, id := range agentIDs {
-			s.h.sinksByAgent.Delete(id)
+	mutation := s.h.transcriptMutationMutex(s.rootAgentID)
+	mutation.RLock()
+	s.childMu.Lock()
+	child := s.childSinks[childAgentID]
+	s.childMu.Unlock()
+	current := child != nil && s.registeredCurrent() && child.registeredCurrent()
+	mutation.RUnlock()
+	if child == nil {
+		s.cleanupUncachedChild(childAgentID)
+		return
+	}
+	if !current {
+		return
+	}
+	for {
+		removal := s.h.prepareActivityRemoval(childAgentID)
+		mutation.Lock()
+		s.childMu.Lock()
+		current = s.childSinks[childAgentID] == child && s.registeredCurrent() && child.registeredCurrent()
+		s.childMu.Unlock()
+		if !current {
+			mutation.Unlock()
+			return
 		}
-		s.h.clearProgressFor(agentIDs)
-	} else {
-		s.h.sinksByAgent.Delete(childAgentID)
+		if !s.h.cleanupChildMapsLocked(childAgentID, removal) {
+			mutation.Unlock()
+			continue
+		}
+		s.detachChildSink(childAgentID)
+		agentIDs := child.retireRegisteredTree()
+		s.h.enqueueProgressClears(agentIDs)
+		mutation.Unlock()
+		s.h.watcher.DrainAgentEvents(childAgentID)
+		s.h.drainProgressClears(agentIDs)
+		return
+	}
+}
+
+// cleanupUncachedChild retires existing activity before a child receives a cached sink.
+func (s *agentOutputSink) cleanupUncachedChild(childAgentID string) {
+	if s.h.queries == nil {
+		return
+	}
+	row, err := s.h.queries.GetAgentByID(bgCtx(), childAgentID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return
+	}
+	if err != nil {
+		slog.Error("read the child before activity cleanup", "agent_id", childAgentID, "error", err)
+		return
+	}
+	if !row.ParentAgentID.Valid || row.ParentAgentID.String != s.agentID {
+		return
+	}
+	value, exists := s.h.activity.Load(childAgentID)
+	if !exists {
+		return
+	}
+	activity := value.(*agentActivity)
+	activity.mu.Lock()
+	scope := activity.scope
+	activity.mu.Unlock()
+	mutation := s.h.transcriptMutationMutex(s.rootAgentID)
+	for {
+		removal := s.h.prepareActivityRemoval(childAgentID)
+		if removal == nil || removal.activity != activity {
+			return
+		}
+		mutation.Lock()
+		s.childMu.Lock()
+		cached := s.childSinks[childAgentID] != nil
+		s.childMu.Unlock()
+		_, registered := s.h.sinksByAgent.Load(childAgentID)
+		activity.mu.Lock()
+		current, present := s.h.activity.Load(childAgentID)
+		sameActivity := present && current == activity && activity.scope == scope
+		activity.mu.Unlock()
+		if !s.registeredCurrent() || cached || registered || !sameActivity {
+			mutation.Unlock()
+			return
+		}
+		if !s.h.cleanupChildMapsLocked(childAgentID, removal) {
+			mutation.Unlock()
+			continue
+		}
+		mutation.Unlock()
+		s.h.watcher.DrainAgentEvents(childAgentID)
+		return
 	}
 }
 

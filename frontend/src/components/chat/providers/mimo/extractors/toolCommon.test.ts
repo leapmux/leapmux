@@ -12,7 +12,7 @@ function partFrame(part: unknown): Record<string, unknown> {
 
 /** One tool part, with the fields a test does not state left at their empty values. */
 function toolPart(fields: Partial<MiMoToolPart>): MiMoToolPart {
-  return { callId: 'call-1', tool: MIMO_TOOL.Bash, status: MIMO_TOOL_STATUS.Completed, input: {}, output: '', error: '', title: '', metadata: {}, attachments: [], ...fields }
+  return { partId: 'prt_call-1', messageId: 'msg_1', sessionId: 'ses_test', callId: 'call-1', tool: MIMO_TOOL.Bash, status: MIMO_TOOL_STATUS.Completed, input: {}, output: '', error: '', title: '', metadata: {}, attachments: [], ...fields }
 }
 
 describe('mimoEvent', () => {
@@ -59,6 +59,9 @@ describe('mimoToolPart', () => {
       attachments: [{ type: 'file', url: 'data:image/png;base64,AA==' }],
     })
     expect(mimoToolPart(frame)).toEqual({
+      partId: 'prt_call-1',
+      messageId: 'msg_1',
+      sessionId: 'ses_test',
       callId: 'call-1',
       tool: MIMO_TOOL.Bash,
       status: MIMO_TOOL_STATUS.Completed,
@@ -74,8 +77,8 @@ describe('mimoToolPart', () => {
   // A state that states only its status reads every other field as empty, so each
   // reader handles one shape rather than an absent field.
   it('reads each absent or malformed field as empty', () => {
-    const frame = partFrame({ type: MIMO_PART_TYPE.Tool, callID: 'call-9', state: { status: 'running', input: 'ls', metadata: [], attachments: 'none' } })
-    expect(mimoToolPart(frame)).toEqual({ callId: 'call-9', tool: '', status: 'running', input: {}, output: '', error: '', title: '', metadata: {}, attachments: [] })
+    const frame = partFrame({ id: 'prt_call-9', type: MIMO_PART_TYPE.Tool, callID: 'call-9', state: { status: 'running', input: 'ls', metadata: [], attachments: 'none' } })
+    expect(mimoToolPart(frame)).toEqual({ partId: 'prt_call-9', messageId: '', sessionId: '', callId: 'call-9', tool: '', status: 'running', input: {}, output: '', error: '', title: '', metadata: {}, attachments: [] })
   })
 
   it('keeps only the attachments that are objects', () => {
@@ -86,9 +89,12 @@ describe('mimoToolPart', () => {
   it.each([
     ['a compaction part', compactionFrame(true)],
     ['a text part', partFrame({ type: 'text', callID: 'call-1', state: {} })],
-    ['a tool part with no call id', partFrame({ type: MIMO_PART_TYPE.Tool, state: { status: 'completed' } })],
-    ['a tool part with an empty call id', partFrame({ type: MIMO_PART_TYPE.Tool, callID: '', state: { status: 'completed' } })],
-    ['a tool part with no state', partFrame({ type: MIMO_PART_TYPE.Tool, callID: 'call-1' })],
+    ['a tool part with no part id', partFrame({ type: MIMO_PART_TYPE.Tool, callID: 'call-1', state: { status: 'completed' } })],
+    ['a tool part with an empty part id', partFrame({ id: '', type: MIMO_PART_TYPE.Tool, callID: 'call-1', state: { status: 'completed' } })],
+    ['a tool part with a numeric part id', partFrame({ id: 0, type: MIMO_PART_TYPE.Tool, callID: 'call-1', state: { status: 'completed' } })],
+    ['a tool part with no call id', partFrame({ id: 'prt_1', type: MIMO_PART_TYPE.Tool, state: { status: 'completed' } })],
+    ['a tool part with an empty call id', partFrame({ id: 'prt_1', type: MIMO_PART_TYPE.Tool, callID: '', state: { status: 'completed' } })],
+    ['a tool part with no state', partFrame({ id: 'prt_1', type: MIMO_PART_TYPE.Tool, callID: 'call-1' })],
     ['a status event', statusFrame('busy')],
   ])('reads no tool part from %s', (_name, frame) => {
     expect(mimoToolPart(frame)).toBeNull()

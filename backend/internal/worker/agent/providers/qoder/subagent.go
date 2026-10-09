@@ -484,7 +484,7 @@ func (a *Agent) startChildTask(event *qoderTaskEvent) bool {
 func qoderFinalChildStatus(status string) (bgtask.Status, bool) {
 	switch status {
 	case "completed":
-		return bgtask.StatusCompleted, true
+		return bgtask.StatusSucceeded, true
 	case "failed":
 		return bgtask.StatusFailed, true
 	case "stopped", "cancelled":

@@ -21,6 +21,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude/claudetest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/codex"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/qoder"
+	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -88,7 +89,7 @@ func persistControlResponseAnswerForTest(t *testing.T, svc *Service, agentID str
 func controlResponseRows(rows []db.Message) []db.Message {
 	marked := make([]db.Message, 0, len(rows))
 	for _, row := range rows {
-		if row.MarkType == leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE {
+		if workerdb.StorageEnumValue(row.MarkType) == leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE {
 			marked = append(marked, row)
 		}
 	}
@@ -165,7 +166,7 @@ func TestSendControlResponse_PersistsCodexUserInputRow(t *testing.T) {
 		"params":{"questions":[{"id":"task","header":"Task"},{"id":"reason","header":"Reason"}]}
 	}`, string(cr.Request), "the complete request retains the native identity and question labels")
 	assert.Equal(t, string(response), string(cr.Response), "the native answer payload is retained verbatim")
-	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, rows[0].MarkType, "a control-response answer draws a scroll-rail jump dot")
+	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, workerdb.StorageEnumValue(rows[0].MarkType), "a control-response answer draws a scroll-rail jump dot")
 }
 
 func TestControlResponseRejectsAnUnansweredOlderInstance(t *testing.T) {
@@ -253,7 +254,7 @@ func TestSendControlResponse_PersistsCodexDenyFeedbackRow(t *testing.T) {
 	assert.Equal(t, "req-1", cr.RequestID)
 	// The typed feedback lives inside the native response; the frontend extracts and renders it.
 	assert.Equal(t, string(response), string(cr.Response))
-	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, rows[0].MarkType, "a control-response answer draws a scroll-rail jump dot")
+	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, workerdb.StorageEnumValue(rows[0].MarkType), "a control-response answer draws a scroll-rail jump dot")
 }
 
 // TestSendControlResponse_CodexPlanModePromptDenyFeedbackIsMarked covers the Codex
@@ -306,7 +307,7 @@ func TestSendControlResponse_CodexPlanModePromptDenyFeedbackIsMarked(t *testing.
 	rows := waitForMessageCount(t, svc, "agent-1", 1)
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, rows[0].Source)
 	assert.Equal(t, "Not yet -- split the migration first.", decodeMessageContent(t, rows[0].Content, rows[0].ContentCompression))
-	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, rows[0].MarkType,
+	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, workerdb.StorageEnumValue(rows[0].MarkType),
 		"a plan-mode-prompt denial's typed feedback is the user's control answer and draws a rail dot")
 }
 
@@ -362,7 +363,7 @@ func TestSendControlResponse_CodexPlanModePromptBareDenyPersistsStructuredRow(t 
 	// The native response is retained verbatim -- the placeholder is not collapsed backend-side;
 	// the frontend collapses it to render "Rejected".
 	assert.Equal(t, string(response), string(cr.Response))
-	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, rows[0].MarkType)
+	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, workerdb.StorageEnumValue(rows[0].MarkType))
 }
 
 func TestSendControlResponse_CodexPlanModePromptAllowPersistsMarkedApproval(t *testing.T) {
@@ -414,11 +415,11 @@ func TestSendControlResponse_CodexPlanModePromptAllowPersistsMarkedApproval(t *t
 	cr := decodeStructuredControlResponse(t, rows[0])
 	assert.Equal(t, "CODEX", cr.Provider)
 	assert.JSONEq(t, `{"response":{"request_id":"plan-1","response":{"behavior":"allow"}}}`, string(cr.Response))
-	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, rows[0].MarkType,
+	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, workerdb.StorageEnumValue(rows[0].MarkType),
 		"the user's plan-mode approval must have a scroll-rail control-response dot")
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, rows[1].Source)
 	assert.Equal(t, "Implement the plan.", decodeMessageContent(t, rows[1].Content, rows[1].ContentCompression))
-	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_UNSPECIFIED, rows[1].MarkType,
+	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_UNSPECIFIED, workerdb.StorageEnumValue(rows[1].MarkType),
 		"the auto-injected prompt is not the user's own answer")
 }
 
@@ -510,7 +511,7 @@ func TestSendControlResponse_CodexPlanModePromptDuplicateAnswerAppliesOnce(t *te
 	require.Empty(t, w.errors)
 
 	rows := waitForMessageCount(t, svc, "agent-1", 2)
-	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, rows[0].MarkType)
+	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, workerdb.StorageEnumValue(rows[0].MarkType))
 	assert.Equal(t, "Implement the plan.", decodeMessageContent(t, rows[1].Content, rows[1].ContentCompression))
 }
 
@@ -737,7 +738,7 @@ func TestSendControlResponse_PersistsOpenCodeQuestionRow(t *testing.T) {
 		"properties":{"questions":[{"header":"Task","question":"Pick a task"},{"header":"Env","question":"Pick an environment"}]}
 	}`, string(cr.Request), "the question headers let the frontend label the structured answers")
 	assert.Equal(t, string(response), string(cr.Response))
-	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, rows[0].MarkType, "a control-response answer draws a scroll-rail jump dot")
+	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, workerdb.StorageEnumValue(rows[0].MarkType), "a control-response answer draws a scroll-rail jump dot")
 }
 
 func TestSendControlResponse_PersistsCopilotPermissionSelectionRow(t *testing.T) {
@@ -809,7 +810,7 @@ func TestSendControlResponse_PersistsCopilotPermissionSelectionRow(t *testing.T)
 		]}
 	}`, string(cr.Request), "the complete permission options retain their native values and labels")
 	assert.Equal(t, string(response), string(cr.Response))
-	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, rows[0].MarkType, "a control-response answer draws a scroll-rail jump dot")
+	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, workerdb.StorageEnumValue(rows[0].MarkType), "a control-response answer draws a scroll-rail jump dot")
 }
 
 // TestSendControlResponse_PersistsClaudePermissionRow covers the Claude permission path: Bash is
@@ -850,7 +851,7 @@ func TestSendControlResponse_PersistsClaudePermissionRow(t *testing.T) {
 	assert.Equal(t, "req-1", cr.RequestID)
 	assert.JSONEq(t, `{"type":"control_request","request_id":"req-1","request":{"tool_name":"Bash"}}`, string(cr.Request))
 	assert.Equal(t, string(response), string(cr.Response))
-	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, rows[0].MarkType, "the structured row draws the rail jump dot")
+	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, workerdb.StorageEnumValue(rows[0].MarkType), "the structured row draws the rail jump dot")
 }
 
 // TestSendControlResponse_ClaudePermissionBareDenyRetainsNativeResponse covers the deny path when
@@ -889,7 +890,7 @@ func TestSendControlResponse_ClaudePermissionBareDenyRetainsNativeResponse(t *te
 	cr := decodeStructuredControlResponse(t, rows[0])
 	assert.Equal(t, string(response), string(cr.Response),
 		"the backend retains the native deny response verbatim; the frontend collapses the placeholder")
-	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, rows[0].MarkType)
+	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, workerdb.StorageEnumValue(rows[0].MarkType))
 }
 
 // TestSendControlResponse_ClaudePermissionDenyWithReasonRetainsMessage is the counterpart: a REAL
@@ -925,7 +926,7 @@ func TestSendControlResponse_ClaudePermissionDenyWithReasonRetainsMessage(t *tes
 	require.Len(t, rows, 1)
 	cr := decodeStructuredControlResponse(t, rows[0])
 	assert.Equal(t, string(response), string(cr.Response), "a genuine typed rejection reason survives verbatim into the native response")
-	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, rows[0].MarkType)
+	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, workerdb.StorageEnumValue(rows[0].MarkType))
 }
 
 func TestSendControlResponse_UsesNestedRequestIDWhenTopLevelIDAlsoExists(t *testing.T) {
@@ -962,7 +963,7 @@ func TestSendControlResponse_UsesNestedRequestIDWhenTopLevelIDAlsoExists(t *test
 	require.Len(t, rows, 1)
 	cr := decodeStructuredControlResponse(t, rows[0])
 	assert.Equal(t, "req-1", cr.RequestID, "the nested control-response request_id keys the row, not the top-level JSON-RPC id")
-	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, rows[0].MarkType)
+	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, workerdb.StorageEnumValue(rows[0].MarkType))
 }
 
 func TestSendControlResponseRejectsUnknownRequests(t *testing.T) {
@@ -1027,7 +1028,7 @@ func TestSendControlResponse_WithholdsDuplicateAnswerRow(t *testing.T) {
 	rows, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{AgentID: "agent-1", Seq: 0, Limit: 10})
 	require.NoError(t, err)
 	require.Len(t, rows, 1, "answering the same request twice draws exactly one row, not two")
-	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, rows[0].MarkType)
+	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, workerdb.StorageEnumValue(rows[0].MarkType))
 }
 
 // TestSendControlResponse_DuplicateAnswerDeletesRequestOnce pins the delete-gating half of the
@@ -1076,7 +1077,7 @@ func TestSendControlResponse_DuplicateAnswerDeletesRequestOnce(t *testing.T) {
 	rows, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{AgentID: "agent-1", Seq: 0, Limit: 10})
 	require.NoError(t, err)
 	require.Len(t, rows, 1, "the duplicate draws no second row")
-	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, rows[0].MarkType)
+	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, workerdb.StorageEnumValue(rows[0].MarkType))
 }
 
 // TestSendControlResponse_DuplicateDoesNotForward pins winner-only forwarding: a duplicate answer
@@ -1268,7 +1269,7 @@ func TestSendControlResponse_ClaudeExitPlanModeClearContextMarksStructuredRow(t 
 	cr := decodeStructuredControlResponse(t, controlRows[0])
 	assert.Equal(t, "CLAUDE_CODE", cr.Provider)
 	assert.JSONEq(t, `{"type":"control_request","request_id":"req-1","request":{"tool_name":"ExitPlanMode","tool_use_id":"toolu-exit"}}`, string(cr.Request))
-	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, controlRows[0].MarkType,
+	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, workerdb.StorageEnumValue(controlRows[0].MarkType),
 		"clear-context skips Claude's self-displayed tool_result, so the structured row must carry the rail dot")
 }
 
@@ -1405,7 +1406,7 @@ func TestSendControlResponse_DuplicateStraddlingRestartStillDeduped(t *testing.T
 	rows, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{AgentID: "agent-1", Seq: 0, Limit: 10})
 	require.NoError(t, err)
 	require.Len(t, rows, 1, "a duplicate straddling the restart is deduped -- the surviving claim draws exactly one row")
-	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, rows[0].MarkType)
+	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, workerdb.StorageEnumValue(rows[0].MarkType))
 }
 
 // TestSendControlResponse_ReusedRequestIDAfterRelaunchPersists is the counterpart: after a relaunch,
@@ -1454,8 +1455,8 @@ func TestSendControlResponse_ReusedRequestIDAfterRelaunchPersists(t *testing.T) 
 	rows, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{AgentID: "agent-1", Seq: 0, Limit: 10})
 	require.NoError(t, err)
 	require.Len(t, rows, 2, "the two distinct instances persist their own rows; instance A's stale duplicate draws none")
-	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, rows[0].MarkType)
-	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, rows[1].MarkType)
+	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, workerdb.StorageEnumValue(rows[0].MarkType))
+	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, workerdb.StorageEnumValue(rows[1].MarkType))
 }
 
 // TestSendControlResponse_CursorCreatePlanPersistsOnlyStructuredRow covers the Cursor createPlan
@@ -1508,7 +1509,7 @@ func TestSendControlResponse_CursorCreatePlanPersistsOnlyStructuredRow(t *testin
 	require.NoError(t, json.Unmarshal(cr.Response, &outcome))
 	assert.Equal(t, "rejected", outcome.Result.Outcome.Outcome)
 	assert.Equal(t, "Needs tests.", outcome.Result.Outcome.Reason)
-	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, rows[0].MarkType,
+	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, workerdb.StorageEnumValue(rows[0].MarkType),
 		"a control-response answer draws a scroll-rail jump dot")
 }
 
@@ -1558,7 +1559,7 @@ func TestSendControlResponse_CursorCreatePlanApprovePersistsOnlyStructuredRow(t 
 	}
 	require.NoError(t, json.Unmarshal(cr.Response, &outcome))
 	assert.Equal(t, "accepted", outcome.Result.Outcome.Outcome)
-	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, rows[0].MarkType)
+	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, workerdb.StorageEnumValue(rows[0].MarkType))
 
 	// createPlan is PlanModeControlNone, so the Allow branch must not touch permission mode.
 	after, err := svc.Queries.GetAgentByID(ctx, "agent-1")
@@ -1671,7 +1672,7 @@ func TestPersistControlResponseRow_EmptyContentPersistsRowNotDropped(t *testing.
 	cr := decodeStructuredControlResponse(t, rows[0])
 	assert.Equal(t, "req-1", cr.RequestID)
 	assert.Empty(t, cr.Response)
-	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, rows[0].MarkType)
+	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, workerdb.StorageEnumValue(rows[0].MarkType))
 }
 
 // Malformed response bytes must remain available in the transcript and Raw JSON view.
@@ -1697,7 +1698,7 @@ func TestPersistControlResponseRow_InvalidJSONContentPersistsRowNotDropped(t *te
 	cr := decodeStructuredControlResponse(t, rows[0])
 	assert.Equal(t, "req-1", cr.RequestID)
 	assert.Equal(t, "not json at all", string(cr.Response))
-	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, rows[0].MarkType)
+	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, workerdb.StorageEnumValue(rows[0].MarkType))
 }
 
 // TestPersistControlResponseRow_IsUserSourcedCountsAsUserMessage pins that the structured

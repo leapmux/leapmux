@@ -19,11 +19,12 @@ func (svc *Service) persistOptionChanges(current db.Agent, previous, values Opti
 	if len(delta) == 0 {
 		return current, nil
 	}
-	settled, _, err := casPersistAgentOptions(bgCtx(), svc.Queries, current.ID, current.Options, delta)
+	settled, err := casPersistAgentOptions(bgCtx(), svc.Queries, current.ID, current.Options, delta)
+	settled.report(current.ID)
 	if err != nil {
 		return current, fmt.Errorf("persist agent settings: %w", err)
 	}
-	current.Options = settled
+	current.Options = settled.options
 	svc.broadcastSettingsStatusChange(current)
 	changes := svc.buildSettingsChanges(&current, previous, values, sortedOptionKeys(delta), notifyFirstSet)
 	if len(changes) > 0 {

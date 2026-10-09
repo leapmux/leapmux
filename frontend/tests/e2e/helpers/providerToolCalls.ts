@@ -5,6 +5,7 @@ import { isAbsolute } from 'node:path'
 // The note in ../agentSettings.ts explains standalone native probes.
 import { AMP_TOOL_NAME } from '../../../src/components/chat/providers/amp/toolNames'
 import { CLINE_TOOL_NAME } from '../../../src/components/chat/providers/cline/toolNames'
+import { MUSE_TOOL, MUSE_TOOL_NAMESPACE } from '../../../src/components/chat/providers/muse/toolNames'
 import { AMP_SHELL_TOOL, AMP_SUBAGENT_TOOL } from '../../../src/generated/contracts/amp-protocol'
 import { CLINE_TOOL } from '../../../src/generated/contracts/cline-protocol'
 import { CODEWHALE_TOOL } from '../../../src/generated/contracts/codewhale-protocol'
@@ -14,7 +15,7 @@ import { DEEPSEEK_HARNESS_TOOL } from '../../../src/generated/contracts/deepseek
 import { GEMINI_TOOL } from '../../../src/generated/contracts/gemini-protocol'
 import { KIMI_TOOL } from '../../../src/generated/contracts/kimi-protocol'
 import { LETTA_TOOL } from '../../../src/generated/contracts/letta-protocol'
-import { MIMO_TOOL } from '../../../src/generated/contracts/mimo-protocol'
+import { MIMO_ACTOR_ACTION, MIMO_TOOL } from '../../../src/generated/contracts/mimo-protocol'
 import { PI_TOOL } from '../../../src/generated/contracts/pi-protocol'
 import { QWEN_TOOL } from '../../../src/generated/contracts/qwen-protocol'
 import { ZCODE_TOOL } from '../../../src/generated/contracts/zcode-protocol'
@@ -374,6 +375,7 @@ const OPENCODE_FAMILY_TODO_STATUSES = [...BASE_TODO_STATUSES, 'cancelled'] as co
  * states the same five.
  */
 const CANCELLED_AND_BLOCKED_TODO_STATUSES = [...BASE_TODO_STATUSES, 'cancelled', 'blocked'] as const satisfies readonly TodoStatus[]
+const MUSE_TODO_STATUSES = [...BASE_TODO_STATUSES, 'cancelled'] as const satisfies readonly TodoStatus[]
 
 /** The one phase that `updateTodosToolCall` gives a whole Oh My Pi list. */
 const OH_MY_PI_TODO_PHASE = 'Plan'
@@ -1810,6 +1812,36 @@ const TOOL_VOCABULARY = {
     codeExecution: null,
     workflowTools: null,
   },
+  [AgentProvider.MUSE_CODE]: {
+    bash: (id, command) => ({ id, name: MUSE_TOOL.Bash, namespace: MUSE_TOOL_NAMESPACE, arguments: { command, description: 'Run the scripted command.' } }),
+    edit: (id, { path, before, after }) => ({ id, name: MUSE_TOOL.EditFile, namespace: MUSE_TOOL_NAMESPACE, arguments: { path, find: before, replace: after } }),
+    write: (id, { path, content }) => ({ id, name: MUSE_TOOL.WriteFile, namespace: MUSE_TOOL_NAMESPACE, arguments: { path, content } }),
+    read: (id, path) => ({ id, name: MUSE_TOOL.ReadFile, namespace: MUSE_TOOL_NAMESPACE, arguments: { path } }),
+    enterPlanMode: null,
+    exitPlanMode: null,
+    exitPlanModeFromFile: null,
+    askUserQuestion: (id, questions) => ({ id, name: MUSE_TOOL.RequestUserInput, namespace: MUSE_TOOL_NAMESPACE, arguments: { questions: questions.map((question, index) => ({
+      id: `question-${index + 1}`,
+      header: question.header,
+      question: question.question,
+      options: question.options.map(option => ({ label: option.label, description: option.description, ...(option.preview ? { preview: { format: 'markdown', content: option.preview } } : {}) })),
+      ...(question.multiSelect ? { selection: { mode: 'multiple', min_selections: 1, max_selections: question.options.length } } : {}),
+    })) } }),
+    spawnSubagent: (id, { description, prompt, agentType }) => ({ id, name: MUSE_TOOL.SubagentSpawn, namespace: MUSE_TOOL_NAMESPACE, arguments: { command_id: id, role: 'general-purpose', task_name: description, objective: prompt, ...(agentType ? { subagent_type: agentType } : {}) } }),
+    spawnSubagentBatch: null,
+    backgroundBash: (id, command) => ({ id, name: MUSE_TOOL.Bash, namespace: MUSE_TOOL_NAMESPACE, arguments: { command, description: 'Run the scripted background command.', yield_time_ms: 0 } }),
+    updateTodos: (id, steps) => ({ id, name: MUSE_TOOL.WriteTodos, namespace: MUSE_TOOL_NAMESPACE, arguments: { todos: steps.map(step => ({ text: step.step, status: acceptedTodoStatus('Muse Code write_todos', MUSE_TODO_STATUSES, step.status) })) } }),
+    createGoal: (id, objective) => ({ id, name: MUSE_TOOL.CreateGoal, namespace: MUSE_TOOL_NAMESPACE, arguments: { objective } }),
+    completeGoal: id => ({ id, name: MUSE_TOOL.UpdateGoal, namespace: MUSE_TOOL_NAMESPACE, arguments: { status: 'complete' } }),
+    blockGoal: (id, reason) => {
+      requireReason('Muse Code update_goal', reason)
+      return { id, name: MUSE_TOOL.UpdateGoal, namespace: MUSE_TOOL_NAMESPACE, arguments: { status: 'blocked' } }
+    },
+    // Muse ignores the response namespace. Its full registered MCP ID selects the server and tool.
+    mcpTool: (id, { server, tool, input }) => ({ id, name: `mcp__${server}__${tool}`, arguments: input }),
+    codeExecution: null,
+    workflowTools: [MUSE_TOOL.Workflow],
+  },
   [AgentProvider.FAST_AGENT]: {
     // Fast Agent's -x shell runtime supplies these coding tools.
     // Their model names have no namespace prefix.
@@ -2437,6 +2469,13 @@ export function ohMyPiYieldToolCall(id: string, report: string): MockModelToolCa
 /** One call of MiMo Code's to-do tool. */
 export function mimoTaskToolCall(id: string, operation: MiMoTaskOperation): MockModelToolCall {
   return { id, name: 'task', arguments: { operation } }
+}
+
+/** Cancel one existing native MiMo actor through its model tool. */
+export function mimoActorCancelToolCall(id: string, actorId: string): MockModelToolCall {
+  if (actorId.trim() === '')
+    throw new Error('A MiMo actor cancellation requires an actor ID.')
+  return { id, name: MIMO_TOOL.Actor, arguments: { operation: { action: MIMO_ACTOR_ACTION.Cancel, actor_id: actorId } } }
 }
 
 /**

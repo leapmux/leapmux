@@ -1,8 +1,11 @@
+import type { MessageInitShape } from '@bufbuild/protobuf'
 import type { GoalSurface } from './chatGoal'
 import type { AgentGoal as ProtoAgentGoal } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { TodoItem } from '~/models/todo'
+import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
-import { AgentGoalAction, AgentGoalStatus } from '~/generated/proto/leapmux/v1/agent_pb'
+import { GOAL_STATUS_TOKEN } from '~/generated/contracts/worker-vocab'
+import { AgentGoalAction, AgentGoalSchema, AgentGoalStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import {
   goalActionsFromProto,
   goalActionState,
@@ -13,15 +16,14 @@ import {
   shouldShowGoalsAndTodosSection,
 } from './chatGoal'
 
-function protoGoal(over: Partial<ProtoAgentGoal> = {}): ProtoAgentGoal {
-  return {
+function protoGoal(over: MessageInitShape<typeof AgentGoalSchema> = {}): ProtoAgentGoal {
+  return create(AgentGoalSchema, {
     objective: 'ship it',
     status: AgentGoalStatus.ACTIVE,
     statusDetail: '',
     createdAt: '',
-    updatedAt: '',
     ...over,
-  } as ProtoAgentGoal
+  })
 }
 
 describe('protoGoalToStore', () => {
@@ -40,9 +42,8 @@ describe('protoGoalToStore', () => {
     expect(protoGoalToStore(protoGoal({ statusDetail: '' })).statusDetail).toBeUndefined()
   })
 
-  // A goal stored before this build understood its status reads as BLOCKED, not
-  // ACTIVE: an unreadable status is one nothing can act on, so the card must not
-  // offer Pause for it.
+  // This explicit UNSPECIFIED zero-value case retains blocked behavior.
+  // UNKNOWN and unrecognized numeric statuses have separate neutral Unknown cases.
   it('reads an unspecified status as blocked', () => {
     expect(protoGoalToStore(protoGoal({ status: AgentGoalStatus.UNSPECIFIED })).status).toBe('blocked')
   })
@@ -82,18 +83,15 @@ describe('goalActionState', () => {
   const active = protoGoalToStore(protoGoal({ status: AgentGoalStatus.ACTIVE }))
   const paused = protoGoalToStore(protoGoal({ status: AgentGoalStatus.PAUSED }))
 
-  // A provider's gap is PERMANENT -- Claude Code has no pause -- so its button
-  // would never light up and is better absent than dead.
+  // Hide an unsupported action instead of displaying a control that cannot run.
   it('hides an action the agent does not support', () => {
     expect(goalActionState({ current: active, actions: ['set', 'clear'] }, 'pause')).toEqual({ kind: 'hidden' })
-    // Omitting `current` is how a surface with no goal reads; the key absent
-    // and the key undefined are the same read here.
+    // An absent current key and an explicit undefined key both mean that there is no goal.
     expect(goalActionState({ actions: [] }, 'set')).toEqual({ kind: 'hidden' })
   })
 
-  // Pause and resume are opposites: offering both would leave one that does
-  // nothing on a goal already in that state. The refused one stays RENDERED,
-  // because it comes back.
+  // Pause and Resume require different states.
+  // A supported action that the current state refuses stays visible with its reason.
   it('enables pause only for an active goal, and resume only for a paused one', () => {
     expect(goalActionState({ current: active, actions: [...all] }, 'pause')).toEqual({ kind: 'enabled' })
     expect(goalActionState({ current: active, actions: [...all] }, 'resume'))
@@ -103,16 +101,15 @@ describe('goalActionState', () => {
       .toEqual({ kind: 'disabled', reason: 'Only an active goal can be paused' })
   })
 
-  // The one action that does not need a goal to exist -- it is how the first one
-  // arrives, and the empty state's button depends on exactly this.
+  // Set requires no current goal because it creates the first goal.
   it('enables set when there is no goal at all', () => {
     expect(goalActionState({ actions: ['set'] }, 'set')).toEqual({ kind: 'enabled' })
     expect(goalActionState({ actions: ['set', 'clear'] }, 'clear'))
       .toEqual({ kind: 'disabled', reason: 'This session has no goal' })
   })
 
-  // A dormant goal is waiting, not active and not paused, so neither verb
-  // applies -- and each says which state it needs rather than going silent.
+  // Dormant is neither active nor paused.
+  // Refuse both actions with their existing state requirements.
   it('refuses both pause and resume for a dormant goal, with a reason', () => {
     const dormant = protoGoalToStore(protoGoal({ status: AgentGoalStatus.DORMANT }))
     expect(goalActionState({ current: dormant, actions: [...all] }, 'pause'))
@@ -123,21 +120,19 @@ describe('goalActionState', () => {
   })
 
   /**
-   * Both fields come from ONE surface, which is what the signature is for. A
-   * caller cannot pair one agent's goal with another agent's verb list, because
-   * there is no second argument to pair it with.
+   * The function receives the goal and actions from one surface.
+   * It has no separate argument that could supply another agent's action list.
    */
   it('reads the goal and the verb list from the same surface', () => {
     const surface: GoalSurface = { current: paused, progress: {}, actions: [...all] }
     expect(goalActionState(surface, 'resume')).toEqual({ kind: 'enabled' })
-    // Narrow that ONE surface's verbs, and the same goal now hides the verb.
+    // Remove the action from the same surface's supported list.
     expect(goalActionState({ ...surface, actions: ['set'] }, 'resume')).toEqual({ kind: 'hidden' })
   })
 })
 
 describe('goalStatusFromWire', () => {
-  // The transcript renderer reads the token the worker PERSISTS, which is a
-  // different vocabulary from the proto enum it broadcasts.
+  // The transcript uses a stored status token rather than the broadcast proto enum.
   it('reads every stored token', () => {
     expect(goalStatusFromWire('active')).toBe('active')
     expect(goalStatusFromWire('paused')).toBe('paused')
@@ -146,8 +141,7 @@ describe('goalStatusFromWire', () => {
     expect(goalStatusFromWire('dormant')).toBe('dormant')
   })
 
-  // Undefined rather than a guess, so the caller can fall back instead of
-  // asserting something the worker did not say.
+  // An absent or unrecognized token returns undefined so the caller can choose its fallback.
   it('answers undefined for a token it does not know', () => {
     expect(goalStatusFromWire('')).toBeUndefined()
     expect(goalStatusFromWire(undefined)).toBeUndefined()
@@ -161,8 +155,8 @@ describe('goalStatusLabel', () => {
     expect(goalStatusLabel('paused')).toBe('Paused')
     expect(goalStatusLabel('done')).toBe('Achieved')
     expect(goalStatusLabel('blocked')).toBe('Needs attention')
-    // A dormant goal is WAITING, not failing. Labelling it "Needs attention"
-    // would report a fault every time a worker restarts.
+    // Dormant reports that no process serves the goal.
+    // It must not report a fault during a worker restart.
     expect(goalStatusLabel('dormant')).toBe('Not running')
   })
 })
@@ -183,8 +177,7 @@ describe('shouldShowGoalsAndTodosSection', () => {
     expect(shouldShowGoalsAndTodosSection([], undefined)).toBe(false)
   })
 
-  // The surface is what the section renders, so a surface it can show keeps
-  // the section visible whatever the goal's own state is.
+  // A goal surface keeps the section visible, regardless of its current goal's state.
   it('shows the section for a goal that exists but cannot be changed', () => {
     const readOnly: GoalSurface = {
       current: { objective: 'Ship the release', status: 'active' },
@@ -192,5 +185,54 @@ describe('shouldShowGoalsAndTodosSection', () => {
       actions: [],
     }
     expect(shouldShowGoalsAndTodosSection([], readOnly)).toBe(true)
+  })
+})
+
+describe('shared unknown goals', () => {
+  it.each(['provider-future-state', 'active', 'blocked', ''])('retains native detail %j under the explicit unknown status', (statusDetail) => {
+    const wire = create(AgentGoalSchema, {
+      nativeId: 'native-unknown-goal',
+      objective: 'Ship the exact objective',
+      status: AgentGoalStatus.UNKNOWN,
+      statusDetail,
+      createdAt: '2026-10-09T00:00:00.000Z',
+    })
+    const converted = protoGoalToStore(wire)
+    expect(converted).toEqual({
+      nativeId: 'native-unknown-goal',
+      objective: 'Ship the exact objective',
+      status: 'unknown',
+      ...(statusDetail === '' ? {} : { statusDetail }),
+      createdAt: '2026-10-09T00:00:00.000Z',
+    })
+    expect(wire.status).toBe(AgentGoalStatus.UNKNOWN)
+    expect(wire.statusDetail).toBe(statusDetail)
+  })
+
+  it.each([-2147483648, -1, 99, 2147483647])('reports neutral unknown for an unrecognized numeric status %s', (status) => {
+    const wire = create(AgentGoalSchema, { objective: 'Keep the goal', status, statusDetail: 'opaque-native-state' })
+    const converted = protoGoalToStore(wire)
+    expect(converted.status).toBe('unknown')
+    expect(converted.statusDetail).toBe('opaque-native-state')
+    expect(goalStatusLabel(converted.status)).toBe('Unknown')
+  })
+
+  it('reads the generated unknown token without inferring an active or blocked state', () => {
+    expect(goalStatusFromWire(GOAL_STATUS_TOKEN.Unknown)).toBe('unknown')
+    const converted = protoGoalToStore(create(AgentGoalSchema, { status: AgentGoalStatus.UNKNOWN }))
+    expect(goalStatusLabel(converted.status)).toBe('Unknown')
+    expect(converted.objective).toBe('')
+    expect(converted.statusDetail).toBeUndefined()
+  })
+
+  it('retains supported clear and replace controls while refusing pause and resume for unknown', () => {
+    const current = protoGoalToStore(create(AgentGoalSchema, { objective: 'Keep the goal', status: AgentGoalStatus.UNKNOWN }))
+    const surface: GoalSurface = { current, progress: {}, actions: ['set', 'clear', 'pause', 'resume'] }
+    expect(goalActionState(surface, 'pause')).toEqual({ kind: 'disabled', reason: 'Only an active goal can be paused' })
+    expect(goalActionState(surface, 'resume')).toEqual({ kind: 'disabled', reason: 'Only a paused goal can be resumed' })
+    expect(goalActionState(surface, 'set')).toEqual({ kind: 'enabled' })
+    expect(goalActionState(surface, 'clear')).toEqual({ kind: 'enabled' })
+    expect(shouldShowGoalsAndTodosSection([], surface)).toBe(true)
+    expect(current.status).toBe('unknown')
   })
 })

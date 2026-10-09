@@ -170,7 +170,7 @@ type codebuddyTaskEvent struct {
 func codebuddyTaskStatus(raw string) (bgtask.Status, bool) {
 	switch raw {
 	case "completed", "done", "success":
-		return bgtask.StatusCompleted, true
+		return bgtask.StatusSucceeded, true
 	case "failed", "error":
 		return bgtask.StatusFailed, true
 	case "stopped", "killed", "cancelled":
@@ -577,7 +577,7 @@ func (a *Agent) observeAgentToolResults(raw []byte) {
 		if rowKey != block.ToolUseID {
 			continue
 		}
-		status := bgtask.StatusCompleted
+		status := bgtask.StatusSucceeded
 		if block.IsError {
 			status = bgtask.StatusFailed
 		}

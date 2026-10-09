@@ -28,7 +28,7 @@ import {
 } from './runningChildProof'
 
 describe('selectRunningChildTask', () => {
-  const old: NativeChildTask = { id: 'old-native-task', kind: BackgroundTaskKind.SUBAGENT, childAgentId: 'old-worker-child', parentAgentId: 'actual-parent', title: 'leapmux-e2e-child', status: BackgroundTaskStatus.COMPLETED }
+  const old: NativeChildTask = { id: 'old-native-task', kind: BackgroundTaskKind.SUBAGENT, childAgentId: 'old-worker-child', parentAgentId: 'actual-parent', title: 'leapmux-e2e-child', status: BackgroundTaskStatus.SUCCEEDED }
   const current: NativeChildTask = { id: 'current-native-task', kind: BackgroundTaskKind.SUBAGENT, childAgentId: 'current-worker-child', parentAgentId: 'actual-parent', title: 'leapmux-e2e-child', status: BackgroundTaskStatus.RUNNING }
   const selection = { parentId: 'actual-parent', rootAgentId: 'actual-parent', previousChildIds: new Set([old.childAgentId]), rowText: 'leapmux-e2e-child' }
   it('selects the exact new running child when an old native child has the same title', () => {
@@ -42,7 +42,7 @@ describe('selectRunningChildTask', () => {
   })
   it.each([
     { ...current, childAgentId: '' },
-    { ...current, status: BackgroundTaskStatus.COMPLETED },
+    { ...current, status: BackgroundTaskStatus.SUCCEEDED },
     { ...current, kind: BackgroundTaskKind.SHELL },
     { ...current, parentAgentId: 'another-parent' },
   ])('refuses a row without this actual running child identity: %j', (task) => {

@@ -64,7 +64,7 @@ func TestACP_SubagentFromToolCallUpdate_FinalStatusCloses(t *testing.T) {
 	obs := SubagentFromToolCallUpdate(tcu)
 	if assert.NotNil(t, obs) {
 		assert.True(t, obs.CloseRow)
-		assert.Equal(t, bgtask.StatusCompleted, obs.Status)
+		assert.Equal(t, bgtask.StatusSucceeded, obs.Status)
 	}
 }
 
@@ -254,7 +254,7 @@ func TestACP_OpenCodeFinalUpdateStillClosesAndRekeys(t *testing.T) {
 	assert.True(t, obs.CloseRow)
 	assert.Equal(t, "ses-child", obs.RowKey)
 	assert.Equal(t, "call-1", obs.RenameFrom)
-	assert.Equal(t, bgtask.StatusCompleted, obs.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, obs.Status)
 }
 
 func TestACP_OpenCodeFamilyTaskWithoutArgumentsOpensNoSpan(t *testing.T) {
@@ -492,7 +492,7 @@ func TestOpenCodeTaskReuseKeepsOneNativeChildAcrossCallIDs(t *testing.T) {
 	row, found := sink.BackgroundTask("ses-native-child")
 	require.True(t, found)
 	assert.Equal(t, initial.ChildAgentID, row.ChildAgentID)
-	assert.Equal(t, bgtask.StatusCompleted, row.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
 	assert.Equal(t, []string{initial.ChildAgentID}, sink.ChildAgentIDs())
 	assert.Equal(t, before, child.Messages())
 	reports := child.LeapMuxNotifications()

@@ -104,7 +104,7 @@ func TestSubagentCallOpensAndClosesARegistryRow(t *testing.T) {
 		isError bool
 		want    bgtask.Status
 	}{
-		{name: "completed", want: bgtask.StatusCompleted},
+		{name: "completed", want: bgtask.StatusSucceeded},
 		{name: "failed", isError: true, want: bgtask.StatusFailed},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -191,7 +191,7 @@ func TestBackgroundCommandRowClosesAtTheEndThatACallStates(t *testing.T) {
 		result string
 		want   bgtask.Status
 	}{
-		{"status of a success", contracts.AmpShellToolShellCommandStatus, `{"output":"done\n","exitCode":0,"running":false,"pid":4242}`, bgtask.StatusCompleted},
+		{"status of a success", contracts.AmpShellToolShellCommandStatus, `{"output":"done\n","exitCode":0,"running":false,"pid":4242}`, bgtask.StatusSucceeded},
 		{"status of a failure", contracts.AmpShellToolShellCommandStatus, `{"output":"boom\n","exitCode":2,"running":false,"pid":4242}`, bgtask.StatusFailed},
 		{"status of a signal", contracts.AmpShellToolShellCommandStatus, `{"output":"Command terminated by signal SIGTERM (no exit code)\n","exitCode":-1,"running":false,"pid":4242}`, bgtask.StatusFailed},
 		{"status of a PID that Amp forgot", contracts.AmpShellToolShellCommandStatus, `{"output":"No tracked shell command for PID 4242","exitCode":1,"running":false,"pid":4242}`, bgtask.StatusFailed},
@@ -253,7 +253,7 @@ func TestOnlyTheShellToolsFollowABackgroundCommand(t *testing.T) {
 	assert.Empty(t, h.sink.BackgroundTasks())
 }
 
-// A call that states no command titles its row with the PID, as prose.
+// A call without a command uses its PID as the row title, displayed as prose.
 func TestBackgroundCommandWithNoCommandTitlesItsRowWithThePID(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
@@ -264,8 +264,8 @@ func TestBackgroundCommandWithNoCommandTitlesItsRowWithThePID(t *testing.T) {
 	assert.False(t, row.TitleIsCommand)
 }
 
-// A later command that takes the PID of an earlier one closes the earlier
-// row, which Amp never stated the end of.
+// A later command can reuse an earlier command's PID.
+// Close the earlier row because its command ended without an Amp outcome report.
 func TestReusedPIDClosesTheEarlierRow(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
@@ -284,14 +284,13 @@ func TestReusedPIDClosesTheEarlierRow(t *testing.T) {
 	h.feed(fp, assistantLine("["+toolUseBlock("TU-st", contracts.AmpShellToolShellCommandStatus, `{"pid":4242}`)+"]", "tool_use"))
 	h.feed(fp, toolResultLine("TU-st", `{"output":"","exitCode":0,"running":false,"pid":4242}`, false))
 	later, _ = h.sink.BackgroundTask(shellRowKey("TU-again"))
-	assert.Equal(t, bgtask.StatusCompleted, later.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, later.Status)
 	earlier, _ = h.sink.BackgroundTask(shellRowKey("TU-dev"))
 	assert.Equal(t, bgtask.StatusStopped, earlier.Status)
 }
 
-// Amp stops every command that it started when it shuts down in order, and it
-// prints its `result` on that path. So an exit after the result closes each open
-// row as stopped.
+// Amp stops every command that it starts during orderly shutdown and prints its result on that path.
+// An exit after that result therefore closes each open row as stopped.
 func TestProcessExitClosesEveryShellRow(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
@@ -358,7 +357,7 @@ func TestStopClosesEveryShellRowOnce(t *testing.T) {
 func TestShellEndStatus(t *testing.T) {
 	t.Parallel()
 	code := func(value int) *int { return &value }
-	assert.Equal(t, bgtask.StatusCompleted, shellEndStatus(contracts.AmpShellResult{ExitCode: code(0)}))
+	assert.Equal(t, bgtask.StatusSucceeded, shellEndStatus(contracts.AmpShellResult{ExitCode: code(0)}))
 	assert.Equal(t, bgtask.StatusFailed, shellEndStatus(contracts.AmpShellResult{ExitCode: code(1)}))
 	assert.Equal(t, bgtask.StatusFailed, shellEndStatus(contracts.AmpShellResult{ExitCode: code(-1)}), "a signal states no exit code of its own")
 	assert.Equal(t, bgtask.StatusFailed, shellEndStatus(contracts.AmpShellResult{}), "an end with no exit code is not a success")
@@ -382,9 +381,9 @@ type ampSubagentTitleFixture struct {
 	} `json:"cases"`
 }
 
-// The worker half of testdata/amp_subagent_title_conformance.json. The browser
-// suite replays the same file against ampAgentRequest, so the registry row and
-// the transcript card of one call show one title.
+// This test supplies the worker assertions for testdata/amp_subagent_title_conformance.json.
+// The browser tests replay the same file against ampAgentRequest.
+// The registry row and transcript card therefore display the same title for each call.
 func TestSubagentTitleConformance(t *testing.T) {
 	t.Parallel()
 	raw, err := os.ReadFile(testutil.RepoPath(t, "testdata", "amp_subagent_title_conformance.json"))

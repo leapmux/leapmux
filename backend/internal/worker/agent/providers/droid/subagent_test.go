@@ -69,7 +69,7 @@ func TestChildSessionMessagesAndTurnEndStayInChildTranscript(t *testing.T) {
 	assert.False(t, a.ActiveChildTurnState("child-1").Active)
 	finished, ok := sink.BackgroundTask("child-1")
 	require.True(t, ok)
-	assert.Equal(t, bgtask.StatusCompleted, finished.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, finished.Status)
 }
 
 func TestUnknownNativeSessionCannotWriteIntoTheRoot(t *testing.T) {

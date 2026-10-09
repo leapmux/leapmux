@@ -49,6 +49,17 @@ type TurnState struct {
 	Steerable bool
 }
 
+// TurnStateLease keeps one accepted provider state current through a store mutation.
+// Release the lease before a provider call or observer delivery.
+type TurnStateLease interface{ Release() }
+
+// TurnStateAdmission retains the exact authority that accepted a provider state.
+// Acquire requires its exact sequence. IsCurrent permits a later identical report.
+type TurnStateAdmission interface {
+	Acquire() (TurnState, TurnStateLease)
+	IsCurrent() bool
+}
+
 // MessageContent keeps provider bytes and supplemental data separate during persistence and extraction.
 type MessageContent struct {
 	Original []byte
@@ -61,10 +72,29 @@ type MessageContent struct {
 	Supplemental []byte
 	Metadata     []byte
 	Completion   MessageCompletion
+	// Publication retains the original live owner, including an unknown native session.
+	Publication TranscriptPublication
+	// WriteReceipt records the storage result of this captured write.
+	WriteReceipt *TranscriptWriteReceipt
+}
+
+// TranscriptOwner identifies the original live publication state of one record.
+type TranscriptOwner interface {
+	IsCurrent() bool
+	PublishSessionInfo(info map[string]interface{}) bool
+}
+
+// TranscriptPublication lets a provider decorate progress without replacing its owner.
+type TranscriptPublication interface {
+	Owner() TranscriptOwner
+	ReportProgress(update ProgressUpdate)
 }
 
 // MessageEnrichment describes a conditional update to separate rendering data.
 type MessageEnrichment struct {
+	Publication         TranscriptPublication
+	WriteReceipt        *MessageEnrichmentReceipt
+	AgentSessionID      string
 	Seq                 int64
 	SpanID              string
 	OriginalContent     []byte
@@ -82,6 +112,9 @@ type StoredMessage struct {
 
 // TranscriptServices persists provider output and turn boundaries.
 type TranscriptServices interface {
+	// CaptureMessage freezes the native session and live owner before a delayed write.
+	// A supplied publication keeps its original owner.
+	CaptureMessage(content MessageContent, span SpanInfo) MessageContent
 	// ReadToolRequest resolves the persisted opener. A missing opener returns nil without an error.
 	ReadToolRequest(spanID string) (*StoredMessage, error)
 	// ReadToolResult resolves the LATEST persisted row of one tool-call span, which is
@@ -89,6 +122,11 @@ type TranscriptServices interface {
 	// the same span, so the two answer different questions and neither substitutes for
 	// the other. A span with no row returns nil without an error.
 	ReadToolResult(spanID string) (*StoredMessage, error)
+	// ReadToolResultBySeq reads the exact committed result row of this agent.
+	// A nonpositive sequence or absent tool row returns nil.
+	ReadToolResultBySeq(seq int64) (*StoredMessage, error)
+	// ReadToolResultForSession keeps the supplied native session, including an empty session.
+	ReadToolResultForSession(spanID, sessionID string) (*StoredMessage, error)
 	PersistMessage(source leapmuxv1.MessageSource, content MessageContent, span SpanInfo) error
 	// EnrichMessage stores rendering data separately from the original provider bytes.
 	// It returns false when the original content or supplemental revision no longer matches.
@@ -99,7 +137,7 @@ type TranscriptServices interface {
 	// that collapses byte-identically into the existing thread tail is persisted
 	// without a broadcast, and callers (the thinking-token reset decorator) use
 	// this to stay in lockstep with the frontend, which only clears on a broadcast.
-	PersistNotification(source leapmuxv1.MessageSource, content []byte) (broadcast bool, err error)
+	PersistNotification(source leapmuxv1.MessageSource, content MessageContent) (broadcast bool, err error)
 	// PersistTurnEnd persists the agent's turn-end divider envelope and
 	// fires the sink-level git-status auto-broadcast. Each provider's
 	// closing envelope (Claude type:"result", Codex turn/completed,

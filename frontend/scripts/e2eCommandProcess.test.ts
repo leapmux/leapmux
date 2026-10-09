@@ -1,5 +1,7 @@
 import { spawn } from 'node:child_process'
+import { once } from 'node:events'
 import process from 'node:process'
+import { PassThrough } from 'node:stream'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createProcessStub } from '~/test-support/childProcess'
 import { spawnCommandProcess } from './e2eCommandProcess'
@@ -58,6 +60,42 @@ function treeProcess(delay = 50) {
   kernel.alive.add(process.platform === 'win32' ? 123 : -123)
   const resource = spawnCommandProcess('controlled', ['argument'], { stdio: 'inherit', cwd: 'private-project' }, { ownTree: true, shutdownDelayMs: delay })
   return { ...stub, resource }
+}
+
+async function treeProcessAfterPipeEnd() {
+  const current = treeProcess()
+  const stdout = new PassThrough()
+  Object.assign(current.emitter, { stdout })
+  const ended = once(stdout, 'end')
+  stdout.resume()
+  stdout.end()
+  await ended
+  return current
+}
+
+function treeProcessWithProbeFailure(code = 'EPERM', afterSignal: NodeJS.Signals = 'SIGTERM') {
+  const current = treeProcess()
+  const stdout = new PassThrough()
+  Object.assign(current.emitter, { stdout })
+  const failure = Object.assign(new Error('The owned group probe failed before native exit.'), { code })
+  const previousSignal = vi.mocked(process.kill).getMockImplementation()!
+  let signalSent = false
+  let failProbes = true
+  vi.mocked(process.kill).mockImplementation((pid, signal) => {
+    if (signal === 0 && signalSent && failProbes)
+      throw failure
+    const sent = previousSignal(pid, signal)
+    if (signal === afterSignal)
+      signalSent = true
+    return sent
+  })
+  return {
+    ...current,
+    stdout,
+    failure,
+    allowProbes: () => { failProbes = false },
+    restoreSignal: () => vi.mocked(process.kill).mockImplementation(previousSignal),
+  }
 }
 
 describe('spawnCommandProcess', () => {
@@ -265,6 +303,354 @@ describe('spawnCommandProcess', () => {
     const failure = Object.assign(new Error('The controlled signal failed.'), { code: 'EPERM' })
     kernel.failure = failure
     await expect(resource.stop()).rejects.toBe(failure)
+    expect(emitter.listenerCount('exit')).toBe(0)
+    expect(emitter.listenerCount('error')).toBe(0)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('waits for native exit and group disappearance after successful termination and probe EPERM without EOF', async () => {
+    const { emitter, resource, stdout, allowProbes, restoreSignal } = treeProcessWithProbeFailure()
+    let result: unknown
+    const stopped = resource.stop().then(() => {
+      result = 'finished'
+    }, (error) => {
+      result = error
+    })
+    try {
+      await vi.advanceTimersByTimeAsync(0)
+      expect(stdout.readableEnded).toBe(false)
+      expect(vi.mocked(process.kill).mock.calls).toEqual([[-123, 'SIGTERM'], [-123, 0]])
+      expect(result).toBeUndefined()
+      allowProbes()
+      kernel.alive.delete(-123)
+      await vi.advanceTimersByTimeAsync(25)
+      expect(result).toBeUndefined()
+      emitter.signalCode = 'SIGTERM'
+      emitter.emit('exit', null, 'SIGTERM')
+      await stopped
+      expect(result).toBe('finished')
+      expect(vi.getTimerCount()).toBe(0)
+      expect(emitter.listenerCount('exit')).toBe(0)
+      expect(emitter.listenerCount('error')).toBe(0)
+    }
+    finally {
+      allowProbes()
+      kernel.alive.delete(-123)
+      emitter.signalCode = 'SIGTERM'
+      emitter.emit('exit', null, 'SIGTERM')
+      await vi.advanceTimersByTimeAsync(100)
+      await stopped
+      restoreSignal()
+      stdout.destroy()
+    }
+  })
+
+  it('stops surviving descendants after successful termination and probe EPERM without EOF', async () => {
+    const { emitter, resource, stdout, allowProbes, restoreSignal } = treeProcessWithProbeFailure()
+    let result: unknown
+    const stopped = resource.stop().then(() => {
+      result = 'finished'
+    }, (error) => {
+      result = error
+    })
+    try {
+      await vi.advanceTimersByTimeAsync(0)
+      expect(stdout.readableEnded).toBe(false)
+      expect(result).toBeUndefined()
+      allowProbes()
+      emitter.signalCode = 'SIGTERM'
+      emitter.emit('exit', null, 'SIGTERM')
+      await vi.advanceTimersByTimeAsync(0)
+      expect(vi.mocked(process.kill).mock.calls.filter(([, signal]) => signal === 'SIGTERM')).toHaveLength(2)
+      expect(result).toBeUndefined()
+      kernel.alive.delete(-123)
+      await vi.advanceTimersByTimeAsync(25)
+      await stopped
+      expect(result).toBe('finished')
+      expect(vi.getTimerCount()).toBe(0)
+      expect(emitter.listenerCount('exit')).toBe(0)
+      expect(emitter.listenerCount('error')).toBe(0)
+    }
+    finally {
+      allowProbes()
+      kernel.alive.delete(-123)
+      emitter.signalCode = 'SIGTERM'
+      emitter.emit('exit', null, 'SIGTERM')
+      await vi.advanceTimersByTimeAsync(100)
+      await stopped
+      restoreSignal()
+      stdout.destroy()
+    }
+  })
+
+  it('returns the original post-termination probe EPERM at the deadline when no native exit arrives', async () => {
+    const { emitter, resource, stdout, failure, allowProbes, restoreSignal } = treeProcessWithProbeFailure()
+    const unrelated = () => {}
+    emitter.on('exit', unrelated)
+    let result: unknown
+    const stopped = resource.stop().then(() => {
+      result = 'finished'
+    }, (error) => {
+      result = error
+    })
+    try {
+      await vi.advanceTimersByTimeAsync(49)
+      expect(stdout.readableEnded).toBe(false)
+      expect(result).toBeUndefined()
+      await vi.advanceTimersByTimeAsync(1)
+      await stopped
+      expect(result).toBe(failure)
+      expect(process.kill).not.toHaveBeenCalledWith(-123, 'SIGKILL')
+      expect(emitter.listeners('exit')).toEqual([unrelated])
+      expect(emitter.listenerCount('error')).toBe(0)
+      expect(vi.getTimerCount()).toBe(0)
+    }
+    finally {
+      allowProbes()
+      kernel.alive.delete(-123)
+      emitter.signalCode = 'SIGTERM'
+      emitter.emit('exit', null, 'SIGTERM')
+      await vi.advanceTimersByTimeAsync(100)
+      await stopped
+      restoreSignal()
+      stdout.destroy()
+    }
+  })
+
+  it('preserves post-termination probe EACCES immediately without EOF', async () => {
+    const { emitter, resource, stdout, failure, restoreSignal } = treeProcessWithProbeFailure('EACCES')
+    try {
+      await expect(resource.stop()).rejects.toBe(failure)
+      expect(stdout.readableEnded).toBe(false)
+      expect(vi.mocked(process.kill).mock.calls).toEqual([[-123, 'SIGTERM'], [-123, 0]])
+      expect(emitter.listenerCount('exit')).toBe(0)
+      expect(emitter.listenerCount('error')).toBe(0)
+      expect(vi.getTimerCount()).toBe(0)
+    }
+    finally {
+      restoreSignal()
+      stdout.destroy()
+    }
+  })
+
+  it('preserves post-exit probe EPERM after a successful termination signal', async () => {
+    const { emitter, resource } = treeProcess()
+    const failure = Object.assign(new Error('The owned group probe fails after native exit.'), { code: 'EPERM' })
+    const previousSignal = vi.mocked(process.kill).getMockImplementation()!
+    vi.mocked(process.kill).mockImplementation((pid, signal) => {
+      if (signal === 0)
+        throw failure
+      const sent = previousSignal(pid, signal)
+      emitter.signalCode = 'SIGTERM'
+      emitter.emit('exit', null, 'SIGTERM')
+      return sent
+    })
+    try {
+      await expect(resource.stop()).rejects.toBe(failure)
+      expect(vi.mocked(process.kill).mock.calls).toEqual([[-123, 'SIGTERM'], [-123, 0]])
+      expect(emitter.listenerCount('exit')).toBe(0)
+      expect(emitter.listenerCount('error')).toBe(0)
+      expect(vi.getTimerCount()).toBe(0)
+    }
+    finally {
+      vi.mocked(process.kill).mockImplementation(previousSignal)
+    }
+  })
+
+  it('keeps forced termination and its deadline after successful SIGKILL and probe EPERM without EOF', async () => {
+    const { emitter, resource, stdout, allowProbes, restoreSignal } = treeProcessWithProbeFailure('EPERM', 'SIGKILL')
+    let result: unknown
+    const stopped = resource.stop().then(() => {
+      result = 'finished'
+    }, (error) => {
+      result = error
+    })
+    try {
+      await vi.advanceTimersByTimeAsync(50)
+      expect(stdout.readableEnded).toBe(false)
+      expect(process.kill).toHaveBeenCalledWith(-123, 'SIGKILL')
+      expect(result).toBeUndefined()
+      await vi.advanceTimersByTimeAsync(25)
+      allowProbes()
+      emitter.signalCode = 'SIGKILL'
+      emitter.emit('exit', null, 'SIGKILL')
+      await vi.advanceTimersByTimeAsync(0)
+      expect(vi.mocked(process.kill).mock.calls.filter(([, signal]) => signal === 'SIGTERM')).toHaveLength(1)
+      expect(vi.mocked(process.kill).mock.calls.filter(([, signal]) => signal === 'SIGKILL')).toHaveLength(2)
+      await vi.advanceTimersByTimeAsync(24)
+      expect(result).toBeUndefined()
+      await vi.advanceTimersByTimeAsync(1)
+      await stopped
+      expect(result).toMatchObject({ message: 'The owned process group 123 did not exit after forced termination.' })
+      expect(vi.getTimerCount()).toBe(0)
+      expect(emitter.listenerCount('exit')).toBe(0)
+      expect(emitter.listenerCount('error')).toBe(0)
+    }
+    finally {
+      allowProbes()
+      kernel.alive.delete(-123)
+      emitter.signalCode = 'SIGKILL'
+      emitter.emit('exit', null, 'SIGKILL')
+      await vi.advanceTimersByTimeAsync(100)
+      await stopped
+      restoreSignal()
+      stdout.destroy()
+    }
+  })
+
+  it('waits for native exit after a pipe ends and the owned group returns EPERM', async () => {
+    const { emitter, resource } = await treeProcessAfterPipeEnd()
+    const failure = Object.assign(new Error('The owned group awaits native exit.'), { code: 'EPERM' })
+    kernel.failure = failure
+    let result: unknown
+    const stopped = resource.stop().then(() => {
+      result = 'finished'
+    }, (error) => {
+      result = error
+    })
+    await vi.advanceTimersByTimeAsync(0)
+    try {
+      expect(result).toBeUndefined()
+    }
+    finally {
+      kernel.failure = undefined
+      kernel.alive.delete(-123)
+      emitter.exitCode = 7
+      emitter.emit('exit', 7, null)
+      await stopped
+    }
+    expect(result).toBe('finished')
+    expect(vi.getTimerCount()).toBe(0)
+    expect(emitter.listenerCount('exit')).toBe(0)
+    expect(emitter.listenerCount('error')).toBe(0)
+  })
+
+  it('stops surviving descendants after native exit resolves an EOF permission error', async () => {
+    const { emitter, resource } = await treeProcessAfterPipeEnd()
+    kernel.failure = Object.assign(new Error('The owned root awaits native exit.'), { code: 'EPERM' })
+    let result: unknown
+    const stopped = resource.stop().then(() => {
+      result = 'finished'
+    }, (error) => {
+      result = error
+    })
+    await vi.advanceTimersByTimeAsync(0)
+    try {
+      expect(result).toBeUndefined()
+      kernel.failure = undefined
+      emitter.exitCode = 7
+      emitter.emit('exit', 7, null)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(vi.mocked(process.kill).mock.calls.filter(([, signal]) => signal === 'SIGTERM')).toHaveLength(2)
+      expect(result).toBeUndefined()
+    }
+    finally {
+      kernel.failure = undefined
+      kernel.alive.delete(-123)
+      emitter.exitCode = 7
+      emitter.emit('exit', 7, null)
+      await vi.advanceTimersByTimeAsync(25)
+      await stopped
+    }
+    expect(result).toBe('finished')
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('returns the original EOF permission error if no native exit arrives before the deadline', async () => {
+    const { emitter, resource } = await treeProcessAfterPipeEnd()
+    const failure = Object.assign(new Error('The owned process refuses its signal.'), { code: 'EPERM' })
+    kernel.failure = failure
+    let result: unknown
+    const stopped = resource.stop().then(() => {
+      result = 'finished'
+    }, (error) => {
+      result = error
+    })
+    await vi.advanceTimersByTimeAsync(0)
+    try {
+      expect(result).toBeUndefined()
+    }
+    finally {
+      await vi.advanceTimersByTimeAsync(50)
+      await stopped
+    }
+    expect(result).toBe(failure)
+    expect(vi.getTimerCount()).toBe(0)
+    expect(emitter.listenerCount('exit')).toBe(0)
+    expect(emitter.listenerCount('error')).toBe(0)
+  })
+
+  it('keeps forced termination and its deadline after native exit resolves an EOF permission error', async () => {
+    const { emitter, resource } = await treeProcessAfterPipeEnd()
+    const failure = Object.assign(new Error('The owned root awaits its forced exit.'), { code: 'EPERM' })
+    const previousSignal = vi.mocked(process.kill).getMockImplementation()!
+    vi.mocked(process.kill).mockImplementation((pid, signal) => {
+      if (signal === 'SIGKILL' && emitter.exitCode === null)
+        throw failure
+      if (!kernel.alive.has(pid))
+        throw Object.assign(new Error('The controlled process does not exist.'), { code: 'ESRCH' })
+      return true
+    })
+    let result: unknown
+    const stopped = resource.stop().then(() => {
+      result = 'finished'
+    }, (error) => {
+      result = error
+    })
+    try {
+      await vi.advanceTimersByTimeAsync(50)
+      expect(process.kill).toHaveBeenCalledWith(-123, 'SIGKILL')
+      expect(result).toBeUndefined()
+      await vi.advanceTimersByTimeAsync(25)
+      emitter.exitCode = 7
+      emitter.emit('exit', 7, null)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(vi.mocked(process.kill).mock.calls.filter(([, signal]) => signal === 'SIGTERM')).toHaveLength(1)
+      expect(vi.mocked(process.kill).mock.calls.filter(([, signal]) => signal === 'SIGKILL')).toHaveLength(2)
+      await vi.advanceTimersByTimeAsync(24)
+      expect(result).toBeUndefined()
+      await vi.advanceTimersByTimeAsync(1)
+      await stopped
+      expect(result).toMatchObject({ message: 'The owned process group 123 did not exit after forced termination.' })
+    }
+    finally {
+      kernel.alive.delete(-123)
+      emitter.exitCode = 7
+      emitter.emit('exit', 7, null)
+      await vi.advanceTimersByTimeAsync(50)
+      await stopped
+      vi.mocked(process.kill).mockImplementation(previousSignal)
+    }
+    expect(vi.getTimerCount()).toBe(0)
+    expect(emitter.listenerCount('exit')).toBe(0)
+    expect(emitter.listenerCount('error')).toBe(0)
+  })
+
+  it.each(['EPERM', 'EACCES'])('preserves %s at EOF after native exit was already observed', async (code) => {
+    const { emitter, resource } = await treeProcessAfterPipeEnd()
+    emitter.exitCode = 7
+    const failure = Object.assign(new Error('The owned descendant signal failed.'), { code })
+    kernel.failure = failure
+    await expect(resource.stop()).rejects.toBe(failure)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('preserves a non-EPERM signal failure at EOF before native exit', async () => {
+    const { resource } = await treeProcessAfterPipeEnd()
+    const failure = Object.assign(new Error('The owned signal failed.'), { code: 'EACCES' })
+    kernel.failure = failure
+    await expect(resource.stop()).rejects.toBe(failure)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('keeps cleanup finished when a queued EOF signal fails after a child error', async () => {
+    const { emitter, resource } = await treeProcessAfterPipeEnd()
+    kernel.failure = Object.assign(new Error('The owned group awaits native exit.'), { code: 'EPERM' })
+    const failure = new Error('The controlled child failed before its signal.')
+    const result = resource.stop().then(() => undefined, error => error)
+    emitter.emit('error', failure)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(await result).toBe(failure)
     expect(emitter.listenerCount('exit')).toBe(0)
     expect(emitter.listenerCount('error')).toBe(0)
     expect(vi.getTimerCount()).toBe(0)

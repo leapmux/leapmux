@@ -15,7 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { exportedFunctionBody, selectorsIn } from '~/test-support/locatorSource'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { ohMyPiYieldToolCall, spawnSubagentToolCall } from './providerToolCalls'
-import { backgroundTaskRows, backgroundTaskRowsIncludingHidden, exerciseHeldChildRow, HELD_CHILD_NAME, HELD_CHILD_REPORT, HELD_CHILD_TASK, HELD_CHILD_TITLE, heldChildAnswer, openChildTabFromRow, openHeldChildTab, requireRegistryRow } from './subagentRegistry'
+import { backgroundTaskRows, backgroundTaskRowsIncludingHidden, exerciseHeldChildRow, expectRowBecomesFinal, HELD_CHILD_NAME, HELD_CHILD_REPORT, HELD_CHILD_TASK, HELD_CHILD_TITLE, heldChildAnswer, openChildTabFromRow, openHeldChildTab, requireRegistryRow } from './subagentRegistry'
 import { startWaitLimitForTests } from './testDeadline'
 
 /** The end of the wait limit that a failure case starts, so that a wait which never passes ends inside the case. */
@@ -198,7 +198,16 @@ vi.mock('@playwright/test', async (importOriginal) => {
       return {
         toHaveCount: async (expected: number) => expect(count(), message).toBe(expected),
         toBeVisible: async () => expect(count(), message).toBeGreaterThan(0),
-        toHaveAttribute: async (key: string, expected: string) => expect(attribute(key), message).toBe(expected),
+        toHaveAttribute: async (key: string, expected: string) => {
+          if ('observeAttributeAssertion' in value && typeof value.observeAttributeAssertion === 'function')
+            value.observeAttributeAssertion(key, expected)
+          expect(attribute(key), message).toBe(expected)
+        },
+        toHaveText: async (expected: string) => {
+          if (!('readText' in value) || typeof value.readText !== 'function')
+            throw new Error('The locator probe supplies no text reader')
+          expect(value.readText(), message).toBe(expected)
+        },
         // The negated form without a value, as `expandSidebarSection` checks that the section carries no `data-closed`.
         not: { toHaveAttribute: async (key: string) => expect(attribute(key), message).toBeNull() },
       }
@@ -210,7 +219,10 @@ vi.mock('@playwright/test', async (importOriginal) => {
     poll: (read: () => Promise<unknown>, options?: { message?: string }) => ({
       toBe: async (expected: unknown) => expect(await read(), options?.message).toBe(expected),
       toMatch: async (expected: RegExp) => expect(await read(), options?.message).toMatch(expected),
-      not: { toBe: async (expected: unknown) => expect(await read(), options?.message).not.toBe(expected) },
+      not: {
+        toBe: async (expected: unknown) => expect(await read(), options?.message).not.toBe(expected),
+        toBeNull: async () => expect(await read(), options?.message).not.toBeNull(),
+      },
     }),
   }) }
 })
@@ -461,5 +473,79 @@ describe('openChildTabFromRow', () => {
     const view = navigation(state, () => state.ids.push('actual-child'))
     await expect(openChildTabFromRow(view.page, view.row)).rejects.toThrow('rendered agent tab IDs are unique')
     expect(view.click).not.toHaveBeenCalled()
+  })
+})
+
+describe('expectRowBecomesFinal', () => {
+  function finalRow(status: string, label: string, appearance: { title?: string, dotLabel?: string, secondaryPresent?: boolean } = {}) {
+    const observed: string[] = []
+    const title = appearance.title ?? 'Task'
+    const dotLabel = appearance.dotLabel ?? label
+    const secondaryPresent = appearance.secondaryPresent ?? true
+    const header = Object.assign(probe(1), { evaluate: async () => true })
+    const page = Object.assign({} as Page, { locator: () => header })
+    const row = Object.assign(probe(1, { 'data-status': status }), {
+      locator: (selector: string) => {
+        if (selector === '[data-testid="bg-task-status-dot"]:visible') {
+          return Object.assign(probe(1, { 'aria-label': dotLabel }), {
+            observeAttributeAssertion: (_key: string, expected: string) => observed.push(expected),
+          })
+        }
+        if (selector === '[data-testid="bg-task-secondary"]:visible, :scope:not(:has([data-testid="bg-task-secondary"]:visible)) [data-testid="bg-task-title"]:visible')
+          return Object.assign(probe(1), { readText: () => secondaryPresent ? label : title })
+        throw new Error(`The final-row probe does not support selector ${selector}`)
+      },
+      filter: ({ hasText }: { hasText: string }) => {
+        const text = secondaryPresent ? `${title} ${label}` : title
+        return probe(text.toLowerCase().includes(hasText.toLowerCase()) ? 1 : 0)
+      },
+    })
+    return { page, row, observed }
+  }
+
+  it.each([
+    ['succeeded', 'Succeeded'],
+    ['failed', 'Failed'],
+    ['stopped', 'Stopped'],
+    ['interrupted', 'Interrupted'],
+    ['ended_with_unknown_outcome', 'Ended with unknown outcome'],
+  ])('accepts the final %s row and requires its exact label', async (status, label) => {
+    const view = finalRow(status, label)
+    await expect(expectRowBecomesFinal(view.page, view.row)).resolves.toBeUndefined()
+    expect(view.observed).toEqual([label])
+  })
+
+  it.each(['pending', 'running', 'paused', ''])('refuses the open or absent row status %j', async (status) => {
+    const view = finalRow(status, 'Running')
+    await expect(expectRowBecomesFinal(view.page, view.row)).rejects.toThrow('not to be null')
+    expect(view.observed).toEqual([])
+  })
+
+  it('refuses a wrong status-dot label when the title contains the expected end label', async () => {
+    const view = finalRow('completed', 'Completed', { title: 'Completed task', dotLabel: 'Failed' })
+    await expect(expectRowBecomesFinal(view.page, view.row)).rejects.toThrow()
+  })
+
+  it('refuses a wrong end-line label when the title and status dot contain the expected label', async () => {
+    const view = finalRow('completed', 'Failed', { title: 'Completed task', dotLabel: 'Completed' })
+    await expect(expectRowBecomesFinal(view.page, view.row)).rejects.toThrow()
+  })
+
+  it('accepts the canonical title when the repeated end line is absent', async () => {
+    const view = finalRow('completed', 'Completed', { title: 'Completed', secondaryPresent: false })
+    await expect(expectRowBecomesFinal(view.page, view.row)).resolves.toBeUndefined()
+    expect(view.observed).toEqual(['Completed'])
+  })
+
+  it('checks the secondary when a longer title contains the canonical word', async () => {
+    const view = finalRow('completed', 'Completed', { title: 'Completed task' })
+    await expect(expectRowBecomesFinal(view.page, view.row)).resolves.toBeUndefined()
+    expect(view.observed).toEqual(['Completed'])
+  })
+
+  it('refuses a final row whose visible label states a different outcome', async () => {
+    const view = finalRow('failed', 'Succeeded')
+    await expect(expectRowBecomesFinal(view.page, view.row)).rejects.toThrow()
+    expect(view.observed).toEqual(['Failed'])
   })
 })

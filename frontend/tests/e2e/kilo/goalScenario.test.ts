@@ -2,7 +2,8 @@ import type { Page } from '@playwright/test'
 import { create, fromBinary, toBinary } from '@bufbuild/protobuf'
 import { describe, expect, it, vi } from 'vitest'
 import { InnerStreamMessageSchema } from '../../../src/generated/proto/leapmux/v1/channel_pb'
-import { WatchEventsRequestSchema, WatchEventsResponseSchema } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
+import { WatchEventsRequestSchema, WatchEventsResponseSchema, WatchMode } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
+import { AGENT_WATCH_UPDATE_ID } from '../helpers/agentEventWatch'
 import { waitForKiloPromptEnd } from './goalScenario'
 
 const { stream, cancel, selectedAgentTabId } = vi.hoisted(() => ({ stream: vi.fn(), cancel: vi.fn(), selectedAgentTabId: vi.fn() }))
@@ -24,7 +25,10 @@ describe('waitForKiloPromptEnd', () => {
     stream.mockReturnValue({
       onMessage: (listener: (message: { payload: Uint8Array }) => void) => queueMicrotask(() => {
         listener(create(InnerStreamMessageSchema, {
-          payload: toBinary(WatchEventsResponseSchema, create(WatchEventsResponseSchema, { event: { case: 'updateAck', value: { updateId: 1n } } })),
+          payload: toBinary(WatchEventsResponseSchema, create(WatchEventsResponseSchema, { event: { case: 'updateAck', value: {
+            updateId: AGENT_WATCH_UPDATE_ID,
+            agentStates: [{ agentId, mode: WatchMode.FULL, replayId: AGENT_WATCH_UPDATE_ID }],
+          } } })),
         }))
         listener(create(InnerStreamMessageSchema, {
           payload: toBinary(WatchEventsResponseSchema, create(WatchEventsResponseSchema, { event: { case: 'agentEvent', value: { agentId, event: { case: 'inputQueueChanged', value: {} } } } })),

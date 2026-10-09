@@ -98,12 +98,15 @@ interface InterruptTurnCommonOptions extends LifecyclePreparation {
   prompt?: string
   divider?: RegExp
   continuation?: { prompt: string, answer: string, contextMarkers?: readonly string[] }
+  /** Inspect the actual held operation before the scenario sends its interrupt. */
+  beforeInterrupt?: () => Promise<void>
 }
 
 /** Interrupt a held model request. This is the default kind. */
 interface InterruptedModelTurnOptions extends InterruptTurnCommonOptions {
   kind?: 'model'
   expectedToolUses?: never
+  reasoning?: never
   /**
    * Where the turn holds: before its response (the default), or after the
    * first streamed text chunk. Goose 1.53.0 ends a turn on `session/cancel` only
@@ -124,6 +127,8 @@ interface InterruptedToolTurnOptions extends InterruptTurnCommonOptions {
   kind: 'tool'
   /** Count every native call, including an execution wrapper around the shell tool. */
   expectedToolUses?: number
+  /** Complete this reasoning before the native tool starts. */
+  reasoning?: string
   holdModelTurn?: never
   heldModelTurnEnd?: never
 }
@@ -148,11 +153,13 @@ export async function exerciseInterruptTurn(
   // The type refuses these combinations. The checks stay for a caller that builds its options as a wider type,
   // because the tool branch would otherwise ignore the model options with no message. The checks read one view
   // that is not a union, because the union narrows each comparison of `kind` to a branch that cannot hold it.
-  const requested: { kind?: string, holdModelTurn?: unknown, heldModelTurnEnd?: unknown } = options
+  const requested: { kind?: string, holdModelTurn?: unknown, heldModelTurnEnd?: unknown, reasoning?: unknown } = options
   if (requested.heldModelTurnEnd !== undefined && requested.kind === 'tool')
     throw new Error('A held model turn end applies to an interrupted model request, not to an interrupted tool.')
   if (requested.holdModelTurn !== undefined && requested.kind === 'tool')
     throw new Error('A held model turn position applies to an interrupted model request, not to an interrupted tool.')
+  if (requested.reasoning !== undefined && requested.kind !== 'tool')
+    throw new Error('Completed reasoning before a held tool requires a tool turn.')
   const toolTotals = interruptedToolTotals(options.expectedToolUses ?? 1)
   await options.prepare?.()
   const marker = uniqueMarker()
@@ -166,7 +173,7 @@ export async function exerciseInterruptTurn(
   let held: MockModelStep
   if (options.kind === 'tool') {
     const script = heldToolScript({ startedFile: toolStarted, releaseFile })
-    held = { toolCalls: [bashToolCall(context.provider, 'held-native-tool', `${quotePosixShellArgument(process.execPath)} -e ${quotePosixShellArgument(script)}`)] }
+    held = { ...(options.reasoning !== undefined ? { reasoning: options.reasoning } : {}), toolCalls: [bashToolCall(context.provider, 'held-native-tool', `${quotePosixShellArgument(process.execPath)} -e ${quotePosixShellArgument(script)}`)] }
   }
   else if (options.holdModelTurn === 'after-first-chunk') {
     const text = `NEVERCOMPLETED${marker}`
@@ -188,6 +195,7 @@ export async function exerciseInterruptTurn(
     else {
       await context.modelScript.waitForGate(gate)
     }
+    await options.beforeInterrupt?.()
     const interrupt = interruptButton(context.page)
     await expect(interrupt).toBeVisible()
     await interrupt.click()

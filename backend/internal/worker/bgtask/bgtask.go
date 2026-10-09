@@ -22,6 +22,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/util/validate"
 )
@@ -294,32 +295,27 @@ var Kinds = [...]Kind{KindSubagent, KindShell, KindWorkflow}
 type Status leapmuxv1.BackgroundTaskStatus
 
 const (
-	StatusUnspecified = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_UNSPECIFIED)
-	StatusPending     = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_PENDING)
-	StatusRunning     = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_RUNNING)
-	StatusPaused      = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_PAUSED)
-	StatusCompleted   = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_COMPLETED)
-	StatusFailed      = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_FAILED)
-	StatusStopped     = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_STOPPED)
-	StatusInterrupted = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_INTERRUPTED)
+	StatusUnspecified             = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_UNSPECIFIED)
+	StatusPending                 = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_PENDING)
+	StatusRunning                 = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_RUNNING)
+	StatusPaused                  = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_PAUSED)
+	StatusSucceeded               = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_SUCCEEDED)
+	StatusFailed                  = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_FAILED)
+	StatusStopped                 = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_STOPPED)
+	StatusInterrupted             = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_INTERRUPTED)
+	StatusEndedWithUnknownOutcome = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_ENDED_WITH_UNKNOWN_OUTCOME)
 )
 
-// MinFinalStatus is the lowest FINAL ordinal, and the whole predicate the SQL
-// needs: `status >= MinFinalStatus` selects the final rows and `status <`
-// selects the open ones. The queries bind it rather than listing four status
-// words, so the split follows a renumber instead of going stale.
-//
-// It states a property of the ORDER of the enum, which nothing in proto
-// enforces, so TestBackgroundTaskFinalStatusesAreTheTopOfTheRange checks it
-// against IsFinished for every value. A new status on the wrong side of the
-// boundary fails that test rather than silently joining the other pool.
-const MinFinalStatus = StatusCompleted
+// MinFinalStatus is the lowest final ordinal.
+// SQL selects final rows with status >= MinFinalStatus and open rows with status < MinFinalStatus.
+// The queries bind this ordinal, so a renumber changes the selection with it.
+// TestBackgroundTaskFinalStatusesAreTheTopOfTheRange verifies this split for every declared status.
+const MinFinalStatus = StatusSucceeded
 
-// IsFinished reports whether s is a final status -- one that makes a row
-// eligible for cap eviction. Unspecified, Pending, Running, and Paused are
-// open. A row becomes eligible for eviction only when it reaches a final status.
+// IsFinished reports whether a final status permits row eviction.
+// Every other status stays open.
 func (s Status) IsFinished() bool {
-	return s == StatusCompleted || s == StatusFailed || s == StatusStopped || s == StatusInterrupted
+	return s == StatusSucceeded || s == StatusFailed || s == StatusStopped || s == StatusInterrupted || s == StatusEndedWithUnknownOutcome
 }
 
 // IsWorking reports whether a task currently contributes to agent activity.
@@ -623,21 +619,23 @@ func ItemsToProto(items []Item) []*leapmuxv1.BackgroundTaskItem {
 func StatusWire(s Status) string {
 	switch s {
 	case StatusRunning:
-		return "running"
+		return contracts.BackgroundTaskStatusTokenRunning
 	case StatusPaused:
-		return "paused"
-	case StatusCompleted:
-		return "completed"
+		return contracts.BackgroundTaskStatusTokenPaused
+	case StatusSucceeded:
+		return contracts.BackgroundTaskStatusTokenSucceeded
 	case StatusFailed:
-		return "failed"
+		return contracts.BackgroundTaskStatusTokenFailed
 	case StatusStopped:
-		return "stopped"
+		return contracts.BackgroundTaskStatusTokenStopped
 	case StatusInterrupted:
-		return "interrupted"
+		return contracts.BackgroundTaskStatusTokenInterrupted
+	case StatusEndedWithUnknownOutcome:
+		return contracts.BackgroundTaskStatusTokenEndedWithUnknownOutcome
 	case StatusPending:
-		return "pending"
+		return contracts.BackgroundTaskStatusTokenPending
 	default:
-		return ""
+		return contracts.BackgroundTaskStatusTokenUnspecified
 	}
 }
 

@@ -55,7 +55,7 @@ func TestJunieNativeChildSessionRoutesItsMessages(t *testing.T) {
 
 	row, ok = sink.BackgroundTask("junie-child-1")
 	require.True(t, ok)
-	assert.Equal(t, bgtask.StatusCompleted, row.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
 	assert.Len(t, sink.Messages(), 0, "the child's answer stays out of the root transcript")
 	require.Len(t, child.Messages(), 2)
 	assert.Contains(t, string(child.Messages()[1].Content), "The child read the file.")
@@ -67,7 +67,7 @@ func TestJunieNativeChildStateClosesTheRegistryRow(t *testing.T) {
 		state string
 		want  bgtask.Status
 	}{
-		{state: "completed", want: bgtask.StatusCompleted},
+		{state: "completed", want: bgtask.StatusSucceeded},
 		{state: "failed", want: bgtask.StatusFailed},
 		{state: "cancelled", want: bgtask.StatusStopped},
 		{state: "disconnected", want: bgtask.StatusFailed},

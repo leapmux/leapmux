@@ -140,16 +140,15 @@ func TestACPTerminal_CreateWaitOutputRelease(t *testing.T) {
 	statusLog := sink.BackgroundTaskStatuses(termID)
 	require.True(t, ok)
 	assert.Equal(t, bgtask.KindShell, row.Kind)
-	// printf often exits before this read; the status trail proves Running was
-	// upserted first (see terminalCreate), which a live snapshot cannot.
+	// printf often exits before this read.
+	// The status log proves that terminalCreate upserts Running first, which a live snapshot alone cannot prove.
 	require.NotEmpty(t, statusLog)
 	assert.Equal(t, bgtask.StatusRunning, statusLog[0])
-	assert.Contains(t, []bgtask.Status{bgtask.StatusRunning, bgtask.StatusCompleted}, row.Status,
+	assert.Contains(t, []bgtask.Status{bgtask.StatusRunning, bgtask.StatusSucceeded}, row.Status,
 		"create must leave the row Running or already Completed, not Failed/Stopped")
 	assert.Equal(t, "printf 'hello-acp'", row.Title)
-	// terminal/create carries the command and nothing else, so this title IS the
-	// command and the client may set it as code -- unlike Claude's shell rows,
-	// whose title is `description || command` with no way to tell which.
+	// terminal/create supplies only the command, so this title represents a verbatim command that the client can display as code.
+	// Claude's shell title uses description || command and supplies no field that distinguishes those two sources.
 	assert.True(t, row.TitleIsCommand, "an ACP terminal title is the command itself")
 
 	dispatchTerminal(b, acpMethodTerminalWaitForExit, 2, map[string]interface{}{
@@ -180,8 +179,8 @@ func TestACPTerminal_CreateWaitOutputRelease(t *testing.T) {
 
 	row, _ = sink.BackgroundTask(termID)
 	statusLog = sink.BackgroundTaskStatuses(termID)
-	assert.Equal(t, bgtask.StatusCompleted, row.Status)
-	assert.Equal(t, []bgtask.Status{bgtask.StatusRunning, bgtask.StatusCompleted}, statusLog)
+	assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+	assert.Equal(t, []bgtask.Status{bgtask.StatusRunning, bgtask.StatusSucceeded}, statusLog)
 
 	b.terminalsMu.Lock()
 	_, still := b.terminals[termID]
@@ -325,11 +324,9 @@ func TestACPTerminal_EmptyCommandTitleIsNotACommand(t *testing.T) {
 	assert.False(t, row.TitleIsCommand, "the fallback label is not a command")
 }
 
-// A command that holds nothing but the characters the title rule strips leaves
-// no label either, so it takes the same "shell" fallback the empty command
-// takes. The clean runs HERE for that reason: the registry cleans every title,
-// so a command left raw would reach the sink non-empty, skip this fallback, and
-// land as a blank row.
+// A command containing only stripped characters needs the same shell fallback as an empty command.
+// Clean it here before selecting that fallback because the registry cleans every title also.
+// Otherwise the raw nonempty command would skip the fallback and become a blank row at the sink.
 func TestACPTerminal_CommandOfStrippedCharactersFallsBackToShell(t *testing.T) {
 	sink := &agenttest.Sink{}
 	b, rec := newTerminalTestBase(t, sink)
@@ -351,10 +348,9 @@ func TestACPTerminal_CommandOfStrippedCharactersFallsBackToShell(t *testing.T) {
 	assert.False(t, row.TitleIsCommand, "the fallback label is not a command")
 }
 
-// The command reaches the registry row whole, quoting included. This is
-// asserted at the provider that owns the only rows whose title really IS a
-// command: `$`, `%`, `"` and `\` used to go, and the row then labelled a
-// command that nobody ran.
+// The registry retains the complete command, including its quotes.
+// This provider supplies rows whose title is a confirmed command, so assert the retained command here.
+// Removing `$`, `%`, `"`, or `\` formerly made the label describe a command that nobody executes.
 func TestACPTerminal_CommandReachesTheRowWhole(t *testing.T) {
 	sink := &agenttest.Sink{}
 	b, rec := newTerminalTestBase(t, sink)
@@ -422,13 +418,12 @@ func TestACPTerminal_ReleaseAllOnStop(t *testing.T) {
 	assert.True(t, row.Status.IsFinished())
 }
 
-// A stop must end the command that the stopped tool still waits on.
+// A stop must end the command that its interrupted tool still waits for.
 //
-// fast-agent 0.10.42 answers session/cancel with the `cancelled` stop reason, but
-// it never kills or releases the terminal of its cancelled tool: its terminal
-// runtime catches only Exception, and asyncio.CancelledError is a BaseException.
-// The command ran on, its row stayed Running, the Worker kept the agent working,
-// and the thinking indicator never cleared after the reader pressed Stop.
+// fast-agent 0.10.42 returns the cancelled stop reason for session/cancel without killing or releasing the tool's terminal.
+// Its terminal runtime catches only Exception, while asyncio.CancelledError inherits BaseException.
+// The command therefore continued, and its row remained Running.
+// The Worker still reported an active agent, so the thinking indicator remained after the reader selected Stop.
 func TestACPTerminal_StoppedPromptReleasesTheTerminalItAwaits(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -479,9 +474,8 @@ func TestACPTerminal_StoppedPromptReleasesTheTerminalItAwaits(t *testing.T) {
 	}
 }
 
-// createTerminalForTest starts command on b and returns its terminal ID. rpcID
-// is the JSON-RPC ID of the create request, and the reply is the response at
-// position replies-1 of rec.
+// createTerminalForTest starts command on b and returns its terminal ID.
+// rpcID identifies the JSON-RPC create request, and rec holds its response at position replies-1.
 func createTerminalForTest(t *testing.T, b *Base, rec *responseRecorder, rpcID, replies int, command string) string {
 	t.Helper()
 	dispatchTerminal(b, acpMethodTerminalCreate, rpcID, map[string]interface{}{
@@ -528,8 +522,8 @@ func TestACPTerminal_StoppedPromptKeepsATerminalThatNothingAwaits(t *testing.T) 
 	assert.Equal(t, bgtask.StatusRunning, row.Status)
 }
 
-// Without a stop, a pending wait is the agent's own business: the turn ended,
-// and the agent can still read the exit later.
+// Without a stop request, preserve a pending wait after the turn ends.
+// The agent can still read that exit in a later turn.
 func TestACPTerminal_PromptWithoutAStopKeepsTheTerminalItAwaits(t *testing.T) {
 	sink := &agenttest.Sink{}
 	b, rec := newTerminalTestBase(t, sink)
@@ -550,9 +544,9 @@ func TestACPTerminal_PromptWithoutAStopKeepsTheTerminalItAwaits(t *testing.T) {
 	assert.Equal(t, bgtask.StatusRunning, row.Status)
 }
 
-// A wait that already got its reply no longer counts. The command exited, so a
-// stop has nothing to end, and the agent can still read the output and release
-// the terminal.
+// A wait that receives its response no longer counts as pending.
+// Its command already exited, so Stop has nothing to end.
+// The agent can still read the output and release the terminal.
 func TestACPTerminal_StoppedPromptKeepsAnExitedTerminal(t *testing.T) {
 	sink := &agenttest.Sink{}
 	b, rec := newTerminalTestBase(t, sink)
@@ -569,7 +563,7 @@ func TestACPTerminal_StoppedPromptKeepsAnExitedTerminal(t *testing.T) {
 	b.finishPromptRequest("sess-1", json.RawMessage(`{"stopReason":"cancelled"}`), nil)
 
 	assert.True(t, terminalHeldForTest(b, termID))
-	assert.Equal(t, []bgtask.Status{bgtask.StatusRunning, bgtask.StatusCompleted}, sink.BackgroundTaskStatuses(termID),
+	assert.Equal(t, []bgtask.Status{bgtask.StatusRunning, bgtask.StatusSucceeded}, sink.BackgroundTaskStatuses(termID),
 		"an exited command keeps its own outcome rather than a stop")
 }
 
@@ -633,8 +627,8 @@ func TestACPTerminal_StoppedPromptReleaseRacesTheAgentRelease(t *testing.T) {
 	}()
 	wg.Wait()
 
-	// The create reply, the wait reply, and the release reply: success when the
-	// agent took the terminal first, "unknown terminalId" when the stop did.
+	// The create and wait requests receive their responses.
+	// The release succeeds if the agent removes the terminal first, or returns "unknown terminalId" if Stop removes it first.
 	resps := rec.wait(t, 3)
 	assert.Len(t, resps, 3)
 	assert.False(t, terminalHeldForTest(b, termID))
@@ -650,7 +644,7 @@ func TestACPTerminal_DefaultCwdFromWorkingDir(t *testing.T) {
 	dispatchTerminal(b, acpMethodTerminalCreate, 1, map[string]interface{}{
 		"sessionId": "sess-1",
 		"command":   "test -f marker.txt && echo found",
-		// cwd omitted — must use workingDir
+		// The request omits cwd, so use workingDir.
 	})
 	resps := rec.wait(t, 1)
 	termID := resps[0]["result"].(map[string]interface{})["terminalId"].(string)
@@ -872,11 +866,10 @@ func TestACPTerminal_NonZeroExitMarksFailed(t *testing.T) {
 	_ = rec.wait(t, 3)
 }
 
-// The registry row must reach its final status BEFORE anything can observe the
-// exit. sess.done is that observation point: terminal/wait_for_exit replies off
-// it, so a client that closes the channel first can read its own terminal's row
-// and still see RUNNING. This asserts the order at the one instant that shows
-// it -- inside CloseBackgroundTask, where done must still be open.
+// Set the registry row's final status before exposing the process exit.
+// sess.done exposes that exit because terminal/wait_for_exit replies when it closes.
+// Closing done first would let the client read Running from its own terminal row after receiving the exit response.
+// Assert the order inside CloseBackgroundTask, where done must remain open.
 func TestACPTerminal_ClosesTheRegistryRowBeforeTheExitIsObservable(t *testing.T) {
 	sink := &agenttest.Sink{}
 	b, rec := newTerminalTestBase(t, sink)
@@ -966,8 +959,7 @@ func TestACPTerminal_WaitForExitDoesNotBlockCaller(t *testing.T) {
 	resps := rec.wait(t, 1)
 	termID := resps[0]["result"].(map[string]interface{})["terminalId"].(string)
 
-	// Dispatch kill immediately after wait_for_exit to prove the read-loop
-	// handler returned without waiting for the sleep to finish.
+	// Dispatch kill immediately after wait_for_exit to prove that the read-loop handler returns without waiting for the sleep command to finish.
 	dispatchTerminal(b, acpMethodTerminalWaitForExit, 2, map[string]interface{}{
 		"sessionId":  "sess-1",
 		"terminalId": termID,
@@ -1061,8 +1053,8 @@ func TestACPTerminal_StopReapsLongLivedChild(t *testing.T) {
 
 	dispatchTerminal(b, acpMethodTerminalCreate, 1, map[string]interface{}{
 		"sessionId": "sess-1",
-		// sleep inherits the host pipes; without process-group kill, Stop
-		// would hang waiting for stdout EOF after killing only /bin/sh.
+		// sleep inherits the host pipes.
+		// Without a process-group kill, Stop would wait indefinitely for stdout to close after killing only /bin/sh.
 		"command": "sleep 60",
 		"cwd":     b.workingDir,
 	})
@@ -1113,8 +1105,7 @@ func TestACPTerminal_CreateRejectedAfterStop(t *testing.T) {
 func TestACPTerminal_ReleaseSessionOnClearContext(t *testing.T) {
 	sink := &agenttest.Sink{}
 	b, rec := newTerminalTestBase(t, sink)
-	// newSessionLocked needs a cancelled ctx so SendRequest fails fast after
-	// releaseSessionTerminals has already run.
+	// Supply a cancelled context so newSessionLocked's SendRequest fails immediately after releaseSessionTerminals runs.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	b.SetContextForTest(ctx)

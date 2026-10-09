@@ -3,6 +3,7 @@ import type { MessageCategory } from '~/components/chat/messageClassifier'
 import { describe, expect, it } from 'vitest'
 import { MIMO_TOOL, MIMO_TOOL_STATUS } from '~/generated/contracts/mimo-protocol'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
+import { pickObject } from '~/lib/jsonPick'
 import { openingFrame, parsedFrame, statusFrame, toolFrame } from '~/test-support/mimoFixtures'
 import { resolveMessageForRendering } from '../../registry'
 import { mimoExtractRow } from './row'
@@ -59,7 +60,24 @@ describe('mimoExtractRow', () => {
   it('ignores a result side of another call', () => {
     const sibling = parsedFrame(toolFrame(MIMO_TOOL.Bash, { status: MIMO_TOOL_STATUS.Error, input: { command: 'false' }, error: 'Command exited with code 1' }, 'call-2'))
     const row = extract(openingFrame(MIMO_TOOL.Bash, input), 'tool_use', { ...noSpan, role: 'request', result: sibling, visibleRows: { request: true, result: true } })
-    expect(row).toMatchObject({ kind: 'tool', role: 'request', call: { id: 'call-1', status: 'in_progress' } })
+    expect(row).toMatchObject({ kind: 'tool', role: 'request', call: { id: 'prt_call-1', status: 'in_progress' } })
+    expect(row?.kind === 'tool' && row.call.kind === 'execute' ? row.call.request.command : null).toBe('echo hi')
+  })
+
+  it.each(['part', 'message', 'session'] as const)('ignores a result that reuses the CallID with a different native %s', (field) => {
+    const sibling = toolFrame(MIMO_TOOL.Bash, { status: MIMO_TOOL_STATUS.Error, input: { command: 'false' }, error: 'Command exited with code 1' })
+    const part = pickObject(pickObject(sibling, 'properties'), 'part')
+    if (!part)
+      throw new Error('The native tool fixture supplied no part.')
+    if (field === 'part')
+      part.id = 'prt_other'
+    else if (field === 'message')
+      part.messageID = 'msg_other'
+    else
+      part.sessionID = 'ses_other'
+    const span: ToolSpanContext = { ...noSpan, role: 'request', result: parsedFrame(sibling), visibleRows: { request: true, result: true } }
+    const row = extract(openingFrame(MIMO_TOOL.Bash, input), 'tool_use', span)
+    expect(row).toMatchObject({ kind: 'tool', role: 'request', call: { status: 'in_progress' } })
     expect(row?.kind === 'tool' && row.call.kind === 'execute' ? row.call.request.command : null).toBe('echo hi')
   })
 

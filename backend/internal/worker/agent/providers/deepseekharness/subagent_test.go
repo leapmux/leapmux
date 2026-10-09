@@ -8,6 +8,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -85,4 +86,118 @@ func TestContinuableResultAttachesOnlyItsExactFirstSpawnSpan(t *testing.T) {
 	span, err = sink.ChildSpawnSpan(virtualID)
 	require.NoError(t, err)
 	assert.Equal(t, "spawn-first", span)
+}
+
+func TestChildTurnStatePreservesEachFinalOutcome(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		completion agent.MessageCompletion
+		status     bgtask.Status
+	}{
+		{agent.MessageCompletionComplete, bgtask.StatusSucceeded},
+		{agent.MessageCompletionInterrupted, bgtask.StatusInterrupted},
+		{agent.MessageCompletionError, bgtask.StatusFailed},
+		{agent.MessageCompletionFinished, bgtask.StatusEndedWithUnknownOutcome},
+	} {
+		t.Run(string(tc.completion), func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a := newOfflineAgent(t, sink)
+			a.children["child"] = &nativeChild{active: true}
+			require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: "child", Kind: bgtask.KindSubagent, Status: bgtask.StatusRunning}))
+
+			require.NoError(t, a.childTurnState("child", false, tc.completion))
+			row, present := sink.BackgroundTask("child")
+			require.True(t, present)
+			assert.Equal(t, tc.status, row.Status)
+			assert.False(t, a.ActiveChildTurnState("child").Active)
+			assert.False(t, row.EndedAt.IsZero())
+			assert.Empty(t, sink.Messages())
+			assert.Empty(t, sink.LeapMuxNotifications())
+		})
+	}
+}
+
+func TestChildTurnStateRejectsInvalidCompletionBeforeChangingActivity(t *testing.T) {
+	t.Parallel()
+	for _, completion := range []agent.MessageCompletion{"", "future", " complete "} {
+		t.Run(string(completion), func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a := newOfflineAgent(t, sink)
+			a.children["child"] = &nativeChild{active: true}
+			require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: "child", Kind: bgtask.KindSubagent, Status: bgtask.StatusRunning, ActiveForm: "Native activity"}))
+			before, present := sink.BackgroundTask("child")
+			require.True(t, present)
+
+			require.ErrorContains(t, a.childTurnState("child", false, completion), "invalid child completion")
+			after, present := sink.BackgroundTask("child")
+			require.True(t, present)
+			assert.Equal(t, before, after)
+			assert.True(t, a.ActiveChildTurnState("child").Active)
+			assert.Equal(t, []bgtask.Status{bgtask.StatusRunning}, sink.BackgroundTaskStatuses("child"))
+		})
+	}
+}
+
+func TestChildTurnStateRevivesAnActiveChildWithoutACompletion(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newOfflineAgent(t, sink)
+	a.children["child"] = &nativeChild{descriptor: nativeChildDescriptor{Mode: "continuable"}}
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: "child", Kind: bgtask.KindSubagent, Status: bgtask.StatusEndedWithUnknownOutcome, ActiveForm: "Old activity"}))
+
+	require.NoError(t, a.childTurnState("child", true, ""))
+	row, present := sink.BackgroundTask("child")
+	require.True(t, present)
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+	assert.True(t, row.EndedAt.IsZero())
+	assert.Empty(t, row.ActiveForm)
+	assert.Equal(t, []string{"child"}, sink.RevivedTasks())
+	assert.True(t, a.ActiveChildTurnState("child").Active)
+	assert.True(t, a.ActiveChildTurnState("child").Steerable)
+}
+
+func TestChildTurnStateIgnoresAnUnknownChild(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newOfflineAgent(t, sink)
+	for _, active := range []bool{false, true} {
+		require.NoError(t, a.childTurnState("missing", active, ""))
+	}
+	assert.Empty(t, a.children)
+	assert.Empty(t, sink.BackgroundTasks())
+}
+
+type failingChildClose struct {
+	*agenttest.Sink
+	cause  error
+	calls  int
+	status bgtask.Status
+}
+
+func (s *failingChildClose) CloseBackgroundTask(_ string, status bgtask.Status) error {
+	s.calls++
+	s.status = status
+	return s.cause
+}
+
+func TestChildTurnStateRetainsARegistryCloseFailure(t *testing.T) {
+	t.Parallel()
+	base := &agenttest.Sink{}
+	cause := errors.New("the registry refused the close")
+	sink := &failingChildClose{Sink: base, cause: cause}
+	a := newOfflineAgent(t, base)
+	a.sink = agent.NewProviderServices(sink)
+	a.children["child"] = &nativeChild{active: true}
+	require.NoError(t, base.UpsertBackgroundTask(bgtask.Upsert{RowKey: "child", Kind: bgtask.KindSubagent, Status: bgtask.StatusRunning}))
+
+	require.ErrorIs(t, a.childTurnState("child", false, agent.MessageCompletionError), cause)
+	assert.Equal(t, 1, sink.calls)
+	assert.Equal(t, bgtask.StatusFailed, sink.status)
+	assert.False(t, a.ActiveChildTurnState("child").Active)
+	row, present := base.BackgroundTask("child")
+	require.True(t, present)
+	assert.Equal(t, bgtask.StatusRunning, row.Status)
+	assert.True(t, row.EndedAt.IsZero())
 }

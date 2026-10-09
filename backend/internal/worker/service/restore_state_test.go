@@ -51,7 +51,7 @@ func TestRestoreStateMarksActiveBackgroundTasksInterrupted(t *testing.T) {
 	}))
 	require.NoError(t, svc.Queries.UpsertAgentBackgroundTask(ctx, db.UpsertAgentBackgroundTaskParams{
 		OwnerAgentID: "root-1", RowKey: "task-done", Seq: 3,
-		Kind: leapmuxv1.BackgroundTaskKind(bgtask.KindSubagent), Title: "already done", Status: leapmuxv1.BackgroundTaskStatus(bgtask.StatusCompleted),
+		Kind: leapmuxv1.BackgroundTaskKind(bgtask.KindSubagent), Title: "already done", Status: leapmuxv1.BackgroundTaskStatus(bgtask.StatusSucceeded),
 	}))
 
 	// The boot-time sweep. RestoreState logs but does not return the
@@ -76,7 +76,7 @@ func TestRestoreStateMarksActiveBackgroundTasksInterrupted(t *testing.T) {
 
 	// The already-finished row is untouched -- the sweep scopes to active rows.
 	require.Contains(t, byKey, "task-done")
-	assert.Equal(t, leapmuxv1.BackgroundTaskStatus(bgtask.StatusCompleted), byKey["task-done"].Status,
+	assert.Equal(t, leapmuxv1.BackgroundTaskStatus(bgtask.StatusSucceeded), byKey["task-done"].Status,
 		"an already-final row must not be relabeled by the boot sweep")
 }
 
@@ -105,7 +105,7 @@ func TestRestoreStatePreservesNativeMessagesForEachInterruptedChild(t *testing.T
 	}
 	doneID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-3", ProviderChildKey: "task-3", Title: "DONE"})
 	require.NoError(t, err)
-	require.NoError(t, sink.CloseBackgroundTask("task-3", bgtask.StatusCompleted))
+	require.NoError(t, sink.CloseBackgroundTask("task-3", bgtask.StatusSucceeded))
 	doneBefore := len(transcriptMessages(t, svc, doneID))
 
 	svc.RestoreState()

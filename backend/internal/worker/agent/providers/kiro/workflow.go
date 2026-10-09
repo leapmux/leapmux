@@ -269,7 +269,7 @@ func (a *Agent) handleNodeStart(note kiroWorkflowNotification) {
 func kiroNodeStatus(status string) bgtask.Status {
 	switch status {
 	case kiroRunCompleted:
-		return bgtask.StatusCompleted
+		return bgtask.StatusSucceeded
 	case kiroRunFailed:
 		return bgtask.StatusFailed
 	default:
@@ -359,7 +359,7 @@ func (a *Agent) handleRunPaused(note kiroWorkflowNotification) {
 func kiroRunStatus(status string) bgtask.Status {
 	switch status {
 	case kiroRunCompleted:
-		return bgtask.StatusCompleted
+		return bgtask.StatusSucceeded
 	case kiroRunFailed:
 		return bgtask.StatusFailed
 	default:

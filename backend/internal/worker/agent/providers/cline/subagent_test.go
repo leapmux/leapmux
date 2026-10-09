@@ -69,15 +69,14 @@ func TestASubagentsOutputReachesItsOwnTranscript(t *testing.T) {
 	assert.Equal(t, []string{contracts.ClineEventToolStarted, contracts.ClineEventToolFinished}, rowEvents(t, &r.sink.Sink),
 		"the lead shows its spawn call alone")
 	item, _ = r.sink.BackgroundTask("spawn_1")
-	assert.Equal(t, bgtask.StatusCompleted, item.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, item.Status)
 	reports := child.LeapMuxNotifications()
 	require.Len(t, reports, 1, "the child's answer ends its transcript as a report")
 	assert.Equal(t, "Subagent result.", reports[0][contracts.NotificationFieldText])
 }
 
-// A configured agent (`subagent_<name>_<hash>`, from `.cline/agents/`) runs a
-// child that asks nothing, with the same untagged live output as spawn_agent.
-// It takes its task as `prompt`.
+// A configured .cline/agents/ tool uses subagent_<name>_<hash> and supplies its task through prompt.
+// It starts a child without approval and emits the same untagged live output as spawn_agent.
 func TestAConfiguredAgentGetsItsOwnTranscript(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
@@ -100,7 +99,7 @@ func TestAConfiguredAgentGetsItsOwnTranscript(t *testing.T) {
 	assert.Equal(t, []string{contracts.ClineEventToolStarted, contracts.ClineEventToolFinished}, rowEvents(t, &r.sink.Sink),
 		"the lead shows its call alone, and not the child's answer as its own")
 	item, _ = r.sink.BackgroundTask("agent_1")
-	assert.Equal(t, bgtask.StatusCompleted, item.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, item.Status)
 }
 
 func TestAParallelToolOfTheLeadStaysWithTheLead(t *testing.T) {
@@ -130,14 +129,14 @@ func TestASubagentOfASubagentGetsItsOwnTranscript(t *testing.T) {
 
 	outer := r.childSink(t, "spawn_1")
 	assert.Equal(t, []string{contracts.ClineEventToolStarted, contracts.ClineEventToolFinished, contracts.ClineEventAssistantFinished}, rowEvents(t, outer))
-	// The inner call belongs to the outer child's transcript, and its row to the
-	// outer child's sink: production files every row under the root owner.
+	// The nested call belongs to the outer child's transcript, and its row writes through that child's sink.
+	// Production still stores every registry row under the root owner.
 	inner, ok := outer.BackgroundTask("spawn_2")
 	require.True(t, ok)
 	outerItem, _ := r.sink.BackgroundTask("spawn_1")
 	assert.Equal(t, outerItem.ChildAgentID, inner.ParentAgentID, "the inner subagent is the outer one's child")
 	assert.Equal(t, []string{contracts.ClineEventAssistantFinished}, rowEvents(t, outer.Child(inner.ChildAgentID)))
-	assert.Equal(t, bgtask.StatusCompleted, inner.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, inner.Status)
 }
 
 func TestAFailedSubagentFailsItsRow(t *testing.T) {
@@ -152,9 +151,9 @@ func TestAFailedSubagentFailsItsRow(t *testing.T) {
 
 func TestSpawnStatus(t *testing.T) {
 	t.Parallel()
-	assert.Equal(t, bgtask.StatusCompleted, spawnStatus("completed", ""))
-	assert.Equal(t, bgtask.StatusCompleted, spawnStatus("max_iterations", ""))
-	assert.Equal(t, bgtask.StatusCompleted, spawnStatus("", ""))
+	assert.Equal(t, bgtask.StatusSucceeded, spawnStatus("completed", ""))
+	assert.Equal(t, bgtask.StatusSucceeded, spawnStatus("max_iterations", ""))
+	assert.Equal(t, bgtask.StatusSucceeded, spawnStatus("", ""))
 	assert.Equal(t, bgtask.StatusStopped, spawnStatus("aborted", "aborted"))
 	assert.Equal(t, bgtask.StatusFailed, spawnStatus("error", ""))
 	assert.Equal(t, bgtask.StatusFailed, spawnStatus("mistake_limit", ""))
@@ -229,7 +228,7 @@ func TestParallelSubagentsTakeTheirTranscriptsFromClinesStore(t *testing.T) {
 	waitFor(t, func() bool {
 		a, _ := r.sink.BackgroundTask("spawn_a")
 		b, _ := r.sink.BackgroundTask("spawn_b")
-		return a.Status == bgtask.StatusCompleted && b.Status == bgtask.StatusCompleted
+		return a.Status == bgtask.StatusSucceeded && b.Status == bgtask.StatusSucceeded
 	}, "both rows close once their transcripts are written")
 
 	childA := r.childSink(t, "spawn_a")
@@ -276,7 +275,7 @@ func TestABackfillWaitsForTheChildToFinish(t *testing.T) {
 	r.feed(t, contracts.ClineEventToolFinished, spawnFinish("spawn_a", "A done.", "completed"))
 	waitFor(t, func() bool {
 		item, _ := r.sink.BackgroundTask("spawn_a")
-		return item.Status == bgtask.StatusCompleted
+		return item.Status == bgtask.StatusSucceeded
 	}, "the row closes after the transcript")
 	assert.Equal(t, []string{contracts.ClineEventAssistantFinished}, rowEvents(t, r.childSink(t, "spawn_a")))
 }
@@ -346,8 +345,8 @@ func TestAChildSessionCreatedBeforeTheCallIsNotItsChild(t *testing.T) {
 	assert.False(t, ok)
 }
 
-// ambiguousSpawns starts two parallel spawns whose output nothing attributes,
-// and ends the first, which starts its backfill.
+// ambiguousSpawns starts two parallel children with unresolved live-output ownership.
+// Ending the first starts its stored transcript read.
 func (r *rig) ambiguousSpawns(t *testing.T) {
 	t.Helper()
 	r.feedTurn(t)
@@ -357,9 +356,9 @@ func (r *rig) ambiguousSpawns(t *testing.T) {
 	r.feed(t, contracts.ClineEventToolFinished, spawnFinish("spawn_a", "A done.", "completed"))
 }
 
-// Cline can store no finished session for a child, or fail to list them. The
-// backfill tries at each of its waits, then gives up, and the row still closes
-// with the child's report: a row that stayed Running would never end.
+// Cline can omit an ended child session or fail to list it.
+// Attempt the stored read at each configured wait, then stop attempting it.
+// The call's known report still closes its row; leaving that row Running would never receive another close.
 func TestABackfillThatFindsNoChildClosesTheRow(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
@@ -386,7 +385,7 @@ func TestABackfillThatFindsNoChildClosesTheRow(t *testing.T) {
 	}
 	waitFor(t, func() bool {
 		item, _ := r.sink.BackgroundTask("spawn_a")
-		return item.Status == bgtask.StatusCompleted
+		return item.Status == bgtask.StatusSucceeded
 	}, "the row closes once the backfill gives up")
 	assert.Len(t, r.hub.commandsNamed(commandSessionList), len(backfillWaits), "one read for each wait")
 	child := r.childSink(t, "spawn_a")
@@ -412,7 +411,7 @@ func TestABackfillThatCannotReadTheChildClosesTheRow(t *testing.T) {
 	r.ambiguousSpawns(t)
 	waitFor(t, func() bool {
 		item, _ := r.sink.BackgroundTask("spawn_a")
-		return item.Status == bgtask.StatusCompleted
+		return item.Status == bgtask.StatusSucceeded
 	}, "the row closes")
 	assert.Len(t, r.hub.commandsNamed(commandSessionMessages), 1, "the backfill reads once and stops")
 	assert.Empty(t, rowEvents(t, r.childSink(t, "spawn_a")))
@@ -438,7 +437,7 @@ func TestAStopDuringABackfillFinishesTheRow(t *testing.T) {
 		assert.True(t, item.Status.IsFinished(), "%s is final when Stop returns", key)
 	}
 	item, _ := r.sink.BackgroundTask("spawn_a")
-	assert.Equal(t, bgtask.StatusCompleted, item.Status, "the call completed before the stop")
+	assert.Equal(t, bgtask.StatusSucceeded, item.Status, "the call completed before the stop")
 }
 
 func TestASubagentWithNoTaskTakesTheFallbackTitle(t *testing.T) {
@@ -452,9 +451,9 @@ func TestASubagentWithNoTaskTakesTheFallbackTitle(t *testing.T) {
 	assert.Empty(t, r.childSink(t, "spawn_1").Messages(), "no task, no prompt row")
 }
 
-// A child transcript that the database refuses leaves the row without a link.
-// The child's output then reaches no transcript -- never the lead's -- and the
-// row still closes with the call.
+// If the database refuses child creation, retain a registry row without a child link.
+// Write the child's output to no transcript, including the lead transcript.
+// The row still closes when its call ends.
 func TestASubagentWithNoTranscriptStillClosesItsRow(t *testing.T) {
 	t.Parallel()
 	r := newRig(t, withNoChild)
@@ -471,12 +470,11 @@ func TestASubagentWithNoTranscriptStillClosesItsRow(t *testing.T) {
 	assert.Equal(t, []string{contracts.ClineEventToolStarted, contracts.ClineEventToolFinished}, rowEvents(t, &r.sink.Sink),
 		"the lead shows its call alone")
 	item, _ = r.sink.BackgroundTask("spawn_1")
-	assert.Equal(t, bgtask.StatusCompleted, item.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, item.Status)
 	assert.False(t, r.agent.spawnRuns())
 }
 
-// A child that completed wrote its text in full, and a call that it still held
-// open did not finish.
+// A successful child completes its text, but a tool call that it leaves open remains incomplete.
 func TestASubagentThatCompletesClosesWhatItLeftOpen(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
@@ -516,8 +514,8 @@ func TestAFailedSubagentReportsItsError(t *testing.T) {
 	assert.Equal(t, "the model failed", reports[0][contracts.NotificationFieldText])
 }
 
-// A call cannot end before the calls that its child made: one that its parent's
-// end cut short stops with it, or fails with it.
+// When a parent ends before its child's nested calls, end those calls also.
+// Use stopped or failed according to the parent's outcome.
 func TestANestedSubagentEndsWithItsParent(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -525,7 +523,7 @@ func TestANestedSubagentEndsWithItsParent(t *testing.T) {
 		outer  bgtask.Status
 		inner  bgtask.Status
 	}{
-		{contracts.ClineRunReasonCompleted, bgtask.StatusCompleted, bgtask.StatusStopped},
+		{contracts.ClineRunReasonCompleted, bgtask.StatusSucceeded, bgtask.StatusStopped},
 		{contracts.ClineRunReasonError, bgtask.StatusFailed, bgtask.StatusFailed},
 		{contracts.ClineRunReasonAborted, bgtask.StatusStopped, bgtask.StatusStopped},
 	} {
@@ -560,7 +558,7 @@ func TestSpawnCompletions(t *testing.T) {
 		status      bgtask.Status
 		text, tools agent.MessageCompletion
 	}{
-		{bgtask.StatusCompleted, agent.MessageCompletionComplete, agent.MessageCompletionError},
+		{bgtask.StatusSucceeded, agent.MessageCompletionComplete, agent.MessageCompletionError},
 		{bgtask.StatusFailed, agent.MessageCompletionError, agent.MessageCompletionError},
 		{bgtask.StatusStopped, agent.MessageCompletionInterrupted, agent.MessageCompletionInterrupted},
 		{bgtask.StatusInterrupted, agent.MessageCompletionInterrupted, agent.MessageCompletionInterrupted},
@@ -570,14 +568,15 @@ func TestSpawnCompletions(t *testing.T) {
 		assert.Equal(t, tc.tools, tools, tc.status.String())
 	}
 	assert.Equal(t, bgtask.StatusFailed, stoppedWith(bgtask.StatusFailed))
-	assert.Equal(t, bgtask.StatusStopped, stoppedWith(bgtask.StatusCompleted))
+	assert.Equal(t, bgtask.StatusStopped, stoppedWith(bgtask.StatusSucceeded))
 	assert.Equal(t, bgtask.StatusStopped, stoppedWith(bgtask.StatusStopped))
 }
 
-// The stored conversation can hold what the transcript cannot show: a call with
-// no id, a result of a call that the transcript never opened, and blank text.
-// None of it reaches the transcript, and a conversation that is not a list
-// writes nothing.
+// Exclude these unusable stored records from the transcript:
+//   - A call without an ID.
+//   - A result without a previously opened call.
+//   - Blank text.
+// A conversation that is not a list also writes nothing.
 func TestWriteStoredConversationSkipsWhatItCannotShow(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)

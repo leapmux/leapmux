@@ -23,8 +23,11 @@ import (
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
-// setupGoalTest provisions a worker service with one agent and returns the
-// sink, the agent id, and a reader for the stored goal columns.
+// setupGoalTest creates one stored agent and returns these values:
+//   - The Worker service.
+//   - The registered root sink.
+//   - The agent ID.
+//   - A reader for the stored row.
 func setupGoalTest(t *testing.T) (*Service, agent.ProviderServices, string, func() db.Agent) {
 	t.Helper()
 	ctx := context.Background()
@@ -45,13 +48,9 @@ func setupGoalTest(t *testing.T) (*Service, agent.ProviderServices, string, func
 	return svc, sink, "agent-1", readRow
 }
 
-// goalNotificationCount counts the goal TRANSITIONS in the transcript.
-//
-// It counts occurrences of the type token, not message rows: adjacent
-// notifications are folded into one notification_thread wrapper that carries
-// each entry inside it, so two transitions with nothing between them are two
-// entries in one row. Counting rows would report that as one and hide a
-// duplicate announcement.
+// goalNotificationCount counts goal transitions in the stored transcript.
+// Adjacent notifications share one notification_thread row, which retains each notification as a separate entry.
+// Count type tokens to detect duplicate announcements within that row.
 func goalNotificationCount(t *testing.T, svc *Service, agentID string) int {
 	t.Helper()
 	msgs, err := svc.Queries.ListMessagesByAgentID(context.Background(), db.ListMessagesByAgentIDParams{
@@ -68,10 +67,8 @@ func goalNotificationCount(t *testing.T, svc *Service, agentID string) int {
 	return n
 }
 
-// goalTransitionKinds returns the `goal_transition` token of every goal_updated
-// entry, in order. It reads the PERSISTED payload rather than calling
-// goalTransitionKind directly, because the value only helps if it survives the
-// notification envelope the browser reads.
+// goalTransitionKinds reads each stored goal_transition token in transcript order.
+// The test must read the actual notification envelope that the browser receives.
 func goalTransitionKinds(t *testing.T, svc *Service, agentID string) []string {
 	t.Helper()
 	msgs, err := svc.Queries.ListMessagesByAgentID(context.Background(), db.ListMessagesByAgentIDParams{
@@ -82,10 +79,8 @@ func goalTransitionKinds(t *testing.T, svc *Service, agentID string) []string {
 	for _, m := range msgs {
 		body, err := msgcodec.Decompress(m.Content, m.ContentCompression)
 		require.NoError(t, err)
-		// Adjacent notifications fold into one thread wrapper, so a row can
-		// carry several entries. Scan the raw body IN ORDER rather than
-		// decoding a shape that differs between a standalone row and a thread;
-		// the order is what the assertions are about.
+		// A notification row can hold one notification or a thread of notifications.
+		// Read tokens in byte order to compare transcript order across both shapes.
 		for _, match := range goalTransitionPattern.FindAllSubmatch(body, -1) {
 			kinds = append(kinds, string(match[1]))
 		}
@@ -93,9 +88,8 @@ func goalTransitionKinds(t *testing.T, svc *Service, agentID string) []string {
 	return kinds
 }
 
-// goalTransitionPattern reads the transition token out of a persisted payload.
-// The value is written with json.Marshal of a map, so the key and the value sit
-// together with no space.
+// goalTransitionPattern reads the transition token from the persisted payload.
+// json.Marshal writes the map's key and value without a space between them.
 var goalTransitionPattern = regexp.MustCompile(`"goal_transition":"([a-z]+)"`)
 
 func activeGoal(objective string, tokensUsed int64, createdAt time.Time) agent.GoalUpdate {
@@ -123,8 +117,108 @@ func TestGoal_FirstReportStoresAndAnnounces(t *testing.T) {
 	assert.Equal(t, 1, goalNotificationCount(t, svc, agentID))
 }
 
-// The regression the ticket is about. Codex reports after every completed tool
-// call, and only the counters move; the transcript must stay at one row.
+func TestGoalUnknownStatusPublishesTheNeutralUpdatedTransition(t *testing.T) {
+	svc, _, writer, sink, _ := goalPublicationFixture(t)
+	update := goalPublicationUpdate("Native objective", 11)
+	sink.UpsertGoal(update)
+	update.Status = agent.GoalStatusUnknown
+	update.StatusDetail = "futureState"
+	sink.UpsertGoal(update)
+	stored := mustGoalRow(t, svc)
+	assert.Equal(t, leapmuxv1.AgentGoalStatus_AGENT_GOAL_STATUS_UNKNOWN, stored.GoalStatus)
+	assert.Equal(t, "futureState", stored.GoalStatusDetail)
+	assert.Equal(t, []string{"set", "updated"}, goalTransitionKinds(t, svc, stored.ID))
+	snapshot, err := svc.Output.LoadGoal(t.Context(), stored.ID)
+	require.NoError(t, err)
+	require.NotNil(t, snapshot.Goal)
+	assert.Equal(t, leapmuxv1.AgentGoalStatus_AGENT_GOAL_STATUS_UNKNOWN, snapshot.Goal.GetStatus())
+	assert.Equal(t, "futureState", snapshot.Goal.GetStatusDetail())
+	stamp := stored.GoalUpdatedAt
+	before := len(decodeAgentEvents(writer.testResponseWriter))
+	sink.UpsertGoal(update)
+	assert.Equal(t, stamp, mustGoalRow(t, svc).GoalUpdatedAt)
+	assert.Empty(t, goalPublicationStages(t, decodeAgentEvents(writer.testResponseWriter)[before:]))
+	update.StatusDetail = "anotherFutureState"
+	sink.UpsertGoal(update)
+	assert.Equal(t, "anotherFutureState", mustGoalRow(t, svc).GoalStatusDetail)
+	assert.Equal(t, 2, goalNotificationCount(t, svc, stored.ID), "a detail-only update must not add another transition")
+}
+
+func TestGoalUnknownSnapshotAndStatusUpdatePreserveStoredIdentity(t *testing.T) {
+	for _, operation := range []string{"snapshot", "status"} {
+		t.Run(operation, func(t *testing.T) {
+			svc, _, _, sink, _ := goalPublicationFixture(t)
+			update := goalPublicationUpdate("Native objective", 11)
+			sink.UpsertGoal(update)
+			before := mustGoalRow(t, svc)
+			if operation == "snapshot" {
+				update.Status, update.StatusDetail, update.Snapshot = agent.GoalStatusUnknown, "futureState", true
+				sink.UpsertGoal(update)
+			} else {
+				sink.UpdateGoalStatus(agent.GoalStatusActive, agent.GoalStatusUnknown)
+			}
+			after := mustGoalRow(t, svc)
+			assert.Equal(t, leapmuxv1.AgentGoalStatus_AGENT_GOAL_STATUS_UNKNOWN, after.GoalStatus)
+			assert.Equal(t, before.GoalObjective, after.GoalObjective)
+			assert.Equal(t, before.GoalNativeID, after.GoalNativeID)
+			assert.Equal(t, before.GoalCreatedAt, after.GoalCreatedAt)
+			expected := 2
+			if operation == "snapshot" {
+				expected = 1
+			}
+			assert.Equal(t, expected, goalNotificationCount(t, svc, after.ID))
+			if operation == "status" {
+				assert.Equal(t, []string{"set", "updated"}, goalTransitionKinds(t, svc, after.ID))
+			}
+		})
+	}
+}
+
+func TestGoalUnknownProcessExitAndReplayDeriveDormantWithoutAWrite(t *testing.T) {
+	svc, dispatcher, writer, sink, _ := goalPublicationFixture(t)
+	update := goalPublicationUpdate("Native objective", 11)
+	update.Status, update.StatusDetail = agent.GoalStatusUnknown, "futureState"
+	sink.UpsertGoal(update)
+	before := mustGoalRow(t, svc)
+	assert.Equal(t, leapmuxv1.AgentGoalStatus_AGENT_GOAL_STATUS_UNKNOWN, before.GoalStatus)
+	beforeNotifications := goalNotificationCount(t, svc, before.ID)
+	svc.Agents.StopAndWaitAgent(before.ID)
+	svc.Output.publishGoalCapabilities(before.ID)
+	after := mustGoalRow(t, svc)
+	assert.Equal(t, before, after, "the process-exit projection must change no stored goal field or stamp")
+	assert.Equal(t, beforeNotifications, goalNotificationCount(t, svc, before.ID))
+	snapshot, err := svc.Output.LoadGoal(t.Context(), before.ID)
+	require.NoError(t, err)
+	require.NotNil(t, snapshot.Goal)
+	assert.Equal(t, leapmuxv1.AgentGoalStatus_AGENT_GOAL_STATUS_DORMANT, snapshot.Goal.GetStatus())
+	assert.Empty(t, snapshot.Goal.GetStatusDetail())
+	var projected *leapmuxv1.AgentGoalChanged
+	for _, event := range decodeAgentEvents(writer.testResponseWriter) {
+		if event.GetGoalChanged() != nil {
+			projected = event.GetGoalChanged()
+		}
+	}
+	require.NotNil(t, projected)
+	assert.Equal(t, leapmuxv1.AgentGoalStatus_AGENT_GOAL_STATUS_DORMANT, projected.GetGoal().GetStatus())
+	assert.Empty(t, projected.GetSupportedActions())
+	replayed := &replayIdentityWriter{testResponseWriter: &testResponseWriter{channelID: "unknown-goal-replay"}}
+	openReplayIdentityWatch(t, dispatcher, &leapmuxv1.WatchEventsRequest{UpdateId: 71, Agents: []*leapmuxv1.WatchAgentEntry{replayOriginEntry(before.ID, 71)}}, replayed)
+	require.Eventually(t, func() bool { return countCatchUpCompletes(replayed.testResponseWriter) == 1 }, 30*time.Second, time.Millisecond)
+	var replayGoal *leapmuxv1.AgentGoalChanged
+	for _, event := range decodeAgentEvents(replayed.testResponseWriter) {
+		if event.GetGoalChanged() != nil {
+			assert.Equal(t, before.ID, readReplayOrigin(event))
+			replayGoal = event.GetGoalChanged()
+		}
+	}
+	require.NotNil(t, replayGoal)
+	assert.True(t, proto.Equal(snapshot.Goal, replayGoal.GetGoal()))
+	assert.Equal(t, snapshot.UpdatedAt, replayGoal.GetGoalUpdatedAt())
+	assert.Equal(t, before, mustGoalRow(t, svc))
+}
+
+// Codex reports after each completed tool call, even when only its counters change.
+// Those reports must produce only one goal transition in the transcript.
 func TestGoal_ProgressOnlyReportsWriteNoTranscriptRow(t *testing.T) {
 	t.Parallel()
 	svc, sink, agentID, readRow := setupGoalTest(t)
@@ -156,10 +250,8 @@ func TestGoal_StatusChangeAnnounces(t *testing.T) {
 	assert.Equal(t, "complete", row.GoalStatusDetail)
 }
 
-// Codex puts NO goal id on the wire. A user who restarts the same objective
-// gets a fresh createdAt and nothing else, so a transition test over
-// (objective, status) alone would read a restart as no change and never
-// announce it.
+// Codex supplies no native goal ID. A restarted objective receives a new createdAt.
+// A comparison of objective and status alone would omit that restart from the transcript.
 func TestGoal_SameObjectiveWithNewCreatedAtIsANewGoal(t *testing.T) {
 	t.Parallel()
 	svc, sink, agentID, readRow := setupGoalTest(t)
@@ -220,9 +312,9 @@ func TestGoal_LearningNativeIdentityPreservesTheExistingGoal(t *testing.T) {
 	assert.Equal(t, "native", readRow().GoalNativeID)
 }
 
-// A resume snapshot restates a goal that may be hours old. It must update the
-// row so the panel is right, and write nothing, or every resume prints
-// "Goal set: X" as though it just happened.
+// A resume snapshot can describe a goal that the provider created hours earlier.
+// It updates the stored row and card without a new transcript notification.
+// A new notification would incorrectly announce the old goal at resume time.
 func TestGoal_SnapshotUpdatesStateWithoutAnnouncing(t *testing.T) {
 	t.Parallel()
 	svc, sink, agentID, readRow := setupGoalTest(t)
@@ -237,18 +329,16 @@ func TestGoal_SnapshotUpdatesStateWithoutAnnouncing(t *testing.T) {
 		"the panel still needs the goal a resume restated")
 }
 
-// Codex sends thread/goal/cleared on resume to mean "this thread has no goal".
-// That arrives when the worker's memory is cold and the ROW may still hold a
-// goal from a previous process, so the write must be issued from what the
-// database holds -- never skipped because the in-memory copy looks empty.
+// Codex sends thread/goal/cleared on resume when the native thread has no goal.
+// The stored row can still hold the previous process's goal while the Worker cache is empty.
+// The clear must use stored state even when a new sink holds no cached goal.
 func TestGoal_ClearIssuesTheWriteFromStoredState(t *testing.T) {
 	t.Parallel()
 	svc, sink, agentID, readRow := setupGoalTest(t)
 	created := time.Unix(1_700_000_000, 0).UTC()
 
 	sink.UpsertGoal(activeGoal("Old objective", 100, created))
-	// A fresh sink stands in for a worker that restarted: it has no memory of
-	// the goal above, and the row still holds it.
+	// A new sink represents a restarted Worker. The original goal remains in its stored row.
 	coldSink := svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 	coldSink.ClearGoal(false)
 
@@ -259,7 +349,7 @@ func TestGoal_ClearIssuesTheWriteFromStoredState(t *testing.T) {
 	assert.Equal(t, 2, goalNotificationCount(t, svc, agentID), "set, then cleared")
 }
 
-// Clearing a goal that was never set changes nothing and announces nothing.
+// A clear of an absent goal changes its stamp but announces no goal transition.
 func TestGoal_ClearWithNoGoalAnnouncesNothing(t *testing.T) {
 	t.Parallel()
 	svc, sink, agentID, _ := setupGoalTest(t)
@@ -269,10 +359,9 @@ func TestGoal_ClearWithNoGoalAnnouncesNothing(t *testing.T) {
 	assert.Equal(t, 0, goalNotificationCount(t, svc, agentID))
 }
 
-// The status DETAIL moves far more often than the goal does: Claude Code puts
-// the goal evaluator's reason for the last "not yet" there, and Reasonix streams
-// a lastReason on a cadence of its own. Announcing those would rebuild the exact
-// transcript flood the applier exists to stop.
+// A status detail can change after every turn while the goal remains the same.
+// Claude Code reports its evaluator's reason, and Reasonix reports lastReason.
+// Those details update the card without a repeated transcript announcement.
 func TestGoal_StatusDetailChangeStoresButNeverAnnounces(t *testing.T) {
 	t.Parallel()
 	svc, sink, agentID, readRow := setupGoalTest(t)
@@ -295,8 +384,8 @@ func TestGoal_StatusDetailChangeStoresButNeverAnnounces(t *testing.T) {
 		"the card still reads the latest reason")
 }
 
-// A DIFFERENT objective after a restart is a new goal and has to reach the
-// transcript. The restatement rule must not swallow it.
+// A changed objective after a restart is a new goal and must reach the transcript.
+// The restatement rule must not suppress it.
 func TestGoal_ANewObjectiveAfterARestartStillAnnounces(t *testing.T) {
 	t.Parallel()
 	svc, sink, agentID, readRow := setupGoalTest(t)
@@ -311,9 +400,8 @@ func TestGoal_ANewObjectiveAfterARestartStillAnnounces(t *testing.T) {
 	assert.Equal(t, "A brand new objective", readRow().GoalObjective)
 }
 
-// The stamp that orders two answers about the goal must survive a CLEAR, which
-// is the answer a stale cold-load reply resurrects. It rides the carrier, not
-// the goal, for exactly that reason.
+// A clear requires its stamp even when its goal is nil.
+// The event carries that stamp so an older cold-load reply cannot restore the cleared goal.
 func TestGoal_ClearedAgentStillCarriesAnOrderingStamp(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -335,8 +423,7 @@ func TestGoal_ClearedAgentStillCarriesAnOrderingStamp(t *testing.T) {
 		"the layout is fixed-width UTC, so a string compare orders the two")
 }
 
-// LoadGoal is the cold-start read. A CHILD agent never owns a goal and must not
-// inherit its root's.
+// LoadGoal supplies the cold-start projection. A child owns no goal and must not inherit its root's goal.
 func TestGoal_LoadGoalAnswersNilForAChild(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -365,9 +452,8 @@ func TestGoal_LoadGoalAnswersNilForAChild(t *testing.T) {
 	assert.Empty(t, childGoal.UpdatedAt, "and no stamp to order one with")
 }
 
-// A child sink must not write a goal at all: Codex collab children ARE threads
-// and can carry one, and storing it under the root would replace the session's
-// objective with a subagent's.
+// A Codex collaboration child is a native thread and can report its own goal.
+// Its child sink must not replace the root's session objective with that goal.
 func TestGoal_ChildSinkCannotWriteAGoal(t *testing.T) {
 	t.Parallel()
 	svc, sink, _, readRow := setupGoalTest(t)
@@ -386,9 +472,10 @@ func TestGoal_ChildSinkCannotWriteAGoal(t *testing.T) {
 		"a child's goal must not overwrite the session's, and a child's clear must not erase it")
 }
 
-// The event the browser actually reads. Three paths send it -- the applier's
-// broadcast, the capability re-publish, and the WatchEvents replay -- so it is
-// built in ONE place and asserted here rather than at each of them.
+// These producers share the pure builder for the event that the browser reads:
+//   - A committed goal mutation.
+//   - A capability projection.
+//   - WatchEvents catch-up.
 func TestGoal_ChangedEventCarriesTheGoalAndItsStamp(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -398,7 +485,7 @@ func TestGoal_ChangedEventCarriesTheGoalAndItsStamp(t *testing.T) {
 	stored, err := svc.Output.LoadGoal(ctx, agentID)
 	require.NoError(t, err)
 
-	event := svc.Output.GoalChangedEvent(agentID, stored.Goal, stored.UpdatedAt)
+	event := GoalChangedEvent(agentID, stored, svc.Output.SupportedGoalActions(agentID))
 	changed := event.GetGoalChanged()
 	require.NotNil(t, changed)
 	assert.Equal(t, agentID, changed.GetAgentId())
@@ -407,9 +494,8 @@ func TestGoal_ChangedEventCarriesTheGoalAndItsStamp(t *testing.T) {
 	assert.NotEmpty(t, changed.GetGoalUpdatedAt())
 }
 
-// The stamp must ride the CARRIER, not the goal, because the answer it has to
-// order is the one where the goal is absent. An agent with no goal still
-// carries a stamp once it has had one cleared.
+// A cleared goal is nil, so the event itself must retain the stamp.
+// The stamp orders this answer against an older reply with a present goal.
 func TestGoal_ChangedEventStampsAnAbsentGoalToo(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -421,24 +507,21 @@ func TestGoal_ChangedEventStampsAnAbsentGoalToo(t *testing.T) {
 	require.NoError(t, err)
 	require.Nil(t, stored.Goal)
 
-	changed := svc.Output.GoalChangedEvent(agentID, stored.Goal, stored.UpdatedAt).GetGoalChanged()
+	changed := GoalChangedEvent(agentID, stored, svc.Output.SupportedGoalActions(agentID)).GetGoalChanged()
 	require.NotNil(t, changed)
 	assert.Nil(t, changed.GetGoal())
 	assert.NotEmpty(t, changed.GetGoalUpdatedAt(),
 		"a cleared goal is the answer a stale reply resurrects, so it needs a stamp")
 }
 
-// The projection speaks for itself rather than trusting every past writer.
-// proto.Marshal fails the WHOLE message for one invalid byte, and this
-// projection feeds ListAgentMessagesResponse -- so a byte that reached the
-// column would fail an entire page of chat history, not merely hide the goal.
+// The projection repairs bytes that a previous writer could store.
+// One invalid byte makes proto.Marshal reject the complete ListAgentMessagesResponse and its chat history page.
 func TestGoal_ProjectionNeverEmitsBytesProtoCannotMarshal(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	svc, _, agentID, _ := setupGoalTest(t)
 
-	// Write the bad bytes straight to the column, which is the one way they get
-	// there: GoalUpdate.Clean strips them on every path into the sink.
+	// Write invalid bytes directly because GoalUpdate.Clean removes them from every sink input.
 	require.NoError(t, svc.Queries.UpdateAgentGoal(ctx, db.UpdateAgentGoalParams{
 		GoalObjective:    "ship \xff it",
 		GoalStatus:       leapmuxv1.AgentGoalStatus(agent.GoalStatusActive),
@@ -448,10 +531,8 @@ func TestGoal_ProjectionNeverEmitsBytesProtoCannotMarshal(t *testing.T) {
 		ID:               agentID,
 	}))
 
-	// sqlite stores the bytes VERBATIM. Without this the test would pass for the
-	// wrong reason -- a database that sanitized on its own would leave the
-	// projection's repair doing nothing, and the assertions below could not tell
-	// the difference.
+	// Require the actual invalid bytes in SQLite before the projection runs.
+	// Otherwise, database sanitization could make the test pass without a projection repair.
 	stored, err := svc.Queries.GetAgentByID(ctx, agentID)
 	require.NoError(t, err)
 	require.False(t, utf8.ValidString(stored.GoalObjective),
@@ -463,7 +544,7 @@ func TestGoal_ProjectionNeverEmitsBytesProtoCannotMarshal(t *testing.T) {
 	assert.True(t, utf8.ValidString(loaded.Goal.GetObjective()))
 	assert.True(t, utf8.ValidString(loaded.Goal.GetStatusDetail()))
 
-	// The real assertion: the whole response this projection rides marshals.
+	// Require serialization of the complete response that carries the projection.
 	_, marshalErr := proto.Marshal(&leapmuxv1.ListAgentMessagesResponse{
 		Goal:       loaded.Goal,
 		GoalLoaded: true,
@@ -471,9 +552,8 @@ func TestGoal_ProjectionNeverEmitsBytesProtoCannotMarshal(t *testing.T) {
 	assert.NoError(t, marshalErr, "one bad byte would fail the entire message page")
 }
 
-// Absent and zero are different answers. No two providers report the same
-// counters, so a field the provider never mentioned must be OMITTED -- a
-// present zero renders as "0 tokens used", which states something false.
+// An absent counter differs from an explicit zero.
+// Keep an unreported counter absent because a displayed zero would claim usage that the provider never reported.
 func TestGoalProgressInfo_OmitsWhatTheProviderDidNotReport(t *testing.T) {
 	t.Parallel()
 
@@ -488,8 +568,7 @@ func TestGoalProgressInfo_OmitsWhatTheProviderDidNotReport(t *testing.T) {
 	assert.NotContains(t, codexLike, "iterations", "Codex states no iteration count")
 	assert.NotContains(t, codexLike, "token_budget", "a null budget is absent, not zero")
 
-	// A zero the provider DID report is kept: zero tokens used is a real answer
-	// for a goal that has just started.
+	// Preserve explicit zero because a newly started goal can report zero usage.
 	zero := int64(0)
 	assert.Equal(t, map[string]interface{}{"tokens_used": int64(0)},
 		goalProgressInfo(agent.GoalUpdate{TokensUsed: &zero}))
@@ -498,19 +577,15 @@ func TestGoalProgressInfo_OmitsWhatTheProviderDidNotReport(t *testing.T) {
 	assert.Nil(t, goalProgressInfo(agent.GoalUpdate{Objective: "no counters here"}))
 }
 
-// The mutex the applier holds is the whole reason a burst of identical reports
-// announces once. Every other test in this file calls the sink serially, and a
-// serial suite stays green with the lock removed: the read-modify-write only
-// interleaves when two reports genuinely race.
-//
-// Run under -race, where a missing lock is also a reported data race.
+// Concurrent identical reports must announce only one transition.
+// Serial calls cannot prove that comparison and storage form one serialized operation.
+// Run with -race to detect concurrent access defects also.
 func TestGoal_ConcurrentIdenticalReportsAnnounceOnce(t *testing.T) {
 	t.Parallel()
 	svc, sink, agentID, readRow := setupGoalTest(t)
 	created := time.Unix(1_700_000_000, 0).UTC()
 
-	// One shared createdAt, so every report describes the SAME goal and only
-	// the first of them is a transition.
+	// The shared creation time identifies one goal. Only the first report is a transition.
 	const reporters = 8
 	start := make(chan struct{})
 	var wg sync.WaitGroup
@@ -530,11 +605,9 @@ func TestGoal_ConcurrentIdenticalReportsAnnounceOnce(t *testing.T) {
 	assert.Equal(t, "Ship it", readRow().GoalObjective)
 }
 
-// A clear that RESTATES the absence must not announce one. Codex pushes
-// thread/goal/cleared on every resume for a thread that has no goal, and that
-// lands when the worker's copy is cold and the row still holds a goal from the
-// previous process -- so without the flag the user opens the chat after a
-// restart and reads "Goal cleared: X" for a clear nobody performed.
+// Codex sends thread/goal/cleared on resume to restate the native thread's absent goal.
+// A snapshot clear removes a stale stored goal without announcing a new user action.
+// Without the snapshot flag, restart would produce a false clear notification.
 func TestGoal_SnapshotClearRemovesTheGoalWithoutAnnouncingIt(t *testing.T) {
 	t.Parallel()
 	svc, sink, agentID, readRow := setupGoalTest(t)
@@ -550,8 +623,8 @@ func TestGoal_SnapshotClearRemovesTheGoalWithoutAnnouncingIt(t *testing.T) {
 		"a restatement of the absence announces nothing")
 }
 
-// The mirror of the test above: a clear the user actually performed still
-// reaches the transcript, so the flag suppresses a restatement and nothing else.
+// A user-requested clear still reaches the transcript.
+// The snapshot flag suppresses only a restatement of native state.
 func TestGoal_RealClearAnnounces(t *testing.T) {
 	t.Parallel()
 	svc, sink, agentID, _ := setupGoalTest(t)
@@ -562,9 +635,8 @@ func TestGoal_RealClearAnnounces(t *testing.T) {
 	assert.Equal(t, 2, goalNotificationCount(t, svc, agentID))
 }
 
-// The case the old blank-status sentinel swallowed. A goal that FINISHED while
-// the worker was down comes back in a different status, and that is a real
-// transition the user must see -- the re-arm rule must not absorb it.
+// A goal can finish while the Worker is down.
+// Its changed status must produce a real transition when the provider reports it after restart.
 func TestGoal_AGoalThatFinishedDuringTheRestartStillAnnounces(t *testing.T) {
 	t.Parallel()
 	svc, sink, agentID, _ := setupGoalTest(t)
@@ -580,9 +652,8 @@ func TestGoal_AGoalThatFinishedDuringTheRestartStillAnnounces(t *testing.T) {
 		"an achievement that happened during the restart is still news")
 }
 
-// A goal with a status and NO objective is a goal the user cannot read. The
-// card would draw an empty line with an armed dot and live controls, so the
-// write path refuses it and the read path refuses it again.
+// A goal without a readable objective must not produce a card with live controls.
+// The write path and read projection both enforce that presence rule.
 func TestGoal_AStatusWithNoObjectiveIsNoGoal(t *testing.T) {
 	t.Parallel()
 	svc, sink, agentID, readRow := setupGoalTest(t)
@@ -604,11 +675,9 @@ func TestGoal_AStatusWithNoObjectiveIsNoGoal(t *testing.T) {
 	assert.Nil(t, snapshot.Goal, "the read path refuses a goal with no text too")
 }
 
-// A report that cleans away the objective is a REMOVAL, and it must reach the
-// transcript as one. Reaching the applier's write path with it half-wiped the
-// row -- objective, status and detail blanked, the identity left behind -- so
-// the card emptied mid-session with nothing said, and the NEXT report carrying
-// the objective again read the blank row as a first "Goal set".
+// A report whose cleaner removes the objective must perform a complete clear and announce the removal.
+// A partial empty write would leave the native identity stored without a removal notification.
+// A later present goal would then produce a new set notification without the preceding clear.
 func TestGoal_AReportThatEmptiesTheObjectiveClearsTheGoal(t *testing.T) {
 	t.Parallel()
 	svc, sink, agentID, readRow := setupGoalTest(t)
@@ -625,15 +694,13 @@ func TestGoal_AReportThatEmptiesTheObjectiveClearsTheGoal(t *testing.T) {
 	assert.Equal(t, 2, goalNotificationCount(t, svc, agentID),
 		"the removal is announced rather than happening silently")
 
-	// And the goal that comes back is a fresh SET, not a repeat of one the
-	// transcript never retracted.
+	// The goal that returns is a new set after the transcript's clear notification.
 	sink.UpsertGoal(activeGoal("Ship it", 0, created))
 	assert.Equal(t, []string{"set", "set"}, goalTransitionKinds(t, svc, agentID))
 }
 
-// The transition KIND is what lets the transcript say "Goal resumed" instead of
-// guessing from the resulting status. A resume ends `active`, and so does a
-// first set, so the status alone cannot tell the two apart.
+// A first set and a resume both end in Active.
+// The explicit transition token lets the transcript distinguish those operations.
 func TestGoal_TransitionKindDistinguishesAResumeFromASet(t *testing.T) {
 	t.Parallel()
 	svc, sink, agentID, _ := setupGoalTest(t)
@@ -662,17 +729,15 @@ func TestGoal_TransitionKindMarksAReplacement(t *testing.T) {
 	assert.Equal(t, []string{"set", "replaced"}, goalTransitionKinds(t, svc, agentID))
 }
 
-// startGoalAgentProcess registers a live process for the agent through the
-// manager's own start path, so AgentAlive answers true exactly as it does in
-// production. Without one the projection reads every stored goal as dormant,
-// which is the correct answer and the wrong fixture for a live-goal test.
+// startGoalAgentProcess registers a real test process through the Manager's startup path.
+// The live-goal fixture needs that process because an absent process correctly projects a stored goal as Dormant.
 func startGoalAgentProcess(t *testing.T, svc *Service, agentID string) {
 	t.Helper()
 	_, err := svc.Agents.StartAgentWith(t.Context(), agent.Options{
 		AgentID:       agentID,
 		WorkingDir:    t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
-	}, svc.Output.NewSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX), claudetest.StartEcho)
+	}, agent.NewProviderServices(requireRootOutputSink(t, svc.Output, agentID)), claudetest.StartEcho)
 	require.NoError(t, err)
 	t.Cleanup(func() { svc.Agents.StopAndWaitAgent(agentID) })
 	require.True(t, svc.Agents.AgentAlive(agentID))
@@ -697,14 +762,9 @@ func TestGoal_DeliveredTextCommandPersistsThroughTheOutputSink(t *testing.T) {
 	assert.Equal(t, "ship the release", stored.Goal.GetObjective())
 }
 
-// DORMANT is derived, never stored. No process pursues a goal that outlived its
-// process, and reporting the last live status would draw a card with an armed
-// dot and working Pause and Clear buttons for a process that is gone.
-//
-// The projection answers `dormant` rather than the empty token, because the
-// empty token means "no goal at all": a client reading that back cannot tell a
-// waiting goal from a status this build does not understand, so a waiting goal
-// would render as a fault.
+// Dormant is derived. The stored provider status remains unchanged after its process exits.
+// The card must show no active indicator or live controls for that absent process.
+// Dormant retains the stored objective, while an empty goal means no objective exists.
 func TestGoal_AGoalWithNoRunningProcessProjectsDormant(t *testing.T) {
 	t.Parallel()
 	svc, sink, agentID, readRow := setupGoalTest(t)
@@ -722,15 +782,13 @@ func TestGoal_AGoalWithNoRunningProcessProjectsDormant(t *testing.T) {
 	assert.Empty(t, snapshot.Goal.GetStatusDetail(),
 		"the provider's word described the running state, and nothing runs")
 
-	// And nothing was written to reach that answer, which is the whole point:
-	// there is no stored copy left to go stale.
+	// The projection changes no stored status or detail.
 	row := readRow()
 	assert.Equal(t, leapmuxv1.AgentGoalStatus(agent.GoalStatusActive), row.GoalStatus, "the row still holds the provider's last word")
 	assert.Equal(t, "verifying", row.GoalStatusDetail)
 }
 
-// The other half of the same rule: a goal a live process pursues keeps the
-// status that process reported.
+// A live process's goal keeps the provider's reported status.
 func TestGoal_AGoalWithARunningProcessKeepsItsStatus(t *testing.T) {
 	t.Parallel()
 	svc, sink, agentID, _ := setupGoalTest(t)
@@ -747,8 +805,7 @@ func TestGoal_AGoalWithARunningProcessKeepsItsStatus(t *testing.T) {
 	assert.Equal(t, "verifying", snapshot.Goal.GetStatusDetail())
 }
 
-// An agent with NO goal never reads as dormant. Dormant means "an objective is
-// stored and nothing pursues it", so with no objective there is nothing to say.
+// An absent objective never projects as Dormant because no goal exists.
 func TestGoal_AnAgentWithNoGoalNeverProjectsDormant(t *testing.T) {
 	t.Parallel()
 	svc, _, agentID, _ := setupGoalTest(t)
@@ -758,14 +815,9 @@ func TestGoal_AnAgentWithNoGoalNeverProjectsDormant(t *testing.T) {
 	assert.Nil(t, snapshot.Goal)
 }
 
-// The first report after a worker restart restates a goal the row already
-// holds, and it must announce nothing -- printing "Goal set: X" at restart time
-// for a goal set an hour ago is the lie Codex's snapshot flag prevents for
-// Codex, reached by a route Claude Code and Reasonix cannot mark for
-// themselves.
-//
-// This needs no rule of its own now. Dormancy is derived, so the restart leaves
-// the stored status alone and the restatement matches it.
+// A same-goal report after restart must not announce a new goal.
+// Codex can mark the report as a snapshot. Claude Code and Reasonix need the stored-row comparison instead.
+// Derived dormancy leaves the stored status unchanged, so an ordinary restatement still matches it.
 func TestGoal_TheFirstReportAfterARestartAnnouncesNothing(t *testing.T) {
 	t.Parallel()
 	svc, sink, agentID, readRow := setupGoalTest(t)
@@ -774,21 +826,18 @@ func TestGoal_TheFirstReportAfterARestartAnnouncesNothing(t *testing.T) {
 	sink.UpsertGoal(activeGoal("Survived a restart", 10, created))
 	require.Equal(t, 1, goalNotificationCount(t, svc, agentID))
 
-	// The provider reports the same goal again, with no snapshot marking of its
-	// own -- Reasonix never sets one.
-	rearm := activeGoal("Survived a restart", 20, created)
-	rearm.Snapshot = false
-	sink.UpsertGoal(rearm)
+	// Reasonix restates its goal without a snapshot flag.
+	restatement := activeGoal("Survived a restart", 20, created)
+	restatement.Snapshot = false
+	sink.UpsertGoal(restatement)
 
 	assert.Equal(t, 1, goalNotificationCount(t, svc, agentID),
 		"restating a goal that outlived the worker is not a new transition")
 	assert.Equal(t, leapmuxv1.AgentGoalStatus(agent.GoalStatusActive), readRow().GoalStatus)
 }
 
-// A process that exits mid-session leaves a goal nothing pursues. The exit
-// publishes so a browser holding the tab open sees the controls settle, rather
-// than learning on its next cold load -- and it writes NOTHING, because the
-// status it would have written is the one the projection already derives.
+// A process exit projects Dormant so an open browser sees its goal controls become unavailable.
+// The projection changes no stored goal status or stamp.
 func TestGoal_ProcessExitPublishesTheDormantGoalWithoutWriting(t *testing.T) {
 	t.Parallel()
 	svc, sink, agentID, readRow := setupGoalTest(t)
@@ -804,8 +853,8 @@ func TestGoal_ProcessExitPublishesTheDormantGoalWithoutWriting(t *testing.T) {
 		"settling the card is a state change, not a transcript event")
 }
 
-// It runs for EVERY process exit, including providers with no goal feature at
-// all, so an agent that never had a goal must come through it untouched.
+// Every process exit publishes capabilities, including providers without a goal feature.
+// An agent with no stored goal must remain unchanged.
 func TestGoal_ProcessExitDoesNothingForAnAgentWithNoGoal(t *testing.T) {
 	t.Parallel()
 	svc, _, agentID, readRow := setupGoalTest(t)
@@ -817,8 +866,8 @@ func TestGoal_ProcessExitDoesNothingForAnAgentWithNoGoal(t *testing.T) {
 	assert.False(t, row.GoalUpdatedAt.Valid, "no stamp, so nothing was written")
 }
 
-// A relaunch stops the old process and runs the exit path again. Nothing is
-// stored, so a second pass cannot differ from the first.
+// Relaunch stops the previous process and repeats the exit projection.
+// A repeated projection must not change the stored stamp.
 func TestGoal_ProcessExitIsIdempotent(t *testing.T) {
 	t.Parallel()
 	svc, sink, agentID, readRow := setupGoalTest(t)
@@ -831,10 +880,9 @@ func TestGoal_ProcessExitIsIdempotent(t *testing.T) {
 	assert.Equal(t, first.Time, readRow().GoalUpdatedAt.Time, "the stamp does not move")
 }
 
-// The OTHER adapter. Two of them build GoalColumns -- one per sqlc row type --
-// and the cold-load path uses this one. It has to carry the agent id like its
-// sibling, or the projection asks the running-agent map about the empty string,
-// gets "not alive", and reports every cold-loaded goal as dormant.
+// The full-row adapter supplies GoalColumns for cold loads.
+// It must retain the row's agent ID so the projection can find its live process.
+// An omitted ID would incorrectly project every stored goal as Dormant.
 func TestGoal_TheFullRowAdapterProjectsALiveGoal(t *testing.T) {
 	t.Parallel()
 	svc, sink, agentID, readRow := setupGoalTest(t)
@@ -848,9 +896,8 @@ func TestGoal_TheFullRowAdapterProjectsALiveGoal(t *testing.T) {
 		"the adapter carries the id, so the projection can find the process")
 }
 
-// A CHILD owns no goal, and that answer comes before the liveness question: a
-// subagent runs inside its parent's process, so asking the map about the child
-// id would report dormant for a goal it does not own in the first place.
+// A child owns no goal, so its projection returns before the process-liveness check.
+// The child runs inside its root's process. A child-ID lookup would incorrectly imply a dormant child goal.
 func TestGoal_AChildProjectsNoGoalAtAll(t *testing.T) {
 	t.Parallel()
 	svc, _, _, _ := setupGoalTest(t)

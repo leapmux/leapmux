@@ -13,6 +13,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
+	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -508,7 +509,7 @@ func (s *Store) SetPaused(ctx context.Context, agentID string, paused bool, reas
 	if paused {
 		owner = pauseOwnerManual
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET paused = ?, pause_reason = ?, pause_owner = ?, revision = revision + 1, updated_at = ? WHERE agent_id = ?`, paused, reason, owner, nowText(), agentID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET paused = ?, pause_reason = ?, pause_owner = ?, revision = revision + 1, updated_at = ? WHERE agent_id = ?`, paused, workerdb.OptionalStorageEnum(reason), workerdb.OptionalStorageEnum(leapmuxv1.AgentInputQueuePauseOwner(owner)), nowText(), agentID); err != nil {
 		return Snapshot{}, err
 	}
 	return commitSnapshot(ctx, tx, agentID)
@@ -580,13 +581,15 @@ func (s *Store) finishPlannedRestart(ctx context.Context, agentID string, oldTur
 		return Snapshot{}, false, err
 	}
 	var paused, active bool
-	var reason leapmuxv1.AgentInputQueuePauseReason
-	var owner pauseOwner
+	var storedReason *leapmuxv1.AgentInputQueuePauseReason
+	var storedOwner *leapmuxv1.AgentInputQueuePauseOwner
 	if err := tx.QueryRowContext(ctx, `
 		SELECT paused, pause_reason, pause_owner, active_turn
-		FROM agent_input_queue_state WHERE agent_id = ?`, agentID).Scan(&paused, &reason, &owner, &active); err != nil {
+		FROM agent_input_queue_state WHERE agent_id = ?`, agentID).Scan(&paused, &storedReason, &storedOwner, &active); err != nil {
 		return Snapshot{}, false, err
 	}
+	reason := workerdb.StorageEnumValue(storedReason)
+	owner := pauseOwner(workerdb.StorageEnumValue(storedOwner))
 	nextPaused := paused
 	nextReason := reason
 	nextOwner := owner
@@ -617,7 +620,7 @@ func (s *Store) finishPlannedRestart(ctx context.Context, agentID string, oldTur
 				active_input_id = CASE WHEN ? THEN active_input_id ELSE '' END,
 				revision = revision + 1, updated_at = ?
 			WHERE agent_id = ?`,
-			nextPaused, nextReason, nextOwner, nextActive, nextActive, nextActive, nowText(), agentID); err != nil {
+			nextPaused, workerdb.OptionalStorageEnum(nextReason), workerdb.OptionalStorageEnum(leapmuxv1.AgentInputQueuePauseOwner(nextOwner)), nextActive, nextActive, nextActive, nowText(), agentID); err != nil {
 			return Snapshot{}, false, err
 		}
 	}
@@ -826,6 +829,20 @@ func (s *Store) prepare(ctx context.Context, agentID, expectedInputID string, al
 	if err != nil {
 		return nil, Snapshot{}, err
 	}
+	found := false
+	for _, stored := range snapshot.Items {
+		if stored.ID != item.ID {
+			continue
+		}
+		// The snapshot supplies updated fields but keeps only a text preview.
+		// Copy these fields separately to preserve the complete dispatch text.
+		item.Error, item.UpdatedAt = stored.Error, stored.UpdatedAt
+		found = true
+		break
+	}
+	if !found {
+		return nil, Snapshot{}, ErrConflict
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, Snapshot{}, err
 	}
@@ -964,7 +981,7 @@ func (s *Store) Accept(ctx context.Context, prepared PreparedDispatch, result Di
 			ID: item.ID, AgentID: item.AgentID, Kind: item.Kind, Text: item.Text,
 			TargetMode: item.TargetMode, PrepareContext: item.PrepareContext,
 			ReclassifyOnEdit: item.ReclassifyOnEdit, Attachments: attachments,
-		}), spanLines, provider, mark, item.CreatedAt); err != nil {
+		}), spanLines, provider, workerdb.OptionalStorageEnum(mark), item.CreatedAt); err != nil {
 		return AcceptedTranscript{}, Snapshot{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM agent_input_queue_items WHERE agent_id = ? AND id = ?`, item.AgentID, item.ID); err != nil {
@@ -1044,33 +1061,19 @@ func (s *Store) FailDispatch(ctx context.Context, agentID, inputID string, deliv
 
 // TurnEnded clears the active turn.
 //
-// The clear carries no turn identity, because the provider signal that reports
-// a turn end carries none either: ProviderServices.SetTurnState identifies only the
-// agent. Order is what keeps the clear correct. Every provider publishes its
-// turn flag on its own single reader goroutine, in wire order, and drain never
-// starts the next turn before Accept commits, so a turn end for turn N always
-// precedes the turn start for N+1. Two rules preserve that order, and both are
-// load-bearing: no call site may publish a turn end from a NEW goroutine (the
-// Codex turn/completed handler once did, to escape the coordinator lock, and
-// reordered the two reports), and drain must not hold the coordinator lock
-// across a provider call, which is what made that escape look necessary.
-//
-// One case stays open: a turn end that an agent process emits AFTER the Worker
-// replaced it clears the new process's turn. Only a provider generation
-// threaded through SetTurnStateFunc can reject that, and the signal does not
-// carry one today.
-//
-// The Boolean reports whether the durable state moved. Every publish of the
-// provider's turn flag reaches here, and a provider republishes the unchanged
-// value freely, so a call that changes nothing must leave the revision alone.
+// This direct operation carries no provider owner.
+// Production provider reports use Manager.ReconcileProviderTurn instead.
+// That method validates the original owner before it calls setTurnState.
+// The Boolean reports whether the durable state changed.
+// An unchanged report leaves the revision unchanged.
 func (s *Store) TurnEnded(ctx context.Context, agentID string) (Snapshot, bool, error) {
 	return s.setTurnState(ctx, agentID, false, false)
 }
 
 // TurnStarted records a turn that the agent process began on its own. It keeps
 // the turn that a dispatch already recorded: that one identifies its input.
-// kind classifies the turn only when the provider knows that it accepts
-// steering. An unclassified provider passes UNSPECIFIED.
+// steerable states whether the provider accepts steering during the turn.
+// Production provider reports use Manager.ReconcileProviderTurn to validate their original owner.
 //
 // The Boolean reports whether the durable state moved. See TurnEnded.
 func (s *Store) TurnStarted(ctx context.Context, agentID string, steerable bool) (Snapshot, bool, error) {
@@ -1198,7 +1201,7 @@ func pauseAndEndTurn(ctx context.Context, tx *sql.Tx, agentID string, reason lea
 func resumeOwnedPause(ctx context.Context, tx *sql.Tx, agentID string, owner pauseOwner) (sql.Result, error) {
 	return tx.ExecContext(ctx, `
 		UPDATE agent_input_queue_state
-		SET paused = 0, pause_reason = 0, pause_owner = 0,
+		SET paused = 0, pause_reason = NULL, pause_owner = NULL,
 			revision = revision + 1, updated_at = ?
 		WHERE agent_id = ? AND paused = 1 AND pause_owner = ?`, nowText(), agentID, owner)
 }
@@ -1470,7 +1473,7 @@ func loadItemAttachments(ctx context.Context, tx db.DBTX, inputID string, loadDa
 func snapshotTx(ctx context.Context, tx db.DBTX, agentID string) (Snapshot, error) {
 	var snapshot Snapshot
 	var revision int64
-	var reason int32
+	var reason *leapmuxv1.AgentInputQueuePauseReason
 	err := tx.QueryRowContext(ctx, `SELECT agent_id, revision, paused, pause_reason, active_turn, active_turn_steerable FROM agent_input_queue_state WHERE agent_id = ?`, agentID).Scan(&snapshot.AgentID, &revision, &snapshot.Paused, &reason, &snapshot.ActiveTurn, &snapshot.ActiveTurnSteerable)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Snapshot{AgentID: agentID}, nil
@@ -1479,7 +1482,7 @@ func snapshotTx(ctx context.Context, tx db.DBTX, agentID string) (Snapshot, erro
 		return Snapshot{}, err
 	}
 	snapshot.Revision = uint64(revision)
-	snapshot.PauseReason = leapmuxv1.AgentInputQueuePauseReason(reason)
+	snapshot.PauseReason = workerdb.StorageEnumValue(reason)
 	rows, err := tx.QueryContext(ctx, `
 		SELECT id, kind,
 			CASE WHEN length(text) > ? THEN substr(text, 1, ?) || '…' ELSE text END,

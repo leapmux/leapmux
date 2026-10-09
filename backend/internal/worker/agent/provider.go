@@ -62,6 +62,8 @@ type Provider interface {
 	// Merge combines two notifications previously classified into the same
 	// group. The default keeps the newer entry verbatim; providers override
 	// when they want a richer reduction (e.g. accumulating retry counts).
+	// Merge combines the previous left-fold result with the next original notification.
+	// The service retains the original group even when the result has another native shape.
 	Merge(class NotificationClassification, previous, next json.RawMessage) (json.RawMessage, error)
 	// IsInterrupt reports whether raw input contains a provider interrupt
 	// frame. The normal frontend path uses the InterruptAgent RPC instead.

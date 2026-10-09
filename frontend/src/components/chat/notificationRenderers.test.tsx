@@ -1,32 +1,26 @@
 import { render } from '@solidjs/testing-library'
 import { afterEach, describe, expect, it } from 'vitest'
 import { ALL_PROVIDERS } from '~/generated/contracts/providers'
+import { GOAL_STATUS_TOKEN, GOAL_TRANSITION, NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { clearSettingsLabelCache, updateSettingsLabelCache } from '~/lib/settingsLabelCache'
 import { elementText, renderDivider, renderThreadElement, renderThreadGlyph, renderThreadHasIcon, renderThreadText } from '~/test-support/messageRenderProbes'
 import { renderNotificationBlocks } from './notificationRenderers'
 
-// Side-effect-register the Claude and Codex plugins so the provider extractor
-// (plugin?.transcript.notificationEntry) actually runs in the tests that pass an agentProvider
-// -- mirroring production, where renderNotificationThread is always called with one.
+// Register the Claude and Codex plugins before testing their notification readers.
+// Each fixture passes its actual provider to the production rendering path.
 await import('./providers/claude/plugin')
 await import('./providers/codex/plugin')
 
-// The settings label cache is a module-level singleton; the tests that populate
-// it (Workflow / Execution Mode labels) would otherwise leak their
-// registrations into later cases and make results order-dependent.
+// The settings-label cache is shared across tests.
+// Clear its registrations so a preceding case cannot change a later case's labels.
 afterEach(() => {
   clearSettingsLabelCache()
 })
 
-// These cases drive the pipeline the way production does: with the row's own
-// provider. A compaction boundary, a rate-limit event and an API retry are all
-// PROVIDER shapes, so the provider is what reads them -- the shared fallback switch
-// that used to answer for them is gone, and a message rendered without a provider
-// now correctly produces nothing.
-//
-// Claude is the default because most of the shapes below are Claude's own. The Codex
-// cases pass their own provider.
+// Pass each native notification to its provider's reader.
+// Without that provider, the shared worker reader supplies no native fallback.
+// Claude is the default for these fixtures. Codex cases pass Codex explicitly.
 function renderText(messages: unknown[], provider: AgentProvider = AgentProvider.CLAUDE_CODE): string {
   return renderThreadText(messages, provider)
 }
@@ -40,8 +34,8 @@ function renderedContains(messages: unknown[], text: string, provider?: AgentPro
 }
 
 describe('the notification thread: compaction and context_cleared rendering', () => {
-  // Note: The backend consolidation handles mutual exclusion between
-  // compaction and context_cleared. The frontend simply renders what it receives.
+  // The backend keeps context_cleared and completed compaction boundaries mutually exclusive within a thread.
+  // The frontend renders the received entries.
 
   const contextClearedMsg = { type: 'context_cleared' }
   const compactBoundaryMsg = {
@@ -101,7 +95,7 @@ describe('the notification thread: compaction and context_cleared rendering', ()
     expect(text).toContain('Model')
   })
 
-  // -- Phase 4 raw-passthrough shapes ----------------------------------
+  // Raw notification fixtures.
 
   it('codex item/started+contextCompaction (raw JSON-RPC) renders the in-progress spinner', () => {
     const messages = [{
@@ -125,26 +119,22 @@ describe('the notification thread: compaction and context_cleared rendering', ()
       method: 'item/started',
       params: { item: { type: 'commandExecution', id: 'cmd-1' } },
     }]
-    // commandExecution is not a notification — describer returns [], so the
-    // thread renders empty. The point is we don't accidentally emit a
-    // compaction spinner for unrelated item kinds.
+    // commandExecution is not a compaction notification.
+    // The reader returns no entry, so the thread displays no compaction spinner.
     expect(renderText(messages, AgentProvider.CODEX)).not.toContain('Compacting context')
   })
 
   it('draws the spinner for the bare {type:"compacting"} envelope, whatever the provider', () => {
-    // `{type:"compacting"}` is LeapMux's OWN envelope, so `leapmuxNotificationEntry`
-    // reads it and no plugin has to. The type is in PLAIN_ROW_TYPES, so a classifier
-    // that meets one already answers `notification`; a neutral extractor with no case
-    // for it drew a row that held no block at all. Rows of this shape are still in the
-    // database, and the five providers of the Agent Client Protocol family supply no
-    // notification hook, so the neutral answer is the only one those rows can get.
+    // The shared extractor reads the worker's compacting envelope.
+    // PLAIN_ROW_TYPES classifies it as a notification before a provider reader runs.
+    // A provider without a notification hook still requires this shared entry.
     const messages = [{ type: 'compacting' }]
     expect(renderText(messages, AgentProvider.CODEX)).toContain('Compacting context')
   })
 
   it('legacy synthesized {type:"system",subtype:"compact_boundary",threadId} from Codex still matches Claude\'s shape', () => {
-    // The Claude raw shape has identical {type:"system",subtype:"compact_boundary"} —
-    // legacy Codex synthesized rows happen to render correctly via this path.
+    // This fixture uses the Claude system compact_boundary shape.
+    // The Claude reader resolves its metadata.
     const messages = [{ type: 'system', subtype: 'compact_boundary', threadId: 't1', turnId: 'turn1' }]
     expect(renderText(messages)).toContain('Context compacted')
   })
@@ -157,9 +147,9 @@ describe('compaction token formatting: pre → post', () => {
   }
 
   /**
-   * Wrap fields in the `microcompact_boundary` system shape. Claude Code emits
-   * no microcompact metadata, so the renderer ignores anything here -- these
-   * fixtures double as "metadata is ignored" guards.
+   * Wrap the fields in the Claude microcompact_boundary envelope.
+   * The reader ignores metadata for that event.
+   * These fixtures verify that metadata-like fields do not change its plain label.
    */
   function microcompactMsg(microcompactMetadata: Record<string, unknown>) {
     return { type: 'system', subtype: 'microcompact_boundary', microcompactMetadata }
@@ -209,15 +199,15 @@ describe('compaction token formatting: pre → post', () => {
   })
 
   it('microcompaction renders a plain "Context microcompacted" with no detail', () => {
-    // Claude Code emits no microcompact metadata; metadata-like fields here are
-    // ignored, so no trigger or token counts appear.
+    // Ignore metadata-like microcompaction fields.
+    // Display no trigger or token count for them.
     const messages = [microcompactMsg({ trigger: 'auto', preTokens: 200000, tokensSaved: 50000 })]
     expect(renderText(messages)).toBe('Context microcompacted')
   })
 
   it('reads camelCase keys (compactMetadata / preTokens / postTokens)', () => {
-    // The consolidated CRDT path delivers camelCase keys rather than the raw
-    // snake_case Claude shape; both must resolve.
+    // The consolidated fixture uses camelCase keys.
+    // Resolve those keys and the native snake_case keys.
     const messages = [{
       type: 'system',
       subtype: 'compact_boundary',
@@ -227,8 +217,8 @@ describe('compaction token formatting: pre → post', () => {
   })
 
   it('drops a lone tokens_saved that has no pre count to anchor a transition', () => {
-    // Without pre, "pre → post" cannot be formed, so the saved figure is not
-    // shown as a bare number (the pre-unification "saved X tokens" behavior).
+    // Without a pre count, the saved count cannot supply a pre-to-post transition.
+    // Do not display that saved count as a standalone token figure.
     const messages = [compactMsg({ tokens_saved: 5000 })]
     expect(renderText(messages)).toBe('Context compacted')
   })
@@ -242,9 +232,9 @@ describe('compaction token formatting: pre → post', () => {
   // -- compact_boundary through a provider pre-pass ------------------------
 
   it('renders a single compact_boundary the same with the Claude or Codex provider pre-pass', () => {
-    // A row an older worker synthesized carries Claude's boundary shape whatever
-    // the agent was, and those rows are persisted. Both plugins therefore read it,
-    // and they must read it the same way.
+    // This fixture supplies the synthesized compact_boundary envelope.
+    // Claude and Codex readers both support that envelope.
+    // Verify that they produce the same label.
     const msg = compactMsg({ trigger: 'auto', pre_tokens: 100000, post_tokens: 8000 })
     const expected = 'Context compacted (auto, 100.0k → 8.0k)'
     expect(elementText(renderThreadElement([msg], AgentProvider.CLAUDE_CODE))).toBe(expected)
@@ -252,8 +242,8 @@ describe('compaction token formatting: pre → post', () => {
   })
 
   it('microcompaction ignores a metadata wrapper under any key (Claude emits none)', () => {
-    // Neither microcompactMetadata nor the snake_case microcompact_metadata is
-    // read; both render the plain label. Guards against re-adding a dead lookup.
+    // Ignore both microcompactMetadata and microcompact_metadata.
+    // Each fixture must retain the plain label.
     const messages = [{
       type: 'system',
       subtype: 'microcompact_boundary',
@@ -263,7 +253,7 @@ describe('compaction token formatting: pre → post', () => {
   })
 
   it('clamps a derived post to 0 when tokens_saved exceeds pre_tokens', () => {
-    // A provider reporting saved > pre must not render a negative size.
+    // A saved count above the pre count must not produce a negative post count.
     const messages = [compactMsg({ trigger: 'auto', pre_tokens: 30000, tokens_saved: 50000 })]
     expect(renderText(messages)).toBe('Context compacted (auto, 30.0k → 0)')
   })
@@ -274,14 +264,14 @@ describe('compaction token formatting: pre → post', () => {
   })
 
   it('renders a no-op transition when tokens_saved is zero', () => {
-    // saved: 0 is a real number (not missing), so post derives to pre.
+    // A reported saved count of zero is present.
+    // The derived post count therefore equals the pre count.
     const messages = [compactMsg({ pre_tokens: 100000, tokens_saved: 0 })]
     expect(renderText(messages)).toBe('Context compacted (100.0k → 100.0k)')
   })
 
   it('clamps an explicit negative post_tokens to 0 (not just the derived path)', () => {
-    // The derived `pre - saved` post is clamped, but a provider could also report
-    // a negative post_tokens directly; that must render 0, not "-5".
+    // Restrict both a derived and a directly reported post count to a minimum of zero.
     const messages = [compactMsg({ pre_tokens: 100000, post_tokens: -5 })]
     expect(renderText(messages)).toBe('Context compacted (100.0k → 0)')
   })
@@ -292,8 +282,8 @@ describe('compaction token formatting: pre → post', () => {
   })
 
   it('drops a non-finite (NaN) count instead of rendering "NaN"', () => {
-    // JSON.parse cannot produce NaN, but a synthesized payload could; the count
-    // degrades to omitted so the other side of the transition still shows.
+    // JSON cannot encode NaN, but a constructed payload can contain it.
+    // Omit that count while retaining the other side of the transition.
     const messages = [compactMsg({ pre_tokens: Number.NaN, post_tokens: 8000 })]
     expect(renderText(messages)).toBe('Context compacted (→ 8.0k)')
   })
@@ -303,7 +293,7 @@ describe('compaction token formatting: pre → post', () => {
     expect(renderText(messages)).toBe('Context compacted (100.0k)')
   })
 
-  // -- divider markup (icon + layout, not just text) -----------------------
+  // Divider markup and layout.
 
   it('renders a single compact boundary as a divider with the icon', () => {
     const msg = compactMsg({ trigger: 'auto', pre_tokens: 100000, post_tokens: 8000 })
@@ -360,7 +350,7 @@ describe('the notification thread: message ordering', () => {
     const messages = [
       { type: 'settings_changed', changes: { collaboration_mode: { old: 'default', new: 'plan' } } },
     ]
-    // The notification renders under the same provider the cache was primed for.
+    // Use the same provider for the notification and cached labels.
     const text = renderThreadText(messages, AgentProvider.CODEX)
     expect(text).toContain('Workflow')
   })
@@ -384,10 +374,9 @@ describe('the notification thread: message ordering', () => {
   })
 
   it('prefers a provider\'s cached label for a well-known axis over the canonical name', () => {
-    // A provider can relabel a well-known axis -- Pi labels "effort" as "Thinking Level".
-    // displayLabel must consult the per-provider cache for well-known ids too, so a
-    // settings_changed without an inline label renders the provider's name rather than
-    // the hardcoded canonical "Effort".
+    // A provider can replace a well-known group's display label.
+    // Consult its cache before displaying the canonical label.
+    // An absent inline label must still preserve that provider-specific display.
     updateSettingsLabelCache(AgentProvider.PI, [{
       id: 'effort',
       label: 'Thinking Level',
@@ -405,8 +394,7 @@ describe('the notification thread: message ordering', () => {
   })
 
   it('falls back to the canonical well-known axis name when the cache is unprimed', () => {
-    // With no cache entry for the provider, a well-known axis still renders its canonical
-    // English name (the fallback that keeps historical notifications readable).
+    // An absent provider cache entry uses the canonical English label.
     const messages = [
       { type: 'settings_changed', changes: { effort: { old: 'low', new: 'high' } } },
     ]
@@ -455,8 +443,7 @@ describe('the notification thread: message ordering', () => {
 })
 
 describe('single-message notification labels', () => {
-  // interrupted / context_cleared / agent_error render through the shared switch
-  // as one-element threads -- the sole notification path.
+  // Read each worker notification through the shared extractor as a one-entry thread.
   it('renders interrupted', () => {
     expect(renderText([{ type: 'interrupted' }])).toBe('Interrupted')
   })
@@ -473,8 +460,7 @@ describe('single-message notification labels', () => {
     expect(renderText([{ type: 'context_cleared' }])).toBe('Context cleared')
   })
 
-  // A live status the provider stated in its own words -- Goose sends one for a
-  // provider switch. The worker normalizes it, so one row draws every provider's.
+  // The worker normalizes the provider's reported status text.
   it('renders an agent status in the provider\'s own words', () => {
     expect(renderText([{ type: 'agent_status', text: 'Switched provider' }])).toBe('Switched provider')
   })
@@ -493,12 +479,9 @@ describe('single-message notification labels', () => {
 })
 
 /**
- * The session-goal transitions.
- *
- * The worker writes these rows only when the goal actually CHANGES -- never for
- * the progress reports Codex sends after every completed tool call -- and it
- * writes them NEUTRAL, so this one renderer serves all five providers that
- * report a goal rather than a copy in each provider plugin.
+ * The worker writes goal transitions in one shared envelope.
+ * A durable goal change creates a row. A progress-only report creates no goal row.
+ * This rendering path therefore serves every provider.
  */
 describe('the notification thread: goal transitions', () => {
   it('announces a new goal with its objective', () => {
@@ -506,8 +489,7 @@ describe('the notification thread: goal transitions', () => {
       .toBe('Goal set: every test passes')
   })
 
-  // The verb states WHAT changed, so a status flip does not read as a fresh
-  // goal being set.
+  // Display the reported transition so a status change does not report a fresh Set.
   it('names the transition for each finished status', () => {
     expect(renderText([{ type: 'goal_updated', objective: 'x', goal_status: 'done' }]))
       .toBe('Goal achieved: x')
@@ -517,8 +499,7 @@ describe('the notification thread: goal transitions', () => {
       .toBe('Goal blocked: x')
   })
 
-  // The provider's own word, when it says more than the neutral status does:
-  // usageLimited and notSatisfied are both `blocked`.
+  // Preserve the native detail when it differs from the neutral status token.
   it('appends the provider status detail when it differs', () => {
     expect(renderText([{
       type: 'goal_updated',
@@ -542,10 +523,9 @@ describe('the notification thread: goal transitions', () => {
   })
 
   /**
-   * A RESUME ends in `active`, and so does a first set, so the status alone
-   * cannot tell them apart -- and reading the status alone announced "Goal set:
-   * x" two rows under "Goal paused: x", for an objective nobody replaced. The
-   * worker holds the row from before the write, so it writes the answer.
+   * Set and Resume can both end in active.
+   * The status alone cannot distinguish those transitions.
+   * The worker compares the prior goal and reports the transition.
    */
   it('names what the change DID, not the status it left behind', () => {
     expect(renderText([{
@@ -568,9 +548,8 @@ describe('the notification thread: goal transitions', () => {
     }])).toBe('Goal set: x')
   })
 
-  // A row an older worker wrote carries no transition, and a token this build
-  // does not know is the same situation. Both fall back to the status rather
-  // than rendering nothing.
+  // An absent or unrecognized transition uses the status fallback.
+  // A recognized status retains its existing label.
   it('falls back to the status when the transition is absent or unknown', () => {
     expect(renderText([{ type: 'goal_updated', objective: 'x', goal_status: 'paused' }]))
       .toBe('Goal paused: x')
@@ -644,8 +623,8 @@ describe('settings change formatting: inline label overrides', () => {
   const settingsMsg = (changes: Record<string, unknown>) => ({ type: 'settings_changed', changes })
 
   it('thread path honors inline label / old_label / new_label overrides', () => {
-    // 'foo' is absent from the settings label cache, so without the inline
-    // overrides this would fall back to "foo (a → b)".
+    // The settings cache contains no foo entry.
+    // The inline labels must therefore supply this fixture's display text.
     const messages = [settingsMsg({ foo: { old: 'a', new: 'b', label: 'My Setting', old_label: 'Old!', new_label: 'New!' } })]
     expect(renderText(messages)).toBe('My Setting (Old! → New!)')
   })
@@ -656,25 +635,23 @@ describe('settings change formatting: inline label overrides', () => {
   })
 
   it('treats an omitted old key as a first-time set (the real first-set wire shape)', () => {
-    // Production omits `old` on first set rather than sending old:''. pickString
-    // coerces the missing key to '', so firstSet is true and the "(new)"-only
-    // form applies -- this exercises the shape the backend actually sends, which
-    // the old:'' fixture above only approximates.
+    // A first Set can omit old instead of sending an empty value.
+    // pickString returns an empty string for that absent field.
+    // The formatter then uses the new-only label.
     const messages = [settingsMsg({ foo: { new: 'x', label: 'My Setting', new_label: 'X!' } })]
     expect(renderText(messages)).toBe('My Setting (X!)')
   })
 
   it('keeps the arrow when the old value exists but its display resolves empty', () => {
-    // old_label:'' forces an empty old display; because the old VALUE exists this
-    // is a real transition, not a first-time set, so it must NOT collapse to the
-    // "(new)"-only form.
+    // An empty old_label overrides the old display text.
+    // The old value still exists, so retain the transition form.
     const messages = [settingsMsg({ foo: { old: 'a', new: 'b', old_label: '', new_label: 'New!' } })]
     expect(renderText(messages)).toBe('foo ( → New!)')
   })
 
   it('honors an explicit empty-string label override instead of falling back to the key', () => {
-    // An empty inline label is intentional and must win over displayLabel(key);
-    // the old `||` treated '' as absent and showed the key instead.
+    // Preserve an explicit empty inline label.
+    // A truthy fallback would incorrectly display the key.
     const messages = [settingsMsg({ foo: { old: 'a', new: 'b', label: '', old_label: 'O', new_label: 'N' } })]
     expect(renderText(messages)).toBe('(O → N)')
   })
@@ -685,8 +662,8 @@ describe('settings change formatting: inline label overrides', () => {
   })
 
   it('skips a null change entry without throwing', () => {
-    // The untyped JSON path could deliver a null value; dereferencing val.old
-    // would otherwise throw, so a malformed entry must degrade to nothing.
+    // An untyped changes map can contain null.
+    // Skip that entry rather than dereferencing its fields.
     const messages = [settingsMsg({ foo: null })]
     expect(renderText(messages)).toBe('')
   })
@@ -697,12 +674,12 @@ describe('settings change formatting: inline label overrides', () => {
   })
 })
 
-// A run of consecutive text children joins into ONE paragraph, and a divider draws
-// as its own block beside it. The row is sized by what it DRAWS, so a thread of ten
-// short children must not lay out as ten lines.
+// Combine consecutive text entries into one paragraph.
+// Display each divider as its own block.
+// Several short text entries must not create several layout rows.
 describe('renderNotificationBlocks: the blocks a thread lays out', () => {
-  const contextClearedMsg = { type: 'context_cleared' } // -> a text entry
-  const compactBoundaryMsg = { // -> a divider entry
+  const contextClearedMsg = { type: 'context_cleared' } // Text entry.
+  const compactBoundaryMsg = { // Divider entry.
     type: 'system',
     subtype: 'compact_boundary',
     compact_metadata: { trigger: 'auto', pre_tokens: 100000 },
@@ -815,5 +792,22 @@ describe('the notification thread: subagent_report', () => {
   it('states that Claude Code withheld a report from the parent', () => {
     expect(renderText([{ type: 'subagent_report', label: 'Reviewer', text: 'Child-only report', status: 'withheld' }]))
       .toContain('Reviewer report withheld')
+  })
+})
+
+describe('shared goal notification rendering', () => {
+  it('renders an updated unknown goal without a false set or blocked label', () => {
+    const { container } = render(() => renderThreadElement([{ type: NOTIFICATION_TYPE.GoalUpdated, objective: 'Keep the objective', goal_status: GOAL_STATUS_TOKEN.Unknown, goal_transition: GOAL_TRANSITION.Updated, status_detail: 'native-future-state' }], AgentProvider.CLAUDE_CODE))
+    expect(container.textContent).toBe('Goal updated: Keep the objective (native-future-state)')
+    expect(container.textContent).not.toContain('Goal set')
+    expect(container.textContent).not.toContain('Goal blocked')
+    expect(container.querySelector('[data-testid="notification-divider"]')).toBeNull()
+  })
+
+  it('renders a neutral unknown goal when no recognized transition exists', () => {
+    const { container } = render(() => renderThreadElement([{ type: NOTIFICATION_TYPE.GoalUpdated, objective: 'Keep the objective', goal_status: GOAL_STATUS_TOKEN.Unknown, status_detail: 'native-future-state' }], AgentProvider.CLAUDE_CODE))
+    expect(container.textContent).toBe('Goal status unknown: Keep the objective (native-future-state)')
+    expect(container.textContent).not.toContain('Goal set')
+    expect(container.textContent).not.toContain('Goal blocked')
   })
 })

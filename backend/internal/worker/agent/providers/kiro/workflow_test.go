@@ -134,7 +134,7 @@ func TestKiroWorkflowRunAndItsSteps(t *testing.T) {
 
 	a.HandleOutput(nodeComplete(t, 0, "completed", "(goal-fallback) progress"))
 	step, _ = sink.BackgroundTask(kiroStepSession)
-	assert.Equal(t, bgtask.StatusCompleted, step.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, step.Status)
 	assert.Equal(t, []string{"Make hello.txt say bye."}, userContents(t, child), "the step's instruction opens its transcript")
 	assert.Equal(t, []string{"Progress."}, childTexts(t, child))
 	assert.Equal(t, []string{"(goal-fallback) progress"}, reportTexts(child))
@@ -144,7 +144,7 @@ func TestKiroWorkflowRunAndItsSteps(t *testing.T) {
 
 	a.HandleOutput(runComplete(t, kiroRunCompleted, map[string]any{}))
 	run, _ = sink.BackgroundTask(runRowKey)
-	assert.Equal(t, bgtask.StatusCompleted, run.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, run.Status)
 }
 
 func TestKiroWorkflowOfAnotherSessionOpensNothing(t *testing.T) {
@@ -252,7 +252,7 @@ func TestKiroRunEndClosesTheStepsItLeftOpen(t *testing.T) {
 	}{
 		{status: kiroRunAborted, want: bgtask.StatusStopped},
 		{status: kiroRunFailed, want: bgtask.StatusFailed},
-		{status: kiroRunCompleted, want: bgtask.StatusCompleted},
+		{status: kiroRunCompleted, want: bgtask.StatusSucceeded},
 	} {
 		t.Run(tc.status, func(t *testing.T) {
 			t.Parallel()
@@ -492,11 +492,11 @@ func TestKiroStepTitle(t *testing.T) {
 
 func TestKiroNodeAndRunStatusMapping(t *testing.T) {
 	t.Parallel()
-	assert.Equal(t, bgtask.StatusCompleted, kiroNodeStatus(kiroRunCompleted))
+	assert.Equal(t, bgtask.StatusSucceeded, kiroNodeStatus(kiroRunCompleted))
 	assert.Equal(t, bgtask.StatusFailed, kiroNodeStatus(kiroRunFailed))
 	assert.Equal(t, bgtask.StatusStopped, kiroNodeStatus(kiroRunAborted))
 	assert.Equal(t, bgtask.StatusStopped, kiroNodeStatus(kiroNodeSkipped))
-	assert.Equal(t, bgtask.StatusCompleted, kiroRunStatus(kiroRunCompleted))
+	assert.Equal(t, bgtask.StatusSucceeded, kiroRunStatus(kiroRunCompleted))
 	assert.Equal(t, bgtask.StatusFailed, kiroRunStatus(kiroRunFailed))
 	assert.Equal(t, bgtask.StatusStopped, kiroRunStatus(kiroRunAborted))
 	assert.Equal(t, bgtask.StatusStopped, kiroRunStatus("something-new"))

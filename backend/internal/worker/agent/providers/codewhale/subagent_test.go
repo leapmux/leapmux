@@ -88,7 +88,7 @@ func TestAgentRunStatus(t *testing.T) {
 		{word: "running_tool", status: bgtask.StatusRunning},
 		{word: "waiting_for_user", status: bgtask.StatusPaused},
 		{word: "interrupted", status: bgtask.StatusPaused},
-		{word: "completed", status: bgtask.StatusCompleted, final: true},
+		{word: "completed", status: bgtask.StatusSucceeded, final: true},
 		{word: "failed", status: bgtask.StatusFailed, final: true},
 		{word: "cancelled", status: bgtask.StatusStopped, final: true},
 		{word: "a_later_word", status: bgtask.StatusRunning},
@@ -138,14 +138,12 @@ func TestInterruptedChildRunResumesWithoutClosingItsRegistryRow(t *testing.T) {
 	assert.True(t, a.pollChild(ctx, childSink, child))
 	task, ok = sink.BackgroundTask(testChildID)
 	require.True(t, ok)
-	assert.Equal(t, bgtask.StatusCompleted, task.Status)
+	assert.Equal(t, bgtask.StatusSucceeded, task.Status)
 }
 
-// restartReconciledRun is the record that Codewhale 0.10.0 returns from GET
-// /v1/agent-runs/{id} for a live child whose latest events are lastLive. The
-// route appends the synthetic restart event after them. The fields are those of
-// a record that a native probe captured for a child that waited for its model;
-// the run ledger on disk held `model_wait` at the same moment.
+// restartReconciledRun reproduces Codewhale 0.10.0's GET /v1/agent-runs/{id} record for a live child with history lastLive.
+// The route appends an artificial restart event after that history.
+// A native probe captures these fields while a child waits for the model, although its stored ledger still reports model_wait.
 func restartReconciledRun(lastLive ...map[string]any) map[string]any {
 	events := []any{
 		map[string]any{"seq": 1, "worker_id": testChildID, "status": "starting", "message": "starting"},
@@ -160,16 +158,13 @@ func restartReconciledRun(lastLive ...map[string]any) map[string]any {
 	return map[string]any{"status": "interrupted", "latest_message": "Interrupted by process restart", "completed_at_ms": 1791132897437, "steps_taken": 1, "events": events}
 }
 
-// TestALiveChildIsNotPausedByTheRestartVerdictOfTheRunRoute pins the reading
-// of a record that the run route reconciles as if the runtime restarted.
+// TestALiveChildIsNotPausedByTheRestartVerdictOfTheRunRoute verifies a record reconciled as if its runtime restarts.
 //
-// Codewhale 0.10.0 answers GET /v1/agent-runs/{id} from a fresh load of its run
-// ledger, and that load marks every live run as interrupted "by process
-// restart" (SubAgentManager::load_state calls
-// reconcile_orphaned_workers_after_restart). The watcher follows only the
-// children that the agent's own runtime started, and that runtime still runs,
-// so the verdict never describes the child. The status of the event before it
-// does. A real interrupt states its own reason and still pauses the row.
+// Codewhale 0.10.0 reloads its ledger for GET /v1/agent-runs/{id}.
+// SubAgentManager::load_state calls reconcile_orphaned_workers_after_restart and marks live runs interrupted "by process restart".
+// The watcher follows only children started by its own still-running runtime, so that load-time verdict describes no actual child restart.
+// Use the preceding event's status instead.
+// A genuine interrupt with its own reason still pauses the row.
 func TestALiveChildIsNotPausedByTheRestartVerdictOfTheRunRoute(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -251,9 +246,8 @@ func TestASubagentIsFollowedToItsEnd(t *testing.T) {
 	})
 	clock := testutil.NewQuartzMock(t)
 	a, sink := newTestAgentWithClock(t, rt, clock)
-	// The trap closes BEFORE the watchers stop, because cleanups run in reverse
-	// order. A watcher parked in a trapped call then returns from it, and the
-	// stop that waits for the watcher does not wait for ever.
+	// The clock trap closes before stopping watchers because cleanup functions run in reverse order.
+	// A watcher blocked in the trap then returns, so the stop that joins it cannot wait indefinitely.
 	tail := clock.Trap().NewTimer(childTimerTag)
 	t.Cleanup(tail.Close)
 	ctx := testutil.DeadlineContext(t)
@@ -312,8 +306,8 @@ func TestASubagentIsFollowedToItsEnd(t *testing.T) {
 		return len(a.children.byID) == 0
 	}, 30*time.Second, 5*time.Millisecond, "the watcher finishes the child")
 	task, _ = sink.BackgroundTask(testChildID)
-	assert.Equal(t, bgtask.StatusCompleted, task.Status)
-	assert.Equal(t, []bgtask.Status{bgtask.StatusRunning, bgtask.StatusCompleted}, sink.BackgroundTaskStatuses(testChildID))
+	assert.Equal(t, bgtask.StatusSucceeded, task.Status)
+	assert.Equal(t, []bgtask.Status{bgtask.StatusRunning, bgtask.StatusSucceeded}, sink.BackgroundTaskStatuses(testChildID))
 	var reports []string
 	for _, notification := range sink.LeapMuxNotifications() {
 		reports = append(reports, string(mustJSON(t, notification)))
@@ -342,9 +336,8 @@ func TestAChildTheLedgerNeverKnewFails(t *testing.T) {
 	assert.Empty(t, sink.LeapMuxNotifications(), "a child with no summary reports nothing into the parent")
 }
 
-// Only a 404 counts toward the limit: a status read that fails for another
-// reason establishes nothing, and a read that finds the run starts the count
-// again.
+// Only a not-found status response advances the missing-run count.
+// Other errors supply no absence evidence, and a successful run read resets the count.
 func TestAChildWhoseRunCannotBeReadIsNotCountedMissing(t *testing.T) {
 	t.Parallel()
 	rt := newFakeRuntime(t)
@@ -378,8 +371,8 @@ func TestAChildWhoseRunCannotBeReadIsNotCountedMissing(t *testing.T) {
 	assert.Empty(t, sink.BackgroundTaskStatuses(testChildID), "no row closed")
 }
 
-// The runtime states a started child's id in the call's result text, in its
-// metadata, or in both. Either one starts the child.
+// The runtime can identify a started child in result text, metadata, or both.
+// Either source starts the same child.
 func TestAChildStartReadsItsIDFromTheResultOrTheMetadata(t *testing.T) {
 	t.Parallel()
 	for name, tc := range map[string]struct {
@@ -448,8 +441,8 @@ func TestCodewhaleChildrenWatchEachChildOnce(t *testing.T) {
 	assert.Nil(t, none.drain())
 }
 
-// The reader drops a record longer than the line limit rather than hold it
-// without limit, and it goes on with the record after it.
+// Drop a record that exceeds the line limit and continue with the next record.
+// Never retain an oversized record without a limit.
 func TestAnOverlongTranscriptRecordIsDropped(t *testing.T) {
 	t.Parallel()
 	a, sink := newTestAgent(t, nil)
@@ -481,7 +474,7 @@ func TestAFailedStartRunsNoChild(t *testing.T) {
 	a.HandleOutput(toolEndEvent(2, "item.failed", "item_1", "call_spawn", contracts.CodewhaleToolAgent, "spawn depth exceeded", agentStartInput, nil))
 	assert.Empty(t, sink.BackgroundTasks())
 
-	// A start whose result names no child starts nothing either.
+	// A start result without a child ID also starts no child.
 	a.HandleOutput(toolStartEvent(3, "item_2", "call_spawn2", contracts.CodewhaleToolAgent, agentStartInput))
 	a.HandleOutput(toolEndEvent(4, "item.completed", "item_2", "call_spawn2", contracts.CodewhaleToolAgent, "started", agentStartInput, nil))
 	assert.Empty(t, sink.BackgroundTasks())
@@ -573,7 +566,7 @@ func TestAWorkflowRunTakesItsTitleAndItsEnd(t *testing.T) {
 	task, ok := sink.BackgroundTask("run-1")
 	require.True(t, ok)
 	assert.Equal(t, "review", task.Title, "a run with no goal takes the workflow's name")
-	assert.Equal(t, bgtask.StatusCompleted, task.Status, "a run that the runtime marks as ended is complete, whatever word states its status")
+	assert.Equal(t, bgtask.StatusEndedWithUnknownOutcome, task.Status, "the native end flag supplies no successful outcome for an unknown status")
 
 	// A result that states no run writes no row.
 	a.HandleOutput(toolStartEvent(3, "item_x", "call_x", contracts.CodewhaleToolWorkflow, input))
@@ -584,7 +577,7 @@ func TestAWorkflowRunTakesItsTitleAndItsEnd(t *testing.T) {
 func TestWorkflowRunStatus(t *testing.T) {
 	t.Parallel()
 	for word, want := range map[string]bgtask.Status{
-		contracts.CodewhaleWorkflowStatusCompleted: bgtask.StatusCompleted,
+		contracts.CodewhaleWorkflowStatusCompleted: bgtask.StatusSucceeded,
 		contracts.CodewhaleWorkflowStatusDegraded:  bgtask.StatusFailed,
 		contracts.CodewhaleWorkflowStatusFailed:    bgtask.StatusFailed,
 		contracts.CodewhaleWorkflowStatusCancelled: bgtask.StatusStopped,
@@ -612,8 +605,7 @@ const testShellTask = "shell_e2131998"
 
 var shellLaunchArgs = map[string]any{"command": "sleep 2; echo bg-done"}
 
-// shellLaunchResult is the final event of a `task_shell_start` call that started
-// a job, as 0.9.13 and 0.10.0 both send it.
+// shellLaunchResult reproduces a final task_shell_start event that launches a job in Codewhale 0.9.13 and 0.10.0.
 func shellLaunchResult(seq uint64, callID string) []byte {
 	return toolEndEvent(seq, "item.completed", "item_"+callID, callID, contracts.CodewhaleToolTaskShellStart,
 		"Background task started: "+testShellTask, shellLaunchArgs,
@@ -629,7 +621,7 @@ func launchShellJob(a *Agent, seq uint64, callID string) {
 func TestShellJobStatus(t *testing.T) {
 	t.Parallel()
 	for word, want := range map[string]bgtask.Status{
-		"Completed": bgtask.StatusCompleted,
+		"Completed": bgtask.StatusSucceeded,
 		"Failed":    bgtask.StatusFailed,
 		"TimedOut":  bgtask.StatusFailed,
 		"Killed":    bgtask.StatusStopped,
@@ -671,7 +663,7 @@ func TestAShellJobIsARegistryRowUntilAWaitReportsItsEnd(t *testing.T) {
 	a.HandleOutput(toolStartEvent(5, "item_w2", "call_wait2", contracts.CodewhaleToolTaskShellWait, waitInput))
 	a.HandleOutput(toolEndEvent(6, "item.completed", "item_w2", "call_wait2", contracts.CodewhaleToolTaskShellWait, "bg-done", waitInput,
 		map[string]any{"task_id": testShellTask, "backgrounded": false, "status": "Completed", "exit_code": 0}))
-	assert.Equal(t, []bgtask.Status{bgtask.StatusRunning, bgtask.StatusCompleted}, sink.BackgroundTaskStatuses("call_start"))
+	assert.Equal(t, []bgtask.Status{bgtask.StatusRunning, bgtask.StatusSucceeded}, sink.BackgroundTaskStatuses("call_start"))
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
 	assert.Empty(t, a.shells.rowKeys)
@@ -692,10 +684,13 @@ func TestAShellCallThatStartsNoJobOpensNoRow(t *testing.T) {
 	assert.Empty(t, sink.BackgroundTasks())
 }
 
-// fakeShellJobs serves the jobs routes of 0.10.0 as the runtime's ShellManager
-// does. A list evicts each finished job that started more than an hour ago, and
-// only then builds its answer (`list_jobs`, FINISHED_SHELL_MAX_AGE); a read of
-// one job evicts nothing (`inspect_job`).
+// fakeShellJobs models the explicit Codewhale 0.10.0 jobs behavior.
+// list_jobs removes final jobs started more than an hour earlier before constructing its result, through FINISHED_SHELL_MAX_AGE.
+// inspect_job removes nothing.
+// This historical fixture differs from Codewhale 0.10.1, which prunes through these limits:
+//   - Finish age.
+//   - Record count.
+//   - Retained bytes.
 type fakeShellJobs struct {
 	mu      sync.Mutex
 	status  string
@@ -790,8 +785,8 @@ func TestTheJobsPollerClosesAJobThatEnded(t *testing.T) {
 	assert.Len(t, rt.requestsTo(http.MethodGet, shellJobRoute(testThreadID, testShellTask)), 3)
 }
 
-// A list that fails for any reason but a missing route establishes nothing, so
-// the next tick asks again.
+// A list error other than a missing route supplies no capability result.
+// Ask again on the next tick.
 func TestTheJobsPollerAsksAgainAfterAFailedProbe(t *testing.T) {
 	t.Parallel()
 	rt := newFakeRuntime(t)
@@ -824,9 +819,9 @@ func TestTheJobsPollerAsksAgainAfterAFailedProbe(t *testing.T) {
 	assert.Len(t, rt.requestsTo(http.MethodGet, listRoute), 2)
 }
 
-// The runtime drops a finished job that started more than an hour ago from its
-// list in the same call that would state its end. The poller reads the job
-// itself, which drops nothing.
+// The explicit Codewhale 0.10.0 fixture removes a final job based on its old start time while listing jobs.
+// Read the individual job instead, which performs no removal.
+// Retain this older counterexample separately from 0.10.1's finish-time retention behavior.
 func TestTheJobsPollerReadsTheEndOfAJobThatRanForAnHour(t *testing.T) {
 	t.Parallel()
 	rt := newFakeRuntime(t)
@@ -845,8 +840,8 @@ func TestTheJobsPollerReadsTheEndOfAJobThatRanForAnHour(t *testing.T) {
 	assert.Equal(t, bgtask.StatusFailed, task.Status)
 }
 
-// A job that the runtime evicted before the poller read its end has ended: the
-// runtime never evicts a job that runs. Its outcome is lost, and the row closes.
+// A removed known job ends before the poller reads its result because the runtime never removes a running job.
+// The missing record supplies no retained outcome, so close the row without claiming success.
 func TestTheJobsPollerClosesAJobThatTheRuntimeForgot(t *testing.T) {
 	t.Parallel()
 	rt := newFakeRuntime(t)
@@ -862,10 +857,11 @@ func TestTheJobsPollerClosesAJobThatTheRuntimeForgot(t *testing.T) {
 	clock.Advance(shellPollInterval).MustWait(ctx)
 	pollerStopped(t, a)
 	task, _ := sink.BackgroundTask("call_start")
-	assert.Equal(t, bgtask.StatusCompleted, task.Status)
+	assert.Equal(t, bgtask.StatusEndedWithUnknownOutcome, task.Status)
 }
 
-// 0.9.13 has no jobs route. One 404 stops the poller for good.
+// Codewhale 0.9.13 has no jobs route.
+// One route-level not-found response stops the poller for the process lifetime.
 func TestTheJobsPollerStopsOnAMissingRoute(t *testing.T) {
 	t.Parallel()
 	rt := newFakeRuntime(t)
@@ -917,13 +913,11 @@ func TestAnExitStopsEveryJobThatRuns(t *testing.T) {
 	assert.Empty(t, a.shells.rowKeys)
 }
 
-// blockUntilCancelled answers a route only when the request ends, and closes
-// entered when the first request arrives. The test releases what is still
-// parked when it ends.
+// blockUntilCancelled holds a route response until its request ends and closes entered on the first request.
+// The test releases any remaining blocked request at cleanup.
 //
-// Call it AFTER the agent is built. Cleanups run in reverse order, so the
-// release then runs before the agent's own cleanup, which waits for every
-// watcher and so for the request that the handler holds.
+// Call it after constructing the agent.
+// Cleanup runs in reverse order, so that release precedes agent cleanup, which joins every watcher and therefore waits for its held request.
 func blockUntilCancelled(t *testing.T, rt *fakeRuntime, method, route string) (entered <-chan struct{}) {
 	t.Helper()
 	arrived := make(chan struct{})
@@ -956,8 +950,8 @@ func stopWithin(t *testing.T, ctx context.Context, a *Agent) {
 	}
 }
 
-// A stop cancels the watchers, and a watcher's request ends with them: a
-// runtime that does not answer must not hold Stop for the API timeout.
+// Stop cancels watchers and their pending requests.
+// An unresponsive native server must not delay Stop until the API timeout.
 func TestStopEndsTheRequestOfAChildWatcher(t *testing.T) {
 	t.Parallel()
 	rt := newFakeRuntime(t)

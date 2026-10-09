@@ -50,8 +50,8 @@ export type {
  * card's `failed`, the command card's `interrupted` and `isError` booleans. Four sites
  * spelled the test separately and gave three different answers for the same row.
  *
- * Null means that the worker recorded no completion. The provider's own bytes then
- * state the outcome, and a caller keeps whatever they say.
+ * Null means that the Worker records no known outcome.
+ * FINISHED records finality alone. The provider's own bytes can still state an outcome.
  */
 export function retainedOutcome(completion: MessageCompletion | undefined): RetainedToolOutcome | null {
   switch (messageCompletionFromProto(completion)) {
@@ -75,7 +75,7 @@ export function retainedOutcome(completion: MessageCompletion | undefined): Reta
  * here rather than spelling the completion test again.
  */
 export function retainedRowIsFinal(completion: MessageCompletion | undefined): boolean {
-  return retainedOutcome(completion) !== null
+  return messageCompletionFromProto(completion) !== null
 }
 
 const registry = new Map<AgentProvider, ProviderPlugin>()

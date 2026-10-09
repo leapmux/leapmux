@@ -111,7 +111,7 @@ func newBoundChildAgent(t *testing.T) (*Agent, *Agent, *bufferStdin, *bufferStdi
 	require.NoError(t, err)
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
 		RowKey: steerChildID, Kind: bgtask.KindSubagent, ChildAgentID: childAgentID,
-		ParentAgentID: root.AgentID(), Title: "Inspect the note", Status: bgtask.StatusCompleted,
+		ParentAgentID: root.AgentID(), Title: "Inspect the note", Status: bgtask.StatusSucceeded,
 	}))
 	ready := make(chan struct{})
 	close(ready)

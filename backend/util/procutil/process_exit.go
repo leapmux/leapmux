@@ -14,6 +14,14 @@ import (
 const processExitWaitQuantum = 50 * time.Millisecond
 const processTreeExitTimeout = 2 * time.Second
 
+// ProcessExitObserver receives the result of native exit observation for an exact creation identity.
+// A nil native error proves exit. A nonnil error states that native observation failed.
+// Construction fixes the observer. The owner calls it outside its mutex.
+// The observer must not call Close synchronously because that call waits for the observer itself.
+type ProcessExitObserver interface {
+	ObserveExit(context.Context, ProcessIdentity, error) error
+}
+
 // processExitWatch observes one OS process object. It never follows a replacement PID.
 type processExitWatch struct {
 	identity  ProcessIdentity
@@ -135,4 +143,22 @@ func (w *processExitWatch) close() error {
 		w.closeErr = w.release()
 	}
 	return w.closeErr
+}
+
+// observeProcessExit keeps native evidence and observer errors separate until it joins the result.
+func observeProcessExit(ctx context.Context, watch *processExitWatch, observer ProcessExitObserver) error {
+	if watch == nil {
+		return errors.New("the process exit watch is absent")
+	}
+	nativeErr := watch.wait(ctx)
+	var result error
+	if nativeErr != nil {
+		result = fmt.Errorf("wait for owned process %d: %w", watch.identity.PID, nativeErr)
+	}
+	if observer != nil {
+		if err := observer.ObserveExit(ctx, watch.identity, nativeErr); err != nil {
+			result = errors.Join(result, fmt.Errorf("observe exit of owned process %d: %w", watch.identity.PID, err))
+		}
+	}
+	return errors.Join(result, watch.close())
 }

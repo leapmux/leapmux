@@ -18,7 +18,9 @@ import { addTerminalInstanceReadyListener, getTerminalInstance } from '~/compone
 import { AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { TabType, WatchMode } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { assertNever } from '~/lib/assertNever'
 import { applyTerminalData, bufferHasVisibleContent } from '~/lib/terminal'
+import { isPublishedActivityState } from '~/stores/agentActivity.store'
 import { exceedsCatchUpGapLimit } from '~/stores/chatLiveTail'
 import { parseTabKey } from '~/stores/tab.helpers'
 import {
@@ -44,13 +46,7 @@ function warnChatHistoryLoadFailed(err: unknown): void {
   showWarnToastUnlessDisconnected('Failed to load chat history', err)
 }
 
-/**
- * Which tabs a worker going offline affects.
- *
- * Both cases filter on `workerId`, and that is the whole point: this walks
- * `view.all()` — every tab in the ACCOUNT, not one workspace — so a tab hosted
- * by any other worker is still perfectly connected.
- */
+/** Retain a terminal frame until its xterm instance mounts. */
 export interface PendingTerminalDataFrame {
   data: Uint8Array
   isSnapshot: boolean
@@ -58,22 +54,18 @@ export interface PendingTerminalDataFrame {
 }
 
 /**
- * Per-terminal cap on buffered pre-mount TerminalData. A terminal whose xterm
- * never mounts (kept off-screen, a render bug, a STARTUP_FAILED pane) would
- * otherwise accumulate every live PTY delta for the session — unbounded memory
- * on a chatty TUI (a build log, htop). A later snapshot re-syncs from the
- * worker's ring, so dropping the oldest frames loses nothing the mount cannot
- * recover. The cap is generous: a normally-mounting terminal never reaches it.
+ * Limit the number of buffered frames per terminal before its xterm instance mounts.
+ * Without this limit, a terminal that never mounts retains every live output frame.
+ * This can occur when the terminal stays hidden or its startup or rendering fails.
+ * A later snapshot restores the content from the worker's ring buffer.
  */
 export const MAX_PENDING_TERMINAL_FRAMES = 256
 
 /**
- * Queue TerminalData until an xterm instance mounts. Snapshots clear prior
- * deltas.
- *
- * Returns true when the cap evicted oldest frames — those bytes are lost to
- * this client, so the caller must flag the terminal for a full-snapshot
- * resubscribe (see `TerminalMeta.needsResync`).
+ * Queue TerminalData until an xterm instance mounts. A snapshot removes the earlier deltas.
+ * Return true when the frame limit removes the oldest frames.
+ * The caller must then request a full snapshot because incremental catch-up cannot restore those bytes.
+ * See TerminalMeta.needsResync.
  */
 export function enqueuePendingTerminalData(
   pending: Map<string, PendingTerminalDataFrame[]>,
@@ -84,8 +76,8 @@ export function enqueuePendingTerminalData(
   if (frame.isSnapshot)
     queue.length = 0
   queue.push(frame)
-  // Bound memory for a terminal that never mounts: drop the oldest frames. A
-  // snapshot clears the queue, so this only trims a long run of pure deltas.
+  // Remove the oldest frames when a terminal never mounts.
+  // A snapshot clears the queue, so this limit applies to a long sequence of deltas.
   let evicted = false
   if (queue.length > MAX_PENDING_TERMINAL_FRAMES) {
     queue.splice(0, queue.length - MAX_PENDING_TERMINAL_FRAMES)
@@ -95,11 +87,16 @@ export function enqueuePendingTerminalData(
   return evicted
 }
 
-/** Drop queued frames for a terminal that is gone (tab closed / re-placed). */
+/** Remove queued frames after the terminal tab closes or receives another placement. */
 export function dropPendingTerminalData(pending: Map<string, PendingTerminalDataFrame[]>, terminalId: string): void {
   pending.delete(terminalId)
 }
 
+/**
+ * Collect the supplied tabs whose worker went offline.
+ * The caller supplies tabs from every workspace in the account.
+ * A tab that another worker hosts retains its connected state.
+ */
 export function collectWorkerOfflineTargets(
   tabs: readonly Tab[],
   workerId: string,
@@ -118,17 +115,14 @@ export function collectWorkerOfflineTargets(
 }
 
 /**
- * Drop every live, unpersisted indicator an agent carries, because its worker
- * went offline.
- *
- * A dropped link ends the turn without a word: no result row, no turn-end
- * divider and no INACTIVE status change. Every OTHER site that reclaims this
- * state runs off one of those events, so this sweep is the only thing standing
- * between an outage and a chat that reads as busy for as long as it lasts --
- * a thinking counter and a running-tool badge frozen on their last value.
- *
- * Exported for its own test: the effect that calls it fires on an internal
- * offline signal a test cannot drive.
+ * Clear the agent's live indicators when its worker goes offline.
+ * A lost connection can omit these events:
+ * - The result row.
+ * - The turn-end divider.
+ * - The INACTIVE status change.
+ * Those events normally clear the indicators.
+ * This separate cleanup prevents stale thinking counters and tool badges throughout the outage.
+ * The export permits direct tests without the connection hook's internal offline signal.
  */
 export function clearOfflineAgentState(
   agentId: string,
@@ -138,9 +132,8 @@ export function clearOfflineAgentState(
     agentActivityStore?: AgentActivityStore
   },
 ): void {
-  // The worker that was going to report the settle is gone, so a retained busy
-  // flag would pin the spinner and keep the Interrupt button on an agent that
-  // nothing can interrupt.
+  // An offline worker cannot report that the agent settled.
+  // Remove its stored activity level so the view removes the spinner and the unusable Interrupt button.
   stores.agentActivityStore?.forget(agentId)
   clearPerTurnLiveState(agentId, stores)
 }
@@ -166,11 +159,10 @@ export function reconcileLaggingTails(deps: {
     const lastSeq = deps.getLastSeq(tab.id)
     const atTail = !deps.hasNewerMessages(tab.id)
     const deferred = deps.isTailFillDeferred(tab.id)
-    // Re-anchor when forward-fill cannot reach the tail: an empty window, or a
-    // gap beyond the catch-up limit. The drain abandons a gap that large, so
-    // the window re-anchors on the newest page. A deferred tail fill cannot
-    // cross a gap that large either. A plain scrolled-away wall keeps its
-    // window: the reader chose that gap, and scroll-down paging recovers it.
+    // Load the newest page when the window is empty or its live catch-up gap exceeds the limit.
+    // Forward paging and deferred catch-up cannot cross a gap that large.
+    // Retain a history window that the user chose by scrolling away from the tail.
+    // The user can return through normal history paging.
     if (lastSeq === 0n || (exceedsCatchUpGapLimit(deps.getLiveTailSeq(tab.id), lastSeq) && (atTail || deferred))) {
       if (!deps.isFetchingNewer(tab.id))
         deps.jumpToLatest(tab.workerId, tab.id)
@@ -196,34 +188,70 @@ export interface WorkspaceConnectionParams {
   repoGitStore: ReturnType<typeof createRepoGitStore>
   quakeStore: QuakeTerminalStore
   /**
-   * The quake key the panel is CURRENTLY showing -- the focused tab's -- or
-   * null when the focused tab has none.
-   *
-   * The shell's own accessor, passed in rather than re-derived, so "is this
-   * shell on screen?" has one answer here and in `QuakeTerminalPanel`. See
-   * `isQuakeEntryOnScreen`.
+   * The focused tab's quake key, or null when the tab has none.
+   * Use the shell's accessor so this hook and QuakeTerminalPanel select the same visible shell.
+   * See isQuakeEntryOnScreen.
    */
   getActiveQuakeKeyId: () => string | null
   getActiveWorkspaceId: () => string | null
-  /** Alert + badge when an agent SETTLES. See handleAgentSettled. */
+  /**
+   * Play the alert after the worker reports that the agent settled. handleAgentSettled sets the
+   * badge.
+   */
   onAgentSettled?: (agentId: string, numToolUses?: number) => void
   /**
-   * Refresh derived views after each TURN end -- git status and the directory
-   * tree. Separate from onAgentSettled because the two fire at different moments: a
-   * turn that leaves a subagent running changed the working tree but has not
-   * settled the agent.
+   * Refresh git status and the directory tree after each turn ends.
+   * onAgentSettled can occur later when a subagent still runs after that turn.
+   * The working tree needs a refresh at the turn boundary in either case.
    */
   onTurnEndRefresh?: (agentId: string) => void
+}
+
+type ReplayTopic = 'activity' | 'goal' | 'tasks'
+
+interface RequestedReplay {
+  workerId: string
+  rootAgentId: string | undefined
+  replayId: bigint
+  cursorSeq: bigint
+  liveClaims: Set<ReplayTopic>
+}
+
+/** Require each payload agent ID to match the frame destination. */
+function replayPayloadMatchesAgent(agentEvent: AgentEvent): boolean {
+  const inner = agentEvent.event
+  switch (inner.case) {
+    case 'statusChange':
+    case 'controlRequest':
+    case 'controlResponseChanged':
+    case 'controlCancel':
+    case 'todosChanged':
+    case 'goalChanged':
+    case 'backgroundTasksChanged':
+      return inner.value.agentId === agentEvent.agentId
+    case 'inputQueueChanged':
+      return inner.value.snapshot?.agentId === agentEvent.agentId
+    case 'agentMessage':
+    case 'catchUpStart':
+    case 'catchUpComplete':
+    case 'turnEnd':
+    case 'activityChanged':
+      return true
+    case undefined:
+      return false
+    default:
+      return assertNever(inner)
+  }
 }
 
 export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
   const { chatStore, agentInputQueueStore, view, metadata, selection, controlStore, agentSessionStore, agentActivityStore, settingsLoading, repoGitStore } = params
   const [offlineWorkers, setOfflineWorkers] = createSignal<ReadonlySet<string>>(new Set())
 
-  // Resume cursor sent per agent on promotion — CatchUpStart reap ceiling.
-  const resumeTails = new Map<string, bigint>()
-  // TerminalData that arrived before the xterm instance was mounted. Snapshot
-  // frames clear prior deltas so we only replay what still matters.
+  // Retain each transmitted FULL receipt and its independent live topic claims.
+  const resumeTails = new Map<string, RequestedReplay>()
+  // Retain TerminalData until the xterm instance mounts.
+  // A snapshot removes earlier deltas that it replaces.
   const pendingTerminalData = new Map<string, PendingTerminalDataFrame[]>()
 
   function flushPendingTerminalData(terminalId: string): void {
@@ -262,17 +290,15 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
   }
 
   const setWorkerOnline = (workerId: string, online: boolean) => {
-    // A removed tab resolves workerId to '' — seeding the offline set with the
-    // empty key is pure churn (the reader treats '' as always-online, but the
-    // sweep effect still iterates it as a no-op on every offline-set change).
+    // A removed tab supplies an empty worker ID.
+    // Keep that ID outside the offline set because workerOnline treats it as connected.
     if (!workerId)
       return
-    // The link came BACK. Release this worker's optimistic branch pins, keeping
-    // the branch values: a pin says "a branch change succeeded, so ignore a
-    // broadcast that still reports the old branch", and a dropped link ends
-    // that claim. Only an agreeing refresh clears a pin otherwise, and a
-    // background tab issues none -- so a stamp made just before the worker died
-    // would label the tab for the rest of the page.
+    // Release optimistic branch pins when the worker reconnects. Retain the branch values.
+    // A pin rejects a broadcast that still reports the branch before a successful local change.
+    // The lost connection ends that claim.
+    // Without this release, a background tab can retain its pin until the page closes.
+    // Such a tab issues no refresh that can confirm the new branch and remove the pin.
     if (online && untrack(offlineWorkers).has(workerId))
       repoGitStore.releaseBranchPinsForWorker(workerId)
     setOfflineWorkers((prev) => {
@@ -286,18 +312,11 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
   }
 
   /**
-   * Whether one quake panel is on screen: it is open AND its directory is the
-   * one the focused tab works in.
-   *
-   * This is the SAME question `QuakeTerminalPanel` answers to decide what to
-   * render -- it shows the entry for `activeQuakeKeyId` and nothing else -- and
-   * it reads the identical accessor rather than re-deriving it. A second
-   * derivation would let the FULL/NOTIFY watch decision disagree with what the
-   * user is looking at, which is how a visible shell stops receiving bytes.
-   *
-   * Declared above the watch-plan memo on purpose. `createMemo` runs its body
-   * once at creation to collect dependencies, so a `const` declared below it
-   * would be in its temporal dead zone and throw.
+   * Require an open quake panel whose directory belongs to the focused tab.
+   * Use the same accessor that QuakeTerminalPanel uses to select its visible entry.
+   * A separate selection rule can put a visible shell in NOTIFY mode and stop its output.
+   * Define this function before the watch-plan memo.
+   * createMemo runs immediately, so a later const definition would throw before initialization.
    */
   const isQuakeEntryOnScreen = (entry: { keyId: string, open: boolean }): boolean =>
     entry.open && params.getActiveQuakeKeyId() === entry.keyId
@@ -309,24 +328,21 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
       tileId => selection.activeKeyForTile(tileId),
       {
         agentResumeSeq: agentId => untrack(() => chatStore.getResumeAfterSeq(agentId)),
-        // Untracked like the resume seq: the loaded tail moves with every
-        // message, and the plan must not re-send a watch update per arrival.
-        // The worker reads it only for the capped-replay skip decision.
+        // Read the loaded tail without reactive tracking, as with the resume sequence.
+        // Each message changes it. That change must not send another watch request.
+        // The worker uses it only to decide whether replay exceeds its limit.
         agentWindowTailSeq: agentId => untrack(() => chatStore.getLastSeq(agentId)),
         terminalAfterOffset: terminalId => untrack(() => metadata.get(terminalId)?.lastOffset ?? 0),
-        // Tracked on purpose: the plan must go out the moment a terminal is
-        // flagged, and back out when the snapshot lands. Only this field is
-        // tracked — lastOffset above moves at PTY-read frequency, and keying
-        // the plan on it would re-send a watch update per output chunk.
+        // Track the resync flag so each set or clear sends the updated plan.
+        // Do not track lastOffset, which changes for each pseudoterminal output chunk.
         terminalNeedsResync: terminalId => metadata.get(terminalId)?.needsResync === true,
         getAgentTab: (agentId: string) => view.getAgentTab(agentId),
-        // A quake terminal is FULL only while its panel is open AND its
-        // directory is the focused tab's -- the same "does the user look at
-        // it?" question a placed terminal answers through its tile. NOTIFY
-        // otherwise, which keeps the cursor moving so a reopen catches up from
-        // the worker's ring instead of paying for a cold snapshot, and keeps
-        // the bell and the title flowing for a shell the user cannot see,
-        // which is when those matter most.
+        // Use FULL only for the open quake panel that belongs to the focused tab.
+        // Use NOTIFY for the other shells to retain these updates:
+        // - Cursor changes.
+        // - Bells.
+        // - Titles.
+        // A reopened panel can then catch up from the worker's ring buffer.
         detachedTerminals: params.quakeStore.liveEntries().map(entry => ({
           terminalId: entry.terminalId,
           workerId: entry.workerId,
@@ -338,16 +354,82 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
 
   let abortSignalFor: (workerId: string) => AbortSignal | undefined = () => undefined
 
+  /** Use the worker's root field, or a complete same-worker parent chain. */
+  function replayRootFor(agentId: string, workerId: string): string | undefined {
+    const visited = new Set<string>()
+    let current = agentId
+    while (!visited.has(current)) {
+      visited.add(current)
+      const tab = view.getAgentTab(current)
+      if (!tab || tab.workerId !== workerId)
+        return undefined
+      if (tab.rootAgentId) {
+        const root = view.getAgentTab(tab.rootAgentId)
+        return root && root.workerId !== workerId ? undefined : tab.rootAgentId
+      }
+      if (!tab.parentAgentId)
+        return current
+      current = tab.parentAgentId
+    }
+    return undefined
+  }
+
+  /** Validate the exact transmitted origin before any replay effect. */
+  function activeReplayFor(agentEvent: AgentEvent, streamWorkerId: string): RequestedReplay | undefined {
+    const origin = agentEvent.replayAgentId
+    const requested = resumeTails.get(origin)
+    if (!origin || !requested || requested.workerId !== streamWorkerId
+      || requested.replayId !== agentEvent.replayId
+      || !agentSessionStore.acceptsReplay(origin, agentEvent.replayId)) {
+      return undefined
+    }
+    if (view.getAgentTab(origin)?.workerId !== streamWorkerId
+      || replayRootFor(origin, streamWorkerId) !== requested.rootAgentId) {
+      return undefined
+    }
+    const destination = view.getAgentTab(agentEvent.agentId)
+    if (destination && destination.workerId !== streamWorkerId)
+      return undefined
+    if (!replayPayloadMatchesAgent(agentEvent))
+      return undefined
+    if (agentEvent.agentId !== origin) {
+      const kind = agentEvent.event.case
+      if ((kind !== 'goalChanged' && kind !== 'backgroundTasksChanged')
+        || requested.rootAgentId === undefined || agentEvent.agentId !== requested.rootAgentId) {
+        return undefined
+      }
+    }
+    return requested
+  }
+
+  /** Protect each active receipt's root topic after an accepted live publication. */
+  function claimRootTopic(workerId: string, agentId: string, topic: 'goal' | 'tasks'): void {
+    for (const [origin, requested] of resumeTails) {
+      if (requested.workerId === workerId
+        && (requested.rootAgentId === agentId || origin === agentId)
+        && agentSessionStore.acceptsReplay(origin, requested.replayId)) {
+        requested.liveClaims.add(topic)
+      }
+    }
+  }
+
   const handleAgentEvent = (agentEvent: AgentEvent, streamWorkerId: string) => {
     const agentId = agentEvent.agentId
     const inner = agentEvent.event
+    const replayId = agentEvent.replayId
+    const requested = agentEvent.replay ? activeReplayFor(agentEvent, streamWorkerId) : undefined
+    if (agentEvent.replay && !requested && inner.case !== 'agentMessage')
+      return
+    const resumeTail = requested?.cursorSeq
 
-    // The FRAME says which it is. A client registers its live watch before the
-    // replay burst runs and both write the same
-    // stream, so arrival order cannot tell them
-    // apart. Guessing from it dropped a permission
-    // prompt's badge, a plan-title update and an
-    // INACTIVE sweep whenever they raced a replay. See AgentEvent.replay.
+    // Use the frame's replay flag because live and replay events share this stream.
+    // The worker registers the live watch before it sends replay events.
+    // Arrival order cannot identify the delivery phase.
+    // An inferred phase can suppress these effects during replay:
+    // - A prompt badge.
+    // - A plan title.
+    // - INACTIVE cleanup.
+    // See AgentEvent.replay.
     const catchUpPhase: CatchUpPhase = agentEvent.replay ? 'catchingUp' : 'live'
     const markLiveAgentActive = () => {
       if (catchUpPhase !== 'live')
@@ -357,21 +439,23 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         setWorkerOnline(wid, true)
       const current = view.getAgentTab(agentId)
       if (current?.agentStatus === AgentStatus.INACTIVE) {
-        // A status that the live stream wrote, like a statusChange event: a
-        // ListAgents reply that is pending holds an older answer. See
-        // `TabMetadataStore.liveStatusEpoch`.
+        // Record the live status so a pending ListAgents reply cannot restore its older answer.
+        // See TabMetadataStore.liveStatusEpoch.
         metadata.patchLiveStatus(agentId, { agentStatus: AgentStatus.ACTIVE })
       }
     }
 
     switch (inner.case) {
       case 'agentMessage':
-        markLiveAgentActive()
+        if (!inner.value.transcriptOnly)
+          markLiveAgentActive()
         handleAgentMessage(
           agentId,
           inner.value,
           { agentSessionStore, chatStore, view, metadata, selection, getActiveWorkspaceId: params.getActiveWorkspaceId },
           catchUpPhase,
+          replayId,
+          agentEvent.replay && !requested ? 'retain-transcript' : 'apply-current-state',
         )
         break
       case 'statusChange':
@@ -402,13 +486,10 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         break
       }
       case 'turnEnd':
-        // A turn ended. That refreshes git status and the directory tree, which
-        // is right per TURN -- the working tree changed whether or not a
-        // subagent is still running.
-        //
-        // It does NOT alert. The alert belongs to the busy -> idle edge
-        // (handleAgentSettled): a turn that leaves a subagent working is not a
-        // finished piece of work, and ringing here told the user otherwise.
+        // Refresh git status and the directory tree after each turn ends.
+        // The working tree can change even when a subagent still runs.
+        // handleAgentSettled plays the alert after a published transition out of WORKING.
+        // An alert here would report completion while that subagent still runs.
         params.onTurnEndRefresh?.(agentId)
         break
       case 'inputQueueChanged': {
@@ -421,32 +502,44 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         break
       }
       case 'goalChanged': {
-        // Keyed by the ROOT owner agent id like the registry above, and
-        // notification-class for the same reason: an off-screen root tab must
-        // still update its goal card and its section visibility.
+        // The root agent owns its goal card and section visibility.
+        // GoalChanged requires FULL interest. A child FULL replay can project its root's goal snapshot.
         const gc = inner.value
-        chatStore.goal.replace(gc.agentId, gc.goal, gc.supportedActions, gc.goalUpdatedAt)
+        if (requested?.liveClaims.has('goal'))
+          break
+        const outcome = chatStore.goal.replace(gc.agentId, gc.goal, gc.supportedActions, gc.goalUpdatedAt)
+        if (catchUpPhase === 'live' && outcome !== 'stale') {
+          claimRootTopic(streamWorkerId, gc.agentId, 'goal')
+          if (outcome === 'progress-cleared')
+            agentSessionStore.claimGoalProgressClear(gc.agentId, { phase: 'live' })
+        }
         break
       }
       case 'backgroundTasksChanged': {
-        // The registry is keyed by the ROOT owner agent id and rides the root
-        // tab's existing WatchAgentEntry (notification-class, so an off-screen
-        // root tab still updates the sidebar/badge).
+        // The root agent owns the registry and receives it through its existing WatchAgentEntry.
+        // NOTIFY delivery keeps the sidebar and badge current when the root tab is hidden.
         const bc = inner.value
+        if (requested?.liveClaims.has('tasks'))
+          break
         chatStore.backgroundTasks.replace(bc.agentId, bc.tasks)
+        if (catchUpPhase === 'live')
+          claimRootTopic(streamWorkerId, bc.agentId, 'tasks')
         break
       }
-      case 'activityChanged':
-        // The Worker's authoritative "is this agent working". Notification-class
-        // and edge-triggered, so an off-screen tab still learns that its agent
-        // settled -- which is the tab that most needs to ring and badge.
-        //
-        // No `catchUpPhase` here, unlike every other alerting branch. Each of
-        // these is a TRANSITION, so a settle that lands while this tab replays
-        // is a live settle and rings. The catch-up BASELINE is a level and
-        // arrives on catchUpStart below, where a level seeds the store. The
-        // replay never sends this message at all, so the frame's own flag would
-        // answer 'live' here in every case.
+      case 'activityChanged': {
+        if (!isPublishedActivityState(inner.value.state))
+          break
+        const active = resumeTails.get(agentId)
+        if (catchUpPhase === 'live' && active?.workerId === streamWorkerId
+          && view.getAgentTab(agentId)?.workerId === streamWorkerId
+          && agentSessionStore.acceptsReplay(agentId, active.replayId)) {
+          active.liveClaims.add('activity')
+        }
+        // Apply the worker's authoritative activity transition, including through NOTIFY delivery.
+        // A hidden tab can then receive its alert and badge when the agent settles.
+        // A live transition still alerts while replay occurs.
+        // catchUpStart supplies the replay baseline separately and produces no alert.
+        // The worker sends no activityChanged event during replay.
         handleActivityChanged(agentId, inner.value, {
           metadata,
           selection,
@@ -456,26 +549,25 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           ...(params.onAgentSettled !== undefined ? { onAgentSettled: params.onAgentSettled } : {}),
         })
         break
+      }
       case 'catchUpStart':
-        chatStore.reconcileAuthoritativeTail(agentId, inner.value.latestSeq, resumeTails.get(agentId))
-        // The activity level the replay opens with. It seeds the spinner ahead
-        // of the message burst and rings nothing. It is the PUBLISHED level, so
-        // it also resets the edge
-        // baseline. This client may
-        // hold a WORKING from a link
-        // that dropped without an
-        // offline sweep, and the
-        // Worker's own answer is what
-        // supersedes it. See AgentActivityStore.seedPublished.
-        agentActivityStore.seedPublished(agentId, inner.value.activityState)
+        chatStore.reconcileAuthoritativeTail(agentId, inner.value.latestSeq, resumeTail)
+        // Restore an unclaimed valid activity level without an alert.
+        // A valid live publication retains its activity claim until replay ends.
+        // Tail reconciliation still applies when that claim refuses the older baseline.
+        // See AgentActivityStore.seedPublished.
+        if (!requested?.liveClaims.has('activity') && isPublishedActivityState(inner.value.activityState))
+          agentActivityStore.seedPublished(agentId, inner.value.activityState)
         break
       case 'catchUpComplete':
+        requested?.liveClaims.clear()
+        agentSessionStore.retireReplay(agentId, replayId)
         chatStore.setCatchingUp(agentId, false)
         chatStore.reconcileAuthoritativeTail(
           agentId,
           inner.value.latestSeq,
           inner.value.startTailSeq === undefined
-            ? resumeTails.get(agentId)
+            ? resumeTail
             : inner.value.startTailSeq,
           true,
         )
@@ -489,12 +581,9 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
   }
 
   /**
-   * Whether a quake terminal is on screen, by terminal id.
-   *
-   * The bell and notification helpers hold an id and nothing else, so this is
-   * the id-keyed door onto the ONE rule above. Two copies of the rule would let
-   * the FULL/NOTIFY watch decision and the "should this raise a desktop
-   * notification?" decision disagree about the same shell.
+   * Find a quake terminal by ID and apply the same visibility rule as its watch entry.
+   * The bell and notification handlers receive only that ID.
+   * A separate rule could make watch mode and desktop notifications disagree about the visible shell.
    */
   const isQuakeTerminalOnScreen = (terminalId: string): boolean => {
     const entry = params.quakeStore.entryForTerminal(terminalId)
@@ -507,18 +596,17 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     switch (termEvent.event.case) {
       case 'data': {
         const { data, isSnapshot, endOffset } = termEvent.event.value
-        // If the tab is gone, don't buffer for it — its terminalId left the
-        // view (closed / re-placed), so nothing will ever mount to drain it.
+        // Discard frames when the terminal tab leaves the view.
+        // No instance can mount to consume them after the tab closes or receives another placement.
         if (!view.getTerminalTab(terminalId)) {
           dropPendingTerminalData(pendingTerminalData, terminalId)
           break
         }
         const instance = getTerminalInstance(terminalId)
         if (!instance) {
-          // Do not advance lastOffset until bytes land on a live instance —
-          // otherwise a late mount would skip catch-up and leave a blank PTY.
-          // An eviction marks the terminal for a full-snapshot resubscribe:
-          // the dropped frames leave a hole no incremental delta can fill.
+          // Advance lastOffset only after a live instance receives the bytes.
+          // An earlier advance would skip catch-up and leave a late instance blank.
+          // Request a full snapshot if the frame limit removes bytes that incremental catch-up cannot restore.
           const evicted = enqueuePendingTerminalData(pendingTerminalData, terminalId, { data, isSnapshot, endOffset })
           if (evicted)
             metadata.patch(terminalId, { needsResync: true })
@@ -533,21 +621,19 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         const newOffset = applyTerminalData(instance, isSnapshot
           ? { kind: 'snapshot', data, endOffset: Number(endOffset), onParsed }
           : { kind: 'delta', data, endOffset: Number(endOffset), currentOffset: metadata.get(terminalId)?.lastOffset ?? 0, onParsed })
-        // An applied snapshot is itself the resync: the buffer was rebuilt
-        // from the worker's ring, so no forced resubscribe is pending.
+        // An applied snapshot restores the buffer from the worker's ring.
+        // Clear the flag that requests another full snapshot.
         metadata.patch(terminalId, { lastOffset: newOffset, ...(isSnapshot ? { needsResync: false } : {}) })
         break
       }
       case 'closed':
-        // A quake terminal is TERMINATED by its shell exiting, not left in
-        // an EXITED state that waits for Enter: there is no pane to leave behind,
-        // and the next open spawns a fresh shell. Routed before
-        // markTerminalExited so the panel never paints the exit notice.
+        // Close the quake terminal when its shell exits. Its next open starts a fresh shell.
+        // Call handleShellExit before markTerminalExited so the panel shows no exit notice or prompt to press Enter.
         if (params.quakeStore.isQuakeTerminal(terminalId))
           params.quakeStore.handleShellExit(terminalId)
         else
           markTerminalExited(metadata, terminalId)
-        // The PTY is gone; any buffered pre-mount bytes will never be written.
+        // The pseudoterminal closed, so no instance can receive its buffered frames.
         dropPendingTerminalData(pendingTerminalData, terminalId)
         break
       case 'statusChange':
@@ -603,11 +689,40 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
       }
     },
     onWorkerOnline: setWorkerOnline,
+    onReplayRequested: (workerId, replayId, entries) => {
+      batch(() => {
+        for (const entry of entries) {
+          agentSessionStore.beginReplay(entry.agentId, replayId)
+          resumeTails.set(entry.agentId, {
+            workerId,
+            rootAgentId: replayRootFor(entry.agentId, workerId),
+            replayId,
+            cursorSeq: entry.cursorSeq,
+            liveClaims: new Set<ReplayTopic>(),
+          })
+          chatStore.setCatchingUp(entry.agentId, true)
+        }
+      })
+    },
+    onReplayRetired: (workerId, replayId, agentIds, reason) => {
+      batch(() => {
+        for (const agentId of agentIds) {
+          const requested = resumeTails.get(agentId)
+          if (requested && requested.workerId !== workerId)
+            continue
+          if (reason === 'removed')
+            agentSessionStore.removeReplay(agentId, replayId)
+          else
+            agentSessionStore.retireReplay(agentId, replayId)
+          if (resumeTails.get(agentId)?.replayId === replayId) {
+            resumeTails.delete(agentId)
+            chatStore.setCatchingUp(agentId, false)
+          }
+        }
+      })
+    },
     onPromoted: (workerId, agentIds) => {
       for (const agentId of agentIds) {
-        chatStore.setCatchingUp(agentId, true)
-        const resumeSeq = untrack(() => chatStore.getResumeAfterSeq(agentId))
-        resumeTails.set(agentId, resumeSeq)
         void chatStore.loadInitialMessages(workerId, agentId).catch(warnChatHistoryLoadFailed)
         void chatStore.loadMessageMarks(workerId, agentId, abortSignalFor(workerId))
       }
@@ -615,46 +730,28 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
   })
   abortSignalFor = streams.abortSignalFor
 
-  // When a worker goes offline, mark its running terminals disconnected and
-  // clear stale streaming state for its agents.
+  // Mark the offline worker's running terminals disconnected and clear its agents' live indicators.
+  // Retain the git store's last known working-tree state, as RepoGitStore.refresh does after a failed read.
+  // Tab.gitToplevel also survives the outage. branchKeys.repoKeyAndLabel still groups tabs by that field.
+  // Removing the git entry here would leave those groups without their branch labels.
   //
-  // This effect deliberately does NOT sweep the repo-keyed git store. An entry
-  // there is the last known state of a working tree. It is not a claim about
-  // the link. Every other worker-sourced field on the tab row survives an
-  // outage the same way, and `RepoGitStore.refresh` keeps last-good state on
-  // its own side.
+  // A background agent tab does not automatically restore a removed git entry:
+  // - useTabHydrators retains its hydrated state for the page lifetime.
+  // - A turn end supplies a new git status only for the agent whose turn ended.
+  // - Replay supplies git status only when the client promotes the agent to FULL.
+  // The user would otherwise need to select each tab or request a Files refresh after every outage.
   //
-  // A sweep here removed the branch with no way back. `Tab.gitToplevel`
-  // outlives the outage, and `branchKeys.repoKeyAndLabel` groups a tab by
-  // that field alone. The branch label comes from this store. A dropped entry
-  // therefore put every tab of that worker under its repo with no branch name.
-  //
-  // Three separate rules kept a BACKGROUND tab from recovering. An agent tab
-  // stays `hydrated` for the life of the page, so `useTabHydrators` never
-  // re-asks. The worker sends a git status only at that agent's own turn end.
-  // The catch-up replay after a reconnect carries one only for an agent that
-  // the client promotes to FULL. So the user clicked each tab, or the Files
-  // refresh button, once per tab, after every dropped link.
-  //
-  // Permanent removal is a different event with its own caller. Worker
-  // deregistration deliberately does NOT clear the repo store
-  // (`useWorkerSection` states why: the entries should outlive the link), so
-  // nothing here sweeps them either.
-  //
-  // Keeping an entry has its own cost, and `RepoGitState.nonRepoProbeIgnored`
-  // pays it: a repo deleted during the outage would otherwise suppress every
-  // later "not a git repository" answer.
+  // Permanent removal has a separate caller. useWorkerSection retains git entries after worker deregistration also.
+  // RepoGitState.nonRepoProbeIgnored permits later non-repository answers if the repository disappears during the outage.
   createEffect(() => {
     const offline = offlineWorkers()
     if (offline.size === 0)
       return
     untrack(() => {
-      // `view.all()` holds PLACED tabs only, so a quake terminal is not in
-      // it and would stay reading READY for the whole outage. Its tab object
-      // comes from the detached family instead.
-      //
-      // Built ONCE, above the loop: neither list depends on the worker, and a
-      // hub restart puts several workers in this set at the same tick.
+      // Include detached quake terminals because view.all contains placed tabs only.
+      // Without their separate list, they would retain READY throughout the outage.
+      // Build both lists once before the loop because neither depends on the worker.
+      // A Hub restart can add several offline workers at once.
       const searchable = [...params.view.all(), ...params.view.detachedTerminalTabs()]
       for (const workerId of offline) {
         const { terminals: affectedTerminals, agents } = collectWorkerOfflineTargets(searchable, workerId)
@@ -666,8 +763,8 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
             )
           }
           for (const tab of agents) {
-            // The patch below writes the tab's status directly and never reaches
-            // handleAgentInactive, so this sweep owns the whole reclamation.
+            // This direct status patch does not call handleAgentInactive.
+            // Clear the live indicators here before that patch.
             clearOfflineAgentState(tab.id, { chatStore, agentSessionStore, agentActivityStore })
             if (tab.agentStatus === AgentStatus.ACTIVE)
               metadata.patch(tab.id, { agentStatus: AgentStatus.INACTIVE })
@@ -677,8 +774,7 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     })
   })
 
-  // Lazy message loading for agent tabs promoted to FULL outside onPromoted
-  // (e.g. user switches to an agent tab whose history was never loaded).
+  // Load history when a newly selected agent tab did not load it through onPromoted.
   createEffect(() => {
     const activeKey = selection.activeKeyForWorkspace(params.getActiveWorkspaceId() ?? '')
     if (!activeKey)

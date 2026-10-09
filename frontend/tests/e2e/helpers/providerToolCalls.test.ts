@@ -81,6 +81,7 @@ import {
   lettaTaskUpdateToolCall,
   lettaViewImageToolCall,
   mcpToolCall,
+  mimoActorCancelToolCall,
   mimoInteractiveBashToolCall,
   mimoTaskToolCall,
   mimoWorkflowToolCall,
@@ -989,7 +990,7 @@ const OPERATIONS = [
 
 describe('TOOL_VOCABULARY', () => {
   it('answers for every provider the proto enum declares', () => {
-    expect(PROVIDERS).toHaveLength(29)
+    expect(PROVIDERS).toHaveLength(30)
     for (const provider of PROVIDERS)
       expect(() => hasToolFor(provider, 'bash'), `provider ${provider}`).not.toThrow()
   })
@@ -1224,6 +1225,23 @@ describe('mimoTaskToolCall', () => {
       arguments: { operation: { action: 'create', summary: 'Write the parser' } },
     })
     expect(mimoTaskToolCall('call-2', { action: 'done', id: 'T1' }).arguments).toEqual({ operation: { action: 'done', id: 'T1' } })
+  })
+})
+
+describe('mimoActorCancelToolCall', () => {
+  it('selects one native actor without changing its opaque identity', () => {
+    expect(mimoActorCancelToolCall('cancel-1', 'general-7')).toEqual({
+      id: 'cancel-1',
+      name: 'actor',
+      arguments: { operation: { action: 'cancel', actor_id: 'general-7' } },
+    })
+    expect(mimoActorCancelToolCall('cancel-2', ' actor-8 ').arguments)
+      .toEqual({ operation: { action: 'cancel', actor_id: ' actor-8 ' } })
+  })
+
+  it.each(['', ' ', '\n\t'])('rejects an empty actor ID %j', (actorId) => {
+    expect(() => mimoActorCancelToolCall('cancel-empty', actorId))
+      .toThrow('A MiMo actor cancellation requires an actor ID.')
   })
 })
 
@@ -1475,6 +1493,7 @@ const TODO_STATUSES_BY_PROVIDER: ReadonlyMap<AgentProvider, readonly TodoStatus[
   [AgentProvider.KILO, ['pending', 'in_progress', 'completed', 'cancelled']],
   [AgentProvider.QODER, ['pending', 'in_progress', 'completed', 'cancelled', 'blocked']],
   [AgentProvider.GEMINI_CLI, ['pending', 'in_progress', 'completed', 'cancelled', 'blocked']],
+  [AgentProvider.MUSE_CODE, ['pending', 'in_progress', 'completed', 'cancelled']],
   [AgentProvider.KIRO, ALL_TODO_STATUSES],
   [AgentProvider.OH_MY_PI, ALL_TODO_STATUSES],
 ])
@@ -2591,4 +2610,162 @@ describe('the ZCode background command', () => {
     expect(backgroundBashToolCall(AgentProvider.ZCODE, 'call-1', 'sleep 60')).toEqual({ id: 'call-1', name: 'Bash', arguments: { command: 'sleep 60', description: 'Run the scripted command in the background', run_in_background: true } })
     expect(bashToolCall(AgentProvider.ZCODE, 'call-1', 'sleep 60').arguments).not.toHaveProperty('run_in_background')
   })
+})
+
+describe('Muse native tool builders', () => {
+  it('uses the proved full MCP function ID', () => {
+    const tool = mcpToolCall(AgentProvider.MUSE_CODE, 'mcp-proof', { server: 'echo_probe', tool: 'echo', input: { value: 'proof' } })
+    expect(tool.name).toBe('mcp__echo_probe__echo')
+    expect(tool.namespace).toBeUndefined()
+  })
+
+  it('supplies stable question IDs and native selection fields', () => {
+    const tool = askUserQuestionToolCall(AgentProvider.MUSE_CODE, 'question-proof', [{
+      header: 'Choice',
+      question: 'Choose the options',
+      multiSelect: true,
+      options: [{ label: 'One', description: 'First option' }, { label: 'Two', description: 'Second option' }],
+    }])
+    expect(tool.arguments?.questions).toEqual([{
+      id: 'question-1',
+      header: 'Choice',
+      question: 'Choose the options',
+      options: [{ label: 'One', description: 'First option' }, { label: 'Two', description: 'Second option' }],
+      selection: { mode: 'multiple', min_selections: 1, max_selections: 2 },
+    }])
+  })
+})
+
+describe('the native Muse workflow code builder', () => {
+  it('exposes the proved native workflow source executor', () => {
+    expect(hasToolFor(AgentProvider.MUSE_CODE, 'codeExecution')).toBe(true)
+  })
+
+  it.each([
+    { label: 'a calculation', source: 'export default async function workflow(host) { await host.agent({ input: "Check the native calculation." }); return { marker: 40 + 2 }; }' },
+    { label: 'an exception', source: 'export default async function workflow(host) { await host.agent({ input: "Check the native failure." }); throw new Error("MUSE_ERROR_" + (40 + 2)); }' },
+    { label: 'zero and negative values', source: 'export default async function workflow(host) { await host.agent({ input: "Check numeric values." }); return { zero: 0, negative: -1 }; }' },
+    { label: 'Unicode and quoted text', source: 'export default async function workflow(host) { await host.agent({ input: "Check the native text." }); return { text: "界\\n\\\"quoted\\\"" }; }' },
+    { label: 'a large source', source: `export default async function workflow(host) { await host.agent({ input: "Check the native source." }); return 42; }\n// ${'x'.repeat(65_536)}` },
+  ])('keeps $label in the exact native source field', ({ source }) => {
+    expect(codeExecutionToolCall(AgentProvider.MUSE_CODE, 'muse-native-code', source)).toEqual({
+      id: 'muse-native-code',
+      name: 'workflow',
+      namespace: 'muse',
+      arguments: { name: 'Native code', script: source },
+    })
+  })
+
+  it.each(['', ' ', '\t\n'])('refuses source without code: %j', (source) => {
+    expect(() => codeExecutionToolCall(AgentProvider.MUSE_CODE, 'muse-native-code', source)).toThrow()
+  })
+
+  it.each(['', ' ', '\t\n'])('refuses a call ID without text: %j', (id) => {
+    expect(() => codeExecutionToolCall(AgentProvider.MUSE_CODE, id, 'export default async function workflow(host) { await host.agent({ input: "Check the source." }); return 42; }')).toThrow()
+  })
+})
+
+describe('askUserQuestionToolCall selection limits', () => {
+  const nativeQuestion = (minimumSelections?: number, maximumSelections?: number, multiSelect = true) => ({
+    header: 'Tools',
+    question: 'Choose the tools',
+    options: [{ label: 'One', description: 'First', preview: 'Native preview 界' }, { label: 'Two' }, { label: 'Three' }],
+    multiSelect,
+    ...(minimumSelections === undefined ? {} : { minimumSelections }),
+    ...(maximumSelections === undefined ? {} : { maximumSelections }),
+  })
+
+  it('maps explicit counts to the exact native model-tool fields', () => {
+    const questions = [nativeQuestion(2, 3)]
+    const original = structuredClone(questions)
+    const tool = askUserQuestionToolCall(AgentProvider.MUSE_CODE, 'limited-question', questions)
+    expect(JSON.parse(JSON.stringify(tool.arguments))).toEqual({ questions: [{
+      id: 'question-1', header: 'Tools', question: 'Choose the tools',
+      options: [{ label: 'One', description: 'First' }, { label: 'Two' }, { label: 'Three' }],
+      selection: { mode: 'multiple', min_selections: 2, max_selections: 3 },
+    }] })
+    expect(questions).toEqual(original)
+  })
+
+  it.each([
+    { label: 'zero minimum', minimum: 0, maximum: 3 },
+    { label: 'negative minimum', minimum: -1, maximum: 3 },
+    { label: 'fractional minimum', minimum: 1.5, maximum: 3 },
+    { label: 'excessive minimum', minimum: 4, maximum: 4 },
+    { label: 'very large minimum', minimum: Number.MAX_SAFE_INTEGER, maximum: Number.MAX_SAFE_INTEGER },
+    { label: 'nonfinite minimum', minimum: Number.POSITIVE_INFINITY, maximum: 3 },
+    { label: 'not-a-number minimum', minimum: Number.NaN, maximum: 3 },
+    { label: 'zero maximum', minimum: 1, maximum: 0 },
+    { label: 'negative maximum', minimum: 1, maximum: -1 },
+    { label: 'fractional maximum', minimum: 1, maximum: 2.5 },
+    { label: 'excessive maximum', minimum: 1, maximum: 4 },
+    { label: 'very large maximum', minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
+    { label: 'nonfinite maximum', minimum: 1, maximum: Number.POSITIVE_INFINITY },
+    { label: 'not-a-number maximum', minimum: 1, maximum: Number.NaN },
+    { label: 'conflicting counts', minimum: 3, maximum: 2 },
+  ])('refuses $label in the installed native model-tool domain', ({ minimum, maximum }) => {
+    const questions = [nativeQuestion(minimum, maximum)]
+    const original = structuredClone(questions)
+    expect(() => askUserQuestionToolCall(AgentProvider.MUSE_CODE, 'invalid-limit', questions)).toThrow()
+    expect(questions).toEqual(original)
+  })
+
+  it('refuses a maximum above the supplied option count', () => {
+    const questions = [{ ...nativeQuestion(1, 3), options: [{ label: 'One' }, { label: 'Two' }] }]
+    const original = structuredClone(questions)
+    expect(() => askUserQuestionToolCall(AgentProvider.MUSE_CODE, 'invalid-limit', questions)).toThrow()
+    expect(questions).toEqual(original)
+  })
+
+  it.each([0, 4, 1000])('refuses %i questions outside the native model array limits', (count) => {
+    const questions = Array.from({ length: count }, () => nativeQuestion())
+    const original = structuredClone(questions)
+    expect(() => askUserQuestionToolCall(AgentProvider.MUSE_CODE, 'invalid-question-count', questions)).toThrow()
+    expect(questions).toEqual(original)
+  })
+
+  it.each([0, 1, 4, 1000])('refuses %i options outside the native model array limits', (count) => {
+    const questions = [{ ...nativeQuestion(), options: Array.from({ length: count }, (_, index) => ({ label: `Option ${index}` })) }]
+    const original = structuredClone(questions)
+    expect(() => askUserQuestionToolCall(AgentProvider.MUSE_CODE, 'invalid-option-count', questions)).toThrow()
+    expect(questions).toEqual(original)
+  })
+
+  it.each([
+    { minimum: 1, maximum: undefined },
+    { minimum: undefined, maximum: 2 },
+    { minimum: 1, maximum: 2 },
+  ])('refuses explicit numeric counts in single mode %j', ({ minimum, maximum }) => {
+    const questions = [nativeQuestion(minimum, maximum, false)]
+    const original = structuredClone(questions)
+    expect(() => askUserQuestionToolCall(AgentProvider.MUSE_CODE, 'single-limit', questions)).toThrow()
+    expect(questions).toEqual(original)
+  })
+
+  it('keeps the existing omitted-count defaults without multiple-mode previews', () => {
+    const questions = [nativeQuestion()]
+    const original = structuredClone(questions)
+    const tool = askUserQuestionToolCall(AgentProvider.MUSE_CODE, 'default-counts', questions)
+    expect(tool.arguments).toMatchObject({ questions: [{ selection: { mode: 'multiple', min_selections: 1, max_selections: 3 } }] })
+    expect(JSON.stringify(tool.arguments)).not.toContain('preview')
+    expect(questions).toEqual(original)
+  })
+
+  it('preserves single-mode previews and leaves its numeric counts absent', () => {
+    const questions = [nativeQuestion(undefined, undefined, false)]
+    const original = structuredClone(questions)
+    const tool = askUserQuestionToolCall(AgentProvider.MUSE_CODE, 'single-preview', questions)
+    expect(tool.arguments).toMatchObject({ questions: [{ options: [{ preview: { format: 'markdown', content: 'Native preview 界' } }, { label: 'Two' }, { label: 'Three' }] }] })
+    expect(JSON.stringify(tool.arguments)).not.toContain('min_selections')
+    expect(JSON.stringify(tool.arguments)).not.toContain('max_selections')
+    expect(questions).toEqual(original)
+  })
+
+  it.each(PROVIDERS.filter(provider => provider !== AgentProvider.MUSE_CODE && hasToolFor(provider, 'askUserQuestion')))
+    ('refuses explicit counts for the builder without this capability %j', (provider) => {
+      const questions = [nativeQuestion(1, 2)]
+      const original = structuredClone(questions)
+      expect(() => askUserQuestionToolCall(provider, 'unsupported-counts', questions)).toThrow()
+      expect(questions).toEqual(original)
+    })
 })

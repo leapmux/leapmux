@@ -1510,7 +1510,7 @@ func TestHandlePiOutput_SubagentNotificationMessageClosesRegistryEntry(t *testin
 	// The registry row must close.
 	tasks := sink.BackgroundTasks()
 	require.Len(t, tasks, 1)
-	assert.Equal(t, bgtask.StatusCompleted, tasks[0].Status,
+	assert.Equal(t, bgtask.StatusSucceeded, tasks[0].Status,
 		"subagent-notification with a final status must close the registry row")
 	assert.True(t, tasks[0].Status.IsFinished())
 

@@ -4,41 +4,61 @@ import (
 	"log/slog"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
 // scheduleNativeTurnRestart keeps the turn marker until a replacement process
 // takes the queued input. A duplicate end report joins the first replacement.
-func (svc *Service) scheduleNativeTurnRestart(agentID string) bool {
-	if svc.Agents == nil || !svc.Agents.NativeTurnRestartRequired(agentID) {
+func (svc *Service) scheduleNativeTurnRestart(agentID string, admission agent.TurnStateAdmission) bool {
+	state, lease := admission.Acquire()
+	if lease == nil {
 		return false
 	}
+	if state.Active {
+		lease.Release()
+		return false
+	}
+	reserved, newReservation := svc.reserveNativeTurnRestart(agentID)
+	lease.Release()
+	if newReservation {
+		go svc.restartAfterNativeTurn(agentID, admission)
+	}
+	return reserved
+}
+
+func (svc *Service) reserveNativeTurnRestart(agentID string) (reserved, newReservation bool) {
 	svc.nativeTurnRestartMu.Lock()
 	defer svc.nativeTurnRestartMu.Unlock()
 	if svc.shuttingDown.Load() {
-		return false
+		return false, false
 	}
 	if _, running := svc.nativeTurnRestarts[agentID]; running {
-		return true
+		return true, false
 	}
 	if svc.nativeTurnRestarts == nil {
 		svc.nativeTurnRestarts = make(map[string]struct{})
 	}
 	svc.nativeTurnRestarts[agentID] = struct{}{}
 	svc.nativeTurnRestartWG.Add(1)
-	go svc.restartAfterNativeTurn(agentID)
-	return true
+	return true, true
 }
 
-func (svc *Service) restartAfterNativeTurn(agentID string) {
+func (svc *Service) restartAfterNativeTurn(agentID string, admission agent.TurnStateAdmission) {
 	defer func() {
 		svc.nativeTurnRestartMu.Lock()
 		delete(svc.nativeTurnRestarts, agentID)
 		svc.nativeTurnRestartMu.Unlock()
 		svc.nativeTurnRestartWG.Done()
 	}()
+	if !admission.IsCurrent() {
+		return
+	}
 
 	dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
 	if err != nil {
+		if !admission.IsCurrent() {
+			return
+		}
 		// A missing row may mean the tab closed during the turn-end report. A
 		// database fault leaves the queue held instead of sending to the old CLI.
 		slog.Warn("read agent for native mode restart failed", "agent_id", agentID, "error", err)
@@ -52,7 +72,7 @@ func (svc *Service) restartAfterNativeTurn(agentID string) {
 		}
 		return
 	}
-	resumeSessionID, err := svc.restartAgentPreservingSession(dbAgent, storedRestartOptions, nativeTurnRestartMessages, restartTurnEndObserved, nil)
+	resumeSessionID, err := svc.restartAgentPreservingSession(dbAgent, storedRestartOptions, nativeTurnRestartMessages, restartTurnEndObserved, admission.IsCurrent)
 	if err != nil {
 		return
 	}

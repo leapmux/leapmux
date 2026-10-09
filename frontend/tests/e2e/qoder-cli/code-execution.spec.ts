@@ -5,9 +5,9 @@ import { expect } from '@playwright/test'
 import { BackgroundTaskKind, BackgroundTaskStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { withCleanup } from '../helpers/cleanup'
 import { openNativeCatalogTurn } from '../helpers/nativeCodeExecution'
-import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
 import { readNativeInputQueue } from '../helpers/nativeInputQueueIdle'
 import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
+import { assertPrivateNativePath } from '../helpers/nativePrivatePath'
 import { currentNativeAgent, nativeAgentById, nativeModelToolNames } from '../helpers/nativeScenario'
 import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
 import { waitForNativeToolSteps } from '../helpers/nativeToolExecution'
@@ -115,7 +115,7 @@ qoderTest('executes native Workflow code and preserves the computed result and s
       await testInfo.attach(`qoder-workflow-${failed ? 'error' : 'output'}-native`, { body: qoderWorkflowDiagnosticJson(evidence), contentType: 'application/json' })
       expect(task?.kind).toBe(BackgroundTaskKind.WORKFLOW)
       expect(initial.agentSessionId).toBe(agent.agentSessionId)
-      expect(task?.status).toBe(failed ? BackgroundTaskStatus.FAILED : BackgroundTaskStatus.COMPLETED)
+      expect(task?.status).toBe(failed ? BackgroundTaskStatus.FAILED : BackgroundTaskStatus.SUCCEEDED)
       expect(outcome.status).toBe(failed ? 'failed' : 'completed')
       if (failed)
         expect(outcome.summary).toContain(expected)
@@ -150,11 +150,11 @@ qoderTest('executes native Workflow code and preserves the computed result and s
   for (const run of runs) {
     const launch = reloaded.messages.map(nativeMessageBody).map(value => qoderWorkflowLaunch(value, run.launch.callId)).find(value => value !== undefined)
     expect(launch).toEqual(run.launch)
-    expect(tasks.find(task => task.id === `workflow:${run.launch.sessionId}:${run.launch.callId}`)?.status).toBe(run.failed ? BackgroundTaskStatus.FAILED : BackgroundTaskStatus.COMPLETED)
+    expect(tasks.find(task => task.id === `workflow:${run.launch.sessionId}:${run.launch.callId}`)?.status).toBe(run.failed ? BackgroundTaskStatus.FAILED : BackgroundTaskStatus.SUCCEEDED)
     const taskId = `workflow:${run.launch.sessionId}:${run.launch.callId}`
     const row = backgroundTaskRows(page, { kind: 'workflow', taskId }).first()
     await expect(row).toBeVisible()
     await expect(row).toHaveAttribute('data-task-id', taskId)
-    await expect(row).toHaveAttribute('data-status', run.failed ? 'failed' : 'completed')
+    await expect(row).toHaveAttribute('data-status', run.failed ? 'failed' : 'succeeded')
   }
 })

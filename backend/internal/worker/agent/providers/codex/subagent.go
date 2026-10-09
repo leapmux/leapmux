@@ -120,7 +120,7 @@ func codexCollabTransition(s string) codexChildTransition {
 	case "pendingInit", "running":
 		return codexChildTransition{status: bgtask.StatusRunning}
 	case "completed":
-		return codexChildTransition{status: bgtask.StatusCompleted, completion: agent.MessageCompletionComplete}
+		return codexChildTransition{status: bgtask.StatusSucceeded, completion: agent.MessageCompletionComplete}
 	case "errored", "notFound":
 		return codexChildTransition{status: bgtask.StatusFailed, completion: agent.MessageCompletionError}
 	case "shutdown":
@@ -146,7 +146,7 @@ func codexChildTurnTransition(params json.RawMessage) codexChildTransition {
 	}
 	switch strings.ToLower(value.Turn.Status) {
 	case "completed":
-		return codexChildTransition{status: bgtask.StatusCompleted, completion: agent.MessageCompletionComplete}
+		return codexChildTransition{status: bgtask.StatusSucceeded, completion: agent.MessageCompletionComplete}
 	case "failed":
 		return codexChildTransition{status: bgtask.StatusFailed, completion: agent.MessageCompletionError}
 	case "cancelled", "canceled", "interrupted", "aborted":
@@ -277,7 +277,7 @@ func (a *Agent) handleCodexSubAgentActivity(item json.RawMessage, parentThreadID
 	}
 	if act.Kind == "completed" {
 		a.completeCodexChildRun(act.AgentThreadID, codexChildTransition{
-			status:     bgtask.StatusCompleted,
+			status:     bgtask.StatusSucceeded,
 			completion: agent.MessageCompletionComplete,
 		})
 		return true

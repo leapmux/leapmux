@@ -52,7 +52,7 @@ claudeTest('shows a native Claude Workflow run without a grouped child row', asy
   const row = workflowRows.filter({ hasText: 'Run one local probe' }).first()
   await expect(row).toBeVisible()
   await expectRowBecomesFinal(page, row)
-  await expect(row).toHaveAttribute('data-status', 'completed')
+  await expect(row).toHaveAttribute('data-status', 'succeeded')
   await expect.poll(() => workflowGroupHeading(row)).toContain(WORKFLOW_NAME)
   expect((await modelScript.status()).ruleMatches['the workflow child answers locally']).toBe(1)
   await expect(workflowRows).toHaveCount(1)

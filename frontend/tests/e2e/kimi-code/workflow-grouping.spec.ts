@@ -44,7 +44,7 @@ kimiTest.describe('Kimi Code workflow grouping', () => {
     await expect(members).toHaveCount(2)
     for (const member of await members.all()) {
       await expectRowBecomesFinal(page, member)
-      await expect(member).toHaveAttribute('data-status', 'completed')
+      await expect(member).toHaveAttribute('data-status', 'succeeded')
     }
     // No spec states the full heading text, so the pattern requires only the swarm description inside it.
     await expectRowsInWorkflowGroup([members.nth(0), members.nth(1)], new RegExp(escapeRegExp(description)))

@@ -382,7 +382,7 @@ func (a *Agent) persistZCodeStopRow() {
 		slog.Error("zcode marshal stop row", "agent_id", a.AgentID(), "error", err)
 		return
 	}
-	if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, content); err != nil {
+	if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, agent.MessageContent{Original: content}); err != nil {
 		slog.Error("zcode persist stop row", "agent_id", a.AgentID(), "error", err)
 	}
 }
@@ -405,7 +405,7 @@ func (a *Agent) persistZCodeStopIgnoredRow(contexts []agent.StopContext) {
 		slog.Error("zcode marshal stop-ignored row", "agent_id", a.AgentID(), "error", err)
 		return
 	}
-	if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, content); err != nil {
+	if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, agent.MessageContent{Original: content}); err != nil {
 		slog.Error("zcode persist stop-ignored row", "agent_id", a.AgentID(), "error", err)
 	}
 }

@@ -224,7 +224,7 @@ type qwenTaskExecutionOutput struct {
 func qwenSubagentStatus(status string, fallback bgtask.Status) bgtask.Status {
 	switch status {
 	case "completed":
-		return bgtask.StatusCompleted
+		return bgtask.StatusSucceeded
 	case "failed":
 		return bgtask.StatusFailed
 	case "cancelled":
@@ -364,7 +364,7 @@ func (a *Agent) finishBackgroundTask(task qwenBackgroundTask) bool {
 	}
 	a.ApplySubagentObservation(&acp.SubagentObservation{
 		RowKey:   rowKey,
-		Status:   a.closingStatus(rowKey, qwenSubagentStatus(task.Status, bgtask.StatusCompleted)),
+		Status:   a.closingStatus(rowKey, qwenSubagentStatus(task.Status, bgtask.StatusSucceeded)),
 		CloseRow: true,
 		Mode:     acp.ModeCloseOnly,
 	})
@@ -395,7 +395,7 @@ func (a *Agent) closingStatus(rowKey string, status bgtask.Status) bgtask.Status
 	if !stopped {
 		return status
 	}
-	if status == bgtask.StatusCompleted {
+	if status == bgtask.StatusSucceeded {
 		return status
 	}
 	// A failed or a plain-stopped verdict after OUR stop is the interrupt we

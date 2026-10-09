@@ -34,7 +34,7 @@ func TestMiMoNativeOutputPathPreservesPreviewWithoutSavedText(t *testing.T) {
 	messages := sink.Messages()
 	require.Len(t, messages, 1)
 	assert.JSONEq(t, string(raw), string(messages[0].Content))
-	assert.Equal(t, "native-full-output", messages[0].SpanID)
+	assert.Equal(t, "prt_outputFile", messages[0].SpanID)
 	assert.True(t, messages[0].Closing)
 	assert.NotContains(t, string(messages[0].Content), "NATIVE_MIDDLE77")
 	assert.NotContains(t, string(messages[0].SupplementalContent), "NATIVE_MIDDLE77", "external output text must not enter Worker storage")

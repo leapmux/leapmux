@@ -9,8 +9,8 @@ import (
 	"github.com/leapmux/leapmux/util/validate"
 )
 
-// The session goal: a standing objective the agent keeps working toward, which
-// a check at the end of every turn re-tests until the condition holds.
+// A session goal is a standing objective that the agent checks after each turn.
+// The checks continue until the goal's condition holds.
 //
 // Several command-line interfaces (CLIs) have this feature and use different
 // wire shapes. LeapMux reads structured reports from these CLIs:
@@ -29,11 +29,13 @@ import (
 //   - Kiro, which runs its goal as a workflow and reports the workflow.
 //   - Oh My Pi, which reports its goal and takes no change.
 //
-// It observes delivered goal commands for Claude Code, Goose and Kilo, whose
-// goal changes travel as a message. Cursor and OpenCode have no goal.
+// These providers change their goal through a delivered message:
+//   - Claude Code.
+//   - Goose.
+//   - Kilo.
+// Cursor and OpenCode have no goal.
 //
-// There is at most ONE goal per agent, because every one of those CLIs enforces
-// that itself:
+// Each CLI permits at most one goal per agent:
 //
 //   - Codex keys thread_goals by thread_id.
 //   - ZCode keys its target by sessionID.
@@ -42,13 +44,11 @@ import (
 //
 // Nothing here is a list.
 
-// GoalStatus is the neutral status: a DEFINED type over
-// leapmuxv1.AgentGoalStatus, so this package, the agents.goal_status column and
-// the browser share one numbering. GoalStatusNone IS the proto's UNSPECIFIED,
-// so the zero value still means "no goal", which is what a caller with an empty
-// struct wants.
+// GoalStatus is a defined type over leapmuxv1.AgentGoalStatus.
+// The Worker and browser use the same enum ordinals as the agents.goal_status column.
+// GoalStatusNone equals the protobuf UNSPECIFIED value, so zero means no goal.
 //
-// Four values describe provider goal states. GoalStatusNone describes an absent goal.
+// Five values describe provider goal states. GoalStatusNone describes an absent goal.
 // Providers use different status vocabularies, so StatusDetail retains the provider's own status.
 // GoalStatusDormant describes a stored goal whose provider process no longer runs.
 type GoalStatus leapmuxv1.AgentGoalStatus
@@ -57,57 +57,49 @@ const (
 	GoalStatusNone   = GoalStatus(leapmuxv1.AgentGoalStatus_AGENT_GOAL_STATUS_UNSPECIFIED)
 	GoalStatusActive = GoalStatus(leapmuxv1.AgentGoalStatus_AGENT_GOAL_STATUS_ACTIVE)
 	GoalStatusPaused = GoalStatus(leapmuxv1.AgentGoalStatus_AGENT_GOAL_STATUS_PAUSED)
-	// GoalStatusBlocked is "not progressing, needs the user":
+	// GoalStatusBlocked means that the goal cannot continue without user action:
 	//
-	//   - Codex's blocked, usageLimited and budgetLimited.
+	//   - Codex's blocked.
+	//   - Codex's usageLimited.
+	//   - Codex's budgetLimited.
 	//   - ZCode's notSatisfied and failed.
 	//   - Reasonix's blocked and stopped.
-	//   - MiMo Code's impossible verdict, its re-entry limit, and a judge that
-	//     failed.
+	//   - MiMo Code's impossible verdict.
+	//   - MiMo Code's limit on re-entry.
+	//   - A failed MiMo Code judge.
 	GoalStatusBlocked = GoalStatus(leapmuxv1.AgentGoalStatus_AGENT_GOAL_STATUS_BLOCKED)
 	GoalStatusDone    = GoalStatus(leapmuxv1.AgentGoalStatus_AGENT_GOAL_STATUS_DONE)
+	// GoalStatusUnknown retains a valid native state that LeapMux cannot interpret.
+	GoalStatusUnknown = GoalStatus(leapmuxv1.AgentGoalStatus_AGENT_GOAL_STATUS_UNKNOWN)
 	// GoalStatusDormant means the objective is stored but no live process pursues it.
-	// LeapMux derives this display state from the running-agent map and does not persist it,
-	// which the agents.goal_status CHECK enforces by excluding this ordinal.
+	// LeapMux derives this display state from the running-agent map.
+	// The agents.goal_status CHECK excludes this ordinal to prevent storage of the derived state.
 	// The provider's last stored status remains available for comparison after a restart.
 	GoalStatusDormant = GoalStatus(leapmuxv1.AgentGoalStatus_AGENT_GOAL_STATUS_DORMANT)
 )
 
-// goalStatusWires maps each status onto the token the goal_updated NOTIFICATION
-// PAYLOAD carries. The empty token is GoalStatusNone, so a cleared goal and a
-// never-set goal read back identically.
-//
-// The tokens come from the contract, because the BROWSER reads the same ones:
-// the worker ships goal_status inside the goal_updated notification payload and
-// the transcript renderer narrows it.
-//
-// This is NOT the storage format. agents.goal_status holds the ordinal
-// directly, so the column and this vocabulary no longer have to be kept in step
-// by hand -- which is what the contract readme used to ask for, and what a
-// renumber used to break silently in a third place nothing generated.
+// goalStatusWires maps each status to its goal_updated notification token.
+// The empty token represents GoalStatusNone for both a cleared and a never-set goal.
+// The contract supplies the tokens because the browser reads the same notification payload.
+// Storage uses the enum ordinal directly. These tokens are not the storage format.
 var goalStatusWires = map[GoalStatus]string{
 	GoalStatusNone:    contracts.GoalStatusTokenNone,
 	GoalStatusActive:  contracts.GoalStatusTokenActive,
 	GoalStatusPaused:  contracts.GoalStatusTokenPaused,
 	GoalStatusBlocked: contracts.GoalStatusTokenBlocked,
 	GoalStatusDone:    contracts.GoalStatusTokenDone,
+	GoalStatusUnknown: contracts.GoalStatusTokenUnknown,
 	GoalStatusDormant: contracts.GoalStatusTokenDormant,
 }
 
-// GoalStatusWire returns the token the goal_updated notification payload
-// carries for s.
-//
-// An unmapped status yields "", because that is what a Go map miss gives, and
-// the browser reads "" as a goal it cannot act on -- so a status missing from
-// goalStatusWires reaches the transcript as a goal with no state rather than as
-// a parse failure. Keep every GoalStatus constant in goalStatusWires.
+// GoalStatusWire returns the goal_updated notification token for s.
+// An unmapped status returns an empty token, which the browser reads as a goal without controls.
+// Keep every GoalStatus constant in goalStatusWires to prevent a silent omission.
 func GoalStatusWire(s GoalStatus) string { return goalStatusWires[s] }
 
-// GoalStatusFromWire is the inverse, for the one caller that has a token rather
-// than a status: the ZCode plugin, which matches a provider word against this
-// vocabulary. An unrecognized token reads as GoalStatusNone rather than an
-// error, because a goal whose status cannot be understood must not offer
-// controls that act on it.
+// GoalStatusFromWire converts a notification token to its status.
+// The ZCode plugin uses this vocabulary to read a provider word.
+// An unrecognized token returns GoalStatusNone because the browser must disable controls for that state.
 func GoalStatusFromWire(wire string) GoalStatus {
 	for status, token := range goalStatusWires {
 		if token == wire {
@@ -117,35 +109,33 @@ func GoalStatusFromWire(wire string) GoalStatus {
 	return GoalStatusNone
 }
 
-// GoalStatusToProto projects onto the wire enum the browser reads. The two
-// numberings are the same one, so this is a cast; it stays a named function
-// because every caller reads better for saying what it projects onto.
+// GoalStatusToProto converts the status to the browser's wire enum.
+// Both types use the same ordinals, so the conversion is a cast.
 func GoalStatusToProto(s GoalStatus) leapmuxv1.AgentGoalStatus {
 	return leapmuxv1.AgentGoalStatus(s)
 }
 
 // GoalUpdate is one provider's report of the current goal.
 //
-// Every progress counter is a POINTER, because absent and zero are different
-// answers and no two providers report the same set: Codex sends tokens and
-// seconds but no iteration count, ZCode sends seconds and an iteration but no
-// tokens, Copilot sends none. A flat struct of values would render "0 tokens
-// used" for a provider that never mentioned tokens.
+// Every counter is a pointer because absent and zero are different answers.
+// Providers report different counter sets:
+//   - Codex reports tokens and seconds without an iteration count.
+//   - ZCode reports seconds and an iteration count without tokens.
+//   - Copilot reports no counters.
 //
-// Claude Code deserves a specific warning: its frame carries `tokens_at_start`,
-// which is a STARTING BALANCE, not usage. Putting it in TokensUsed would print
-// a number meaning the opposite of its label, so the Claude parser leaves
-// TokensUsed nil.
+// Flat values would show zero tokens for a provider that reports no token count.
+//
+// Claude Code reports tokens_at_start, which is a starting balance rather than usage.
+// The Claude parser leaves TokensUsed nil because that balance cannot describe tokens used.
 type GoalUpdate struct {
 	// NativeID distinguishes provider goals that have the same objective text.
 	NativeID     string
 	Objective    string
 	Status       GoalStatus
 	StatusDetail string
-	// CreatedAt is part of the goal's IDENTITY. Codex puts no goal id on the
-	// wire, so a goal replaced with the same objective text is distinguishable
-	// only by a fresh CreatedAt -- without it, "restart this objective" looks
-	// like no change at all and never reaches the transcript.
+	// CreatedAt distinguishes goals when the provider supplies no native ID.
+	// Codex uses a new creation time for a restarted goal with the same objective.
+	// Without it, that restart produces no transcript transition.
 	CreatedAt time.Time
 
 	TokensUsed      *int64
@@ -153,56 +143,34 @@ type GoalUpdate struct {
 	TimeUsedSeconds *int64
 	Iterations      *int32
 
-	// Snapshot marks a report that RESTATES the goal rather than announcing a
-	// change: Codex pushes one unsolicited on every thread/resume, marked by a
-	// null turnId. It updates state and writes NO transcript row, because
-	// persisting it would announce "Goal set: X" at restart time for a goal set
-	// an hour ago -- a lie about when it happened.
+	// Snapshot marks a historical report that updates state without a transcript notification.
+	// Codex sends one on thread/resume with a null turnId.
+	// A new notification would incorrectly announce an old goal at restart time.
 	Snapshot bool
 }
 
-// Clean caps and sanitizes the provider-written text. It runs at the sink
-// boundary, so no caller has to remember.
+// Clean restricts provider text and removes unreadable bytes at the sink boundary.
+// StripUnreadable preserves whitespace and line breaks because the objective is prose.
+// CleanName would change the paragraph that the user supplies.
+// One invalid byte makes proto.Marshal reject the complete AgentGoalChanged message.
+// Without this repair, a provider byte could keep the goal panel empty without an explanatory log.
 //
-// StripUnreadable is the right rule rather than CleanName: an objective is
-// PROSE that a user or a model wrote, and it keeps its line breaks (see that
-// function's doc -- whitespace survives, and only non-whitespace controls go).
-// A rule that folded whitespace would reflow the paragraph the user typed.
+// An objective with GoalStatusNone becomes Blocked because None means no goal.
+// This shared rule prevents the contradictory report from reaching storage.
+// Providers interpret their native status words before this cleaner runs.
+// Unknown remains distinct from a missing status.
 //
-// Dropping the invalid bytes is not cosmetic. ONE invalid byte makes
-// proto.Marshal fail for the WHOLE AgentGoalChanged message, and that message
-// is the only way the panel ever populates -- so a single bad byte from one
-// provider would leave an empty panel forever with nothing in the log to
-// explain it. This is the same hazard bgtask.wireString exists to prevent.
+// A status without an objective becomes no goal and drops its counters.
+// An empty objective can come from these inputs:
+//   - ZCode reports one while its status remains present.
+//   - Reasonix reports one while its state machine starts.
+//   - StripUnreadable removes an objective that contains only control characters.
 //
-// It also resolves the two contradictory reports, in OPPOSITE directions,
-// because a goal needs both halves and each half decides what the other means.
-//
-// An objective with NO status becomes Blocked. GoalStatusNone means "no goal",
-// so a report that states both says a goal exists and does not. Every provider
-// already resolves an unrecognized status word to Blocked for the same reason
-// -- a state this build cannot read is one it must not offer Pause for -- and
-// doing it here means a NEW provider that forgets the mapping inherits the rule
-// instead of storing the contradiction. A stored objective with a blank status
-// is also the exact mark the applier reads as "this goal outlived a worker
-// restart", so a provider able to write that state by hand would silence a real
-// transition.
-//
-// A status with NO objective becomes no goal at all, and drops the counters
-// with it. Three routes reach that state: ZCode returns early only when BOTH
-// halves are empty, Reasonix sends an absent `objective` as "" while its state
-// machine starts, and StripUnreadable above empties an objective made only of
-// control characters. The card renders a goal from the status alone, so without
-// this the panel shows an empty objective line with an active status indicator and
-// live Pause and Clear buttons -- a goal with no text that the user cannot read
-// and did not set.
+// Without this rule, the card could show live controls for an unreadable goal that the user did not set.
 func (u GoalUpdate) Clean() GoalUpdate {
-	// The caps come from the contract, because the BROWSER enforces the same
-	// objective limit on its own input. The objective is written by a model or
-	// by a user and reaches a proto string and a database column, so it needs
-	// the cap every other provider-chosen label carries (see
-	// bgtask.LabelByteLimit); the status detail is a WORD, and anything longer
-	// is a provider sending prose down a field the card renders inline.
+	// The contract supplies the limits because the browser applies the same objective limit.
+	// The objective reaches a protobuf string and a database column.
+	// The detail appears inline on the card and uses its own byte limit.
 	u.Objective = validate.StripUnreadable(u.Objective, contracts.GoalObjectiveByteLimit)
 	u.StatusDetail = validate.StripUnreadable(u.StatusDetail, contracts.GoalStatusDetailByteLimit)
 	if u.Objective != "" && u.Status == GoalStatusNone {
@@ -230,8 +198,8 @@ const (
 	GoalActionResume
 )
 
-// GoalActionFromProto maps the wire enum. The unspecified action has no
-// meaning, so it reports false rather than defaulting to one of the four.
+// GoalActionFromProto converts a wire action to its domain action.
+// The unspecified action returns false because it identifies no operation.
 func GoalActionFromProto(a leapmuxv1.AgentGoalAction) (GoalAction, bool) {
 	switch a {
 	case leapmuxv1.AgentGoalAction_AGENT_GOAL_ACTION_SET:
@@ -269,13 +237,11 @@ type GoalCapable interface {
 	SupportedGoalActions() []GoalAction
 }
 
-// GoalOutcome is what one goal action left for the caller to do.
-//
-// A side-band provider performed the action, and returns the zero value. The
-// exception is an action whose side-band command starts no turn: Kimi Code's
-// set returns the objective, which starts the work. A text-route provider
-// built a user message that changes nothing until the durable input queue
-// delivers it, and returns it in QueuedInput.
+// GoalOutcome states the input that the caller must enqueue after a goal action.
+// A provider that completes the action through a separate command returns the zero value.
+// Kimi Code's Set returns its objective because its native goal command starts no turn.
+// A provider that uses a user message returns that command in QueuedInput.
+// That message changes the goal only after the durable input queue delivers it.
 type GoalOutcome struct {
 	// QueuedInput is an explicit provider command that the caller must enqueue.
 	// Empty means the action already took effect. Never use an ordinary prompt
@@ -283,9 +249,8 @@ type GoalOutcome struct {
 	QueuedInput string
 }
 
-// GoalWriter is implemented by each provider that can be TOLD to change its
-// goal. One interface, whichever route the provider uses, so no caller chooses
-// between two and no provider can implement both and lose one silently.
+// GoalWriter supplies every provider route for a goal change through one interface.
+// A caller needs no provider-specific route selection.
 //
 // Not every provider that reports a goal can change it:
 //
@@ -294,36 +259,37 @@ type GoalOutcome struct {
 //     stops the current turn. They perform all four actions at once.
 //   - GitHub Copilot invokes its native autopilot command as a side-band RPC.
 //     Its Clear has no command: it disposes the session and opens it again.
-//   - Codewhale writes the goal through its REST route. A set starts a kickoff
-//     turn itself. The runtime has no Pause and no Resume.
+//   - Codewhale writes the goal through its REST route. Set starts a turn.
+//     The runtime has no Pause and no Resume.
 //   - Kimi Code writes the goal through its session profile. Creating a goal
 //     starts no turn, so a set also returns the objective as QueuedInput.
-//   - Claude Code, Goose, and Kilo have only a user-message command. They
-//     return it as QueuedInput, and observe it after the queue delivers it.
-//     GoalTextCommander is how they build and observe that text.
-//   - Qwen Code changes its goal through its side-band goal control
-//     (qwen/control/session/goal/control), which takes effect at once, also
-//     while a goal round runs. Its own goal report states what the request did.
-//   - Grok Build has only a user-message command. It goes to Grok's own prompt
-//     queue at once, not as QueuedInput, because Grok runs the whole goal loop
-//     inside one turn and yields to a queued prompt before the next round. Its
-//     own goal report states what the command did.
+//   - Claude Code returns its user-message command as QueuedInput.
+//     GoalTextCommander builds and observes the text after queued delivery.
+//   - Goose uses the same user-message route through GoalTextCommander.
+//   - Kilo uses the same user-message route through GoalTextCommander.
+//   - Qwen Code uses qwen/control/session/goal/control.
+//     The command takes effect at once, including during a goal round.
+//     Its goal report states the command's result.
+//   - Grok Build sends its user-message command to its native prompt queue immediately.
+//     Its goal loop occupies one turn and reads a queued prompt before the next round.
+//     Its goal report states the command's result, so QueuedInput stays empty.
 //   - Pi writes the command of its goal extension to the process directly.
 //   - Reasonix sets its mode and submits the objective under one session lock.
-//     Normal mode clears its goal. ACP provides no Pause or Resume operation.
+//     Normal mode clears its goal.
+//     The Agent Client Protocol (ACP) provides no Pause or Resume operation.
 //   - MiMo Code has a goal command on its HTTP command route. A set starts a
 //     turn whose prompt is the objective. MiMo has no Pause and no Resume.
-//   - Kiro sets its goal with a user-message command, returned as QueuedInput,
-//     and runs the goal as a workflow. The workflow's own requests clear,
-//     pause and resume it, so those three need the id of a run that Kiro
-//     reported.
+//   - Kiro returns its goal-setting user-message command as QueuedInput.
+//     The goal runs as a workflow. These commands require the reported workflow run ID:
+//   - Clear.
+//   - Pause.
+//   - Resume.
 //   - Oh My Pi reports its goal and implements no GoalWriter: no RPC command
 //     reaches its goal runtime.
 //
-// SupportedGoalActions is what the browser reads to disable a control, so it
-// lives on the same interface as the implementations and cannot drift from
-// them. This mirrors AgentInfo.accepts_messages, which is decided the same way
-// (a type assertion on the running agent) for the same reason.
+// The browser reads SupportedGoalActions to disable controls that the running provider cannot perform.
+// The method belongs to the same interface as the operation to keep both decisions together.
+// AgentInfo.accepts_messages uses the same type assertion on the running agent.
 type GoalWriter interface {
 	GoalCapable
 
@@ -333,9 +299,8 @@ type GoalWriter interface {
 	PerformGoalAction(action GoalAction, objective string) (GoalOutcome, error)
 }
 
-// GoalCommandDelivery identifies the channel that carried a goal command to the
-// provider process. A provider reads its own command parser on one channel and
-// not always on the other, so the observer must know which one delivered.
+// GoalCommandDelivery identifies the channel that delivered the goal command.
+// A provider can parse commands on one channel only, so its observer needs the exact delivery channel.
 type GoalCommandDelivery int
 
 const (
@@ -347,10 +312,9 @@ const (
 
 // GoalTextCommander owns a provider's user-message command syntax.
 //
-// It is NOT a second write route beside GoalWriter: a text-route provider
-// implements both, and its PerformGoalAction returns the text this builds. The
-// Manager asserts this one only to report a DELIVERY back, which a side-band
-// provider has no use for.
+// A provider that uses a user message implements both GoalTextCommander and GoalWriter.
+// PerformGoalAction returns the command text that this interface builds.
+// The Manager uses this interface only to report delivery of that text.
 type GoalTextCommander interface {
 	GoalWriter
 	// ObserveGoalCommand updates local goal state after a delivery. The

@@ -4,9 +4,9 @@ import type { UseWatchEventsStreamsOpts } from '~/hooks/useWatchEventsStreams'
 import { create } from '@bufbuild/protobuf'
 import { createRoot } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { AgentStatus, AvailableOptionGroupSchema } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentStatus, AvailableOptionGroupSchema, WatchReplayMode } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
-import { TabType, WatchEventsResponseSchema } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { AgentEventSchema, TabType, WatchAgentEntrySchema, WatchEventsResponseSchema, WatchMode } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { useWorkspaceConnection } from '~/hooks/useWorkspaceConnection'
 import { createAgentActivityStore } from '~/stores/agentActivity.store'
@@ -23,7 +23,7 @@ vi.mock('~/api/workerRpc', async (importOriginal) => {
   const actual = await importOriginal<typeof import('~/api/workerRpc')>()
   return {
     ...actual,
-    // Answered with an empty page so the hook's own promise chains settle.
+    // Return an empty page so the hook completes its history request.
     listAgentMessages: vi.fn().mockResolvedValue({ messages: [], hasMore: false }),
     channelManager: {
       getOrOpenChannel: vi.fn().mockResolvedValue('ch-1'),
@@ -39,8 +39,7 @@ vi.mock('~/components/common/Toast', () => ({
   showWarnToastUnlessDisconnected: vi.fn(),
 }))
 
-// The real stream hook dials a channel. Replaced with a capture, so a test
-// delivers frames to the dispatcher itself.
+// Capture the stream hook's options so each test sends frames through the dispatcher.
 const streams = vi.hoisted(() => ({ opts: undefined as unknown }))
 
 vi.mock('~/hooks/useWatchEventsStreams', () => ({
@@ -88,6 +87,13 @@ function mountConnection(initial: AgentStatus) {
       getActiveWorkspaceId: () => WS,
     })
   })
+  streamOpts().onReplayRequested?.(WORKER, 1n, [create(WatchAgentEntrySchema, {
+    agentId: 'a1',
+    mode: WatchMode.FULL,
+    replay: WatchReplayMode.LATEST,
+    cursorSeq: 0n,
+    replayId: 1n,
+  })])
   return {
     dispose,
     status: () => view.getAgentTab('a1')?.agentStatus,
@@ -96,11 +102,13 @@ function mountConnection(initial: AgentStatus) {
   }
 }
 
-function agentEvent(event: unknown, replay = false): WatchEventsResponse {
-  return { event: { case: 'agentEvent', value: { agentId: 'a1', event, replay } } } as unknown as WatchEventsResponse
+function agentEvent(event: NonNullable<MessageInitShape<typeof AgentEventSchema>['event']>, replay = false): WatchEventsResponse {
+  return create(WatchEventsResponseSchema, {
+    event: { case: 'agentEvent', value: create(AgentEventSchema, { agentId: 'a1', event, replay, replayId: replay ? 1n : 0n, replayAgentId: replay ? 'a1' : '' }) },
+  })
 }
 
-function controlRequest(): unknown {
+function controlRequest(): NonNullable<MessageInitShape<typeof AgentEventSchema>['event']> {
   return {
     case: 'controlRequest',
     value: { agentId: 'a1', requestId: 'req-1', payload: new TextEncoder().encode(JSON.stringify({ tool_name: 'Bash' })) },
@@ -108,13 +116,10 @@ function controlRequest(): unknown {
 }
 
 /**
- * The live writers of an agent's status, through the real hook.
- *
- * A `ListAgents` reply that is pending holds an older answer than every status
- * that the live stream writes meanwhile, and it compares
- * `TabMetadataStore.liveStatusEpoch` across the call to learn whether one landed
- * (see `useTabHydrators`). A writer that bypasses the count lets the older reply
- * replace its status.
+ * Verify live status writes through the real hook.
+ * A pending ListAgents request can return a status older than a live event.
+ * useTabHydrators compares TabMetadataStore.liveStatusEpoch across that request to detect an intervening write.
+ * A writer that omits the count lets the older reply replace its status.
  */
 describe('useWorkspaceConnection live status writers', () => {
   it('counts a statusChange event', () => {
@@ -162,13 +167,10 @@ describe('useWorkspaceConnection live status writers', () => {
 })
 
 /**
- * The live writers of an agent's option-group catalog, through the real hook.
- *
- * A `ListAgents` reply that is pending holds an older catalog than every catalog
- * that the live stream writes meanwhile, and it compares
- * `TabMetadataStore.liveCatalogEpoch` across the call to learn whether one landed
- * (see `useTabHydrators`). The catalog count is apart from the status count: an
- * event of one kind says nothing about the other.
+ * Verify live catalog writes through the real hook.
+ * A pending ListAgents request can return a catalog older than a live event.
+ * useTabHydrators compares TabMetadataStore.liveCatalogEpoch across that request to detect an intervening write.
+ * Catalog and status have separate counts because one event can change either or both.
  */
 describe('useWorkspaceConnection live catalog writers', () => {
   const catalog = () => [create(AvailableOptionGroupSchema, { id: 'model', currentValue: 'opus' })]
@@ -274,13 +276,10 @@ function terminalEvent(event: NonNullable<MessageInitShape<typeof TerminalEventS
 }
 
 /**
- * The live writers of a terminal's status, through the real hook.
- *
- * A `ListTerminals` reply that is pending holds an older answer than every
- * status that the live stream writes meanwhile, and it compares
- * `TabMetadataStore.liveStatusEpoch` across the call to learn whether one landed
- * (see `useTabHydrators`). A writer that bypasses the count lets the older reply
- * replace its status.
+ * Verify live terminal status writes through the real hook.
+ * A pending ListTerminals request can return a status older than a live event.
+ * useTabHydrators compares TabMetadataStore.liveStatusEpoch across that request to detect an intervening write.
+ * A writer that omits the count lets the older reply replace its status.
  */
 describe('useWorkspaceConnection live terminal status writers', () => {
   it('counts a statusChange event', () => {

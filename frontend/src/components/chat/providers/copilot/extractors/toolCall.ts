@@ -27,7 +27,7 @@ import { failedResult, isFileChangeKind, proseResult, readToolCallSpec, unparsed
 import { deriveToolCallStatus } from '../../../model/toolCallLifecycle'
 import { declinedToolCallSpec } from '../../declinedToolCall'
 import { toolRequestFor } from '../../defaultToolRequests'
-import { retainedOutcome } from '../../registry'
+import { retainedOutcome, retainedRowIsFinal } from '../../registry'
 import { TOOL_FILE_PATH_KEYS, toolInputPaths } from '../../toolInputKeys'
 import { copilotAgentResult } from '../extractors/agent'
 import { copilotPatchText } from '../extractors/fileEdit'
@@ -119,7 +119,7 @@ export interface CopilotToolRow {
   /** The MCP server and tool the start event stated, for a dash-namespaced call. */
   mcp?: { server: string, tool: string }
   input: Record<string, unknown>
-  /** True once the completion event arrived. */
+  /** True when a native completion or retained completion makes the row final. */
   finished: boolean
   lifecycle: ToolCallLifecycleFacts
   /** The completion's `result` object, or its `error` object when the call failed. */
@@ -234,6 +234,7 @@ export function copilotToolRow(
     // whose completion the runtime never sent. `failed` does reach the row, because
     // it explains why the row stops where it does.
     const outcome = retainedOutcome(completion)
+    const finished = retainedRowIsFinal(completion)
     const identity = copilotMcpIdentity(started)
     return {
       toolCallId: pickString(started, 'toolCallId'),
@@ -241,10 +242,10 @@ export function copilotToolRow(
       kind: copilotToolKind(toolName),
       ...(identity ? { mcp: identity } : {}),
       input: copilotToolArguments(toolName, started.arguments),
-      finished: outcome !== null,
+      finished,
       // A retained start frame lands NO result: the turn ending says nothing about
       // a call whose completion event the runtime never sent.
-      lifecycle: { frameStatus: 'unstated', providerOutcome: null, retainedOutcome: outcome, rowFinal: outcome !== null, resultFrameLanded: false },
+      lifecycle: { frameStatus: 'unstated', providerOutcome: null, retainedOutcome: outcome, rowFinal: finished, resultFrameLanded: false },
       raw: null,
     }
   }
@@ -318,15 +319,10 @@ export interface CopilotToolFacts {
   /** The text the result carries. */
   output: string
   status: ToolCallStatus
-  /**
-   * True once the call ENDED, whether the runtime completed it or the turn retained it.
-   *
-   * A finished row that did not fail is `completed` or `cancelled`, because those are
-   * the only three words {@link copilotToolRow} states for a finished call. Both of the
-   * two answer the same body: the runtime attached a `result` object, and the row's own
-   * status is the one place that says a reader stopped the turn around it.
-   */
+  /** True when the row ended, including a retained row with no native result. */
   finished: boolean
+  /** True only when a native completion event supplies the result frame. */
+  hasResult: boolean
   /**
    * The runtime's own fault flag: `success !== true` on the completion event, or the
    * `failed` outcome the turn recorded.
@@ -341,12 +337,9 @@ export interface CopilotToolFacts {
    */
   failed: boolean
   /**
-   * True once the call finished with an answer to read: it neither failed nor was
-   * refused.
-   *
-   * A REFUSED call is not one of these. Its only text is the refusal, so a reader that
-   * took that text as the call's answer read it as a report the view printed, or as a
-   * match list of one file.
+   * True when a native result supplies an answer without failure or refusal.
+   * A retained completion supplies finality without an answer.
+   * A refusal supplies its reason, which no reader can interpret as tool output.
    */
   answered: boolean
   /** The MCP server and tool the start event stated, for a dash-namespaced call. */
@@ -434,7 +427,8 @@ export function copilotToolFacts(row: CopilotToolRow): CopilotToolFacts {
   const failed = status === 'failed'
   const contents = Array.isArray(row.raw?.contents) ? row.raw.contents : null
   const structuredJson = prettifyStructuredJson(row.raw?.structuredContent)
-  const answered = row.finished && !failed && status !== 'declined'
+  const hasResult = row.lifecycle.resultFrameLanded
+  const answered = hasResult && !failed && status !== 'declined'
   return {
     rawArgs: row.input,
     args,
@@ -444,6 +438,7 @@ export function copilotToolFacts(row: CopilotToolRow): CopilotToolFacts {
     output,
     status,
     finished: row.finished,
+    hasResult,
     failed,
     answered,
     mcp: row.mcp,
@@ -725,7 +720,7 @@ function copilotFileEdit(facts: CopilotToolFacts): FileEditDiff | null {
  * default here would put one provider's card out of step with every other one.
  */
 function copilotProseAnswer(facts: CopilotToolFacts, format: ProseResult['format']): { result?: ProseResult | ToolFailureResult } {
-  if (!facts.finished)
+  if (!facts.hasResult)
     return {}
   return { result: facts.failed ? failedResult(facts.output) : proseResult(facts.output, format) }
 }
@@ -764,7 +759,7 @@ function copilotFileChangeParts(facts: CopilotToolFacts, kind: 'edit' | 'write' 
     ? `${new Set(facts.requestedChanges.map(source => source.filePath)).size} files`
     : facts.patchText && !facts.requestedChanges ? facts.toolName : undefined
   const titled = title !== undefined ? { ...sides, title } : sides
-  if (!facts.finished)
+  if (!facts.hasResult)
     return { request, ...titled }
   // The REQUEST stays on a failure. `RequestedChangesBody` refuses to draw a failed
   // call's diff for every provider, so keeping the list adds nothing to the body -- but
@@ -801,6 +796,8 @@ function copilotSearchParts(facts: CopilotToolFacts): Omit<ToolCallSpecVariant<'
   // The field is optional on the specification, so it stays absent when the call stated none.
   const extraContent = facts.extraContent
   const sides = extraContent !== undefined ? { extraContent } : {}
+  if (!facts.hasResult)
+    return { request, ...sides }
   if (!source)
     return facts.failed ? { request, ...sides, result: failedResult(facts.output) } : { request, ...sides }
   // A match list keeps the grep kind and states its counts, so the summary reads
@@ -867,20 +864,22 @@ export const COPILOT_TOOL_READERS: ToolCallSpecReaderTable<CopilotToolFacts> = {
       // request states, so the header and the card cannot drift.
       title: request.description || 'Task',
       ...copilotExtraContent(facts.extraContent),
-      ...(facts.finished ? { result: { agents: [copilotAgentResult(facts)] } } : {}),
+      ...(facts.hasResult ? { result: { agents: [copilotAgentResult(facts)] } } : {}),
     }
   },
   todo: (facts): ToolCallSpecVariant<'todo'> => {
     const request = copilotRequestFor('todo', facts)
     // No title: `todoRenderer` composes the same words from the request this specification
     // carries, and a copy here is a second place for the wording to drift.
+    if (!facts.hasResult)
+      return { kind: 'todo', request, ...copilotExtraContent(facts.extraContent) }
     if (facts.failed)
       return { kind: 'todo', request, ...copilotExtraContent(facts.extraContent), result: failedResult(facts.output) }
-    return { kind: 'todo', request, ...copilotExtraContent(facts.extraContent), ...(facts.finished ? { result: { items: request.items } } : {}) }
+    return { kind: 'todo', request, ...copilotExtraContent(facts.extraContent), result: { items: request.items } }
   },
   task: (facts): ToolCallSpecVariant<'task'> => {
     const request = copilotRequestFor('task', facts)
-    if (!facts.finished)
+    if (!facts.hasResult)
       return { kind: 'task', request, title: facts.title }
     // The `read_bash` family answers with a background shell's own output, in the
     // shape `bash` answers with: a trailer that repeats the exit code, and a
@@ -915,7 +914,7 @@ export const COPILOT_TOOL_READERS: ToolCallSpecReaderTable<CopilotToolFacts> = {
     const request = copilotRequestFor('execute', facts)
     // No title: a command states itself in the shared header, and the tool word
     // `bash` above the very command it ran states nothing more.
-    if (!facts.finished)
+    if (!facts.hasResult)
       return { kind: 'execute', request }
     const { exitCode, text, extraContent, metadata } = copilotCommandParts(facts)
     return {
@@ -933,7 +932,7 @@ export const COPILOT_TOOL_READERS: ToolCallSpecReaderTable<CopilotToolFacts> = {
   delete: (facts): ToolCallSpecVariant<'delete'> => ({ kind: 'delete', ...copilotFileChangeParts(facts, 'delete') }),
   read: (facts): ToolCallSpecVariant<'read'> => {
     const request = copilotRequestFor('read', facts)
-    if (!facts.finished)
+    if (!facts.hasResult)
       return { kind: 'read', request }
     // The blocks ride every state of the call, for the reason `copilotSearchParts` gives.
     if (facts.failed)
@@ -949,7 +948,7 @@ export const COPILOT_TOOL_READERS: ToolCallSpecReaderTable<CopilotToolFacts> = {
   search: (facts): ToolCallSpecVariant<'search'> => ({ kind: 'search', ...copilotSearchParts(facts) }),
   web_search: (facts): ToolCallSpecVariant<'web_search'> => {
     const request = copilotRequestFor('web_search', facts)
-    if (!facts.finished)
+    if (!facts.hasResult)
       return { kind: 'web_search', request }
     return { kind: 'web_search', request, ...copilotExtraContent(facts.extraContent), result: { links: [], summary: facts.output } }
   },
@@ -964,20 +963,20 @@ export const COPILOT_TOOL_READERS: ToolCallSpecReaderTable<CopilotToolFacts> = {
       kind: 'question',
       request,
       ...copilotExtraContent(facts.extraContent),
-      ...(facts.finished ? { result: { answers: facts.output ? [{ header, answer: facts.output }] : [] } } : {}),
+      ...(facts.hasResult ? { result: { answers: facts.output ? [{ header, answer: facts.output }] : [] } } : {}),
     }
   },
   mcp: (facts): ToolCallSpecVariant<'mcp'> => {
     const request = copilotRequestFor('mcp', facts)
     // No extra content: an uncategorized card draws its blocks inside the result, so
     // stating them here too would draw each one twice.
-    if (!facts.finished)
+    if (!facts.hasResult)
       return { kind: 'mcp', request }
     return { kind: 'mcp', request, result: copilotGenericToolResult(facts) }
   },
   move: (facts): ToolCallSpecVariant<'move'> => {
     const request = copilotRequestFor('move', facts)
-    if (!facts.finished)
+    if (!facts.hasResult)
       return { kind: 'move', request, ...copilotExtraContent(facts.extraContent) }
     // The REQUEST stays, for the reason `copilotFileChangeParts` gives: a move whose
     // request is empty heads the row `Move` with neither source nor destination.
@@ -987,7 +986,7 @@ export const COPILOT_TOOL_READERS: ToolCallSpecReaderTable<CopilotToolFacts> = {
   },
   fetch: (facts): ToolCallSpecVariant<'fetch'> => {
     const request = copilotRequestFor('fetch', facts)
-    if (!facts.finished)
+    if (!facts.hasResult)
       return { kind: 'fetch', request }
     // The blocks ride every state of the call, for the reason `copilotSearchParts` gives.
     if (facts.failed)
@@ -996,7 +995,7 @@ export const COPILOT_TOOL_READERS: ToolCallSpecReaderTable<CopilotToolFacts> = {
   },
   message: (facts): ToolCallSpecVariant<'message'> => {
     const request = copilotRequestFor('message', facts)
-    if (!facts.finished)
+    if (!facts.hasResult)
       return { kind: 'message', request }
     return { kind: 'message', request, result: proseResult(facts.output), ...copilotExtraContent(facts.extraContent) }
   },

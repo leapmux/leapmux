@@ -333,7 +333,7 @@ func (a *Agent) persistNotification(env codewhaleEnvelope) {
 	if a.IsDiscardingOutput() || len(env.raw) == 0 {
 		return
 	}
-	if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, env.raw); err != nil {
+	if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: env.raw}); err != nil {
 		slog.Error("codewhale persist notification", "agent_id", a.AgentID(), "event", env.Event, "error", err)
 	}
 }

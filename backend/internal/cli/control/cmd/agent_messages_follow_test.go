@@ -43,9 +43,10 @@ func (t *fakeAgentMessagesTransport) OpenWatchEvents(parentCtx context.Context, 
 	ctx, cancel := context.WithCancel(parentCtx)
 	t.cancel = cancel
 	t.done = make(chan struct{})
+	done := t.done
 	go func() {
 		<-ctx.Done()
-		close(t.done)
+		close(done)
 	}()
 	return &fakeAgentMessagesHandle{tr: t, cancel: cancel, done: t.done}, nil
 }
@@ -172,8 +173,15 @@ func TestAgentMessages_ReconnectCarriesCursor(t *testing.T) {
 	require.Eventually(t, func() bool { return cursor.Get("a-1") == 5 },
 		time.Second, 10*time.Millisecond)
 
-	// Simulate reconnect: build a new request from the cursor and
-	// call Update again — the resubscribe must carry seq=5.
+	first := tr.lastRequest()
+	require.NotNil(t, first)
+	require.Positive(t, first.GetAgents()[0].GetReplayId())
+	tr.mu.Lock()
+	stop, done := tr.cancel, tr.done
+	tr.mu.Unlock()
+	stop()
+	<-done
+	// A completed handle makes Update open a fresh stream from seq=5.
 	require.NoError(t, sub.Update(ctx, &leapmuxv1.WatchEventsRequest{
 		Agents: cursor.Snapshot(map[string]struct{}{"a-1": {}}),
 	}))
@@ -184,6 +192,8 @@ func TestAgentMessages_ReconnectCarriesCursor(t *testing.T) {
 	assert.Equal(t, leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR, last.GetAgents()[0].GetReplay())
 	assert.Equal(t, int64(5), last.GetAgents()[0].GetCursorSeq(),
 		"reconnect must carry the latest cursor forward")
+	assert.Greater(t, last.GetAgents()[0].GetReplayId(), first.GetAgents()[0].GetReplayId())
+	assert.Equal(t, last.GetUpdateId(), last.GetAgents()[0].GetReplayId())
 }
 
 // TestAgentMessages_StartSeqIsHonored: when `RunAgentMessages
@@ -223,9 +233,7 @@ func TestAgentMessages_OutOfOrderFramesDoNotRegressCursor(t *testing.T) {
 	require.Eventually(t, func() bool { return cursor.Get("a-1") == 10 },
 		time.Second, 10*time.Millisecond)
 	tr.push(3)
-	// Wait a beat to make sure if the cursor was going to regress it
-	// would have done so by now.
-	time.Sleep(50 * time.Millisecond)
+	// push returns after the synchronous frame handler completes.
 	assert.Equal(t, int64(10), cursor.Get("a-1"),
 		"out-of-order seq=3 must not regress the cursor below 10")
 }
@@ -298,8 +306,14 @@ func TestAgentMessages_TwoUpdatesShareCursor(t *testing.T) {
 	require.Eventually(t, func() bool { return cursor.Get("a-1") == 8 },
 		time.Second, 10*time.Millisecond)
 
-	// Reconnect using the cursor's current state (matches the
-	// production reconnect loop).
+	first := tr.lastRequest()
+	require.NotNil(t, first)
+	tr.mu.Lock()
+	stop, done := tr.cancel, tr.done
+	tr.mu.Unlock()
+	stop()
+	<-done
+	// Open the next stream from the same cursor after the first stream ends.
 	require.NoError(t, sub.Update(ctx, &leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{streamevents.AgentWatchEntry("a-1", cursor.Get("a-1"))},
 	}))
@@ -308,6 +322,7 @@ func TestAgentMessages_TwoUpdatesShareCursor(t *testing.T) {
 	assert.Equal(t, leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR, last.GetAgents()[0].GetReplay())
 	assert.Equal(t, int64(8), last.GetAgents()[0].GetCursorSeq(),
 		"reconnect must resume from the cursor seq, not a fresh latest subscription")
+	assert.Greater(t, last.GetAgents()[0].GetReplayId(), first.GetAgents()[0].GetReplayId())
 }
 
 // TestReconnectBackoff_ResetsOnDelivery pins the activity-based reset: a session

@@ -17,6 +17,7 @@ import type { ManagedNativeScenarioContext } from './nativeScenario'
 import type { NativeSidebarContext } from './nativeSidebarSnapshot'
 import type { RunningNativeChild } from './runningChildProof'
 import { expect } from '@playwright/test'
+import { BACKGROUND_TASK_STATUS_TOKEN } from '~/generated/contracts/worker-vocab'
 import { cleanupOnFailure, withCleanup } from './cleanup'
 import { cssAttributeValue } from './cssAttribute'
 import { selectedAgentTabId } from './nativeScenario'
@@ -26,7 +27,13 @@ import { retryUntilPass } from './retryUntilPass'
 import { AGENT_TAB_SELECTOR, tabIdSelector } from './tabSelectors'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, assistantBubbles, expandSidebarSection, expectAssistantAnswer, interruptButton, sendMessage, tabById, waitForAgentIdle } from './ui'
 
-const FINAL_STATUSES = ['completed', 'failed', 'stopped', 'interrupted'] as const
+const FINAL_STATUSES = [
+  BACKGROUND_TASK_STATUS_TOKEN.Succeeded,
+  BACKGROUND_TASK_STATUS_TOKEN.Failed,
+  BACKGROUND_TASK_STATUS_TOKEN.Stopped,
+  BACKGROUND_TASK_STATUS_TOKEN.Interrupted,
+  BACKGROUND_TASK_STATUS_TOKEN.EndedWithUnknownOutcome,
+] as const
 
 /** Locator for the Background tasks section header (right sidebar). */
 export function backgroundTasksSection(page: Page): Locator {
@@ -449,10 +456,11 @@ export async function expectRegistryRow(page: Page, filter: RowFilter): Promise<
 
 /** The end label the row shows for each final status. */
 const END_LABELS: Record<string, string> = {
-  completed: 'Completed',
-  failed: 'Failed',
-  stopped: 'Stopped',
-  interrupted: 'Interrupted',
+  [BACKGROUND_TASK_STATUS_TOKEN.Succeeded]: 'Succeeded',
+  [BACKGROUND_TASK_STATUS_TOKEN.Failed]: 'Failed',
+  [BACKGROUND_TASK_STATUS_TOKEN.Stopped]: 'Stopped',
+  [BACKGROUND_TASK_STATUS_TOKEN.Interrupted]: 'Interrupted',
+  [BACKGROUND_TASK_STATUS_TOKEN.EndedWithUnknownOutcome]: 'Ended with unknown outcome',
 }
 
 /**
@@ -468,8 +476,15 @@ export async function expectRowBecomesFinal(page: Page, row: Locator): Promise<v
     return settled
   }).not.toBeNull()
   const label = END_LABELS[settled ?? '']
-  if (label)
+  if (label) {
+    await expect(row.locator('[data-testid="bg-task-status-dot"]:visible')).toHaveAttribute('aria-label', label)
+    // Select one label per browser query. A title update can add or remove the secondary between separate requests.
+    const visibleLabel = row.locator(
+      '[data-testid="bg-task-secondary"]:visible, :scope:not(:has([data-testid="bg-task-secondary"]:visible)) [data-testid="bg-task-title"]:visible',
+    )
+    await expect(visibleLabel).toHaveText(label)
     await expect(row.filter({ hasText: label })).toBeVisible()
+  }
 }
 
 /** Assert the section header and its rows remain visible after tasks finish. */

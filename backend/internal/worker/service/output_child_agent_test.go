@@ -17,6 +17,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
+	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -172,6 +173,52 @@ func TestPersistSubagentReportUsesTheReportIdentity(t *testing.T) {
 		assert.Regexp(t, `^subagent-report:[0-9a-f]{64}$`, rows[1].IdempotencyKey)
 		assert.NotEqual(t, rows[0].IdempotencyKey, rows[1].IdempotencyKey)
 	})
+}
+
+func TestNotificationReportIdentityConcurrentDifferentContentKeepsOneFirstWinner(t *testing.T) {
+	t.Parallel()
+	svc, sink := setupRootSink(t, "concurrent-first-report")
+	sink.UpdateSessionID("native-session")
+	type result struct {
+		stored bool
+		err    error
+	}
+	results := make(chan result, 2)
+	start := make(chan struct{})
+	var group sync.WaitGroup
+	for _, text := range []string{"First candidate", "Second candidate"} {
+		group.Go(func() {
+			<-start
+			stored, err := sink.PersistSubagentReport(agent.SubagentReportWrite{ReportID: "same-report", Report: agent.SubagentReport{Text: text}})
+			results <- result{stored: stored, err: err}
+		})
+	}
+	close(start)
+	group.Wait()
+	close(results)
+	var winners int
+	for result := range results {
+		assert.NoError(t, result.err)
+		if result.stored {
+			winners++
+		}
+	}
+	assert.Equal(t, 1, winners)
+	rows, err := svc.Queries.ListAllMessagesByAgentID(t.Context(), db.ListAllMessagesByAgentIDParams{AgentID: "concurrent-first-report"})
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, "native-session", rows[0].AgentSessionID)
+	wrapped := decodeNotifWrapper(t, rows[0].Content, rows[0].ContentCompression)
+	require.Len(t, wrapped.Messages, 1)
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(wrapped.Messages[0], &payload))
+	assert.Contains(t, []string{"First candidate", "Second candidate"}, payload[contracts.NotificationFieldText])
+	stored, err := sink.PersistSubagentReport(agent.SubagentReportWrite{ReportID: "same-report", Report: agent.SubagentReport{Text: "Changed replay"}})
+	assert.NoError(t, err)
+	assert.False(t, stored)
+	after, err := svc.Queries.ListAllMessagesByAgentID(t.Context(), db.ListAllMessagesByAgentIDParams{AgentID: "concurrent-first-report"})
+	require.NoError(t, err)
+	assert.Equal(t, rows, after)
 }
 
 func TestPersistSubagentReportDeduplicatesConcurrentWriters(t *testing.T) {
@@ -719,6 +766,177 @@ func TestCleanupChildAgent_ReChildSinkGetsFreshTracker(t *testing.T) {
 		"the re-cached sink's tracker is the one the registry owns")
 }
 
+func TestObsoleteParentCleanupKeepsTheReplacementChildAndHeldSettle(t *testing.T) {
+	t.Parallel()
+	svc, sink := setupRootSink(t, "root-old-parent")
+	oldRoot := requireRootOutputSink(t, svc.Output, "root-old-parent")
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "child-spawn", ProviderChildKey: "native-child", Title: "Child"})
+	require.NoError(t, err)
+	oldChild := requireChildOutputSink(t, oldRoot, childID)
+	oldChild.UpdateSessionID("original-child-session")
+	svc.Output.NewSink(oldRoot.agentID, oldRoot.agentProvider)
+	currentRoot := requireRootOutputSink(t, svc.Output, oldRoot.agentID)
+	currentChild := requireChildOutputSink(t, currentRoot, childID)
+	currentChild.UpdateSessionID("replacement-child-session")
+	currentChild.ReportProgress(agent.NativeTokenProgress("current-model", 23))
+	activity := svc.Output.activityFor(childID, oldRoot.agentID)
+	windows := holdSettles(t, svc.Output)
+	activity.mu.Lock()
+	require.True(t, svc.Output.holdSettleLocked(activity, childID, oldRoot.agentID))
+	beforeTimer, beforeGeneration := activity.settleTimer, activity.settleGen
+	activity.mu.Unlock()
+	beforeProgress := currentChild.progress.snapshotInfo()
+	beforeFact := currentChild.currentMessageSessionFact()
+	oldRoot.CleanupChildAgent(childID)
+	assert.Same(t, currentChild, svc.Output.sinkForAgent(childID))
+	tracker, _, exists := svc.Output.trackers.get(childID)
+	require.True(t, exists, "obsolete cleanup retains the replacement tracker")
+	assert.Same(t, currentChild.tracker, tracker)
+	value, exists := svc.Output.activity.Load(childID)
+	require.True(t, exists, "obsolete cleanup retains the replacement activity")
+	assert.Same(t, activity, value)
+	activity.mu.Lock()
+	assert.True(t, activity.settlePending)
+	assert.Same(t, beforeTimer, activity.settleTimer)
+	assert.Equal(t, beforeGeneration, activity.settleGen)
+	activity.mu.Unlock()
+	assert.Len(t, windows.openWindows(), 1)
+	assert.Same(t, beforeFact, currentChild.currentMessageSessionFact())
+	assert.Equal(t, beforeProgress, currentChild.progress.snapshotInfo())
+}
+
+func TestRetiredChildCapturedOperationsKeepOriginalSessionAndGeometry(t *testing.T) {
+	t.Parallel()
+	svc, parent := setupRootSink(t, "root-historical-child")
+	oldRoot := requireRootOutputSink(t, svc.Output, "root-historical-child")
+	childID, err := parent.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn-old", ProviderChildKey: "old-child", Title: "Child"})
+	require.NoError(t, err)
+	oldChild := requireChildOutputSink(t, oldRoot, childID)
+	oldChild.UpdateSessionID("original-child-session")
+	oldChild.OpenSpan("outer-item", "outer-span")
+	span := agent.SpanInfo{SpanID: "original-span", ParentSpanID: "outer-span"}
+	message := agent.CaptureTranscript(oldChild, agent.MessageContent{Original: []byte(`{"type":"assistant","text":"original"}`)}, span)
+	notification := agent.CaptureTranscript(oldChild, agent.MessageContent{Original: []byte(`{"type":"system","subtype":"notice"}`)}, agent.SpanInfo{})
+	divider := agent.CaptureTranscript(oldChild, agent.MessageContent{Original: []byte(`{"type":"result","num_tool_uses":4}`)}, agent.SpanInfo{})
+	svc.Output.NewSink(oldRoot.agentID, oldRoot.agentProvider)
+	currentChild := requireChildOutputSink(t, requireRootOutputSink(t, svc.Output, oldRoot.agentID), childID)
+	currentChild.UpdateSessionID("replacement-child-session")
+	currentChild.ReportProgress(agent.NativeTokenProgress("replacement-model", 31))
+	beforeProgress := currentChild.progress.snapshotInfo()
+	require.NoError(t, message.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT))
+	_, err = notification.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT)
+	require.NoError(t, err)
+	require.NoError(t, divider.PersistTurnEnd())
+	rows, err := svc.Queries.ListAllMessagesByAgentID(t.Context(), db.ListAllMessagesByAgentIDParams{AgentID: childID})
+	require.NoError(t, err)
+	require.Len(t, rows, 3)
+	for _, row := range rows {
+		assert.Equal(t, "original-child-session", row.AgentSessionID)
+		assert.True(t, row.TranscriptOnly)
+	}
+	assert.Equal(t, "original-span", rows[0].SpanID)
+	assert.Greater(t, rows[0].Depth, int64(0))
+	assert.Equal(t, beforeProgress, currentChild.progress.snapshotInfo())
+	assertHistoricalChildReplay(t, svc, childID, 3)
+}
+
+func TestRetiredChildCapturedUncachedSinkKeepsReplacementMapsExact(t *testing.T) {
+	t.Parallel()
+	svc, parent := setupRootSink(t, "root-uncached-history")
+	oldRoot := requireRootOutputSink(t, svc.Output, "root-uncached-history")
+	childID, err := parent.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "uncached-spawn", ProviderChildKey: "uncached-child", Title: "Child"})
+	require.NoError(t, err)
+	svc.Output.NewSink(oldRoot.agentID, oldRoot.agentProvider)
+	currentRoot := requireRootOutputSink(t, svc.Output, oldRoot.agentID)
+	currentChild := requireChildOutputSink(t, currentRoot, childID)
+	currentChild.UpdateSessionID("replacement-only-session")
+	currentChild.ReportProgress(agent.NativeTokenProgress("replacement-model", 37))
+	activity := svc.Output.activityFor(childID, oldRoot.agentID)
+	activity.mu.Lock()
+	beforeScope := svc.Output.scopeLocked(activity, oldRoot.agentID)
+	activity.mu.Unlock()
+	beforeIndex, exists := svc.Output.treeChildren.Load(oldRoot.agentID)
+	require.True(t, exists)
+	beforeTrackerCount := svc.Output.trackers.len()
+	beforeFact := currentChild.currentMessageSessionFact()
+	beforeProgress := currentChild.progress.snapshotInfo()
+	historical := oldRoot.ChildSink(childID)
+	probe := historical.CaptureMessage(agent.MessageContent{Original: []byte(`{"type":"assistant","text":"old unknown"}`)}, agent.SpanInfo{})
+	owner := probe.Publication.Owner().(*transcriptOwner)
+	assert.Empty(t, probe.AgentSessionID)
+	assert.NotSame(t, currentChild.tracker, owner.sink.tracker)
+	assert.NotSame(t, activity, owner.activity)
+	assert.False(t, owner.IsCurrent())
+	for i, operation := range []string{"message", "notification", "divider"} {
+		content := agent.MessageContent{Original: []byte(`{"type":"system","text":"original bytes"}`), IdempotencyKey: fmt.Sprintf("historical:%d", i)}
+		record := agent.CaptureTranscript(historical, content, agent.SpanInfo{})
+		switch operation {
+		case "message":
+			require.NoError(t, record.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT))
+		case "notification":
+			_, err = record.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT)
+			require.NoError(t, err)
+		case "divider":
+			require.NoError(t, record.PersistTurnEnd())
+		}
+	}
+	assert.Same(t, currentChild, svc.Output.sinkForAgent(childID))
+	assert.Equal(t, beforeTrackerCount, svc.Output.trackers.len())
+	tracker, _, exists := svc.Output.trackers.get(childID)
+	require.True(t, exists)
+	assert.Same(t, currentChild.tracker, tracker)
+	value, exists := svc.Output.activity.Load(childID)
+	require.True(t, exists)
+	assert.Same(t, activity, value)
+	index, exists := svc.Output.treeChildren.Load(oldRoot.agentID)
+	require.True(t, exists)
+	assert.Same(t, beforeIndex, index)
+	indexed, exists := index.(*sync.Map).Load(childID)
+	require.True(t, exists)
+	assert.Same(t, activity, indexed)
+	activity.mu.Lock()
+	assert.Same(t, beforeScope, activity.scope)
+	activity.mu.Unlock()
+	assert.Same(t, beforeFact, currentChild.currentMessageSessionFact())
+	assert.Equal(t, beforeProgress, currentChild.progress.snapshotInfo())
+	rows, err := svc.Queries.ListAllMessagesByAgentID(t.Context(), db.ListAllMessagesByAgentIDParams{AgentID: childID})
+	require.NoError(t, err)
+	require.Len(t, rows, 3)
+	for _, row := range rows {
+		assert.Empty(t, row.AgentSessionID)
+		assert.True(t, row.TranscriptOnly)
+	}
+	assertHistoricalChildReplay(t, svc, childID, 3)
+}
+
+func assertHistoricalChildReplay(t *testing.T, svc *Service, childID string, count int) {
+	t.Helper()
+	stored, err := svc.Queries.ListAllMessagesByAgentID(t.Context(), db.ListAllMessagesByAgentIDParams{AgentID: childID})
+	require.NoError(t, err)
+	storedIDs := make(map[string]struct{}, len(stored))
+	for _, message := range stored {
+		storedIDs[message.ID] = struct{}{}
+	}
+	row, err := svc.Queries.GetAgentByID(t.Context(), childID)
+	require.NoError(t, err)
+	writer := &testResponseWriter{channelID: "historical-child-replay"}
+	svc.replayAgentCatchUp(newReplaySink(writer, 0), &leapmuxv1.WatchAgentEntry{AgentId: childID}, row, nil)
+	var messages int
+	for _, stream := range writer.streamsSnapshot() {
+		event := decodeWatchAgentEvent(t, stream)
+		if message := event.GetAgentMessage(); message != nil {
+			if _, exists := storedIDs[message.GetId()]; !exists {
+				continue
+			}
+			messages++
+			assert.True(t, event.GetReplay())
+			assert.Equal(t, childID, readReplayOrigin(event))
+			assert.True(t, message.GetTranscriptOnly())
+		}
+	}
+	assert.Equal(t, count, messages)
+}
+
 // transcriptMessages reads a child transcript in seq order, decoding each row's
 // content so a test can assert on the envelope the frontend receives.
 func transcriptMessages(t *testing.T, svc *Service, childID string) []map[string]any {
@@ -800,11 +1018,11 @@ func TestCloseBackgroundTask_LeavesTheNativeTranscriptUnchanged(t *testing.T) {
 	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 
-	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
+	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusSucceeded))
 
 	msgs := transcriptMessages(t, svc, childID)
 	require.Empty(t, msgs)
-	assertChildTaskOutcome(t, svc, "root-1", "task-1", childID, bgtask.StatusCompleted)
+	assertChildTaskOutcome(t, svc, "root-1", "task-1", childID, bgtask.StatusSucceeded)
 }
 
 // Each final status remains available through the registry.
@@ -898,7 +1116,7 @@ func TestSubagentCompletion_PreservesTheNativeResultInEitherArrivalOrder(t *test
 		childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 		require.NoError(t, err)
 
-		require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
+		require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusSucceeded))
 		require.NoError(t, sink.ChildSink(childID).PersistTurnEnd(agent.MessageContent{Original: result}, agent.SpanInfo{}))
 
 		msgs := transcriptMessages(t, svc, childID)
@@ -914,7 +1132,7 @@ func TestSubagentCompletion_PreservesTheNativeResultInEitherArrivalOrder(t *test
 		require.NoError(t, err)
 
 		require.NoError(t, sink.ChildSink(childID).PersistTurnEnd(agent.MessageContent{Original: result}, agent.SpanInfo{}))
-		require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
+		require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusSucceeded))
 
 		msgs := transcriptMessages(t, svc, childID)
 		require.Len(t, msgs, 1)
@@ -935,7 +1153,7 @@ func TestSubagentCompletion_ConcurrentWritersRetainTheNativeResult(t *testing.T)
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		assert.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
+		assert.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusSucceeded))
 	}()
 	go func() {
 		defer wg.Done()
@@ -957,12 +1175,12 @@ func TestSubagentCompletion_RepeatedFinalStatusLeavesTheTranscriptUnchanged(t *t
 	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 
-	require.NoError(t, sink.UpdateBackgroundTaskStatus("task-1", bgtask.StatusCompleted, "wrote the summary"))
-	require.NoError(t, sink.UpdateBackgroundTaskStatus("task-1", bgtask.StatusCompleted, ""))
+	require.NoError(t, sink.UpdateBackgroundTaskStatus("task-1", bgtask.StatusSucceeded, "wrote the summary"))
+	require.NoError(t, sink.UpdateBackgroundTaskStatus("task-1", bgtask.StatusSucceeded, ""))
 
 	msgs := transcriptMessages(t, svc, childID)
 	require.Empty(t, msgs)
-	assertChildTaskOutcome(t, svc, "root-1", "task-1", childID, bgtask.StatusCompleted)
+	assertChildTaskOutcome(t, svc, "root-1", "task-1", childID, bgtask.StatusSucceeded)
 }
 
 // Each unkeyed native root completion remains a distinct transcript record.
@@ -985,12 +1203,12 @@ func TestCloseBackgroundTask_RepeatedClosePreservesTheFirstOutcome(t *testing.T)
 	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 
-	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
+	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusSucceeded))
 	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusFailed))
-	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
+	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusSucceeded))
 
 	assert.Empty(t, transcriptMessages(t, svc, childID))
-	assertChildTaskOutcome(t, svc, "root-1", "task-1", childID, bgtask.StatusCompleted)
+	assertChildTaskOutcome(t, svc, "root-1", "task-1", childID, bgtask.StatusSucceeded)
 }
 
 // A shell row has no transcript to close; the divider must not be written into
@@ -1002,7 +1220,7 @@ func TestCloseBackgroundTask_ShellRowWritesNoDivider(t *testing.T) {
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
 		RowKey: "shell-1", Kind: bgtask.KindShell, Title: "npm test", Status: bgtask.StatusRunning,
 	}))
-	require.NoError(t, sink.CloseBackgroundTask("shell-1", bgtask.StatusCompleted))
+	require.NoError(t, sink.CloseBackgroundTask("shell-1", bgtask.StatusSucceeded))
 
 	assert.Empty(t, transcriptMessages(t, svc, "root-1"))
 }
@@ -1070,13 +1288,13 @@ func TestMarkBackgroundTasksExited_SkipsAnAlreadyClosedSubagent(t *testing.T) {
 	svc, sink := setupRootSink(t, "root-1")
 	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
-	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
+	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusSucceeded))
 
 	svc.Output.MarkAgentBackgroundTasksExited("root-1", false)
 
 	msgs := transcriptMessages(t, svc, childID)
 	require.Empty(t, msgs)
-	assertChildTaskOutcome(t, svc, "root-1", "task-1", childID, bgtask.StatusCompleted)
+	assertChildTaskOutcome(t, svc, "root-1", "task-1", childID, bgtask.StatusSucceeded)
 }
 
 // Registry completion preserves an earlier native completion result.
@@ -1089,7 +1307,7 @@ func TestCloseBackgroundTask_PreservesAnEarlierNativeResult(t *testing.T) {
 
 	// The forwarded subagent result, persisted as the child's turn end.
 	require.NoError(t, sink.PersistChildTurnEnd(childID, agent.MessageContent{Original: []byte(`{"type":"result","duration_ms":5100,"is_error":false}`)}, agent.SpanInfo{}))
-	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
+	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusSucceeded))
 
 	msgs := transcriptMessages(t, svc, childID)
 	require.Len(t, msgs, 1, "the provider's own turn-end divider is the only one")
@@ -1123,7 +1341,7 @@ func TestCloseBackgroundTask_PreservesTheNativeMessagesProvider(t *testing.T) {
 	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 	require.NoError(t, sink.PersistChildTurnEnd(childID, agent.MessageContent{Original: []byte(`{"type":"result","duration_ms":0}`)}, agent.SpanInfo{}))
-	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
+	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusSucceeded))
 
 	rows, err := svc.Queries.ListAllMessagesByAgentID(context.Background(),
 		db.ListAllMessagesByAgentIDParams{AgentID: childID})
@@ -1205,8 +1423,8 @@ func TestReviveBackgroundTask_ReturnsAFinishedRowToRunning(t *testing.T) {
 		Description: "/tmp/task-1.output",
 		Status:      bgtask.StatusRunning,
 	}))
-	require.NoError(t, sink.UpdateBackgroundTaskStatus("task-1", bgtask.StatusCompleted, "wrote the report"))
-	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
+	require.NoError(t, sink.UpdateBackgroundTaskStatus("task-1", bgtask.StatusSucceeded, "wrote the report"))
+	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusSucceeded))
 	require.True(t, registrySnapshotRow(t, svc, "root-1", "task-1").Status.IsFinished())
 
 	require.NoError(t, sink.ReviveBackgroundTask("task-1"))
@@ -1256,7 +1474,7 @@ func TestReviveBackgroundTask_PreservesNativeResultsAcrossRuns(t *testing.T) {
 	svc, sink := setupRootSink(t, "root-1")
 	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
-	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
+	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusSucceeded))
 	require.NoError(t, sink.PersistChildTurnEnd(childID, agent.MessageContent{Original: []byte(`{"type":"result","duration_ms":12}`)}, agent.SpanInfo{}))
 
 	require.NoError(t, sink.ReviveBackgroundTask("task-1"))
@@ -1276,7 +1494,7 @@ func TestSubagentCompletion_PreservesEachNativeRunAfterARevive(t *testing.T) {
 	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 	require.NoError(t, sink.PersistChildTurnEnd(childID, agent.MessageContent{Original: []byte(`{"type":"result","duration_ms":12}`)}, agent.SpanInfo{}))
-	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
+	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusSucceeded))
 	require.NoError(t, sink.ReviveBackgroundTask("task-1"))
 	require.NoError(t, sink.PersistChildTurnEnd(childID, agent.MessageContent{Original: []byte(`{"type":"result","duration_ms":34,"is_error":true}`)}, agent.SpanInfo{}))
 	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusFailed))
@@ -1298,7 +1516,7 @@ func TestChildTranscript_AppendsAfterRegistryCompletion(t *testing.T) {
 	svc, sink := setupRootSink(t, "root-1")
 	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
-	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
+	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusSucceeded))
 
 	require.NoError(t, sink.PersistChildMessage(childID,
 		leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
@@ -1321,10 +1539,10 @@ func TestLookupBackgroundTask_ResolvesTheChildAndStatus(t *testing.T) {
 	assert.Equal(t, childID, gotChild)
 	assert.Equal(t, bgtask.StatusRunning, status)
 
-	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
+	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusSucceeded))
 	_, status, ok, _ = sink.LookupBackgroundTask("task-1")
 	require.True(t, ok)
-	assert.Equal(t, bgtask.StatusCompleted, status)
+	assert.Equal(t, bgtask.StatusSucceeded, status)
 }
 
 // fillSubagentDisplayCap pushes `extra` fresh subagent rows through the root's
@@ -1349,7 +1567,7 @@ func TestLookupBackgroundTask_ResolvesARowThatLeftTheDisplayCache(t *testing.T) 
 	svc, sink := setupRootSink(t, "root-1")
 	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
-	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
+	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusSucceeded))
 
 	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks)
 
@@ -1364,7 +1582,7 @@ func TestLookupBackgroundTask_ResolvesARowThatLeftTheDisplayCache(t *testing.T) 
 	require.NoError(t, err)
 	require.True(t, ok, "the retained row resolves through the point lookup")
 	assert.Equal(t, childID, gotChild)
-	assert.Equal(t, bgtask.StatusCompleted, status)
+	assert.Equal(t, bgtask.StatusSucceeded, status)
 }
 
 // resolveChildRegistryRow's query is the reverse route, and it is what
@@ -1378,7 +1596,7 @@ func TestGetAgentBackgroundTaskByChildAgentID_ResolvesPastTheDisplayCap(t *testi
 	svc, sink := setupRootSink(t, "root-1")
 	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
-	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
+	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusSucceeded))
 
 	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks)
 
@@ -1415,7 +1633,7 @@ func TestReviveBackgroundTask_RowWithNoTranscript(t *testing.T) {
 		Title:  "npm test",
 		Status: bgtask.StatusRunning,
 	}))
-	require.NoError(t, sink.CloseBackgroundTask("shell-1", bgtask.StatusCompleted))
+	require.NoError(t, sink.CloseBackgroundTask("shell-1", bgtask.StatusSucceeded))
 
 	require.NoError(t, sink.ReviveBackgroundTask("shell-1"))
 	assert.Equal(t, bgtask.StatusRunning, registrySnapshotRow(t, svc, "root-1", "shell-1").Status)
@@ -1429,7 +1647,7 @@ func TestReviveBackgroundTask_TrustsTheDatabaseOverAStaleCache(t *testing.T) {
 	svc, sink := setupRootSink(t, "root-1")
 	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
-	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusCompleted))
+	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusSucceeded))
 	require.True(t, registrySnapshotRow(t, svc, "root-1", "task-1").Status.IsFinished())
 
 	// Put the DB back to running behind the cache's back, so the two disagree
@@ -1472,9 +1690,9 @@ func TestPersistChildUserMessage_AppendsWithTheScrollRailMark(t *testing.T) {
 		db.ListAllMessagesByAgentIDParams{AgentID: childID})
 	require.NoError(t, err)
 	require.Len(t, rows, 2)
-	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE, rows[1].MarkType,
+	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE, workerdb.StorageEnumValue(rows[1].MarkType),
 		"a mid-transcript user message is exactly what the scroll rail exists to find")
-	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_UNSPECIFIED, rows[0].MarkType,
+	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_UNSPECIFIED, workerdb.StorageEnumValue(rows[0].MarkType),
 		"and the opening prompt carries none, so the rail does not point at it")
 }
 

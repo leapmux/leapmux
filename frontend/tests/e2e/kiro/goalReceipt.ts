@@ -2,7 +2,7 @@ import type { MockModelRequestRecord } from '../helpers/mockModelScript'
 import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs'
 import { isAbsolute, join } from 'node:path'
 import { isObject } from '../../../src/lib/jsonPick'
-import { assertPrivateNativePath } from '../helpers/nativeCredentialIsolation'
+import { assertPrivateNativePath } from '../helpers/nativePrivatePath'
 import { isFileNameComponent } from '../helpers/runDirectory'
 
 export interface KiroGoalMessage {

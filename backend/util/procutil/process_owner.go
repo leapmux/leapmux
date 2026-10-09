@@ -16,32 +16,33 @@ const processCaptureTimeout = 2 * time.Second
 // It retains children only after their live ancestry and creation identities agree.
 // A dead parent cannot grant ownership of an unobserved detached child.
 type ProcessOwner struct {
-	mu                 sync.Mutex
-	cmd                processCommand
-	root               ProcessIdentity
-	children           map[ProcessIdentity]struct{}
-	platform           processOwnerPlatform
-	started            bool
-	closed             bool
-	result             error
-	waitStarted        bool
-	waitFinished       bool
-	waitDone           chan struct{}
-	waitResult         error
-	exitReceiptForTest func(context.Context, ProcessIdentity) error
-}
-
-// SetExitReceiptForTest delays the completion receipt of an exact owned process.
-// Tests set it before shutdown. Production always uses the native exit watch.
-func (o *ProcessOwner) SetExitReceiptForTest(receipt func(context.Context, ProcessIdentity) error) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	o.exitReceiptForTest = receipt
+	mu            sync.Mutex
+	cmd           processCommand
+	root          ProcessIdentity
+	children      map[ProcessIdentity]struct{}
+	platform      processOwnerPlatform
+	starting      bool
+	startDone     chan struct{}
+	started       bool
+	terminating   bool
+	terminateDone chan struct{}
+	closed        bool
+	result        error
+	waitStarted   bool
+	waitFinished  bool
+	waitDone      chan struct{}
+	waitResult    error
+	exitObserver  ProcessExitObserver
 }
 
 // PrepareProcess owns cancellation before Start can create a child.
 func PrepareProcess(cmd *exec.Cmd) *ProcessOwner {
-	owner := &ProcessOwner{children: make(map[ProcessIdentity]struct{})}
+	return PrepareProcessWithExitObserver(cmd, nil)
+}
+
+// PrepareProcessWithExitObserver fixes the observer before Start can create a child.
+func PrepareProcessWithExitObserver(cmd *exec.Cmd, observer ProcessExitObserver) *ProcessOwner {
+	owner := &ProcessOwner{children: make(map[ProcessIdentity]struct{}), exitObserver: observer}
 	if cmd != nil {
 		owner.cmd = execProcessCommand{command: cmd}
 		// A plain exec.Command rejects a nonnil Cancel function.
@@ -56,13 +57,18 @@ func PrepareProcess(cmd *exec.Cmd) *ProcessOwner {
 
 // OwnStartedProcess accepts only the current verified identity of an already-started child.
 func OwnStartedProcess(identity ProcessIdentity) (*ProcessOwner, error) {
+	return OwnStartedProcessWithExitObserver(identity, nil)
+}
+
+// OwnStartedProcessWithExitObserver fixes the observer while it adopts an exact live process.
+func OwnStartedProcessWithExitObserver(identity ProcessIdentity, observer ProcessExitObserver) (*ProcessOwner, error) {
 	if identity.PID == os.Getpid() {
 		return nil, errors.New("the process owner cannot adopt the worker process")
 	}
 	if identity.IsZero() || !identity.Runs() {
 		return nil, errors.New("the process owner requires a live creation identity")
 	}
-	owner := &ProcessOwner{root: identity, children: make(map[ProcessIdentity]struct{}), started: true}
+	owner := &ProcessOwner{root: identity, children: make(map[ProcessIdentity]struct{}), started: true, exitObserver: observer}
 	if err := owner.platform.attach(owner.root); err != nil {
 		return nil, err
 	}
@@ -75,9 +81,14 @@ func (o *ProcessOwner) Start() error {
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if o.closed || o.started || o.cmd == nil {
+	if o.closed || o.terminating || o.started || o.cmd == nil {
 		return errors.New("the process owner cannot start this command")
 	}
+	o.starting, o.startDone = true, make(chan struct{})
+	defer func() {
+		o.starting = false
+		close(o.startDone)
+	}()
 	if err := o.cmd.start(); err != nil {
 		o.result = errors.Join(o.result, err)
 		return err
@@ -114,6 +125,9 @@ func (o *ProcessOwner) Capture(ctx context.Context) error {
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	if o.closed || o.terminating {
+		return nil
+	}
 	err := o.captureLocked(ctx)
 	o.result = errors.Join(o.result, err)
 	return err
@@ -188,7 +202,7 @@ func (o *ProcessOwner) BindDescendants(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if !o.started || o.closed || o.root.IsZero() || !o.root.Runs() {
+	if !o.started || o.closed || o.terminating || o.root.IsZero() || !o.root.Runs() {
 		return errors.New("the original process ended before its descendants could be bound")
 	}
 	err := o.captureLocked(ctx)
@@ -200,7 +214,7 @@ func (o *ProcessOwner) BindDescendants(ctx context.Context) error {
 }
 
 func (o *ProcessOwner) captureLocked(ctx context.Context) error {
-	if !o.started || o.root.IsZero() || o.closed {
+	if !o.started || o.root.IsZero() || o.closed || o.terminating {
 		return nil
 	}
 	roots := make([]ProcessIdentity, 0, len(o.children)+1)
@@ -236,7 +250,7 @@ func (o *ProcessOwner) Cancel() error {
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if o.closed || !o.started {
+	if o.closed || o.terminating || !o.started {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), processCaptureTimeout)
@@ -248,19 +262,36 @@ func (o *ProcessOwner) Cancel() error {
 }
 
 // Terminate waits for verified processes to exit after it stops the owned tree.
-// Concurrent callers receive the same completed result under the owner mutex.
+// Concurrent callers wait outside the mutex and receive the same completed result.
 func (o *ProcessOwner) Terminate() error {
 	if o == nil {
 		return nil
 	}
 	o.mu.Lock()
-	defer o.mu.Unlock()
+	for o.starting {
+		done := o.startDone
+		o.mu.Unlock()
+		<-done
+		o.mu.Lock()
+	}
 	if o.closed {
-		return o.result
+		result := o.result
+		o.mu.Unlock()
+		return result
+	}
+	if o.terminating {
+		done := o.terminateDone
+		o.mu.Unlock()
+		<-done
+		o.mu.Lock()
+		result := o.result
+		o.mu.Unlock()
+		return result
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), processCaptureTimeout)
 	err := o.captureLocked(ctx)
 	cancel()
+	o.terminating, o.terminateDone = true, make(chan struct{})
 	exitCtx, cancelExit := context.WithTimeout(context.Background(), processTreeExitTimeout)
 	defer cancelExit()
 	var watches []*processExitWatch
@@ -282,22 +313,18 @@ func (o *ProcessOwner) Terminate() error {
 		watches = append(watches, watch)
 	}
 	err = errors.Join(err, o.killChildrenLocked(), o.platform.terminate(o.root))
+	observer := o.exitObserver
+	o.mu.Unlock()
 	for _, watch := range watches {
-		var waitErr error
-		if o.exitReceiptForTest != nil {
-			waitErr = o.exitReceiptForTest(exitCtx, watch.identity)
-		}
-		if waitErr == nil {
-			waitErr = watch.wait(exitCtx)
-		}
-		if waitErr != nil {
-			err = errors.Join(err, fmt.Errorf("wait for owned process %d: %w", watch.identity.PID, waitErr))
-		}
-		err = errors.Join(err, watch.close())
+		err = errors.Join(err, observeProcessExit(exitCtx, watch, observer))
 	}
+	o.mu.Lock()
 	o.closed = true
 	o.result = errors.Join(o.result, err)
-	return o.result
+	close(o.terminateDone)
+	result := o.result
+	o.mu.Unlock()
+	return result
 }
 
 // Close retains verified identities after reparenting and releases the owner's resources.

@@ -218,7 +218,7 @@ func (a *Agent) handleFrame(line []byte) {
 
 // persistNotification stores a notification row verbatim.
 func (a *Agent) persistNotification(payload []byte) {
-	if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, payload); err != nil {
+	if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: payload}); err != nil {
 		slog.Debug("letta: persist notification failed", "agent_id", a.AgentID(), "error", err)
 	}
 }
