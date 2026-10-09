@@ -792,6 +792,54 @@ export const ROW_KIND_CASES: RowKindCase[] = [
     category: 'notification',
   },
 
+  // --- Muse Code ---------------------------------------------------------
+  //
+  // The MSP frames the plugin's own tests transcribe, as the worker persists them.
+  {
+    provider: Provider.MUSE_CODE,
+    name: 'assistant text',
+    payload: { method: 'item/completed', params: { sessionId: 'native-session', item: { itemId: 'native-item', kind: 'agentMessage', status: 'completed', text: 'Native answer.' } } },
+    category: 'assistant_text',
+  },
+  {
+    provider: Provider.MUSE_CODE,
+    name: 'reasoning',
+    payload: { method: 'item/completed', params: { sessionId: 'native-session', item: { itemId: 'native-item', kind: 'reasoning', status: 'completed', summary: ['First', 'Second'] } } },
+    category: 'assistant_thinking',
+  },
+  {
+    provider: Provider.MUSE_CODE,
+    name: 'bash tool call',
+    payload: { method: 'item/started', params: { sessionId: 'session', item: { itemId: 'tool', kind: 'toolCall', turnId: 'turn', callId: 'call', tool: 'bash', args: '{"command":"printf native"}', status: 'inProgress' } } },
+    category: 'tool_use',
+    spanType: 'bash',
+  },
+  {
+    provider: Provider.MUSE_CODE,
+    name: 'bash tool result',
+    payload: { method: 'item/completed', params: { sessionId: 'session', item: { itemId: 'tool', kind: 'toolCall', turnId: 'turn', callId: 'call', tool: 'bash', args: '{"command":"printf native"}', status: 'completed', visibleOutput: 'native' } } },
+    category: 'tool_result',
+    spanType: 'bash',
+  },
+  {
+    provider: Provider.MUSE_CODE,
+    name: 'turn end',
+    payload: { method: 'turn/completed', params: { sessionId: 'native-session' } },
+    category: 'result_divider',
+  },
+  {
+    provider: Provider.MUSE_CODE,
+    name: 'recognized to-do update',
+    payload: { method: 'session/todoListChanged', params: { sessionId: 'native-session', items: [{ text: 'Native task', status: 'completed' }] } },
+    category: 'hidden',
+  },
+  {
+    provider: Provider.MUSE_CODE,
+    name: 'question settlement',
+    payload: { method: 'userInput/settled', params: { sessionId: 'native-session', userInputId: 'native-input', outcome: 'answered' } },
+    category: 'notification',
+  },
+
   // --- The rows LeapMux writes itself ------------------------------------
   //
   // Each carries LeapMux's own envelope rather than a provider frame, so every

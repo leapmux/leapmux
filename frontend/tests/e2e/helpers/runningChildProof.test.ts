@@ -498,7 +498,7 @@ describe('expectRunningChildCompletes', () => {
       'to.have.attribute.value data-kind=subagent',
       'to.have.attribute.value data-status=running',
       'finish',
-      'to.have.attribute.value data-status=completed',
+      'to.have.attribute.value data-status=succeeded',
     ])
   })
 
@@ -509,9 +509,9 @@ describe('expectRunningChildCompletes', () => {
       'to.have.attribute.value data-kind=subagent',
       'to.have.attribute.value data-status=running',
       'finish',
-      'to.have.attribute.value data-status=completed',
+      'to.have.attribute.value data-status=succeeded',
       'reload',
-      'to.have.attribute.value data-status=completed',
+      'to.have.attribute.value data-status=succeeded',
     ])
   })
 
@@ -519,6 +519,6 @@ describe('expectRunningChildCompletes', () => {
     const log: string[] = []
     await expect(expectRunningChildCompletes(child(log, { childId: 'same', parentId: 'same' }))).rejects.toThrow('the child runs as an agent of its own')
     expect(log).toContain('finish')
-    expect(log).not.toContain('to.have.attribute.value data-status=completed')
+    expect(log).not.toContain('to.have.attribute.value data-status=succeeded')
   })
 })

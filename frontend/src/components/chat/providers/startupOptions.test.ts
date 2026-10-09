@@ -14,19 +14,19 @@ function groups(): StartupOptionGroup[] {
 
 describe('validateStartupOptionGroups', () => {
   it.each([
-    ['null group', (source: StartupOptionGroup[]) => { source[0] = null as unknown as StartupOptionGroup }],
-    ['blank ID', (source: StartupOptionGroup[]) => { source[0] = { ...source[0]!, id: ' ' } }],
-    ['blank value', (source: StartupOptionGroup[]) => { source[0] = { ...source[0]!, options: [{ value: ' ', label: 'Blank' }], defaultValue: ' ' } }],
-    ['null option', (source: StartupOptionGroup[]) => { source[0] = { ...source[0]!, options: [null as unknown as StartupOptionGroup['options'][number]] } }],
-    ['absent options', (source: StartupOptionGroup[]) => { source[0] = { ...source[0]!, options: undefined as unknown as StartupOptionGroup['options'] } }],
-    ['repeated ID', (source: StartupOptionGroup[]) => { source.push(source[0]!) }],
-    ['repeated value', (source: StartupOptionGroup[]) => { source[0] = { ...source[0]!, options: [source[0]!.options[0]!, source[0]!.options[0]!] } }],
-    ['empty options', (source: StartupOptionGroup[]) => { source[0] = { ...source[0]!, options: [] } }],
-    ['foreign default', (source: StartupOptionGroup[]) => { source[0] = { ...source[0]!, defaultValue: 'other' } }],
-  ])('rejects a %s', (_case, change) => {
+    ['null group', 'The provider supplies an invalid or repeated startup option group.', (source: StartupOptionGroup[]) => { source[0] = null as unknown as StartupOptionGroup }],
+    ['blank ID', 'The provider supplies an invalid or repeated startup option group.', (source: StartupOptionGroup[]) => { source[0] = { ...source[0]!, id: ' ' } }],
+    ['blank value', 'The provider supplies an invalid or repeated startup option.', (source: StartupOptionGroup[]) => { source[0] = { ...source[0]!, options: [{ value: ' ', label: 'Blank' }], defaultValue: ' ' } }],
+    ['null option', 'The provider supplies an invalid or repeated startup option.', (source: StartupOptionGroup[]) => { source[0] = { ...source[0]!, options: [null as unknown as StartupOptionGroup['options'][number]] } }],
+    ['absent options', 'The provider supplies an invalid or repeated startup option group.', (source: StartupOptionGroup[]) => { source[0] = { ...source[0]!, options: undefined as unknown as StartupOptionGroup['options'] } }],
+    ['repeated ID', 'The provider supplies an invalid or repeated startup option group.', (source: StartupOptionGroup[]) => { source.push(source[0]!) }],
+    ['repeated value', 'The provider supplies an invalid or repeated startup option.', (source: StartupOptionGroup[]) => { source[0] = { ...source[0]!, options: [source[0]!.options[0]!, source[0]!.options[0]!] } }],
+    ['empty options', 'The provider startup default is outside its options.', (source: StartupOptionGroup[]) => { source[0] = { ...source[0]!, options: [] } }],
+    ['foreign default', 'The provider startup default is outside its options.', (source: StartupOptionGroup[]) => { source[0] = { ...source[0]!, defaultValue: 'other' } }],
+  ])('rejects %s as %s', (_case, reason, change) => {
     const source = groups()
     change(source)
-    expect(() => validateStartupOptionGroups(source)).toThrow()
+    expect(() => validateStartupOptionGroups(source)).toThrow(reason)
   })
 })
 
@@ -41,8 +41,12 @@ describe('resolveStartupOptionValues', () => {
     expect(selected).toEqual({ trust: 'agent' })
   })
 
-  it.each([{ trust: 'other' }, { foreign: 'agent' }, { trust: '' }])('rejects invalid selections %j', (selected) => {
-    expect(() => resolveStartupOptionValues(groups(), selected)).toThrow()
+  it.each([
+    [{ trust: 'other' }, 'The selected startup value is outside the provider options.'],
+    [{ foreign: 'agent' }, 'The startup selection belongs to another provider.'],
+    [{ trust: '' }, 'The selected startup value is outside the provider options.'],
+  ])('rejects %j as %s', (selected, reason) => {
+    expect(() => resolveStartupOptionValues(groups(), selected)).toThrow(reason)
   })
 
   it('accepts no groups and no selections', () => {

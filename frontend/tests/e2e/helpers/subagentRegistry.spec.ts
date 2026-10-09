@@ -45,33 +45,33 @@ test('accepts distinct success and unknown-outcome rows as final', async ({ page
 
 test('refuses a wrong status-dot label when the task title contains the expected end label', async ({ page }) => {
   await page.setContent(`
-    <div data-testid="bg-task-row" data-kind="subagent" data-status="completed">
-      <span data-testid="bg-task-title">Completed task</span>
+    <div data-testid="bg-task-row" data-kind="subagent" data-status="succeeded">
+      <span data-testid="bg-task-title">Succeeded task</span>
       <span data-testid="bg-task-status-dot" aria-label="Failed">●</span>
-      <span data-testid="bg-task-secondary">Completed</span>
+      <span data-testid="bg-task-secondary">Succeeded</span>
     </div>
   `)
   const row = page.locator('[data-testid="bg-task-row"]:visible')
-  await expect(expectRowBecomesFinal(page, row)).rejects.toThrow()
+  await expect(expectRowBecomesFinal(page, row)).rejects.toThrow('aria-label')
 })
 
 test('refuses a wrong end-line label when the title and status dot contain the expected label', async ({ page }) => {
   await page.setContent(`
-    <div data-testid="bg-task-row" data-kind="subagent" data-status="completed">
-      <span data-testid="bg-task-title">Completed task</span>
-      <span data-testid="bg-task-status-dot" aria-label="Completed">●</span>
+    <div data-testid="bg-task-row" data-kind="subagent" data-status="succeeded">
+      <span data-testid="bg-task-title">Succeeded task</span>
+      <span data-testid="bg-task-status-dot" aria-label="Succeeded">●</span>
       <span data-testid="bg-task-secondary">Failed</span>
     </div>
   `)
   const row = page.locator('[data-testid="bg-task-row"]:visible')
-  await expect(expectRowBecomesFinal(page, row)).rejects.toThrow()
+  await expect(expectRowBecomesFinal(page, row)).rejects.toThrow('toHaveText')
 })
 
 test('accepts the canonical title when the repeated end line is absent', async ({ page }) => {
   await page.setContent(`
-    <div data-testid="bg-task-row" data-kind="subagent" data-status="completed">
-      <span data-testid="bg-task-title">Completed</span>
-      <span data-testid="bg-task-status-dot" aria-label="Completed">●</span>
+    <div data-testid="bg-task-row" data-kind="subagent" data-status="succeeded">
+      <span data-testid="bg-task-title">Succeeded</span>
+      <span data-testid="bg-task-status-dot" aria-label="Succeeded">●</span>
     </div>
   `)
   const row = page.locator('[data-testid="bg-task-row"]:visible')
@@ -81,13 +81,13 @@ test('accepts the canonical title when the repeated end line is absent', async (
 
 test('checks the secondary when a longer title contains the canonical word', async ({ page }) => {
   await page.setContent(`
-    <div data-testid="bg-task-row" data-kind="subagent" data-status="completed">
-      <span data-testid="bg-task-title">Completed task</span>
-      <span data-testid="bg-task-status-dot" aria-label="Completed">●</span>
-      <span data-testid="bg-task-secondary">Completed</span>
+    <div data-testid="bg-task-row" data-kind="subagent" data-status="succeeded">
+      <span data-testid="bg-task-title">Succeeded task</span>
+      <span data-testid="bg-task-status-dot" aria-label="Succeeded">●</span>
+      <span data-testid="bg-task-secondary">Succeeded</span>
     </div>
   `)
   const row = page.locator('[data-testid="bg-task-row"]:visible')
   await expectRowBecomesFinal(page, row)
-  await expect(row.locator('[data-testid="bg-task-secondary"]:visible')).toHaveText('Completed')
+  await expect(row.locator('[data-testid="bg-task-secondary"]:visible')).toHaveText('Succeeded')
 })

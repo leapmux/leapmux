@@ -90,15 +90,15 @@ describe('readNativeProviderMark', () => {
     ['invalid five-digit color', '<linearGradient id="g"><stop offset="0" stop-color="#12345"/></linearGradient>'],
     ['unsupported style', '<linearGradient id="g"><stop offset="0" stop-color="#000" style="background:url(https://example.com/image);"/></linearGradient>'],
   ])('rejects %s in a native gradient', (_case, gradient) => {
-    expect(() => readNativeProviderMark(`<svg viewBox="0 0 24 24"><path d="M0 0h24v24H0z" fill="url(#g)"/><defs>${gradient}</defs></svg>`)).toThrow()
+    expect(() => readNativeProviderMark(`<svg viewBox="0 0 24 24"><path d="M0 0h24v24H0z" fill="url(#g)"/><defs>${gradient}</defs></svg>`)).toThrow(/^The native provider (mark|gradient)/)
   })
 
   it.each(['url(#absent)', 'url(https://example.com/paint)', 'url(//example.com/paint)'])('rejects the unresolved paint %s', (fill) => {
-    expect(() => readNativeProviderMark(`<svg viewBox="0 0 24 24"><path d="M0 0h24v24H0z" fill="${fill}"/></svg>`)).toThrow()
+    expect(() => readNativeProviderMark(`<svg viewBox="0 0 24 24"><path d="M0 0h24v24H0z" fill="${fill}"/></svg>`)).toThrow('The native provider paint requires a declared local gradient.')
   })
 
   it('rejects duplicate definition groups', () => {
-    expect(() => readNativeProviderMark('<svg viewBox="0 0 24 24"><path d="M0 0h24v24H0z"/><defs><linearGradient id="g"><stop offset="0" stop-color="#000"/></linearGradient></defs><defs><linearGradient id="h"><stop offset="1" stop-color="#fff"/></linearGradient></defs></svg>')).toThrow()
+    expect(() => readNativeProviderMark('<svg viewBox="0 0 24 24"><path d="M0 0h24v24H0z"/><defs><linearGradient id="g"><stop offset="0" stop-color="#000"/></linearGradient></defs><defs><linearGradient id="h"><stop offset="1" stop-color="#fff"/></linearGradient></defs></svg>')).toThrow('The native provider mark contains repeated definitions.')
   })
 
   it('preserves a four-digit RGBA color', () => {
@@ -113,7 +113,7 @@ describe('readNativeProviderMark', () => {
     'unrecognized-paint',
     'red',
   ])('rejects the unsupported paint grammar %s', (fill) => {
-    expect(() => readNativeProviderMark(`<svg viewBox="0 0 24 24"><path d="M0 0h24v24H0z" fill="${fill}"/></svg>`)).toThrow()
+    expect(() => readNativeProviderMark(`<svg viewBox="0 0 24 24"><path d="M0 0h24v24H0z" fill="${fill}"/></svg>`)).toThrow('The native provider paint requires a declared local gradient.')
   })
 
   it('preserves root paint and an explicit child paint override', () => {

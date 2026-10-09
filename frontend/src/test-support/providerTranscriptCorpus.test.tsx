@@ -490,6 +490,15 @@ function editFrames(provider: AgentProvider): TranscriptFrame[] {
       frame('result', provider, 'parity-edit', MIMO_TOOL.Edit, toolFrame(MIMO_TOOL.Edit, { input, output: 'Edit applied successfully.', metadata: { diff, filediff: { file: path, patch: diff, additions: 1, deletions: 1 } } }, 'parity-edit')),
     ]
   }
+  if (provider === AgentProvider.MUSE_CODE) {
+    // Muse's edit_file states the substitution as find/replace, JSON-encoded in args.
+    const args = JSON.stringify({ path, find: before, replace: after })
+    const item = (status: string) => ({ itemId: 'parity-edit', kind: 'toolCall', turnId: 'turn', callId: 'parity-edit', tool: 'edit_file', args, status })
+    return [
+      frame('request', provider, 'parity-edit', 'edit_file', { method: 'item/started', params: { sessionId: 'session', item: item('inProgress') } }),
+      frame('result', provider, 'parity-edit', 'edit_file', { method: 'item/completed', params: { sessionId: 'session', item: { ...item('completed'), visibleOutput: 'Saved' } } }),
+    ]
+  }
   if (provider === AgentProvider.GITHUB_COPILOT) {
     // Copilot's edit is its own native pair, and `str_replace_editor` states the
     // replacement directly rather than as a diff block.
@@ -587,6 +596,7 @@ const EDIT_PROVIDERS = [
   ['Command Code', AgentProvider.COMMAND_CODE],
   ['Deepseek Harness', AgentProvider.DEEPSEEK_HARNESS],
   ['Gemini CLI', AgentProvider.GEMINI_CLI],
+  ['Muse Code', AgentProvider.MUSE_CODE],
 ] as const
 
 describe('native file edits render their committed results', () => {

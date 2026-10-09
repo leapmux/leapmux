@@ -184,12 +184,45 @@ export interface QuestionRequest {
    * no flag of its own.
    */
   freeText?: boolean
+  /**
+   * Explicit selection counts for a multiple-selection question, in a neutral
+   * form each builder maps to its own native domain. Muse Code's model tool
+   * carries them as `min_selections`/`max_selections`; a builder whose native
+   * tool states no counts refuses them.
+   */
+  minimumSelections?: number
+  /** Upper counterpart of {@link minimumSelections}; the two are independent. */
+  maximumSelections?: number
 }
 
 /** One approach a plan offers. The approval surface lists each one as a choice. */
 export interface PlanApproachRequest {
   label: string
   description: string
+}
+
+/**
+ * One provider's native question builder, with the selection-count support its
+ * native model tool states. A builder that carries no native counts refuses
+ * them, because a shape the installed tool never reads is a script that answers
+ * a question the tool did not ask.
+ */
+export interface QuestionToolBuilder {
+  build: (id: string, questions: QuestionRequest[]) => MockModelToolCall
+  /**
+   * Whether the native model tool accepts explicit selection counts. Absent
+   * support does not prove the native provider lacks the feature -- only that
+   * this table has no proved native form for it.
+   */
+  supportsSelectionLimits: boolean
+}
+
+/**
+ * State one provider's question builder as the table's descriptor, defaulting
+ * to no native selection-count support.
+ */
+function questionBuilder(build: QuestionToolBuilder['build'], supportsSelectionLimits = false): QuestionToolBuilder {
+  return { build, supportsSelectionLimits }
 }
 
 /**
@@ -215,7 +248,7 @@ interface ProviderToolVocabulary {
    */
   exitPlanModeFromFile: ((id: string, approaches: PlanApproachRequest[]) => MockModelToolCall) | null
   /** Ask the user to choose, which raises a control request. */
-  askUserQuestion: ((id: string, questions: QuestionRequest[]) => MockModelToolCall) | null
+  askUserQuestion: QuestionToolBuilder | null
   /** Spawn a subagent, which opens a registry row and a child transcript. */
   spawnSubagent: ((id: string, request: SubagentRequest) => MockModelToolCall) | null
   /**
@@ -568,7 +601,7 @@ const TOOL_VOCABULARY = {
     enterPlanMode: id => ({ id, name: 'EnterPlanMode', arguments: {} }),
     exitPlanMode: (id, plan) => ({ id, name: 'ExitPlanMode', arguments: { plan } }),
     exitPlanModeFromFile: null,
-    askUserQuestion: (id, questions) => ({ id, name: 'AskUserQuestion', arguments: { questions: questions.map(withMultiSelect) } }),
+    askUserQuestion: questionBuilder((id, questions) => ({ id, name: 'AskUserQuestion', arguments: { questions: questions.map(withMultiSelect) } })),
     // Claude Code 2.1.289 in stream-JSON mode offers `run_in_background`, and a child runs in the background when the
     // call omits it ("Agents run in the background by default"). The E2E children report through a completion
     // notification ("Async agent launched successfully."), so the default here is that native default.
@@ -626,7 +659,7 @@ const TOOL_VOCABULARY = {
     // The native multi_select field controls multiple choices.
     // The native allow_free_text field states that the question invites a typed answer. Codewhale 0.10.0 offers the
     // typed "Other" answer on every question all the same: the field is a hint to the model, and no gate.
-    askUserQuestion: (id, questions) => ({
+    askUserQuestion: questionBuilder((id, questions) => ({
       id,
       name: 'request_user_input',
       arguments: {
@@ -639,7 +672,7 @@ const TOOL_VOCABULARY = {
           multi_select: question.multiSelect ?? false,
         })),
       },
-    }),
+    })),
     // The agent tool handles each subagent action.
     // Its start action returns the child ID before the child completes.
     // The name field identifies the child session and requires an identifier.
@@ -683,7 +716,7 @@ const TOOL_VOCABULARY = {
     enterPlanMode: null,
     exitPlanMode: null,
     exitPlanModeFromFile: null,
-    askUserQuestion: (id, questions) => ({
+    askUserQuestion: questionBuilder((id, questions) => ({
       id,
       name: 'request_user_input',
       arguments: {
@@ -694,7 +727,7 @@ const TOOL_VOCABULARY = {
           options: question.options.map(({ label, description }) => ({ label, description })),
         })),
       },
-    }),
+    })),
     // Send a function call with JSON arguments and the collaboration namespace.
     // An exec call to tools.spawn_agent creates no child and reports no result.
     // A bare spawn_agent function call returns "unsupported call: spawn_agent" in the tool output.
@@ -747,7 +780,7 @@ const TOOL_VOCABULARY = {
       },
     }),
     exitPlanModeFromFile: null,
-    askUserQuestion: (id, questions) => {
+    askUserQuestion: questionBuilder((id, questions) => {
       const question = questions[0]
       if (questions.length !== 1 || !question || question.multiSelect)
         throw new Error('Copilot ask_user accepts exactly one single-choice question')
@@ -756,7 +789,7 @@ const TOOL_VOCABULARY = {
         name: 'ask_user',
         arguments: { question: question.question, choices: question.options.map(option => option.label) },
       }
-    },
+    }),
     // The native task tool requires four fields:
     //
     // - agent_type.
@@ -805,7 +838,7 @@ const TOOL_VOCABULARY = {
     enterPlanMode: null,
     exitPlanMode: null,
     exitPlanModeFromFile: null,
-    askUserQuestion: cursorQuestionToolCall,
+    askUserQuestion: questionBuilder(cursorQuestionToolCall),
     // The Run surface executes a native child when nativeExecution exists.
     // The remote Task report path remains available for service-only scenarios.
     // Cursor's TaskArgs carries no background choice (cursor-agent 2026.09.28): the service states it in the result,
@@ -899,7 +932,7 @@ const TOOL_VOCABULARY = {
     // Use the native multi_select field.
     // An option accepts only its label and description.
     // The schema refuses the preview field that Claude accepts.
-    askUserQuestion: (id, questions) => ({
+    askUserQuestion: questionBuilder((id, questions) => ({
       id,
       name: 'AskUserQuestion',
       arguments: {
@@ -910,7 +943,7 @@ const TOOL_VOCABULARY = {
           multi_select: multiSelect ?? false,
         })),
       },
-    }),
+    })),
     // `coder` is the default type, stated so a change of default cannot change
     // the child. `explore` would prefix the prompt with a git context.
     // Kimi Code 2.1.1 takes `run_in_background`, and a child runs in the foreground when the call omits it. A background
@@ -953,7 +986,7 @@ const TOOL_VOCABULARY = {
     enterPlanMode: null,
     exitPlanMode: null,
     exitPlanModeFromFile: null,
-    askUserQuestion: openCodeFamilyQuestionCall,
+    askUserQuestion: questionBuilder(openCodeFamilyQuestionCall),
     // The native task schema requires subagent_type beside description and prompt.
     // task.ts reads that field to resolve the child and reports "Unknown agent type" when it identifies no agent.
     // The general agent is built in through agent/agent.ts.
@@ -994,7 +1027,7 @@ const TOOL_VOCABULARY = {
     exitPlanModeFromFile: null,
     // The schema spells a multi-select question `multiple`, and an option takes
     // `label` and `description` alone.
-    askUserQuestion: (id, questions) => ({
+    askUserQuestion: questionBuilder((id, questions) => ({
       id,
       name: 'question',
       arguments: {
@@ -1005,7 +1038,7 @@ const TOOL_VOCABULARY = {
           multiple: multiSelect ?? false,
         })),
       },
-    }),
+    })),
     // The run action waits until the subagent reports.
     // The parent's next ordered model turn receives that report.
     // The spawn action, MiMo's own default, returns before the child completes.
@@ -1038,7 +1071,7 @@ const TOOL_VOCABULARY = {
     enterPlanMode: null,
     exitPlanMode: null,
     exitPlanModeFromFile: null,
-    askUserQuestion: openCodeFamilyQuestionCall,
+    askUserQuestion: questionBuilder(openCodeFamilyQuestionCall),
     // The native tool/task.ts schema requires subagent_type as a Schema.String beside description and prompt.
     // The general agent is built in through agent/agent.ts.
     // Without that field, a registry row can appear but its child runs no turn.
@@ -1063,7 +1096,7 @@ const TOOL_VOCABULARY = {
     edit: (id, { path, before, after }) => ({ id, name: 'edit', arguments: { path, edits: [{ oldText: before, newText: after }] } }),
     write: (id, { path, content }) => ({ id, name: 'write', arguments: { path, content } }),
     read: (id, path) => ({ id, name: 'read', arguments: { path } }),
-    askUserQuestion: (id, questions) => ({ id, name: 'ask_user_question', arguments: { questions: questions.map(withMultiSelect) } }),
+    askUserQuestion: questionBuilder((id, questions) => ({ id, name: 'ask_user_question', arguments: { questions: questions.map(withMultiSelect) } })),
     // The session mode selects plan mode.
     // No model tool enters it.
     // The plan_mode_complete tool leaves plan mode and carries the plan text.
@@ -1103,11 +1136,11 @@ const TOOL_VOCABULARY = {
     exitPlanModeFromFile: null,
     // Grok spells the flag `multi_select` in the schema the model sees, and
     // offers no header chip.
-    askUserQuestion: (id, questions) => ({
+    askUserQuestion: questionBuilder((id, questions) => ({
       id,
       name: 'ask_user_question',
       arguments: { questions: questions.map(({ question, options, multiSelect }) => ({ question, options, multi_select: multiSelect ?? false })) },
-    }),
+    })),
     spawnSubagent: (id, { description, prompt, background }) => ({ id, name: 'spawn_subagent', arguments: { prompt, description, background: background ?? false } }),
     spawnSubagentBatch: null,
     backgroundBash: (id, command) => ({ id, name: 'run_terminal_command', arguments: { command, description: 'Run the scripted command in the background', background: true } }),
@@ -1133,7 +1166,7 @@ const TOOL_VOCABULARY = {
     enterPlanMode: id => ({ id, name: 'enter_plan_mode', arguments: {} }),
     exitPlanMode: (id, plan) => ({ id, name: 'exit_plan_mode', arguments: { plan } }),
     exitPlanModeFromFile: null,
-    askUserQuestion: (id, questions) => ({ id, name: 'ask_user_question', arguments: { questions: questions.map(withMultiSelect) } }),
+    askUserQuestion: questionBuilder((id, questions) => ({ id, name: 'ask_user_question', arguments: { questions: questions.map(withMultiSelect) } })),
     // Qwen 0.24 defaults to a background agent run.
     // Set run_in_background explicitly to select the intended path.
     spawnSubagent: (id, { description, prompt, background }) => ({
@@ -1174,7 +1207,7 @@ const TOOL_VOCABULARY = {
     // Each option carries a title.
     // The tool has no header and no flag for multiple selections.
     // The builder omits the header and refuses a multiSelect request.
-    askUserQuestion: (id, questions) => {
+    askUserQuestion: questionBuilder((id, questions) => {
       const [question, ...rest] = questions
       if (!question || rest.length > 0)
         throw new Error('Kiro\'s user_input asks exactly one question')
@@ -1185,7 +1218,7 @@ const TOOL_VOCABULARY = {
         name: 'user_input',
         arguments: { question: question.question, options: question.options.map(({ label, description }) => ({ title: label, description })), reason: 'general-question' },
       }
-    },
+    }),
     // `name` states an agent that Kiro bundles, and `explanation` is the reason the
     // row states.
     spawnSubagent: (id, { description, prompt }) => ({ id, name: 'invoke_sub_agent', arguments: { name: KIRO_CHILD_AGENT, prompt, explanation: description } }),
@@ -1234,7 +1267,7 @@ const TOOL_VOCABULARY = {
     exitPlanMode: null,
     exitPlanModeFromFile: null,
     // `ask` takes an id for each question and `multi` for a multi-select.
-    askUserQuestion: (id, questions) => ({
+    askUserQuestion: questionBuilder((id, questions) => ({
       id,
       name: 'ask',
       arguments: {
@@ -1246,7 +1279,7 @@ const TOOL_VOCABULARY = {
           ...(question.multiSelect ? { multi: true } : {}),
         })),
       },
-    }),
+    })),
     // The task tool accepts a task list, and one call with several tasks runs them at the same time.
     spawnSubagent: (id, request) => ohMyPiTaskToolCall(id, [request]),
     spawnSubagentBatch: ohMyPiTaskToolCall,
@@ -1317,7 +1350,7 @@ const TOOL_VOCABULARY = {
     enterPlanMode: id => ({ id, name: 'EnterPlanMode', arguments: {} }),
     exitPlanMode: (id, plan) => ({ id, name: 'ExitPlanMode', arguments: { plan } }),
     exitPlanModeFromFile: null,
-    askUserQuestion: (id, questions) => ({ id, name: 'AskUserQuestion', arguments: { questions: questions.map(withMultiSelect) } }),
+    askUserQuestion: questionBuilder((id, questions) => ({ id, name: 'AskUserQuestion', arguments: { questions: questions.map(withMultiSelect) } })),
     // ZCode 3.14.4's Agent takes `run_in_background`, and a child runs in the foreground when the call omits it.
     spawnSubagent: (id, { description, prompt, background }) => ({ id, name: 'Agent', arguments: { description, prompt, subagent_type: 'general-purpose', run_in_background: background ?? false } }),
     spawnSubagentBatch: null,
@@ -1412,7 +1445,7 @@ const TOOL_VOCABULARY = {
     // Each option is a label.
     // The tool has no header or multiSelect field.
     // The builder refuses a request that the schema cannot represent.
-    askUserQuestion: (id, questions) => {
+    askUserQuestion: questionBuilder((id, questions) => {
       const [question, ...rest] = questions
       if (!question || rest.length > 0)
         throw new Error('Cline\'s ask_question asks exactly one question')
@@ -1421,7 +1454,7 @@ const TOOL_VOCABULARY = {
       if (question.options.length < 2 || question.options.length > 5)
         throw new Error('Cline\'s ask_question takes 2 to 5 options')
       return { id, name: CLINE_TOOL.AskQuestion, arguments: { question: question.question, options: question.options.map(({ label }) => label) } }
-    },
+    }),
     // The native spawn_agent tool accepts a system prompt and task.
     // It accepts no separate label.
     // LeapMux uses the task's first line as the row title.
@@ -1456,7 +1489,7 @@ const TOOL_VOCABULARY = {
     enterPlanMode: id => ({ id, name: 'EnterPlanMode', arguments: {} }),
     exitPlanMode: (id, plan) => ({ id, name: 'ExitPlanMode', arguments: { plan } }),
     exitPlanModeFromFile: null,
-    askUserQuestion: (id, questions) => ({ id, name: 'AskUserQuestion', arguments: { questions: questions.map(withMultiSelect) } }),
+    askUserQuestion: questionBuilder((id, questions) => ({ id, name: 'AskUserQuestion', arguments: { questions: questions.map(withMultiSelect) } })),
     // CodeBuddy Code 2.160.0's Agent takes `run_in_background` unless CODEBUDDY_CODE_DISABLE_BACKGROUND_TASKS is set,
     // which the E2E environment does not set. A child runs in the foreground when the call omits the flag.
     spawnSubagent: (id, { description, prompt, background }) => ({ id, name: 'Agent', arguments: { description, prompt, subagent_type: 'general-purpose', run_in_background: background ?? false } }),
@@ -1508,7 +1541,7 @@ const TOOL_VOCABULARY = {
     // Each question requires name and question.
     // Each option requires a short title and a description sentence.
     // The native choices become the control options.
-    askUserQuestion: (id, questions) => ({
+    askUserQuestion: questionBuilder((id, questions) => ({
       id,
       name: 'ask_user',
       arguments: {
@@ -1519,7 +1552,7 @@ const TOOL_VOCABULARY = {
           allowMultiple: question.multiSelect ?? false,
         })),
       },
-    }),
+    })),
     // The spawn_subagent tool waits for the child result.
     // Its required agent field identifies the child kind.
     // Its name field labels fresh built-in agents.
@@ -1563,7 +1596,7 @@ const TOOL_VOCABULARY = {
     exitPlanModeFromFile: null,
     // Letta Code 0.34.2 requires a header and, for each option, a label and a description of its own. The schema states
     // no preview, so the preview stays out.
-    askUserQuestion: (id, questions) => ({
+    askUserQuestion: questionBuilder((id, questions) => ({
       id,
       name: 'AskUserQuestion',
       arguments: {
@@ -1574,7 +1607,7 @@ const TOOL_VOCABULARY = {
           multiSelect: q.multiSelect ?? false,
         })),
       },
-    }),
+    })),
     // The model calls Letta's Task tool `Agent`. Its schema states no background choice, because each child runs in the
     // background: "Agents always run in the background" (0.34.2). The builder refuses a foreground request.
     spawnSubagent: (id, { description, prompt, background }) => {
@@ -1632,7 +1665,7 @@ const TOOL_VOCABULARY = {
     exitPlanModeFromFile: null,
     // The respond question operation requests an ACP form.
     // Its options field supplies 2 to 5 labels.
-    askUserQuestion: (id, questions) => ({
+    askUserQuestion: questionBuilder((id, questions) => ({
       id,
       name: 'respond',
       arguments: {
@@ -1640,7 +1673,7 @@ const TOOL_VOCABULARY = {
         text: questions.map(question => question.question).join('\n\n'),
         options: questions[0]?.options.map(({ label }) => label) ?? [],
       },
-    }),
+    })),
     // The native tool takes one array even when the turn starts one child.
     spawnSubagent: (id, request) => diracSubagentsToolCall(id, [request]),
     spawnSubagentBatch: diracSubagentsToolCall,
@@ -1667,7 +1700,7 @@ const TOOL_VOCABULARY = {
     enterPlanMode: id => ({ id, name: 'EnterPlanMode', arguments: {} }),
     exitPlanMode: null,
     exitPlanModeFromFile: id => ({ id, name: 'ExitPlanMode', arguments: {} }),
-    askUserQuestion: (id, questions) => ({ id, name: 'AskUserQuestion', arguments: { questions: questions.map(withMultiSelect) } }),
+    askUserQuestion: questionBuilder((id, questions) => ({ id, name: 'AskUserQuestion', arguments: { questions: questions.map(withMultiSelect) } })),
     spawnSubagent: (id, { description, prompt }) => ({ id, name: 'Agent', arguments: { description, prompt, subagent_type: 'general-purpose' } }),
     spawnSubagentBatch: null,
     backgroundBash: (id, command) => ({
@@ -1711,7 +1744,7 @@ const TOOL_VOCABULARY = {
     // Droid's AskUser takes one plain-text `questionnaire`, not a questions
     // array. The format is numbered `[question]` blocks with `[topic]` and
     // `[option]` lines.
-    askUserQuestion: (id, questions) => ({
+    askUserQuestion: questionBuilder((id, questions) => ({
       id: droidCallId(id),
       name: 'AskUser',
       arguments: {
@@ -1721,7 +1754,7 @@ const TOOL_VOCABULARY = {
           ...q.options.map(o => `[option] ${o.label}`),
         ].join('\n')).join('\n\n'),
       },
-    }),
+    })),
     // `explorer` is a built-in child type. Droid runs it in the background
     // when `await` is false; it does not accept a `background` argument.
     spawnSubagent: (id, { description, prompt, background }) => ({
@@ -1778,7 +1811,7 @@ const TOOL_VOCABULARY = {
     enterPlanMode: null,
     exitPlanMode: (id, plan) => ({ id, name: DEEPSEEK_HARNESS_TOOL.ExitPlanMode, arguments: { plan } }),
     exitPlanModeFromFile: null,
-    askUserQuestion: (id, questions) => ({ id, name: DEEPSEEK_HARNESS_TOOL.AskUserQuestion, arguments: { questions: questions.map(({ freeText: _freeText, ...question }, index) => ({ id: `question-${index + 1}`, ...question })) } }),
+    askUserQuestion: questionBuilder((id, questions) => ({ id, name: DEEPSEEK_HARNESS_TOOL.AskUserQuestion, arguments: { questions: questions.map(({ freeText: _freeText, ...question }, index) => ({ id: `question-${index + 1}`, ...question })) } })),
     spawnSubagent: (id, { description, prompt, background }) => ({ id, name: DEEPSEEK_HARNESS_TOOL.Subagent, arguments: { description, prompt, run_in_background: background ?? true } }),
     spawnSubagentBatch: null,
     backgroundBash: (id, command) => ({ id, name: DEEPSEEK_HARNESS_TOOL.Bash, arguments: { command, description: 'Run the scripted background command.', run_in_background: true } }),
@@ -1820,13 +1853,51 @@ const TOOL_VOCABULARY = {
     enterPlanMode: null,
     exitPlanMode: null,
     exitPlanModeFromFile: null,
-    askUserQuestion: (id, questions) => ({ id, name: MUSE_TOOL.RequestUserInput, namespace: MUSE_TOOL_NAMESPACE, arguments: { questions: questions.map((question, index) => ({
-      id: `question-${index + 1}`,
-      header: question.header,
-      question: question.question,
-      options: question.options.map(option => ({ label: option.label, description: option.description, ...(option.preview ? { preview: { format: 'markdown', content: option.preview } } : {}) })),
-      ...(question.multiSelect ? { selection: { mode: 'multiple', min_selections: 1, max_selections: question.options.length } } : {}),
-    })) } }),
+    // The model tool's own snake-case count domain differs from the MSP
+    // selection record the control request carries. Explicit counts replace
+    // the defaults of the omitted form, and every count must name a number of
+    // options the tool can actually select.
+    askUserQuestion: questionBuilder((id, questions) => {
+      if (questions.length < 1 || questions.length > 3)
+        throw new Error('The native Muse question tool takes one to three questions.')
+      return {
+        id,
+        name: MUSE_TOOL.RequestUserInput,
+        namespace: MUSE_TOOL_NAMESPACE,
+        arguments: {
+          questions: questions.map((question, index) => {
+            if (question.options.length < 2 || question.options.length > 3)
+              throw new Error('The native Muse question tool takes two to three options per question.')
+            if (!question.multiSelect) {
+              if (question.minimumSelections !== undefined || question.maximumSelections !== undefined)
+                throw new Error('The native Muse single-selection question states no counts.')
+              return {
+                id: `question-${index + 1}`,
+                header: question.header,
+                question: question.question,
+                options: question.options.map(option => ({ label: option.label, description: option.description, ...(option.preview ? { preview: { format: 'markdown', content: option.preview } } : {}) })),
+              }
+            }
+            const minimum = question.minimumSelections ?? 1
+            const maximum = question.maximumSelections ?? question.options.length
+            for (const [word, count] of [['minimum', minimum], ['maximum', maximum]] as const) {
+              if (!Number.isSafeInteger(count) || count < 1 || count > question.options.length)
+                throw new Error(`The native Muse selection ${word} must be a whole number of the options: ${String(count)}`)
+            }
+            if (maximum < minimum)
+              throw new Error('The native Muse selection maximum cannot fall below its minimum.')
+            return {
+              id: `question-${index + 1}`,
+              header: question.header,
+              question: question.question,
+              // The multiple-selection form carries no option preview.
+              options: question.options.map(option => ({ label: option.label, description: option.description })),
+              selection: { mode: 'multiple', min_selections: minimum, max_selections: maximum },
+            }
+          }),
+        },
+      }
+    }, true),
     spawnSubagent: (id, { description, prompt, agentType }) => ({ id, name: MUSE_TOOL.SubagentSpawn, namespace: MUSE_TOOL_NAMESPACE, arguments: { command_id: id, role: 'general-purpose', task_name: description, objective: prompt, ...(agentType ? { subagent_type: agentType } : {}) } }),
     spawnSubagentBatch: null,
     backgroundBash: (id, command) => ({ id, name: MUSE_TOOL.Bash, namespace: MUSE_TOOL_NAMESPACE, arguments: { command, description: 'Run the scripted background command.', yield_time_ms: 0 } }),
@@ -1839,7 +1910,13 @@ const TOOL_VOCABULARY = {
     },
     // Muse ignores the response namespace. Its full registered MCP ID selects the server and tool.
     mcpTool: (id, { server, tool, input }) => ({ id, name: `mcp__${server}__${tool}`, arguments: input }),
-    codeExecution: null,
+    // The proved native workflow source executor. The script reaches the tool
+    // byte-exact; only the display name is ours.
+    codeExecution: (id, source) => {
+      if (!id.trim() || !source.trim())
+        throw new Error('The native Muse workflow call requires a call ID and source.')
+      return { id, name: MUSE_TOOL.Workflow, namespace: MUSE_TOOL_NAMESPACE, arguments: { name: 'Native code', script: source } }
+    },
     workflowTools: [MUSE_TOOL.Workflow],
   },
   [AgentProvider.FAST_AGENT]: {
@@ -2325,7 +2402,10 @@ function withMultiSelect({ freeText: _freeText, ...question }: QuestionRequest):
 
 /** Ask the user to choose, in the provider's own tool. */
 export function askUserQuestionToolCall(provider: AgentProvider, id: string, questions: QuestionRequest[]): MockModelToolCall {
-  return requireBuilder(vocabulary(provider).askUserQuestion, provider, 'ask user question')(id, questions)
+  const builder = requireBuilder(vocabulary(provider).askUserQuestion, provider, 'ask user question')
+  if (!builder.supportsSelectionLimits && questions.some(question => question.minimumSelections !== undefined || question.maximumSelections !== undefined))
+    throw new Error(`AgentProvider ${provider} question builder accepts no explicit selection counts`)
+  return builder.build(id, questions)
 }
 
 /** Enter plan mode, in the provider's own tool. */

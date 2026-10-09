@@ -38,13 +38,36 @@ export function museQuestions(payload: Record<string, unknown>): ControlQuestion
       const preview = pickString(pickObject(option, 'preview'), 'content')
       options.push({ label, value: label, ...(description ? { description } : {}), ...(preview ? { preview } : {}) })
     }
-    const minimum = selection.minSelections === undefined ? 0 : selection.minSelections
-    const maximum = selection.maxSelections === undefined ? options.length : selection.maxSelections
-    if (typeof minimum !== 'number' || !Number.isSafeInteger(minimum) || minimum < 0
-      || typeof maximum !== 'number' || !Number.isSafeInteger(maximum) || maximum < minimum || maximum > options.length) {
-      return []
+    // Only a multiple-selection form can carry the counts into the model: a
+    // single choice has exactly one answer and no counts to state. A count the
+    // form states but that is not a whole number of the options refuses the
+    // whole request, and an absent count stays absent.
+    const multiple = selection.mode === MUSE_QUESTION_SELECTION_MODE.Multiple
+    let minimum: number | undefined
+    let maximum: number | undefined
+    if (multiple) {
+      const count = (value: unknown): value is number =>
+        typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 && value <= options.length
+      const rawMinimum = selection.minSelections
+      const rawMaximum = selection.maxSelections
+      if (rawMinimum !== undefined && !count(rawMinimum))
+        return []
+      if (rawMaximum !== undefined && !count(rawMaximum))
+        return []
+      if (typeof rawMinimum === 'number' && typeof rawMaximum === 'number' && rawMaximum < rawMinimum)
+        return []
+      minimum = rawMinimum
+      maximum = rawMaximum
     }
-    questions.push({ id, header: question.header, question: text, options, multiSelect: selection.mode === MUSE_QUESTION_SELECTION_MODE.Multiple })
+    questions.push({
+      id,
+      header: question.header,
+      question: text,
+      options,
+      multiSelect: multiple,
+      ...(minimum !== undefined ? { minimumSelections: minimum } : {}),
+      ...(maximum !== undefined ? { maximumSelections: maximum } : {}),
+    })
   }
   return questions
 }

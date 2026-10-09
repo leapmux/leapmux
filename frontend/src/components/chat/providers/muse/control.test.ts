@@ -86,14 +86,16 @@ describe('museControl', () => {
     { label: 'numeric ID', choices: [{ choiceId: 0, label: 'Deny', decision: 'denied', scope: 'once' }] },
     { label: 'null ID', choices: [{ choiceId: null, label: 'Deny', decision: 'denied', scope: 'once' }] },
     { label: 'absent label', choices: [{ choiceId: 'deny', decision: 'denied', scope: 'once' }] },
-    { label: 'unknown scope', choices: [{ choiceId: 'deny', label: 'Deny', decision: 'denied', scope: 'futureScope' }] },
+    { label: 'unknown scope', choices: [{ choiceId: 'deny', label: 'Deny', decision: 'denied', scope: 'futureScope' }], reason: 'Muse supplies no denial choice that accepts this feedback.' },
     { label: 'invalid feedback flag', choices: [{ choiceId: 'deny', label: 'Deny', decision: 'denied', scope: 'once', acceptsFeedback: 'true' }] },
     { label: 'partial list', choices: [null, { choiceId: 'deny', label: 'Deny', decision: 'denied', scope: 'once' }] },
     { label: 'duplicate IDs', choices: [{ choiceId: 'deny', label: 'Deny', decision: 'denied', scope: 'once' }, { choiceId: 'deny', label: 'Deny again', decision: 'denied', scope: 'once' }] },
-  ])('refuses an independent denial reply for $label', ({ choices }) => {
+  ])('refuses an independent denial reply for $label', ({ choices, reason }) => {
     const frame = approval(choices)
     const original = structuredClone(frame)
-    expect(() => museControl.buildControlResponse?.(frame, '', 'worker-request')).toThrow()
+    // A scope the vocabulary does not know still validates as a string, so the
+    // refusal names the missing denial; every other case names the invalid list.
+    expect(() => museControl.buildControlResponse?.(frame, '', 'worker-request')).toThrow(reason ?? 'The native Muse approval choices are invalid.')
     expect(frame).toEqual(original)
   })
 })
@@ -244,7 +246,7 @@ describe('museControl native once denial', () => {
   ])('refuses an implicit $decision denial with $scope scope', ({ decision, scope }) => {
     const frame = approval([{ choiceId: 'native-choice', label: 'Native choice', decision, scope }])
     const original = structuredClone(frame)
-    expect(() => museControl.buildControlResponse?.(frame, '', 'worker-request')).toThrow()
+    expect(() => museControl.buildControlResponse?.(frame, '', 'worker-request')).toThrow('Muse supplies no denial choice that accepts this feedback.')
     expect(frame).toEqual(original)
   })
 

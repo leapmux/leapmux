@@ -66,7 +66,7 @@ describe('createMuseEnvironment', () => {
   })
 
   it.each(['https://example.com/v1', 'http://user:pass@127.0.0.1/v1', 'http://127.0.0.1/v1?key=x', 'http://127.0.0.1/not-v1'])('refuses an invalid endpoint before any write %s', (baseURL) => {
-    expect(() => createMuseEnvironment({ ...options(), baseURL })).toThrow()
+    expect(() => createMuseEnvironment({ ...options(), baseURL })).toThrow(/must be a loopback HTTP URL\.|must end with \/v1\./)
     expect(existsSync(join(home, '.config'))).toBe(false)
   })
 
@@ -80,7 +80,7 @@ describe('createMuseEnvironment', () => {
     const foreign = mkdtempSync(join(resolve(import.meta.dirname, '../../../../.tmp'), 'muse-foreign-home-'))
     try {
       symlinkSync(foreign, join(home, '.config'), 'dir')
-      expect(() => createMuseEnvironment(options())).toThrow()
+      expect(() => createMuseEnvironment(options())).toThrow('The private native path resolves outside the E2E run.')
       expect(existsSync(join(foreign, 'muse'))).toBe(false)
     }
     finally {

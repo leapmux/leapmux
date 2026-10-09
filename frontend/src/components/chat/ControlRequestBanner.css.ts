@@ -116,6 +116,13 @@ export const questionPageHeader = style({
   marginBottom: 'var(--space-1)',
 })
 
+/** The native selection-count sentence under a question that states counts. */
+export const questionCountHint = style({
+  fontSize: 'var(--text-8)',
+  color: 'var(--muted-foreground)',
+  marginBottom: 'var(--space-1)',
+})
+
 // Control request content occupies the MarkdownEditor banner slot.
 export const controlBanner = style({
   position: 'relative',

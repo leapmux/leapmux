@@ -157,7 +157,7 @@ createInterface({ input: process.stdin }).on('line', raw => {
     const { host, child } = await controlledHost()
     const reply = host.request('initialize', {})
     child.stdout.write(`${raw}\n`)
-    await expect(reply).rejects.toBeInstanceOf(Error)
+    await expect(reply).rejects.toThrow(/The native Muse frame has an invalid|Unexpected token/)
     await host.close()
   })
 

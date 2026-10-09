@@ -389,14 +389,14 @@ describe('BackgroundTaskList', () => {
     expect(rowsText(container)).toBe('npm test')
   })
 
-  it.each(['Completed', ' \u200BCompleted\u202E '])('keeps the exact status on the dot when the cleaned title %j suppresses the repeated end line', (title) => {
+  it.each(['Succeeded', ' \u200BSucceeded\u202E '])('keeps the exact status on the dot when the cleaned title %j suppresses the repeated end line', (title) => {
     const native = { ...protoTask('same-final-label', title, ''), status: BackgroundTaskStatus.SUCCEEDED }
     const { container } = renderList({ tasks: [protoBackgroundTaskToStore(native)] })
-    expect(titles(container)[0]?.textContent).toBe('Completed')
+    expect(titles(container)[0]?.textContent).toBe('Succeeded')
     expect(secondaries(container)).toHaveLength(0)
-    expect(container.querySelector('[data-testid="bg-task-status-dot"]')).toHaveAttribute('aria-label', 'Completed')
-    expect(rowsText(container)).toBe('Completed')
-    expect(container.querySelector('[data-testid="bg-task-title"]')?.textContent).toBe('Completed')
+    expect(container.querySelector('[data-testid="bg-task-status-dot"]')).toHaveAttribute('aria-label', 'Succeeded')
+    expect(rowsText(container)).toBe('Succeeded')
+    expect(container.querySelector('[data-testid="bg-task-title"]')?.textContent).toBe('Succeeded')
     expect(container.querySelector('[data-testid="bg-task-secondary"]')).toBeNull()
   })
 
@@ -404,8 +404,8 @@ describe('BackgroundTaskList', () => {
     const native = { ...protoTask('separate-final-label', 'Review the diff', ''), status: BackgroundTaskStatus.SUCCEEDED }
     const { container } = renderList({ tasks: [protoBackgroundTaskToStore(native)] })
     expect(container.querySelector('[data-testid="bg-task-title"]')?.textContent).toBe('Review the diff')
-    expect(container.querySelector('[data-testid="bg-task-secondary"]')?.textContent).toBe('Completed')
-    expect(container.querySelector('[data-testid="bg-task-status-dot"]')).toHaveAttribute('aria-label', 'Completed')
+    expect(container.querySelector('[data-testid="bg-task-secondary"]')?.textContent).toBe('Succeeded')
+    expect(container.querySelector('[data-testid="bg-task-status-dot"]')).toHaveAttribute('aria-label', 'Succeeded')
   })
 
   it('keeps a secondary line that adds something the title does not say', () => {

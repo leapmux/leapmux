@@ -7,8 +7,9 @@
  */
 export const TOOL_FILE_PATH_KEYS = ['filePath', 'path', 'file_path'] as const
 // Junie's `search_replace` states the two sides of a substitution as
-// `search`/`replace`; the three spellings below are the other agents'.
-export const TOOL_OLD_TEXT_KEYS = ['oldText', 'oldString', 'old_string', 'search'] as const
+// `search`/`replace`, and Muse Code's `edit_file` states them as `find`/`replace`;
+// the other spellings below are the other agents'.
+export const TOOL_OLD_TEXT_KEYS = ['oldText', 'oldString', 'old_string', 'search', 'find'] as const
 export const TOOL_NEW_TEXT_KEYS = ['newText', 'newString', 'new_string', 'replace'] as const
 // A move states two paths and neither is a `filePath`. Reasonix's `move_file`
 // sends `source_path`/`destination_path`; the camelCase and old/new spellings

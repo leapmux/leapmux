@@ -1,7 +1,7 @@
 import type { Component } from 'solid-js'
 import type { AgentInfo, AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { createRepoGitStore } from '~/stores/repoGit.store'
-import { createMemo, createSignal, Show } from 'solid-js'
+import { createEffect, createMemo, createSignal, on, Show } from 'solid-js'
 import * as workerRpc from '~/api/workerRpc'
 import { openAgentRequestOptions, providerFor } from '~/components/chat/providers/registry'
 import { resolveStartupOptionValues } from '~/components/chat/providers/startupOptions'
@@ -81,6 +81,13 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
     if (provider !== undefined)
       setStartupChoice({ provider, values: { ...startupValues(), [id]: value } })
   }
+  // A provider change DISCARDS the choice, so a switch away and back lands on
+  // the new provider's defaults: each group belongs to one provider, and a
+  // restored pick would answer a question that provider never asked.
+  createEffect(on(agentProvider, (_provider, prev) => {
+    if (prev !== undefined)
+      setStartupChoice(undefined)
+  }))
 
   const sessionId = createSessionIdState(agentProvider)
   const title = createTitleState(randomAgentTitle)

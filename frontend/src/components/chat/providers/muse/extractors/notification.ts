@@ -25,9 +25,12 @@ export function museCompactionBoundary(parsed: ParsedMessageContent): Compaction
   const item = museItem(parsed.parentObject)
   if (item?.kind !== MUSE_ITEM_KIND.Compaction || item.outcome !== MUSE_COMPACTION_OUTCOME.Compacted)
     return null
-  const pre = pickNumber(item, 'tokensBefore', undefined)
-  const post = pickNumber(item, 'tokensAfter', undefined)
-  return { trigger: pickString(item, 'trigger'), ...(pre !== undefined && pre >= 0 ? { pre } : {}), ...(post !== undefined && post >= 0 ? { post } : {}) }
+  // A token count is a whole number of tokens; a fraction or a float beyond the
+  // safe range is a corrupt native value, not a count to render.
+  const count = (n: number | undefined) => n !== undefined && Number.isSafeInteger(n) && n >= 0 ? n : undefined
+  const before = count(pickNumber(item, 'tokensBefore', undefined))
+  const after = count(pickNumber(item, 'tokensAfter', undefined))
+  return { trigger: pickString(item, 'trigger'), ...(before !== undefined ? { pre: before } : {}), ...(after !== undefined ? { post: after } : {}) }
 }
 export function museNotificationEntry(payload: Record<string, unknown>): NotificationEntry[] {
   if (payload.method === MUSE_METHOD.UserInputSettled) {
@@ -42,7 +45,7 @@ export function museNotificationEntry(payload: Record<string, unknown>): Notific
     if (!Array.isArray(items))
       return []
     return items.flatMap((item): NotificationEntry[] => {
-      if (!isObject(item) || typeof item.status !== 'string' || item.status === '' || NATIVE_TODO_STATUSES.has(item.status))
+      if (!isObject(item) || typeof item.status !== 'string' || !item.status.trim() || NATIVE_TODO_STATUSES.has(item.status))
         return []
       return [{ kind: 'text', text: `Unknown Muse to-do status: ${item.status}` }]
     })
@@ -51,7 +54,16 @@ export function museNotificationEntry(payload: Record<string, unknown>): Notific
   if (item?.kind === MUSE_ITEM_KIND.Compaction) {
     if (item.outcome === MUSE_COMPACTION_OUTCOME.Compacted)
       return [{ kind: 'compaction', phase: 'end', detail: { trigger: pickString(item, 'trigger') } }]
-    return [{ kind: 'text', text: pickString(item, 'reason') || COMPACTION_OUTCOME_TEXT.get(pickString(item, 'outcome')) || `Muse compaction: ${pickString(item, 'outcome')}` }]
+    // A readable reason states the outcome better than a canned sentence; a
+    // whitespace-only reason states nothing, and neither does an unreadable
+    // outcome, so the notification waits for a frame that says something.
+    const reason = pickString(item, 'reason')
+    if (reason.trim())
+      return [{ kind: 'text', text: reason }]
+    const outcome = pickString(item, 'outcome')
+    if (!outcome.trim())
+      return []
+    return [{ kind: 'text', text: COMPACTION_OUTCOME_TEXT.get(outcome) ?? `Muse compaction: ${outcome}` }]
   }
   if (payload.method === MUSE_METHOD.TurnRetryScheduled) {
     const params = museParams(payload)

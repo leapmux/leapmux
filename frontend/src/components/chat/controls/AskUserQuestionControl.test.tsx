@@ -174,6 +174,14 @@ describe('submitBlockedReason', () => {
     const questions = [{ question: 'Choose the tools', options: [{ label: 'One' }, { label: 'Two' }, { label: 'Three' }], multiSelect: true, minimumSelections: 2, maximumSelections: 3 }]
     expect(submitBlockedReason(questions, unanswered)).toBe('Select 2 to 3 options, or type a custom answer below.')
   })
+
+  it('states the one-sided count a native question that states one end', () => {
+    const options = [{ label: 'One' }, { label: 'Two' }, { label: 'Three' }]
+    expect(submitBlockedReason([{ question: 'Choose the tools', options, multiSelect: true, minimumSelections: 2 }], unanswered))
+      .toBe('Select at least 2 options, or type a custom answer below.')
+    expect(submitBlockedReason([{ question: 'Choose the tools', options, multiSelect: true, maximumSelections: 2 }], unanswered))
+      .toBe('Select up to 2 options, or type a custom answer below.')
+  })
 })
 
 describe('AskUserQuestionActions', () => {

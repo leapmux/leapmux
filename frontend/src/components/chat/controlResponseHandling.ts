@@ -282,7 +282,7 @@ export function useControlResponseHandling(
   // effect below.
   createEffect(on(
     activeControlRequest,
-    (request) => {
+    (request, prev) => {
       answerOwner = request
       answerState.setResponsePending(false)
       answerState.setResponseError('')
@@ -302,11 +302,19 @@ export function useControlResponseHandling(
       // can have.
       const token = ++restoreToken
       restoringFor = request
-      answerState.setSelections({})
-      answerState.setCustomTexts({})
-      answerState.setCurrentPage(0)
-      answerState.setSwitches({})
-      answerState.setChoices({})
+      // The FIRST assignment wipes nothing. A production mount holds a fresh,
+      // blank answer state, so there is nothing to wipe; a harness (or a reload
+      // race) that already holds THIS request's answers keeps them, and the
+      // load below defers to any non-blank in-memory answer anyway. Only a
+      // CHANGE of request wipes: the outgoing request's answers must never
+      // answer the incoming one.
+      if (prev !== undefined) {
+        answerState.setSelections({})
+        answerState.setCustomTexts({})
+        answerState.setCurrentPage(0)
+        answerState.setSwitches({})
+        answerState.setChoices({})
+      }
       if (!request || !props.agentId) {
         restoringFor = null
         return

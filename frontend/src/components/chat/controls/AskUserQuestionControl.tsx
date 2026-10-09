@@ -59,15 +59,47 @@ function isSelected(state: ControlAnswerState, qIdx: number, value: string) {
   return (state.selections()[qIdx] ?? []).includes(value)
 }
 
+/** Whether `count` chosen options satisfy the question's native selection counts. */
+function selectionWithinLimits(question: ControlQuestion | undefined, count: number): boolean {
+  const min = question?.minimumSelections
+  const max = question?.maximumSelections
+  if (min !== undefined && count < min)
+    return false
+  if (max !== undefined && count > max)
+    return false
+  return true
+}
+
+/**
+ * The count sentence for a question that states native selection counts, or
+ * null when it states none. `Select 2 options` (an exact count), `Select 2 to 3
+ * options` (a range), `Select at least 2 options` / `Select up to 3 options`
+ * (one end).
+ */
+export function selectionCountPhrase(question: ControlQuestion): string | null {
+  const min = question.minimumSelections
+  const max = question.maximumSelections
+  if (min !== undefined && max !== undefined)
+    return min === max ? `Select ${min} options` : `Select ${min} to ${max} options`
+  if (min !== undefined)
+    return `Select at least ${min} options`
+  if (max !== undefined)
+    return `Select up to ${max} options`
+  return null
+}
+
 /** An answer needs content unless the provider accepts an explicit empty answer. */
 function isPageAnsweredWithOption(state: ControlAnswerState, qIdx: number, question?: ControlQuestion): boolean {
-  if (question?.allowEmpty)
-    return true
   const sel = state.selections()[qIdx] ?? []
+  // A selection outside the native counts is not an answer, whatever text sits
+  // beside it: the text is a NOTE on the selection, and the note cannot complete
+  // a partial selection. A selection within the counts is complete on its own.
   if (sel.length > 0)
-    return true
+    return selectionWithinLimits(question, sel.length)
   const customText = state.customTexts()[qIdx]?.trim()
-  return !!customText
+  if (customText)
+    return true
+  return question?.allowEmpty === true
 }
 
 /**
@@ -95,9 +127,13 @@ export function submitBlockedReason(questions: ControlQuestion[], isAnswered: (i
     return ''
   // `findIndex` yields a valid index when non-negative; `?.` is the type-level
   // guard alone.
-  const reason = questions[waiting]?.options?.length
-    ? 'Choose an option, or type a custom answer below.'
-    : 'Type a custom answer below.'
+  const waitingQuestion = questions[waiting]
+  const counts = waitingQuestion ? selectionCountPhrase(waitingQuestion) : null
+  const reason = counts !== null
+    ? `${counts}, or type a custom answer below.`
+    : waitingQuestion?.options?.length
+      ? 'Choose an option, or type a custom answer below.'
+      : 'Type a custom answer below.'
   return questions.length > 1 ? `Every question needs an answer. ${reason}` : reason
 }
 
@@ -184,6 +220,11 @@ export function trySubmitAskUserQuestion(
   editorContentRef?: EditorContentRef,
   preserveSelectionNotes = false,
 ): boolean {
+  // A payload that parsed to no question has nothing to answer; sending would
+  // reply "answered" to a question nobody asked.
+  if (questions.length === 0)
+    return false
+
   // Save current editor text to the current page.
   const page = state.currentPage()
   state.setCustomTexts(prev => ({ ...prev, [page]: currentContent }))
@@ -255,9 +296,25 @@ export const AskUserQuestionContent: Component<{ request: ControlRequest, answer
       <Show when={currentQuestion()}>
         {(q) => {
           const qIdx = currentPage
+          // An unchecked option locks once the selection reaches the maximum;
+          // a checked one stays live so the reader can release a slot.
+          const maxed = () => {
+            const max = q().maximumSelections
+            return max !== undefined && (props.answerState.selections()[qIdx()] ?? []).length >= max
+          }
+          const counts = () => selectionCountPhrase(q())
           return (
             <div class={styles.questionGroup} data-testid="control-question-group">
               <div class={styles.questionLabel}>{q().question}</div>
+              <Show when={counts()}>
+                {phrase => (
+                  <div class={styles.questionCountHint} data-testid="control-selection-hint">
+                    {phrase()}
+                    {' '}
+                    if you use options.
+                  </div>
+                )}
+              </Show>
               <div class={styles.optionList} style={props.optionsDisabled ? { 'opacity': '0.5', 'pointer-events': 'none' } : undefined}>
                 <Show
                   when={q().multiSelect}
@@ -294,7 +351,7 @@ export const AskUserQuestionContent: Component<{ request: ControlRequest, answer
                         type="checkbox"
                         checked={isSelected(props.answerState, qIdx(), questionOptionValue(opt))}
                         onChange={() => toggleSelection(props.answerState, qIdx(), questionOptionValue(opt), true, questions().length, preservesSelectionNotes(props.agentProvider))}
-                        {...(props.optionsDisabled === undefined ? {} : { disabled: props.optionsDisabled })}
+                        disabled={props.optionsDisabled === true || (maxed() && !isSelected(props.answerState, qIdx(), questionOptionValue(opt)))}
                       />
                     )}
                   />
@@ -319,8 +376,12 @@ export const AskUserQuestionActions: Component<ActionsProps & {
   const isPageAnswered = (qIdx: number) => {
     if (isPageAnsweredWithOption(props.answerState, qIdx, questions()[qIdx]))
       return true
-    // The current page's editor text hasn't been saved to customTexts yet.
+    // The current page's editor text hasn't been saved to customTexts yet. It
+    // completes the page only while the page holds no selection: text beside a
+    // selection is a NOTE on it, and a selection outside the native counts
+    // stays incomplete whatever the note says.
     return qIdx === props.answerState.currentPage() && props.hasEditorContent
+      && (props.answerState.selections()[qIdx] ?? []).length === 0
   }
 
   const allAnswered = () => {
@@ -436,7 +497,10 @@ export const AskUserQuestionActions: Component<ActionsProps & {
     const qs = questions()
     for (let i = 0; i < qs.length; i++) {
       if (!isPageAnsweredWithOption(props.answerState, i, qs[i])) {
+        // A page left unanswered can hold a selection outside its native
+        // counts; the fill replaces that partial answer, not just fills a blank.
         props.answerState.setCustomTexts(prev => ({ ...prev, [i]: 'Go with the recommended option.' }))
+        props.answerState.setSelections(prev => ({ ...prev, [i]: [] }))
       }
     }
     void submitAnswers()

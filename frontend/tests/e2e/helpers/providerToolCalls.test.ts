@@ -2657,11 +2657,11 @@ describe('the native Muse workflow code builder', () => {
   })
 
   it.each(['', ' ', '\t\n'])('refuses source without code: %j', (source) => {
-    expect(() => codeExecutionToolCall(AgentProvider.MUSE_CODE, 'muse-native-code', source)).toThrow()
+    expect(() => codeExecutionToolCall(AgentProvider.MUSE_CODE, 'muse-native-code', source)).toThrow('The native Muse workflow call requires a call ID and source.')
   })
 
   it.each(['', ' ', '\t\n'])('refuses a call ID without text: %j', (id) => {
-    expect(() => codeExecutionToolCall(AgentProvider.MUSE_CODE, id, 'export default async function workflow(host) { await host.agent({ input: "Check the source." }); return 42; }')).toThrow()
+    expect(() => codeExecutionToolCall(AgentProvider.MUSE_CODE, id, 'export default async function workflow(host) { await host.agent({ input: "Check the source." }); return 42; }')).toThrow('The native Muse workflow call requires a call ID and source.')
   })
 })
 
@@ -2708,28 +2708,28 @@ describe('askUserQuestionToolCall selection limits', () => {
   ])('refuses $label in the installed native model-tool domain', ({ minimum, maximum }) => {
     const questions = [nativeQuestion(minimum, maximum)]
     const original = structuredClone(questions)
-    expect(() => askUserQuestionToolCall(AgentProvider.MUSE_CODE, 'invalid-limit', questions)).toThrow()
+    expect(() => askUserQuestionToolCall(AgentProvider.MUSE_CODE, 'invalid-limit', questions)).toThrow(/native Muse selection (minimum|maximum)|below its minimum/)
     expect(questions).toEqual(original)
   })
 
   it('refuses a maximum above the supplied option count', () => {
     const questions = [{ ...nativeQuestion(1, 3), options: [{ label: 'One', description: 'First' }, { label: 'Two', description: 'Second' }] }]
     const original = structuredClone(questions)
-    expect(() => askUserQuestionToolCall(AgentProvider.MUSE_CODE, 'invalid-limit', questions)).toThrow()
+    expect(() => askUserQuestionToolCall(AgentProvider.MUSE_CODE, 'invalid-limit', questions)).toThrow(/native Muse selection (minimum|maximum)|below its minimum/)
     expect(questions).toEqual(original)
   })
 
   it.each([0, 4, 1000])('refuses %i questions outside the native model array limits', (count) => {
     const questions = Array.from({ length: count }, () => nativeQuestion())
     const original = structuredClone(questions)
-    expect(() => askUserQuestionToolCall(AgentProvider.MUSE_CODE, 'invalid-question-count', questions)).toThrow()
+    expect(() => askUserQuestionToolCall(AgentProvider.MUSE_CODE, 'invalid-question-count', questions)).toThrow('The native Muse question tool takes one to three questions.')
     expect(questions).toEqual(original)
   })
 
   it.each([0, 1, 4, 1000])('refuses %i options outside the native model array limits', (count) => {
     const questions = [{ ...nativeQuestion(), options: Array.from({ length: count }, (_, index) => ({ label: `Option ${index}`, description: `Option ${index} description` })) }]
     const original = structuredClone(questions)
-    expect(() => askUserQuestionToolCall(AgentProvider.MUSE_CODE, 'invalid-option-count', questions)).toThrow()
+    expect(() => askUserQuestionToolCall(AgentProvider.MUSE_CODE, 'invalid-option-count', questions)).toThrow('The native Muse question tool takes two to three options per question.')
     expect(questions).toEqual(original)
   })
 
@@ -2740,7 +2740,7 @@ describe('askUserQuestionToolCall selection limits', () => {
   ])('refuses explicit numeric counts in single mode %j', ({ minimum, maximum }) => {
     const questions = [nativeQuestion(minimum, maximum, false)]
     const original = structuredClone(questions)
-    expect(() => askUserQuestionToolCall(AgentProvider.MUSE_CODE, 'single-limit', questions)).toThrow()
+    expect(() => askUserQuestionToolCall(AgentProvider.MUSE_CODE, 'single-limit', questions)).toThrow('The native Muse single-selection question states no counts.')
     expect(questions).toEqual(original)
   })
 
@@ -2766,7 +2766,7 @@ describe('askUserQuestionToolCall selection limits', () => {
   it.each(PROVIDERS.filter(provider => provider !== AgentProvider.MUSE_CODE && hasToolFor(provider, 'askUserQuestion')))('refuses explicit counts for the builder without this capability %j', (provider) => {
     const questions = [nativeQuestion(1, 2)]
     const original = structuredClone(questions)
-    expect(() => askUserQuestionToolCall(provider, 'unsupported-counts', questions)).toThrow()
+    expect(() => askUserQuestionToolCall(provider, 'unsupported-counts', questions)).toThrow('question builder accepts no explicit selection counts')
     expect(questions).toEqual(original)
   })
 })

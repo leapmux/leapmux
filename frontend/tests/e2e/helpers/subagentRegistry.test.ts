@@ -522,30 +522,30 @@ describe('expectRowBecomesFinal', () => {
   })
 
   it('refuses a wrong status-dot label when the title contains the expected end label', async () => {
-    const view = finalRow('completed', 'Completed', { title: 'Completed task', dotLabel: 'Failed' })
-    await expect(expectRowBecomesFinal(view.page, view.row)).rejects.toThrow()
+    const view = finalRow('succeeded', 'Succeeded', { title: 'Succeeded task', dotLabel: 'Failed' })
+    await expect(expectRowBecomesFinal(view.page, view.row)).rejects.toThrow('expected')
   })
 
   it('refuses a wrong end-line label when the title and status dot contain the expected label', async () => {
-    const view = finalRow('completed', 'Failed', { title: 'Completed task', dotLabel: 'Completed' })
-    await expect(expectRowBecomesFinal(view.page, view.row)).rejects.toThrow()
+    const view = finalRow('succeeded', 'Failed', { title: 'Succeeded task', dotLabel: 'Succeeded' })
+    await expect(expectRowBecomesFinal(view.page, view.row)).rejects.toThrow('expected')
   })
 
   it('accepts the canonical title when the repeated end line is absent', async () => {
-    const view = finalRow('completed', 'Completed', { title: 'Completed', secondaryPresent: false })
+    const view = finalRow('succeeded', 'Succeeded', { title: 'Succeeded', secondaryPresent: false })
     await expect(expectRowBecomesFinal(view.page, view.row)).resolves.toBeUndefined()
-    expect(view.observed).toEqual(['Completed'])
+    expect(view.observed).toEqual(['Succeeded'])
   })
 
   it('checks the secondary when a longer title contains the canonical word', async () => {
-    const view = finalRow('completed', 'Completed', { title: 'Completed task' })
+    const view = finalRow('succeeded', 'Succeeded', { title: 'Succeeded task' })
     await expect(expectRowBecomesFinal(view.page, view.row)).resolves.toBeUndefined()
-    expect(view.observed).toEqual(['Completed'])
+    expect(view.observed).toEqual(['Succeeded'])
   })
 
   it('refuses a final row whose visible label states a different outcome', async () => {
     const view = finalRow('failed', 'Succeeded')
-    await expect(expectRowBecomesFinal(view.page, view.row)).rejects.toThrow()
+    await expect(expectRowBecomesFinal(view.page, view.row)).rejects.toThrow('expected')
     expect(view.observed).toEqual(['Failed'])
   })
 })
