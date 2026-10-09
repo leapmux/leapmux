@@ -847,6 +847,7 @@ func TestFinishAllChildConversations_EndsEveryChildAsAStop(t *testing.T) {
 //   - Command set.
 //   - Usage.
 //   - Session information.
+//
 // A tagged update of any listed type changes no parent state and writes no transcript row.
 // An unrecognized update type counts as conversation content and enters the child transcript.
 func TestChildRoute_ASessionStateUpdateOfAChildChangesNothing(t *testing.T) {

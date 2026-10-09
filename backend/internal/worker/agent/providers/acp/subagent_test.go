@@ -243,6 +243,7 @@ func TestACP_FinalStatusMap(t *testing.T) {
 //   - Kilo.
 //   - Reasonix.
 //   - Cursor.
+//
 // Each provider's decode test also runs its detector on a payload decoded through this same path.
 func TestACPEnvelopesDecodeTheWireFieldNames(t *testing.T) {
 	t.Parallel()

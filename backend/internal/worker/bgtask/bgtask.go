@@ -15,8 +15,6 @@
 package bgtask
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
@@ -107,13 +105,13 @@ func ValidateRowKey(s string) error {
 
 // derivedRowKeyPrefix marks a row key this package derived because the
 // provider's own key was unusable. It is not a namespace a provider can reach:
-// a provider that sent this exact prefix followed by 64 hex characters would
-// have to be sending the sha256 of some other string it never sent.
-const derivedRowKeyPrefix = "leapmux-derived-key:"
+// fresh native input that starts with a reserved prefix is escaped before it
+// is stored (see row_key.go), so a provider would have to send the sha256 of
+// some other string it never sent to collide with one.
 
 // NormalizeRowKey returns the row key to store for the provider-supplied key s:
-// s itself when ValidateRowKey accepts it, and a key derived from it when it
-// does not.
+// s itself when ValidateRowKey accepts it and it carries no reserved prefix,
+// and a hashed key under a reserved prefix when it does not.
 //
 // TOTAL, and that is the point. ValidateRowKey states exactly what makes a key
 // unusable, and every caller answered a refusal by failing the write -- so a
@@ -122,23 +120,29 @@ const derivedRowKeyPrefix = "leapmux-derived-key:"
 // running with nothing on screen to say so, which is a worse answer than an
 // unreadable label.
 //
-// A DERIVED KEY IS STILL AN IDENTITY, which is what lets it replace the
-// refusal. The row key is the second half of the (owner_agent_id, row_key)
+// A DERIVED OR ESCAPED KEY IS STILL AN IDENTITY, which is what lets it replace
+// the refusal. The row key is the second half of the (owner_agent_id, row_key)
 // primary key, and every later upsert, status change, close and rename
 // addresses the row by it, so the rule that produces it must be a function of
 // the provider's key alone and must not map two keys onto one:
 //
 //   - A function of s alone. The same provider key normalizes to the same
-//     derived key on every call, in every process, so the upsert that opens the
+//     stored key on every call, in every process, so the upsert that opens the
 //     row and the close that finishes it land on the same row across a worker
 //     restart.
 //   - Injective in practice. A CUT is not: providers build keys by prefixing a
 //     fixed namespace to a payload, so two keys that pass RowKeyByteLimit share
 //     their first 256 bytes far more readily than at random. Two keys collide
 //     here only through a sha256 collision.
-//   - Bounded and valid UTF-8 by construction, so the derived key satisfies
-//     ValidateRowKey itself. Normalizing an already-derived key returns it
-//     unchanged, so a value that passes through twice is stable.
+//   - Bounded and valid UTF-8 by construction, so the hashed key satisfies
+//     ValidateRowKey itself.
+//
+// A USABLE key that starts with a reserved prefix is ESCAPED rather than
+// stored: a native key shaped like a derived one must not address another
+// task's row. The escape is why a stored key may never pass through here again
+// -- loading one is ParseRowIdentity's job -- and NewRowKey is the typed form
+// that makes the fresh-native and stored-identity directions impossible to
+// confuse.
 //
 // It answers the invalid-UTF-8 refusal as well as the over-long one, which is
 // the case wireString cannot help with: `Id` is the one proto string on a
@@ -147,13 +151,6 @@ const derivedRowKeyPrefix = "leapmux-derived-key:"
 //
 // The caller decides whether to say anything. `key != s` is the whole test, and
 // ValidateRowKey supplies the reason for the log line.
-func NormalizeRowKey(s string) string {
-	if ValidateRowKey(s) == nil {
-		return s
-	}
-	sum := sha256.Sum256([]byte(s))
-	return derivedRowKeyPrefix + hex.EncodeToString(sum[:])
-}
 
 // ValidateGroupKey reports why a provider-supplied GROUP key is unusable, or
 // nil when it is usable. The empty key is accepted and means "this row is not

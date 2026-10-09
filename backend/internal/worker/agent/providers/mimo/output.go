@@ -53,6 +53,11 @@ type mimoMessageRecord struct {
 	completed bool
 	// errorName is the native outcome of this message.
 	errorName string
+	// attributionClosed marks a record that can no longer receive later actor
+	// or identity metadata: flushUnfinishedOutput closed it when native events
+	// could no longer finish its output, so a pending opening or unresolved
+	// stream must not keep waiting for an attribution that cannot arrive.
+	attributionClosed bool
 	// streamFailure records the first accepted stream failure, independent of GET metadata.
 	streamFailure *mimoError
 	// pendingParts keeps native observations once, in their original order.
@@ -325,6 +330,7 @@ func (a *Agent) handleMessageUpdated(event mimoEvent) {
 		record.turnEpoch = existing.turnEpoch
 		record.pendingParts = existing.pendingParts
 		record.streamFailure = existing.streamFailure
+		record.attributionClosed = existing.attributionClosed
 		record.actor = existing.actor
 		record.sessionID = existing.sessionID
 		if existing.completed && existing.identityKnown {
@@ -638,7 +644,7 @@ func (a *Agent) flushPendingMessage(messageID string, fallback agent.MessageComp
 		}
 		pending := record.pendingParts[0]
 		state := a.parts[pending.partID]
-		if (pending.kind == mimoPendingUserPrompt || state != nil && state.skip && record.role == roleUser) && !record.actorKnown {
+		if (pending.kind == mimoPendingUserPrompt || state != nil && state.skip && record.role == roleUser) && !record.actorKnown && !record.attributionClosed {
 			a.Mu.Unlock()
 			return true
 		}
@@ -1057,6 +1063,12 @@ func (a *Agent) flushActorText(actorID string, completion agent.MessageCompletio
 			continue
 		}
 		record := a.messages[state.messageID]
+		// An unresolved whole text keeps its native record through Stop and
+		// ClearContext: a failed native GET cannot identify a role or a
+		// transcript destination, so closure retains the observation instead
+		// of flushing it somewhere it does not belong. attributionClosed does
+		// not lift this guard -- closure makes MORE attribution impossible,
+		// not less.
 		if state.unresolved != nil && !record.identityKnown {
 			continue
 		}
@@ -1802,10 +1814,46 @@ func (a *Agent) removeFailureLocked(failure *mimoFailure) {
 	a.pendingFailures = slices.DeleteFunc(a.pendingFailures, func(pending *mimoFailure) bool { return pending == failure })
 }
 
-// persistFailureRow writes a failure as a notification row.
-func (a *Agent) persistFailureRow(raw []byte) {
-	if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw}); err != nil {
-		slog.Error("mimo persist error", "agent_id", a.AgentID(), "error", err)
+// flushFailureNotifications retries eligible observations in their native order.
+// A child failure stays held while its child row can still succeed: the retained
+// native actor row owns that report until its write succeeds, so closure cannot
+// persist a second copy over it. A write that fails keeps its failure queued;
+// a later Stop, Wait, or ClearContext retries it without repeating the entries
+// that already succeeded.
+func (a *Agent) flushFailureNotifications() {
+	for {
+		a.Mu.Lock()
+		var failure *mimoFailure
+		for _, pending := range a.pendingFailures {
+			if pending.notificationReady {
+				failure = pending
+				break
+			}
+		}
+		a.Mu.Unlock()
+		if failure == nil {
+			return
+		}
+		a.Mu.Lock()
+		pendingActorRow := a.hasPendingActorFailureLocked(failure)
+		a.Mu.Unlock()
+		if pendingActorRow {
+			// The retained native actor row owns this report until its write succeeds.
+			return
+		}
+		sink := a.sink
+		if failure.actor != nil {
+			if childID, ok := a.ensureActorRecordTranscript(failure.actor, failure.sessionID); ok {
+				sink = a.sink.ChildSink(childID)
+			}
+		}
+		if _, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: failure.raw}); err != nil {
+			slog.Error("mimo persist error", "agent_id", a.AgentID(), "error", err)
+			return
+		}
+		a.Mu.Lock()
+		a.removeFailureLocked(failure)
+		a.Mu.Unlock()
 	}
 }
 

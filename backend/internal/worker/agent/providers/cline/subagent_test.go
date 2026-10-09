@@ -576,6 +576,7 @@ func TestSpawnCompletions(t *testing.T) {
 //   - A call without an ID.
 //   - A result without a previously opened call.
 //   - Blank text.
+//
 // A conversation that is not a list also writes nothing.
 func TestWriteStoredConversationSkipsWhatItCannotShow(t *testing.T) {
 	t.Parallel()

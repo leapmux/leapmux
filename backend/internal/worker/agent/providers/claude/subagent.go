@@ -16,6 +16,7 @@ import (
 // These Claude tools start a subagent:
 //   - Agent, the current tool name.
 //   - Task, the previous spelling still emitted for permission rules, hooks, and resumed sessions.
+//
 // See src/tools/AgentTool/constants.ts and its AGENT_TOOL_NAME and LEGACY_AGENT_TOOL_NAME constants.
 // The separate to-do tools start no subagent:
 //   - TaskCreate.
@@ -58,6 +59,7 @@ func claudeToolSpawnsSubagent(toolName string) bool {
 //   - local_bash identifies a shell, including foreground work, and keeps its tool span.
 //   - local_agent identifies a Task subagent and releases its tool span.
 //   - local_workflow identifies a Workflow run and releases its tool span.
+//
 // Every other task type also releases the span.
 // A workflow owns no child transcript, while an agent or unknown spawn type does.
 //
@@ -74,6 +76,7 @@ const (
 //   - task_notification.
 //   - task_updated.
 //   - background_tasks_changed.
+//
 // Every field is optional.
 // For an unknown subtype, claudeHandleTaskEvent returns false and preserves the ordinary persistence path.
 type claudeTaskEnvelope struct {
@@ -112,6 +115,7 @@ type claudeTaskUsage struct {
 //     It repeats the notification status and causes no registry change.
 //   - background_tasks_changed supplies the CLI's current background-task list.
 //     It distinguishes foreground and background shells, but this handler consumes it without a registry change. See below.
+//
 // Workflow agents forward no transcript: the probes found zero parent_tool_use_id rows.
 // Their registry-only rows group by workflow_name.
 func (a *Agent) claudeHandleTaskEvent(content []byte) bool {
@@ -467,6 +471,7 @@ func lookupClaudeKnownTask(sink agent.BackgroundTaskServices, taskID string) cla
 //   - The registry already contains this task.
 //   - The row has a final status.
 //   - This process records a current SendMessage delivery or a verified shell wake.
+//
 // A first start or duplicate registration of a running task therefore does not revive a row.
 // Stored restart evidence also distinguishes a live restart from a resumed session's hydration of previously ended tasks.
 //
@@ -490,27 +495,31 @@ func (a *Agent) reviveClaudeSubagent(ev *claudeTaskEnvelope, childID string, kno
 	// The caller supplies evidence already read before deriving the title.
 	// Both decisions therefore use the same event classification.
 	// This branch checks the delivery form separately because only that form supplies transcript text.
-	delivered := a.tasks.takeClaudeRestart(ev.TaskID)
+	delivered, promptPersisted := a.tasks.takeClaudeRestart(ev.TaskID)
 	if !delivered && !restart.wake {
 		return false, nil
 	}
-	// Persist the delivered message before reviving the registry row because the writes are independent.
-	// A still-final row remains visibly incorrect and a later notification can correct it.
-	// A failed text write only logs its error.
-	// If row revival succeeds, no delivery intent remains to retry that missing message.
-	if delivered {
+	// The two writes are independent, so the intent keeps a fact for each: a
+	// FAILED prompt write retains the intent with no fact settled, which also
+	// PREVENTS revival -- reopening the row would display a restart whose
+	// delivered message never reached the transcript. A SUCCEEDED prompt write
+	// followed by a failed revival retains the intent with the prompt fact
+	// settled, so the retry retries only the revival: re-persisting would
+	// duplicate the delivered message.
+	if delivered && !promptPersisted {
 		if err := a.sink.PersistChildUserMessage(childID, ev.Prompt); err != nil {
 			slog.Warn("claude restart persist message failed", "child", childID, "error", err)
+			a.tasks.rearmClaudeRestart(ev.TaskID, false)
+			return true, err
 		}
+		promptPersisted = true
 	}
 	if err := a.sink.ReviveBackgroundTask(ev.TaskID); err != nil {
-		// Restore a consumed delivery intent when the registry revival fails.
-		// The final row can then retry on another task_started in the same turn.
-		// Use root scope ("") because this handler runs on the root stream.
-		// The root turn ends later than the child turn, so that scope preserves the complete retry interval.
+		// Restore the consumed intent with its settled fact, so a later
+		// task_started retries exactly the stage that failed.
 		// A shell wake consumes no delivery intent and restores none.
 		if delivered {
-			a.tasks.armClaudeRestart(ev.TaskID, "")
+			a.tasks.rearmClaudeRestart(ev.TaskID, promptPersisted)
 		}
 		return true, err
 	}
@@ -611,8 +620,8 @@ var claudeTaskStatusMap = map[string]bgtask.Status{
 // childKey is the registry row key and equals the CLI task_id set by handleClaudeTaskStarted.
 // stop_task addresses that task registry entry:
 //
-//   {"type":"control_request","request_id":"...",
-//    "request":{"subtype":"stop_task","task_id":"<task_id>"}}
+//	{"type":"control_request","request_id":"...",
+//	 "request":{"subtype":"stop_task","task_id":"<task_id>"}}
 //
 // Claude offers no native child-input route, so this provider implements ChildInterrupter without ChildSteerer.
 // The Manager reports ErrChildOperationUnsupported only when a provider lacks this method.
@@ -662,6 +671,7 @@ func hasToolResultBlock(env *messageEnvelope) bool {
 //   - A child tool_use.
 //   - A child tool_result.
 //   - The child's result.
+//
 // Resolve the child through the task-to-tool-use index recorded at task_started.
 // If that index misses an early envelope, EnsureChildAgent can still use the spawn span.
 // Never change the parent span tracker for these messages.
@@ -918,6 +928,7 @@ func claudePeerHandbackText(body string) string {
 //   - Task kind.
 //   - Routing IDs.
 //   - A final result that arrives before its start event.
+//
 // A restart can supply both the original spawn ID and a SendMessage ID.
 // Both IDs must resolve the run, and completion must remove both.
 type claudeTaskRunIndex struct {
@@ -937,13 +948,27 @@ type claudeTaskTranscriptIndex struct {
 	childTask map[string]string
 }
 
+// claudeRestartDelivery is one retained delivery intent for an ended child,
+// with the facts a retry needs: the sender scopes that armed it and whether
+// the delivered text already reached the child transcript. The two facts are
+// separate because the writes are independent -- a failed prompt write must
+// retry BOTH stages, while a prompt write that succeeded before a failed
+// revival must retry ONLY the revival, and re-persisting would duplicate the
+// delivered message in the transcript.
+type claudeRestartDelivery struct {
+	senders map[string]struct{}
+	// promptPersisted records that the child transcript already holds the
+	// delivered text.
+	promptPersisted bool
+}
+
 // claudeTaskRestartIndex retains process-lifetime restart evidence:
 //   - finishedShells rejects hydration replays.
 //   - pendingByTask lets each transcript remove only its own restart intent.
 //   - sendMessageCalls preserves classification for a late task_started.
 type claudeTaskRestartIndex struct {
 	finishedShells   map[string]struct{}
-	pendingByTask    map[string]map[string]struct{}
+	pendingByTask    map[string]*claudeRestartDelivery
 	sendMessageCalls map[string]struct{}
 }
 
@@ -1339,6 +1364,7 @@ func (i *claudeTaskIndex) kindForTask(taskID string) bgtask.Kind {
 //   - A display name.
 //   - Another session.
 //   - A uds:, bridge:, or did: address.
+//
 // Those recipients therefore resolve to no child row.
 type claudeSendMessageInput struct {
 	To string `json:"to"`
@@ -1448,28 +1474,55 @@ func (i *claudeTaskIndex) armClaudeRestart(to, armedBy string) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	if i.restarts.pendingByTask == nil {
-		i.restarts.pendingByTask = make(map[string]map[string]struct{})
+		i.restarts.pendingByTask = make(map[string]*claudeRestartDelivery)
 	}
-	if i.restarts.pendingByTask[to] == nil {
-		i.restarts.pendingByTask[to] = make(map[string]struct{})
+	delivery := i.restarts.pendingByTask[to]
+	if delivery == nil {
+		delivery = &claudeRestartDelivery{senders: make(map[string]struct{})}
+		i.restarts.pendingByTask[to] = delivery
 	}
-	i.restarts.pendingByTask[to][armedBy] = struct{}{}
+	delivery.senders[armedBy] = struct{}{}
 }
 
-// takeClaudeRestart reports whether a current delivery intent exists for taskID and consumes every sender scope for it.
-// One restart must not reopen the same row twice.
-// The CLI restarts a recipient once even when multiple senders queue messages, so consume the complete set rather than one scope.
-func (i *claudeTaskIndex) takeClaudeRestart(taskID string) bool {
+// rearmClaudeRestart restores a consumed intent with its settled facts so a
+// later task_started retries exactly the stage that failed. The root scope
+// ("") keeps the intent alive past every child turn's end, because this
+// handler runs on the root stream and the root turn ends later than the
+// child's.
+func (i *claudeTaskIndex) rearmClaudeRestart(taskID string, promptPersisted bool) {
 	if taskID == "" {
-		return false
+		return
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	if _, ok := i.restarts.pendingByTask[taskID]; !ok {
-		return false
+	if i.restarts.pendingByTask == nil {
+		i.restarts.pendingByTask = make(map[string]*claudeRestartDelivery)
+	}
+	delivery := i.restarts.pendingByTask[taskID]
+	if delivery == nil {
+		delivery = &claudeRestartDelivery{senders: make(map[string]struct{})}
+		i.restarts.pendingByTask[taskID] = delivery
+	}
+	delivery.senders[""] = struct{}{}
+	delivery.promptPersisted = promptPersisted
+}
+
+// takeClaudeRestart consumes one task's delivery intent and reports whether
+// its delivered text already reached the transcript.
+// One restart must not reopen the same row twice.
+// The CLI restarts a recipient once even when multiple senders queue messages, so consume the complete set rather than one scope.
+func (i *claudeTaskIndex) takeClaudeRestart(taskID string) (delivered, promptPersisted bool) {
+	if taskID == "" {
+		return false, false
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	delivery, ok := i.restarts.pendingByTask[taskID]
+	if !ok {
+		return false, false
 	}
 	delete(i.restarts.pendingByTask, taskID)
-	return true
+	return true, delivery.promptPersisted
 }
 
 // clearClaudeRestarts removes one transcript's delivery intents at that transcript's turn end.
@@ -1477,6 +1530,7 @@ func (i *claudeTaskIndex) takeClaudeRestart(taskID string) bool {
 //   - A message to a live child.
 //   - A recipient outside this session.
 //   - A send refused by the CLI.
+//
 // Without removal, their intents would accumulate for the agent's lifetime.
 //
 // Remove only the ending transcript's scope.
@@ -1488,9 +1542,9 @@ func (i *claudeTaskIndex) clearClaudeRestarts(armedBy string) {
 	// Remove only the ending transcript from each recipient's sender set.
 	// Remove the recipient entry when its final sender ends.
 	// When two transcripts address one child, the earlier turn end therefore cannot cancel the later sender's expected restart.
-	for to, scopes := range i.restarts.pendingByTask {
-		delete(scopes, armedBy)
-		if len(scopes) == 0 {
+	for to, delivery := range i.restarts.pendingByTask {
+		delete(delivery.senders, armedBy)
+		if len(delivery.senders) == 0 {
 			delete(i.restarts.pendingByTask, to)
 		}
 	}

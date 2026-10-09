@@ -20,6 +20,13 @@ func (a *Agent) handleOutput(line *providerkit.ParsedLine) {
 		defer a.dispatchMu.Unlock()
 		a.dispatchOutput(line)
 	}()
+	// Goal writes run outside every dispatch, provider, and lifecycle lock: a
+	// native goal observer re-enters HandleOutput from its UpsertGoal and
+	// ClearGoal callbacks, and running those callbacks under dispatchMu would
+	// deadlock the reentry on the first nested native frame.
+	for _, apply := range a.takeDeferredGoalActions() {
+		apply()
+	}
 	a.drainControls()
 }
 
@@ -153,7 +160,7 @@ func (a *Agent) handleItem(raw, params []byte, state *sessionState) {
 		}
 	} else if item.Item.Kind == contracts.MuseItemKindCompaction {
 		if finished {
-			_, err := state.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw)
+			_, err := state.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw})
 			if err != nil {
 				slog.Warn("persist Muse compaction", "error", err)
 			}

@@ -15,19 +15,22 @@ import (
 // Agent owns one native host and the root and child sessions that the host serves.
 type Agent struct {
 	*connection
-	sink            agent.ProviderServices
-	opts            agent.Options
-	sendMu          sync.Mutex
-	dispatchMu      sync.Mutex
-	finalizeMu      sync.Mutex
-	stateMu         sync.Mutex
-	controlMu       sync.Mutex
-	controlQueue    []*controlRecord
-	controlDraining bool
-	sessionID       string
-	settings        optionmap.Map
-	models          []*agent.ModelInfo
-	sessions        map[string]*sessionState
+	sink       agent.ProviderServices
+	opts       agent.Options
+	sendMu     sync.Mutex
+	dispatchMu sync.Mutex
+	// deferredGoalActions holds goal writes queued under dispatchMu that run
+	// after dispatch releases. See handleOutput.
+	deferredGoalActions []func()
+	finalizeMu          sync.Mutex
+	stateMu             sync.Mutex
+	controlMu           sync.Mutex
+	controlQueue        []*controlRecord
+	controlDraining     bool
+	sessionID           string
+	settings            optionmap.Map
+	models              []*agent.ModelInfo
+	sessions            map[string]*sessionState
 }
 
 type sessionState struct {

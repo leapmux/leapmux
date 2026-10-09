@@ -166,6 +166,15 @@ func (a *Agent) runViewRecovery(id string, state *sessionState, recovery *viewRe
 		}
 		a.stateMu.Unlock()
 		if retired {
+			// The host retired mid-recovery. The buffered frames were still
+			// RECEIVED native evidence, so they persist exactly as received --
+			// losing one would erase output the provider really produced. The
+			// paged replay is dropped instead: its gap belongs to a view the
+			// retired host can no longer serve, and every dispatched frame
+			// already guards its own live effects on the retired state.
+			for _, raw := range buffer {
+				a.dispatchOutput(providerkit.ParseLine(raw))
+			}
 			return
 		}
 		served := make(map[string]bool)

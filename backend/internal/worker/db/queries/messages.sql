@@ -142,10 +142,16 @@ SET supplemental_content = COALESCE(CAST(sqlc.arg(supplemental_content) AS BLOB)
 WHERE id = sqlc.arg(id) AND agent_id = sqlc.arg(agent_id);
 
 -- name: ListMessageSupplementsByAgentAndSession :many
-SELECT id, agent_id, agent_session_id, source, agent_provider,
-       supplemental_content, supplemental_content_compression
+-- Serves only the notification duplicate lookup. The notification_entry_count
+-- <> 0 term repeats the predicate of the PARTIAL idx_messages_notification_entries
+-- (SQLite matches a partial index syntactically), so the read touches only
+-- messages whose stored supplement holds a journal or corrupt private storage
+-- (count -1), and its cost does not depend on the session's ordinary message
+-- count. The caller decompresses and decodes each row, so a -1 row surfaces
+-- its corruption there instead of passing as journal-free.
+SELECT source, agent_provider, supplemental_content, supplemental_content_compression
 FROM messages
-WHERE agent_id = ? AND agent_session_id = ?
+WHERE agent_id = ? AND agent_session_id = ? AND notification_entry_count <> 0
 ORDER BY seq ASC;
 
 -- name: GetLatestMessageByAgentID :one

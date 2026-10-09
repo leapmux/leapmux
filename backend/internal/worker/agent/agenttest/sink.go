@@ -107,6 +107,12 @@ type Sink struct {
 	// spawnSpans records this sink's direct children under childSinkMu.
 	// The Worker requires the same direct parent when it reads a child row.
 	spawnSpans map[string]string
+	// registryRoot links a child sink to the sink whose registry it shares.
+	// Production keys every registry row by the ROOT agent (the sink's
+	// rootAgentID), so a grandchild's row is physically the root's: a child
+	// sink reads and writes the same registry its root does. Nil on the root
+	// itself, which is its own registry.
+	registryRoot *Sink
 	// bgTasks records the latest registry state per row key (owner == this sink).
 	bgTasks map[string]bgtask.Item
 	// bgTaskStatuses records distinct status values per row key, in order.
@@ -760,16 +766,18 @@ func (s *Sink) PersistSubagentReport(write agent.SubagentReportWrite) (bool, err
 	return true, nil
 }
 func (s *Sink) PersistChildSubagentReport(write agent.ChildSubagentReportWrite) (bool, error) {
-	rowKey := strings.TrimSpace(write.RowKey)
-	if rowKey == "" {
+	// The COMPLETE native key, never a trimmed one: trimming maps two provider
+	// identities onto one string, and the report then lands on a different
+	// child than the one the provider named.
+	if write.RowKey == "" {
 		return false, fmt.Errorf("child subagent report has no row key")
 	}
-	childID, _, found, err := s.LookupBackgroundTask(rowKey)
+	childID, _, found, err := s.LookupBackgroundTask(write.RowKey)
 	if err != nil {
 		return false, err
 	}
 	if !found || childID == "" {
-		return false, fmt.Errorf("subagent report child for row %q is unavailable", rowKey)
+		return false, fmt.Errorf("subagent report child for row %q is unavailable", write.RowKey)
 	}
 	return s.ChildSink(childID).PersistSubagentReport(write.Write)
 }
@@ -913,10 +921,11 @@ func (s *Sink) EnsureChildAgent(spec agent.ChildAgentSpec) (string, error) {
 		s.children = make(map[childSinkIdentity]*Sink)
 	}
 	var child *Sink
+	registry := s.registry()
 	if rowKey != "" {
-		s.bgTasksMu.Lock()
-		childID := s.bgTasks[rowKey].ChildAgentID
-		s.bgTasksMu.Unlock()
+		registry.bgTasksMu.Lock()
+		childID := registry.bgTasks[rowKey].ChildAgentID
+		registry.bgTasksMu.Unlock()
 		for _, candidate := range s.children {
 			if childID != "" && candidate.childAgentID() == childID {
 				child = candidate
@@ -938,7 +947,7 @@ func (s *Sink) EnsureChildAgent(spec agent.ChildAgentSpec) (string, error) {
 		return "", fmt.Errorf("the child belongs to another native session: %w", agent.ErrChildIdentityRefused)
 	}
 	if child == nil {
-		child = &Sink{nativeChildKey: spec.ProviderChildKey}
+		child = &Sink{nativeChildKey: spec.ProviderChildKey, registryRoot: s.registry()}
 		if spec.AgentSessionID != "" {
 			child.UpdateSessionID(spec.AgentSessionID)
 		}
@@ -965,19 +974,32 @@ func (s *Sink) EnsureChildAgent(spec agent.ChildAgentSpec) (string, error) {
 		}
 	}
 	if rowKey != "" {
-		s.bgTasksMu.Lock()
-		if s.bgTasks == nil {
-			s.bgTasks = make(map[string]bgtask.Item)
+		registry.bgTasksMu.Lock()
+		if registry.bgTasks == nil {
+			registry.bgTasks = make(map[string]bgtask.Item)
 		}
-		item := s.bgTasks[rowKey]
+		item := registry.bgTasks[rowKey]
 		item.RowKey, item.ChildAgentID, item.Kind = rowKey, cid, bgtask.KindSubagent
+		if item.ParentAgentID == "" {
+			item.ParentAgentID = s.childAgentID()
+		}
 		if spec.Title != "" {
 			item.Title = spec.Title
 		}
-		s.bgTasks[rowKey] = item
-		s.bgTasksMu.Unlock()
+		registry.bgTasks[rowKey] = item
+		registry.bgTasksMu.Unlock()
 	}
 	return cid, nil
+}
+
+// registry returns the sink that physically owns the background-task registry:
+// the root of this sink's descendant tree. Every registry mutation and lookup
+// routes through it, so a row a grandchild opens is the row its root closes.
+func (s *Sink) registry() *Sink {
+	if s.registryRoot != nil {
+		return s.registryRoot
+	}
+	return s
 }
 
 // childAgentID returns the synthetic ID that EnsureChildAgent assigns to this child sink.
@@ -1027,7 +1049,7 @@ func (s *Sink) Child(childAgentID string) *Sink {
 	}
 	// A child id that was not EnsureChildAgent'd (e.g. an explicit PersistChild*):
 	// create a fresh recording sink so the call still records.
-	c := &Sink{}
+	c := &Sink{registryRoot: s.registry()}
 	c.setChildAgentID(childAgentID)
 	if s.children == nil {
 		s.children = make(map[childSinkIdentity]*Sink)
@@ -1094,10 +1116,24 @@ func (s *Sink) PersistChildUserMessage(childAgentID, text string) error {
 var testFakeEndedAt = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 func (s *Sink) UpsertBackgroundTask(task bgtask.Upsert) error {
-	s.bgTasksMu.Lock()
-	defer s.bgTasksMu.Unlock()
-	if s.bgTasks == nil {
-		s.bgTasks = make(map[string]bgtask.Item)
+	// An upsert with no key has no identity to open a row under: the registry
+	// refuses it, as production does, rather than deriving a key for bytes no
+	// provider sent. A caller with no linkage skips the call entirely.
+	if task.RowKey == "" {
+		return fmt.Errorf("background task upsert has no row key")
+	}
+	// The parent agent id is the sink that owns THIS call, as production sets
+	// it: the root for a root upsert, the child for a grandchild spawn. The
+	// registry stays physically shared while BackgroundTasks projects each
+	// owner's own rows.
+	if task.ParentAgentID == "" {
+		task.ParentAgentID = s.childAgentID()
+	}
+	r := s.registry()
+	r.bgTasksMu.Lock()
+	defer r.bgTasksMu.Unlock()
+	if r.bgTasks == nil {
+		r.bgTasks = make(map[string]bgtask.Item)
 	}
 	// The Worker uses task.Clean().ToItem().PreservingBlanksFrom(existing).
 	// Keep the same chain here.
@@ -1110,7 +1146,7 @@ func (s *Sink) UpsertBackgroundTask(task bgtask.Upsert) error {
 	// An unusable native key gets a derived key rather than losing the row.
 	// A test sink that retains the raw key would accept a row key that production never stores.
 	task.RowKey = bgtask.NormalizeRowKey(task.RowKey)
-	existing := s.bgTasks[task.RowKey]
+	existing := r.bgTasks[task.RowKey]
 	item := task.Clean().ToItem().PreservingBlanksFrom(existing)
 	// A final status is absorbing, as in the registry: a replayed non-final
 	// upsert must not resurrect a row that already ended. Without this the fake
@@ -1123,8 +1159,8 @@ func (s *Sink) UpsertBackgroundTask(task bgtask.Upsert) error {
 	if !existing.Status.IsFinished() && item.Status.IsFinished() && item.EndedAt.IsZero() {
 		item.EndedAt = testFakeEndedAt
 	}
-	s.bgTasks[task.RowKey] = item
-	s.recordBgTaskStatusLocked(task.RowKey, item.Status)
+	r.bgTasks[task.RowKey] = item
+	r.recordBgTaskStatusLocked(task.RowKey, item.Status)
 	return nil
 }
 
@@ -1141,9 +1177,10 @@ func (s *Sink) recordBgTaskStatusLocked(rowKey string, status bgtask.Status) {
 
 func (s *Sink) UpdateBackgroundTaskStatus(rowKey string, status bgtask.Status, activeForm string) error {
 	rowKey = bgtask.NormalizeRowKey(rowKey)
-	s.bgTasksMu.Lock()
-	defer s.bgTasksMu.Unlock()
-	if item, ok := s.bgTasks[rowKey]; ok {
+	r := s.registry()
+	r.bgTasksMu.Lock()
+	defer r.bgTasksMu.Unlock()
+	if item, ok := r.bgTasks[rowKey]; ok {
 		// Monotonic and absorbing, as in the registry: a late or replayed
 		// non-final update must not resurrect a finished row.
 		if item.Status.IsFinished() && !status.IsFinished() {
@@ -1154,8 +1191,8 @@ func (s *Sink) UpdateBackgroundTaskStatus(rowKey string, status bgtask.Status, a
 		}
 		item.Status = status
 		item.ActiveForm = activeForm
-		s.bgTasks[rowKey] = item
-		s.recordBgTaskStatusLocked(rowKey, status)
+		r.bgTasks[rowKey] = item
+		r.recordBgTaskStatusLocked(rowKey, status)
 	}
 	return nil
 }
@@ -1165,9 +1202,10 @@ func (s *Sink) CloseBackgroundTask(rowKey string, status bgtask.Status) error {
 		s.OnCloseBackgroundTask(rowKey, status)
 	}
 	rowKey = bgtask.NormalizeRowKey(rowKey)
-	s.bgTasksMu.Lock()
-	defer s.bgTasksMu.Unlock()
-	if item, ok := s.bgTasks[rowKey]; ok {
+	r := s.registry()
+	r.bgTasksMu.Lock()
+	defer r.bgTasksMu.Unlock()
+	if item, ok := r.bgTasks[rowKey]; ok {
 		// First close wins, as in the registry: a re-close cannot relabel a row
 		// that already ended.
 		if item.Status.IsFinished() {
@@ -1175,20 +1213,21 @@ func (s *Sink) CloseBackgroundTask(rowKey string, status bgtask.Status) error {
 		}
 		item.Status = status
 		item.EndedAt = testFakeEndedAt
-		s.bgTasks[rowKey] = item
-		s.recordBgTaskStatusLocked(rowKey, status)
+		r.bgTasks[rowKey] = item
+		r.recordBgTaskStatusLocked(rowKey, status)
 	}
 	return nil
 }
 
 func (s *Sink) LookupBackgroundTask(rowKey string) (string, bgtask.Status, bool, error) {
 	var noStatus bgtask.Status
-	s.bgTasksMu.Lock()
-	defer s.bgTasksMu.Unlock()
-	if s.lookups == nil {
-		s.lookups = make(map[string]int)
+	r := s.registry()
+	r.bgTasksMu.Lock()
+	defer r.bgTasksMu.Unlock()
+	if r.lookups == nil {
+		r.lookups = make(map[string]int)
 	}
-	s.lookups[rowKey]++
+	r.lookups[rowKey]++
 	if s.LookupErr != nil {
 		return "", noStatus, false, s.LookupErr
 	}
@@ -1196,19 +1235,43 @@ func (s *Sink) LookupBackgroundTask(rowKey string) (string, bgtask.Status, bool,
 		return "", noStatus, false, nil
 	}
 	rowKey = bgtask.NormalizeRowKey(rowKey)
-	item, ok := s.bgTasks[rowKey]
+	item, ok := r.bgTasks[rowKey]
 	if !ok {
 		return "", noStatus, false, nil
 	}
 	return item.ChildAgentID, item.Status, true, nil
 }
 
+// LookupChildIdentity resolves a stored registry key to its durable child by
+// its exact spelling, mirroring the service: the registry row states the child
+// agent id, and the child sink retains the provider's own native key bytes.
+func (s *Sink) LookupChildIdentity(identity bgtask.RowIdentity) (agent.ChildIdentity, bool, error) {
+	r := s.registry()
+	r.bgTasksMu.Lock()
+	item, found := r.bgTasks[identity.String()]
+	r.bgTasksMu.Unlock()
+	if !found || item.ChildAgentID == "" {
+		return agent.ChildIdentity{}, false, nil
+	}
+	native := ""
+	s.childSinkMu.Lock()
+	for _, child := range s.children {
+		if child.childAgentID() == item.ChildAgentID {
+			native = child.nativeChildKey
+			break
+		}
+	}
+	s.childSinkMu.Unlock()
+	return agent.ChildIdentity{AgentID: item.ChildAgentID, ProviderChildKey: native}, true, nil
+}
+
 // LookupBackgroundTaskCalls returns how many times LookupBackgroundTask read
 // rowKey.
 func (s *Sink) LookupBackgroundTaskCalls(rowKey string) int {
-	s.bgTasksMu.Lock()
-	defer s.bgTasksMu.Unlock()
-	return s.lookups[rowKey]
+	r := s.registry()
+	r.bgTasksMu.Lock()
+	defer r.bgTasksMu.Unlock()
+	return r.lookups[rowKey]
 }
 
 // ReviveBackgroundTask mirrors the registry's revive: a finished row returns to
@@ -1246,14 +1309,15 @@ func (s *Sink) ReviveBackgroundTask(rowKey string) error {
 // The stored linkage survives that cap, as registryOps.retention requires.
 // Do not use eviction to test missing linkage.
 func (s *Sink) UnlinkBackgroundTask(rowKey string) {
-	s.bgTasksMu.Lock()
-	defer s.bgTasksMu.Unlock()
-	item, ok := s.bgTasks[rowKey]
+	r := s.registry()
+	r.bgTasksMu.Lock()
+	defer r.bgTasksMu.Unlock()
+	item, ok := r.bgTasks[rowKey]
 	if !ok {
 		return
 	}
 	item.ChildAgentID = ""
-	s.bgTasks[rowKey] = item
+	r.bgTasks[rowKey] = item
 }
 
 // ChildAgentIDs lists each child transcript that this sink supplies.
@@ -1272,9 +1336,10 @@ func (s *Sink) ChildAgentIDs() []string {
 
 // RevivedTasks returns the row keys ReviveBackgroundTask actually reopened.
 func (s *Sink) RevivedTasks() []string {
-	s.bgTasksMu.Lock()
-	defer s.bgTasksMu.Unlock()
-	return append([]string(nil), s.revivedTasks...)
+	r := s.registry()
+	r.bgTasksMu.Lock()
+	defer r.bgTasksMu.Unlock()
+	return append([]string(nil), r.revivedTasks...)
 }
 
 func (s *Sink) RenameBackgroundTask(oldKey, newKey string) error {
@@ -1286,9 +1351,10 @@ func (s *Sink) RenameBackgroundTask(oldKey, newKey string) error {
 	// BOTH keys, as production does: normalizing one and not the other is how a
 	// rename stops finding its own row.
 	oldKey, newKey = bgtask.NormalizeRowKey(oldKey), bgtask.NormalizeRowKey(newKey)
-	s.bgTasksMu.Lock()
-	defer s.bgTasksMu.Unlock()
-	item, ok := s.bgTasks[oldKey]
+	r := s.registry()
+	r.bgTasksMu.Lock()
+	defer r.bgTasksMu.Unlock()
+	item, ok := r.bgTasks[oldKey]
 	if !ok || oldKey == newKey {
 		return nil
 	}
@@ -1297,13 +1363,13 @@ func (s *Sink) RenameBackgroundTask(oldKey, newKey string) error {
 	// The test sink must preserve that behavior.
 	// Overwriting the destination would let tests accept the opposite result.
 	// Claude restart events can reach this collision after each reorder.
-	if _, occupied := s.bgTasks[newKey]; occupied {
-		delete(s.bgTasks, oldKey)
+	if _, occupied := r.bgTasks[newKey]; occupied {
+		delete(r.bgTasks, oldKey)
 		return nil
 	}
-	delete(s.bgTasks, oldKey)
+	delete(r.bgTasks, oldKey)
 	item.RowKey = newKey
-	s.bgTasks[newKey] = item
+	r.bgTasks[newKey] = item
 	return nil
 }
 
@@ -1322,14 +1388,19 @@ func RowKeys(sink *Sink) []string {
 // per-child cleanup use the real OutputHandler via svc.Output.NewSink.
 func (s *Sink) CleanupChildAgent(childAgentID string) {}
 
-// BackgroundTasks returns a snapshot sorted by row key.
+// BackgroundTasks returns the shared registry as a snapshot sorted by row key,
+// exactly what the Worker broadcasts for the root: every descendant's row is
+// physically the root registry's, and each row's ParentAgentID states the
+// parent that owns it. A test that wants one owner's rows filters on that
+// linkage.
 // The map does not supply a stable order.
 // Sorting lets a test check the complete list without searching for each row.
 func (s *Sink) BackgroundTasks() []bgtask.Item {
-	s.bgTasksMu.Lock()
-	defer s.bgTasksMu.Unlock()
-	out := make([]bgtask.Item, 0, len(s.bgTasks))
-	for _, item := range s.bgTasks {
+	r := s.registry()
+	r.bgTasksMu.Lock()
+	defer r.bgTasksMu.Unlock()
+	out := make([]bgtask.Item, 0, len(r.bgTasks))
+	for _, item := range r.bgTasks {
 		out = append(out, item)
 	}
 	slices.SortFunc(out, func(a, b bgtask.Item) int { return cmp.Compare(a.RowKey, b.RowKey) })
@@ -1531,6 +1602,9 @@ func Nop() agent.ProviderServices { return agent.NewProviderServices(nop{}) }
 func (nop) PersistMessage(leapmuxv1.MessageSource, agent.MessageContent, agent.SpanInfo) error {
 	return nil
 }
+func (nop) LookupChildIdentity(bgtask.RowIdentity) (agent.ChildIdentity, bool, error) {
+	return agent.ChildIdentity{}, false, nil
+}
 func (nop) EnrichMessage(agent.MessageEnrichment) (bool, error)                   { return false, nil }
 func (nop) ReadToolRequest(string) (*agent.StoredMessage, error)                  { return nil, nil }
 func (nop) ReadToolResult(string) (*agent.StoredMessage, error)                   { return nil, nil }
@@ -1673,15 +1747,17 @@ func (s *Sink) ProgressSnapshot() agent.ProgressSnapshot {
 // BackgroundTask returns the latest registry state of rowKey, and whether the
 // sink holds a row for it.
 func (s *Sink) BackgroundTask(rowKey string) (bgtask.Item, bool) {
-	s.bgTasksMu.Lock()
-	defer s.bgTasksMu.Unlock()
-	row, ok := s.bgTasks[rowKey]
+	r := s.registry()
+	r.bgTasksMu.Lock()
+	defer r.bgTasksMu.Unlock()
+	row, ok := r.bgTasks[rowKey]
 	return row, ok
 }
 
 // BackgroundTaskStatuses returns the distinct statuses rowKey took, in order.
 func (s *Sink) BackgroundTaskStatuses(rowKey string) []bgtask.Status {
-	s.bgTasksMu.Lock()
-	defer s.bgTasksMu.Unlock()
-	return slices.Clone(s.bgTaskStatuses[rowKey])
+	r := s.registry()
+	r.bgTasksMu.Lock()
+	defer r.bgTasksMu.Unlock()
+	return slices.Clone(r.bgTaskStatuses[rowKey])
 }

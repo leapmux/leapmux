@@ -19,7 +19,7 @@ function subagentRow(over: Partial<BackgroundTaskItem> = {}): BackgroundTaskItem
     childAgentId: 'child-1',
     title: 'Explore the parser',
     activity: '',
-    status: 'completed',
+    status: 'succeeded',
     ...over,
   }
 }

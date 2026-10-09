@@ -16,10 +16,10 @@ func (a *Agent) handleEvent(line *providerkit.ParsedLine, state *sessionState) {
 		ModelID   string `json:"modelId"`
 		Effort    string `json:"reasoningEffort"`
 		Mode      string `json:"mode"`
-		Goal      *struct {
-			Objective string `json:"objective"`
-			Status    string `json:"status"`
-		} `json:"goal"`
+		// Goal stays raw: an absent goal, an explicit null goal, and a goal
+		// object are three different native answers, and a typed pointer
+		// collapses the first two into one.
+		Goal json.RawMessage `json:"goal"`
 	}
 	if json.Unmarshal(line.Params, &event) != nil {
 		return
@@ -48,20 +48,33 @@ func (a *Agent) handleEvent(line *providerkit.ParsedLine, state *sessionState) {
 		if !root {
 			return
 		}
-		if event.Goal == nil {
-			state.sink.ClearGoal(false)
+		update, clear, valid := parseMuseGoalEvent(event.Goal)
+		if !valid {
+			// An invalid payload states nothing about the goal. The previous
+			// goal survives untouched: no upsert that could blank it and no
+			// clear that could drop it.
 			return
 		}
-		status := agent.GoalStatusActive
-		switch event.Goal.Status {
-		case "paused":
-			status = agent.GoalStatusPaused
-		case "completed", "satisfied":
-			status = agent.GoalStatusDone
-		case "blocked", "failed":
-			status = agent.GoalStatusBlocked
-		}
-		state.sink.UpsertGoal(agent.GoalUpdate{Objective: event.Goal.Objective, Status: status, StatusDetail: event.Goal.Status})
+		sink, raw := state.sink, line.Raw
+		// The writes run AFTER dispatch releases: a goal observer can re-enter
+		// native output from UpsertGoal and ClearGoal, and the dispatch mutex
+		// must be free when it does.
+		a.deferGoalAction(func() {
+			if clear {
+				sink.ClearGoal(false)
+				return
+			}
+			sink.UpsertGoal(update)
+			if update.Status == agent.GoalStatusUnknown {
+				// An unrecognized native status cannot project to the goal card
+				// without inventing a state, so the raw native bytes stay in
+				// the transcript for the browser's generic reader alongside
+				// the normalized display detail.
+				if _, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw}); err != nil {
+					slog.Warn("persist an unknown Muse goal status", "error", err)
+				}
+			}
+		})
 	case contracts.MuseMethodContextUsage:
 		a.handleContextUsage(line.Params, state)
 	case contracts.MuseMethodTokenUsage:
@@ -71,7 +84,7 @@ func (a *Agent) handleEvent(line *providerkit.ParsedLine, state *sessionState) {
 			a.handleUsage(line.Params, state.sink)
 		}
 	case contracts.MuseMethodTodoListChanged, contracts.MuseMethodTurnRetryScheduled:
-		_, err := state.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, line.Raw)
+		_, err := state.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: line.Raw})
 		if err != nil {
 			slog.Warn("persist a Muse notification", "error", err)
 		}
@@ -80,7 +93,7 @@ func (a *Agent) handleEvent(line *providerkit.ParsedLine, state *sessionState) {
 	case methodSessionStatusChanged, methodSessionStarted, methodSessionClosed:
 	default:
 		// Preserve an unknown native notification for the browser's generic reader.
-		_, err := state.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, line.Raw)
+		_, err := state.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: line.Raw})
 		if err != nil {
 			slog.Warn("persist an unknown Muse notification", "error", err)
 		}

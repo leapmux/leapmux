@@ -332,6 +332,7 @@ func (b *acpTerminalHost) handleTerminalMethod(line *providerkit.ParsedLine) {
 //   - terminal/create.
 //   - terminal/output.
 //   - terminal/kill.
+//
 // Waiting for the write there can deadlock.
 // A child that reads no stdin blocks that write, while its unread stdout fills the output pipe and blocks the child.
 // Neither side can then continue.
@@ -373,6 +374,7 @@ func (b *acpTerminalHost) getTerminal(terminalID string) (*acpTerminalSession, b
 //   - LEAPMUX_WORKER.
 //   - ExtraEnv.
 //   - Identity-variable removal.
+//
 // When no agent command exists, as in unit tests, use FinalizeAgentEnv(os.Environ()).
 func (b *Base) terminalBaseEnv() []string {
 	var base []string

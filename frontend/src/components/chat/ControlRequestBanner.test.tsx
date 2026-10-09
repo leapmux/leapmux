@@ -44,7 +44,8 @@ function limitedMuseQuestionRequest(): ControlRequest {
   request.payload = {
     method: 'userInput/requested',
     params: {
-      sessionId: 'native-session', userInputId: 'native-input',
+      sessionId: 'native-session',
+      userInputId: 'native-input',
       questions: [{ id: 'native-question-0', header: '', question: 'Choose the native answer', options: [{ label: 'One' }, { label: 'Two' }, { label: 'Three' }], selection: { mode: 'multiple', minSelections: 2, maxSelections: 2 } }],
     },
   }
@@ -74,7 +75,8 @@ describe('the Muse question selection limits', () => {
       fireEvent.click(submit)
       await vi.waitFor(() => expect(respond).toHaveBeenCalledOnce())
       expect(JSON.parse(new TextDecoder().decode(respond.mock.calls[0]?.[0]))).toEqual({ jsonrpc: '2.0', id: request.requestId, result: { answers: [{ questionId: 'native-question-0', selectedLabels: selections }] } })
-    } else {
+    }
+    else {
       expect(submit).toBeDisabled()
       fireEvent.click(submit)
       expect(respond).not.toHaveBeenCalled()

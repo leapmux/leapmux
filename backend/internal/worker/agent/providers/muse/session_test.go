@@ -44,7 +44,7 @@ func TestMuseStoredSessionsReadsEveryNativePageAndSortsRootSessions(t *testing.T
 		return []json.RawMessage{museSessionPage(t, []map[string]any{older, child}, "opaque-page"), museSessionPage(t, []map[string]any{tied, newer}, nil)}
 	}})
 
-	got, err := storedSessions(museRoleContext(t), museRoleSessionQuery(opts, registration, env, 10))
+	got, err := storedSessions(museRoleContext(t), museRoleSessionQuery(opts, registration, env, 10), nil)
 	require.NoError(t, err)
 	require.Len(t, got, 3)
 	assert.Equal(t, []string{"newer", "tie", "older"}, []string{got[0].Handle, got[1].Handle, got[2].Handle})
@@ -78,7 +78,7 @@ func TestMuseStoredSessionsRejectsMalformedPages(t *testing.T) {
 	} {
 		t.Run(raw, func(t *testing.T) {
 			opts, registration, env, path := museRoleLaunch(t, museRoleHostSpec{Pages: []json.RawMessage{json.RawMessage(raw)}})
-			got, err := storedSessions(museRoleContext(t), museRoleSessionQuery(opts, registration, env, 10))
+			got, err := storedSessions(museRoleContext(t), museRoleSessionQuery(opts, registration, env, 10), nil)
 			require.Error(t, err)
 			assert.Nil(t, got)
 			records := museRoleRecords(t, path)
@@ -99,7 +99,7 @@ func TestMuseStoredSessionsRejectsInvalidDatesBeforeSortingAndCapping(t *testing
 					}
 					return []json.RawMessage{museSessionPage(t, []map[string]any{session}, nil)}
 				}})
-				got, err := storedSessions(museRoleContext(t), museRoleSessionQuery(opts, registration, env, 1))
+				got, err := storedSessions(museRoleContext(t), museRoleSessionQuery(opts, registration, env, 1), nil)
 				require.Error(t, err)
 				assert.Nil(t, got)
 				records := museRoleRecords(t, path)
@@ -114,7 +114,7 @@ func TestMuseStoredSessionsPreservesAnAbsentOptionalActivityTimestamp(t *testing
 		session := museStoredSession("native-session", workspace, "2026-10-08T00:00:01Z")
 		return []json.RawMessage{museSessionPage(t, []map[string]any{session}, nil)}
 	}})
-	got, err := storedSessions(museRoleContext(t), museRoleSessionQuery(opts, registration, env, 1))
+	got, err := storedSessions(museRoleContext(t), museRoleSessionQuery(opts, registration, env, 1), nil)
 	require.NoError(t, err)
 	require.Len(t, got, 1)
 	assert.Equal(t, time.Date(2026, 10, 8, 0, 0, 1, 0, time.UTC), got[0].UpdatedAt)
@@ -123,7 +123,7 @@ func TestMuseStoredSessionsPreservesAnAbsentOptionalActivityTimestamp(t *testing
 func TestMuseStoredSessionsRejectsRepeatedCursorsAndKeepsTheHostOwned(t *testing.T) {
 	p := museSessionPage(t, []map[string]any{}, "same-cursor")
 	opts, registration, env, path := museRoleLaunch(t, museRoleHostSpec{Pages: []json.RawMessage{p, p}})
-	got, err := storedSessions(museRoleContext(t), museRoleSessionQuery(opts, registration, env, 10))
+	got, err := storedSessions(museRoleContext(t), museRoleSessionQuery(opts, registration, env, 10), nil)
 	require.ErrorContains(t, err, "cursor")
 	assert.Nil(t, got)
 	records := museRoleRecords(t, path)
@@ -133,7 +133,7 @@ func TestMuseStoredSessionsRejectsRepeatedCursorsAndKeepsTheHostOwned(t *testing
 
 func TestMuseStoredSessionsPreservesNativeRefusalAndClosesTheQueryHost(t *testing.T) {
 	opts, registration, env, path := museRoleLaunch(t, museRoleHostSpec{PageError: json.RawMessage(`{"code":-32000,"message":"The native index is unavailable"}`)})
-	got, err := storedSessions(museRoleContext(t), museRoleSessionQuery(opts, registration, env, 10))
+	got, err := storedSessions(museRoleContext(t), museRoleSessionQuery(opts, registration, env, 10), nil)
 	require.ErrorContains(t, err, "The native index is unavailable")
 	assert.Nil(t, got)
 	records := museRoleRecords(t, path)
@@ -150,7 +150,7 @@ func TestMuseStoredSessionsCancelsAnActiveQueryAndClosesItsExactHost(t *testing.
 	t.Cleanup(cancel)
 	result := make(chan error, 1)
 	go func() {
-		_, err := storedSessions(ctx, museRoleSessionQuery(opts, registration, env, 10))
+		_, err := storedSessions(ctx, museRoleSessionQuery(opts, registration, env, 10), nil)
 		result <- err
 	}()
 	accepted := make(chan net.Conn, 1)
@@ -211,7 +211,7 @@ func TestMuseStoredSessionsCapsNativePagesAndReturnedRows(t *testing.T) {
 				}
 				return pages
 			}})
-			got, err := storedSessions(museRoleContext(t), museRoleSessionQuery(opts, registration, env, limit))
+			got, err := storedSessions(museRoleContext(t), museRoleSessionQuery(opts, registration, env, limit), nil)
 			require.NoError(t, err)
 			assert.Len(t, got, count)
 			page := 0
@@ -239,7 +239,7 @@ func TestMuseStoredSessionsPreservesQueryAndCleanupFailures(t *testing.T) {
 				spec.PageError = json.RawMessage(`{"code":-32000,"message":"The native index is unavailable"}`)
 			}
 			opts, registration, env, path := museRoleLaunch(t, spec)
-			got, err := storedSessions(museRoleContext(t), museRoleSessionQuery(opts, registration, env, 10))
+			got, err := storedSessions(museRoleContext(t), museRoleSessionQuery(opts, registration, env, 10), nil)
 			if queryFails {
 				require.ErrorContains(t, err, "The native index is unavailable")
 			}

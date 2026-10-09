@@ -166,7 +166,7 @@ function startupGroupReaders(spec, table, contract, key, side, sources) {
       return new RegExp(`range\\s+${symbol.replaceAll('.', '\\.')}\\b`).test(source.text)
     return tsLocalNames(source.text, symbol).some(local =>
       new RegExp(`Object\\.values\\(\\s*${local}\\s*\\)`).test(source.text)
-      || groups.some(([group]) => wordPattern(`${local}.${group}`).test(source.text)))
+        || groups.some(([group]) => wordPattern(`${local}.${group}`).test(source.text)))
   }).map(source => source.path)
 }
 
@@ -368,7 +368,6 @@ describe('a one-sided table states why', () => {
   })
 })
 
-
 describe('startupGroupReaders', () => {
   const spec = { goPrefix: 'Probe', tsPrefix: 'PROBE' }
   const contract = { startupOptionGroups: { Mode: { id: 'Mode', valuesTable: 'modes', options: [{ value: 'Native' }] } } }
@@ -381,7 +380,7 @@ describe('startupGroupReaders', () => {
   })
 
   it('rejects an import without a consumer', () => {
-    expect(startupGroupReaders(spec, { key: 'modes' }, contract, 'Native', 'ts', source("import { PROBE_STARTUP_OPTION_GROUPS } from 'generated'"))).toEqual([])
+    expect(startupGroupReaders(spec, { key: 'modes' }, contract, 'Native', 'ts', source('import { PROBE_STARTUP_OPTION_GROUPS } from \'generated\''))).toEqual([])
     expect(startupGroupReaders(spec, { key: 'modes' }, contract, 'Native', 'go', [])).toEqual([])
   })
 

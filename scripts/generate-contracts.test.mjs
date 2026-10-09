@@ -2356,19 +2356,19 @@ describe('emitGoExternalApps and emitTsExternalApps', () => {
     expect(go).toBe(emitGoExternalApps(second))
     expect(ts).toBe(emitTsExternalApps(first))
     expect(go).toContain(`var ExternalAppIDsByOS = map[string][]string{
-	"darwin": {
-		"file-manager",
-		"vscode",
-		"xcode",
-	},
-	"linux": {
-		"file-manager",
-		"vscode",
-	},
-	"windows": {
-		"file-manager",
-		"vscode",
-	},
+\t"darwin": {
+\t\t"file-manager",
+\t\t"vscode",
+\t\t"xcode",
+\t},
+\t"linux": {
+\t\t"file-manager",
+\t\t"vscode",
+\t},
+\t"windows": {
+\t\t"file-manager",
+\t\t"vscode",
+\t},
 }`)
     expect(ts).toContain(`export const SUPPORTED_EXTERNAL_APP_IDS = [
   "file-manager",

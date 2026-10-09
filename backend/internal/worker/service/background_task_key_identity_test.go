@@ -55,3 +55,41 @@ func TestChildSubagentReportKeepsTheExactRegistryKey(t *testing.T) {
 	assert.ErrorContains(t, err, "no row key")
 	assert.False(t, stored)
 }
+
+// LookupChildIdentity resolves the STORED spelling exactly: a derived or
+// escaped registry key answers the provider's own native key bytes, because
+// re-deriving a stored key as fresh input would escape it and address a row
+// that exists nowhere.
+func TestLookupChildIdentityAnswersNativeBytesForStoredSpellings(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		key  string
+	}{
+		{name: "a plain native key", key: "native-child"},
+		{name: "a derived key", key: strings.Repeat("x", bgtask.RowKeyByteLimit+1)},
+		{name: "an escaped reserved-shaped key", key: bgtask.NormalizeRowKey(bgtask.NormalizeRowKey(strings.Repeat("x", bgtask.RowKeyByteLimit+1)))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, sink, _, listRows := setupBgTaskTestWithService(t)
+			childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: tc.key, Title: "Native child"})
+			require.NoError(t, err)
+			rows := listRows()
+			require.Len(t, rows, 1)
+
+			identity, err := bgtask.ParseRowIdentity(rows[0].RowKey)
+			require.NoError(t, err)
+			resolved, found, lookupErr := sink.LookupChildIdentity(identity)
+			require.NoError(t, lookupErr)
+			require.True(t, found)
+			assert.Equal(t, childID, resolved.AgentID)
+			assert.Equal(t, tc.key, resolved.ProviderChildKey, "the native key keeps its exact provider bytes")
+
+			absent, found, lookupErr := sink.LookupChildIdentity(bgtask.RowIdentity{})
+			require.NoError(t, lookupErr)
+			assert.False(t, found)
+			assert.Empty(t, absent.AgentID)
+		})
+	}
+}

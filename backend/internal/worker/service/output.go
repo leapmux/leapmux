@@ -13,7 +13,6 @@ import (
 	"log/slog"
 	"os"
 	"slices"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -1570,16 +1569,19 @@ func (s *agentOutputSink) PersistSubagentReport(write agent.SubagentReportWrite)
 }
 
 func (s *agentOutputSink) PersistChildSubagentReport(write agent.ChildSubagentReportWrite) (bool, error) {
-	rowKey := strings.TrimSpace(write.RowKey)
-	if rowKey == "" {
+	// The COMPLETE native key, never a trimmed one: trimming maps two provider
+	// identities onto one string, and the report then lands on a different
+	// child than the one the provider named. LookupBackgroundTask normalizes
+	// the full key, so a spaced native key finds the row its spaced key opened.
+	if write.RowKey == "" {
 		return false, fmt.Errorf("child subagent report has no row key")
 	}
-	childID, _, found, err := s.LookupBackgroundTask(rowKey)
+	childID, _, found, err := s.LookupBackgroundTask(write.RowKey)
 	if err != nil {
 		return false, err
 	}
 	if !found || childID == "" {
-		return false, fmt.Errorf("subagent report child for row %q is unavailable", rowKey)
+		return false, fmt.Errorf("subagent report child for row %q is unavailable", write.RowKey)
 	}
 	childSink := s.ChildSink(childID)
 	if childSink == nil {
@@ -1663,9 +1665,9 @@ func createMessageRow(ctx context.Context, q *db.Queries, params db.CreateMessag
 	if params.AssembledKind != nil && (*params.AssembledKind < leapmuxv1.AssembledMessageKind_ASSEMBLED_MESSAGE_KIND_TEXT || *params.AssembledKind > leapmuxv1.AssembledMessageKind_ASSEMBLED_MESSAGE_KIND_PLAN) {
 		return 0, fmt.Errorf("message %q has an unknown assembled kind %d", params.ID, *params.AssembledKind)
 	}
-	if params.Completion < int64(leapmuxv1.MessageCompletion_MESSAGE_COMPLETION_UNSPECIFIED) ||
-		params.Completion > int64(leapmuxv1.MessageCompletion_MESSAGE_COMPLETION_FINISHED) {
-		return 0, fmt.Errorf("refusing to persist message %q with unknown completion %d", params.ID, params.Completion)
+	if params.Completion != nil && (*params.Completion < leapmuxv1.MessageCompletion_MESSAGE_COMPLETION_UNSPECIFIED ||
+		*params.Completion > leapmuxv1.MessageCompletion_MESSAGE_COMPLETION_FINISHED) {
+		return 0, fmt.Errorf("refusing to persist message %q with unknown completion %d", params.ID, *params.Completion)
 	}
 	return q.CreateMessage(ctx, params)
 }

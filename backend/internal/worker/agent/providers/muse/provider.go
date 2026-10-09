@@ -10,11 +10,18 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/todoevents"
 )
 
-type museProvider struct{ agent.ProviderDefaults }
+type museProvider struct {
+	agent.ProviderDefaults
+	// locator overrides the launch locator for the stored-session host. Nil on
+	// the registration instance; a test states a controlled peer here, the way
+	// Amp's tests state a controlled CLI.
+	locator *launch.Locator
+}
 
 func (museProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
 	return providerkit.RejectPDFAndBinaryAttachment("Muse Code MSP", attachment)
@@ -36,8 +43,8 @@ func (p museProvider) ResolveResumeHandle(handle, home string) (string, error) {
 	}
 	return id, nil
 }
-func (museProvider) ListStoredSessions(ctx context.Context, q agent.StoredSessionQuery) ([]agent.StoredSession, error) {
-	return storedSessions(ctx, q)
+func (p museProvider) ListStoredSessions(ctx context.Context, q agent.StoredSessionQuery) ([]agent.StoredSession, error) {
+	return storedSessions(ctx, q, p.locator)
 }
 func (museProvider) Classify(raw json.RawMessage) agent.NotificationClassification {
 	var message struct {

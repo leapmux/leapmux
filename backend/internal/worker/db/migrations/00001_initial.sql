@@ -42,7 +42,7 @@ CREATE TABLE agents (
     -- CreateAgent binds the column, so the DEFAULT below is unreachable and the
     -- CHECK is the only guard.
     agent_provider   INTEGER NOT NULL DEFAULT 1
-        CHECK (agent_provider BETWEEN 1 AND 30),
+        CHECK (typeof(agent_provider) = 'integer') CHECK (agent_provider BETWEEN 1 AND 30),
     -- Subagent linkage. parent_agent_id is set ONLY for virtual child agents
     -- (subagent transcripts fed by the parent provider's process; they never
     -- own a process). spawn_span_id is the tool_use span in the PARENT
@@ -167,6 +167,20 @@ CREATE TABLE messages (
     supplemental_content BLOB NOT NULL DEFAULT X'',
     supplemental_content_compression INTEGER NOT NULL DEFAULT 1
         CHECK (typeof(supplemental_content_compression) = 'integer') CHECK (supplemental_content_compression BETWEEN 1 AND 2),
+    -- Stored notification journal length, computed by the deterministic
+    -- leapmux_notification_entry_count function the Worker database package
+    -- registers before any Worker connection opens. 0 means no journal (the
+    -- ordinary message), -1 means the stored supplement fails decompression
+    -- or holds invalid private storage, and a positive count is the journal
+    -- length. idx_messages_notification_entries and the duplicate lookup read
+    -- this count so they never decompress the session's ordinary supplements.
+    -- The count is private to Worker storage: it reaches no protobuf field.
+    -- External writes require the same deterministic function to be registered.
+    notification_entry_count INTEGER GENERATED ALWAYS AS (
+        leapmux_notification_entry_count(supplemental_content, supplemental_content_compression)
+    ) STORED NOT NULL
+        CHECK (typeof(notification_entry_count) = 'integer')
+        CHECK (notification_entry_count >= -1),
     supplemental_revision INTEGER NOT NULL DEFAULT 0
         CHECK (typeof(supplemental_revision) = 'integer' AND supplemental_revision >= 0),
     -- A non-empty key identifies a message-producing operation that must stay
@@ -184,15 +198,34 @@ CREATE TABLE messages (
     -- plain range; TestAgentProviderOrdinalsAreContiguous fails the suite if a
     -- hole appears.
     agent_provider      INTEGER NOT NULL DEFAULT 1
-        CHECK (agent_provider BETWEEN 1 AND 30),
-    -- Scroll-rail jump-mark classifier (0=none, see proto MarkType). Set at write
-    -- time so the rail can list marked seqs without decompressing content.
-    mark_type           INTEGER NOT NULL DEFAULT 0,
-    -- AssembledMessageKind and MessageCompletion ordinals. 0 is a real state in both
-    -- (this message is not an assembled one, and it reports no completion), so both
-    -- CHECKs start at 0. TestEnumColumnChecksMatchTheirProtoRanges pins both ranges.
-    assembled_kind      INTEGER NOT NULL DEFAULT 0 CHECK (assembled_kind BETWEEN 0 AND 3),
-    completion          INTEGER NOT NULL DEFAULT 0 CHECK (completion BETWEEN 0 AND 4),
+        CHECK (typeof(agent_provider) = 'integer') CHECK (agent_provider BETWEEN 1 AND 30),
+    -- Optional MarkType ordinal for the scroll-rail jump marks. NULL means no
+    -- mark; the unspecified 0 is unstorable because wire absence is SQL NULL.
+    -- Set at write time so the rail can list marked seqs without decompressing
+    -- content, and partial-indexed so unmarked inserts skip that index.
+    -- TestEnumColumnChecksMatchTheirProtoRanges pins the range.
+    mark_type           INTEGER
+        CHECK (mark_type IS NULL OR typeof(mark_type) = 'integer')
+        CHECK (mark_type BETWEEN 1 AND 2),
+    -- Optional AssembledMessageKind and MessageCompletion ordinals. NULL means
+    -- this message is not an assembled one and reports no completion, and the
+    -- unspecified 0 is unstorable for the same reason.
+    -- completion's range CHECK keeps the enum's contiguous 0..4 numbering
+    -- visible while the typeof clause refuses the 0 itself: the zero documents
+    -- the numbering, not an admissible stored value.
+    -- TestEnumColumnChecksMatchTheirProtoRanges pins both ranges.
+    assembled_kind      INTEGER
+        CHECK (assembled_kind IS NULL OR typeof(assembled_kind) = 'integer')
+        CHECK (assembled_kind BETWEEN 1 AND 3),
+    completion          INTEGER
+        CHECK (completion IS NULL OR (typeof(completion) = 'integer' AND completion <> 0))
+        CHECK (completion BETWEEN 0 AND 4),
+    -- A historical write without live effects: the row persists in its
+    -- original transcript (its capture owner retired), but no current live
+    -- state follows it. The browser receives the same fact through
+    -- AgentChatMessage.transcript_only.
+    transcript_only     INTEGER NOT NULL DEFAULT 0
+        CHECK (typeof(transcript_only) = 'integer'),
     created_at          DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     UNIQUE(agent_id, seq)
 );
@@ -205,6 +238,16 @@ CREATE INDEX idx_messages_span_id ON messages(agent_id, agent_session_id, span_i
 CREATE INDEX idx_messages_mark_type ON messages(agent_id, seq, mark_type) WHERE mark_type IS NOT NULL;
 CREATE UNIQUE INDEX idx_messages_idempotency_key
     ON messages(agent_id, agent_session_id, idempotency_key) WHERE idempotency_key <> '';
+-- Serves the notification duplicate lookup, which reads only messages whose
+-- generated count identifies a journal or corrupt private storage. Partial
+-- (only counted rows) so the far-more-numerous ordinary inserts skip it, and
+-- a lookup's read cost does not depend on the session's ordinary message
+-- count. The aggregate rows this index lists can hold an empty row-level
+-- idempotency key on purpose, so idx_messages_idempotency_key cannot find
+-- them; this index is the one accessor that may.
+CREATE INDEX idx_messages_notification_entries
+    ON messages (agent_id, agent_session_id, seq)
+    WHERE notification_entry_count <> 0;
 
 -- Record processed native completions separately from stored messages.
 -- A failed completion claim can leave its message stored without its effects.
@@ -346,7 +389,7 @@ CREATE TABLE control_response_answers (
     -- that recorded 0 for a forgotten write would match an agent whose provider
     -- field was also unset.
     agent_provider INTEGER NOT NULL
-        CHECK (agent_provider BETWEEN 1 AND 30),
+        CHECK (typeof(agent_provider) = 'integer') CHECK (agent_provider BETWEEN 1 AND 30),
     input_id TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (agent_id, request_id, claim_token)
 );
@@ -627,7 +670,7 @@ CREATE TABLE agent_background_tasks (
     -- split against bgtask.Status.IsFinished, so a new status added on the
     -- wrong side of it fails the suite instead of silently joining the other
     -- pool.
-    status          INTEGER NOT NULL CHECK (status BETWEEN 1 AND 8),
+    status          INTEGER NOT NULL CHECK (typeof(status) = 'integer') CHECK (status BETWEEN 1 AND 8),
     created_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     updated_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     ended_at        DATETIME,

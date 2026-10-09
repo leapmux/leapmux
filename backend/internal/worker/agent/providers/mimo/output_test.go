@@ -2364,8 +2364,8 @@ func TestLateUnresolvedChildFailureSurvivesParentSettlementAndRestart(t *testing
 
 type rejectedFailureReceiptSink struct {
 	agent.ProviderServices
-	dividerReject      atomic.Int32
-	notificationReject atomic.Int32
+	dividerReject       atomic.Int32
+	notificationReject  atomic.Int32
 	notificationBlocked atomic.Bool
 }
 
@@ -2377,7 +2377,7 @@ func (s *rejectedFailureReceiptSink) PersistTurnEnd(content agent.MessageContent
 	return s.ProviderServices.PersistTurnEnd(content, span)
 }
 
-func (s *rejectedFailureReceiptSink) PersistNotification(source leapmuxv1.MessageSource, raw []byte) (bool, error) {
+func (s *rejectedFailureReceiptSink) PersistNotification(source leapmuxv1.MessageSource, content agent.MessageContent) (bool, error) {
 	if s.notificationBlocked.Load() {
 		return false, errors.New("the controlled notification write remains blocked")
 	}
@@ -2385,7 +2385,7 @@ func (s *rejectedFailureReceiptSink) PersistNotification(source leapmuxv1.Messag
 		s.notificationReject.Add(-1)
 		return false, errors.New("the controlled failure notification write failed")
 	}
-	return s.ProviderServices.PersistNotification(source, raw)
+	return s.ProviderServices.PersistNotification(source, content)
 }
 
 func TestLateRejectedMainDividerRetainsItsOriginalFinalization(t *testing.T) {
@@ -2653,7 +2653,7 @@ func TestLateRejectedRetryNotificationsKeepEveryNativeObservation(t *testing.T) 
 			retry := func(attempt int) []byte {
 				return eventJSON(t, contracts.MiMoEventSessionStatus, map[string]any{
 					"sessionID": testSessionID,
-					"status": map[string]any{"type": contracts.MiMoStatusTypeRetry, "attempt": attempt, "message": "The native retry reason.", "next": attempt},
+					"status":    map[string]any{"type": contracts.MiMoStatusTypeRetry, "attempt": attempt, "message": "The native retry reason.", "next": attempt},
 				})
 			}
 			one, two := retry(1), retry(2)
@@ -2823,14 +2823,14 @@ func usageMessageEvent(t *testing.T, messageID, actor string, cost float64, toke
 func TestLateRetainedMainUsageKeepsCurrentContextOwnership(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name string
+		name        string
 		replacement bool
-		actor string
-		messageID string
-		cost float64
-		input int64
-		context int64
-		totalCost float64
+		actor       string
+		messageID   string
+		cost        float64
+		input       int64
+		context     int64
+		totalCost   float64
 	}{
 		{name: "latest completed turn", actor: mainActorID, messageID: "msg_usage_original", cost: 0.75, input: 1500, context: 1500, totalCost: 0.75},
 		{name: "old main message", replacement: true, actor: mainActorID, messageID: "msg_usage_original", cost: 1, input: 1500, context: 2000, totalCost: 1.75},
@@ -2861,10 +2861,10 @@ func TestLateRetainedMainUsageKeepsCurrentContextOwnership(t *testing.T) {
 func TestLateMainUsageKeepsOptionalCounterSemantics(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name string
-		tokens any
+		name    string
+		tokens  any
 		context int64
-		cost float64
+		cost    float64
 	}{
 		{name: "zero", tokens: map[string]any{"input": 0, "output": 0}, context: 1000, cost: 0.75},
 		{name: "absent tokens", context: 1000, cost: 0.75},

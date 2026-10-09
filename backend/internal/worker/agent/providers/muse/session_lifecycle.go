@@ -3,6 +3,7 @@ package muse
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -96,10 +97,35 @@ func (a *Agent) ClearContext() (string, error) {
 	if err := a.openSession("", a.APITimeout()); err != nil {
 		return "", err
 	}
+	// Commit the replacement, then retire the old session state BEFORE its
+	// subscriptions close: every late native frame of the old session then
+	// meets a retired state and changes no live turn or transcript.
+	a.stateMu.Lock()
+	replacement := a.sessionID
+	if previous := a.sessions[old]; previous != nil && old != replacement {
+		previous.retired = true
+		previous.turnID = ""
+	}
+	logSubscription := int64(0)
+	if previous := a.sessions[old]; previous != nil {
+		logSubscription = previous.log.subscriptionID
+	}
+	a.stateMu.Unlock()
 	a.sink.ResetSpans()
-	a.sink.UpdateSessionID(a.sessionID)
-	_, err := a.request(methodViewUnsubscribe, map[string]string{"sessionId": old}, a.APITimeout(), nil)
-	return a.sessionID, err
+	a.sink.UpdateSessionID(replacement)
+	// Both native subscriptions of the old session close after the commit. A
+	// refusal there cannot roll the committed replacement back, so it is
+	// logged and swallowed: the host stops delivering either way, and the
+	// retired state already ignores whatever still arrives.
+	if _, err := a.request(methodViewUnsubscribe, map[string]string{"sessionId": old}, a.APITimeout(), nil); err != nil {
+		slog.Warn("muse view unsubscribe after context clear failed", "session", old, "error", err)
+	}
+	if logSubscription != 0 {
+		if _, err := a.request(methodLogUnsubscribe, map[string]any{"subscriptionId": logSubscription}, a.APITimeout(), nil); err != nil {
+			slog.Warn("muse log unsubscribe after context clear failed", "session", old, "error", err)
+		}
+	}
+	return replacement, nil
 }
 
 func (a *Agent) CompactContext() error {

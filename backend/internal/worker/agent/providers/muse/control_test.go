@@ -928,8 +928,8 @@ func TestMuseQuestionReadsALargeImmutableFormConcurrently(t *testing.T) {
 	assert.Equal(t, originalAnswer, answer)
 }
 
-func (sink *museControlPublicationSink) PersistNotification(source leapmuxv1.MessageSource, content []byte) (bool, error) {
-	sink.notificationAttempts = append(sink.notificationAttempts, slices.Clone(content))
+func (sink *museControlPublicationSink) PersistNotification(source leapmuxv1.MessageSource, content agent.MessageContent) (bool, error) {
+	sink.notificationAttempts = append(sink.notificationAttempts, content.Clone().Original)
 	if sink.notificationErr != nil {
 		return false, sink.notificationErr
 	}

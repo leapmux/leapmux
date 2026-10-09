@@ -80,7 +80,7 @@ func TestStoredSessionPickerRejectsInvalidRequiredDates(t *testing.T) {
 	for _, field := range []string{"createdAt", "updatedAt", "lastActivityAt"} {
 		t.Run(field, func(t *testing.T) {
 			t.Setenv("LEAPMUX_MUSE_NATIVE_LIST_INVALID_DATE", field)
-			_, err := storedSessions(testutil.DeadlineContext(t), agent.StoredSessionQuery{WorkingDir: t.TempDir(), Shell: "/bin/sh"})
+			_, err := storedSessions(testutil.DeadlineContext(t), agent.StoredSessionQuery{WorkingDir: t.TempDir(), Shell: "/bin/sh"}, nil)
 			require.Error(t, err)
 		})
 	}

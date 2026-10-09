@@ -84,3 +84,47 @@ func notificationLookupFixture(b *testing.B, count int, providerSupplement bool)
 	require.NoError(b, transaction.Commit())
 	return queries, entry
 }
+
+// Measure the write cost the generated notification_entry_count column adds:
+// every message INSERT now evaluates the deterministic function once, on the
+// ordinary no-journal path (empty supplement) and on the journal path.
+func BenchmarkNotificationEntryCountWriteCost(b *testing.B) {
+	for _, journal := range []bool{false, true} {
+		b.Run(fmt.Sprintf("journal=%t", journal), func(b *testing.B) {
+			ctx := b.Context()
+			database, err := workerdb.Open(":memory:", sqlitedb.Config{})
+			require.NoError(b, err)
+			b.Cleanup(func() { _ = database.Close() })
+			require.NoError(b, workerdb.Migrate(ctx, database))
+			queries := db.New(database)
+			require.NoError(b, queries.CreateAgent(ctx, db.CreateAgentParams{
+				ID: "write-agent", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+			}))
+			entry, err := agent.NewNotificationEntry(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+				leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+				agent.MessageContent{IdempotencyKey: "known-key", Original: []byte(`{"type":"system","text":"notification"}`)})
+			require.NoError(b, err)
+			supplement, err := agent.AppendNotificationJournal(nil, agent.MessageContent{Original: []byte(`{"type":"system","text":"notification"}`)}, entry)
+			require.NoError(b, err)
+			stored, storedCompression := msgcodec.Compress(supplement)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for written := 0; b.Loop(); written++ {
+				supplemental, compression := []byte(nil), leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE
+				if journal {
+					supplemental, compression = stored, storedCompression
+				}
+				_, err := createMessageRow(ctx, queries, db.CreateMessageParams{
+					ID: fmt.Sprintf("write-%d", written), AgentID: "write-agent", AgentSessionID: "write-session",
+					Source: leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+					Content: []byte(`{"content":"ordinary message"}`), ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
+					SupplementalContent: supplemental, SupplementalContentCompression: compression,
+					SpanLines: "[]", CreatedAt: sqltime.NewSQLiteTime(time.Date(2026, time.October, 9, 0, 0, 0, 0, time.UTC)),
+				})
+				if err != nil {
+					b.Fatalf("write the message: %v", err)
+				}
+			}
+		})
+	}
+}

@@ -75,6 +75,7 @@ func (s *spawnCall) markAmbiguous() {
 // It accepts these native tools from Cline 3.0.64's configured-agent-tool.ts:
 //   - spawn_agent.
 //   - A .cline/agents/ tool with the shape subagent_<name>_<hash>.
+//
 // Both return the same result shape and run the child's tools without approval.
 func startsSubagent(toolName string) bool {
 	return toolName == contracts.ClineToolSpawnAgent || strings.HasPrefix(toolName, contracts.ClineToolPrefixConfiguredAgent)
@@ -280,6 +281,7 @@ func spawnCompletions(status bgtask.Status) (text, tools agent.MessageCompletion
 //   - Complete its own child transcript.
 //   - Write its report.
 //   - Close its registry row.
+//
 // If live ownership is ambiguous, first reconstruct that child's transcript from Cline's store.
 func (a *Agent) finishSpawn(s *spawnCall, status bgtask.Status, report string) {
 	a.Mu.Lock()
@@ -570,6 +572,7 @@ func (m storedMessage) blocks() []storedBlock {
 //   - assistant.finished.
 //   - tool.started.
 //   - tool.finished.
+//
 // Preserve previously counted live text and reasoning, as well as every tool call already displayed.
 // The first user message is the task that already opens the transcript.
 func (a *Agent) writeStoredConversation(job backfillJob, sessionID string, raw json.RawMessage) {

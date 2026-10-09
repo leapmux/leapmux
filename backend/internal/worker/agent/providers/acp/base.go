@@ -427,6 +427,7 @@ func (b *Base) HasAvailableCommand(command string) bool {
 // Before session/new, the method releases that session:
 //   - Answer each open control request.
 //   - Send session/cancel when a turn runs.
+//
 // After the swap, close the outgoing session's rows and end that session with the agent.
 // Then reapplySettings, when present, applies the provider settings to the new session, such as the model and permission mode.
 // A failed session/new leaves the outgoing session current with its turn stopped, as Stop does.
@@ -555,6 +556,7 @@ func (b *Base) WithSessionID(fn func(sessionID string) error) error {
 //   - The option ID.
 //   - The label.
 //   - The order.
+//
 // Permission mode uses "Mode". The primary agent uses "Primary Agent".
 // secondaryChannel and StaticSecondaryGroup share that declaration, so their presentation cannot differ.
 type secondaryAxis struct {
@@ -649,6 +651,7 @@ type acpSecondaryChannel struct {
 //   - Its presentation.
 //   - Its state pointers.
 //   - Its refresh operations.
+//
 // Settings writes and refreshes use that result, so this method owns the family selection.
 // The operations capture b. Hold b.Mu when an operation accesses its fields.
 // secondaryChannelOnce caches the result because construction fixes the mode channel for the process lifetime.
@@ -797,6 +800,7 @@ func (b *Base) setSecondary(value string) error {
 //   - The model.
 //   - The secondary setting.
 //   - Mutable config options.
+//
 // It uses the resolved secondary channel and effectiveSetModel.
 // b.hooks.ModelIDNormalizer supplies each provider's model-ID conversion.
 func (b *Base) UpdateSettings(options optionmap.Map) agentapi.SettingsApplyResult {
@@ -974,6 +978,7 @@ func (b *Base) refreshModelsLocked(models []*agentapi.ModelInfo, modelsFieldInfo
 //   - A valid reported value.
 //   - A valid stored value.
 //   - The first nonempty option ID.
+//
 // An empty rebuild preserves the preceding list.
 // A configOptions `mode` override takes precedence when present.
 // The caller holds the owning Base.Mu because these operations access Base fields.
@@ -1371,6 +1376,7 @@ func (b *Base) resetTurnStateLocked() {
 //   - The field is absent.
 //   - The field is empty.
 //   - Decoding fails.
+//
 // It logs a warning when decoding fails.
 // The kind argument identifies the session update type in that warning.
 func (b *Base) extractACPChunkText(content json.RawMessage, kind string) string {
@@ -1399,6 +1405,7 @@ func (b *Base) persistPromptResponse(resp json.RawMessage, numToolUses int) {
 //   - RawInput.
 //   - RawOutput.
 //   - Meta.
+//
 // Provider hooks can therefore detect a subagent spawn from the input shape instead of guessing from its tool name.
 type ToolCallEnvelope struct {
 	ToolCallID string          `json:"toolCallId"`
@@ -1459,6 +1466,7 @@ const (
 //   - Registry upsert data: kind/rowKey/title/activity/status/group.
 //   - An optional row close.
 //   - An optional child transcript payload with the child key and raw bytes to persist.
+//
 // Shared code converts the observation into sink calls, so provider-specific names and shapes stay outside this file.
 type SubagentObservation struct {
 	// These fields describe the registry row.
@@ -1927,6 +1935,7 @@ func Start[T any](ctx context.Context, opts agentapi.Options, sink agentapi.Prov
 //   - The model group.
 //   - The mapped permission-mode or primary-agent group, when a secondary channel exists.
 //   - Any mutable option groups that the server reports.
+//
 // The secondary group carries its current value.
 // Omit it when it has neither options nor a current value.
 // One implementation serves every ACP family through secondaryChannel and the provider's secondaryFallback, so providers need no override.
@@ -1996,6 +2005,7 @@ func (b *Base) secondaryOptionGroupLocked() *leapmuxv1.AvailableOptionGroup {
 //   - Model.
 //   - Mode.
 //   - configOptions.
+//
 // It serves session/new and resume handshakes and the ClearContext response.
 // The caller validates the session ID.
 func parseACPSessionResult(resp json.RawMessage) (*SessionResult, error) {
@@ -2305,6 +2315,7 @@ func acpModelInfosFromConfigOption(option ConfigOption) ([]ModelInfo, string) {
 // Servers report models through one or both of these channels:
 //   - The SessionModelState models field.
 //   - A model selector in configOptions, which OpenCode and Kilo use exclusively.
+//
 // Combine both channels, keep models-field entries first, and remove duplicate model IDs.
 // Providers with split catalogs or a partial channel list therefore expose every model.
 // Use the models field's current ID when present, or otherwise the config option's current value.
@@ -2497,6 +2508,7 @@ func (b *Base) applyHandshakeMode(handshake *SessionResult, defaultMode string) 
 //   - Configure the secondary channel.
 //   - Attempt the requested model write.
 //   - Apply the remaining startup options.
+//
 // Secondary-channel rejection stops the agent and returns a startup error.
 // Model rejection does not undo the secondary channel or stop an otherwise valid session.
 // One shared sequence preserves that order for both families.
@@ -2519,6 +2531,7 @@ func (b *Base) applySecondaryStartup(handshake *SessionResult, opts agentapi.Opt
 //   - Kiro.
 //   - Qwen Code.
 //   - Reasonix.
+//
 // It reads the handshake mode channel and applies the requested permission mode.
 // Cursor supplies its normalized model ID.
 // trySetStartupModel uses effectiveSetModel, which automatically selects Cursor's native conversion through setCursorModel.
@@ -2547,6 +2560,7 @@ func (b *Base) ApplyPrimaryAgentStartup(handshake *SessionResult, opts agentapi.
 // The resolved mode channel controls the configOptions mode selector:
 //   - ModeChannelPermissionMode applies permission mode.
 //   - ModeChannelPrimaryAgent applies the primary agent for OpenCode and Kilo.
+//
 // Expose each unmapped option as a mutable group.
 // Update every channel under one lock, so a concurrent settings read cannot observe an incomplete update.
 // Broadcast after releasing the lock.
@@ -2676,6 +2690,7 @@ func protoSliceEqual[T proto.Message](a, b []T) bool {
 //   - Keep the first entry for each value, as buildACPModels does.
 //   - Skip empty IDs and IDs excluded by the hidden filter.
 //   - Normalize names as buildPrimaryAgentOptions does at handshake.
+//
 // Every option therefore renders identically before and after a config_option_update and in the mode and mutable-option channels.
 // The caller sets the group's DefaultValue through buildOptionGroup, rather than setting a default on each option.
 // buildConfigOptionSelect and applyOptionGroupsLocked share this builder.
@@ -2714,6 +2729,7 @@ func buildConfigOptionSelect(options []ConfigOption, hiddenFilter func(string) b
 //   - The new value.
 //   - Whether the current value changed.
 //   - Whether the available list changed.
+//
 // When preferredFirst is nonempty, move that ID first before comparing lists.
 // The rebuilt list then matches the handshake's order, and an unchanged catalog compares equal.
 // The caller must hold b.Mu.

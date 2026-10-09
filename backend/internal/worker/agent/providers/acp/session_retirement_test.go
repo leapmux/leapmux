@@ -232,6 +232,7 @@ func sessionIDsOf(requests []agenttest.RecordedRequest, method string) []string 
 //   - Answer each such request.
 //   - Retire its card.
 //   - Cancel the turn.
+//
 // Otherwise the old turn remains blocked until a later stop of the new session answers its request.
 // That answer would let the old turn continue without a visible transcript.
 func TestACPClearContextReleasesTheOutgoingTurnBeforeTheNewSession(t *testing.T) {
@@ -331,6 +332,7 @@ func TestACPPublishesTheControlRequestsOfTheSessionsThatItServes(t *testing.T) {
 // The sink learns a new main session after the base:
 //   - At startup, after the session/new response.
 //   - At a context clear, after the swap.
+//
 // A main-session request in that interval formerly used the sink's old session, which caused every answer to be refused.
 // The base therefore stores a main-session request under its actual main session.
 // A subagent-session request or request without a session keeps the sink's session because neither identifies its owning main session.
@@ -419,6 +421,7 @@ func TestACPClearContextForgetsTheChildSessionsOfTheOutgoingSession(t *testing.T
 //   - OpenCode.
 //   - Kilo.
 //   - Reasonix.
+//
 // session/cancel leaves that work running.
 func TestACPClearContextClosesTheOutgoingSessionWhenTheAgentAdvertisesIt(t *testing.T) {
 	t.Parallel()

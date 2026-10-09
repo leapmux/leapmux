@@ -1,4 +1,3 @@
-import { BACKGROUND_TASK_STATUS_TOKEN } from '~/generated/contracts/worker-vocab'
 import type { Component, JSX } from 'solid-js'
 import type { BackgroundTaskItem, BackgroundTaskKindFilter } from '~/stores/chatBackgroundTasks'
 import Bot from 'lucide-solid/icons/bot'
@@ -8,6 +7,7 @@ import WorkflowIcon from 'lucide-solid/icons/workflow'
 import { createMemo, For, Match, Show, Switch } from 'solid-js'
 import { ClippedText } from '~/components/common/ClippedText'
 import { StatusDot } from '~/components/common/StatusDot'
+import { BACKGROUND_TASK_STATUS_TOKEN } from '~/generated/contracts/worker-vocab'
 import { cleanName } from '~/lib/validate'
 import {
   backgroundTaskEndLabel,

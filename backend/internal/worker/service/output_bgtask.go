@@ -1133,6 +1133,13 @@ func (s *agentOutputSink) applyAndBroadcast(rowKey string, apply func(rootAgentI
 }
 
 func (s *agentOutputSink) UpsertBackgroundTask(task bgtask.Upsert) error {
+	// An upsert with no key has no identity to open a row under: the registry
+	// refuses it rather than deriving a key for bytes no provider sent. A
+	// caller with no registry linkage skips the call entirely; renaming and
+	// child-agent ensurement still treat the empty key as their no-op signal.
+	if task.RowKey == "" {
+		return fmt.Errorf("background task upsert has no row key")
+	}
 	// The closure takes its key from applyAndBroadcast rather than from the
 	// Upsert it closes over. applyAndBroadcast NORMALIZES, so the two are not
 	// always the same string, and `task` carries the row key a second time --
@@ -1220,6 +1227,44 @@ func (s *agentOutputSink) LookupBackgroundTask(rowKey string) (string, bgtask.St
 		return "", noStatus, false, nil
 	}
 	return row.ChildAgentID, row.Status, true, nil
+}
+
+// LookupChildIdentity resolves a stored registry key to its durable child
+// without re-deriving the key: the identity's spelling is what the registry
+// already holds, so the read goes to the cache and the primary key by its
+// exact bytes. The native key comes from the child agent row, which preserves
+// the provider's own bytes however the registry key was spelled.
+func (s *agentOutputSink) LookupChildIdentity(identity bgtask.RowIdentity) (agent.ChildIdentity, bool, error) {
+	key := identity.String()
+	cache := s.h.bgTaskCache(s.rootAgentID)
+	cache.Mu.Lock()
+	if err := cache.on(s.h.queries, s.rootAgentID).ensureSeededLocked(s.h.bgTaskCtx()); err != nil {
+		cache.Mu.Unlock()
+		return agent.ChildIdentity{}, false, fmt.Errorf("seed background tasks for %s: %w", s.rootAgentID, err)
+	}
+	childID := ""
+	if idx := cache.indexOf(key); idx >= 0 {
+		childID = cache.Rows[idx].ChildAgentID
+	}
+	cache.Mu.Unlock()
+	if childID == "" {
+		// The cache holds only the display window; a row that carries a child
+		// transcript outlives it. The primary key read is the same fallback
+		// LookupBackgroundTask makes, with the same third-answer error rule.
+		row, found, err := s.h.loadStoredBgTask(s.h.bgTaskCtx(), s.h.queries, s.rootAgentID, key)
+		if err != nil || !found {
+			return agent.ChildIdentity{}, false, err
+		}
+		childID = row.ChildAgentID
+	}
+	if childID == "" {
+		return agent.ChildIdentity{}, false, nil
+	}
+	child, err := s.h.queries.GetAgentByID(s.h.bgTaskCtx(), childID)
+	if err != nil {
+		return agent.ChildIdentity{}, false, nil
+	}
+	return agent.ChildIdentity{AgentID: childID, ProviderChildKey: child.ProviderChildKey}, true, nil
 }
 
 // ReviveBackgroundTask returns a finished row to running and clears the prior run's descriptive state.

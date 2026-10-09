@@ -235,7 +235,7 @@ func (a *Agent) applyControlRecord(record *controlRecord) bool {
 			}
 			record.cancel(record.key)
 		}
-		if _, err := record.state.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, record.raw); err != nil {
+		if _, err := record.state.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: record.raw}); err != nil {
 			slog.Warn("persist a Muse control settlement", "error", err)
 			return false
 		}

@@ -454,6 +454,17 @@ type ChildServices interface {
 }
 
 // BackgroundTaskServices owns the provider-neutral task registry.
+// ChildIdentity is the durable half of a registry row's child linkage: the
+// child agent id, and the provider's own native key exactly as first observed.
+// The native key is the bytes the provider recognizes on its own wire; the
+// registry spelling of the same row can be a derived or escaped digest, which
+// no provider command accepts.
+type ChildIdentity struct {
+	AgentID string
+	// ProviderChildKey is the provider's own key bytes; empty for a span-only child.
+	ProviderChildKey string
+}
+
 type BackgroundTaskServices interface {
 
 	// Registry writes. All are keyed under the ROOT owner of this sink.
@@ -495,6 +506,21 @@ type BackgroundTaskServices interface {
 	// first. A key that identifies nothing (a display name, another session, a
 	// foreign address) simply misses.
 	LookupBackgroundTask(rowKey string) (childAgentID string, status bgtask.Status, ok bool, err error)
+
+	// LookupChildIdentity resolves a STORED registry key to its durable child:
+	// the child agent id and the provider's own native key bytes. The identity
+	// arrives typed because its spelling is already stored: re-deriving it as
+	// fresh provider input would ESCAPE a derived key and address a row that
+	// exists nowhere, so this is the one registry read that takes
+	// bgtask.RowIdentity instead of a fresh provider key.
+	//
+	// ok is false when the root's registry holds no row under that exact
+	// spelling or the row owns no child transcript. A span-only child exists
+	// with an empty ProviderChildKey: the child is durable, its native key is
+	// not. A caller that needs a native key for a wire command treats the empty
+	// ProviderChildKey as "no native route" and must not fall back to the
+	// registry spelling.
+	LookupChildIdentity(identity bgtask.RowIdentity) (ChildIdentity, bool, error)
 
 	// ReviveBackgroundTask returns a FINISHED row to Running, clears its
 	// ended_at, and lets the reopened transcript be closed again by the next

@@ -5,19 +5,64 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
+	"github.com/leapmux/leapmux/internal/worker/terminal"
 )
 
-func storedSessions(ctx context.Context, q agent.StoredSessionQuery) (sessions []agent.StoredSession, err error) {
+// absentMuseHost reports whether a stored-session host failure means the Muse
+// command is not available on this machine. The locator states that as its own
+// error, and an unresolvable launch reaches process start as an empty command.
+// Neither sentinel is a defined error value, so the two message fragments are
+// matched alongside the exec and filesystem causes they can also surface as.
+func absentMuseHost(err error) bool {
+	var execErr *exec.Error
+	if errors.As(err, &execErr) {
+		return true
+	}
+	// The launch wraps the host in a shell, so an unresolvable command reaches
+	// process start as the shell's own exit 127 ("command not found") rather
+	// than an exec error.
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 127 {
+		return true
+	}
+	if errors.Is(err, exec.ErrNotFound) || errors.Is(err, fs.ErrNotExist) {
+		return true
+	}
+	message := err.Error()
+	return strings.Contains(message, "is not installed on this machine") ||
+		strings.Contains(message, "exec: no command")
+}
+
+func storedSessions(ctx context.Context, q agent.StoredSessionQuery, locator *launch.Locator) (sessions []agent.StoredSession, err error) {
 	registration := Registration()
+	if locator != nil {
+		registration.Locator = *locator
+	}
 	if q.RuntimeLocator != nil {
 		registration.Locator = *q.RuntimeLocator
 	}
 	opts := agent.Options{WorkingDir: q.WorkingDir, HomeDir: q.Home(), Shell: q.Shell, LoginShell: q.LoginShell}
+	if opts.Shell == "" {
+		// A stored-session query names no shell -- the browser asks for the
+		// session list before any agent runs -- so the query host runs under
+		// the same default shell providerkit.RunCLI falls back to.
+		opts.Shell = terminal.ResolveDefaultShell()
+	}
 	c, err := openConnection(ctx, opts, registration, q.Environ(), nil)
 	if err != nil {
+		if absentMuseHost(err) {
+			// The Muse command not being available is the store's EMPTY
+			// state, the same answer every file-backed provider gives for a
+			// directory that does not exist -- not a read failure.
+			return nil, nil
+		}
 		return nil, err
 	}
 	defer func() {

@@ -390,7 +390,7 @@ describe('BackgroundTaskList', () => {
   })
 
   it.each(['Completed', ' \u200BCompleted\u202E '])('keeps the exact status on the dot when the cleaned title %j suppresses the repeated end line', (title) => {
-    const native = { ...protoTask('same-final-label', title, ''), status: BackgroundTaskStatus.COMPLETED }
+    const native = { ...protoTask('same-final-label', title, ''), status: BackgroundTaskStatus.SUCCEEDED }
     const { container } = renderList({ tasks: [protoBackgroundTaskToStore(native)] })
     expect(titles(container)[0]?.textContent).toBe('Completed')
     expect(secondaries(container)).toHaveLength(0)
@@ -401,7 +401,7 @@ describe('BackgroundTaskList', () => {
   })
 
   it('exposes separate title and secondary fields for final-row verification', () => {
-    const native = { ...protoTask('separate-final-label', 'Review the diff', ''), status: BackgroundTaskStatus.COMPLETED }
+    const native = { ...protoTask('separate-final-label', 'Review the diff', ''), status: BackgroundTaskStatus.SUCCEEDED }
     const { container } = renderList({ tasks: [protoBackgroundTaskToStore(native)] })
     expect(container.querySelector('[data-testid="bg-task-title"]')?.textContent).toBe('Review the diff')
     expect(container.querySelector('[data-testid="bg-task-secondary"]')?.textContent).toBe('Completed')

@@ -145,8 +145,12 @@ func TestNativeCopilotNestedSubagentBelongsToItsParent(t *testing.T) {
 	nestedRow, ok := copilotBackgroundRow(t, parentSink, "agent-2")
 	require.True(t, ok, "the nested row belongs to the subagent that spawned it")
 	assert.Equal(t, parentRow.ChildAgentID, nestedRow.ParentAgentID)
-	_, rootHasNested := copilotBackgroundRow(t, sink, "agent-2")
-	assert.False(t, rootHasNested, "the root never owns a grandchild row")
+	// The registry is physically shared across the descendant tree, so the
+	// grandchild row is reachable from the root too -- but its linkage owns
+	// it: the parent that spawned it, never the root.
+	rootNested, rootHasNested := copilotBackgroundRow(t, sink, "agent-2")
+	require.True(t, rootHasNested, "the shared registry retains the grandchild physically")
+	assert.Equal(t, parentRow.ChildAgentID, rootNested.ParentAgentID, "the grandchild row links to its parent, never the root")
 }
 
 // An event for a subagent this process never saw start still reaches a transcript.

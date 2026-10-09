@@ -81,7 +81,7 @@ func TestQueriesRepeatTheirPartialIndexPredicate(t *testing.T) {
 		},
 		{
 			name:  "ListMessageSupplementsByAgentAndSession",
-			index: "sqlite_autoindex_messages_2",
+			index: "idx_messages_notification_entries",
 			run: func(t *testing.T) {
 				rows, err := q.ListMessageSupplementsByAgentAndSession(t.Context(), queries.ListMessageSupplementsByAgentAndSessionParams{
 					AgentID: "agent", AgentSessionID: "native-session",

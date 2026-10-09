@@ -501,6 +501,11 @@ func (a *Agent) completeCodexChildRun(threadID string, transition codexChildTran
 	hadTurn := state.turnID != ""
 	state.turnID = ""
 	finalized := state.transcriptFinalized
+	// Copy the SELECTED transition before the flush and close consumers: the
+	// first outcome a closing run chose stays that run's outcome, so a later
+	// completed activity retries a failed close with the original failed
+	// outcome instead of substituting its own.
+	transition = state.finalTransition
 	a.Mu.Unlock()
 
 	route, routed := a.ensureCodexChildRoute(threadID)
@@ -633,8 +638,23 @@ func (a *Agent) takeCollabChildPrompt(threadID string) string {
 }
 
 // InterruptChild aborts a child's current turn inside the owner process.
+//
+// childKey is the registry row's STORED key, which can be a derived or escaped
+// digest of the native thread id. The interrupt goes to the native thread id
+// itself: the durable child identity carries the provider's own bytes, and a
+// normalized registry key never reaches Codex's wire as a thread id.
 func (a *Agent) InterruptChild(childKey string, stop agent.StopContext) error {
 	threadID := childKey
+	if a.sink != nil {
+		if identity, err := bgtask.ParseRowIdentity(childKey); err == nil {
+			if child, found, lookupErr := a.sink.LookupChildIdentity(identity); lookupErr == nil && found {
+				if child.ProviderChildKey == "" {
+					return fmt.Errorf("%w: the subagent has no native codex thread", agent.ErrChildRouteNotReady)
+				}
+				threadID = child.ProviderChildKey
+			}
+		}
+	}
 	if !a.knownCollabChild(threadID) {
 		// The live route can be empty after a restart while the registry row
 		// still resolves. Report a retryable failure.

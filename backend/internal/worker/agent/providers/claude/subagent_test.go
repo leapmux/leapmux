@@ -1042,6 +1042,7 @@ func TestClaude_NestedSpawnOpensNoSpanInTheChildTranscript(t *testing.T) {
 //   - Spawn.
 //   - One reply.
 //   - Final notification.
+//
 // It returns the child's sink.
 // The actual lifecycle establishes a successful final row and its transcript link before testing restart behavior.
 // No directly seeded row replaces that prerequisite.
@@ -1201,6 +1202,7 @@ func TestClaude_TaskStartedWithoutASendMessageDoesNotRevive(t *testing.T) {
 //   - A message to a live child.
 //   - A foreign recipient.
 //   - A send refused by the CLI.
+//
 // The turn end removes it.
 func TestClaude_SendMessageArmExpiresAtTheTurnEnd(t *testing.T) {
 	t.Parallel()
@@ -1582,7 +1584,8 @@ func TestClaude_ATaskStartedThatResolvesNoChildKeepsTheArm(t *testing.T) {
 	restartTaskStarted(a, "tu-send", "Also check the tests.")
 
 	assert.Empty(t, sink.RevivedTasks(), "no transcript resolved, so no revive happened")
-	assert.True(t, a.tasks.takeClaudeRestart("task-1"), "the arm is still standing for a retry")
+	rearmed, _ := a.tasks.takeClaudeRestart("task-1")
+	assert.True(t, rearmed, "the arm is still standing for a retry")
 }
 
 // The CLI can forward a restarted result under the original spawn span.
@@ -1771,7 +1774,9 @@ func TestClaude_AFailedReviveKeepsTheMessageAndRearms(t *testing.T) {
 	msgs := child.Messages()
 	require.Len(t, msgs, before+1, "the delivered message is recorded although the row write failed")
 	assert.JSONEq(t, `{"content":"Also check the tests."}`, string(msgs[len(msgs)-1].Content))
-	assert.True(t, a.tasks.takeClaudeRestart("task-1"), "the arm is back, so a later task_started can retry")
+	rearmed, promptPersisted := a.tasks.takeClaudeRestart("task-1")
+	assert.True(t, rearmed, "the arm is back, so a later task_started can retry")
+	assert.True(t, promptPersisted, "the retry must not repeat the delivered message")
 }
 
 // A child can message an ended sibling, which must classify as a restart at both handleClaudeTaskStarted checks.

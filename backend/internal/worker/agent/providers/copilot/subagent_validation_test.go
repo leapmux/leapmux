@@ -16,7 +16,7 @@ func TestNativeCopilotMalformedCompletionKeepsTheChildActive(t *testing.T) {
 		event  string
 		status bgtask.Status
 	}{
-		{"completed", contracts.CopilotEventSubagentCompleted, bgtask.StatusCompleted},
+		{"completed", contracts.CopilotEventSubagentCompleted, bgtask.StatusSucceeded},
 		{"failed", contracts.CopilotEventSubagentFailed, bgtask.StatusFailed},
 	} {
 		t.Run(outcome.name, func(t *testing.T) {

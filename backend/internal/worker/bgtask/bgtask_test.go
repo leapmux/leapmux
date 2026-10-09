@@ -189,12 +189,19 @@ func TestNormalizeRowKey(t *testing.T) {
 		}
 	})
 
-	t.Run("is stable under a second pass", func(t *testing.T) {
-		// applyAndBroadcast normalizes a key EnsureChildAgent may already have
-		// normalized. A second pass that moved the key would orphan the row.
+	t.Run("moves a reserved-shaped key on a second pass", func(t *testing.T) {
+		// The typed model replaces second-pass stability with a direction rule:
+		// NormalizeRowKey takes FRESH provider bytes only, because a stored key
+		// can carry a reserved prefix that fresh input must escape. Loading a
+		// stored key is ParseRowIdentity's job, which validates it as itself.
+		// A call site that re-normalized a stored key would move its row, and
+		// that defect is what NewRowKey exists to make unrepresentable.
 		for _, key := range unusable {
 			once := NormalizeRowKey(key)
-			assert.Equal(t, once, NormalizeRowKey(once))
+			identity, err := ParseRowIdentity(once)
+			require.NoError(t, err)
+			assert.Equal(t, once, identity.String(), "loading keeps the stored identity")
+			assert.NotEqual(t, once, NormalizeRowKey(once), "re-normalizing stored bytes escapes them")
 		}
 	})
 

@@ -1,5 +1,5 @@
 import type { MockModelToolCall } from './mockModelScript'
-import type { TodoStatus } from './providerToolCalls'
+import type { QuestionRequest, TodoStatus } from './providerToolCalls'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
@@ -2666,10 +2666,10 @@ describe('the native Muse workflow code builder', () => {
 })
 
 describe('askUserQuestionToolCall selection limits', () => {
-  const nativeQuestion = (minimumSelections?: number, maximumSelections?: number, multiSelect = true) => ({
+  const nativeQuestion = (minimumSelections?: number, maximumSelections?: number, multiSelect = true): QuestionRequest => ({
     header: 'Tools',
     question: 'Choose the tools',
-    options: [{ label: 'One', description: 'First', preview: 'Native preview 界' }, { label: 'Two' }, { label: 'Three' }],
+    options: [{ label: 'One', description: 'First', preview: 'Native preview 界' }, { label: 'Two', description: 'Second' }, { label: 'Three', description: 'Third' }],
     multiSelect,
     ...(minimumSelections === undefined ? {} : { minimumSelections }),
     ...(maximumSelections === undefined ? {} : { maximumSelections }),
@@ -2680,8 +2680,10 @@ describe('askUserQuestionToolCall selection limits', () => {
     const original = structuredClone(questions)
     const tool = askUserQuestionToolCall(AgentProvider.MUSE_CODE, 'limited-question', questions)
     expect(JSON.parse(JSON.stringify(tool.arguments))).toEqual({ questions: [{
-      id: 'question-1', header: 'Tools', question: 'Choose the tools',
-      options: [{ label: 'One', description: 'First' }, { label: 'Two' }, { label: 'Three' }],
+      id: 'question-1',
+      header: 'Tools',
+      question: 'Choose the tools',
+      options: [{ label: 'One', description: 'First' }, { label: 'Two', description: 'Second' }, { label: 'Three', description: 'Third' }],
       selection: { mode: 'multiple', min_selections: 2, max_selections: 3 },
     }] })
     expect(questions).toEqual(original)
@@ -2711,7 +2713,7 @@ describe('askUserQuestionToolCall selection limits', () => {
   })
 
   it('refuses a maximum above the supplied option count', () => {
-    const questions = [{ ...nativeQuestion(1, 3), options: [{ label: 'One' }, { label: 'Two' }] }]
+    const questions = [{ ...nativeQuestion(1, 3), options: [{ label: 'One', description: 'First' }, { label: 'Two', description: 'Second' }] }]
     const original = structuredClone(questions)
     expect(() => askUserQuestionToolCall(AgentProvider.MUSE_CODE, 'invalid-limit', questions)).toThrow()
     expect(questions).toEqual(original)
@@ -2725,7 +2727,7 @@ describe('askUserQuestionToolCall selection limits', () => {
   })
 
   it.each([0, 1, 4, 1000])('refuses %i options outside the native model array limits', (count) => {
-    const questions = [{ ...nativeQuestion(), options: Array.from({ length: count }, (_, index) => ({ label: `Option ${index}` })) }]
+    const questions = [{ ...nativeQuestion(), options: Array.from({ length: count }, (_, index) => ({ label: `Option ${index}`, description: `Option ${index} description` })) }]
     const original = structuredClone(questions)
     expect(() => askUserQuestionToolCall(AgentProvider.MUSE_CODE, 'invalid-option-count', questions)).toThrow()
     expect(questions).toEqual(original)
@@ -2755,17 +2757,16 @@ describe('askUserQuestionToolCall selection limits', () => {
     const questions = [nativeQuestion(undefined, undefined, false)]
     const original = structuredClone(questions)
     const tool = askUserQuestionToolCall(AgentProvider.MUSE_CODE, 'single-preview', questions)
-    expect(tool.arguments).toMatchObject({ questions: [{ options: [{ preview: { format: 'markdown', content: 'Native preview 界' } }, { label: 'Two' }, { label: 'Three' }] }] })
+    expect(tool.arguments).toMatchObject({ questions: [{ options: [{ preview: { format: 'markdown', content: 'Native preview 界' } }, { label: 'Two', description: 'Second' }, { label: 'Three', description: 'Third' }] }] })
     expect(JSON.stringify(tool.arguments)).not.toContain('min_selections')
     expect(JSON.stringify(tool.arguments)).not.toContain('max_selections')
     expect(questions).toEqual(original)
   })
 
-  it.each(PROVIDERS.filter(provider => provider !== AgentProvider.MUSE_CODE && hasToolFor(provider, 'askUserQuestion')))
-    ('refuses explicit counts for the builder without this capability %j', (provider) => {
-      const questions = [nativeQuestion(1, 2)]
-      const original = structuredClone(questions)
-      expect(() => askUserQuestionToolCall(provider, 'unsupported-counts', questions)).toThrow()
-      expect(questions).toEqual(original)
-    })
+  it.each(PROVIDERS.filter(provider => provider !== AgentProvider.MUSE_CODE && hasToolFor(provider, 'askUserQuestion')))('refuses explicit counts for the builder without this capability %j', (provider) => {
+    const questions = [nativeQuestion(1, 2)]
+    const original = structuredClone(questions)
+    expect(() => askUserQuestionToolCall(provider, 'unsupported-counts', questions)).toThrow()
+    expect(questions).toEqual(original)
+  })
 })
