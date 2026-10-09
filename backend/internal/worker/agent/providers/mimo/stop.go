@@ -182,6 +182,8 @@ func (a *Agent) finishOutput(completion agent.MessageCompletion) {
 	a.Mu.Unlock()
 	// A rejected notification remains available to the next Stop or Wait call.
 	a.flushFailureNotifications()
+	a.retryRetainedTurnEnd()
+	a.flushCapturedNotifications()
 	a.sink.ReportProgress(agent.ResetProgress())
 	// Process completion ends live spans even when a native closing row waits for persistence.
 	a.sink.ResetSpans()

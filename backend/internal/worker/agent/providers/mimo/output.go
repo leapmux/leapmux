@@ -1411,9 +1411,12 @@ func (a *Agent) handleCompactionPart(event mimoEvent, sessionID string, part mim
 	if ack != nil {
 		close(ack)
 	}
-	if _, err := a.sinkForActor(actorID).PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: event.raw}); err != nil {
-		slog.Error("mimo persist compaction", "agent_id", a.AgentID(), "error", err)
-	}
+	content := agent.MessageContent{Original: event.raw}
+	// A main-transcript compaction holds while a native failure can still
+	// claim the main transcript ahead of it; a child transcript's compaction
+	// is exactly addressed and writes now.
+	rootHeld := actorID == mainActorID && a.rootHoldsNotifications()
+	a.persistCapturedNotification(a.sinkForActor(actorID), content, rootHeld)
 	if releaseManual {
 		// The native summarize route keeps its reply until the next prompt
 		// finishes. Release the Worker queue after the summary exists.
@@ -1452,10 +1455,11 @@ func (a *Agent) handleSessionStatus(event mimoEvent) {
 		a.beginTurn()
 	case contracts.MiMoStatusTypeRetry:
 		// A retry is still the same turn: the agent waits and tries again.
+		// Every retry observation is distinct, including two with equal
+		// bodies: nothing here identifies a native retry, so the queue keeps
+		// each arrival as its own observation.
 		a.beginTurn()
-		if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: event.raw}); err != nil {
-			slog.Error("mimo persist retry", "agent_id", a.AgentID(), "error", err)
-		}
+		a.persistCapturedNotification(a.sink, agent.MessageContent{Original: event.raw}, a.rootHoldsNotifications())
 	case contracts.MiMoStatusTypeIdle:
 		a.endTurn(event.raw)
 	default:
@@ -1507,6 +1511,10 @@ func (a *Agent) beginTurn() {
 // The Worker can hold an active turn before this agent starts one.
 // The input queue marks a turn active when the native server accepts its prompt.
 func (a *Agent) endTurn(idle []byte) {
+	// A divider whose write failed retries first: the later idle can only
+	// carry that retry, never a fresh finalization over the failed turn's
+	// real outcome.
+	a.retryRetainedTurnEnd()
 	a.flushFailureNotifications()
 	a.Mu.Lock()
 	if a.manualCompactionID != "" {
@@ -1557,8 +1565,25 @@ func (a *Agent) endTurn(idle []byte) {
 	a.closeUnfinishedTools(mainActorID, completion)
 	a.sink.ReportProgress(agent.ResetModelProgress())
 	content := a.turnEndContent(divider, completion)
-	if err := a.sink.PersistTurnEnd(content, agent.SpanInfo{}); err != nil {
+	// The native session fact travels IN the content: the captured write
+	// freezes it, so a retry after a session change still lands the divider
+	// in the transcript of the session that actually ended the turn.
+	a.Mu.Lock()
+	content.AgentSessionID = a.sessionID
+	a.Mu.Unlock()
+	captured := agent.CaptureTranscript(a.sink, content, agent.SpanInfo{})
+	if err := captured.PersistTurnEnd(); err != nil {
 		slog.Error("mimo persist turn end", "agent_id", a.AgentID(), "error", err)
+		// Retain the exact finalization -- divider bytes, completion, tool
+		// count -- for the retry the next idle or closure carries. A later
+		// idle would otherwise write an empty divider over the failed turn's
+		// real outcome.
+		a.Mu.Lock()
+		a.retainedTurnEnd = &captured
+		if reportsFailure {
+			a.retainedTurnEndFailure = selected
+		}
+		a.Mu.Unlock()
 	} else if reportsFailure {
 		a.Mu.Lock()
 		a.removeFailureLocked(selected)
@@ -1583,6 +1608,30 @@ func (a *Agent) endTurn(idle []byte) {
 	a.PublishTurnActive()
 	a.retireMainControls()
 	a.flushFailureNotifications()
+	a.flushCapturedNotifications()
+}
+
+// retryRetainedTurnEnd retries a turn-end divider whose write failed, with
+// the finalization captured when the turn actually ended.
+func (a *Agent) retryRetainedTurnEnd() {
+	a.Mu.Lock()
+	captured, failure := a.retainedTurnEnd, a.retainedTurnEndFailure
+	a.Mu.Unlock()
+	if captured == nil {
+		return
+	}
+	if err := captured.PersistTurnEnd(); err != nil {
+		slog.Error("mimo persist turn end", "agent_id", a.AgentID(), "error", err)
+		return
+	}
+	a.Mu.Lock()
+	a.retainedTurnEnd, a.retainedTurnEndFailure = nil, nil
+	a.Mu.Unlock()
+	if failure != nil {
+		a.Mu.Lock()
+		a.removeFailureLocked(failure)
+		a.Mu.Unlock()
+	}
 }
 
 // keepPendingPartsLocked preserves failed native writes when the session changes.
@@ -1763,6 +1812,9 @@ func (a *Agent) attributeFailure(err mimoError, record *mimoMessageRecord) {
 		// Native actor settlement or closure must still persist this failure.
 		failure.actor = record.actor
 		a.Mu.Unlock()
+		// The failure claimed a child transcript, so the main transcript's
+		// held notifications now have a settled destination.
+		a.flushCapturedNotifications()
 		return
 	}
 	if a.turnActive {
@@ -1777,6 +1829,7 @@ func (a *Agent) attributeFailure(err mimoError, record *mimoMessageRecord) {
 	failure.notificationReady = true
 	a.Mu.Unlock()
 	a.flushFailureNotifications()
+	a.flushCapturedNotifications()
 	a.PublishTurnActive()
 }
 
@@ -1796,6 +1849,7 @@ func (a *Agent) flushHeldFailure() {
 	}
 	a.Mu.Unlock()
 	a.flushFailureNotifications()
+	a.flushCapturedNotifications()
 	a.PublishTurnActive()
 }
 

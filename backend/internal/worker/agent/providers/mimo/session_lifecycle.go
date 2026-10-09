@@ -123,6 +123,8 @@ func (a *Agent) ClearContext() (string, error) {
 	a.Mu.Unlock()
 	// A rejected write retains the old observation after the native session changes.
 	a.flushFailureNotifications()
+	a.retryRetainedTurnEnd()
+	a.flushCapturedNotifications()
 	a.ResetCumulativeOutput()
 	a.sink.ReportProgress(agent.ResetProgress())
 	a.sink.ResetSpans()

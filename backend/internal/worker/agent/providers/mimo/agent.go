@@ -51,7 +51,11 @@ type Agent struct {
 	// dispatchMu serializes event handlers with abort reconciliation and context clear.
 	// Each handler changes state in several steps under a.Mu.
 	// Another writer between those steps would see an incomplete state change.
-	dispatchMu sync.Mutex
+	dispatchMu             sync.Mutex
+	notifMu                sync.Mutex
+	retainedTurnEnd        *agent.CapturedTranscript
+	retainedTurnEndFailure *mimoFailure
+	notificationQueue      []*mimoQueuedNotification
 
 	// --- guarded by Mu ---
 
