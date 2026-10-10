@@ -1,8 +1,13 @@
 /** Compare the retained native result with the result that reached the next model request. */
 export function codewhaleBashModelMatches(workerText: string, modelText: string): boolean {
+  // Codewhale 0.10 spills a large result to its own file and hands the model the
+  // same retained excerpt the Worker keeps, whatever its length, so an exact
+  // match is the answer before any older compaction shape is tried.
+  if (workerText === modelText)
+    return true
   const characters = Array.from(workerText)
   if (characters.length <= 48_000)
-    return workerText === modelText
+    return false
   const marker = '\n\n[... output truncated for context ...]\n\n'
   const maximum = 4000
   const remaining = maximum - Array.from(marker).length

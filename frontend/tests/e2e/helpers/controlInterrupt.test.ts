@@ -8,7 +8,7 @@ import process from 'node:process'
 import { create } from '@bufbuild/protobuf'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentActivityState, AgentInfoSchema, AgentProvider, AgentStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { DEFERRED_TOOL_LOAD_CALL_ID, exerciseControlInterrupt, raiseWaitingControl, WAITING_CONTROL_CALL_ID, WAITING_QUESTION, waitingControlSteps } from './controlInterrupt'
+import { exerciseControlInterrupt, raiseWaitingControl, WAITING_CONTROL_CALL_ID, WAITING_QUESTION, waitingControlSteps } from './controlInterrupt'
 import { askUserQuestionToolCall, bashToolCall } from './providerToolCalls'
 
 /** The steps that the scenario takes, in order, and the state that the fakes report. */
@@ -213,14 +213,7 @@ describe('waitingControlSteps', () => {
   const control = raiseWaitingControl(AgentProvider.CODEWHALE, 'question', '', 'abc123')
 
   it('raises the control in one step', () => {
-    expect(waitingControlSteps(control, false)).toEqual([{ toolCalls: [control.toolCall] }])
-  })
-
-  it('loads a deferred tool with a call of its own before the call that raises the control', () => {
-    expect(waitingControlSteps(control, true)).toEqual([
-      { toolCalls: [{ ...control.toolCall, id: DEFERRED_TOOL_LOAD_CALL_ID }] },
-      { toolCalls: [control.toolCall] },
-    ])
+    expect(waitingControlSteps(control)).toEqual([{ toolCalls: [control.toolCall] }])
   })
 })
 
@@ -286,14 +279,13 @@ describe('exerciseControlInterrupt', () => {
     ])
   })
 
-  it('waits for the call after the load of a deferred tool, and ends the turn after it', async () => {
+  it('waits for the raising call, and ends the turn after it', async () => {
     const { script, queued } = fakeScript(1)
-    await exerciseControlInterrupt(context(script, AgentProvider.CODEWHALE), { control: 'question', deferredTool: true })
+    await exerciseControlInterrupt(context(script, AgentProvider.CODEWHALE), { control: 'question' })
     const control = raiseWaitingControl(AgentProvider.CODEWHALE, 'question', '', 'abc123')
-    expect(queued).toEqual(waitingControlSteps(control, true))
-    expect(flow.events).toContain('steps:3')
-    expect(flow.events).not.toContain('steps:2')
-    expect(flow.turnEnded).toHaveBeenCalledExactlyOnceWith(script, 3)
+    expect(queued).toEqual(waitingControlSteps(control))
+    expect(flow.events).toContain('steps:2')
+    expect(flow.turnEnded).toHaveBeenCalledExactlyOnceWith(script, 2)
   })
 
   it('raises a permission whose banner states the file of its command, and passes while the file stays absent', async () => {

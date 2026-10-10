@@ -180,6 +180,8 @@ func launchRuntimeOnce(ctx context.Context, sink agent.ProviderServices, l runti
 //
 // Pin the token and store paths after the final environment merge.
 // An inherited runtime directory must not move the store that LeapMux reads.
+// The store's own home keeps this runtime out of the coordination state of the
+// configured home, which serves one daemon at a time.
 // Adaptive routing supplies immutable native output files and their ownership sidecars.
 func runtimeEnv(env []string, opts agent.Options, store codewhaleStore, token string) []string {
 	env = providerkit.FinalizeAgentEnv(env, opts)
@@ -187,6 +189,7 @@ func runtimeEnv(env []string, opts agent.Options, store codewhaleStore, token st
 		envRuntimeToken+"="+token,
 		envTasksDir+"="+store.tasksDir(),
 		envRuntimeDir+"="+store.runtimeDir(),
+		envHome+"="+store.runtimeHome(),
 		"CODEWHALE_ADAPTIVE_OUTPUT_ROUTING=1",
 	)
 }

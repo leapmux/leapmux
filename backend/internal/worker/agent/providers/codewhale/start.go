@@ -225,13 +225,19 @@ func (a *Agent) syncGoalSnapshot(threadID string) {
 	}
 }
 
-// discardFreshStore removes a store this start made and never used. A store
-// that holds a thread is never removed here: a resume may need it.
+// discardFreshStore removes a store this start made and never used, with its
+// private runtime home. A store that holds a thread is never removed here: a
+// resume may need it.
 func discardFreshStore(fresh bool, store codewhaleStore) {
 	if !fresh || store.dir == "" {
 		return
 	}
 	if err := os.RemoveAll(store.dir); err != nil && !errors.Is(err, os.ErrNotExist) {
 		slog.Debug("codewhale remove an unused store", "store", store.dir, "error", err)
+	}
+	if home := store.runtimeHome(); home != "" {
+		if err := os.RemoveAll(home); err != nil && !errors.Is(err, os.ErrNotExist) {
+			slog.Debug("codewhale remove an unused store home", "home", home, "error", err)
+		}
 	}
 }

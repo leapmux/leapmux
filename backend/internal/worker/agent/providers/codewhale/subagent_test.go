@@ -103,11 +103,6 @@ func TestAgentRunStatus(t *testing.T) {
 func TestInterruptedChildRunResumesWithoutClosingItsRegistryRow(t *testing.T) {
 	t.Parallel()
 	rt := newFakeRuntime(t)
-	var nativeStatus atomic.Value
-	nativeStatus.Store("interrupted")
-	rt.handle(http.MethodGet, routeAgentRuns+"/"+testChildID, func(w http.ResponseWriter, _ *http.Request) {
-		writeFakeJSON(w, http.StatusOK, map[string]any{"status": nativeStatus.Load().(string)})
-	})
 	a, sink := newTestAgent(t, rt)
 	child := &codewhaleChild{
 		agentID:   testChildID,
@@ -119,131 +114,35 @@ func TestInterruptedChildRunResumesWithoutClosingItsRegistryRow(t *testing.T) {
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
 		RowKey: testChildID, Kind: bgtask.KindSubagent, ChildAgentID: child.childID, Status: bgtask.StatusRunning,
 	}))
-	childSink := sink.ChildSink(child.childID)
-	ctx := testutil.DeadlineContext(t)
+	a.children.start(child, a.watchChild)
 
-	assert.False(t, a.pollChild(ctx, childSink, child))
+	// A wait that saw an interruptible child leaves its row open and paused.
+	a.HandleOutput(toolEndEvent(20, "item.completed", "item_wait", "call_wait", contracts.CodewhaleToolAgent,
+		`{"settled":[{"agent_id":"`+testChildID+`","status":"interrupted"}]}`, map[string]any{"action": "wait"}, nil))
 	task, ok := sink.BackgroundTask(testChildID)
 	require.True(t, ok)
 	assert.Equal(t, bgtask.StatusPaused, task.Status)
 	assert.Empty(t, sink.Child(child.childID).ClosedSpans(), "a resumable child keeps its transcript open")
 
-	nativeStatus.Store("model_wait")
-	assert.False(t, a.pollChild(ctx, childSink, child))
+	// A wait that saw the child run again moves the row back.
+	a.HandleOutput(toolEndEvent(21, "item.completed", "item_wait2", "call_wait2", contracts.CodewhaleToolAgent,
+		`{"settled":[{"agent_id":"`+testChildID+`","status":"model_wait"}]}`, map[string]any{"action": "wait"}, nil))
 	task, ok = sink.BackgroundTask(testChildID)
 	require.True(t, ok)
 	assert.Equal(t, bgtask.StatusRunning, task.Status)
 
-	nativeStatus.Store("completed")
-	assert.True(t, a.pollChild(ctx, childSink, child))
-	task, ok = sink.BackgroundTask(testChildID)
-	require.True(t, ok)
-	assert.Equal(t, bgtask.StatusSucceeded, task.Status)
-}
-
-// restartReconciledRun reproduces Codewhale 0.10.0's GET /v1/agent-runs/{id} record for a live child with history lastLive.
-// The route appends an artificial restart event after that history.
-// A native probe captures these fields while a child waits for the model, although its stored ledger still reports model_wait.
-func restartReconciledRun(lastLive ...map[string]any) map[string]any {
-	events := []any{
-		map[string]any{"seq": 1, "worker_id": testChildID, "status": "starting", "message": "starting"},
-		map[string]any{"seq": 2, "worker_id": testChildID, "status": "running", "message": "running"},
-	}
-	for i, event := range lastLive {
-		event["seq"] = 3 + i
-		event["worker_id"] = testChildID
-		events = append(events, event)
-	}
-	events = append(events, map[string]any{"seq": 3 + len(lastLive), "worker_id": testChildID, "status": "interrupted", "message": "Interrupted by process restart", "step": 1})
-	return map[string]any{"status": "interrupted", "latest_message": "Interrupted by process restart", "completed_at_ms": 1791132897437, "steps_taken": 1, "events": events}
-}
-
-// TestALiveChildIsNotPausedByTheRestartVerdictOfTheRunRoute verifies a record reconciled as if its runtime restarts.
-//
-// Codewhale 0.10.0 reloads its ledger for GET /v1/agent-runs/{id}.
-// SubAgentManager::load_state calls reconcile_orphaned_workers_after_restart and marks live runs interrupted "by process restart".
-// The watcher follows only children started by its own still-running runtime, so that load-time verdict describes no actual child restart.
-// Use the preceding event's status instead.
-// A genuine interrupt with its own reason still pauses the row.
-func TestALiveChildIsNotPausedByTheRestartVerdictOfTheRunRoute(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		name   string
-		record map[string]any
-		want   bgtask.Status
-	}{
-		{
-			name:   "a child that waits for its model",
-			record: restartReconciledRun(map[string]any{"status": "starting", "message": "started (explore)"}, map[string]any{"status": "model_wait", "message": "step 1: requesting model response", "step": 1}),
-			want:   bgtask.StatusRunning,
-		},
-		{
-			name:   "a child that runs a tool",
-			record: restartReconciledRun(map[string]any{"status": "running_tool", "message": "step 1: bash"}),
-			want:   bgtask.StatusRunning,
-		},
-		{
-			name:   "a child that is still queued",
-			record: restartReconciledRun(map[string]any{"status": "queued", "message": "queued"}),
-			want:   bgtask.StatusPending,
-		},
-		{
-			name:   "a record with the verdict as its only event",
-			record: map[string]any{"status": "interrupted", "latest_message": "Interrupted by process restart", "events": []any{map[string]any{"seq": 1, "status": "interrupted", "message": "Interrupted by process restart"}}},
-			want:   bgtask.StatusRunning,
-		},
-		{
-			name:   "a record with the verdict and no events",
-			record: map[string]any{"status": "interrupted", "latest_message": "Interrupted by process restart"},
-			want:   bgtask.StatusRunning,
-		},
-		{
-			name: "a child that its parent interrupted",
-			record: map[string]any{"status": "interrupted", "latest_message": "interrupted by parent via agents/interrupt", "events": []any{
-				map[string]any{"seq": 1, "status": "running", "message": "running"},
-				map[string]any{"seq": 2, "status": "interrupted", "message": "interrupted by parent via agents/interrupt"},
-			}},
-			want: bgtask.StatusPaused,
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			rt := newFakeRuntime(t)
-			rt.handle(http.MethodGet, routeAgentRuns+"/"+testChildID, func(w http.ResponseWriter, _ *http.Request) {
-				writeFakeJSON(w, http.StatusOK, tc.record)
-			})
-			a, sink := newTestAgent(t, rt)
-			child := &codewhaleChild{
-				agentID:   testChildID,
-				childID:   "child-1",
-				path:      filepath.Join(t.TempDir(), "absent.jsonl"),
-				nudge:     make(chan struct{}, 1),
-				openTools: map[string]string{},
-			}
-			require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
-				RowKey: testChildID, Kind: bgtask.KindSubagent, ChildAgentID: child.childID, Status: bgtask.StatusRunning,
-			}))
-
-			assert.False(t, a.pollChild(testutil.DeadlineContext(t), sink.ChildSink(child.childID), child), "an interrupted run is not final")
-			task, ok := sink.BackgroundTask(testChildID)
-			require.True(t, ok)
-			assert.Equal(t, tc.want, task.Status)
-			assert.Empty(t, sink.Child(child.childID).ClosedSpans(), "a child that is not final keeps its transcript open")
-		})
-	}
+	// A wait that saw the run end closes the row.
+	a.HandleOutput(toolEndEvent(22, "item.completed", "item_wait3", "call_wait3", contracts.CodewhaleToolAgent,
+		`{"settled":[{"agent_id":"`+testChildID+`","status":"completed"}]}`, map[string]any{"action": "wait"}, nil))
+	require.Eventually(t, func() bool {
+		task, ok := sink.BackgroundTask(testChildID)
+		return ok && task.Status == bgtask.StatusSucceeded
+	}, 30*time.Second, 5*time.Millisecond)
 }
 
 func TestASubagentIsFollowedToItsEnd(t *testing.T) {
 	t.Parallel()
 	rt := newFakeRuntime(t)
-	var finished atomic.Bool
-	rt.handle(http.MethodGet, routeAgentRuns+"/"+testChildID, func(w http.ResponseWriter, _ *http.Request) {
-		if finished.Load() {
-			writeFakeJSON(w, http.StatusOK, map[string]any{"status": "completed", "result_summary": "There are 3 files."})
-			return
-		}
-		writeFakeJSON(w, http.StatusOK, map[string]any{"status": "running"})
-	})
 	clock := testutil.NewQuartzMock(t)
 	a, sink := newTestAgentWithClock(t, rt, clock)
 	// The clock trap closes before stopping watchers because cleanup functions run in reverse order.
@@ -269,7 +168,7 @@ func TestASubagentIsFollowedToItsEnd(t *testing.T) {
 	child := sink.Child(childID)
 	assert.Contains(t, string(child.Messages()[0].Content), "Count the files.", "the child transcript opens on its prompt")
 
-	// The first tick reads the file and polls the run, then arms the tail timer.
+	// The first tick reads the file, then arms the tail timer.
 	// The watcher does nothing more until that timer fires or a wait wakes it.
 	assert.Equal(t, childTailInterval, testutil.WaitForTimer(t, ctx, tail))
 	rows := child.Messages()
@@ -278,13 +177,18 @@ func TestASubagentIsFollowedToItsEnd(t *testing.T) {
 	assert.Equal(t, "call_child", rows[2].SpanID)
 	assert.Equal(t, "bash", rows[2].SpanType)
 
-	// The runtime completes the record and writes more.
+	// The runtime completes the record and writes more. The replayed assistant
+	// text alone is not an answer, because its index already passed; the final
+	// assistant message that calls no tool ends the run.
 	appendTranscript(t, path, `age":{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_child","content":"a\nb\nc"}]}}`+"\n"+
 		transcriptLine(t, 1, "assistant", map[string]any{"type": "text", "text": "A replayed record."})+
 		transcriptLine(t, 3, "user", map[string]any{"type": "text", "text": "Also count the directories."})+
 		transcriptLine(t, 4, "assistant", map[string]any{"type": "text", "text": "There are 3 files."}))
 	clock.Advance(childTailInterval).MustWait(ctx)
-	testutil.WaitForTimer(t, ctx, tail)
+	require.Eventually(t, func() bool {
+		task, ok := sink.BackgroundTask(testChildID)
+		return ok && task.Status == bgtask.StatusSucceeded
+	}, 30*time.Second, 5*time.Millisecond, "the answer closes the child")
 	rows = child.Messages()
 	require.Len(t, rows, 6, "the replayed index is skipped")
 	assert.Equal(t, "call_child", rows[3].SpanID)
@@ -292,19 +196,6 @@ func TestASubagentIsFollowedToItsEnd(t *testing.T) {
 	assert.Equal(t, "bash", rows[3].SpanType)
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, rows[4].Source, "a later message to the child is the reader's own row")
 	assert.Contains(t, string(rows[5].Content), "There are 3 files.")
-	assert.Len(t, rt.requestsTo(http.MethodGet, routeAgentRuns+"/"+testChildID), 1, "a tail tick that is not a poll tick reads no status")
-
-	// A wait that settled the child wakes the watcher at once: the clock does
-	// not move, and the run status is read on the wake.
-	finished.Store(true)
-	a.HandleOutput(toolStartEvent(20, "item_wait", "call_wait", contracts.CodewhaleToolAgent, map[string]any{"action": "wait"}))
-	a.HandleOutput(toolEndEvent(21, "item.completed", "item_wait", "call_wait", contracts.CodewhaleToolAgent,
-		`{"action":"wait","settled":[{"agent_id":"`+testChildID+`","name":"counter","status":"completed"}],"running":0}`, map[string]any{"action": "wait"}, nil))
-	require.Eventually(t, func() bool {
-		a.children.mu.Lock()
-		defer a.children.mu.Unlock()
-		return len(a.children.byID) == 0
-	}, 30*time.Second, 5*time.Millisecond, "the watcher finishes the child")
 	task, _ = sink.BackgroundTask(testChildID)
 	assert.Equal(t, bgtask.StatusSucceeded, task.Status)
 	assert.Equal(t, []bgtask.Status{bgtask.StatusRunning, bgtask.StatusSucceeded}, sink.BackgroundTaskStatuses(testChildID))
@@ -315,60 +206,13 @@ func TestASubagentIsFollowedToItsEnd(t *testing.T) {
 	require.Len(t, reports, 1, "the child's summary is reported into the parent once")
 	assert.Contains(t, reports[0], "There are 3 files.")
 	assert.Contains(t, reports[0], "counter")
-}
 
-func TestAChildTheLedgerNeverKnewFails(t *testing.T) {
-	t.Parallel()
-	rt := newFakeRuntime(t)
-	a, sink := newTestAgentWithClock(t, rt, quartz.NewReal())
-	child := &codewhaleChild{agentID: testChildID, childID: "child-1", path: filepath.Join(t.TempDir(), "absent.jsonl"), nudge: make(chan struct{}, 1), openTools: map[string]string{"call_open": "bash"}}
-	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: testChildID, Kind: bgtask.KindSubagent, ChildAgentID: "child-1", Status: bgtask.StatusRunning}))
-	childSink := sink.ChildSink("child-1")
-	ctx := testutil.DeadlineContext(t)
-	for i := 1; i < childMissingLimit; i++ {
-		assert.False(t, a.pollChild(ctx, childSink, child), i)
-	}
-	assert.True(t, a.pollChild(ctx, childSink, child))
-	task, ok := sink.BackgroundTask(testChildID)
-	require.True(t, ok)
-	assert.Equal(t, bgtask.StatusFailed, task.Status)
-	assert.Contains(t, sink.Child("child-1").ClosedSpans(), "call_open", "a call the transcript never answered is closed")
-	assert.Empty(t, sink.LeapMuxNotifications(), "a child with no summary reports nothing into the parent")
-}
-
-// Only a not-found status response advances the missing-run count.
-// Other errors supply no absence evidence, and a successful run read resets the count.
-func TestAChildWhoseRunCannotBeReadIsNotCountedMissing(t *testing.T) {
-	t.Parallel()
-	rt := newFakeRuntime(t)
-	var status atomic.Int32
-	status.Store(http.StatusInternalServerError)
-	rt.handle(http.MethodGet, routeAgentRuns+"/"+testChildID, func(w http.ResponseWriter, _ *http.Request) {
-		code := int(status.Load())
-		if code != http.StatusOK {
-			writeFakeJSON(w, code, map[string]any{"error": map[string]any{"message": "no", "status": code}})
-			return
-		}
-		writeFakeJSON(w, http.StatusOK, map[string]any{"status": "running"})
-	})
-	a, sink := newTestAgent(t, rt)
-	child := &codewhaleChild{agentID: testChildID, childID: "child-1", path: filepath.Join(t.TempDir(), "absent.jsonl"), nudge: make(chan struct{}, 1), openTools: map[string]string{}}
-	childSink := sink.ChildSink("child-1")
-	ctx := testutil.DeadlineContext(t)
-
-	for i := range childMissingLimit + 1 {
-		assert.False(t, a.pollChild(ctx, childSink, child), i)
-	}
-	assert.Zero(t, child.missing, "a failed read is not a missing run")
-
-	status.Store(http.StatusNotFound)
-	for i := 1; i < childMissingLimit; i++ {
-		assert.False(t, a.pollChild(ctx, childSink, child), i)
-	}
-	status.Store(http.StatusOK)
-	assert.False(t, a.pollChild(ctx, childSink, child), "a running child is not finished")
-	assert.Zero(t, child.missing, "a read that finds the run starts the count again")
-	assert.Empty(t, sink.BackgroundTaskStatuses(testChildID), "no row closed")
+	// A wait that repeats the settle finds the child already closed.
+	a.HandleOutput(toolStartEvent(20, "item_wait", "call_wait", contracts.CodewhaleToolAgent, map[string]any{"action": "wait"}))
+	a.HandleOutput(toolEndEvent(21, "item.completed", "item_wait", "call_wait", contracts.CodewhaleToolAgent,
+		`{"action":"wait","settled":[{"agent_id":"`+testChildID+`","name":"counter","status":"completed"}],"running":0}`, map[string]any{"action": "wait"}, nil))
+	assert.Equal(t, []bgtask.Status{bgtask.StatusRunning, bgtask.StatusSucceeded}, sink.BackgroundTaskStatuses(testChildID))
+	assert.Len(t, sink.LeapMuxNotifications(), 1, "a repeated settle reports nothing new")
 }
 
 // The runtime can identify a started child in result text, metadata, or both.
@@ -384,7 +228,6 @@ func TestAChildStartReadsItsIDFromTheResultOrTheMetadata(t *testing.T) {
 		"the metadata": {"Started.", map[string]any{"action": "start", "agent_id": "agent_b"}, "agent_b"},
 	} {
 		rt := newFakeRuntime(t)
-		rt.respondJSON(http.MethodGet, routeAgentRuns+"/"+tc.id, http.StatusOK, map[string]any{"status": "running"})
 		a, sink := newTestAgent(t, rt)
 		a.HandleOutput(toolStartEvent(10, "item_spawn", "call_spawn", contracts.CodewhaleToolAgent, agentStartInput))
 		a.HandleOutput(toolEndEvent(11, "item.completed", "item_spawn", "call_spawn", contracts.CodewhaleToolAgent, tc.detail, agentStartInput, tc.metadata))
@@ -483,7 +326,6 @@ func TestAFailedStartRunsNoChild(t *testing.T) {
 func TestAStopClosesTheChildrenItCutOff(t *testing.T) {
 	t.Parallel()
 	rt := newFakeRuntime(t)
-	rt.respondJSON(http.MethodGet, routeAgentRuns+"/"+testChildID, http.StatusOK, map[string]any{"status": "running"})
 	a, sink := newTestAgent(t, rt)
 	startChildRun(a)
 
@@ -948,27 +790,6 @@ func stopWithin(t *testing.T, ctx context.Context, a *Agent) {
 	case <-ctx.Done():
 		t.Fatal("Stop waited for a watcher's request")
 	}
-}
-
-// Stop cancels watchers and their pending requests.
-// An unresponsive native server must not delay Stop until the API timeout.
-func TestStopEndsTheRequestOfAChildWatcher(t *testing.T) {
-	t.Parallel()
-	rt := newFakeRuntime(t)
-	a, sink := newTestAgentWith(t, rt, testAgentOptions{apiTimeout: time.Hour})
-	entered := blockUntilCancelled(t, rt, http.MethodGet, routeAgentRuns+"/"+testChildID)
-	ctx := testutil.DeadlineContext(t)
-	startChildRun(a)
-
-	select {
-	case <-entered:
-	case <-ctx.Done():
-		t.Fatal("the watcher read no run status")
-	}
-	stopWithin(t, ctx, a)
-	task, ok := sink.BackgroundTask(testChildID)
-	require.True(t, ok)
-	assert.Equal(t, bgtask.StatusStopped, task.Status)
 }
 
 func TestStopEndsTheRequestOfTheJobsPoller(t *testing.T) {

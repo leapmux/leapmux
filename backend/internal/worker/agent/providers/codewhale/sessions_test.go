@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -65,6 +66,37 @@ func TestNewCodewhaleStore(t *testing.T) {
 	assert.Equal(t, os.FileMode(0o700), info.Mode().Perm())
 	assert.Equal(t, first.dir, first.tasksDir())
 	assert.Equal(t, filepath.Join(first.dir, "runtime"), first.runtimeDir())
+
+	// The store keeps a home of its own, linked to the configuration entries of
+	// the configured home and nothing else: one Codewhale home coordinates one
+	// daemon, so a second runtime of the same configured home needs its own.
+	require.Equal(t, filepath.Join(root, codewhaleHomePrefix+strings.TrimPrefix(filepath.Base(first.dir), codewhaleStorePrefix)), first.home, "the private home sits beside its store")
+	homeInfo, err := os.Stat(first.home)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o700), homeInfo.Mode().Perm())
+	for _, entry := range codewhaleSharedHomeEntries {
+		_, err := os.Lstat(filepath.Join(first.home, entry))
+		assert.ErrorIs(t, err, os.ErrNotExist, "a configured home that holds no %s shares none", entry)
+	}
+
+	configuredHome := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(configuredHome, "config.toml"), []byte("provider = \"deepseek\"\n"), 0o600))
+	require.NoError(t, os.MkdirAll(filepath.Join(configuredHome, "catalog"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(configuredHome, "catalog", "provider-catalogs.json"), []byte("{}"), 0o600))
+	shared := newCodewhaleStoreForTest(t, filepath.Join(configuredHome, "leapmux"))
+	// The runtime refuses a symlinked configuration, so the entries are copies.
+	configCopy, err := os.ReadFile(filepath.Join(shared.home, "config.toml"))
+	require.NoError(t, err)
+	assert.Equal(t, "provider = \"deepseek\"\n", string(configCopy))
+	copyInfo, err := os.Lstat(filepath.Join(shared.home, "config.toml"))
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), copyInfo.Mode().Perm())
+	assert.False(t, copyInfo.Mode()&os.ModeSymlink != 0, "the configuration is a copy, not a link")
+	catalogCopy, err := os.ReadFile(filepath.Join(shared.home, "catalog", "provider-catalogs.json"))
+	require.NoError(t, err)
+	assert.Equal(t, "{}", string(catalogCopy))
+	_, err = os.Lstat(filepath.Join(shared.home, "mcp.json"))
+	assert.ErrorIs(t, err, os.ErrNotExist, "a home without an MCP registration shares none")
 
 	_, err = newCodewhaleStore("")
 	assert.Error(t, err)
@@ -239,4 +271,13 @@ func TestFindCodewhaleStoreEdges(t *testing.T) {
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, errThreadNotStored)
 	assert.ErrorContains(t, err, "read the Codewhale stores")
+}
+
+// newCodewhaleStoreForTest makes a store under root for assertions that need a
+// second, configured home.
+func newCodewhaleStoreForTest(t *testing.T, root string) codewhaleStore {
+	t.Helper()
+	store, err := newCodewhaleStore(root)
+	require.NoError(t, err)
+	return store
 }

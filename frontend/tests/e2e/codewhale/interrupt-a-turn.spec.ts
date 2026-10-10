@@ -14,7 +14,6 @@ codewhaleTest('keeps the interrupted partial answer and its marker after reload'
   await exerciseInterruptedPartialAnswer(native)
 })
 
-// Codewhale defers `request_user_input`: its first call loads the schema and runs nothing.
 codewhaleTest('withdraws a waiting question and keeps its session usable', async ({ native }) => {
-  await exerciseControlInterrupt(native, { control: 'question', deferredTool: true })
+  await exerciseControlInterrupt(native, { control: 'question' })
 })

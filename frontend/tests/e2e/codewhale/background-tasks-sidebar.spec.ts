@@ -17,26 +17,24 @@ codewhaleTest.describe('Codewhale subagent registry', () => {
     const { page, modelScript, leapmuxServer } = native
     await expectNoRegistryRows(page, leapmuxServer)
 
-    // `task_shell_start` is a deferred tool: the first call loads its schema and
-    // runs nothing, and the second one starts the job.
-    const shellCall = backgroundBashToolCall(AgentProvider.CODEWHALE, 'load-shell', 'echo codewhale-bg-done')
+    // Codewhale 0.10 starts the job on the first `task_shell_start` call, where
+    // an earlier runtime loaded the tool's schema first and needed a second one.
+    const shellCall = backgroundBashToolCall(AgentProvider.CODEWHALE, 'start-shell', 'echo codewhale-bg-done')
     const start = await modelScript.queue(
       { toolCalls: [shellCall] },
-      { toolCalls: [{ ...shellCall, id: 'start-shell' }] },
       { text: 'The job runs in the background.' },
     )
     // The runtime may hand the job's end to the model in a turn of its own.
     await modelScript.fallback({ text: 'The job ended.' })
     await sendMessage(page, modelScript.prompt('Run the echo in the background.'))
-    await modelScript.waitForSteps(start + 2)
+    await modelScript.waitForSteps(start + 1)
 
-    // The Ask posture asks before the job's command runs. The schema load ran
-    // nothing, so it asked nothing.
+    // The Ask posture asks before the job's command runs.
     const banner = await waitForControlBanner(page)
     await expect(banner).toContainText('echo codewhale-bg-done')
     await answerControl(page, 'allow')
     await expect(banner).not.toBeVisible()
-    await modelScript.waitForSteps(start + 3)
+    await modelScript.waitForSteps(start + 2)
 
     const row = await requireRegistryRow(page, 'shell')
     await expect(row).toContainText('echo codewhale-bg-done')

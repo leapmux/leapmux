@@ -70,20 +70,12 @@ export interface ControlInterruptOptions {
   control: WaitingControl
   /** Prepare the session before its first turn, for example a mode that offers the question tool or asks before a command. */
   prepare?: () => Promise<void>
-  /**
-   * The native agent defers the tool that raises the control: the first call loads the tool's schema and runs
-   * nothing, so the turn calls the tool twice. Codewhale defers `request_user_input` this way.
-   */
-  deferredTool?: true
 }
 
-/** The ID of the call that loads a deferred tool, before the call that raises the control. */
-export const DEFERRED_TOOL_LOAD_CALL_ID = 'waiting-control-load'
-
-/** The model steps that raise `control`: the call alone, or a load of the deferred tool before it. */
-export function waitingControlSteps(control: RaisedControl, deferredTool: boolean): MockModelStep[] {
-  const raise = { toolCalls: [control.toolCall] }
-  return deferredTool ? [{ toolCalls: [{ ...control.toolCall, id: DEFERRED_TOOL_LOAD_CALL_ID }] }, raise] : [raise]
+/** The model steps that raise `control`: the call alone. Codewhale 0.10 raised the control on the
+ * first call, where an earlier runtime loaded the tool's schema first and needed a second one. */
+export function waitingControlSteps(control: RaisedControl): MockModelStep[] {
+  return [{ toolCalls: [control.toolCall] }]
 }
 
 /**
@@ -107,7 +99,7 @@ export async function exerciseControlInterrupt(context: ManagedNativeScenarioCon
   await sendNativeAnswer(context, `Keep CONTROLCONTEXT${marker} for this session.`, `CONTROLANSWER${marker}`)
   const agent = await currentNativeAgent(context)
   const control = raiseWaitingControl(context.provider, options.control, agent.workingDir, marker)
-  const steps = waitingControlSteps(control, options.deferredTool === true)
+  const steps = waitingControlSteps(control)
   const start = await context.modelScript.queue(...steps)
   const raised = start + steps.length
   await sendMessage(context.page, context.modelScript.prompt('Wait on the scripted control.'))

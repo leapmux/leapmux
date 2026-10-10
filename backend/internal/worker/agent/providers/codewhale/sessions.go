@@ -53,6 +53,12 @@ const codewhaleHomeDirName = ".codewhale"
 // under the stores root is not read as a store.
 const codewhaleStorePrefix = "store-"
 
+// codewhaleHomePrefix starts the private runtime home that belongs to one
+// store. It sits beside its store under the same root, because a Codewhale
+// daemon socket path must stay within the platform's limit and a nested home
+// would push a deep workspace past it.
+const codewhaleHomePrefix = "home-"
+
 // storeRecordMaxBytes limits one record the reader opens. A thread record
 // carries the compaction summary, which is the largest field it has.
 const storeRecordMaxBytes = 8 << 20
@@ -87,10 +93,29 @@ func codewhaleStoresRoot(q agent.StoredSessionQuery) string {
 // codewhaleStore is one task store.
 type codewhaleStore struct {
 	dir string
+	// home is this store's private CODEWHALE_HOME, so its runtime coordinates
+	// with no other runtime of the configured home.
+	home string
 }
 
 // tasksDir is what CODEWHALE_TASKS_DIR states.
 func (s codewhaleStore) tasksDir() string { return s.dir }
+
+// runtimeHome is the CODEWHALE_HOME of this store's runtime.
+func (s codewhaleStore) runtimeHome() string {
+	if s.home != "" {
+		return s.home
+	}
+	return storeHome(s.dir)
+}
+
+// storeHome derives the private home of a store from its directory, for a store
+// that a lookup found rather than made.
+func storeHome(storeDir string) string {
+	root := filepath.Dir(storeDir)
+	suffix := strings.TrimPrefix(filepath.Base(storeDir), codewhaleStorePrefix)
+	return filepath.Join(root, codewhaleHomePrefix+suffix)
+}
 
 // runtimeDir is the thread store root, which CODEWHALE_RUNTIME_DIR states.
 func (s codewhaleStore) runtimeDir() string { return filepath.Join(s.dir, runtimeStoreDir) }
@@ -100,18 +125,82 @@ func (s codewhaleStore) threadPath(threadID string) string {
 	return filepath.Join(s.runtimeDir(), "threads", threadID+".json")
 }
 
+// codewhaleSharedHomeEntries are the configuration entries of a Codewhale home
+// that every runtime reads and no runtime owns: the provider configuration, the
+// MCP server registration, and the model catalog. A store's own home copies
+// each entry that the configured home holds -- the runtime refuses a symlinked
+// configuration -- so a runtime of one store reads the same configuration while
+// keeping its state to itself.
+var codewhaleSharedHomeEntries = []string{"config.toml", "mcp.json", "catalog"}
+
 // newCodewhaleStore makes a fresh, empty store under root.
+//
+// The store also brings a home of its own for its runtime. Codewhale coordinates
+// every process of one home -- one daemon socket, one owner ledger -- and refuses
+// a second runtime while another holds that state, so an agent of another worker
+// in the same configured home could never start. A per-store home ends that
+// coordination at the store.
 func newCodewhaleStore(root string) (codewhaleStore, error) {
 	if root == "" {
 		return codewhaleStore{}, errors.New("no home directory to keep a Codewhale store in")
 	}
-	dir := filepath.Join(root, codewhaleStorePrefix+id.Short())
+	shortID := id.Short()
+	dir := filepath.Join(root, codewhaleStorePrefix+shortID)
 	// 0700: a store holds the whole conversation, and the runtime creates its own
 	// files 0600 inside it.
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return codewhaleStore{}, fmt.Errorf("create the Codewhale store: %w", err)
 	}
-	return codewhaleStore{dir: dir}, nil
+	home := filepath.Join(root, codewhaleHomePrefix+shortID)
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		return codewhaleStore{}, fmt.Errorf("create the Codewhale store home: %w", err)
+	}
+	sharedHome := filepath.Dir(root)
+	for _, entry := range codewhaleSharedHomeEntries {
+		if err := copyHomeEntry(filepath.Join(sharedHome, entry), filepath.Join(home, entry)); err != nil {
+			return codewhaleStore{}, fmt.Errorf("share the Codewhale home entry %s: %w", entry, err)
+		}
+	}
+	return codewhaleStore{dir: dir, home: home}, nil
+}
+
+// copyHomeEntry copies one configuration entry of a Codewhale home into a
+// store's home. A missing entry shares nothing, and an existing destination
+// states a retry that already shared it.
+func copyHomeEntry(source, destination string) error {
+	info, err := os.Lstat(source)
+	if err != nil {
+		return nil
+	}
+	if _, err := os.Lstat(destination); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		// The catalog is a directory of provider files.
+		entries, err := os.ReadDir(source)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(destination, 0o700); err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			if !entry.Type().IsRegular() {
+				continue
+			}
+			if err := copyHomeEntry(filepath.Join(source, entry.Name()), filepath.Join(destination, entry.Name())); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	data, err := os.ReadFile(source)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(destination, data, 0o600)
 }
 
 // errThreadNotStored reports a resume handle that no LeapMux store holds.
@@ -137,7 +226,7 @@ func findCodewhaleStore(root, threadID string) (codewhaleStore, error) {
 		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), codewhaleStorePrefix) {
 			continue
 		}
-		store := codewhaleStore{dir: filepath.Join(root, entry.Name())}
+		store := codewhaleStore{dir: filepath.Join(root, entry.Name()), home: storeHome(filepath.Join(root, entry.Name()))}
 		info, err := os.Stat(store.threadPath(threadID))
 		if err != nil || !info.Mode().IsRegular() {
 			continue
@@ -186,7 +275,7 @@ func codewhaleStoredSessions(ctx context.Context, q agent.StoredSessionQuery) ([
 		if len(sessions) >= limit || ctx.Err() != nil {
 			break
 		}
-		sessions = append(sessions, readStoreSessions(codewhaleStore{dir: entry.Path}, q.WorkingDir)...)
+		sessions = append(sessions, readStoreSessions(codewhaleStore{dir: entry.Path, home: storeHome(entry.Path)}, q.WorkingDir)...)
 	}
 	return agent.SortAndCapSessions(sessions, limit), nil
 }

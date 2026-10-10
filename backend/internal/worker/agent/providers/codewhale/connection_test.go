@@ -31,6 +31,7 @@ func TestRuntimeEnvPinsTheStoreAndTheToken(t *testing.T) {
 	assert.Equal(t, []string{"fresh-token"}, envutil.ValuesFor(env, envRuntimeToken), "an inherited token never reaches the runtime")
 	assert.Equal(t, []string{store.tasksDir()}, envutil.ValuesFor(env, envTasksDir))
 	assert.Equal(t, []string{store.runtimeDir()}, envutil.ValuesFor(env, envRuntimeDir), "an inherited runtime dir would move the store")
+	assert.Equal(t, []string{store.runtimeHome()}, envutil.ValuesFor(env, envHome), "the store's runtime coordinates in a home of its own")
 	assert.False(t, envutil.HasKey(env, "CODEWHALE_SESSION_ID"))
 	assert.True(t, envutil.HasKey(env, "PATH"))
 	assert.Contains(t, env, "EXTRA=1")

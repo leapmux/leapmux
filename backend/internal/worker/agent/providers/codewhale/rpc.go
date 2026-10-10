@@ -255,11 +255,6 @@ func (a *Agent) readThreadContext(threadID string) (json.RawMessage, error) {
 	return raw, err
 }
 
-// readAgentRun reads one subagent's record. ctx is the watcher's.
-func (a *Agent) readAgentRun(ctx context.Context, runID string, out any) error {
-	return a.callIn(ctx, a.APITimeout(), http.MethodGet, routeAgentRuns+"/"+url.PathEscape(runID), nil, nil, out)
-}
-
 // listThreadJobs lists the thread's background shell jobs. The route exists
 // from 0.10.0, and 0.9.13 answers 404. The poller lists only to learn which of
 // the two it talks to: the list drops old finished jobs as it answers, so it

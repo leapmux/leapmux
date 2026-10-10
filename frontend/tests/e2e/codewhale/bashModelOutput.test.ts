@@ -17,4 +17,13 @@ describe('codewhaleBashModelMatches', () => {
     expect(codewhaleBashModelMatches('native short output', 'native short output')).toBe(true)
     expect(codewhaleBashModelMatches('native short output', 'different output')).toBe(false)
   })
+
+  it('accepts one exact spilled excerpt past the old compaction length, as Codewhale 0.10 states it', () => {
+    // Codewhale 0.10 spills a large result to its own file and hands the model
+    // the same excerpt the Worker retains, with its line-range footer, instead of
+    // the older compaction wrapper.
+    const excerpt = `[approval] approved by the user before execution.\n\n${'spilled native line\n'.repeat(3000)}\n[Showing lines 7433-8001 of 8001 (50.0KB limit). Full output: /private/tmp/codewhale-bash-XyZ]`
+    expect(codewhaleBashModelMatches(excerpt, excerpt)).toBe(true)
+    expect(codewhaleBashModelMatches(excerpt, excerpt.slice(0, -1))).toBe(false)
+  })
 })
