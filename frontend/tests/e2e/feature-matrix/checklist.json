@@ -3,17 +3,17 @@
   "supportStates": [
     {
       "id": "supported",
-      "symbol": "✅",
+      "symbol": "\u2705",
       "label": "Supported"
     },
     {
       "id": "agent-limit",
-      "symbol": "🚫",
+      "symbol": "\ud83d\udeab",
       "label": "The agent does not offer it"
     },
     {
       "id": "leapmux-limit",
-      "symbol": "🚧",
+      "symbol": "\ud83d\udea7",
       "label": "LeapMux does not support it yet"
     }
   ],
@@ -7088,7 +7088,7 @@
       "cursor": {
         "support": "supported",
         "userNote": "",
-        "detailNote": "",
+        "detailNote": "Task rows come from the native task tool and its session lifecycle. The background SHELL row is absent on the installed build: cursor-agent 2026.09.28 never surfaces `is_background` on its ACP stream for a service-driven shell call, whatever the wire states. Live probes (2026-10-11) set ShellArgs.is_background (field 11) on the started update and ShellResult.is_background (field 102) on the completed one, with and without the client execution request: the rawInput and rawOutput that reach the worker always carry only the command and the exit/stdout result, so no native evidence can open a shell row. The worker's mapping from a backgrounded completed call to a shell registry row stays, unit-tested against the CLI's own schema, for the day the CLI relays the flag.",
         "spec": "frontend/tests/e2e/cursor/background-tasks-sidebar.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",

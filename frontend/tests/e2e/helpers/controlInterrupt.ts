@@ -72,8 +72,10 @@ export interface ControlInterruptOptions {
   prepare?: () => Promise<void>
 }
 
-/** The model steps that raise `control`: the call alone. Codewhale 0.10 raised the control on the
- * first call, where an earlier runtime loaded the tool's schema first and needed a second one. */
+/**
+ * The model steps that raise `control`: the call alone. Codewhale 0.10 raised the control on the
+ * first call, where an earlier runtime loaded the tool's schema first and needed a second one.
+ */
 export function waitingControlSteps(control: RaisedControl): MockModelStep[] {
   return [{ toolCalls: [control.toolCall] }]
 }

@@ -96,9 +96,11 @@ max_reprompts = 0
 `
 }
 
-/** Codewhale accepts image input only from an offering of the endpoint the thread
+/**
+ * Codewhale accepts image input only from an offering of the endpoint the thread
  * runs. A thread binds the endpoint of the model it opened with, and a later model
- * switch keeps that binding, so every mock offering states the one endpoint. */
+ * switch keeps that binding, so every mock offering states the one endpoint.
+ */
 function codewhaleCatalog(options: CodewhaleEnvironmentOptions): Record<string, unknown> {
   const fingerprint = createHash('sha256').update(options.baseURL).digest('hex')
   const fetchedAt = Math.floor(Date.now() / 1000)
