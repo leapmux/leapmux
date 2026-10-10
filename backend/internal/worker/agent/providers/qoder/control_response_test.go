@@ -13,6 +13,10 @@ import (
 
 // browserAnswer is the neutral envelope the browser sends.
 func browserAnswer(t *testing.T, requestID, behavior, message string, updatedInput map[string]any) []byte {
+	return browserAnswerWithChoice(t, requestID, behavior, message, updatedInput, "")
+}
+
+func browserAnswerWithChoice(t *testing.T, requestID, behavior, message string, updatedInput map[string]any, choice string) []byte {
 	t.Helper()
 	inner := map[string]any{"behavior": behavior}
 	if message != "" {
@@ -20,6 +24,9 @@ func browserAnswer(t *testing.T, requestID, behavior, message string, updatedInp
 	}
 	if updatedInput != nil {
 		inner["updatedInput"] = updatedInput
+	}
+	if choice != "" {
+		inner["choice"] = choice
 	}
 	data, err := json.Marshal(map[string]any{"response": map[string]any{"request_id": requestID, "response": inner}})
 	require.NoError(t, err)
@@ -126,4 +133,25 @@ func TestDecodeControlUpdatedInput(t *testing.T) {
 	assert.Nil(t, agent.DecodeControlUpdatedInput([]byte(`{"response":{"request_id":"x","response":{"behavior":"allow","updatedInput":"text"}}}`)))
 	assert.Equal(t, map[string]any{"command": "ls"},
 		agent.DecodeControlUpdatedInput([]byte(`{"response":{"request_id":"x","response":{"behavior":"allow","updatedInput":{"command":"ls"}}}}`)))
+}
+
+// The session pill's choice names Qoder's own session tier: the allow carries
+// its `permissionScope`, and the runtime derives and keeps the session rule
+// itself. Any other choice stays the once answer.
+func TestQoderTranslateSessionChoiceStatesThePermissionScope(t *testing.T) {
+	t.Parallel()
+
+	translated, ok := translateQoderCanUseTool(browserAnswerWithChoice(t, "approval:1", "allow", "", nil, "session"))
+	require.True(t, ok)
+	assert.Equal(t, map[string]any{
+		"behavior":        "allow",
+		"permissionScope": "session",
+	}, nativeAnswer(t, translated))
+
+	translated, ok = translateQoderCanUseTool(browserAnswerWithChoice(t, "approval:1", "allow", "", nil, "once"))
+	require.True(t, ok)
+	assert.Equal(t, map[string]any{
+		"behavior": "allow",
+		"outcome":  contracts.QoderPermissionOutcomeProceedOnce,
+	}, nativeAnswer(t, translated))
 }

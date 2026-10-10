@@ -4,7 +4,7 @@ import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { droidTest } from '../droid-fixtures'
 import { expectTurnEndedAfter } from '../helpers/modelScriptFixture'
-import { exerciseNativePermissionDecision } from '../helpers/nativePermission'
+import { exerciseNativePermissionDecision, exerciseRememberedAllow } from '../helpers/nativePermission'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { editToolCall } from '../helpers/providerToolCalls'
 import { answerControl, assistantBubbles, enterControlFeedback, expectNoControlBanner, PLATFORM_MOD, savedControlAnswer, sendMessage, userBubbles, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
@@ -100,5 +100,26 @@ droidTest.describe('Factory Droid control requests', () => {
     await page.reload()
     await expect(savedControlAnswer(page)).toHaveText('Deny')
     await expect(userBubbles(page).filter({ hasText: reason }).first()).toBeVisible()
+  })
+
+  // The request's own option list offers an always tier, whose saved row reads
+  // Droid's own "Allow always" words -- the exact native reply. The saved rule
+  // lives in Droid's session records under the private home, keyed to this
+  // workspace's directory, so no later spec inherits the grant and no rule file
+  // needs restoring. The same file edit in the next turn must raise no banner at
+  // any time.
+  droidTest('an always allow covers the same edit in the next turn', async ({ askingDroidWorkspace, page, modelScript, leapmuxServer }) => {
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingDroidWorkspace.workspaceId })
+    const note = join(askingDroidWorkspace.workingDir, 'always-note.txt')
+    writeFileSync(note, 'a\n')
+    await exerciseRememberedAllow(context, {
+      scope: 'Always',
+      firstCall: editToolCall(context.provider, 'always-edit-first', { path: 'always-note.txt', before: 'a\n', after: 'b\n' }),
+      secondCall: editToolCall(context.provider, 'always-edit-second', { path: 'always-note.txt', before: 'b\n', after: 'c\n' }),
+      beforeDecision: () => expect(readFileSync(note, 'utf8')).toBe('a\n'),
+      firstProof: () => expect(readFileSync(note, 'utf8')).toBe('b\n'),
+      secondProof: () => expect(readFileSync(note, 'utf8')).toBe('c\n'),
+      viewProof: () => expect(savedControlAnswer(page)).toHaveText('Allow always'),
+    })
   })
 })

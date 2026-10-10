@@ -1,5 +1,6 @@
+import type { ControlResponseSender } from '../../controls/types'
 import type { ProviderControlCapability } from '../capabilities'
-import { buildAllowResponse, buildDenyResponse, getToolInput } from '~/utils/controlResponse'
+import { buildAllowResponse, buildControlResponseEnvelope, buildDenyResponse, getToolInput, withControlChoice } from '~/utils/controlResponse'
 
 import { buildAskAnswers } from '../../controls/AskUserQuestionControl'
 import { withElicitationResponse } from '../../controls/elicitationResponse'
@@ -9,6 +10,22 @@ import { qoderAskUserQuestions, qoderIsAskUserQuestion } from './askUserQuestion
 import { qoderElicitation } from './elicitation'
 import { qoderExtractControl } from './extractControl'
 import { qoderPermissionPresets } from './permissionPresets'
+
+/**
+ * Send one offered scope option. Both offered ids are allows -- the footer's
+ * Allow button submits whichever scope pill is selected -- and the choice rides
+ * the neutral envelope for the worker to translate: `session` becomes Qoder's
+ * `permissionScope`. An id outside the offered set answers deny, because
+ * granting a choice the runtime never offered is the one outcome a permission
+ * answer must not have.
+ */
+export function sendQoderPermissionOption(onRespond: ControlResponseSender, requestId: string, optionId: string): Promise<void> {
+  const behavior = optionId === 'once' || optionId === 'session' ? 'allow' : 'deny'
+  return sendResponse(onRespond, withControlChoice(
+    buildControlResponseEnvelope(requestId, { behavior }),
+    optionId,
+  ))
+}
 
 /**
  * The Qoder control channel.
@@ -47,4 +64,5 @@ export const qoderControls: ProviderControlCapability = {
       : buildAllowResponse(requestId, getToolInput(payload))
   },
   extractControl: qoderExtractControl,
+  sendPermissionOption: sendQoderPermissionOption,
 }

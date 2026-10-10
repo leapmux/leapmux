@@ -43,6 +43,16 @@ func (p claudeProvider) ResolveControlResponse(ctx agent.ControlResponseContext)
 	}
 	res.SelfDisplayed = p.IsSelfDisplayingControlTool(ctx.ToolName)
 	res.PlanModeControl = p.PlanModeControl(ctx.ToolName)
+	if !res.Withhold {
+		if _, behavior, _, ok := agent.DecodeControlBehavior(res.Content); ok && behavior == agent.ControlBehaviorAllow && agent.DecodeControlChoice(ctx.ResponseContent) == "session" {
+			content, err := applyClaudeSessionPermission(res.Content, ctx.ToolName)
+			if err != nil {
+				res.Refuse(agent.RefusalUnencodableReply)
+			} else {
+				res.Content = content
+			}
+		}
+	}
 	if !res.Withhold && res.PlanModeControl == agent.PlanModeControlExit && ctx.PlanApproval.GetPermissionMode() != "" && !ctx.PlanApproval.GetClearContext() {
 		if _, behavior, _, ok := agent.DecodeControlBehavior(res.Content); ok && behavior == agent.ControlBehaviorAllow {
 			content, err := applyClaudePlanPermission(res.Content, ctx.PlanApproval.GetPermissionMode())

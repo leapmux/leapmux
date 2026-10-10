@@ -386,9 +386,10 @@ func (a *Agent) replyZCodeControlFailure(id json.RawMessage, message string) {
 }
 
 // replyZCodePermission answers a permission request directly, for the paths where
-// no user decision is possible.
+// no user decision is possible. No reader picked an option, so no choice rides
+// the answer and the decision word alone selects the reply.
 func (a *Agent) replyZCodePermission(id json.RawMessage, options []zcodePermissionOption, behavior, reason string) {
-	result, err := zcodePermissionResult(options, behavior, reason)
+	result, err := zcodePermissionResult(options, behavior, reason, "")
 	if err != nil {
 		a.replyZCodeControlFailure(id, err.Error())
 		return
@@ -508,10 +509,35 @@ func (a *Agent) answerOfficialMcpAuthHeaders(id json.RawMessage) {
 // always correct. For an ALLOW it is the honest fallback, and it is why the
 // option-matching is fail-safe: an option list that offers no allow at all cannot
 // produce one.
-func zcodePermissionResult(options []zcodePermissionOption, behavior, reason string) (json.RawMessage, error) {
+// zcodePermissionResult builds the app-server's reply from the reader's answer.
+//
+// The CHOICE names the option the reader picked in the pill group, and that
+// option's embedded response is the exact native reply -- an "always allow"
+// option carries permissionUpdates a bare decision would drop. The choice must
+// name an OFFERED option: an id no option states changes nothing, so a stale
+// pill cannot invent a grant. Without a choice, the decision word picks the
+// first option whose response carries it.
+func zcodePermissionResult(options []zcodePermissionOption, behavior, reason, choice string) (json.RawMessage, error) {
 	want := contracts.ZCodeDecisionAllow
 	if behavior != agent.ControlBehaviorAllow {
 		want = contracts.ZCodeDecisionDeny
+	}
+	if choice != "" {
+		for i := range options {
+			if options[i].OptionID != choice {
+				continue
+			}
+			var body struct {
+				Decision string `json:"decision"`
+			}
+			if len(options[i].Response) == 0 || json.Unmarshal(options[i].Response, &body) != nil {
+				break
+			}
+			if body.Decision != want {
+				break
+			}
+			return zcodeOptionResponse(options[i], want, reason)
+		}
 	}
 	if option := zcodeOptionForDecision(options, want); option != nil {
 		return zcodeOptionResponse(*option, want, reason)
@@ -756,7 +782,7 @@ func zcodeReplyForAnswer(stored zcodeControlRequestPayload, behavior, message st
 				return nil, fmt.Errorf("read stored permission request: %w", err)
 			}
 		}
-		result, err := zcodePermissionResult(req.Options, behavior, message)
+		result, err := zcodePermissionResult(req.Options, behavior, message, agent.DecodeControlChoice(responseContent))
 		if err != nil {
 			return nil, err
 		}

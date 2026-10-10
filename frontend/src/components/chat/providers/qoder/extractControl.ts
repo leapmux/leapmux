@@ -1,18 +1,32 @@
+import type { PermissionOption } from '../../model/controlPrompt'
 import type { ControlExtractionInput, ExtractedControlRequest } from '../registry'
 import { pickString } from '~/lib/jsonPick'
 import { getToolInput, getToolName } from '~/utils/controlResponse'
+import { KIND_ALLOW_ALWAYS, KIND_ALLOW_ONCE, KIND_REJECT_ONCE } from '../../model/controlPrompt'
 
 /** The Qoder tool names this extractor draws with a shell command. */
 const QODER_SHELL_TOOLS = new Set(['Bash'])
 
 /**
+ * The scope answers Qoder's runtime accepts on an allow, which its own reader
+ * maps onto `permissionScope: "session"` (kept for the session) and
+ * `permissionScope: "persist"` (saved to the project). LeapMux offers the
+ * session tier alone: the reader derives the session rule itself, so nothing
+ * outlives the private session that granted it.
+ */
+const QODER_PERMISSION_OPTIONS: PermissionOption[] = [
+  { optionId: 'once', kind: KIND_ALLOW_ONCE, name: 'Allow once' },
+  { optionId: 'session', kind: KIND_ALLOW_ALWAYS, name: 'Allow for this session' },
+  { optionId: 'deny', kind: KIND_REJECT_ONCE, name: 'Deny' },
+]
+
+/**
  * `Provider.extractControl` for Qoder CLI.
  *
  * A can_use_tool request states `tool_name`, `input` and its own display
- * fields. The extractor reads the neutral tool pair and the shell command; the
- * runtime's own option list stays unrendered, so the shared Allow/Deny pair is
- * the surface and the worker translates the answer into Qoder's
- * `{behavior, outcome}` object.
+ * fields. The extractor reads the neutral tool pair, the shell command, and the
+ * scope answers the runtime accepts; the worker translates the chosen answer
+ * into Qoder's `{behavior, permissionScope}` object.
  */
 export function qoderExtractControl(input: ControlExtractionInput): ExtractedControlRequest | null {
   const { payload } = input
@@ -29,7 +43,7 @@ export function qoderExtractControl(input: ControlExtractionInput): ExtractedCon
       title: toolName,
       input: toolInput,
       ...(command !== undefined ? { command } : {}),
-      options: [],
+      options: QODER_PERMISSION_OPTIONS,
     },
   }
 }

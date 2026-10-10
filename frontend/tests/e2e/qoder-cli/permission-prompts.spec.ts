@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { expectNoNativeControl } from '../helpers/nativeControlObservation'
-import { exerciseNativePermissionDecision, exerciseNativePermissionReason, expectSavedRefusalFeedback } from '../helpers/nativePermission'
+import { exerciseNativePermissionDecision, exerciseNativePermissionReason, exerciseRememberedAllow, expectSavedRefusalFeedback } from '../helpers/nativePermission'
 import { runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { answerControl, expectNoControlBanner, savedControlAnswer, sendMessage, toolRows, waitForAgentIdle, waitForControlBanner, waitForSettingsHydrated } from '../helpers/ui'
@@ -102,6 +102,27 @@ qoderTest.describe('Qoder CLI control answers', () => {
         await expectNoControlBanner(page)
         await expectSavedRefusalFeedback(page, reason)
       },
+    })
+  })
+
+  // The Allow scope group offers the session tier the runtime itself keeps: the
+  // answer carries Qoder's `permissionScope: "session"`, the runtime derives the
+  // session rule, and the same command in the next turn raises no banner at any
+  // time. A session rule lives in the session alone, so no rule file needs
+  // restoring.
+  qoderTest('a session allow covers the same command in the next turn', async ({ askingQoderWorkspace, page, modelScript, leapmuxServer }) => {
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingQoderWorkspace.workspaceId })
+    const proof = join(askingQoderWorkspace.workingDir, 'qoder-session-proof.txt')
+    // Each run appends, so the file states how many runs happened.
+    const command = 'printf qoder-session >> qoder-session-proof.txt'
+    await exerciseRememberedAllow(context, {
+      scope: 'Session',
+      firstCall: bashToolCall(context.provider, 'qoder-session-first', command),
+      secondCall: bashToolCall(context.provider, 'qoder-session-second', command),
+      beforeDecision: () => expect(existsSync(proof)).toBe(false),
+      firstProof: () => expect(readFileSync(proof, 'utf8')).toBe('qoder-session'),
+      secondProof: () => expect(readFileSync(proof, 'utf8')).toBe('qoder-sessionqoder-session'),
+      viewProof: () => expect(savedControlAnswer(page)).toHaveText('Allow'),
     })
   })
 })

@@ -1,6 +1,8 @@
+import type { PermissionOption } from '../../model/controlPrompt'
 import type { ControlExtractionInput, ExtractedControlRequest } from '../registry'
-import { DROID_CONFIRMATION_TYPE, DROID_NOTIFICATION_FIELD, DROID_REQUEST_TYPE } from '~/generated/contracts/droid-protocol'
+import { DROID_CONFIRMATION_TYPE, DROID_NOTIFICATION_FIELD, DROID_PERMISSION_OPTION, DROID_REQUEST_TYPE } from '~/generated/contracts/droid-protocol'
 import { pickObject, pickString } from '~/lib/jsonPick'
+import { KIND_ALLOW_ALWAYS, KIND_ALLOW_ONCE, KIND_REJECT_ONCE } from '../../model/controlPrompt'
 import { droidToolKind } from './toolKinds'
 
 /**
@@ -14,6 +16,40 @@ import { droidToolKind } from './toolKinds'
  * A QUESTION takes its own path — `askUserQuestion.isRequest` recognizes it
  * before this reader runs — so this reader answers a permission alone.
  */
+
+/**
+ * The canonical kind one offered option belongs to. The remembered tiers
+ * (`proceed_always*`) are scope choices; `proceed_once` and `cancel` are the
+ * once pair; every other tier Droid defines stays an additional button, because
+ * the autonomy and new-session choices grant something wider than a scope and
+ * guessing a slot for them would misanswer them.
+ */
+function droidOptionKind(option: string): string {
+  switch (option) {
+    case DROID_PERMISSION_OPTION.ProceedOnce: return KIND_ALLOW_ONCE
+    case DROID_PERMISSION_OPTION.ProceedAlways:
+    case DROID_PERMISSION_OPTION.ProceedAlwaysFile:
+    case DROID_PERMISSION_OPTION.ProceedAlwaysTools:
+    case DROID_PERMISSION_OPTION.ProceedAlwaysServer: return KIND_ALLOW_ALWAYS
+    case DROID_PERMISSION_OPTION.Cancel: return KIND_REJECT_ONCE
+    default: return ''
+  }
+}
+
+/** The offered options a permission request states, in its own order. */
+export function droidPermissionOptions(payload: Record<string, unknown>): PermissionOption[] {
+  const offered = payload.options
+  if (!Array.isArray(offered))
+    return []
+  const options: PermissionOption[] = []
+  for (const value of offered) {
+    if (typeof value !== 'string' || value === '')
+      continue
+    options.push({ optionId: value, kind: droidOptionKind(value) })
+  }
+  return options
+}
+
 export function droidExtractControl(input: ControlExtractionInput): ExtractedControlRequest | null {
   const { payload } = input
   if (pickString(payload, 'type') !== DROID_REQUEST_TYPE.Permission)
@@ -52,7 +88,7 @@ export function droidExtractControl(input: ControlExtractionInput): ExtractedCon
       input: toolInput,
       ...(command !== '' ? { command } : {}),
       ...(reason !== '' ? { reason } : {}),
-      options: [],
+      options: droidPermissionOptions(payload),
     },
   }
 }

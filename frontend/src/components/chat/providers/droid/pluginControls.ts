@@ -1,15 +1,29 @@
+import type { ControlResponseSender } from '../../controls/types'
 import type { ProviderControlCapability } from '../capabilities'
-import { buildDenyResponse } from '~/utils/controlResponse'
+import { DROID_PERMISSION_OPTION } from '~/generated/contracts/droid-protocol'
 
+import { buildControlResponseEnvelope, buildDenyResponse } from '~/utils/controlResponse'
 import { sendResponse } from '../../controls/types'
 import { buildDroidAnswer, droidIsQuestionRequest, droidQuestionsFromPayload } from './askUserQuestion'
 import { droidControlResponseSummary } from './controlResponse'
 import { droidExtractControl } from './extractControl'
 import { droidPermissionPresets } from './permissionPresets'
 
+/**
+ * Send one offered option. The inner response carries Droid's own
+ * `selectedOption`, and the worker checks it against the list the request
+ * offered. `cancel` is the deny; every other offered value is an allow, and the
+ * worker refuses one that contradicts or was never offered.
+ */
+export function sendDroidPermissionOption(onRespond: ControlResponseSender, requestId: string, optionId: string): Promise<void> {
+  const behavior = optionId === DROID_PERMISSION_OPTION.Cancel ? 'deny' : 'allow'
+  return sendResponse(onRespond, buildControlResponseEnvelope(requestId, { behavior, selectedOption: optionId }))
+}
+
 /** The complete Factory Droid control channel, separate from provider registration. */
 export const droidControls: ProviderControlCapability = {
   extractControl: droidExtractControl,
+  sendPermissionOption: sendDroidPermissionOption,
   // The saved row holds Droid's own JSON-RPC reply, not the neutral envelope.
   controlResponseDisplay: droidControlResponseSummary,
   // The composer's send is a rejection. Droid's reply cannot carry its text, so

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { QODER_MODE } from '~/generated/contracts/qoder-protocol'
 import { CONTROL_REJECTED_BY_USER_MESSAGE } from '~/utils/controlResponse'
 import { createControlAnswerState } from '../../controls/types'
@@ -68,11 +68,20 @@ describe('qoderControls', () => {
       .toMatchObject({ response: { response: { behavior: 'deny', message: CONTROL_REJECTED_BY_USER_MESSAGE } } })
   })
 
-  it('reads a shell command and an empty option list for the shared pair', () => {
+  it('reads a shell command beside the offered scope options', () => {
     expect(qoderControls.extractControl?.({ payload: approvalPayload('Bash', { command: 'ls' }) }))
       .toStrictEqual({
         kind: 'permission',
-        permission: { title: 'Bash', input: { command: 'ls' }, command: 'ls', options: [] },
+        permission: {
+          title: 'Bash',
+          input: { command: 'ls' },
+          command: 'ls',
+          options: [
+            { optionId: 'once', kind: 'allow_once', name: 'Allow once' },
+            { optionId: 'session', kind: 'allow_always', name: 'Allow for this session' },
+            { optionId: 'deny', kind: 'reject_once', name: 'Deny' },
+          ],
+        },
       })
     expect(qoderControls.extractControl?.({ payload: approvalPayload('ExitPlanMode', {}) })?.kind).toBe('plan')
   })
@@ -145,5 +154,34 @@ describe('qoderControls askUserQuestion', () => {
         response: { behavior: 'deny', message: 'Ask again tomorrow.' },
       },
     })
+  })
+})
+
+describe('qoderControls permission options', () => {
+  it('offers the once and session scopes the runtime accepts', () => {
+    const extracted = qoderControls.extractControl?.({ payload: approvalPayload('Bash', { command: 'printf hi > out.txt' }) })
+    expect(extracted && 'permission' in extracted ? extracted.permission.options : []).toEqual([
+      { optionId: 'once', kind: 'allow_once', name: 'Allow once' },
+      { optionId: 'session', kind: 'allow_always', name: 'Allow for this session' },
+      { optionId: 'deny', kind: 'reject_once', name: 'Deny' },
+    ])
+  })
+
+  it('sends the selected scope as the choice of an allow', async () => {
+    const onRespond = vi.fn().mockResolvedValue(undefined)
+    await qoderControls.sendPermissionOption?.(onRespond, 'approval:ap1', 'session')
+    expect(onRespond).toHaveBeenCalledOnce()
+    const sent = JSON.parse(new TextDecoder().decode(onRespond.mock.calls[0]?.[0] as Uint8Array))
+    expect(sent).toMatchObject({ response: { response: { behavior: 'allow', choice: 'session' } } })
+
+    await qoderControls.sendPermissionOption?.(onRespond, 'approval:ap1', 'once')
+    sent.response.response.behavior = 'allow'
+    expect(JSON.parse(new TextDecoder().decode(onRespond.mock.calls[1]?.[0] as Uint8Array)))
+      .toMatchObject({ response: { response: { behavior: 'allow', choice: 'once' } } })
+
+    // An id no pill offered answers deny, mirroring the runtime's fail-safe.
+    await qoderControls.sendPermissionOption?.(onRespond, 'approval:ap1', 'persist')
+    expect(JSON.parse(new TextDecoder().decode(onRespond.mock.calls[2]?.[0] as Uint8Array)))
+      .toMatchObject({ response: { response: { behavior: 'deny', choice: 'persist' } } })
   })
 })

@@ -1,5 +1,6 @@
+import type { ControlResponseSender } from '../../controls/types'
 import type { ProviderControlCapability } from '../capabilities'
-import { buildAllowResponse, buildDenyResponse, getToolInput } from '~/utils/controlResponse'
+import { buildAllowResponse, buildControlResponseEnvelope, buildDenyResponse, getToolInput, withControlChoice } from '~/utils/controlResponse'
 
 import { buildAskAnswers } from '../../controls/AskUserQuestionControl'
 import { withElicitationResponse } from '../../controls/elicitationResponse'
@@ -9,6 +10,19 @@ import { claudeAskUserQuestions, claudeIsAskUserQuestion } from './askUserQuesti
 import { claudeElicitation } from './elicitation'
 import { claudeExtractControl } from './extractControl'
 import { claudePermissionPresets } from './permissionPresets'
+
+/**
+ * Send one offered scope option. The choice rides the neutral envelope: the
+ * worker turns `session` into the `updatedPermissions` grant the CLI keeps for
+ * the session, and any other offered id is the once answer or the deny.
+ */
+export function sendClaudePermissionOption(onRespond: ControlResponseSender, requestId: string, optionId: string): Promise<void> {
+  const behavior = optionId === 'deny' ? 'deny' : 'allow'
+  return sendResponse(onRespond, withControlChoice(
+    buildControlResponseEnvelope(requestId, { behavior }),
+    optionId,
+  ))
+}
 
 /** The complete Claude control channel, separate from provider registration. */
 export const claudeControls: ProviderControlCapability = {
@@ -38,4 +52,5 @@ export const claudeControls: ProviderControlCapability = {
       : buildAllowResponse(requestId, getToolInput(payload))
   },
   extractControl: claudeExtractControl,
+  sendPermissionOption: sendClaudePermissionOption,
 }

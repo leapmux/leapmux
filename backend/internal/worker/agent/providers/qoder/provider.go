@@ -64,12 +64,25 @@ func (qoderProvider) ResolveControlResponse(ctx agent.ControlResponseContext) ag
 // An allow carries the `updatedInput` the browser folded its answer into, and
 // states NO outcome beside it: Qoder resolves an explicit outcome first and
 // would then drop the input (see canUseToolAnswer). An allow that modifies
-// nothing states `proceed_once`. A deny carries the user's words on `message`
-// and `reason` and states no outcome either, so the words reach the model.
+// nothing states `proceed_once`, or the `permissionScope` of the session pill
+// the reader selected (see scopeChoiceOf). A deny carries the user's words on
+// `message` and `reason` and states no outcome either, so the words reach the
+// model.
 //
 // The frame keeps NO top-level `request_id`: Qoder's StructuredIOReader
 // validates the envelope and rejects a frame that carries one as a malformed
 // control_response, and the pending request matches on `response.request_id`.
+// The answer's CHOICE names the scope pill the reader selected. `session` is
+// Qoder's own session tier: the answer carries its `permissionScope`, and the
+// runtime derives and keeps the session rule itself. Any other id (or none) is
+// the once answer, so a stale pill can never invent a wider grant.
+func scopeChoiceOf(content []byte) string {
+	if choice := agent.DecodeControlChoice(content); choice == "session" {
+		return "session"
+	}
+	return ""
+}
+
 func translateQoderCanUseTool(content []byte) ([]byte, bool) {
 	requestID, behavior, message, decoded := agent.DecodeControlBehavior(content)
 	if !decoded || (behavior != agent.ControlBehaviorAllow && behavior != agent.ControlBehaviorDeny) {
@@ -79,6 +92,8 @@ func translateQoderCanUseTool(content []byte) ([]byte, bool) {
 	if behavior == agent.ControlBehaviorAllow {
 		if updatedInput := agent.DecodeControlUpdatedInput(content); updatedInput != nil {
 			answer.UpdatedInput = updatedInput
+		} else if scope := scopeChoiceOf(content); scope != "" {
+			answer.PermissionScope = scope
 		} else {
 			answer.Outcome = contracts.QoderPermissionOutcomeProceedOnce
 		}
