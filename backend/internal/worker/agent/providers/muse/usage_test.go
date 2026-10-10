@@ -137,3 +137,22 @@ func TestMuseSubscriptionUsageRejectsInvalidAndAbsentNativeWindows(t *testing.T)
 		})
 	}
 }
+
+func TestMuseSubscriptionUsageParsesTheLiveAccountFrame(t *testing.T) {
+	t.Parallel()
+	// The exact frame the installed host emitted against the signed-in Meta
+	// account on 2026-10-10 (usage/changed during one real turn): raw bytes,
+	// so the parse also proves the field spelling the live account sends.
+	const live = `{"window":{"usedPercent":0,"windowDurationMins":300,"resetsAtMs":1791611340000},"weekly":{"usedPercent":0,"resetsAtMs":1791763200000},"tier":"27681393394859588","observedAtMs":1791593354940}`
+	a, sink := testAgent(t)
+	feed(t, a, contracts.MuseMethodUsageChanged, json.RawMessage(live))
+	value, exists := sink.LastSessionInfoValue(contracts.SessionInfoKeyRateLimits)
+	require.True(t, exists, "the live account frame is a valid observation")
+	assert.Equal(t, map[string]any{
+		contracts.RateLimitUpdateFieldMode: contracts.RateLimitUpdateModeReplace,
+		contracts.RateLimitUpdateFieldValues: map[string]any{
+			"five_hour": map[string]any{contracts.RateLimitFieldRateLimitType: "five_hour", contracts.RateLimitFieldUtilization: float64(0), contracts.RateLimitFieldResetsAt: float64(1791611340)},
+			"seven_day": map[string]any{contracts.RateLimitFieldRateLimitType: "seven_day", contracts.RateLimitFieldUtilization: float64(0), contracts.RateLimitFieldResetsAt: float64(1791763200)},
+		},
+	}, value)
+}

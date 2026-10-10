@@ -2977,11 +2977,11 @@
         "verified": true
       },
       "muse-code": {
-        "support": "agent-limit",
-        "userNote": "Muse reports subscription quota through usage/read and usage/changed, sourced from the Meta account (META_API_KEY overrides the account login), so the local mock endpoint cannot drive a window: usage/read answers truthfully empty and no quota UI exists to draw.",
-        "detailNote": "Muse reports subscription quota through usage/read and usage/changed, sourced from the Meta account (META_API_KEY overrides the account login), so the local mock endpoint cannot drive a window: usage/read answers truthfully empty and no quota UI exists to draw. The deciding evidence came from the binary itself: its exported MSP schema, its strings, and a live serve probe under the local mock.",
+        "support": "supported",
+        "userNote": "Muse reports subscription quota through usage/changed and usage/read, observed from the Meta account (live probe 2026-10-10: a 5-hour and a weekly window, each usedPercent/resetsAtMs, windowDurationMins 300). The Worker normalizes the frame into 5-hour/7-day entries and the agent card renders them. The local mock carries no account, so the browser proof shows the quota UI absent there.",
+        "detailNote": "Muse reports its subscription quota through usage/changed and usage/read, observed from the Meta account (a live probe on 2026-10-10 captured the exact frame: a 5-hour window and a weekly window, each usedPercent/resetsAtMs, with windowDurationMins 300). The Worker normalizes that frame into the 5-hour and 7-day rate-limit entries and the agent card renders them. The local mock endpoint carries no account, so the browser proof shows the quota UI staying absent there; a worker regression test pins the exact live bytes. The deciding evidence came from the binary itself: its exported MSP schema and a live serve probe against the signed-in account.",
         "spec": "frontend/tests/e2e/muse-code/rate-limit-state.spec.ts",
-        "audit": "covered-negative",
+        "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
       }
@@ -7602,8 +7602,8 @@
       },
       "muse-code": {
         "support": "agent-limit",
-        "userNote": "Native subagent tools exist in the binary (subagent_spawn/status/send_message/wait/read_result/cancel) but only its TUI and exec toolsets carry them: the serve host offers none even with run.subagent_delegation_mode auto, the agents experiment enable",
-        "detailNote": "Native subagent tools exist in the binary (subagent_spawn/status/send_message/wait/read_result/cancel) but only its TUI and exec toolsets carry them: the serve host offers none even with run.subagent_delegation_mode auto, the agents experiment enabled, execution capacity configured, and the live feature gates. Children run only inside workflow scripts, and the fold carries a durable childId with no session, so no transcript tab can exist. The deciding evidence came from the binary itself: its exported MSP schema, its strings, and a live serve probe under the local mock.",
+        "userNote": "The binary owns six native subagent tools (subagent_spawn/status/send_message/wait/read_result/cancel), and its exec and TUI runtimes offer them once the workspace is trusted (a live probe saw the 32-tool set with \"Agent delegation: auto unavailable:",
+        "detailNote": "The binary owns six native subagent tools (subagent_spawn/status/send_message/wait/read_result/cancel), and its exec and TUI runtimes offer them once the workspace is trusted (a live probe saw the 32-tool set with \"Agent delegation: auto unavailable: workspace is untrusted\" as the only gate). The serve host that LeapMux drives never offers them: 26 tools under every combination tried -- delegation mode auto on the command line and in settings, a trusted workspace, agents.execution_capacity, the agents experiment, and the live feature gates. The deciding evidence came from the binary itself: its exported MSP schema, its strings, and live serve and exec probes under the local mock.",
         "spec": "frontend/tests/e2e/muse-code/subagent-transcript-tab.spec.ts",
         "audit": "covered-negative",
         "testStatus": "passed",
@@ -7874,8 +7874,8 @@
       },
       "muse-code": {
         "support": "agent-limit",
-        "userNote": "Native subagent tools exist in the binary but only its TUI and exec toolsets carry them; the serve host offers none under any discovered configuration. A workflow fold child owns no session, so no separate transcript receives its rows.",
-        "detailNote": "Native subagent tools exist in the binary but only its TUI and exec toolsets carry them; the serve host offers none under any discovered configuration. A workflow fold child owns no session, so no separate transcript receives its rows. The deciding evidence came from the binary itself: its exported MSP schema, its strings, and a live serve probe under the local mock.",
+        "userNote": "The binary owns six native subagent tools (subagent_spawn/status/send_message/wait/read_result/cancel), and its exec and TUI runtimes offer them once the workspace is trusted (a live probe saw the 32-tool set with \"Agent delegation: auto unavailable:",
+        "detailNote": "The binary owns six native subagent tools (subagent_spawn/status/send_message/wait/read_result/cancel), and its exec and TUI runtimes offer them once the workspace is trusted (a live probe saw the 32-tool set with \"Agent delegation: auto unavailable: workspace is untrusted\" as the only gate). The serve host that LeapMux drives never offers them: 26 tools under every combination tried -- delegation mode auto on the command line and in settings, a trusted workspace, agents.execution_capacity, the agents experiment, and the live feature gates. The deciding evidence came from the binary itself: its exported MSP schema, its strings, and live serve and exec probes under the local mock.",
         "spec": "frontend/tests/e2e/muse-code/subagent-live-transcript.spec.ts",
         "audit": "covered-negative",
         "testStatus": "passed",
@@ -8146,8 +8146,8 @@
       },
       "muse-code": {
         "support": "agent-limit",
-        "userNote": "The serve host exposes no spawn or send tool under any discovered configuration (the subagent tools live in the TUI and exec toolsets), and a fold child links no child agent, so no composer can reach a child.",
-        "detailNote": "The serve host exposes no spawn or send tool under any discovered configuration (the subagent tools live in the TUI and exec toolsets), and a fold child links no child agent, so no composer can reach a child. The deciding evidence came from the binary itself: its exported MSP schema, its strings, and a live serve probe under the local mock.",
+        "userNote": "The binary owns six native subagent tools (subagent_spawn/status/send_message/wait/read_result/cancel), and its exec and TUI runtimes offer them once the workspace is trusted (a live probe saw the 32-tool set with \"Agent delegation: auto unavailable:",
+        "detailNote": "The binary owns six native subagent tools (subagent_spawn/status/send_message/wait/read_result/cancel), and its exec and TUI runtimes offer them once the workspace is trusted (a live probe saw the 32-tool set with \"Agent delegation: auto unavailable: workspace is untrusted\" as the only gate). The serve host that LeapMux drives never offers them: 26 tools under every combination tried -- delegation mode auto on the command line and in settings, a trusted workspace, agents.execution_capacity, the agents experiment, and the live feature gates. The deciding evidence came from the binary itself: its exported MSP schema, its strings, and live serve and exec probes under the local mock.",
         "spec": "frontend/tests/e2e/muse-code/send-to-a-subagent.spec.ts",
         "audit": "covered-negative",
         "testStatus": "passed",
@@ -8418,8 +8418,8 @@
       },
       "muse-code": {
         "support": "agent-limit",
-        "userNote": "The serve host exposes no spawn or cancel tool under any discovered configuration (the subagent tools live in the TUI and exec toolsets), and a fold child links no child agent, so no per-child Interrupt control exists.",
-        "detailNote": "The serve host exposes no spawn or cancel tool under any discovered configuration (the subagent tools live in the TUI and exec toolsets), and a fold child links no child agent, so no per-child Interrupt control exists. The deciding evidence came from the binary itself: its exported MSP schema, its strings, and a live serve probe under the local mock.",
+        "userNote": "The binary owns six native subagent tools (subagent_spawn/status/send_message/wait/read_result/cancel), and its exec and TUI runtimes offer them once the workspace is trusted (a live probe saw the 32-tool set with \"Agent delegation: auto unavailable:",
+        "detailNote": "The binary owns six native subagent tools (subagent_spawn/status/send_message/wait/read_result/cancel), and its exec and TUI runtimes offer them once the workspace is trusted (a live probe saw the 32-tool set with \"Agent delegation: auto unavailable: workspace is untrusted\" as the only gate). The serve host that LeapMux drives never offers them: 26 tools under every combination tried -- delegation mode auto on the command line and in settings, a trusted workspace, agents.execution_capacity, the agents experiment, and the live feature gates. The deciding evidence came from the binary itself: its exported MSP schema, its strings, and live serve and exec probes under the local mock.",
         "spec": "frontend/tests/e2e/muse-code/interrupt-a-subagent.spec.ts",
         "audit": "covered-negative",
         "testStatus": "passed",
