@@ -1,6 +1,6 @@
 # LeapMux
 
-Multi-agent coding assistant platform for twenty-nine agent providers.
+Multi-agent coding assistant platform for thirty agent providers.
 
 - Backend: Go
 - Frontend: SolidJS with vanilla-extract CSS (`.css.ts` files)
@@ -159,7 +159,7 @@ Each provider is a Go package under `backend/internal/worker/agent/providers/`,
 as each frontend plugin is a folder under `frontend/src/components/chat/providers/`.
 These providers read their own native protocol: `claude`, `codex`, `copilot`,
 `pi`, `zcode`, `codewhale`, `kimi`, `mimo`, `ohmypi`, `amp`, `cline`, `codebuddy`,
-`commandcode`, `deepseekharness`, `droid`, `letta`, `qoder`. These speak the
+`commandcode`, `deepseekharness`, `droid`, `letta`, `qoder`, `muse`. These speak the
 Agent Client Protocol on the shared base in `providers/acp` (`acp.Start`):
 `opencode`, `cursor`, `kilo`, `goose`, `reasonix`, `qwen`, `grok`, `kiro`, `dirac`,
 `fastagent`, `gemini`, `junie`.
@@ -174,7 +174,8 @@ streams JSON that resembles Claude Code's stream but is a protocol of its own,
 so it shares no code with `claude`. Cline (`cline`) also offers an ACP mode, but
 `cline` drives Cline's hub WebSocket protocol instead: only the hub carries
 questions, plan approval, steering, the session list, images and reasoning
-effort.
+effort. Muse (`muse`) speaks its native Muse Session Protocol (MSP) through
+`muse serve`, which exposes more required controls than Muse's ACP adapter.
 
 Anything depending on **one provider's wire format or message shapes** MUST live
 in that provider's package, never in shared code (package `agent`,

@@ -232,6 +232,7 @@ Tool-result content depends on the provider. See the [feature matrix](#feature-m
 - Codewhale publishes immutable native image records. LeapMux stores verified image bytes beside the native tool event.
 - Cline supplies text-only tool results.
 - Amp can display an image from a file that `Read` opens. Its MCP results supply text only.
+- Muse Code hands an image's bytes to the next model request, but its tool result states the file and media type as text alone.
 
 ### Turn boundaries and notifications
 
