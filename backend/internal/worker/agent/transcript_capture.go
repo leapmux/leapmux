@@ -62,6 +62,17 @@ func (write CapturedTranscript) PersistMessage(source leapmuxv1.MessageSource) e
 	return err
 }
 
+// FrozenContent returns the captured record with its publication owner. A
+// reader that builds one capture-time operation from the record (the captured
+// goal writer) reads this; the answer stays shared, so a caller that mutates
+// must Clone first.
+func (write CapturedTranscript) FrozenContent() MessageContent {
+	if write.write == nil {
+		return MessageContent{}
+	}
+	return write.write.content
+}
+
 func (write CapturedTranscript) PersistNotification(source leapmuxv1.MessageSource) (bool, error) {
 	return write.persist(capturedNotification, source)
 }

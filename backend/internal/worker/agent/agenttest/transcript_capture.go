@@ -1,6 +1,8 @@
 package agenttest
 
 import (
+	"errors"
+
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
@@ -77,4 +79,52 @@ func (owner *testTranscriptOwner) ReportProgress(update agent.ProgressUpdate) {
 			contracts.SessionInfoKeyOutputBytesMinimum: snapshot.OutputBytesMinimum,
 		})
 	}
+}
+
+// GoalWriterFor builds the goal writer of one captured publication, mirroring
+// the worker sink's factory: the capture freezes the session fact at
+// observation, the writer refuses once a session replacement retires it, and
+// ordinary later turns in the same session keep it valid. The write lands on
+// the ROOT sink, whose registry the whole tree shares.
+func (sink *Sink) GoalWriterFor(captured agent.CapturedTranscript) (agent.CapturedGoalWriter, error) {
+	if !sink.ownsGoal() {
+		return nil, errors.New("a child transcript owns no session goal")
+	}
+	content := captured.FrozenContent()
+	if content.Publication == nil {
+		return nil, errors.New("the captured goal write has no publication owner")
+	}
+	owner, ok := content.Publication.Owner().(*testTranscriptOwner)
+	if !ok || owner == nil {
+		return nil, errors.New("the captured goal write has a foreign publication owner")
+	}
+	if owner.sink != sink {
+		return nil, errors.New("the captured goal write belongs to another sink")
+	}
+	if content.AgentSessionID == "" || content.AgentSessionID != owner.key.sessionID {
+		return nil, errors.New("the captured goal write's expected session does not match its native session fact")
+	}
+	return &sinkGoalWriter{root: sink.registry(), owner: owner}, nil
+}
+
+// sinkGoalWriter applies goal writes under one observation-time session fact.
+type sinkGoalWriter struct {
+	root  *Sink
+	owner *testTranscriptOwner
+}
+
+func (writer *sinkGoalWriter) UpsertGoal(update agent.GoalUpdate) error {
+	if !writer.owner.IsCurrent() {
+		return errors.New("the captured goal write's publication expired")
+	}
+	writer.root.UpsertGoal(update)
+	return nil
+}
+
+func (writer *sinkGoalWriter) ClearGoal() error {
+	if !writer.owner.IsCurrent() {
+		return errors.New("the captured goal write's publication expired")
+	}
+	writer.root.ClearGoal(false)
+	return nil
 }

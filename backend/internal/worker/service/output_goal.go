@@ -51,19 +51,25 @@ func (change goalChange) readFailure() string {
 
 // applyGoalUpdate preserves one original source and notification context across preparation attempts.
 // Only a concurrent change to the stored inputs repeats preparation. Storage errors return immediately.
-func (h *OutputHandler) applyGoalUpdate(operation goalOperation, change goalChange) {
+//
+// The returned failure is zero when the update committed or nothing was left
+// to do; the direct capture-now callers ignore it (every failure is logged
+// here already), and the captured goal writer returns it to its caller so a
+// retrying provider treats refusal and failed persistence the same.
+func (h *OutputHandler) applyGoalUpdate(operation goalOperation, change goalChange) goalFailure {
 	for {
 		if !operation.admission.isCurrent() {
-			return
+			return goalFailure{message: "the goal write's publication is no longer current", err: errGoalWriterExpired}
 		}
 		actions := h.SupportedGoalActions(operation.admission.agentID)
 		row, current, err := operation.admission.readGoal()
 		if err != nil {
-			logGoalFailure(operation.admission.agentID, goalFailure{message: change.readFailure(), err: err})
-			return
+			failure := goalFailure{message: change.readFailure(), err: err}
+			logGoalFailure(operation.admission.agentID, failure)
+			return failure
 		}
 		if !current {
-			return
+			return goalFailure{message: "the goal write's agent row is no longer current", err: errGoalWriterExpired}
 		}
 		update := change.update
 		matches := change.expectedStatus == nil ||
@@ -81,13 +87,13 @@ func (h *OutputHandler) applyGoalUpdate(operation goalOperation, change goalChan
 			prepared, failure = h.applyGoalUpdateFromRow(operation, row, update, actions)
 			if failure.err != nil {
 				logGoalFailure(operation.admission.agentID, failure)
-				return
+				return failure
 			}
 		}
 		result, failure := h.commitGoalPreparation(operation.admission, prepared, change.readFailure())
 		if failure.err != nil {
 			logGoalFailure(operation.admission.agentID, failure)
-			return
+			return failure
 		}
 		if result == goalPrepareAgain {
 			continue
@@ -95,7 +101,7 @@ func (h *OutputHandler) applyGoalUpdate(operation goalOperation, change goalChan
 		if result == goalCommitted {
 			h.drainGoalPublications(operation.admission.agentID)
 		}
-		return
+		return goalFailure{}
 	}
 }
 

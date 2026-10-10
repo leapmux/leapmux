@@ -215,3 +215,41 @@ func TestGoalAdmissionRejectsChildrenBeforeCallbacks(t *testing.T) {
 	services.PublishGoalCapabilities()
 	assert.Equal(t, 1, callbacks, "the real root capability control must reach the same provider callback")
 }
+
+func TestGoalWriterForCarriesTheObservationAuthority(t *testing.T) {
+	t.Parallel()
+	svc, _, _, services, _ := goalPublicationFixture(t)
+	sink := requireRootOutputSink(t, svc.Output, "goal-publication-owner")
+	services.UpsertGoal(goalPublicationUpdate("Standing goal", 11))
+	services.UpdateSessionID("original-goal-session")
+
+	// A capture under the live session builds a writer that applies.
+	captured := agent.CaptureTranscript(sink, agent.MessageContent{AgentSessionID: "original-goal-session"}, agent.SpanInfo{})
+	writer, err := sink.GoalWriterFor(captured)
+	require.NoError(t, err)
+	require.NoError(t, writer.UpsertGoal(goalPublicationUpdate("Captured goal", 31)))
+	assert.Equal(t, "Captured goal", storedGoalColumns(t, svc).Objective)
+
+	// A capture whose expected session names another session is refused
+	// before any write.
+	foreign := agent.CaptureTranscript(sink, agent.MessageContent{AgentSessionID: "another-session"}, agent.SpanInfo{})
+	if _, err := sink.GoalWriterFor(foreign); err == nil {
+		t.Fatal("a capture from another session must not build a goal writer")
+	}
+
+	// A session replacement expires a writer captured before it.
+	early, err := sink.GoalWriterFor(captured)
+	require.NoError(t, err)
+	services.UpdateSessionID("replacement-goal-session")
+	require.ErrorIs(t, early.UpsertGoal(goalPublicationUpdate("Expired goal", 41)), errGoalWriterExpired)
+	require.ErrorIs(t, early.ClearGoal(), errGoalWriterExpired)
+	assert.Equal(t, "Captured goal", storedGoalColumns(t, svc).Objective, "an expired writer changes nothing")
+
+	// A capture made under the replacement session applies again: the factory
+	// reads the live authority, not a global switch.
+	fresh := agent.CaptureTranscript(sink, agent.MessageContent{AgentSessionID: "replacement-goal-session"}, agent.SpanInfo{})
+	next, err := sink.GoalWriterFor(fresh)
+	require.NoError(t, err)
+	require.NoError(t, next.UpsertGoal(goalPublicationUpdate("Replaced session goal", 51)))
+	assert.Equal(t, "Replaced session goal", storedGoalColumns(t, svc).Objective)
+}

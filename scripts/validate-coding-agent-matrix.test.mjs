@@ -422,7 +422,7 @@ describe('validateCodingAgentMatrix', () => {
           counts[cell.support] += 1
       }
       // A deliberate change of a verdict changes these numbers. Update them with the checklist.
-      expect(counts).toEqual({ 'supported': 1046, 'agent-limit': 404, 'leapmux-limit': 87 })
+      expect(counts).toEqual({ 'supported': 1082, 'agent-limit': 421, 'leapmux-limit': 87 })
       expect(checklist.supportStates).toEqual(SUPPORT_STATES)
     })
   })

@@ -970,6 +970,28 @@ tasks:
       - task: test-backend
       - task: test-desktop
 
+  audit-agent-cases:
+    desc: Audit the preserved browser cases against a discovery manifest
+    # One record per original case states its exact final destination; the audit
+    # refuses a missing record, a duplicate original, an absent destination, a
+    # lost required assertion, and an uncovered original.
+    cmds:
+      - node scripts/audit-agent-case-preservation.mjs --discovery {{.DISCOVERY}}
+
+  verify-agent-acceptance:
+    desc: Accept feature cells only from a complete same-source report
+    # Every discovered case of a cell's spec must pass first-attempt; the report
+    # and the discovery must share one frozen source identity.
+    cmds:
+      - node scripts/verify-agent-feature-acceptance.mjs --report {{.REPORT}} --discovery {{.DISCOVERY}} {{.IDENTITY}}
+
+  freeze-agent-source:
+    desc: Record or verify the agent source identity
+    # --record freezes HEAD, every tracked file's mode and SHA-256, the new and
+    # deleted files, and the discovery digest; --verify refuses any difference.
+    cmds:
+      - node scripts/verify-agent-source-freeze.mjs {{.CLI_ARGS}}
+
   test-scripts:
     desc: Test repository scripts
     # Bun tests repository and desktop build scripts outside the frontend Vitest project.

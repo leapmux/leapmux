@@ -1647,11 +1647,14 @@ func (nop) UpsertGoal(agent.GoalUpdate)                                         
 func (nop) UpdateGoalStatus(agent.GoalStatus, agent.GoalStatus)                     {}
 func (nop) ClearGoal(bool)                                                          {}
 func (nop) PublishGoalCapabilities()                                                {}
-func (nop) ScheduleAutoContinue(agent.AutoContinueSchedule)                         {}
-func (nop) CancelAutoContinue(agent.AutoContinueReason)                             {}
-func (nop) EnsureChildAgent(agent.ChildAgentSpec) (string, error)                   { return "", nil }
-func (nop) ChildSpawnSpan(string) (string, error)                                   { return "", nil }
-func (nop) ChildSink(string) agent.ProviderServices                                 { return Nop() }
+func (nop) GoalWriterFor(agent.CapturedTranscript) (agent.CapturedGoalWriter, error) {
+	return nil, errors.New("the nop sink captures no goal authority")
+}
+func (nop) ScheduleAutoContinue(agent.AutoContinueSchedule)       {}
+func (nop) CancelAutoContinue(agent.AutoContinueReason)           {}
+func (nop) EnsureChildAgent(agent.ChildAgentSpec) (string, error) { return "", nil }
+func (nop) ChildSpawnSpan(string) (string, error)                 { return "", nil }
+func (nop) ChildSink(string) agent.ProviderServices               { return Nop() }
 func (nop) PersistChildMessage(string, leapmuxv1.MessageSource, []byte, agent.SpanInfo) error {
 	return nil
 }

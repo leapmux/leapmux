@@ -350,6 +350,35 @@ type GoalServices interface {
 	// for an agent that reports no goal capability -- so an answer that is
 	// merely early leaves the feature unreachable for the life of the session.
 	PublishGoalCapabilities()
+
+	// GoalWriterFor builds the goal writer of one captured publication.
+	//
+	// A provider that defers its goal writes (Muse runs them after its dispatch
+	// lock releases) must capture the writer when the native goal event ARRIVES,
+	// not when the deferred write executes: a context replacement between the
+	// two would give old native goal data the new session's authority. The
+	// captured transcript freezes the publication owner and the native session
+	// fact at observation; the returned writer refuses with an error once that
+	// authority expires, and ordinary later turns in the same native session
+	// keep it valid.
+	//
+	// The captured content's AgentSessionID must name the captured native
+	// session fact: a capture whose expected session disagrees with the live
+	// owner's session is not this observation's writer.
+	//
+	// The direct methods above stay capture-now operations through the same
+	// admission machinery; a provider with no delay between observation and
+	// write needs no factory.
+	GoalWriterFor(captured CapturedTranscript) (CapturedGoalWriter, error)
+}
+
+// CapturedGoalWriter applies goal writes under one captured publication's
+// authority. Both methods refuse with an error after that authority expires;
+// the refusal and a failed persistence share one error policy, so a caller
+// that retries treats them the same.
+type CapturedGoalWriter interface {
+	UpsertGoal(update GoalUpdate) error
+	ClearGoal() error
 }
 
 // AutoContinueServices schedules automatic continuation.

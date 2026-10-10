@@ -64,6 +64,14 @@ func TestMuseGoalActionsRejectAnEmptyObjectiveAndUnsupportedActionBeforeAWrite(t
 	assert.Zero(t, requests)
 }
 
+/** An agent whose sink holds the open native session, as the worker's sink does. */
+func goalTestAgent(t *testing.T) (*Agent, *agenttest.Sink) {
+	t.Helper()
+	a, sink := testAgent(t)
+	sink.UpdateSessionID("session")
+	return a, sink
+}
+
 func goalEventParams(sessionID string, goal any) map[string]any {
 	return map[string]any{
 		"sessionId":  sessionID,
@@ -94,7 +102,7 @@ func TestMuseGoalEventsKeepKnownAndUnknownStatesDistinct(t *testing.T) {
 	} {
 		t.Run(scenario.status, func(t *testing.T) {
 			t.Parallel()
-			a, sink := testAgent(t)
+			a, sink := goalTestAgent(t)
 			feed(t, a, methodSessionGoalChanged, goalEventParams("session", map[string]any{
 				"objective": "Read the native objective", "status": scenario.status, "percentComplete": 0,
 			}))
@@ -133,7 +141,7 @@ func TestMuseGoalEventsPreserveThePreviousGoalForInvalidFields(t *testing.T) {
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			t.Parallel()
-			a, sink := testAgent(t)
+			a, sink := goalTestAgent(t)
 			before := agent.GoalUpdate{Objective: "The previous objective", Status: agent.GoalStatusPaused}
 			sink.UpsertGoal(before)
 			params := goalEventParams("session", scenario.goal)
@@ -149,7 +157,7 @@ func TestMuseGoalEventsPreserveThePreviousGoalForInvalidFields(t *testing.T) {
 
 func TestMuseGoalEventsClearOnlyAnExplicitNullGoal(t *testing.T) {
 	t.Parallel()
-	a, sink := testAgent(t)
+	a, sink := goalTestAgent(t)
 	before := agent.GoalUpdate{Objective: "The previous objective", Status: agent.GoalStatusActive}
 	sink.UpsertGoal(before)
 	feed(t, a, methodSessionGoalChanged, goalEventParams("session", nil))
@@ -170,7 +178,7 @@ func TestMuseUnknownGoalKeepsRawBytesAndNormalizedDisplayDetail(t *testing.T) {
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			t.Parallel()
-			a, sink := testAgent(t)
+			a, sink := goalTestAgent(t)
 			raw := feed(t, a, methodSessionGoalChanged, goalEventParams("session", map[string]any{
 				"objective": "Native objective", "status": scenario.status, "percentComplete": 0,
 			}))
@@ -217,6 +225,36 @@ func (sink *museGoalObserverSink) ClearGoal(snapshot bool) {
 	}
 }
 
+// GoalWriterFor keeps the nested-output hook on the captured path the agent
+// actually drives: the deferred write goes through the writer, not the sink's
+// direct methods.
+func (sink *museGoalObserverSink) GoalWriterFor(captured agent.CapturedTranscript) (agent.CapturedGoalWriter, error) {
+	writer, err := sink.ProviderServices.GoalWriterFor(captured)
+	if err != nil {
+		return nil, err
+	}
+	return &museGoalObserverWriter{writer: writer, observe: sink.observe}, nil
+}
+
+type museGoalObserverWriter struct {
+	writer  agent.CapturedGoalWriter
+	observe func()
+}
+
+func (w *museGoalObserverWriter) UpsertGoal(update agent.GoalUpdate) error {
+	if w.observe != nil {
+		w.observe()
+	}
+	return w.writer.UpsertGoal(update)
+}
+
+func (w *museGoalObserverWriter) ClearGoal() error {
+	if w.observe != nil {
+		w.observe()
+	}
+	return w.writer.ClearGoal()
+}
+
 func TestMuseGoalObserversReleaseDispatchBeforeNestedNativeOutput(t *testing.T) {
 	for _, scenario := range []struct {
 		name       string
@@ -228,7 +266,7 @@ func TestMuseGoalObserversReleaseDispatchBeforeNestedNativeOutput(t *testing.T) 
 		{"clear", nil, 0, 1},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
-			a, sink := testAgent(t)
+			a, sink := goalTestAgent(t)
 			nested, err := json.Marshal(map[string]any{
 				"jsonrpc": "2.0",
 				"method":  "session/todoListChanged",
@@ -278,4 +316,44 @@ func TestMuseGoalObserversReleaseDispatchBeforeNestedNativeOutput(t *testing.T) 
 			assert.Equal(t, 1, stored, "the nested native notification must persist exactly once")
 		})
 	}
+}
+
+func TestMuseGoalWriterRefusesAfterContextReplacement(t *testing.T) {
+	t.Parallel()
+	a, sink := goalTestAgent(t)
+	// The goal observation arrives under the open session; the write runs in
+	// the same flush but only after the observation. A context replacement
+	// between the two installs a new native session fact on the sink -- the
+	// authority fact the capture froze -- and the old native goal data must
+	// not gain the new session's authority.
+	replaced := false
+	observer := &museGoalObserverSink{ProviderServices: a.sink}
+	observer.observe = func() {
+		if !replaced {
+			replaced = true
+			sink.UpdateSessionID("replacement")
+		}
+	}
+	a.sink = observer
+	a.sessions["session"].sink = observer
+	feed(t, a, methodSessionGoalChanged, goalEventParams("session", map[string]any{"objective": "The replaced session goal", "status": "active"}))
+	assert.True(t, replaced, "the observer must run between observation and write")
+	assert.Empty(t, sink.Goals())
+	assert.Zero(t, sink.GoalClears())
+}
+
+func TestMuseGoalWriterSurvivesLaterTurnsInTheSameSession(t *testing.T) {
+	t.Parallel()
+	a, sink := goalTestAgent(t)
+	feed(t, a, methodSessionGoalChanged, goalEventParams("session", map[string]any{"objective": "The same-session goal", "status": "active"}))
+	// Ordinary later turns in the same native session change no authority
+	// fact; the deferred write still lands.
+	a.Mu.Lock()
+	a.TurnToolUses++
+	a.Mu.Unlock()
+	for _, action := range a.takeDeferredGoalActions() {
+		action()
+	}
+	require.Len(t, sink.Goals(), 1)
+	assert.Equal(t, "The same-session goal", sink.Goals()[0].Objective)
 }

@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Agent browser-case preservation records",
+  "description": "One record per original browser case, stating its exact final destination after the consolidated repair. audit-agent-case-preservation validates every record against the final discovery.",
+  "type": "object",
+  "required": ["schema_version", "records"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": 1 },
+    "records": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/definitions/record" }
+    }
+  },
+  "definitions": {
+    "path": { "type": "string", "pattern": "^frontend/tests/e2e/.+\\.spec\\.ts$" },
+    "title": { "type": "string", "minLength": 1 },
+    "record": {
+      "type": "object",
+      "required": ["originalFile", "originalTitle", "disposition"],
+      "additionalProperties": false,
+      "properties": {
+        "originalFile": { "$ref": "#/definitions/path" },
+        "originalDescribe": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/title" },
+          "description": "The describe blocks around the original case, outermost first, when a move or merge must recompute its original id."
+        },
+        "originalCaseId": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{20}-[0-9a-f]{20}$",
+          "description": "The original case's Playwright id, when it is known outright instead of derived from the file and title."
+        },
+        "originalTitle": { "$ref": "#/definitions/title" },
+        "disposition": { "enum": ["retained", "moved", "merged"] },
+        "destinationFile": { "$ref": "#/definitions/path" },
+        "destinationDescribe": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/title" }
+        },
+        "destinationTitle": { "$ref": "#/definitions/title" },
+        "requiredAssertions": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 },
+          "description": "The assertions a merge had to keep. A merge states at least one: a title match alone never proves the original's checks survived."
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "disposition": { "const": "merged" } }, "required": ["disposition"] },
+          "then": {
+            "required": ["destinationFile", "destinationTitle", "requiredAssertions"],
+            "properties": {
+              "destinationFile": true,
+              "destinationTitle": true,
+              "requiredAssertions": true
+            }
+          }
+        },
+        {
+          "if": { "properties": { "disposition": { "const": "moved" } }, "required": ["disposition"] },
+          "then": {
+            "required": ["destinationFile", "destinationTitle"],
+            "properties": {
+              "destinationFile": true,
+              "destinationTitle": true
+            }
+          }
+        }
+      ]
+    }
+  }
+}

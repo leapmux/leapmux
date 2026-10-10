@@ -104,11 +104,12 @@ func cursorSubagentFromToolCall(tc acp.ToolCallEnvelope) *acp.SubagentObservatio
 		Prompt string `json:"prompt"`
 	}
 	_ = json.Unmarshal(tc.RawInput, &input)
+	key := bgtask.NormalizeRowKey(tc.ToolCallID)
 	return &acp.SubagentObservation{
-		RowKey:        tc.ToolCallID,
+		RowKey:        key,
 		Title:         title,
 		Status:        bgtask.StatusRunning,
-		ChildAgentKey: tc.ToolCallID,
+		ChildAgentKey: key,
 		Prompt:        input.Prompt,
 		Spawns:        true,
 	}
@@ -170,7 +171,7 @@ func cursorSubagentFromToolCallUpdate(tcu acp.ToolCallUpdateEnvelope, wasTaskToo
 		return nil
 	}
 	obs := &acp.SubagentObservation{
-		RowKey:   tcu.ToolCallID,
+		RowKey:   bgtask.NormalizeRowKey(tcu.ToolCallID),
 		Status:   acp.FinalStatus(tcu.Status),
 		CloseRow: true,
 		Mode:     acp.ModeCloseOnly,

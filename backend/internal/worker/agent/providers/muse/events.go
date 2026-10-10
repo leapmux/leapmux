@@ -56,15 +56,28 @@ func (a *Agent) handleEvent(line *providerkit.ParsedLine, state *sessionState) {
 			return
 		}
 		sink, raw := state.sink, line.Raw
-		// The writes run AFTER dispatch releases: a goal observer can re-enter
-		// native output from UpsertGoal and ClearGoal, and the dispatch mutex
-		// must be free when it does.
+		// Capture the goal authority NOW, at the observation: the writes run
+		// after dispatch releases (a goal observer can re-enter native output,
+		// and the dispatch mutex must be free when it does), and a context
+		// replacement in between must not hand old native goal data the new
+		// session's authority. The captured writer refuses once that happens.
+		captured := agent.CaptureTranscript(sink, agent.MessageContent{AgentSessionID: event.SessionID, Original: raw}, agent.SpanInfo{})
+		writer, err := sink.GoalWriterFor(captured)
+		if err != nil {
+			slog.Warn("capture a Muse goal writer", "error", err)
+			return
+		}
 		a.deferGoalAction(func() {
 			if clear {
-				sink.ClearGoal(false)
+				if err := writer.ClearGoal(); err != nil {
+					slog.Warn("clear the native Muse goal", "error", err)
+				}
 				return
 			}
-			sink.UpsertGoal(update)
+			if err := writer.UpsertGoal(update); err != nil {
+				slog.Warn("upsert the native Muse goal", "error", err)
+				return
+			}
 			if update.Status == agent.GoalStatusUnknown {
 				// An unrecognized native status cannot project to the goal card
 				// without inventing a state, so the raw native bytes stay in

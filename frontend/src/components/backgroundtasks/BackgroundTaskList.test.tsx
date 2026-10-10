@@ -3,6 +3,7 @@ import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import { fireEvent, render } from '@solidjs/testing-library'
 import { createStore } from 'solid-js/store'
 import { describe, expect, it, vi } from 'vitest'
+import { rowDomIdentity } from '~/components/backgroundtasks/BackgroundTaskList'
 import * as styles from '~/components/backgroundtasks/BackgroundTaskList.css'
 import { BackgroundTaskPanel } from '~/components/backgroundtasks/BackgroundTaskPanel'
 import { BackgroundTaskKind, BackgroundTaskStatus } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -82,6 +83,18 @@ function titles(container: HTMLElement): HTMLElement[] {
 function secondaries(container: HTMLElement): HTMLElement[] {
   return [...container.querySelectorAll<HTMLElement>(classSelector(styles.taskSecondary))]
 }
+
+describe('rowDomIdentity', () => {
+  it('keeps an ordinary native key unchanged', () => {
+    expect(rowDomIdentity('task-1')).toBe('task-1')
+  })
+
+  it('replaces each control character in a Cursor tool call id', () => {
+    expect(rowDomIdentity('call_CTRL\n_ID\t205')).toBe('call_CTRL\uFFFD_ID\uFFFD205')
+    expect(rowDomIdentity('del\u007F')).toBe('del\uFFFD')
+    expect(rowDomIdentity('c1\u0085')).toBe('c1\uFFFD')
+  })
+})
 
 describe('BackgroundTaskList', () => {
   it('shows unknown-outcome finality with a static muted dot and a retained transcript link', () => {

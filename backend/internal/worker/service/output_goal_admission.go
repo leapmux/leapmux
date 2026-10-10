@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"sync"
 
@@ -50,6 +51,82 @@ func (h *OutputHandler) captureGoalProjection(agentID string) goalOperation {
 		return sink.captureGoalOperation()
 	}
 	return goalOperation{admission: &goalAdmission{h: h, agentID: agentID}}
+}
+
+// errGoalWriterRefused names one policy for a goal writer that cannot exist:
+// the refusal and a failed write share it, so a retrying caller treats both
+// the same instead of reading a nil writer and a nil error as success.
+var errGoalWriterRefused = errors.New("the captured goal write has no current authority")
+
+// errGoalWriterExpired names the refusal a captured goal writer returns once
+// its publication's session authority is gone: a context replacement replaced
+// the native session, and the captured observation belongs to the old one.
+var errGoalWriterExpired = errors.New("the captured goal write's publication expired")
+
+// GoalWriterFor builds the goal writer of one captured publication. The caller
+// captures the transcript when its native goal observation ARRIVES; the writer
+// checks the sink, the publisher, and the native session fact atomically at
+// each publication, so ordinary later turns in the same native session keep it
+// valid and a context replacement refuses it.
+func (sink *agentOutputSink) GoalWriterFor(captured agent.CapturedTranscript) (agent.CapturedGoalWriter, error) {
+	if !sink.ownsGoal("GoalWriterFor") {
+		return nil, errGoalWriterRefused
+	}
+	content := captured.FrozenContent()
+	if content.Publication == nil {
+		return nil, errGoalWriterRefused
+	}
+	owner, ok := content.Publication.Owner().(*transcriptOwner)
+	if !ok || owner == nil {
+		return nil, errGoalWriterRefused
+	}
+	if owner.sink != sink {
+		return nil, errGoalWriterRefused
+	}
+	// The expected session must equal the CAPTURED NATIVE SESSION FACT's id:
+	// the owner's sessionID field only echoes the request, so comparing
+	// against it would accept a capture from a foreign session that is born
+	// expired instead of refused.
+	if content.AgentSessionID == "" || owner.session == nil || content.AgentSessionID != owner.session.id {
+		return nil, errGoalWriterRefused
+	}
+	return &capturedGoalWriter{operation: goalOperation{
+		admission: &goalAdmission{
+			h:         sink.h,
+			agentID:   sink.agentID,
+			sink:      sink,
+			publisher: sink.turnPublisherSink(),
+			session:   owner.session,
+		},
+		content: content.Clone(),
+	}}, nil
+}
+
+// capturedGoalWriter applies goal writes under one observation-time authority.
+type capturedGoalWriter struct {
+	operation goalOperation
+}
+
+func (writer *capturedGoalWriter) UpsertGoal(update agent.GoalUpdate) error {
+	if !writer.operation.admission.isCurrent() {
+		return errGoalWriterExpired
+	}
+	return writer.apply(goalChange{update: cloneGoalUpdate(update).Clean()})
+}
+
+func (writer *capturedGoalWriter) ClearGoal() error {
+	if !writer.operation.admission.isCurrent() {
+		return errGoalWriterExpired
+	}
+	return writer.apply(goalChange{})
+}
+
+func (writer *capturedGoalWriter) apply(change goalChange) error {
+	failure := writer.operation.admission.h.applyGoalUpdate(writer.operation, change)
+	if failure.err != nil {
+		return failure.err
+	}
+	return nil
 }
 
 func (operation goalOperation) captureNotification(payload map[string]interface{}) (agent.CapturedTranscript, error) {

@@ -45,6 +45,25 @@ const LOAD_FAILED_MESSAGE = 'Could not load background tasks from the worker'
 // The renderer and repeat-text guard share the same first line.
 // Clean each candidate before the fallback selects it. Invisible text cannot create a blank label.
 // Native row keys retain exact identity. NormalizeRowKey replaces invalid keys with a digest rather than editing them.
+/**
+ * The display-safe form of a row key for `data-task-id`.
+ *
+ * The key itself is the registry identity and stays exact everywhere it is
+ * looked up; this attribute only lets a reader (a test, devtools) name the row
+ * in the DOM. A native key can carry control characters (a Cursor tool call
+ * id embeds newlines), and an attribute holding them breaks every selector and
+ * snapshot that touches it, so each control character renders as U+FFFD. The
+ * attribute is never a lookup key: nothing in the app reads it back.
+ */
+export function rowDomIdentity(key: string): string {
+  let clean = ''
+  for (const ch of key) {
+    const code = ch.codePointAt(0) ?? 0
+    clean += code < 0x20 || code === 0x7F || (code >= 0x80 && code <= 0x9F) ? '\uFFFD' : ch
+  }
+  return clean
+}
+
 // Cursor keys can contain newlines, so the browser cleans display text without changing the key.
 // The Worker already cleans titles. cleanName preserves that cleaned value.
 function rowTitle(item: BackgroundTaskItem): string {
@@ -206,7 +225,7 @@ export const BackgroundTaskList: Component<BackgroundTaskListProps> = (props) =>
       }
     },
     'data-testid': 'bg-task-row',
-    get 'data-task-id'() { return item.rowKey },
+    get 'data-task-id'() { return rowDomIdentity(item.rowKey) },
     get 'data-status'() { return item.status },
     get 'data-kind'() { return item.kind },
     get 'data-child-agent-id'() { return item.childAgentId ?? '' },

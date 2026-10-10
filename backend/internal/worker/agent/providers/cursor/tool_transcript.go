@@ -145,7 +145,7 @@ func (a *Agent) noteCursorTaskExtension(toolCallID string) {
 
 func (a *Agent) persistReadyCursorTaskReport(toolCallID, report string) {
 	_, err := a.Sink().PersistChildSubagentReport(agent.ChildSubagentReportWrite{
-		RowKey: toolCallID,
+		RowKey: bgtask.NormalizeRowKey(toolCallID),
 		Write: agent.SubagentReportWrite{
 			ReportID: toolCallID,
 			Report:   agent.SubagentReport{Label: "Cursor subagent", Text: report},

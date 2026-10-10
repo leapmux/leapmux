@@ -1,6 +1,7 @@
 package providerkit
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -70,6 +71,9 @@ type goalServicesRecorder struct {
 func (s *goalServicesRecorder) UpsertGoal(update agent.GoalUpdate) { s.update = update }
 
 func (*goalServicesRecorder) UpdateGoalStatus(agent.GoalStatus, agent.GoalStatus) {}
+func (*goalServicesRecorder) GoalWriterFor(agent.CapturedTranscript) (agent.CapturedGoalWriter, error) {
+	return nil, errors.New("the recorder captures no goal authority")
+}
 
 func (*goalServicesRecorder) ClearGoal(bool) {}
 
