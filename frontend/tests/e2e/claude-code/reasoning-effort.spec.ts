@@ -2,7 +2,7 @@ import { expect } from '@playwright/test'
 import { claudeProcessTest as test } from '../claude-fixtures'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { exerciseModelSwitchKeepsOption, exerciseNativeOption } from '../helpers/nativeSettings'
-import { chooseSettingsOption, expectSettingsChip, expectSettingsOptionChosen, offeredSettingsOptions, openPlusMenu, openSettingsMenu, settingsBar, settingsGroupTrigger, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
+import { chooseSettingsOption, expectSettingsChip, expectSettingsOptionChosen, offeredSettingsOptions, openPlusMenu, settingsBar, settingsGroupTrigger, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
 import { claudeUltracodeEnabled } from './ultracodeRequest'
 
 test.describe('Agent Settings', () => {
@@ -15,32 +15,35 @@ test.describe('Agent Settings', () => {
     })
   })
 
-  test('effort hidden when haiku selected', async ({ authenticatedWorkspace, page }) => {
-    const trigger = settingsBar(page)
-    await expect(trigger).toBeVisible()
+  // Claude 2.1.295 grants every offered model the same effort axis -- the CLI's own
+  // rule excludes only opus-4-6, which its list no longer offers -- so the group no
+  // longer hides for Haiku. Both surfaces must keep it, and the choice must survive
+  // the trip through Haiku and back.
+  test('every offered model keeps the effort group and the selected level', async ({ native, page }) => {
+    await expect(settingsBar(page)).toBeVisible()
 
-    // Haiku offers no effort group or effort chip. Sonnet offers both controls.
     const effortSubmenu = settingsGroupTrigger(page, 'effort')
     const effortChip = page.locator('[data-testid="composer-effort-trigger"]')
 
-    await expect((await openSettingsMenu(page, 'effort')).getByTestId('effort-high')).toBeVisible()
-    await chooseSettingsOption(page, 'model-haiku')
-    await expectSettingsChip(page, 'Haiku')
+    const onSonnet = await offeredSettingsOptions(page, 'effort')
+    await chooseSettingsOption(page, 'effort-xhigh')
     await waitForSettingsIdle(page)
+    await expectSettingsOptionChosen(page, 'effort-xhigh')
 
-    // Effort is hidden for Haiku, on both surfaces.
-    await openPlusMenu(page)
-    await expect(effortSubmenu).toHaveCount(0)
-    await expect(effortChip).toHaveCount(0)
-    await page.keyboard.press('Escape')
+    for (const model of ['haiku', 'opus[1m]', 'sonnet']) {
+      await chooseSettingsOption(page, `model-${model}`)
+      await waitForSettingsIdle(page)
+      // The group stays on both surfaces, and the menu offers the same levels.
+      await openPlusMenu(page)
+      await expect(effortSubmenu).toHaveCount(1)
+      await expect(effortChip).toHaveCount(1)
+      await page.keyboard.press('Escape')
+      expect(await offeredSettingsOptions(page, 'effort')).toEqual(onSonnet)
+      await expectSettingsOptionChosen(page, 'effort-xhigh')
+    }
 
-    // Restore Sonnet and its effort group.
-    await chooseSettingsOption(page, 'model-sonnet')
-    await expectSettingsChip(page, 'Sonnet')
-    await waitForSettingsIdle(page)
-
-    await expect((await openSettingsMenu(page, 'effort')).getByTestId('effort-high')).toBeVisible()
-    await page.keyboard.press('Escape')
+    const request = await sendNativeAnswer(native, 'Reply once after the model tour.', 'Claude answered after the tour.')
+    expect(request.body).toMatchObject({ output_config: { effort: 'xhigh' } })
   })
 
   test('the effort menu is the same before and after a model round trip', async ({ authenticatedWorkspace, page }) => {
@@ -109,9 +112,11 @@ test.describe('Agent Settings', () => {
     })
   })
 
-  // Haiku offers no effort axis, so the switch to Haiku drops the tier. The switch back to Sonnet
-  // carries no effort either, and the row holds none, so Sonnet reports the level that it selects.
-  test('a model switch to a model without effort resets the effort', async ({ native, page }) => {
+  // No offered model lacks effort under the installed CLI, so nothing resets the
+  // stored tier: a round trip through Haiku keeps the chosen level, and the next
+  // native request proves it. Medium remains a real level of the shared set, so
+  // choosing it after the trip proves the level follows the user, not the model.
+  test('a round trip through Haiku keeps the selected effort', async ({ native, page }) => {
     const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
 
@@ -125,15 +130,14 @@ test.describe('Agent Settings', () => {
     await chooseSettingsOption(page, 'model-haiku')
     await expectSettingsChip(page, 'Haiku')
     await waitForSettingsIdle(page)
+    await expectSettingsOptionChosen(page, 'effort-xhigh')
     await chooseSettingsOption(page, 'model-sonnet')
     await expectSettingsChip(page, 'Sonnet')
     await waitForSettingsIdle(page)
-
-    // The effort menu chooses one level, so Medium also proves that Xhigh is gone.
-    await expectSettingsOptionChosen(page, 'effort-medium')
+    await expectSettingsOptionChosen(page, 'effort-xhigh')
 
     const request = await sendNativeAnswer(native, 'Reply once after the round trip through Haiku.', 'Claude answered after the round trip.')
-    expect(request.body).toMatchObject({ output_config: { effort: 'medium' } })
+    expect(request.body).toMatchObject({ output_config: { effort: 'xhigh' } })
   })
 
   // A new session pins no effort: the CLI chooses the level of its model. The menu shows that level, and a

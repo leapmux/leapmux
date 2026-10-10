@@ -5319,7 +5319,9 @@
         "Agent Settings"
       ],
       "originalTitle": "a model switch to a model without effort resets the effort",
-      "disposition": "retained"
+      "disposition": "moved",
+      "destinationFile": "frontend/tests/e2e/claude-code/reasoning-effort.spec.ts",
+      "destinationTitle": "a round trip through Haiku keeps the selected effort"
     },
     {
       "originalFile": "frontend/tests/e2e/claude-code/reasoning-effort.spec.ts",
@@ -5327,7 +5329,9 @@
         "Agent Settings"
       ],
       "originalTitle": "effort hidden when haiku selected",
-      "disposition": "retained"
+      "disposition": "moved",
+      "destinationFile": "frontend/tests/e2e/claude-code/reasoning-effort.spec.ts",
+      "destinationTitle": "every offered model keeps the effort group and the selected level"
     },
     {
       "originalFile": "frontend/tests/e2e/claude-code/reasoning-effort.spec.ts",

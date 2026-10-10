@@ -61,16 +61,17 @@ test.describe('Agent Settings', () => {
     await expect(visibleOnly(page.getByText(/Extended Thinking \((?:.* → )?Adaptive\)/))).toHaveCount(0)
   })
 
-  // Claude Code 2.1.289 refuses to disable thinking for Sonnet 5.5, Opus 5.5 and
-  // Fable (`rejects_disabled_thinking` in its model catalog): for a disabled
-  // session it sends no `thinking` at all, and its own toggle reports "Thinking
-  // can't be turned off". So the Sonnet phase proves the enabled state with its
-  // effort, and the off state is proved on Haiku, which accepts both states.
-  // Haiku thinks with a token budget, so its enabled type is "enabled".
+  // Claude Code's model catalog refuses to disable thinking: 2.1.289 covered
+  // Sonnet 5.5, Opus 5.5 and Fable, and 2.1.295 adds Haiku 5.5
+  // (`rejects_disabled_thinking` in its capabilities), so every offered model
+  // rejects the off state. A disabled session therefore sends NO `thinking` at
+  // all -- the off state is proved by the absent key, not a `disabled` type.
+  // Haiku 5.5 joins the adaptive models, so its enabled type is "adaptive" as
+  // well; its own toggle still labels the state "On".
   test('applies thinking to the native request independently of model and effort, before and after reload', async ({ native, page }) => {
     const phases = [
       { model: 'model-sonnet', effort: 'effort-medium', modelPattern: /^claude-sonnet-/, states: ['on'] as const, enabledType: 'adaptive', expectedEffort: 'medium' },
-      { model: 'model-haiku', effort: undefined, modelPattern: /^claude-haiku-/, states: ['off', 'on'] as const, enabledType: 'enabled', expectedEffort: undefined },
+      { model: 'model-haiku', effort: undefined, modelPattern: /^claude-haiku-/, states: ['off', 'on'] as const, enabledType: 'adaptive', expectedEffort: undefined },
     ]
     for (const phase of phases) {
       await chooseSettingsOption(page, phase.model)
@@ -90,7 +91,13 @@ test.describe('Agent Settings', () => {
           selectedModel ??= request.body.model
           expect(request.body.model).toBe(selectedModel)
           expect(request.body.model).toEqual(expect.stringMatching(phase.modelPattern))
-          expect(request.body).toMatchObject({ thinking: { type: step.value === 'on' ? phase.enabledType : 'disabled' } })
+          if (step.value === 'on') {
+            expect(request.body).toMatchObject({ thinking: { type: phase.enabledType } })
+          }
+          else {
+            // The model refuses the disabled state, so the request states no thinking at all.
+            expect('thinking' in request.body).toBe(false)
+          }
           if (phase.expectedEffort !== undefined)
             expect(request.body).toMatchObject({ output_config: { effort: phase.expectedEffort } })
         },
