@@ -382,7 +382,12 @@ describe('exerciseAllowThenFeedbackRejection', () => {
     const press = async (key: string) => {
       flow.events.push(`press:${key}`)
     }
-    const page = Object.assign({} as Page, { keyboard: { press } })
+    const page = Object.assign({} as Page, {
+      keyboard: { press },
+      reload: async () => {
+        flow.events.push('reload')
+      },
+    })
     const modelScript = {
       prompt: (text: string) => text,
       queue: async (...steps: unknown[]) => {
@@ -419,6 +424,7 @@ describe('exerciseAllowThenFeedbackRejection', () => {
       'steps:7',
       'idle',
       'request:6',
+      'reload',
     ])
     expect(flow.feedback).toBe(reason)
     // The saved answer is the bubble that holds the lead of a feedback row and the reason.
@@ -428,6 +434,7 @@ describe('exerciseAllowThenFeedbackRejection', () => {
       `text:printf approved > ${join(native.directory, 'approved.txt')}`,
       `text:printf rejected > ${join(native.directory, 'rejected.txt')}`,
       'count:0',
+      'visible',
       'visible',
       'visible',
     ])
@@ -632,7 +639,11 @@ function scriptedContext(bodies: (feedback: string) => Record<number, unknown>, 
       return { protocol: 'openai-chat-completions', path: '/chat/completions', body: bodies(flow.feedback)[index] ?? { messages: [] } }
     },
   } as unknown as ModelScript
-  const scripted: ManagedNativeScenarioContext = { provider: context.provider, providerAgent: context.providerAgent, workspaceId: context.workspaceId, leapmuxServer: context.leapmuxServer, page: {} as Page, modelScript }
+  const scripted: ManagedNativeScenarioContext = { provider: context.provider, providerAgent: context.providerAgent, workspaceId: context.workspaceId, leapmuxServer: context.leapmuxServer, page: {
+    reload: async () => {
+      flow.events.push('reload')
+    },
+  } as unknown as Page, modelScript }
   return { context: scripted, queued }
 }
 
@@ -655,10 +666,11 @@ describe('exerciseNativePermissionReason', () => {
       viewProof,
     })
     expect(queued).toEqual([[{ toolCalls: [toolCall] }, { text: expect.stringContaining('The refusal reached the model.') }]])
-    expect(flow.events).toEqual(['queue:2', 'send', 'steps:5', 'banner', 'before', 'feedback', 'button:deny', 'answer:deny', 'steps:6', 'idle', 'not-run', 'request:5'])
+    expect(flow.events).toEqual(['queue:2', 'send', 'steps:5', 'banner', 'before', 'feedback', 'button:deny', 'answer:deny', 'steps:6', 'idle', 'not-run', 'request:5', 'reload'])
     expect(flow.feedback).toMatch(/^Leave the target as it is\. REASON[0-9a-f]{32}$/)
     expect(declinedRow.assertions).toEqual(['exact:Send feedback', 'count:0', 'visible'])
-    expect(viewProof).toHaveBeenCalledExactlyOnceWith(flow.feedback)
+    expect(viewProof).toHaveBeenCalledTimes(2)
+    expect(viewProof).toHaveBeenLastCalledWith(flow.feedback)
   })
 
   it('requires the reason in the turn of the next message, and not in the turn that the refusal continues', async () => {
@@ -675,7 +687,7 @@ describe('exerciseNativePermissionReason', () => {
       { text: expect.stringContaining('The refusal reached the model.') },
       { text: expect.stringContaining('The reason reached the model.') },
     ]])
-    expect(flow.events).toEqual(['queue:3', 'send', 'steps:5', 'banner', 'feedback', 'button:deny', 'answer:deny', 'steps:7', 'idle', 'not-run', 'request:5', 'request:6'])
+    expect(flow.events).toEqual(['queue:3', 'send', 'steps:5', 'banner', 'feedback', 'button:deny', 'answer:deny', 'steps:7', 'idle', 'not-run', 'request:5', 'request:6', 'reload'])
     // The refusal answer, the user row of the reason, and the answer to the reason.
     expect(declinedRow.assertions).toEqual(['exact:Send feedback', 'count:0', 'visible', 'visible', 'visible'])
     expect(rowQuery.filters).toContainEqual({ hasText: flow.feedback })
@@ -685,7 +697,7 @@ describe('exerciseNativePermissionReason', () => {
     const { context: refused, queued } = scriptedContext(feedback => ({ 5: holding(feedback) }))
     await exerciseNativePermissionReason(refused, { toolCall, route: 'next-message', afterRefusal: 'ends', expectNotRun: () => {} })
     expect(queued).toEqual([[{ toolCalls: [toolCall] }, { text: expect.stringContaining('The reason reached the model.') }]])
-    expect(flow.events).toEqual(['queue:2', 'send', 'steps:5', 'banner', 'feedback', 'button:deny', 'answer:deny', 'steps:6', 'idle', 'request:5'])
+    expect(flow.events).toEqual(['queue:2', 'send', 'steps:5', 'banner', 'feedback', 'button:deny', 'answer:deny', 'steps:6', 'idle', 'request:5', 'reload'])
     expect(declinedRow.assertions).toEqual(['exact:Send feedback', 'count:0', 'visible', 'visible'])
   })
 

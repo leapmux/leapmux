@@ -180,6 +180,10 @@ export async function exerciseAllowThenFeedbackRejection(context: NativeScenario
   await expectSavedRefusalFeedback(context.page, reason)
   await expect(assistantBubbles(context.page).filter({ hasText: answer })).toBeVisible()
   expect(existsSync(rejected)).toBe(false)
+  // The refusal and its reason persist after a reload redraws the transcript.
+  await context.page.reload()
+  await expectSavedRefusalFeedback(context.page, reason)
+  expect(existsSync(rejected)).toBe(false)
 }
 
 /**
@@ -326,6 +330,10 @@ export async function exerciseNativePermissionReason(context: NativeScenarioCont
     await expect(userBubbles(context.page).filter({ hasText: reason }).first()).toBeVisible()
     await expect(assistantBubbles(context.page).filter({ hasText: reasonAnswer }).first()).toBeVisible()
   }
+  await options.viewProof?.(reason)
+  // The refusal and its reason persist: every proof the caller states of the saved
+  // rows must hold again after a reload redraws the transcript from storage.
+  await context.page.reload()
   await options.viewProof?.(reason)
 }
 

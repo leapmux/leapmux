@@ -94,7 +94,11 @@ droidTest.describe('Factory Droid control requests', () => {
     await expect(userBubbles(page).filter({ hasText: reason }).first()).toBeVisible()
     await expect(assistantBubbles(page).filter({ hasText: 'I will leave the note as it is.' }).first()).toBeVisible()
     // The saved row reads Droid's own `cancel` reply as the button's word. The reason
-    // is the row of the next message.
+    // is the row of the next message. Both persist after a reload redraws the
+    // transcript from storage.
     await expect(savedControlAnswer(page)).toHaveText('Deny')
+    await page.reload()
+    await expect(savedControlAnswer(page)).toHaveText('Deny')
+    await expect(userBubbles(page).filter({ hasText: reason }).first()).toBeVisible()
   })
 })
