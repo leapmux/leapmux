@@ -3,13 +3,22 @@ import type { NativeModelTurn } from '../helpers/nativeScenario'
 import { isObject } from '../../../src/lib/jsonPick'
 
 /**
+ * The native context blocks Junie states as whole user rows of its own:
+ * the capability listing it sends before the issue, and the project listing it
+ * sends after it. Both are the model's input, not the conversation, so the
+ * reader classifies them as context and returns no user turn for either.
+ */
+const NATIVE_CONTEXT_ROW = /^## (?:CAPABILITIES CONTEXT|PROJECT STRUCTURE)\n/
+
+/**
  * Read the turns of a native Junie request in request order, with the current prompt last.
  *
  * Junie does not restate its transcript as alternating turns. Its history processor
  * compresses the previous exchange into ONE user row: the issue it worked on inside
  * `<previous_issue>` and its own answer inside `<previous_issue_solution>`. Those two
  * blocks are the prior user and assistant turns in request order, and every further
- * user row, such as the new issue description, keeps its place as a user turn.
+ * user row keeps its place as a user turn unless it is one of Junie's own context
+ * blocks, which the reader drops.
  */
 export function junieModelTurns(request: MockModelRequestRecord): NativeModelTurn[] {
   if (request.protocol !== 'openai-chat-completions')
@@ -21,6 +30,8 @@ export function junieModelTurns(request: MockModelRequestRecord): NativeModelTur
     if (!isObject(message))
       return []
     if (message.role !== 'user' || typeof message.content !== 'string')
+      return []
+    if (NATIVE_CONTEXT_ROW.test(message.content))
       return []
     const turns: NativeModelTurn[] = []
     // The anchors keep the pattern on the real blocks: the row's prose names each

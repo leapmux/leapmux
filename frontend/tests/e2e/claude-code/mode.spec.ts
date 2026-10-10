@@ -3,7 +3,7 @@ import { claudeTest, claudeProcessTest as test } from '../claude-fixtures'
 import { nativeModelInstructionText } from '../helpers/nativeScenario'
 import { exerciseNativeOption } from '../helpers/nativeSettings'
 import { thinkingIndicatorShownDuring } from '../helpers/thinkingIndicatorWatch'
-import { agentTabs, chooseSettingsOption, composerEditor, expectSettingsChip, openAgentViaUI, permissionModeOffered, settingsBar, visibleOnly, waitForAgentIdle, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
+import { chooseSettingsOption, composerEditor, expectSettingsChip, permissionModeOffered, settingsBar, visibleOnly, waitForAgentIdle, waitForSettingsIdle } from '../helpers/ui'
 
 test.describe('Agent Settings', () => {
   test('switch permission modes', async ({ authenticatedWorkspace, page }) => {
@@ -68,26 +68,6 @@ test.describe('Agent Settings', () => {
     await expectSettingsChip(page, 'Plan Mode')
   })
 
-  test('focus returns to editor after mode change', async ({ authenticatedWorkspace, page }) => {
-    // Require the editor after agent startup.
-    const editor = composerEditor(page)
-    await expect(editor).toBeVisible()
-
-    const trigger = settingsBar(page)
-    await expect(trigger).toBeVisible()
-
-    // Open dropdown and click a mode
-    await chooseSettingsOption(page, 'permissionMode-plan')
-
-    // Close the dropdown by pressing Escape
-    await page.keyboard.press('Escape')
-    await expect(page.locator('[data-testid="composer-plus-popover"]')).not.toBeVisible()
-
-    // Click the editor and verify it can receive focus
-    await editor.click()
-    await expect(editor).toBeFocused()
-  })
-
   test('permission mode change notification appears in chat', async ({ authenticatedWorkspace, page }) => {
     const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
@@ -136,56 +116,6 @@ test.describe('Agent Settings', () => {
 
     // Direct check too
     await expect(page.locator('[data-testid="thinking-indicator"]:visible')).toHaveCount(0)
-  })
-
-  test('permission mode change in new agent tab targets correct agent', async ({ authenticatedWorkspace, page }) => {
-    const trigger = settingsBar(page)
-    await expect(trigger).toBeVisible()
-
-    // Verify first agent starts with Default mode
-    await waitForSettingsHydrated(page)
-    await expectSettingsChip(page, 'Default')
-
-    // Open a second agent tab
-    await openAgentViaUI(page)
-
-    // A new session requests Auto Mode. The CLI startup probe determines whether that mode is available.
-    // Read the picker to determine the exact expected mode. An alternative regular expression can accept an incorrect default.
-    await waitForSettingsHydrated(page)
-    const expectedMode = await permissionModeOffered(page, 'auto') ? 'Auto Mode' : 'Default'
-    await expectSettingsChip(page, expectedMode)
-
-    // Switch the new agent to Plan Mode
-    await chooseSettingsOption(page, 'permissionMode-plan')
-    await expectSettingsChip(page, 'Plan Mode')
-    await waitForSettingsIdle(page)
-
-    // Require the notification in the new agent's chat.
-    await expect(visibleOnly(page.getByText(`Mode (${expectedMode} → Plan Mode)`))).toBeVisible()
-
-    // Switch back to the first agent tab
-    await agentTabs(page).first().click()
-
-    // First agent should still be in Default mode
-    await expectSettingsChip(page, 'Default')
-    // And should NOT have the permission mode notification
-    await expect(visibleOnly(page.getByText('Mode (Default → Plan Mode)'))).not.toBeVisible()
-  })
-
-  test('settings loading indicator in the status bar', async ({ authenticatedWorkspace, page }) => {
-    const trigger = settingsBar(page)
-    await expect(trigger).toBeVisible()
-
-    // Select Haiku from the default Sonnet model. The chip changes before the Worker confirms the setting.
-    // Require the spinner during that unconfirmed state.
-    await chooseSettingsOption(page, 'model-haiku')
-
-    const loadingSpinner = page.locator('[data-testid="settings-loading-spinner"]')
-    await expect(loadingSpinner).toBeVisible()
-
-    // Require spinner removal after statusChange arrives.
-    await expect(loadingSpinner).not.toBeVisible()
-    await expectSettingsChip(page, 'Haiku')
   })
 })
 

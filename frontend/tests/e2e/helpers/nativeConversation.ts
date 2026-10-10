@@ -49,37 +49,21 @@ export async function expectNoUnrenderedRow(page: Page): Promise<void> {
 }
 
 /**
- * Make `pattern` match a whole text, from its first character to its last. The pattern loses the flags that change
- * that: `m` makes `^` and `$` match at each line, and `g` and `y` make `test` start at the `lastIndex` of the previous
- * match.
- */
-function wholeTextPattern(pattern: RegExp): RegExp {
-  return new RegExp(`^(?:${pattern.source})$`, pattern.flags.replace(/[gmy]/g, ''))
-}
-
-/**
  * Require that the last user turn of a native model request holds `prompt`.
  *
  * A check of the whole request also passes when the prompt reaches the model only in an instruction or in an earlier
  * row, while the native agent sends a different user row last. A provider whose request does not state its history in
- * a generic model API shape supplies its own turn reader (`readConversationTurns`). The user rows that the native agent
- * itself sends after the prompt match `nativeRowsAfterPrompt`, and the check steps over them.
+ * a generic model API shape, or whose native rows the generic reader would misread as conversation, supplies its own
+ * turn reader (`readConversationTurns`), which classifies the engine's own rows as context.
  */
 function expectPromptInLastUserTurn(
   context: Pick<NativeScenarioContext, 'readConversationTurns'>,
   request: MockModelRequestRecord,
   prompt: string,
-  nativeRowsAfterPrompt: RegExp | undefined,
 ): void {
   const userTurns = (context.readConversationTurns ?? nativeModelConversationTurns)(request).filter(turn => turn.role === 'user')
-  let end = userTurns.length
-  if (nativeRowsAfterPrompt !== undefined) {
-    const nativeRow = wholeTextPattern(nativeRowsAfterPrompt)
-    while (end > 0 && nativeRow.test(userTurns[end - 1]!.text))
-      end--
-  }
-  const promptTurn = userTurns[end - 1]
-  expect(promptTurn, 'the native request holds a user turn before the native rows after the prompt').toBeDefined()
+  const promptTurn = userTurns.at(-1)
+  expect(promptTurn, 'the native request holds a user turn that carries the prompt').toBeDefined()
   expect(promptTurn?.text, 'the last user turn of the native request holds the prompt').toContain(prompt)
 }
 
@@ -126,12 +110,6 @@ export interface BasicChatOptions {
    * "Turn ended". The default is false.
    */
   timedDivider?: boolean
-  /**
-   * The text of each user row that the native agent itself sends after the prompt, such as a date reminder. Each such
-   * row must match it from its first character to its last, and the user turn before the rows must hold the prompt.
-   * State it only for a native row that the provider's turn reader reads as a user turn.
-   */
-  nativeRowsAfterPrompt?: RegExp
 }
 
 /** The prompt of one basic chat turn and the model request that consumed it. */
@@ -151,13 +129,13 @@ export interface BasicChatTurn {
  */
 export async function exerciseBasicChat(
   context: NativeScenarioContext,
-  { timedDivider = false, nativeRowsAfterPrompt }: BasicChatOptions = {},
+  { timedDivider = false }: BasicChatOptions = {},
 ): Promise<BasicChatTurn> {
   const marker = uniqueMarker()
   const prompt = `Reply once for BASICCHAT${marker}.`
   const answer = `BASICANSWER${marker}`
   const request = await sendNativeAnswer(context, prompt, answer)
-  expectPromptInLastUserTurn(context, request, prompt, nativeRowsAfterPrompt)
+  expectPromptInLastUserTurn(context, request, prompt)
   const dividerText = basicChatDividerText(timedDivider, drawnToolCallCount(context, nativeTextStep(context, answer)))
   const divider = context.page.locator('[data-testid="result-divider"]:visible').last()
   await expect(userBubbles(context.page).filter({ hasText: prompt }).first()).toBeVisible()

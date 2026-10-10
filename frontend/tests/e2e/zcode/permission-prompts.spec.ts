@@ -3,9 +3,10 @@ import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { exerciseNativePermissionReason } from '../helpers/nativePermission'
 import { currentNativeAgent } from '../helpers/nativeScenario'
+import { runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { quotePosixShellArgument } from '../helpers/shellArguments'
-import { savedControlAnswer } from '../helpers/ui'
+import { savedControlAnswer, toolRows } from '../helpers/ui'
 import { zcodeTest } from '../zcode-fixtures'
 import { exerciseZCodeRemovalPermission } from './permissionScenario'
 
@@ -30,4 +31,25 @@ zcodeTest('a typed refusal reason reaches the model with the denial', async ({ n
     // The saved row states the decision, and the reason that the native reply carried on a line of its own.
     viewProof: reason => expect(savedControlAnswer(native.page)).toHaveText(`Deny\n${reason}`),
   })
+})
+
+// Build mode must run a read-only command without approval. The arithmetic form
+// of the other providers' specs, `echo "zcode-$((40 + 2))"`, does not qualify:
+// ZCode's read-only check (`isRuntimeReadOnlyBashCommand` in `zcode.cjs`)
+// rejects every word that expands (`$((...))`, `$VAR`, `$(...)`), and Build mode
+// then gives such a command the default Bash risk, `high`, and waits for an
+// approval that this test never gives. A `printf` with a literal format and a
+// numeric argument passes the check, so the turn clicks nothing and an approval
+// request would hold it. No scripted text states `zcode-42`, so only the
+// command's own output can put it in a tool row: that output is the proof that
+// Build mode ran the command.
+zcodeTest('Build mode runs a read-only command with no approval', async ({ native }) => {
+  await runNativeToolTurn(native, {
+    toolCalls: [bashToolCall(native.provider, 'printf-call', `printf 'zcode-%d' 42`)],
+    prompt: 'Run the printf command and show me the output.',
+    answer: 'The command printed its number.',
+    permissions: 'none',
+  })
+
+  await expect(toolRows(native.page).filter({ hasText: 'zcode-42' }).first()).toBeVisible()
 })

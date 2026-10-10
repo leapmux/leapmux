@@ -94,7 +94,7 @@ const DIVIDERS = '[data-testid="result-divider"]:visible'
 const LAST_DIVIDER = `last ${DIVIDERS}`
 const UNTIMED_DIVIDER = String.raw`/^Turn ended(?:\$\d+\.\d{4})?$/`
 const TIMED_DIVIDER = String.raw`/^Turn ended \((?:\d+ms|\d+\.\d+s|\d+[dhms](?: \d+[dhms])*)\)(?:\$\d+\.\d{4})?$/`
-const USER_TURN_DEFINED = 'the native request holds a user turn before the native rows after the prompt: defined'
+const USER_TURN_DEFINED = 'the native request holds a user turn that carries the prompt: defined'
 const LAST_USER_TURN = 'the last user turn of the native request holds the prompt'
 const DATE_REMINDER = '<system-reminder>\nToday\'s date is 2026-10-07.\n</system-reminder>'
 
@@ -261,31 +261,6 @@ describe('exerciseBasicChat', () => {
     const { prompt, request } = await exerciseBasicChat(fakeContext({ userRowsAfterPrompt: [DATE_REMINDER], readConversationTurns: reader }))
     expect(reader).toHaveBeenCalledWith(request)
     expect(recorded.events).toContain(`${LAST_USER_TURN}: contains ${prompt}`)
-  })
-
-  it.each([
-    ['one native row', [DATE_REMINDER]],
-    ['two native rows', [DATE_REMINDER, DATE_REMINDER]],
-    ['no native row', []],
-  ])('steps over the native rows after the prompt: %s', async (_case, rows) => {
-    // A global pattern keeps a `lastIndex` between two `test` calls. The second row must get the same test.
-    const nativeRowsAfterPrompt = /<system-reminder>\nToday's date is \d{4}-\d{2}-\d{2}\.\n<\/system-reminder>/g
-    const { prompt } = await exerciseBasicChat(fakeContext({ userRowsAfterPrompt: rows }), { nativeRowsAfterPrompt })
-    expect(recorded.events).toContain(`${LAST_USER_TURN}: contains ${prompt}`)
-  })
-
-  it.each([
-    ['a row that the pattern matches only in part', [`${DATE_REMINDER}\nAnother instruction.`], /<system-reminder>[\s\S]*?<\/system-reminder>/],
-    ['a multi-line row whose first line a line-anchored pattern matches', ['<system-reminder>\nAnother instruction.'], /^<system-reminder>$/m],
-    ['a row after the native row', [DATE_REMINDER, 'Another instruction.'], /<system-reminder>[\s\S]*<\/system-reminder>/],
-  ])('fails for %s', async (_case, rows, nativeRowsAfterPrompt) => {
-    await expect(exerciseBasicChat(fakeContext({ userRowsAfterPrompt: rows }), { nativeRowsAfterPrompt })).rejects.toThrow(`The fake ${LAST_USER_TURN} does not contain`)
-  })
-
-  it('fails when the native-row pattern matches every user row, the prompt too', async () => {
-    await expect(exerciseBasicChat(fakeContext({ userRowsAfterPrompt: [DATE_REMINDER] }), { nativeRowsAfterPrompt: /[\s\S]*/ }))
-      .rejects
-      .toThrow('The fake value is undefined: the native request holds a user turn before the native rows after the prompt')
   })
 
   it('fails when the provider reader states the prompt in an earlier user turn', async () => {

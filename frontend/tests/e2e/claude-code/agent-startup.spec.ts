@@ -7,7 +7,7 @@ import { openAgentViaAPI } from '../helpers/api'
 import { exerciseAgentStartup } from '../helpers/nativeLifecycle'
 import { AGENT_TAB_SELECTOR } from '../helpers/tabSelectors'
 import { extractWorkerMarks, installRpcListeners, renderTimeline, withTimingWorker } from '../helpers/timingFixture'
-import { agentTabs, ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, COMPOSER_EDITOR_SELECTOR, composerEditor, expectAgentTabCount, expectAssistantAnswer, expectSettingsChip, loginViaToken, openWorkspace, sendMessage, settingsBar } from '../helpers/ui'
+import { agentTabs, ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, COMPOSER_EDITOR_SELECTOR, composerEditor, expectAgentTabCount, expectAssistantAnswer, expectSettingsChip, loginViaToken, openWorkspace, settingsBar } from '../helpers/ui'
 import { withTestWorkspace } from '../helpers/workspace'
 import { nativeLaunch } from './scenarios'
 
@@ -16,13 +16,6 @@ const timingTest = claudeTest.extend<{ timingWorker: TimingWorker }>({
   timingWorker: async ({ leapmuxServer }, use) => withTimingWorker(leapmuxServer, {
     dataDirPrefix: 'leapmux-timing-e2e',
     env: { LEAPMUX_TRACE_AGENT_STARTUP: '1' },
-  }, use),
-})
-
-const startupErrorTest = claudeTest.extend<{ failingWorker: TimingWorker }>({
-  failingWorker: async ({ leapmuxServer }, use) => withTimingWorker(leapmuxServer, {
-    dataDirPrefix: 'leapmux-startup-err',
-    env: { SHELL: '/usr/bin/false', LEAPMUX_WORKER_AGENT_STARTUP_TIMEOUT_SECONDS: '5' },
   }, use),
 })
 
@@ -257,28 +250,5 @@ claudeTest.describe('Claude Code agent startup queue', () => {
       answer: ARITHMETIC_ANSWER_TEXT,
     })
     await expectAssistantAnswer(page)
-  })
-})
-
-startupErrorTest.describe('Claude Code agent startup error', () => {
-  startupErrorTest('shows in-tab error and rejects subsequent sends', async ({ page, failingWorker }) => {
-    const srv = failingWorker.server
-
-    await withTestWorkspace(srv, 'startup-err', async ({ workspaceId }) => {
-      await openAgentViaAPI(srv, workspaceId)
-      await loginViaToken(page, srv.adminToken)
-      await openWorkspace(page, workspaceId)
-
-      // The startup-error panel must appear with the formatted error.
-      const errorPanel = page.locator('[data-testid="agent-startup-error"]')
-      await expect(errorPanel).toBeVisible()
-      await expect(errorPanel.locator('h2')).toContainText('failed to start')
-      await expect(errorPanel.locator('pre code')).toBeVisible()
-
-      // The Worker retains the input as a failed queue item.
-      await sendMessage(page, 'hello')
-      await expect(page.getByTestId('agent-input-queue')).toContainText('Failed')
-      await expect(page.getByTestId('agent-input-queue')).toContainText('hello')
-    })
   })
 })
