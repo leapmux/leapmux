@@ -185,6 +185,15 @@ func launchRuntimeOnce(ctx context.Context, sink agent.ProviderServices, l runti
 // Adaptive routing supplies immutable native output files and their ownership sidecars.
 func runtimeEnv(env []string, opts agent.Options, store codewhaleStore, token string) []string {
 	env = providerkit.FinalizeAgentEnv(env, opts)
+	// The runtime still reads the DeepSeek-era aliases of every CODEWHALE_
+	// variable, and one of them decides its route: an inherited
+	// DEEPSEEK_BASE_URL silently overrides the configured endpoint and voids
+	// the provider catalog's endpoint fingerprint, so a model's capabilities
+	// read as unknown and image turns refuse. The worker owns the whole route
+	// through its configuration file and the pinned variables below, so an
+	// ambient alias -- another tool's export, or another provider's value in a
+	// shared environment -- must never reach the runtime.
+	env = envutil.StripByPrefix(env, "DEEPSEEK_")
 	return envutil.PinEnv(env,
 		envRuntimeToken+"="+token,
 		envTasksDir+"="+store.tasksDir(),

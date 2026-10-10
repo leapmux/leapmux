@@ -96,7 +96,9 @@ max_reprompts = 0
 `
 }
 
-/** Codewhale accepts image input only from a fresh catalog for this endpoint. */
+/** Codewhale accepts image input only from an offering of the endpoint the thread
+ * runs. A thread binds the endpoint of the model it opened with, and a later model
+ * switch keeps that binding, so every mock offering states the one endpoint. */
 function codewhaleCatalog(options: CodewhaleEnvironmentOptions): Record<string, unknown> {
   const fingerprint = createHash('sha256').update(options.baseURL).digest('hex')
   const fetchedAt = Math.floor(Date.now() / 1000)
@@ -119,7 +121,7 @@ function codewhaleCatalog(options: CodewhaleEnvironmentOptions): Record<string, 
           fetched_at: fetchedAt,
           ttl_secs: 86_400,
           offerings: [
-            offering(options.modelID, 'responses', false, true),
+            offering(options.modelID, 'chat', false, true),
             offering(options.visionModelID, 'chat', true, false),
           ],
           status: { state: 'fresh' },

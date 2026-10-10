@@ -18,7 +18,7 @@ import { codewhaleBashModelMatches } from './bashModelOutput'
 import { codewhaleMcpToolResult } from './mcpToolResult'
 import { readCodewhaleNativeOutput } from './outputFilePaths'
 import { CODEWHALE_AGENT, nativeContext } from './scenarios'
-import { codewhaleNativeOutputCallId } from './toolCallIdentity'
+import { codewhaleNativeCallId } from './toolCallIdentity'
 
 codewhaleTest('keeps the native MCP output path and exact preview after reload', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }, testInfo) => {
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
@@ -36,7 +36,7 @@ codewhaleTest('keeps the native MCP output path and exact preview after reload',
       output: generated.capture,
       callId: 'native-output-path',
       call: (_output, callId) => mcpToolCall(context.provider, callId, { server: server.name, tool: 'inspect', input: { count: -1, enabled: false, text: '' } }),
-      nativeCallId: (_request, scriptedId, snapshot) => codewhaleNativeOutputCallId(snapshot, scriptedId),
+      nativeCallId: (_request, scriptedId, snapshot) => codewhaleNativeCallId(snapshot, scriptedId),
       proof: capture => proveNativeOutputReceipt(capture, testInfo, readCodewhaleNativeOutput, {
         // The MCP result keeps both ends of the computed output in its preview.
         previewMarkers: [capture.output.firstMarker, capture.output.lastMarker],
@@ -58,7 +58,7 @@ codewhaleTest('keeps the native Bash output path and limit after reload', async 
   await captureNativeToolOutput(context, testInfo, {
     output: computedNativeToolOutput({ lineCount: 8000, padding: 30 }),
     callId: 'native-bash-first-cap',
-    nativeCallId: (_request, scriptedId, snapshot) => codewhaleNativeOutputCallId(snapshot, scriptedId),
+    nativeCallId: (_request, scriptedId, snapshot) => codewhaleNativeCallId(snapshot, scriptedId),
     proof: capture => proveNativeOutputReceipt(capture, testInfo, readCodewhaleNativeOutput, {
       extraProof: (receipt) => {
         const item = isObject(receipt.frame.payload) ? receipt.frame.payload.item : undefined

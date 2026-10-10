@@ -41,7 +41,7 @@ describe('createCodewhaleEnvironment', () => {
     const fetchedAt = Date.parse('2026-10-06T00:00:00Z') / 1000
     expect(entry).toMatchObject({ provider: 'deepseek:deepseek', base_url_fingerprint: fingerprint, fetched_at: fetchedAt, status: { state: 'fresh' } })
     expect(entry.offerings).toEqual([
-      expect.objectContaining({ wire_model_id: 'unit-model', endpoint_key: 'responses', default_for_provider: true, modalities: { input: ['text'], output: ['text'] } }),
+      expect.objectContaining({ wire_model_id: 'unit-model', endpoint_key: 'chat', default_for_provider: true, modalities: { input: ['text'], output: ['text'] } }),
       expect.objectContaining({ wire_model_id: 'unit-vision', endpoint_key: 'chat', default_for_provider: false, modalities: { input: ['text', 'image'], output: ['text'] } }),
     ])
   })

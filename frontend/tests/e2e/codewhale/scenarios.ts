@@ -6,6 +6,7 @@ import { managedNativeContext } from '../helpers/nativeScenario'
 import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
 import { exerciseShellToolExecution } from '../helpers/nativeToolExecution'
 import { gitRepositoryWorkingDir } from '../helpers/providerWorkingDir'
+import { codewhaleToolRowIdResolver } from './toolCallIdentity'
 
 /**
  * How a Codewhale agent opens. Its working directory is the root of a git repository of its own.
@@ -17,9 +18,9 @@ import { gitRepositoryWorkingDir } from '../helpers/providerWorkingDir'
  */
 export const CODEWHALE_AGENT: ProviderAgent = { provider: AgentProvider.CODEWHALE, prefix: 'codewhale-e2e', workingDir: gitRepositoryWorkingDir }
 
-/** Build the scenario context of Codewhale. Its native protocol needs no field beyond the provider. */
+/** Build the scenario context of Codewhale. Its tool rows key by the runtime's own call id, so the context resolves them. */
 export async function nativeContext(fixtures: NativeContextFixtures): Promise<ManagedNativeScenarioContext> {
-  return managedNativeContext(fixtures, CODEWHALE_AGENT)
+  return managedNativeContext(fixtures, CODEWHALE_AGENT, { resolveToolRowId: codewhaleToolRowIdResolver(fixtures) })
 }
 
 /** Select the actual isolated executable and hold only its native runtime invocation. */

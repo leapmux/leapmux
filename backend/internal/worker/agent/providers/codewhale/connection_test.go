@@ -24,6 +24,8 @@ func TestRuntimeEnvPinsTheStoreAndTheToken(t *testing.T) {
 		envTasksDir + "=/elsewhere/tasks",
 		envRuntimeDir + "=/elsewhere/runtime",
 		"CODEWHALE_SESSION_ID=parent-session",
+		"DEEPSEEK_BASE_URL=http://127.0.0.1:9/v1",
+		"DEEPSEEK_API_KEY=another-tool-key",
 		"PATH=/usr/bin",
 	}
 	env := runtimeEnv(inherited, agent.Options{ExtraEnv: []string{"EXTRA=1"}}, store, "fresh-token")
@@ -32,6 +34,8 @@ func TestRuntimeEnvPinsTheStoreAndTheToken(t *testing.T) {
 	assert.Equal(t, []string{store.tasksDir()}, envutil.ValuesFor(env, envTasksDir))
 	assert.Equal(t, []string{store.runtimeDir()}, envutil.ValuesFor(env, envRuntimeDir), "an inherited runtime dir would move the store")
 	assert.Equal(t, []string{store.runtimeHome()}, envutil.ValuesFor(env, envHome), "the store's runtime coordinates in a home of its own")
+	assert.Empty(t, envutil.ValuesFor(env, "DEEPSEEK_BASE_URL"), "a DeepSeek-era alias never overrides the configured route")
+	assert.Empty(t, envutil.ValuesFor(env, "DEEPSEEK_API_KEY"), "a DeepSeek-era alias never reaches the runtime")
 	assert.False(t, envutil.HasKey(env, "CODEWHALE_SESSION_ID"))
 	assert.True(t, envutil.HasKey(env, "PATH"))
 	assert.Contains(t, env, "EXTRA=1")

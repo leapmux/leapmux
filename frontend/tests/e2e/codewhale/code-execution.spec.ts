@@ -16,11 +16,12 @@ codewhaleTest('runs native code and retains computed output and script errors af
   await waitForAgentIdle(page)
   // The request after the discovery holds the discovery result and the catalog that the discovery loaded.
   const catalog = await modelScript.requestAt(start + 1)
-  expect(JSON.parse(nativeToolResult(catalog, 'discover-native-executor'))).toEqual({
-    type: 'tool_search_tool_search_result',
-    tool_references: [{ type: 'tool_reference', tool_name: 'execute_tools' }],
-    unavailable_tool_references: [],
-  })
+  // Codewhale 0.10 admits a search result only for tools its bounded toolbox
+  // did not already hold, so an executor that ships active states no
+  // reference; the schema assertions below prove the catalog carries it.
+  const search = JSON.parse(nativeToolResult(catalog, 'discover-native-executor'))
+  expect(search.type).toBe('tool_search_tool_search_result')
+  expect(search.unavailable_tool_references).toEqual([])
   nativeCodeExecutionSchema(catalog, 'execute_tools', { code: 'string' })
   await exerciseNativeCodeExecution(context, {
     catalogProof: (request) => {

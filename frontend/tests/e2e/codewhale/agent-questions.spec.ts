@@ -28,20 +28,19 @@ const SIZE_Q: QuestionRequest = {
 /**
  * Script a question, send the turn that asks it, and return the step index of the answer that follows the reply.
  *
- * `request_user_input` is a deferred tool: the runtime answers the first call
- * with its schema and runs nothing. The second call raises the banner, and the
- * third step is the model's answer after it reads the reply. The shared question
- * turn scripts one question call, so this turn stays here.
+ * Codewhale 0.10 raises `request_user_input` on its first call, where an earlier
+ * runtime answered that call with the tool's schema and ran nothing. The second
+ * step is the model's answer after it reads the reply. The shared question turn
+ * scripts one question call, so this turn stays here.
  */
 async function askQuestions(context: NativeScenarioContext, questions: QuestionRequest[], answer: string): Promise<number> {
   const start = await context.modelScript.queue(
-    { toolCalls: [askUserQuestionToolCall(context.provider, 'load-question', questions)] },
     { toolCalls: [askUserQuestionToolCall(context.provider, 'ask-question', questions)] },
     { text: answer },
   )
   await sendMessage(context.page, context.modelScript.prompt('Ask me about my drink.'))
-  await context.modelScript.waitForSteps(start + 2)
-  return start + 2
+  await context.modelScript.waitForSteps(start + 1)
+  return start + 1
 }
 
 codewhaleTest.describe('Codewhale questions', () => {

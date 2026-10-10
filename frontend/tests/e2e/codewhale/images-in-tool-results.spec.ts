@@ -25,10 +25,20 @@ import { openProviderAgent } from '../helpers/workspace'
 import { CODEWHALE_AGENT, nativeContext } from './scenarios'
 
 /** Prove that the actual image bytes reside in the completed Worker's stored row. */
-async function expectSavedImage(context: ManagedNativeScenarioContext, callId: string, uri: string): Promise<void> {
+async function expectSavedImage(context: ManagedNativeScenarioContext, callId: string, uri: string): Promise<string> {
   const agent = await currentNativeAgent(context)
   const saved = await readAllAgentMessages(context, agent.id)
-  const results = saved.filter(message => message.spanId === callId && message.completion === MessageCompletion.COMPLETE)
+  // The runtime answers the model under the scripted call id while its item
+  // frames span their own native id, so resolve the row through the frame's
+  // provider link instead of the scripted id.
+  const results = saved.filter((message) => {
+    if (message.completion !== MessageCompletion.COMPLETE)
+      return false
+    const parsed = parseMessageContent(message)
+    const item = isObject(parsed.topLevel?.payload) ? (parsed.topLevel?.payload as { item?: unknown }).item : undefined
+    const metadata = isObject(item) ? (item as { metadata?: unknown }).metadata : undefined
+    return isObject(metadata) && (metadata as { provider_tool_use_id?: unknown }).provider_tool_use_id === callId
+  })
   expect(results).toHaveLength(1)
   const parsed = parseMessageContent(results[0]!)
   expect(parsed.topLevel?.event).toBe(CODEWHALE_EVENT.ItemCompleted)
@@ -41,10 +51,11 @@ async function expectSavedImage(context: ManagedNativeScenarioContext, callId: s
   const descriptor = Array.isArray(media) ? media[0] : undefined
   if (!isObject(descriptor) || typeof descriptor.artifact_id !== 'string')
     throw new Error('The completed native image result has no full tool output ID.')
-  expect(descriptor.tool_call_id).toBe(callId)
+  expect(descriptor.tool_call_id).toBe(results[0]!.spanId)
   const supplement = parsed.supplementalContent
   const outputFiles = isObject(supplement) && isObject(supplement.outputFiles) ? supplement.outputFiles : undefined
   expect(outputFiles?.[descriptor.artifact_id]).toBe(uri)
+  return results[0]!.spanId
 }
 
 /** Open the stored transcript image in its image tab and decode the actual bytes. */
@@ -68,29 +79,29 @@ codewhaleTest('draws the actual native MCP image before and after reload', async
     await openProviderAgent(leapmuxServer, context.workspaceId, CODEWHALE_AGENT, { workingDir, model: CODEWHALE_VISION_MODEL_ID })
     await openWorkspace(page, context.workspaceId)
     await applyPermissionPreset(page, 'bypass')
+    // Codewhale 0.10 runs a tool on its first call, where an earlier runtime
+    // loaded a deferred tool's schema first and needed a second one.
     const start = await modelScript.queue(
-      { toolCalls: [mcpToolCall(context.provider, 'image-load', { server: server.name, tool: 'show', input: {} })] },
       { toolCalls: [mcpToolCall(context.provider, 'image-result', { server: server.name, tool: 'show', input: {} })] },
       { text: 'The actual image tool completed.' },
     )
-    await sendMessage(page, modelScript.prompt('Load the registered image tool, then call it and consume its result.'))
+    await sendMessage(page, modelScript.prompt('Call the registered image tool and consume its result.'))
     // A direct native MCP call initializes the lazy pool. ToolSearch only reads the existing catalog.
-    expect(nativeToolResult(await modelScript.requestAt(start + 1), 'image-load')).toContain(`MCP image ${imageName}`)
     await expect.poll(() => existsSync(server.ready)).toBe(true)
-    await waitForNativeToolSteps(context, start + 3)
-    const request = await modelScript.requestAt(start + 2)
+    await waitForNativeToolSteps(context, start + 2)
+    const request = await modelScript.requestAt(start + 1)
     expect(nativeToolResult(request, 'image-result')).toContain(`MCP image ${imageName}`)
     expect(nativeToolResult(request, 'image-result')).toContain('[MCP image payload removed from text output]')
     const imageBytes = readFileSync(join(workingDir, imageName)).toString('base64')
     expect(JSON.stringify(request.body).includes(imageBytes), 'the model request carries the image bytes').toBe(true)
-    await expectSavedImage(context, 'image-result', `data:image/png;base64,${imageBytes}`)
-    await expectMcpToolImage(page, imageName, 'image-result')
+    const nativeCallID = await expectSavedImage(context, 'image-result', `data:image/png;base64,${imageBytes}`)
+    await expectMcpToolImage(page, imageName, nativeCallID)
     await page.reload()
     await waitForSettingsHydrated(page)
-    await expectMcpToolImage(page, imageName, 'image-result')
+    await expectMcpToolImage(page, imageName, nativeCallID)
     await exerciseSessionResume(context)
-    await expectMcpToolImage(page, imageName, 'image-result')
-    await expectStoredImageViewer(context, await mcpResultImage(page, imageName, 'image-result'))
+    await expectMcpToolImage(page, imageName, nativeCallID)
+    await expectStoredImageViewer(context, await mcpResultImage(page, imageName, nativeCallID))
   })
 })
 
@@ -101,15 +112,15 @@ codewhaleTest('draws a native ReadMedia image and preserves its stored bytes aft
   await openProviderAgent(leapmuxServer, context.workspaceId, CODEWHALE_AGENT, { workingDir, model: CODEWHALE_VISION_MODEL_ID })
   await openWorkspace(page, context.workspaceId)
   await applyPermissionPreset(page, 'bypass')
+  // Codewhale 0.10 runs a tool on its first call, where an earlier runtime
+  // loaded a deferred tool's schema first and needed a second one.
   const start = await modelScript.queue(
-    { toolCalls: [codewhaleReadMediaToolCall('load-read-image', join(workingDir, imageName))] },
     { toolCalls: [codewhaleReadMediaToolCall('read-image', join(workingDir, imageName))] },
     { text: 'The actual ReadMedia image completed.' },
   )
   await sendMessage(page, modelScript.prompt('Run the scripted native image read and consume its result.'))
-  await waitForNativeToolSteps(context, start + 3)
-  expect(nativeToolResult(await modelScript.requestAt(start + 1), 'load-read-image')).toContain('The tool was not executed. Retry with the loaded schema.')
-  const request = await modelScript.requestAt(start + 2)
+  await waitForNativeToolSteps(context, start + 2)
+  const request = await modelScript.requestAt(start + 1)
   expect(nativeToolResult(request, 'read-image')).toContain(imageName)
   const body = request.body
   const messages = isObject(body) && Array.isArray(body.messages) ? body.messages : []
