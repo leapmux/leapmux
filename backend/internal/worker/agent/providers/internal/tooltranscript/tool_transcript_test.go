@@ -1023,6 +1023,10 @@ func TestToolTranscriptRetainedObservationUsesItsOriginalStoredSequence(t *testi
 	require.NoError(t, err)
 	assert.False(t, written)
 	persistClosingToolRow(t, transcript, original)
+	// The second closing row requests an interim pass whose flush settles the
+	// retained observation. Wait for it, so the boundary below observes the
+	// observation at its own sequence instead of racing the background pass.
+	transcript.WaitForSupplementsForTest()
 	require.NoError(t, transcript.PersistTurnEnd(agent.MessageContent{Original: []byte(`{"done":true}`)}, agent.SpanInfo{}))
 	rows := sink.Messages()
 	require.Len(t, rows, 3)
@@ -1169,6 +1173,59 @@ func TestToolTranscriptConcurrentFlushClaimsEachObservationOnce(t *testing.T) {
 	assert.ErrorContains(t, secondError, "in flight")
 	assert.Equal(t, int64(1), reader.reads.Load())
 	assert.JSONEq(t, `{"winner":"stored","frame":"retained"}`, string(sink.Messages()[0].SupplementalContent))
+}
+
+func TestToolTranscriptTurnEndToleratesAConcurrentObservationFlush(t *testing.T) {
+	t.Parallel()
+	transcript, sink, writer := newObservationTranscript(t)
+	persistClosingToolRow(t, transcript, []byte(`{"toolCallId":"call"}`))
+	loseExternalObservationCAS(t, sink, writer)
+	written, err := transcript.EnrichToolSpan("call", func([]byte) ([]byte, error) { return []byte(`{"frame":"retained"}`), nil })
+	require.NoError(t, err)
+	assert.False(t, written)
+	release := make(chan struct{})
+	var once sync.Once
+	finishRead := func() { once.Do(func() { close(release) }) }
+	defer finishRead()
+	reader := &heldObservationReader{ProviderServices: writer.ProviderServices, entered: make(chan struct{}), release: release}
+	writer.ProviderServices = reader
+	first := make(chan error, 1)
+	go func() { first <- transcript.flushObservations() }()
+	select {
+	case <-reader.entered:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the observation read did not start")
+	}
+	// The interim pass owns the observation claim, exactly as a provider turn end
+	// can land while the background supplement worker is mid-read. The boundary
+	// must not fail the turn end for a claim it does not own: the observation
+	// stays retained, and the flush that holds it settles the row.
+	require.NoError(t, transcript.PersistTurnEnd(agent.MessageContent{Original: []byte(`{"done":true}`)}, agent.SpanInfo{}))
+	finishRead()
+	select {
+	case err = <-first:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the observation flush did not finish after release")
+	}
+	assert.NoError(t, err)
+	assert.JSONEq(t, `{"winner":"stored","frame":"retained"}`, string(sink.Messages()[0].SupplementalContent))
+}
+
+func TestToolTranscriptTurnEndStillFailsARealFlushError(t *testing.T) {
+	t.Parallel()
+	transcript, sink, writer := newObservationTranscript(t)
+	persistClosingToolRow(t, transcript, []byte(`{"toolCallId":"call"}`))
+	loseExternalObservationCAS(t, sink, writer)
+	written, err := transcript.EnrichToolSpan("call", func([]byte) ([]byte, error) { return []byte(`{"retained":true}`), nil })
+	require.NoError(t, err)
+	assert.False(t, written)
+	// A failing delegated read is a settlement failure the turn end must report;
+	// only another flush's in-flight claim is tolerated at the boundary.
+	writer.ProviderServices = &failingObservationReader{ProviderServices: writer.ProviderServices}
+	err = transcript.PersistTurnEnd(agent.MessageContent{Original: []byte(`{"done":true}`)}, agent.SpanInfo{})
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, errToolObservationInFlight)
+	assert.ErrorContains(t, err, "the retained observation read failed")
 }
 
 type failingObservationReader struct {

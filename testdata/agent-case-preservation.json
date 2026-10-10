@@ -292,14 +292,6 @@
   {
    "originalFile": "frontend/tests/e2e/008-email-verification.spec.ts",
    "originalDescribe": [
-    "the account panel on an unverified address"
-   ],
-   "originalTitle": "offers verification without tearing the app down",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/008-email-verification.spec.ts",
-   "originalDescribe": [
     "Email verification"
    ],
    "originalTitle": "resend code shows a cooldown on the verify-email page",
@@ -330,11 +322,11 @@
    "disposition": "retained"
   },
   {
-   "originalFile": "frontend/tests/e2e/009-elevation.spec.ts",
+   "originalFile": "frontend/tests/e2e/008-email-verification.spec.ts",
    "originalDescribe": [
-    "the verified-session state"
+    "the account panel on an unverified address"
    ],
-   "originalTitle": "appears above the account rows once the user proves a factor",
+   "originalTitle": "offers verification without tearing the app down",
    "disposition": "retained"
   },
   {
@@ -343,14 +335,6 @@
     "session elevation"
    ],
    "originalTitle": "covers a second action of a different kind",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/009-elevation.spec.ts",
-   "originalDescribe": [
-    "the verified-session state"
-   ],
-   "originalTitle": "ends the window on demand",
    "disposition": "retained"
   },
   {
@@ -383,6 +367,22 @@
     "session elevation"
    ],
    "originalTitle": "reports the wrong password without granting the window",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/009-elevation.spec.ts",
+   "originalDescribe": [
+    "the verified-session state"
+   ],
+   "originalTitle": "appears above the account rows once the user proves a factor",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/009-elevation.spec.ts",
+   "originalDescribe": [
+    "the verified-session state"
+   ],
+   "originalTitle": "ends the window on demand",
    "disposition": "retained"
   },
   {
@@ -524,26 +524,9 @@
   {
    "originalFile": "frontend/tests/e2e/013-workspace-context-menu.spec.ts",
    "originalDescribe": [
-    "Workspace Context Menu",
-    "touch long press"
-   ],
-   "originalTitle": "a long press opens the menu; a press that scrolls away does not",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/013-workspace-context-menu.spec.ts",
-   "originalDescribe": [
     "Workspace Context Menu"
    ],
    "originalTitle": "a workspace with no repository keeps the no-target start items",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/013-workspace-context-menu.spec.ts",
-   "originalDescribe": [
-    "Workspace Context Menu"
-   ],
-   "originalTitle": "one repository renders its start items and its repository block flat",
    "disposition": "retained"
   },
   {
@@ -553,6 +536,14 @@
     "coarse pointer"
    ],
    "originalTitle": "only the selected row shows its kebab",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/013-workspace-context-menu.spec.ts",
+   "originalDescribe": [
+    "Workspace Context Menu"
+   ],
+   "originalTitle": "one repository renders its start items and its repository block flat",
    "disposition": "retained"
   },
   {
@@ -580,11 +571,12 @@
    "disposition": "retained"
   },
   {
-   "originalFile": "frontend/tests/e2e/014-workspace-archive.spec.ts",
+   "originalFile": "frontend/tests/e2e/013-workspace-context-menu.spec.ts",
    "originalDescribe": [
-    "workspace archive"
+    "Workspace Context Menu",
+    "touch long press"
    ],
-   "originalTitle": "leaks no non-workspace section into the row menu",
+   "originalTitle": "a long press opens the menu; a press that scrolls away does not",
    "disposition": "retained"
   },
   {
@@ -593,6 +585,14 @@
     "workspace archive reconciliation"
    ],
    "originalTitle": "prevents agent resume when archival happens while the Worker is offline",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/014-workspace-archive.spec.ts",
+   "originalDescribe": [
+    "workspace archive"
+   ],
+   "originalTitle": "leaks no non-workspace section into the row menu",
    "disposition": "retained"
   },
   {
@@ -824,7 +824,7 @@
    "originalDescribe": [
     "Worker Management"
    ],
-   "originalTitle": "should show Workers section with registered worker",
+   "originalTitle": "should show green status dot for online worker",
    "disposition": "retained"
   },
   {
@@ -832,7 +832,7 @@
    "originalDescribe": [
     "Worker Management"
    ],
-   "originalTitle": "should show green status dot for online worker",
+   "originalTitle": "should show Workers section with registered worker",
    "disposition": "retained"
   },
   {
@@ -862,17 +862,17 @@
   {
    "originalFile": "frontend/tests/e2e/021-worker-deregistration.spec.ts",
    "originalDescribe": [
-    "Worker Status Indicator"
+    "Worker Deregistration"
    ],
-   "originalTitle": "should show red status dot when worker goes offline and green when back online",
+   "originalTitle": "should still show main worker after deregistration of temp worker",
    "disposition": "retained"
   },
   {
    "originalFile": "frontend/tests/e2e/021-worker-deregistration.spec.ts",
    "originalDescribe": [
-    "Worker Deregistration"
+    "Worker Status Indicator"
    ],
-   "originalTitle": "should still show main worker after deregistration of temp worker",
+   "originalTitle": "should show red status dot when worker goes offline and green when back online",
    "disposition": "retained"
   },
   {
@@ -958,7 +958,7 @@
   {
    "originalFile": "frontend/tests/e2e/030-markdown-editor-input.spec.ts",
    "originalDescribe": [
-    "Markdown editor input \u2014 smoke"
+    "Markdown editor input — smoke"
    ],
    "originalTitle": "the bullet-list input rule + Tab produces a nested list in the live editor",
    "disposition": "retained"
@@ -977,6 +977,14 @@
     "Clipboard Copy/Paste"
    ],
    "originalTitle": "copy and paste preserves markdown structure",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/032-markdown-editor-paste.spec.ts",
+   "originalDescribe": [
+    "Markdown Paste"
+   ],
+   "originalTitle": "pasting markdown list text creates a bullet list",
    "disposition": "retained"
   },
   {
@@ -1004,75 +1012,11 @@
    "disposition": "retained"
   },
   {
-   "originalFile": "frontend/tests/e2e/032-markdown-editor-paste.spec.ts",
-   "originalDescribe": [
-    "Markdown Paste"
-   ],
-   "originalTitle": "pasting markdown list text creates a bullet list",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/033-markdown-editor-code.spec.ts",
-   "originalDescribe": [
-    "Markdown Editor links"
-   ],
-   "originalTitle": "Enter in the URL field applies and dismisses the popover",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/033-markdown-editor-code.spec.ts",
-   "originalDescribe": [
-    "send feedback button labels"
-   ],
-   "originalTitle": "ExitPlanMode banner shows Reject when editor is empty and Send feedback when typing",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/033-markdown-editor-code.spec.ts",
-   "originalDescribe": [
-    "Markdown Editor links"
-   ],
-   "originalTitle": "a link URL can be corrected after it is created",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/033-markdown-editor-code.spec.ts",
-   "originalDescribe": [
-    "Markdown Editor links"
-   ],
-   "originalTitle": "a link can be unmade, keeping its text",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/033-markdown-editor-code.spec.ts",
-   "originalDescribe": [
-    "Code Language Label"
-   ],
-   "originalTitle": "clicking language label opens popover and selecting language updates it",
-   "disposition": "retained"
-  },
-  {
    "originalFile": "frontend/tests/e2e/033-markdown-editor-code.spec.ts",
    "originalDescribe": [
     "Code block field"
    ],
    "originalTitle": "gives inline code and a <kbd> the same step as a fenced block",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/033-markdown-editor-code.spec.ts",
-   "originalDescribe": [
-    "Markdown Editor links"
-   ],
-   "originalTitle": "mod+K links the selected text",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/033-markdown-editor-code.spec.ts",
-   "originalDescribe": [
-    "Markdown Editor links"
-   ],
-   "originalTitle": "mod+K on a caret in a link edits that link, and over it overrides it",
    "disposition": "retained"
   },
   {
@@ -1094,6 +1038,22 @@
   {
    "originalFile": "frontend/tests/e2e/033-markdown-editor-code.spec.ts",
    "originalDescribe": [
+    "Code block field"
+   ],
+   "originalTitle": "shows the block through, rather than tinting it twice, for a child that fills the background",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/033-markdown-editor-code.spec.ts",
+   "originalDescribe": [
+    "Code Language Label"
+   ],
+   "originalTitle": "clicking language label opens popover and selecting language updates it",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/033-markdown-editor-code.spec.ts",
+   "originalDescribe": [
     "Code Language Label"
    ],
    "originalTitle": "re-clicking the language label closes the popover instead of reopening it",
@@ -1104,7 +1064,55 @@
    "originalDescribe": [
     "Markdown Editor links"
    ],
+   "originalTitle": "a link can be unmade, keeping its text",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/033-markdown-editor-code.spec.ts",
+   "originalDescribe": [
+    "Markdown Editor links"
+   ],
+   "originalTitle": "a link URL can be corrected after it is created",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/033-markdown-editor-code.spec.ts",
+   "originalDescribe": [
+    "Markdown Editor links"
+   ],
+   "originalTitle": "Enter in the URL field applies and dismisses the popover",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/033-markdown-editor-code.spec.ts",
+   "originalDescribe": [
+    "Markdown Editor links"
+   ],
+   "originalTitle": "mod+K links the selected text",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/033-markdown-editor-code.spec.ts",
+   "originalDescribe": [
+    "Markdown Editor links"
+   ],
+   "originalTitle": "mod+K on a caret in a link edits that link, and over it overrides it",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/033-markdown-editor-code.spec.ts",
+   "originalDescribe": [
+    "Markdown Editor links"
+   ],
    "originalTitle": "saving dismisses the popover, and it reopens cleanly afterwards",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/033-markdown-editor-code.spec.ts",
+   "originalDescribe": [
+    "Markdown Editor links"
+   ],
+   "originalTitle": "the link popover fits its own box, with no horizontal overflow",
    "disposition": "retained"
   },
   {
@@ -1126,17 +1134,9 @@
   {
    "originalFile": "frontend/tests/e2e/033-markdown-editor-code.spec.ts",
    "originalDescribe": [
-    "Code block field"
+    "send feedback button labels"
    ],
-   "originalTitle": "shows the block through, rather than tinting it twice, for a child that fills the background",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/033-markdown-editor-code.spec.ts",
-   "originalDescribe": [
-    "Markdown Editor links"
-   ],
-   "originalTitle": "the link popover fits its own box, with no horizontal overflow",
+   "originalTitle": "ExitPlanMode banner shows Reject when editor is empty and Send feedback when typing",
    "disposition": "retained"
   },
   {
@@ -1166,14 +1166,6 @@
   {
    "originalFile": "frontend/tests/e2e/036-dropdown-popover.spec.ts",
    "originalDescribe": [
-    "agent info card"
-   ],
-   "originalTitle": "a click inside the card leaves it open, so its text stays selectable",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/036-dropdown-popover.spec.ts",
-   "originalDescribe": [
     "a menu whose click also focuses the tile"
    ],
    "originalTitle": "a dropdown host adds no box of its own to the row",
@@ -1182,9 +1174,17 @@
   {
    "originalFile": "frontend/tests/e2e/036-dropdown-popover.spec.ts",
    "originalDescribe": [
-    "nested popovers"
+    "a menu whose click also focuses the tile"
    ],
-   "originalTitle": "an inner card survives opening inside an outer menu",
+   "originalTitle": "the tab bar survives the click that opens its menu",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/036-dropdown-popover.spec.ts",
+   "originalDescribe": [
+    "agent info card"
+   ],
+   "originalTitle": "a click inside the card leaves it open, so its text stays selectable",
    "disposition": "retained"
   },
   {
@@ -1198,9 +1198,17 @@
   {
    "originalFile": "frontend/tests/e2e/036-dropdown-popover.spec.ts",
    "originalDescribe": [
-    "DropdownMenu Popover \u2013 Focus and Positioning"
+    "DropdownMenu Popover – Focus and Positioning"
    ],
    "originalTitle": "clicking editor while popover is open should keep editor focused",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/036-dropdown-popover.spec.ts",
+   "originalDescribe": [
+    "DropdownMenu Popover – Focus and Positioning"
+   ],
+   "originalTitle": "selecting text inside popover by dragging should not reposition it",
    "disposition": "retained"
   },
   {
@@ -1222,17 +1230,9 @@
   {
    "originalFile": "frontend/tests/e2e/036-dropdown-popover.spec.ts",
    "originalDescribe": [
-    "DropdownMenu Popover \u2013 Focus and Positioning"
+    "nested popovers"
    ],
-   "originalTitle": "selecting text inside popover by dragging should not reposition it",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/036-dropdown-popover.spec.ts",
-   "originalDescribe": [
-    "a menu whose click also focuses the tile"
-   ],
-   "originalTitle": "the tab bar survives the click that opens its menu",
+   "originalTitle": "an inner card survives opening inside an outer menu",
    "disposition": "retained"
   },
   {
@@ -1406,14 +1406,6 @@
   {
    "originalFile": "frontend/tests/e2e/040-chat-message-rendering.spec.ts",
    "originalDescribe": [
-    "message long press (phone)"
-   ],
-   "originalTitle": "a long press opens the menu on the hold and the release leaves it up",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/040-chat-message-rendering.spec.ts",
-   "originalDescribe": [
     "Chat Message Rendering"
    ],
    "originalTitle": "a user bubble meets the right panel edge and keeps its left side inset",
@@ -1449,6 +1441,14 @@
     "Chat Message Rendering"
    ],
    "originalTitle": "user message renders as human text and assistant reply renders as markdown",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/040-chat-message-rendering.spec.ts",
+   "originalDescribe": [
+    "message long press (phone)"
+   ],
+   "originalTitle": "a long press opens the menu on the hold and the release leaves it up",
    "disposition": "retained"
   },
   {
@@ -2585,6 +2585,22 @@
   {
    "originalFile": "frontend/tests/e2e/083-preferences-admin.spec.ts",
    "originalDescribe": [
+    "administration settings need a verified session"
+   ],
+   "originalTitle": "ends the window from the administration panel",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/083-preferences-admin.spec.ts",
+   "originalDescribe": [
+    "administration settings need a verified session"
+   ],
+   "originalTitle": "prompts on the first write and applies it once the user verifies",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/083-preferences-admin.spec.ts",
+   "originalDescribe": [
     "Preferences administration groups"
    ],
    "originalTitle": "a public URL change reaches the passkey affordance without a reload",
@@ -2601,25 +2617,9 @@
   {
    "originalFile": "frontend/tests/e2e/083-preferences-admin.spec.ts",
    "originalDescribe": [
-    "administration settings need a verified session"
-   ],
-   "originalTitle": "ends the window from the administration panel",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/083-preferences-admin.spec.ts",
-   "originalDescribe": [
     "Preferences administration groups"
    ],
    "originalTitle": "non-admins do not see the administration groups",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/083-preferences-admin.spec.ts",
-   "originalDescribe": [
-    "administration settings need a verified session"
-   ],
-   "originalTitle": "prompts on the first write and applies it once the user verifies",
    "disposition": "retained"
   },
   {
@@ -2636,6 +2636,24 @@
     "Preferences administration groups"
    ],
    "originalTitle": "states an enforced toggle in the words of its switch",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/084-theme-picker.spec.ts",
+   "originalDescribe": [
+    "color-scheme follows the app",
+    "under a DARK OS"
+   ],
+   "originalTitle": "resolves light-dark() to the light branch once the app is light",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/084-theme-picker.spec.ts",
+   "originalDescribe": [
+    "color-scheme follows the app",
+    "under a LIGHT OS"
+   ],
+   "originalTitle": "resolves light-dark() to the dark branch once the app is dark",
    "disposition": "retained"
   },
   {
@@ -2731,7 +2749,7 @@
    "originalDescribe": [
     "Theme picker"
    ],
-   "originalTitle": "repaints the CODE palette from the chosen theme, and gives a block a field of its own",
+   "originalTitle": "repaints the app and survives a reload",
    "disposition": "retained"
   },
   {
@@ -2739,25 +2757,7 @@
    "originalDescribe": [
     "Theme picker"
    ],
-   "originalTitle": "repaints the app and survives a reload",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/084-theme-picker.spec.ts",
-   "originalDescribe": [
-    "color-scheme follows the app",
-    "under a LIGHT OS"
-   ],
-   "originalTitle": "resolves light-dark() to the dark branch once the app is dark",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/084-theme-picker.spec.ts",
-   "originalDescribe": [
-    "color-scheme follows the app",
-    "under a DARK OS"
-   ],
-   "originalTitle": "resolves light-dark() to the light branch once the app is light",
+   "originalTitle": "repaints the CODE palette from the chosen theme, and gives a block a field of its own",
    "disposition": "retained"
   },
   {
@@ -2853,7 +2853,7 @@
    "originalDescribe": [
     "Tab close timing"
    ],
-   "originalTitle": "scenario 1 \u2014 two worktree tabs on the same worktree, close one",
+   "originalTitle": "scenario 1 — two worktree tabs on the same worktree, close one",
    "disposition": "retained"
   },
   {
@@ -2861,7 +2861,7 @@
    "originalDescribe": [
     "Tab close timing"
    ],
-   "originalTitle": "scenario 2 \u2014 worktree close with \"Close anyway\" (KEEP)",
+   "originalTitle": "scenario 2 — worktree close with \"Close anyway\" (KEEP)",
    "disposition": "retained"
   },
   {
@@ -2869,7 +2869,7 @@
    "originalDescribe": [
     "Tab close timing"
    ],
-   "originalTitle": "scenario 3 \u2014 worktree close with \"Delete\" (REMOVE)",
+   "originalTitle": "scenario 3 — worktree close with \"Delete\" (REMOVE)",
    "disposition": "retained"
   },
   {
@@ -2923,15 +2923,6 @@
   {
    "originalFile": "frontend/tests/e2e/108-agent-input-queue.spec.ts",
    "originalDescribe": [
-    "agent input queue",
-    "touch reorder (phone)"
-   ],
-   "originalTitle": "reorders a queued input by dragging its grip with a finger",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/108-agent-input-queue.spec.ts",
-   "originalDescribe": [
     "agent input queue"
    ],
    "originalTitle": "reorders a queued input by dragging its row",
@@ -2954,6 +2945,15 @@
    "disposition": "retained"
   },
   {
+   "originalFile": "frontend/tests/e2e/108-agent-input-queue.spec.ts",
+   "originalDescribe": [
+    "agent input queue",
+    "touch reorder (phone)"
+   ],
+   "originalTitle": "reorders a queued input by dragging its grip with a finger",
+   "disposition": "retained"
+  },
+  {
    "originalFile": "frontend/tests/e2e/140-grid-layout.spec.ts",
    "originalDescribe": [
     "Grid layout"
@@ -2966,7 +2966,7 @@
    "originalDescribe": [
     "Grid layout"
    ],
-   "originalTitle": "Make a grid creates a 2\u00d72 with close button only on top-right cell",
+   "originalTitle": "Make a grid creates a 2×2 with close button only on top-right cell",
    "disposition": "retained"
   },
   {
@@ -3094,7 +3094,7 @@
    "originalDescribe": [
     "CRDT convergence"
    ],
-   "originalTitle": "two contexts split-tile interleaved \u2192 both converge",
+   "originalTitle": "two contexts split-tile interleaved → both converge",
    "disposition": "retained"
   },
   {
@@ -3356,17 +3356,17 @@
   {
    "originalFile": "frontend/tests/e2e/179-captcha-wasm-algorithms.spec.ts",
    "originalDescribe": [
-    "captcha WASM solvers (SCRYPT)"
+    "captcha WASM solvers (ARGON2ID)"
    ],
-   "originalTitle": "login solves a SCRYPT challenge through the dynamically loaded worker",
+   "originalTitle": "the widget's algorithm registry holds the ARGON2ID solver",
    "disposition": "retained"
   },
   {
    "originalFile": "frontend/tests/e2e/179-captcha-wasm-algorithms.spec.ts",
    "originalDescribe": [
-    "captcha WASM solvers (ARGON2ID)"
+    "captcha WASM solvers (SCRYPT)"
    ],
-   "originalTitle": "the widget's algorithm registry holds the ARGON2ID solver",
+   "originalTitle": "login solves a SCRYPT challenge through the dynamically loaded worker",
    "disposition": "retained"
   },
   {
@@ -3380,6 +3380,22 @@
   {
    "originalFile": "frontend/tests/e2e/179-mobile-tabs-touch.spec.ts",
    "originalDescribe": [
+    "mobile drawers (phone)"
+   ],
+   "originalTitle": "the drawer starts below the tab bar, leaving the Files header actions reachable",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/179-mobile-tabs-touch.spec.ts",
+   "originalDescribe": [
+    "mobile drawers (phone)"
+   ],
+   "originalTitle": "the workspace grip follows the title and leaves the chevron at the indent edge",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/179-mobile-tabs-touch.spec.ts",
+   "originalDescribe": [
     "mobile tab sheet (phone)"
    ],
    "originalTitle": "a long press on a sheet row body opens its menu, not an unintended drag",
@@ -3388,9 +3404,33 @@
   {
    "originalFile": "frontend/tests/e2e/179-mobile-tabs-touch.spec.ts",
    "originalDescribe": [
-    "tablet touch (desktop layout)"
+    "mobile tab sheet (phone)"
    ],
-   "originalTitle": "a mouse drag from the tab body reorders (the desktop regression guard)",
+   "originalTitle": "closing a tab from the sheet removes its row and updates the chip count",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/179-mobile-tabs-touch.spec.ts",
+   "originalDescribe": [
+    "mobile tab sheet (phone)"
+   ],
+   "originalTitle": "the chip replaces the strip and its sheet switches tabs",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/179-mobile-tabs-touch.spec.ts",
+   "originalDescribe": [
+    "mobile tab sheet (phone)"
+   ],
+   "originalTitle": "the overlay tap and the Escape key close the sheet",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/179-mobile-tabs-touch.spec.ts",
+   "originalDescribe": [
+    "mobile tab sheet (phone)"
+   ],
+   "originalTitle": "touch drag from a sheet grip reorders; a press on the row body does not",
    "disposition": "retained"
   },
   {
@@ -3412,49 +3452,9 @@
   {
    "originalFile": "frontend/tests/e2e/179-mobile-tabs-touch.spec.ts",
    "originalDescribe": [
-    "tablet touch (desktop layout)"
-   ],
-   "originalTitle": "a touch drag from a grip reorders",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/179-mobile-tabs-touch.spec.ts",
-   "originalDescribe": [
-    "mobile tab sheet (phone)"
-   ],
-   "originalTitle": "closing a tab from the sheet removes its row and updates the chip count",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/179-mobile-tabs-touch.spec.ts",
-   "originalDescribe": [
     "soft-keyboard viewport contract (phone)"
    ],
    "originalTitle": "the body takes its size from --vvh and its place from --vv-shift",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/179-mobile-tabs-touch.spec.ts",
-   "originalDescribe": [
-    "mobile tab sheet (phone)"
-   ],
-   "originalTitle": "the chip replaces the strip and its sheet switches tabs",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/179-mobile-tabs-touch.spec.ts",
-   "originalDescribe": [
-    "mobile drawers (phone)"
-   ],
-   "originalTitle": "the drawer starts below the tab bar, leaving the Files header actions reachable",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/179-mobile-tabs-touch.spec.ts",
-   "originalDescribe": [
-    "mobile tab sheet (phone)"
-   ],
-   "originalTitle": "the overlay tap and the Escape key close the sheet",
    "disposition": "retained"
   },
   {
@@ -3476,25 +3476,17 @@
   {
    "originalFile": "frontend/tests/e2e/179-mobile-tabs-touch.spec.ts",
    "originalDescribe": [
-    "mobile drawers (phone)"
+    "tablet touch (desktop layout)"
    ],
-   "originalTitle": "the workspace grip follows the title and leaves the chevron at the indent edge",
+   "originalTitle": "a mouse drag from the tab body reorders (the desktop regression guard)",
    "disposition": "retained"
   },
   {
    "originalFile": "frontend/tests/e2e/179-mobile-tabs-touch.spec.ts",
    "originalDescribe": [
-    "mobile tab sheet (phone)"
+    "tablet touch (desktop layout)"
    ],
-   "originalTitle": "touch drag from a sheet grip reorders; a press on the row body does not",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/180-captcha-external-providers.spec.ts",
-   "originalDescribe": [
-    "captcha provider: turnstile"
-   ],
-   "originalTitle": "fake checkbox solves, submit unlocks, denial stays uniform",
+   "originalTitle": "a touch drag from a grip reorders",
    "disposition": "retained"
   },
   {
@@ -3506,11 +3498,35 @@
    "disposition": "retained"
   },
   {
+   "originalFile": "frontend/tests/e2e/180-captcha-external-providers.spec.ts",
+   "originalDescribe": [
+    "captcha provider: turnstile"
+   ],
+   "originalTitle": "fake checkbox solves, submit unlocks, denial stays uniform",
+   "disposition": "retained"
+  },
+  {
    "originalFile": "frontend/tests/e2e/180-dialog-mobile-scroll.spec.ts",
    "originalDescribe": [
     "creation dialog on a phone"
    ],
    "originalTitle": "body scrolls as one container; header and footer stay pinned; the scrollbar sits at the dialog edge",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/181-dialog-safe-area-geometry.spec.ts",
+   "originalDescribe": [
+    "dialog design max-width (zero safe-area insets)"
+   ],
+   "originalTitle": "standard dialog width stays at or below 900px",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/181-dialog-safe-area-geometry.spec.ts",
+   "originalDescribe": [
+    "dialog safe-area geometry (landscape notch)"
+   ],
+   "originalTitle": "panel and close button clear a right-side notch",
    "disposition": "retained"
   },
   {
@@ -3526,15 +3542,7 @@
    "originalDescribe": [
     "dialog safe-area geometry (portrait)"
    ],
-   "originalTitle": "Preferences (huge) panel and close button clear status bar and home indicator",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/181-dialog-safe-area-geometry.spec.ts",
-   "originalDescribe": [
-    "dialog safe-area geometry (landscape notch)"
-   ],
-   "originalTitle": "panel and close button clear a right-side notch",
+   "originalTitle": "panel and close button clear status bar and home indicator",
    "disposition": "retained"
   },
   {
@@ -3542,23 +3550,7 @@
    "originalDescribe": [
     "dialog safe-area geometry (portrait)"
    ],
-   "originalTitle": "panel and close button clear status bar and home indicator",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/181-dialog-safe-area-geometry.spec.ts",
-   "originalDescribe": [
-    "dialog design max-width (zero safe-area insets)"
-   ],
-   "originalTitle": "standard dialog width stays at or below 900px",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/181-security-headers.spec.ts",
-   "originalDescribe": [
-    "the authorization server pages"
-   ],
-   "originalTitle": "a consent page allows only the address its app registered",
+   "originalTitle": "Preferences (huge) panel and close button clear status bar and home indicator",
    "disposition": "retained"
   },
   {
@@ -3599,6 +3591,14 @@
     "security headers"
    ],
    "originalTitle": "serves the transport headers on a non-document route",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/181-security-headers.spec.ts",
+   "originalDescribe": [
+    "the authorization server pages"
+   ],
+   "originalTitle": "a consent page allows only the address its app registered",
    "disposition": "retained"
   },
   {
@@ -3700,9 +3700,17 @@
   {
    "originalFile": "frontend/tests/e2e/184-app-registration.spec.ts",
    "originalDescribe": [
-    "open registration"
+    "app registration visibility"
    ],
-   "originalTitle": "is refused while the setting is off, and the metadata says so",
+   "originalTitle": "refuses a hub-wide registration from an ordinary account",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/184-app-registration.spec.ts",
+   "originalDescribe": [
+    "app registration visibility"
+   ],
+   "originalTitle": "refuses an admin ceiling from an ordinary account",
    "disposition": "retained"
   },
   {
@@ -3716,17 +3724,9 @@
   {
    "originalFile": "frontend/tests/e2e/184-app-registration.spec.ts",
    "originalDescribe": [
-    "app registration visibility"
+    "open registration"
    ],
-   "originalTitle": "refuses a hub-wide registration from an ordinary account",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/184-app-registration.spec.ts",
-   "originalDescribe": [
-    "app registration visibility"
-   ],
-   "originalTitle": "refuses an admin ceiling from an ordinary account",
+   "originalTitle": "is refused while the setting is off, and the metadata says so",
    "disposition": "retained"
   },
   {
@@ -3876,57 +3876,9 @@
   {
    "originalFile": "frontend/tests/e2e/186-boot-splash-handoff.spec.ts",
    "originalDescribe": [
-    "boot splash progress checklist"
-   ],
-   "originalTitle": "fades the splash in on first paint, and skips the entrance under reduced motion",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/186-boot-splash-handoff.spec.ts",
-   "originalDescribe": [
-    "boot splash progress checklist"
-   ],
-   "originalTitle": "keeps shell rows invisible off the shell path, and shows them with data-boot-shell",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/186-boot-splash-handoff.spec.ts",
-   "originalDescribe": [
-    "boot splash progress checklist"
-   ],
-   "originalTitle": "maps the attribute to done checks, one active row, and a visible ready list",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/186-boot-splash-handoff.spec.ts",
-   "originalDescribe": [
     "boot splash geometry under a safe-area inset"
    ],
    "originalTitle": "the AppShell overlay puts the column where the static splash had it",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/186-boot-splash-handoff.spec.ts",
-   "originalDescribe": [
-    "boot splash geometry under a safe-area inset"
-   ],
-   "originalTitle": "the Solid splash fills the content box with no definite-height ancestor",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/186-boot-splash-handoff.spec.ts",
-   "originalDescribe": [
-    "static boot splash handoff"
-   ],
-   "originalTitle": "the entry removes the static splash and shows the shell",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/186-boot-splash-handoff.spec.ts",
-   "originalDescribe": [
-    "boot splash layout across the app stylesheet"
-   ],
-   "originalTitle": "the failure panel keeps its geometry when the app stylesheet lands",
    "disposition": "retained"
   },
   {
@@ -3964,9 +3916,17 @@
   {
    "originalFile": "frontend/tests/e2e/186-boot-splash-handoff.spec.ts",
    "originalDescribe": [
-    "boot splash progress checklist"
+    "boot splash geometry under a safe-area inset"
    ],
-   "originalTitle": "the logo and the label hold still across every phase, with oat present",
+   "originalTitle": "the Solid splash fills the content box with no definite-height ancestor",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/186-boot-splash-handoff.spec.ts",
+   "originalDescribe": [
+    "boot splash layout across the app stylesheet"
+   ],
+   "originalTitle": "the failure panel keeps its geometry when the app stylesheet lands",
    "disposition": "retained"
   },
   {
@@ -3983,6 +3943,46 @@
     "boot splash layout across the app stylesheet"
    ],
    "originalTitle": "the static splash keeps its geometry when the app stylesheet lands",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/186-boot-splash-handoff.spec.ts",
+   "originalDescribe": [
+    "boot splash progress checklist"
+   ],
+   "originalTitle": "fades the splash in on first paint, and skips the entrance under reduced motion",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/186-boot-splash-handoff.spec.ts",
+   "originalDescribe": [
+    "boot splash progress checklist"
+   ],
+   "originalTitle": "keeps shell rows invisible off the shell path, and shows them with data-boot-shell",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/186-boot-splash-handoff.spec.ts",
+   "originalDescribe": [
+    "boot splash progress checklist"
+   ],
+   "originalTitle": "maps the attribute to done checks, one active row, and a visible ready list",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/186-boot-splash-handoff.spec.ts",
+   "originalDescribe": [
+    "boot splash progress checklist"
+   ],
+   "originalTitle": "the logo and the label hold still across every phase, with oat present",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/186-boot-splash-handoff.spec.ts",
+   "originalDescribe": [
+    "static boot splash handoff"
+   ],
+   "originalTitle": "the entry removes the static splash and shows the shell",
    "disposition": "retained"
   },
   {
@@ -4022,6 +4022,22 @@
    "originalDescribe": [
     "sidebar section menu"
    ],
+   "originalTitle": "a custom section can be created, renamed and deleted from the menu",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/195-sidebar-section-menu.spec.ts",
+   "originalDescribe": [
+    "sidebar section menu"
+   ],
+   "originalTitle": "a repository row pre-fills the New workspace dialog",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/195-sidebar-section-menu.spec.ts",
+   "originalDescribe": [
+    "sidebar section menu"
+   ],
    "originalTitle": "Collapse all collapses the rows of THAT section",
    "disposition": "retained"
   },
@@ -4046,31 +4062,15 @@
    "originalDescribe": [
     "sidebar section menu"
    ],
-   "originalTitle": "Unarchive all empties the archive back into In progress",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/195-sidebar-section-menu.spec.ts",
-   "originalDescribe": [
-    "sidebar section menu"
-   ],
-   "originalTitle": "a custom section can be created, renamed and deleted from the menu",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/195-sidebar-section-menu.spec.ts",
-   "originalDescribe": [
-    "sidebar section menu"
-   ],
-   "originalTitle": "a repository row pre-fills the New workspace dialog",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/195-sidebar-section-menu.spec.ts",
-   "originalDescribe": [
-    "sidebar section menu"
-   ],
    "originalTitle": "the archived section menu opens while the section is COLLAPSED",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/195-sidebar-section-menu.spec.ts",
+   "originalDescribe": [
+    "sidebar section menu"
+   ],
+   "originalTitle": "Unarchive all empties the archive back into In progress",
    "disposition": "retained"
   },
   {
@@ -4231,6 +4231,12 @@
     "notification consolidation"
    ],
    "originalTitle": "copies native settings consolidation and received Raw JSON after reload",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/205-background-task-key-identity.spec.ts",
+   "originalDescribe": [],
+   "originalTitle": "keeps two colliding native Cursor identities apart",
    "disposition": "retained"
   },
   {
@@ -4720,34 +4726,12 @@
   {
    "originalFile": "frontend/tests/e2e/claude-code/agent-questions.spec.ts",
    "originalDescribe": [
-    "Control Request Draft Persistence"
+    "Agent Settings"
    ],
-   "originalTitle": "AskUserQuestion custom text draft survives page reload",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/claude-code/agent-questions.spec.ts",
-   "originalDescribe": [
-    "Control Request - AskUserQuestion"
-   ],
-   "originalTitle": "Stop button rejects the request",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/claude-code/agent-questions.spec.ts",
-   "originalDescribe": [
-    "Control Request - AskUserQuestion"
-   ],
-   "originalTitle": "YOLO button fills unanswered questions",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/claude-code/agent-questions.spec.ts",
-   "originalDescribe": [
-    "Control Request Draft Persistence"
-   ],
-   "originalTitle": "control request draft is isolated from conversation draft",
-   "disposition": "retained"
+   "originalTitle": "interrupt via control request",
+   "disposition": "moved",
+   "destinationFile": "frontend/tests/e2e/claude-code/interrupt-a-turn.spec.ts",
+   "destinationTitle": "interrupt via control request"
   },
   {
    "originalFile": "frontend/tests/e2e/claude-code/agent-questions.spec.ts",
@@ -4764,16 +4748,6 @@
    ],
    "originalTitle": "control request on a background workspace badges its tab when returned to",
    "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/claude-code/agent-questions.spec.ts",
-   "originalDescribe": [
-    "Agent Settings"
-   ],
-   "originalTitle": "interrupt via control request",
-   "disposition": "moved",
-   "destinationFile": "frontend/tests/e2e/claude-code/interrupt-a-turn.spec.ts",
-   "destinationTitle": "interrupt via control request"
   },
   {
    "originalFile": "frontend/tests/e2e/claude-code/agent-questions.spec.ts",
@@ -4808,6 +4782,38 @@
    "disposition": "retained"
   },
   {
+   "originalFile": "frontend/tests/e2e/claude-code/agent-questions.spec.ts",
+   "originalDescribe": [
+    "Control Request - AskUserQuestion"
+   ],
+   "originalTitle": "Stop button rejects the request",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/claude-code/agent-questions.spec.ts",
+   "originalDescribe": [
+    "Control Request - AskUserQuestion"
+   ],
+   "originalTitle": "YOLO button fills unanswered questions",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/claude-code/agent-questions.spec.ts",
+   "originalDescribe": [
+    "Control Request Draft Persistence"
+   ],
+   "originalTitle": "AskUserQuestion custom text draft survives page reload",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/claude-code/agent-questions.spec.ts",
+   "originalDescribe": [
+    "Control Request Draft Persistence"
+   ],
+   "originalTitle": "control request draft is isolated from conversation draft",
+   "disposition": "retained"
+  },
+  {
    "originalFile": "frontend/tests/e2e/claude-code/agent-startup.spec.ts",
    "originalDescribe": [
     "Agent Settings"
@@ -4826,17 +4832,17 @@
   {
    "originalFile": "frontend/tests/e2e/claude-code/agent-startup.spec.ts",
    "originalDescribe": [
-    "Claude Code agent startup queue"
+    "Claude Code agent startup error"
    ],
-   "originalTitle": "queues a typed-during-startup message and delivers it on ACTIVE",
+   "originalTitle": "shows in-tab error and rejects subsequent sends",
    "disposition": "retained"
   },
   {
    "originalFile": "frontend/tests/e2e/claude-code/agent-startup.spec.ts",
    "originalDescribe": [
-    "Claude Code agent startup error"
+    "Claude Code agent startup queue"
    ],
-   "originalTitle": "shows in-tab error and rejects subsequent sends",
+   "originalTitle": "queues a typed-during-startup message and delivers it on ACTIVE",
    "disposition": "retained"
   },
   {
@@ -4861,16 +4867,16 @@
   },
   {
    "originalFile": "frontend/tests/e2e/claude-code/bypass-permissions-shortcut.spec.ts",
-   "originalDescribe": [
-    "plan mode - bypass permissions"
-   ],
-   "originalTitle": "bypass permissions from ExitPlanMode banner",
+   "originalDescribe": [],
+   "originalTitle": "executes a protected native Bypass command and keeps the applied mode after reload",
    "disposition": "retained"
   },
   {
    "originalFile": "frontend/tests/e2e/claude-code/bypass-permissions-shortcut.spec.ts",
-   "originalDescribe": [],
-   "originalTitle": "executes a protected native Bypass command and keeps the applied mode after reload",
+   "originalDescribe": [
+    "plan mode - bypass permissions"
+   ],
+   "originalTitle": "bypass permissions from ExitPlanMode banner",
    "disposition": "retained"
   },
   {
@@ -4920,6 +4926,14 @@
    "originalDescribe": [
     "Agent Settings"
    ],
+   "originalTitle": "applies thinking to the native request independently of model and effort, before and after reload",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/claude-code/extended-thinking.spec.ts",
+   "originalDescribe": [
+    "Agent Settings"
+   ],
    "originalTitle": "Extended Thinking label reflects model",
    "disposition": "retained"
   },
@@ -4929,14 +4943,6 @@
     "Agent Settings"
    ],
    "originalTitle": "Extended Thinking toggle round-trip tracks the confirmed state",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/claude-code/extended-thinking.spec.ts",
-   "originalDescribe": [
-    "Agent Settings"
-   ],
-   "originalTitle": "applies thinking to the native request independently of model and effort, before and after reload",
    "disposition": "retained"
   },
   {
@@ -5031,12 +5037,6 @@
   },
   {
    "originalFile": "frontend/tests/e2e/claude-code/mode.spec.ts",
-   "originalDescribe": [],
-   "originalTitle": "applies native Plan instructions before and after restoring the selected mode",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/claude-code/mode.spec.ts",
    "originalDescribe": [
     "Agent Settings"
    ],
@@ -5092,6 +5092,12 @@
    "disposition": "retained"
   },
   {
+   "originalFile": "frontend/tests/e2e/claude-code/mode.spec.ts",
+   "originalDescribe": [],
+   "originalTitle": "applies native Plan instructions before and after restoring the selected mode",
+   "disposition": "retained"
+  },
+  {
    "originalFile": "frontend/tests/e2e/claude-code/model-context-on-resume.spec.ts",
    "originalDescribe": [
     "Agent Session Resume"
@@ -5103,6 +5109,31 @@
    "originalFile": "frontend/tests/e2e/claude-code/model-error.spec.ts",
    "originalDescribe": [],
    "originalTitle": "reports a native model error and accepts the next turn",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/claude-code/model.spec.ts",
+   "originalDescribe": [
+    "1m-context model"
+   ],
+   "originalTitle": "switch to opus[1m] and exchange messages",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/claude-code/model.spec.ts",
+   "originalDescribe": [
+    "1m-context model"
+   ],
+   "originalTitle": "switching to Default resolves to a concrete model with its effort menu",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/claude-code/model.spec.ts",
+   "originalDescribe": [
+    "Agent Settings",
+    "bracketed model names"
+   ],
+   "originalTitle": "switch to model with bracket characters",
    "disposition": "retained"
   },
   {
@@ -5135,31 +5166,6 @@
     "Agent Settings"
    ],
    "originalTitle": "switch model",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/claude-code/model.spec.ts",
-   "originalDescribe": [
-    "Agent Settings",
-    "bracketed model names"
-   ],
-   "originalTitle": "switch to model with bracket characters",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/claude-code/model.spec.ts",
-   "originalDescribe": [
-    "1m-context model"
-   ],
-   "originalTitle": "switch to opus[1m] and exchange messages",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/claude-code/model.spec.ts",
-   "originalDescribe": [
-    "1m-context model"
-   ],
-   "originalTitle": "switching to Default resolves to a concrete model with its effort menu",
    "disposition": "retained"
   },
   {
@@ -5227,9 +5233,9 @@
   {
    "originalFile": "frontend/tests/e2e/claude-code/plan-approval-banner.spec.ts",
    "originalDescribe": [
-    "Plan Mode"
+    "plan mode - bypass permissions"
    ],
-   "originalTitle": "approve with clear context checkbox checked",
+   "originalTitle": "lays the pill radios and their moving copies out identically",
    "disposition": "retained"
   },
   {
@@ -5245,15 +5251,15 @@
    "originalDescribe": [
     "Plan Mode"
    ],
-   "originalTitle": "enter plan mode, reject exit, then approve exit",
+   "originalTitle": "approve with clear context checkbox checked",
    "disposition": "retained"
   },
   {
    "originalFile": "frontend/tests/e2e/claude-code/plan-approval-banner.spec.ts",
    "originalDescribe": [
-    "plan mode - bypass permissions"
+    "Plan Mode"
    ],
-   "originalTitle": "lays the pill radios and their moving copies out identically",
+   "originalTitle": "enter plan mode, reject exit, then approve exit",
    "disposition": "retained"
   },
   {
@@ -5358,25 +5364,6 @@
   },
   {
    "originalFile": "frontend/tests/e2e/claude-code/session-reset.spec.ts",
-   "originalTitle": "excludes unique prior native context after ${command} and keeps saved Worker rows",
-   "disposition": "moved",
-   "destinationFile": "frontend/tests/e2e/claude-code/session-reset.spec.ts",
-   "destinationTitle": "excludes unique prior native context after /clear and keeps saved Worker rows"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/claude-code/session-reset.spec.ts",
-   "originalDescribe": [],
-   "originalTitle": "excludes unique prior native context after /clear and keeps saved Worker rows",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/claude-code/session-reset.spec.ts",
-   "originalDescribe": [],
-   "originalTitle": "excludes unique prior native context after /reset and keeps saved Worker rows",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/claude-code/session-reset.spec.ts",
    "originalDescribe": [
     "Clear Command"
    ],
@@ -5392,29 +5379,23 @@
    "disposition": "retained"
   },
   {
-   "originalFile": "frontend/tests/e2e/claude-code/session-resume.spec.ts",
-   "originalDescribe": [
-    "Session picker in the New Agent dialog"
-   ],
-   "originalTitle": "falls back to the session-id input in a directory with no history",
+   "originalFile": "frontend/tests/e2e/claude-code/session-reset.spec.ts",
+   "originalDescribe": [],
+   "originalTitle": "excludes unique prior native context after /clear and keeps saved Worker rows",
    "disposition": "retained"
   },
   {
-   "originalFile": "frontend/tests/e2e/claude-code/session-resume.spec.ts",
-   "originalDescribe": [
-    "Session picker in the New Agent dialog"
-   ],
-   "originalTitle": "offers a closed session, hides the open one, and resumes what was picked",
+   "originalFile": "frontend/tests/e2e/claude-code/session-reset.spec.ts",
+   "originalDescribe": [],
+   "originalTitle": "excludes unique prior native context after /reset and keeps saved Worker rows",
    "disposition": "retained"
   },
   {
-   "originalFile": "frontend/tests/e2e/claude-code/session-resume.spec.ts",
-   "originalDescribe": [
-    "Agent Settings",
-    "worker restart"
-   ],
-   "originalTitle": "settings restored after worker restart",
-   "disposition": "retained"
+   "originalFile": "frontend/tests/e2e/claude-code/session-reset.spec.ts",
+   "originalTitle": "excludes unique prior native context after ${command} and keeps saved Worker rows",
+   "disposition": "moved",
+   "destinationFile": "frontend/tests/e2e/claude-code/session-reset.spec.ts",
+   "destinationTitle": "excludes unique prior native context after /clear and keeps saved Worker rows"
   },
   {
    "originalFile": "frontend/tests/e2e/claude-code/session-resume.spec.ts",
@@ -5435,17 +5416,18 @@
   {
    "originalFile": "frontend/tests/e2e/claude-code/session-resume.spec.ts",
    "originalDescribe": [
-    "Settings and /clear after Worker restart"
+    "Agent Session Resume"
    ],
-   "originalTitle": "should handle settings changes and /clear after worker restart",
+   "originalTitle": "should resume the agent process on worker restart without a message",
    "disposition": "retained"
   },
   {
    "originalFile": "frontend/tests/e2e/claude-code/session-resume.spec.ts",
    "originalDescribe": [
-    "worker restart thinking indicator"
+    "Agent Settings",
+    "worker restart"
    ],
-   "originalTitle": "should hide thinking indicator when worker goes offline during agent turn",
+   "originalTitle": "settings restored after worker restart",
    "disposition": "retained"
   },
   {
@@ -5475,17 +5457,41 @@
   {
    "originalFile": "frontend/tests/e2e/claude-code/session-resume.spec.ts",
    "originalDescribe": [
-    "worker restart thinking indicator"
+    "Session picker in the New Agent dialog"
    ],
-   "originalTitle": "should resume agent after worker restart and new message",
+   "originalTitle": "falls back to the session-id input in a directory with no history",
    "disposition": "retained"
   },
   {
    "originalFile": "frontend/tests/e2e/claude-code/session-resume.spec.ts",
    "originalDescribe": [
-    "Agent Session Resume"
+    "Session picker in the New Agent dialog"
    ],
-   "originalTitle": "should resume the agent process on worker restart without a message",
+   "originalTitle": "offers a closed session, hides the open one, and resumes what was picked",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/claude-code/session-resume.spec.ts",
+   "originalDescribe": [
+    "Settings and /clear after Worker restart"
+   ],
+   "originalTitle": "should handle settings changes and /clear after worker restart",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/claude-code/session-resume.spec.ts",
+   "originalDescribe": [
+    "worker restart thinking indicator"
+   ],
+   "originalTitle": "should hide thinking indicator when worker goes offline during agent turn",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/claude-code/session-resume.spec.ts",
+   "originalDescribe": [
+    "worker restart thinking indicator"
+   ],
+   "originalTitle": "should resume agent after worker restart and new message",
    "disposition": "retained"
   },
   {
@@ -5504,12 +5510,6 @@
   },
   {
    "originalFile": "frontend/tests/e2e/claude-code/smart-permissions-shortcut.spec.ts",
-   "originalDescribe": [],
-   "originalTitle": "executes the native Smart command with confirmed Auto mode before and after reload",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/claude-code/smart-permissions-shortcut.spec.ts",
    "originalDescribe": [
     "Agent Settings"
    ],
@@ -5517,9 +5517,9 @@
    "disposition": "retained"
   },
   {
-   "originalFile": "frontend/tests/e2e/claude-code/steer-mid-turn.spec.ts",
+   "originalFile": "frontend/tests/e2e/claude-code/smart-permissions-shortcut.spec.ts",
    "originalDescribe": [],
-   "originalTitle": "delivers steering to the actual native tool turn before its single turn end",
+   "originalTitle": "executes the native Smart command with confirmed Auto mode before and after reload",
    "disposition": "retained"
   },
   {
@@ -5536,6 +5536,12 @@
     "agent input queue"
    ],
    "originalTitle": "refuses to steer a PDF into a Claude turn and sends it as the next turn",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/claude-code/steer-mid-turn.spec.ts",
+   "originalDescribe": [],
+   "originalTitle": "delivers steering to the actual native tool turn before its single turn end",
    "disposition": "retained"
   },
   {
@@ -5965,14 +5971,6 @@
   {
    "originalFile": "frontend/tests/e2e/cline/reasoning-effort.spec.ts",
    "originalDescribe": [
-    "Cline settings"
-   ],
-   "originalTitle": "applies reasoning effort to the native model request",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/cline/reasoning-effort.spec.ts",
-   "originalDescribe": [
     "Cline model switch"
    ],
    "originalTitle": "hides the effort for a model without levels and settles Auto after the round trip",
@@ -5984,6 +5982,14 @@
     "Cline model switch"
    ],
    "originalTitle": "keeps the chosen effort after a model switch and a reload",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/cline/reasoning-effort.spec.ts",
+   "originalDescribe": [
+    "Cline settings"
+   ],
+   "originalTitle": "applies reasoning effort to the native model request",
    "disposition": "retained"
   },
   {
@@ -6240,12 +6246,6 @@
   },
   {
    "originalFile": "frontend/tests/e2e/codebuddy-code/file-tool-execution.spec.ts",
-   "originalDescribe": [],
-   "originalTitle": "reads and changes native files and keeps the applied diff after reload",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/codebuddy-code/file-tool-execution.spec.ts",
    "originalDescribe": [
     "CodeBuddy Code file tool execution"
    ],
@@ -6258,6 +6258,12 @@
     "CodeBuddy Code file tool execution"
    ],
    "originalTitle": "writes a new file and lands its content on disk",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/codebuddy-code/file-tool-execution.spec.ts",
+   "originalDescribe": [],
+   "originalTitle": "reads and changes native files and keeps the applied diff after reload",
    "disposition": "retained"
   },
   {
@@ -6920,16 +6926,16 @@
   },
   {
    "originalFile": "frontend/tests/e2e/codewhale/reasoning-effort.spec.ts",
-   "originalDescribe": [],
-   "originalTitle": "keeps the chosen effort after a model switch and a reload",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/codewhale/reasoning-effort.spec.ts",
    "originalDescribe": [
     "Codewhale settings"
    ],
    "originalTitle": "sends the chosen effort with the next turn",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/codewhale/reasoning-effort.spec.ts",
+   "originalDescribe": [],
+   "originalTitle": "keeps the chosen effort after a model switch and a reload",
    "disposition": "retained"
   },
   {
@@ -6974,16 +6980,16 @@
   },
   {
    "originalFile": "frontend/tests/e2e/codewhale/shell-tool-execution.spec.ts",
-   "originalDescribe": [],
-   "originalTitle": "preserves a literal private shell path with spaces and metacharacters",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/codewhale/shell-tool-execution.spec.ts",
    "originalDescribe": [
     "Codewhale tool execution"
    ],
    "originalTitle": "runs a command and draws its output",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/codewhale/shell-tool-execution.spec.ts",
+   "originalDescribe": [],
+   "originalTitle": "preserves a literal private shell path with spaces and metacharacters",
    "disposition": "retained"
   },
   {
@@ -7074,16 +7080,16 @@
   },
   {
    "originalFile": "frontend/tests/e2e/codewhale/workflow-grouping.spec.ts",
-   "originalDescribe": [],
-   "originalTitle": "keeps two actual native workflow units inside one opaque workflow row",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/codewhale/workflow-grouping.spec.ts",
    "originalDescribe": [
     "Codewhale workflow grouping"
    ],
    "originalTitle": "shows one workflow row after its native child answers",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/codewhale/workflow-grouping.spec.ts",
+   "originalDescribe": [],
+   "originalTitle": "keeps two actual native workflow units inside one opaque workflow row",
    "disposition": "retained"
   },
   {
@@ -7163,18 +7169,18 @@
   },
   {
    "originalFile": "frontend/tests/e2e/codex/close-an-agent.spec.ts",
+   "originalTitle": "can close Codex agent tab",
+   "disposition": "moved",
+   "destinationFile": "frontend/tests/e2e/080-turn-end-sound-preferences.spec.ts",
+   "destinationTitle": "should NOT play sound when closing an agent tab"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/codex/close-an-agent.spec.ts",
    "originalDescribe": [
     "codex agent lifecycle"
    ],
    "originalTitle": "can close Codex agent tab",
    "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/codex/close-an-agent.spec.ts",
-   "originalTitle": "can close Codex agent tab",
-   "disposition": "moved",
-   "destinationFile": "frontend/tests/e2e/080-turn-end-sound-preferences.spec.ts",
-   "destinationTitle": "should NOT play sound when closing an agent tab"
   },
   {
    "originalFile": "frontend/tests/e2e/codex/close-an-agent.spec.ts",
@@ -7308,6 +7314,27 @@
   },
   {
    "originalFile": "frontend/tests/e2e/codex/interrupt-a-turn.spec.ts",
+   "originalDescribe": [
+    "codex interrupt"
+   ],
+   "originalTitle": "stops loading after root interruption while a subagent remains active",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/codex/interrupt-a-turn.spec.ts",
+   "originalDescribe": [
+    "generation progress"
+   ],
+   "originalTitle": "keeps interrupted model text and its marker after reload",
+   "disposition": "moved",
+   "destinationFile": "frontend/tests/e2e/codex/interrupt-a-turn.spec.ts",
+   "destinationDescribe": [
+    "codex interrupted partial answer"
+   ],
+   "destinationTitle": "keeps interrupted model text and its marker after reload"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/codex/interrupt-a-turn.spec.ts",
    "originalDescribe": [],
    "originalTitle": "resumes the input queue and reaches the same native session after interruption",
    "disposition": "retained"
@@ -7316,14 +7343,6 @@
    "originalFile": "frontend/tests/e2e/codex/interrupt-a-turn.spec.ts",
    "originalDescribe": [],
    "originalTitle": "stops an actual native tool and reaches the same native session after interruption",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/codex/interrupt-a-turn.spec.ts",
-   "originalDescribe": [
-    "codex interrupt"
-   ],
-   "originalTitle": "stops loading after root interruption while a subagent remains active",
    "disposition": "retained"
   },
   {
@@ -7417,17 +7436,17 @@
   {
    "originalFile": "frontend/tests/e2e/codex/permission-prompts.spec.ts",
    "originalDescribe": [
-    "codex permission requests"
+    "codex approval UI"
    ],
-   "originalTitle": "a command rule covers the same escalated command in the next turn",
+   "originalTitle": "approval flow works with on-request policy",
    "disposition": "retained"
   },
   {
    "originalFile": "frontend/tests/e2e/codex/permission-prompts.spec.ts",
    "originalDescribe": [
-    "codex approval UI"
+    "codex permission requests"
    ],
-   "originalTitle": "approval flow works with on-request policy",
+   "originalTitle": "a command rule covers the same escalated command in the next turn",
    "disposition": "retained"
   },
   {
@@ -7502,6 +7521,14 @@
   },
   {
    "originalFile": "frontend/tests/e2e/codex/reasoning-effort.spec.ts",
+   "originalDescribe": [
+    "applies Codex session settings"
+   ],
+   "originalTitle": "sends the selected effort and keeps it after a reload",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/codex/reasoning-effort.spec.ts",
    "originalDescribe": [],
    "originalTitle": "keeps one effort menu over a round trip through a model without the chosen level",
    "disposition": "retained"
@@ -7510,14 +7537,6 @@
    "originalFile": "frontend/tests/e2e/codex/reasoning-effort.spec.ts",
    "originalDescribe": [],
    "originalTitle": "keeps the chosen effort after a model switch and a reload",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/codex/reasoning-effort.spec.ts",
-   "originalDescribe": [
-    "applies Codex session settings"
-   ],
-   "originalTitle": "sends the selected effort and keeps it after a reload",
    "disposition": "retained"
   },
   {
@@ -7578,16 +7597,16 @@
   },
   {
    "originalFile": "frontend/tests/e2e/codex/steer-mid-turn.spec.ts",
-   "originalDescribe": [],
-   "originalTitle": "delivers steering to the actual native tool turn before its single turn end",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/codex/steer-mid-turn.spec.ts",
    "originalDescribe": [
     "Codex session goal"
    ],
    "originalTitle": "offers Steer for input queued during a goal turn",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/codex/steer-mid-turn.spec.ts",
+   "originalDescribe": [],
+   "originalTitle": "delivers steering to the actual native tool turn before its single turn end",
    "disposition": "retained"
   },
   {
@@ -8391,13 +8410,13 @@
   {
    "originalFile": "frontend/tests/e2e/cursor/subagent-transcript-tab.spec.ts",
    "originalDescribe": [],
-   "originalTitle": "Task delegation creates a registry row with a sanitized key",
+   "originalTitle": "shows the actual native child identity and final reply in its tab",
    "disposition": "retained"
   },
   {
    "originalFile": "frontend/tests/e2e/cursor/subagent-transcript-tab.spec.ts",
    "originalDescribe": [],
-   "originalTitle": "shows the actual native child identity and final reply in its tab",
+   "originalTitle": "Task delegation creates a registry row with a sanitized key",
    "disposition": "retained"
   },
   {
@@ -8846,6 +8865,14 @@
   },
   {
    "originalFile": "frontend/tests/e2e/dirac/agent-questions.spec.ts",
+   "originalDescribe": [
+    "dirac agent questions"
+   ],
+   "originalTitle": "returns the selected form answer through the native question tool",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/dirac/agent-questions.spec.ts",
    "originalDescribe": [],
    "originalTitle": "returns a typed answer and refuses empty or whitespace-only text",
    "disposition": "retained"
@@ -8854,14 +8881,6 @@
    "originalFile": "frontend/tests/e2e/dirac/agent-questions.spec.ts",
    "originalDescribe": [],
    "originalTitle": "returns native question cancellation without selecting an offered answer",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/dirac/agent-questions.spec.ts",
-   "originalDescribe": [
-    "dirac agent questions"
-   ],
-   "originalTitle": "returns the selected form answer through the native question tool",
    "disposition": "retained"
   },
   {
@@ -9036,16 +9055,16 @@
   },
   {
    "originalFile": "frontend/tests/e2e/dirac/mcp-tool-execution.spec.ts",
-   "originalDescribe": [],
-   "originalTitle": "offers no MCP tool after its actual native ACP request accepts the configured server list",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/dirac/mcp-tool-execution.spec.ts",
    "originalDescribe": [
     "native mcp tool execution"
    ],
    "originalTitle": "offers no MCP tool from a project server in its ACP session",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/dirac/mcp-tool-execution.spec.ts",
+   "originalDescribe": [],
+   "originalTitle": "offers no MCP tool after its actual native ACP request accepts the configured server list",
    "disposition": "retained"
   },
   {
@@ -9172,12 +9191,6 @@
   },
   {
    "originalFile": "frontend/tests/e2e/dirac/reasoning-effort.spec.ts",
-   "originalDescribe": [],
-   "originalTitle": "keeps the chosen effort after a model switch and a reload",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/dirac/reasoning-effort.spec.ts",
    "originalDescribe": [
     "Dirac settings apply"
    ],
@@ -9190,6 +9203,12 @@
     "Dirac settings apply"
    ],
    "originalTitle": "switches the mode and the effort, and keeps them after reload",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/dirac/reasoning-effort.spec.ts",
+   "originalDescribe": [],
+   "originalTitle": "keeps the chosen effort after a model switch and a reload",
    "disposition": "retained"
   },
   {
@@ -9888,16 +9907,16 @@
   },
   {
    "originalFile": "frontend/tests/e2e/fast-agent/file-tool-execution.spec.ts",
-   "originalDescribe": [],
-   "originalTitle": "reads and changes native files and keeps the applied diff after reload",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/fast-agent/file-tool-execution.spec.ts",
    "originalDescribe": [
     "Fast Agent tool execution"
    ],
    "originalTitle": "runs a command, a read and an edit with its diff",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/fast-agent/file-tool-execution.spec.ts",
+   "originalDescribe": [],
+   "originalTitle": "reads and changes native files and keeps the applied diff after reload",
    "disposition": "retained"
   },
   {
@@ -9990,16 +10009,16 @@
   },
   {
    "originalFile": "frontend/tests/e2e/fast-agent/mode.spec.ts",
-   "originalDescribe": [],
-   "originalTitle": "selects another configured native agent before and after reload",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/fast-agent/mode.spec.ts",
    "originalDescribe": [
     "Fast Agent settings"
    ],
    "originalTitle": "the settings menu shows the agent mode",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/fast-agent/mode.spec.ts",
+   "originalDescribe": [],
+   "originalTitle": "selects another configured native agent before and after reload",
    "disposition": "retained"
   },
   {
@@ -10925,6 +10944,16 @@
    "disposition": "retained"
   },
   {
+   "originalFile": "frontend/tests/e2e/github-copilot/permission-prompts.spec.ts",
+   "originalTitle": "permission-prompts: places queued guidance in the next native model request",
+   "disposition": "merged",
+   "destinationFile": "frontend/tests/e2e/github-copilot/steer-mid-turn.spec.ts",
+   "destinationTitle": "places queued guidance in the next native model request",
+   "requiredAssertions": [
+    "queued guidance reaches the next native model request"
+   ]
+  },
+  {
    "originalFile": "frontend/tests/e2e/github-copilot/plan-approval-banner.spec.ts",
    "originalDescribe": [],
    "originalTitle": "plan-approval-banner: rejects the native exit tool, ends the turn, and stays in plan mode",
@@ -11309,10 +11338,31 @@
   },
   {
    "originalFile": "frontend/tests/e2e/goose/permission-prompts.spec.ts",
+   "originalTitle": "permission-prompts: roundtrips zero, false, and blue through native form elicitation",
+   "disposition": "merged",
+   "destinationFile": "frontend/tests/e2e/goose/mcp-input-request.spec.ts",
+   "destinationTitle": "roundtrips zero, false, and blue through native form elicitation",
+   "requiredAssertions": [
+    "zero, false, and blue roundtrip through native form elicitation"
+   ]
+  },
+  {
+   "originalFile": "frontend/tests/e2e/goose/permission-prompts.spec.ts",
    "originalTitle": "permission-prompts: smart mode asks before a removal and auto mode runs it",
    "disposition": "moved",
    "destinationFile": "frontend/tests/e2e/goose/permission-prompts.spec.ts",
    "destinationTitle": "smart mode asks before a removal and auto mode runs it"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/goose/permission-prompts.spec.ts",
+   "originalTitle": "permission-prompts: the sidebar follows each checklist the agent writes, and keeps it after a reload",
+   "disposition": "merged",
+   "destinationFile": "frontend/tests/e2e/goose/to-do-sidebar.spec.ts",
+   "destinationTitle": "the sidebar follows each checklist the agent writes, and keeps it after a reload",
+   "requiredAssertions": [
+    "the sidebar follows each checklist the agent writes",
+    "the checklist persists after a page reload"
+   ]
   },
   {
    "originalFile": "frontend/tests/e2e/goose/permission-prompts.spec.ts",
@@ -11584,6 +11634,20 @@
    "originalDescribe": [],
    "originalTitle": "proves the missing fast-mode setting against the live catalog and a native tool",
    "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/grok-build/file-tool-execution.spec.ts",
+   "originalDescribe": [
+    "Grok Build tool execution"
+   ],
+   "originalTitle": "runs a command, an edit with its diff, a read and a to-do list",
+   "disposition": "merged",
+   "destinationFile": "frontend/tests/e2e/grok-build/shell-tool-execution.spec.ts",
+   "destinationTitle": "proves calculated native stdout and failed stderr reach the next turn",
+   "requiredAssertions": [
+    "a failed command row states its native exit code in the header"
+   ],
+   "destinationDescribe": []
   },
   {
    "originalFile": "frontend/tests/e2e/grok-build/file-tool-execution.spec.ts",
@@ -11936,14 +12000,6 @@
   {
    "originalFile": "frontend/tests/e2e/helpers/attachmentModelProbe.spec.ts",
    "originalDescribe": [
-    "expectNoRejectedContent"
-   ],
-   "originalTitle": "accepts a clean prompt and rejects hidden bytes or a filename",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/helpers/attachmentModelProbe.spec.ts",
-   "originalDescribe": [
     "expectNativeAttachmentProof"
    ],
    "originalTitle": "accepts full PDF bytes in Kiro native user documents",
@@ -11976,30 +12032,6 @@
   {
    "originalFile": "frontend/tests/e2e/helpers/attachmentModelProbe.spec.ts",
    "originalDescribe": [
-    "expectNoRejectedContent"
-   ],
-   "originalTitle": "allows a filename in workspace context without the rejected bytes",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/helpers/attachmentModelProbe.spec.ts",
-   "originalDescribe": [
-    "expectNoRejectedContent"
-   ],
-   "originalTitle": "checks the clean turn after an earlier scripted request",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/helpers/attachmentModelProbe.spec.ts",
-   "originalDescribe": [
-    "expectNativeAttachmentProof"
-   ],
-   "originalTitle": "rejects PDF page text and a PDF header alone",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/helpers/attachmentModelProbe.spec.ts",
-   "originalDescribe": [
     "expectNativeAttachmentProof"
    ],
    "originalTitle": "rejects a PDF marker without exact native PDF handoff",
@@ -12011,30 +12043,6 @@
     "expectNativeAttachmentProof"
    ],
    "originalTitle": "rejects a PNG header while its complete bytes appear only in a system prompt",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/helpers/attachmentModelProbe.spec.ts",
-   "originalDescribe": [
-    "expectNativeAttachmentProof"
-   ],
-   "originalTitle": "rejects a WebP image with the wrong colors",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/helpers/attachmentModelProbe.spec.ts",
-   "originalDescribe": [
-    "expectNativeAttachmentProof"
-   ],
-   "originalTitle": "rejects a WebP transform that declares image/png",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/helpers/attachmentModelProbe.spec.ts",
-   "originalDescribe": [
-    "expectNativeAttachmentProof"
-   ],
-   "originalTitle": "rejects a WebP transform when the provider sends the PNG bytes unchanged",
    "disposition": "retained"
   },
   {
@@ -12072,6 +12080,94 @@
   {
    "originalFile": "frontend/tests/e2e/helpers/attachmentModelProbe.spec.ts",
    "originalDescribe": [
+    "expectNativeAttachmentProof"
+   ],
+   "originalTitle": "rejects a typed PDF part that carries only the PDF header",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/helpers/attachmentModelProbe.spec.ts",
+   "originalDescribe": [
+    "expectNativeAttachmentProof"
+   ],
+   "originalTitle": "rejects a WebP image with the wrong colors",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/helpers/attachmentModelProbe.spec.ts",
+   "originalDescribe": [
+    "expectNativeAttachmentProof"
+   ],
+   "originalTitle": "rejects a WebP transform that declares image/png",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/helpers/attachmentModelProbe.spec.ts",
+   "originalDescribe": [
+    "expectNativeAttachmentProof"
+   ],
+   "originalTitle": "rejects a WebP transform when the provider sends the PNG bytes unchanged",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/helpers/attachmentModelProbe.spec.ts",
+   "originalDescribe": [
+    "expectNativeAttachmentProof"
+   ],
+   "originalTitle": "rejects an unrelated quadrant image without exact native PDF handoff",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/helpers/attachmentModelProbe.spec.ts",
+   "originalDescribe": [
+    "expectNativeAttachmentProof"
+   ],
+   "originalTitle": "rejects complete PDF bytes in plain text instead of a native PDF part",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/helpers/attachmentModelProbe.spec.ts",
+   "originalDescribe": [
+    "expectNativeAttachmentProof"
+   ],
+   "originalTitle": "rejects PDF page text and a PDF header alone",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/helpers/attachmentModelProbe.spec.ts",
+   "originalDescribe": [
+    "expectNativeAttachmentProof"
+   ],
+   "originalTitle": "rejects the complete PNG in non-canonical base64",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/helpers/attachmentModelProbe.spec.ts",
+   "originalDescribe": [
+    "expectNoRejectedContent"
+   ],
+   "originalTitle": "accepts a clean prompt and rejects hidden bytes or a filename",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/helpers/attachmentModelProbe.spec.ts",
+   "originalDescribe": [
+    "expectNoRejectedContent"
+   ],
+   "originalTitle": "allows a filename in workspace context without the rejected bytes",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/helpers/attachmentModelProbe.spec.ts",
+   "originalDescribe": [
+    "expectNoRejectedContent"
+   ],
+   "originalTitle": "checks the clean turn after an earlier scripted request",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/helpers/attachmentModelProbe.spec.ts",
+   "originalDescribe": [
     "expectNoRejectedContent"
    ],
    "originalTitle": "rejects a refused PDF that returns as a raster image",
@@ -12096,41 +12192,9 @@
   {
    "originalFile": "frontend/tests/e2e/helpers/attachmentModelProbe.spec.ts",
    "originalDescribe": [
-    "expectNativeAttachmentProof"
-   ],
-   "originalTitle": "rejects a typed PDF part that carries only the PDF header",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/helpers/attachmentModelProbe.spec.ts",
-   "originalDescribe": [
-    "expectNativeAttachmentProof"
-   ],
-   "originalTitle": "rejects an unrelated quadrant image without exact native PDF handoff",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/helpers/attachmentModelProbe.spec.ts",
-   "originalDescribe": [
     "expectNoRejectedContent"
    ],
    "originalTitle": "rejects binary bytes hidden in the clean request system field",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/helpers/attachmentModelProbe.spec.ts",
-   "originalDescribe": [
-    "expectNativeAttachmentProof"
-   ],
-   "originalTitle": "rejects complete PDF bytes in plain text instead of a native PDF part",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/helpers/attachmentModelProbe.spec.ts",
-   "originalDescribe": [
-    "expectNativeAttachmentProof"
-   ],
-   "originalTitle": "rejects the complete PNG in non-canonical base64",
    "disposition": "retained"
   },
   {
@@ -12441,16 +12505,16 @@
   },
   {
    "originalFile": "frontend/tests/e2e/junie/credential-isolation.spec.ts",
-   "originalDescribe": [],
-   "originalTitle": "runs the actual native turn with private configuration and mock credentials",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/junie/credential-isolation.spec.ts",
    "originalDescribe": [
     "native credential isolation"
    ],
    "originalTitle": "uses the private credential stub during a native turn",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/junie/credential-isolation.spec.ts",
+   "originalDescribe": [],
+   "originalTitle": "runs the actual native turn with private configuration and mock credentials",
    "disposition": "retained"
   },
   {
@@ -12473,16 +12537,16 @@
   },
   {
    "originalFile": "frontend/tests/e2e/junie/file-tool-execution.spec.ts",
-   "originalDescribe": [],
-   "originalTitle": "reads and changes native files and keeps the applied diff after reload",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/junie/file-tool-execution.spec.ts",
    "originalDescribe": [
     "Junie tool execution"
    ],
    "originalTitle": "runs a command, a read and an edit with its diff",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/junie/file-tool-execution.spec.ts",
+   "originalDescribe": [],
+   "originalTitle": "reads and changes native files and keeps the applied diff after reload",
    "disposition": "retained"
   },
   {
@@ -13059,6 +13123,16 @@
   },
   {
    "originalFile": "frontend/tests/e2e/kilo/permission-prompts.spec.ts",
+   "originalTitle": "permission-prompts: places queued guidance in the next native model request",
+   "disposition": "merged",
+   "destinationFile": "frontend/tests/e2e/kilo/steer-mid-turn.spec.ts",
+   "destinationTitle": "places queued guidance in the next native model request",
+   "requiredAssertions": [
+    "queued guidance reaches the next native model request"
+   ]
+  },
+  {
+   "originalFile": "frontend/tests/e2e/kilo/permission-prompts.spec.ts",
    "originalDescribe": [],
    "originalTitle": "sends the reader's typed refusal reason as the next message",
    "disposition": "retained"
@@ -13579,6 +13653,12 @@
   },
   {
    "originalFile": "frontend/tests/e2e/kimi-code/shell-tool-execution.spec.ts",
+   "originalDescribe": [],
+   "originalTitle": "preserves a literal private shell path with spaces and metacharacters",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/kimi-code/shell-tool-execution.spec.ts",
    "originalDescribe": [
     "uses Kimi Code tools"
    ],
@@ -13591,12 +13671,6 @@
     "uses Kimi Code tools"
    ],
    "originalTitle": "a failed command shows its output and its exit code",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/kimi-code/shell-tool-execution.spec.ts",
-   "originalDescribe": [],
-   "originalTitle": "preserves a literal private shell path with spaces and metacharacters",
    "disposition": "retained"
   },
   {
@@ -13824,6 +13898,20 @@
    "disposition": "retained"
   },
   {
+   "originalFile": "frontend/tests/e2e/kiro/file-tool-execution.spec.ts",
+   "originalDescribe": [
+    "Kiro tool execution"
+   ],
+   "originalTitle": "reads, edits and writes a file, runs a command, and keeps a to-do list",
+   "disposition": "merged",
+   "destinationFile": "frontend/tests/e2e/kiro/shell-tool-execution.spec.ts",
+   "destinationTitle": "proves calculated native stdout and failed stderr reach the next turn",
+   "requiredAssertions": [
+    "a failed command row states its native exit code in the header"
+   ],
+   "destinationDescribe": []
+  },
+  {
    "originalFile": "frontend/tests/e2e/kiro/generation-progress.spec.ts",
    "originalDescribe": [],
    "originalTitle": "proves the live native generation counter",
@@ -13858,6 +13946,45 @@
    "originalDescribe": [],
    "originalTitle": "proves the unsupported native child interrupt route while its original task runs",
    "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/kiro/interrupt-a-turn.spec.ts",
+   "originalDescribe": [
+    "Kiro interrupt, steering and process lifetime"
+   ],
+   "originalTitle": "interrupts a running tool",
+   "disposition": "moved",
+   "destinationFile": "frontend/tests/e2e/kiro/interrupt-a-turn.spec.ts",
+   "destinationDescribe": [
+    "Kiro interrupt"
+   ],
+   "destinationTitle": "interrupts a running tool"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/kiro/interrupt-a-turn.spec.ts",
+   "originalDescribe": [
+    "Kiro interrupt, steering and process lifetime"
+   ],
+   "originalTitle": "interrupts a running turn",
+   "disposition": "moved",
+   "destinationFile": "frontend/tests/e2e/kiro/interrupt-a-turn.spec.ts",
+   "destinationDescribe": [
+    "Kiro interrupt"
+   ],
+   "destinationTitle": "interrupts a running turn"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/kiro/interrupt-a-turn.spec.ts",
+   "originalDescribe": [
+    "Kiro interrupt, steering and process lifetime"
+   ],
+   "originalTitle": "withdraws a waiting question",
+   "disposition": "moved",
+   "destinationFile": "frontend/tests/e2e/kiro/interrupt-a-turn.spec.ts",
+   "destinationDescribe": [
+    "Kiro interrupt"
+   ],
+   "destinationTitle": "withdraws a waiting question"
   },
   {
    "originalFile": "frontend/tests/e2e/kiro/interrupt-a-turn.spec.ts",
@@ -14386,14 +14513,6 @@
   {
    "originalFile": "frontend/tests/e2e/letta-code/mode.spec.ts",
    "originalDescribe": [
-    "Letta Code settings"
-   ],
-   "originalTitle": "applies a permission-mode change to the session",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/letta-code/mode.spec.ts",
-   "originalDescribe": [
     "Letta Code modes"
    ],
    "originalTitle": "asks in Standard and runs a write in Unrestricted",
@@ -14405,6 +14524,14 @@
     "Letta Code modes"
    ],
    "originalTitle": "the mode menu lists Standard, Accept Edits, Unrestricted and Strict",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/letta-code/mode.spec.ts",
+   "originalDescribe": [
+    "Letta Code settings"
+   ],
+   "originalTitle": "applies a permission-mode change to the session",
    "disposition": "retained"
   },
   {
@@ -14538,6 +14665,16 @@
    "originalDescribe": [],
    "originalTitle": "reopens a completed picker session and restores its saved Worker rows",
    "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/letta-code/shell-tool-execution.spec.ts",
+   "originalTitle": "draws the output of a command",
+   "disposition": "merged",
+   "destinationFile": "frontend/tests/e2e/letta-code/shell-tool-execution.spec.ts",
+   "destinationTitle": "runs successful and failed native commands with their actual output",
+   "requiredAssertions": [
+    "the computed command output appears in a message row of the chat"
+   ]
   },
   {
    "originalFile": "frontend/tests/e2e/letta-code/shell-tool-execution.spec.ts",
@@ -15042,6 +15179,14 @@
   {
    "originalFile": "frontend/tests/e2e/mimo-code/shell-tool-execution.spec.ts",
    "originalDescribe": [
+    "MiMo Code interactive commands"
+   ],
+   "originalTitle": "refuses an interactive command without blocking the turn",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/mimo-code/shell-tool-execution.spec.ts",
+   "originalDescribe": [
     "MiMo Code tool execution"
    ],
    "originalTitle": "a shell command renders as a tool card with its output",
@@ -15051,14 +15196,6 @@
    "originalFile": "frontend/tests/e2e/mimo-code/shell-tool-execution.spec.ts",
    "originalDescribe": [],
    "originalTitle": "preserves a literal private shell path with spaces and metacharacters",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/mimo-code/shell-tool-execution.spec.ts",
-   "originalDescribe": [
-    "MiMo Code interactive commands"
-   ],
-   "originalTitle": "refuses an interactive command without blocking the turn",
    "disposition": "retained"
   },
   {
@@ -16887,6 +17024,16 @@
   },
   {
    "originalFile": "frontend/tests/e2e/pi/shell-tool-execution.spec.ts",
+   "originalTitle": "bash command execution renders output in chat",
+   "disposition": "merged",
+   "destinationFile": "frontend/tests/e2e/pi/shell-tool-execution.spec.ts",
+   "destinationTitle": "keeps actual native shell output and a failed command result",
+   "requiredAssertions": [
+    "the computed command output appears in a message row of the chat"
+   ]
+  },
+  {
+   "originalFile": "frontend/tests/e2e/pi/shell-tool-execution.spec.ts",
    "originalDescribe": [],
    "originalTitle": "keeps actual native shell output and a failed command result",
    "disposition": "retained"
@@ -17071,12 +17218,6 @@
   },
   {
    "originalFile": "frontend/tests/e2e/qoder-cli/file-tool-execution.spec.ts",
-   "originalDescribe": [],
-   "originalTitle": "reads and changes native files and keeps the applied diff after reload",
-   "disposition": "retained"
-  },
-  {
-   "originalFile": "frontend/tests/e2e/qoder-cli/file-tool-execution.spec.ts",
    "originalDescribe": [
     "Qoder CLI file tool execution"
    ],
@@ -17089,6 +17230,12 @@
     "Qoder CLI file tool execution"
    ],
    "originalTitle": "writes a new file and lands its content on disk",
+   "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/qoder-cli/file-tool-execution.spec.ts",
+   "originalDescribe": [],
+   "originalTitle": "reads and changes native files and keeps the applied diff after reload",
    "disposition": "retained"
   },
   {
@@ -17296,17 +17443,17 @@
   {
    "originalFile": "frontend/tests/e2e/qoder-cli/reasoning-effort.spec.ts",
    "originalDescribe": [
-    "Qoder CLI model switch"
+    "Qoder CLI effort and session goal"
    ],
-   "originalTitle": "keeps the chosen effort after a model switch and a reload",
+   "originalTitle": "uses the selected reasoning effort in the next native model request",
    "disposition": "retained"
   },
   {
    "originalFile": "frontend/tests/e2e/qoder-cli/reasoning-effort.spec.ts",
    "originalDescribe": [
-    "Qoder CLI effort and session goal"
+    "Qoder CLI model switch"
    ],
-   "originalTitle": "uses the selected reasoning effort in the next native model request",
+   "originalTitle": "keeps the chosen effort after a model switch and a reload",
    "disposition": "retained"
   },
   {
@@ -18155,6 +18302,13 @@
   },
   {
    "originalFile": "frontend/tests/e2e/reasonix/permission-prompts.spec.ts",
+   "originalTitle": "permission-prompts: refuses a native write in Plan mode and asks in Normal mode",
+   "disposition": "moved",
+   "destinationFile": "frontend/tests/e2e/reasonix/permission-prompts.spec.ts",
+   "destinationTitle": "refuses a shell write in ask mode and sends the typed reason as the next message"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/reasonix/permission-prompts.spec.ts",
    "originalDescribe": [],
    "originalTitle": "refuses a shell write in ask mode and sends the typed reason as the next message",
    "disposition": "retained"
@@ -18595,6 +18749,13 @@
    "originalDescribe": [],
    "originalTitle": "an allow under the Unchanged pill runs the command and keeps the mode",
    "disposition": "retained"
+  },
+  {
+   "originalFile": "frontend/tests/e2e/zcode/permission-prompts.spec.ts",
+   "originalTitle": "the permission banner applies the selected bypass pill on allow",
+   "disposition": "moved",
+   "destinationFile": "frontend/tests/e2e/zcode/permission-prompts.spec.ts",
+   "destinationTitle": "an allow under the Unchanged pill runs the command and keeps the mode"
   },
   {
    "originalFile": "frontend/tests/e2e/zcode/plan-approval-banner.spec.ts",

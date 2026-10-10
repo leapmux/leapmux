@@ -30,7 +30,7 @@ import { retryUntilPass } from './retryUntilPass'
 import { getGlobalState } from './server'
 import { quotePosixShellArgument, uniqueMarker } from './shellArguments'
 import { RELEASE_POLL_MS } from './toolOutputControl'
-import { assistantBubbles, composerEditor, interruptButton, messageBubbles, messageContents, resumePausedQueue, sendMessage, tabById, userBubbles, visibleOnly, waitForAgentIdle } from './ui'
+import { assistantBubbles, composerEditor, interruptButton, messageBubbles, messageContents, resumePausedQueue, sendMessage, tabById, toolRows, userBubbles, visibleOnly, waitForAgentIdle } from './ui'
 import { closeNativeAgentAndWait, inspectLastTabCloseViaAPI } from './workerTabs'
 
 interface LifecyclePreparation {
@@ -191,6 +191,13 @@ export async function exerciseInterruptTurn(
       // A provider that asks before a tool runs shows an Allow button. The wait allows each actual request.
       await approveNativeToolsUntil(context.page, async () => existsSync(toolStarted))
       await expect(messageBubbles(context.page).filter({ hasText: toolStarted }).first()).toBeVisible()
+      // The started file proves the command runs, not that every native call of
+      // the turn reached the transcript: Codex states its execution wrapper and
+      // the nested command as two rows, and a stop that lands before both exist
+      // leaves the divider counting only the rows that did.
+      const expectedUses = options.expectedToolUses ?? 1
+      if (expectedUses > 1)
+        await expect.poll(() => toolRows(context.page).count()).toBeGreaterThanOrEqual(expectedUses)
     }
     else {
       await context.modelScript.waitForGate(gate)

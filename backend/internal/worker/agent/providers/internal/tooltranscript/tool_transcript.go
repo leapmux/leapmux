@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -502,7 +503,16 @@ func (s *Transcript) PersistMessage(source leapmuxv1.MessageSource, content agen
 
 func (s *Transcript) prepareBoundary() (toolBoundary, error) {
 	if err := s.flushObservations(); err != nil {
-		return toolBoundary{}, err
+		// The background supplement worker can hold an observation claim when a
+		// provider's turn ends. The claim stays with that flush -- it settles the
+		// row against the observation's original sequence -- and the boundary
+		// keeps the observation retained for its own final pass or a later one,
+		// so an in-flight claim must not fail the turn end. Any other error is a
+		// real settlement failure the caller has to see.
+		if !errors.Is(err, errToolObservationInFlight) {
+			return toolBoundary{}, err
+		}
+		slog.Warn("Retain the in-flight tool observation at the turn boundary", "provider", s.source.ProviderName(), "error", err)
 	}
 	s.mu.Lock()
 	s.queued = nil
@@ -839,6 +849,11 @@ func (s *Transcript) hasObservationLocked(sequence int64) bool {
 	return false
 }
 
+// errToolObservationInFlight states that another flush owns the observation's
+// claim right now. A concurrent claimer reports it instead of waiting, so a
+// claim held through a slow delegated read cannot pile up waiters.
+var errToolObservationInFlight = errors.New("the tool observation is in flight")
+
 // flushObservations retries frozen bytes against their exact committed rows.
 // It never resolves an old observation through the latest row of a reused span.
 func (s *Transcript) flushObservations() error {
@@ -865,7 +880,7 @@ func (s *Transcript) flushObservation(observation *toolObservation) error {
 	}
 	if observation.inFlight {
 		s.mu.Unlock()
-		return fmt.Errorf("the tool observation is in flight")
+		return errToolObservationInFlight
 	}
 	observation.inFlight = true
 	s.mu.Unlock()
