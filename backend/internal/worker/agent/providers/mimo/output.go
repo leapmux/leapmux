@@ -1408,15 +1408,18 @@ func (a *Agent) handleCompactionPart(event mimoEvent, sessionID string, part mim
 		}
 	}
 	a.Mu.Unlock()
-	if ack != nil {
-		close(ack)
-	}
 	content := agent.MessageContent{Original: event.raw}
 	// A main-transcript compaction holds while a native failure can still
 	// claim the main transcript ahead of it; a child transcript's compaction
 	// is exactly addressed and writes now.
 	rootHeld := actorID == mainActorID && a.rootHoldsNotifications()
 	a.persistCapturedNotification(a.sinkForActor(actorID), content, rootHeld)
+	// The ack states the compaction started with its notice on the transcript,
+	// so it fires only after the write: a reader that returns on the ack and
+	// reads the transcript must find the notice already there.
+	if ack != nil {
+		close(ack)
+	}
 	if releaseManual {
 		// The native summarize route keeps its reply until the next prompt
 		// finishes. Release the Worker queue after the summary exists.
