@@ -1,7 +1,6 @@
-import type { LiveControlSurface } from './controlSurface'
 import type { ControlRequest } from '~/stores/control.store'
 import { createRoot, createSignal } from 'solid-js'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { controlSurface, createControlSurface } from './controlSurface'
 import '../providers'
@@ -29,9 +28,8 @@ describe('controlSurface', () => {
     expect(surface?.kind).toBe('elicitation')
   })
 
-  // Everything a shared form does not answer is a PERMISSION, read by the provider's
-  // own `extractControl`. It used to be the opaque `plugin` kind, which said only
-  // "the plugin draws this" and let each provider's component decide what that meant.
+  // The provider's extractControl reads a permission that no shared form answers.
+  // The old plugin kind left that decision to each provider's component.
   it('reads everything else as a permission the provider extracted', () => {
     const surface = controlSurface(
       request({ request: { tool_name: 'Bash', input: { command: 'pwd' } } }),
@@ -40,17 +38,24 @@ describe('controlSurface', () => {
     )
     expect(surface).toEqual({
       kind: 'permission',
-      permission: { title: 'Bash', input: { command: 'pwd' }, command: 'pwd', options: [] },
+      permission: {
+        title: 'Bash',
+        input: { command: 'pwd' },
+        command: 'pwd',
+        options: [
+          { optionId: 'once', kind: 'allow_once', name: 'Allow once' },
+          { optionId: 'session', kind: 'allow_always', name: 'Allow for this session' },
+          { optionId: 'deny', kind: 'reject_once', name: 'Deny' },
+        ],
+      },
     })
   })
 
   /*
-   * The generic fallback states NO arguments.
-   *
-   * It used to pass `request.payload`, which is the whole JSON-RPC envelope, so the
-   * banner headed it "Arguments" while the Allow button beside it sent
-   * `payload.request.input ?? {}` -- the two halves of one banner read two different
-   * parts of the payload, and the half the reader saw was not the half the agent got.
+   * The generic fallback states no arguments.
+   * The old fallback displayed the whole JSON-RPC envelope as Arguments.
+   * Its Allow button sent payload.request.input instead, or an empty object when input was absent.
+   * The banner therefore displayed data that the agent did not receive.
    */
   it('states no arguments for a payload no provider reads', () => {
     // A provider whose plugin recognizes nothing in this envelope.
@@ -79,21 +84,25 @@ describe('controlSurface', () => {
   })
 })
 
-// The composer builds ONE of these for the active request and passes the
-// surface to both halves of the banner, which classify nothing of their own.
+// The composer creates one surface for the active request and passes it to both parts of the banner.
+// Neither part classifies the request again.
 describe('createControlSurface', () => {
+  const disposers: (() => void)[] = []
+  afterEach(() => {
+    for (const dispose of disposers.splice(0))
+      dispose()
+  })
+
   function live(agentProvider: AgentProvider | undefined, current: () => ControlRequest | null) {
-    let surface!: LiveControlSurface
-    const dispose = createRoot((disposeRoot) => {
-      surface = createControlSurface(current, () => undefined, () => agentProvider)
-      return disposeRoot
+    return createRoot((dispose) => {
+      disposers.push(dispose)
+      return createControlSurface(current, () => undefined, () => agentProvider)
     })
-    return { surface, dispose }
   }
 
   it('reclassifies as the request it follows changes', () => {
     const [current, setCurrent] = createSignal<ControlRequest | null>(questionRequest())
-    const { surface, dispose } = live(AgentProvider.CLAUDE_CODE, current)
+    const surface = live(AgentProvider.CLAUDE_CODE, current)
     expect(surface.provider()).toBe(AgentProvider.CLAUDE_CODE)
     expect(surface.surface()?.kind).toBe('question')
 
@@ -102,21 +111,18 @@ describe('createControlSurface', () => {
 
     setCurrent(null)
     expect(surface.surface()).toBeUndefined()
-    dispose()
   })
 
   // One memo, so every reader of the same request gets the same answer without
   // parsing the payload again.
   it('answers every reader of one request from the same classification', () => {
-    const { surface, dispose } = live(AgentProvider.CLAUDE_CODE, questionRequest)
+    const surface = live(AgentProvider.CLAUDE_CODE, questionRequest)
     expect(surface.surface()).toBe(surface.surface())
-    dispose()
   })
 
   it('prefers the provider the request carries', () => {
     const goose = { ...questionRequest(), agentProvider: AgentProvider.GOOSE }
-    const { surface, dispose } = live(AgentProvider.CLAUDE_CODE, () => goose)
+    const surface = live(AgentProvider.CLAUDE_CODE, () => goose)
     expect(surface.provider()).toBe(AgentProvider.GOOSE)
-    dispose()
   })
 })

@@ -5,10 +5,12 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { accountStorageKey, PREFIX_CONTROL_STATE } from '../../../src/lib/browserStorage'
 import { isObject } from '../../../src/lib/jsonPick'
 import { openAgentViaAPI } from '../helpers/api'
+import { expectTurnEndedAfter } from '../helpers/modelScriptFixture'
+import { waitForNativeInputQueueIdle } from '../helpers/nativeInputQueueIdle'
 import { piEditorProbeToolCall } from '../helpers/providerToolCalls'
 import { newProviderWorkingDir } from '../helpers/providerWorkingDir'
 import { waitForStoredEntry } from '../helpers/storage'
-import { composerEditor, controlBanner, controlButton, expectNoControlBanner, expectSettingsChip, messageBubbles, openWorkspace, savedControlAnswer, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { composerEditor, controlBanner, controlButton, expectNoControlBanner, expectSettingsChip, messageBubbles, openWorkspace, resumePausedQueue, savedControlAnswer, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { piTest } from '../pi-fixtures'
 import { PI_AGENT } from './scenarios'
 import { withMockPiModel } from './scriptedModel'
@@ -17,6 +19,7 @@ for (const scenario of [
   { label: 'whitespace', text: '  first line\n\tsecond line\n  ', cancel: false },
   { label: 'empty text', text: '', cancel: false },
   { label: 'cancellation', text: '  unsent text\n', cancel: true },
+  { label: 'interruption', text: '  interrupted draft\n', cancel: true, interrupt: true },
 ]) {
   piTest(`delivers a native Pi editor answer after reload with ${scenario.label}`, async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
     const errors: string[] = []
@@ -49,14 +52,14 @@ export default function (pi) {
       await expectSettingsChip(page, 'Protocol test')
       const start = await modelScript.queue(
         { toolCalls: [piEditorProbeToolCall('editor-call')] },
-        { text: 'Protocol test complete.' },
+        ...('interrupt' in scenario ? [] : [{ text: 'Protocol test complete.' }]),
       )
       await sendMessage(page, modelScript.prompt('Run the configured editor probe.'))
       const banner = controlBanner(page)
       const editor = banner.getByTestId('dialog-editor')
       await expect(banner).toContainText('Edit the probe text')
       await expect(editor).toBeVisible()
-      // `composerEditor` matches only a visible composer, so a hidden check through it passes always.
+      // composerEditor selects visible elements. Read the actual composer to prove that it hides.
       await expect(page.getByTestId('composer-editor')).toBeHidden()
       expect(await editor.evaluate((element) => {
         const banner = element.closest('[data-testid="control-banner"]')!
@@ -66,7 +69,7 @@ export default function (pi) {
       })).toBe(true)
       await expect(editor).toHaveValue('Original prefill')
       await editor.fill(scenario.text)
-      // Verify the committed draft before reload tests recovery.
+      // Require the saved draft before the reload.
       await waitForStoredEntry(
         page,
         accountStorageKey(leapmuxServer.adminUserId, `${PREFIX_CONTROL_STATE}${agentId}:`),
@@ -78,23 +81,44 @@ export default function (pi) {
       await expect(page.getByTestId('queue-pause-button')).toHaveCount(0)
       const action = controlButton(page, scenario.cancel ? 'deny' : 'allow')
       await expect(action).toBeInViewport({ ratio: 1 })
-      // One path for every scenario. The `whitespace` case used to branch here
-      // into a storage-failure flow: a SQLite trigger aborted the response
-      // write, the banner then STAYED with an alert, and a second tab watched
-      // that unsaved state. All of it rested on the injected failure -- with
-      // the write succeeding the banner closes at once -- so the branch went
-      // with the injection rather than being rewritten around a state the
-      // product no longer reaches here. See
-      // https://github.com/leapmux/leapmux/issues/489.
-      await action.click()
+      // This native proof uses successful storage writes.
+      // A failed answer write needs a separate fault injection that keeps the unanswered dialog.
+      // See https://github.com/leapmux/leapmux/issues/489.
+      if ('interrupt' in scenario)
+        await banner.getByTestId('control-interrupt').click()
+      else
+        await action.click()
       await expectNoControlBanner(page)
-      await modelScript.waitForSteps(start + 2)
+      const completedSteps = start + ('interrupt' in scenario ? 1 : 2)
+      await modelScript.waitForSteps(completedSteps)
       await waitForAgentIdle(page)
+      await expect.poll(() => {
+        try {
+          return JSON.parse(readFileSync(receipt, 'utf8'))
+        }
+        catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT')
+            return null
+          throw error
+        }
+      }).toEqual(scenario.cancel ? { cancelled: true } : { value: scenario.text, cancelled: false })
+      await expectTurnEndedAfter(modelScript, completedSteps)
       await expect(composerEditor(page)).toHaveAttribute('contenteditable', 'true')
-      await expect(messageBubbles(page).filter({ hasText: 'EDITOR_RESPONSE_RECEIVED' }).first()).toBeVisible()
-      expect(JSON.parse(readFileSync(receipt, 'utf8'))).toEqual(scenario.cancel
-        ? { cancelled: true }
-        : { value: scenario.text, cancelled: false })
+      if ('interrupt' in scenario) {
+        const queue = await waitForNativeInputQueueIdle(leapmuxServer, agentId, modelScript.testDeadline)
+        expect(queue.paused).toBe(true)
+        await resumePausedQueue(page)
+        const next = await modelScript.queue({ text: 'The editor interrupt ended. The next turn works.' })
+        await sendMessage(page, modelScript.prompt('Reply after the editor interrupt.'))
+        await modelScript.waitForSteps(next + 1)
+        await waitForAgentIdle(page)
+        await expect(messageBubbles(page).filter({ hasText: 'The editor interrupt ended. The next turn works.' }).first()).toBeVisible()
+        await expectTurnEndedAfter(modelScript, next + 1)
+        await expectNoControlBanner(page)
+      }
+      else {
+        await expect(messageBubbles(page).filter({ hasText: 'EDITOR_RESPONSE_RECEIVED' }).first()).toBeVisible()
+      }
       if (scenario.label === 'whitespace') {
         const answer = savedControlAnswer(page).filter({ hasText: 'first line' })
         expect(await answer.textContent()).toBe(scenario.text)

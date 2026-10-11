@@ -113,15 +113,15 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [go.uber.org/multierr v1.11.0](#gouberorgmultierr-v1110)
 - [go.yaml.in/yaml/v3 v3.0.5](#goyamlinyamlv3-v305)
 - [go4.org/netipx v0.0.0-20260823151212-3075585bcbeb](#go4orgnetipx-v000-20260823151212-3075585bcbeb)
-- [golang.org/x/crypto v0.55.0](#golangorgxcrypto-v0550)
-- [golang.org/x/mod v0.40.0](#golangorgxmod-v0400)
-- [golang.org/x/net v0.58.0](#golangorgxnet-v0580)
+- [golang.org/x/crypto v0.57.0](#golangorgxcrypto-v0570)
+- [golang.org/x/mod v0.41.0](#golangorgxmod-v0410)
+- [golang.org/x/net v0.59.0](#golangorgxnet-v0590)
 - [golang.org/x/oauth2 v0.36.0](#golangorgxoauth2-v0360)
-- [golang.org/x/sync v0.22.0](#golangorgxsync-v0220)
-- [golang.org/x/sys v0.47.0](#golangorgxsys-v0470)
-- [golang.org/x/term v0.45.0](#golangorgxterm-v0450)
-- [golang.org/x/text v0.41.0](#golangorgxtext-v0410)
-- [golang.org/x/tools v0.49.0](#golangorgxtools-v0490)
+- [golang.org/x/sync v0.23.0](#golangorgxsync-v0230)
+- [golang.org/x/sys v0.48.0](#golangorgxsys-v0480)
+- [golang.org/x/term v0.46.0](#golangorgxterm-v0460)
+- [golang.org/x/text v0.42.0](#golangorgxtext-v0420)
+- [golang.org/x/tools v0.50.0](#golangorgxtools-v0500)
 - [google.golang.org/grpc v1.83.2](#googlegolangorggrpc-v1832)
 - [google.golang.org/protobuf v1.36.12](#googlegolangorgprotobuf-v13612)
 - [modernc.org/libc v1.74.4](#moderncorglibc-v1744)
@@ -10944,7 +10944,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### golang.org/x/crypto v0.55.0
+### golang.org/x/crypto v0.57.0
 
 ```
 Copyright 2009 The Go Authors.
@@ -10976,7 +10976,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### golang.org/x/mod v0.40.0
+### golang.org/x/mod v0.41.0
 
 ```
 Copyright 2009 The Go Authors.
@@ -11008,7 +11008,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### golang.org/x/net v0.58.0
+### golang.org/x/net v0.59.0
 
 ```
 Copyright 2009 The Go Authors.
@@ -11072,7 +11072,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### golang.org/x/sync v0.22.0
+### golang.org/x/sync v0.23.0
 
 ```
 Copyright 2009 The Go Authors.
@@ -11104,7 +11104,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### golang.org/x/sys v0.47.0
+### golang.org/x/sys v0.48.0
 
 ```
 Copyright 2009 The Go Authors.
@@ -11136,7 +11136,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### golang.org/x/term v0.45.0
+### golang.org/x/term v0.46.0
 
 ```
 Copyright 2009 The Go Authors.
@@ -11168,7 +11168,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### golang.org/x/text v0.41.0
+### golang.org/x/text v0.42.0
 
 ```
 Copyright 2009 The Go Authors.
@@ -11200,7 +11200,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### golang.org/x/tools v0.49.0
+### golang.org/x/tools v0.50.0
 
 ```
 Copyright 2009 The Go Authors.

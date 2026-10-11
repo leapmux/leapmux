@@ -15,99 +15,84 @@ import (
 type verdict int
 
 const (
-	// verdictUndecided means the question is still open: no probe ran yet, or
-	// the probe could not reach the endpoint. A caller that can use HTTP/1.1
-	// still tries h2c on this verdict, because "unreachable" is not "HTTP/1.1
-	// only", and the real request reports the real failure.
+	// verdictUndecided means that no probe ran or the probe reached no protocol verdict.
+	// A caller still tries cleartext HTTP/2 (h2c), even when it can use HTTP/1.1.
+	// An unreachable endpoint proves no protocol limit. The real request reports its failure.
 	verdictUndecided verdict = iota
 	// verdictSupported means the endpoint answered an HTTP/2 PING.
 	verdictSupported
-	// verdictUnsupported means the endpoint refused the HTTP/2 connection
-	// preface. A Go server that serves HTTP/1.1 alone answers 400; nginx
-	// without h2c does the same.
+	// verdictUnsupported means that connection setup failed or a PING failed before context cancellation.
+	// An HTTP/1.1 response to the preface does not satisfy the HTTP/2 handshake.
 	verdictUnsupported
 )
 
-// undecidedCooldown is how long an UNDECIDED probe suppresses the next one.
+// undecidedCooldown specifies how long an undecided probe suppresses another probe.
 //
-// An undecided verdict means the probe could not reach the endpoint, so it
-// settles nothing and is not cached. Without a cooldown the NEXT request
-// started another probe and blocked on it, and that wait buys nothing: both
-// cleartext lanes take h2c on undecided, so the caller's behaviour is the same
-// whether it waited or not. Against an endpoint that accepts a connection and
-// then says nothing, that cost every request a whole probeTimeout of dead time
-// -- inside the caller's own http.Client.Timeout, so `leapmux control version`
-// (a 5s budget against a 5s probe) reached the hub with an already-expired
-// context, and the worker's reconnect loop paid it before every backoff.
+// An undecided verdict proves no protocol support, so the prober does not cache it.
+// Without a cooldown, each request starts another probe and waits for it.
+// Both cleartext transports use h2c on an undecided verdict, so the extra wait changes no behavior.
+// A silent endpoint consumes the full probeTimeout inside each caller's http.Client.Timeout.
+// A five-second probe then consumes the full five-second limit of `leapmux control version`.
+// The Worker reconnect loop incurs that wait before every backoff also.
 //
-// The cooldown is longer than probeTimeout, so a request that arrives while a
-// stalled probe is still running joins that probe rather than starting a new
-// one, and shorter than a person's patience with a hub that came back: an
-// endpoint that recovers is measured again within the minute.
+// Requests that arrive during a probe share its completion channel.
+// An undecided verdict then suppresses another probe for longer than probeTimeout.
+// A recovered endpoint can receive another probe within a minute.
 const undecidedCooldown = 30 * time.Second
 
-// probeTimeout limits one probe. It has to outlast a dial and one round trip
-// on a slow link, and it has to end well inside a caller's patience when the
-// endpoint accepts a connection and then says nothing.
+// probeTimeout permits a dial and one round trip on a slow link.
+// It also limits the wait when an endpoint accepts a connection and sends nothing.
 const probeTimeout = 5 * time.Second
 
-// prober answers "does this cleartext endpoint speak h2c?" for one Endpoint,
-// with at most one probe in flight and at most one answer kept.
+// prober checks whether one Endpoint supports h2c.
+// It runs at most one probe at a time and keeps at most one decided verdict.
 //
-// # Why probe instead of trying and retrying
+// # Protocol selection
 //
-// Go does not negotiate cleartext HTTP/2: net/http uses h2c only when
-// Transport.Protocols holds UnencryptedHTTP2 and does NOT hold HTTP1, so a
-// transport speaks one of the two and never discovers the other. The
-// alternative — send the request on h2c and repeat it on HTTP/1.1 when it
-// fails — would have to tell "this endpoint has no h2c" apart from "the hub
-// restarted mid-request" using error strings from three layers, and it would
-// repeat a request that the endpoint may already have processed. A probe on
-// its own connection answers the question with no application request at all.
+// Go does not negotiate cleartext HTTP/2.
+// net/http uses h2c only when Transport.Protocols enables UnencryptedHTTP2 and disables HTTP1.
+// Each transport therefore uses one protocol without detecting the other.
+// Repeating a failed h2c request over HTTP/1.1 requires protocol detection from error strings across three layers.
+// That approach cannot safely distinguish absent h2c support from a Hub restart during a request.
+// It can repeat a request that the endpoint already processed.
 //
-// # What the probe costs the endpoint
+// A probe uses a separate connection and sends no application request.
 //
-// Against a LeapMux hub, nothing that a handler can see: net/http consumes the
-// HTTP/2 client preface in maybeServeUnencryptedHTTP2 before it routes, so the
-// probe reaches no route, no access log and no rate limiter. Against an
-// endpoint with no h2c the preface DOES arrive as a malformed request, so a
-// proxy log gets one 400 line per process. That deployment is already
-// misconfigured for the worker's bidirectional stream, which needs HTTP/2 on
-// the same URL.
+// # Endpoint effects
 //
-// # Why a DECIDED answer is kept for the life of the process
+// A LeapMux Hub consumes the preface in net/http.maybeServeUnencryptedHTTP2 before routing.
+// No application handler receives the probe.
+// The probe reaches no application access log or rate limiter.
+// An endpoint without h2c can route the preface as a PRI request or reject it.
+// A proxy can log one 400 response per process.
+// That endpoint cannot serve the Worker's bidirectional stream, which requires HTTP/2 at the same URL.
 //
-// An endpoint that gains or loses h2c did so because somebody changed a
-// reverse proxy. A time-to-live would pick that up a few minutes sooner, and
-// would cost an expiry rule for a fact that changes at a restart anyway. The
-// restart that follows such a change picks it up instead.
+// # Verdict lifetime
 //
-// An UNDECIDED answer is different, and does carry a clock: it settles
-// nothing, so it must not be cached, but repeating it on the next request
-// costs a whole probeTimeout for no information. See undecidedCooldown.
+// An endpoint gains or loses h2c when its reverse proxy configuration changes.
+// The process restart after that change permits another probe.
+// An expiry rule detects the change sooner but adds recurring probes for a fact that changes at restart.
+// The prober therefore keeps a decided verdict for the process lifetime.
+// An undecided verdict proves nothing and must permit another probe after undecidedCooldown.
 type prober struct {
 	endpointURL string
 	dial        func(ctx context.Context) (net.Conn, error)
 
-	// run replaces the real probe in this package's tests, so a test can
-	// count probes, hold one open, or dictate a verdict without a server.
+	// run replaces the real probe in this package's tests.
+	// A test can count probes or control their completion and verdict without a server.
 	run func(ctx context.Context) verdict
-	// onWait, when set, is called by a caller that is about to block on a probe
-	// another caller started. Only this package's tests set it: it is the seam
-	// that makes "the waiter reached the wait" observable, so those tests
-	// synchronise on an event instead of on a sleep long enough to look safe.
+	// A caller invokes onWait before it waits on another caller's probe.
+	// Only package tests set this hook. They synchronize on that event without a sleep.
 	onWait func()
-	// now reads the clock the cooldown below measures against. A test supplies
-	// its own and advances it by hand, so the cooldown is exercised with no
-	// sleep and no window to race: the seam that ends the state is a value the
-	// test sets, not a real timer it has to outlast.
+	// now reads the cooldown clock. A test supplies and advances its own clock.
+	// The test controls the end of the cooldown without a sleep or a real timer.
 	now func() time.Time
 
 	mu      sync.Mutex
 	decided bool
 	result  verdict
-	// undecidedUntil is the instant an UNDECIDED verdict stops suppressing the
-	// next probe. Zero means "probe now". See undecidedCooldown.
+	// undecidedUntil specifies when an undecided verdict permits another probe.
+	// Zero permits a probe now. See undecidedCooldown.
 	undecidedUntil time.Time
 	inflight       chan struct{}
 
@@ -120,16 +105,12 @@ func newProber(endpointURL string, dial func(ctx context.Context) (net.Conn, err
 	return &prober{endpointURL: endpointURL, dial: dial, now: time.Now}
 }
 
-// supportsH2C returns the endpoint's verdict, running at most one probe at a
-// time.
+// supportsH2C returns the endpoint's verdict and runs at most one probe at a time.
 //
-// The probe runs on its OWN goroutine under its own deadline, and every
-// caller -- including the one whose request started it -- waits on the probe
-// or on its own request context, whichever ends first. That split is what
-// makes both halves true at once: a caller that gives up (a cancelled request,
-// a shutdown) returns immediately and never waits out the probe deadline, and
-// its cancellation does not take the answer away from the callers still
-// waiting.
+// The probe uses its own goroutine and deadline.
+// Each caller, including the caller that starts it, waits for probe completion or its own context cancellation.
+// A cancelled caller returns immediately without waiting for the probe deadline.
+// Its cancellation does not change the verdict for other callers.
 func (p *prober) supportsH2C(ctx context.Context) verdict {
 	p.mu.Lock()
 	if p.decided {
@@ -139,10 +120,8 @@ func (p *prober) supportsH2C(ctx context.Context) verdict {
 	}
 	wait := p.inflight
 	if wait == nil && p.now().Before(p.undecidedUntil) {
-		// A recent probe reached the endpoint and learned nothing. Answer
-		// undecided at once rather than starting another and blocking on it:
-		// the caller takes h2c either way, so the wait cannot change what it
-		// does. See undecidedCooldown.
+		// A recent probe reached no verdict. Return undecided without another wait.
+		// The caller uses h2c on that verdict. See undecidedCooldown.
 		p.mu.Unlock()
 		return verdictUndecided
 	}
@@ -168,15 +147,13 @@ func (p *prober) supportsH2C(ctx context.Context) verdict {
 	if p.decided {
 		return p.result
 	}
-	// The probe reached no verdict, because it could not reach the endpoint.
-	// Do NOT start another one here: every waiter would then probe in turn,
-	// and a hub that is down would cost one probe per request. The next
-	// request after the cooldown starts the next probe.
+	// The probe reached no verdict. Another probe here makes each waiter repeat the same failed attempt.
+	// The next request after the cooldown starts another probe.
 	return verdictUndecided
 }
 
-// runProbe performs one probe and publishes its verdict. It owns the in-flight
-// channel and closes it, whether the probe reached a verdict or not.
+// runProbe runs one probe and publishes its verdict.
+// It owns and closes the completion channel, including when the probe reaches no verdict.
 func (p *prober) runProbe(done chan struct{}) {
 	result := p.probe()
 
@@ -186,8 +163,7 @@ func (p *prober) runProbe(done chan struct{}) {
 		p.decided = true
 		p.result = result
 	} else {
-		// Not cached -- an unreachable endpoint settles nothing -- but the next
-		// request does not repeat it either. See undecidedCooldown.
+		// Keep no decided verdict after an inconclusive probe. Delay another probe until the cooldown ends.
 		p.undecidedUntil = p.now().Add(undecidedCooldown)
 	}
 	p.mu.Unlock()
@@ -195,14 +171,14 @@ func (p *prober) runProbe(done chan struct{}) {
 
 	if result == verdictUnsupported {
 		p.warnOnce.Do(func() {
-			slog.Warn("endpoint does not support cleartext HTTP/2 (h2c); unary calls fall back to HTTP/1.1, but a worker's Connect stream needs HTTP/2 on this URL",
+			slog.Warn("endpoint does not support cleartext HTTP/2 (h2c). Unary calls use HTTP/1.1. The Worker Connect stream requires HTTP/2 at this URL.",
 				"endpoint", p.endpointURL)
 		})
 	}
 }
 
-// probe runs one probe under its own deadline. It takes no caller context:
-// the goroutine that runs it belongs to no single request.
+// probe runs one probe under its own deadline.
+// It takes no caller context because its goroutine belongs to no single request.
 func (p *prober) probe() verdict {
 	p.calls.Add(1)
 	probeCtx, cancel := context.WithTimeout(context.Background(), probeTimeout)
@@ -213,9 +189,9 @@ func (p *prober) probe() verdict {
 	return p.ping(probeCtx)
 }
 
-// ping opens one connection, completes the HTTP/2 handshake on it and waits
-// for a PING acknowledgement. It sends HTTP/2 frames only: no method, no path,
-// no body and no credential.
+// ping opens one connection and completes its HTTP/2 handshake.
+// It waits for a PING acknowledgement and sends only HTTP/2 frames.
+// It sends no application method or path. It sends no application body or credential.
 func (p *prober) ping(ctx context.Context) verdict {
 	conn, err := p.dial(ctx)
 	if err != nil {
@@ -223,11 +199,12 @@ func (p *prober) ping(ctx context.Context) verdict {
 	}
 	defer func() { _ = conn.Close() }()
 
-	// NewClientConn writes the connection preface and our SETTINGS, and starts
-	// the read loop. It does NOT wait for the server's SETTINGS, so the answer
-	// comes from the PING acknowledgement below rather than from this call.
-	var transport http2.Transport
-	clientConn, err := transport.NewClientConn(conn)
+	// net/http.ClientConn exposes no PING method. The probe must send no application request.
+	// The low-level http2 API retains that capability after its transport deprecation.
+	// NewClientConn sends the preface and SETTINGS, then starts the read loop.
+	// It does not wait for the server's SETTINGS. Only the PING acknowledgement proves support.
+	var transport http2.Transport                    //nolint:staticcheck // net/http.ClientConn exposes no PING method.
+	clientConn, err := transport.NewClientConn(conn) //nolint:staticcheck // The probe must send a PING without an application request.
 	if err != nil {
 		return verdictUnsupported
 	}
@@ -235,8 +212,8 @@ func (p *prober) ping(ctx context.Context) verdict {
 
 	if err := clientConn.Ping(ctx); err != nil {
 		if ctx.Err() != nil {
-			// The endpoint accepted the connection and then said nothing. That
-			// is a stalled endpoint, not a protocol answer.
+			// The endpoint accepted the connection and sent nothing before the deadline.
+			// Return undecided because the timeout proves no protocol limit.
 			return verdictUndecided
 		}
 		return verdictUnsupported
