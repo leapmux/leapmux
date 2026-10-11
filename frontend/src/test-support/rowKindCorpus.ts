@@ -2,9 +2,11 @@ import type { MessageCategory } from '~/components/chat/messageClassifier'
 import type { ChatRow } from '~/components/chat/model/row'
 import type { ChatRowExtraction } from '~/components/chat/rowExtraction'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { MIMO_STATUS_TYPE, MIMO_TOOL } from '~/generated/contracts/mimo-protocol'
 import { MESSAGE_METADATA_FIELD } from '~/generated/contracts/worker-vocab'
 import { AgentProvider as Provider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { copilotToolStart } from '~/test-support/copilotFixtures'
+import { compactionFrame, errorFrame, openingFrame, statusFrame, toolFrame } from '~/test-support/mimoFixtures'
 
 /**
  * One provider frame, with the row kind BOTH layers must answer for it.
@@ -444,5 +446,49 @@ export const ROW_KIND_CASES: RowKindCase[] = [
     name: 'turn end',
     payload: { type: 'turn.ended', time: 1790186809300, agentId: 'main', turnId: 0, reason: 'completed', durationMs: 32, sessionId: 'session_f7cf22a1-3d27-4d41-b8e2-978b1e5fa5a7' },
     category: 'result_divider',
+  },
+  {
+    provider: Provider.MIMO_CODE,
+    name: 'running tool',
+    payload: openingFrame(MIMO_TOOL.Bash, { command: 'ls' }),
+    category: 'tool_use',
+    spanType: MIMO_TOOL.Bash,
+  },
+  {
+    provider: Provider.MIMO_CODE,
+    name: 'finished tool',
+    payload: toolFrame(MIMO_TOOL.Bash, { input: { command: 'ls' }, output: 'a.ts\n', metadata: { output: 'a.ts\n', exit: 0 } }),
+    category: 'tool_result',
+    spanType: MIMO_TOOL.Bash,
+  },
+  {
+    provider: Provider.MIMO_CODE,
+    name: 'busy status',
+    payload: statusFrame(MIMO_STATUS_TYPE.Busy),
+    category: 'hidden',
+  },
+  {
+    provider: Provider.MIMO_CODE,
+    name: 'retry',
+    payload: statusFrame(MIMO_STATUS_TYPE.Retry, { attempt: 1, message: 'Provider is overloaded', next: 0 }),
+    category: 'notification',
+  },
+  {
+    provider: Provider.MIMO_CODE,
+    name: 'compaction',
+    payload: compactionFrame(true),
+    category: 'notification',
+  },
+  {
+    provider: Provider.MIMO_CODE,
+    name: 'turn end',
+    payload: statusFrame(MIMO_STATUS_TYPE.Idle),
+    category: 'result_divider',
+  },
+  {
+    provider: Provider.MIMO_CODE,
+    name: 'error outside a turn',
+    payload: errorFrame('APIError', 'Provider returned 500'),
+    category: 'notification',
   },
 ]

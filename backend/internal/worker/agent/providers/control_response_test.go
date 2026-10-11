@@ -72,14 +72,13 @@ func TestControlResponsePreservesNativeAnswerBytes(t *testing.T) {
 		{"kilo questions", leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO, `{"type":"question.asked","properties":{"questions":[{"header":"Task"}]}}`, `{"id":7,"result":{"answers":[["Inspect"]]}}`},
 		// MiMo sends each answer to its own HTTP route, so the answer keeps the shape
 		// the browser wrote, and the persisted row shows that shape.
-		{"mimo questions", leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO, `{"type":"question.asked","properties":{"id":"que_1","questions":[{"header":"Task"}]},"request":{"tool_name":"question"}}`, `{"jsonrpc":"2.0","id":"mimo-question:que_1","result":{"answers":[["Inspect"]]}}`},
-		{"mimo permission option", leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO, `{"type":"permission.asked","properties":{"id":"per_1","permission":"bash"},"request":{"tool_name":"bash"}}`, `{"jsonrpc":"2.0","id":"mimo-permission:per_1","result":{"outcome":{"outcome":"selected","optionId":"always"}}}`},
+		{"mimo questions", leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE, `{"type":"question.asked","properties":{"id":"que_1","questions":[{"header":"Task"}]},"request":{"tool_name":"question"}}`, `{"jsonrpc":"2.0","id":"mimo-question:que_1","result":{"answers":[["Inspect"]]}}`},
+		{"mimo permission option", leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE, `{"type":"permission.asked","properties":{"id":"per_1","permission":"bash"},"request":{"tool_name":"bash"}}`, `{"jsonrpc":"2.0","id":"mimo-permission:per_1","result":{"outcome":{"outcome":"selected","optionId":"always"}}}`},
 	}
 	for _, provider := range []leapmuxv1.AgentProvider{
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	} {
 		for _, options := range []string{`[]`, `[{"optionId":"once","name":"Allow once","kind":"allow_once"}]`} {
 			cases = append(cases, nativeAnswerCase{provider.String() + options, provider, `{"id":7,"method":"session/request_permission","params":{"options":` + options + `}}`, `{"id":7,"result":{"outcome":{"optionId":"once"}}}`})
@@ -107,7 +106,6 @@ func TestControlResponseRestoresTheNativeRequestID(t *testing.T) {
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	} {
 		for _, wireID := range []string{`42`, `0`, `-5`, `1e3`, `9007199254740993`, `"42"`, `"001"`, `"abc-123"`} {
 			t.Run(provider.String()+"/"+wireID, func(t *testing.T) {

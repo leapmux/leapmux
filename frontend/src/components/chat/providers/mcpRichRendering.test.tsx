@@ -1,8 +1,10 @@
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { pickObject, pickString } from '~/lib/jsonPick'
 import { copilotToolComplete, copilotToolStart } from '~/test-support/copilotFixtures'
 import { testMessageSources } from '~/test-support/messageRenderSources'
+import { openingFrame, toolFrame } from '~/test-support/mimoFixtures'
 import { pngBase64 } from '~/test-support/pngFixture'
 import { providerRowImages } from '~/test-support/toolCallFixture'
 import { renderMessageContent } from '../messageContentRenderer'
@@ -21,7 +23,24 @@ interface RichToolCase {
 }
 
 /** The output MiMo writes for a Model Context Protocol result: its text blocks, joined. */
+function mimoOutput(blocks: Record<string, unknown>[]): string {
+  return blocks.flatMap(block => block.type === 'text' && typeof block.text === 'string' ? [block.text] : []).join('\n\n')
+}
+
 /** The file attachments MiMo writes for the images and binary resources of a result. */
+function mimoAttachments(blocks: Record<string, unknown>[]): Record<string, unknown>[] {
+  return blocks.flatMap((block): Record<string, unknown>[] => {
+    if (block.type === 'image' && typeof block.data === 'string' && typeof block.mimeType === 'string')
+      return [{ type: 'file', mime: block.mimeType, url: `data:${block.mimeType};base64,${block.data}` }]
+    const resource = pickObject(block, 'resource')
+    const mime = pickString(resource, 'mimeType')
+    const blob = pickString(resource, 'blob')
+    if (block.type === 'resource' && mime && blob)
+      return [{ type: 'file', mime, url: `data:${mime};base64,${blob}`, filename: pickString(resource, 'uri') }]
+    return []
+  })
+}
+
 function richToolCases(blocks: Record<string, unknown>[]): RichToolCase[] {
   const acpCases: RichToolCase[] = [
     {
@@ -58,6 +77,13 @@ function richToolCases(blocks: Record<string, unknown>[]): RichToolCase[] {
       provider: AgentProvider.CODEX,
       request: { item: { id: 'call', type: 'mcpToolCall', status: 'inProgress', server: 'probe', tool: 'echo', arguments: { query: 'native args' } } },
       result: { item: { id: 'call', type: 'mcpToolCall', status: 'completed', server: 'probe', tool: 'echo', arguments: { query: 'native args' }, result: { content: blocks } } },
+    },
+    {
+      // MiMo folds the result the way `src/mcp/tool-result.ts` does: the text blocks
+      // become the output, and each image or binary resource becomes a file attachment.
+      provider: AgentProvider.MIMO_CODE,
+      request: openingFrame('probe_echo', { query: 'native args' }, 'call'),
+      result: toolFrame('probe_echo', { input: { query: 'native args' }, output: mimoOutput(blocks), attachments: mimoAttachments(blocks), metadata: { mcp: { isError: false } } }, 'call'),
     },
     {
       provider: AgentProvider.PI,

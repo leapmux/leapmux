@@ -276,7 +276,7 @@ function KimiCodeIcon(props: { size: number, class?: string }): JSX.Element {
   )
 }
 
-export function MiMoCodeIcon(props: { size: number, class?: string }): JSX.Element {
+function MiMoCodeIcon(props: { size: number, class?: string }): JSX.Element {
   // The Xiaomi MiMo mark. MiMo Code has no square mark of its own: its
   // repository still ships OpenCode's, which would repeat the OpenCode icon in
   // the picker. The mark is a wide two-line lockup, so it spans 98% of the
@@ -637,6 +637,9 @@ export function AgentProviderIcon(props: AgentProviderIconProps): JSX.Element {
       </Match>
       <Match when={props.provider === AgentProvider.ZCODE}>
         <ZCodeIcon size={props.size} {...classProps()} />
+      </Match>
+      <Match when={props.provider === AgentProvider.MIMO_CODE}>
+        <MiMoCodeIcon size={props.size} {...classProps()} />
       </Match>
       <Match when={props.provider === AgentProvider.KIMI_CODE}>
         <KimiCodeIcon size={props.size} {...classProps()} />

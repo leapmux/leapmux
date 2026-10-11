@@ -5,6 +5,7 @@ import { CODEWHALE_TOOL } from '../../../src/generated/contracts/codewhale-proto
 // The note in ../agentSettings.ts explains standalone native probes.
 import { COPILOT_TOOL } from '../../../src/generated/contracts/copilot-protocol'
 import { KIMI_TOOL } from '../../../src/generated/contracts/kimi-protocol'
+import { MIMO_ACTOR_ACTION, MIMO_TOOL } from '../../../src/generated/contracts/mimo-protocol'
 import { PI_TOOL } from '../../../src/generated/contracts/pi-protocol'
 import { ZCODE_TOOL } from '../../../src/generated/contracts/zcode-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
@@ -986,6 +987,58 @@ const TOOL_VOCABULARY = {
     codeExecution: (id, source) => ({ id, name: 'mcp__node_repl__js', arguments: { code: source, title: 'Run the native script' } }),
     workflowTools: [ZCODE_TOOL.CreateWorkflow],
   },
+  [AgentProvider.MIMO_CODE]: {
+    // `description` is REQUIRED by the schema, and MiMo refuses a call without it.
+    bash: (id, command) => ({ id, name: 'bash', arguments: { command, description: 'Run the scripted command' } }),
+    // MiMo refuses an edit of a file that the session did not read first, so a spec
+    // scripts a read of the file before the edit.
+    edit: (id, { path, before, after }) => ({ id, name: 'edit', arguments: { file_path: path, old_string: before, new_string: after } }),
+    write: (id, { path, content }) => ({ id, name: 'write', arguments: { file_path: path, content } }),
+    read: (id, path) => ({ id, name: 'read', arguments: { file_path: path } }),
+    // Plan mode is a primary agent that a prompt runs on, not a tool.
+    enterPlanMode: null,
+    // `plan_exit` takes no argument. The plan is a file that the plan agent writes
+    // at a path the session picks, so the call cannot carry the plan text.
+    exitPlanMode: id => ({ id, name: 'plan_exit', arguments: {} }),
+    exitPlanModeFromFile: null,
+    // The schema spells a multi-select question `multiple`, and an option takes
+    // `label` and `description` alone.
+    askUserQuestion: questionBuilder((id, questions) => ({
+      id,
+      name: 'question',
+      arguments: {
+        questions: questions.map(({ question, header, options, multiSelect }) => ({
+          question,
+          header,
+          options: options.map(({ label, description }) => ({ label, description })),
+          multiple: multiSelect ?? false,
+        })),
+      },
+    })),
+    // The run action waits until the subagent reports.
+    // The parent's next ordered model turn receives that report.
+    // The spawn action, MiMo's own default, returns before the child completes.
+    // Its later `<actor-notification>` reaches the parent as a user message, which requires a matching script rule.
+    // The builder takes run unless the caller asks for the background.
+    spawnSubagent: (id, { description, prompt, background }) => ({
+      id,
+      name: 'actor',
+      arguments: { operation: { action: background === true ? 'spawn' : 'run', subagent_type: 'general', description, prompt } },
+    }),
+    spawnSubagentBatch: null,
+    backgroundBash: null,
+    // The to-do tool acts on ONE item for each call, so it cannot write a list in
+    // one call. `mimoTaskToolCall` below states each operation.
+    updateTodos: null,
+    // MiMo's goal is a session setting that the user writes, not a model tool.
+    createGoal: null,
+    completeGoal: null,
+    blockGoal: null,
+    mcpTool: (id, { server, tool, input }) => ({ id, name: `${server}_${tool}`, arguments: input }),
+    codeExecution: (id, source) => ({ id, name: 'exec', arguments: { code: source } }),
+    workflowTools: [MIMO_TOOL.Workflow],
+  },
+
   [AgentProvider.KIMI_CODE]: {
     // Kimi Code supplies each tool's JSON Schema in its model request.
     // The schemas set additionalProperties=false.
@@ -1534,6 +1587,12 @@ export function codewhaleToolSearchToolCall(id: string, query: string): MockMode
 
 export function codewhaleReadMediaToolCall(id: string, path: string): MockModelToolCall {
   return { id, name: CODEWHALE_TOOL.ReadMedia, arguments: { path } }
+}
+
+export function mimoActorCancelToolCall(id: string, actorId: string): MockModelToolCall {
+  if (actorId.trim() === '')
+    throw new Error('A MiMo actor cancellation requires an actor ID.')
+  return { id, name: MIMO_TOOL.Actor, arguments: { operation: { action: MIMO_ACTOR_ACTION.Cancel, actor_id: actorId } } }
 }
 
 export function enterPlanModeToolCall(provider: AgentProvider, id: string): MockModelToolCall {

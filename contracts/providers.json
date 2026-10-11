@@ -68,6 +68,13 @@
       "parseAliases": [
         "kimi"
       ]
+    },
+    "AGENT_PROVIDER_MIMO_CODE": {
+      "displayName": "MiMo Code",
+      "cliAlias": "mimo-code",
+      "parseAliases": [
+        "mimo"
+      ]
     }
   }
 }

@@ -36,12 +36,13 @@ const (
 // between providers is a provider-specific shape that leaked into another
 // provider.
 var allowedProviderImports = map[string][]string{
-	".":                      {"claude", "codex", "copilot", "cursor", "goose", "kilo", "opencode", "pi", "reasonix", "zcode", "codewhale", "kimi"},
+	".":                      {"claude", "codex", "copilot", "cursor", "goose", "kilo", "opencode", "pi", "reasonix", "zcode", "codewhale", "kimi", "mimo"},
 	"acp":                    nil,
 	"acp/acptest":            nil,
 	"claude":                 nil,
 	"codewhale":              nil,
 	"kimi":                   nil,
+	"mimo":                   {"opencode/opencodestore"},
 	"claude/claudetest":      {"claude"},
 	"codex":                  nil,
 	"copilot":                nil,
