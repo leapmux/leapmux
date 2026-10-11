@@ -47,7 +47,7 @@ func decodeWatchFrame(logger *slog.Logger, transportName string, payload []byte)
 	return &resp, true
 }
 
-// logTerminalStreamError reports the error envelope that ended a WatchEvents
+// logEndingStreamError reports the error envelope that ended a WatchEvents
 // subscription.
 //
 // A subscription can die on a server-side rejection ("only the worker owner...",
@@ -59,7 +59,7 @@ func decodeWatchFrame(logger *slog.Logger, transportName string, payload []byte)
 // returned to the caller without reshaping that interface; logging it is what
 // keeps it recoverable today, and mirrors both the malformed-frame log above and
 // crossworker.Client.StreamInner, which surfaces the identical envelope.
-func logTerminalStreamError(logger *slog.Logger, transportName string, code int32, message string) {
+func logEndingStreamError(logger *slog.Logger, transportName string, code int32, message string) {
 	logger.Error("streamevents: subscription ended with a server error",
 		"transport", transportName, "code", code, "error", message)
 }
@@ -192,7 +192,7 @@ func (t *ChannelTransport) OpenWatchEvents(parentCtx context.Context, req *leapm
 				return
 			}
 			if msg.GetIsError() {
-				logTerminalStreamError(transportLogger(t.logger), "channel", msg.GetErrorCode(), msg.GetErrorMessage())
+				logEndingStreamError(transportLogger(t.logger), "channel", msg.GetErrorCode(), msg.GetErrorMessage())
 				cancel()
 				return
 			}
@@ -219,7 +219,7 @@ func (t *ChannelTransport) OpenWatchEvents(parentCtx context.Context, req *leapm
 		case <-t.channel.Context().Done():
 		case resp := <-respCh:
 			if resp.GetIsError() {
-				logTerminalStreamError(transportLogger(t.logger), "channel", resp.GetErrorCode(), resp.GetErrorMessage())
+				logEndingStreamError(transportLogger(t.logger), "channel", resp.GetErrorCode(), resp.GetErrorMessage())
 			}
 		}
 		closed.Store(true)
@@ -332,7 +332,7 @@ func (t *LocalIPCTransport) OpenWatchEvents(parentCtx context.Context, req *leap
 		for stream.Receive() {
 			env := stream.Msg()
 			if env.GetIsError() {
-				logTerminalStreamError(transportLogger(t.logger), "local-ipc", env.GetErrorCode(), env.GetErrorMessage())
+				logEndingStreamError(transportLogger(t.logger), "local-ipc", env.GetErrorCode(), env.GetErrorMessage())
 				return
 			}
 			if len(env.GetPayload()) == 0 {

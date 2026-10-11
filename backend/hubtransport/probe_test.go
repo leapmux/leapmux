@@ -18,9 +18,8 @@ import (
 
 // --- the decision, with the probe replaced -------------------------------
 //
-// These cases drive the sharing and caching rules. They inject the probe, so
-// there is no timer to size and no server to race: the seam that ends each
-// state is a channel this test closes.
+// These tests inject the probe to verify its sharing and caching rules.
+// Each test closes a channel to end the probe without a timer or server race.
 
 func TestProbeRunsOnceUnderConcurrentFirstRequests(t *testing.T) {
 	release := make(chan struct{})
@@ -42,7 +41,7 @@ func TestProbeRunsOnceUnderConcurrentFirstRequests(t *testing.T) {
 			results[i] = p.supportsH2C(context.Background())
 		}()
 	}
-	// Every caller is either probing or waiting once the first probe starts.
+	// The first probe starts before the test releases it.
 	<-probing
 	close(release)
 	wg.Wait()
@@ -79,9 +78,8 @@ func newTestProber(t *testing.T) (*prober, *quartz.Mock) {
 	return p, clock
 }
 
-// TestUndecidedVerdictIsNotCached pins the rule that keeps a momentary outage
-// from pinning a healthy hub to HTTP/1.1 for the life of the process: the
-// answer is never remembered, only the RE-ASKING is paced.
+// TestUndecidedVerdictIsNotCached verifies that a temporary outage creates no permanent HTTP/1.1 verdict.
+// The prober limits repeated probes without caching the undecided verdict.
 func TestUndecidedVerdictIsNotCached(t *testing.T) {
 	var answers atomic.Int64
 	p, clock := newTestProber(t)
@@ -98,14 +96,11 @@ func TestUndecidedVerdictIsNotCached(t *testing.T) {
 	assert.EqualValues(t, 2, p.calls.Load())
 }
 
-// TestUndecidedVerdictPacesTheNextProbe pins the cooldown itself.
+// TestUndecidedVerdictPacesTheNextProbe verifies the cooldown.
 //
-// Before it, EVERY request against an endpoint that accepts a connection and
-// then says nothing started its own probe and blocked on it for a whole
-// probeTimeout -- inside the caller's own http.Client.Timeout, so a `leapmux
-// control version` with a 5s budget reached the hub with an already-expired
-// context. The wait bought nothing: both cleartext lanes take h2c on
-// undecided, so the caller does the same thing either way.
+// Without it, each request to a silent endpoint waits for the full probeTimeout inside its own http.Client.Timeout.
+// That consumes the five-second limit of `leapmux control version` before its request reaches the Hub.
+// Both cleartext transports use h2c on an undecided verdict, so the extra wait changes no behavior.
 func TestUndecidedVerdictPacesTheNextProbe(t *testing.T) {
 	p, clock := newTestProber(t)
 	p.run = func(context.Context) verdict { return verdictUndecided }
@@ -127,11 +122,10 @@ func TestUndecidedVerdictPacesTheNextProbe(t *testing.T) {
 	// At the deadline the next request probes again.
 	clock.Advance(1)
 	assert.Equal(t, verdictUndecided, p.supportsH2C(context.Background()))
-	assert.EqualValues(t, 2, p.calls.Load(), "the cooldown paces the re-probe, it does not stop it")
+	assert.EqualValues(t, 2, p.calls.Load(), "the cooldown delays another probe and permits it at the deadline")
 }
 
-// The cooldown must not survive a verdict. An endpoint that comes back is
-// measured, and its answer is then kept for the life of the process.
+// A decided verdict ends the cooldown and stays cached for the process lifetime.
 func TestACooldownDoesNotOutlastAVerdict(t *testing.T) {
 	var answers atomic.Int64
 	p, clock := newTestProber(t)
@@ -153,8 +147,7 @@ func TestACooldownDoesNotOutlastAVerdict(t *testing.T) {
 	assert.EqualValues(t, 2, p.calls.Load())
 }
 
-// A prober that has NEVER probed must not be suppressed by the zero value of
-// undecidedUntil, whatever the clock reads.
+// The zero value of undecidedUntil must not suppress the first probe, whatever the clock reads.
 func TestAFreshProberIsNotInACooldown(t *testing.T) {
 	p, _ := newTestProber(t)
 	p.run = func(context.Context) verdict { return verdictSupported }
@@ -163,13 +156,10 @@ func TestAFreshProberIsNotInACooldown(t *testing.T) {
 	assert.EqualValues(t, 1, p.calls.Load())
 }
 
-// TestAWaiterTakesTheUndecidedAnswerInsteadOfReprobing guards against the
-// shape where a caller that waited on a probe starts its own when that probe
-// reached no verdict: every waiter would then probe in turn, each under the
-// full probe deadline, against an endpoint that is simply down.
+// TestAWaiterTakesTheUndecidedAnswerInsteadOfReprobing verifies that a waiter starts no second probe after an undecided result.
+// Otherwise each waiter consumes another full probe deadline against the same unreachable endpoint.
 //
-// The next request is still free to re-probe -- see
-// TestUndecidedVerdictIsNotCached. The rule here is about the wait itself.
+// A later request can probe again. See TestUndecidedVerdictIsNotCached.
 func TestAWaiterTakesTheUndecidedAnswerInsteadOfReprobing(t *testing.T) {
 	release := make(chan struct{})
 	probing := make(chan struct{}, 1)
@@ -184,7 +174,7 @@ func TestAWaiterTakesTheUndecidedAnswerInsteadOfReprobing(t *testing.T) {
 
 	first := make(chan verdict, 1)
 	go func() { first <- p.supportsH2C(context.Background()) }()
-	<-probing // the first caller owns the probe and is parked in it
+	<-probing // The first caller waits in its own probe.
 
 	second := make(chan verdict, 1)
 	go func() { second <- p.supportsH2C(context.Background()) }()
@@ -196,8 +186,7 @@ func TestAWaiterTakesTheUndecidedAnswerInsteadOfReprobing(t *testing.T) {
 	assert.EqualValues(t, 1, p.calls.Load(), "the waiter must take the undecided answer, not probe again")
 }
 
-// TestCancelledFirstRequestDoesNotPoisonTheProbe covers the caller that gives
-// up while others wait behind it: the one that leaves must decide nothing.
+// TestCancelledFirstRequestDoesNotPoisonTheProbe verifies that a cancelled waiter does not change the probe's verdict.
 func TestCancelledFirstRequestDoesNotPoisonTheProbe(t *testing.T) {
 	release := make(chan struct{})
 	probing := make(chan struct{}, 1)
@@ -210,8 +199,7 @@ func TestCancelledFirstRequestDoesNotPoisonTheProbe(t *testing.T) {
 	}
 	p.onWait = func() { close(waiting) }
 
-	// The first caller starts the probe. The second waits on it, and is the one
-	// cancelled -- a waiter is the caller that can walk away mid-probe.
+	// The first caller starts the probe. The test cancels the second caller while it waits on that probe.
 	first := make(chan verdict, 1)
 	go func() { first <- p.supportsH2C(context.Background()) }()
 	<-probing
@@ -230,10 +218,8 @@ func TestCancelledFirstRequestDoesNotPoisonTheProbe(t *testing.T) {
 	assert.EqualValues(t, 1, p.calls.Load())
 }
 
-// TestCancelledStartingRequestDoesNotWaitOutTheProbe covers the caller whose
-// request STARTED the probe. It must be able to leave too: a shutdown during
-// the first request otherwise waits out the whole probe deadline, and the
-// process it is trying to stop stays up for it.
+// TestCancelledStartingRequestDoesNotWaitOutTheProbe verifies that the caller that starts a probe can cancel its own wait.
+// Otherwise process shutdown during the first request must wait for the full probe deadline.
 func TestCancelledStartingRequestDoesNotWaitOutTheProbe(t *testing.T) {
 	release := make(chan struct{})
 	probing := make(chan struct{}, 1)
@@ -251,8 +237,7 @@ func TestCancelledStartingRequestDoesNotWaitOutTheProbe(t *testing.T) {
 	cancel()
 	assert.Equal(t, verdictUndecided, <-first, "the starting caller must return with its request")
 
-	// The probe it started outlives it and still publishes its answer, so the
-	// callers behind it -- and the next request -- get the verdict.
+	// The probe continues after that caller cancels. Other callers and later requests receive its verdict.
 	close(release)
 	assert.Equal(t, verdictSupported, p.supportsH2C(context.Background()))
 	assert.EqualValues(t, 1, p.calls.Load())
@@ -261,10 +246,13 @@ func TestCancelledStartingRequestDoesNotWaitOutTheProbe(t *testing.T) {
 // --- the real probe, against real listeners ------------------------------
 
 func TestPingAcceptsAnH2CEndpoint(t *testing.T) {
+	var requests atomic.Int64
 	srv := hubtransporttest.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	assert.Equal(t, verdictSupported, probeAddr(t, srv.Listener.Addr().String(), 5*time.Second))
+	assert.Zero(t, requests.Load(), "the PING probe must reach no application handler")
 }
 
 func TestPingRejectsAnHTTP11OnlyEndpoint(t *testing.T) {
@@ -274,9 +262,8 @@ func TestPingRejectsAnHTTP11OnlyEndpoint(t *testing.T) {
 	assert.Equal(t, verdictUnsupported, probeAddr(t, srv.Listener.Addr().String(), 5*time.Second))
 }
 
-// TestPingRejectsAnOriginThatAnswersHTTP11ToThePreface is the nginx shape,
-// which a Go server cannot produce: the origin answers the HTTP/2 connection
-// preface with an HTTP/1.1 error response and closes.
+// TestPingRejectsAnOriginThatAnswersHTTP11ToThePreface verifies rejection with an HTTP/1.1 400 response.
+// The raw listener fixes the response bytes and closes the connection.
 func TestPingRejectsAnOriginThatAnswersHTTP11ToThePreface(t *testing.T) {
 	addr := rawListener(t, func(conn net.Conn) {
 		_, _ = conn.Write([]byte("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n"))
@@ -285,9 +272,8 @@ func TestPingRejectsAnOriginThatAnswersHTTP11ToThePreface(t *testing.T) {
 	assert.Equal(t, verdictUnsupported, probeAddr(t, addr, 5*time.Second))
 }
 
-// TestPingLeavesAStalledEndpointUndecided covers the origin that accepts a
-// connection and then says nothing. A timeout is not a protocol answer, so
-// pinning the process to HTTP/1.1 on it would hide the real failure.
+// TestPingLeavesAStalledEndpointUndecided verifies a silent endpoint.
+// A timeout proves no protocol limit and must not select HTTP/1.1 permanently.
 func TestPingLeavesAStalledEndpointUndecided(t *testing.T) {
 	addr := rawListener(t, func(net.Conn) { /* accept and stay silent */ })
 	assert.Equal(t, verdictUndecided, probeAddr(t, addr, 100*time.Millisecond))
@@ -299,8 +285,7 @@ func TestPingLeavesAnUnreachableEndpointUndecided(t *testing.T) {
 	assert.Equal(t, verdictUndecided, probeAddr(t, "127.0.0.1:1", time.Second))
 }
 
-// TestPingClosesItsConnection pins that a probe costs one connection and not
-// one leaked socket per process.
+// TestPingClosesItsConnection verifies that the probe closes its own socket.
 func TestPingClosesItsConnection(t *testing.T) {
 	closed := make(chan struct{})
 	addr := rawListener(t, func(conn net.Conn) {
@@ -316,16 +301,15 @@ func TestPingClosesItsConnection(t *testing.T) {
 	assert.Equal(t, verdictUndecided, probeAddr(t, addr, 200*time.Millisecond))
 	select {
 	case <-closed:
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("probe did not close its connection")
 	}
 }
 
 // probeAddr runs the real probe against addr under timeout.
 //
-// It calls ping rather than probe so the deadline is the test's, not the
-// package's five seconds. probe adds only the detach-from-caller wrapper,
-// which TestCancelledFirstRequestDoesNotPoisonTheProbe covers.
+// It calls ping with the test's deadline instead of probe's five-second deadline.
+// TestCancelledFirstRequestDoesNotPoisonTheProbe covers probe's separate ownership of the context.
 func probeAddr(t *testing.T, addr string, timeout time.Duration) verdict {
 	t.Helper()
 	p := newProber("http://"+addr, func(ctx context.Context) (net.Conn, error) {
@@ -337,21 +321,55 @@ func probeAddr(t *testing.T, addr string, timeout time.Duration) verdict {
 	return p.ping(ctx)
 }
 
-// rawListener accepts connections and hands each to handle. It exists because
-// an origin that is not a Go HTTP server -- nginx answering 400, a proxy that
-// accepts and stalls -- is exactly what the fallback has to classify.
+// TestRawListenerClosesAcceptedConnections requires cleanup to close each accepted socket.
+func TestRawListenerClosesAcceptedConnections(t *testing.T) {
+	accepted := make(chan net.Conn, 1)
+	var serverConn net.Conn
+	require.True(t, t.Run("listener ownership", func(child *testing.T) {
+		addr := rawListener(child, func(conn net.Conn) { accepted <- conn })
+		clientConn, err := net.DialTimeout("tcp", addr, 30*time.Second)
+		require.NoError(child, err)
+		t.Cleanup(func() { _ = clientConn.Close() })
+		select {
+		case serverConn = <-accepted:
+		case <-time.After(30 * time.Second):
+			child.Fatal("the listener accepted no connection")
+		}
+		t.Cleanup(func() { _ = serverConn.Close() })
+	}))
+	_, err := serverConn.Write([]byte("the subtest ended"))
+	require.ErrorIs(t, err, net.ErrClosed, "fixture cleanup must close every accepted socket")
+}
+
+// rawListener supplies a raw endpoint for protocol rejection and silent-endpoint tests.
 func rawListener(t *testing.T, handle func(net.Conn)) string {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = ln.Close() })
+	acceptedDone := make(chan struct{})
+	var connections []net.Conn
+	var handlers sync.WaitGroup
+	t.Cleanup(func() {
+		_ = ln.Close()
+		<-acceptedDone
+		for _, conn := range connections {
+			_ = conn.Close()
+		}
+		handlers.Wait()
+	})
 	go func() {
+		defer close(acceptedDone)
 		for {
 			conn, err := ln.Accept()
 			if err != nil {
 				return
 			}
-			go handle(conn)
+			connections = append(connections, conn)
+			handlers.Add(1)
+			go func() {
+				defer handlers.Done()
+				handle(conn)
+			}()
 		}
 	}()
 	return ln.Addr().String()

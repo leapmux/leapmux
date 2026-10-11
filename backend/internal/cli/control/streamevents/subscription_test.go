@@ -3,6 +3,7 @@ package streamevents
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,6 +17,8 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/backoffutil"
 	"github.com/leapmux/leapmux/internal/util/testutil"
+	"github.com/leapmux/leapmux/tunnel"
+	"google.golang.org/protobuf/proto"
 )
 
 // fakeHandle is an in-memory Handle for subscription tests.
@@ -260,11 +263,11 @@ func newRetrySub(t *testing.T, tr *fakeTransport) (*Subscription, *armCountingCl
 	return sub, clk
 }
 
-// lookupFailedAck builds a WatchEventsResponse carrying a LOOKUP_FAILED
-// rejection for entityID — the frame shape every LOOKUP_FAILED test drives.
-func lookupFailedAck(entityID string) *leapmuxv1.WatchEventsResponse {
+// lookupFailedAck rejects entityID and reports the exact retained registration.
+func lookupFailedAck(entityID string, updateID uint64) *leapmuxv1.WatchEventsResponse {
 	return &leapmuxv1.WatchEventsResponse{
 		Event: &leapmuxv1.WatchEventsResponse_UpdateAck{UpdateAck: &leapmuxv1.WatchUpdateAck{
+			UpdateId: updateID,
 			RejectedAgents: []*leapmuxv1.WatchRejection{{
 				EntityId: entityID,
 				Reason:   leapmuxv1.WatchRejectionReason_WATCH_REJECTION_REASON_LOOKUP_FAILED,
@@ -273,10 +276,21 @@ func lookupFailedAck(entityID string) *leapmuxv1.WatchEventsResponse {
 	}
 }
 
-// pushLookupFailed delivers a LOOKUP_FAILED ack for entityID through tr's
-// frame callback, the shape a flapping worker emits.
+// pushLookupFailed uses the exact latest transmitted interest ID.
+// These fixtures retain no agent registration after a failed lookup.
 func pushLookupFailed(tr *fakeTransport, entityID string) {
-	tr.pushFrame(lookupFailedAck(entityID))
+	tr.mu.Lock()
+	request := tr.calls[len(tr.calls)-1]
+	if tr.handle != nil {
+		tr.handle.mu.Lock()
+		if count := len(tr.handle.updates); count > 0 {
+			request = tr.handle.updates[count-1]
+		}
+		tr.handle.mu.Unlock()
+	}
+	updateID := request.GetUpdateId()
+	tr.mu.Unlock()
+	tr.pushFrame(lookupFailedAck(entityID, updateID))
 }
 
 // pushAgentMessage delivers a live agent chat message frame for agentID with the
@@ -587,13 +601,22 @@ func TestSubscription_DefaultClockDrivesTheRetry(t *testing.T) {
 
 	require.NoError(t, sub.Update(context.Background(),
 		&leapmuxv1.WatchEventsRequest{Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "a-1"}}}))
+	updated := make(chan struct{})
+	tr.mu.Lock()
+	handle := tr.handle
+	tr.mu.Unlock()
+	handle.mu.Lock()
+	handle.updateFn = func(*leapmuxv1.WatchEventsRequest) error { close(updated); return nil }
+	handle.mu.Unlock()
 	pushLookupFailed(tr, "a-1")
 
-	require.Eventually(t, func() bool {
-		attempts, _ := retryState(sub)
-		return attempts == 1
-	}, 10*time.Second, time.Millisecond,
-		"a retry armed on the real clock must fire, commit its slot, and restate")
+	select {
+	case <-updated:
+	case <-testutil.DeadlineContext(t).Done():
+		t.Fatal("a retry on the real clock did not complete its transport update")
+	}
+	attempts, _ := retryState(sub)
+	assert.Equal(t, 1, attempts, "the real-clock retry must commit its one attempt")
 	assert.Len(t, updatesOf(t, tr), 1, "the real-clock retry restates the interest once")
 }
 
@@ -1435,9 +1458,8 @@ func TestSubscription_UpdateAssignsMonotonicUpdateId(t *testing.T) {
 // TestSubscription_StaleLookupFailedAckDoesNotConsumeBudget pins the stale-ack
 // filter (SWEEP-8): a LOOKUP_FAILED ack whose update_id is below the inflight id
 // is dropped before it can arm a retry. Without this, a stale ack from a
-// superseded revision would burn the budget on a LOOKUP_FAILED the newer
-// revision is already resolving. update_id=0 (no revision info) is always
-// processed, matching the frontend.
+// superseded revision would consume a retry for an earlier failure.
+// Only the exact nonzero current update ID can change the retry state.
 func TestSubscription_StaleLookupFailedAckDoesNotConsumeBudget(t *testing.T) {
 	tr := &fakeTransport{}
 	sub, clk := newRetrySub(t, tr)
@@ -1467,8 +1489,7 @@ func TestSubscription_StaleLookupFailedAckDoesNotConsumeBudget(t *testing.T) {
 	assert.False(t, inFlight, "a stale ack must not arm a retry")
 	assert.Zero(t, clk.armCount(), "a stale ack must not arm a retry timer")
 
-	// A current ack (update_id=0 is always processed, matching the frontend)
-	// for an entity STILL in the interest arms a retry and consumes a slot.
+	// The exact current ACK for a wanted entity schedules one retry.
 	pushLookupFailed(tr, "a-2")
 	delay := testutil.WaitForTimer(t, ctx, newTimer)
 	testutil.AdvanceAndAwaitStop(t, ctx, clk.Mock, delay, stopTimer)
@@ -1616,6 +1637,15 @@ func TestSubscription_RapidSequentialUpdates(t *testing.T) {
 	assert.Equal(t, int32(1), atomic.LoadInt32(&tr.callsOpened))
 	last := tr.lastUpdate()
 	require.NotNil(t, last)
+	assert.Equal(t, leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST, last.GetAgents()[0].GetReplay())
+	assert.Zero(t, last.GetAgents()[0].GetCursorSeq())
+	assert.Equal(t, uint64(1), last.GetAgents()[0].GetReplayId())
+	assert.Equal(t, leapmuxv1.WatchMode_WATCH_MODE_FULL, last.GetAgents()[0].GetMode())
+	// A new FULL lifetime uses the current resume cursor.
+	require.NoError(t, sub.Update(t.Context(), &leapmuxv1.WatchEventsRequest{Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "a-1", Mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}}}))
+	require.NoError(t, sub.Update(t.Context(), &leapmuxv1.WatchEventsRequest{Agents: []*leapmuxv1.WatchAgentEntry{AgentWatchEntry("a-1", updates-1)}}))
+	last = tr.lastUpdate()
+	require.NotNil(t, last)
 	assert.Equal(t, leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_AFTER_CURSOR, last.GetAgents()[0].GetReplay())
 	assert.Equal(t, int64(updates-1), last.GetAgents()[0].GetCursorSeq())
 	assert.Equal(t, leapmuxv1.WatchMode_WATCH_MODE_FULL, last.GetAgents()[0].GetMode())
@@ -1694,4 +1724,261 @@ func TestSubscription_AgentMessageNilDoesNotAdvanceCursor(t *testing.T) {
 	})
 	// Cursor stays at 5; the empty event must not have touched it.
 	assert.Equal(t, int64(5), agents.Get("a-1"))
+}
+
+type replayIdentityChannel struct {
+	*fakeChannel
+	mu                 sync.Mutex
+	openings           [][]byte
+	revisions          [][]byte
+	failNextUpdate     bool
+	earlyLookupFailure bool
+}
+
+func (channel *replayIdentityChannel) SendRPCNoWait(ctx context.Context, method string, payload []byte, handlers tunnel.RPCHandlers) (uint64, error) {
+	channel.mu.Lock()
+	channel.openings = append(channel.openings, append([]byte(nil), payload...))
+	early := channel.earlyLookupFailure
+	channel.mu.Unlock()
+	if early {
+		var request leapmuxv1.WatchEventsRequest
+		if err := proto.Unmarshal(payload, &request); err != nil {
+			return 0, err
+		}
+		ack := &leapmuxv1.WatchUpdateAck{UpdateId: request.UpdateId, RejectedAgents: []*leapmuxv1.WatchRejection{{EntityId: request.Agents[0].AgentId, Reason: leapmuxv1.WatchRejectionReason_WATCH_REJECTION_REASON_LOOKUP_FAILED}}}
+		encoded, err := proto.Marshal(&leapmuxv1.WatchEventsResponse{Event: &leapmuxv1.WatchEventsResponse_UpdateAck{UpdateAck: ack}})
+		if err != nil {
+			return 0, err
+		}
+		handlers.Stream(&leapmuxv1.InnerStreamMessage{Payload: encoded})
+	}
+	return channel.fakeChannel.SendRPCNoWait(ctx, method, payload, handlers)
+}
+
+func (channel *replayIdentityChannel) SendStreamRequest(ctx context.Context, id uint64, payload []byte, cancel bool) error {
+	channel.mu.Lock()
+	channel.revisions = append(channel.revisions, append([]byte(nil), payload...))
+	fail := channel.failNextUpdate
+	channel.failNextUpdate = false
+	channel.mu.Unlock()
+	if fail {
+		return errors.New("the channel refused the update")
+	}
+	return channel.fakeChannel.SendStreamRequest(ctx, id, payload, cancel)
+}
+
+func (channel *replayIdentityChannel) requests(t *testing.T, opening bool) []*leapmuxv1.WatchEventsRequest {
+	t.Helper()
+	channel.mu.Lock()
+	defer channel.mu.Unlock()
+	encoded := channel.revisions
+	if opening {
+		encoded = channel.openings
+	}
+	requests := make([]*leapmuxv1.WatchEventsRequest, len(encoded))
+	for index, payload := range encoded {
+		requests[index] = &leapmuxv1.WatchEventsRequest{}
+		require.NoError(t, proto.Unmarshal(payload, requests[index]))
+	}
+	return requests
+}
+
+func replayIdentitySubscription(t *testing.T) (*Subscription, *replayIdentityChannel) {
+	t.Helper()
+	channel := &replayIdentityChannel{fakeChannel: &fakeChannel{ctx: context.Background()}}
+	subscription := NewSubscription(NewChannelTransport(channel, nil), NewAgentCursor(), NewTerminalCursor(), nil, nil, nil, WithClock(testutil.NewQuartzMock(t)))
+	t.Cleanup(subscription.Cancel)
+	return subscription, channel
+}
+
+func TestSubscriptionReplayIdentityFreezesActualSerializedTuple(t *testing.T) {
+	subscription, channel := replayIdentitySubscription(t)
+	const initialCursor = int64(9007199254740993)
+	first := AgentWatchEntry("agent", initialCursor)
+	zero := int64(0)
+	first.WindowTailSeq = &zero
+	require.NoError(t, subscription.Update(t.Context(), &leapmuxv1.WatchEventsRequest{Agents: []*leapmuxv1.WatchAgentEntry{first}}))
+	opening := channel.requests(t, true)[0]
+	require.Len(t, opening.Agents, 1)
+	assert.Positive(t, opening.Agents[0].ReplayId)
+	assert.Equal(t, opening.UpdateId, opening.Agents[0].ReplayId)
+	first.CursorSeq = 7
+	first.WindowTailSeq = nil
+	next := AgentWatchEntry("agent", initialCursor+100)
+	require.NoError(t, subscription.Update(t.Context(), &leapmuxv1.WatchEventsRequest{Agents: []*leapmuxv1.WatchAgentEntry{next, {AgentId: "notify", Mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}}}))
+	revision := channel.requests(t, false)[0]
+	assert.Greater(t, revision.UpdateId, opening.UpdateId)
+	assert.True(t, proto.Equal(opening.Agents[0], revision.Agents[0]))
+	assert.Zero(t, revision.Agents[1].ReplayId)
+}
+
+func TestSubscriptionReplayIdentityStartsFreshAfterDemotionAndReconnect(t *testing.T) {
+	subscription, channel := replayIdentitySubscription(t)
+	require.NoError(t, subscription.Update(t.Context(), &leapmuxv1.WatchEventsRequest{Agents: []*leapmuxv1.WatchAgentEntry{AgentWatchEntry("agent", 7)}}))
+	first := channel.requests(t, true)[0]
+	require.NoError(t, subscription.Update(t.Context(), &leapmuxv1.WatchEventsRequest{Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent", Mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}}}))
+	require.NoError(t, subscription.Update(t.Context(), &leapmuxv1.WatchEventsRequest{Agents: []*leapmuxv1.WatchAgentEntry{AgentWatchEntry("agent", 9)}}))
+	second := channel.requests(t, false)[1]
+	assert.Greater(t, second.Agents[0].ReplayId, first.Agents[0].ReplayId)
+	assert.Equal(t, second.UpdateId, second.Agents[0].ReplayId)
+	subscription.mu.Lock()
+	handle := subscription.handle
+	subscription.mu.Unlock()
+	handle.Cancel()
+	<-handle.Done()
+	require.NoError(t, subscription.Update(t.Context(), &leapmuxv1.WatchEventsRequest{Agents: []*leapmuxv1.WatchAgentEntry{AgentWatchEntry("agent", 11)}}))
+	third := channel.requests(t, true)[1]
+	assert.Greater(t, third.Agents[0].ReplayId, second.Agents[0].ReplayId)
+	assert.Equal(t, int64(11), third.Agents[0].CursorSeq)
+}
+
+func TestSubscriptionReplayIdentityFailedRevisionKeepsPreviousTuple(t *testing.T) {
+	subscription, channel := replayIdentitySubscription(t)
+	require.NoError(t, subscription.Update(t.Context(), &leapmuxv1.WatchEventsRequest{Agents: []*leapmuxv1.WatchAgentEntry{AgentWatchEntry("agent", 7)}}))
+	first := channel.requests(t, true)[0]
+	channel.mu.Lock()
+	channel.failNextUpdate = true
+	channel.mu.Unlock()
+	require.Error(t, subscription.Update(t.Context(), &leapmuxv1.WatchEventsRequest{Agents: []*leapmuxv1.WatchAgentEntry{AgentWatchEntry("other", 9)}}))
+	require.NoError(t, subscription.Update(t.Context(), &leapmuxv1.WatchEventsRequest{Agents: []*leapmuxv1.WatchAgentEntry{AgentWatchEntry("agent", 11)}}))
+	last := channel.requests(t, false)[1]
+	assert.True(t, proto.Equal(first.Agents[0], last.Agents[0]))
+	assert.Positive(t, last.Agents[0].ReplayId)
+}
+
+func TestSubscriptionReplayIdentityAcceptsAckBeforeOpenReturns(t *testing.T) {
+	subscription, channel := replayIdentitySubscription(t)
+	channel.earlyLookupFailure = true
+	require.NoError(t, subscription.Update(t.Context(), &leapmuxv1.WatchEventsRequest{Agents: []*leapmuxv1.WatchAgentEntry{AgentWatchEntry("agent", 7)}}))
+	_, inFlight := retryState(subscription)
+	assert.True(t, inFlight, "the exact opening ACK must retain its retry before OpenWatchEvents returns")
+}
+
+func TestSubscriptionReplayIdentityIgnoresZeroAndFutureAcks(t *testing.T) {
+	for _, ackID := range []uint64{0, 2} {
+		t.Run(func() string {
+			if ackID == 0 {
+				return "zero"
+			}
+			return "future"
+		}(), func(t *testing.T) {
+			subscription, channel := replayIdentitySubscription(t)
+			require.NoError(t, subscription.Update(t.Context(), &leapmuxv1.WatchEventsRequest{Agents: []*leapmuxv1.WatchAgentEntry{AgentWatchEntry("agent", 7)}}))
+			response := &leapmuxv1.WatchEventsResponse{Event: &leapmuxv1.WatchEventsResponse_UpdateAck{UpdateAck: &leapmuxv1.WatchUpdateAck{UpdateId: ackID, RejectedAgents: []*leapmuxv1.WatchRejection{{EntityId: "agent", Reason: leapmuxv1.WatchRejectionReason_WATCH_REJECTION_REASON_LOOKUP_FAILED}}}}}
+			payload, err := proto.Marshal(response)
+			require.NoError(t, err)
+			channel.cb(&leapmuxv1.InnerStreamMessage{Payload: payload})
+			attempts, inFlight := retryState(subscription)
+			assert.Zero(t, attempts)
+			assert.False(t, inFlight)
+		})
+	}
+}
+
+func TestSubscriptionReplayIdentityRefusesUint64Exhaustion(t *testing.T) {
+	subscription, channel := replayIdentitySubscription(t)
+	subscription.mu.Lock()
+	subscription.nextUpdateId = ^uint64(0) - 1
+	subscription.mu.Unlock()
+	require.NoError(t, subscription.Update(t.Context(), &leapmuxv1.WatchEventsRequest{Agents: []*leapmuxv1.WatchAgentEntry{AgentWatchEntry("agent", 7)}}))
+	first := channel.requests(t, true)[0]
+	assert.Equal(t, ^uint64(0), first.UpdateId)
+	assert.Equal(t, ^uint64(0), first.Agents[0].ReplayId)
+	require.Error(t, subscription.Update(t.Context(), &leapmuxv1.WatchEventsRequest{Agents: []*leapmuxv1.WatchAgentEntry{AgentWatchEntry("agent", 11)}}))
+	assert.Empty(t, channel.requests(t, false))
+	subscription.mu.Lock()
+	current := subscription.inflightUpdateId
+	subscription.mu.Unlock()
+	assert.Equal(t, ^uint64(0), current)
+}
+
+type subscriptionLockLogHandler struct {
+	inspect func(slog.Record)
+}
+
+func (*subscriptionLockLogHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (handler *subscriptionLockLogHandler) Handle(_ context.Context, record slog.Record) error {
+	handler.inspect(record)
+	return nil
+}
+func (handler *subscriptionLockLogHandler) WithAttrs([]slog.Attr) slog.Handler { return handler }
+func (handler *subscriptionLockLogHandler) WithGroup(string) slog.Handler      { return handler }
+
+func TestSubscriptionReplayIdentityReportsExhaustionOutsideItsMutex(t *testing.T) {
+	transport := &fakeTransport{}
+	subscription, _ := newRetrySub(t, transport)
+	require.NoError(t, subscription.Update(t.Context(), &leapmuxv1.WatchEventsRequest{
+		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent", Mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}},
+	}))
+	subscription.mu.Lock()
+	for !subscription.retry.Done() {
+		subscription.retry.Peek()
+		subscription.retry.Commit()
+	}
+	subscription.mu.Unlock()
+	previousLogger := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+	var warnings int
+	slog.SetDefault(slog.New(&subscriptionLockLogHandler{inspect: func(record slog.Record) {
+		if record.Message != "streamevents: LOOKUP_FAILED retry budget exhausted" {
+			return
+		}
+		warnings++
+		unlocked := subscription.mu.TryLock()
+		assert.True(t, unlocked, "a synchronous log handler must receive the warning outside the subscription mutex")
+		if unlocked {
+			subscription.mu.Unlock()
+		}
+	}}))
+	pushLookupFailed(transport, "agent")
+	assert.Equal(t, 1, warnings)
+	assert.True(t, subscription.retryExhaustedLogged)
+}
+
+func TestSubscriptionReplayIdentityKeepsAFreshOpeningRetryAfterAnOlderTimerRetires(t *testing.T) {
+	channel := &replayIdentityChannel{fakeChannel: &fakeChannel{ctx: context.Background()}}
+	clock := &armCountingClock{Mock: testutil.NewQuartzMock(t)}
+	subscription := NewSubscription(NewChannelTransport(channel, nil), NewAgentCursor(), NewTerminalCursor(), nil, nil, nil, WithClock(clock))
+	t.Cleanup(subscription.Cancel)
+	subscription.retry = fastRetry()
+	ctx := testutil.DeadlineContext(t)
+	newTimer, stopTimer := testutil.NewTimerTraps(t, clock.Mock, subscriptionRetryTimerTag)
+	require.NoError(t, subscription.Update(t.Context(), &leapmuxv1.WatchEventsRequest{Agents: []*leapmuxv1.WatchAgentEntry{AgentWatchEntry("agent", 7)}}))
+	first := channel.requests(t, true)[0]
+	payload, err := proto.Marshal(lookupFailedAck("agent", first.UpdateId))
+	require.NoError(t, err)
+	channel.cb(&leapmuxv1.InnerStreamMessage{Payload: payload})
+	assert.Equal(t, 10*time.Millisecond, testutil.WaitForTimer(t, ctx, newTimer))
+	clock.Advance(3 * time.Millisecond).MustWait(ctx)
+	subscription.mu.Lock()
+	firstHandle := subscription.handle
+	subscription.mu.Unlock()
+	firstHandle.Cancel()
+	<-firstHandle.Done()
+	channel.mu.Lock()
+	channel.earlyLookupFailure = true
+	channel.mu.Unlock()
+	require.NoError(t, subscription.Update(t.Context(), &leapmuxv1.WatchEventsRequest{Agents: []*leapmuxv1.WatchAgentEntry{AgentWatchEntry("agent", 11)}}))
+	second := channel.requests(t, true)[1]
+	assert.Greater(t, second.UpdateId, first.UpdateId)
+	assert.Greater(t, second.Agents[0].ReplayId, first.Agents[0].ReplayId)
+	assert.Equal(t, int64(11), second.Agents[0].CursorSeq)
+	require.Eventually(t, func() bool { return clock.armCount() == 2 }, 30*time.Second, time.Millisecond,
+		"the exact fresh opening ACK must schedule a second timer while the earlier timer still waits")
+	assert.Equal(t, 10*time.Millisecond, testutil.WaitForTimer(t, ctx, newTimer))
+	testutil.AdvanceAndAwaitStop(t, ctx, clock.Mock, 7*time.Millisecond, stopTimer)
+	attempts, inFlight := retryState(subscription)
+	assert.Zero(t, attempts)
+	assert.True(t, inFlight, "the older timer must not clear the fresh opening's pending retry")
+	assert.Empty(t, channel.requests(t, false))
+	testutil.AdvanceAndAwaitStop(t, ctx, clock.Mock, 3*time.Millisecond, stopTimer)
+	revisions := channel.requests(t, false)
+	require.Len(t, revisions, 1)
+	assert.Greater(t, revisions[0].UpdateId, second.UpdateId)
+	assert.Equal(t, int64(11), revisions[0].Agents[0].CursorSeq)
+	assert.Greater(t, revisions[0].Agents[0].ReplayId, second.Agents[0].ReplayId,
+		"the failed opening owned no registered replay lifetime")
+	attempts, inFlight = retryState(subscription)
+	assert.Equal(t, 1, attempts)
+	assert.False(t, inFlight)
 }

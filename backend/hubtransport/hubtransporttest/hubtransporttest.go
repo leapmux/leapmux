@@ -1,12 +1,10 @@
-// Package hubtransporttest starts test servers that speak the protocols a
-// LeapMux Hub speaks, so a test exercises the transport a caller really gets.
+// Package hubtransporttest starts test servers with the protocols that a LeapMux Hub supplies.
 //
-// A bare httptest.NewServer speaks HTTP/1.1 alone, which a Hub never does
-// (hub/server.go sets HTTP1 and UnencryptedHTTP2 on one listener). Against
-// such a server the h2c probe's connection preface arrives as a malformed
-// HTTP/1.1 request and REACHES THE HANDLER, so a test that counts handler
-// calls counts one extra. Use NewServer for a faithful Hub, and NewHTTP1Server
-// only when the point of the test is the fallback.
+// A bare httptest.NewServer supplies HTTP/1.1 alone.
+// The Hub enables HTTP1 and UnencryptedHTTP2 on one listener in hub/server.go.
+// An HTTP/1.1 server accepts the cleartext HTTP/2 (h2c) preface as a PRI request and calls its handler.
+// A test that counts handler calls then counts one extra.
+// Use NewServer for a faithful Hub. Use NewHTTP1Server only to test fallback.
 package hubtransporttest
 
 import (
@@ -20,8 +18,8 @@ import (
 	"github.com/leapmux/leapmux/locallisten/locallistentest"
 )
 
-// NewServer starts a cleartext server that speaks HTTP/1.1 and h2c, as the Hub
-// and the worker control-IPC server both do. It is closed when the test ends.
+// NewServer starts a cleartext server with HTTP/1.1 and h2c, as the Hub and Worker control server do.
+// Test cleanup closes the server.
 func NewServer(t *testing.T, handler http.Handler) *httptest.Server {
 	t.Helper()
 	return start(t, handler, false, func(p *http.Protocols) {
@@ -30,17 +28,17 @@ func NewServer(t *testing.T, handler http.Handler) *httptest.Server {
 	})
 }
 
-// NewHTTP1Server starts a cleartext server that speaks HTTP/1.1 ONLY. It
-// stands for a reverse proxy with no h2c support, the deployment the fallback
-// exists for.
+// NewHTTP1Server starts a cleartext server with HTTP/1.1 alone.
+// It models a reverse proxy without h2c support, which requires the HTTP/1.1 fallback.
 func NewHTTP1Server(t *testing.T, handler http.Handler) *httptest.Server {
 	t.Helper()
 	return start(t, handler, false, func(p *http.Protocols) { p.SetHTTP1(true) })
 }
 
-// NewTLSServer starts a TLS server that offers both h2 and http/1.1 through
-// ALPN. Its certificate is self-signed: a client reaches it only by trusting
-// srv.Certificate(), which is what proves that verification stayed on.
+// NewTLSServer starts a Transport Layer Security (TLS) server with h2 and http/1.1.
+// It offers these protocols through Application-Layer Protocol Negotiation (ALPN).
+// A client must trust srv.Certificate() to accept the server's self-signed certificate.
+// That requirement proves that the client keeps certificate verification enabled.
 func NewTLSServer(t *testing.T, handler http.Handler) *httptest.Server {
 	t.Helper()
 	return start(t, handler, true, func(p *http.Protocols) {
@@ -61,8 +59,8 @@ func start(t *testing.T, handler http.Handler, useTLS bool, setProtocols func(*h
 	protocols := &http.Protocols{}
 	setProtocols(protocols)
 	srv.Config.Protocols = protocols
-	// EnableHTTP2 governs httptest's own TLS setup; Protocols governs the
-	// server. Both have to agree, or StartTLS offers no h2 in its ALPN list.
+	// EnableHTTP2 controls httptest's TLS setup. Protocols controls the server.
+	// Both must agree, or StartTLS offers no h2 through ALPN.
 	srv.EnableHTTP2 = useTLS && protocols.HTTP2()
 	if useTLS {
 		srv.StartTLS()
@@ -73,19 +71,21 @@ func start(t *testing.T, handler http.Handler, useTLS bool, setProtocols func(*h
 	return srv
 }
 
-// NewSocketServer starts a server on a `unix:` socket or a Windows named pipe,
-// speaking HTTP/1.1 and h2c, as the Hub's own local listener and the worker's
-// control-IPC listener both do. It returns the listen URL and is closed when
-// the test ends.
+// NewSocketServer starts a server on a unix: socket or a Windows named pipe.
+// It supplies HTTP/1.1 and h2c, as the Hub's local listener and Worker's control listener do.
+// It returns the listen URL. Test cleanup closes the server.
 //
-// name only has to be unique within the process: UniqueListenURL keeps the
-// socket path under AF_UNIX's 104-byte sun_path limit, which t.TempDir() blows
-// past on a macOS runner.
+// name must be unique within the process only.
+// UniqueListenURL keeps the socket path within AF_UNIX's 104-byte sun_path limit.
+// A path from t.TempDir() exceeds that limit on macOS runners.
 //
-// It is the socket sibling of NewServer. Three suites hand-rolled this same
-// eight-line sequence -- Listen, the two-protocol set, an http.Server with a
-// read-header timeout, a Serve goroutine, WaitReady -- so the policy a local
-// LeapMux listener offers lived in three places and could be edited in one.
+// This helper applies NewServer's protocol policy to a local socket.
+// It keeps the shared setup in one place:
+// - Create the listener.
+// - Enable both protocols.
+// - Set the header timeout on the http.Server.
+// - Start the Serve goroutine.
+// - Wait for the listener to become ready.
 func NewSocketServer(t *testing.T, name string, handler http.Handler) string {
 	t.Helper()
 	socketURL := locallistentest.UniqueListenURL(t, name)

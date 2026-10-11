@@ -269,8 +269,7 @@ enum WatchMode {
 // leaves the stream open.
 //
 // Revisions COALESCE: each states the whole interest, so the worker may apply
-// only the newest of a burst. A client waiting on revision N therefore accepts
-// any WatchUpdateAck with update_id >= N.
+// only the newest of a burst. A client applies only the ACK for its exact current update ID.
 message WatchEventsRequest {
   repeated WatchAgentEntry agents = 1;
   repeated WatchTerminalEntry terminals = 2;
@@ -287,11 +286,12 @@ message WatchEventsRequest {
 
 message WatchAgentEntry {
   string agent_id = 1;
-  // Which history to replay when this entry TRANSITIONS into WATCH_MODE_FULL.
-  // Ignored while the entry is already FULL (no replay is owed) or NOTIFY.
+  // History to replay when this FULL lifetime starts.
+  // A new replay_id starts another lifetime even when the registered mode stays FULL.
+  // Ignored for NOTIFY.
   WatchReplayMode replay = 2;
-  // Exclusive lower bound for AFTER_CURSOR replay (replay seq > cursor_seq);
-  // ignored for LATEST / while not transitioning into FULL.
+  // Exclusive sequence limit for AFTER_CURSOR replay (replay seq > cursor_seq).
+  // Ignored for LATEST or outside a FULL lifetime.
   int64 cursor_seq = 3;
   WatchMode mode = 4;
   // The subscriber's loaded window tail, used ONLY as the base of the
@@ -303,6 +303,9 @@ message WatchAgentEntry {
   // cursor_seq. Present 0 (an empty loaded window) is meaningful -- that client
   // re-anchors on any gap past the limit.
   optional int64 window_tail_seq = 5;
+  // Positive identity of this FULL lifetime. NOTIFY carries zero.
+  // Keep replay and cursor fields fixed while this identity remains FULL.
+  uint64 replay_id = 6;
 }
 
 message WatchTerminalEntry {
@@ -357,6 +360,14 @@ message WatchRejection {
   WatchRejectionReason reason = 2;
 }
 
+// Actual registered state for one agent after an interest update.
+message WatchAgentState {
+  string agent_id = 1;
+  WatchMode mode = 2;
+  // Positive for FULL and zero for NOTIFY.
+  uint64 replay_id = 3;
+}
+
 // WatchUpdateAck reports what one WatchEventsRequest actually subscribed. It is
 // sent for EVERY request, applied cleanly or not, and it never ends the stream.
 //
@@ -373,21 +384,26 @@ message WatchUpdateAck {
   uint64 update_id = 1;
   repeated WatchRejection rejected_agents = 2;
   repeated WatchRejection rejected_terminals = 3;
+  // Complete actual agent registration state for this channel.
+  // LOOKUP_FAILED returns the prior state because it does not apply the agent kind.
+  repeated WatchAgentState agent_states = 4;
 }
 
 message AgentEvent {
   string agent_id = 1;
 
-  // True when the catch-up REPLAY produced this frame, false when it is live.
-  //
-  // A replay re-sends state a client may already hold, so a client must not
-  // alert on one. The client cannot tell the two apart by itself. It registers
-  // its live watch BEFORE the replay burst runs, and both write
-  // the same stream, so a live frame that arrives mid-burst looks
-  // exactly like a replayed one. Guessing from that order dropped a permission prompt's
-  // badge, a plan-title update and an INACTIVE sweep whenever they raced a
-  // replay. broadcastReplayAgentEvent is the one writer that sets this.
+  // Replay frames carry true. Live frames carry false.
+  // A client subscribes to live events before catch-up.
+  // The same stream can contain live and replay frames during catch-up.
+  // The client uses this field to suppress replay alerts.
+  // broadcastReplayAgentEvent sets this field.
   bool replay = 14;
+  // FULL lifetime that produced this replay. Live frames carry zero.
+  uint64 replay_id = 16;
+  // The watched agent that produced this replay.
+  // Root goal and task projections can use a different destination agent_id.
+  // Live frames carry an empty string.
+  string replay_agent_id = 17;
   oneof event {
     AgentChatMessage agent_message = 2;
     AgentStatusChange status_change = 3;
