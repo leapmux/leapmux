@@ -36,7 +36,7 @@ const (
 // between providers is a provider-specific shape that leaked into another
 // provider.
 var allowedProviderImports = map[string][]string{
-	".":                      {"claude", "codex", "copilot", "cursor", "goose", "kilo", "opencode", "pi", "reasonix", "zcode", "codewhale", "kimi", "mimo", "qwen"},
+	".":                      {"claude", "codex", "copilot", "cursor", "goose", "kilo", "opencode", "pi", "reasonix", "zcode", "codewhale", "kimi", "mimo", "qwen", "ohmypi"},
 	"acp":                    nil,
 	"acp/acptest":            nil,
 	"claude":                 nil,
@@ -44,6 +44,7 @@ var allowedProviderImports = map[string][]string{
 	"kimi":                   nil,
 	"mimo":                   {"opencode/opencodestore"},
 	"qwen":                   {"acp"},
+	"ohmypi":                 nil,
 	"claude/claudetest":      {"claude"},
 	"codex":                  nil,
 	"copilot":                nil,

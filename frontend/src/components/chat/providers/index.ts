@@ -2,6 +2,7 @@
 // Each supported provider requires one import for registry lookup.
 import './claude/plugin'
 import './codex/plugin'
+import './ohmypi/plugin'
 import './opencode/plugin'
 import './pi/plugin'
 import './copilot/plugin'

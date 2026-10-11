@@ -321,7 +321,7 @@ function QwenCodeIcon(props: { size: number, class?: string }): JSX.Element {
   )
 }
 
-export function OhMyPiIcon(props: { size: number, class?: string }): JSX.Element {
+function OhMyPiIcon(props: { size: number, class?: string }): JSX.Element {
   // Oh My Pi's gradient pi glyph, from its favicon and README hero, without
   // the favicon's dark tile. The glyph takes 81% of the square viewBox, the
   // margin the Pi mark carries.
@@ -637,6 +637,9 @@ export function AgentProviderIcon(props: AgentProviderIconProps): JSX.Element {
       </Match>
       <Match when={props.provider === AgentProvider.ZCODE}>
         <ZCodeIcon size={props.size} {...classProps()} />
+      </Match>
+      <Match when={props.provider === AgentProvider.OH_MY_PI}>
+        <OhMyPiIcon size={props.size} {...classProps()} />
       </Match>
       <Match when={props.provider === AgentProvider.QWEN_CODE}>
         <QwenCodeIcon size={props.size} {...classProps()} />

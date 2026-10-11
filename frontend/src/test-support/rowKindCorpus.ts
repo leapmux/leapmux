@@ -513,4 +513,41 @@ export const ROW_KIND_CASES: RowKindCase[] = [
     payload: { jsonrpc: '2.0', method: '_qwencode/end_turn', params: { sessionId: 's', reason: 'end_turn', source: 'goal' } },
     category: 'result_divider',
   },
+  {
+    provider: Provider.OH_MY_PI,
+    name: 'assistant text',
+    payload: { type: 'message_end', message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'The user wants a greeting.' }, { type: 'text', text: 'Hello from the mock model.' }], stopReason: 'stop' } },
+    category: 'assistant_text',
+  },
+  {
+    provider: Provider.OH_MY_PI,
+    name: 'tool execution start',
+    payload: { type: 'tool_execution_start', toolCallId: 'call_1', toolName: 'bash', args: { command: 'echo probe-output' } },
+    category: 'tool_use',
+  },
+  {
+    provider: Provider.OH_MY_PI,
+    name: 'tool execution end',
+    payload: { type: 'tool_execution_end', toolCallId: 'call_1', toolName: 'bash', result: { content: [{ type: 'text', text: 'probe-output\n\n\nWall time: 0.05 seconds' }], details: { timeoutSeconds: 300, wallTimeMs: 49.99 } }, isError: false },
+    category: 'tool_result',
+    spanType: 'bash',
+  },
+  {
+    provider: Provider.OH_MY_PI,
+    name: 'automatic retry',
+    payload: { type: 'auto_retry_start', attempt: 1, maxAttempts: 10, delayMs: 92.36, errorMessage: '400 bad request' },
+    category: 'notification',
+  },
+  {
+    provider: Provider.OH_MY_PI,
+    name: 'background job delivered',
+    payload: { type: 'message_end', message: { role: 'custom', customType: 'async-result', content: '<system-notice>Background job ScoutOne has completed.</system-notice>', display: true, details: { jobs: [{ jobId: 'ScoutOne', type: 'task', label: 'ScoutOne' }] } } },
+    category: 'notification',
+  },
+  {
+    provider: Provider.OH_MY_PI,
+    name: 'turn end',
+    payload: { type: 'agent_end', isTerminal: true, messages: [] },
+    category: 'result_divider',
+  },
 ]

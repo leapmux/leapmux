@@ -34,6 +34,7 @@ var providerDirs = map[leapmuxv1.AgentProvider]string{
 	leapmuxv1.AgentProvider_AGENT_PROVIDER_KIMI_CODE:      "kimi",
 	leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE:      "mimo",
 	leapmuxv1.AgentProvider_AGENT_PROVIDER_QWEN_CODE:      "qwen",
+	leapmuxv1.AgentProvider_AGENT_PROVIDER_OH_MY_PI:       "ohmypi",
 }
 
 // requiredSuites states, for each package directory, the agenttest suites that
@@ -57,6 +58,11 @@ var requiredSuites = map[string][]string{
 		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
 		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
 		"AssertPreservesTheResponseWithoutARequest", "AssertTokenResumeRule", "AssertChildCapabilities",
+	},
+	"ohmypi": {
+		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
+		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
+		"AssertPreservesTheResponseWithoutARequest", "AssertWithholdsTheResponseForAMalformedRequest", "AssertChildCapabilities",
 	},
 	"mimo": {
 		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",

@@ -26,7 +26,8 @@ func TestOnlySessionFileProvidersLeaveTheTokenRule(t *testing.T) {
 	pathLike := filepath.Join(testutil.NativeAbsPath("/tmp/pi/sessions"), `a\b`+".jsonl")
 
 	sessionFileProviders := map[leapmuxv1.AgentProvider]bool{
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_PI: true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_PI:       true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_OH_MY_PI: true,
 	}
 	registry := Registry()
 	for _, id := range registry.Providers() {

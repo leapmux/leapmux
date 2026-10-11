@@ -111,6 +111,8 @@ export interface SubagentRequest {
 export type TodoStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled' | 'deleted' | 'abandoned' | 'blocked'
 
 /** The three statuses that every native to-do tool of this table accepts. */
+const OH_MY_PI_TODO_PHASE = 'Plan'
+
 const BASE_TODO_STATUSES = ['pending', 'in_progress', 'completed'] as const satisfies readonly TodoStatus[]
 
 /** One step of a to-do list, in the shape every provider that keeps one shares. */
@@ -988,6 +990,50 @@ const TOOL_VOCABULARY = {
     codeExecution: (id, source) => ({ id, name: 'mcp__node_repl__js', arguments: { code: source, title: 'Run the native script' } }),
     workflowTools: [ZCODE_TOOL.CreateWorkflow],
   },
+  [AgentProvider.OH_MY_PI]: {
+    bash: (id, command) => ({ id, name: 'bash', arguments: { command } }),
+    edit: (id, { path, before, after }) => ({ id, name: 'edit', arguments: { path, old_string: before, new_string: after } }),
+    write: (id, { path, content }) => ({ id, name: 'write', arguments: { path, content } }),
+    read: (id, path) => ({ id, name: 'read', arguments: { path } }),
+    // omp's plan mode is a terminal feature; RPC reaches no plan-mode tool.
+    enterPlanMode: null,
+    exitPlanMode: null,
+    exitPlanModeFromFile: null,
+    // `ask` takes an id for each question and `multi` for a multi-select.
+    askUserQuestion: questionBuilder((id, questions) => ({
+      id,
+      name: 'ask',
+      arguments: {
+        questions: questions.map((question, index) => ({
+          id: `q${index + 1}`,
+          question: question.question,
+          header: question.header,
+          options: question.options,
+          ...(question.multiSelect ? { multi: true } : {}),
+        })),
+      },
+    })),
+    // The task tool accepts a task list, and one call with several tasks runs them at the same time.
+    spawnSubagent: (id, request) => ohMyPiTaskToolCall(id, [request]),
+    spawnSubagentBatch: ohMyPiTaskToolCall,
+    // The `async` flag of bash backgrounds the command (omp 18.6.0), and a later `async-result` message reports its end.
+    // omp offers the flag only while its `async.enabled` setting is on, and the E2E profile turns that setting off:
+    // the call needs a profile that turns it on.
+    backgroundBash: (id, command) => ({ id, name: 'bash', arguments: { command, async: true } }),
+    // The todo init command creates a list with phases.
+    // Oh My Pi sets the first task to in_progress.
+    // The init schema accepts no status field, so the builder cannot select the initial statuses.
+    // `ohMyPiTodoToolCall` states each later change of status.
+    updateTodos: (id, steps) => ({ id, name: 'todo', arguments: { op: 'init', list: [{ phase: OH_MY_PI_TODO_PHASE, items: steps.map(step => step.step) }] } }),
+    // omp starts goal mode from its terminal UI only; RPC offers no goal tool.
+    createGoal: null,
+    completeGoal: null,
+    blockGoal: null,
+    mcpTool: (id, { server, tool, input }) => ({ id, name: `mcp__${server}_${tool}`, arguments: input }),
+    codeExecution: (id, source) => ({ id, name: 'eval', arguments: { language: 'js', code: source } }),
+    workflowTools: null,
+  },
+
   [AgentProvider.QWEN_CODE]: {
     // Read off the tool schemas in Qwen Code 0.24.4's own model request.
     bash: (id, command) => ({ id, name: 'run_shell_command', arguments: { command, description: 'Run the scripted command' } }),
@@ -1626,6 +1672,24 @@ export function mimoActorCancelToolCall(id: string, actorId: string): MockModelT
   if (actorId.trim() === '')
     throw new Error('A MiMo actor cancellation requires an actor ID.')
   return { id, name: MIMO_TOOL.Actor, arguments: { operation: { action: MIMO_ACTOR_ACTION.Cancel, actor_id: actorId } } }
+}
+
+function ohMyPiTaskToolCall(id: string, requests: readonly SubagentRequest[]): MockModelToolCall {
+  if (requests.length === 0)
+    throw new Error('The native Oh My Pi task call requires at least one task.')
+  if (requests.some(request => request.background !== undefined))
+    throw new Error('The native Oh My Pi task call carries no background choice; the async.enabled setting of its profile decides.')
+  const names = requests.map(request => identifierFrom(request.description))
+  if (new Set(names.map(name => name.toLowerCase())).size !== names.length)
+    throw new Error(`The native Oh My Pi task names must differ: ${names.join(', ')}.`)
+  return {
+    id,
+    name: 'task',
+    arguments: {
+      context: requests.map(request => request.description).join('\n'),
+      tasks: requests.map((request, index) => ({ name: names[index], agent: 'task', task: request.prompt })),
+    },
+  }
 }
 
 export function enterPlanModeToolCall(provider: AgentProvider, id: string): MockModelToolCall {

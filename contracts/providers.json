@@ -82,6 +82,13 @@
       "parseAliases": [
         "qwen"
       ]
+    },
+    "AGENT_PROVIDER_OH_MY_PI": {
+      "displayName": "Oh My Pi",
+      "cliAlias": "oh-my-pi",
+      "parseAliases": [
+        "omp"
+      ]
     }
   }
 }
