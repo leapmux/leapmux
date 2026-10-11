@@ -134,8 +134,8 @@ func TestConstructionServerErrorsPreserveListenerCloseFailures(t *testing.T) {
 	localErr := errors.New("close local failed")
 
 	err := acquiredResources{
-		tcpLn:   &closeErrorListener{err: tcpErr},
-		localLn: &closeErrorListener{err: localErr},
+		tcpLns:   []net.Listener{&closeErrorListener{err: tcpErr}},
+		localLns: []net.Listener{&closeErrorListener{err: localErr}},
 	}.close(primaryErr)
 	require.ErrorIs(t, err, primaryErr)
 	require.ErrorIs(t, err, tcpErr)

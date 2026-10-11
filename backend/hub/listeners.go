@@ -77,16 +77,16 @@ type boundListener struct {
 // nothing but its own Serve goroutine -- the handler, the timeouts, the h2c
 // configuration and the shutdown drain are already shared.
 //
-// The local IPC listener is NOT in here. It is bound once, never rebound, and
-// it is the one transport that authenticates a caller by existing, so keeping
-// it out means no reconfiguration path can ever close it by mistake.
+// The local IPC listeners are NOT in here. They are bound once, never rebound,
+// and each is the one transport that authenticates a caller by existing, so
+// keeping them out means no reconfiguration path can ever close one by mistake.
 type listenerSet struct {
 	server *http.Server
-	// base is the address -listen gave, or nil under NoTCP. It is never
-	// dropped from the wanted set: Apply merges it with the extras, so an
-	// operator can widen it but never take it away, and a settings row can
-	// never leave the hub with no socket its operator asked for.
-	base *listenset.Addr
+	// bases are the addresses --listen gave, or empty when it named none. They
+	// are never dropped from the wanted set: Apply merges them with the extras,
+	// so an operator can widen them but never take them away, and a settings
+	// row can never leave the hub with no socket its operator asked for.
+	bases []listenset.Addr
 	// serveErr carries a listener that stopped WITHOUT being asked to. A
 	// deliberate close is filtered out here rather than at the reader, so
 	// Serve's select cannot mistake a reconfiguration for a fatal fault.
@@ -126,9 +126,17 @@ type listenerSet struct {
 	wg         sync.WaitGroup
 }
 
-// newListenerSet builds the set around an already-bound base listener.
+// baseBinding is one --listen socket the caller already bound and the address
+// it stands for. The two travel together so the set cannot register an address
+// against the wrong listener.
+type baseBinding struct {
+	ln   net.Listener
+	addr listenset.Addr
+}
+
+// newListenerSet builds the set around the already-bound base listeners.
 //
-// The base is bound by the caller, BEFORE the database opens, and that order
+// The bases are bound by the caller, BEFORE the database opens, and that order
 // is deliberate: two hubs racing for the same port must fail fast, with no
 // window in which one of them has done database work. The extras cannot join
 // that early, because the row that holds them is not readable until the store
@@ -138,17 +146,17 @@ type listenerSet struct {
 // and the CSP the whole service wiring produces, and the set is built before
 // any of that so the reporter can hold it by value: a set resolved through a
 // getter forced every read to carry a nil branch that nothing could reach.
-func newListenerSet(baseLn net.Listener, base *listenset.Addr, serveErr chan<- error) *listenerSet {
+func newListenerSet(bound []baseBinding, serveErr chan<- error) *listenerSet {
 	s := &listenerSet{
-		base:     base,
 		serveErr: serveErr,
 		active:   make(map[string]*boundListener),
 		failed:   make(map[string]failedAddress),
 	}
-	if baseLn != nil && base != nil {
-		resolved := resolvePort(*base, baseLn)
-		s.base = &resolved
-		s.active[resolved.String()] = &boundListener{ln: baseLn, addr: resolved, source: SourceListen}
+	s.bases = make([]listenset.Addr, 0, len(bound))
+	for _, b := range bound {
+		resolved := resolvePort(b.addr, b.ln)
+		s.bases = append(s.bases, resolved)
+		s.active[resolved.String()] = &boundListener{ln: b.ln, addr: resolved, source: SourceListen}
 	}
 	return s
 }
@@ -283,7 +291,7 @@ func (s *listenerSet) serveEnded(bl *boundListener, err error) bool {
 // merge that closes the -listen socket and then fails to bind its replacement
 // would otherwise leave the hub unreachable at the address its operator gave.
 func (s *listenerSet) Apply(extras []listenset.Addr) error {
-	want := listenset.Merge(s.base, extras)
+	want := listenset.Merge(s.bases, extras)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -340,15 +348,17 @@ func (s *listenerSet) Apply(extras []listenset.Addr) error {
 	return nil
 }
 
-// requested reports whether the caller still asks for this address: the base,
-// or one of the extras it passed. The caller holds the lock.
+// requested reports whether the caller still asks for this address: one of
+// the bases, or one of the extras it passed. The caller holds the lock.
 //
 // It reads the list as WRITTEN rather than the merged result, because an
 // address the merge folded away is still one the operator asked for -- and an
 // address they deleted must stop being reported the moment they delete it.
 func (s *listenerSet) requested(extras []listenset.Addr, addr listenset.Addr) bool {
-	if s.base != nil && s.base.String() == addr.String() {
-		return true
+	for _, b := range s.bases {
+		if b.String() == addr.String() {
+			return true
+		}
 	}
 	for _, e := range extras {
 		if e.String() == addr.String() {
@@ -406,20 +416,20 @@ func (s *listenerSet) rollbackLocked(opened []string, closed []removedListener) 
 	return errors.Join(errs...)
 }
 
-// sourceFor says why an address is bound: the -listen address alone, an extra
-// alone, or one address that covers both.
+// sourceFor says why an address is bound: a --listen address alone, an extra
+// alone, or one address that covers what --listen gave as well.
 func (s *listenerSet) sourceFor(addr listenset.Addr) AddressSource {
-	if s.base == nil {
-		return SourceExtra
+	for _, b := range s.bases {
+		if addr.String() == b.String() {
+			return SourceListen
+		}
 	}
-	switch {
-	case addr.String() == s.base.String():
-		return SourceListen
-	case addr.Covers(*s.base):
-		return SourceMerged
-	default:
-		return SourceExtra
+	for _, b := range s.bases {
+		if addr.Covers(b) {
+			return SourceMerged
+		}
 	}
+	return SourceExtra
 }
 
 // ApplyBestEffort binds what it can and reports what it could not, instead of
@@ -577,14 +587,16 @@ func (s *listenerSet) Bound() []listenset.Bound {
 }
 
 // PrimaryListenAddr is the address a browser-facing URL should give: the
-// -listen address when it is still bound, else the first extra the hub bound.
+// first --listen address that is still bound, else the first extra the hub
+// bound. With several --listen addresses the first in configuration order is
+// the primary; the rest still answer.
 //
 // The fallback is what makes a desktop hub work. It runs with no TCP base at
-// all, so before this feature "no -listen" and "no reachable address" were the
-// same thing; an extra address makes them different, and a hub answering on
-// 192.168.1.24:8080 must not keep reporting that it has no browser origin.
+// all, so before this feature "no --listen" and "no reachable address" were
+// the same thing; an extra address makes them different, and a hub answering
+// on 192.168.1.24:8080 must not keep reporting that it has no browser origin.
 //
-// It returns the DIAL form, which is what -listen itself carries and what
+// It returns the DIAL form, which is what --listen itself carries and what
 // every helper downstream reads. The canonical form must NOT be used here:
 // settings.browserHostForListen recognises the wildcard as an EMPTY host with
 // a port (":4327"), so the canonical "*:4327" would read as a machine called
@@ -593,13 +605,17 @@ func (s *listenerSet) Bound() []listenset.Bound {
 // It returns "" when nothing is bound, which is still the desktop's ordinary
 // state and which every caller already handles.
 func (s *listenerSet) PrimaryListenAddr() string {
-	if s.base != nil {
-		s.mu.Lock()
-		_, live := s.active[s.base.String()]
-		s.mu.Unlock()
-		if live {
-			return s.base.DialAddr()
+	s.mu.Lock()
+	var live string
+	for _, b := range s.bases {
+		if _, ok := s.active[b.String()]; ok {
+			live = b.DialAddr()
+			break
 		}
+	}
+	s.mu.Unlock()
+	if live != "" {
+		return live
 	}
 	for _, b := range s.Bound() {
 		if b.Err == "" {
@@ -656,7 +672,7 @@ func boundAddressesForLog(bound []BoundAddress) []string {
 // window in which a consumer could reach a set that does not exist, and no
 // unreachable nil branch to write here for one.
 //
-// It owns the FALLBACK. "The live primary address, and the one -listen
+// It owns the FALLBACK. "The live primary address, and the one --listen
 // gave when nothing is bound" is one rule, and every consumer used to carry
 // its own copy of it -- the auth service, the mail renderer and the OAuth
 // issuer URL each spelled it -- which is how the links in an email and the
@@ -667,8 +683,10 @@ func boundAddressesForLog(bound []BoundAddress) []string {
 // type and both packages already import it.
 type listenReporter struct {
 	set *listenerSet
-	// configured is the address -listen gave, for a hub with nothing bound.
-	configured string
+	// configured is every TCP address --listen gave (with the launcher's
+	// default filled in when it named none), for a hub with nothing bound.
+	// The first is the primary; see Config.PrimaryTCPListen.
+	configured []string
 }
 
 func (r listenReporter) Bound() []listenset.Bound { return r.set.Bound() }
@@ -677,7 +695,10 @@ func (r listenReporter) PrimaryListenAddr() string {
 	if addr := r.set.PrimaryListenAddr(); addr != "" {
 		return addr
 	}
-	return r.configured
+	if len(r.configured) > 0 {
+		return r.configured[0]
+	}
+	return ""
 }
 
 // refuseUnguardedExposure is the cross-key settings rule that keeps a solo hub

@@ -92,7 +92,7 @@ func TestGetCurrentUser_ReportsTheSoloAccountsPasswordFromTheHash(t *testing.T) 
 	svc, st, gate, soloUser := soloUserService(t)
 	ctx := auth.WithUser(context.Background(), soloUser)
 
-	deps := servicetest.AuthServiceDeps(st, &config.Config{SoloMode: true, Listen: "127.0.0.1:4327"},
+	deps := servicetest.AuthServiceDeps(st, &config.Config{SoloMode: true, Listen: []string{"127.0.0.1:4327"}},
 		servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil))
 	deps.SoloGate = gate
 	authSvc := service.NewAuthService(deps)

@@ -267,7 +267,7 @@ func (a Addr) Covers(b Addr) bool {
 	}
 }
 
-// Merge returns the addresses the hub actually binds: base and extras, with
+// Merge returns the addresses the hub actually binds: bases and extras, with
 // every duplicate removed and every covered address folded into the address
 // that covers it.
 //
@@ -278,11 +278,9 @@ func (a Addr) Covers(b Addr) bool {
 // The result is sorted -- port, then widest kind, then host -- so a caller can
 // compare two results, and so a log line and the panel's "serving now" list
 // read in the same order every time.
-func Merge(base *Addr, extras []Addr) []Addr {
-	all := make([]Addr, 0, len(extras)+1)
-	if base != nil {
-		all = append(all, *base)
-	}
+func Merge(bases []Addr, extras []Addr) []Addr {
+	all := make([]Addr, 0, len(extras)+len(bases))
+	all = append(all, bases...)
 	all = append(all, extras...)
 
 	seen := make(map[string]bool, len(all))

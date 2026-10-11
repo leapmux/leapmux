@@ -120,15 +120,15 @@ func TestLoadOrCreateWorkerState_UnknownWorkerReRegisters(t *testing.T) {
 	assert.Equal(t, "w-new", readState(t, path).WorkerID, "the new state must be persisted")
 }
 
-// A transient store failure (e.g. sqlite "database is locked" racing another writer
-// at startup) is NOT a missing worker. Treating it as one would discard the saved
-// WorkerID and re-register a brand-new identity, orphaning every workspace and tab
-// still pointed at the old worker. The launch must fail so a retry finds the row
-// intact -- only store.ErrNotFound re-registers.
+// A transient store failure (for example a disk I/O error) is NOT a missing
+// worker. Treating it as one would discard the saved WorkerID and re-register a
+// brand-new identity, orphaning every workspace and tab still pointed at the old
+// worker. The launch must fail so a retry finds the row intact -- only
+// store.ErrNotFound re-registers.
 func TestLoadOrCreateWorkerState_TransientLookupErrorDoesNotReRegister(t *testing.T) {
 	dir := t.TempDir()
 	path := writeState(t, dir, soloState{WorkerID: "w1", AuthToken: "tok", RegisteredBy: "real-owner"})
-	transient := errors.New("database is locked")
+	transient := errors.New("disk I/O error")
 	reg := &fakeRegistrar{
 		ownerErr:  transient,
 		adminID:   "admin-1",
@@ -203,8 +203,8 @@ func TestLoadOrCreateWorkerState_CorruptStateReRegistersLoudlyAndPreserves(t *te
 
 // persistState writes atomically (temp file in the same dir, then rename), so a
 // reader never observes a half-written file. The observable contract from outside
-// is: the written file round-trips through the parser, and no .tmp remnants are
-// left behind on success.
+// is: the written file round-trips through the parser, and no temp remnants are
+// left behind on success. The temp is atomicfile's `<name>.tmp<random>`.
 func TestPersistState_RoundTripsAndLeavesNoTempRemnants(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "worker-state.json")
@@ -213,9 +213,29 @@ func TestPersistState_RoundTripsAndLeavesNoTempRemnants(t *testing.T) {
 	require.NoError(t, persistState(path, &in))
 
 	assert.Equal(t, in, readState(t, path), "the written state must round-trip exactly")
-	tmpRemnants, err := filepath.Glob(filepath.Join(dir, ".worker-state-*.tmp"))
+	tmpRemnants, err := filepath.Glob(path + ".tmp*")
 	require.NoError(t, err)
 	assert.Empty(t, tmpRemnants, "a successful atomic write must not leave temp files behind")
+}
+
+// persistState stamps the pid as the FIRST field and keeps the file at 0600:
+// the pid is how a reader tells which process wrote the file, and the mode is
+// what keeps the credentials in it to their owner.
+func TestPersistState_PIDIsFirstAndModeIs0600(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+	in := soloState{WorkerID: "w1", AuthToken: "tok"}
+
+	require.NoError(t, persistState(path, &in))
+
+	raw, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Regexp(t, `^\{\s*"pid"`, string(raw), "pid must be the first JSON key")
+	assert.Equal(t, os.Getpid(), readState(t, path).PID, "the writer names this process")
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm(),
+		"the credentials file must not be readable by anyone but its owner")
 }
 
 // The deferral arm's discriminator. "No admin has completed /setup yet" is the ONE
@@ -248,7 +268,7 @@ func TestLoadOrCreateWorkerState_OnlyTheMissingAdminIsDeferrable(t *testing.T) {
 
 	t.Run("a non-not-found admin lookup failure is not", func(t *testing.T) {
 		t.Parallel()
-		boom := errors.New("database is locked")
+		boom := errors.New("disk I/O error")
 		reg := &fakeRegistrar{adminErr: boom}
 		_, err := loadOrCreateWorkerState(t.Context(), reg, filepath.Join(dir, "locked.json"), t.TempDir())
 		require.Error(t, err)

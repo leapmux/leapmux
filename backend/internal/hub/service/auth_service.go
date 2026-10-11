@@ -109,13 +109,13 @@ func NewAuthService(deps AuthServiceDeps) *AuthService {
 		captchaSvc = disabledCaptcha{}
 	}
 	// A nil reporter is a hub with no listener set to ask, so it answers from
-	// the address -listen gave; see ConfiguredListen for why that default is
-	// stated once rather than at each read.
+	// the primary TCP address --listen gave; see ConfiguredListen for why that
+	// default is stated once rather than at each read.
 	listen := deps.Listen
 	if listen == nil {
 		configured := ""
 		if deps.Config != nil {
-			configured = deps.Config.Listen
+			configured = deps.Config.PrimaryTCPListen()
 		}
 		listen = ConfiguredListen{Listen: configured}
 	}
@@ -692,30 +692,32 @@ func (s *AuthService) GetSystemInfo(ctx context.Context, req *connect.Request[le
 	// Decide what URL workers should target. Precedence:
 	//   1. An explicit public_url setting wins (admin's canonical external URL,
 	//      typically used when the hub is behind a reverse proxy).
-	//   2. If -listen gave no TCP address (desktop's NoTCP mode), the browser
-	//      origin is `tauri://localhost`, which is unusable. Such a hub can
-	//      still hold a TCP address the extra_listen_addresses setting added,
-	//      so prefer that one and fall back to the local unix-socket /
+	//   2. If the bind set names no TCP address (desktop's NoTCP mode), the
+	//      browser origin is `tauri://localhost`, which is unusable. Such a hub
+	//      can still hold a TCP address the extra_listen_addresses setting
+	//      added, so prefer that one and fall back to the local unix-socket /
 	//      named-pipe address, which workers can always dial locally.
 	//   3. Otherwise leave it empty — the frontend falls back to
 	//      window.location.origin, which already reflects whatever proxy or
 	//      hostname the user connects through.
 	//
-	// Case 2 tests cfg.Listen and NOT the live address. They differ on exactly
-	// the deployment this matters for: a desktop hub that gained an extra
-	// address has a live address, so testing that one dropped the case and
-	// answered "" -- and the frontend's window.location.origin fallback, which
-	// case 3 rests on, is `tauri://localhost` there.
+	// Case 2 tests the CONFIGURED bind set and NOT the live address. They
+	// differ on exactly the deployment this matters for: a desktop hub that
+	// gained an extra address has a live address, so testing that one dropped
+	// the case and answered "" -- and the frontend's window.location.origin
+	// fallback, which case 3 rests on, is `tauri://localhost` there.
 	var workerHubURL string
 	snap := s.snap(ctx)
 	switch {
 	case settings.KeyPublicURL.Of(snap) != "":
 		workerHubURL = settings.KeyPublicURL.Of(snap)
-	case s.cfg.Listen == "":
+	case s.cfg.PrimaryTCPListen() == "":
 		if addr := s.listenAddr(); addr != "" {
 			workerHubURL = settings.BaseURL(snap, addr)
-		} else if u, err := s.cfg.LocalListenURL(); err == nil {
-			workerHubURL = u
+		} else if local, err := s.cfg.LocalListenURLs(); err == nil && len(local) > 0 {
+			// The first of several. The worker dials one endpoint; the rest
+			// of the local listeners still answer.
+			workerHubURL = local[0]
 		}
 	}
 

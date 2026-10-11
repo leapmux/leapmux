@@ -61,7 +61,7 @@ func TestAdminNetworkService_ReportsTheLiveListeners(t *testing.T) {
 			{Addr: listenset.MustParse("192.168.1.24:8080"), Source: listenset.SourceExtra, Err: "address already in use"},
 		},
 	}
-	svc, _, set := newNetworkService(t, &config.Config{SoloMode: true, Listen: "127.0.0.1:4327"}, listen)
+	svc, _, set := newNetworkService(t, &config.Config{SoloMode: true, Listen: []string{"127.0.0.1:4327"}}, listen)
 
 	require.NoError(t, set.Update(context.Background(), settings.KeyExtraListenAddresses,
 		json.RawMessage(`{"addresses":["*:4327","192.168.1.24:8080"]}`)))
@@ -157,7 +157,7 @@ func stripZone(ip string) string {
 // A hub with no listener set yet (the window before Serve) must answer rather
 // than panic: the dialog can be opened at any moment.
 func TestAdminNetworkService_ToleratesNoListenerSet(t *testing.T) {
-	svc, _, _ := newNetworkService(t, &config.Config{SoloMode: true, Listen: "127.0.0.1:4327"}, nil)
+	svc, _, _ := newNetworkService(t, &config.Config{SoloMode: true, Listen: []string{"127.0.0.1:4327"}}, nil)
 
 	resp, err := svc.GetListenStatus(context.Background(), connect.NewRequest(&leapmuxv1.GetListenStatusRequest{}))
 	require.NoError(t, err)
@@ -191,7 +191,7 @@ func systemInfoForSolo(t *testing.T, listen service.ListenReporter, ctx context.
 	if withPassword {
 		setSoloPasswordForTest(t, st)
 	}
-	deps := servicetest.AuthServiceDeps(st, &config.Config{SoloMode: true, Listen: "127.0.0.1:4327"},
+	deps := servicetest.AuthServiceDeps(st, &config.Config{SoloMode: true, Listen: []string{"127.0.0.1:4327"}},
 		servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil))
 	deps.Listen = listen
 	deps.SoloGate = auth.NewSoloGate(true, st)
@@ -256,7 +256,7 @@ func TestGetSystemInfo_PasskeysAreNeverRunnableInSolo(t *testing.T) {
 func TestGetSystemInfo_TheSoloFieldsAreFalseOnAMultiUserHub(t *testing.T) {
 	st := hubtestutil.OpenTestStore(t)
 	hubtestutil.CreateTestAdmin(t, st)
-	deps := servicetest.AuthServiceDeps(st, &config.Config{Listen: ":4327"},
+	deps := servicetest.AuthServiceDeps(st, &config.Config{Listen: []string{":4327"}},
 		servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil))
 	deps.Listen = fakeListenReporter{primary: ":4327", bound: []listenset.Bound{
 		{Addr: listenset.MustParse("*:4327"), Source: listenset.SourceListen},
@@ -279,7 +279,7 @@ func TestGetSystemInfo_DoesNotReadTheSoloAccountOnAMultiUserHub(t *testing.T) {
 	st := hubtestutil.OpenTestStore(t)
 	hubtestutil.CreateTestAdmin(t, st)
 	counted := &countingUserStore{Store: st}
-	deps := servicetest.AuthServiceDeps(counted, &config.Config{Listen: ":4327"},
+	deps := servicetest.AuthServiceDeps(counted, &config.Config{Listen: []string{":4327"}},
 		servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil))
 	deps.Listen = fakeListenReporter{primary: ":4327", bound: []listenset.Bound{
 		{Addr: listenset.MustParse("*:4327"), Source: listenset.SourceListen},

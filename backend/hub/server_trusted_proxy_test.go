@@ -30,7 +30,7 @@ func TestServer_AppliesTrustedProxyIdentityOutsideTheHandlerStack(t *testing.T) 
 		w.Header().Set("X-Test-Remote-Addr", r.RemoteAddr)
 		w.WriteHeader(http.StatusNoContent)
 	})
-	srv := startTestServer(t, &config.Config{Listen: base}, WithFrontendHandler(frontend))
+	srv := startTestServer(t, &config.Config{Listen: []string{base}}, WithFrontendHandler(frontend))
 	requireAnswers(t, base)
 
 	client := &http.Client{Timeout: 10 * time.Second}
