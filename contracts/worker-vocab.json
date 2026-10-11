@@ -16,7 +16,8 @@
     "SubagentReport": "subagent_report",
     "GoalUpdated": "goal_updated",
     "GoalCleared": "goal_cleared",
-    "AgentStatus": "agent_status"
+    "AgentStatus": "agent_status",
+    "InputRequeued": "input_requeued"
   },
   "goalStatusTokens": {
     "None": "",
@@ -24,6 +25,7 @@
     "Paused": "paused",
     "Blocked": "blocked",
     "Done": "done",
+    "Unknown": "unknown",
     "Dormant": "dormant"
   },
   "goalTransitions": {
@@ -32,7 +34,8 @@
     "Resumed": "resumed",
     "Paused": "paused",
     "Blocked": "blocked",
-    "Achieved": "achieved"
+    "Achieved": "achieved",
+    "Updated": "updated"
   },
   "workerWrittenNotificationTypes": [
     "SubagentEnded",
@@ -40,7 +43,8 @@
     "GoalUpdated",
     "GoalCleared",
     "StopIgnored",
-    "AgentStatus"
+    "AgentStatus",
+    "InputRequeued"
   ],
   "assembledMessage": {
     "fields": {
@@ -60,7 +64,8 @@
     "completions": {
       "Complete": "complete",
       "Interrupted": "interrupted",
-      "Error": "error"
+      "Error": "error",
+      "Finished": "finished"
     }
   },
   "toolOutcome": {

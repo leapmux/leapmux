@@ -18,6 +18,8 @@ import { clearHandshakeState, initiatorHandshake1, initiatorHandshake2 } from '.
 const PROTOCOL_NAME = 'Noise_NK_25519_ChaChaPoly_BLAKE2b'
 const DH_LEN = 32
 const AEAD_TAG_SIZE = 16
+/** The error of `chacha20poly1305` from `@noble/ciphers` when the tag does not authenticate the ciphertext. */
+const AEAD_TAG_FAILURE = 'invalid tag'
 
 function encrypt(key: Uint8Array, nonce: number, ad: Uint8Array, plaintext: Uint8Array): Uint8Array {
   const nonceBytes = new Uint8Array(12)
@@ -332,9 +334,10 @@ describe('hybrid Noise_NK handshake', { timeout: 120_000 }, () => {
     )
 
     // Initiator should fail because handshake hashes diverged
-    // (mixHash(mlkemCT) differs between initiator and responder).
+    // (mixHash(mlkemCT) differs between initiator and responder). The hash is
+    // the associated data of the message 2 payload, so its tag fails first.
     expect(() => initiatorHandshake2(handshakeState, responder.message2, slhdsaKeys.publicKey))
-      .toThrow()
+      .toThrow(AEAD_TAG_FAILURE)
   })
 
   it('should encrypt empty messages', () => {

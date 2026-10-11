@@ -125,11 +125,11 @@ describe('createIdbConnection', () => {
     // A key path IndexedDB refuses, which fails the open inside Dexie's upgrade.
     const conn = connect('upgrade-throws', { [STORE]: '!!not a key path' })
 
-    await expect(conn.open()).rejects.toBeDefined()
+    await expect(conn.open()).rejects.toThrow(/invalid key path/)
     // A retry must produce a fresh request rather than replay the cached
     // rejection forever; it fails again for the same reason, but it is a NEW
     // attempt, which is what lets a transient failure (quota, blocked) recover.
-    await expect(conn.open()).rejects.toBeDefined()
+    await expect(conn.open()).rejects.toThrow(/invalid key path/)
     expect(openSpy.mock.calls.length).toBeGreaterThanOrEqual(2)
     openSpy.mockRestore()
     conn.reset()
@@ -159,7 +159,7 @@ describe('createIdbConnection', () => {
       return request
     })
     const failing = connect('non-recreate')
-    await expect(failing.open()).rejects.toBeDefined()
+    await expect(failing.open()).rejects.toThrow('simulated quota failure')
     openSpy.mockRestore()
     failing.reset()
 

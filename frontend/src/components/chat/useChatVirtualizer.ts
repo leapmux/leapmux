@@ -152,7 +152,7 @@ export interface PersistableRowHeight {
 /**
  * The most recent height commit that changed the offset map -- diagnostic attribution for
  * the scroll-anchor drift WARN. The re-pin fires off `totalHeight()` and only sees THAT the
- * geometry moved, not which row moved it; this names the row and by how much, so a logged
+ * geometry moved, not which row moved it; this identifies the row and the change, so a logged
  * drift can be traced to its cause: `firstMeasure` (an estimate->real correction, i.e. the
  * per-kind median was off for this row / it outran premeasure) vs a re-measure (a
  * premeasured-vs-visible height mismatch or a chrome/content change), and `delta`
@@ -246,9 +246,9 @@ const FALLBACK_ESTIMATE_OUTLIER_PX = 1200
  * cache above that ceiling keeps the whole active window cached (mountedIds are
  * additionally protected from eviction), so a measured row is never re-measured
  * while still in the window, while a scroll-through-everything session that churns
- * far more rows than the ceiling still bounds memory.
+ * far more rows than the ceiling still limits memory.
  *
- * Exported so the eviction test derives its over-cap loop bound from the real
+ * Exported so the eviction test derives its loop limit from the real
  * value instead of hard-coding it (and silently breaking when the cap changes).
  */
 export const HEIGHT_CACHE_MAX = 2400
@@ -258,15 +258,9 @@ function resolve(v: Accessor<number> | number | undefined, fallback: number): nu
   return typeof v === 'function' ? v() : v
 }
 
-/**
- * Whether `n` is a usable row height: finite and strictly positive. `n > 0`
- * already rejects NaN (`NaN > 0` is false); Number.isFinite additionally rejects
- * Infinity. A non-usable DOM measurement would poison the cumulative offset map
- * (every offset past that row becomes NaN/Infinity, blanking the list), so
- * measurements are ignored whenever this is false.
- */
+/** Reject a height that cannot enter the cumulative offset map. */
 function isUsableHeight(n: number): boolean {
-  return n > 0 && Number.isFinite(n)
+  return n >= 0 && Number.isFinite(n)
 }
 
 export interface UseChatVirtualizerResult {
@@ -372,7 +366,7 @@ export interface UseChatVirtualizerResult {
    * geometry commit is queued behind the momentum-scroll deferral gate.
    */
   hasPendingPremeasuredHeight: (id: string) => boolean
-  /** Gate DOM measurement commits while native momentum owns scrollTop. */
+  /** Defer DOM measurement commits while native momentum owns scrollTop. */
   setVisibleMeasurementDeferral: (defer: boolean) => void
   /**
    * Reactive "fast user scroll in flight" flag — a momentum fling OR a fast
@@ -401,16 +395,12 @@ export interface UseChatVirtualizerResult {
 }
 
 /**
- * A measured height only feeds the estimate when it is within the plausible band; a
- * pathological outlier (a giant unwindowed diff) is cached for its own row but kept out
- * of the estimate so it can't distort what an UNMEASURED row is assumed to be. The median
- * already resists outliers, but excluding them also bounds the histogram's key range and
- * keeps the `fallbackExcluded` diagnostic meaningful. Returns the contribution height, or
- * undefined when the row is an outlier (recorded on its cache entry so eviction removes
- * exactly what was added).
+ * Only a positive height within the estimate limit contributes to the median.
+ * Cache an empty row or a large outlier for that row without changing the estimate.
+ * Record each contribution on its cache entry. Eviction removes that exact value.
  */
 function fallbackEstimateContribution(height: number): number | undefined {
-  return height <= FALLBACK_ESTIMATE_OUTLIER_PX ? height : undefined
+  return height > 0 && height <= FALLBACK_ESTIMATE_OUTLIER_PX ? height : undefined
 }
 
 interface CachedMeasuredHeight {
@@ -623,13 +613,9 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
   // from `gapAboveOf` below rather than from a token of its own -- so this
   // function is the single decider for both the offset and the rail across it.
   //
-  // Two adjacent BANDS (assistant message / thought) instead OVERLAP by one
-  // border width. Each band paints a full-bleed strip with a line on its top and
-  // bottom edge, so a zero gap would stack two lines; the lower row paints after
-  // the upper one, so this overlap puts its top border exactly over the upper
-  // row's bottom border and the pair shows one line. Placing the merge HERE, in
-  // the offset map, keeps every row's own height independent of its neighbour --
-  // which hidden premeasure requires, because it measures each row alone.
+  // Adjacent bands share one border. Overlap their edges by one border width
+  // when both heights support it. Reduce the overlap for an empty or short band
+  // so offsets never decrease. Premeasure still measures each row separately.
   const gapAfter = (list: VirtualItem[], i: number): number => {
     if (i >= list.length - 1)
       return 0
@@ -638,7 +624,7 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
       return 0
     const cur = list[i]
     if (cur !== undefined && messageBandKind(cur.kind ?? '') && messageBandKind(next.kind ?? ''))
-      return -BAND_BORDER_PX
+      return -Math.min(BAND_BORDER_PX, resolvedHeight(cur), resolvedHeight(next))
     return next.hasSpanLines
       ? resolve(opts.gapSmallPx, DEFAULT_GAP_SMALL_PX)
       : resolve(opts.gapLargePx, DEFAULT_GAP_LARGE_PX)
@@ -728,15 +714,6 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     const index = g.indexById.get(id)
     const item = index === undefined ? undefined : g.list[index]
     return item !== undefined ? item.heightKey : undefined
-  }
-
-  // The row's current estimate bucket -- used when recording its measurement so the
-  // contribution lands in (and later leaves) the right per-kind median.
-  const currentKind = (id: string): string => {
-    const g = geom()
-    const index = g.indexById.get(id)
-    const item = index === undefined ? undefined : g.list[index]
-    return item !== undefined ? kindOf(item) : DEFAULT_ESTIMATE_KIND
   }
 
   const hasMeasuredHeight = (id: string): boolean => {
@@ -876,16 +853,8 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     currentKey: string | undefined,
     kind: string,
   ): boolean => {
-    // Ignore non-positive (or non-finite) heights: a row not yet laid out -- or one
-    // under a display:none ancestor (an inactive TILE/workspace; an inactive tab
-    // PANE is visibility:hidden and still measures its real height) -- reports 0,
-    // which would poison the height cache and drag the median estimate toward
-    // zero. The finite-positive guard rejects NaN (`NaN > 0` is false, so a stray
-    // NaN would otherwise flow into the median histogram and turn every fallback
-    // estimate -- and thus the whole offset map -- into NaN) AND Infinity (which
-    // a bare `height > 0` lets through, then poisons the estimate the same
-    // way). Single chokepoint for both the immediate attachRow read and the
-    // ResizeObserver flush.
+    // DOM callers verify layout before this numeric commit. A valid empty row
+    // has a zero height. It completes measurement without changing the estimate.
     if (!isUsableHeight(height))
       return false
     if (heightKey !== currentKey)
@@ -984,7 +953,12 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     heightKey: string | undefined,
     source: MeasurementCommitInfo['source'],
   ): boolean => {
-    const changed = applyHeightCommit(id, height, heightKey, source, currentHeightKey(id), currentKind(id))
+    const { list, indexById } = rowIndex()
+    const index = indexById.get(id)
+    const item = index === undefined ? undefined : list[index]
+    if (item === undefined)
+      return false
+    const changed = applyHeightCommit(id, height, heightKey, source, item.heightKey, kindOf(item))
     if (changed)
       setGeomVersion(v => v + 1)
     return changed
@@ -1000,6 +974,8 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     return commitMeasuredHeight(id, height, heightKey, 'premeasure')
   }
   const primeHeight = (id: string, height: number, heightKey?: string): boolean => {
+    if (!rowIndex().indexById.has(id))
+      return false
     if (mountedIds.has(id) && hasMeasuredHeight(id))
       return false
     if (deferMeasurements) {

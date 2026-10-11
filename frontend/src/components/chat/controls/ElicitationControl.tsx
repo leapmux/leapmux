@@ -4,7 +4,7 @@ import type { ElicitationRequest } from '~/components/chat/model/controlPrompt'
 import type { McpElicitationAction } from '~/generated/contracts/mcp-elicitation'
 import { createMemo, createSignal, createUniqueId, For, Match, Show, Switch } from 'solid-js'
 import { LoadingMenu } from '~/components/common/LoadingMenu'
-import { isPillOptions } from '~/components/common/PillGroup'
+import { isPillOptions } from '~/components/common/pillOptions'
 import { MCP_ELICITATION_ACTION } from '~/generated/contracts/mcp-elicitation'
 import { UNTRUSTED_LINK_ATTRIBUTE } from '~/lib/untrustedLinkClicks'
 import * as styles from '../ControlRequestBanner.css'
@@ -158,11 +158,9 @@ export const ElicitationActions: Component<ActionsProps & { elicitation: Elicita
         setError(controlResponseErrorMessage(error))
     }
     finally {
-      // A send that RESOLVES can still leave the request open: the worker
-      // records a response it cannot confirm, and the store keeps the request.
-      // The reset belonged in the catch alone, so those buttons stayed disabled
-      // with no way to answer again. A completed response unmounts this
-      // component, where the reset costs nothing.
+      // A successful send can leave the request open when the Worker cannot confirm its response.
+      // Reset pending after both success and failure so the user can answer that open request again.
+      // A completed response removes this component, where the reset has no further effect.
       setPending(false)
     }
   }

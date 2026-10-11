@@ -1,14 +1,7 @@
-import { beforeAll, describe } from 'vitest'
+import { render } from '@solidjs/testing-library'
+import { describe, expect, it } from 'vitest'
 import { checkKindModule } from '~/test-support/kindTestHarness'
-
-// jsdom does not provide ResizeObserver, which the shared layouts observe with.
-beforeAll(() => {
-  globalThis.ResizeObserver ??= class {
-    observe() {}
-    unobserve() {}
-    disconnect() {}
-  } as unknown as typeof ResizeObserver
-})
+import { WebFetchResultBody } from '../webFetchResult'
 
 describe('fetch renderer', () => {
   checkKindModule({
@@ -18,5 +11,13 @@ describe('fetch renderer', () => {
     titlePart: 'example.com',
     result: { result: 'page text' },
     resultPart: 'page text',
+  })
+
+  it('marks the fetched page as returned output without marking the summary', () => {
+    const { container } = render(() => <WebFetchResultBody source={{ result: 'page text', code: 200, codeText: 'OK' }} />)
+    const outputs = container.querySelectorAll('[data-tool-output-preview]')
+    expect(outputs).toHaveLength(1)
+    expect(outputs[0]?.textContent).toBe('page text')
+    expect(container.textContent).toContain('200 OK')
   })
 })

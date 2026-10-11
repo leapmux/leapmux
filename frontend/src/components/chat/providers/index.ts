@@ -1,5 +1,5 @@
-// Side-effect imports: each plugin module calls registerProvider() at import time.
-// Removing one silently breaks that provider's providerFor() lookup in registry.ts.
+// Each plugin registers its provider when this module imports it.
+// Each supported provider requires one import for registry lookup.
 import './claude/plugin'
 import './codex/plugin'
 import './opencode/plugin'

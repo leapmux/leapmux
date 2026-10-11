@@ -216,7 +216,7 @@ describe('shikiWorkerClient', () => {
     await expect(second).resolves.toEqual(tokens)
   })
 
-  it('serves persisted tokens from the artifact store without spawning a worker', async () => {
+  it('serves persisted tokens from the full tool output store without spawning a worker', async () => {
     vi.stubGlobal('indexedDB', new IDBFactory())
     const workers: unknown[] = []
     Object.defineProperty(globalThis, 'Worker', {

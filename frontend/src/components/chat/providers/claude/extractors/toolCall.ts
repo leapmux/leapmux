@@ -6,7 +6,7 @@ import type { ClaudeRowContext, ClaudeToolRow } from '../extractors/toolCommon'
 import { createToolCall } from '../../../model/createToolCall'
 import { parseMcpToolName } from '../../../model/mcpToolCall'
 import { failedResult, isGenericKind, readToolCallSpec, unparsedResult } from '../../../model/toolCall'
-import { retainedOutcome } from '../../registry'
+import { retainedOutcome, retainedRowIsFinal } from '../../registry'
 import { claudeAgentSpec } from '../extractors/agent'
 import { claudeExecuteSpec } from '../extractors/execute'
 import { claudeToolFailureResult } from '../extractors/failure'
@@ -52,7 +52,7 @@ export function claudeEnvelope(row: ClaudeToolRow, context: ClaudeRowContext): T
       frameStatus: 'unstated',
       providerOutcome: row.toolUseResult?.interrupted === true ? 'interrupted' : row.isError === true ? 'failed' : null,
       retainedOutcome: retainedOutcome(context.completion),
-      rowFinal: row.role === 'result' || retainedOutcome(context.completion) !== null,
+      rowFinal: row.role === 'result' || retainedRowIsFinal(context.completion),
       resultFrameLanded: row.role === 'result',
     },
   }

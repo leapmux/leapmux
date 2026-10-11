@@ -1,5 +1,7 @@
 import type { MessageInitShape } from '@bufbuild/protobuf'
+import type { MessageContextSources } from './messageContextResolver'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { MessageSpanIdentity } from '~/lib/messageSpan'
 import { create } from '@bufbuild/protobuf'
 import { createEffect, createRoot, createSignal } from 'solid-js'
@@ -9,6 +11,17 @@ import { createChatStore } from '~/stores/chat.store'
 import { createSpanIndex } from '~/stores/chatSpanIndex'
 import { createMessageContextResolver } from './messageContextResolver'
 import './providers/opencode/plugin'
+
+// Supply an explicit no-side role without a provider wire format.
+// All other records use the actual registry and provider plugins.
+vi.mock('~/components/chat/providers/registry', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('~/components/chat/providers/registry')>()
+  return {
+    ...actual,
+    resolvedSpanRole: (parsed: ParsedMessageContent, provider: AgentProvider) =>
+      parsed.parentObject?.noSpanSideForTest === true ? 'none' : actual.resolvedSpanRole(parsed, provider),
+  }
+})
 
 const cleanups: Array<() => void> = []
 afterEach(() => cleanups.splice(0).forEach(dispose => dispose()))
@@ -35,7 +48,11 @@ function toolMessage(id: string, seq: bigint, side: 'request' | 'result', extra:
   })
 }
 
-function fixture(initial: AgentChatMessage[] = []) {
+function noSideMessage(id: string, seq: bigint, extra: MessageInitShape<typeof AgentChatMessageSchema> = {}): AgentChatMessage {
+  return toolMessage(id, seq, 'request', { content: new TextEncoder().encode(JSON.stringify({ noSpanSideForTest: true })), ...extra })
+}
+
+function fixture(initial: AgentChatMessage[] = [], spanMessage?: MessageContextSources['spanMessage']) {
   return createRoot((dispose) => {
     cleanups.push(dispose)
     const [messages, setMessages] = createSignal(initial)
@@ -50,7 +67,7 @@ function fixture(initial: AgentChatMessage[] = []) {
       messages,
       messageVersion: version,
       contentVersion: () => 0,
-      spanMessage: (spanId, side) => side === 'request' ? index.getRequestMessage('agent', spanId) : index.getResultMessage('agent', spanId),
+      spanMessage: spanMessage ?? ((spanId, side) => side === 'request' ? index.getRequestMessage('agent', spanId) : index.getResultMessage('agent', spanId)),
       messageBySeq: seq => messages().find(message => message.seq === seq),
       fetchSpan,
       fetchMessage,
@@ -413,5 +430,102 @@ describe('message context resolver', () => {
     // A new row replaces the array, which is what prune must answer.
     expect(store.addMessage(agentId, toolMessage('result', 2n, 'result'))).toBe(true)
     expect(walks).toBe(initial + 1)
+  })
+})
+
+describe('explicit no-side message context', () => {
+  const identity = { spanId: 'span', agentSessionId: '' }
+
+  it('keeps an isolated no-side record out of pair lookups and visible rows', () => {
+    const progress = noSideMessage('window', 1n)
+    const { resolver } = fixture([progress])
+    expect(resolver.role(progress)).toBe('none')
+    expect(resolver.request(identity)).toBeUndefined()
+    expect(resolver.result(identity)).toBeUndefined()
+    expect(resolver.visibleRows(identity)).toEqual({ request: false, result: false })
+  })
+
+  it('keeps hidden no-side progress beside the genuine request', () => {
+    const request = toolMessage('request', 1n, 'request')
+    const progress = noSideMessage('window', 2n)
+    const { resolver } = fixture([request, progress])
+    expect(resolver.role(progress)).toBe('none')
+    expect(resolver.request(identity)?.message).toBe(request)
+    expect(resolver.result(identity)).toBeUndefined()
+    expect(resolver.visibleRows(identity)).toEqual({ request: true, result: false })
+  })
+
+  it.each(['request', 'result'] as const)('refuses a stale %s slot that contains a no-side record', (side) => {
+    const progress = noSideMessage('window', 2n)
+    const { resolver } = fixture([progress], (_identity, requestedSide) => requestedSide === side ? progress : undefined)
+    expect(resolver.role(progress)).toBe('none')
+    expect(resolver.request(identity)).toBeUndefined()
+    expect(resolver.result(identity)).toBeUndefined()
+    expect(resolver.visibleRows(identity)).toEqual({ request: false, result: false })
+  })
+
+  it('keeps fetched no-side records out of pair lookups', async () => {
+    const progress = noSideMessage('window', 1n)
+    const { resolver, fetchSpan } = fixture()
+    fetchSpan.mockResolvedValueOnce([progress])
+    const release = resolver.retainSpan(identity)
+    await resolver.loadSpan(identity)
+    expect(resolver.role(progress)).toBe('none')
+    expect(resolver.request(identity)).toBeUndefined()
+    expect(resolver.result(identity)).toBeUndefined()
+    expect(resolver.visibleRows(identity)).toEqual({ request: false, result: false })
+    release()
+  })
+
+  it('keeps a genuine fetched result when a newer resident slot contains no-side progress', async () => {
+    const result = toolMessage('result', 2n, 'result')
+    const progress = noSideMessage('window', 3n)
+    const { resolver, fetchSpan } = fixture([progress], (_identity, side) => side === 'result' ? progress : undefined)
+    fetchSpan.mockResolvedValueOnce([result])
+    const release = resolver.retainSpan(identity)
+    await resolver.loadSpan(identity)
+    expect(resolver.result(identity)?.message).toBe(result)
+    expect(resolver.role(progress)).toBe('none')
+    expect(resolver.visibleRows(identity)).toEqual({ request: false, result: false })
+    release()
+  })
+
+  it('recovers the genuine pair when both resident slots contain no-side records', async () => {
+    const first = noSideMessage('first-window', 1n)
+    const second = noSideMessage('second-window', 2n)
+    const request = toolMessage('request', 3n, 'request')
+    const result = toolMessage('result', 4n, 'result')
+    const { resolver, fetchSpan } = fixture([first, second], (_identity, side) => side === 'request' ? first : second)
+    fetchSpan.mockResolvedValueOnce([request, result])
+    const release = resolver.retainSpan(identity)
+    await resolver.loadSpan(identity)
+    expect(fetchSpan).toHaveBeenCalledTimes(1)
+    expect(resolver.request(identity)?.message).toBe(request)
+    expect(resolver.result(identity)?.message).toBe(result)
+    expect(resolver.visibleRows(identity)).toEqual({ request: false, result: false })
+    release()
+  })
+
+  it.each(['request', 'result'] as const)('removes a %s side after a same-ID replacement becomes no-side', (side) => {
+    const original = toolMessage('changing', 1n, side)
+    const replacement = noSideMessage(original.id, original.seq)
+    const { resolver, replaceMessages } = fixture([original])
+    expect(resolver.role(original)).toBe(side)
+    replaceMessages([replacement])
+    expect(resolver.role(original)).toBe('none')
+    expect(resolver.request(identity)).toBeUndefined()
+    expect(resolver.result(identity)).toBeUndefined()
+    expect(resolver.visibleRows(identity)).toEqual({ request: false, result: false })
+  })
+
+  it('keeps a reused span separate when only one session has no-side progress', () => {
+    const first = toolMessage('first-request', 1n, 'request', { agentSessionId: 'first-session' })
+    const second = toolMessage('second-result', 2n, 'result', { agentSessionId: 'second-session' })
+    const progress = noSideMessage('window', 3n, { agentSessionId: 'first-session' })
+    const { resolver } = fixture([first, second, progress])
+    expect(resolver.visibleRows({ spanId: 'span', agentSessionId: 'first-session' })).toEqual({ request: true, result: false })
+    expect(resolver.visibleRows({ spanId: 'span', agentSessionId: 'second-session' })).toEqual({ request: false, result: true })
+    expect(resolver.request({ spanId: 'span', agentSessionId: 'first-session' })?.message).toBe(first)
+    expect(resolver.result({ spanId: 'span', agentSessionId: 'second-session' })?.message).toBe(second)
   })
 })

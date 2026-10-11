@@ -4,7 +4,6 @@ import { isFinishedToolCallStatus, toolCallStatus } from '~/components/chat/mode
 import { ACP_UPDATE } from '~/generated/contracts/acp-protocol'
 import { isObject, pickString } from '~/lib/jsonPick'
 import { isPlainNotificationType } from '~/lib/notificationTypes'
-import { buildAllowResponse, buildDenyResponse, getToolInput } from '~/utils/controlResponse'
 import { messageCompletionFromProto } from '../../assembledMessage'
 import { isFinalCompactingStatus, isNotificationThreadWrapper } from '../../messageUtils'
 import { classifyNotifications } from '../../notificationClassification'
@@ -12,26 +11,10 @@ import { unwrapACPResult } from './resultWrapper'
 import { ACP_SESSION_UPDATE } from './updateVocabulary'
 
 /**
- * Build the wire-format control-response for an ACP-style control request.
- * Deny when the user provided text feedback, allow otherwise (echoing back
- * the original tool input). Used by every ACP-based provider plugin
- * (`buildControlResponse: acpBuildControlResponse`).
- */
-export function acpBuildControlResponse(
-  payload: Record<string, unknown>,
-  content: string,
-  requestId: string,
-): Record<string, unknown> {
-  return content
-    ? buildDenyResponse(requestId, content)
-    : buildAllowResponse(requestId, getToolInput(payload))
-}
-
-/**
  * True when the wrapper holds a notification thread of this family.
  *
  * This family adds no type to the base set, which is what the `undefined` states. Every
- * notification these five daemons write is LeapMux's own envelope, and
+ * notification these daemons write is LeapMux's own envelope, and
  * `BASE_NOTIFICATION_TYPES` accepts each one -- `agent_error` included, because the
  * worker writes that type for every provider.
  *
@@ -53,12 +36,12 @@ export function isACPNotifThread(wrapper: { messages: unknown[] } | null): boole
  * such frames would surface as a `notification` that holds no block, and the row would
  * fall back to the raw-frame card.
  *
- * NO DAEMON OF THIS FAMILY SENDS A `system` FRAME. All five answer pure JSON-RPC, and
+ * NO DAEMON OF THIS FAMILY SENDS A `system` FRAME. Each answers pure JSON-RPC, and
  * no `sessionUpdate` vocabulary of theirs holds that word. The worker stores two
  * shapes of theirs byte for byte -- a JSON-RPC envelope, tagged `jsonrpc`/`method`/
  * `id`, and a session update, tagged `sessionUpdate` -- and neither shape carries a
  * top-level `type`. The registration hook says the same thing from the other side: the
- * five plugins of this family supply no `notificationEntry`, because every
+ * plugins of this family supply no `notificationEntry`, because every
  * notification in those transcripts is LeapMux's own envelope.
  *
  * No transcript of this family holds such a frame today, and the guard stays because
@@ -101,6 +84,12 @@ export interface ACPClassifyConfig {
    * its plugin registration.
    */
   classifyToolCallUpdate?: (parent: Record<string, unknown>) => MessageCategory | undefined
+  /**
+   * The stop reason that a provider's own frame states for the end of a turn that
+   * the agent started by itself, or undefined for any other frame. The worker stores
+   * that frame as the turn-end row, as it stores a prompt response.
+   */
+  agentTurnEnd?: (parent: Record<string, unknown>) => string | undefined
 }
 
 export function classifyACPMessage(config: ACPClassifyConfig = {}): (input: ClassificationInput, context?: ClassificationContext) => MessageCategory {
@@ -180,6 +169,13 @@ export function classifyACPMessage(config: ACPClassifyConfig = {}): (input: Clas
 
     if (sessionUpdate === ACP_SESSION_UPDATE.PLAN)
       return { kind: 'tool_use' }
+
+    // The provider's own end of a turn that the agent started by itself comes BEFORE
+    // the hidden updates. A provider can state that end on an update that the family
+    // hides otherwise -- Kiro states it on a `session_info_update` -- and the worker
+    // stores exactly that update as the turn-end row.
+    if (config.agentTurnEnd?.(parent) !== undefined)
+      return { kind: 'result_divider' }
 
     if (hiddenSessionUpdates.has(sessionUpdate))
       return { kind: 'hidden' }

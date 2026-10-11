@@ -1,4 +1,5 @@
 import type { Navigator } from '@solidjs/router'
+import { escapeRegExp } from '~/lib/regexp'
 import { safeRedirect } from '~/lib/safeRedirect'
 
 /**
@@ -20,10 +21,6 @@ const ROUTE_GROUP = /^\(.*\)$/
 /** A dynamic segment: `[id]` matches one segment, `[...rest]` matches the rest. */
 const DYNAMIC_SEGMENT = /^\[.*\]$/
 const CATCH_ALL_SEGMENT = /^\[\.\.\..*\]$/
-
-function escapeRegExp(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
 
 /**
  * The addresses this SPA answers, as patterns.

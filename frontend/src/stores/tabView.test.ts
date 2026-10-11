@@ -300,6 +300,7 @@ describe('tabView', () => {
           startupMessage: 'starting',
           parentAgentId: 'parent-1',
           acceptsMessages: true,
+          acceptsInterrupt: true,
           supportsSteering: true,
           rootAgentId: 'root-1',
         })
@@ -326,6 +327,7 @@ describe('tabView', () => {
         expect(tab.startupMessage).toBe('starting')
         expect(tab.parentAgentId).toBe('parent-1')
         expect(tab.acceptsMessages).toBe(true)
+        expect(tab.acceptsInterrupt).toBe(true)
         expect(tab.supportsSteering).toBe(true)
         expect(tab.rootAgentId).toBe('root-1')
         dispose()

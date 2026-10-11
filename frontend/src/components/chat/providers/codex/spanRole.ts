@@ -1,9 +1,9 @@
 import type { ResolvedMessageContent } from '../../rowExtractionTypes'
-import type {} from '../registry'
 import type { ToolSpanRole } from '~/lib/messageSpan'
 import { CODEX_ITEM } from '~/generated/contracts/codex-protocol'
 import { pickString } from '~/lib/jsonPick'
 import { retainedRowIsFinal } from '../registry'
+import { codexRawExecRole } from './extractors/execute'
 import { extractItem } from './extractors/item'
 import { CODEX_STATUS } from './itemVocabulary'
 import { isCodexFinishedStatus } from './status'
@@ -19,6 +19,9 @@ const CODEX_TOOL_SPANS = new Set<string>([
 ])
 
 export function codexSpanRole(parsed: ResolvedMessageContent): ToolSpanRole {
+  const executionRole = codexRawExecRole(parsed.parentObject)
+  if (executionRole)
+    return retainedRowIsFinal(parsed.completion) ? 'result' : executionRole
   const item = extractItem(parsed.parentObject)
   if (!item || !CODEX_TOOL_SPANS.has(pickString(item, 'type')))
     return 'other'
@@ -29,6 +32,9 @@ export function codexSpanRole(parsed: ResolvedMessageContent): ToolSpanRole {
 }
 
 export function codexRelatedMessages(parsed: ResolvedMessageContent) {
+  const executionRole = codexRawExecRole(parsed.parentObject)
+  if (executionRole)
+    return executionRole === 'result' ? ['request'] as const : ['result'] as const
   const item = extractItem(parsed.parentObject)
   if (item?.type === CODEX_ITEM.ImageView || item?.type === CODEX_ITEM.CollabAgentToolCall)
     return ['request', 'result'] as const

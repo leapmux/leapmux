@@ -247,6 +247,68 @@ describe('useAgentOperations settings reconciliation', () => {
     expect(tab?.optionValues?.effort).toBe('xhigh')
   })
 
+  // The user changes the model alone, so the request carries the model alone. The browser clamps an
+  // effort that the new model lacks for display, and it must never send that clamped value: the
+  // worker decides what happens to every other axis and reports each change in its settlements.
+  describe('a model switch', () => {
+    // Opus and Sonnet offer the same four tiers. Haiku offers no effort axis. Each model option
+    // carries its own effort group, as the live catalog does.
+    function switchableCatalog(current: string, effort: string): AvailableOptionGroup[] {
+      const tiers = () => effortGroup(['auto', 'high', 'xhigh', 'max'], '', 'high')
+      const model = create(AvailableOptionGroupSchema, {
+        id: 'model',
+        label: 'Model',
+        order: 10,
+        mutable: true,
+        currentValue: current,
+        options: [
+          create(AvailableOptionSchema, { id: 'opus[1m]', name: 'Opus (1M context)', subGroups: [tiers()] }),
+          create(AvailableOptionSchema, { id: 'sonnet', name: 'Sonnet', subGroups: [tiers()] }),
+          create(AvailableOptionSchema, { id: 'haiku', name: 'Haiku' }),
+        ],
+      })
+      return current === 'haiku' ? [model, permissionGroup] : [model, effortGroup(['auto', 'high', 'xhigh', 'max'], effort, 'high'), permissionGroup]
+    }
+
+    it('sends the model alone and keeps an effort that the new model offers', async () => {
+      const stores = seedAgent({
+        optionValues: { model: 'opus[1m]', effort: 'xhigh', permissionMode: 'default' },
+        optionGroups: switchableCatalog('opus[1m]', 'xhigh'),
+      })
+      // The worker keeps xhigh, so the model is the only axis that it settles.
+      updateAgentSettings.mockResolvedValue(confirmedResponse({ model: 'sonnet' }))
+
+      await runChange(stores, { groupKey: 'model', value: 'sonnet' })
+
+      expect(updateAgentSettings).toHaveBeenCalledWith('w1', {
+        agentId: 'a1',
+        settings: { options: { model: 'sonnet' } },
+      })
+      const tab = stores.view.getAgentTab('a1')
+      expect(tab?.optionValues?.model).toBe('sonnet')
+      expect(tab?.optionValues?.effort).toBe('xhigh')
+    })
+
+    it('sends the model alone and applies the removal of an effort that the new model lacks', async () => {
+      const stores = seedAgent({
+        optionValues: { model: 'opus[1m]', effort: 'xhigh', permissionMode: 'default' },
+        optionGroups: switchableCatalog('opus[1m]', 'xhigh'),
+      })
+      // The worker drops the effort of a model with no effort axis and reports the removal.
+      updateAgentSettings.mockResolvedValue(confirmedResponse({ model: 'haiku', effort: undefined }))
+
+      await runChange(stores, { groupKey: 'model', value: 'haiku' })
+
+      expect(updateAgentSettings).toHaveBeenCalledWith('w1', {
+        agentId: 'a1',
+        settings: { options: { model: 'haiku' } },
+      })
+      const tab = stores.view.getAgentTab('a1')
+      expect(tab?.optionValues?.model).toBe('haiku')
+      expect(tab?.optionValues).not.toHaveProperty('effort')
+    })
+  })
+
   it('rolls back a failed change by deleting the key when it had no prior value', async () => {
     const stores = seedAgent({
       // permissionMode is absent from optionValues -- the catalog's currentValue

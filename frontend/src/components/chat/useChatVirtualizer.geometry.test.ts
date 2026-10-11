@@ -7,6 +7,98 @@ import { HEIGHT_CACHE_MAX, sameVirtualItems, useChatVirtualizer } from './useCha
 import { fakeRow, makeItems, plainItems, setup } from './useChatVirtualizer.testkit'
 
 describe('useChatVirtualizer geometry', () => {
+  it('completes an empty row without changing the positive estimate', () => {
+    createRoot((dispose) => {
+      const { virt } = setup(plainItems(3))
+      virt.measure('m1', 120)
+      expect(virt.measure('m2', 0)).toBe(true)
+      expect(virt.hasMeasuredHeight('m2')).toBe(true)
+      expect(virt.heightOfIndex(1)).toBe(0)
+      expect(virt.estimateHeight()).toBe(120)
+      expect(virt.offsetOfIndex(2)).toBe(160)
+      expect(virt.totalHeight()).toBe(280)
+      expect(virt.snapshotHeights()).toContainEqual({ id: 'm2', heightKey: undefined, height: 0 })
+      dispose()
+    })
+  })
+
+  it('hydrates cached zero and invalidates it when the layout key changes', () => {
+    createRoot((dispose) => {
+      try {
+        const { virt, setList } = setup([{ id: 'empty', heightKey: 'old', hasSpanLines: false }])
+        expect(virt.primeHeights([{ id: 'empty', heightKey: 'old', height: 0 }])).toBe(1)
+        expect(virt.hasMeasuredHeight('empty')).toBe(true)
+        expect(virt.totalHeight()).toBe(0)
+        expect(virt.estimateHeight()).toBe(100)
+        expect(virt.measure('empty', 0.2)).toBe(true)
+        expect(virt.heightOfIndex(0)).toBe(0.2)
+        expect(virt.measure('empty', 0)).toBe(true)
+        expect(virt.heightOfIndex(0)).toBe(0)
+        setList([{ id: 'empty', heightKey: 'new', hasSpanLines: false }])
+        expect(virt.hasMeasuredHeight('empty')).toBe(false)
+        expect(virt.primeHeight('empty', 0, 'old')).toBe(false)
+        expect(virt.primeHeight('missing', 0)).toBe(false)
+        expect(virt.measure('missing', 0)).toBe(false)
+        virt.setVisibleMeasurementDeferral(true)
+        expect(virt.primeHeight('missing', 0)).toBe(false)
+        expect(virt.hasPendingPremeasuredHeight('missing')).toBe(false)
+        virt.setVisibleMeasurementDeferral(false)
+        expect(virt.heightOfIndex(0)).toBe(100)
+      }
+      finally {
+        dispose()
+      }
+    })
+  })
+
+  it('keeps band offsets nondecreasing for zero and fractional heights', () => {
+    createRoot((dispose) => {
+      const { virt } = setup(makeItems([
+        { seq: 1, kind: 'assistant_text' },
+        { seq: 2, kind: 'assistant_thinking' },
+        { seq: 3, kind: 'assistant_text' },
+      ]))
+      virt.measure('m1', 0)
+      virt.measure('m2', 0.2)
+      virt.measure('m3', 0.4)
+      expect(virt.hasMeasuredHeight('m1')).toBe(true)
+      expect(virt.offsetOfIndex(1)).toBe(0)
+      expect(virt.offsetOfIndex(2)).toBe(0)
+      expect(virt.totalHeight()).toBe(0.4)
+      dispose()
+    })
+  })
+
+  it('keeps an anchor at the first empty band and preserves an offset inside the later body', () => {
+    createRoot((dispose) => {
+      try {
+        const { virt } = setup(makeItems([
+          { seq: 1, kind: 'assistant_text' },
+          { seq: 2, kind: 'assistant_thinking' },
+          { seq: 3, kind: 'assistant_text' },
+        ]))
+        virt.measure('m1', 0)
+        virt.measure('m2', 0)
+        virt.measure('m3', 40)
+        const atStart = virt.anchorAt(0)!
+        const insideBody = virt.anchorAt(10)!
+        expect(atStart).toEqual({ id: 'm1', offsetWithinRow: 0, basisHeight: 0, gapFraction: 0 })
+        expect(insideBody.id).toBe('m3')
+        expect(virt.scrollTopForAnchor(insideBody)).toBe(10)
+        virt.measure('m1', 20)
+        expect(virt.scrollTopForAnchor(atStart)).toBe(0)
+        expect(virt.scrollTopForAnchor(insideBody)).toBe(30)
+        expect(virt.gapAboveOf('m2') === 0).toBe(true)
+        virt.measure('m2', 10)
+        expect(virt.gapAboveOf('m2')).toBe(-BAND_BORDER_PX)
+        expect(virt.gapAboveOf('m3')).toBe(-BAND_BORDER_PX)
+      }
+      finally {
+        dispose()
+      }
+    })
+  })
+
   it('computes estimate-only offsets and total height', () => {
     createRoot((dispose) => {
       const { virt } = setup(plainItems(5))
@@ -175,14 +267,12 @@ describe('useChatVirtualizer geometry', () => {
     })
   })
 
-  it('ignores a zero-height measurement (hidden tab) and leaves the estimate intact', () => {
+  it('rejects a negative height and keeps the prior measurement', () => {
     createRoot((dispose) => {
       const { virt } = setup(plainItems(3))
       virt.measure('m1', 200)
       expect(virt.estimateHeight()).toBe(200)
-      // A row in a display:none tab reports height 0 — must be ignored so it
-      // doesn't poison the cache or drag the median estimate to ~0.
-      expect(virt.measure('m1', 0)).toBe(false)
+      expect(virt.measure('m1', -1)).toBe(false)
       expect(virt.heightOfIndex(0)).toBe(200)
       expect(virt.estimateHeight()).toBe(200)
       dispose()
@@ -196,7 +286,7 @@ describe('useChatVirtualizer geometry', () => {
       expect(virt.estimateHeight()).toBe(200)
       // A stray NaN height (`NaN <= 0` is false, so the old non-positive guard
       // let it through) would flow into the median histogram and turn estimateHeight — and
-      // thus the whole offset map — into NaN. It must be rejected like a zero.
+      // thus the whole offset map — into NaN. The engine must reject it.
       expect(virt.measure('m2', Number.NaN)).toBe(false)
       expect(virt.estimateHeight()).toBe(200)
       expect(Number.isFinite(virt.totalHeight())).toBe(true)
@@ -211,7 +301,7 @@ describe('useChatVirtualizer geometry', () => {
       expect(virt.estimateHeight()).toBe(200)
       // A stray Infinity height passes a bare `height > 0` test (`Infinity > 0` is
       // true), so it would flow into the median histogram and turn estimateHeight — and the
-      // whole offset map — into NaN/Infinity. The finite-positive guard rejects it.
+      // whole offset map — into NaN/Infinity. The finite-height guard rejects it.
       expect(virt.measure('m2', Number.POSITIVE_INFINITY)).toBe(false)
       expect(virt.estimateHeight()).toBe(200)
       expect(Number.isFinite(virt.totalHeight())).toBe(true)
@@ -418,7 +508,7 @@ describe('useChatVirtualizer geometry', () => {
 
       // Each of these is refused BEFORE the commit lands, so none may inflate the totals --
       // a count that drifts from the real commits makes the WARN attribution a lie.
-      expect(virt.measure('a', 0)).toBe(false) // non-positive: would poison the offset map
+      expect(virt.measure('a', -1)).toBe(false) // A negative height cannot enter the offset map.
       expect(virt.measure('a', Number.NaN)).toBe(false) // NaN
       expect(virt.measure('a', Number.POSITIVE_INFINITY)).toBe(false) // Infinity
       expect(virt.primeHeight('a', 250, 'stale-key')).toBe(false) // heightKey mismatch
@@ -552,22 +642,26 @@ describe('useChatVirtualizer geometry', () => {
 
   it('does not let hidden premeasure overwrite an already measured mounted row', () => {
     createRoot((dispose) => {
-      const [list] = createSignal<VirtualItem[]>([
-        { id: 'a', hasSpanLines: false, heightKey: 'k1' },
-      ])
-      const virt = useChatVirtualizer({
-        items: list,
-        overscanPx: 0,
-        estimateHeight: 100,
-        gapSmallPx: 10,
-        gapLargePx: 20,
-      })
-      virt.attachRow('a', fakeRow(320))
+      try {
+        const [list] = createSignal<VirtualItem[]>([
+          { id: 'a', hasSpanLines: false, heightKey: 'k1' },
+        ])
+        const virt = useChatVirtualizer({
+          items: list,
+          overscanPx: 0,
+          estimateHeight: 100,
+          gapSmallPx: 10,
+          gapLargePx: 20,
+        })
+        virt.attachRow('a', fakeRow(320))
 
-      expect(virt.heightOfIndex(0)).toBe(320)
-      expect(virt.primeHeight('a', 120, 'k1')).toBe(false)
-      expect(virt.heightOfIndex(0)).toBe(320)
-      dispose()
+        expect(virt.heightOfIndex(0)).toBe(320)
+        expect(virt.primeHeight('a', 120, 'k1')).toBe(false)
+        expect(virt.heightOfIndex(0)).toBe(320)
+      }
+      finally {
+        dispose()
+      }
     })
   })
 
@@ -829,7 +923,7 @@ describe('primeHeights bulk hydration and snapshotheights', () => {
       const adopted = virt.primeHeights([
         { id: 'ghost', heightKey: 'k-live', height: 50 }, // not in the list
         { id: 'm1', heightKey: 'k-stale', height: 50 }, // wrong layout epoch
-        { id: 'm2', heightKey: 'k-live', height: 0 }, // unusable height
+        { id: 'm2', heightKey: 'k-live', height: -1 }, // unusable height
       ])
       expect(adopted).toBe(0)
       expect(virt.geometryVersion()).toBe(before)
@@ -840,13 +934,17 @@ describe('primeHeights bulk hydration and snapshotheights', () => {
 
   it('never overwrites a mounted row\'s live visible measurement', () => {
     createRoot((dispose) => {
-      const { virt } = setup(plainItems(2))
-      virt.attachRow('m1', fakeRow(150))
-      virt.measure('m1', 150)
-      const adopted = virt.primeHeights([{ id: 'm1', heightKey: undefined, height: 999 }])
-      expect(adopted).toBe(0)
-      expect(virt.heightOfIndex(0)).toBe(150)
-      dispose()
+      try {
+        const { virt } = setup(plainItems(2))
+        virt.attachRow('m1', fakeRow(150))
+        virt.measure('m1', 150)
+        const adopted = virt.primeHeights([{ id: 'm1', heightKey: undefined, height: 999 }])
+        expect(adopted).toBe(0)
+        expect(virt.heightOfIndex(0)).toBe(150)
+      }
+      finally {
+        dispose()
+      }
     })
   })
 

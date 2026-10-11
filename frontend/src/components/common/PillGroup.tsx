@@ -1,5 +1,6 @@
 import type { LucideIcon } from 'lucide-solid'
 import type { Component } from 'solid-js'
+import type { PillOptions, PillOptionSpec } from './pillOptions'
 import { createEffect, createMemo, createSignal, createUniqueId, For, onCleanup, onMount, Show } from 'solid-js'
 import { createKeyedElementRefs } from '~/lib/keyedElementRefs'
 import { createRafResizeObserver } from '~/lib/resizeObserver'
@@ -8,67 +9,11 @@ import { sameValueZero, shallowEqualMapKeyArrays } from '~/lib/shallowEqual'
 import { srOnly } from '~/styles/shared.css'
 import { Icon } from './Icon'
 import * as styles from './PillGroup.css'
+import { PILL_OPTION_LIMIT } from './pillOptions'
 import { Tooltip } from './Tooltip'
-
-/** One choice in a {@link PillGroup}. */
-export interface PillOptionSpec<K> {
-  /** The unique selection key. */
-  key: K
-  label: string
-  /**
-   * Draw this in place of the label text, for an option too narrow to spell
-   * out. `label` stays the accessible name and becomes the tooltip, so the
-   * option keeps a name for a screen reader and for a by-name lookup.
-   */
-  icon?: LucideIcon
-  /** A non-empty reason that makes this option unavailable. */
-  disabledReason?: string
-}
 
 /** The icon size an option draws at. One line of `--text-8` is 18px tall. */
 const OPTION_ICON_SIZE = 'xs'
-
-/** One through four fixed choices. Use a menu for any other list. */
-export type PillOptions<K>
-  = | readonly [PillOptionSpec<K>]
-    | readonly [PillOptionSpec<K>, PillOptionSpec<K>]
-    | readonly [PillOptionSpec<K>, PillOptionSpec<K>, PillOptionSpec<K>]
-    | readonly [PillOptionSpec<K>, PillOptionSpec<K>, PillOptionSpec<K>, PillOptionSpec<K>]
-
-export const PILL_OPTION_LIMIT = 4
-
-/**
- * Whether a list of option specs is a drawable {@link PillOptions} — one through
- * `PILL_OPTION_LIMIT` entries. The one source of the "what counts as a drawable
- * pill set" rule, so callers that must degrade on a longer list (a menu instead)
- * all apply the same cutoff.
- */
-export function isPillOptions<K extends string>(options: readonly PillOptionSpec<K>[]): options is PillOptions<K> {
-  return options.length > 0 && options.length <= PILL_OPTION_LIMIT
-}
-
-/**
- * The label for each item, replaced by its distinct form wherever two items
- * would otherwise read the same.
- *
- * `optionMap` refuses two options that share a KEY, and nothing refuses two that
- * share a LABEL. Two pills with one name let the user pick the wrong answer, give
- * a screen reader the same name twice, and make `getByRole('radio', { name })`
- * match more than one element. A group derives its labels from a small
- * vocabulary, so a collision is normal rather than exceptional, and each caller
- * supplies the detail that tells its own two items apart.
- */
-export function disambiguateLabels<T>(
-  items: readonly T[],
-  label: (item: T) => string,
-  distinct: (item: T) => string,
-): string[] {
-  const counts = new Map<string, number>()
-  const labels = items.map(label)
-  for (const one of labels)
-    counts.set(one, (counts.get(one) ?? 0) + 1)
-  return items.map((item, index) => ((counts.get(labels[index]!) ?? 0) > 1 ? distinct(item) : labels[index]!))
-}
 
 type PillOptionState
   = | { kind: 'enabled' }
@@ -113,26 +58,22 @@ function PillOption(props: {
    */
   const tooltipText = () => (props.state.kind === 'option-refused' ? props.state.reason : props.label)
   /**
-   * When it opens. A refusal reason and an icon-only option's name are never on
-   * screen, so both open on every hover. A text option repeats a label the
-   * reader can already read, so it opens only where the group CUTS THE PILL OFF
-   * -- `pillGroup` is `overflow: hidden`, and a row too narrow for its options
-   * clips the last ones. Without this a clipped option states no name at all,
-   * and a group whose labels carry a distinguishing detail (a host, a command)
-   * is exactly the one that runs out of room.
+   * Show the tooltip on every hover for an icon option or a refused option.
+   * Their labels or refusal reasons are not otherwise visible.
+   * A text option shows the tooltip only when the group clips it.
+   * The group uses overflow:hidden, so a narrow row can hide its last labels.
+   * Those labels can include the host or command that distinguishes an option.
    */
   const tooltipShowWhen = (): 'always' | 'clipped' =>
     (props.state.kind === 'option-refused' || props.icon !== undefined ? 'always' : 'clipped')
   /**
-   * The name an icon-only option carries. Passed as a STRING rather than
-   * `true`, so it stays the name even when the tooltip states a refusal reason
-   * instead; `Tooltip` then publishes the reason as a description, because the
-   * two strings differ.
+   * Pass an icon option's label as its accessible name.
+   * Keep that name when the tooltip also reports a refusal reason.
+   * Tooltip exposes the different refusal text as a description.
    *
-   * A TEXT option passes nothing. Its own text is already the accessible name,
-   * and an `aria-label` that repeats it only makes the button answer a second
-   * by-label lookup -- `LoginPage` has a `Password` field beside a `Password`
-   * pill, and the two then collide.
+   * A text option uses its visible text as its accessible name.
+   * Do not repeat it through aria-label.
+   * A repeated aria-label creates another by-label match, which can collide with a form field such as Password.
    */
   const tooltipName = () => (props.icon === undefined ? undefined : props.label)
   const pill = () => (

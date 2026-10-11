@@ -9,7 +9,9 @@ import { createPerAgentListStore } from './chatPerAgentStore'
 
 export function protoTodoToItem(todo: ProtoTodoItem, index: number): TodoItem {
   let status: TodoItem['status'] = 'pending'
-  if (todo.status === TodoStatus.IN_PROGRESS)
+  if (todo.status === TodoStatus.BLOCKED)
+    status = 'blocked'
+  else if (todo.status === TodoStatus.IN_PROGRESS)
     status = 'in_progress'
   else if (todo.status === TodoStatus.COMPLETED)
     status = 'completed'

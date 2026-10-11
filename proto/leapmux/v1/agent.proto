@@ -261,6 +261,11 @@ message AgentInfo {
   // so its child transcripts are read-only. The frontend gates the composer on
   // this field.
   bool accepts_messages = 18;
+  // Whether this agent's turn can be interrupted from its own tab. Roots:
+  // always true. Children: true only when the feeding provider can interrupt a
+  // subagent turn inside its process (Provider.ChildCapabilities). The
+  // frontend shows the Interrupt control of a child tab on this field.
+  bool accepts_interrupt = 25;
   // The ROOT owner agent id (the top of the parent_agent_id chain). For a root
   // agent this equals its own id. The background-task registry and the root's
   // TodosChanged/BackgroundTasksChanged events are keyed by this id, so a child
@@ -307,6 +312,8 @@ message AgentInfo {
   // subagent's own row, which is 1 exactly while it runs. Reported so a close
   // guard can say WHAT it is refusing to interrupt, not just that it refuses.
   int32 active_background_tasks = 22;
+  // The stable native key of a virtual child. A provider can omit its spawn span.
+  string provider_child_key = 26;
 }
 
 // AvailableOption describes a single selectable value within an option group
@@ -355,6 +362,10 @@ message AvailableOptionGroup {
   string default_value = 5;             // Provider default option id
   bool mutable = 6;                     // false => agent-controlled, render read-only
   int32 order = 7;                      // Ascending display order in the popover
+  // Why a read-only group cannot change, in words the reader can act on. Empty
+  // for a mutable group, and for a read-only group whose reason is only that the
+  // agent controls it.
+  string read_only_reason = 8;
 }
 
 // --- Agent Messaging ---
@@ -551,6 +562,8 @@ enum MessageCompletion {
   MESSAGE_COMPLETION_COMPLETE = 1;
   MESSAGE_COMPLETION_INTERRUPTED = 2;
   MESSAGE_COMPLETION_ERROR = 3;
+  // The provider reports finality without a known outcome.
+  MESSAGE_COMPLETION_FINISHED = 4;
 }
 
 message AgentChatMessage {
@@ -589,6 +602,8 @@ message AgentChatMessage {
   // Provider session identity, separate from the original message bytes.
   // Related tool messages must belong to this session as well as this agent.
   string agent_session_id = 21;
+  // True when this transcript update must not change current live state.
+  bool transcript_only = 22;
 }
 
 // AgentStatusChange notifies of agent status transitions.
@@ -797,6 +812,7 @@ enum TodoStatus {
   TODO_STATUS_IN_PROGRESS = 2;
   TODO_STATUS_COMPLETED = 3;
   TODO_STATUS_DELETED = 4;
+  TODO_STATUS_BLOCKED = 5;
 }
 
 // AgentTodosChanged is broadcast whenever a message mutates an agent's
@@ -924,7 +940,9 @@ enum AgentGoalStatus {
   // a process that no longer exists. Blanking the status sends UNSPECIFIED,
   // which a client can only read as "a status I do not understand", so a goal
   // that merely waits for its session to resume renders as a fault.
-  AGENT_GOAL_STATUS_DORMANT = 5;
+  // A provider can preserve an unrecognized state through UNKNOWN instead.
+  AGENT_GOAL_STATUS_UNKNOWN = 5;
+  AGENT_GOAL_STATUS_DORMANT = 6;
 }
 
 enum AgentGoalAction {

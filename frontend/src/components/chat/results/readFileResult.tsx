@@ -63,9 +63,10 @@ export function ReadFileResultBody(props: {
       </Show>
       <Show
         when={hasParsedLines() && items().length > 0}
-        fallback={<CollapsibleContent kind="pre" text={fallbackText()} display={fallback.display()} isCollapsed={fallback.isCollapsed()} {...(props.context !== undefined ? { context: props.context } : {})} />}
+        fallback={<CollapsibleContent outputPreview={Boolean(props.source.fallbackContent)} kind="pre" text={fallbackText()} display={fallback.display()} isCollapsed={fallback.isCollapsed()} {...(props.context !== undefined ? { context: props.context } : {})} />}
       >
         <ReadResultView
+          outputPreview
           lines={displayItems()}
           {...(props.path !== undefined ? { filePath: props.path } : {})}
           {...(props.context?.premeasureMode !== undefined ? { premeasureMode: props.context?.premeasureMode } : {})}

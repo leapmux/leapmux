@@ -1,7 +1,9 @@
-// These tests exercise parsers, data structures, and repository rules without a browser.
+// These tests run without a browser.
 // Keep the list explicit so a new browser test keeps the jsdom environment by default.
 // Both projects use this list, which prevents overlap and preserves collection of all other tests.
 export const NODE_TEST_FILES = [
+  'eslint/chatPipelinePlugin.test.ts',
+  'eslint/providerWireTokens.test.ts',
   'scripts/resolve-task-bin.test.ts',
   'scripts/run-e2e.test.ts',
   'scripts/run-vitest.test.mjs',
@@ -39,8 +41,10 @@ export const NODE_TEST_FILES = [
   'src/components/chat/providers/claude/extractors/search.test.ts',
   'src/components/chat/providers/claude/extractors/todo.test.ts',
   'src/components/chat/providers/claude/extractors/webSearch.test.ts',
+  'src/components/chat/providers/codex/extractControl.test.ts',
   'src/components/chat/providers/codex/extractors/plan.test.ts',
   'src/components/chat/providers/codex/extractors/webSearch.test.ts',
+  'src/components/chat/providers/openCodeQuestions.test.ts',
   'src/components/chat/providers/opencode/controlResponse.test.ts',
   'src/components/chat/providers/pi/askUserQuestion.test.ts',
   'src/components/chat/providers/pi/extractors/execute.test.ts',
@@ -56,6 +60,7 @@ export const NODE_TEST_FILES = [
   'src/components/chat/settingsGroups.test.ts',
   'src/components/chat/spanLinesParse.test.ts',
   'src/components/common/Dialog.css.test.ts',
+  'src/components/common/pillOptions.test.ts',
   'src/components/settings/account/fetchAllPages.test.ts',
   'src/components/settings/account/scopeCatalogue.test.ts',
   'src/components/settings/account/scopeToken.test.ts',
@@ -180,7 +185,6 @@ export const NODE_TEST_FILES = [
   'src/test-support/noImportCycles.test.ts',
   'src/test-support/noMangledTestTitles.test.ts',
   'src/test-support/noMirroredUnitTests.test.ts',
-  'src/test-support/noNetworkIdleWait.test.ts',
   'src/test-support/paletteColorsAreTokens.test.ts',
   'src/test-support/restrictedSyntaxKeepsBaseRules.test.ts',
   'src/test-support/setupGateIsSingleSource.test.ts',
@@ -214,7 +218,6 @@ export const NODE_TEST_FILES = [
   'tests/e2e/helpers/providerToolCalls.test.ts',
   'tests/e2e/helpers/runDirectory.test.ts',
   'tests/e2e/helpers/safeArea.test.ts',
-  'tests/e2e/helpers/scriptedPiModel.test.ts',
   'tests/e2e/helpers/server.test.ts',
   'tests/e2e/helpers/serverOutput.test.ts',
   'tests/e2e/helpers/subagentRegistry.test.ts',

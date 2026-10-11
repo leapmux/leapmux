@@ -1,7 +1,8 @@
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { escapeRegExp } from '~/lib/regexp'
 import { bodyContentHeight, bodyHeight, bodySafeAreaTop } from '~/styles/tokens'
 import {
   BOOT_PHASE_READY,
@@ -40,8 +41,7 @@ import {
  * hand-escaping at the call site.
  */
 function cssRule(css: string, selector: string): string {
-  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  const match = new RegExp(`(?:^|[}\\n])${escaped}\\{([^}]*)\\}`).exec(css)
+  const match = new RegExp(`(?:^|[}\\n])${escapeRegExp(selector)}\\{([^}]*)\\}`).exec(css)
   expect(match, `bootSplashDocumentCss states no ${selector} rule`).not.toBeNull()
   return match![1]!
 }
@@ -467,7 +467,7 @@ describe('boot splash lockstep sources', () => {
 
   it('does not ship a BootSplash.css.ts twin', () => {
     const path = resolve(here, '../components/common/BootSplash.css.ts')
-    expect(() => readFileSync(path, 'utf8')).toThrow()
+    expect(existsSync(path)).toBe(false)
   })
 
   // Two stylesheets paint the body: this one until the app bundle lands, and

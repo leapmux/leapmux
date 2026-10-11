@@ -78,6 +78,73 @@ function withStoredBody(fields: Record<string, unknown>, record: Record<string, 
   })
 }
 
+describe('reasonix shell records', () => {
+  // Verbatim shape of a Reasonix 1.38.7 `bash` record: the host's tool result, and
+  // `tool_execution` with the code of the command.
+  function shell(status: 'completed' | 'failed', record: Record<string, unknown>) {
+    const built = call({ title: 'bash', kind: 'execute', status, rawInput: { command: 'printf x' } }, {
+      status,
+      rawOutput: { reasonix: { role: 'tool', tool_call_id: 'reasonix-tool', name: 'bash', ...record } },
+    })
+    if (built.kind !== 'execute')
+      throw new Error('The native shell record must draw an execute row.')
+    return typedResult(built)?.commands[0]
+  }
+
+  it('reads the code of a failed command and drops the host failure line', () => {
+    expect(shell('failed', { content: 'error: command exited: exit status 7\nSHELLERR77\n', tool_execution: { kind: 'shell', state: 'failed', exitCode: 7 } }))
+      .toMatchObject({ output: 'SHELLERR77\n', exitCode: 7 })
+  })
+
+  it('reads the code from the failure line when the record states no execution', () => {
+    expect(shell('failed', { content: 'error: command exited: exit status 3\nout' })).toMatchObject({ output: 'out', exitCode: 3 })
+  })
+
+  it('reads the zero code of a command that succeeded', () => {
+    expect(shell('completed', { content: 'SHELL42\n[receipt r_97da2502]', tool_execution: { kind: 'shell', state: 'completed', exitCode: 0 } }))
+      .toMatchObject({ output: 'SHELL42', exitCode: 0 })
+  })
+
+  it('removes only the final host receipt and preserves an earlier printed receipt', () => {
+    expect(shell('completed', { content: '[receipt r_printed]\nSHELL42\n[receipt r_native]', tool_execution: { exitCode: 0 } }))
+      .toMatchObject({ output: '[receipt r_printed]\nSHELL42', exitCode: 0 })
+  })
+
+  it('keeps a failure line of another cause, which states the reason', () => {
+    expect(shell('failed', { content: 'error: command exited: signal: killed\nout', tool_execution: { kind: 'shell', state: 'failed' } }))
+      .toMatchObject({ output: 'error: command exited: signal: killed\nout' })
+  })
+
+  it('keeps an unsafe failure line instead of removing an unreadable reason', () => {
+    const text = 'error: command exited: exit status 9007199254740992\nout'
+    const result = shell('failed', { content: text })
+    expect(result?.output).toBe(text)
+    expect(result?.exitCode).toBeNull()
+  })
+
+  it.each(['completed', 'failed'] as const)('keeps a printed failure line when the structured exit is zero and the frame is %s', (status) => {
+    const text = 'error: command exited: exit status 7\nprinted output'
+    expect(shell(status, { content: text, tool_execution: { exitCode: 0 } }))
+      .toMatchObject({ output: text, exitCode: 0 })
+  })
+
+  it('keeps a printed failure line when the structured exit states another nonzero code', () => {
+    const text = 'error: command exited: exit status 7\nprinted output'
+    expect(shell('failed', { content: text, tool_execution: { exitCode: 3 } }))
+      .toMatchObject({ output: text, exitCode: 3 })
+  })
+
+  it('does not infer a failed exit from the output of a completed text-only call', () => {
+    const text = 'error: command exited: exit status 7\nprinted output'
+    expect(shell('completed', { content: text })).toMatchObject({ output: text, exitCode: null })
+  })
+
+  it('reads a matching structured failed exit even when the call frame completed', () => {
+    expect(shell('completed', { content: 'error: command exited: exit status 7\nactual output', tool_execution: { exitCode: 7 } }))
+      .toMatchObject({ output: 'actual output', exitCode: 7 })
+  })
+})
+
 describe('reasonix stored tool records', () => {
   // The plugin reads `raw_content` first and `content` second, so a field name that
   // stopped matching falls through to the shorter body instead of failing the build.

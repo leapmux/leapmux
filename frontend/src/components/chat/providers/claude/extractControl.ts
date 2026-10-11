@@ -1,6 +1,8 @@
+import type { PermissionOption } from '../../model/controlPrompt'
 import type { ControlExtractionInput, ExtractedControlRequest } from '../registry'
 import { isObject, pickString } from '~/lib/jsonPick'
 import { getToolInput, getToolName } from '~/utils/controlResponse'
+import { KIND_ALLOW_ALWAYS, KIND_ALLOW_ONCE, KIND_REJECT_ONCE } from '../../model/controlPrompt'
 import { CLAUDE_TOOL_NAMES } from './toolNames'
 
 /**
@@ -22,6 +24,19 @@ function claudePlanPermissions(payload: Record<string, unknown>) {
     return tool.trim() && prompt.trim() ? [{ tool, prompt }] : []
   })
 }
+
+/**
+ * The scope answers LeapMux offers for Claude Code. Its control protocol states
+ * no option list on the request, but its reply ACCEPTS remembered grants: the
+ * worker attaches `updatedPermissions` with a session destination, and the CLI
+ * keeps the rule for the session. The session tier alone is offered -- a saved
+ * rule file would outlive the private session that granted it.
+ */
+const CLAUDE_PERMISSION_OPTIONS: PermissionOption[] = [
+  { optionId: 'once', kind: KIND_ALLOW_ONCE, name: 'Allow once' },
+  { optionId: 'session', kind: KIND_ALLOW_ALWAYS, name: 'Allow for this session' },
+  { optionId: 'deny', kind: KIND_REJECT_ONCE, name: 'Deny' },
+]
 
 /**
  * `Provider.extractControl` for Claude Code.
@@ -52,7 +67,7 @@ export function claudeExtractControl(input: ControlExtractionInput): ExtractedCo
       title: toolName,
       input: toolInput,
       ...(command !== undefined ? { command } : {}),
-      options: [],
+      options: CLAUDE_PERMISSION_OPTIONS,
     },
   }
 }

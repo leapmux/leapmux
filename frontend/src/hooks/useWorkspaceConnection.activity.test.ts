@@ -1,9 +1,11 @@
+import type { MessageInitShape } from '@bufbuild/protobuf'
 import type { WatchEventsResponse } from '~/generated/proto/leapmux/v1/workspace_pb'
 import type { UseWatchEventsStreamsOpts } from '~/hooks/useWatchEventsStreams'
+import { create } from '@bufbuild/protobuf'
 import { createRoot } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { AgentActivityState, AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
-import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
+import { AgentActivityState, AgentStatus, WatchReplayMode } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentEventSchema, TabType, WatchAgentEntrySchema, WatchEventsResponseSchema, WatchMode } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { useWorkspaceConnection } from '~/hooks/useWorkspaceConnection'
 import { createAgentActivityStore } from '~/stores/agentActivity.store'
@@ -21,7 +23,7 @@ vi.mock('~/api/workerRpc', async (importOriginal) => {
   return {
     ...actual,
     // The tail-reconcile effect asks for the newest page of every agent tab.
-    // Answered with an empty page so the hook's own promise chains settle.
+    // Return an empty page so the hook completes its history request.
     listAgentMessages: vi.fn().mockResolvedValue({ messages: [], hasMore: false }),
     channelManager: {
       getOrOpenChannel: vi.fn().mockResolvedValue('ch-1'),
@@ -38,12 +40,8 @@ vi.mock('~/components/common/Toast', () => ({
 }))
 
 /**
- * The real stream hook dials a channel. Replaced with a capture, so a test
- * delivers frames to the dispatcher itself.
- *
- * This is what makes the `catchUpStart` wiring testable at all. The unit tests
- * beside it drive `AgentActivityStore` and the extracted handlers directly, so
- * every one of them passes whichever of the two the switch happens to call.
+ * Capture the real stream hook's options so each test sends frames through the dispatcher.
+ * Direct AgentActivityStore and handler tests do not verify which handler that dispatcher selects.
  */
 const streams = vi.hoisted(() => ({ opts: undefined as unknown }))
 
@@ -67,7 +65,9 @@ function streamOpts(): UseWatchEventsStreamsOpts {
 const WS = 'ws-activity-dispatch'
 const WORKER = 'w-1'
 
-/** One agent tab on one worker, with the activity store and the alert exposed. */
+/**
+ * Two agent tabs on one worker, with the activity store and the alert exposed.
+ */
 function mountConnection() {
   const harness = installTestBridge({ workspaceId: WS })
   const { view, metadata, selection } = createTestTabStores(WS)
@@ -79,8 +79,8 @@ function mountConnection() {
   emitAddTab({ type: TabType.AGENT, id: 'a2', tileId: harness.rootTileId, position: 'p2', workerId: WORKER })
   metadata.patch('a1', { agentStatus: AgentStatus.ACTIVE })
   metadata.patch('a2', { agentStatus: AgentStatus.ACTIVE })
-  // a2 is the tile's active tab, so a1 is OFF screen -- which is the tab a
-  // badge is for. A prompt on the tab the user already looks at badges nothing.
+  // a2 is the active tab, so a1 is off screen and can receive a notification badge.
+  // A prompt on the visible tab adds no badge.
   selection.setActiveById(TabType.AGENT, 'a2')
 
   let dispose!: () => void
@@ -103,6 +103,13 @@ function mountConnection() {
       onAgentSettled: (id: string) => settled.push(id),
     })
   })
+  streamOpts().onReplayRequested?.(WORKER, 1n, [create(WatchAgentEntrySchema, {
+    agentId: 'a1',
+    mode: WatchMode.FULL,
+    replay: WatchReplayMode.LATEST,
+    cursorSeq: 0n,
+    replayId: 1n,
+  })])
   return {
     dispose,
     activity,
@@ -112,22 +119,21 @@ function mountConnection() {
   }
 }
 
-/** A control request's payload is JSON, and the handler drops one it cannot parse. */
+/** The handler retains an unreadable control request and its decoding failure. This fixture supplies JSON bytes. */
 function controlPayload(): Uint8Array {
   return new TextEncoder().encode(JSON.stringify({ tool_name: 'Bash' }))
 }
 
-function agentEvent(agentId: string, event: unknown, replay = false): WatchEventsResponse {
-  return { event: { case: 'agentEvent', value: { agentId, event, replay } } } as unknown as WatchEventsResponse
+function agentEvent(agentId: string, event: NonNullable<MessageInitShape<typeof AgentEventSchema>['event']>, replay = false): WatchEventsResponse {
+  return create(WatchEventsResponseSchema, {
+    event: { case: 'agentEvent', value: create(AgentEventSchema, { agentId, event, replay, replayId: replay ? 1n : 0n, replayAgentId: replay ? agentId : '' }) },
+  })
 }
 
 /**
- * The `catchUpStart` branch of handleAgentEvent, which no other test reaches.
- *
- * Swapping that one line to `handleActivityChanged` makes every reconnect ring
- * once for each agent that settled while the client was away -- the burst the
- * level/transition split exists to prevent -- and the whole suite stays green
- * without these cases.
+ * Verify catchUpStart through handleAgentEvent.
+ * Applying a transition handler to this baseline alerts once for each agent that settled while the client was disconnected.
+ * The baseline handler restores the level without creating those alerts.
  */
 describe('useWorkspaceConnection catchUpStart activity', () => {
   it('seeds the replay baseline instead of ringing for it', () => {
@@ -159,8 +165,8 @@ describe('useWorkspaceConnection catchUpStart activity', () => {
   })
 
   it('still rings for the settle that follows the baseline', () => {
-    // The baseline carries the PUBLISHED state, so a settle the Worker is still
-    // holding in its debounce window reads WORKING here and keeps its edge.
+    // The baseline carries the published state.
+    // A held settle therefore restores WORKING and retains its later transition.
     const { dispose, activity, settled } = mountConnection()
     activity.apply('a1', AgentActivityState.WORKING)
 
@@ -179,11 +185,9 @@ describe('useWorkspaceConnection catchUpStart activity', () => {
 })
 
 /**
- * The replay/live split, now that the FRAME says which it is.
- *
- * A client registers its live watch before the replay burst runs and both write
- * the same stream, so arrival order cannot tell them apart. Guessing from it
- * dropped a live permission prompt's badge whenever it raced a replay.
+ * Verify the frame's explicit replay flag. The worker registers live interest before replay
+ * starts. Live and replay frames share one stream. Arrival order cannot distinguish them.
+ * Treating a live prompt as replay loses its notification badge.
  */
 describe('useWorkspaceConnection replay marking', () => {
   it('badges an off-screen tab for a live control request that races a replay', () => {

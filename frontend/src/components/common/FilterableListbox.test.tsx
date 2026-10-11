@@ -4,6 +4,37 @@ import { describe, expect, it, vi } from 'vitest'
 import { FilterableListbox } from './FilterableListbox'
 
 describe('FilterableListbox', () => {
+  it('exposes the selected option and follows a current-value change', () => {
+    const [current, setCurrent] = createSignal('alpha')
+    render(() => FilterableListbox({
+      ariaLabel: 'Test options',
+      items: [
+        { label: 'Alpha', value: 'alpha' },
+        { label: 'Bravo', value: 'bravo' },
+      ],
+      get current() { return current() },
+      onSelect: () => {},
+    }))
+
+    const listbox = screen.getByRole('listbox')
+    expect(within(listbox).getByRole('option', { name: 'Alpha' })).toHaveAttribute('aria-selected', 'true')
+    expect(within(listbox).getByRole('option', { name: 'Bravo' })).toHaveAttribute('aria-selected', 'false')
+
+    setCurrent('bravo')
+    expect(within(listbox).getByRole('option', { name: 'Alpha' })).toHaveAttribute('aria-selected', 'false')
+    expect(within(listbox).getByRole('option', { name: 'Bravo' })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('leaves every option unselected when current is absent', () => {
+    render(() => FilterableListbox({
+      ariaLabel: 'Test options',
+      items: [{ label: 'Alpha', value: 'alpha' }],
+      onSelect: () => {},
+    }))
+
+    expect(screen.getByRole('option', { name: 'Alpha' })).toHaveAttribute('aria-selected', 'false')
+  })
+
   // Guards the highlighted-index clamp: the worker re-emits a shorter catalog on an optimistic
   // model switch, shrinking props.items under the listbox. Without clamping, highlightedIndex
   // keeps pointing past the end and Enter selects nothing (the index resolves to undefined).
@@ -14,6 +45,7 @@ describe('FilterableListbox', () => {
     const [items, setItems] = createSignal(big)
     const onSelect = vi.fn()
     render(() => FilterableListbox({
+      ariaLabel: 'Test options',
       get items() { return items() },
       testIdPrefix: 'm',
       onSelect,
@@ -34,6 +66,7 @@ describe('FilterableListbox', () => {
 
   it('wraps a row in the hover-tooltip span only when the row has tooltip text', () => {
     render(() => FilterableListbox({
+      ariaLabel: 'Test options',
       items: [
         { label: 'With', value: 'w', tooltip: 'has tip' },
         { label: 'Without', value: 'wo' },
@@ -56,6 +89,7 @@ describe('FilterableListbox', () => {
     // five and every caller forgot the sixth, which is how the code-language
     // picker's ids lost their right-aligned muted styling.
     render(() => FilterableListbox({
+      ariaLabel: 'Test options',
       items: [
         { label: 'JavaScript', value: 'javascript', secondary: 'js' },
         { label: 'TypeScript', value: 'typescript', secondary: 'ts' },
@@ -81,6 +115,7 @@ describe('FilterableListbox', () => {
   it('uses a controlled filter when filter/setFilter props are provided', async () => {
     const [filter, setFilter] = createSignal('')
     render(() => FilterableListbox({
+      ariaLabel: 'Test options',
       items: [
         { label: 'Apple', value: 'apple' },
         { label: 'Banana', value: 'banana' },
@@ -111,6 +146,7 @@ describe('FilterableListbox', () => {
     const [resetKey, setResetKey] = createSignal(0)
     const onSelect = vi.fn()
     render(() => FilterableListbox({
+      ariaLabel: 'Test options',
       items: [
         { label: 'Alpha', value: 'alpha' },
         { label: 'Bravo', value: 'bravo' },
@@ -140,6 +176,7 @@ describe('FilterableListbox', () => {
     // and the option they came back for is missing.
     const [resetKey, setResetKey] = createSignal(0)
     render(() => FilterableListbox({
+      ariaLabel: 'Test options',
       items: [
         { label: 'Alpha', value: 'alpha' },
         { label: 'Bravo', value: 'bravo' },
@@ -166,6 +203,7 @@ describe('FilterableListbox', () => {
     const [resetKey, setResetKey] = createSignal(0)
     const onSelect = vi.fn()
     render(() => FilterableListbox({
+      ariaLabel: 'Test options',
       items: [
         { label: 'Alpha', value: 'alpha' },
         { label: 'Bravo', value: 'bravo' },
@@ -186,6 +224,7 @@ describe('FilterableListbox', () => {
     const [resetKey, setResetKey] = createSignal(0)
     const onSelect = vi.fn()
     render(() => FilterableListbox({
+      ariaLabel: 'Test options',
       items: [
         { label: 'Alpha', value: 'alpha' },
         { label: 'Bravo', value: 'bravo' },

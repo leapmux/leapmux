@@ -15,7 +15,7 @@ export function copilotFrame(type: string, data: Record<string, unknown>, agentI
 }
 
 /** The `tool.execution_start` row that opens one tool call. */
-export function copilotToolStart(toolCallId: string, toolName: string, args: Record<string, unknown>): Record<string, unknown> {
+export function copilotToolStart(toolCallId: string, toolName: string, args: Record<string, unknown> | string): Record<string, unknown> {
   return copilotFrame(COPILOT_EVENT.ToolStarted, { toolCallId, toolName, arguments: args })
 }
 

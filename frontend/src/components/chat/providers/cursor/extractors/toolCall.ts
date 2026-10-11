@@ -8,8 +8,9 @@ import { CURSOR_TOOL } from '~/generated/contracts/cursor-protocol'
 import { isObject, pickBoolean, pickFirstString, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
 import { mcpToolCallRequest } from '../../../model/mcpToolCall'
 import { readFileResultFromContent } from '../../../model/readFileResult'
-import { failedResult, proseResult, unparsedResult } from '../../../model/toolCall'
+import { proseResult, unparsedResult } from '../../../model/toolCall'
 import { acpBaseSpec, acpRemapFacts, acpSpecFor } from '../../acp/extractors/toolCall'
+import { declinedToolCallSpec } from '../../declinedToolCall'
 import { questionsFromRecords } from '../../questionRecords'
 import { TOOL_FILE_PATH_KEYS } from '../../toolInputKeys'
 import { cursorAgentCall } from '../extractors/agent'
@@ -337,6 +338,10 @@ function cursorToolCall(source: ACPToolFacts): ToolCallSpec {
 /**
  * Cursor returns file and shell output in rawOutput without ACP content blocks.
  *
+ * Cursor hooks the tool NAME. Its protocol carries none, but five tools write their
+ * own name into `rawInput`, and a saved record identifies every tool that it restored
+ * (`cursorToolCall`).
+ *
  * The two post-conditions every Cursor row carries are applied HERE, around the
  * whole build, rather than at each of its dozen returns: the protocol error a row
  * states nothing else about, and the declined status of a call that never ran.
@@ -350,7 +355,7 @@ export const cursorToolCallAdapter: ACPToolCallAdapter = (facts) => {
   // `{permissionDenied:true}`. Both mean the tool never ran, which `failed` would
   // misreport as a tool that tried.
   if (pickBoolean(raw, 'rejected') === true || pickBoolean(raw, 'permissionDenied') === true)
-    return { ...payload, statusOverride: 'declined', result: failedResult(pickString(raw, 'reason') || facts.text) }
+    return declinedToolCallSpec(payload, pickString(raw, 'reason') || facts.text)
   // Cursor reports a protocol-level failure in `rawOutput.error` and writes no
   // output beside it. A build that restored no payload from the saved result is
   // empty for exactly that reason -- a failed `mcp_*` call whose saved result is

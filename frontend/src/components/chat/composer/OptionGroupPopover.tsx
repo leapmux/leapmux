@@ -154,17 +154,27 @@ export function OptionGroupPopover(props: OptionGroupPopoverProps): JSX.Element 
     props.onChange?.({ sets: { [props.groupId]: value } })
   }
 
-  const current = () => resolvedCurrent(props.optionGroups, props.optionValues, props.groupId)
+  // A memo, not a thunk: each option row reads it to mark itself selected, and a resolution scans the whole option
+  // list. As a thunk, one status push of a catalog of about 400 models (Kilo) cost one scan for each read of each row,
+  // which blocked the page for seconds. The memo resolves once per change, and its `===` keeps a push that leaves the
+  // value alone from touching any row.
+  const current = createMemo(() => resolvedCurrent(props.optionGroups, props.optionValues, props.groupId))
 
   // A group the agent controls, or a composer that accepts no input at all,
-  // both render the options read-only — the reasons differ, so the tooltip does.
+  // both render the options read-only, and the reasons differ, so the tooltip does.
   // The composer-wide reason comes from the caller, which resolved it once for
   // every surface; only the per-group reason is this component's to write.
   const readOnly = () => !!props.disabledReason || !group()?.mutable
   const readOnlyReason = () => {
     if (props.disabledReason)
       return props.disabledReason
-    return group()?.mutable ? undefined : 'This setting is controlled by the agent'
+    const shown = group()
+    if (shown?.mutable)
+      return undefined
+    // The provider's own words, when it states why the group cannot change: Amp
+    // fixes the mode when a thread gets its first message, and the reader can act
+    // on that reason where the generic one says nothing.
+    return shown?.readOnlyReason || 'This setting is controlled by the agent'
   }
   // Set only when there is a reason: exactOptionalPropertyTypes rejects an
   // explicit `undefined` for the items' optional `disabledReason`. One read of

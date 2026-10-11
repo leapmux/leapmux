@@ -7,6 +7,7 @@ import { WorkerSchema } from '~/generated/proto/leapmux/v1/worker_pb'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 /// <reference types="vitest/globals" />
 import { withPreferences } from '~/test-support/preferencesProvider'
+import '~/components/chat/providers'
 
 // The agent dialog's own guard wiring, mirroring the terminal twin: the
 // parent computes the reason (AppShellDialogs suite), but THIS component

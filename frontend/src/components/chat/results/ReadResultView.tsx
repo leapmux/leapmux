@@ -30,6 +30,8 @@ export function ReadResultView(props: {
   textSelectionActive?: () => boolean
   /** Row outside the near-viewport band: tokenize at low worker priority. */
   rowOffscreen?: () => boolean
+  /** When true, each line's text carries data-tool-output-preview. Set it only for returned tool output. */
+  outputPreview?: boolean
 }): JSX.Element {
   const display = createMemo(() => {
     const limited = limitTextLinesForDisplay<NumberedFileLine>(props.lines)
@@ -63,11 +65,15 @@ export function ReadResultView(props: {
     rowOffscreen: () => props.rowOffscreen?.() === true,
   })
 
-  // Dynamic line number column width based on the largest line number
+  // Dynamic line number column width based on the largest line number. An elision
+  // row has no number, and it can be the last row, so the width comes from the
+  // largest number rather than from the last row.
   const lineNumWidth = createMemo(() => {
-    const maxNum = lines().length > 0
-      ? lines().at(-1)!.num
-      : 0
+    let maxNum = 0
+    for (const line of lines()) {
+      if (line.num !== null && line.num > maxNum)
+        maxNum = line.num
+    }
     return `${Math.max(String(maxNum).length, 1)}ch`
   })
 
@@ -80,14 +86,14 @@ export function ReadResultView(props: {
             return t?.[index()] ?? null
           }
           return (
-            <div class={codeViewLine} data-line-num={line.num}>
+            <div class={codeViewLine} data-line-num={line.num ?? undefined}>
               <span
                 class={codeViewLineNumber}
                 style={{ width: lineNumWidth() }}
               >
                 {line.num}
               </span>
-              <span class={codeViewContent}>
+              <span class={codeViewContent} data-tool-output-preview={props.outputPreview ? '' : undefined}>
                 <Show
                   when={tokens()}
                   fallback={line.text}

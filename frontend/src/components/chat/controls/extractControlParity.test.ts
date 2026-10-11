@@ -1,4 +1,3 @@
-import type { ControlPrompt } from '../model/controlPrompt'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { copilotPermissionRequest } from '~/test-support/copilotFixtures'
@@ -7,16 +6,13 @@ import { controlSurface } from './controlSurface'
 import '../providers'
 
 /**
- * One control request per provider, read through the shared derivation.
- *
- * Every provider used to ship a `ControlContent` component that dispatched to the
- * same five bodies, and each decided for itself which fields to pass. The five
- * drifted: a permission on one agent drew its reason and the same permission on the
- * next drew none, because nobody could see the two side by side. This reads them
- * side by side.
+ * Read one control request per provider through the shared derivation.
+ * Each old ControlContent component selected its own fields for the same five bodies.
+ * Their outputs differed: one provider displayed its reason while another omitted it.
+ * These tests compare those outputs directly.
  */
-function surfaceOf(provider: AgentProvider, payload: Record<string, unknown>): ControlPrompt | undefined {
-  return controlSurface({ requestId: 'r', agentId: 'a', payload }, provider, undefined) as ControlPrompt | undefined
+function surfaceOf(provider: AgentProvider, payload: Record<string, unknown>) {
+  return controlSurface({ requestId: 'r', agentId: 'a', payload }, provider, undefined)
 }
 
 const COMMAND = 'npm test -- --runInBand'
@@ -29,7 +25,12 @@ describe('every provider reads a shell permission the same way', () => {
     [AgentProvider.CODEX, { method: 'item/commandExecution/requestApproval', params: { command: COMMAND } }],
     [AgentProvider.OPENCODE, { params: { toolCall: { toolCallId: 'c', kind: 'execute', title: 'Run', rawInput: { command: COMMAND } } } }],
     [AgentProvider.GOOSE, { params: { toolCall: { toolCallId: 'c', kind: 'execute', title: 'Run', rawInput: { command: COMMAND } } } }],
+    // Grok presents the normalized input with a `variant` tag, beside the name in `_meta`.
+
+    // Kiro's request states the call as its title alone, and the command in its own metadata.
+
     [AgentProvider.GITHUB_COPILOT, copilotPermissionRequest({ kind: 'shell', intention: 'Run', fullCommandText: COMMAND, commands: [], canOfferSessionApproval: true })],
+
   ]
 
   it.each(cases)('provider %s states the command it wants to run', (provider, payload) => {
@@ -40,9 +41,11 @@ describe('every provider reads a shell permission the same way', () => {
     expect(surface.permission.command).toBe(COMMAND)
   })
 
-  // The tool NAME is what a reader weighs first, and every provider states one --
-  // under `tool_name`, under a method, or inside the tool call.
-  it.each(cases)('provider %s names the operation', (provider, payload) => {
+  // Each provider identifies its operation through one of these fields:
+  // - A tool name.
+  // - A method.
+  // - A tool-call field.
+  it.each(cases)('provider %s identifies the operation', (provider, payload) => {
     const surface = surfaceOf(provider, payload)
     if (surface?.kind !== 'permission')
       throw new Error('a shell approval is a permission')
@@ -55,12 +58,17 @@ describe('every provider reads its own plan approval', () => {
     [AgentProvider.CLAUDE_CODE, { request: { tool_name: 'ExitPlanMode', input: {} } }],
     [AgentProvider.ZCODE, { request: { tool_name: 'ExitPlanMode', input: {} } }],
     [AgentProvider.CODEX, { request: { tool_name: 'CodexPlanModePrompt', input: {} } }],
+
+    // Grok sends `null` for an empty plan file.
+
+    // Cline's plan tool asks for approval before it runs; the plan is the answer above it.
+
   ])('provider %s reads a plan', (provider, payload) => {
     expect(surfaceOf(provider, payload)?.kind).toBe('plan')
   })
 
-  // Copilot is the one provider that sends the WHOLE plan in its request, where the
-  // others send an approval that identifies a plan the transcript already holds.
+  // Copilot sends the plan text in its request.
+  // Other requests can identify a plan that the transcript already holds.
   it('carries the plan text when the request itself holds it', () => {
     const surface = surfaceOf(
       AgentProvider.GITHUB_COPILOT,
@@ -68,12 +76,18 @@ describe('every provider reads its own plan approval', () => {
     )
     expect(surface).toEqual({ kind: 'plan', text: '# Ship it' })
   })
+
+  // Grok's own request and Qwen's permission request both carry the plan as well.
+  it.each([
+
+  ])('carries the plan text of provider %s', (provider, payload) => {
+    expect(surfaceOf(provider, payload)).toEqual({ kind: 'plan', text: '# Ship it' })
+  })
 })
 
 describe('the permission options a provider offers', () => {
-  // The Agent Client Protocol family and Copilot send their own option lists, which
-  // `layoutPermissionOptions` lays out. Every other provider sends none, and the
-  // shared Allow/Deny pair answers instead -- an EMPTY list is that statement.
+  // An option list can come from the native request or the replies that the provider accepts.
+  // An empty list selects the shared Allow/Deny pair.
   it('carries the wire options of a provider that sends them', () => {
     const surface = surfaceOf(AgentProvider.GOOSE, {
       params: {
@@ -85,17 +99,9 @@ describe('the permission options a provider offers', () => {
       throw new Error('a tool approval is a permission')
     expect(surface.permission.options).toEqual([{ optionId: 'once', kind: 'allow_once', name: 'Allow once' }])
   })
-
-  it('states an empty list for a provider that offers none', () => {
-    const surface = surfaceOf(AgentProvider.CLAUDE_CODE, { request: { tool_name: 'Read', input: { file_path: '/a.ts' } } })
-    if (surface?.kind !== 'permission')
-      throw new Error('a tool approval is a permission')
-    expect(surface.permission.options).toEqual([])
-  })
 })
 
-// Pi's extension dialogs are neither a permission nor a question: there is nothing to
-// approve and no option list, so they take a variant of their own.
+// Pi's confirm and editor dialogs use their own variants instead of the permission or question form.
 describe('pi extension dialogs', () => {
   it.each([
     ['confirm', 'confirm'],
@@ -108,10 +114,9 @@ describe('pi extension dialogs', () => {
     expect(surface.dialog.title).toBe('Approve?')
   })
 
-  // Pi's own question predicate claims `input` and `select` first -- both offer the
-  // reader a CHOICE, which is what the shared question form answers. The dialog
-  // control therefore sees `confirm` and `editor` alone, and the model keeps its
-  // `input` variant because Pi's four methods are what it models.
+  // Pi's question predicate claims input and select first. The shared question form answers both.
+  // The dialog control therefore reads confirm and editor alone.
+  // The model retains its input variant to describe all four native methods.
   it.each(['input', 'select'])('routes a %s dialog to the question form', (method) => {
     const surface = surfaceOf(AgentProvider.PI, { type: 'extension_ui_request', method, title: 'Approve?' })
     expect(surface?.kind).toBe('question')
@@ -128,14 +133,11 @@ describe('pi extension dialogs', () => {
 })
 
 /*
- * A provider LeapMux cannot read at all still draws a DECISION: the shared
- * Allow/Deny pair, which is the same answer an unnamed tool takes in the transcript.
- *
- * It states no arguments, and that is the point. The fallback used to invent
- * `input: request.payload`, which is the whole JSON-RPC envelope, so the banner
- * headed it "Arguments" while the Allow button beside it sent
- * `payload.request.input ?? {}` -- the two halves of one banner read two different
- * parts of the payload, and the half the reader saw was not the half the agent got.
+ * An unknown provider still gets the shared Allow/Deny pair, as an unnamed transcript tool does.
+ * The fallback states no arguments.
+ * The old fallback displayed the whole JSON-RPC envelope as Arguments.
+ * Its Allow button sent payload.request.input instead, or an empty object when input was absent.
+ * The banner therefore displayed data that the agent did not receive.
  */
 describe('a payload no provider reads', () => {
   it('falls back to an empty permission rather than nothing', () => {
@@ -154,17 +156,11 @@ describe('a payload no provider reads', () => {
 })
 
 /**
- * Who answers a permission, and with what.
- *
- * A permission is answered in one of two ways, and which one is not a choice the
- * banner makes: the RUNTIME decides. An agent that states its own option list is
- * answered by picking one of THOSE, and the id travels in that agent's own envelope,
- * so the plugin must state a sender beside the options. An agent that states none is
- * answered by the shared Allow/Deny pair, which needs no sender at all.
- *
- * The two lists below are that partition, and each case carries the payload it
- * classifies -- a plugin that stopped filling its options, or one that added options
- * without a sender, fails here rather than drawing buttons that answer nothing.
+ * The native runtime determines the supported permission replies.
+ * A provider that exposes option replies must supply their sender also.
+ * The selected option ID travels in the native envelope.
+ * A request without option replies uses the shared Allow/Deny pair and requires no option sender.
+ * Each case supplies the payload that it classifies to detect missing options or senders.
  */
 describe('who answers a permission', () => {
   const toolCall = { toolCallId: 'c', kind: 'other', title: 'Write' }
@@ -178,11 +174,18 @@ describe('who answers a permission', () => {
     [AgentProvider.GOOSE, { params: { toolCall, options: wireOptions } }],
     [AgentProvider.REASONIX, { params: { toolCall, options: wireOptions } }],
     [AgentProvider.CURSOR, { params: { toolCall, options: wireOptions } }],
+
     // OpenCode and Kilo answer with their own two ids even when the request states none.
     [AgentProvider.OPENCODE, { params: { toolCall } }],
     [AgentProvider.KILO, { params: { toolCall } }],
     // Copilot states no list, so LeapMux states the decisions the runtime accepts.
     [AgentProvider.GITHUB_COPILOT, copilotPermissionRequest({ kind: 'read', canOfferSessionApproval: true })],
+    // Kimi Code states no list either: every approval takes the same three answers.
+
+    // omp states its two answers as the dialog's own options.
+
+    // MiMo states no list either, and always takes one of its own three reply words.
+
   ])('provider %s states its own answers and how to send one', (provider, payload) => {
     const surface = surfaceOf(provider, payload)
     if (surface?.kind !== 'permission')
@@ -192,13 +195,20 @@ describe('who answers a permission', () => {
   })
 
   it.each([
-    [AgentProvider.CLAUDE_CODE, { request: { tool_name: 'Read', input: { file_path: '/a.ts' } } }],
-    [AgentProvider.ZCODE, { request: { tool_name: 'Read', input: { file_path: '/a.ts' } } }],
-    [AgentProvider.CODEX, { method: 'item/commandExecution/requestApproval', params: { command: 'pwd' } }],
-  ])('provider %s leaves the shared Allow / Deny pair to answer', (provider, payload) => {
+    [AgentProvider.CLAUDE_CODE, { request: { tool_name: 'Read', input: { file_path: '/a.ts' } } }, [
+      { optionId: 'once', kind: 'allow_once', name: 'Allow once' },
+      { optionId: 'session', kind: 'allow_always', name: 'Allow for this session' },
+      { optionId: 'deny', kind: 'reject_once', name: 'Deny' },
+    ]],
+    [AgentProvider.ZCODE, { request: { tool_name: 'Read', input: { file_path: '/a.ts' } } }, []],
+    [AgentProvider.CODEX, { method: 'item/commandExecution/requestApproval', params: { command: 'pwd' } }, []],
+
+  ])('provider %s exposes its supported replies for the request', (provider, payload, options) => {
     const surface = surfaceOf(provider, payload)
     if (surface?.kind !== 'permission')
       throw new Error('a tool approval is a permission')
-    expect(surface.permission.options).toEqual([])
+    expect(surface.permission.options).toEqual(options)
+    if (options.length > 0)
+      expect(pluginFor(provider)?.controls?.sendPermissionOption).toBeDefined()
   })
 })

@@ -103,16 +103,3 @@ export function acpFileEditsFromToolCallRawInput(
     return []
   return [{ filePath, structuredPatch: null, oldStr: '', newStr: content }]
 }
-
-/**
- * The FIRST change an ACP tool_call's `rawInput` states, or null when it states none.
- *
- * For a caller that draws one change and no more. A multi-edit states several, so
- * take {@link acpFileEditsFromToolCallRawInput} wherever the whole list can draw.
- */
-export function acpFileEditFromToolCallRawInput(
-  kind: string | undefined,
-  rawInput: Record<string, unknown> | null | undefined,
-): FileEditDiff | null {
-  return acpFileEditsFromToolCallRawInput(kind, rawInput)[0] ?? null
-}

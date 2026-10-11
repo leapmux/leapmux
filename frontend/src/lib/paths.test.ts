@@ -6,6 +6,7 @@ import {
   filesystemRoot,
   flavorFromOs,
   isAbsolute,
+  isFilesystemPath,
   isFilesystemRoot,
   join,
   normalizeSeparators,
@@ -524,5 +525,59 @@ describe('relativizePath from a filesystem root', () => {
   it('offers no relative chain between an absolute path and a relative base', () => {
     expect(relativizePath('/opt/data', 'rel/base')).toBe('/opt/data')
     expect(relativizePath('C:\\opt\\data', 'rel\\base', undefined, 'win32')).toBe('C:\\opt\\data')
+  })
+})
+
+describe('isFilesystemPath', () => {
+  it.each([
+    '/',
+    '/native/output.txt',
+    '/native/../output.txt',
+    '/native/./output.txt',
+    '/native/ output .txt',
+    '/native/line\nfeed.txt',
+    '/native/carriage\rreturn.txt',
+    'C:\\native\\output.txt',
+    'c:/native/output.txt',
+    '\\\\server\\share\\output.txt',
+    `/native/${'long'.repeat(4096)}.txt`,
+  ])('accepts the exact absolute filesystem spelling: %j', (value) => {
+    expect(isFilesystemPath(value)).toBe(true)
+  })
+
+  it.each([
+    undefined,
+    null,
+    false,
+    true,
+    0,
+    -1,
+    [],
+    {},
+    '',
+    ' \t\n\r',
+    '/native/zero\0byte.txt',
+    'file:///native/output.txt',
+    'https://example.com/output.txt',
+    'zcode-artifact://session/output',
+    'artifact:0',
+    'data:text/plain,output',
+    'C:relative.txt',
+  ])('rejects absent values and URI schemes for both path modes: %j', (value) => {
+    expect(isFilesystemPath(value)).toBe(false)
+    expect(isFilesystemPath(value, true)).toBe(false)
+  })
+
+  it.each(['output.txt', './output.txt', '../output.txt', 'native/path.txt', 'native\\path.txt'])('accepts a relative spelling only for an explicit producer: %j', (value) => {
+    expect(isFilesystemPath(value)).toBe(false)
+    expect(isFilesystemPath(value, true)).toBe(true)
+  })
+})
+
+describe('relative filenames and ASCII URI schemes', () => {
+  it('keeps a relative POSIX filename whose Kelvin sign is not an ASCII URI scheme', () => {
+    const path = 'K:結果.log'
+    expect(isFilesystemPath(path)).toBe(false)
+    expect(isFilesystemPath(path, true)).toBe(true)
   })
 })

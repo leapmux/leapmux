@@ -1,5 +1,5 @@
 import type { VirtualItem } from './useChatVirtualizer'
-import { createSignal } from 'solid-js'
+import { createSignal, onCleanup } from 'solid-js'
 import { useChatVirtualizer } from './useChatVirtualizer'
 
 /**
@@ -20,10 +20,12 @@ export function plainItems(count: number, startSeq = 1): VirtualItem[] {
   return makeItems(Array.from({ length: count }, (_, i) => ({ seq: startSeq + i })))
 }
 
-/** A detached DOM row whose measured height is `h` (jsdom reports 0 otherwise). */
+/** Mount a row with a controlled layout. Remove it when its owner ends. */
 export function fakeRow(h: number): HTMLElement {
   const el = document.createElement('div')
-  el.getBoundingClientRect = () => ({ height: h }) as DOMRect
+  el.getBoundingClientRect = () => new DOMRect(0, 0, 400, h)
+  document.body.append(el)
+  onCleanup(() => el.remove())
   return el
 }
 

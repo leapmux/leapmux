@@ -134,7 +134,7 @@ describe('applyChunk', () => {
 
   it('throws on an undecodable blob, so the caller can wipe and cold-start', () => {
     const rebuilt = parseHeader(serializeHeader(state()))
-    expect(() => applyChunk(rebuilt, 'node', 'n1', new Uint8Array([0xFF, 0xFE, 0xFD]))).toThrow()
+    expect(() => applyChunk(rebuilt, 'node', 'n1', new Uint8Array([0xFF, 0xFE, 0xFD]))).toThrow('premature EOF')
   })
 })
 

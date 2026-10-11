@@ -3,12 +3,13 @@ import type { ClaudeCallFacts } from './toolCall'
 import type { ClaudeToolRow } from './toolCommon'
 import type { ToolSpanContext } from '~/components/chat/rowExtractionTypes'
 import { describe, expect, it } from 'vitest'
+import { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TOOL_KINDS } from '../../../model/toolKind'
 import { DEFAULT_TOOL_REQUESTS } from '../../defaultToolRequests'
 import { input } from '../../testUtils'
 import { claudeToolRowHidden } from '../toolKinds'
 import { CLAUDE_TOOL_NAMES } from '../toolNames'
-import { CLAUDE_TOOL_READERS, claudeSpec } from './toolCall'
+import { CLAUDE_TOOL_READERS, claudeSpec, claudeToolCall } from './toolCall'
 import { claudeToolRow } from './toolCommon'
 import { CLAUDE_TOOL_REQUEST_OVERRIDES } from './toolRequests'
 
@@ -77,6 +78,16 @@ const SMOKE_FACTS: ClaudeCallFacts = factsOf(
 const SHARED_REQUEST_KINDS: ToolKind[] = TOOL_KINDS.filter(
   kind => !Object.keys(CLAUDE_TOOL_REQUEST_OVERRIDES).includes(kind),
 )
+
+describe('claudeToolCall', () => {
+  it('keeps a retained final request without a known result or outcome', () => {
+    const request = requestRow(CLAUDE_TOOL_NAMES.BASH, { command: 'printf native' })
+    const call = claudeToolCall(request, undefined, { completion: MessageCompletion.FINISHED })
+    expect(call.status).toBe('incomplete')
+    expect(call.result).toBeUndefined()
+    expect(call.request).toMatchObject({ command: 'printf native' })
+  })
+})
 
 describe('CLAUDE_TOOL_READERS', () => {
   it('states one reader for every tool kind', () => {

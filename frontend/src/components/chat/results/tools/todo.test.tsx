@@ -1,20 +1,11 @@
 import { render } from '@solidjs/testing-library'
-import { beforeAll, describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { failedResult } from '~/components/chat/model/toolCall'
 import { checkKindModule } from '~/test-support/kindTestHarness'
 import { toolCallFixture, toolRow } from '~/test-support/toolCallFixture'
 import { ToolMessage } from '../ToolMessage'
 import { parsedCall } from './renderer'
 import { TODO_PARTIAL_LIST_NOTICE, todoRenderer } from './todo'
-
-// jsdom does not provide ResizeObserver, which the shared layouts observe with.
-beforeAll(() => {
-  globalThis.ResizeObserver ??= class {
-    observe() {}
-    unobserve() {}
-    disconnect() {}
-  } as unknown as typeof ResizeObserver
-})
 
 // The one task held as a VALUE: an index into the list reads as possibly
 // undefined, and the marker fixtures below spread THIS object.
@@ -91,6 +82,18 @@ describe('todo renderer', () => {
 
   // The EMPTY case is the one the marker matters most for: the body states
   // `To-do list cleared`, which is a claim the stopped call never made.
+  it('marks the returned note as output and leaves the carried note unmarked', () => {
+    const saved = toolCallFixture('todo', { result: { items: ONE_TASK, note: 'MARKER-RESULT-NOTE' } })
+    const result = render(() => <ToolMessage row={toolRow(saved)} />)
+    const outputs = result.container.querySelectorAll('[data-tool-output-preview]')
+    expect(outputs).toHaveLength(1)
+    expect(outputs[0]?.textContent).toBe('MARKER-RESULT-NOTE')
+    const carried = toolCallFixture('todo', { status: 'in_progress', request: { items: ONE_TASK, note: 'MARKER-REQUEST-NOTE' } })
+    const request = render(() => <ToolMessage row={toolRow(carried, 'update')} />)
+    expect(request.container.textContent).toContain('MARKER-REQUEST-NOTE')
+    expect(request.container.querySelector('[data-tool-output-preview]')).toBeNull()
+  })
+
   it('marks an empty checklist the turn stopped, which the body calls cleared', () => {
     const call = toolCallFixture('todo', { status: 'cancelled', result: { items: [] } })
     const { container } = render(() => <ToolMessage row={toolRow(call)} />)

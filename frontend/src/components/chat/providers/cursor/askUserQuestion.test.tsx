@@ -2,7 +2,7 @@ import { fireEvent, render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { AskUserQuestionContent } from '../../controls/AskUserQuestionControl'
 import { createControlAnswerState } from '../../controls/types'
-import { getCursorQuestions, sendCursorQuestionResponse } from './askUserQuestion'
+import { getCursorQuestions, sendCursorQuestionRejectResponse, sendCursorQuestionResponse } from './askUserQuestion'
 
 describe('cursor question controls', () => {
   it('keeps separate values for options with the same label', async () => {
@@ -71,5 +71,27 @@ describe('cursor question controls', () => {
     expect(getCursorQuestions({ params: { questions: [null, 7, { id: 'q', prompt: 'Choose', options: [null, 7, { id: 'valid', label: 'Valid' }] }] } }))
       .toEqual([{ id: 'q', question: 'Choose', header: 'Choose', multiSelect: false, options: [{ value: 'valid', label: 'Valid' }] }])
     expect(getCursorQuestions({ params: { questions: {} } })).toEqual([])
+  })
+})
+
+// Cursor reads a dismissed question as the protocol's `cancelled` outcome, and the
+// reason the reader typed rides beside it. The worker stores the same word, so the
+// saved row reads it back (see controlResponse.test.ts).
+describe('sendCursorQuestionRejectResponse', () => {
+  async function sent(reason?: string): Promise<unknown[]> {
+    const responses: unknown[] = []
+    await sendCursorQuestionRejectResponse(async (bytes) => {
+      responses.push(JSON.parse(new TextDecoder().decode(bytes)))
+    }, 'jsonrpc:4', reason)
+    return responses
+  }
+
+  it('cancels the question with the reason the reader typed', async () => {
+    expect(await sent('changed mind')).toEqual([{ jsonrpc: '2.0', id: 'jsonrpc:4', result: { outcome: { outcome: 'cancelled', reason: 'changed mind' } } }])
+  })
+
+  it('states no reason field for an empty or absent reason', async () => {
+    expect(await sent('')).toEqual([{ jsonrpc: '2.0', id: 'jsonrpc:4', result: { outcome: { outcome: 'cancelled' } } }])
+    expect(await sent()).toEqual([{ jsonrpc: '2.0', id: 'jsonrpc:4', result: { outcome: { outcome: 'cancelled' } } }])
   })
 })

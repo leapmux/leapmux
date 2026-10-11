@@ -1,6 +1,6 @@
-// OS-aware filesystem path helpers. Callers without an explicit flavor get a
-// best-effort sniff from the path (drive letter / UNC prefix → win32, else
-// posix); callers that know the worker OS should pass `flavor` to override.
+// Filesystem path helpers use an explicit platform or inspect the path prefix.
+// A drive letter or Universal Naming Convention (UNC) prefix selects Windows. Other prefixes select POSIX.
+// Pass the worker platform when the caller knows it.
 
 export type PathFlavor = 'win32' | 'posix'
 
@@ -103,7 +103,7 @@ export function isAbsolute(p: string, flavor?: PathFlavor): boolean {
 }
 
 /**
- * The filesystem root `p` lives under, or undefined when `p` is not absolute.
+ * Return the filesystem root, or undefined for a path without an absolute volume.
  *
  *   filesystemRoot('/etc/hosts', 'posix')        -> '/'
  *   filesystemRoot('C:/Users/a', 'win32')        -> 'C:\\'
@@ -111,14 +111,10 @@ export function isAbsolute(p: string, flavor?: PathFlavor): boolean {
  *   filesystemRoot('proj/src', 'posix')          -> undefined
  *   filesystemRoot('\\rooted', 'win32')          -> undefined
  *
- * The answer always ENDS IN the flavor's separator, because that is what a
- * worker's ListDirectory needs. `C:` alone identifies the current directory
- * on drive C, not the drive's root, which is also why `isAbsolute('C:')` is
- * correctly false.
- *
- * A win32 path that is rooted but volume-less (`\foo`, `/foo`) answers
- * undefined: which drive it lands on is the worker's current directory, and
- * the browser cannot know it. Callers fall back.
+ * The result ends with the platform separator. The worker's ListDirectory requires this form.
+ * `C:` selects the current directory on drive C. It does not identify the drive root.
+ * A Windows path without a volume depends on the worker's current drive.
+ * The browser cannot select that drive. Callers use their fallback.
  */
 export function filesystemRoot(p: string, flavor?: PathFlavor): string | undefined {
   if (!p)
@@ -131,29 +127,35 @@ export function filesystemRoot(p: string, flavor?: PathFlavor): string | undefin
 }
 
 /**
- * Whether `p` IS a filesystem root, whatever spelling it arrives in.
+ * Classify a displayed filesystem path without changing its spelling.
+ * This check proves no file existence or access permission.
+ * A native producer can permit relative paths explicitly.
+ */
+export function isFilesystemPath(value: unknown, allowRelative = false): value is string {
+  if (typeof value !== 'string' || !value.trim() || value.includes('\0'))
+    return false
+  // A drive letter followed by a separator identifies a Windows path, not a URI scheme.
+  if (DRIVE_LETTER_RE.test(value))
+    return true
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:/u.test(value))
+    return false
+  return filesystemRoot(value) !== undefined || allowRelative
+}
+
+/**
+ * Detect a filesystem root across its valid native spellings.
  *
- *   isFilesystemRoot('/', 'posix')                 -> true
- *   isFilesystemRoot('//', 'posix')                -> true
- *   isFilesystemRoot('C:/', 'win32')               -> true
- *   isFilesystemRoot('\\\\srv\\share', 'win32')      -> true
- *   isFilesystemRoot('C:', 'win32')                -> false
- *   isFilesystemRoot('/home', 'posix')             -> false
+ *   isFilesystemRoot('/', 'posix')            -> true
+ *   isFilesystemRoot('//', 'posix')           -> true
+ *   isFilesystemRoot('C:/', 'win32')          -> true
+ *   isFilesystemRoot('\\\\srv\\share', 'win32') -> true
+ *   isFilesystemRoot('C:', 'win32')           -> false
+ *   isFilesystemRoot('/home', 'posix')        -> false
  *
- * A root arrives spelled several ways -- `/` and `//`, `C:\` and `C:/`,
- * `\\srv\share` with and without its trailing separator -- and a caller that
- * compares against `filesystemRoot`'s own output recognizes only one of them.
- * A caller that compares against `filesystemRoot`'s own output recognizes
- * only one of them. Counting COMPONENTS recognizes all of them, because
- * `split` drops the empty ones: `//` and `C:/` hold nothing beyond their own
- * root, and `/home` holds one thing more. That matters at both call sites:
- * the tree labels its root row with itself, and "Copy relative path" refuses
- * a root as a base.
- *
- * `C:` stays false. It is drive-relative -- it identifies the current
- * directory on drive C, not the drive's root -- and `filesystemRoot` already
- * answers undefined for it, which is also why `isAbsolute('C:')` is correctly
- * false.
+ * `split` removes empty segments. A root has no segments below its volume.
+ * Comparing only with filesystemRoot misses valid separator variants.
+ * The tree uses this check for root labels. "Copy relative path" rejects a root as its base.
+ * `C:` stays relative to the current directory on drive C. filesystemRoot returns undefined for it.
  */
 export function isFilesystemRoot(p: string, flavor?: PathFlavor): boolean {
   if (!p)

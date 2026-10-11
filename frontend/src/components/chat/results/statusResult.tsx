@@ -13,16 +13,14 @@ import { ToolStatusHeader } from './ToolStatusHeader'
 import { textNeedsCollapse, useCollapsedLines } from './useCollapsedLines'
 
 /**
- * One glyph for each outcome. Annotated, so a fifth outcome fails the build here.
- *
- * The three ENDED glyphs come from the shared table, which the subagent card reads
- * too: the two used to spell the same three mappings under different words, so a
- * change to the "it stopped" glyph reached one card and not the other.
+ * Specify one icon for each task outcome.
+ * The Record type rejects a new outcome without its icon.
+ * Ended outcomes share the agent card icon table.
  */
 const OUTCOME_ICON: Record<TaskStatus, LucideIcon> = {
   ...ENDED_OUTCOME_ICON,
-  // A task surface that has not answered yet. The subagent card has no glyph for its
-  // own `running`, because absence is what tells it the run has not ended.
+  // Task cards show an icon while they run.
+  // Agent cards use an absent ended icon to identify that same unfinished state.
   running: ClockFading,
 }
 
@@ -40,15 +38,12 @@ export function StatusResultBody(props: { source: TaskResult, context?: ToolResu
         {command => <CommandInputBody command={command()} {...(props.context !== undefined ? { context: props.context } : {})} />}
       </Show>
       <Show when={output()}>
-        <CollapsibleContent kind="ansi-or-pre" text={output()} display={collapsed.display()} isCollapsed={collapsed.isCollapsed()} {...(props.context !== undefined ? { context: props.context } : {})} />
+        <CollapsibleContent outputPreview kind="ansi-or-pre" text={output()} display={collapsed.display()} isCollapsed={collapsed.isCollapsed()} {...(props.context !== undefined ? { context: props.context } : {})} />
       </Show>
     </>
   )
-  // A header needs WORDS. `TaskResult.title` is optional -- the surface states no state
-  // word for some answers -- and drawing the header anyway put a lone coloured glyph
-  // above the note, which tells a reader that something ended and not what. The note
-  // keeps its own wrapper, and the row's shared outcome header states the call's
-  // outcome instead (`taskRenderer.statesOwnOutcome` asks exactly this question).
+  // Draw a status header only when the native result supplies its title.
+  // Otherwise, keep the output wrapper and let the row state the call's outcome.
   return (
     <Show when={props.source.title} fallback={<div class={toolMessage}>{body()}</div>}>
       {title => (

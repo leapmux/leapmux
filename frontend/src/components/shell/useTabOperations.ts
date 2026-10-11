@@ -16,7 +16,7 @@ import type { FileOpenSource, FileTab, Tab } from '~/stores/tab.types'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
-import { batch, createEffect, createSignal } from 'solid-js'
+import { batch, createSignal } from 'solid-js'
 import { isWorkerUnreachable } from '~/api/workerErrors'
 import * as workerRpc from '~/api/workerRpc'
 import { showInfoToast, showWarnToast } from '~/components/common/Toast'
@@ -48,7 +48,6 @@ interface UseTabOperationsOpts {
   getCurrentTabContext: () => TabContext
   focusEditor: () => void
   getScrollState: () => SavedViewportScroll | undefined
-  setFileTreePath: (path: string) => void
   /**
    * Active workspace id, for the layout-side reads only:
    * `activeTabForWorkspace`, `ownerWorkspaceFor` and `view.forWorkspace`. No
@@ -101,7 +100,6 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     getCurrentTabContext,
     focusEditor,
     getScrollState,
-    setFileTreePath,
     getActiveWorkspaceId,
   } = opts
 
@@ -854,19 +852,6 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
       emitRemoveTab(TabType.IMAGE, tabId)
     })
   }
-
-  // Reset file tree selection when active tab changes.
-  //
-  // No `'~'` fallback: this feeds the tree's `selectedPath`, which it compares
-  // against the absolute paths the worker reports. A tilde resolves only on
-  // the worker, so it matches no node and selects nothing -- an empty string
-  // says that with no pretence, and the tree then reveals its own
-  // `revealPath` instead.
-  createEffect(() => {
-    const _tab = activeTab()
-    const ctx = getCurrentTabContext()
-    setFileTreePath(ctx.workingDir)
-  })
 
   /**
    * Open an image a chat row was clicked on, in whichever tab kind can show it

@@ -195,7 +195,7 @@ export default antfu({
   // LAYER 1 DRAWS NOTHING. A provider plugin reads one agent's wire format and
   // returns the provider-neutral model; `../results/` is what turns that model
   // into markup. A plugin that renders puts one provider's shapes behind a
-  // module the other nine also reach, which is the drift this pipeline exists
+  // module the other providers also reach, which is the drift this pipeline exists
   // to prevent.
   //
   // `layer-imports` already stops a plugin from importing `../results/`, and
@@ -206,7 +206,7 @@ export default antfu({
   //
   // `ignores` carries the whole allowlist, and every path in it is pinned by
   // `src/test-support/chatLayerStructure.test.ts`:
-  //   - the four CONTROL SURFACES, which answer a provider's own permission or
+  //   - the three CONTROL SURFACES, which answer a provider's own permission or
   //     plan prompt. Their markup is provider-specific by nature, so it lives
   //     beside the provider that raises it rather than in a shared renderer
   //     that would have to branch on the provider to draw it.
@@ -232,6 +232,33 @@ export default antfu({
     'no-restricted-syntax': ['error', ...BASE_RESTRICTED_SYNTAX, {
       selector: 'JSXElement',
       message: 'Layer 1 draws nothing. A provider plugin returns the provider-neutral model from `../model/`, and `../results/` renders it. A control surface that must draw goes in its own `*Actions.tsx` and is listed in the allowlist in eslint.config.ts.',
+    }],
+  },
+}, {
+  // A NATIVE AGENT OPENS BY THE RULE OF ITS PROVIDER. Each open of an agent of a
+  // stated provider requires a `ProviderWorkingDir`, and only
+  // `tests/e2e/helpers/providerWorkingDir.ts` makes one: the rule of the
+  // provider, or `deliberateWorkingDir` with its reason. A cast makes the brand
+  // from any string, so a spec could open the agent in a directory that it made
+  // by hand again, which the brand exists to refuse. The selector reads every
+  // spelling of the type in the asserted type: a bare name, a qualified name,
+  // an `import()` type, and a wrapper.
+  //
+  // A unit test opens no agent, so `ignores` takes every `*.test.ts`. It gets the
+  // brand of a fixed path from `~/test-support/unitWorkingDir`, and the second
+  // selector keeps that module out of every file that opens a real agent.
+  files: ['tests/e2e/**/*.ts'],
+  ignores: ['tests/e2e/**/*.test.ts', 'tests/e2e/helpers/providerWorkingDir.ts'],
+  rules: {
+    // Spread the base selectors: ESLint REPLACES a rule's options rather than
+    // merging them, so omitting them would delete the `const enum`, `export =`
+    // and DOM-`title` bans for exactly this tree.
+    'no-restricted-syntax': ['error', ...BASE_RESTRICTED_SYNTAX, {
+      selector: ':matches(TSAsExpression, TSTypeAssertion) > .typeAnnotation Identifier[name="ProviderWorkingDir"]',
+      message: 'Do not cast to `ProviderWorkingDir`. Make the directory by the rule of the provider (`newProviderWorkingDir`, `newNativeWorkingDir`), or state a deliberate layout with `deliberateWorkingDir` and its reason (`tests/e2e/helpers/providerWorkingDir.ts`).',
+    }, {
+      selector: 'ImportDeclaration[source.value=/(?:^|\\/)test-support\\/unitWorkingDir$/]',
+      message: '`unitWorkingDir` is for a unit test, which opens no agent. A spec, a fixture, or a helper makes its directory by the rule of the provider, or states a deliberate layout with `deliberateWorkingDir`.',
     }],
   },
 }, {

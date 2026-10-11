@@ -59,7 +59,7 @@ function copilotToolSpanRow(
   // ONE call from every side of THIS call the store resolved: the start event
   // identifies the tool and the arguments, the completion the outcome. A start for
   // another call would supply the wrong name and the wrong arguments.
-  const row = copilotToolRow(parsed.parentObject, spanType, span.request, parsed.completion)
+  const row = copilotToolRow(parsed.parentObject, { spanType, request: span.request, completion: parsed.completion })
   if (!row)
     return null
   const call: ToolCall = copilotToolCall(row)

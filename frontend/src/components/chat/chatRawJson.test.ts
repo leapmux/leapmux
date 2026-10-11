@@ -24,6 +24,14 @@ function parsed(over: Partial<ParsedMessageContent> = {}): ParsedMessageContent 
 }
 
 describe('buildRawJsonEnvelope', () => {
+  it('keeps finished metadata outside the original provider bytes', () => {
+    const raw = '{"native":"unchanged","completion":"provider-value"}'
+    const message = create(AgentChatMessageSchema, { content: new TextEncoder().encode(raw), contentCompression: ContentCompression.NONE, completion: MessageCompletion.FINISHED })
+    const output = JSON.parse(buildRawJsonEnvelope(message, parseMessageContent(message), 'agent'))
+    expect(output.completion).toBe('finished')
+    expect(output.content).toEqual(JSON.parse(raw))
+  })
+
   it('keeps undecodable bytes distinct from an empty original payload', () => {
     const message = create(AgentChatMessageSchema, {
       content: new Uint8Array([1, 2, 3]),
@@ -100,6 +108,50 @@ describe('buildRawJsonEnvelope', () => {
     expect(parsed.messageMetadata).toEqual({ duration_ms: 0 })
   })
 
+  it('shows exact received metadata strings beside consolidated content', () => {
+    const original = ' {"type":"notification_thread","old_seqs":[3],"messages":[{"type":"system","text":"Visible notice"}]} '
+    const records = [{
+      label: 'opaque:zero',
+      data_base64: '/wB7IndpZGUiOjkwMDcxOTkyNTQ3NDA5OTN9',
+      extra_base64: 'AAE=',
+      empty_base64: '',
+      status: 4,
+      retained: true,
+    }]
+    const supplemental = `{"provider":{"notification_entries":"Provider field"},"metadata":{"duration_ms":0,"opaque_records":${JSON.stringify(records)}}}`
+    const message = create(AgentChatMessageSchema, {
+      content: new TextEncoder().encode(original),
+      contentCompression: ContentCompression.NONE,
+      supplementalContent: new TextEncoder().encode(supplemental),
+      supplementalContentCompression: ContentCompression.NONE,
+      completion: MessageCompletion.FINISHED,
+    })
+    const result = buildRawJsonEnvelope(message, parseMessageContent(message), 'agent')
+    expect(result).toContain(`"content":${original}`)
+    expect(result).toContain(`"supplemental_content":${supplemental}`)
+    const envelope = JSON.parse(result)
+    expect(envelope.content.messages).toEqual([{ type: 'system', text: 'Visible notice' }])
+    expect(envelope.supplemental_content.metadata.opaque_records).toEqual(records)
+    expect(envelope.supplemental_content.provider.notification_entries).toBe('Provider field')
+    expect(envelope.completion).toBe('finished')
+  })
+
+  it('retains received metadata when the content bytes cannot decode', () => {
+    const supplemental = '{"metadata":{"opaque_records":[{"data_base64":"/wA=","extra_base64":"","label":"","retained":true}]}}'
+    const message = create(AgentChatMessageSchema, {
+      content: new Uint8Array([0xFF, 0]),
+      contentCompression: ContentCompression.NONE,
+      supplementalContent: new TextEncoder().encode(supplemental),
+      supplementalContentCompression: ContentCompression.NONE,
+    })
+    const output = buildRawJsonEnvelope(message, parseMessageContent(message), 'agent')
+    expect(output).toContain(`"supplemental_content":${supplemental}`)
+    const envelope = JSON.parse(output)
+    expect(envelope.content).toEqual({ compression: ContentCompression.NONE, base64: '/wA=' })
+    expect(envelope.content_decode_failed).toBe(true)
+    expect(envelope.supplemental_content.metadata.opaque_records[0].data_base64).toBe('/wA=')
+  })
+
   it('preserves JSON null as supplemental data', () => {
     const message = create(AgentChatMessageSchema, {
       content: new TextEncoder().encode('{}'),
@@ -134,7 +186,7 @@ describe('buildRawJsonEnvelope', () => {
     expect(out.span_id).toBe('s1')
     expect(out.span_type).toBe('tool_use')
     expect(out.depth).toBe(2)
-    // unset optional fields are absent
+    // Omit unset optional fields.
     expect('parent_span_id' in out).toBe(false)
     expect('span_color' in out).toBe(false)
   })

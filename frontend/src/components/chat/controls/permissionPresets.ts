@@ -1,18 +1,16 @@
 import type { Accessor } from 'solid-js'
 import type { PermissionPresetController, PermissionPresetKind, ProviderPermissionPresets } from '../providerSettings'
 import type { ActionsProps } from './types'
-import type { PillOptions, PillOptionSpec } from '~/components/common/PillGroup'
+import type { PillOptions, PillOptionSpec } from '~/components/common/pillOptions'
 
 import { Minus } from 'lucide-solid'
-import { isPillOptions } from '~/components/common/PillGroup'
+import { isPillOptions } from '~/components/common/pillOptions'
 import { PERMISSION_PRESET_SPECS } from '../providerSettings'
 import { createControlChoice } from './types'
 
 /**
- * What the permission pill group does when the request's positive action is taken.
- *
- * `unspecified` applies NO permission change. It is not a "default mode" the
- * agent switches to -- it leaves every axis where the session already has it.
+ * Select the permission change that follows a positive reply.
+ * The unspecified choice preserves every current session setting.
  */
 export type PermissionPresetChoice
   = | 'unspecified'
@@ -22,13 +20,10 @@ export type PermissionPresetChoice
 const CONTROL_PERMISSION_CHOICE_ID = 'control-permissions-pill'
 
 /**
- * The choice an ORDINARY permission request opens on: whichever preset the
- * session already has on.
- *
- * A request that arrives while the session runs on bypass opens on Bypass, so
- * an Allow keeps the session where the user put it. Neither preset on means
- * `unspecified`, which changes nothing. This never TURNS ON a preset the user
- * did not choose -- it reports the one already running.
+ * An ordinary request opens with the session's active preset.
+ * A Bypass session therefore opens with Bypass selected.
+ * Without an active preset, use unspecified.
+ * This initial choice reports the current preset and enables no new preset.
  */
 export function sessionPermissionChoice(presets: PermissionPresetController | undefined): PermissionPresetChoice {
   return presets?.active ?? 'unspecified'
@@ -40,17 +35,11 @@ export interface PermissionPresetChoiceState {
 }
 
 /**
- * Binds the permission pill group's selection to the composer's shared answer
- * record, so a rebuild of the control component cannot discard it.
- *
- * `opening` supplies the choice for as long as the user picks no pill, and it is
- * an ACCESSOR because the session can move under an open banner -- a mode switch
- * from the composer must move the untouched group with it. A stored choice wins
- * over it from the first click onward.
- *
- * `createControlChoice` stores strings; every value this group writes is a
- * `PermissionPresetChoice` key (its pills carry no other keys), so the read-back
- * cast cannot surface a foreign string.
+ * Store this permission choice in the composer's shared answer record so a component rebuild preserves it.
+ * Use the opening accessor until the user selects a choice.
+ * A composer mode change can then update an untouched group.
+ * A stored user choice takes precedence afterward.
+ * Every key that this group writes belongs to PermissionPresetChoice.
  */
 export function createPermissionPresetChoice(
   props: Pick<ActionsProps, 'answerState'>,
@@ -71,26 +60,22 @@ export function createSessionPermissionPresetChoice(
 }
 
 /**
- * The pill group's options: `Unchanged` first (the do-nothing state), then each
- * preset the live catalog offers. A preset the catalog does not
- * offer has no pill, mirroring the composer menu's hide-when-unavailable rule; when
- * NEITHER is offered there is no group at all, so a provider without presets (Pi,
- * OpenCode, Cursor, ...) draws the row it drew before the group existed.
+ * List Unchanged first, then each preset that the live catalog offers.
+ * Omit unavailable preset choices.
+ * Omit the entire group when the catalog offers no presets.
  */
 export function permissionPillOptions(presets: ProviderPermissionPresets | undefined): PillOptions<PermissionPresetChoice> | undefined {
   if (!presets)
     return undefined
-  // An icon, not the word. This group shares one composer footer row with the
-  // decision buttons, and the do-nothing option is the one that can give up its
-  // text: the other options identify a preset. `Minus` reads as
-  // "no change"; the label stays as the accessible name and the tooltip.
+  // Use the Minus icon for the Unchanged choice to keep room for the decision buttons.
+  // Keep Unchanged as its accessible name and tooltip.
+  // The other choices retain text that identifies their preset.
   const options: PillOptionSpec<PermissionPresetChoice>[] = [{ key: 'unspecified', label: 'Unchanged', icon: Minus }]
   for (const spec of PERMISSION_PRESET_SPECS) {
     if (presets[spec.kind])
       options.push({ key: spec.kind, label: spec.shortLabel })
   }
-  // A lone Unchanged pill is no choice at all: presets the catalog stopped
-  // offering draw no group, same as no presets at all.
+  // Omit a group that contains only Unchanged because it offers no preset choice.
   return options.length > 1 && isPillOptions(options) ? options : undefined
 }
 
@@ -108,12 +93,9 @@ export function buildPermissionPill(
   const options = permissionPillOptions(presets)
   if (!options)
     return undefined
-  // The choice is clamped to the offered pills: a preset the catalog stopped
-  // offering while its choice was stored must not leave a group with no radio
-  // checked and an Allow that silently applies nothing. This also catches an
-  // OPENING choice the group draws no pill for -- a plan approval opens on
-  // `smart` whether or not the provider ships one. `unspecified` is the clamp
-  // target because it is the one pill every group draws, and it applies nothing.
+  // Use the stored choice only when the catalog still offers it.
+  // Otherwise, select unspecified, which every displayed group offers and which applies no change.
+  // This also handles a plan approval that initially selects Smart when that provider offers no Smart preset.
   const stored = choiceState.choice()
   const selected = options.some(option => option.key === stored) ? stored : 'unspecified'
   return { options, selected, onSelect: choiceState.setChoice }
@@ -128,15 +110,10 @@ export function buildSessionPermissionPill(
 }
 
 /**
- * Applies the chosen preset after a control request's positive answer — the same
- * `onSettingChange({ sets })` call the composer `[+]` menu's permission items make,
- * so a pill and the menu item cannot diverge in what they switch.
- *
- * The CALLER must await the answer before calling this. The worker dispatches the
- * response and the settings change concurrently, and applying a permission mode the
- * provider cannot take live relaunches the agent -- a relaunch that won the race
- * killed the session before the answer reached it. `Unchanged`, a missing
- * apply handler, or a preset the catalog stopped offering applies nothing.
+ * Apply the selected preset through the same settings handler as the composer menu.
+ * The caller must await the positive response first.
+ * A provider can restart for a permission change, so an earlier settings change could stop the process before its reply arrives.
+ * Apply no change for Unchanged, an absent handler, or a preset that the catalog no longer offers.
  */
 export function applyPermissionPreset(
   presets: PermissionPresetController | undefined,
@@ -149,10 +126,9 @@ export function applyPermissionPreset(
 }
 
 /**
- * Sends the permission response before it applies the chosen preset.
- *
- * Some providers relaunch for a permission change. The response must reach the
- * old session before that relaunch starts.
+ * Send the permission response before applying the selected preset.
+ * A provider can restart for the settings change.
+ * Its old session must receive the response before that restart.
  */
 export async function respondThenApplyPermissionPreset(
   response: Promise<void>,

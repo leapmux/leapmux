@@ -1,4 +1,4 @@
-import { onCleanup } from 'solid-js'
+import { createEffect, onCleanup, untrack } from 'solid-js'
 import { userCRDTClient } from '~/api/clients'
 import { monotonicNow } from '~/lib/monotonicNow'
 
@@ -123,6 +123,43 @@ export function mountPresenceHeartbeat(opts: HeartbeatOpts): HeartbeatHandle {
     pingNow: () => send(true),
     stop,
   }
+}
+
+/** What {@link claimPresenceWhenReady} reads, and the claim that it sends. */
+export interface PresenceClaimOpts {
+  /** Whether the `/ws/userevents` stream completed its bootstrap. */
+  bootstrapped: () => boolean
+  /** The workspace in view, or '' while none is. */
+  workspaceId: () => string
+  /** Send the claim for the workspace in view, as `HeartbeatHandle.pingNow` does. */
+  pingNow: () => void
+}
+
+/**
+ * Claim presence whenever the `/ws/userevents` stream is bootstrapped and a workspace is in view: on the bootstrap of
+ * each stream, and when the workspace in view changes while the stream is live. Run it inside a Solid root.
+ *
+ * A claim on the bootstrap alone is not enough, for two reasons:
+ * - `pingNow` sends nothing while no workspace is in view, and a reload restores that workspace from browser storage,
+ *   which can finish after the stream bootstraps. The claim was then lost until the next input, so the reloaded tab
+ *   did not become the active client.
+ * - The pointer event of the click that switches the workspace sends its heartbeat for the workspace that the click
+ *   leaves, so the workspace that it opens needs a claim of its own.
+ */
+export function claimPresenceWhenReady(opts: PresenceClaimOpts): void {
+  // The workspace that the current stream claimed, or undefined before its first claim.
+  let claimed: string | undefined
+  createEffect(() => {
+    if (!opts.bootstrapped()) {
+      claimed = undefined
+      return
+    }
+    const workspaceId = opts.workspaceId()
+    if (workspaceId === '' || workspaceId === claimed)
+      return
+    claimed = workspaceId
+    untrack(() => opts.pingNow())
+  })
 }
 
 async function defaultSender(workspaceId: string): Promise<void> {

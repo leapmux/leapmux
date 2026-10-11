@@ -22,7 +22,7 @@ export function acpPermissionToolCall(payload: Record<string, unknown>): Record<
  * `layoutPermissionOptions` reads the KINDS rather than the ids for exactly that
  * reason. An empty list is a real answer: the shared Allow/Deny pair answers then.
  *
- * READ, never asserted, and every reader of the six providers that share this depends
+ * READ, never asserted, and every reader of the ACP providers that share this depends
  * on it. `layoutPermissionOptions` and `permissionOptionLabel` both dereference
  * `option.kind` with no guard, so a `null` element threw the whole banner into the
  * ErrorBoundary. A STRING `options` is quieter and worse: its `length` is the length

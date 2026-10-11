@@ -1,7 +1,11 @@
+import type { Mock } from 'vitest'
+import type { PlanChoice } from '../model/controlPrompt'
+import type { ControlResponseSender } from './types'
 import type { ControlRequest } from '~/stores/control.store'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { ExitPlanModeActions } from '~/components/chat/controls/ExitPlanModeControl'
+import { dangerMenuItem } from '~/styles/shared.css'
 import { permissionPillGroup } from '~/test-support/controlRequests'
 import { createControlAnswerState } from './types'
 
@@ -267,5 +271,132 @@ describe('ExitPlanModeActions', () => {
 
     expect(screen.queryByTestId('control-permissions-pill-group')).not.toBeInTheDocument()
     expect(screen.getByTestId('plan-clear-context-checkbox')).toBeInTheDocument()
+  })
+
+  describe('with the choices a runtime offers', () => {
+    const choices = [
+      { id: 'Option A', label: 'Approve: Option A', approves: true },
+      { id: 'Revise', label: 'Request revisions', approves: false },
+    ]
+
+    function renderWithChoices(onRespond: Mock<ControlResponseSender>, hasEditorContent = false, offered: PlanChoice[] = choices) {
+      render(() => (
+        <ExitPlanModeActions
+          request={makeRequest('req-choice', 'agent-choice')}
+          answerState={createControlAnswerState()}
+          onRespond={onRespond}
+          hasEditorContent={hasEditorContent}
+          onTriggerSend={() => {}}
+          presets={{ bypass: { sets: { permissionMode: 'bypassPermissions' } }, apply: vi.fn() }}
+          choices={offered}
+        />
+      ))
+    }
+
+    function decodeCall(onRespond: Mock<ControlResponseSender>) {
+      const call = onRespond.mock.calls[0]
+      if (!call)
+        throw new Error('the choice sent no response')
+      const [bytes, options] = call
+      return { decoded: JSON.parse(new TextDecoder().decode(bytes)), options }
+    }
+
+    // A runtime can state what each approach does. The reader needs it to choose,
+    // because the plan text need not repeat it.
+    it('states what each approach does in the tooltip of its menu item', () => {
+      vi.useFakeTimers()
+      try {
+        renderWithChoices(vi.fn<ControlResponseSender>().mockResolvedValue(undefined), false, [
+          { id: 'Option A', label: 'Approve: Option A', description: 'Split the parser first', approves: true },
+          { id: 'Revise', label: 'Request revisions', approves: false },
+        ])
+        fireEvent.click(screen.getByTestId('control-more-actions'))
+        fireEvent.mouseEnter(screen.getByTestId('plan-choice-0'))
+        vi.advanceTimersByTime(700)
+        expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('Split the parser first')
+      }
+      finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('offers each choice in the overflow menu', () => {
+      renderWithChoices(vi.fn<ControlResponseSender>().mockResolvedValue(undefined))
+      fireEvent.click(screen.getByTestId('control-more-actions'))
+      expect(screen.getByTestId('plan-choice-0')).toHaveTextContent('Approve: Option A')
+      expect(screen.getByTestId('plan-choice-1')).toHaveTextContent('Request revisions')
+    })
+
+    it('sends an approving choice as an approval with the plan settings', () => {
+      const onRespond = vi.fn<ControlResponseSender>().mockResolvedValue(undefined)
+      renderWithChoices(onRespond)
+      fireEvent.click(screen.getByTestId('control-more-actions'))
+      fireEvent.click(screen.getByTestId('plan-choice-0'))
+      const { decoded, options } = decodeCall(onRespond)
+      expect(decoded.response.request_id).toBe('req-choice')
+      expect(decoded.response.response).toMatchObject({ behavior: 'allow', choice: 'Option A' })
+      expect(options).toEqual({ planApproval: { permissionMode: '', clearContext: false } })
+    })
+
+    // The choice approves the same plan as Approve, so it carries what the reader set
+    // on the pills and the switch, exactly as Approve does.
+    it('sends the permission mode and the cleared context that the reader set with an approving choice', () => {
+      const onRespond = vi.fn<ControlResponseSender>().mockResolvedValue(undefined)
+      renderWithChoices(onRespond)
+      fireEvent.click(permissionPillGroup().getByRole('radio', { name: 'Bypass' }))
+      fireEvent.click(screen.getByTestId('plan-clear-context-checkbox').querySelector('input')!)
+      fireEvent.click(screen.getByTestId('control-more-actions'))
+      fireEvent.click(screen.getByTestId('plan-choice-0'))
+      const { decoded, options } = decodeCall(onRespond)
+      expect(decoded).not.toHaveProperty('permissionMode')
+      expect(options).toEqual({ planApproval: { permissionMode: 'bypassPermissions', clearContext: true } })
+    })
+
+    // The service refuses plan settings on anything but an approval, so a refusal
+    // carries none even when the reader set them.
+    it('sends a refusing choice as a refusal with no plan settings', () => {
+      const onRespond = vi.fn<ControlResponseSender>().mockResolvedValue(undefined)
+      renderWithChoices(onRespond)
+      fireEvent.click(permissionPillGroup().getByRole('radio', { name: 'Bypass' }))
+      fireEvent.click(screen.getByTestId('plan-clear-context-checkbox').querySelector('input')!)
+      fireEvent.click(screen.getByTestId('control-more-actions'))
+      fireEvent.click(screen.getByTestId('plan-choice-1'))
+      const { decoded, options } = decodeCall(onRespond)
+      expect(onRespond).toHaveBeenCalledOnce()
+      expect(decoded.response.request_id).toBe('req-choice')
+      expect(decoded.response.response).toMatchObject({ behavior: 'deny', choice: 'Revise' })
+      expect(options).toBeUndefined()
+    })
+
+    it('draws a refusing choice in the danger colour and an approving one plain', () => {
+      renderWithChoices(vi.fn<ControlResponseSender>().mockResolvedValue(undefined))
+      fireEvent.click(screen.getByTestId('control-more-actions'))
+      expect(screen.getByTestId('plan-choice-0')).not.toHaveClass(dangerMenuItem)
+      expect(screen.getByTestId('plan-choice-1')).toHaveClass(dangerMenuItem)
+    })
+
+    it('offers no overflow menu for an empty list of choices', () => {
+      renderWithChoices(vi.fn<ControlResponseSender>().mockResolvedValue(undefined), false, [])
+      expect(screen.queryByTestId('control-more-actions')).not.toBeInTheDocument()
+      expect(screen.getByTestId('plan-approve-btn')).toBeInTheDocument()
+    })
+
+    it('hides the choices while the editor holds feedback', () => {
+      renderWithChoices(vi.fn<ControlResponseSender>().mockResolvedValue(undefined), true)
+      expect(screen.queryByTestId('control-more-actions')).not.toBeInTheDocument()
+    })
+  })
+
+  it('offers no overflow menu for a runtime that offers no choice', () => {
+    render(() => (
+      <ExitPlanModeActions
+        request={makeRequest()}
+        answerState={createControlAnswerState()}
+        onRespond={vi.fn().mockResolvedValue(undefined)}
+        hasEditorContent={false}
+        onTriggerSend={() => {}}
+      />
+    ))
+    expect(screen.queryByTestId('control-more-actions')).not.toBeInTheDocument()
   })
 })

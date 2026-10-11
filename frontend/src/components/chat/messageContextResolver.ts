@@ -189,12 +189,15 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
 
   function role(message: AgentChatMessage, parsed?: ParsedMessageContent): ToolSpanRole {
     const selected = current(message, parsed)
+    const providerRole = resolvedSpanRole(selected.resolved, selected.message.agentProvider)
+    if (providerRole === 'none')
+      return providerRole
     const identity = messageSpanIdentity(selected.message)
     if (related(identity, 'result')?.message.id === selected.message.id)
       return 'result'
     if (related(identity, 'request')?.message.id === selected.message.id)
       return 'request'
-    return resolvedSpanRole(selected.resolved, selected.message.agentProvider)
+    return providerRole
   }
 
   function visibleRows(identity: MessageSpanIdentity): ToolSpanRowPresence {
@@ -248,7 +251,16 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
     cacheVersion()
     if (!identity.spanId || disposed)
       return undefined
-    const matches = (message: AgentChatMessage | undefined) => message && messageSpanKey(message) === messageSpanKey(identity) ? message : undefined
+    const matches = (message: AgentChatMessage | undefined) => {
+      if (!message || messageSpanKey(message) !== messageSpanKey(identity))
+        return undefined
+      const selected = current(message)
+      if (messageSpanKey(selected.message) !== messageSpanKey(identity)
+        || resolvedSpanRole(selected.resolved, selected.message.agentProvider) === 'none') {
+        return undefined
+      }
+      return selected.message
+    }
     const resident = matches(source.spanMessage(identity, side))
     const cached = matches(side === 'request' ? spans.getRequestMessage(source.scopeKey, identity) : spans.getResultMessage(source.scopeKey, identity))
     const message = newestRelatedMessage(resident, cached)
@@ -342,7 +354,7 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
     return untrack(async () => {
       if (!identity.spanId || disposed || loadedSpans.has(spanId))
         return Promise.resolve()
-      if (source.spanMessage(identity, 'request') && source.spanMessage(identity, 'result'))
+      if (related(identity, 'request') && related(identity, 'result'))
         return Promise.resolve()
       const key = `span:${spanId}`
       const running = inflight.get(key)

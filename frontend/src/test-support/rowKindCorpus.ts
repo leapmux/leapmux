@@ -118,11 +118,12 @@ export function drawnRowKind(category: MessageCategory['kind'], extraction: Chat
  * The frames the invariant runs over.
  *
  * Every entry is a shape captured from a runtime or transcribed from the plugin's
- * own classification tests -- the Cursor and Goose entries come from the `.tmp/probe`
- * sessions this refactor ran against the installed binaries. A shape invented for
- * the test would prove only that two readers agree about a frame no provider sends.
+ * own classification tests or tool fixtures -- the Cursor and Goose entries come from
+ * sessions against the installed binaries. A shape invented for the test would prove
+ * only that two readers agree about a frame no provider sends.
  */
 export const ROW_KIND_CASES: RowKindCase[] = [
+
   // --- Claude Code -------------------------------------------------------
   {
     provider: Provider.CLAUDE_CODE,
@@ -256,6 +257,20 @@ export const ROW_KIND_CASES: RowKindCase[] = [
     category: 'hidden',
   },
 
+  // --- Reasonix (transcribed from `reasonix/toolResults.fixtures.ts`) -----
+  {
+    provider: Provider.REASONIX,
+    name: 'first tool call',
+    payload: { sessionUpdate: 'tool_call', toolCallId: 'rx-1', status: 'pending', title: 'read_file', kind: 'read', rawInput: { path: '/p/a.ts' } },
+    category: 'tool_use',
+  },
+  {
+    provider: Provider.REASONIX,
+    name: 'completed tool call',
+    payload: { sessionUpdate: 'tool_call_update', toolCallId: 'rx-1', status: 'completed', content: [{ type: 'content', content: { type: 'text', text: 'one\ntwo\n' } }] },
+    category: 'tool_use',
+  },
+
   // --- OpenCode and Kilo -------------------------------------------------
   {
     provider: Provider.OPENCODE,
@@ -363,4 +378,5 @@ export const ROW_KIND_CASES: RowKindCase[] = [
     payload: { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'Done.' }] } },
     category: 'unsupported_provider',
   },
+
 ]

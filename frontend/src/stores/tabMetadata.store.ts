@@ -114,6 +114,8 @@ export interface AgentMeta {
   parentAgentId?: string | undefined
   /** Backend-authoritative: a child that accepts user messages is steerable. */
   acceptsMessages?: boolean | undefined
+  /** Backend-authoritative: whether the tab can interrupt this agent's turn. */
+  acceptsInterrupt?: boolean | undefined
   /** Whether the live provider accepts an explicit queue-head steer. */
   supportsSteering?: boolean | undefined
   supportsPreemption?: boolean | undefined
@@ -421,6 +423,16 @@ function createMruPersister(initialJson: string) {
   }
 }
 
+/**
+ * What a live event can write that a snapshot reply of the worker (`ListAgents`,
+ * `ListTerminals`) also states. Each kind has its own count, because an event of
+ * one kind says nothing about the other. See `patchLive`.
+ *
+ * - `'status'`: the lifecycle of the tab.
+ * - `'catalog'`: the option-group catalog of an agent.
+ */
+export type LiveWrite = 'status' | 'catalog'
+
 export function createTabMetadataStore() {
   // Seed MRU eagerly, before any render can read `mruHead`. The bootstrap
   // sequence (auth → WebSocket → projection fills) means `mruHead` is consulted
@@ -437,6 +449,32 @@ export function createTabMetadataStore() {
   const [state, setState] = createStore<{ byTabId: Record<string, TabMetadata> }>({ byTabId: seedByTabId })
   let mruCounter = seedMax
 
+  // How many live events of each kind every tab applied. Plain data, not store state:
+  // no reader renders it, and a counter that sits in a reactive row would turn every
+  // repeated status push into a write that `sameStoredValue` could not drop.
+  const liveEpochs: Record<LiveWrite, Map<string, number>> = { status: new Map(), catalog: new Map() }
+
+  const patch = (tabId: string, fields: TabMetadata) => {
+    setState(produce((s) => {
+      const existing = s.byTabId[tabId] ?? {}
+      mergeDefined(existing, fields)
+      s.byTabId[tabId] = existing
+    }))
+  }
+
+  const forgetLiveEpochs = (tabId: string) => {
+    for (const epochs of Object.values(liveEpochs))
+      epochs.delete(tabId)
+  }
+
+  const patchLive = (tabId: string, fields: TabMetadata, writes: readonly LiveWrite[]) => {
+    patch(tabId, fields)
+    for (const write of writes) {
+      const epochs = liveEpochs[write]
+      epochs.set(tabId, (epochs.get(tabId) ?? 0) + 1)
+    }
+  }
+
   return {
     state,
 
@@ -449,12 +487,60 @@ export function createTabMetadataStore() {
      * Undefined values are skipped rather than written, so a partial update from
      * one source (say a git-status event) can't blank fields another source owns.
      */
-    patch(tabId: string, fields: TabMetadata) {
-      setState(produce((s) => {
-        const existing = s.byTabId[tabId] ?? {}
-        mergeDefined(existing, fields)
-        s.byTabId[tabId] = existing
-      }))
+    patch,
+
+    /**
+     * `patch` for an event that the worker pushed on the live stream and that the
+     * tab applied. `writes` lists what the event wrote that a snapshot reply also
+     * states. It is the only writer that advances {@link liveStatusEpoch} and
+     * {@link liveCatalogEpoch}, one step for each kind that it lists.
+     *
+     * List `'status'` when the event writes the lifecycle of the tab: the status of
+     * an agent, or the status of a terminal. List `'catalog'` when the event
+     * carries the option-group catalog of an agent. An event that carries neither
+     * (a git-only update), and an event that a guard refused, go through `patch`
+     * instead. Neither one answers the question that a snapshot answers.
+     */
+    patchLive,
+
+    /** `patchLive` for an event that writes the lifecycle of the tab and nothing else that a snapshot states. */
+    patchLiveStatus(tabId: string, fields: TabMetadata) {
+      patchLive(tabId, fields, ['status'])
+    },
+
+    /**
+     * The number of live status events that this tab applied. The value changes
+     * when one more event lands, and for no other reason.
+     *
+     * A reader that fetches a snapshot of the worker's state (`ListAgents`,
+     * `ListTerminals`) reads it before it sends the request, and again when the
+     * reply lands. A different value means the live stream wrote a status while
+     * the reply was pending. The worker can read the snapshot before it sends
+     * those events, so the reply can hold the older answer, and it must not
+     * replace the status. Nothing sends the status again, so the tab would keep
+     * the older one for as long as the page lives.
+     *
+     * Zero for a tab that applied no event, and for a tab that was removed.
+     */
+    liveStatusEpoch(tabId: string): number {
+      return liveEpochs.status.get(tabId) ?? 0
+    },
+
+    /**
+     * The number of live events with an option-group catalog that this tab applied.
+     * It counts apart from {@link liveStatusEpoch}, because the two kinds of event
+     * differ: a status event such as STARTING carries no catalog, and a settings
+     * refresh carries a catalog and no status.
+     *
+     * A reader of a `ListAgents` reply compares it across the request, as it does
+     * for the status. A different value means the tab holds a catalog that the
+     * live stream wrote while the reply was pending. That catalog is newer than the
+     * reply, so the reply must not replace it.
+     *
+     * Zero for a tab that applied no such event, and for a tab that was removed.
+     */
+    liveCatalogEpoch(tabId: string): number {
+      return liveEpochs.catalog.get(tabId) ?? 0
     },
 
     /**
@@ -505,6 +591,7 @@ export function createTabMetadataStore() {
       setState(produce((s) => {
         delete s.byTabId[tabId]
       }))
+      forgetLiveEpochs(tabId)
       persistMru(state.byTabId)
     },
 
@@ -533,6 +620,8 @@ export function createTabMetadataStore() {
         for (const tabId of retired)
           delete s.byTabId[tabId]
       }))
+      for (const tabId of retired)
+        forgetLiveEpochs(tabId)
       persistMru(state.byTabId)
     },
 

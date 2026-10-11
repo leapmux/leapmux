@@ -70,7 +70,7 @@ const BASE_NOTIFICATION_TYPES: ReadonlySet<string> = new Set<string>([
  */
 export function isNotificationThreadWrapper(
   wrapper: { messages: unknown[] } | null,
-  extraTypes?: Set<string>,
+  extraTypes?: ReadonlySet<string>,
   checkSubtype?: (type: string, subtype: string | undefined) => boolean,
 ): wrapper is { messages: unknown[] } {
   if (!wrapper || wrapper.messages.length < 1)

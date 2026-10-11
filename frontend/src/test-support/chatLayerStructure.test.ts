@@ -28,7 +28,7 @@ const MODEL_DIR = join(CHAT_DIR, 'model')
  * not a transcript row -- the row model does not describe them.
  *
  * `eslint.config.ts` bans `JSXElement` under `providers/` and lists exactly
- * these four paths in its `ignores`, beside the two `testUtils.tsx` helpers
+ * these three paths in its `ignores`, beside the two `testUtils.tsx` helpers
  * that render for a provider's own tests. This list is what keeps the two in
  * step: a path that leaves one and not the other fails below.
  */

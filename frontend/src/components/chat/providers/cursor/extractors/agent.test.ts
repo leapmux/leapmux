@@ -1,23 +1,22 @@
 import type { ACPToolFacts } from '../../acp/extractors/toolCall'
 import { describe, expect, it } from 'vitest'
 import { typedResult } from '../../../model/toolCall'
-import { acpToolFinished } from '../../acp/extractors/toolCall'
+import { acpToolFacts } from '../../acp/extractors/toolCall'
 import { cursorAgentCall } from './agent'
 
 function facts(fields: Record<string, unknown>): ACPToolFacts {
   const tool = { sessionUpdate: 'tool_call_update', status: 'completed', toolCallId: 'task', rawInput: { _toolName: 'task', description: 'Inspect sample' }, ...fields }
-  // `finished` is a FACT the shared build derives, and the adapter reads it rather
-  // than asking the frame again: the frame alone cannot see the turn's own outcome.
-  return { tool, finished: acpToolFinished(tool) } as unknown as ACPToolFacts
+  // The shared builder supplies the adapter's full lifecycle and input facts.
+  return acpToolFacts(tool)
 }
 
-function agent(fields: Record<string, unknown>, native?: Record<string, unknown> | null, savedOutput?: string) {
+function agent(fields: Record<string, unknown>, native?: Record<string, unknown> | null, nativeReport?: string) {
   const model = facts(fields)
-  return cursorAgentCall(model, model.tool.rawInput as Record<string, unknown>, native, savedOutput)
+  return cursorAgentCall(model, model.args, native, nativeReport)
 }
 
-function source(fields: Record<string, unknown>, extra: Record<string, unknown> = {}, savedOutput?: string) {
-  const payload = agent({ rawOutput: undefined, ...extra }, { output: { success: fields } }, savedOutput)
+function source(fields: Record<string, unknown>, extra: Record<string, unknown> = {}, nativeReport?: string) {
+  const payload = agent({ rawOutput: undefined, ...extra }, { output: { success: fields } }, nativeReport)
   const run = typedResult(payload)?.agents[0]
   if (run === undefined)
     throw new Error('Expected an agent result with one run')

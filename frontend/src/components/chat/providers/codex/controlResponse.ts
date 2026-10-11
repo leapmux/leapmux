@@ -2,8 +2,8 @@ import type { ControlAnswerState, ControlResponseSender } from '../../controls/t
 import type { ControlResponseSummary } from '../../model/controlResponse'
 import type { ControlQuestion } from '../../model/question'
 import type { PersistedControlResponse } from '../../persistedControlResponse'
-import type { PillOptions } from '~/components/common/PillGroup'
-import { disambiguateLabels, isPillOptions, PILL_OPTION_LIMIT } from '~/components/common/PillGroup'
+import type { PillOptions } from '~/components/common/pillOptions'
+import { disambiguateLabels, isPillOptions, PILL_OPTION_LIMIT } from '~/components/common/pillOptions'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { decodeControlBehaviorEnvelope } from '~/utils/controlResponse'
 import { sendJsonRpcResult } from '../../controls/types'
@@ -79,7 +79,7 @@ export function getCodexParams(payload: Record<string, unknown>): Record<string,
 }
 
 /**
- * Sends a Codex-native approval decision as a JSON-RPC response directly.
+ * Send the native approval decision as a JSON remote procedure call (JSON-RPC) response.
  */
 export function sendCodexDecision(
   onRespond: ControlResponseSender,
@@ -92,8 +92,7 @@ export function sendCodexDecision(
 const CODEX_OTHER_OPTION_LABEL = 'None of the above'
 
 function hasCodexOtherOption(question: ControlQuestion): boolean {
-  const raw = question as unknown as Record<string, unknown>
-  return raw.isOther === true && Array.isArray(question.options) && question.options.length > 0
+  return 'isOther' in question && question.isOther === true && Array.isArray(question.options) && question.options.length > 0
 }
 
 function codexAnswerValues(question: ControlQuestion, index: number, answerState: ControlAnswerState): string[] {
@@ -106,8 +105,8 @@ function codexAnswerValues(question: ControlQuestion, index: number, answerState
       // Codex marks its auto-added free-form option explicitly.
       values.push(CODEX_OTHER_OPTION_LABEL)
     }
-    // Codex's TUI appends free-form text as a user_note answer entry,
-    // even for questions without a selected option.
+    // The Codex terminal user interface (TUI) adds custom text as a user_note answer.
+    // It adds that answer even when the user selects no option.
     values.push(`user_note: ${customText}`)
   }
 
@@ -115,7 +114,7 @@ function codexAnswerValues(question: ControlQuestion, index: number, answerState
 }
 
 /**
- * Sends a Codex-native requestUserInput response as a JSON-RPC response directly.
+ * Send the native requestUserInput answer as a JSON-RPC response.
  */
 export function sendCodexUserInputResponse(
   onRespond: ControlResponseSender,
@@ -166,14 +165,10 @@ interface CodexAllowChoice {
 }
 
 /**
- * How each allow decision reads as a pill, strongest-lasting last.
- *
- * ONE ordered table, so a pill's label and its position come from one row. The
- * two lived in separate cascades that a reader had to keep in step by hand, and
- * neither was exhaustive: a decision that matched no branch still drew a pill,
- * labelled as the branch that happened to be last. `detail` tells two decisions
- * of the same row apart, because a payload may carry two host rules or two
- * command rules.
+ * Order the allow choices by their remember duration.
+ * Derive each choice's label and position from this single table.
+ * A decision that matches no row must not receive another decision's label.
+ * The detail function distinguishes repeated host rules or command rules.
  */
 const CODEX_ALLOW_CHOICE_SPECS: ReadonlyArray<{
   match: (decision: CodexDecision) => boolean
@@ -203,11 +198,9 @@ function codexAllowChoiceSpecIndex(decision: CodexDecision): number {
 }
 
 /**
- * Builds the choices that qualify the shared Allow button. A group requires
- * Codex's one-turn `accept` decision, so its first and default pill is Once.
- *
- * A decision that matches no row draws no pill. It stays in `additional`, where
- * `codexDecisionLabel` gives it its own name on its own button.
+ * Build the scope choices for the Allow button.
+ * The group requires the accept decision as its first and default Once choice.
+ * A decision with no matching table row stays in additional and uses its own codexDecisionLabel button.
  */
 function codexAllowChoices(decisions: CodexDecision[]): PillChoices | undefined {
   const candidates = decisions
@@ -235,10 +228,9 @@ function codexAllowChoices(decisions: CodexDecision[]): PillChoices | undefined 
     label: labels[index]!,
     decision,
   }))
-  // The slice already caps the count and the guard above sets the floor, so this
-  // narrows the tuple type rather than rejecting anything. Keeping the pills and
-  // the selection on ONE value is what matters: a group that vanished while
-  // `selectedAllowChoice` still answered would send a rule nothing offered.
+  // The slice enforces the maximum count and the prior check enforces the minimum count.
+  // The guard then narrows the options to the tuple type.
+  // Keep the options and selected decision in one result so a removed group cannot send an unoffered rule.
   const options = choices.map(choice => ({ key: choice.key, label: choice.label }))
   return isPillOptions(options) ? { choices, options } : undefined
 }
@@ -250,11 +242,8 @@ interface PillChoices {
 }
 
 /**
- * The accessible name of the Codex allow-choice group.
- *
- * Both Codex action components draw the group, and the E2E specs and the
- * `allowChoicePillGroup` test helper look it up by this name, so one spelling
- * keeps a rename from reaching some of those and missing the rest.
+ * The Codex action components and test helpers use this accessible group name.
+ * Keep one declaration so each control and lookup uses the same text.
  */
 export const ALLOW_AS_LABEL = 'Allow as'
 
@@ -274,21 +263,14 @@ export interface ResolvedCodexDecisions {
 }
 
 /**
- * The decisions a Codex approval banner draws, from the request's own list.
+ * Read the decisions from the native request's list.
+ * When every variant is recognized, preserve its offered polarities exactly.
+ * Do not invent an Allow or Deny choice that that list does not offer.
  *
- * A polarity the list does not carry is ABSENT, and the banner draws no button
- * for it. It must never be invented: a fabricated `accept` answers a request
- * that offered no way to approve, and a fabricated `cancel` refuses one that
- * offered no way to refuse. Codex then acts on a decision the user never had.
- *
- * One case does invent a token, and it is the opposite failure. `parseCodexDecision`
- * DROPS a variant that this build does not know, so a list of one unknown allow
- * decision beside a refusal parses to the refusal alone. Removing Allow there
- * would leave the user unable to approve at all, for a request that Codex did
- * offer an approval for. So a list the parser NARROWED keeps the canonical
- * token of the missing polarity -- the same pair the empty-list branch below
- * synthesizes -- and only a list that survived intact reports the polarity as
- * genuinely absent.
+ * An unknown variant makes the parser discard part of the native list.
+ * In that case, keep the canonical token for a missing polarity so the user can still approve or refuse.
+ * An empty list uses the canonical accept and cancel pair also.
+ * Only an intact parsed list can establish that a polarity is absent.
  */
 export function resolveCodexDecisions(raw: unknown): ResolvedCodexDecisions {
   const offered = Array.isArray(raw) ? raw : []
@@ -309,9 +291,8 @@ export function resolveCodexDecisions(raw: unknown): ResolvedCodexDecisions {
   if (negative)
     consumed.add(negative)
   const additional = decisions.filter(decision => !consumed.has(decision))
-  // Each optional half is OMITTED rather than passed as `undefined`: the banner
-  // reads the key's absence as "no button of this polarity", which is the rule the
-  // doc above states.
+  // Omit a missing optional choice.
+  // The banner uses that absence to omit its decision button.
   return {
     ...(negative !== undefined ? { negative } : {}),
     ...(positive !== undefined ? { positive } : {}),
@@ -333,9 +314,10 @@ export function codexRequestedPermissions(payload: Record<string, unknown>): Rec
 }
 
 /**
- * Render a requestUserInput answer as "Header: v1, v2" lines, in request-question order, then any
- * answer keys not in the request in a STABLE (sorted) order. Empty answer values are dropped (and
- * their key isn't marked seen), so an all-empty answer produces no line. Null when nothing renders.
+ * Format requestUserInput answers as Header: v1, v2 lines.
+ * Use the request question order first, then sort remaining answer keys.
+ * Drop empty answer values without marking their keys seen.
+ * Return null when no answer line remains.
  */
 function codexUserInputAnswers(
   request: Record<string, unknown> | undefined,
@@ -367,8 +349,8 @@ function codexUserInputAnswers(
     const entry = answers[key]
     if (!isObject(entry) || seen.has(key))
       return
-    // seen is set ONLY when a non-empty line is emitted, so the empty-filter and the dedup stay
-    // entangled -- an all-empty answer neither renders nor marks the key seen.
+    // Mark a key seen only after producing a nonempty answer line.
+    // An empty answer must produce no line and must not prevent a later nonempty answer.
     const line = labeledAnswerLine(labels.get(key) ?? key, entry.answers)
     if (line !== null) {
       lines.push(line)
@@ -386,9 +368,9 @@ function codexUserInputAnswers(
 }
 
 /**
- * Read `result.decision` and map it to a label (the frontend now owns this; the backend persists
- * the native decision without deriving a label). Null for a missing/null/empty decision so the
- * caller degrades gracefully.
+ * Read result.decision and derive its label in the frontend.
+ * The backend stores the native decision without adding a label.
+ * Return null for a missing, null, or empty decision so the caller can use its fallback.
  */
 function codexDecisionText(request: Record<string, unknown> | undefined, response: Record<string, unknown> | undefined): string | null {
   const result = pickObject(response, 'result', undefined)
@@ -405,13 +387,14 @@ function codexDecisionText(request: Record<string, unknown> | undefined, respons
 }
 
 /**
- * Derive the display for a persisted Codex control response, dispatching on the RESPONSE shape (not
- * the pruned request) so a request-gone answer still renders: requestUserInput answers live entirely
- * in `result.answers`, so `codexUserInputAnswers` recognizes them regardless of whether the pruned
- * request survived (it labels by question header when the request is present, else by the answer
- * key). A declined/stopped requestUserInput carries no answers -- it arrives as a JSON-RPC decision
- * ({result:{decision:'decline'}}) -- so it falls through to the deny-with-feedback / decision-label
- * derivation. Null when none applies (the caller falls back to the neutral behavior/generic label).
+ * Read the response shape to derive a persisted Codex answer.
+ * An answer can remain after its request is pruned.
+ * The result.answers object still supplies requestUserInput values in that state.
+ * Use question headers when the request remains and answer keys otherwise.
+ *
+ * A declined or stopped requestUserInput has no answers and carries a JSON-RPC decline decision.
+ * Use its denial feedback or decision label.
+ * Return null when no response-specific display applies so the caller can use the neutral behavior display.
  */
 export function codexControlResponseSummary(cr: PersistedControlResponse): ControlResponseSummary | null {
   const answers = codexUserInputAnswers(cr.request, cr.response)

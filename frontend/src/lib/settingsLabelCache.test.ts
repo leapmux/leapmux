@@ -167,22 +167,59 @@ describe('settingsLabelCache', () => {
     expect(getCachedSettingsLabel(GOOSE, 'pinned', 'a')).toBe('A')
   })
 
-  it('evicts a group\'s label and option sub-map together in a single over-cap push (no half-eviction)', () => {
-    // A SINGLE catalog push of > the 64-group cap with a LABELED group at the front: under the
-    // old two-map design, whose label and option maps had different eviction populations, the
-    // front group's option sub-map could evict while its label survived (a half-eviction). With
-    // one record per group, a group's label and options evict -- or survive -- together.
-    const groups: AvailableOptionGroup[] = [group('old', 'Old', [['a', 'A']])]
-    for (let i = 0; i < 64; i++)
+  it('evicts a group\'s label and option sub-map together once later pushes pass the cap (no half-eviction)', () => {
+    // A LABELED group, then 64 other groups in a later push: under the old two-map design, whose
+    // label and option maps had different eviction populations, the old group's option sub-map
+    // could evict while its label survived (a half-eviction). With one record per group, a group's
+    // label and options evict -- or survive -- together.
+    updateSettingsLabelCache(GOOSE, [group('old', 'Old', [['a', 'A']])])
+    const groups: AvailableOptionGroup[] = []
+    for (let i = 0; i < 63; i++)
       groups.push(group(`fill${i}`, `Fill ${i}`, [[`f${i}`, `F ${i}`]]))
     groups.push(group('new', 'New', [['z', 'Z']]))
     updateSettingsLabelCache(GOOSE, groups)
+    updateSettingsLabelCache(GOOSE, [group('newest', 'Newest', [['n', 'N']])])
 
-    // 'old' was inserted first and pushed past the cap, so its WHOLE entry evicts -- both lookups miss.
+    // 'old' is the least recent of 66 groups, so its WHOLE entry evicts -- both lookups miss.
     expect(getCachedSettingsGroupLabel(GOOSE, 'old')).toBeUndefined()
     expect(getCachedSettingsLabel(GOOSE, 'old', 'a')).toBeUndefined()
-    // 'new' is the most-recent group, so its WHOLE entry survives -- both lookups resolve.
+    // 'new' is among the 64 most recent groups, so its WHOLE entry survives -- both lookups resolve.
     expect(getCachedSettingsGroupLabel(GOOSE, 'new')).toBe('New')
     expect(getCachedSettingsLabel(GOOSE, 'new', 'z')).toBe('Z')
+  })
+
+  // A provider can offer more options than the cap: Kilo's catalog holds about 400 models. The cap
+  // bounds labels that stopped appearing, so it must never evict an option of the current push.
+  describe('a push larger than the cap', () => {
+    function models(count: number): AvailableOptionGroup {
+      return group('model', 'Model', Array.from({ length: count }, (_, i): [string, string] => [`m${i}`, `Model ${i}`]))
+    }
+
+    it('keeps the label of every option that the push offers', () => {
+      clearSettingsLabelCache()
+      updateSettingsLabelCache(CURSOR, [models(400)])
+      expect(getCachedSettingsLabel(CURSOR, 'model', 'm0')).toBe('Model 0')
+      expect(getCachedSettingsLabel(CURSOR, 'model', 'm399')).toBe('Model 399')
+    })
+
+    // A revision bump makes every reader of the labels compute again, so an identical push must not
+    // bump it. Each agent status update pushes the whole catalog again.
+    it('keeps its revision for an identical push', () => {
+      clearSettingsLabelCache()
+      updateSettingsLabelCache(CURSOR, [models(400)])
+      const revision = settingsLabelCacheRevision()
+      updateSettingsLabelCache(CURSOR, [models(400)])
+      expect(settingsLabelCacheRevision()).toBe(revision)
+    })
+
+    it('keeps every group that the push offers, also past the group cap', () => {
+      clearSettingsLabelCache()
+      const groups = Array.from({ length: 70 }, (_, i) => group(`g${i}`, `Group ${i}`, [[`o${i}`, `Option ${i}`]]))
+      updateSettingsLabelCache(GOOSE, groups)
+      expect(getCachedSettingsGroupLabel(GOOSE, 'g0')).toBe('Group 0')
+      const revision = settingsLabelCacheRevision()
+      updateSettingsLabelCache(GOOSE, groups)
+      expect(settingsLabelCacheRevision()).toBe(revision)
+    })
   })
 })

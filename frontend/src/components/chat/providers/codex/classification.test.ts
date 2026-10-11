@@ -1,8 +1,35 @@
 import { describe, expect, it } from 'vitest'
+import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { input } from '../testUtils'
 import { classifyCodexMessage } from './classification'
 
 describe('classifyCodexMessage', () => {
+  it.each(['parameters', 'notification'])('recognizes native exec requests in the %s wrapper', (wrapper) => {
+    const parameters = { threadId: 'native-thread', turnId: 'native-turn', item: { type: 'custom_tool_call', call_id: 'exec-call', name: 'exec', input: 'text(40 + 2);', status: 'completed' } }
+    const payload = wrapper === 'parameters' ? parameters : { method: 'rawResponseItem/completed', params: parameters }
+    expect(classifyCodexMessage({ ...input(payload, undefined, AgentProvider.CODEX), spanId: 'exec-call', spanType: 'exec' })).toEqual({ kind: 'tool_use' })
+  })
+
+  it.each(['parameters', 'notification'])('recognizes native exec outputs in the %s wrapper', (wrapper) => {
+    const parameters = { threadId: 'native-thread', turnId: 'native-turn', item: { type: 'custom_tool_call_output', call_id: 'exec-call', output: [{ type: 'input_text', text: 'Script completed\nWall time 0.0 seconds\nOutput:\n' }, { type: 'input_text', text: '42' }] } }
+    const payload = wrapper === 'parameters' ? parameters : { method: 'rawResponseItem/completed', params: parameters }
+    expect(classifyCodexMessage({ ...input(payload, undefined, AgentProvider.CODEX), spanId: 'exec-call', spanType: 'exec' })).toEqual({ kind: 'tool_use' })
+  })
+
+  it.each([
+    { type: 'custom_tool_call', call_id: 'other', name: 'exec', namespace: 'remote', input: 'text(42);' },
+    { type: 'custom_tool_call', call_id: 'other', name: 'apply_patch', input: 'patch' },
+    { type: 'function_call', call_id: 'other', name: 'exec_command', arguments: '{}' },
+    { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Mirror answer' }] },
+  ])('keeps a raw mirror or foreign call hidden: %j', (item) => {
+    expect(classifyCodexMessage(input({ method: 'rawResponseItem/completed', params: { threadId: 'native-thread', turnId: 'native-turn', item } }, undefined, AgentProvider.CODEX))).toEqual({ kind: 'hidden' })
+  })
+
+  it('does not classify an unnamed custom output in another tool span as native exec', () => {
+    const parameters = { threadId: 'native-thread', turnId: 'native-turn', item: { type: 'custom_tool_call_output', call_id: 'other-call', output: 'Other output' } }
+    expect(classifyCodexMessage({ ...input(parameters, undefined, AgentProvider.CODEX), spanId: 'other-call', spanType: 'apply_patch' }).kind).not.toBe('tool_use')
+  })
+
   // The item type comes straight off the wire, and the classifier table is a plain
   // object. A type that identifies an `Object.prototype` member answered with a
   // FUNCTION, which the dispatch below then CALLED -- on the path every row takes.

@@ -2,7 +2,7 @@ import type { ContextUsageInfo } from '~/models/agentSession'
 import { cleanup, render } from '@solidjs/testing-library'
 import { afterEach, describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { computePercentage, contextBufferPct, contextSize, ContextUsageGrid, DEFAULT_CONTEXT_WINDOW, resolveContextWindow } from './ContextUsageGrid'
+import { computePercentage, contextBufferPct, contextSize, ContextUsageGrid, DEFAULT_CONTEXT_WINDOW, isPercentOnlyUsage, resolveContextWindow } from './ContextUsageGrid'
 
 // Side-effect import: register the Claude plugin so contextBufferPct can resolve
 // its autocompact buffer through the registry.
@@ -100,6 +100,52 @@ describe('context window resolution', () => {
   })
 })
 
+describe('a reading that states the fill alone', () => {
+  const noTokens = { inputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 }
+
+  it('takes the stated percentage', () => {
+    expect(isPercentOnlyUsage({ ...noTokens, usagePercent: 3.5 })).toBe(true)
+    expect(computePercentage({ ...noTokens, usagePercent: 3.5 })).toBe(3.5)
+  })
+
+  it('reads a stated zero as an empty context rather than as no reading', () => {
+    expect(computePercentage({ ...noTokens, usagePercent: 0 })).toBe(0)
+  })
+
+  it('caps the percentage to the meter', () => {
+    expect(computePercentage({ ...noTokens, usagePercent: 140 })).toBe(100)
+    expect(computePercentage({ ...noTokens, usagePercent: -5 })).toBe(0)
+  })
+
+  it('scales to the usable capacity as a token reading does', () => {
+    // Claude reserves 16.5%, so 50% of the whole window is ~59.88% of what it can use.
+    expect(computePercentage({ ...noTokens, usagePercent: 50 }, undefined, AgentProvider.CLAUDE_CODE)).toBeCloseTo(59.88, 1)
+  })
+
+  it('caps a percentage that the scale to the usable capacity pushes past the meter', () => {
+    // 90% of Claude's whole window is ~107.8% of the capacity it can use.
+    expect(computePercentage({ ...noTokens, usagePercent: 90 }, undefined, AgentProvider.CLAUDE_CODE)).toBe(100)
+  })
+
+  it('lets a token count win over the percentage', () => {
+    const usage = { ...noTokens, contextTokens: 50, contextWindow: 200, usagePercent: 90 }
+    expect(isPercentOnlyUsage(usage)).toBe(false)
+    expect(computePercentage(usage)).toBe(25)
+  })
+
+  it('takes the percentage when the stated token count is zero', () => {
+    // A count of zero is no count to draw, so the percentage is the whole reading.
+    const usage = { ...noTokens, contextTokens: 0, contextWindow: 200, usagePercent: 30 }
+    expect(isPercentOnlyUsage(usage)).toBe(true)
+    expect(computePercentage(usage)).toBe(30)
+  })
+
+  it('reads a reading with neither a token count nor a percentage as no reading', () => {
+    expect(isPercentOnlyUsage(noTokens)).toBe(false)
+    expect(computePercentage(noTokens)).toBeNull()
+  })
+})
+
 afterEach(cleanup)
 
 const INACTIVE = 'var(--context-grid-inactive)'
@@ -149,6 +195,24 @@ describe('ContextUsageGrid rendering', () => {
   it('falls back to the info icon when the context is empty', () => {
     const { container } = render(() => <ContextUsageGrid size={12} contextUsage={usageAt(0)} />)
     expect(container.querySelectorAll('rect')).toHaveLength(0)
+  })
+
+  it('draws a reading that states the fill alone', () => {
+    const { container } = render(() => (
+      <ContextUsageGrid size={12} contextUsage={{ inputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, usagePercent: 35 }} />
+    ))
+    expect(meterOf(container)).toBe('.../#../###')
+  })
+
+  it('draws an empty meter, not the info icon, for a stated zero percentage', () => {
+    // A zero token count is no reading, but a stated 0% is a real reading of an
+    // empty context, so the meter shows and states it.
+    const { container, getByLabelText } = render(() => (
+      <ContextUsageGrid size={12} contextUsage={{ inputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, usagePercent: 0 }} />
+    ))
+    expect(meterOf(container)).toBe('.../.../...')
+    expect(container.querySelector('svg.lucide-info')).toBeNull()
+    expect(getByLabelText('Context: 0%')).toBeTruthy()
   })
 
   it('fills bottom-left first, so the meter grows upwards', () => {

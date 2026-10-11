@@ -17,6 +17,11 @@ export interface ContextUsageInfo {
   /** Authoritative provider-reported current context size, when available. */
   contextTokens?: number
   contextWindow?: number
+  /**
+   * The fill of the context window in percent, for a provider that reports the fill
+   * and no token count. A reading that states tokens wins over it.
+   */
+  usagePercent?: number
 }
 
 export interface RateLimitInfo {

@@ -225,7 +225,8 @@
           "required": [
             "Complete",
             "Interrupted",
-            "Error"
+            "Error",
+            "Finished"
           ],
           "properties": {
             "Complete": {
@@ -237,6 +238,10 @@
               "pattern": "^[a-z][a-z0-9_]*$"
             },
             "Error": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_]*$"
+            },
+            "Finished": {
               "type": "string",
               "pattern": "^[a-z][a-z0-9_]*$"
             }

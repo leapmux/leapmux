@@ -1,6 +1,6 @@
 import type { RepoGitStore, UpsertRepoGitFromProtoOpts } from './repoGit'
 import type { AgentTab, Tab, TerminalTab } from './tab.types'
-import type { TerminalMeta } from './tabMetadata.store'
+import type { TabMetadata, TerminalMeta } from './tabMetadata.store'
 import type { listTerminals } from '~/api/workerRpc'
 import type { AgentInfo, AgentProvider, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
 import { pluginFor } from '~/components/chat/providers/registry'
@@ -211,6 +211,7 @@ export function protoToAgentTabFields(
     agentProvider: agent.agentProvider,
     agentStatus: agent.status,
     acceptsMessages: agent.acceptsMessages,
+    acceptsInterrupt: agent.acceptsInterrupt,
     supportsSteering: agent.supportsSteering,
     supportsPreemption: agent.supportsPreemption,
     ...deriveOptionGroupTabFields(agent.optionGroups),
@@ -226,6 +227,63 @@ export function protoToAgentTabFields(
   if (agent.gitStatus?.toplevel)
     fields.gitToplevel = agent.gitStatus.toplevel
   return fields
+}
+
+/**
+ * The tab fields that a live status event writes beside the status itself. Each
+ * one states the lifecycle of the agent at the moment of the event.
+ * `buildAgentStatusTabUpdate` writes exactly these, and `useWorkspaceConnection.test.ts`
+ * fails when the two lists differ.
+ */
+export const LIVE_STATUS_FIELDS = [
+  'agentStatus',
+  'agentSessionId',
+  'supportsSteering',
+  'supportsPreemption',
+  'startupError',
+  'startupMessage',
+] as const satisfies readonly (keyof AgentTab)[]
+
+/**
+ * The tab fields that a live event writes when it carries an option-group
+ * catalog: the groups, and the current value of each group.
+ * `deriveOptionGroupTabFields` writes exactly these, `resolveSettingsTabFields`
+ * builds on it, and `tab.helpers.test.ts` fails when the lists differ.
+ */
+export const LIVE_CATALOG_FIELDS = [
+  'optionGroups',
+  'optionValues',
+] as const satisfies readonly (keyof AgentTab)[]
+
+function withoutFields(fields: Partial<AgentTab>, owned: readonly (keyof AgentTab)[]): Partial<AgentTab> {
+  const kept = { ...fields }
+  for (const key of owned)
+    delete kept[key]
+  return kept
+}
+
+/**
+ * `fields` without the lifecycle fields that a live status event owns.
+ *
+ * A `ListAgents` reply states the lifecycle as the worker read it before the
+ * reply left. When the live stream wrote a status in the meantime (see
+ * `TabMetadataStore.liveStatusEpoch`), the reply holds the older answer, and
+ * only the rest of it still applies: the identity and the settings of the tab.
+ */
+export function withoutLiveStatusFields(fields: Partial<AgentTab>): Partial<AgentTab> {
+  return withoutFields(fields, LIVE_STATUS_FIELDS)
+}
+
+/**
+ * `fields` without the option-group catalog that a live event owns.
+ *
+ * A `ListAgents` reply states the catalog as the worker read it before the reply
+ * left. When the live stream wrote a catalog in the meantime (see
+ * `TabMetadataStore.liveCatalogEpoch`), the tab holds the newer answer, and the
+ * reply keeps only the rest: the identity and the lifecycle of the tab.
+ */
+export function withoutLiveCatalogFields(fields: Partial<AgentTab>): Partial<AgentTab> {
+  return withoutFields(fields, LIVE_CATALOG_FIELDS)
 }
 
 /**
@@ -358,13 +416,20 @@ export function isSteerableAgentTab(tab: { type: TabType, parentAgentId?: string
   return pluginFor(tab.agentProvider)?.configuration?.supportsSubagentSend ?? false
 }
 
-/** Whether an agent tab can send a direct interrupt to its process owner. */
-export function agentTabSupportsInterrupt(tab: { type: TabType, parentAgentId?: string | undefined, agentProvider?: AgentProvider | undefined } | undefined): boolean {
+/**
+ * Whether an agent tab can send a direct interrupt to its process owner.
+ *
+ * A root always can. A child can when the worker states it
+ * (`AgentInfo.accepts_interrupt`), which it decides from the provider's own
+ * capability, so the answer cannot drift from the code that interrupts. Until
+ * the worker's answer arrives, a child tab offers no Interrupt control.
+ */
+export function agentTabSupportsInterrupt(tab: { type: TabType, parentAgentId?: string | undefined, acceptsInterrupt?: boolean | undefined } | undefined): boolean {
   if (tab?.type !== TabType.AGENT)
     return false
   if (!tab.parentAgentId)
     return true
-  return pluginFor(tab.agentProvider)?.configuration?.supportsSubagentInterrupt ?? false
+  return tab.acceptsInterrupt === true
 }
 
 /**
@@ -381,8 +446,9 @@ export function mruSteerableAgentTab<T extends Tab>(tabs: readonly T[]): T | und
  * Swap the model-dependent groups (effort, and Claude's extended-thinking group
  * whose enabled label is "Adaptive" vs "On" per model) for the ones the selected
  * model carries in its `subGroups`. This lets an optimistic model switch update
- * those groups instantly, instead of waiting for the worker's relaunch
- * round-trip (a model change resets effort to auto, which forces a relaunch).
+ * those groups instantly, instead of waiting for the worker's answer. The worker
+ * keeps the effort when the new model offers it. It resets the effort to auto
+ * otherwise, which can force a relaunch.
  *
  * The dependent group ids are the union across every model's sub_groups, so a
  * model that omits one (Haiku has no effort group) correctly drops it. Returns a
@@ -461,9 +527,9 @@ function projectOptionGroups(base: AvailableOptionGroup[], values: Record<string
     // effectiveCurrent helper). This projects the RAW optimistic value; the panel and trigger
     // additionally CLAMP/validate an out-of-list value (currentValueOrDefault / effortValid),
     // so during an in-flight model switch the effort group's projected currentValue may briefly
-    // be a tier the new model doesn't offer (e.g. xhigh left over from Opus after switching to
-    // Sonnet) -- every consumer that surfaces it guards against that itself. Reuse the existing
-    // reference when nothing changed (DOM stability).
+    // be a tier the new model doesn't offer (e.g. high left over from a reasoning model after
+    // switching to a model that does not reason) -- every consumer that surfaces it guards
+    // against that itself. Reuse the existing reference when nothing changed (DOM stability).
     const next = effectiveCurrent(values, g)
     if (next === g.currentValue)
       return g
@@ -507,6 +573,7 @@ export function agentTabToInfo(tab: Tab | undefined): AgentInfo | undefined {
     startupMessage: tab.startupMessage ?? '',
     parentAgentId: tab.parentAgentId ?? '',
     acceptsMessages: tab.acceptsMessages ?? false,
+    acceptsInterrupt: tab.acceptsInterrupt ?? false,
     supportsSteering: tab.supportsSteering ?? false,
     supportsPreemption: tab.supportsPreemption ?? false,
     rootAgentId: tab.rootAgentId ?? '',
@@ -837,6 +904,56 @@ export function terminalMetadata(workerId: string, term: ProtoTerminal) {
   const fields = protoToTerminalTabFields(workerId, term)
   const { status, ...rest } = fields
   return { ...rest, terminalStatus: status }
+}
+
+/**
+ * The metadata fields that a live terminal status event writes beside the
+ * status itself. Each one states the lifecycle of the terminal at the moment of
+ * the event. `applyTerminalStatusChange` and `markTerminalExited` write them
+ * through `TabMetadataStore.patchLiveStatus`, and `useWorkspaceConnection.test.ts`
+ * fails when the two lists differ.
+ *
+ * Those two writers also set `contentReady`, and this list leaves it out on
+ * purpose. Nothing writes `contentReady` to false, so an older reply cannot move
+ * it back.
+ */
+export const TERMINAL_LIVE_STATUS_FIELDS = [
+  'terminalStatus',
+  'startupError',
+  'startupMessage',
+] as const satisfies readonly (keyof TabMetadata)[]
+
+type TerminalLifecycleField = typeof TERMINAL_LIVE_STATUS_FIELDS[number]
+
+/**
+ * The part of a `ListTerminals` reply that still applies after a live status
+ * event landed while the reply was pending (see
+ * `TabMetadataStore.liveStatusEpoch`).
+ *
+ * The reply states the lifecycle as the worker read it, and the event is
+ * newer than that reading. So the reply gives up the lifecycle fields and
+ * keeps the rest: the title, the directories, the size, and the screen.
+ *
+ * One answer outlasts the event: a shell that exited. The catch-up marker that
+ * a watch sends on subscribe reads READY for a shell that exited before the
+ * subscription, because the marker has no field for the exit. Only the reply
+ * carries it. A dead shell stays dead until a restart, and a restart needs a
+ * user who presses Enter on an EXITED tab that is hydrated. A reply that says
+ * EXITED therefore applies in full.
+ *
+ * Another client can restart the shell while the reply is pending. The
+ * restart then lands between the moment when the worker reads the state and the
+ * moment when the reply arrives. This guard does not cover that case.
+ */
+export function keepLiveTerminalStatus<T extends Partial<Record<TerminalLifecycleField, unknown>>>(
+  fields: T,
+): Omit<T, TerminalLifecycleField> {
+  if (fields.terminalStatus === TerminalStatus.EXITED)
+    return fields
+  const kept = { ...fields }
+  for (const key of TERMINAL_LIVE_STATUS_FIELDS)
+    delete kept[key]
+  return kept
 }
 
 /**

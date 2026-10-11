@@ -52,11 +52,10 @@ export function messageBandKind(kind: string): MessageBandKind | undefined {
 /**
  * Width of a band's top and bottom border, in CSS pixels.
  *
- * Two adjacent bands are placed exactly this far apart in the NEGATIVE
- * direction (see gapAfter in ~/components/chat/useChatVirtualizer.ts), so the
- * lower row's top border lands on the upper row's bottom border and the pair
- * shows one line instead of two. Keep it equal to the border width that
- * `bandRow` declares in ~/components/chat/messageStyles.css.ts.
+ * Adjacent bands overlap by this width when both heights support it.
+ * `gapAfter` reduces the overlap for zero or fractional heights.
+ * The lower band's top border covers the upper band's bottom border.
+ * Keep this value equal to the border width in ~/components/chat/messageStyles.css.ts.
  */
 export const BAND_BORDER_PX = 1
 

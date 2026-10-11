@@ -39,6 +39,7 @@ export interface FilterableItem {
  */
 export function FilterableListbox(props: {
   items: FilterableItem[]
+  ariaLabel: string
   current?: string
   placeholder?: string
   testIdPrefix?: string
@@ -165,13 +166,15 @@ export function FilterableListbox(props: {
 
   return (
     <>
-      <div class={styles.comboboxListbox} ref={listRef}>
+      <div class={styles.comboboxListbox} role="listbox" aria-label={props.ariaLabel} ref={listRef}>
         <For each={filtered()}>
           {(item, index) => {
             const selected = () => props.current != null && item.value === props.current
             const row = (
               <div
                 data-listbox-item=""
+                role="option"
+                aria-selected={selected()}
                 class={[styles.comboboxItem, index() === highlightedIndex() ? styles.comboboxItemHighlighted : '', selected() ? styles.comboboxItemSelected : ''].filter(Boolean).join(' ')}
                 data-testid={props.testIdPrefix ? `${props.testIdPrefix}-${item.value}` : undefined}
                 onClick={() => props.onSelect(item.value)}

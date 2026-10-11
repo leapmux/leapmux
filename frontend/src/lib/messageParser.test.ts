@@ -21,7 +21,7 @@ function makeMsg(source: MessageSource, content: unknown, opts?: { seq?: bigint,
   return makeMessage({
     source,
     content: rawContent(content),
-    // The factory's Partial<> optionals reject an explicit undefined; omit when absent.
+    // Partial<> rejects an explicit undefined option. Omit the option when its value is absent.
     ...(opts?.seq === undefined ? {} : { seq: opts.seq }),
     ...(opts?.spanId === undefined ? {} : { spanId: opts.spanId }),
     ...(opts?.spanType === undefined ? {} : { spanType: opts.spanType }),
@@ -38,6 +38,31 @@ function wrap(...messages: unknown[]): { type: typeof NOTIFICATION_THREAD_TYPE, 
 // ---------------------------------------------------------------------------
 
 describe('parseMessageContent', () => {
+  it('keeps native session identity in neutral metadata without changing provider bytes', () => {
+    const original = { type: 'native-result', output: 'native output' }
+    const message = makeMessage({ content: rawContent(original), agentSessionId: 'native-current-session' })
+    const result = parseMessageContent(message)
+    expect(result.agentSessionId).toBe('native-current-session')
+    expect(result.parentObject).toEqual(original)
+    expect(result.rawText).toBe(JSON.stringify(original))
+    expect(parseMessageContent(message)).toBe(result)
+  })
+
+  it('keeps the Worker session column separate from a foreign provider session field', () => {
+    const original = { type: 'native-result', agentSessionId: 'foreign-provider-session' }
+    const result = parseMessageContent(makeMessage({ content: rawContent(original), agentSessionId: 'native-current-session' }))
+    expect(result.agentSessionId).toBe('native-current-session')
+    expect(result.parentObject).toEqual(original)
+  })
+
+  it('keeps an empty or unreadable message session without inventing a provider identity', () => {
+    for (const content of [new TextEncoder().encode('{invalid'), new Uint8Array([0xFF, 0xFE])]) {
+      const result = parseMessageContent(makeMessage({ content, agentSessionId: '' }))
+      expect(result.agentSessionId).toBe('')
+      expect(result.parentObject).toBeUndefined()
+    }
+  })
+
   it('keeps typed completion when provider JSON is invalid', () => {
     const content = new TextEncoder().encode('{unfinished')
     const result = parseMessageContent(makeMessage({ content, completion: MessageCompletion.INTERRUPTED }))
@@ -62,6 +87,45 @@ describe('parseMessageContent', () => {
     expect(result.rawText).toBe(JSON.stringify(original))
     expect(result.supplementalContent).toEqual(supplemental)
     expect(result.messageMetadata).toEqual({ duration_ms: 0 })
+  })
+
+  it('retains received opaque metadata without interpreting its encoded fields', () => {
+    const original = { type: 'notification_thread', old_seqs: [], messages: [{ type: 'system', text: 'Visible notice' }] }
+    const records = [{
+      label: 'opaque:zero',
+      data_base64: '/wB7IndpZGUiOjkwMDcxOTkyNTQ3NDA5OTN9',
+      extra_base64: 'AAE=',
+      empty_base64: '',
+      status: 4,
+      retained: true,
+    }, {
+      label: '',
+      data_base64: '',
+      extra_base64: '',
+      empty_base64: 'eyJkdXJhdGlvbl9tcyI6MH0=',
+      retained: false,
+    }]
+    const provider = { notification_entries: 'Provider field', recovered: true }
+    const supplement = { provider, metadata: { duration_ms: 0, opaque_records: records } }
+    const message = makeMessage({ content: rawContent(original), supplementalContent: rawContent(supplement) })
+    const result = parseMessageContent(message)
+    expect(result.rawText).toBe(JSON.stringify(original))
+    expect(result.wrapper?.messages).toEqual(original.messages)
+    expect(result.supplementalContent).toEqual(provider)
+    expect(result.messageMetadata).toEqual(supplement.metadata)
+    expect(result.supplementalRawText).toBe(JSON.stringify(supplement))
+    expect(extractPlanFilePath(result)).toBeUndefined()
+    expect(extractContextUsage(result, () => null)).toBeNull()
+  })
+
+  it('keeps an unknown metadata array without interpreting its fields', () => {
+    const original = { type: 'assistant', message: { content: [] } }
+    const metadata = { opaque_records: [{ encoded_value: 'This is unknown metadata.' }] }
+    const message = makeMessage({ content: rawContent(original), supplementalContent: rawContent({ metadata }) })
+    const result = parseMessageContent(message)
+    expect(result.parentObject).toEqual(original)
+    expect(result.messageMetadata).toEqual(metadata)
+    expect(result.supplementalContent).toBeUndefined()
   })
 
   it('preserves the original when supplemental JSON is invalid', () => {
@@ -165,7 +229,7 @@ describe('parseMessageContent', () => {
     const msg = makeMessage({ content: new Uint8Array() })
     const result = parseMessageContent(msg)
 
-    // Empty Uint8Array decodes to "" which fails JSON.parse → topLevel null
+    // An empty Uint8Array decodes to an empty string. JSON.parse rejects it, so topLevel remains null.
     expect(result.rawText).toBe('')
     expect(result.topLevel).toBeNull()
     expect(result.parentObject).toBeUndefined()
@@ -212,7 +276,7 @@ describe('getInnerMessageType', () => {
 })
 
 // ---------------------------------------------------------------------------
-// messageUsage — the neutral `.message.usage` accessor both Claude and Pi read
+// messageUsage: the neutral message.usage accessor that Claude and Pi both read.
 // ---------------------------------------------------------------------------
 
 describe('messageUsage', () => {
@@ -231,7 +295,7 @@ describe('messageUsage', () => {
   })
 
   it('returns undefined when message is not an object (the isObject guard)', () => {
-    // A non-object `message` (e.g. a string) must not blow up the `.usage` read.
+    // A non-object message, such as a string, must not make the usage read throw.
     expect(usageOf({ type: 'assistant', message: 'not-an-object' })).toBeUndefined()
   })
 })
@@ -241,8 +305,9 @@ describe('messageUsage', () => {
 // ---------------------------------------------------------------------------
 
 describe('extractContextUsage', () => {
-  // A stub provider hook standing in for contextUsageFromMessage; the provider-shape parsing itself
-  // (Codex tokenUsage, Claude input_tokens, Pi input/cacheWrite) is tested in each plugin's test.
+  // The fallback models the provider hook. Each provider's tests check its native usage fields.
+// These tests check the neutral extractor.
+
   const stubFallback = (parsed: ParsedMessageContent): ContextUsageInfo | null => {
     const usage = messageUsage(parsed)
     if (!usage || typeof usage.input_tokens !== 'number')
@@ -326,9 +391,47 @@ describe('extractContextUsage', () => {
     })
   })
 
+  it('extracts a normalized reading that states the fill alone', () => {
+    const msg = makeMsg(MessageSource.AGENT, { type: 'assistant', context_usage: { usage_percent: 3.5 } })
+    expect(extractContextUsage(parseMessageContent(msg), noProviderUsage)).toEqual({
+      contextUsage: { inputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, usagePercent: 3.5 },
+    })
+  })
+
+  it('keeps a stated zero percentage and drops a percentage that is no reading', () => {
+    const zero = makeMsg(MessageSource.AGENT, { type: 'assistant', context_usage: { usage_percent: 0 } })
+    expect(extractContextUsage(parseMessageContent(zero), noProviderUsage)?.contextUsage?.usagePercent).toBe(0)
+    for (const value of [-1, 'full', null]) {
+      const msg = makeMsg(MessageSource.AGENT, { type: 'assistant', context_usage: { usage_percent: value } })
+      expect(extractContextUsage(parseMessageContent(msg), noProviderUsage), String(value)).toBeNull()
+    }
+  })
+
+  it('keeps the percentage beside a token count', () => {
+    // The parser retains the token count and percentage. The meter gives the token count priority.
+    const msg = makeMsg(MessageSource.AGENT, { type: 'assistant', context_usage: { input_tokens: 10, context_window: 100, usage_percent: 40 } })
+    expect(extractContextUsage(parseMessageContent(msg), noProviderUsage)).toEqual({
+      contextUsage: { inputTokens: 10, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, contextWindow: 100, usagePercent: 40 },
+    })
+  })
+
+  it('drops a percentage that is no reading and keeps the token count beside it', () => {
+    const msg = makeMsg(MessageSource.AGENT, { type: 'assistant', context_usage: { input_tokens: 10, usage_percent: -1 } })
+    const usage = extractContextUsage(parseMessageContent(msg), noProviderUsage)?.contextUsage
+    expect(usage).toEqual({ inputTokens: 10, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 })
+    // Omit the key instead of writing undefined because the store compares key counts.
+    expect(Object.keys(usage ?? {})).not.toContain('usagePercent')
+  })
+
+  it('keeps a percentage past the whole window for the meter to cap', () => {
+    const msg = makeMsg(MessageSource.AGENT, { type: 'assistant', context_usage: { usage_percent: 250 } })
+    expect(extractContextUsage(parseMessageContent(msg), noProviderUsage)?.contextUsage?.usagePercent).toBe(250)
+  })
+
   it('skips the provider fallback when a backend-normalized context_usage is present', () => {
-    // The raw message.usage fallback runs ONLY when no normalized context_usage was folded in;
-    // a message carrying both must use the normalized value and never invoke the fallback.
+    // Use normalized context usage when it exists. Never call the provider fallback for that
+    // payload.
+
     const content = {
       type: 'message_end',
       context_usage: { input_tokens: 100, cache_read_input_tokens: 20 },
@@ -369,10 +472,15 @@ describe('extractContextUsage', () => {
 // ---------------------------------------------------------------------------
 
 /*
- * This reads the SESSION metadata a turn end carries -- the context window, the
- * normalized usage and the running cost -- and nothing else. The turn's own totals
- * (`num_tool_uses`, `total_cost_usd`, `duration_ms`) belong to the row the reader
- * sees, and `dividerMetaFromMessage` states them there.
+ * Read only the session metadata that a turn end supplies:
+ * - The context window.
+ * - The normalized usage.
+ * - The running cost.
+ * The visible divider row owns the turn totals:
+ * - num_tool_uses.
+ * - total_cost_usd.
+ * - duration_ms.
+ * dividerMetaFromMessage supplies those totals to the visible row.
  */
 describe('extractResultMetadata', () => {
   it('extracts contextWindow and cost', () => {

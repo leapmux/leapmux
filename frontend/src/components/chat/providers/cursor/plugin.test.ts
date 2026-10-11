@@ -2,6 +2,7 @@ import { render, screen } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { compactControl } from '~/components/common/CompactControl.css'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { providerToolCall } from '~/test-support/toolCallFixture'
 import { createControlAnswerState } from '../../controls/types'
 import { describeACPProviderBasics } from '../acp/testUtils'
 import { providerFor } from '../registry'
@@ -11,10 +12,9 @@ import './plugin'
 describe('cursor provider', () => {
   const plugin = providerFor(AgentProvider.CURSOR)!
 
-  // Cursor's attachment caps, assembled-text handling, config_option_update hiding,
-  // and ACP interrupt request are the standard stub behaviours (interrupt is wired unconditionally
-  // by registerACPProvider, so routing through the helper also covers it).
-  describeACPProviderBasics(AgentProvider.CURSOR, { text: true, image: true, pdf: true, binary: true })
+  // Cursor keeps the standard ACP text/image behavior and interrupts. It drops
+  // embedded blob content, so PDF and binary attachments must be refused.
+  describeACPProviderBasics(AgentProvider.CURSOR, { text: true, image: true, pdf: false, binary: false })
 
   it('maps plan mode to agent/plan values', () => {
     expect(plugin?.configuration?.planMode?.currentMode({ optionValues: { permissionMode: 'plan' } })).toBe('plan')
@@ -74,5 +74,40 @@ describe('cursor provider', () => {
       request: { method: 'cursor/create_plan' },
       response: { result: { outcome: { outcome: 'accepted' } } },
     })).toEqual({ kind: 'label', text: 'Accept' })
+  })
+})
+
+describe('native output without a filesystem pointer', () => {
+  it('keeps a valid native result and omits the output path hook', () => {
+    const frame = {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'native-call',
+      status: 'completed',
+      kind: 'execute',
+      title: 'native command',
+      rawInput: {
+        command: 'printf preview',
+      },
+      content: [
+        {
+          type: 'content',
+          content: {
+            type: 'text',
+            text: 'native inline preview',
+          },
+        },
+      ],
+      rawOutput: {
+        output: 'native inline preview',
+        exitCode: 0,
+      },
+    }
+    const call = providerToolCall(AgentProvider.CURSOR, frame, { spanId: 'native-call', spanType: 'Shell', agentSessionId: 'native-session', role: 'result' })
+    expect(call).not.toBeNull()
+    expect(call?.id).toBe('native-call')
+    expect(call?.outputFilePaths).toBeUndefined()
+    const registered = providerFor(AgentProvider.CURSOR)
+    expect(registered).toBeDefined()
+    expect(registered?.transcript.outputFilePaths).toBeUndefined()
   })
 })

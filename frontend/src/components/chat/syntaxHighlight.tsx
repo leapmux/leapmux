@@ -7,7 +7,7 @@ import { createMemo, For, Show } from 'solid-js'
 import { canHighlightBySize } from './results/collapse'
 import { useAsyncCodeTokens } from './useAsyncCodeTokens'
 
-/** Map a markdown render context to the shared token hook's premeasure/hold gate. */
+/** Read premeasure and pause controls for the shared token hook. */
 function tokenGateFromContext(context: MarkdownRenderContext | undefined): TokenGate {
   return {
     premeasure: context?.premeasureMode === true,
@@ -16,6 +16,7 @@ function tokenGateFromContext(context: MarkdownRenderContext | undefined): Token
 }
 
 function TokenizedCode(props: {
+  dataToolOutputPreview?: boolean
   code: string
   tokens?: CachedToken[][] | null
   class?: string
@@ -27,6 +28,7 @@ function TokenizedCode(props: {
     <div
       ref={el => props.elementRef?.(el)}
       class={props.class}
+      data-tool-output-preview={props.dataToolOutputPreview ? '' : undefined}
       data-command-input-collapsed={props.dataCommandInputCollapsed ? '' : undefined}
       data-command-input-overflowing={props.dataCommandInputOverflowing ? '' : undefined}
     >
@@ -53,14 +55,13 @@ function TokenizedCode(props: {
 }
 
 /**
- * A code body highlighted as token <span>s via the async Oniguruma token worker
- * (replacing the old synchronous `codeToHtml` + innerHTML path). While tokens are
- * in flight / paused / oversized, `TokenizedCode` shows the raw text, so there is
- * no flash of nothing. The only per-surface difference is the Shiki `lang`; the
- * eligibility, gate, and token markup are identical, so Bash and JSON are thin
- * wrappers that bind `lang` rather than two copies that must stay in sync.
+ * Render code as token spans from the asynchronous token worker.
+ * Keep raw text visible while token work waits, pauses, or exceeds its limits.
+ * Bash and JSON share token eligibility, controls, and markup.
+ * Each wrapper supplies its language.
  */
 function AsyncHighlightedCode(props: {
+  dataToolOutputPreview?: boolean
   lang: string
   code: string
   context?: MarkdownRenderContext
@@ -71,9 +72,9 @@ function AsyncHighlightedCode(props: {
   dataCommandInputOverflowing?: boolean
   elementRef?: (el: HTMLDivElement) => void
 }): JSX.Element {
-  // Memoized so the per-surface char/line scan runs once per code change, not on
-  // every currentKey() read inside the hook (2-3x per reactive pass). Mirrors
-  // useDiffTokens, which memoizes its eligibility for the same reason.
+  // Calculate size eligibility once for each code change.
+  // Repeated token-key reads then reuse the same result.
+  // useDiffTokens applies this same cache rule.
   const eligible = createMemo(() => canHighlightBySize(props.code, {
     ...(props.maxHighlightChars !== undefined ? { maxChars: props.maxHighlightChars } : {}),
     ...(props.maxHighlightLines !== undefined ? { maxLines: props.maxHighlightLines } : {}),
@@ -92,6 +93,7 @@ function AsyncHighlightedCode(props: {
       {...(props.dataCommandInputCollapsed !== undefined ? { dataCommandInputCollapsed: props.dataCommandInputCollapsed } : {})}
       {...(props.dataCommandInputOverflowing !== undefined ? { dataCommandInputOverflowing: props.dataCommandInputOverflowing } : {})}
       {...(props.elementRef !== undefined ? { elementRef: props.elementRef } : {})}
+      {...(props.dataToolOutputPreview !== undefined ? { dataToolOutputPreview: props.dataToolOutputPreview } : {})}
       tokens={tokens()}
     />
   )
@@ -124,6 +126,7 @@ export function CommandHighlightHtml(props: {
 }
 
 export function JsonHighlightHtml(props: {
+  dataToolOutputPreview?: boolean
   code: string
   context?: MarkdownRenderContext
   class?: string
@@ -133,6 +136,7 @@ export function JsonHighlightHtml(props: {
   return (
     <AsyncHighlightedCode
       lang="json"
+      {...(props.dataToolOutputPreview !== undefined ? { dataToolOutputPreview: props.dataToolOutputPreview } : {})}
       code={props.code}
       {...(props.context !== undefined ? { context: props.context } : {})}
       {...(props.class !== undefined ? { class: props.class } : {})}

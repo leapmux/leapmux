@@ -391,6 +391,7 @@ export function createTabView(opts: CreateTabViewOpts) {
           startupMessage: m.startupMessage,
           parentAgentId: m.parentAgentId,
           acceptsMessages: m.acceptsMessages,
+          acceptsInterrupt: m.acceptsInterrupt,
           supportsSteering: m.supportsSteering,
           supportsPreemption: m.supportsPreemption,
           rootAgentId: m.rootAgentId,

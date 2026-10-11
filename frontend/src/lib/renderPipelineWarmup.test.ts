@@ -27,8 +27,8 @@ describe('renderPipelineWarmup', () => {
     vi.mocked(renderMarkdownInWorker).mockClear()
     vi.mocked(tokenizeAsync).mockClear()
     vi.mocked(sweepArtifacts).mockClear()
-    ;(globalThis as unknown as { Worker: unknown }).Worker = class {}
-    // Desktop-sized viewport so the constrained path does not steal these cases.
+    vi.stubGlobal('Worker', class {})
+    // The desktop viewport keeps these cases on the unconstrained path.
     vi.stubGlobal('matchMedia', (query: string) => ({
       matches: false,
       media: query,
@@ -41,12 +41,11 @@ describe('renderPipelineWarmup', () => {
   })
 
   afterEach(() => {
-    delete (globalThis as unknown as { Worker?: unknown }).Worker
     vi.unstubAllGlobals()
     vi.useRealTimers()
   })
 
-  it('runs one worker warm-up per surface plus the artifact sweep at idle', async () => {
+  it('runs one worker warm-up per surface and sweeps the render cache at idle', async () => {
     const callbacks: Array<() => void> = []
     vi.stubGlobal('requestIdleCallback', (cb: () => void) => {
       callbacks.push(cb)
@@ -78,7 +77,7 @@ describe('renderPipelineWarmup', () => {
   })
 
   it('is a no-op without Worker support', () => {
-    delete (globalThis as unknown as { Worker?: unknown }).Worker
+    vi.stubGlobal('Worker', undefined)
     const ric = vi.fn()
     vi.stubGlobal('requestIdleCallback', ric)
     scheduleRenderPipelineWarmup()

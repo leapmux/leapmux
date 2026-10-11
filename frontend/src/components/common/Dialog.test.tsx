@@ -90,6 +90,34 @@ describe('dialog', () => {
     await waitFor(() => expect(onClose).toHaveBeenCalled())
   })
 
+  // An E2E check reads this attribute to tell a closing dialog from an opening one: the opacity and the animations
+  // change in both.
+  it('states data-closing from the close request until the parent unmounts it, and not before', () => {
+    const { container } = render(() => (
+      <Dialog title="Test" onClose={vi.fn()}>
+        <p>Content</p>
+      </Dialog>
+    ))
+
+    const dialog = container.querySelector('dialog')!
+    expect(dialog.hasAttribute('data-closing')).toBe(false)
+    dialog.dispatchEvent(new Event('cancel', { bubbles: false, cancelable: true }))
+    // The marker is set in the same task as the close request.
+    expect(dialog.hasAttribute('data-closing')).toBe(true)
+  })
+
+  it('states no data-closing for a close request while busy', () => {
+    const { container } = render(() => (
+      <Dialog title="Test" busy onClose={vi.fn()}>
+        <p>Content</p>
+      </Dialog>
+    ))
+
+    const dialog = container.querySelector('dialog')!
+    dialog.dispatchEvent(new Event('cancel', { bubbles: false, cancelable: true }))
+    expect(dialog.hasAttribute('data-closing')).toBe(false)
+  })
+
   it('acts on no Escape of its own, so an inner layer can consume it', async () => {
     const onClose = vi.fn()
     const { container } = render(() => (

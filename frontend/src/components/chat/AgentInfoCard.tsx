@@ -15,7 +15,7 @@ import * as styles from './ChatView.css'
 import { pluginFor } from './providers/registry'
 import { formatTokenCount } from './rendererUtils'
 import { OPTION_ID_MODEL, optionGroup, selectedModelContextWindow } from './settingsGroups'
-import { computePercentage, contextBufferPct, contextSize, resolveContextWindow } from './widgets/ContextUsageGrid'
+import { computePercentage, contextBufferPct, contextSize, isPercentOnlyUsage, resolveContextWindow } from './widgets/ContextUsageGrid'
 
 export interface AgentInfoCardProps {
   // These three arrive as reactive getters that resolve through to undefined
@@ -290,13 +290,19 @@ export function useAgentInfoCard(props: AgentInfoCardProps) {
           const total = contextSize(usage)
           const pct = computePercentage(usage, modelCtxWindow, agent()?.agentProvider)
           const bufferPct = contextBufferPct(agent()?.agentProvider)
+          // The percentage is a share of the window less the headroom that the
+          // provider keeps, so each form of the row states that headroom.
+          const headroom = bufferPct > 0 ? ` with ${bufferPct}% headroom` : ''
+          const percentSuffix = pct != null ? ` (${Math.round(pct)}%${headroom})` : ''
           return (
             <div class={styles.infoRow}>
               <span class={styles.infoLabel}>Context</span>
               <span class={styles.infoValueText}>
-                {formatTokenCount(total)}
-                {` / ${formatTokenCount(ctxWindow)}`}
-                {pct != null ? ` (${Math.round(pct)}%${bufferPct > 0 ? ` with ${bufferPct}% headroom` : ''})` : ''}
+                {/* A provider that reports the fill alone states no token count to
+                    show, so the row states the percentage by itself. */}
+                {isPercentOnlyUsage(usage)
+                  ? `${Math.round(pct ?? 0)}% of the context window${headroom}`
+                  : `${formatTokenCount(total)} / ${formatTokenCount(ctxWindow)}${percentSuffix}`}
               </span>
             </div>
           )

@@ -1,7 +1,7 @@
 import type { Accessor, JSX, JSXElement } from 'solid-js'
 import type { ContextMenuPress } from './contextMenuGesture'
 import type { PopoverAnchor, PopoverPositionOptions } from '~/lib/popoverPosition'
-import { createEffect, createSignal, createUniqueId, on, onCleanup, Show } from 'solid-js'
+import { createEffect, createMemo, createSignal, createUniqueId, on, onCleanup, Show } from 'solid-js'
 import { Dynamic } from 'solid-js/web'
 import { calcPopoverPosition } from '~/lib/popoverPosition'
 import { createRafResizeObserver } from '~/lib/resizeObserver'
@@ -895,8 +895,16 @@ export function DropdownMenu(props: DropdownMenuProps) {
   // Right-click / long-press on the owning row. See `scheduleOpen` in
   // ~/components/common/contextMenuGesture.ts for the two calls a touch hold
   // makes and why.
+  //
+  // The gesture depends on the row ELEMENT alone, so a memo holds it. A row
+  // passes `contextMenuFor` among optional spread props, and a read of a merged
+  // prop also reads each reactive source that the row spreads beside it, such
+  // as the tab or the pop action. Without the memo, each update of the row's
+  // item runs the attach effect again. The detach then cancels a hold that is
+  // in flight, and the menu never opens under the finger.
+  const contextMenuEl = createMemo(() => props.contextMenuFor?.())
   createEffect(() => {
-    const el = props.contextMenuFor?.()
+    const el = contextMenuEl()
     if (!el)
       return
     const detach = attachContextMenuGesture(el, {

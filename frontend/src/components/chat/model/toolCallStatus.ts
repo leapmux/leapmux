@@ -4,14 +4,16 @@ import type { ProviderToolOutcome, ToolOutcome } from './toolOutcome'
  * Every state a tool row's header can draw.
  *
  * A CLOSED set, for the reason {@link ToolKind} gives: the header tests the value
- * against three words, so a typo such as `'canceled'` compiled into a header that
- * silently never drew. `unstated` means that the provider states no status.
+ * against a fixed set of words, so a typo such as `'canceled'` compiled into a header
+ * that silently never drew. `unstated` means that the provider states no status.
  * An Agent Client Protocol update that omits the field sends this state.
  *
- * `declined` is the call a reader REFUSED, so the tool never ran. It is not a
- * failure: no command produced an exit code and no patch touched a file. Codex
- * reports it on a `commandExecution` or a `fileChange` whose approval the reader
- * denied, and Cursor reports it on a rejected web approval.
+ * `declined` is a call that the reader or a rule REFUSED, so the tool never ran. It
+ * is not a failure: no command produced an exit code and no patch touched a file. A
+ * provider plugin states it only where its own frame states the refusal, and the
+ * model then admits no artifact and no typed payload for the call
+ * (`DeclinedToolCallState`). Its result, when present, is the refusal in words, or
+ * the prose answer of a kind whose own result is prose.
  */
 export const TOOL_CALL_STATUSES = ['unstated', 'pending', 'in_progress', 'completed', 'failed', 'cancelled', 'declined', 'incomplete'] as const
 
@@ -66,9 +68,9 @@ export function statusForOutcome(outcome: Exclude<ProviderToolOutcome, 'succeede
 /**
  * The outcome word a row's own status states, or null when the status states none.
  *
- * Three statuses end a call in a way the reader must see, and each maps to one word
- * of the shared outcome vocabulary. Every other status -- including `completed` --
- * needs no such header, because the body states the result.
+ * Each status that the switch below lists ends a call in a way the reader must see,
+ * and each maps to one word of the shared outcome vocabulary. Every other status --
+ * including `completed` -- needs no such header, because the body states the result.
  *
  * One table, because the header, the MCP card's failure label and the toolbar each
  * asked the question separately, and a status added to the union reached only the

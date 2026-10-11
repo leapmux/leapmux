@@ -138,6 +138,22 @@ describe('copilot native tool rendering', () => {
     expect(container.textContent).toContain('Directory:/project')
   })
 
+  it('shows the empty-output notice for an actual landed empty result', () => {
+    const args = { command: 'true' }
+    const result = { result: { content: '' } }
+    const call = providerToolCall(AgentProvider.GITHUB_COPILOT, complete(result), {
+      spanType: COPILOT_TOOL.Bash,
+      request: parsed(start(args, COPILOT_TOOL.Bash)),
+    })
+    expect(call).toMatchObject({
+      kind: 'execute',
+      status: 'completed',
+      result: { commands: [{ output: '' }], unresolvedTerminals: [] },
+    })
+    const { container } = renderResult(args, COPILOT_TOOL.Bash, result)
+    expect(container.textContent).toContain('[no output]')
+  })
+
   it('extracts the shell status trailer without showing it as output', () => {
     const { container } = renderResult({ command: 'python3 sample.py' }, COPILOT_TOOL.Bash, {
       success: false,
@@ -180,6 +196,32 @@ describe('copilot native tool rendering', () => {
     })
     expect(container.textContent).toContain('File does not exist')
     expect(container.textContent).toContain('Error')
+  })
+
+  // The runtime's `rejected` code states a refusal, so the command never ran. The row
+  // says so, and it does not head the refusal as an error the command produced.
+  it('heads a refused shell call as declined rather than as an error', () => {
+    const { container } = renderResult({ command: 'rm -f doomed.txt' }, COPILOT_TOOL.Bash, {
+      success: false,
+      error: { code: 'rejected', message: 'The user rejected this tool call.' },
+    })
+    expect(container.textContent).toContain('Declined')
+    expect(container.textContent).toContain('The user rejected this tool call.')
+    expect(container.textContent).not.toContain('Error')
+  })
+
+  // The layout the transcript draws: the request card stands above, so the result row
+  // states the outcome and the refusal alone. The worker stores a refused completion
+  // with NO completion column (`copilotToolCompletionData.completion` in the Go
+  // provider), so nothing draws a LeapMux error header over the row's own outcome.
+  it('heads a refused shell call under its request card as declined', () => {
+    const { container } = renderResult({ command: 'rm -f doomed.txt' }, COPILOT_TOOL.Bash, {
+      success: false,
+      error: { code: 'rejected', message: 'The user rejected this tool call.' },
+    }, true)
+    expect([...container.querySelectorAll(`.${toolUseHeader}`)].map(node => node.textContent)).toEqual(['Declined'])
+    expect(container.textContent).toContain('The user rejected this tool call.')
+    expect(container.textContent).not.toContain('Error')
   })
 
   // A failed call states its reason in `error`. Reading the partial `result` there
@@ -485,10 +527,9 @@ describe('copilot native tool rendering', () => {
 })
 
 describe('a copilot tool row the turn interrupted', () => {
-  // The runtime sends no completion for a call its turn cut short, so the worker
-  // stores the START frame again. That copy is the call's RESULT, so the row reads
-  // as one: no second request card under the Interrupted header, and no result body,
-  // because the runtime reported none.
+  // The Worker stores the start frame again when the runtime supplies no completion.
+  // This retained row closes the span.
+  // It shows the interruption without another request card or a constructed result.
   const args = { command: 'bun test --coverage' }
   const request = start(args, COPILOT_TOOL.Bash)
 
@@ -515,10 +556,13 @@ describe('a copilot tool row the turn interrupted', () => {
       .toEqual(['Interrupted'])
   })
 
-  // The runtime reported no output, and every other provider's interrupted command
-  // says exactly this, so the four transports read the same.
-  it('states that the call produced no output', () => {
+  // The runtime supplies no result frame.
+  // The view must not claim that its output was empty.
+  it('keeps absent native output separate from an empty result', () => {
+    const call = providerToolCall(AgentProvider.GITHUB_COPILOT, request, { completion: MessageCompletion.INTERRUPTED })
+    expect(call).toMatchObject({ kind: 'execute', status: 'cancelled', request: { command: args.command } })
+    expect(call?.result).toBeUndefined()
     const { container } = renderRetained()
-    expect(container.textContent).toBe('Interrupted[no output]')
+    expect(container.textContent).toBe('Interrupted')
   })
 })

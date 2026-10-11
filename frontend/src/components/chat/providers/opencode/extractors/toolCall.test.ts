@@ -3,10 +3,11 @@ import type { ToolKind } from '../../../model/toolKind'
 import { describe, expect, it } from 'vitest'
 import { isToolFailureResult, isUnparsedToolResult, typedResult } from '../../../model/toolCall'
 import { acpToolCall } from '../../acp/extractors/toolCall'
+import { OPENCODE_REFUSED_TOOL_ERRORS } from '../protocol'
 import { openCodeToolCallAdapterFor } from './toolCall'
 
 function model(tool: Record<string, unknown>): ToolCall {
-  return acpToolCall({ sessionUpdate: 'tool_call', toolCallId: 'open-code-tool', status: 'pending', kind: 'think', title: 'task', ...tool }, openCodeToolCallAdapterFor(), undefined)
+  return acpToolCall({ sessionUpdate: 'tool_call', toolCallId: 'open-code-tool', status: 'pending', kind: 'think', title: 'task', ...tool }, openCodeToolCallAdapterFor({ refusals: OPENCODE_REFUSED_TOOL_ERRORS }), undefined)
 }
 
 describe('openCodeToolCallAdapterFor subagent launches', () => {
@@ -244,7 +245,7 @@ describe('openCodeToolCallAdapterFor kind stability', () => {
   function lifecycle(frame: Record<string, unknown>, answer: Record<string, unknown>, kinds?: (toolName: string) => ToolKind | undefined): ToolKind[] {
     const build = (tool: Record<string, unknown>) => acpToolCall(
       { sessionUpdate: 'tool_call', toolCallId: 'open-code-tool', ...tool },
-      openCodeToolCallAdapterFor(kinds),
+      openCodeToolCallAdapterFor({ refusals: OPENCODE_REFUSED_TOOL_ERRORS, ...(kinds ? { toolKinds: kinds } : {}) }),
       undefined,
     ).kind
     return [
@@ -617,7 +618,7 @@ describe('openCodeToolCallAdapterFor stopped calls', () => {
       title: 'chart',
       rawInput: { title: 'Weekly hits', spec },
       content: [{ type: 'content', content: { type: 'text', text: spec } }],
-    }, openCodeToolCallAdapterFor(name => (name === 'chart' ? 'chart' : undefined)), undefined)
+    }, openCodeToolCallAdapterFor({ refusals: OPENCODE_REFUSED_TOOL_ERRORS, toolKinds: name => (name === 'chart' ? 'chart' : undefined) }), undefined)
     expect(call.kind).toBe('chart')
     expect(isToolFailureResult(call.result)).toBe(failed)
     expect(call.kind === 'chart' ? typedResult(call)?.series.map(series => series.label) : undefined)
@@ -646,5 +647,49 @@ describe('openCodeToolCallAdapterFor file-change aliases', () => {
     expect(call.kind === 'edit' ? call.request.changes : undefined).toStrictEqual([
       { filePath: '/p/nb.ipynb', oldStr: 'x', newStr: 'y', structuredPatch: null },
     ])
+  })
+})
+
+/**
+ * A refused call is read from the daemon's own error table, and from its error field.
+ *
+ * The plugin tests read each daemon's refusals through the registry. These cases pin
+ * the two choices the shared adapter makes for every daemon.
+ */
+describe('openCodeToolCallAdapterFor refused calls', () => {
+  const DISMISSED = 'The user dismissed this question'
+  const QUESTION = { questions: [{ header: 'Scope', question: 'Which package?', options: [{ label: 'frontend' }] }] }
+
+  /** A failed question call, with the error in the frame's content block and error field. */
+  const failedQuestion = (rawOutput: Record<string, unknown> | undefined) => ({
+    sessionUpdate: 'tool_call_update',
+    toolCallId: 'refused-call',
+    status: 'failed',
+    kind: 'other',
+    title: 'question',
+    rawInput: QUESTION,
+    content: [{ type: 'content', content: { type: 'text', text: DISMISSED } }],
+    ...(rawOutput !== undefined ? { rawOutput } : {}),
+  })
+
+  // The daemons write different errors behind one wire format. OpenCode's question tool
+  // fails on a dismissal, and Kilo's completes, so only OpenCode's table holds the words.
+  it('reads a refusal only from the table the daemon supplies', () => {
+    const frame = failedQuestion({ error: DISMISSED })
+    expect(acpToolCall(frame, openCodeToolCallAdapterFor({ refusals: OPENCODE_REFUSED_TOOL_ERRORS }), undefined).status).toBe('declined')
+    expect(acpToolCall(frame, openCodeToolCallAdapterFor({ refusals: { messages: [], messagePrefixes: [] } }), undefined).status).toBe('failed')
+  })
+
+  // `rawOutput.error` is the daemon's own slot for the error. A content block can hold
+  // anything the tool printed, so the same words there decide nothing.
+  it('reads the refusal from the error field alone', () => {
+    expect(acpToolCall(failedQuestion(undefined), openCodeToolCallAdapterFor({ refusals: OPENCODE_REFUSED_TOOL_ERRORS }), undefined).status).toBe('failed')
+  })
+
+  // A prefix states where the variable words START. Words before it are not a refusal.
+  it('matches a prefix only at the start of the error', () => {
+    const feedback = 'The user rejected permission to use this specific tool call with the following feedback: Keep it.'
+    expect(acpToolCall(failedQuestion({ error: feedback }), openCodeToolCallAdapterFor({ refusals: OPENCODE_REFUSED_TOOL_ERRORS }), undefined).status).toBe('declined')
+    expect(acpToolCall(failedQuestion({ error: `question: ${feedback}` }), openCodeToolCallAdapterFor({ refusals: OPENCODE_REFUSED_TOOL_ERRORS }), undefined).status).toBe('failed')
   })
 })

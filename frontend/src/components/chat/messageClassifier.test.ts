@@ -186,7 +186,7 @@ describe('classifyMessage', () => {
 
   // -- LeapMux's own user row, whatever the provider ------------------------
 
-  describe('a user row with no registered plugin', () => {
+  describe('LeapMux user rows across provider hydration', () => {
     // A tab projected from the CRDT has no provider until metadata hydration ends.
     it('classifies LeapMux\'s flat user payload as user_content', () => {
       const result = classifyMessage(input({ content: 'hi' }, null, AgentProvider.UNSPECIFIED, MessageSource.USER))
@@ -533,16 +533,13 @@ describe('classifyMessage', () => {
 
   // -- worker-written notifications ----------------------------------------
 
-  // The worker writes the subagent-end divider itself, so no agent wire format
-  // carries it and no provider plugin can classify it. These pin that it is
-  // classified before dispatch, for every provider: a miss here renders the
-  // divider as raw JSON in the subagent's own transcript.
+  // Worker notices use the same dispatch before every provider plugin.
   describe('worker-written notification', () => {
-    const divider = { type: 'subagent_ended', status: 'completed' }
+    const statusNotice = { type: 'agent_status', text: 'The child supplied its final report.' }
     const report = { type: 'subagent_report', label: 'Reviewer', text: 'Report' }
 
-    it.each(ALL_PROVIDERS)('classifies subagent_ended as a notification for provider %s', (provider) => {
-      const result = classifyMessage(input(divider, null, provider))
+    it.each(ALL_PROVIDERS)('classifies a Worker status notice as a notification for provider %s', (provider) => {
+      const result = classifyMessage(input(statusNotice, null, provider))
       expect(result.kind).toBe('notification')
       expect(result.kind === 'notification' && result.entries).toHaveLength(1)
     })
@@ -557,9 +554,9 @@ describe('classifyMessage', () => {
 
     it('carries every final status through unchanged', () => {
       for (const status of ['completed', 'failed', 'stopped', 'interrupted']) {
-        const parent = { type: 'subagent_ended', status }
+        const parent = { type: 'subagent_report', text: 'Native child report', status }
         const result = classifyMessage(input(parent))
-        expect(result.kind === 'notification' && result.entries).toHaveLength(1)
+        expect(result.kind === 'notification' && result.entries).toEqual([{ kind: 'subagent-report', text: 'Native child report', status }])
       }
     })
 
@@ -592,6 +589,7 @@ describe('classifyMessage', () => {
       { type: 'goal_updated', objective: 'Ship it', goal_status: 'active' },
       { type: 'goal_cleared', objective: 'Ship it' },
       { type: 'stop_ignored' },
+      { type: 'input_requeued' },
     ])('classifies a wrapped $type', (notification) => {
       const result = classifyMessage(input(notification, wrapper(notification)))
       expect(result.kind).toBe('notification')
@@ -600,7 +598,7 @@ describe('classifyMessage', () => {
     // A wrapper means a consolidated thread, and the plugins resolve those
     // first. Guarding on `!wrapper` keeps that precedence.
     it('yields to a notification thread wrapper', () => {
-      const result = classifyMessage(input(divider, wrapper({ type: 'interrupted' })))
+      const result = classifyMessage(input(statusNotice, wrapper({ type: 'interrupted' })))
       expect(result.kind).toBe('notification')
       expect(result.kind === 'notification' && result.entries).toEqual([{ kind: 'text', text: 'Interrupted' }])
     })

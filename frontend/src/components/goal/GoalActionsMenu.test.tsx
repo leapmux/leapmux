@@ -1,6 +1,9 @@
 import type { GoalAction, GoalSurface, SessionGoal } from '~/stores/chatGoal'
+import { create } from '@bufbuild/protobuf'
 import { fireEvent, render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
+import { AgentGoalSchema, AgentGoalStatus } from '~/generated/proto/leapmux/v1/agent_pb'
+import { protoGoalToStore } from '~/stores/chatGoal'
 import { dangerMenuItem } from '~/styles/shared.css'
 import { GoalActionsMenu } from './GoalActionsMenu'
 
@@ -11,9 +14,8 @@ function goal(over: Partial<SessionGoal> = {}): SessionGoal {
 const ALL: GoalAction[] = ['set', 'clear', 'pause', 'resume']
 
 /**
- * A loose record, not `Partial<GoalSurface>`: a case below deliberately passes
- * `onAction: undefined` -- the key EXISTS, with no handler -- which
- * `exactOptionalPropertyTypes` keeps out of the typed shape.
+ * Use an untyped record for the explicit onAction: undefined fixture.
+ * exactOptionalPropertyTypes excludes that present key from Partial<GoalSurface>.
  */
 function surface(over: Record<string, unknown> = {}): GoalSurface {
   return Object.assign({ current: goal(), progress: {}, actions: ALL, onAction: vi.fn() }, over)
@@ -37,11 +39,7 @@ describe('GoalActionsMenu', () => {
     expect(onAction).toHaveBeenCalledWith('clear')
   })
 
-  /**
-   * Claude Code's gap, and the one a user meets most: it has no pause and no
-   * resume at all. That gap is PERMANENT, so the items are absent -- an item
-   * that can never light up says less than no item.
-   */
+  /** An unsupported Pause or Resume action stays absent from the menu. */
   it('omits an action the provider does not support at all', () => {
     const { queryByTestId, getByTestId } = render(() => (
       <GoalActionsMenu goal={surface({ actions: ['set', 'clear'] })} />
@@ -52,9 +50,8 @@ describe('GoalActionsMenu', () => {
   })
 
   /**
-   * The other half of the same rule. A SUPPORTED action that the current goal
-   * state refuses keeps its place, disabled with the reason, because it comes
-   * back the moment the state changes.
+   * A supported action that the current goal refuses stays visible.
+   * Disable it and retain its reason so it can return when the state permits it.
    */
   it('keeps a supported action the goal state refuses, disabled with its reason', () => {
     const { getByTestId } = render(() => (
@@ -62,15 +59,14 @@ describe('GoalActionsMenu', () => {
     ))
     const pause = getByTestId('goal-action-pause') as HTMLButtonElement
     expect(pause.disabled).toBe(true)
-    // The accessible name stays the verb. An ariaLabel carrying the reason
-    // would announce a sentence where "Pause" belongs and break every
-    // by-role lookup.
+    // Keep the action as the accessible name.
+    // The reason belongs in the tooltip and must not replace that name.
     expect(pause.textContent).toBe('Pause')
     expect((getByTestId('goal-action-resume') as HTMLButtonElement).disabled).toBe(false)
   })
 
-  // Neither verb applies to a dormant goal, and each says which state it needs
-  // rather than going silent.
+  // Dormant permits neither Pause nor Resume.
+  // Each refused action states which goal status it requires.
   it('disables pause and resume for a dormant goal, and keeps clear', () => {
     const { getByTestId } = render(() => (
       <GoalActionsMenu goal={surface({ current: goal({ status: 'dormant' }) })} />
@@ -80,8 +76,8 @@ describe('GoalActionsMenu', () => {
     expect((getByTestId('goal-action-clear') as HTMLButtonElement).disabled).toBe(false)
   })
 
-  // Clearing destroys the goal. It is the one item that reads as destructive,
-  // and a rule keeps it away from the verb above it.
+  // Clear removes the goal.
+  // Separate that destructive action from the preceding actions.
   it('marks Clear goal as destructive and separates it', () => {
     const { getByTestId, container } = render(() => (
       <GoalActionsMenu goal={surface()} />
@@ -99,10 +95,7 @@ describe('GoalActionsMenu', () => {
     expect(container.querySelectorAll('hr')).toHaveLength(0)
   })
 
-  /**
-   * A read-only provider -- Reasonix reports a goal but can change none --
-   * gets no trigger at all, rather than a `...` that opens an empty card.
-   */
+  /** A provider with no supported actions displays no menu trigger. */
   it('renders nothing when the agent supports no action', () => {
     const { queryByTestId } = render(() => (
       <GoalActionsMenu goal={surface({ actions: [] })} />
@@ -113,12 +106,9 @@ describe('GoalActionsMenu', () => {
   })
 
   /**
-   * The menu owns the WHOLE "can act" decision, not half of it.
-   *
-   * A host with no handler gets no trigger, for the same reason a provider with
-   * no verbs does: a `...` that opens a card of controls which cannot run is
-   * worse than no `...`. The card used to make this half of the decision
-   * itself, from the same surface, which is one question asked twice.
+   * The menu owns the complete decision about whether a control can act.
+   * A host with no handler displays no trigger.
+   * The card must not duplicate that decision from the same surface.
    */
   it('renders nothing when the surface carries no handler', () => {
     const { queryByTestId } = render(() => (
@@ -127,12 +117,28 @@ describe('GoalActionsMenu', () => {
     expect(queryByTestId('goal-actions-trigger')).toBeNull()
   })
 
-  // The trigger is an icon with no visible text, so its tooltip is also its
-  // accessible name.
+  // The icon trigger has no visible text.
+  // Its tooltip supplies its accessible name.
   it('gives its trigger an accessible name', () => {
     const { getByRole } = render(() => (
       <GoalActionsMenu goal={surface()} />
     ))
     expect(getByRole('button', { name: 'Goal actions' })).not.toBeNull()
+  })
+})
+
+describe('unknown goal controls', () => {
+  it('keeps supported controls and refuses state-dependent actions for an unknown goal', () => {
+    const current = protoGoalToStore(create(AgentGoalSchema, { objective: 'Keep the goal', status: AgentGoalStatus.UNKNOWN, statusDetail: 'future-state' }))
+    const onAction = vi.fn()
+    const { getByTestId } = render(() => <GoalActionsMenu goal={surface({ current, onAction })} />)
+    expect(getByTestId('goal-action-pause')).toBeDisabled()
+    expect(getByTestId('goal-action-resume')).toBeDisabled()
+    expect(getByTestId('goal-action-set')).not.toBeDisabled()
+    expect(getByTestId('goal-action-clear')).not.toBeDisabled()
+    fireEvent.click(getByTestId('goal-actions-trigger'))
+    fireEvent.click(getByTestId('goal-action-clear'))
+    expect(onAction).toHaveBeenCalledExactlyOnceWith('clear')
+    expect(current.status).toBe('unknown')
   })
 })

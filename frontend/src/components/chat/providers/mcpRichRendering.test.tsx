@@ -20,6 +20,8 @@ interface RichToolCase {
   supplemental?: Record<string, unknown>
 }
 
+/** The output MiMo writes for a Model Context Protocol result: its text blocks, joined. */
+/** The file attachments MiMo writes for the images and binary resources of a result. */
 function richToolCases(blocks: Record<string, unknown>[]): RichToolCase[] {
   const acpCases: RichToolCase[] = [
     {
@@ -57,11 +59,6 @@ function richToolCases(blocks: Record<string, unknown>[]): RichToolCase[] {
       request: { item: { id: 'call', type: 'mcpToolCall', status: 'inProgress', server: 'probe', tool: 'echo', arguments: { query: 'native args' } } },
       result: { item: { id: 'call', type: 'mcpToolCall', status: 'completed', server: 'probe', tool: 'echo', arguments: { query: 'native args' }, result: { content: blocks } } },
     },
-    {
-      provider: AgentProvider.PI,
-      request: { type: 'tool_execution_start', toolCallId: 'call', toolName: 'mcp', args: { tool: 'probe_echo', args: { query: 'native args' } } },
-      result: { type: 'tool_execution_end', toolCallId: 'call', toolName: 'mcp', result: { content: [], details: { server: 'probe', tool: 'echo', mcpResult: { content: blocks } } } },
-    },
   ]
 }
 
@@ -71,12 +68,12 @@ describe.each([
 ])('rich $kind results across providers', ({ image }) => {
   const cases = richToolCases([{ type: 'text', text: 'Rich **body**' }, image])
   it.each(cases)('renders provider $provider text and images through the shared components', ({ provider, request, result, supplemental }) => {
-    const start = input(request)
+    const start = input(request, null, provider)
     const end = result
     const plugin = providerFor(provider)!
-    const parsed = input(end)
+    const parsed = input(end, null, provider)
     parsed.supplementalContent = supplemental ? { sessionUpdate: end.sessionUpdate, status: end.status, toolCallId: end.toolCallId, ...supplemental } : undefined
-    const category = plugin?.transcript.classify(input(end))
+    const category = plugin?.transcript.classify(parsed)
     const { container } = render(() => [
       renderMessageContent(start.parentObject, { sources: testMessageSources({ current: () => start, result: () => parsed }) }, plugin?.transcript.classify(start), provider),
       renderMessageContent(end, { sources: testMessageSources({ current: () => parsed, request: () => start }) }, category, provider),

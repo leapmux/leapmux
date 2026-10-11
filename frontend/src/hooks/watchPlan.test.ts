@@ -42,17 +42,16 @@ describe('agentWatchEntry', () => {
 })
 
 /**
- * Fixture overrides: `undefined` CLEARs a defaulted optional field (absence
- * keeps the default), so the map allows it where the tab type does not.
+ * An explicit undefined override clears a defaulted optional field. An absent override retains the default.
+ * The fixture type accepts that clear where the tab type does not.
  */
 type TabOverrides<T> = { [K in keyof T]?: T[K] | undefined }
 
 function agent(overrides: TabOverrides<Extract<Tab, { type: TabType.AGENT }>> = {}): Tab {
   const { type, id, workspaceId, ...rest } = overrides
   return {
-    // Required fields never clear, so default them explicitly; the trailing
-    // spread applies only to optional fields, where an explicit undefined
-    // override clears the default (the fixture's documented purpose).
+    // Required fields cannot clear. Apply their defaults explicitly.
+    // The trailing spread lets an explicit undefined clear an optional field's default.
     type: type ?? TabType.AGENT,
     id: id ?? 'a1',
     workspaceId: workspaceId ?? 'ws-1',
@@ -146,10 +145,7 @@ describe('buildWatchPlans', () => {
     expect(plan.agents.every(a => a.mode === WatchMode.FULL)).toBe(true)
   })
 
-  // A quake terminal -- the shell behind one working directory's panel -- has
-  // no tab and therefore no placement, so nothing in `tabs` can carry it. It is
-  // in no plan at all unless it is passed separately, and a terminal in no plan
-  // receives no bytes: the panel stays blank while its shell runs.
+  // A quake shell has no tab placement. Supply it separately so its panel receives output while the shell runs.
   describe('detached terminals', () => {
     const detached = (mode: WatchMode) => [{ terminalId: 'q1', workerId: 'w1', mode }]
 
@@ -209,9 +205,7 @@ describe('buildWatchPlans', () => {
       expect(plans.size).toBe(0)
     })
 
-    // The two cursor callbacks share the type `(agentId: string) => bigint`, so
-    // as adjacent positional parameters a transposition type-checked silently.
-    // Named, each lands on its own field, and this pins that.
+    // The cursor handlers share one type. Separate option fields prevent an accidental positional exchange.
     it('routes each named cursor input to its own field', () => {
       const plans = buildWatchPlans([agent({ id: 'a1' })], 'ws-1', () => '1:a1', {
         agentResumeSeq: () => 7n,
@@ -222,8 +216,7 @@ describe('buildWatchPlans', () => {
       expect(entry?.windowTailSeq).toBe(9n)
     })
 
-    // The panel opening and closing is exactly a mode flip, and the plan has to
-    // go out for it -- otherwise a reopened panel keeps receiving nothing.
+    // Opening or closing the panel changes its mode. Send that change so a reopened panel receives output.
     it('re-keys the plan on a mode flip and stays stable across reordering', () => {
       const full = buildWatchPlans([], 'ws-1', () => null, { detachedTerminals: detached(WatchMode.FULL) })
       const notify = buildWatchPlans([], 'ws-1', () => null, { detachedTerminals: detached(WatchMode.NOTIFY) })
@@ -259,8 +252,7 @@ describe('buildWatchPlans', () => {
   })
 
   it('adds a NOTIFY root entry for a child tab so it receives root notification events', () => {
-    // A root tab + a child tab on the same worker. The child has parentAgentId
-    // set to the root.
+    // The root and child share one worker. The child's parentAgentId identifies the root.
     const tabs = [
       agent({ id: 'root-1', tileId: 'tile-1' }),
       agent({ id: 'child-1', tileId: 'tile-2', parentAgentId: 'root-1' }),
@@ -276,22 +268,68 @@ describe('buildWatchPlans', () => {
       tabs.find(t => t.id === id) as AgentTab | undefined
     const plans = buildWatchPlans(tabs, 'ws-1', activeKey, { getAgentTab })
     const agentIds = plans.get('w1')!.agents.map(a => ({ id: a.agentId, mode: a.mode }))
-    // root-1 appears twice (its own FULL + the child-driven NOTIFY). The dedup
-    // keeps it to one entry — the root's own tab already placed it.
+    // The actual root entry supplies FULL. The child reuses that entry instead of adding a NOTIFY duplicate.
     expect(agentIds.filter(a => a.id === 'root-1')).toHaveLength(1)
     expect(agentIds).toContainEqual({ id: 'child-1', mode: WatchMode.FULL })
   })
 
+  it.each(['child-first', 'root-first'] as const)('uses one actual root entry with exact cursors in %s order', (order) => {
+    const root = agent({ id: 'root-1', tileId: 'root-tile' })
+    const child = agent({ id: 'child-1', tileId: 'child-tile', parentAgentId: 'root-1' })
+    const shell = terminal({ id: 'terminal-1', tileId: 'terminal-tile' })
+    const tabs = [...(order === 'child-first' ? [child, root] : [root, child]), shell]
+    const active = new Map([
+      ['root-tile', `${TabType.AGENT}:root-1`],
+      ['child-tile', `${TabType.AGENT}:child-1`],
+      ['terminal-tile', `${TabType.TERMINAL}:terminal-1`],
+    ])
+    const plan = buildWatchPlans(tabs, 'ws-1', tileId => active.get(tileId) ?? null, {
+      getAgentTab: id => tabs.find((tab): tab is AgentTab => tab.type === TabType.AGENT && tab.id === id),
+      agentResumeSeq: id => id === 'root-1' ? 9007199254740993n : 0n,
+      agentWindowTailSeq: id => id === 'root-1' ? 9007199254740991n : 0n,
+      terminalAfterOffset: () => 17n,
+    }).get('w1')
+    expect(plan?.agents).toHaveLength(2)
+    expect(plan?.agents.filter(entry => entry.agentId === 'root-1')).toEqual([{
+      agentId: 'root-1',
+      mode: WatchMode.FULL,
+      replay: WatchReplayMode.AFTER_CURSOR_OR_NONE,
+      cursorSeq: 9007199254740993n,
+      windowTailSeq: 9007199254740991n,
+    }])
+    expect(plan?.agents.filter(entry => entry.agentId === 'child-1')).toHaveLength(1)
+    expect(plan?.terminals).toEqual([{ terminalId: 'terminal-1', mode: WatchMode.FULL, afterOffset: 17n }])
+    expect(plan?.terminalResync.size).toBe(0)
+  })
+
+  it.each(['child-first', 'root-first'] as const)('retains the actual hidden root cursor in %s order', (order) => {
+    const root = agent({ id: 'root-1', tileId: 'root-tile' })
+    const child = agent({ id: 'child-1', tileId: 'child-tile', parentAgentId: 'root-1' })
+    const tabs = order === 'child-first' ? [child, root] : [root, child]
+    const plan = buildWatchPlans(tabs, 'ws-1', tileId => tileId === 'child-tile' ? `${TabType.AGENT}:child-1` : null, {
+      getAgentTab: id => tabs.find((tab): tab is AgentTab => tab.type === TabType.AGENT && tab.id === id),
+      agentResumeSeq: id => id === 'root-1' ? 42n : 0n,
+      agentWindowTailSeq: () => 0n,
+    }).get('w1')
+    expect(plan?.agents).toHaveLength(2)
+    expect(plan?.agents.filter(entry => entry.agentId === 'root-1')).toEqual([{
+      agentId: 'root-1',
+      mode: WatchMode.NOTIFY,
+      replay: WatchReplayMode.AFTER_CURSOR_OR_NONE,
+      cursorSeq: 42n,
+      windowTailSeq: 0n,
+    }])
+  })
+
   it('adds a NOTIFY root entry when the root tab is NOT placed (child-only)', () => {
-    // Only the child is placed; the root is absent from the tab list.
+    // The tab list places only the child and excludes the root.
     const child = agent({ id: 'child-1', tileId: 'tile-1', parentAgentId: 'root-1' })
-    // getAgentTab resolves the child to its root even though root-1 is not in
-    // the tabs list (simulating a lookup that finds the root tab record).
+    // The lookup finds the root record even though the placed tabs exclude it.
     const getAgentTab = (id: string): AgentTab | undefined => {
       if (id === 'child-1')
         return child as AgentTab
       if (id === 'root-1') {
-        // The root has no parent of its own: drop the key the child carried.
+        // The root has no parent. Remove the child's parent field.
         const { parentAgentId: _childParent, ...root } = child as AgentTab
         return { ...root, id: 'root-1' }
       }
@@ -299,7 +337,7 @@ describe('buildWatchPlans', () => {
     }
     const plans = buildWatchPlans([child], 'ws-1', () => '1:child-1', { getAgentTab })
     const agentIds = plans.get('w1')!.agents.map(a => ({ id: a.agentId, mode: a.mode }))
-    // The child's own entry + a NOTIFY root entry.
+    // The plan includes the child and a NOTIFY root entry.
     expect(agentIds).toContainEqual({ id: 'child-1', mode: WatchMode.FULL })
     expect(agentIds).toContainEqual({ id: 'root-1', mode: WatchMode.NOTIFY })
   })
@@ -360,8 +398,7 @@ describe('watchPlanKey', () => {
       terminals: [{ terminalId: 't1', afterOffset: BigInt(0), mode: WatchMode.FULL } as never],
       terminalResync: new Set(['t1']),
     }
-    // Without the resync arm in the key, both plans would key identically
-    // (`t1:FULL`) and the stream would never re-send the cold afterOffset.
+    // Without resync in the key, both plans would share t1:FULL and the stream would omit the zero-offset request.
     expect(watchPlanKey(clean)).not.toBe(watchPlanKey(flagged))
   })
 })

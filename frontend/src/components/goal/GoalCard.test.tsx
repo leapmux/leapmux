@@ -1,6 +1,10 @@
 import type { GoalAction, SessionGoal } from '~/stores/chatGoal'
+import { create } from '@bufbuild/protobuf'
 import { fireEvent, render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
+import { AgentGoalSchema, AgentGoalStatus } from '~/generated/proto/leapmux/v1/agent_pb'
+import { protoGoalToStore } from '~/stores/chatGoal'
+import * as statusDotStyles from '~/styles/statusDot.css'
 import { GoalCard } from './GoalCard'
 
 function goal(over: Partial<SessionGoal> = {}): SessionGoal {
@@ -18,8 +22,8 @@ describe('GoalCard', () => {
     expect(getByTestId('goal-status-dot').getAttribute('data-status')).toBe('active')
   })
 
-  // The provider's own word survives beside the neutral status, because mapping
-  // five vocabularies onto four values loses which limit was hit.
+  // Retain the provider's native detail beside the neutral status.
+  // The neutral status alone cannot identify each native limit.
   it('shows the provider status detail beside the neutral status', () => {
     const { getByTestId } = render(() => (
       <GoalCard goal={{ current: goal({ status: 'blocked', statusDetail: 'usageLimited' }), progress: {}, actions: ALL }} />
@@ -28,9 +32,8 @@ describe('GoalCard', () => {
   })
 
   /**
-   * Absent and zero are different answers. No two providers report the same
-   * counters, so a field the provider never sent must not render as a zero --
-   * "0 tokens" states a number nobody gave.
+   * Keep an absent counter distinct from a reported zero.
+   * A missing field must not display a number that the provider did not report.
    */
   it('renders only the counters the provider reported', () => {
     const { getByTestId } = render(() => (
@@ -57,11 +60,9 @@ describe('GoalCard', () => {
   })
 
   /**
-   * There is deliberately no timer. `ToolRunningBadge` made the same call for
-   * the same render cost, and Codex's `timeUsedSeconds` is BUDGET CONSUMED
-   * rather than wall clock -- ticking it would assert spending while the agent
-   * waits on an approval, and the number would jump backwards when the real one
-   * lands.
+   * Render the provider's time counter without a local timer.
+   * A timer could increase that counter during an approval wait.
+   * The next provider report could then reduce the displayed value.
    */
   it('does not tick the elapsed time', () => {
     vi.useFakeTimers()
@@ -79,9 +80,8 @@ describe('GoalCard', () => {
   })
 
   /**
-   * The card offers the verbs behind one `...` trigger, so a menu is what a
-   * goal with a handler shows. Which verbs it holds, and which of them are
-   * refused, is `GoalActionsMenu`'s decision and is tested there.
+   * A current goal with an action handler displays one menu trigger.
+   * GoalActionsMenu decides which supported actions can run.
    */
   it('offers the actions menu for a goal it can act on', () => {
     const { getByTestId } = render(() => (
@@ -91,13 +91,8 @@ describe('GoalCard', () => {
   })
 
   /**
-   * The card hands the menu the WHOLE surface, so the verb a reader picks
-   * reaches the handler that surface carries.
-   *
-   * Tested here rather than only in `./GoalActionsMenu.test.tsx`, because that
-   * suite renders the menu alone: it cannot see the card dropping the handler
-   * or forwarding the wrong action, and the only other coverage of this path
-   * sits in another component's test file.
+   * Forward the complete surface so the selected action reaches its handler.
+   * The menu's own tests cannot detect a card that omits or replaces that handler.
    */
   it('runs a menu verb against the handler its surface carries', () => {
     const onAction = vi.fn()
@@ -111,18 +106,17 @@ describe('GoalCard', () => {
     expect(onAction).toHaveBeenCalledWith('pause')
   })
 
-  // A read-only surface: the panel renders the goal, and nothing can change it.
+  // The read-only surface displays the goal and offers no change controls.
   it('offers no actions menu when the surface has no handler', () => {
     const { queryByTestId, getByTestId } = render(() => (
       <GoalCard goal={{ current: goal(), progress: {}, actions: ALL }} />
     ))
     expect(queryByTestId('goal-actions-trigger')).toBeNull()
-    // The goal itself is still on screen; only the verbs are absent.
+    // Keep the goal visible when its actions are absent.
     expect(getByTestId('goal-objective').textContent).toContain('every test passes')
   })
 
-  // A read-only provider (Reasonix reports a goal but can change none) shows the
-  // goal and no controls at all, rather than a row of dead buttons.
+  // A provider with no supported actions displays the goal without controls.
   it('renders no controls when the agent supports no action', () => {
     const { queryByTestId } = render(() => (
       <GoalCard goal={{ current: goal(), progress: {}, actions: [], onAction: vi.fn() }} />
@@ -133,9 +127,8 @@ describe('GoalCard', () => {
   })
 
   /**
-   * No menu in the empty state. `set` is the only verb that applies with no
-   * goal, and the empty state offers it as its own call to action -- a first
-   * goal must not be one click deeper than the concept it introduces.
+   * The empty card offers Set directly.
+   * It displays no menu because other actions require a current goal.
    */
   it('offers no actions menu in the empty state', () => {
     const { queryByTestId } = render(() => (
@@ -144,8 +137,7 @@ describe('GoalCard', () => {
     expect(queryByTestId('goal-actions-trigger')).toBeNull()
   })
 
-  // Setting is how the FIRST goal arrives, so the empty state has to offer it --
-  // which is why the capability list is separate from the goal.
+  // The separate capability list lets the empty card offer the first Set action.
   it('offers Set a goal in the empty state when the agent supports it', () => {
     const onAction = vi.fn()
     const { getByTestId } = render(() => (
@@ -158,8 +150,8 @@ describe('GoalCard', () => {
   })
 
   /**
-   * A separator states that something FOLLOWS, and the card cannot see what is
-   * below it. GoalsAndTodos renders the rule when a to-do list follows.
+   * GoalsAndTodos supplies a separator when a to-do list follows the card.
+   * The card cannot determine whether another row follows it.
    */
   it('draws no separator of its own', () => {
     const { container } = render(() => (
@@ -177,8 +169,8 @@ describe('GoalCard', () => {
     expect(getByTestId('goal-card-empty')).not.toBeNull()
   })
 
-  // One stable node with changing text. A `<Show>` that swapped nodes would
-  // make a screen reader re-announce on every rebuild.
+  // Keep one stable live-region node while its text changes.
+  // Replacing that node could cause an additional screen-reader announcement.
   it('keeps one polite live region that states the current goal', () => {
     const { container } = render(() => (
       <GoalCard goal={{ current: goal({ status: 'blocked', statusDetail: 'notSatisfied' }), progress: {}, actions: [] }} announce />
@@ -190,11 +182,9 @@ describe('GoalCard', () => {
   })
 
   /**
-   * The objective is markdown SOURCE, and the card renders it. A screen reader
-   * handed the source reads the syntax -- "ship the asterisk asterisk auth
-   * refactor asterisk asterisk" -- so the live region announces the words the
-   * card actually shows. `GoalObjective` refuses to hand the source to
-   * `Tooltip`'s `text` for the same reason.
+   * The card renders Markdown but its live region announces plain text.
+   * Reading Markdown source would announce syntax that the visible card does not show.
+   * GoalObjective uses the same plain text rule for its tooltip.
    */
   it('announces the objective as words, not as markdown syntax', () => {
     const { container } = render(() => (
@@ -214,10 +204,8 @@ describe('GoalCard', () => {
   })
 
   /**
-   * Two cards can be on screen at once: the sidebar section and an open
-   * ThinkingIndicator popover render the same content. A live region in each
-   * announces one goal change twice, so only the instance that sets `announce`
-   * holds one.
+   * The sidebar and an open ThinkingIndicator popover can display the same goal.
+   * Only the card with announce set supplies a live region.
    */
   it('holds no live region unless it owns the announcement', () => {
     const { container } = render(() => (
@@ -229,10 +217,9 @@ describe('GoalCard', () => {
   })
 
   /**
-   * A dormant goal is WAITING, not failing: no live process pursues it. The
-   * worker writes that state at boot and when an agent exits, so it reaches the
-   * card on every restart -- and reporting it as a fault would cry wolf each
-   * time.
+   * The worker derives Dormant when no live process serves an agent with a stored goal.
+   * That projection changes no stored goal status or timestamp.
+   * The card reports no running process without displaying a fault.
    */
   it('renders a dormant goal as waiting rather than as a fault', () => {
     const { getByTestId } = render(() => (
@@ -241,5 +228,35 @@ describe('GoalCard', () => {
     expect(getByTestId('goal-status-dot').getAttribute('data-status')).toBe('dormant')
     expect(getByTestId('goal-card').textContent).toContain('Not running')
     expect(getByTestId('goal-card').textContent).not.toContain('Needs attention')
+  })
+})
+
+describe('unknown goal presentation', () => {
+  it('shows a neutral unknown status and retains the native detail and counters', () => {
+    const current = protoGoalToStore(create(AgentGoalSchema, { nativeId: 'unknown-goal', objective: 'Keep the **objective**', status: AgentGoalStatus.UNKNOWN, statusDetail: 'provider-future-state' }))
+    const { getByTestId, container } = render(() => <GoalCard goal={{ current, progress: { tokensUsed: 0, timeUsedSeconds: 30, iterations: 2 }, actions: ALL }} announce />)
+    const dot = getByTestId('goal-status-dot')
+    expect(getByTestId('goal-objective').textContent).toContain('Keep the objective')
+    expect(getByTestId('goal-status-detail')).toHaveTextContent('provider-future-state')
+    expect(getByTestId('goal-progress')).toHaveTextContent('0 tokens')
+    expect(getByTestId('goal-progress')).toHaveTextContent('30s')
+    expect(getByTestId('goal-progress')).toHaveTextContent('2 turns')
+    expect(dot).toHaveAttribute('data-status', 'unknown')
+    expect(dot).toHaveAttribute('aria-label', 'Unknown')
+    expect(dot.classList.contains(statusDotStyles.statusDotMuted)).toBe(true)
+    expect(dot.classList.contains(statusDotStyles.statusDotDanger)).toBe(false)
+    expect(dot.classList.contains(statusDotStyles.statusDotActive)).toBe(false)
+    expect(container.querySelector('[role="status"][aria-live="polite"]')).toHaveTextContent('Session goal unknown, provider-future-state: Keep the objective')
+    expect(getByTestId('goal-card')).not.toHaveTextContent('Needs attention')
+  })
+
+  it('keeps an unknown read-only goal visible without inventing progress or controls', () => {
+    const current = protoGoalToStore(create(AgentGoalSchema, { objective: 'Keep the goal', status: AgentGoalStatus.UNKNOWN }))
+    const { getByTestId, queryByTestId } = render(() => <GoalCard goal={{ current, progress: {}, actions: [] }} />)
+    expect(getByTestId('goal-card')).toHaveTextContent('Keep the goal')
+    expect(queryByTestId('goal-progress')).toBeNull()
+    expect(queryByTestId('goal-status-detail')).toBeNull()
+    expect(queryByTestId('goal-actions-trigger')).toBeNull()
+    expect(getByTestId('goal-status-dot')).toHaveAttribute('aria-label', 'Unknown')
   })
 })

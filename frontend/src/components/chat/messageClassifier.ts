@@ -51,6 +51,7 @@ function isLeapMuxUserPayload(input: ClassificationInput): boolean {
   return input.source === MessageSource.USER
     && input.wrapper === null
     && input.parentObject !== undefined
+    && input.parentObject !== null
     && typeof input.parentObject.content === 'string'
     && !('type' in input.parentObject)
 }
@@ -79,9 +80,19 @@ export function classifyMessage(input: ClassificationInput, context?: Classifica
   if (response)
     return { kind: 'control_response', response }
 
+  // LeapMux writes this envelope for every provider. Classify it before the
+  // provider plugin so a new plugin cannot hide the user's own message.
+  if (isLeapMuxUserPayload(input)) {
+    if (input.parentObject?.hidden === true)
+      return { kind: 'hidden' }
+    if (input.parentObject?.planExecution === true)
+      return { kind: 'plan_execution' }
+    return { kind: 'user_content' }
+  }
+
   const plugin = pluginFor(input.agentProvider)
   if (!plugin)
-    return isLeapMuxUserPayload(input) ? { kind: 'user_content' } : { kind: 'unsupported_provider' }
+    return { kind: 'unsupported_provider' }
   if (!input.wrapper && isWorkerWrittenNotification(input.parentObject))
     return classifyNotifications([input.parentObject], input.agentProvider, plugin.transcript.notificationEntry)
   return plugin.transcript.classify(input, context)

@@ -1,18 +1,13 @@
 import type { ToolKind } from '../../model/toolKind'
 
 /**
- * The two built-in extensions whose tools this plugin reads by name.
+ * The developer extension whose tools this plugin reads by name.
  *
- * Not in `contracts/goose-protocol.json`, which holds the identifiers BOTH programs
- * read. The worker knows neither word, so the contract rule keeps them on the one side
- * that does. `summon` is the third built-in extension, and it IS in the contract
- * (`GOOSE_SUBAGENT`), because the worker reads it too.
+ * The worker does not read this extension's tool names, so they stay here.
+ * The subagent and to-do identifiers live in `contracts/goose-protocol.json`
+ * because both programs read them.
  */
 export const GOOSE_DEVELOPER_EXTENSION = 'developer'
-export const GOOSE_TODO_EXTENSION = 'todo'
-
-/** The one tool of the `todo` extension. */
-export const GOOSE_TODO_TOOL = 'todo_write'
 
 /**
  * The tool names of the `developer` extension, as the words a branch compares against.

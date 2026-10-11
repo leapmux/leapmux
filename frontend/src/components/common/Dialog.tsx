@@ -143,6 +143,9 @@ export const Dialog: Component<DialogProps> = (props) => {
       classList={{ [styles.closing]: closing() }}
       data-testid={props['data-testid']}
       data-busy={props.busy ? '' : undefined}
+      // The closing state under a stable name: the marker class above is a hashed name, and the opacity and the
+      // animations change while the dialog opens as well as while it closes.
+      data-closing={closing() ? '' : undefined}
       aria-label={props.title}
       onPointerDown={(e) => {
         // Only treat this as a backdrop press if the pointer went down directly

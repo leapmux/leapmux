@@ -3,6 +3,15 @@ import { describe, expect, it } from 'vitest'
 import { TaskCheckbox } from '~/components/todo/TaskCheckbox'
 
 describe('TaskCheckbox', () => {
+  it('renders a distinct unfinished glyph with an accessible blocked status', () => {
+    const { getByRole, container } = render(() => <TaskCheckbox status="blocked" />)
+    expect(getByRole('img', { name: 'Blocked' })).toBeVisible()
+    const checkbox = container.querySelector('[data-task-checkbox="blocked"]')
+    expect(checkbox?.querySelector('rect')).not.toBeNull()
+    expect(checkbox?.querySelector('path')).not.toBeNull()
+    expect(checkbox?.querySelector('polyline')).toBeNull()
+  })
+
   it('renders an empty checkbox for pending', () => {
     const { container } = render(() => <TaskCheckbox status="pending" />)
     const box = container.querySelector('[data-task-checkbox="pending"]')

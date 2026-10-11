@@ -12,6 +12,8 @@ import { concatBytes } from './bytes'
 import { CipherState, initiatorHandshake1, initiatorHandshake2 } from './noise'
 
 const PROTOCOL_NAME = 'Noise_NK_25519_ChaChaPoly_BLAKE2b'
+/** The error of `chacha20poly1305` from `@noble/ciphers` when the tag does not authenticate the ciphertext. */
+const AEAD_TAG_FAILURE = 'invalid tag'
 
 function hkdf2(ck: Uint8Array, ikm: Uint8Array): [Uint8Array, Uint8Array] {
   const tempKey = hmac(blake2b, ck, ikm)
@@ -217,7 +219,7 @@ describe('noise_NK handshake', () => {
     // Responder processes with correct key. In Noise_NK, after the es DH,
     // the AEAD decrypt of the empty payload in message 1 will fail because
     // the derived key is wrong (initiator DH'd with wrong public key).
-    expect(() => responderHandshake(staticPrivate, staticPublic, message1)).toThrow()
+    expect(() => responderHandshake(staticPrivate, staticPublic, message1)).toThrow(AEAD_TAG_FAILURE)
   })
 
   it('should encrypt empty messages', () => {
@@ -351,7 +353,7 @@ describe('CipherState limits', () => {
     // @ts-expect-error accessing private field to simulate clock advance
     cs.prevExpiresAt = -1
     const ctStraddle = oldKey.encrypt(new TextEncoder().encode('straddle'))
-    expect(() => cs.decrypt(ctStraddle)).toThrow()
+    expect(() => cs.decrypt(ctStraddle)).toThrow(AEAD_TAG_FAILURE)
   })
 
   it('clearPrev drops the retained previous key so an old-key frame fails', () => {
@@ -369,7 +371,7 @@ describe('CipherState limits', () => {
     cs.clearPrev()
 
     const ctStraddle = oldKey.encrypt(new TextEncoder().encode('straddle'))
-    expect(() => cs.decrypt(ctStraddle)).toThrow()
+    expect(() => cs.decrypt(ctStraddle)).toThrow(AEAD_TAG_FAILURE)
   })
 
   it('rekeyWithSecret(retainPrev=false) keeps no previous key (send direction)', () => {
@@ -388,7 +390,7 @@ describe('CipherState limits', () => {
     // @ts-expect-error accessing private field to assert no prev was retained
     expect(cs.prev).toBeNull()
     const ctStraddle = oldKey.encrypt(new TextEncoder().encode('straddle'))
-    expect(() => cs.decrypt(ctStraddle)).toThrow()
+    expect(() => cs.decrypt(ctStraddle)).toThrow(AEAD_TAG_FAILURE)
   })
 
   it('grace window: an expired prev is zeroed on the next decrypt (not left in the heap)', () => {
@@ -410,7 +412,7 @@ describe('CipherState limits', () => {
     // A straddling old-key frame: current key fails, prev is expired, so the
     // decrypt must retire prev (zero + drop) and then fail closed.
     const ctStraddle = oldKey.encrypt(new TextEncoder().encode('straddle'))
-    expect(() => cs.decrypt(ctStraddle)).toThrow()
+    expect(() => cs.decrypt(ctStraddle)).toThrow(AEAD_TAG_FAILURE)
     // @ts-expect-error accessing private field to assert prev was retired on expiry
     expect(cs.prev).toBeNull()
   })

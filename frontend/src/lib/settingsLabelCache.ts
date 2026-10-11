@@ -67,17 +67,29 @@ export function settingsLabelDependencyRevision(dependencies: readonly SettingsL
     .join('|')
 }
 
-// Upper bound on retained option labels per (provider, group). The per-group option-id ->
-// name map can grow over a very long session with heavy churn (e.g. many distinct Cursor
-// model variants, repeated effort switches), accumulating every id ever seen. 256 is
-// generous enough that historical settings_changed rows in a normal session keep their labels.
+// Upper bound on retained option labels per (provider, group) BEYOND the options of the current
+// push. The per-group option-id -> name map can grow over a very long session with heavy churn
+// (e.g. many distinct Cursor model variants, repeated effort switches), accumulating every id ever
+// seen. 256 is generous enough that historical settings_changed rows in a normal session keep their
+// labels. The cap of one push is never below the size of that push (see `pushCap`).
 const MAX_LABELS_PER_GROUP = 256
 
-// Upper bound on retained GROUP ids per provider. Real providers expose a handful of groups
-// (model, effort, permission mode, a few config options), so this only bites a non-conforming
-// server cycling distinct group ids -- the same adversary the per-group option-id cap defends
-// against. Without it, that dimension would grow without bound.
+// Upper bound on retained GROUP ids per provider, with the same floor of the current push. Real
+// providers expose a handful of groups (model, effort, permission mode, a few config options), so
+// this only bites a non-conforming server cycling distinct group ids -- the same adversary the
+// per-group option-id cap defends against. Without it, that dimension would grow without bound.
 const MAX_GROUPS_PER_PROVIDER = 64
+
+/**
+ * The cap of one dimension for one push: `max`, or the number of entries that the push offers when
+ * that is larger. The cap bounds entries that STOPPED appearing. A provider can offer more than
+ * `max` at once (Kilo's model catalog holds about 400 models), and a cap below the push would evict
+ * entries of the current catalog inside the push itself: their labels could never resolve, and each
+ * identical push would count as a change and bump the revision that every reader computes from.
+ */
+function pushCap(max: number, pushSize: number): number {
+  return Math.max(max, pushSize)
+}
 
 /**
  * Insert or refresh `map[key] = value` with LRU eviction at `max`. A Map preserves insertion
@@ -107,6 +119,7 @@ export function updateSettingsLabelCache(provider: AgentProvider, optionGroups?:
   if (!optionGroups)
     return
   const groups = getOrCreate(optionGroupCache, provider, () => new Map<string, GroupLabelEntry>())
+  const groupCap = pushCap(MAX_GROUPS_PER_PROVIDER, new Set(optionGroups.map(group => group.id)).size)
   const seenInPush = new Set<string>()
   let changed = false
   const nextRevision = settingsLabelRevision() + 1
@@ -140,13 +153,14 @@ export function updateSettingsLabelCache(provider: AgentProvider, optionGroups?:
     // those historical rows readable; a renamed id still picks up its new name here because
     // `set` overwrites the same key. Growth is bounded by setWithCap's LRU eviction,
     // so an evicted (long-unseen) id falls back to its raw value in an old row.
+    const optionCap = pushCap(MAX_LABELS_PER_GROUP, new Set(group.options.filter(opt => opt.name).map(opt => opt.id)).size)
     for (const opt of group.options) {
       if (opt.name)
-        groupChanged = setWithCap(entry.options, opt.id, opt.name, MAX_LABELS_PER_GROUP) || groupChanged
+        groupChanged = setWithCap(entry.options, opt.id, opt.name, optionCap) || groupChanged
     }
     if (groupChanged)
       entry.revision = nextRevision
-    changed = setWithCap(groups, group.id, entry, MAX_GROUPS_PER_PROVIDER) || groupChanged || changed
+    changed = setWithCap(groups, group.id, entry, groupCap) || groupChanged || changed
   }
   if (changed)
     setSettingsLabelRevision(value => value + 1)

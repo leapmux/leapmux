@@ -10,8 +10,8 @@ function jsonInt64(value: bigint): number | string {
 }
 
 /**
- * Show decoded provider content beside LeapMux metadata and supplemental content.
- * Preserve numeric literals and repeated keys in both stored JSON sources.
+ * Show the received content beside LeapMux metadata and the received supplement.
+ * Preserve numeric literals and repeated keys in both received JSON sources.
  * The optional geometry field shows the measured row height.
  */
 export function buildRawJsonEnvelope(
@@ -44,8 +44,8 @@ export function buildRawJsonEnvelope(
   if (message.spanColor > 0)
     envelope.span_color = message.spanColor
   if (message.spanLines && message.spanLines !== '[]') {
-    // span_lines is backend-generated JSON, but a corrupt value must still render:
-    // degrade to its raw string instead of throwing (this is the debug surface).
+    // The backend supplies span_lines as JSON.
+    // Show a corrupt value as its raw string so this debug view remains usable.
     try {
       envelope.span_lines = JSON.parse(message.spanLines)
     }

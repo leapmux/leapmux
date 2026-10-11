@@ -4,12 +4,14 @@ function todoStatusRank(status: TodoItem['status']): number {
   switch (status) {
     case 'in_progress':
       return 0
-    case 'pending':
+    case 'blocked':
       return 1
-    case 'completed':
+    case 'pending':
       return 2
-    default:
+    case 'completed':
       return 3
+    case 'deleted':
+      return 4
   }
 }
 

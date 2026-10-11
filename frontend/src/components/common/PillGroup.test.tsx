@@ -1,19 +1,18 @@
-import type { PillOptions } from './PillGroup'
+import type { PillOptions } from './pillOptions'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { Minus } from 'lucide-solid'
 import { createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { hoverForTooltip, stubClipped, stubFitting } from '~/test-support/clipStub'
 import { installControllableResizeObserver, triggerResizeObserversSync } from '~/test-support/resizeObserverStub'
-import { disambiguateLabels, PillGroup } from './PillGroup'
+import { PillGroup } from './PillGroup'
 import * as styles from './PillGroup.css'
 
 /**
- * These controls contain one required choice. Radio semantics give the group
- * its accessible name, selected state, and position information.
- *
- * The old controls used identical stateless buttons. `aria-pressed` would
- * describe toggle buttons, which promise that the reader can clear a choice.
+ * These controls require one selected choice.
+ * Radio semantics expose the group name and its selected option.
+ * They also expose each option's position.
+ * Toggle-button semantics would incorrectly imply that the user can clear the required choice.
  */
 describe('pill group (PillGroup)', () => {
   const options = [
@@ -161,10 +160,8 @@ describe('pill group (PillGroup)', () => {
 })
 
 /**
- * A stale stored value can match no current option.
- *
- * Browser storage uses an unchecked cast. A removed enum value can therefore
- * survive a schema change. The group must remain reachable in this state.
+ * A stored value can identify a removed option after a schema change.
+ * The group must remain reachable even when no current option matches that value.
  */
 describe('pill group with no selected option', () => {
   const options = [
@@ -224,14 +221,15 @@ describe('pill group option identity', () => {
       { key: 'five', label: 'Five' },
     ]],
   ])('rejects %s options', (_description, options) => {
-    expect(() => render(() => (
-      <PillGroup
-        label="Invalid count"
-        options={options as unknown as PillOptions<string>}
-        selectedKey="one"
-        onSelect={vi.fn()}
-      />
-    ))).toThrow(/one through four options/i)
+    const props = {
+      label: 'Invalid count',
+      options,
+      selectedKey: 'one',
+      onSelect: vi.fn(),
+    }
+    // The tuple type excludes these lengths. The runtime call must still reject them.
+    expect(() => render(() => Reflect.apply(PillGroup, undefined, [props])))
+      .toThrow(/one through four options/i)
   })
 
   it('keeps the focused radio when fresh records carry the same values', () => {
@@ -613,9 +611,9 @@ describe('pill group small variant', () => {
   })
 
   it('sizes the radios and their label copies together', () => {
-    // Each copy covers one real radio exactly, and the moving fill is clipped
-    // to the radio underneath. A size that reached one of the two rows alone
-    // would move every copy off the radio it covers.
+    // Each visual copy covers one real radio.
+    // The selection fill clips to that radio.
+    // Apply size changes to both rows so each copy remains aligned with its radio.
     const { copies, radios } = renderSized(true)
 
     expect(copies).toHaveLength(2)
@@ -666,8 +664,8 @@ describe('pill group icon option', () => {
   })
 
   it('copies an icon into the sliding overlay', () => {
-    // The copy is what paints the option once the fill slides under it. A copy
-    // that reproduced the label STRING would leave an icon option blank there.
+    // The visual copy paints the option under the selection fill.
+    // Copy its icon also so the selected icon option does not become empty.
     const { copies } = renderIconGroup()
 
     expect(copies).toHaveLength(2)
@@ -679,11 +677,9 @@ describe('pill group icon option', () => {
 })
 
 /**
- * A group is `overflow: hidden`, so a row too narrow for its options cuts the
- * last ones off. A clipped text option used to state no name at all: it carried
- * no tooltip, so neither a reader nor a screen reader could recover it. The
- * groups most likely to run out of room are the ones whose labels carry a
- * distinguishing detail, such as a host or a command.
+ * The group clips overflowing options.
+ * A clipped text option needs a tooltip so users can read its full label.
+ * Labels with a distinguishing host or command can require more space than the group provides.
  */
 describe('pill group clipped option', () => {
   const options = [
@@ -716,67 +712,12 @@ describe('pill group clipped option', () => {
     expect(hoverForTooltip(radio)).toBeNull()
   })
 
-  // The option's own TEXT is its accessible name. An `aria-label` that repeats
-  // it would make the pill answer a second by-label lookup, which collides with
-  // a real field of the same name (`LoginPage` has a `Password` pill beside a
-  // `Password` input).
+  // The visible text supplies the option's accessible name.
+  // A repeated aria-label adds a second by-label match and can collide with a form field.
+  // LoginPage contains both a Password option and a Password input.
   it('adds no aria-label to an option that spells its own name', () => {
     const radio = renderClipGroup()
     expect(radio).not.toHaveAttribute('aria-label')
     expect(radio).toHaveAccessibleName('Host: a.example.com')
-  })
-})
-
-/**
- * `optionMap` throws on two options that share a KEY, and nothing catches two
- * that share a LABEL: the user cannot tell them apart, a screen reader
- * announces one name twice, and a by-name lookup matches both.
- */
-describe('disambiguateLabels', () => {
-  const label = (item: { label: string }) => item.label
-  const distinct = (item: { label: string, detail: string }) => item.detail
-
-  it('keeps a label that no other item shares', () => {
-    expect(disambiguateLabels(
-      [{ label: 'Once', detail: 'a' }, { label: 'Session', detail: 'b' }],
-      label,
-      distinct,
-    )).toEqual(['Once', 'Session'])
-  })
-
-  it('replaces every member of a collision, not the later ones alone', () => {
-    expect(disambiguateLabels(
-      [{ label: 'Host rule', detail: 'Host: a' }, { label: 'Host rule', detail: 'Host: b' }],
-      label,
-      distinct,
-    )).toEqual(['Host: a', 'Host: b'])
-  })
-
-  it('leaves an uncolliding neighbour alone while it replaces a collision', () => {
-    expect(disambiguateLabels(
-      [
-        { label: 'Once', detail: 'Once' },
-        { label: 'Host rule', detail: 'Host: a' },
-        { label: 'Host rule', detail: 'Host: b' },
-      ],
-      label,
-      distinct,
-    )).toEqual(['Once', 'Host: a', 'Host: b'])
-  })
-
-  it('replaces all three of a three-way collision', () => {
-    expect(disambiguateLabels(
-      [
-        { label: 'Host rule', detail: 'Host: a' },
-        { label: 'Host rule', detail: 'Host: b' },
-        { label: 'Host rule', detail: 'Host: c' },
-      ],
-      label,
-      distinct,
-    )).toEqual(['Host: a', 'Host: b', 'Host: c'])
-  })
-
-  it('gives an empty list back unchanged', () => {
-    expect(disambiguateLabels([], label, distinct)).toEqual([])
   })
 })

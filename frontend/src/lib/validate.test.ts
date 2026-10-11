@@ -15,6 +15,7 @@ import {
   validateEmail,
   validatePassword,
   validateReservedUsername,
+  validateSessionFileOrIdHandle,
   validateSessionId,
 } from './validate'
 
@@ -1299,5 +1300,46 @@ describe('validateBranchName conformance', () => {
     const marker = branchRefusalMarkers[c.refusal]
     expect(marker, `case "${c.why}" carries an unknown refusal token "${c.refusal}"`).toBeDefined()
     expect(got).toContain(marker)
+  })
+})
+
+describe('validateSessionFileOrIdHandle', () => {
+  it('accepts no handle', () => {
+    expect(validateSessionFileOrIdHandle('')).toBeNull()
+  })
+
+  it('judges a value with a separator, or a .jsonl suffix, by the path rule', () => {
+    expect(validateSessionFileOrIdHandle('/home/u/.omp/agent/sessions/-p/a.jsonl')).toBeNull()
+    expect(validateSessionFileOrIdHandle('C:\\Users\\u\\a.jsonl')).toBeNull()
+    expect(validateSessionFileOrIdHandle('relative/a.jsonl')).toBe('Session file path must be absolute')
+    expect(validateSessionFileOrIdHandle('a.jsonl')).toBe('Session file path must be absolute')
+    expect(validateSessionFileOrIdHandle('/p/../a.jsonl')).toBe('Session file path must not contain ".."')
+  })
+
+  it('judges every other value by the token rule', () => {
+    expect(validateSessionFileOrIdHandle('01a0cf77-9ae4-72d8-9a42-665c431d3beb')).toBeNull()
+    expect(validateSessionFileOrIdHandle(' 01a0cf77')).toBe('Session ID must not start or end with whitespace')
+    expect(validateSessionFileOrIdHandle('-flag')).toBe('Session ID must not start with a hyphen')
+  })
+
+  // The shape test must answer as the worker's `SessionFileHandleIsPath` does, or the
+  // two sides judge one handle by different rules.
+  it('sends a tilde with a separator to the path rule and a bare tilde to the token rule', () => {
+    expect(validateSessionFileOrIdHandle('~/s')).toBeNull()
+    // A tilde with no separator is an ID, so the path rule never sees it.
+    expect(validateSessionFileOrIdHandle('~')).toBeNull()
+    // The suffix alone makes a path, and a tilde with no separator after it does
+    // not make that path absolute.
+    expect(validateSessionFileOrIdHandle('~s.jsonl')).toBe('Session file path must be absolute')
+  })
+
+  it('matches the .jsonl suffix case-sensitively, as the worker does', () => {
+    // Not a path by shape, so the token rule accepts it as an ID.
+    expect(validateSessionFileOrIdHandle('a.JSONL')).toBeNull()
+    expect(validateSessionFileOrIdHandle('a.jsonl')).toBe('Session file path must be absolute')
+  })
+
+  it('sends a value whose .jsonl is not the suffix to the token rule', () => {
+    expect(validateSessionFileOrIdHandle('a.jsonl ')).toBe('Session ID must not start or end with whitespace')
   })
 })

@@ -96,6 +96,7 @@ export function OptionGroupMenuItems(props: OptionGroupMenuItemsProps): JSX.Elem
       >
         <FilterableListbox
           items={props.items}
+          ariaLabel={props.label}
           current={props.current}
           testIdPrefix={props.testIdPrefix}
           onSelect={props.onChange}

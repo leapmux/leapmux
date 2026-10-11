@@ -2,11 +2,10 @@ import { isAbsolute, join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { collectE2EFiles, e2eRoot } from '~/test-support/e2eFiles'
 
-// Three e2e guards -- `noNetworkIdleWait`, `chatRowReads` and
-// `visibleChatLocators` -- scan whatever this walk returns and then assert
-// their offender list is empty. An empty walk is a silent pass for all three at
-// once, so the non-emptiness is pinned HERE, one time, rather than in each of
-// them.
+// The e2e guards that `e2eFiles.ts` lists scan whatever this walk returns, and
+// then assert that their offender list is empty. An empty walk is a silent pass
+// for all of them at once, so this file pins the non-emptiness one time, rather
+// than in each guard.
 
 describe('collectE2EFiles', () => {
   it('finds the files the e2e guards scan', () => {

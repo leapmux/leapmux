@@ -22,23 +22,17 @@ function agentResultTitle(source: AgentRun, context?: ToolResultRenderContext): 
 }
 
 /**
- * The glyph each ENDED outcome takes.
- *
- * Partial on purpose: an outcome absent from it is one the run has not reached, so
- * this card states what the subagent is rather than how it finished.
- * {@link agentRunStatesOutcome} reads the same table, so the glyph and the answer the
- * row's header depends on cannot drift.
+ * Icons for outcomes that ended the agent run.
+ * An absent icon means the run did not reach an ended outcome.
+ * The card then describes its current state.
+ * agentRunStatesOutcome reads this same table to keep the shared header consistent.
  */
 const AGENT_OUTCOME_ICON: Partial<Record<AgentRunStatus, LucideIcon>> = ENDED_OUTCOME_ICON
 
 /**
- * Whether ONE run's card states how that run ended.
- *
- * `agentRenderer` asks it of every run before it suppresses the shared outcome header,
- * because a card that shows the neutral glyph and the word `running` says nothing about
- * how the CALL ended. A launch that failed while its child state still read `running`
- * -- or read nothing, which Codex reports as `status unavailable` -- drew a row whose
- * every line was about the child and no line about the failure.
+ * Report whether this agent card states an ended outcome.
+ * The shared row header remains when the child is still running or its status is unavailable.
+ * A failed call must still show its own failure when the child state supplies no ended outcome.
  */
 export function agentRunStatesOutcome(run: AgentRun): boolean {
   return AGENT_OUTCOME_ICON[run.outcome] !== undefined
@@ -53,7 +47,7 @@ export function AgentResultBody(props: { source: AgentRun, context?: ToolResultR
       <ToolMetadata items={props.source.metadata} />
       <Show when={props.source.body}>
         <Show when={props.source.bodyLabel}><div class={toolResultPrompt}>{props.source.bodyLabel}</div></Show>
-        <CollapsibleContent kind="markdown-tool-result" text={props.source.body} isCollapsed={collapsed()} {...(props.context !== undefined ? { context: props.context } : {})} />
+        <CollapsibleContent outputPreview kind="markdown-tool-result" text={props.source.body} isCollapsed={collapsed()} {...(props.context !== undefined ? { context: props.context } : {})} />
       </Show>
     </ToolStatusHeader>
   )

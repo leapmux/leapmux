@@ -80,6 +80,10 @@ export function ComposerStatusBar(props: ComposerStatusBarProps): JSX.Element {
   // for Codex, primaryAgent for OpenCode/Kilo, …). Reused verbatim from the old
   // fused trigger label so the chip shows the same "mode" the panel does.
   const modeGroupKey = () => pluginFor(props.agent?.agentProvider)?.configuration?.triggerModeGroupKey
+  // The provider's reasoning-effort axis. An Agent Client Protocol agent reports it
+  // under an id of its own (Goose `thinking_effort`), so the plugin states the id,
+  // and every other provider uses the well-known one.
+  const effortGroupKey = () => pluginFor(props.agent?.agentProvider)?.configuration?.effortGroupKey ?? OPTION_ID_EFFORT
 
   return (
     <div class={styles.statusBar} data-testid="composer-status-bar">
@@ -100,9 +104,9 @@ export function ComposerStatusBar(props: ComposerStatusBarProps): JSX.Element {
             testIdPrefix="composer-model"
           />
         </Show>
-        <Show when={hasGroup(props.agent, OPTION_ID_EFFORT)}>
+        <Show when={hasGroup(props.agent, effortGroupKey())}>
           <OptionAxisChip
-            groupId={OPTION_ID_EFFORT}
+            groupId={effortGroupKey()}
             optionGroups={props.agent?.optionGroups}
             optionValues={props.optionValues}
             {...(props.onSettingChange === undefined ? {} : { onChange: props.onSettingChange })}

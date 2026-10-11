@@ -14,8 +14,9 @@ const WIRE_TOKEN = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$/
  *
  * The corpus holds payloads captured from the installed runtimes (RL-001), so this is the
  * reload half of the rule that `controls/permissionActionsParity.test.tsx` holds for the
- * BUTTONS. Five native wire shapes reach one chokepoint here, and a runtime that changes
- * its shape fails the case instead of quietly degrading a reloaded row to "Responded".
+ * BUTTONS. Each native wire shape of the corpus reaches one chokepoint here, and a
+ * runtime that changes its shape fails the case instead of quietly degrading a reloaded
+ * row to "Responded".
  */
 describe('saved decision corpus', () => {
   it.each(SAVED_DECISION_CORPUS)('reads $name back as its own words', (entry) => {

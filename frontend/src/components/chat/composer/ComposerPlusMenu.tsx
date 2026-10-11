@@ -202,38 +202,25 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
   const [open, setOpen] = createSignal(false)
 
   /**
-   * Everything that decides WHICH ROWS EXIST, held still while the menu is open.
+   * Hold the row structure while the menu is open.
    *
-   * The menu is drawn from live props, and a status push supplies groups, a
-   * branch, agent info and permission actions -- each of which inserts rows ABOVE
-   * the two toggles at the bottom. A pointer already aimed at "Send with Enter"
-   * then lands on whatever slid into its place, and one of those is a provider
-   * action that applies a setting the moment the user clicks it.
+   * A status update can add groups, branch details, agent info, or permission
+   * actions above the two toggles. New rows can move the target under a pointer.
+   * A user could then select a different action.
    *
-   * Reading `open()` FIRST and returning `prev` without touching any live source
-   * is what freezes it: that run subscribes to `open` alone, so no push can
-   * re-run this memo until the menu closes. `hasMenuRows(prev)` reads the HELD
-   * snapshot, a plain object, so the condition below adds no subscription.
+   * Read `open()` first. When the open menu has rows, return `prev` before
+   * reading live props. The memo then follows only `open` until the menu closes.
+   * `hasMenuRows(prev)` reads a plain snapshot and adds no subscription.
    *
-   * ONE snapshot rather than a memo per field, because the fields are not
-   * independent -- `hasMiddleSection` fences the region they share, so a mix of
-   * fresh and stale values could draw a rule around nothing.
+   * Keep one snapshot because `hasMiddleSection` depends on several fields.
+   * Separate snapshots could draw a divider without the rows it separates.
+   * An empty middle section has no rows to hold, so its first status update
+   * can add rows while the menu stays open. Later additions wait for a close.
+   * `./OptionGroupPopover` applies the same rule to its option list.
    *
-   * `hasMenuRows(prev)`, not `prev !== undefined`: an EMPTY middle section is
-   * nothing to hold still, and a freeze on one STRANDS the menu. Every settings
-   * axis, the branch and the agent info arrive together on the first push, so a
-   * menu opened before that push holds the attach item and the two toggles
-   * alone, and it never refills: the user must close it and open it again, with
-   * nothing on screen to say so, and this menu is the only settings surface once
-   * the status bar is off. The option list in `./OptionGroupPopover` already
-   * applies the same rule one level down.
-   *
-   * The trade: while the middle section is empty, its rows can still appear
-   * under the pointer. That is the one case the freeze cannot cover without the
-   * stranding, and the first push ends it.
-   *
-   * Only the STRUCTURE is frozen. Labels, checked state, the disabled reason and
-   * the spinner keep reading live, because staleness THERE would be its own bug.
+   * An empty menu can still gain rows under a pointer. Holding it instead
+   * would leave those actions unavailable until the user closes the menu.
+   * Labels, selected state, disabled reasons, and the spinner stay live.
    */
   const structure = createMemo<MenuStructure>((prev) => {
     if (open() && prev !== undefined && hasMenuRows(prev))

@@ -1,10 +1,11 @@
+import type { ControlAnswerSeed } from '../../controls/types'
 import type { ControlQuestion } from '../../model/question'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { describe, expect, it, vi } from 'vitest'
 import { CODEX_OPTION, CODEX_OPTION_DEFAULT } from '~/generated/contracts/codex-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { renderDivider } from '~/test-support/messageRenderProbes'
-import { providerQuotableText } from '~/test-support/toolCallFixture'
+import { providerQuotableText, providerToolCall } from '~/test-support/toolCallFixture'
 import { createControlAnswerState } from '../../controls/types'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
@@ -243,6 +244,23 @@ describe('sendCodexDecision', () => {
 })
 
 describe('sendCodexUserInputResponse', () => {
+  function nativeQuestions(question: Record<string, unknown>): ControlQuestion[] {
+    const control = providerFor(AgentProvider.CODEX)?.controls?.askUserQuestion
+    if (!control)
+      throw new Error('The Codex plugin has no native question capability.')
+    return control.extractQuestions({ method: 'item/tool/requestUserInput', params: { questions: [question] } })
+  }
+
+  async function answerNativeQuestion(question: Record<string, unknown>, seed: ControlAnswerSeed): Promise<Record<string, unknown>> {
+    let captured: Uint8Array | undefined
+    await sendCodexUserInputResponse(async (content) => {
+      captured = content
+    }, 'native-answer', nativeQuestions(question), createControlAnswerState(seed))
+    if (!captured)
+      throw new Error('The native Codex question emitted no response.')
+    return decode(captured)
+  }
+
   function decode(bytes: Uint8Array): Record<string, unknown> {
     return JSON.parse(new TextDecoder().decode(bytes))
   }
@@ -378,14 +396,12 @@ describe('sendCodexUserInputResponse', () => {
       captured = content
     })
 
-    const questions: ControlQuestion[] = [
-      {
-        id: 'q1',
-        question: 'Pick one',
-        options: [{ label: 'A' }, { label: 'B' }],
-        isOther: true,
-      } as unknown as ControlQuestion,
-    ]
+    const questions = nativeQuestions({
+      id: 'q1',
+      question: 'Pick one',
+      isOther: true,
+      options: [{ label: 'A' }, { label: 'B' }],
+    })
     const state = createControlAnswerState({ customTexts: { 0: 'my custom answer' } })
 
     await sendCodexUserInputResponse(onRespond, '14', questions, state)
@@ -400,6 +416,37 @@ describe('sendCodexUserInputResponse', () => {
         },
       },
     })
+  })
+
+  it.each([
+    { label: 'false', flags: { isOther: false } },
+    { label: 'absent', flags: {} },
+  ])('omits the native Other label when its flag is $label', async ({ flags }) => {
+    const response = await answerNativeQuestion({ id: 'q1', question: 'Pick one', options: [{ label: 'A' }], ...flags }, { customTexts: { 0: 'my custom answer' } })
+    expect(response).toMatchObject({ result: { answers: { q1: { answers: ['user_note: my custom answer'] } } } })
+  })
+
+  it.each([
+    { label: 'empty', fields: { options: [] } },
+    { label: 'absent', fields: {} },
+  ])('omits the native Other label when options are $label', async ({ fields }) => {
+    const response = await answerNativeQuestion({ id: 'q1', question: 'Free text', isOther: true, ...fields }, { customTexts: { 0: 'my custom answer' } })
+    expect(response).toMatchObject({ result: { answers: { q1: { answers: ['user_note: my custom answer'] } } } })
+  })
+
+  it('trims outer native note whitespace and preserves its Unicode text and internal spacing', async () => {
+    const response = await answerNativeQuestion({ id: 'q1', question: 'Pick one', isOther: true, options: [{ label: 'A' }] }, { customTexts: { 0: '  \n실제 내용 😀\n  second line  \t' } })
+    expect(response).toMatchObject({ result: { answers: { q1: { answers: ['None of the above', 'user_note: 실제 내용 😀\n  second line'] } } } })
+  })
+
+  it.each(['', ' ', '\t\n'])('keeps an empty answer list for uncommitted native note text %j', async (text) => {
+    const response = await answerNativeQuestion({ id: 'q1', question: 'Pick one', isOther: true, options: [{ label: 'A' }] }, { customTexts: { 0: text } })
+    expect(response).toMatchObject({ result: { answers: { q1: { answers: [] } } } })
+  })
+
+  it.each(['0', 'false', ''])('preserves the native selected string value %j without an empty note', async (selected) => {
+    const response = await answerNativeQuestion({ id: 'q1', question: 'Pick one', isOther: true, options: [{ label: selected }] }, { selections: { 0: [selected] }, customTexts: { 0: '' } })
+    expect(response).toMatchObject({ result: { answers: { q1: { answers: [selected] } } } })
   })
 
   it('includes unanswered questions with empty answer lists like the native TUI', async () => {
@@ -609,5 +656,27 @@ describe('codex relatedMessages', () => {
 
   it('a command execution wants nothing, because each row carries its own body', () => {
     expect(plugin?.transcript.relatedMessages!(input(item({ type: 'commandExecution', status: 'completed', command: 'ls' })))).toEqual([])
+  })
+})
+
+describe('native output without a filesystem pointer', () => {
+  it('keeps a valid native result and omits the output path hook', () => {
+    const frame = {
+      item: {
+        type: 'commandExecution',
+        id: 'native-call',
+        status: 'completed',
+        command: 'printf preview',
+        aggregatedOutput: 'native inline preview',
+        exitCode: 0,
+      },
+    }
+    const call = providerToolCall(AgentProvider.CODEX, frame, { spanId: 'native-call', spanType: 'commandExecution', agentSessionId: 'native-session', role: 'result' })
+    expect(call).not.toBeNull()
+    expect(call?.id).toBe('native-call')
+    expect(call?.outputFilePaths).toBeUndefined()
+    const registered = providerFor(AgentProvider.CODEX)
+    expect(registered).toBeDefined()
+    expect(registered?.transcript.outputFilePaths).toBeUndefined()
   })
 })

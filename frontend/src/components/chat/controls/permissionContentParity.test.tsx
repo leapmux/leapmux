@@ -11,6 +11,8 @@ describe('permission content parity', () => {
   const input = { command, timeout: 0, quiet: false, note: '' }
   const providers = [AgentProvider.CLAUDE_CODE, AgentProvider.CODEX, AgentProvider.OPENCODE, AgentProvider.KILO, AgentProvider.CURSOR, AgentProvider.GITHUB_COPILOT, AgentProvider.GOOSE, AgentProvider.REASONIX, AgentProvider.ZCODE]
 
+  // Kimi Code's approval is its own event, and its display states the command and its
+  // working directory; the server sends no free-form tool input beside it.
   // Copilot's request is its own native event, and its shell kind states the command
   // in `fullCommandText` beside the identifiers a session-wide approval would use.
   const copilotShellRequest = copilotPermissionRequest({
@@ -23,7 +25,7 @@ describe('permission content parity', () => {
 
   it.each([...providers, AgentProvider.PI])('does not request another approval after provider %s receives a response', (provider) => {
     const payload = provider === AgentProvider.PI
-      ? { type: 'extension_ui_request', method: 'select', title: `MCP: probe wants to run command\n\nArguments:\n${JSON.stringify(input)}`, options: ['Allow once', 'Allow for session', 'Deny'] }
+      ? { type: 'extension_ui_request', id: 'request', method: 'confirm', title: 'Confirm command', message: command }
       : provider === AgentProvider.CLAUDE_CODE || provider === AgentProvider.ZCODE
         ? { request: { tool_name: 'Bash', input } }
         : provider === AgentProvider.CODEX
@@ -34,7 +36,7 @@ describe('permission content parity', () => {
     const { getByText, queryByText } = render(() => (
       <ControlRequestContent agentProvider={provider} request={{ agentId: 'agent', requestId: 'request', payload, responseState: ControlResponseState.DELIVERED }} answerState={createControlAnswerState()} />
     ))
-    expect(getByText('Permission request', { exact: true })).toBeVisible()
+    expect(getByText(provider === AgentProvider.PI ? 'Confirm command' : 'Permission request', { exact: true })).toBeVisible()
     expect(queryByText('Permission Required', { exact: true })).toBeNull()
   })
 

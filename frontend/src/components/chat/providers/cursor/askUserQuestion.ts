@@ -1,5 +1,6 @@
 import type { ControlAnswerState, ControlResponseSender } from '../../controls/types'
 import type { ControlQuestion } from '../../model/question'
+import { ACP_PERMISSION_OUTCOME } from '~/generated/contracts/acp-protocol'
 import { CURSOR_METHOD } from '~/generated/contracts/cursor-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { sendResponse } from '../../controls/types'
@@ -80,7 +81,7 @@ export function sendCursorQuestionRejectResponse(
     id: requestId,
     result: {
       outcome: {
-        outcome: 'cancelled',
+        outcome: ACP_PERMISSION_OUTCOME.Cancelled,
         ...(reason ? { reason } : {}),
       },
     },

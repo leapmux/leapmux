@@ -1,5 +1,6 @@
 import type { MessageCategory } from '../../messageClassifier'
 import type { ClassificationContext, ClassificationInput } from '../registry'
+import { CLAUDE_FRAME_KIND } from '~/generated/contracts/claude-protocol'
 import { NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { isPlainNotificationType } from '~/lib/notificationTypes'
@@ -23,7 +24,7 @@ const CLAUDE_EXTRA_TYPES = new Set<string>([NOTIFICATION_TYPE.RateLimitEvent])
 
 function isClaudeNotifThread(wrapper: { messages: unknown[] } | null): wrapper is { messages: unknown[] } {
   return isNotificationThreadWrapper(wrapper, CLAUDE_EXTRA_TYPES, (t, st) =>
-    t === 'system' && !claudeSystemSubtypeHidden(st ?? ''))
+    t === CLAUDE_FRAME_KIND.System && !claudeSystemSubtypeHidden(st ?? ''))
 }
 
 /**
@@ -53,7 +54,7 @@ function isHiddenClaudeNotification(m: Record<string, unknown>): boolean {
     const info = pickObject(m, 'rate_limit_info')
     return info?.status === 'allowed'
   }
-  if (type === 'system') {
+  if (type === CLAUDE_FRAME_KIND.System) {
     if (claudeSystemSubtypeHidden(pickString(m, 'subtype')))
       return true
     if (isFinalCompactingStatus(m))
@@ -79,7 +80,7 @@ type ClaudeTypeClassifier = (
  * and drew the raw frame for the other three.
  */
 const CLAUDE_NOTIFICATION_CLASSIFIERS: Record<string, ClaudeTypeClassifier> = {
-  system(parent, input) {
+  [CLAUDE_FRAME_KIND.System](parent, input) {
     const subtype = pickString(parent, 'subtype')
     if (input.parentSpanId && (subtype === 'task_started' || subtype === 'task_progress'))
       return { kind: 'hidden' }
@@ -95,7 +96,7 @@ const CLAUDE_NOTIFICATION_CLASSIFIERS: Record<string, ClaudeTypeClassifier> = {
   // `/clear`, and the plan exit that starts a new conversation. A transcript
   // recorded before the worker rewrote it still carries this type.
   conversation_reset: (parent, input) => classifyNotifications([parent], input.agentProvider, claudeNotificationEntry),
-  result: () => ({ kind: 'result_divider' }),
+  [CLAUDE_FRAME_KIND.Result]: () => ({ kind: 'result_divider' }),
 }
 
 /**
@@ -104,7 +105,7 @@ const CLAUDE_NOTIFICATION_CLASSIFIERS: Record<string, ClaudeTypeClassifier> = {
  * that those flags can preempt the content dispatch.
  */
 const CLAUDE_CONTENT_CLASSIFIERS: Record<string, ClaudeTypeClassifier> = {
-  assistant(parent, input) {
+  [CLAUDE_FRAME_KIND.Assistant](parent, input) {
     const message = pickObject(parent, 'message')
     if (!message)
       return { kind: 'unknown' }
@@ -137,7 +138,7 @@ const CLAUDE_CONTENT_CLASSIFIERS: Record<string, ClaudeTypeClassifier> = {
     }
     return { kind: 'unknown' }
   },
-  user(parent, input, context) {
+  [CLAUDE_FRAME_KIND.User](parent, input, context) {
     // The span column states the tool on every row of a span, so one test answers
     // for a result row whose own bytes state no tool -- `EnterPlanMode` carries
     // no `tool_result` block at all, and its row is hidden all the same.

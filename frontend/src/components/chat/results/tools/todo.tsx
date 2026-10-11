@@ -67,7 +67,7 @@ export const todoRenderer: ToolKindRenderer<'todo'> = {
         <Show when={toolCallStatusOutcome(call.status) === 'interrupted'}>
           <div class={toolInputSummary}>{TODO_PARTIAL_LIST_NOTICE}</div>
         </Show>
-        {call.result.note ? <CollapsibleContent kind="markdown-tool-result" text={call.result.note} isCollapsed={false} {...(view.context !== undefined ? { context: view.context } : {})} /> : null}
+        {call.result.note ? <CollapsibleContent outputPreview kind="markdown-tool-result" text={call.result.note} isCollapsed={false} {...(view.context !== undefined ? { context: view.context } : {})} /> : null}
       </>
     )
   },

@@ -1,20 +1,24 @@
-// Shared controllable ResizeObserver stub for unit tests. jsdom doesn't
-// implement ResizeObserver; vitest.setup.ts installs an inert no-op stub.
-// Tests that need to drive the resize callback should call
-// installControllableResizeObserver() inside beforeAll() to override the
-// inert stub with one that tracks every constructed observer's callback and
-// observed elements, then invoke the returned trigger helpers.
+// jsdom does not implement ResizeObserver. vitest.setup.ts installs an inert stub.
+// Install this controllable stub before a test that needs resize callbacks.
+// The trigger helpers notify each observer about its observed elements.
 
 let observers: ControllableResizeObserver[] = []
 
 function entryFor(target: Element): ResizeObserverEntry {
+  const contentRect = target.getBoundingClientRect()
+  // Test entries use the controlled rectangle for every size array.
+  // They do not calculate CSS box sizes or physical pixels.
+  const size = { inlineSize: contentRect.width, blockSize: contentRect.height }
   return {
     target,
-    contentRect: target.getBoundingClientRect(),
-  } as ResizeObserverEntry
+    contentRect,
+    borderBoxSize: [size],
+    contentBoxSize: [size],
+    devicePixelContentBoxSize: [size],
+  }
 }
 
-class ControllableResizeObserver {
+class ControllableResizeObserver implements ResizeObserver {
   private callback: ResizeObserverCallback
   private observed = new Set<Element>()
 
@@ -39,7 +43,7 @@ class ControllableResizeObserver {
   }
 
   trigger(targets = [...this.observed]) {
-    this.callback(targets.map(entryFor), this as unknown as ResizeObserver)
+    this.callback(targets.map(entryFor), this)
   }
 
   observes(target: Element): boolean {
@@ -53,7 +57,7 @@ export async function flushAnimationFrame() {
 
 export function installControllableResizeObserver() {
   observers = []
-  globalThis.ResizeObserver = ControllableResizeObserver as unknown as typeof ResizeObserver
+  globalThis.ResizeObserver = ControllableResizeObserver
 }
 
 export async function triggerResizeObservers() {

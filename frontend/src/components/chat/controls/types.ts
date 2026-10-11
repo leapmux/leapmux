@@ -7,6 +7,7 @@ import type { AgentProvider, PlanApprovalSettings } from '~/generated/proto/leap
 import type { ContextUsageInfo } from '~/models/agentSession'
 import type { ControlRequest } from '~/stores/control.store'
 import { createSignal } from 'solid-js'
+import { ACP_PERMISSION_OUTCOME } from '~/generated/contracts/acp-protocol'
 
 export interface ControlResponseOptions {
   recordOnly?: boolean
@@ -317,5 +318,5 @@ export function sendSelectedOptionResponse(
   requestId: string,
   optionId: string,
 ): Promise<void> {
-  return sendJsonRpcResult(onRespond, requestId, { outcome: { outcome: 'selected', optionId } })
+  return sendJsonRpcResult(onRespond, requestId, { outcome: { outcome: ACP_PERMISSION_OUTCOME.Selected, optionId } })
 }

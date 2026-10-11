@@ -1,9 +1,23 @@
-import type { ControlAnswerState, ControlResponseSender } from '../../controls/types'
-import type { ControlQuestion } from '../../model/question'
+/**
+ * The question wire of the OpenCode protocol.
+ *
+ * `question.asked` states its questions under `properties.questions`, and the answer
+ * states one list of chosen labels for each question, or a rejection. The event and
+ * the answer fields come from `contracts/opencode-protocol.json`, which the worker
+ * reads too.
+ *
+ * Three providers speak this wire. OpenCode and Kilo, an OpenCode fork, reach it
+ * through the Agent Client Protocol family (`registerOpenCodeProtocolProvider`). MiMo
+ * Code, another OpenCode fork, reaches it over its own HTTP routes and stays outside
+ * that family. So the helpers live here, beside the family and not inside it, and
+ * each provider decides for itself which requests are questions.
+ */
 
+import type { ControlAnswerState, ControlResponseSender } from '../controls/types'
+import type { ControlQuestion } from '../model/question'
 import { OPENCODE_ANSWER_FIELD } from '~/generated/contracts/opencode-protocol'
 import { isObject, pickObject } from '~/lib/jsonPick'
-import { questionsFromWire, sendResponse } from '../../controls/types'
+import { questionsFromWire, sendJsonRpcResult } from '../controls/types'
 
 /**
  * Fold the legacy `multiple` field onto `multiSelect`, on the RAW element.
@@ -22,10 +36,8 @@ function foldMultiple(raw: unknown): unknown {
 }
 
 /**
- * Read the `properties.questions` array off an OpenCode-style `question.asked`
- * payload and normalize the legacy `multiple` field to `multiSelect`. Used by
- * both the OpenCode and Kilo plugins (Kilo is an OpenCode fork that shares
- * the same wire format).
+ * Read the `properties.questions` array of a `question.asked` payload, and fold the
+ * legacy `multiple` field onto `multiSelect`.
  *
  * The shared reader, not a cast. The one upstream guard tests `payload.type`, which
  * says nothing about `properties`: a `questions` that held a string, a number or an
@@ -39,6 +51,10 @@ export function extractOpenCodeQuestions(payload: Record<string, unknown>): Cont
   return questionsFromWire(foldMultiple(properties?.questions))
 }
 
+/**
+ * Answer one question request: for each question, in the question order, the options
+ * the reader chose, else the words the reader typed, else no answer.
+ */
 export function sendOpenCodeQuestionResponse(
   onRespond: ControlResponseSender,
   requestId: string,
@@ -47,27 +63,18 @@ export function sendOpenCodeQuestionResponse(
 ): Promise<void> {
   const answers: string[][] = questions.map((_, index) => {
     const selected = answerState.selections()[index] ?? []
-    const customText = answerState.customTexts()[index]?.trim()
     if (selected.length > 0)
       return selected
-    if (customText)
-      return [customText]
-    return []
+    const customText = answerState.customTexts()[index]?.trim()
+    return customText ? [customText] : []
   })
-  return sendResponse(onRespond, {
-    jsonrpc: '2.0',
-    id: requestId,
-    result: { [OPENCODE_ANSWER_FIELD.Answers]: answers },
-  })
+  return sendJsonRpcResult(onRespond, requestId, { [OPENCODE_ANSWER_FIELD.Answers]: answers })
 }
 
+/** Reject one question request. */
 export function sendOpenCodeQuestionRejectResponse(
   onRespond: ControlResponseSender,
   requestId: string,
 ): Promise<void> {
-  return sendResponse(onRespond, {
-    jsonrpc: '2.0',
-    id: requestId,
-    result: { [OPENCODE_ANSWER_FIELD.Rejected]: true },
-  })
+  return sendJsonRpcResult(onRespond, requestId, { [OPENCODE_ANSWER_FIELD.Rejected]: true })
 }

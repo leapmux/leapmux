@@ -1,11 +1,19 @@
 import type { MessageCategory } from '../../messageClassifier'
 import type { MessageContentRenderContext } from '../../messageContentRenderer'
 import { fireEvent, render, waitFor } from '@solidjs/testing-library'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { dismissActiveTooltip, SHOW_DELAY_MS } from '~/components/common/Tooltip'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { makeTranscriptMessage } from '~/test-support/messageFactory'
+import { pngBase64 } from '~/test-support/pngFixture'
+import { createTranscriptScenario } from '~/test-support/transcriptScenario'
 import { renderMessageContent } from '../../messageContentRenderer'
 import './plugin'
+
+afterEach(() => {
+  dismissActiveTooltip()
+  vi.useRealTimers()
+})
 
 const tokenizeAsyncCalls = vi.hoisted(() => vi.fn())
 const tokenizeAsyncMock = vi.hoisted(() => vi.fn(async (lang: string, code: string) => {
@@ -22,12 +30,16 @@ vi.mock('~/lib/tokenCache', () => ({
   makeKey: (lang: string, code: string) => `${lang}\0${code}`,
 }))
 
-vi.mock('~/context/PreferencesContext', () => ({
-  usePreferences: () => ({
-    diffView: () => 'unified',
-    expandAgentThoughts: () => true,
-  }),
-}))
+vi.mock('~/context/PreferencesContext', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('~/context/PreferencesContext')>()
+  return {
+    ...actual,
+    usePreferences: () => ({
+      diffView: () => 'unified',
+      expandAgentThoughts: () => true,
+    }),
+  }
+})
 
 function renderCodexItem(item: Record<string, unknown>, context?: MessageContentRenderContext) {
   const parsed = { item, threadId: 't1', turnId: 'r1' }
@@ -35,8 +47,39 @@ function renderCodexItem(item: Record<string, unknown>, context?: MessageContent
   return render(() => <>{renderMessageContent(parsed, context, category, AgentProvider.CODEX)}</>)
 }
 
+describe('codex native exec rendering', () => {
+  it.each([false, true])('renders the exact native result and its failure state: %s', async (failed) => {
+    const request = { threadId: 'native-thread', turnId: 'native-turn', item: { type: 'custom_tool_call', call_id: 'native-exec', name: 'exec', input: failed ? 'throw new Error("Native thrown: " + (70 + 7));' : 'text("Native computed: " + (40 + 2));', status: 'completed' } }
+    const expected = failed ? 'Error: Native thrown: 77' : 'Native computed: 42'
+    const result = { threadId: 'native-thread', turnId: 'native-turn', item: { type: 'custom_tool_call_output', call_id: 'native-exec', output: [{ type: 'input_text', text: `Script ${failed ? 'failed' : 'completed'}\nWall time 0.0 seconds\nOutput:\n` }, { type: 'input_text', text: expected }] } }
+    const scenario = createTranscriptScenario({ archive: [
+      makeTranscriptMessage({ id: 'native-request', provider: AgentProvider.CODEX, spanId: 'native-exec', spanType: 'exec', agentSessionId: 'native-session', content: request }, 1n),
+      makeTranscriptMessage({ id: 'native-result', provider: AgentProvider.CODEX, spanId: 'native-exec', spanType: 'exec', agentSessionId: 'native-session', content: result }, 2n),
+    ] })
+    const { container } = scenario.renderBubble('native-result')
+    await waitFor(() => expect(container).toHaveTextContent(expected))
+    expect(scenario.toolRow('native-result').call.status).toBe(failed ? 'failed' : 'completed')
+    expect(container.textContent).not.toContain('custom_tool_call_output')
+  })
+
+  it('renders one decoded image from native exec output', async () => {
+    const data = pngBase64(12, 8)
+    const request = { threadId: 'native-thread', turnId: 'native-turn', item: { type: 'custom_tool_call', call_id: 'native-image-exec', name: 'exec', input: 'image(nativeImage);', status: 'completed' } }
+    const result = { threadId: 'native-thread', turnId: 'native-turn', item: { type: 'custom_tool_call_output', call_id: 'native-image-exec', output: [{ type: 'input_text', text: 'Script completed\nWall time 0.0 seconds\nOutput:\n' }, { type: 'input_image', image_url: `data:image/png;base64,${data}` }] } }
+    const scenario = createTranscriptScenario({ archive: [
+      makeTranscriptMessage({ id: 'native-image-request', provider: AgentProvider.CODEX, spanId: 'native-image-exec', spanType: 'exec', agentSessionId: 'native-session', content: request }, 1n),
+      makeTranscriptMessage({ id: 'native-image-result', provider: AgentProvider.CODEX, spanId: 'native-image-exec', spanType: 'exec', agentSessionId: 'native-session', content: result }, 2n),
+    ] })
+    const { container } = scenario.renderBubble('native-image-result')
+    await waitFor(() => expect(container.querySelectorAll('img')).toHaveLength(1))
+    expect(scenario.toolRow('native-image-result').call.images).toMatchObject([{ url: `data:image/png;base64,${data}` }])
+    expect(container.textContent).not.toContain(data)
+  })
+})
+
 describe('codex command actions', () => {
-  it('bounds collapsed action rendering and builds rich tooltips only on demand', async () => {
+  it('limits collapsed action rendering and builds rich tooltips only on demand', async () => {
+    vi.useFakeTimers()
     tokenizeAsyncCalls.mockClear()
     const commandActions = Array.from({ length: 20 }, (_, index) => ({
       type: 'read',
@@ -57,10 +100,13 @@ describe('codex command actions', () => {
     expect(container.querySelector('[aria-label="Show all actions"]')).not.toBeNull()
 
     const firstAction = container.querySelector('[data-command-action="read"]')
-    fireEvent.mouseEnter(firstAction!)
-    await new Promise(resolve => setTimeout(resolve, SHOW_DELAY_MS + 10))
-    await waitFor(() => expect(tokenizeAsyncCalls).toHaveBeenCalledTimes(1))
-    dismissActiveTooltip()
+    expect(firstAction).not.toBeNull()
+    if (!firstAction)
+      throw new Error('The collapsed command row has no read action.')
+    fireEvent.mouseEnter(firstAction)
+    expect(tokenizeAsyncCalls).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(SHOW_DELAY_MS)
+    expect(tokenizeAsyncCalls).toHaveBeenCalledTimes(1)
   })
 
   it('renders structured actions and the process identifier through the shared execute renderer', () => {
@@ -95,6 +141,7 @@ describe('codex command actions', () => {
   })
 
   it('puts one known action in the title with a highlighted command tooltip', async () => {
+    vi.useFakeTimers()
     tokenizeAsyncCalls.mockClear()
     const { container } = renderCodexItem({
       type: 'commandExecution',
@@ -106,9 +153,12 @@ describe('codex command actions', () => {
 
     expect(title).toHaveTextContent('Read src/main.ts')
     expect(container.querySelector('[data-command-action]')).toBeNull()
-    fireEvent.mouseEnter(title!)
-    await new Promise(resolve => setTimeout(resolve, SHOW_DELAY_MS + 10))
-    await waitFor(() => expect(tokenizeAsyncCalls).toHaveBeenCalledWith('bash', 'sed -n \'1,5p\' src/main.ts'))
-    dismissActiveTooltip()
+    expect(title).not.toBeNull()
+    if (!title)
+      throw new Error('The command row has no execute title.')
+    fireEvent.mouseEnter(title)
+    expect(tokenizeAsyncCalls).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(SHOW_DELAY_MS)
+    expect(tokenizeAsyncCalls).toHaveBeenCalledWith('bash', 'sed -n \'1,5p\' src/main.ts')
   })
 })

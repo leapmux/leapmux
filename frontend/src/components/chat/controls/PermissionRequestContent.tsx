@@ -4,12 +4,14 @@ import type { ControlRequest } from '~/stores/control.store'
 import { createMemo, Show } from 'solid-js'
 import { isObject } from '~/lib/jsonPick'
 import * as styles from '../ControlRequestBanner.css'
+import { MarkdownText } from '../messageRenderers'
 import { CollapsibleText } from './CollapsibleText'
 import { ControlJson } from './ControlJson'
 import { canAnswerControlRequest } from './controlResponseState'
 
 /**
- * The permission body: what the call is, why it needs approval, and its arguments.
+ * The permission body: what the call is, why it needs approval, the text it asks the
+ * reader to approve, and its arguments.
  *
  * It draws every field of the model's permission EXCEPT the options, which are the
  * answers -- those belong to the actions half, beside the buttons that send one.
@@ -34,6 +36,9 @@ export const PermissionRequestContent: ParentComponent<{
       </Show>
       <Show when={props.source.reason}>
         <div class={styles.bannerReason}>{props.source.reason}</div>
+      </Show>
+      <Show when={props.source.text}>
+        {text => <MarkdownText text={text()} />}
       </Show>
       {props.children}
       <Show when={props.source.command !== undefined}>

@@ -2,10 +2,11 @@ import { ASSEMBLED_MESSAGE } from '~/generated/contracts/worker-vocab'
 import { MessageCompletion as ProtoMessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { isObject, pickString } from '~/lib/jsonPick'
 
-export type MessageCompletion = 'complete' | 'interrupted' | 'error'
+export type MessageCompletion = 'complete' | 'interrupted' | 'error' | 'finished'
 
 export const INTERRUPTION_MARKER = 'Text truncated by interruption.'
 export const ERROR_MARKER = 'Text truncated by an error.'
+export const FINISHED_MARKER = 'Text ended without a known outcome.'
 
 export interface AssembledMessage {
   kind: 'text' | 'reasoning' | 'plan'
@@ -21,6 +22,8 @@ export function messageCompletionFromProto(value: ProtoMessageCompletion | undef
       return ASSEMBLED_MESSAGE.CompletionInterrupted
     case ProtoMessageCompletion.ERROR:
       return ASSEMBLED_MESSAGE.CompletionError
+    case ProtoMessageCompletion.FINISHED:
+      return ASSEMBLED_MESSAGE.CompletionFinished
     default:
       return null
   }
@@ -29,7 +32,8 @@ export function messageCompletionFromProto(value: ProtoMessageCompletion | undef
 function parseCompletion(value: unknown): MessageCompletion | null {
   if (value !== ASSEMBLED_MESSAGE.CompletionComplete
     && value !== ASSEMBLED_MESSAGE.CompletionInterrupted
-    && value !== ASSEMBLED_MESSAGE.CompletionError) {
+    && value !== ASSEMBLED_MESSAGE.CompletionError
+    && value !== ASSEMBLED_MESSAGE.CompletionFinished) {
     return null
   }
   return value
@@ -55,6 +59,8 @@ export function completionMarker(completion: MessageCompletion | null): string |
     return INTERRUPTION_MARKER
   if (completion === ASSEMBLED_MESSAGE.CompletionError)
     return ERROR_MARKER
+  if (completion === ASSEMBLED_MESSAGE.CompletionFinished)
+    return FINISHED_MARKER
   return null
 }
 

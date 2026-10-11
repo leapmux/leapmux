@@ -9,6 +9,12 @@ import { protoTodoToItem } from '~/stores/chatTodoStore'
 
 describe('TodoItem', () => {
   describe('normalizeTodoStatus', () => {
+    it('preserves blocked tasks as unfinished work', () => {
+      expect(normalizeTodoStatus('blocked')).toBe('blocked')
+      expect(isFinishedTodoStatus('blocked')).toBe(false)
+      expect(todoProgress([{ rowKey: 'blocked', content: 'Request access', status: 'blocked', activeForm: 'Requesting access' }])).toEqual({ done: 0, total: 1 })
+    })
+
     it('accepts the snake_case wire form (claude/acp)', () => {
       expect(normalizeTodoStatus('in_progress')).toBe('in_progress')
     })
@@ -92,6 +98,10 @@ describe('TodoItem', () => {
   })
 
   describe('protoTodoToItem', () => {
+    it('preserves the blocked proto status during hydration', () => {
+      expect(protoTodoToItem(create(TodoItemSchema, { id: 'blocked', content: 'Request access', status: TodoStatus.BLOCKED }), 0).status).toBe('blocked')
+    })
+
     it('maps the proto enum to the canonical string union', () => {
       const t = create(TodoItemSchema, { id: 't1', content: 'c', status: TodoStatus.IN_PROGRESS, activeForm: 'doing c', description: 'why c' })
       expect(protoTodoToItem(t, 0)).toEqual({ id: 't1', rowKey: 't1', content: 'c', status: 'in_progress', activeForm: 'doing c', description: 'why c' })
@@ -197,6 +207,12 @@ describe('TodoItem', () => {
 describe('sortTodos', () => {
   const todo = (content: string, status: TodoItem['status']): TodoItem =>
     ({ rowKey: content, content, status, activeForm: '' })
+
+  it('keeps blocked work before pending and completed work without changing the input', () => {
+    const input = [todo('completed', 'completed'), todo('pending', 'pending'), todo('blocked', 'blocked'), todo('active', 'in_progress'), todo('deleted', 'deleted')]
+    expect(sortTodos(input).map(item => item.content)).toEqual(['active', 'blocked', 'pending', 'completed', 'deleted'])
+    expect(input.map(item => item.content)).toEqual(['completed', 'pending', 'blocked', 'active', 'deleted'])
+  })
 
   it('puts in-progress first, then what is left, then what is done', () => {
     const sorted = sortTodos([

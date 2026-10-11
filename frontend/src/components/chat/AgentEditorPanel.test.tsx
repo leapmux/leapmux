@@ -1,3 +1,4 @@
+import type { MessageInitShape } from '@bufbuild/protobuf'
 import type { AgentEditorPanelProps } from './AgentEditorPanel'
 import type { AgentInfo } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ControlRequest } from '~/stores/control.store'
@@ -8,7 +9,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { compactControl } from '~/components/common/CompactControl.css'
 import { PreferencesProvider } from '~/context/PreferencesContext'
 import { CLAUDE_MODE } from '~/generated/contracts/claude-protocol'
-import { AgentActivityState, AgentInputKind, AgentInputQueuePauseReason, AgentInputQueueSnapshotSchema, AgentInputState, AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentActivityState, AgentInfoSchema, AgentInputKind, AgentInputQueuePauseReason, AgentInputQueueSnapshotSchema, AgentInputState, AgentProvider, AvailableOptionGroupSchema } from '~/generated/proto/leapmux/v1/agent_pb'
 import { localStorageLoad, localStorageStore, PREFIX_CONTROL_STATE } from '~/lib/browserStorage'
 import { clearDraft, loadDraft, saveDraft } from '~/lib/editor/draftPersistence'
 import { createControlStore } from '~/stores/control.store'
@@ -64,15 +65,15 @@ afterEach(() => {
   }
 })
 
-function agent(overrides: Partial<AgentInfo> = {}): AgentInfo {
-  return {
+function agent(overrides: MessageInitShape<typeof AgentInfoSchema> = {}): AgentInfo {
+  return create(AgentInfoSchema, {
     agentProvider: AgentProvider.CLAUDE_CODE,
     workerId: 'w1',
-    // What `agentTabToInfo` really builds: a Tab row carries no home dir.
+    // A tab row carries no home directory. The panel reads it from the Worker store.
     homeDir: '',
     optionGroups: [],
     ...overrides,
-  } as unknown as AgentInfo
+  })
 }
 
 interface RenderPanelOptions {
@@ -148,7 +149,7 @@ function questionRequestPayload(): Record<string, unknown> {
 
 /** The mutable permission-mode catalog that Claude reports. */
 function claudePermissionModeGroup(currentValue: string = CLAUDE_MODE.Default): AgentInfo['optionGroups'][number] {
-  return {
+  return create(AvailableOptionGroupSchema, {
     id: 'permissionMode',
     label: 'Approval',
     order: 30,
@@ -156,7 +157,7 @@ function claudePermissionModeGroup(currentValue: string = CLAUDE_MODE.Default): 
     defaultValue: CLAUDE_MODE.Default,
     currentValue,
     options: Object.values(CLAUDE_MODE).map(mode => ({ id: mode, name: mode })),
-  } as unknown as AgentInfo['optionGroups'][number]
+  })
 }
 
 function addControlRequest(
@@ -186,6 +187,26 @@ async function waitForControlActionsReady() {
 // has no such ancestor, because `createComponent` untracks the element that its
 // prop getter builds.
 describe('AgentEditorPanel', () => {
+  it('identifies the focused editor before and after the agent changes', () => {
+    const repoGitStore = createRepoGitStore()
+    let selectAgent: ((id: string) => void) | undefined
+    render(() => {
+      const [agentId, setAgentId] = createSignal('a1')
+      selectAgent = id => setAgentId(id)
+      return (
+        <PreferencesProvider>
+          <AgentEditorPanel agentId={agentId()} agent={agent()} repoGitStore={repoGitStore} onSendMessage={() => {}} />
+        </PreferencesProvider>
+      )
+    })
+    const panel = screen.getByTestId('agent-editor-panel')
+    expect(panel).toHaveAttribute('data-agent-id', 'a1')
+    if (!selectAgent)
+      throw new Error('The editor identity fixture did not initialize its agent selector.')
+    selectAgent('a2')
+    expect(panel).toHaveAttribute('data-agent-id', 'a2')
+  })
+
   it('reports an unavailable response handler without accepting the request', async () => {
     const controlStore = createControlStore()
     addControlRequest(controlStore, { requestId: 'permission', payload: toolRequestPayload('Bash'), claimToken: 'claim' })
@@ -929,6 +950,36 @@ describe('agent editor panel', () => {
     // glyph rendered.
     expect(toggle.querySelector('svg')?.getAttribute('class')).toContain('play')
     unmount()
+  })
+
+  // A read-only subagent tab takes no message, so its queue can hold none. An
+  // interrupt still pauses that queue, and a banner or toggle there would offer
+  // an action that the tab cannot take.
+  it('draws no queue controls on a read-only subagent tab whose queue paused', () => {
+    const snapshot = create(AgentInputQueueSnapshotSchema, {
+      agentId: 'c1',
+      paused: true,
+      pauseReason: AgentInputQueuePauseReason.INTERRUPTED,
+    })
+    render(() => (
+      <PreferencesProvider>
+        <AgentEditorPanel
+          agentId="c1"
+          agent={agent({ workerId: 'w1' })}
+          repoGitStore={createRepoGitStore()}
+          gitTab={{ workerId: 'w1', gitToplevel: WORKTREE_DIR }}
+          onSendMessage={() => {}}
+          branchActions={stubBranchMenuActions()}
+          branchWorkerId="w1"
+          inputQueue={snapshot}
+          disabledReason="This subagent takes no messages."
+        />
+      </PreferencesProvider>
+    ))
+
+    expect(screen.queryByTestId('queue-pause-banner')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('queue-pause-banner-resume')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('queue-pause-button')).not.toBeInTheDocument()
   })
 
   it('says Send will queue while the queue is paused', () => {

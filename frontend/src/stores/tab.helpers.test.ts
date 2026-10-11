@@ -1,9 +1,11 @@
+import type { MessageInitShape } from '@bufbuild/protobuf'
 import type { AgentTab, Tab } from './tab.types'
 import type { AgentInfo, AvailableOptionGroup } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { GitRepoStatus } from '~/generated/proto/leapmux/v1/common_pb'
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
 import { __resetProviderRegistryForTest, registerProvider } from '~/components/chat/providers/registry'
+import { resolvedCurrent } from '~/components/chat/settingsGroups'
 import { AgentInfoSchema, AgentProvider, AgentStatus, AvailableOptionGroupSchema, AvailableOptionSchema } from '~/generated/proto/leapmux/v1/agent_pb'
 import { GitRepoStatusSchema } from '~/generated/proto/leapmux/v1/common_pb'
 import { TerminalInfoSchema, TerminalProgress_State, TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
@@ -15,7 +17,7 @@ import { repoKey } from './repoGit'
 // failed a 5s test on a cold Vite cache. `./tab.helpers` already pulls
 // `./repoGit` into the static graph, so nothing here forces the dynamic form.
 import { createRepoGitStore } from './repoGit.store'
-import { agentTabSupportsInterrupt, agentTabToInfo, canCloseTab, canRenameTab, deriveOptionGroupTabFields, descendantAgentTabs, isSameRepo, isSteerableAgentTab, isSubagentTab, isTabReadyForGitStatus, mruSteerableAgentTab, openedAgentTabFields, openedTerminalMetadata, planOptimisticRepoGit, protoToAgentTabFields, resolveOptimisticGitInfo, rootAgentIdFor, setOptionValue, tabDisplayLabel, tabTooltipShowWhen, tabTooltipText, terminalMetadata, terminalProgressBarProps } from './tab.helpers'
+import { agentTabSupportsInterrupt, agentTabToInfo, canCloseTab, canRenameTab, deriveOptionGroupTabFields, descendantAgentTabs, isSameRepo, isSteerableAgentTab, isSubagentTab, isTabReadyForGitStatus, keepLiveTerminalStatus, LIVE_CATALOG_FIELDS, LIVE_STATUS_FIELDS, mruSteerableAgentTab, openedAgentTabFields, openedTerminalMetadata, planOptimisticRepoGit, protoToAgentTabFields, resolveOptimisticGitInfo, rootAgentIdFor, setOptionValue, tabDisplayLabel, tabTooltipShowWhen, tabTooltipText, TERMINAL_LIVE_STATUS_FIELDS, terminalMetadata, terminalProgressBarProps, withoutLiveCatalogFields, withoutLiveStatusFields } from './tab.helpers'
 import { createTabMetadataStore } from './tabMetadata.store'
 
 // `tabDisplayLabel` is the shared "what should we render in the tab strip
@@ -223,6 +225,18 @@ describe('protoToAgentTabFields git status', () => {
   })
 })
 
+// The worker states what a child tab may do. The tab keeps both answers, so the
+// composer and the Interrupt control read the worker's decision.
+describe('protoToAgentTabFields child capabilities', () => {
+  it('carries accepts_messages and accepts_interrupt onto the tab', () => {
+    const child = create(AgentInfoSchema, { id: 'c1', parentAgentId: 'root-1', agentProvider: AgentProvider.CLAUDE_CODE, acceptsMessages: false, acceptsInterrupt: true })
+    const fields = protoToAgentTabFields(createRepoGitStore(), 'wkr-1', child)
+    expect(fields.acceptsMessages).toBe(false)
+    expect(fields.acceptsInterrupt).toBe(true)
+    expect(agentTabSupportsInterrupt({ type: TabType.AGENT, parentAgentId: 'root-1', ...fields })).toBe(true)
+  })
+})
+
 describe('agentTabToInfo model-dependent option groups', () => {
   function opt(id: string, name: string, subGroups: AvailableOptionGroup[] = []) {
     return create(AvailableOptionSchema, { id, name, subGroups })
@@ -331,6 +345,34 @@ describe('agentTabToInfo model-dependent option groups', () => {
     expect(effort?.defaultValue).toBe('high')
   })
 
+  // The worker keeps the stored effort on a model switch when the new model offers it, and resets
+  // it to auto otherwise. These two cases pin what the effort control shows in the meantime.
+  it('keeps the carried-over effort selected when the new model offers it', () => {
+    const sonnetWithXhigh = [effortGroup(['auto', 'high', 'xhigh', 'max'], 'high'), thinkingGroup('Adaptive')]
+    const catalog = [
+      create(AvailableOptionGroupSchema, {
+        id: 'model',
+        label: 'Model',
+        order: 10,
+        mutable: true,
+        currentValue: 'opus[1m]',
+        options: [opt('sonnet', 'Sonnet', sonnetWithXhigh), opt('opus[1m]', 'Opus', opusSub)],
+      }),
+      ...opusSub,
+      permissionGroup,
+    ]
+    const groups = infoGroups({ optionValues: { model: 'sonnet', effort: 'xhigh' }, optionGroups: catalog })
+
+    expect(resolvedCurrent(groups, { model: 'sonnet', effort: 'xhigh' }, 'effort')).toBe('xhigh')
+  })
+
+  it('shows the default tier of the new model when it lacks the carried-over effort', () => {
+    // The worker stores auto here, and the new model resolves auto to its default tier.
+    const groups = infoGroups({ optionValues: { model: 'sonnet', effort: 'xhigh' }, optionGroups: catalogFor('opus[1m]') })
+
+    expect(resolvedCurrent(groups, { model: 'sonnet', effort: 'xhigh' }, 'effort')).toBe('high')
+  })
+
   it('keeps existing dependent groups when the optimistic model is not a listed option', () => {
     // A hidden/unknown model id lingering in optionValues must NOT strip effort
     // and thinking to nothing -- the catalog's dependent groups survive until a
@@ -342,20 +384,22 @@ describe('agentTabToInfo model-dependent option groups', () => {
 })
 
 describe('agentTabToInfo subagent linkage', () => {
-  it('passes parentAgentId and acceptsMessages through to AgentInfo', () => {
-    const tab = agent({ parentAgentId: 'root-1', acceptsMessages: true }) as Tab
+  it('passes parentAgentId, acceptsMessages and acceptsInterrupt through to AgentInfo', () => {
+    const tab = agent({ parentAgentId: 'root-1', acceptsMessages: true, acceptsInterrupt: true }) as Tab
     const info = agentTabToInfo(tab)
     expect(info).toBeDefined()
     expect(info!.parentAgentId).toBe('root-1')
     expect(info!.acceptsMessages).toBe(true)
+    expect(info!.acceptsInterrupt).toBe(true)
   })
 
-  it('defaults parentAgentId to empty and acceptsMessages to false for a root agent', () => {
+  it('defaults parentAgentId to empty, and acceptsMessages and acceptsInterrupt to false', () => {
     const tab = agent() as Tab
     const info = agentTabToInfo(tab)
     expect(info).toBeDefined()
     expect(info!.parentAgentId).toBe('')
     expect(info!.acceptsMessages).toBe(false)
+    expect(info!.acceptsInterrupt).toBe(false)
   })
 })
 
@@ -1044,22 +1088,21 @@ describe('agentTabSupportsInterrupt', () => {
     expect(agentTabSupportsInterrupt(undefined)).toBe(false)
   })
 
-  it('uses the child provider interrupt capability independently of input', () => {
-    __resetProviderRegistryForTest()
-    registerProvider(AgentProvider.CODEX, {
-      transcript: { classify: () => ({} as never), spanRole: () => 'other', extractRow: () => null, extractDivider: () => null },
-      configuration: { supportsSubagentSend: false, supportsSubagentInterrupt: true },
-    })
-    expect(agentTabSupportsInterrupt({
-      type: TabType.AGENT,
-      parentAgentId: 'root',
-      agentProvider: AgentProvider.CODEX,
-    })).toBe(true)
-    expect(agentTabSupportsInterrupt({
-      type: TabType.AGENT,
-      parentAgentId: 'root',
-      agentProvider: AgentProvider.CLAUDE_CODE,
-    })).toBe(false)
+  // The worker decides from the provider's own capability, independently of
+  // direct input: a Codex child takes no message, and it can still be stopped.
+  it('follows the worker\'s answer for a child tab', () => {
+    expect(agentTabSupportsInterrupt({ type: TabType.AGENT, parentAgentId: 'root', acceptsInterrupt: true })).toBe(true)
+    expect(agentTabSupportsInterrupt({ type: TabType.AGENT, parentAgentId: 'root', acceptsInterrupt: false })).toBe(false)
+  })
+
+  // A child tab hydrates after it opens. Until the worker answers, it offers no
+  // Interrupt control rather than a control that the worker may refuse.
+  it('offers no interrupt for a child tab that the worker has not described', () => {
+    expect(agentTabSupportsInterrupt({ type: TabType.AGENT, parentAgentId: 'root' })).toBe(false)
+  })
+
+  it('keeps a root interruptible whatever the field states', () => {
+    expect(agentTabSupportsInterrupt({ type: TabType.AGENT, acceptsInterrupt: false })).toBe(true)
   })
 })
 
@@ -1137,5 +1180,192 @@ describe('canCloseTab and canRenameTab', () => {
   it('treats an absent archived flag as not archived', () => {
     expect(canCloseTab(undefined)).toBe(true)
     expect(canRenameTab(undefined, agent)).toBe(true)
+  })
+})
+
+describe('withoutLiveStatusFields', () => {
+  const full: Partial<AgentTab> = {
+    workerId: 'w1',
+    workingDir: '/repo',
+    title: 'Agent Liz',
+    agentStatus: AgentStatus.STARTING,
+    agentSessionId: 's1',
+    supportsSteering: true,
+    supportsPreemption: true,
+    startupError: 'e',
+    startupMessage: 'Starting Claude Code…',
+    optionValues: { model: 'opus' },
+  }
+
+  it('removes every lifecycle field that a live status event owns', () => {
+    const kept = withoutLiveStatusFields(full)
+    for (const key of LIVE_STATUS_FIELDS)
+      expect(key in kept, `${key} stays out`).toBe(false)
+  })
+
+  it('keeps the identity and the settings of the tab', () => {
+    expect(withoutLiveStatusFields(full)).toEqual({
+      workerId: 'w1',
+      workingDir: '/repo',
+      title: 'Agent Liz',
+      optionValues: { model: 'opus' },
+    })
+  })
+
+  it('does not change its argument', () => {
+    const before = { ...full }
+    withoutLiveStatusFields(full)
+    expect(full).toEqual(before)
+  })
+
+  it('accepts fields that carry none of them', () => {
+    expect(withoutLiveStatusFields({})).toEqual({})
+  })
+
+  it('removes the lifecycle fields that protoToAgentTabFields writes from a reply', () => {
+    const fields = protoToAgentTabFields(createRepoGitStore(), 'w1', create(AgentInfoSchema, {
+      id: 'a1',
+      status: AgentStatus.STARTING,
+      agentSessionId: 's1',
+      startupMessage: 'Starting Claude Code…',
+      supportsSteering: true,
+      supportsPreemption: true,
+      title: 'Agent Liz',
+    }))
+    expect(Object.keys(fields)).toEqual(expect.arrayContaining([...LIVE_STATUS_FIELDS.filter(k => k !== 'startupError')]))
+
+    const kept = withoutLiveStatusFields(fields)
+    for (const key of LIVE_STATUS_FIELDS)
+      expect(key in kept, `${key} stays out`).toBe(false)
+    expect(kept.title).toBe('Agent Liz')
+  })
+})
+
+describe('withoutLiveCatalogFields', () => {
+  const full: Partial<AgentTab> = {
+    workerId: 'w1',
+    workingDir: '/repo',
+    title: 'Agent Liz',
+    agentStatus: AgentStatus.ACTIVE,
+    agentSessionId: 's1',
+    optionGroups: [create(AvailableOptionGroupSchema, { id: 'model', currentValue: 'opus' })],
+    optionValues: { model: 'opus' },
+  }
+
+  it('removes the catalog and the current values that a live event owns', () => {
+    const kept = withoutLiveCatalogFields(full)
+    for (const key of LIVE_CATALOG_FIELDS)
+      expect(key in kept, `${key} stays out`).toBe(false)
+  })
+
+  it('keeps the identity and the lifecycle of the tab', () => {
+    expect(withoutLiveCatalogFields(full)).toEqual({
+      workerId: 'w1',
+      workingDir: '/repo',
+      title: 'Agent Liz',
+      agentStatus: AgentStatus.ACTIVE,
+      agentSessionId: 's1',
+    })
+  })
+
+  it('does not change its argument', () => {
+    const before = { ...full }
+    withoutLiveCatalogFields(full)
+    expect(full).toEqual(before)
+  })
+
+  it('accepts fields that carry none of them', () => {
+    expect(withoutLiveCatalogFields({})).toEqual({})
+  })
+
+  it('removes the catalog fields that protoToAgentTabFields writes from a reply', () => {
+    const fields = protoToAgentTabFields(createRepoGitStore(), 'w1', create(AgentInfoSchema, {
+      id: 'a1',
+      title: 'Agent Liz',
+      optionGroups: [create(AvailableOptionGroupSchema, { id: 'model', currentValue: 'opus' })],
+    }))
+    expect(Object.keys(fields)).toEqual(expect.arrayContaining([...LIVE_CATALOG_FIELDS]))
+
+    const kept = withoutLiveCatalogFields(fields)
+    for (const key of LIVE_CATALOG_FIELDS)
+      expect(key in kept, `${key} stays out`).toBe(false)
+    expect(kept.title).toBe('Agent Liz')
+  })
+
+  // `deriveOptionGroupTabFields` is the one producer of the catalog fields. A field
+  // that it writes and the list misses would let an older reply overwrite it.
+  it('lists exactly the fields that deriveOptionGroupTabFields writes', () => {
+    const written = new Set<string>()
+    for (const groups of [
+      [create(AvailableOptionGroupSchema, { id: 'model', currentValue: 'opus' })],
+      [create(AvailableOptionGroupSchema, { id: 'model' })],
+    ]) {
+      for (const key of Object.keys(deriveOptionGroupTabFields(groups)))
+        written.add(key)
+    }
+    expect([...written].sort()).toEqual([...LIVE_CATALOG_FIELDS].sort())
+  })
+})
+
+describe('keepLiveTerminalStatus', () => {
+  const reply = (over: MessageInitShape<typeof TerminalInfoSchema> = {}) =>
+    terminalMetadata('w1', create(TerminalInfoSchema, {
+      terminalId: 't1',
+      status: TerminalStatus.STARTING,
+      startupMessage: 'Starting zsh…',
+      title: 'zsh',
+      workingDir: '/repo',
+      shellStartDir: '/repo',
+      cols: 132,
+      rows: 40,
+      screen: new Uint8Array([104, 105]),
+      screenEndOffset: 2n,
+      gitStatus: create(GitRepoStatusSchema, { toplevel: '/repo', branch: 'main' }),
+      ...over,
+    }))
+
+  it('removes every lifecycle field that a live status event owns', () => {
+    const kept = keepLiveTerminalStatus(reply())
+    for (const key of TERMINAL_LIVE_STATUS_FIELDS)
+      expect(key in kept, `${key} stays out`).toBe(false)
+  })
+
+  it('keeps what a live status event does not own', () => {
+    const kept = keepLiveTerminalStatus(reply())
+    expect(kept).toEqual({
+      workerId: 'w1',
+      title: 'zsh',
+      workingDir: '/repo',
+      shellStartDir: '/repo',
+      cols: 132,
+      rows: 40,
+      screen: new Uint8Array([104, 105]),
+      lastOffset: 2,
+      contentReady: true,
+      gitToplevel: '/repo',
+    })
+  })
+
+  it('removes the lifecycle fields of a STARTUP_FAILED reply too', () => {
+    const kept = keepLiveTerminalStatus(reply({ status: TerminalStatus.STARTUP_FAILED, startupError: 'no such shell', startupMessage: '' }))
+    for (const key of TERMINAL_LIVE_STATUS_FIELDS)
+      expect(key in kept, `${key} stays out`).toBe(false)
+  })
+
+  // A live event cannot say that a shell is gone: the catch-up marker reads READY
+  // for a shell that exited before the subscription, and only the reply carries
+  // the exit. A dead shell stays dead until a restart.
+  it('keeps the whole reply when it says that the shell exited', () => {
+    const fields = reply({ status: TerminalStatus.READY, exited: true, startupMessage: '' })
+    expect(fields.terminalStatus).toBe(TerminalStatus.EXITED)
+
+    expect(keepLiveTerminalStatus(fields)).toEqual(fields)
+  })
+
+  it('does not change its argument', () => {
+    const fields = reply()
+    const before = { ...fields }
+    keepLiveTerminalStatus(fields)
+    expect(fields).toEqual(before)
   })
 })

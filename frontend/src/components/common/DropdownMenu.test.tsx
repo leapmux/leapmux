@@ -1,5 +1,6 @@
 /// <reference types="vitest/globals" />
 import { cleanup, fireEvent, render, screen } from '@solidjs/testing-library'
+import { createSignal, mergeProps } from 'solid-js'
 import { beforeAll, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { DIALOG_HEIGHT_VAR, popoverCard, popoverFieldMenuClamp, popoverMenuClamp, TRIGGER_WIDTH_VAR } from '~/styles/popover.css'
 import { motion } from '~/styles/tokens'
@@ -563,6 +564,72 @@ describe('DropdownMenu contextMenuFor', () => {
     }
     finally {
       vi.unstubAllGlobals()
+      vi.useRealTimers()
+    }
+  })
+
+  // A row passes `contextMenuFor` among optional spread props, so reading it
+  // also reads every reactive source spread beside it. A change in one of those
+  // sources is not a change of the row, and the hold on that row must survive it.
+  it('keeps a touch hold when a prop merged beside contextMenuFor changes', () => {
+    vi.useFakeTimers()
+    try {
+      let rowEl!: HTMLDivElement
+      const [label, setLabel] = createSignal('Row menu')
+      const menuProps = mergeProps({ contextMenuFor: () => rowEl }, () => ({ 'data-label': label() }))
+      render(() => (
+        <>
+          <div ref={rowEl} data-testid="row">row</div>
+          <DropdownMenu {...menuProps} data-testid="row-menu-popover">
+            <button role="menuitem">Rename</button>
+          </DropdownMenu>
+        </>
+      ))
+      const row = screen.getByTestId('row')
+      const popover = screen.getByTestId('row-menu-popover')
+
+      row.dispatchEvent(pointerEvent('pointerdown', { x: 150, y: 108, pointerType: 'touch' }))
+      vi.advanceTimersByTime(motion.longPress / 2)
+      setLabel('Row menu, renamed')
+      expect(row.hasAttribute('data-press-hold'), 'the change must leave the hold in flight').toBe(true)
+      vi.advanceTimersByTime(motion.longPress / 2)
+      vi.runOnlyPendingTimers()
+
+      expect(popover.matches(':popover-open'), 'the hold must open the menu under the finger').toBe(true)
+    }
+    finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('moves the gesture to the new row when the accessor returns another element', () => {
+    vi.useFakeTimers()
+    try {
+      let firstRow!: HTMLDivElement
+      let secondRow!: HTMLDivElement
+      const [useSecond, setUseSecond] = createSignal(false)
+      render(() => (
+        <>
+          <div ref={firstRow}>first</div>
+          <div ref={secondRow}>second</div>
+          <DropdownMenu contextMenuFor={() => (useSecond() ? secondRow : firstRow)} data-testid="row-menu-popover">
+            <button role="menuitem">Rename</button>
+          </DropdownMenu>
+        </>
+      ))
+      const popover = screen.getByTestId('row-menu-popover')
+      const show = vi.spyOn(popover, 'showPopover')
+
+      setUseSecond(true)
+      firstRow.dispatchEvent(new MouseEvent('contextmenu', { clientX: 150, bubbles: true, cancelable: true }))
+      vi.runAllTimers()
+      expect(show, 'the previous row must lose the gesture').not.toHaveBeenCalled()
+
+      secondRow.dispatchEvent(new MouseEvent('contextmenu', { clientX: 150, bubbles: true, cancelable: true }))
+      vi.runAllTimers()
+      expect(show, 'the new row must open the menu').toHaveBeenCalledOnce()
+    }
+    finally {
       vi.useRealTimers()
     }
   })

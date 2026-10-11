@@ -275,6 +275,10 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   ))
   /** The drawn row, or null for a frame nobody could read (which draws the shared card). */
   const row = (): ChatRow | null => extractedRow(extraction())
+  const toolRow = createMemo(() => {
+    const current = row()
+    return current?.kind === 'tool' ? current : null
+  })
 
   // Toolbar metadata for the current message — collapsibility, diff presence, the
   // two button labels, and a lazy copyable-content getter. Every tool row answers,
@@ -641,6 +645,10 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
           class={bubbleClass()}
           data-testid="message-bubble"
           data-role={sourceLabel(props.message.source)}
+          data-tool-call-id={toolRow()?.call.id}
+          data-tool-row-role={toolRow()?.role}
+          data-tool-status={toolRow()?.call.status}
+          data-message-seq={toolRow() ? String(props.message.seq) : undefined}
         >
           <div ref={contentRef} data-testid="message-content">
             <ErrorBoundary fallback={messageErrorFallback('Failed to render message:')}>

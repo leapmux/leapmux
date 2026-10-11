@@ -1,9 +1,21 @@
 import type { ControlQuestion } from './question'
 
+/**
+ * How far an always-allow reaches: this session, the workspace, the project, or
+ * every project of the user.
+ */
+export type PermissionScope = 'session' | 'workspace' | 'project' | 'user'
+
 export interface PermissionOption {
   optionId: string
   kind: string
   name?: string
+  /**
+   * The reach of an always-allow, when the plugin knows it. A plugin that writes
+   * the option itself states it. Without it, the scope label reads the agent's
+   * option name, which can hold the text of the call.
+   */
+  scope?: PermissionScope
 }
 
 export const KIND_ALLOW_ONCE = 'allow_once'
@@ -24,6 +36,23 @@ export function isAllowPermissionKind(kind: string): boolean {
 export interface PlanPermission {
   tool: string
   prompt: string
+}
+
+/**
+ * One answer a plan approval offers beside its plain Approve and Reject.
+ *
+ * A runtime can offer the reader more than a yes or a no to a plan: the approaches the
+ * plan itself lists, a request for revisions, a refusal that also ends plan mode. Each
+ * one approves or refuses the plan, and the answer carries its `id` back so the
+ * provider can map it onto its own wire answer. The ids are the provider's own words.
+ */
+export interface PlanChoice {
+  /** What the answer carries back, which the provider maps onto its own answer. */
+  id: string
+  label: string
+  description?: string
+  /** True for a choice that approves the plan, false for one that refuses it. */
+  approves: boolean
 }
 
 export interface ElicitationRequest {
@@ -54,6 +83,12 @@ export interface PermissionPrompt {
   title?: string
   /** Why the call needs approval, in the runtime's own words. */
   reason?: string
+  /**
+   * What the runtime asks the reader to approve, in prose, drawn as markdown: a
+   * subagent's plan, for example. A plugin that states it leaves it out of `input`,
+   * so the reader sees it once.
+   */
+  text?: string
   /**
    * The command the call runs, drawn as code above the arguments.
    *
@@ -119,8 +154,9 @@ export interface DialogPrompt {
  * (`Provider.extractControl`), so the banner holds no provider's wire format and no
  * `switch` on provider.
  *
- * A `plan` carries the two optional lists the approval draws beside the plan, and
- * the plan TEXT when its own request carries one. Most providers put the plan in the
+ * A `plan` carries the two optional lists the approval draws beside the plan, the
+ * plan TEXT when its own request carries one, and the extra answers the runtime offers
+ * beside Approve and Reject. Most providers put the plan in the
  * transcript and send an approval that identifies it -- Copilot is the one that
  * sends the whole plan in the request, so the banner draws it there rather than
  * pointing at a row the reader would have to find.
@@ -128,6 +164,6 @@ export interface DialogPrompt {
 export type ControlPrompt
   = | { kind: 'question', questions: ControlQuestion[] }
     | { kind: 'elicitation', elicitation: ElicitationRequest }
-    | { kind: 'plan', text?: string, permissions?: readonly PlanPermission[], details?: readonly string[] }
+    | { kind: 'plan', text?: string, permissions?: readonly PlanPermission[], details?: readonly string[], choices?: readonly PlanChoice[] }
     | { kind: 'permission', permission: PermissionPrompt }
     | { kind: 'dialog', dialog: DialogPrompt }

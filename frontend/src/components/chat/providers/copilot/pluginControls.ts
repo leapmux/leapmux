@@ -1,19 +1,17 @@
 import type { ProviderControlCapability } from '../capabilities'
-import { COPILOT_PERMISSION_MODE } from '~/generated/contracts/copilot-protocol'
 import { buildControlResponseEnvelope, buildDenyResponse } from '~/utils/controlResponse'
+
 import { withElicitationResponse } from '../../controls/elicitationResponse'
 import { sendResponse } from '../../controls/types'
 import { copilotControlResponseSummary } from './controlResponse'
 import { copilotElicitation } from './elicitation'
 import { copilotExtractControl, copilotIsQuestion, copilotQuestions } from './extractControl'
 import { sendCopilotPermissionResponse } from './permissionOptions'
+import { copilotPermissionPresets } from './permissionPresets'
 
 /** The complete Copilot control channel, separate from provider registration. */
 export const copilotControls: ProviderControlCapability = {
-  permissionPresets: {
-    smart: { sets: { permissionMode: COPILOT_PERMISSION_MODE.Assisted } },
-    bypass: { sets: { permissionMode: COPILOT_PERMISSION_MODE.AllowAll } },
-  },
+  permissionPresets: copilotPermissionPresets,
   controlResponseDisplay: withElicitationResponse(copilotElicitation, copilotControlResponseSummary),
   elicitation: copilotElicitation,
   // The composer's send is a rejection. Allow lives on its own button.
