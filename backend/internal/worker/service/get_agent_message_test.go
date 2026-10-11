@@ -12,6 +12,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/worker/channel"
+	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -26,6 +27,15 @@ func getAgentMessage(t *testing.T, d *channel.Dispatcher, agentID string, seq in
 	var resp leapmuxv1.GetAgentMessageResponse
 	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
 	return &resp, w
+}
+
+func TestMessageSupplementProjectionGetRejectsShadowedPrivateState(t *testing.T) {
+	t.Parallel()
+	svc, dispatcher, _ := setupTestService(t)
+	agentID, _, seq := createShadowedPrivateProjectionRow(t, svc)
+	writer := newTestWriter()
+	dispatch(dispatcher, "GetAgentMessage", &leapmuxv1.GetAgentMessageRequest{AgentId: agentID, Seq: seq}, writer)
+	assertPrivateProjectionRefusal(t, writer)
 }
 
 // TestGetAgentMessage_ReturnsMessageBySeq asserts the handler returns the row whose
@@ -46,7 +56,7 @@ func TestGetAgentMessage_ReturnsMessageBySeq(t *testing.T) {
 		Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
 		Content:       []byte(`{"content":"hello world"}`),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		MarkType:      leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE,
+		MarkType:      workerdb.OptionalStorageEnum(leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE),
 		CreatedAt:     sqltime.NewSQLiteTime(time.Now()),
 	})
 	require.NoError(t, err)

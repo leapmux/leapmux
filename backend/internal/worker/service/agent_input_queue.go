@@ -2,7 +2,9 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -48,6 +50,17 @@ func queueAttachments(attachments []*leapmuxv1.Attachment) []inputqueue.Attachme
 		}
 	}
 	return result
+}
+
+// droppedInputID is the queue item id of the input that a provider dropped. It
+// derives from the drop, so a repeat of one drop gives the same item and the
+// queue adds nothing. The id also becomes the transcript message id, which is
+// unique across the Worker, so the agent id is part of the hash. The length
+// prefix keeps each pair of ids apart: no separator is safe, because a drop id
+// is the provider's own text.
+func droppedInputID(agentID, dropID string) string {
+	sum := sha256.Sum256(fmt.Appendf(nil, "%d:%s%s", len(agentID), agentID, dropID))
+	return "dropped-" + hex.EncodeToString(sum[:16])
 }
 
 func providerAttachments(attachments []inputqueue.Attachment) []*leapmuxv1.Attachment {
@@ -113,16 +126,17 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.DispatchItem) (inputqu
 		return inputqueue.DispatchResult{}, classifyQueueDeliveryError(err)
 	}
 	text := resolvedInput.text
-	// Two checks, because either one alone can miss. The registry holds the
-	// live outcome, and persistAgentStartupError only logs when its write
-	// fails, so a failed write leaves the column empty while the registry says
-	// STARTUP_FAILED.
-	if status, _, _, ok := svc.AgentStartup.status(item.AgentID); ok &&
-		status == leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED {
-		return inputqueue.DispatchResult{}, fmt.Errorf("agent failed to start; open a new agent")
-	}
-	if dbAgent.StartupError != "" && !svc.Agents.HasAgent(item.AgentID) {
-		return inputqueue.DispatchResult{}, fmt.Errorf("agent failed to start; open a new agent")
+	// An agent whose last startup failed takes no input, except an explicit
+	// /clear: the clear starts a fresh session and recovers the agent (see
+	// clearRecovery), and the refusal of a native resume tells the user to send
+	// it. Every other kind reaches ensureAgentRunning, which refuses the agent
+	// too.
+	//
+	// This check runs before the in-flight join in ensureAgentRunning, so it
+	// cannot see a startup that fails during that join. ensureAgentRunning
+	// asks the same predicate again after the join.
+	if item.Kind != leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CLEAR_CONTEXT && svc.agentStartupFailed(&dbAgent) {
+		return inputqueue.DispatchResult{}, errAgentStartupFailed
 	}
 	attachments, err := a.svc.Agents.Registry().NormalizeAttachments(dbAgent.AgentProvider, providerAttachments(item.Attachments))
 	if err != nil {
@@ -162,8 +176,11 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.DispatchItem) (inputqu
 			// closed pipe. Return the input to the queue instead.
 			return &inputqueue.DeliveryError{Err: agent.ErrAgentNotFound, Outcome: inputqueue.DispatchNotReady}
 		}
-		resumeID := svc.resolveResumeSessionID(item.AgentID, dbAgent.AgentSessionID, dbAgent.Resumed)
-		return svc.ensureAgentRunning(item.AgentID, &resumeID, queuedStart)
+		// ensureAgentRunning resolves the resumed session itself, from the row
+		// that it reads after the join. dbAgent was read before the join and
+		// before a plan context replaced the session, so a session resolved
+		// from it can be one that the provider already moved away from.
+		return svc.ensureAgentRunning(item.AgentID, resumeIfConversation, queuedStart)
 	}
 
 	switch item.Kind {
@@ -316,11 +333,11 @@ func (a *agentInputQueueAdapter) Steer(item inputqueue.DispatchItem) (inputqueue
 	}, classifyQueueSteerError(err)
 }
 
-// AcceptsKind answers whether this agent can ever take the kind. A subagent
-// runs inside its owner's process, so it takes a message or control feedback
-// only: a slash command that the classifier rewrote to a clear or a compact
-// has no path to it. Enqueue refuses it here, where the user sees an invalid
-// argument, instead of storing it and pausing the whole queue at dispatch.
+// AcceptsKind reports whether this agent can receive the input kind.
+// A child receives user messages only when its provider supports that route.
+// Native control feedback stays independent of user message support.
+// A child cannot execute root slash commands such as clear or compact.
+// Enqueue refuses unsupported input before it changes the durable queue.
 func (a *agentInputQueueAdapter) AcceptsKind(agentID string, kind leapmuxv1.AgentInputKind) bool {
 	dbAgent, err := a.svc.Queries.GetAgentByID(bgCtx(), agentID)
 	if err != nil {
@@ -331,8 +348,10 @@ func (a *agentInputQueueAdapter) AcceptsKind(agentID string, kind leapmuxv1.Agen
 	if !dbAgent.ParentAgentID.Valid {
 		return true
 	}
-	return kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE ||
-		kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK
+	if kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE {
+		return a.svc.Agents.Registry().Plugin(dbAgent.AgentProvider).ChildCapabilities(parseOptions(dbAgent.Options)).AcceptsMessages
+	}
+	return kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK
 }
 
 func (a *agentInputQueueAdapter) SupportsSteering(agentID string) bool {
@@ -348,7 +367,7 @@ func (a *agentInputQueueAdapter) SupportsSteering(agentID string) bool {
 // InterruptAgent RPC applies belong to a user STOP, and a stop-pause would hold
 // the very dispatch Preempt exists to unblock.
 func (a *agentInputQueueAdapter) Interrupt(agentID string) error {
-	err := a.svc.Agents.Interrupt(agentID)
+	err := a.svc.Agents.Interrupt(agentID, agent.StopContext{})
 	if errors.Is(err, agent.ErrAgentNotFound) {
 		return fmt.Errorf("agent is not running: %w", err)
 	}
@@ -372,7 +391,7 @@ func (a *agentInputQueueAdapter) SupportsPreemption(agentID string) bool {
 // a `SELECT *` on the agents row once per agent.
 func (svc *Service) agentSupportsSteering(dbAgent *db.Agent) bool {
 	if dbAgent.ParentAgentID.Valid {
-		if !svc.Agents.Registry().Plugin(dbAgent.AgentProvider).SupportsChildSteering() {
+		if !svc.Agents.Registry().Plugin(dbAgent.AgentProvider).ChildCapabilities(parseOptions(dbAgent.Options)).AcceptsMessages {
 			return false
 		}
 		row, err := svc.Queries.GetAgentBackgroundTaskByChildAgentID(bgCtx(), dbAgent.ID)

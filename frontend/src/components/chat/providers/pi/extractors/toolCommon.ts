@@ -1,7 +1,8 @@
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import { PI_EVENT, PI_RESULT_FIELD } from '~/generated/contracts/pi-protocol'
+import { PI_EVENT } from '~/generated/contracts/pi-protocol'
 import { asContentArray, splitToolResultContent } from '~/lib/contentBlocks'
 import { pickObject, pickString } from '~/lib/jsonPick'
+import { PI_TOOL_RESULT_FIELD } from '../protocol'
 
 /**
  * Pull the canonical fields off a Pi `tool_execution_*` event payload. The
@@ -45,7 +46,7 @@ export function piToolResultText(result: Record<string, unknown> | null | undefi
 export function piToolResult(result: Record<string, unknown> | null | undefined): PiToolResult {
   return {
     text: piToolResultText(result),
-    details: pickObject(result ?? undefined, PI_RESULT_FIELD.Details) ?? {},
+    details: pickObject(result ?? undefined, PI_TOOL_RESULT_FIELD.Details) ?? {},
   }
 }
 

@@ -47,6 +47,11 @@ describe('pi result divider', () => {
       .toEqual({ label: 'Turn ended' })
   })
 
+  it('keeps the native length limit qualifier after a normal completion', () => {
+    expect(plugin.transcript.extractDivider({ type: 'agent_end', messages: [{ role: 'assistant', stopReason: 'length' }] }))
+      .toEqual({ label: 'Turn ended (length limit)' })
+  })
+
   // An aborted turn is not an error: the reader asked for it, and every provider
   // states an interruption in the same words.
   it('maps an aborted stopReason to the shared interruption label', () => {
@@ -314,6 +319,46 @@ describe('pi tool row toolbar metadata', () => {
   })
 })
 
+// The worker persists the thinking of each assistant message as a reasoning row of
+// its own, before the message. The message's own row therefore draws its text alone,
+// and a message that holds no text draws nothing.
+describe('pi message rows', () => {
+  it('draws the text of a message and leaves its thinking out', () => {
+    const parent = {
+      type: 'message_end',
+      message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'reasoning' }, { type: 'text', text: 'Hello' }, { type: 'text', text: 'world' }] },
+    }
+    expect(providerRow(AgentProvider.PI, parent)).toEqual({ kind: 'assistant-text', text: 'Hello\n\nworld' })
+  })
+
+  it('draws nothing for a message that holds thinking alone', () => {
+    const parent = {
+      type: 'message_end',
+      message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'reasoning' }] },
+    }
+    expect(providerRow(AgentProvider.PI, parent)).toEqual({ kind: 'hidden' })
+  })
+
+  it('draws nothing for a message whose text blocks are blank', () => {
+    const parent = {
+      type: 'message_end',
+      message: { role: 'assistant', content: [{ type: 'text', text: '   ' }] },
+    }
+    expect(providerRow(AgentProvider.PI, parent)).toEqual({ kind: 'hidden' })
+  })
+
+  // A custom message states its content as one string rather than as blocks.
+  it('draws the string content of a visible custom message', () => {
+    const parent = { type: 'message_end', message: { role: 'custom', customType: 'note', display: true, content: 'A note from an extension.' } }
+    expect(providerRow(AgentProvider.PI, parent)).toEqual({ kind: 'assistant-text', text: 'A note from an extension.' })
+  })
+
+  it('draws the text blocks of a custom message and leaves its thinking out', () => {
+    const parent = { type: 'message_end', message: { role: 'custom', customType: 'note', display: true, content: [{ type: 'thinking', thinking: 'reasoning' }, { type: 'text', text: 'Shown' }] } }
+    expect(providerRow(AgentProvider.PI, parent)).toEqual({ kind: 'assistant-text', text: 'Shown' })
+  })
+})
+
 describe('pi quotable text', () => {
   it('joins assistant text content blocks as paragraphs (≥2 newlines between blocks)', () => {
     const parent = {
@@ -326,12 +371,13 @@ describe('pi quotable text', () => {
     expect(providerQuotableText(AgentProvider.PI, parent, { category: { kind: 'assistant_text' } })).toBe('Hello\n\nworld')
   })
 
-  it('joins thinking blocks for assistant_thinking', () => {
+  // The thinking is a row of its own, so the message's row quotes its text alone.
+  it('quotes only the text of a message that also holds thinking', () => {
     const parent = {
       type: 'message_end',
-      message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'reasoning' }] },
+      message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'reasoning' }, { type: 'text', text: 'Hello' }] },
     }
-    expect(providerQuotableText(AgentProvider.PI, parent, { category: { kind: 'assistant_thinking' } })).toBe('reasoning')
+    expect(providerQuotableText(AgentProvider.PI, parent, { category: { kind: 'assistant_text' } })).toBe('Hello')
   })
 
   it('returns user content string', () => {

@@ -206,7 +206,7 @@ func TestClaudeCodeAvailableModels_EffortsMatchDocs(t *testing.T) {
 	// ("low,medium,high,xhigh,max"). This catalog is only the FALLBACK the live
 	// report replaces, so any model listed here with a narrower set would make
 	// the effort menu grow options the first time the live catalog arrived.
-	for _, id := range []string{"fable[1m]", "opus", "opus[1m]", "sonnet", "sonnet[1m]"} {
+	for _, id := range []string{"fable[1m]", "opus", "opus[1m]", "sonnet"} {
 		m := byID[id]
 		require.NotNil(t, m, "model %q missing", id)
 		assert.Equal(t, xhighEfforts, claudeEffortIDs(m), "xhigh effort list for %q", id)
@@ -417,11 +417,21 @@ func TestEffortResolver_GenuinelyEffortlessModelStaysEmpty(t *testing.T) {
 }
 
 // TestClaudeFallbackDisplayName covers S6: a "[1m]" model id with no CLI displayName
-// renders as "X (1M context)" instead of the raw "X[1m]".
+// renders as "X (1M context)" instead of the raw "X[1m]". A model that the static catalog
+// lists keeps the name of its row, because the 1M window is the only window that the CLI
+// offers for it: the picker and the read-only readout then show one label for one id.
 func TestClaudeFallbackDisplayName(t *testing.T) {
-	assert.Equal(t, "Opus (1M context)", claudeFallbackDisplayName("opus[1m]"))
+	for _, row := range claudeCodeAvailableModels {
+		if is1MContextVariant(row.Id) {
+			assert.Equal(t, row.DisplayName, claudeFallbackDisplayName(row.Id), "the readout of %s matches its static row", row.Id)
+		}
+	}
+	assert.Equal(t, "Opus", claudeFallbackDisplayName("opus[1m]"))
 	assert.Equal(t, "Opus", claudeFallbackDisplayName("opus"))
-	assert.Equal(t, "Fable (1M context)", claudeFallbackDisplayName("fable[1m]"))
+	assert.Equal(t, "Fable", claudeFallbackDisplayName("fable[1m]"))
+	// A 1M variant that the static catalog lacks has a standard-context sibling, so the
+	// suffix tells the two apart, as the live CLI words it ("Sonnet (1M context)").
+	assert.Equal(t, "Sonnet (1M context)", claudeFallbackDisplayName("sonnet[1m]"))
 	// A decorated 1M marker is sized at 1M by claudeContextWindowForValue, so the
 	// fallback name must agree (detect via is1MContextVariant, not a literal "[1m]"
 	// suffix) instead of falling through to a garbled "Fable[1m Beta]".
@@ -437,7 +447,7 @@ func TestClaudeFallbackDisplayName(t *testing.T) {
 		{Value: "opus[1m]", SupportsEffort: true, SupportedEffortLevels: []string{"high", "xhigh"}},
 	}, nil))["opus[1m]"]
 	require.NotNil(t, got)
-	assert.Equal(t, "Opus (1M context)", got.DisplayName, "missing displayName falls back to the [1m]-aware name")
+	assert.Equal(t, "Opus", got.DisplayName, "missing displayName falls back to the name of the static row")
 }
 
 // Canonical CLI effort-level vectors the model fixtures reuse: xhigh-capable models
@@ -485,7 +495,7 @@ func TestEnsureSettledModelListed_InjectsResolvedDefault(t *testing.T) {
 
 	got := agent.FindAvailableModel(a.availableModels, "opus[1m]")
 	require.NotNil(t, got, "the resolved default is added to the picker catalog")
-	assert.Equal(t, "Opus (1M context)", got.DisplayName, "named from the static fallback, not the raw id")
+	assert.Equal(t, "Opus", got.DisplayName, "named from the static fallback, not the raw id")
 	assert.Equal(t, int64(claudeOneMillionContextWindow), got.ContextWindow)
 	// The injected entry carries Opus's real effort menu (xhigh + ultracode), so the
 	// settings panel renders an effort section instead of hiding it.
@@ -630,7 +640,7 @@ func TestCanonicalModelRank(t *testing.T) {
 	assert.Equal(t, 0, canonicalModelRank(agent.DefaultModelSentinel), "the sentinel ranks first")
 	assert.Equal(t, 1, canonicalModelRank("fable[1m]"))
 	assert.Equal(t, 3, canonicalModelRank("opus[1m]"))
-	assert.Equal(t, 6, canonicalModelRank("haiku"), "the weakest catalog model ranks last among known ids")
+	assert.Equal(t, 5, canonicalModelRank("haiku"), "the weakest catalog model ranks last among known ids")
 	assert.Less(t, canonicalModelRank("fable[1m]"), canonicalModelRank("haiku"),
 		"a more powerful model out-ranks a weaker one")
 	assert.Equal(t, len(claudeCodeAvailableModels), canonicalModelRank("mystery[1m]"),
@@ -888,26 +898,48 @@ func TestConvertClaudeModels_SentinelOwnsReservedDefaultID(t *testing.T) {
 // conversion ever drift, this fails.
 func TestConvertClaudeModels_ReproducesStaticCatalog(t *testing.T) {
 	xhighLevels := []string{"low", "medium", "high", "xhigh", "max"}
+	// The rows and labels mirror the /model picker of Claude Code 2.1.289, read
+	// from the browser trace of an E2E session (API key, ANTHROPIC_BASE_URL set):
+	// Default (recommended), Opus, Fable, Sonnet, Haiku. Every current Opus,
+	// Sonnet and Fable model has a native 1M window there, so the CLI lists one
+	// Opus row without "(1M context)" and no separate Sonnet 1M row.
+	//
+	// The descriptions are NOT the CLI's. The CLI writes the resolved model
+	// version into each one ("Opus 5.5 · Best for everyday, complex tasks"), which
+	// a static fallback cannot track, so LeapMux keeps its own version-free words.
 	payload := []claudeCodeModelInfo{
-		// The live CLI reports Fable fully-qualified; it canonicalizes to the static
-		// catalog's "fable[1m]" id.
-		{Value: "claude-fable-5[1m]", DisplayName: "Fable 5", Description: "Most powerful for the hardest problems", SupportsEffort: true, SupportedEffortLevels: xhighLevels},
-		// Opus is 1M-only: the live CLI lists only the 1M variant, which canonicalizes
-		// to the static catalog's selectable "opus[1m]" entry. (The static catalog's
-		// hidden legacy "opus" entry has no convert equivalent -- convert always emits
-		// "opus[1m]" -- so it is skipped in the comparison below.)
-		{Value: "opus[1m]", DisplayName: "Opus (1M context)", Description: "Most capable for complex work", SupportsEffort: true, SupportedEffortLevels: xhighLevels},
+		// The CLI can spell a row as an alias ("opus") or a full id
+		// ("claude-opus-5-5"). Both canonicalize to the static catalog's selectable
+		// "opus[1m]" entry. (The static catalog's hidden legacy "opus" entry has no
+		// convert equivalent -- convert always emits "opus[1m]" -- so it is skipped
+		// in the comparison below.)
+		{Value: "opus", DisplayName: "Opus", Description: "Most capable for complex work", SupportsEffort: true, SupportedEffortLevels: xhighLevels},
+		// Fable canonicalizes to the static catalog's "fable[1m]" id.
+		{Value: "claude-fable-5-1", DisplayName: "Fable", Description: "Most powerful for the hardest problems", SupportsEffort: true, SupportedEffortLevels: xhighLevels},
 		// xhighLevels, not maxLevels: this payload is meant to mirror what the live
 		// CLI reports, and it reports the same "low,medium,high,xhigh,max" for
 		// Sonnet as for Opus. Declaring maxLevels here is what let the static
 		// catalog drift away from the CLI unnoticed -- this guard compared the
 		// stale catalog against an equally stale payload and passed.
 		{Value: "sonnet", DisplayName: "Sonnet", Description: "Best for everyday tasks", SupportsEffort: true, SupportedEffortLevels: xhighLevels},
-		{Value: "sonnet[1m]", DisplayName: "Sonnet (1M context)", Description: "Best for everyday tasks", SupportsEffort: true, SupportedEffortLevels: xhighLevels},
 		{Value: "haiku", DisplayName: "Haiku", Description: "Fastest for quick answers", SupportsEffort: false},
 	}
 
-	got := claudeModelsByID(convertClaudeModels(payload, nil))
+	converted := convertClaudeModels(payload, nil)
+	got := claudeModelsByID(converted)
+	// The static catalog lists no model the CLI does not, so the picker cannot
+	// shrink or grow when the live catalog replaces the fallback.
+	staticIDs := make([]string, 0, len(claudeCodeAvailableModels))
+	for _, m := range claudeCodeAvailableModels {
+		if m.Id != agent.DefaultModelSentinel && !m.Hidden {
+			staticIDs = append(staticIDs, m.Id)
+		}
+	}
+	convertedIDs := make([]string, 0, len(converted))
+	for _, m := range converted {
+		convertedIDs = append(convertedIDs, m.Id)
+	}
+	assert.ElementsMatch(t, convertedIDs, staticIDs, "the selectable static models are exactly the models the CLI lists")
 	for _, want := range claudeCodeAvailableModels {
 		// The "default" sentinel is a hand-authored placeholder (no concrete
 		// model behind it), not a convert output, so it has no equivalent here.

@@ -2,7 +2,8 @@ import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { renderThreadElement, renderThreadHasIcon, renderThreadText } from '~/test-support/messageRenderProbes'
-import { describePiNotification, piNotificationEntry } from './notification'
+import { input } from '../../testUtils'
+import { describePiNotification, piCompactionBoundary, piNotificationEntry } from './notification'
 
 // Side-effect import to register the Pi plugin so renderNotificationThread can
 // consult its notificationThreadEntry -- the sole Pi notification render path.
@@ -37,7 +38,7 @@ describe('piNotificationEntry compaction and retries', () => {
   })
 
   it('draws the reason alone when tokensBefore is absent', () => {
-    expect(line({ type: 'compaction_end', reason: 'manual' })).toBe('Context compacted (manual)')
+    expect(line({ type: 'compaction_end', reason: 'manual', result: {} })).toBe('Context compacted (manual)')
   })
 
   // `result.tokensBefore` is an estimate that can be non-integer; the shared
@@ -52,7 +53,14 @@ describe('piNotificationEntry compaction and retries', () => {
   })
 
   it('draws a bare "Context compacted" when neither reason nor tokensBefore is present', () => {
-    expect(line({ type: 'compaction_end' })).toBe('Context compacted')
+    expect(line({ type: 'compaction_end', result: {} })).toBe('Context compacted')
+  })
+
+  it('draws a failed compaction as an error without a success boundary', () => {
+    const failed = { type: 'compaction_end', reason: 'manual', aborted: false, errorMessage: 'Nothing to compact (session too small)' }
+    expect(line(failed)).toBe('Compaction failed (Nothing to compact (session too small))')
+    expect(piCompactionBoundary(input(failed))).toBeNull()
+    expect(line({ type: 'compaction_end', result: null })).toBe('Compaction failed (no compaction result)')
   })
 
   it('flags an aborted compaction explicitly', () => {
@@ -220,6 +228,11 @@ describe('piNotificationEntry', () => {
   it('maps an aborted compaction_end to a compaction that produced no boundary', () => {
     expect(piNotificationEntry({ type: 'compaction_end', aborted: true, reason: 'threshold' }))
       .toEqual([{ kind: 'compaction', phase: 'end', error: 'aborted' }])
+  })
+
+  it('maps a failed compaction_end to an error without a boundary', () => {
+    expect(piNotificationEntry({ type: 'compaction_end', aborted: false, errorMessage: 'Nothing to compact (session too small)' }))
+      .toEqual([{ kind: 'compaction', phase: 'end', error: 'Nothing to compact (session too small)' }])
   })
 
   it('maps a retry to a retry entry under the API scope', () => {

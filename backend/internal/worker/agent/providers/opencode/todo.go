@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/todoevents"
 )
 
@@ -21,7 +21,7 @@ func (p FamilyProvider) ExtractTodoEvent(spanType string, content []byte, paired
 			} `json:"metadata"`
 		} `json:"rawOutput"`
 	}
-	if json.Unmarshal(content, &result) != nil || (result.SessionUpdate != acp.UpdateToolCallUpdate && result.SessionUpdate != acp.UpdateToolCall) || result.Status != "completed" {
+	if json.Unmarshal(content, &result) != nil || (result.SessionUpdate != contracts.ACPUpdateToolCallUpdate && result.SessionUpdate != contracts.ACPUpdateToolCall) || result.Status != "completed" {
 		return todoevents.Event{}, false
 	}
 	var entries []json.RawMessage

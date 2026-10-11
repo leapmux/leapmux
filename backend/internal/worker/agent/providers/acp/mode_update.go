@@ -20,13 +20,23 @@ func (b *Base) handleACPModeUpdate(update json.RawMessage) {
 		slog.Warn("decode ACP mode update", "provider", b.ProviderName(), "agent_id", b.AgentID(), "error", err)
 		return
 	}
-	if mode.CurrentModeID == "" {
+	b.ObserveCurrentMode(mode.CurrentModeID)
+}
+
+// ObserveCurrentMode records a mode that the agent reports it entered, on the
+// secondary axis of the provider. The base reads the standard
+// current_mode_update. A provider whose agent reports a mode change on a
+// notification of its own calls this for it, so both reports reach one
+// setting and one broadcast. An empty mode states nothing and changes
+// nothing.
+func (b *Base) ObserveCurrentMode(modeID string) {
+	if modeID == "" {
 		return
 	}
 	axis := b.secondaryChannel()
 	b.Mu.Lock()
-	changed := *axis.field != mode.CurrentModeID
-	*axis.field = mode.CurrentModeID
+	changed := *axis.field != modeID
+	*axis.field = modeID
 	b.Mu.Unlock()
 	if changed {
 		b.BroadcastSettingsRefresh()

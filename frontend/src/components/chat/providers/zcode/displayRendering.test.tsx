@@ -61,7 +61,7 @@ describe('zcode result display hints', () => {
           },
         },
       },
-      artifacts: { [uri]: `data:image/png;base64,${PNG}` },
+      outputFiles: { [uri]: `data:image/png;base64,${PNG}` },
     }
     const context = { spanType: 'mcp__docs__read', sources: testMessageSources({ current: () => current }) }
     const { container } = renderZCodeRow(parsed, context)

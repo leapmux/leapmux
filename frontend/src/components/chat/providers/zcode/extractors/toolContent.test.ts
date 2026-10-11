@@ -40,7 +40,7 @@ function fixture(child = false) {
         },
       },
     },
-    artifacts: { [uri]: 'data:image/png;base64,AQID' },
+    outputFiles: { [uri]: 'data:image/png;base64,AQID' },
   }
   const row = zcodeRow(original, 'mcp__docs__read', undefined, supplemental)
   return { original, supplemental, row, uri }
@@ -58,7 +58,7 @@ describe('stored ZCode tool content', () => {
 
   it('keeps a missing image slot for the image viewer', () => {
     const { row, supplemental, uri } = fixture()
-    delete supplemental.artifacts[uri]
+    delete supplemental.outputFiles[uri]
     const images = zcodeToolResultImages(row)
     expect(images).toHaveLength(1)
     expect(images[0]?.url).toBeUndefined()

@@ -46,7 +46,7 @@ func lastStdinLine(t *testing.T, output *bytes.Buffer) string {
 func approvePiFreshImplementation(t *testing.T, a *Agent) {
 	t.Helper()
 	a.handlePiExtensionUIRequest([]byte(`{"type":"extension_ui_request","id":"plan-ready","method":"select","title":"Proposed plan ready. What next?","options":["Implement here","Start fresh and implement","Export plan…","Stay in Plan mode"]}`))
-	require.NoError(t, a.SendRawInput([]byte(`{"type":"extension_ui_response","id":"plan-ready","value":"Start fresh and implement"}`)))
+	require.NoError(t, a.SendRawInput([]byte(`{"type":"extension_ui_response","id":"plan-ready","value":"Start fresh and implement"}`), agent.StopContext{}))
 }
 
 func TestPiFreshSettingsDialogAnsweredAfterFreshApproval(t *testing.T) {
@@ -123,7 +123,7 @@ func TestPiPlanFreshApprovalIgnoredWhenValueDiffers(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := piFreshImplementationFixture()
 	a.handlePiExtensionUIRequest([]byte(`{"type":"extension_ui_request","id":"plan-ready","method":"select","title":"Proposed plan ready. What next?","options":["Implement here","Start fresh and implement"]}`))
-	require.NoError(t, a.SendRawInput([]byte(`{"type":"extension_ui_response","id":"plan-ready","value":"`+contracts.PiPlanActionImplementHere+`"}`)))
+	require.NoError(t, a.SendRawInput([]byte(`{"type":"extension_ui_response","id":"plan-ready","value":"`+contracts.PiPlanActionImplementHere+`"}`), agent.StopContext{}))
 
 	a.Mu.Lock()
 	pending := a.freshImplementationPending
@@ -136,7 +136,7 @@ func TestPiCancelledPlanResponseDoesNotArmFreshAutoAnswer(t *testing.T) {
 	t.Parallel()
 	a, _, _ := piFreshImplementationFixture()
 	a.handlePiExtensionUIRequest([]byte(`{"type":"extension_ui_request","id":"plan-ready","method":"select","title":"Proposed plan ready. What next?","options":["Implement here","Start fresh and implement"]}`))
-	require.NoError(t, a.SendRawInput([]byte(`{"type":"extension_ui_response","id":"plan-ready","cancelled":true}`)))
+	require.NoError(t, a.SendRawInput([]byte(`{"type":"extension_ui_response","id":"plan-ready","cancelled":true}`), agent.StopContext{}))
 
 	a.Mu.Lock()
 	pending := a.freshImplementationPending

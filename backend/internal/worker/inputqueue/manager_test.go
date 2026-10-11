@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -13,6 +14,12 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 )
+
+// eventuallyWait limits each wait for work that the manager does on a goroutine
+// of its own. A wait that succeeds returns at once, so the limit is generous
+// for a loaded machine: a short limit fails a correct test when the machine is
+// busy.
+const eventuallyWait = 30 * time.Second
 
 type recordingDispatcher struct {
 	// refusedKind lets a test refuse one kind the way a subagent refuses a
@@ -121,12 +128,144 @@ func TestManagerDispatchesOneTurnAtATime(t *testing.T) {
 		_, err := manager.Enqueue(ctx, NewItem{ID: inputID, AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: inputID})
 		require.NoError(t, err)
 	}
-	require.Eventually(t, func() bool { return len(dispatcher.dispatches()) == 1 }, time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return len(dispatcher.dispatches()) == 1 }, eventuallyWait, 10*time.Millisecond)
 	assert.Equal(t, []string{"one"}, dispatcher.dispatches())
 	_, err := manager.TurnEnded(ctx, "agent-1")
 	require.NoError(t, err)
-	require.Eventually(t, func() bool { return len(dispatcher.dispatches()) == 2 }, time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return len(dispatcher.dispatches()) == 2 }, eventuallyWait, 10*time.Millisecond)
 	assert.Equal(t, []string{"one", "two"}, dispatcher.dispatches())
+}
+
+// TestManagerEnqueueReportingAddedReportsOnlyTheCallThatAddsTheItem pins the
+// answer that a caller acts on once per item: true for the call that adds the
+// item, and false for each repeat, whether the queue still holds the item or
+// already delivered it.
+func TestManagerEnqueueReportingAddedReportsOnlyTheCallThatAddsTheItem(t *testing.T) {
+	t.Parallel()
+
+	_, store := newStoreFixture(t)
+	dispatcher := &recordingDispatcher{}
+	manager := NewManager(store, dispatcher, &recordingObserver{})
+	ctx := context.Background()
+	// The running turn keeps the item in the queue until the test ends it.
+	_, err := manager.TurnStarted(ctx, "agent-1", false)
+	require.NoError(t, err)
+	input := NewItem{ID: "dropped", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "dropped"}
+
+	snapshot, added, err := manager.EnqueueReportingAdded(ctx, input)
+	require.NoError(t, err)
+	assert.True(t, added)
+	require.Len(t, snapshot.Items, 1)
+	assert.Equal(t, "dropped", snapshot.Items[0].ID)
+
+	snapshot, added, err = manager.EnqueueReportingAdded(ctx, input)
+	require.NoError(t, err)
+	assert.False(t, added, "the queue holds the item already")
+	assert.Len(t, snapshot.Items, 1)
+
+	_, err = manager.TurnEnded(ctx, "agent-1")
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { return len(dispatcher.dispatches()) == 1 }, eventuallyWait, 10*time.Millisecond)
+	require.Eventually(t, func() bool {
+		snapshot, err := manager.Snapshot(ctx, "agent-1")
+		return err == nil && len(snapshot.Items) == 0
+	}, eventuallyWait, 10*time.Millisecond)
+
+	snapshot, added, err = manager.EnqueueReportingAdded(ctx, input)
+	require.NoError(t, err)
+	assert.False(t, added, "the queue delivered the item already")
+	assert.Empty(t, snapshot.Items)
+
+	conflicting := input
+	conflicting.Text = "different"
+	_, added, err = manager.EnqueueReportingAdded(ctx, conflicting)
+	require.ErrorIs(t, err, ErrConflict)
+	assert.False(t, added)
+
+	manager.StopAndWait()
+	_, added, err = manager.EnqueueReportingAdded(ctx, NewItem{ID: "late", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "late"})
+	require.ErrorIs(t, err, ErrManagerStopped)
+	assert.False(t, added)
+}
+
+// TestManagerEnqueueReportingAddedReportsNothingForARefusal pins the refusals
+// that come before the store adds anything: a kind the agent does not accept,
+// an input with no id, and a full queue. Each one adds nothing, so a caller that
+// acts once for each added item acts on none of them.
+func TestManagerEnqueueReportingAddedReportsNothingForARefusal(t *testing.T) {
+	t.Parallel()
+
+	database, store := newStoreFixture(t)
+	dispatcher := &recordingDispatcher{refusedKind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CLEAR_CONTEXT}
+	manager := NewManager(store, dispatcher, &recordingObserver{})
+	t.Cleanup(manager.StopAndWait)
+	ctx := context.Background()
+	_, err := manager.SetPaused(ctx, "agent-1", true)
+	require.NoError(t, err)
+
+	_, added, err := manager.EnqueueReportingAdded(ctx, NewItem{
+		ID: "clear", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CLEAR_CONTEXT, Text: "/clear",
+	})
+	require.ErrorIs(t, err, ErrInvalidInput, "the agent does not accept the kind")
+	assert.False(t, added)
+
+	_, added, err = manager.EnqueueReportingAdded(ctx, NewItem{
+		AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "no id",
+	})
+	require.ErrorIs(t, err, ErrInvalidInput, "an input with no id")
+	assert.False(t, added)
+
+	for i := 1; i <= MaxItems; i++ {
+		_, err := database.ExecContext(ctx, `
+			INSERT INTO agent_input_queue_items (id, agent_id, order_index, kind, text)
+			VALUES (?, 'agent-1', ?, 1, 'queued')`, fmt.Sprintf("input-%d", i), i)
+		require.NoError(t, err)
+	}
+	_, added, err = manager.EnqueueReportingAdded(ctx, NewItem{
+		ID: "overflow", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "overflow",
+	})
+	require.ErrorIs(t, err, ErrQueueFull)
+	assert.False(t, added)
+	snapshot, err := manager.Snapshot(ctx, "agent-1")
+	require.NoError(t, err)
+	assert.Len(t, snapshot.Items, MaxItems, "a refusal adds nothing to the queue")
+}
+
+// Several callers can hand back the same item at once. The coordinator of the
+// agent serializes them, so exactly one call reports that it added the item.
+func TestManagerEnqueueReportingAddedReportsOneAddAcrossConcurrentCalls(t *testing.T) {
+	t.Parallel()
+
+	_, store := newStoreFixture(t)
+	manager := NewManager(store, &recordingDispatcher{}, &recordingObserver{})
+	t.Cleanup(manager.StopAndWait)
+	ctx := context.Background()
+	_, err := manager.SetPaused(ctx, "agent-1", true)
+	require.NoError(t, err)
+	input := NewItem{ID: "dropped", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "dropped"}
+
+	const callers = 16
+	var wg sync.WaitGroup
+	results := make(chan bool, callers)
+	for range callers {
+		wg.Go(func() {
+			_, added, err := manager.EnqueueReportingAdded(ctx, input)
+			assert.NoError(t, err)
+			results <- added
+		})
+	}
+	wg.Wait()
+	close(results)
+	adds := 0
+	for added := range results {
+		if added {
+			adds++
+		}
+	}
+	assert.Equal(t, 1, adds, "one call added the item, and every other call found it")
+	snapshot, err := manager.Snapshot(ctx, "agent-1")
+	require.NoError(t, err)
+	assert.Len(t, snapshot.Items, 1)
 }
 
 func TestManagerWaitsForExternallyStartedChildTurn(t *testing.T) {
@@ -143,7 +282,7 @@ func TestManagerWaitsForExternallyStartedChildTurn(t *testing.T) {
 	assert.Never(t, func() bool { return len(dispatcher.dispatches()) > 0 }, 50*time.Millisecond, 5*time.Millisecond)
 	_, err = manager.TurnEnded(ctx, "agent-1")
 	require.NoError(t, err)
-	require.Eventually(t, func() bool { return len(dispatcher.dispatches()) == 1 }, time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return len(dispatcher.dispatches()) == 1 }, eventuallyWait, 10*time.Millisecond)
 }
 
 func TestManagerWaitsForActiveTurnBeforeCompactOperation(t *testing.T) {
@@ -155,13 +294,13 @@ func TestManagerWaitsForActiveTurnBeforeCompactOperation(t *testing.T) {
 	ctx := context.Background()
 	_, err := manager.Enqueue(ctx, NewItem{ID: "message", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "message"})
 	require.NoError(t, err)
-	require.Eventually(t, func() bool { return len(dispatcher.dispatches()) == 1 }, time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return len(dispatcher.dispatches()) == 1 }, eventuallyWait, 10*time.Millisecond)
 	_, err = manager.Enqueue(ctx, NewItem{ID: "compact", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_COMPACT_CONTEXT, Text: "/compact"})
 	require.NoError(t, err)
 	assert.Never(t, func() bool { return len(dispatcher.dispatches()) > 1 }, 50*time.Millisecond, 5*time.Millisecond)
 	_, err = manager.TurnEnded(ctx, "agent-1")
 	require.NoError(t, err)
-	require.Eventually(t, func() bool { return len(dispatcher.dispatches()) == 2 }, time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return len(dispatcher.dispatches()) == 2 }, eventuallyWait, 10*time.Millisecond)
 	assert.Equal(t, []string{"message", "compact"}, dispatcher.dispatches())
 }
 
@@ -184,7 +323,7 @@ func TestManagerEditBarrierAndSteer(t *testing.T) {
 	snapshot, err := manager.CancelEdit(ctx, "agent-1", "one", "client")
 	require.NoError(t, err)
 	assert.Empty(t, snapshot.Items[0].EditOwner)
-	require.Eventually(t, func() bool { return len(dispatcher.dispatches()) == 1 }, time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return len(dispatcher.dispatches()) == 1 }, eventuallyWait, 10*time.Millisecond)
 
 	_, err = manager.Enqueue(ctx, NewItem{ID: "two", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "two"})
 	require.NoError(t, err)
@@ -207,7 +346,7 @@ func TestManagerFailurePausesAndRetryDispatchesOnlyHead(t *testing.T) {
 	require.Eventually(t, func() bool {
 		snapshot, snapshotErr := manager.Snapshot(ctx, "agent-1")
 		return snapshotErr == nil && snapshot.Paused && len(snapshot.Items) == 1 && snapshot.Items[0].State == leapmuxv1.AgentInputState_AGENT_INPUT_STATE_FAILED
-	}, time.Second, 10*time.Millisecond)
+	}, eventuallyWait, 10*time.Millisecond)
 	dispatcher.mu.Lock()
 	dispatcher.fail = nil
 	dispatcher.mu.Unlock()
@@ -238,7 +377,7 @@ func TestManagerSteerRequeuesWhenCapabilityDisappears(t *testing.T) {
 		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 	})
 	require.NoError(t, err)
-	require.Eventually(t, func() bool { return len(dispatcher.dispatches()) == 1 }, time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return len(dispatcher.dispatches()) == 1 }, eventuallyWait, 10*time.Millisecond)
 	_, err = manager.Enqueue(ctx, NewItem{
 		ID: "steer", AgentID: "agent-1", Text: "guide",
 		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
@@ -267,7 +406,7 @@ func TestManagerSteerMarksUncertainDelivery(t *testing.T) {
 		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 	})
 	require.NoError(t, err)
-	require.Eventually(t, func() bool { return len(dispatcher.dispatches()) == 1 }, time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return len(dispatcher.dispatches()) == 1 }, eventuallyWait, 10*time.Millisecond)
 	_, err = manager.Enqueue(ctx, NewItem{
 		ID: "steer", AgentID: "agent-1", Text: "guide",
 		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
@@ -294,7 +433,7 @@ func TestManagerDrainsNormallyAfterSuccessfulSteerTurnEnds(t *testing.T) {
 		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 	})
 	require.NoError(t, err)
-	require.Eventually(t, func() bool { return len(dispatcher.dispatches()) == 1 }, time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return len(dispatcher.dispatches()) == 1 }, eventuallyWait, 10*time.Millisecond)
 	_, err = manager.Enqueue(ctx, NewItem{
 		ID: "steer", AgentID: "agent-1", Text: "guide",
 		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
@@ -311,7 +450,7 @@ func TestManagerDrainsNormallyAfterSuccessfulSteerTurnEnds(t *testing.T) {
 
 	_, err = manager.TurnEnded(ctx, "agent-1")
 	require.NoError(t, err)
-	require.Eventually(t, func() bool { return len(dispatcher.dispatches()) == 2 }, time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return len(dispatcher.dispatches()) == 2 }, eventuallyWait, 10*time.Millisecond)
 	assert.Equal(t, []string{"active", "later"}, dispatcher.dispatches())
 }
 
@@ -327,7 +466,7 @@ func TestManagerPreemptInterruptsAndDrainsOnTurnEnd(t *testing.T) {
 		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 	})
 	require.NoError(t, err)
-	require.Eventually(t, func() bool { return len(dispatcher.dispatches()) == 1 }, time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return len(dispatcher.dispatches()) == 1 }, eventuallyWait, 10*time.Millisecond)
 	_, err = manager.Enqueue(ctx, NewItem{
 		ID: "next", AgentID: "agent-1", Text: "next",
 		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
@@ -345,7 +484,7 @@ func TestManagerPreemptInterruptsAndDrainsOnTurnEnd(t *testing.T) {
 
 	_, err = manager.TurnEnded(ctx, "agent-1")
 	require.NoError(t, err)
-	require.Eventually(t, func() bool { return len(dispatcher.dispatches()) == 2 }, time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return len(dispatcher.dispatches()) == 2 }, eventuallyWait, 10*time.Millisecond)
 	assert.Equal(t, []string{"active", "next"}, dispatcher.dispatches())
 }
 
@@ -451,7 +590,7 @@ func testManagerSteerTurnEndRace(t *testing.T, providerErr error) {
 	ctx := context.Background()
 	_, err := manager.Enqueue(ctx, NewItem{ID: "active", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "active"})
 	require.NoError(t, err)
-	require.Eventually(t, func() bool { return len(dispatcher.dispatches()) == 1 }, time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return len(dispatcher.dispatches()) == 1 }, eventuallyWait, 10*time.Millisecond)
 	_, err = manager.Enqueue(ctx, NewItem{ID: "next", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "next"})
 	require.NoError(t, err)
 	started := make(chan struct{})
@@ -481,7 +620,7 @@ func testManagerSteerTurnEndRace(t *testing.T, providerErr error) {
 		_, turnEndErr := manager.TurnEnded(ctx, "agent-1")
 		turnEndDone <- turnEndErr
 	}()
-	require.Eventually(t, func() bool { return len(turnEndDone) == 1 }, time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return len(turnEndDone) == 1 }, eventuallyWait, 10*time.Millisecond)
 	require.NoError(t, <-turnEndDone)
 	close(release)
 	<-steerDone
@@ -503,7 +642,7 @@ func TestManagerRecoverDrainsUnpausedQueuedInput(t *testing.T) {
 	manager := NewManager(store, dispatcher, &recordingObserver{})
 
 	require.NoError(t, manager.Recover(ctx))
-	require.Eventually(t, func() bool { return len(dispatcher.dispatches()) == 1 }, time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return len(dispatcher.dispatches()) == 1 }, eventuallyWait, 10*time.Millisecond)
 }
 
 func TestManagerRecoverStateWaitsForRecoveredDrain(t *testing.T) {
@@ -519,7 +658,7 @@ func TestManagerRecoverStateWaitsForRecoveredDrain(t *testing.T) {
 	require.NoError(t, manager.RecoverState(ctx))
 	assert.Never(t, func() bool { return len(dispatcher.dispatches()) > 0 }, 50*time.Millisecond, 5*time.Millisecond)
 	require.NoError(t, manager.DrainRecovered(ctx))
-	require.Eventually(t, func() bool { return len(dispatcher.dispatches()) == 1 }, time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return len(dispatcher.dispatches()) == 1 }, eventuallyWait, 10*time.Millisecond)
 }
 
 func TestManagerRecoveredDrainSkipsAnAgentRemovedDuringReconciliation(t *testing.T) {
@@ -553,7 +692,7 @@ func TestManagerPausesAsUncertainWhenAcceptedTranscriptCannotPersist(t *testing.
 		snapshot, snapshotErr := manager.Snapshot(ctx, "agent-1")
 		return snapshotErr == nil && snapshot.Paused && len(snapshot.Items) == 1 &&
 			snapshot.Items[0].State == leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DELIVERY_UNCERTAIN
-	}, time.Second, 10*time.Millisecond)
+	}, eventuallyWait, 10*time.Millisecond)
 }
 
 func TestManagerSerializesConcurrentClientMutations(t *testing.T) {
@@ -588,32 +727,39 @@ func TestManagerPlannedRestartPreservesQueueState(t *testing.T) {
 	t.Parallel()
 
 	for _, test := range []struct {
-		name             string
-		manualPause      bool
-		processReplaced  bool
-		restartSucceeded bool
-		wantActive       bool
-		wantPaused       bool
-		wantPauseReason  leapmuxv1.AgentInputQueuePauseReason
+		name              string
+		manualPause       bool
+		nativeEndObserved bool
+		oldTurnEnded      bool
+		restartSucceeded  bool
+		wantActive        bool
+		wantPaused        bool
+		wantPauseReason   leapmuxv1.AgentInputQueuePauseReason
 	}{
 		{
-			name:            "successful replacement",
-			processReplaced: true, restartSucceeded: true,
+			name:         "successful replacement",
+			oldTurnEnded: true, restartSucceeded: true,
 		},
 		{
-			name:            "failure before replacement",
-			processReplaced: false, restartSucceeded: false,
+			name:         "failure before replacement",
+			oldTurnEnded: false, restartSucceeded: false,
 			wantActive: true,
 		},
 		{
-			name:            "failed replacement",
-			processReplaced: true, restartSucceeded: false,
+			name:         "failed replacement",
+			oldTurnEnded: true, restartSucceeded: false,
 			wantPaused:      true,
 			wantPauseReason: leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED,
 		},
 		{
+			name:              "failed restart after native turn end",
+			nativeEndObserved: true, oldTurnEnded: true, restartSucceeded: false,
+			wantPaused:      true,
+			wantPauseReason: leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_DELIVERY_FAILED,
+		},
+		{
 			name:        "existing manual pause",
-			manualPause: true, processReplaced: true, restartSucceeded: true,
+			manualPause: true, oldTurnEnded: true, restartSucceeded: true,
 			wantPaused:      true,
 			wantPauseReason: leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_MANUAL,
 		},
@@ -636,8 +782,12 @@ func TestManagerPlannedRestartPreservesQueueState(t *testing.T) {
 			require.NoError(t, err)
 			assert.True(t, during.Paused)
 			assert.True(t, during.ActiveTurn)
+			if test.nativeEndObserved {
+				_, err = manager.Pause(ctx, "agent-1", leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_DELIVERY_FAILED)
+				require.NoError(t, err)
+			}
 
-			require.NoError(t, restart.Finish(ctx, test.processReplaced, test.restartSucceeded))
+			require.NoError(t, restart.Finish(ctx, test.oldTurnEnded, test.restartSucceeded))
 			after, err := manager.Snapshot(ctx, "agent-1")
 			require.NoError(t, err)
 			assert.Equal(t, test.wantActive, after.ActiveTurn)
@@ -669,7 +819,7 @@ func TestManagerPlannedRestartNeverBlocksAnExplicitResume(t *testing.T) {
 	select {
 	case resumeErr := <-resumeDone:
 		require.NoError(t, resumeErr)
-	case <-time.After(2 * time.Second):
+	case <-time.After(eventuallyWait):
 		t.Fatal("an explicit resume waited on the planned restart")
 	}
 
@@ -825,7 +975,7 @@ func TestManagerKeepsDrainingWhenTheTurnEndsDuringItsOwnDispatch(t *testing.T) {
 	require.Eventually(t, func() bool {
 		s, snapshotErr := manager.Snapshot(ctx, "agent-1")
 		return snapshotErr == nil && len(dispatcher.dispatches()) == 2 && len(s.Items) == 0
-	}, time.Second, 10*time.Millisecond)
+	}, eventuallyWait, 10*time.Millisecond)
 	assert.Equal(t, []string{"one", "two"}, dispatcher.dispatches())
 	snapshot, err := manager.Snapshot(ctx, "agent-1")
 	require.NoError(t, err)
@@ -892,7 +1042,7 @@ func TestManagerTurnStartedKeepsTheTurnADispatchAlreadyOwns(t *testing.T) {
 	require.Eventually(t, func() bool {
 		snapshot, snapshotErr := manager.Snapshot(ctx, "agent-1")
 		return snapshotErr == nil && len(snapshot.Items) == 0
-	}, time.Second, 10*time.Millisecond)
+	}, eventuallyWait, 10*time.Millisecond)
 	snapshot, err := manager.Snapshot(ctx, "agent-1")
 	require.NoError(t, err)
 	assert.True(t, snapshot.ActiveTurn, "the dispatched turn survives the provider's own report of it")
@@ -918,13 +1068,13 @@ func TestManagerBusyRefusalHoldsTheItemWithoutPausingTheQueue(t *testing.T) {
 	_, err := manager.Enqueue(ctx, NewItem{ID: "one", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "one"})
 	require.NoError(t, err)
 
-	require.Eventually(t, func() bool { return len(dispatcher.dispatches()) == 1 }, time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return len(dispatcher.dispatches()) == 1 }, eventuallyWait, 10*time.Millisecond)
 	var snapshot Snapshot
 	require.Eventually(t, func() bool {
 		snapshot, err = manager.Snapshot(ctx, "agent-1")
 		return err == nil && len(snapshot.Items) == 1 &&
 			snapshot.Items[0].State == leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED
-	}, time.Second, 10*time.Millisecond)
+	}, eventuallyWait, 10*time.Millisecond)
 	assert.False(t, snapshot.Paused, "a busy agent is not a stopped one")
 	assert.Empty(t, snapshot.Items[0].Error, "nothing failed, so the item carries no error")
 	assert.True(t, snapshot.ActiveTurn, "the turn the item collided with is what holds it")
@@ -934,7 +1084,7 @@ func TestManagerBusyRefusalHoldsTheItemWithoutPausingTheQueue(t *testing.T) {
 	require.Eventually(t, func() bool {
 		snapshot, err = manager.Snapshot(ctx, "agent-1")
 		return err == nil && len(snapshot.Items) == 0
-	}, time.Second, 10*time.Millisecond)
+	}, eventuallyWait, 10*time.Millisecond)
 	assert.Equal(t, []string{"one", "one"}, dispatcher.dispatches(),
 		"the same item goes out again once the turn that refused it ends")
 }
@@ -957,7 +1107,7 @@ func TestManagerBusyRefusalRepeatsWhenTheTurnEndsInsideIt(t *testing.T) {
 	require.Eventually(t, func() bool {
 		snapshot, snapshotErr := manager.Snapshot(ctx, "agent-1")
 		return snapshotErr == nil && len(snapshot.Items) == 0
-	}, time.Second, 10*time.Millisecond)
+	}, eventuallyWait, 10*time.Millisecond)
 	assert.Equal(t, []string{"one", "one"}, dispatcher.dispatches(),
 		"the loop repeats for the turn end it could not see, with no outside trigger")
 }
@@ -987,7 +1137,7 @@ func TestManagerBusyRefusalReleasesTheTurnIdentityItClaimed(t *testing.T) {
 		snapshot, err = manager.Snapshot(ctx, "agent-1")
 		return err == nil && len(dispatcher.dispatches()) == 1 && len(snapshot.Items) == 1 &&
 			snapshot.Items[0].State == leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED
-	}, time.Second, 10*time.Millisecond)
+	}, eventuallyWait, 10*time.Millisecond)
 	assert.True(t, snapshot.ActiveTurn, "the refusal proves a turn is in flight")
 	assert.False(t, snapshot.ActiveTurnSteerable,
 		"the refused item's kind does not describe the provider's own turn")
@@ -1031,7 +1181,7 @@ func TestManagerBusyRefusalKeepsTheProviderTurnClassification(t *testing.T) {
 		snapshot, err = manager.Snapshot(ctx, "agent-1")
 		return err == nil && len(dispatcher.dispatches()) == 1 && len(snapshot.Items) == 1 &&
 			snapshot.Items[0].State == leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED
-	}, time.Second, 10*time.Millisecond)
+	}, eventuallyWait, 10*time.Millisecond)
 	assert.True(t, snapshot.ActiveTurn)
 	assert.True(t, snapshot.ActiveTurnSteerable)
 	assert.True(t, snapshot.Items[0].CanSteer,
@@ -1059,7 +1209,7 @@ func TestManagerRetryBusyRefusalDrainsWhenTheTurnEndsInsideIt(t *testing.T) {
 		snapshot, snapshotErr := manager.Snapshot(ctx, "agent-1")
 		return snapshotErr == nil && len(snapshot.Items) == 1 &&
 			snapshot.Items[0].State == leapmuxv1.AgentInputState_AGENT_INPUT_STATE_FAILED
-	}, time.Second, 10*time.Millisecond)
+	}, eventuallyWait, 10*time.Millisecond)
 
 	// The retry collides with a turn, and that turn ends inside the refusal.
 	busy := &onceDispatcher{firstErr: busyRefusal()}
@@ -1071,7 +1221,7 @@ func TestManagerRetryBusyRefusalDrainsWhenTheTurnEndsInsideIt(t *testing.T) {
 	require.Eventually(t, func() bool {
 		snapshot, snapshotErr := manager.Snapshot(ctx, "agent-1")
 		return snapshotErr == nil && len(snapshot.Items) == 0
-	}, time.Second, 10*time.Millisecond)
+	}, eventuallyWait, 10*time.Millisecond)
 	assert.Equal(t, []string{"one", "one"}, busy.dispatches(),
 		"the retried item goes out again with no further user action")
 }
@@ -1111,7 +1261,206 @@ func TestManagerRepeatedTurnEndRestartsADrainAStoreErrorStopped(t *testing.T) {
 	require.Eventually(t, func() bool {
 		snapshot, snapshotErr := manager.Snapshot(ctx, "agent-1")
 		return snapshotErr == nil && len(snapshot.Items) == 0
-	}, time.Second, 10*time.Millisecond)
+	}, eventuallyWait, 10*time.Millisecond)
 	assert.Equal(t, []string{"one"}, dispatcher.dispatches(),
 		"the repeated clear restarted the loop the store error stopped")
+}
+
+type reentryQueueObserver struct {
+	NopObserver
+	changed  func(Snapshot)
+	accepted func(AcceptedTranscript)
+}
+
+func (observer *reentryQueueObserver) QueueChanged(snapshot Snapshot) {
+	if observer.changed != nil {
+		observer.changed(snapshot)
+	}
+}
+
+func (observer *reentryQueueObserver) InputAccepted(transcript AcceptedTranscript) {
+	if observer.accepted != nil {
+		observer.accepted(transcript)
+	}
+}
+
+func TestManagerObserversCanReadCommittedQueueStateDuringReentry(t *testing.T) {
+	t.Parallel()
+	for _, operation := range []string{"enqueue", "pause", "manual pause", "retry", "steer", "drain", "restart begin", "restart finish"} {
+		t.Run(operation, func(t *testing.T) {
+			t.Parallel()
+			_, store := newStoreFixture(t)
+			ctx := t.Context()
+			input := NewItem{ID: "one", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "one"}
+			if operation == "enqueue" {
+				_, _, err := store.TurnStarted(ctx, "agent-1", false)
+				require.NoError(t, err)
+			}
+			if operation == "retry" || operation == "steer" || operation == "drain" {
+				_, err := store.Enqueue(ctx, input)
+				require.NoError(t, err)
+			}
+			if operation == "retry" {
+				prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
+				require.NoError(t, err)
+				require.NotNil(t, prepared)
+				_, err = store.FailDispatch(ctx, "agent-1", "one", assert.AnError, false)
+				require.NoError(t, err)
+			}
+			if operation == "steer" {
+				_, _, err := store.TurnStarted(ctx, "agent-1", true)
+				require.NoError(t, err)
+			}
+			observer := &reentryQueueObserver{}
+			manager := NewManager(store, &recordingDispatcher{steering: true}, observer)
+			var restart *PlannedRestart
+			if operation == "restart finish" {
+				var err error
+				restart, err = manager.BeginPlannedRestart(ctx, "agent-1")
+				require.NoError(t, err)
+			}
+			var entered atomic.Bool
+			observed := make(chan error, 1)
+			nestedFinished := make(chan struct{})
+			observer.changed = func(committed Snapshot) {
+				if !entered.CompareAndSwap(false, true) {
+					return
+				}
+				nestedResult := make(chan error, 1)
+				go func() {
+					current, err := manager.Snapshot(ctx, "agent-1")
+					if err == nil && current.Revision < committed.Revision {
+						err = fmt.Errorf("the observer read revision %d before committed revision %d", current.Revision, committed.Revision)
+					}
+					nestedResult <- err
+					close(nestedFinished)
+				}()
+				select {
+				case err := <-nestedResult:
+					observed <- err
+				case <-time.After(eventuallyWait):
+					observed <- errors.New("the queue observer holds the coordinator lock across reentry")
+				}
+			}
+			completed := make(chan error, 1)
+			go func() {
+				var err error
+				switch operation {
+				case "enqueue":
+					_, err = manager.Enqueue(ctx, input)
+				case "pause":
+					_, err = manager.Pause(ctx, "agent-1", leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_AGENT_STOPPED)
+				case "manual pause":
+					_, err = manager.SetPaused(ctx, "agent-1", true)
+				case "retry":
+					_, err = manager.Retry(ctx, "agent-1", "one", false)
+				case "steer":
+					_, err = manager.Steer(ctx, "agent-1", "one")
+				case "drain":
+					manager.NotifyDependencyReady("agent-1")
+				case "restart begin":
+					var hold *PlannedRestart
+					hold, err = manager.BeginPlannedRestart(ctx, "agent-1")
+					if err == nil {
+						err = hold.Finish(ctx, false, true)
+					}
+				case "restart finish":
+					err = restart.Finish(ctx, false, true)
+				}
+				completed <- err
+			}()
+			var observerErr error
+			select {
+			case observerErr = <-observed:
+			case <-time.After(2 * eventuallyWait):
+				t.Fatal("the queue observer blocked when it read the committed queue")
+			}
+			select {
+			case err := <-completed:
+				require.NoError(t, err)
+			case <-time.After(eventuallyWait):
+				t.Fatal("the queue operation did not finish after observer reentry")
+			}
+			select {
+			case <-nestedFinished:
+			case <-time.After(eventuallyWait):
+				t.Fatal("the queue read did not finish after the observer returned")
+			}
+			manager.StopAndWait()
+			assert.NoError(t, observerErr)
+		})
+	}
+}
+
+type afterAcceptDispatcher struct {
+	recordingDispatcher
+	afterAccept func()
+}
+
+func (dispatcher *afterAcceptDispatcher) Dispatch(item DispatchItem) (DispatchResult, error) {
+	result, err := dispatcher.recordingDispatcher.Dispatch(item)
+	result.AfterAccept = dispatcher.afterAccept
+	return result, err
+}
+
+func TestManagerAfterAcceptCanReconcileTheNextTurnInOrder(t *testing.T) {
+	t.Parallel()
+	_, store := newStoreFixture(t)
+	ctx := t.Context()
+	_, err := store.Enqueue(ctx, NewItem{ID: "one", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "one"})
+	require.NoError(t, err)
+	observer := &reentryQueueObserver{}
+	dispatcher := &afterAcceptDispatcher{}
+	manager := NewManager(store, dispatcher, observer)
+	var orderMu sync.Mutex
+	var order []string
+	appendOrder := func(value string) {
+		orderMu.Lock()
+		order = append(order, value)
+		orderMu.Unlock()
+	}
+	observer.accepted = func(AcceptedTranscript) { appendOrder("accepted") }
+	observer.changed = func(snapshot Snapshot) {
+		if len(snapshot.Items) == 0 {
+			appendOrder("accepted snapshot")
+		}
+	}
+	completed := make(chan error, 1)
+	nestedFinished := make(chan struct{})
+	dispatcher.afterAccept = func() {
+		appendOrder("after accept")
+		nestedResult := make(chan error, 1)
+		go func() {
+			_, err := manager.TurnStarted(ctx, "agent-1", true)
+			nestedResult <- err
+			close(nestedFinished)
+		}()
+		select {
+		case err := <-nestedResult:
+			completed <- err
+		case <-time.After(eventuallyWait):
+			completed <- errors.New("the accepted-input handler holds the coordinator lock across reentry")
+		}
+	}
+	manager.NotifyDependencyReady("agent-1")
+	var callbackErr error
+	select {
+	case callbackErr = <-completed:
+	case <-time.After(2 * eventuallyWait):
+		t.Fatal("the accepted-input handler blocked when it reconciled the next turn")
+	}
+	select {
+	case <-nestedFinished:
+	case <-time.After(eventuallyWait):
+		t.Fatal("the next turn did not finish after the accepted-input handler returned")
+	}
+	manager.StopAndWait()
+	assert.NoError(t, callbackErr)
+	orderMu.Lock()
+	assert.Equal(t, []string{"accepted", "accepted snapshot", "after accept", "accepted snapshot"}, order)
+	orderMu.Unlock()
+	snapshot, err := store.Snapshot(ctx, "agent-1")
+	require.NoError(t, err)
+	assert.True(t, snapshot.ActiveTurn)
+	assert.True(t, snapshot.ActiveTurnSteerable)
 }

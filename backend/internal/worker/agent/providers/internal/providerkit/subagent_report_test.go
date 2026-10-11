@@ -23,7 +23,7 @@ func TestPersistSubagentReportNormalizesOneSharedEnvelope(t *testing.T) {
 	require.Len(t, reports, 1)
 	assert.Equal(t, contracts.NotificationTypeSubagentReport, reports[0][contracts.NotificationFieldType])
 	assert.Equal(t, "Parser reviewer", reports[0][contracts.NotificationFieldLabel])
-	assert.Equal(t, "**Report**", reports[0][contracts.NotificationFieldText])
+	assert.Equal(t, "\n**Report**\n", reports[0][contracts.NotificationFieldText])
 	assert.Equal(t, "flagged", reports[0][contracts.NotificationFieldStatus])
 }
 
@@ -77,7 +77,7 @@ func TestPersistSubagentReportResolvesAChildRow(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	childID, err := sink.EnsureChildAgent("spawn-1", "row-1", "Reviewer")
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn-1", ProviderChildKey: "row-1", Title: "Reviewer"})
 	require.NoError(t, err)
 	write := agent.ChildSubagentReportWrite{
 		RowKey: "row-1",

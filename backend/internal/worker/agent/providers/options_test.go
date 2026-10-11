@@ -16,9 +16,10 @@ import (
 // MODEL (effort default stamped by resolveProviderDefaults) from every other provider,
 // whose effort, if any, is server-driven and model-independent.
 //
-// Claude, Codex and Pi state their tiers in a static catalog. Native Copilot has no
-// static catalog -- the account decides which models exist -- so it raises managesEffort
-// in its init() instead; a model switch must still rebuild its tiers.
+// Claude, Codex and Pi state their tiers in a static catalog. Native Copilot,
+// Codewhale, Kimi Code, MiMo Code, Cline and Muse Code have no static catalog -- the account or the
+// user's configuration decides which models exist -- so each raises
+// Registration.ManagesEffort instead; a model switch must still rebuild its tiers.
 //
 // The two sets are a PARTITION of the generated provider table, so the "false" side is
 // derived rather than retyped: a provider added later lands in it automatically, and a
@@ -69,9 +70,17 @@ func TestValidateLaunchOptionsAsksTheProviderItsOwnPermissionQuestion(t *testing
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, true, true, true},
 		// Manages effort, states no permission enum of its own.
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_PI, false, true, false},
+		// Manages effort, and discovers its modes -- MiMo's primary agents -- from the
+		// server, as an ACP provider does.
 		// An ACP provider discovers its modes from the daemon.
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, false, false, false},
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, false, false, false},
+		// States its three approval modes itself, and discovers its thinking
+		// levels from the running model.
+		// States its two permission modes itself, and has no effort axis: its mode
+		// chooses the reasoning effort.
+		// States its three modes itself, and each model of the user's provider
+		// states its own reasoning efforts.
 	} {
 		t.Run(tc.provider.String(), func(t *testing.T) {
 			assert.Equal(t, tc.fixedModes, registry.HasFixedPermissionModes(tc.provider),

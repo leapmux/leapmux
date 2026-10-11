@@ -22,7 +22,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/leapmux/leapmux/internal/util/testutil"
-	"github.com/leapmux/leapmux/internal/worker/agent"
+	agentapi "github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -142,7 +142,7 @@ func TestHelperProcessControlResponder(t *testing.T) {
 // child process and wires it up as an Agent. script is forwarded
 // as LEAPMUX_TEST_CONTROL_SCRIPT; logPath (optional) as
 // LEAPMUX_TEST_CONTROL_LOG.
-func mockStartWithResponder(ctx context.Context, opts agent.Options, sink agent.ProviderServices, script, logPath string) (*Agent, error) {
+func mockStartWithResponder(ctx context.Context, opts agentapi.Options, sink agentapi.ProviderServices, script, logPath string) (*Agent, error) {
 	env := []string{
 		"GO_WANT_HELPER_PROCESS_RESPONDER=1",
 		"LEAPMUX_TEST_CONTROL_SCRIPT=" + script,
@@ -154,7 +154,7 @@ func mockStartWithResponder(ctx context.Context, opts agent.Options, sink agent.
 }
 
 // mockStart spawns a test helper process instead of the real claude binary.
-func mockStart(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (*Agent, error) {
+func mockStart(ctx context.Context, opts agentapi.Options, sink agentapi.ProviderServices) (*Agent, error) {
 	return spawnMockClaudeAgent(ctx, "TestHelperProcess", []string{"GO_WANT_HELPER_PROCESS=1"}, opts, sink)
 }
 
@@ -162,15 +162,15 @@ func TestAgent_StartAndStop(t *testing.T) {
 	ctx := context.Background()
 	sink := &agenttest.Sink{}
 
-	agent, err := mockStart(ctx, agent.Options{
+	agent, err := mockStart(ctx, agentapi.Options{
 		AgentID:    "test-workspace",
-		Options:    map[string]string{agent.OptionIDModel: "test"},
+		Options:    map[string]string{agentapi.OptionIDModel: "test"},
 		WorkingDir: t.TempDir(),
-	}, agent.NewProviderServices(sink))
+	}, agentapi.NewProviderServices(sink))
 	require.NoError(t, err, "mockStart")
 
 	// Send a valid assistant NDJSON message that HandleOutput will persist.
-	require.NoError(t, agent.SendRawInput([]byte(`{"type":"assistant","message":{"role":"assistant","content":"hi"}}`+"\n")), "SendRawInput")
+	require.NoError(t, agent.SendRawInput([]byte(`{"type":"assistant","message":{"role":"assistant","content":"hi"}}`+"\n"), agentapi.StopContext{}), "SendRawInput")
 
 	// Wait for the message to be processed by HandleOutput and persisted via the sink.
 	testutil.AssertEventually(t, func() bool {
@@ -192,9 +192,9 @@ func TestAgent_StartAndStop(t *testing.T) {
 func TestAgent_SendInputAfterStop(t *testing.T) {
 	ctx := context.Background()
 
-	agent, err := mockStart(ctx, agent.Options{
+	agent, err := mockStart(ctx, agentapi.Options{
 		AgentID:    "test-workspace-2",
-		Options:    map[string]string{agent.OptionIDModel: "test"},
+		Options:    map[string]string{agentapi.OptionIDModel: "test"},
 		WorkingDir: t.TempDir(),
 	}, agenttest.Nop())
 	require.NoError(t, err, "mockStart")
@@ -208,9 +208,9 @@ func TestAgent_SendInputAfterStop(t *testing.T) {
 func TestAgent_AgentID(t *testing.T) {
 	ctx := context.Background()
 
-	agent, err := mockStart(ctx, agent.Options{
+	agent, err := mockStart(ctx, agentapi.Options{
 		AgentID:    "my-agent",
-		Options:    map[string]string{agent.OptionIDModel: "test"},
+		Options:    map[string]string{agentapi.OptionIDModel: "test"},
 		WorkingDir: t.TempDir(),
 	}, agenttest.Nop())
 	require.NoError(t, err, "mockStart")
@@ -226,9 +226,9 @@ func TestAgent_WorkingDir(t *testing.T) {
 	// Create a marker file in the temp dir.
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "marker.txt"), []byte("ok"), 0o644))
 
-	agent, err := mockStart(ctx, agent.Options{
+	agent, err := mockStart(ctx, agentapi.Options{
 		AgentID:    "wd-test",
-		Options:    map[string]string{agent.OptionIDModel: "test"},
+		Options:    map[string]string{agentapi.OptionIDModel: "test"},
 		WorkingDir: dir,
 	}, agenttest.Nop())
 	require.NoError(t, err, "mockStart")
@@ -266,7 +266,7 @@ func TestHelperProcessWithInit(t *testing.T) {
 
 // mockStartWithInit spawns a test helper process that outputs an init line
 // with a session_id, simulating real Claude Code behavior.
-func mockStartWithInit(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (*Agent, error) {
+func mockStartWithInit(ctx context.Context, opts agentapi.Options, sink agentapi.ProviderServices) (*Agent, error) {
 	return spawnMockClaudeAgent(ctx, "TestHelperProcessWithInit",
 		[]string{"GO_WANT_HELPER_PROCESS_WITH_INIT=1"}, opts, sink)
 }
@@ -277,11 +277,11 @@ func TestAgent_InitMessageFlowsThrough(t *testing.T) {
 	ctx := context.Background()
 	sink := &agenttest.Sink{}
 
-	agent, err := mockStartWithInit(ctx, agent.Options{
+	agent, err := mockStartWithInit(ctx, agentapi.Options{
 		AgentID:    "init-test",
-		Options:    map[string]string{agent.OptionIDModel: "test"},
+		Options:    map[string]string{agentapi.OptionIDModel: "test"},
 		WorkingDir: t.TempDir(),
-	}, agent.NewProviderServices(sink))
+	}, agentapi.NewProviderServices(sink))
 	require.NoError(t, err, "mockStartWithInit")
 	defer func() {
 		agent.Stop()
@@ -297,7 +297,7 @@ func TestAgent_InitMessageFlowsThrough(t *testing.T) {
 		"session ID should match the init message")
 
 	// Send additional input (an assistant message) and verify it flows through too.
-	require.NoError(t, agent.SendRawInput([]byte(`{"type":"assistant","message":{"role":"assistant","content":"reply"}}`+"\n")))
+	require.NoError(t, agent.SendRawInput([]byte(`{"type":"assistant","message":{"role":"assistant","content":"reply"}}`+"\n"), agentapi.StopContext{}))
 	testutil.AssertEventually(t, func() bool {
 		return sink.MessageCount() >= 1
 	}, "expected additional output after input")
@@ -309,11 +309,11 @@ func TestAgent_ToolUseCountSurvivesToolResult(t *testing.T) {
 	ctx := context.Background()
 	sink := &agenttest.Sink{}
 
-	agent, err := mockStartWithInit(ctx, agent.Options{
+	agent, err := mockStartWithInit(ctx, agentapi.Options{
 		AgentID:    "tool-count-test",
-		Options:    map[string]string{agent.OptionIDModel: "test"},
+		Options:    map[string]string{agentapi.OptionIDModel: "test"},
 		WorkingDir: t.TempDir(),
-	}, agent.NewProviderServices(sink))
+	}, agentapi.NewProviderServices(sink))
 	require.NoError(t, err, "mockStartWithInit")
 	defer func() {
 		agent.Stop()
@@ -327,27 +327,27 @@ func TestAgent_ToolUseCountSurvivesToolResult(t *testing.T) {
 
 	// 1. User text echo — resets counter to 0.
 	userEcho := `{"type":"user","message":{"role":"user","content":"Run pwd"}}` + "\n"
-	require.NoError(t, agent.SendRawInput([]byte(userEcho)))
+	require.NoError(t, agent.SendRawInput([]byte(userEcho), agentapi.StopContext{}))
 	time.Sleep(50 * time.Millisecond)
 
 	// 2. Assistant with tool_use — counter should become 1.
 	assistantToolUse := `{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"pwd"}}]},"session_id":"test-session","uuid":"uuid1"}` + "\n"
-	require.NoError(t, agent.SendRawInput([]byte(assistantToolUse)))
+	require.NoError(t, agent.SendRawInput([]byte(assistantToolUse), agentapi.StopContext{}))
 	time.Sleep(50 * time.Millisecond)
 
 	// 3. Tool result (user type, array content) — should NOT reset counter.
 	toolResult := `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"/home/user"}]}}` + "\n"
-	require.NoError(t, agent.SendRawInput([]byte(toolResult)))
+	require.NoError(t, agent.SendRawInput([]byte(toolResult), agentapi.StopContext{}))
 	time.Sleep(50 * time.Millisecond)
 
 	// 4. Assistant with text (no tool_use) — counter stays 1.
 	assistantText := `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"The current directory is /home/user"}]},"session_id":"test-session","uuid":"uuid2"}` + "\n"
-	require.NoError(t, agent.SendRawInput([]byte(assistantText)))
+	require.NoError(t, agent.SendRawInput([]byte(assistantText), agentapi.StopContext{}))
 	time.Sleep(50 * time.Millisecond)
 
 	// 5. The result keeps its original bytes and stores the tool count separately.
 	resultMsg := `{"type":"result","subtype":"turn_end"}` + "\n"
-	require.NoError(t, agent.SendRawInput([]byte(resultMsg)))
+	require.NoError(t, agent.SendRawInput([]byte(resultMsg), agentapi.StopContext{}))
 
 	testutil.AssertEventually(t, func() bool {
 		msgs := sink.Messages()
@@ -388,11 +388,11 @@ func TestAgent_SpanTypeSetOnToolUseAndResult(t *testing.T) {
 	ctx := context.Background()
 	sink := &agenttest.Sink{}
 
-	agent, err := mockStartWithInit(ctx, agent.Options{
+	agent, err := mockStartWithInit(ctx, agentapi.Options{
 		AgentID:    "span-type-test",
-		Options:    map[string]string{agent.OptionIDModel: "test"},
+		Options:    map[string]string{agentapi.OptionIDModel: "test"},
 		WorkingDir: t.TempDir(),
-	}, agent.NewProviderServices(sink))
+	}, agentapi.NewProviderServices(sink))
 	require.NoError(t, err, "mockStartWithInit")
 	defer func() {
 		agent.Stop()
@@ -408,7 +408,7 @@ func TestAgent_SpanTypeSetOnToolUseAndResult(t *testing.T) {
 
 	// Send a tool_use (assistant) message with tool name "Grep".
 	toolUseMsg := `{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_test123","name":"Grep","input":{"pattern":"foo"}}]},"session_id":"test-session","uuid":"uuid1"}` + "\n"
-	require.NoError(t, agent.SendRawInput([]byte(toolUseMsg)))
+	require.NoError(t, agent.SendRawInput([]byte(toolUseMsg), agentapi.StopContext{}))
 
 	testutil.AssertEventually(t, func() bool {
 		return sink.MessageCount() > initialCount
@@ -421,7 +421,7 @@ func TestAgent_SpanTypeSetOnToolUseAndResult(t *testing.T) {
 
 	// Send a tool_result (user) message referencing the same tool_use_id.
 	toolResultMsg := `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_test123","content":"Found 3 files"}]},"session_id":"test-session","uuid":"uuid2","tool_use_result":{"mode":"files_with_matches","filenames":["a.go","b.go","c.go"],"numFiles":3}}` + "\n"
-	require.NoError(t, agent.SendRawInput([]byte(toolResultMsg)))
+	require.NoError(t, agent.SendRawInput([]byte(toolResultMsg), agentapi.StopContext{}))
 
 	testutil.AssertEventually(t, func() bool {
 		return sink.MessageCount() > initialCount+1
@@ -440,11 +440,11 @@ func TestAgent_ParallelToolUseClosesAllSpans(t *testing.T) {
 	ctx := context.Background()
 	sink := &agenttest.Sink{}
 
-	agent, err := mockStartWithInit(ctx, agent.Options{
+	agent, err := mockStartWithInit(ctx, agentapi.Options{
 		AgentID:    "parallel-span-test",
-		Options:    map[string]string{agent.OptionIDModel: "test"},
+		Options:    map[string]string{agentapi.OptionIDModel: "test"},
 		WorkingDir: t.TempDir(),
-	}, agent.NewProviderServices(sink))
+	}, agentapi.NewProviderServices(sink))
 	require.NoError(t, err, "mockStartWithInit")
 	defer func() {
 		agent.Stop()
@@ -460,7 +460,7 @@ func TestAgent_ParallelToolUseClosesAllSpans(t *testing.T) {
 		`{"type":"tool_use","id":"toolu_A","name":"Grep","input":{"pattern":"foo"}},` +
 		`{"type":"tool_use","id":"toolu_B","name":"Bash","input":{"command":"ls"}}` +
 		`]},"session_id":"test-session","uuid":"uuid1"}` + "\n"
-	require.NoError(t, agent.SendRawInput([]byte(toolUseMsg)))
+	require.NoError(t, agent.SendRawInput([]byte(toolUseMsg), agentapi.StopContext{}))
 
 	testutil.AssertEventually(t, func() bool {
 		return len(sink.OpenSpans()) >= 2
@@ -475,7 +475,7 @@ func TestAgent_ParallelToolUseClosesAllSpans(t *testing.T) {
 		`{"type":"tool_result","tool_use_id":"toolu_A","content":"match found"},` +
 		`{"type":"tool_result","tool_use_id":"toolu_B","content":"file list"}` +
 		`]},"session_id":"test-session","uuid":"uuid2"}` + "\n"
-	require.NoError(t, agent.SendRawInput([]byte(toolResultMsg)))
+	require.NoError(t, agent.SendRawInput([]byte(toolResultMsg), agentapi.StopContext{}))
 
 	testutil.AssertEventually(t, func() bool {
 		return sink.ClosedSpanCount() >= 2
@@ -488,11 +488,11 @@ func TestAgent_ParallelToolResultMarksLaterSelfDisplayingControlResponse(t *test
 	ctx := context.Background()
 	sink := &agenttest.Sink{}
 
-	agent, err := mockStartWithInit(ctx, agent.Options{
+	agent, err := mockStartWithInit(ctx, agentapi.Options{
 		AgentID:    "parallel-control-response-test",
-		Options:    map[string]string{agent.OptionIDModel: "test"},
+		Options:    map[string]string{agentapi.OptionIDModel: "test"},
 		WorkingDir: t.TempDir(),
-	}, agent.NewProviderServices(sink))
+	}, agentapi.NewProviderServices(sink))
 	require.NoError(t, err, "mockStartWithInit")
 	defer func() {
 		agent.Stop()
@@ -507,7 +507,7 @@ func TestAgent_ParallelToolResultMarksLaterSelfDisplayingControlResponse(t *test
 		`{"type":"tool_use","id":"toolu_A","name":"Bash","input":{"command":"ls"}},` +
 		`{"type":"tool_use","id":"toolu_B","name":"AskUserQuestion","input":{"question":"Proceed?"}}` +
 		`]},"session_id":"test-session","uuid":"uuid1"}` + "\n"
-	require.NoError(t, agent.SendRawInput([]byte(toolUseMsg)))
+	require.NoError(t, agent.SendRawInput([]byte(toolUseMsg), agentapi.StopContext{}))
 
 	testutil.AssertEventually(t, func() bool {
 		return len(sink.OpenSpans()) >= 2
@@ -518,7 +518,7 @@ func TestAgent_ParallelToolResultMarksLaterSelfDisplayingControlResponse(t *test
 		`{"type":"tool_result","tool_use_id":"toolu_B","content":"Yes, continue."}` +
 		`]},"session_id":"test-session","uuid":"uuid2"}` + "\n"
 	messageCountBeforeResult := len(sink.Messages())
-	require.NoError(t, agent.SendRawInput([]byte(toolResultMsg)))
+	require.NoError(t, agent.SendRawInput([]byte(toolResultMsg), agentapi.StopContext{}))
 
 	testutil.AssertEventually(t, func() bool {
 		msgs := sink.Messages()
@@ -564,7 +564,7 @@ func TestAgent_StartTimeoutCleansUpProcess(t *testing.T) {
 
 	// Use mock infra to test the timeout path: a process that reads stdin
 	// but never writes a control_response, causing the handshake to timeout.
-	startUnresponsive := func(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (*Agent, error) {
+	startUnresponsive := func(ctx context.Context, opts agentapi.Options, sink agentapi.ProviderServices) (*Agent, error) {
 		ctx2, cancel := context.WithCancel(ctx)
 
 		cmd := exec.CommandContext(ctx2, os.Args[0], "-test.run=TestHelperProcessUnresponsive", "--")
@@ -619,7 +619,7 @@ func TestAgent_StartTimeoutCleansUpProcess(t *testing.T) {
 
 		msg := fmt.Sprintf(`{"type":"control_request","request_id":"%s","request":{"subtype":"set_permission_mode","mode":"%s"}}`,
 			requestID, mode)
-		if sendErr := a.SendRawInput([]byte(msg)); sendErr != nil {
+		if sendErr := a.SendRawInput([]byte(msg), agentapi.StopContext{}); sendErr != nil {
 			a.unregisterPendingControl(requestID)
 			a.Stop()
 			_ = a.Wait()
@@ -652,9 +652,9 @@ func TestAgent_StartTimeoutCleansUpProcess(t *testing.T) {
 		return a, nil
 	}
 
-	agent, err := startUnresponsive(ctx, agent.Options{
+	agent, err := startUnresponsive(ctx, agentapi.Options{
 		AgentID:        "timeout-test-mock",
-		Options:        map[string]string{agent.OptionIDModel: "test"},
+		Options:        map[string]string{agentapi.OptionIDModel: "test"},
 		WorkingDir:     t.TempDir(),
 		StartupTimeout: 200 * time.Millisecond,
 	}, agenttest.Nop())
@@ -669,7 +669,7 @@ func TestAgent_EarlyExitDetected(t *testing.T) {
 
 	// Spawn a process that writes to stderr and exits immediately,
 	// simulating Claude Code rejecting a nested session.
-	startEarlyExit := func(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (*Agent, error) {
+	startEarlyExit := func(ctx context.Context, opts agentapi.Options, sink agentapi.ProviderServices) (*Agent, error) {
 		ctx2, cancel := context.WithCancel(ctx)
 
 		cmd := exec.CommandContext(ctx2, os.Args[0], "-test.run=TestHelperProcessEarlyExit", "--")
@@ -735,9 +735,9 @@ func TestAgent_EarlyExitDetected(t *testing.T) {
 	const startupTimeout = 30 * time.Second
 
 	start := time.Now()
-	agent, err := startEarlyExit(ctx, agent.Options{
+	agent, err := startEarlyExit(ctx, agentapi.Options{
 		AgentID:        "early-exit-test",
-		Options:        map[string]string{agent.OptionIDModel: "test"},
+		Options:        map[string]string{agentapi.OptionIDModel: "test"},
 		WorkingDir:     t.TempDir(),
 		StartupTimeout: startupTimeout,
 	}, agenttest.Nop())
@@ -824,7 +824,7 @@ func TestAgent_PreambleSkipping(t *testing.T) {
 		}),
 		model:          "test",
 		workingDir:     t.TempDir(),
-		sink:           agent.NewProviderServices(sink),
+		sink:           agentapi.NewProviderServices(sink),
 		pendingControl: make(map[string]chan<- claudeCodeControlResult),
 	}
 
@@ -838,7 +838,7 @@ func TestAgent_PreambleSkipping(t *testing.T) {
 	go a.readOutputLoop(scanner)
 
 	// Send a valid assistant NDJSON message to trigger output after delimiter.
-	require.NoError(t, a.SendRawInput([]byte(`{"type":"assistant","message":{"role":"assistant","content":"hello"}}`+"\n")))
+	require.NoError(t, a.SendRawInput([]byte(`{"type":"assistant","message":{"role":"assistant","content":"hello"}}`+"\n"), agentapi.StopContext{}))
 
 	// Wait for output to arrive via the sink.
 	testutil.AssertEventually(t, func() bool {
@@ -924,7 +924,7 @@ func TestAgent_PreambleMetaParsing(t *testing.T) {
 		}),
 		model:          "test",
 		workingDir:     t.TempDir(),
-		sink:           agent.NewProviderServices(sink),
+		sink:           agentapi.NewProviderServices(sink),
 		pendingControl: make(map[string]chan<- claudeCodeControlResult),
 	}
 	a.SkipStderr()
@@ -936,7 +936,7 @@ func TestAgent_PreambleMetaParsing(t *testing.T) {
 	go a.readOutputLoop(scanner)
 
 	// Send a valid assistant NDJSON message to trigger post-preamble output.
-	require.NoError(t, a.SendRawInput([]byte(`{"type":"assistant","message":{"role":"assistant","content":"hello"}}`+"\n")))
+	require.NoError(t, a.SendRawInput([]byte(`{"type":"assistant","message":{"role":"assistant","content":"hello"}}`+"\n"), agentapi.StopContext{}))
 
 	testutil.AssertEventually(t, func() bool {
 		return sink.MessageCount() > 0
@@ -1059,7 +1059,7 @@ func TestApplyStartupPermissionMode(t *testing.T) {
 
 			logPath := filepath.Join(t.TempDir(), "control.log")
 			agent, err := mockStartWithResponder(ctx,
-				agent.Options{AgentID: tc.agentID, WorkingDir: t.TempDir()},
+				agentapi.Options{AgentID: tc.agentID, WorkingDir: t.TempDir()},
 				agenttest.Nop(), tc.script, logPath)
 			require.NoError(t, err, "mockStartWithResponder")
 			defer func() { agent.Stop(); _ = agent.Wait() }()
@@ -1149,7 +1149,7 @@ func TestApplyStartupPermissionMode_TimedOutProbeLeavesNoDeferredAck(t *testing.
 	// "skip" answers nothing, so the auto probe times out. The requested mode
 	// that follows it is acknowledged.
 	a, err := mockStartWithResponder(ctx,
-		agent.Options{AgentID: "handshake-probe-timeout", WorkingDir: t.TempDir()},
+		agentapi.Options{AgentID: "handshake-probe-timeout", WorkingDir: t.TempDir()},
 		agenttest.Nop(), "skip|success", logPath)
 	require.NoError(t, err, "mockStartWithResponder")
 	defer func() { a.Stop(); _ = a.Wait() }()
@@ -1166,7 +1166,7 @@ func TestApplyStartupPermissionMode_TimedOutProbeLeavesNoDeferredAck(t *testing.
 		"the acknowledged mode supersedes the timed-out probe, so no ack stays deferred")
 	assert.Equal(t, contracts.ClaudeModePlan, confirmed,
 		"the acknowledged mode is the confirmed one, not the probed one")
-	assert.NotEqual(t, agent.OptionSettlementUnresolved,
-		a.SettingsSnapshot().Settlements[agent.OptionIDPermissionMode].State,
+	assert.NotEqual(t, agentapi.OptionSettlementUnresolved,
+		a.SettingsSnapshot().Settlements[agentapi.OptionIDPermissionMode].State,
 		"a session whose mode the CLI acknowledged must report the axis as settled")
 }

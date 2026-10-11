@@ -79,7 +79,7 @@ func TestKnownOptionIDs(t *testing.T) {
 
 	gooseProvider := leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE
 	assert.True(t, has(gooseProvider, agent.OptionIDPermissionMode))
-	assert.True(t, has(gooseProvider, goose.ConfigThinkingEffort))
+	assert.True(t, has(gooseProvider, contracts.GooseConfigThinkingEffort))
 	assert.True(t, has(gooseProvider, goose.ConfigProvider))
 	assert.False(t, has(gooseProvider, agent.OptionIDEffort), "goose uses thinking_effort, not the well-known effort")
 
@@ -146,8 +146,12 @@ func TestPermissionDefaults(t *testing.T) {
 		// default, and only a fallback.
 		{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, wantFallback: codex.DefaultApprovalPolicy},
 		{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE, wantFallback: contracts.ZCodeDefaultMode},
+		// Oh My Pi falls back to Write, which asks before a command runs. omp's own
+		// default is Yolo, the mode the bypass preset selects.
 		{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, wantFallback: cursor.ModeAgent},
 		{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX, wantFallback: contracts.ReasonixModeNormal},
+		// MiMo runs the build agent, MiMo's own default, and its permission policy
+		// is a separate axis that ProviderOptionDefaults seeds.
 		// A provider with no permission-mode axis at all declares neither half, and the
 		// option is left unset rather than stamped with a value it cannot accept.
 		{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_PI},

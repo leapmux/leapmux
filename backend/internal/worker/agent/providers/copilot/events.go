@@ -30,6 +30,9 @@ const (
 // transcript as a row that states no conversation.
 const copilotEventUsageCheckpoint = "session.usage_checkpoint"
 
+// A session can run for hours. Keep only recent reasoning IDs for duplicate checks.
+const maxCopilotReasoningIDs = 256
+
 // copilotMethodIsTelemetry reports whether a method describes the RUNTIME rather
 // than the work.
 //
@@ -144,14 +147,25 @@ func (a *Agent) handleNativeEvent(raw []byte, event copilotEvent) {
 		}
 	case contracts.CopilotEventSessionUsageInfo:
 		a.reportNativeContextUsage(sink, event.Data)
+	case contracts.CopilotEventAssistantUsage:
+		// Quota snapshots describe account state and do not create transcript rows.
+		a.reportNativeQuota(sink, event.Data)
+		return
 	case copilotEventUsageCheckpoint:
 		// Credit totals and model cache state. LeapMux surfaces neither, and the
 		// runtime does not mark the event ephemeral, so the transcript would hold one
 		// row of counters for every turn.
 		return
 	case contracts.CopilotEventAssistantMessageDelta, contracts.CopilotEventAssistantStreamingDelta,
-		contracts.CopilotEventAssistantReasoningDelta,
-		contracts.CopilotEventAssistantMessage, contracts.CopilotEventAssistantReasoning:
+		contracts.CopilotEventAssistantReasoningDelta:
+		a.reportNativeTextProgress(sink, event)
+	case contracts.CopilotEventAssistantReasoning:
+		if !a.shouldPersistNativeReasoning(event.Data) {
+			return
+		}
+		a.reportNativeTextProgress(sink, event)
+	case contracts.CopilotEventAssistantMessage:
+		a.persistEmbeddedReasoning(sink, event)
 		a.reportNativeTextProgress(sink, event)
 	case contracts.CopilotEventSessionModeChanged, contracts.CopilotEventSessionPermissionsChanged,
 		contracts.CopilotEventSessionModelChange:
@@ -240,7 +254,13 @@ func (a *Agent) endNativeTurn(raw []byte, aborted bool) {
 	a.closeStreamedNativeText(completion)
 	a.closeOpenNativeTools()
 	a.sink.ReportProgress(agent.ResetProgress())
-	if err := a.sink.PersistTurnEnd(agent.MessageContent{Original: raw, AgentSessionID: a.currentNativeSessionID()}, agent.SpanInfo{}); err != nil {
+	// The runtime states no count, so the Worker states its own, zero included. The
+	// browser rings the completion sound for a turn that states no count, and an
+	// explicit zero keeps a turn without tools quiet.
+	content := agent.MessageContent{Original: raw, AgentSessionID: a.currentNativeSessionID()}
+	uses := a.turnToolUses
+	a.turnToolUses = 0
+	if err := a.sink.PersistTurnEnd(agent.WithToolUseCount(content, uses), agent.SpanInfo{}); err != nil {
 		slog.Error("Persist Copilot turn end", "agent_id", a.AgentID(), "error", err)
 	}
 }
@@ -303,6 +323,11 @@ func (a *Agent) startNativeTool(raw []byte, event copilotEvent) {
 		a.openTools = make(map[string]*copilotOpenTool)
 	}
 	a.openTools[start.ToolCallID] = tool
+	// A subagent's calls belong to its own transcript. The Task call that started the
+	// subagent is one call of this turn.
+	if child == nil {
+		a.turnToolUses++
+	}
 	content := agent.MessageContent{Original: raw, AgentSessionID: a.currentNativeSessionID()}
 	if err := providerkit.OpenToolSpan(a.sinkFor(child), content, start.ToolCallID, start.ToolName, tool.spawns); err != nil {
 		slog.Error("Persist Copilot tool call", "agent_id", a.AgentID(), "tool_call_id", start.ToolCallID, "error", err)
@@ -315,10 +340,7 @@ func (a *Agent) startNativeTool(raw []byte, event copilotEvent) {
 // the span type is absent, so the row carries the tool-call ID alone and the
 // renderer shows the result without a request.
 func (a *Agent) completeNativeTool(raw []byte, event copilotEvent) {
-	var complete struct {
-		ToolCallID string `json:"toolCallId"`
-		Success    *bool  `json:"success"`
-	}
+	var complete copilotToolCompletionData
 	if err := json.Unmarshal(event.Data, &complete); err != nil || complete.ToolCallID == "" {
 		slog.Warn("Read Copilot tool completion", "agent_id", a.AgentID(), "error", err)
 		a.persistNativeFrameTo(a.sinkFor(a.childForEvent(event)), raw, agent.SpanInfo{})
@@ -333,10 +355,7 @@ func (a *Agent) completeNativeTool(raw []byte, event copilotEvent) {
 		child, spanType, spawns = tool.child, tool.name, tool.spawns
 	}
 	sink := a.sinkFor(child)
-	content := agent.MessageContent{Original: raw, AgentSessionID: a.currentNativeSessionID()}
-	if complete.Success != nil && !*complete.Success {
-		content.Completion = agent.MessageCompletionError
-	}
+	content := agent.MessageContent{Original: raw, AgentSessionID: a.currentNativeSessionID(), Completion: complete.completion()}
 	if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{
 		SpanID: complete.ToolCallID, SpanType: spanType, Closing: true,
 	}); err != nil {
@@ -344,6 +363,48 @@ func (a *Agent) completeNativeTool(raw []byte, event copilotEvent) {
 	}
 	if !spawns {
 		sink.CloseSpan(complete.ToolCallID)
+	}
+}
+
+// copilotToolCompletionData holds the fields of a `tool.execution_complete` that the
+// worker reads.
+type copilotToolCompletionData struct {
+	ToolCallID string `json:"toolCallId"`
+	Success    *bool  `json:"success"`
+	Error      *struct {
+		Code string `json:"code"`
+	} `json:"error"`
+}
+
+// completion is LeapMux's own statement about how the call ended, for the completion
+// column of its result row.
+//
+// The browser draws that statement as the row's header, in place of the outcome the
+// call states itself. So the statement must agree with the runtime's structured
+// `error.code`, never with the `success` flag alone:
+//
+//   - A call that succeeded, or that states no success value, takes no completion.
+//   - An `interrupted` call takes the interrupted completion: an aborted turn cut it
+//     short.
+//   - A `rejected` or `denied` call takes no completion. A permission decision refused
+//     it, so it never ran, and an error completion headed the declined row with
+//     `Error`. The browser reads the refusal from the frame itself.
+//   - Every other failure takes the error completion.
+func (c copilotToolCompletionData) completion() agent.MessageCompletion {
+	if c.Success == nil || *c.Success {
+		return ""
+	}
+	code := ""
+	if c.Error != nil {
+		code = c.Error.Code
+	}
+	switch code {
+	case contracts.CopilotToolErrorCodeInterrupted:
+		return agent.MessageCompletionInterrupted
+	case contracts.CopilotToolErrorCodeRejected, contracts.CopilotToolErrorCodeDenied:
+		return ""
+	default:
+		return agent.MessageCompletionError
 	}
 }
 
@@ -360,12 +421,22 @@ const copilotResponseSizeScope = "copilot:response"
 // Reading each known spelling means a build that fills a different one needs no
 // change here.
 type copilotAssistantText struct {
-	Content      string `json:"content"`
-	Text         string `json:"text"`
-	Delta        string `json:"delta"`
-	DeltaContent string `json:"deltaContent"`
-	MessageID    string `json:"messageId"`
-	ReasoningID  string `json:"reasoningId"`
+	Content         string `json:"content"`
+	Text            string `json:"text"`
+	Delta           string `json:"delta"`
+	DeltaContent    string `json:"deltaContent"`
+	MessageID       string `json:"messageId"`
+	ReasoningID     string `json:"reasoningId"`
+	ReasoningText   string `json:"reasoningText"`
+	ReasoningOpaque string `json:"reasoningOpaque"`
+	ReasoningBlocks struct {
+		Blocks []struct {
+			ID      string `json:"id"`
+			Summary []struct {
+				Text string `json:"text"`
+			} `json:"summary"`
+		} `json:"blocks"`
+	} `json:"reasoningBlocks"`
 	// TotalResponseSizeBytes is the running size of the answer, which is all the
 	// answer's own stream carries today.
 	TotalResponseSizeBytes int64 `json:"totalResponseSizeBytes"`
@@ -374,6 +445,115 @@ type copilotAssistantText struct {
 // body reports the text one assistant event carries, whichever field holds it.
 func (t copilotAssistantText) body() string {
 	return sessionstore.FirstNonBlank(t.DeltaContent, t.Delta, t.Content, t.Text)
+}
+
+// embeddedReasoning takes the summary that the runtime put on a finished answer.
+// The summary field is the fallback when the runtime omits reasoningText.
+func (t copilotAssistantText) embeddedReasoning() (string, string) {
+	id := sessionstore.FirstNonBlank(t.ReasoningID, t.ReasoningOpaque)
+	if id == "" && len(t.ReasoningBlocks.Blocks) > 0 {
+		id = t.ReasoningBlocks.Blocks[0].ID
+	}
+	text := t.ReasoningText
+	if strings.TrimSpace(text) == "" {
+		var parts []string
+		for _, block := range t.ReasoningBlocks.Blocks {
+			for _, summary := range block.Summary {
+				if strings.TrimSpace(summary.Text) != "" {
+					parts = append(parts, summary.Text)
+				}
+			}
+		}
+		text = strings.Join(parts, "\n")
+	}
+	if strings.TrimSpace(text) == "" {
+		return "", ""
+	}
+	return id, text
+}
+
+// shouldPersistNativeReasoning records the ID of a separate finished reasoning event.
+// The caller holds outputMu, which also guards the recent-ID map.
+func (a *Agent) shouldPersistNativeReasoning(data json.RawMessage) bool {
+	var text copilotAssistantText
+	if json.Unmarshal(data, &text) != nil {
+		return true
+	}
+	if strings.TrimSpace(text.body()) == "" {
+		return false
+	}
+	if text.ReasoningID == "" {
+		return true
+	}
+	if a.sawReasoning(text.ReasoningID) {
+		return false
+	}
+	a.rememberReasoning(text.ReasoningID)
+	return true
+}
+
+// sawReasoning checks one native ID within its session. The caller holds outputMu.
+func (a *Agent) sawReasoning(id string) bool {
+	_, exists := a.reasoningSeen[a.currentNativeSessionID()+"\x00"+id]
+	return exists
+}
+
+// rememberReasoning limits duplicate state without discarding IDs from a busy turn.
+// The caller holds outputMu.
+func (a *Agent) rememberReasoning(id string) {
+	key := a.currentNativeSessionID() + "\x00" + id
+	if a.reasoningSeen == nil {
+		a.reasoningSeen = make(map[string]struct{})
+	}
+	if _, exists := a.reasoningSeen[key]; exists {
+		return
+	}
+	if len(a.reasoningOrder) >= maxCopilotReasoningIDs {
+		delete(a.reasoningSeen, a.reasoningOrder[0])
+		a.reasoningOrder[0] = ""
+		a.reasoningOrder = a.reasoningOrder[1:]
+	}
+	a.reasoningSeen[key] = struct{}{}
+	a.reasoningOrder = append(a.reasoningOrder, key)
+}
+
+// persistEmbeddedReasoning restores the thought that Copilot's Responses path
+// sends inside assistant.message instead of a separate assistant.reasoning event.
+func (a *Agent) persistEmbeddedReasoning(sink agent.ProviderServices, event copilotEvent) {
+	var text copilotAssistantText
+	if json.Unmarshal(event.Data, &text) != nil {
+		return
+	}
+	id, content := text.embeddedReasoning()
+	if content == "" {
+		return
+	}
+	if id == "" {
+		id = event.ID + "-reasoning"
+	}
+	if a.sawReasoning(id) {
+		return
+	}
+	a.rememberReasoning(id)
+	data, err := json.Marshal(map[string]string{"reasoningId": id, "content": content})
+	if err != nil {
+		slog.Error("Encode Copilot reasoning", "agent_id", a.AgentID(), "error", err)
+		return
+	}
+	reasoning := copilotEvent{
+		ID: event.ID + "-reasoning", Type: contracts.CopilotEventAssistantReasoning,
+		AgentID: event.AgentID, ParentID: event.ParentID, Data: data,
+	}
+	frame, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0", "method": copilotMethodSessionEvent,
+		"params": map[string]any{"sessionId": a.currentNativeSessionID(), "event": reasoning},
+	})
+	if err != nil {
+		slog.Error("Encode Copilot reasoning frame", "agent_id", a.AgentID(), "error", err)
+		return
+	}
+	a.reportNativeTextProgress(sink, reasoning)
+	a.persistNativeFrameTo(sink, frame, agent.SpanInfo{})
 }
 
 // copilotAssistantTextKind reports which assembled segment one assistant event

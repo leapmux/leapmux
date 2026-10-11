@@ -56,7 +56,7 @@ describe('createTabBusyProbe', () => {
 
   describe('agent tabs', () => {
     it('reports a working agent, with its active tasks', async () => {
-      const { probe } = makeProbe([task(), task({ rowKey: 'r2', status: 'completed' })])
+      const { probe } = makeProbe([task(), task({ rowKey: 'r2', status: 'succeeded' })])
       agentIs('a1', AgentActivityState.WORKING)
 
       const reason = await probe.probe(agentTab('a1'))

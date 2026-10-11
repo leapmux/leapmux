@@ -73,6 +73,16 @@ func claudeSessionArgs(resumeSessionID string) ([]string, error) {
 // exist.
 const claudeSessionStateEnv = "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1"
 
+// claudeDisableAutoUpdaterEnv turns off the auto-updater of Claude Code, which
+// installs a newer release over the running one (`npm install -g`, `brew upgrade`
+// or the native installer). Any truthy value does; a truthy
+// CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC and DISABLE_UPDATES do too, but they
+// switch off more than the updater. Claude Code renders the updater only in its
+// interactive UI, which this stream-json launch never starts; the variable
+// reaches a `claude` that the agent's own tool starts. The shell wrapper states
+// it after the user's profile.
+const claudeDisableAutoUpdaterEnv = "DISABLE_AUTOUPDATER=1"
+
 // claudeAgentEnv builds the environment for one Claude Code launch, from the
 // environment the worker inherited.
 //
@@ -170,7 +180,8 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	// already flagged one: a default-model launch sends no --model/--effort
 	// (empty modelEffortArgs) but must still detect a provider configured in the
 	// user's rc files so OptionGroups() can hide the model/effort UI.
-	launchSpec, err := providerkit.ResolveLaunch(ctx, opts, Registration())
+	registration := Registration()
+	launchSpec, err := providerkit.ResolveLaunch(ctx, opts, registration)
 	if err != nil {
 		cancel()
 		return nil, err
@@ -184,6 +195,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		LoginShell:   opts.LoginShell,
 		Launch:       launchSpec,
 		StripEnvKeys: []string{"CLAUDECODE"},
+		SetEnv:       []string{claudeDisableAutoUpdaterEnv},
 		BaseArgs:     baseArgs,
 		EnvGated:     modelEffortGate,
 		WorkingDir:   opts.WorkingDir,
@@ -194,13 +206,14 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 
 	// providerkit.SetupProcessPipes configures SIGTERM cancel, WaitDelay, and opens
 	// stdin/stdout/stderr pipes.
-	stdin, stdout, stderrPipe, err := providerkit.SetupProcessPipes(cmd, cancel)
+	pipes, err := providerkit.SetupProcessPipes(cmd, cancel)
 	if err != nil {
 		return nil, err
 	}
+	stdout, stderrPipe := pipes.Stdout(), pipes.Stderr()
 
 	a := &Agent{
-		Process:                providerkit.NewProcess(opts, "claude", cmd, stdin, ctx, cancel, preambleDelimiter, metaPrefix),
+		Process:                providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "claude", ShutdownGrace: registration.ShutdownGrace, PreambleDelimiter: preambleDelimiter, PreambleMetaPrefix: metaPrefix}, pipes, ctx, cancel),
 		model:                  launchModel,
 		sessionID:              sessionArgs[1],
 		effort:                 opts.Effort(),
@@ -213,7 +226,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	}
 
 	agent.TraceStartupPhase(opts.AgentID, "before_exec_start")
-	if err := a.StartCmd(cmd, cancel); err != nil {
+	if err := a.StartCmd(); err != nil {
 		return nil, err
 	}
 	agent.TraceStartupPhase(opts.AgentID, "after_exec_start")
@@ -298,9 +311,24 @@ func (a *Agent) runStartupHandshake(ctx context.Context, opts agent.Options) err
 	agent.TraceStartupPhase(opts.AgentID, "after_permission_mode")
 
 	// Apply persisted options that differ from initialized defaults.
-	if flagSettings := a.buildStartupFlagSettings(opts.Options); len(flagSettings) > 0 {
+	flagSettings := a.buildStartupFlagSettings(opts.Options)
+	flagsApplied := false
+	if len(flagSettings) > 0 {
 		if err := a.sendApplyFlagSettings(ctx, flagSettings, timeout); err != nil {
 			slog.Warn("apply_flag_settings at startup failed", "agent_id", a.AgentID(), "error", err)
+		} else {
+			flagsApplied = true
+		}
+	}
+	// The CLI fixed the session's thinking at launch, from settings that did not
+	// hold the stored value yet, so the stored value needs its own request (see
+	// applySessionThinking). Only after the flag landed: a session that disables
+	// thinking while its settings still read "on" would contradict the readback.
+	thinkingUnapplied := false
+	if _, thinking := flagSettings[OptionAlwaysThinking]; thinking && flagsApplied {
+		if err := a.applySessionThinking(ctx, opts.Options[OptionAlwaysThinking], timeout); err != nil {
+			slog.Warn("set_max_thinking_tokens at startup failed", "agent_id", a.AgentID(), "error", err)
+			thinkingUnapplied = true
 		}
 	}
 	// Refresh from the CLI once startup completes so the persisted effort
@@ -313,6 +341,11 @@ func (a *Agent) runStartupHandshake(ctx context.Context, opts agent.Options) err
 		if _, observed := observedSettings[id]; !observed {
 			a.markSettingsUnresolved(id)
 		}
+	}
+	// The readback reports the flag, which landed. The running session did not
+	// take the value, so the readback alone would confirm a value nobody runs.
+	if thinkingUnapplied {
+		a.markSettingsUnresolved(OptionAlwaysThinking)
 	}
 	a.ensureSettledModelListed()
 	return nil

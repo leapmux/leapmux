@@ -27,7 +27,7 @@ func NonSteerable(start agent.StartFunc) agent.StartFunc {
 
 type nonSteerableAgent struct{ agent.Agent }
 
-func (nonSteerableAgent) Interrupt() error { return nil }
+func (nonSteerableAgent) Interrupt(stop agent.StopContext) error { return nil }
 
 // IgnoredStop wraps start so the agent it starts states that an earlier
 // stop was accepted and then ignored -- the answer that makes the
@@ -47,5 +47,5 @@ func IgnoredStop(start agent.StartFunc) agent.StartFunc {
 
 type ignoredStopAgent struct{ agent.Agent }
 
-func (ignoredStopAgent) Interrupt() error               { return nil }
-func (ignoredStopAgent) InterruptEscalationReady() bool { return true }
+func (ignoredStopAgent) Interrupt(stop agent.StopContext) error { return nil }
+func (ignoredStopAgent) InterruptEscalationReady() bool         { return true }

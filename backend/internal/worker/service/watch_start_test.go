@@ -25,7 +25,7 @@ func (writer *watchUpdatingBindWriter) BindStream(controller channel.StreamContr
 func TestWatchStartupDoesNotReplaceANewerRevision(t *testing.T) {
 	svc, dispatcher, writer := setupTestService(t)
 	createClaimTestAgent(t, svc, "agent-1")
-	update, err := proto.Marshal(&leapmuxv1.WatchEventsRequest{UpdateId: 2, Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}})
+	update, err := proto.Marshal(&leapmuxv1.WatchEventsRequest{UpdateId: 2, Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}}})
 	require.NoError(t, err)
 	initial, err := proto.Marshal(&leapmuxv1.WatchEventsRequest{UpdateId: 1, Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}}})
 	require.NoError(t, err)

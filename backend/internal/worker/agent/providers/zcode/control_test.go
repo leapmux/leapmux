@@ -201,6 +201,23 @@ func zcodeAnswer(t *testing.T, requestID, behavior, message string, answers map[
 	if answers != nil {
 		inner["updatedInput"] = map[string]any{"answers": answers}
 	}
+	return zcodeMarshalAnswer(t, requestID, inner)
+}
+
+func zcodeAnswerWithChoice(t *testing.T, requestID, behavior, message, choice string) []byte {
+	t.Helper()
+	inner := map[string]any{"behavior": behavior}
+	if message != "" {
+		inner["message"] = message
+	}
+	if choice != "" {
+		inner["choice"] = choice
+	}
+	return zcodeMarshalAnswer(t, requestID, inner)
+}
+
+func zcodeMarshalAnswer(t *testing.T, requestID string, inner map[string]any) []byte {
+	t.Helper()
 	content, err := json.Marshal(map[string]any{
 		"type": "control_response",
 		"response": map[string]any{
@@ -311,6 +328,35 @@ func TestZCodeResolveControlResponse_AllowEchoesTheOptionResponse(t *testing.T) 
 	assert.Equal(t, agent.PlanModeControlNone, res.PlanModeControl)
 }
 
+// The answer's CHOICE names the option the reader picked in the pill group. That
+// option's response is the exact native reply -- "Always allow in this project"
+// carries permissionUpdates a bare allow would drop, and picking it must echo ITS
+// response even though an earlier option also allows.
+func TestZCodeResolveControlResponse_AChosenOptionIdEchoesThatOptionResponse(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	a.HandleOutput(zcodeRequestLine(t, 7, contracts.ZCodeMethodRequestPermission, zcodePermissionParams))
+	stored := zcodeStoredPayload(t, sink)
+
+	frame, _ := zcodeResolve(t, stored, zcodeAnswerWithChoice(t, "req-1", agent.ControlBehaviorAllow, "", "allow_always"))
+	var result map[string]any
+	require.NoError(t, json.Unmarshal(frame.Result, &result))
+	assert.Equal(t, contracts.ZCodeDecisionAllow, result["decision"])
+	assert.NotContains(t, result, "scope", "the chosen always option's response is echoed whole, not the once option's")
+	assert.Equal(t, []any{map[string]any{"rule": "Bash(rm:*)"}},
+		result["permissionUpdates"], "the chosen always option's rule updates reach the backend")
+
+	// A choice that names no offered option changes nothing: the decision word
+	// still picks the first allowing option, so a stale pill cannot invent a grant.
+	frame, _ = zcodeResolve(t, stored, zcodeAnswerWithChoice(t, "req-1", agent.ControlBehaviorAllow, "", "allow_project"))
+	var fallback map[string]any
+	require.NoError(t, json.Unmarshal(frame.Result, &fallback))
+	assert.Equal(t, "once", fallback["scope"], "an unknown choice id falls back to the decision word")
+	assert.NotContains(t, fallback, "permissionUpdates")
+}
+
 func TestZCodeResolveControlResponse_DenyCarriesTheUsersReason(t *testing.T) {
 	t.Parallel()
 
@@ -337,7 +383,7 @@ func TestZCodePermissionResult_AnAllowWithNoAllowingOptionDenies(t *testing.T) {
 		{OptionID: "deny", Response: json.RawMessage(`{"decision":"deny"}`)},
 		{OptionID: "weird", Response: json.RawMessage(`{"decision":"escalate"}`)},
 	}
-	raw, err := zcodePermissionResult(options, agent.ControlBehaviorAllow, "")
+	raw, err := zcodePermissionResult(options, agent.ControlBehaviorAllow, "", "")
 	require.NoError(t, err)
 	var result map[string]any
 	require.NoError(t, json.Unmarshal(raw, &result))
@@ -351,7 +397,7 @@ func TestZCodePermissionResult_WithNoOptionsSynthesizesABareDecision(t *testing.
 	t.Parallel()
 
 	for _, behavior := range []string{agent.ControlBehaviorAllow, agent.ControlBehaviorDeny} {
-		raw, err := zcodePermissionResult(nil, behavior, "because")
+		raw, err := zcodePermissionResult(nil, behavior, "because", "")
 		require.NoError(t, err)
 		var result map[string]any
 		require.NoError(t, json.Unmarshal(raw, &result))
@@ -1133,6 +1179,15 @@ func TestZCodeProvider_TurnEndToolUsesReadsTheStatedCount(t *testing.T) {
 	assert.False(t, ok)
 	_, ok = provider.TurnEndToolUses([]byte(`not json`))
 	assert.False(t, ok)
+
+	// The Worker's own count, which every divider carries, outranks the native one: a
+	// stopped turn states toolCallCount 0 for the call that the stop cut.
+	count, ok = provider.TurnEndToolUses([]byte(`{"type":"turn.completed","payload":{"toolCallCount":0,"resultType":"cancelled"},"num_tool_uses":1}`))
+	assert.True(t, ok)
+	assert.Equal(t, int32(1), count)
+	count, ok = provider.TurnEndToolUses([]byte(`{"type":"turn.failed","payload":{"toolCallCount":3},"num_tool_uses":2}`))
+	assert.True(t, ok)
+	assert.Equal(t, int32(2), count)
 }
 
 // ZCode's handle is an opaque TOKEN from session/list, so the token rule applies and
@@ -1179,8 +1234,10 @@ func TestZCodeProvider_TheFalseCapabilitiesAreDeliberate(t *testing.T) {
 	provider := zcodeProvider{}
 	assert.False(t, provider.IsSelfDisplayingControlTool(contracts.ZCodeToolNameAskUserQuestion),
 		"the app-server echoes no control answer, so the synthetic row is the only record")
-	assert.False(t, provider.SupportsChildSteering(), "a ZCode subagent takes no further message")
-	assert.False(t, provider.EndsSubagentTranscript(nil))
+	assert.False(t, provider.ChildCapabilities(nil).AcceptsMessages, "a ZCode subagent takes no further message")
+	count, known := provider.TurnEndToolUses(nil)
+	assert.False(t, known)
+	assert.Zero(t, count)
 	assert.Empty(t, provider.PlanApprovalOptions(""))
 	assert.Empty(t, provider.SyntheticInterruptNotice())
 	_, ok := provider.PermissionModeFromRawInput(`{"mode":"yolo"}`)

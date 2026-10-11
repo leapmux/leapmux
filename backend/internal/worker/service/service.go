@@ -88,10 +88,12 @@ type Service struct {
 	// points, and only the background one takes a startup permit.
 	startBackgroundAgentFn func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error)
 	startTerminalFn        func(context.Context, terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error
-	createAgentRecordFn    func(context.Context, db.CreateAgentParams) error
-	getAgentByIDFn         func(context.Context, string) (db.Agent, error)
-	sendControlResponseFn  func(string, []byte) error
-	updateAgentSettingsFn  func(string, OptionMap) agent.SettingsApplyResult
+	// beforeAgentCloseTeardownFn holds a close after admission closes in tests.
+	beforeAgentCloseTeardownFn func(string)
+	createAgentRecordFn        func(context.Context, db.CreateAgentParams) error
+	getAgentByIDFn             func(context.Context, string) (db.Agent, error)
+	sendControlResponseFn      func(string, []byte) error
+	updateAgentSettingsFn      func(string, OptionMap) agent.SettingsApplyResult
 	// batchGitStatusFn runs the concurrent git-status batch for a watch
 	// catch-up. A seam (same contract as its siblings above) so tests can
 	// observe the overlap's cancellation without spawning real git processes.
@@ -143,11 +145,15 @@ type Service struct {
 	// them even if a handler panics.
 	Cleanup sync.WaitGroup
 
-	// forceStops holds the agent ids with an interrupt-escalation restart in
-	// flight. A stop press that lands while the replacement is still starting
-	// finds nothing running to interrupt, and the honest answer is the benign
-	// one -- the press that began the restart already carried this one's intent.
+	// forceStops shares a process replacement result for one captured process and turn scope.
+	// Closing the result channel publishes its error to every concurrent caller.
 	forceStops sync.Map
+
+	// Native tool changes can require a replacement before queued input runs.
+	// The mutex makes restart admission atomic with Shutdown's closed flag.
+	nativeTurnRestartMu sync.Mutex
+	nativeTurnRestarts  map[string]struct{}
+	nativeTurnRestartWG sync.WaitGroup
 
 	// tunnels is the worker-singleton tunnel manager built in RegisterAll. It
 	// owns the half-closed idle reaper goroutine, which Shutdown stops for clean
@@ -610,26 +616,38 @@ func New(cfg Config) *Service {
 	// The one turn flag every provider publishes. A queue that already closed
 	// admission refuses it, and a Worker shutdown stops every agent it runs --
 	// so that refusal is the expected end of the signal, not a fault to report.
-	svc.Output.SetTurnStateFunc(func(agentID string, state agent.TurnState) {
-		var err error
-		what := "turn end"
-		if state.Active {
-			what = "turn start"
-			_, err = svc.InputQueue.TurnStarted(bgCtx(), agentID, state.Steerable)
-		} else {
-			_, err = svc.InputQueue.TurnEnded(bgCtx(), agentID)
+	svc.Output.SetTurnStateFunc(func(agentID string, admission agent.TurnStateAdmission) {
+		state, lease := admission.Acquire()
+		if lease == nil {
+			return
 		}
+		lease.Release()
+		if !state.Active && svc.Agents.NativeTurnRestartRequired(agentID) && svc.scheduleNativeTurnRestart(agentID, admission) {
+			return
+		}
+		_, err := svc.InputQueue.ReconcileProviderTurn(bgCtx(), agentID, admission)
 		if err != nil && !errors.Is(err, inputqueue.ErrManagerStopped) {
 			slog.Warn("reconcile agent input queue with the provider's turn flag failed",
-				"agent_id", agentID, "edge", what, "error", err)
+				"agent_id", agentID, "error", err)
 		}
+	})
+	svc.Output.SetRequeueDroppedInputFunc(func(agentID, dropID, content string, attachments []*leapmuxv1.Attachment) (bool, error) {
+		_, added, err := svc.InputQueue.EnqueueReportingAdded(bgCtx(), inputqueue.NewItem{
+			ID: droppedInputID(agentID, dropID), AgentID: agentID,
+			Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: content,
+			Attachments:      queueAttachments(attachments),
+			ReclassifyOnEdit: true,
+		})
+		return added, err
 	})
 	svc.startAgentFn = svc.Agents.StartAgent
 	svc.startBackgroundAgentFn = svc.Agents.StartBackgroundAgent
 	svc.startTerminalFn = svc.Terminals.StartTerminal
 	svc.createAgentRecordFn = svc.Queries.CreateAgent
 	svc.getAgentByIDFn = svc.Queries.GetAgentByID
-	svc.sendControlResponseFn = svc.Agents.SendRawInput
+	svc.sendControlResponseFn = func(agentID string, content []byte) error {
+		return svc.Agents.SendRawInput(agentID, content, agent.StopContext{})
+	}
 	svc.updateAgentSettingsFn = svc.Agents.UpdateSettings
 	svc.batchGitStatusFn = gitutil.BatchGetGitStatus
 
@@ -643,9 +661,15 @@ func New(cfg Config) *Service {
 	})
 	// Let PersistSettingsRefresh detect the startup window so it doesn't
 	// clobber a settings change made mid-startup (see SetAgentStartingFunc).
+	// Read through svc, as the closure below does.
 	svc.Output.SetAgentStartingFunc(func(agentID string) bool {
-		_, _, _, ok := svc.AgentStartup.status(agentID)
-		return ok
+		return svc.AgentStartup.startupWindowOpen(agentID)
+	})
+	// Keep a late provider push from reporting ACTIVE while a close of its tab
+	// is in progress (see SetAgentClosingFunc). Read through svc, as above, so
+	// a test that replaces the registry is still the one consulted.
+	svc.Output.SetAgentClosingFunc(func(agentID string) bool {
+		return svc.AgentStartup.closing(agentID)
 	})
 
 	return svc
@@ -720,6 +744,16 @@ func (svc *Service) startTerminal(ctx context.Context, opts terminal.Options, ou
 }
 
 func (svc *Service) createAgentRecord(ctx context.Context, params db.CreateAgentParams) error {
+	if err := validateAgentRecordProvider(params); err != nil {
+		return err
+	}
+	if svc.createAgentRecordFn != nil {
+		return svc.createAgentRecordFn(ctx, params)
+	}
+	return svc.Queries.CreateAgent(ctx, params)
+}
+
+func validateAgentRecordProvider(params db.CreateAgentParams) error {
 	// Every agent row must carry a real provider: the client renders each of the
 	// agent's messages through that provider's renderers, and createMessageRow
 	// refuses to persist a message row for an UNSPECIFIED provider. Enforce the
@@ -731,10 +765,7 @@ func (svc *Service) createAgentRecord(ctx context.Context, params db.CreateAgent
 	if params.AgentProvider == leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED {
 		return fmt.Errorf("refusing to create agent %q with UNSPECIFIED agent provider", params.ID)
 	}
-	if svc.createAgentRecordFn != nil {
-		return svc.createAgentRecordFn(ctx, params)
-	}
-	return svc.Queries.CreateAgent(ctx, params)
+	return nil
 }
 
 // clearAgentSessionID forgets the session an agent was in, so the next cold
@@ -742,15 +773,21 @@ func (svc *Service) createAgentRecord(ctx context.Context, params db.CreateAgent
 //
 // Every relaunch failure path calls it: a relaunch that could not start left
 // the row pointing at a session the previous process owned, and the next
-// message would relaunch with --resume against it. The write is best-effort --
-// the relaunch already failed, and the caller is reporting that failure to the
-// user -- so the error is logged rather than returned.
+// message would relaunch with --resume against it. A context clear calls it
+// also, before its launch, because that launch never resumes the cleared
+// session (see prepareClearContext).
+//
+// The write is best-effort, so the error is logged rather than returned. On a
+// failure path, the relaunch already failed, and the caller reports that
+// failure to the user. In a context clear, the old process already stopped, and
+// the launch that follows still replaces the session for each provider that
+// states its new session at the launch.
 func (svc *Service) clearAgentSessionID(agentID string) {
 	if err := svc.Queries.UpdateAgentSessionID(bgCtx(), db.UpdateAgentSessionIDParams{
 		AgentSessionID: "",
 		ID:             agentID,
 	}); err != nil {
-		slog.Warn("failed to clear the agent session id after a failed relaunch",
+		slog.Warn("failed to clear the stored agent session id",
 			"agent_id", agentID, "error", err)
 	}
 }
@@ -787,14 +824,8 @@ func (svc *Service) RestoreState() {
 	// the same stamp (the in-memory caches do not exist yet at boot, so there is
 	// no cache/DB drift to guard here -- this is purely for uniform labeling).
 	bootNow := nowMillis()
-	// The sweep REPORTS the child transcripts it ended, so the divider list and
-	// the write are one statement. Each transcript gets a closing divider below,
-	// for the same reason the exit sweep writes one -- a subagent cut off by a
-	// worker restart would otherwise show an 'interrupted' row in the sidebar
-	// beside a transcript that just stops, and the tab would keep a thinking
-	// indicator that never resolves. When the sweep fails nothing moved, so
-	// nothing is owed a divider and a later boot finds the rows still active.
-	endedChildIDs, err := svc.Queries.MarkAllActiveAgentBackgroundTasksInterrupted(bgCtx(), db.MarkAllActiveAgentBackgroundTasksInterruptedParams{
+	// The sweep updates registry status without changing native transcripts.
+	endedCount, err := svc.Queries.MarkAllActiveAgentBackgroundTasksInterrupted(bgCtx(), db.MarkAllActiveAgentBackgroundTasksInterruptedParams{
 		Status:         leapmuxv1.BackgroundTaskStatus(bgtask.StatusInterrupted),
 		MinFinalStatus: leapmuxv1.BackgroundTaskStatus(bgtask.MinFinalStatus),
 		EndedAt:        sqltime.SQLiteNullTimeOf(bootNow),
@@ -802,9 +833,8 @@ func (svc *Service) RestoreState() {
 	})
 	if err != nil {
 		slog.Warn("mark active background tasks interrupted failed", "error", err)
-	} else if len(endedChildIDs) > 0 {
-		slog.Info("marked background tasks interrupted on boot", "count", len(endedChildIDs))
-		svc.Output.WriteSubagentEndDividers(endedChildIDs, bgtask.StatusInterrupted)
+	} else if endedCount > 0 {
+		slog.Info("marked background tasks interrupted on boot", "count", endedCount)
 	}
 	svc.Output.restoreAutoContinueSchedules()
 }
@@ -883,7 +913,11 @@ func (svc *Service) Shutdown() {
 	// Close the door before anything else, so the drains below are draining a
 	// set that can no longer grow. See the field's comment for what got in
 	// otherwise.
+	svc.nativeTurnRestartMu.Lock()
+	// A scheduler that entered first completes its WaitGroup Add before this
+	// latch closes. A later scheduler sees the latch while it holds this mutex.
 	svc.shuttingDown.Store(true)
+	svc.nativeTurnRestartMu.Unlock()
 	// Set the Output-level shutdown latch too: a shutdown-driven StopAll below
 	// must leave background-task rows ACTIVE so the NEXT boot's RestoreState
 	// sweep labels them 'interrupted' (a truthful "worker restart" label)
@@ -936,6 +970,7 @@ func (svc *Service) Shutdown() {
 	// Queue dispatch runs outside the RPC handler that created it. Join those
 	// goroutines before the startup drains and provider teardown below.
 	waitForInputQueue()
+	svc.nativeTurnRestartWG.Wait()
 
 	// Drain any goroutines spawned by OpenAgent/OpenTerminal so their
 	// trailing DB writes and filesystem work land before the caller
@@ -1625,6 +1660,8 @@ func sendStreamError(sender channel.ResponseWriter, code codes.Code, msg string)
 // registry use it: an explicit error is a better answer than a tab whose
 // process is about to be killed unannounced, and it is what makes Shutdown's
 // documented "no new requests" precondition true rather than merely asserted.
+// holdRelaunch claims a startup entry too. It reads shuttingDown itself, because
+// the requests that reach it still run during Shutdown.
 func (svc *Service) refuseIfShuttingDown(sender channel.ResponseWriter) bool {
 	if !svc.shuttingDown.Load() {
 		return false

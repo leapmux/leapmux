@@ -2,6 +2,8 @@ package agent
 
 import (
 	"math"
+	"slices"
+	"strings"
 	"unicode/utf8"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -29,10 +31,12 @@ const (
 type ProgressUpdate struct {
 	Operation ProgressOperation
 	ScopeID   string
-	Text      string
-	Value     int64
-	Minimum   bool
-	Exact     bool
+	// PreserveModelScopes applies only to a global model reset. ScopeID takes priority.
+	PreserveModelScopes []string
+	Text                string
+	Value               int64
+	Minimum             bool
+	Exact               bool
 	// Truncated states that the observation LOST earlier output. It belongs to
 	// ProgressOutputTail alone: a tail says what the tool printed last, and the
 	// reader must know when there was more before it.
@@ -59,18 +63,14 @@ func OutputExactTotalProgress(scopeID string, bytes int64) ProgressUpdate {
 	return ProgressUpdate{Operation: ProgressOutputTotal, ScopeID: scopeID, Value: bytes, Exact: true}
 }
 
-// OutputTailProgress carries the last text a RUNNING tool printed, so the card
+// OutputTailProgress carries the last text a running tool printed, so the card
 // can show the call's current output while it runs.
 //
-// It is not a counter. Every other operation here folds into one aggregate that
-// the agent broadcasts as a number; this one travels per SPAN and reaches the
-// span's own running-tool payload, because a tail belongs to one tool call and
-// says nothing about any other. `scopeID` is that call's id, which is also its
-// span id.
+// Counters produce one aggregate for the agent. This operation carries text for one span.
+// scopeID identifies the tool span. The tail belongs only to that span.
 //
-// Ephemeral, like every observation in this file: the worker never writes the
-// tail to the messages table, and the finished row carries the whole text
-// through the retained frame the provider sends at the end.
+// The worker does not store live tails in the messages table.
+// The final native frame supplies the whole output for the finished row.
 func OutputTailProgress(scopeID, tail string, truncated bool) ProgressUpdate {
 	return ProgressUpdate{Operation: ProgressOutputTail, ScopeID: scopeID, Text: tail, Truncated: truncated}
 }
@@ -93,6 +93,20 @@ func ResetProgress() ProgressUpdate {
 
 func ResetModelProgress() ProgressUpdate {
 	return ProgressUpdate{Operation: ProgressModelReset}
+}
+
+// ResetModelProgressPreservingScopes keeps the supplied scopes during a global model reset.
+// The update owns its selector so later caller mutation cannot change it.
+func ResetModelProgressPreservingScopes(scopeIDs []string) ProgressUpdate {
+	return ProgressUpdate{Operation: ProgressModelReset, PreserveModelScopes: slices.Clone(scopeIDs)}
+}
+
+// ResetModelScopeProgress clears one model scope. An invalid target changes nothing.
+func ResetModelScopeProgress(scopeID string) ProgressUpdate {
+	if strings.TrimSpace(scopeID) == "" || strings.ContainsRune(scopeID, '\x00') {
+		return ProgressUpdate{}
+	}
+	return ProgressUpdate{Operation: ProgressModelReset, ScopeID: scopeID}
 }
 
 type progressScope struct {
@@ -130,12 +144,25 @@ func (c *ProgressCounter) Apply(update ProgressUpdate) (ProgressSnapshot, bool) 
 		return c.last, changed
 	}
 	if update.Operation == ProgressModelReset {
+		var preserved map[string]struct{}
+		if update.ScopeID == "" && len(update.PreserveModelScopes) > 0 {
+			preserved = make(map[string]struct{}, len(update.PreserveModelScopes))
+			for _, scopeID := range update.PreserveModelScopes {
+				preserved[scopeID] = struct{}{}
+			}
+		}
 		for id, scope := range c.scopes {
+			if update.ScopeID != "" && update.ScopeID != id {
+				continue
+			}
+			if _, keep := preserved[id]; keep {
+				continue
+			}
 			scope.modelActive = false
 			scope.modelRetained = 0
 			scope.modelChars = 0
 			scope.nativeTokens = 0
-			if !scope.outputActive && scope.outputRetained == 0 && scope.outputBytes == 0 {
+			if !scope.hasOutputState() {
 				delete(c.scopes, id)
 			}
 		}
@@ -144,9 +171,8 @@ func (c *ProgressCounter) Apply(update ProgressUpdate) (ProgressSnapshot, bool) 
 		c.last = next
 		return next, changed
 	}
-	// A tail is per-span text rather than a counter, so it changes nothing here.
-	// The publisher reads it before it reaches this aggregate; see
-	// OutputTailProgress.
+	// A tail changes no counter. The publisher reads its text before aggregate calculation.
+	// See OutputTailProgress.
 	if update.Operation == ProgressOutputTail || update.ScopeID == "" {
 		return c.last, false
 	}
@@ -217,10 +243,8 @@ func (c *ProgressCounter) Apply(update ProgressUpdate) (ProgressSnapshot, bool) 
 	case ProgressModelReset, ProgressReset:
 		return c.last, false
 	case ProgressOutputTail:
-		// Unreachable: the guard above this switch returns for a tail before any
-		// scope is touched. The case is here because the switch is exhaustive over
-		// ProgressOperation, so a new operation is a compile-time failure rather than
-		// a value that silently falls through and moves no counter.
+		// The earlier guard returns before a tail changes any scope.
+		// This case keeps the switch exhaustive over ProgressOperation.
 		return c.last, false
 	}
 	var next ProgressSnapshot
@@ -276,8 +300,7 @@ func (c *ProgressCounter) dropFinishedKind(kind ProgressOperation) {
 			scope.outputMinimum = false
 			scope.outputRetainedMinimum = false
 		}
-		if !scope.modelActive && !scope.outputActive && scope.modelRetained == 0 && scope.modelChars == 0 &&
-			scope.nativeTokens == 0 && scope.outputRetained == 0 && scope.outputBytes == 0 {
+		if !scope.modelActive && scope.modelRetained == 0 && scope.modelChars == 0 && scope.nativeTokens == 0 && !scope.hasOutputState() {
 			delete(c.scopes, id)
 		}
 	}
@@ -301,6 +324,10 @@ func (s *progressScope) currentOutputTotal() int64 {
 
 func (s *progressScope) hasOutputMinimum() bool {
 	return s.outputRetainedMinimum || s.outputMinimum
+}
+
+func (s *progressScope) hasOutputState() bool {
+	return s.outputActive || s.outputRetained != 0 || s.outputBytes != 0 || s.hasOutputMinimum()
 }
 
 func replaceAggregate(total, oldValue, newValue int64) int64 {
@@ -342,23 +369,50 @@ type modelProgressResetTranscript struct {
 }
 
 func (s modelProgressResetTranscript) PersistMessage(source leapmuxv1.MessageSource, content MessageContent, span SpanInfo) error {
-	if source == leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT && span.ParentSpanID == "" {
-		s.progress.ReportProgress(ResetModelProgress())
+	if content.WriteReceipt == nil {
+		content.WriteReceipt = NewTranscriptWriteReceipt()
 	}
-	return s.TranscriptServices.PersistMessage(source, content, span)
+	content = s.CaptureMessage(content, span)
+	err := s.TranscriptServices.PersistMessage(source, content, span)
+	if err == nil && source == leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT && span.ParentSpanID == "" {
+		s.resetModelProgress(content)
+	}
+	return err
 }
 
-func (s modelProgressResetTranscript) PersistNotification(source leapmuxv1.MessageSource, content []byte) (bool, error) {
+func (s modelProgressResetTranscript) PersistNotification(source leapmuxv1.MessageSource, content MessageContent) (bool, error) {
+	if content.WriteReceipt == nil {
+		content.WriteReceipt = NewTranscriptWriteReceipt()
+	}
+	content = s.CaptureMessage(content, SpanInfo{})
 	broadcast, err := s.TranscriptServices.PersistNotification(source, content)
 	if err == nil && broadcast && source == leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT {
-		s.progress.ReportProgress(ResetModelProgress())
+		s.resetModelProgress(content)
 	}
 	return broadcast, err
 }
 
 func (s modelProgressResetTranscript) PersistTurnEnd(content MessageContent, span SpanInfo) error {
+	if content.WriteReceipt == nil {
+		content.WriteReceipt = NewTranscriptWriteReceipt()
+	}
+	content = s.CaptureMessage(content, span)
+	err := s.TranscriptServices.PersistTurnEnd(content, span)
+	if err == nil {
+		s.resetModelProgress(content)
+	}
+	return err
+}
+
+func (s modelProgressResetTranscript) resetModelProgress(content MessageContent) {
+	if content.WriteReceipt != nil && !content.WriteReceipt.ClaimModelReset() {
+		return
+	}
+	if content.Publication != nil {
+		content.Publication.ReportProgress(ResetModelProgress())
+		return
+	}
 	s.progress.ReportProgress(ResetModelProgress())
-	return s.TranscriptServices.PersistTurnEnd(content, span)
 }
 
 type modelProgressResetControl struct {

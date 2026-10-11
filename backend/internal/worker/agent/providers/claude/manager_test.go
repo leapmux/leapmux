@@ -97,7 +97,7 @@ func TestManager_SendInput(t *testing.T) {
 	// SendInput sends a user JSON message; the mock echoes it back.
 	// Since it's a simple user text echo, HandleOutput drops it.
 	// Send raw assistant NDJSON to verify the full pipeline.
-	require.NoError(t, m.SendRawInput("s2", []byte(`{"type":"assistant","message":{"role":"assistant","content":"hi"}}`+"\n")), "SendRawInput")
+	require.NoError(t, m.SendRawInput("s2", []byte(`{"type":"assistant","message":{"role":"assistant","content":"hi"}}`+"\n"), agent.StopContext{}), "SendRawInput")
 
 	testutil.AssertEventually(t, func() bool {
 		return sink.MessageCount() > 0

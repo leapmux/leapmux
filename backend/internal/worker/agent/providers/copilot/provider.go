@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"regexp"
 	"strings"
 
@@ -19,6 +20,14 @@ import (
 // that Copilot simply takes needs no method here.
 type copilotProvider struct {
 	agent.ProviderDefaults
+}
+
+// The native Copilot model request keeps only the filename of a PDF or binary blob.
+func (copilotProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
+	if attachment.Kind == agent.AttachmentKindPDF || attachment.Kind == agent.AttachmentKindBinary {
+		return fmt.Errorf("copilot cannot deliver %s attachment %q to its model", attachment.Kind, attachment.Filename)
+	}
+	return nil
 }
 
 // IsInterrupt recognizes Copilot's own abort frame.

@@ -1,12 +1,12 @@
 {
-  "_readme": "Shared cases for Pi artifact recovery without changes to original provider messages. It also covers the partial result of a call whose turn ended first, which the worker keeps beside the agent's own tool_execution_start frame.",
+  "_readme": "Pi message resolution cases for Go and TypeScript. Each native result keeps its original inline preview, images, and reported paths. Obsolete saved-text supplements cannot replace native results. A retained start frame can recover its last native partial result when the exact tool and call identities match. The corpus preserves malformed and absent fields also.",
   "cases": [
     {
-      "name": "restore text and keep image order and other fields",
+      "name": "keep the native preview and keep image order and other fields",
       "original": {
         "type": "tool_execution_end",
         "toolCallId": "call",
-        "toolName": "mcpScript",
+        "toolName": "mcp__probe__long_text",
         "isError": false,
         "result": {
           "content": [
@@ -24,58 +24,24 @@
             }
           ],
           "details": {
-            "mode": "script",
-            "outputGuard": {
-              "truncated": true,
-              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
-            }
+            "server": "probe",
+            "tool": "long_text",
+            "fullOutputPath": "/native-tmp/pi-mcp-0123456789abcdef.txt"
           }
         }
       },
       "supplemental": {
         "toolCallId": "call",
-        "toolName": "mcpScript",
+        "toolName": "mcp__probe__long_text",
         "outputFile": {
-          "path": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt",
+          "path": "/native-tmp/pi-mcp-0123456789abcdef.txt",
           "text": "Complete output\nLast line"
         }
       },
       "expected": {
         "type": "tool_execution_end",
         "toolCallId": "call",
-        "toolName": "mcpScript",
-        "isError": false,
-        "result": {
-          "content": [
-            {
-              "type": "text",
-              "text": "Complete output\nLast line",
-              "annotations": {
-                "priority": 0
-              }
-            },
-            {
-              "type": "image",
-              "data": "AAAA",
-              "mimeType": "image/png"
-            }
-          ],
-          "details": {
-            "mode": "script",
-            "outputGuard": {
-              "truncated": true,
-              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
-            }
-          }
-        }
-      }
-    },
-    {
-      "name": "preserve an explicitly empty recovered text",
-      "original": {
-        "type": "tool_execution_end",
-        "toolCallId": "call",
-        "toolName": "mcpScript",
+        "toolName": "mcp__probe__long_text",
         "isError": false,
         "result": {
           "content": [
@@ -93,32 +59,25 @@
             }
           ],
           "details": {
-            "mode": "script",
-            "outputGuard": {
-              "truncated": true,
-              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
-            }
+            "server": "probe",
+            "tool": "long_text",
+            "fullOutputPath": "/native-tmp/pi-mcp-0123456789abcdef.txt"
           }
         }
-      },
-      "supplemental": {
-        "toolCallId": "call",
-        "toolName": "mcpScript",
-        "outputFile": {
-          "path": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt",
-          "text": ""
-        }
-      },
-      "expected": {
+      }
+    },
+    {
+      "name": "ignore explicitly empty saved text and keep the native preview",
+      "original": {
         "type": "tool_execution_end",
         "toolCallId": "call",
-        "toolName": "mcpScript",
+        "toolName": "mcp__probe__long_text",
         "isError": false,
         "result": {
           "content": [
             {
               "type": "text",
-              "text": "",
+              "text": "Short output",
               "annotations": {
                 "priority": 0
               }
@@ -130,11 +89,44 @@
             }
           ],
           "details": {
-            "mode": "script",
-            "outputGuard": {
-              "truncated": true,
-              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
+            "server": "probe",
+            "tool": "long_text",
+            "fullOutputPath": "/native-tmp/pi-mcp-0123456789abcdef.txt"
+          }
+        }
+      },
+      "supplemental": {
+        "toolCallId": "call",
+        "toolName": "mcp__probe__long_text",
+        "outputFile": {
+          "path": "/native-tmp/pi-mcp-0123456789abcdef.txt",
+          "text": ""
+        }
+      },
+      "expected": {
+        "type": "tool_execution_end",
+        "toolCallId": "call",
+        "toolName": "mcp__probe__long_text",
+        "isError": false,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Short output",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
             }
+          ],
+          "details": {
+            "server": "probe",
+            "tool": "long_text",
+            "fullOutputPath": "/native-tmp/pi-mcp-0123456789abcdef.txt"
           }
         }
       }
@@ -144,7 +136,7 @@
       "original": {
         "type": "tool_execution_end",
         "toolCallId": "call",
-        "toolName": "mcpScript",
+        "toolName": "mcp__probe__long_text",
         "isError": false,
         "result": {
           "content": [
@@ -162,26 +154,24 @@
             }
           ],
           "details": {
-            "mode": "script",
-            "outputGuard": {
-              "truncated": true,
-              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
-            }
+            "server": "probe",
+            "tool": "long_text",
+            "fullOutputPath": "/native-tmp/pi-mcp-0123456789abcdef.txt"
           }
         }
       },
       "supplemental": {
         "toolCallId": "other",
-        "toolName": "mcpScript",
+        "toolName": "mcp__probe__long_text",
         "outputFile": {
-          "path": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt",
+          "path": "/native-tmp/pi-mcp-0123456789abcdef.txt",
           "text": "Complete output\nLast line"
         }
       },
       "expected": {
         "type": "tool_execution_end",
         "toolCallId": "call",
-        "toolName": "mcpScript",
+        "toolName": "mcp__probe__long_text",
         "isError": false,
         "result": {
           "content": [
@@ -199,11 +189,9 @@
             }
           ],
           "details": {
-            "mode": "script",
-            "outputGuard": {
-              "truncated": true,
-              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
-            }
+            "server": "probe",
+            "tool": "long_text",
+            "fullOutputPath": "/native-tmp/pi-mcp-0123456789abcdef.txt"
           }
         }
       }
@@ -213,7 +201,7 @@
       "original": {
         "type": "tool_execution_end",
         "toolCallId": "call",
-        "toolName": "mcpScript",
+        "toolName": "mcp__probe__long_text",
         "isError": false,
         "result": {
           "content": [
@@ -231,11 +219,9 @@
             }
           ],
           "details": {
-            "mode": "script",
-            "outputGuard": {
-              "truncated": true,
-              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
-            }
+            "server": "probe",
+            "tool": "long_text",
+            "fullOutputPath": "/native-tmp/pi-mcp-0123456789abcdef.txt"
           }
         }
       },
@@ -243,14 +229,14 @@
         "toolCallId": "call",
         "toolName": "other",
         "outputFile": {
-          "path": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt",
+          "path": "/native-tmp/pi-mcp-0123456789abcdef.txt",
           "text": "Complete output\nLast line"
         }
       },
       "expected": {
         "type": "tool_execution_end",
         "toolCallId": "call",
-        "toolName": "mcpScript",
+        "toolName": "mcp__probe__long_text",
         "isError": false,
         "result": {
           "content": [
@@ -268,11 +254,9 @@
             }
           ],
           "details": {
-            "mode": "script",
-            "outputGuard": {
-              "truncated": true,
-              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
-            }
+            "server": "probe",
+            "tool": "long_text",
+            "fullOutputPath": "/native-tmp/pi-mcp-0123456789abcdef.txt"
           }
         }
       }
@@ -282,7 +266,7 @@
       "original": {
         "type": "tool_execution_end",
         "toolCallId": "call",
-        "toolName": "mcpScript",
+        "toolName": "mcp__probe__long_text",
         "isError": false,
         "result": {
           "content": [
@@ -300,17 +284,15 @@
             }
           ],
           "details": {
-            "mode": "script",
-            "outputGuard": {
-              "truncated": true,
-              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
-            }
+            "server": "probe",
+            "tool": "long_text",
+            "fullOutputPath": "/native-tmp/pi-mcp-0123456789abcdef.txt"
           }
         }
       },
       "supplemental": {
         "toolCallId": "call",
-        "toolName": "mcpScript",
+        "toolName": "mcp__probe__long_text",
         "outputFile": {
           "path": "/different",
           "text": "Complete output\nLast line"
@@ -319,7 +301,7 @@
       "expected": {
         "type": "tool_execution_end",
         "toolCallId": "call",
-        "toolName": "mcpScript",
+        "toolName": "mcp__probe__long_text",
         "isError": false,
         "result": {
           "content": [
@@ -337,11 +319,9 @@
             }
           ],
           "details": {
-            "mode": "script",
-            "outputGuard": {
-              "truncated": true,
-              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
-            }
+            "server": "probe",
+            "tool": "long_text",
+            "fullOutputPath": "/native-tmp/pi-mcp-0123456789abcdef.txt"
           }
         }
       }
@@ -351,7 +331,7 @@
       "original": {
         "type": "tool_execution_end",
         "toolCallId": "call",
-        "toolName": "mcpScript",
+        "toolName": "mcp__probe__long_text",
         "isError": false,
         "result": {
           "content": [
@@ -369,26 +349,23 @@
             }
           ],
           "details": {
-            "mode": "script",
-            "outputGuard": {
-              "truncated": false,
-              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
-            }
+            "server": "probe",
+            "tool": "long_text"
           }
         }
       },
       "supplemental": {
         "toolCallId": "call",
-        "toolName": "mcpScript",
+        "toolName": "mcp__probe__long_text",
         "outputFile": {
-          "path": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt",
+          "path": "/native-tmp/pi-mcp-0123456789abcdef.txt",
           "text": "Complete output\nLast line"
         }
       },
       "expected": {
         "type": "tool_execution_end",
         "toolCallId": "call",
-        "toolName": "mcpScript",
+        "toolName": "mcp__probe__long_text",
         "isError": false,
         "result": {
           "content": [
@@ -406,21 +383,18 @@
             }
           ],
           "details": {
-            "mode": "script",
-            "outputGuard": {
-              "truncated": false,
-              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
-            }
+            "server": "probe",
+            "tool": "long_text"
           }
         }
       }
     },
     {
-      "name": "retain nonboolean marker",
+      "name": "retain a nonstring native output path",
       "original": {
         "type": "tool_execution_end",
         "toolCallId": "call",
-        "toolName": "mcpScript",
+        "toolName": "mcp__probe__long_text",
         "isError": false,
         "result": {
           "content": [
@@ -438,26 +412,24 @@
             }
           ],
           "details": {
-            "mode": "script",
-            "outputGuard": {
-              "truncated": "true",
-              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
-            }
+            "server": "probe",
+            "tool": "long_text",
+            "fullOutputPath": "true"
           }
         }
       },
       "supplemental": {
         "toolCallId": "call",
-        "toolName": "mcpScript",
+        "toolName": "mcp__probe__long_text",
         "outputFile": {
-          "path": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt",
+          "path": "/native-tmp/pi-mcp-0123456789abcdef.txt",
           "text": "Complete output\nLast line"
         }
       },
       "expected": {
         "type": "tool_execution_end",
         "toolCallId": "call",
-        "toolName": "mcpScript",
+        "toolName": "mcp__probe__long_text",
         "isError": false,
         "result": {
           "content": [
@@ -475,11 +447,9 @@
             }
           ],
           "details": {
-            "mode": "script",
-            "outputGuard": {
-              "truncated": "true",
-              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
-            }
+            "server": "probe",
+            "tool": "long_text",
+            "fullOutputPath": "true"
           }
         }
       }
@@ -489,40 +459,36 @@
       "original": {
         "type": "tool_execution_end",
         "toolCallId": "call",
-        "toolName": "mcpScript",
+        "toolName": "mcp__probe__long_text",
         "isError": false,
         "result": {
           "content": null,
           "details": {
-            "mode": "script",
-            "outputGuard": {
-              "truncated": true,
-              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
-            }
+            "server": "probe",
+            "tool": "long_text",
+            "fullOutputPath": "/native-tmp/pi-mcp-0123456789abcdef.txt"
           }
         }
       },
       "supplemental": {
         "toolCallId": "call",
-        "toolName": "mcpScript",
+        "toolName": "mcp__probe__long_text",
         "outputFile": {
-          "path": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt",
+          "path": "/native-tmp/pi-mcp-0123456789abcdef.txt",
           "text": "Complete output\nLast line"
         }
       },
       "expected": {
         "type": "tool_execution_end",
         "toolCallId": "call",
-        "toolName": "mcpScript",
+        "toolName": "mcp__probe__long_text",
         "isError": false,
         "result": {
           "content": null,
           "details": {
-            "mode": "script",
-            "outputGuard": {
-              "truncated": true,
-              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
-            }
+            "server": "probe",
+            "tool": "long_text",
+            "fullOutputPath": "/native-tmp/pi-mcp-0123456789abcdef.txt"
           }
         }
       }
@@ -532,7 +498,7 @@
       "original": {
         "type": "tool_execution_end",
         "toolCallId": "call",
-        "toolName": "mcpScript",
+        "toolName": "mcp__probe__long_text",
         "isError": false,
         "result": {
           "content": [
@@ -543,26 +509,24 @@
             }
           ],
           "details": {
-            "mode": "script",
-            "outputGuard": {
-              "truncated": true,
-              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
-            }
+            "server": "probe",
+            "tool": "long_text",
+            "fullOutputPath": "/native-tmp/pi-mcp-0123456789abcdef.txt"
           }
         }
       },
       "supplemental": {
         "toolCallId": "call",
-        "toolName": "mcpScript",
+        "toolName": "mcp__probe__long_text",
         "outputFile": {
-          "path": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt",
+          "path": "/native-tmp/pi-mcp-0123456789abcdef.txt",
           "text": "Complete output\nLast line"
         }
       },
       "expected": {
         "type": "tool_execution_end",
         "toolCallId": "call",
-        "toolName": "mcpScript",
+        "toolName": "mcp__probe__long_text",
         "isError": false,
         "result": {
           "content": [
@@ -573,11 +537,9 @@
             }
           ],
           "details": {
-            "mode": "script",
-            "outputGuard": {
-              "truncated": true,
-              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
-            }
+            "server": "probe",
+            "tool": "long_text",
+            "fullOutputPath": "/native-tmp/pi-mcp-0123456789abcdef.txt"
           }
         }
       }
@@ -587,40 +549,36 @@
       "original": {
         "type": "tool_execution_end",
         "toolCallId": "call",
-        "toolName": "mcpScript",
+        "toolName": "mcp__probe__long_text",
         "isError": false,
         "result": {
           "content": {},
           "details": {
-            "mode": "script",
-            "outputGuard": {
-              "truncated": true,
-              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
-            }
+            "server": "probe",
+            "tool": "long_text",
+            "fullOutputPath": "/native-tmp/pi-mcp-0123456789abcdef.txt"
           }
         }
       },
       "supplemental": {
         "toolCallId": "call",
-        "toolName": "mcpScript",
+        "toolName": "mcp__probe__long_text",
         "outputFile": {
-          "path": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt",
+          "path": "/native-tmp/pi-mcp-0123456789abcdef.txt",
           "text": "Complete output\nLast line"
         }
       },
       "expected": {
         "type": "tool_execution_end",
         "toolCallId": "call",
-        "toolName": "mcpScript",
+        "toolName": "mcp__probe__long_text",
         "isError": false,
         "result": {
           "content": {},
           "details": {
-            "mode": "script",
-            "outputGuard": {
-              "truncated": true,
-              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
-            }
+            "server": "probe",
+            "tool": "long_text",
+            "fullOutputPath": "/native-tmp/pi-mcp-0123456789abcdef.txt"
           }
         }
       }
@@ -630,7 +588,7 @@
       "original": {
         "type": "tool_execution_update",
         "toolCallId": "call",
-        "toolName": "mcpScript",
+        "toolName": "mcp__probe__long_text",
         "isError": false,
         "result": {
           "content": [
@@ -648,26 +606,24 @@
             }
           ],
           "details": {
-            "mode": "script",
-            "outputGuard": {
-              "truncated": true,
-              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
-            }
+            "server": "probe",
+            "tool": "long_text",
+            "fullOutputPath": "/native-tmp/pi-mcp-0123456789abcdef.txt"
           }
         }
       },
       "supplemental": {
         "toolCallId": "call",
-        "toolName": "mcpScript",
+        "toolName": "mcp__probe__long_text",
         "outputFile": {
-          "path": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt",
+          "path": "/native-tmp/pi-mcp-0123456789abcdef.txt",
           "text": "Complete output\nLast line"
         }
       },
       "expected": {
         "type": "tool_execution_update",
         "toolCallId": "call",
-        "toolName": "mcpScript",
+        "toolName": "mcp__probe__long_text",
         "isError": false,
         "result": {
           "content": [
@@ -685,11 +641,9 @@
             }
           ],
           "details": {
-            "mode": "script",
-            "outputGuard": {
-              "truncated": true,
-              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
-            }
+            "server": "probe",
+            "tool": "long_text",
+            "fullOutputPath": "/native-tmp/pi-mcp-0123456789abcdef.txt"
           }
         }
       }
@@ -699,7 +653,7 @@
       "original": {
         "type": "tool_execution_end",
         "toolCallId": "call",
-        "toolName": "mcpScript",
+        "toolName": "mcp__probe__long_text",
         "isError": false,
         "result": {
           "content": [
@@ -717,11 +671,9 @@
             }
           ],
           "details": {
-            "mode": "script",
-            "outputGuard": {
-              "truncated": true,
-              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
-            }
+            "server": "probe",
+            "tool": "long_text",
+            "fullOutputPath": "/native-tmp/pi-mcp-0123456789abcdef.txt"
           }
         }
       },
@@ -729,7 +681,7 @@
       "expected": {
         "type": "tool_execution_end",
         "toolCallId": "call",
-        "toolName": "mcpScript",
+        "toolName": "mcp__probe__long_text",
         "isError": false,
         "result": {
           "content": [
@@ -747,11 +699,9 @@
             }
           ],
           "details": {
-            "mode": "script",
-            "outputGuard": {
-              "truncated": true,
-              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
-            }
+            "server": "probe",
+            "tool": "long_text",
+            "fullOutputPath": "/native-tmp/pi-mcp-0123456789abcdef.txt"
           }
         }
       }
@@ -761,7 +711,7 @@
       "original": {
         "type": "tool_execution_end",
         "toolCallId": "call",
-        "toolName": "mcpScript",
+        "toolName": "mcp__probe__long_text",
         "isError": false,
         "result": {
           "content": [
@@ -779,11 +729,9 @@
             }
           ],
           "details": {
-            "mode": "script",
-            "outputGuard": {
-              "truncated": true,
-              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
-            }
+            "server": "probe",
+            "tool": "long_text",
+            "fullOutputPath": "/native-tmp/pi-mcp-0123456789abcdef.txt"
           }
         }
       },
@@ -791,7 +739,7 @@
       "expected": {
         "type": "tool_execution_end",
         "toolCallId": "call",
-        "toolName": "mcpScript",
+        "toolName": "mcp__probe__long_text",
         "isError": false,
         "result": {
           "content": [
@@ -809,21 +757,19 @@
             }
           ],
           "details": {
-            "mode": "script",
-            "outputGuard": {
-              "truncated": true,
-              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
-            }
+            "server": "probe",
+            "tool": "long_text",
+            "fullOutputPath": "/native-tmp/pi-mcp-0123456789abcdef.txt"
           }
         }
       }
     },
     {
-      "name": "invalid recovered text",
+      "name": "ignore invalid saved text and keep the native preview",
       "original": {
         "type": "tool_execution_end",
         "toolCallId": "call",
-        "toolName": "mcpScript",
+        "toolName": "mcp__probe__long_text",
         "isError": false,
         "result": {
           "content": [
@@ -841,26 +787,24 @@
             }
           ],
           "details": {
-            "mode": "script",
-            "outputGuard": {
-              "truncated": true,
-              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
-            }
+            "server": "probe",
+            "tool": "long_text",
+            "fullOutputPath": "/native-tmp/pi-mcp-0123456789abcdef.txt"
           }
         }
       },
       "supplemental": {
         "toolCallId": "call",
-        "toolName": "mcpScript",
+        "toolName": "mcp__probe__long_text",
         "outputFile": {
-          "path": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt",
+          "path": "/native-tmp/pi-mcp-0123456789abcdef.txt",
           "text": false
         }
       },
       "expected": {
         "type": "tool_execution_end",
         "toolCallId": "call",
-        "toolName": "mcpScript",
+        "toolName": "mcp__probe__long_text",
         "isError": false,
         "result": {
           "content": [
@@ -878,22 +822,20 @@
             }
           ],
           "details": {
-            "mode": "script",
-            "outputGuard": {
-              "truncated": true,
-              "fullOutputPath": "/tmp/pi-mcp-output-Ab123C/output-1234abcd.txt"
-            }
+            "server": "probe",
+            "tool": "long_text",
+            "fullOutputPath": "/native-tmp/pi-mcp-0123456789abcdef.txt"
           }
         }
       }
     },
     {
-      "name": "restore the complete native MCP result",
+      "name": "keep the native preview without changing the native structured result",
       "original": {
         "type": "tool_execution_end",
         "toolCallId": "call",
-        "toolName": "mcp",
-        "isError": false,
+        "toolName": "mcp__probe__long_text",
+        "isError": true,
         "result": {
           "content": [
             {
@@ -910,21 +852,11 @@
             }
           ],
           "details": {
-            "server": "docs",
-            "tool": "lookup",
-            "mcpResult": {
-              "omitted": true,
-              "fullResultPath": "/tmp/pi-mcp-output-Ab123C/mcp-result-1234abcd.txt"
-            }
-          }
-        }
-      },
-      "supplemental": {
-        "toolCallId": "call",
-        "toolName": "mcp",
-        "mcpResultFile": {
-          "path": "/tmp/pi-mcp-output-Ab123C/mcp-result-1234abcd.txt",
-          "result": {
+            "server": "probe",
+            "tool": "long_text",
+            "fullOutputPath": "/native-tmp/pi-mcp-0123456789abcdef.txt"
+          },
+          "structuredContent": {
             "content": [
               {
                 "type": "image",
@@ -933,17 +865,26 @@
               }
             ],
             "structuredContent": {
-              "count": 0
+              "count": 0,
+              "empty": ""
             },
             "isError": true
           }
         }
       },
+      "supplemental": {
+        "toolCallId": "call",
+        "toolName": "mcp__probe__long_text",
+        "outputFile": {
+          "path": "/native-tmp/pi-mcp-0123456789abcdef.txt",
+          "text": "Complete native output"
+        }
+      },
       "expected": {
         "type": "tool_execution_end",
         "toolCallId": "call",
-        "toolName": "mcp",
-        "isError": false,
+        "toolName": "mcp__probe__long_text",
+        "isError": true,
         "result": {
           "content": [
             {
@@ -960,32 +901,34 @@
             }
           ],
           "details": {
-            "server": "docs",
-            "tool": "lookup",
-            "mcpResult": {
-              "content": [
-                {
-                  "type": "image",
-                  "data": "BBBB",
-                  "mimeType": "image/png"
-                }
-              ],
-              "structuredContent": {
-                "count": 0
-              },
-              "isError": true
-            }
+            "server": "probe",
+            "tool": "long_text",
+            "fullOutputPath": "/native-tmp/pi-mcp-0123456789abcdef.txt"
+          },
+          "structuredContent": {
+            "content": [
+              {
+                "type": "image",
+                "data": "BBBB",
+                "mimeType": "image/png"
+              }
+            ],
+            "structuredContent": {
+              "count": 0,
+              "empty": ""
+            },
+            "isError": true
           }
         }
       }
     },
     {
-      "name": "different result path",
+      "name": "reject a different path without changing the native structured result",
       "original": {
         "type": "tool_execution_end",
         "toolCallId": "call",
-        "toolName": "mcp",
-        "isError": false,
+        "toolName": "mcp__probe__long_text",
+        "isError": true,
         "result": {
           "content": [
             {
@@ -1002,21 +945,60 @@
             }
           ],
           "details": {
-            "server": "docs",
-            "tool": "lookup",
-            "mcpResult": {
-              "omitted": true,
-              "fullResultPath": "/tmp/pi-mcp-output-Ab123C/mcp-result-1234abcd.txt"
-            }
+            "server": "probe",
+            "tool": "long_text",
+            "fullOutputPath": "/native-tmp/pi-mcp-0123456789abcdef.txt"
+          },
+          "structuredContent": {
+            "content": [
+              {
+                "type": "image",
+                "data": "BBBB",
+                "mimeType": "image/png"
+              }
+            ],
+            "structuredContent": {
+              "count": 0,
+              "empty": ""
+            },
+            "isError": true
           }
         }
       },
       "supplemental": {
         "toolCallId": "call",
-        "toolName": "mcp",
-        "mcpResultFile": {
+        "toolName": "mcp__probe__long_text",
+        "outputFile": {
           "path": "/different",
-          "result": {
+          "text": "Complete native output"
+        }
+      },
+      "expected": {
+        "type": "tool_execution_end",
+        "toolCallId": "call",
+        "toolName": "mcp__probe__long_text",
+        "isError": true,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Short output",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "details": {
+            "server": "probe",
+            "tool": "long_text",
+            "fullOutputPath": "/native-tmp/pi-mcp-0123456789abcdef.txt"
+          },
+          "structuredContent": {
             "content": [
               {
                 "type": "image",
@@ -1025,50 +1007,21 @@
               }
             ],
             "structuredContent": {
-              "count": 0
+              "count": 0,
+              "empty": ""
             },
             "isError": true
-          }
-        }
-      },
-      "expected": {
-        "type": "tool_execution_end",
-        "toolCallId": "call",
-        "toolName": "mcp",
-        "isError": false,
-        "result": {
-          "content": [
-            {
-              "type": "text",
-              "text": "Short output",
-              "annotations": {
-                "priority": 0
-              }
-            },
-            {
-              "type": "image",
-              "data": "AAAA",
-              "mimeType": "image/png"
-            }
-          ],
-          "details": {
-            "server": "docs",
-            "tool": "lookup",
-            "mcpResult": {
-              "omitted": true,
-              "fullResultPath": "/tmp/pi-mcp-output-Ab123C/mcp-result-1234abcd.txt"
-            }
           }
         }
       }
     },
     {
-      "name": "absent result path",
+      "name": "reject an absent path without changing the native structured result",
       "original": {
         "type": "tool_execution_end",
         "toolCallId": "call",
-        "toolName": "mcp",
-        "isError": false,
+        "toolName": "mcp__probe__long_text",
+        "isError": true,
         "result": {
           "content": [
             {
@@ -1085,21 +1038,60 @@
             }
           ],
           "details": {
-            "server": "docs",
-            "tool": "lookup",
-            "mcpResult": {
-              "omitted": true,
-              "fullResultPath": "/tmp/pi-mcp-output-Ab123C/mcp-result-1234abcd.txt"
-            }
+            "server": "probe",
+            "tool": "long_text",
+            "fullOutputPath": "/native-tmp/pi-mcp-0123456789abcdef.txt"
+          },
+          "structuredContent": {
+            "content": [
+              {
+                "type": "image",
+                "data": "BBBB",
+                "mimeType": "image/png"
+              }
+            ],
+            "structuredContent": {
+              "count": 0,
+              "empty": ""
+            },
+            "isError": true
           }
         }
       },
       "supplemental": {
         "toolCallId": "call",
-        "toolName": "mcp",
-        "mcpResultFile": {
+        "toolName": "mcp__probe__long_text",
+        "outputFile": {
           "path": null,
-          "result": {
+          "text": "Complete native output"
+        }
+      },
+      "expected": {
+        "type": "tool_execution_end",
+        "toolCallId": "call",
+        "toolName": "mcp__probe__long_text",
+        "isError": true,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Short output",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "details": {
+            "server": "probe",
+            "tool": "long_text",
+            "fullOutputPath": "/native-tmp/pi-mcp-0123456789abcdef.txt"
+          },
+          "structuredContent": {
             "content": [
               {
                 "type": "image",
@@ -1108,50 +1100,21 @@
               }
             ],
             "structuredContent": {
-              "count": 0
+              "count": 0,
+              "empty": ""
             },
             "isError": true
           }
         }
-      },
-      "expected": {
-        "type": "tool_execution_end",
-        "toolCallId": "call",
-        "toolName": "mcp",
-        "isError": false,
-        "result": {
-          "content": [
-            {
-              "type": "text",
-              "text": "Short output",
-              "annotations": {
-                "priority": 0
-              }
-            },
-            {
-              "type": "image",
-              "data": "AAAA",
-              "mimeType": "image/png"
-            }
-          ],
-          "details": {
-            "server": "docs",
-            "tool": "lookup",
-            "mcpResult": {
-              "omitted": true,
-              "fullResultPath": "/tmp/pi-mcp-output-Ab123C/mcp-result-1234abcd.txt"
-            }
-          }
-        }
       }
     },
     {
-      "name": "reject an invalid recovered MCP result",
+      "name": "reject invalid text without changing the native structured result",
       "original": {
         "type": "tool_execution_end",
         "toolCallId": "call",
-        "toolName": "mcp",
-        "isError": false,
+        "toolName": "mcp__probe__long_text",
+        "isError": true,
         "result": {
           "content": [
             {
@@ -1168,92 +1131,11 @@
             }
           ],
           "details": {
-            "server": "docs",
-            "tool": "lookup",
-            "mcpResult": {
-              "omitted": true,
-              "fullResultPath": "/tmp/pi-mcp-output-Ab123C/mcp-result-1234abcd.txt"
-            }
-          }
-        }
-      },
-      "supplemental": {
-        "toolCallId": "call",
-        "toolName": "mcp",
-        "mcpResultFile": {
-          "path": "/tmp/pi-mcp-output-Ab123C/mcp-result-1234abcd.txt",
-          "result": []
-        }
-      },
-      "expected": {
-        "type": "tool_execution_end",
-        "toolCallId": "call",
-        "toolName": "mcp",
-        "isError": false,
-        "result": {
-          "content": [
-            {
-              "type": "text",
-              "text": "Short output",
-              "annotations": {
-                "priority": 0
-              }
-            },
-            {
-              "type": "image",
-              "data": "AAAA",
-              "mimeType": "image/png"
-            }
-          ],
-          "details": {
-            "server": "docs",
-            "tool": "lookup",
-            "mcpResult": {
-              "omitted": true,
-              "fullResultPath": "/tmp/pi-mcp-output-Ab123C/mcp-result-1234abcd.txt"
-            }
-          }
-        }
-      }
-    },
-    {
-      "name": "keep an existing complete native result",
-      "original": {
-        "type": "tool_execution_end",
-        "toolCallId": "call",
-        "toolName": "mcp",
-        "isError": false,
-        "result": {
-          "content": [
-            {
-              "type": "text",
-              "text": "Short output",
-              "annotations": {
-                "priority": 0
-              }
-            },
-            {
-              "type": "image",
-              "data": "AAAA",
-              "mimeType": "image/png"
-            }
-          ],
-          "details": {
-            "server": "docs",
-            "tool": "lookup",
-            "mcpResult": {
-              "content": [],
-              "fullResultPath": "/tmp/pi-mcp-output-Ab123C/mcp-result-1234abcd.txt"
-            }
-          }
-        }
-      },
-      "supplemental": {
-        "toolCallId": "call",
-        "toolName": "mcp",
-        "mcpResultFile": {
-          "path": "/tmp/pi-mcp-output-Ab123C/mcp-result-1234abcd.txt",
-          "result": {
+            "server": "probe",
+            "tool": "long_text",
+            "fullOutputPath": "/native-tmp/pi-mcp-0123456789abcdef.txt"
+          },
+          "structuredContent": {
             "content": [
               {
                 "type": "image",
@@ -1262,17 +1144,26 @@
               }
             ],
             "structuredContent": {
-              "count": 0
+              "count": 0,
+              "empty": ""
             },
             "isError": true
           }
         }
       },
+      "supplemental": {
+        "toolCallId": "call",
+        "toolName": "mcp__probe__long_text",
+        "outputFile": {
+          "path": "/native-tmp/pi-mcp-0123456789abcdef.txt",
+          "text": []
+        }
+      },
       "expected": {
         "type": "tool_execution_end",
         "toolCallId": "call",
-        "toolName": "mcp",
-        "isError": false,
+        "toolName": "mcp__probe__long_text",
+        "isError": true,
         "result": {
           "content": [
             {
@@ -1289,12 +1180,116 @@
             }
           ],
           "details": {
-            "server": "docs",
-            "tool": "lookup",
-            "mcpResult": {
-              "content": [],
-              "fullResultPath": "/tmp/pi-mcp-output-Ab123C/mcp-result-1234abcd.txt"
+            "server": "probe",
+            "tool": "long_text",
+            "fullOutputPath": "/native-tmp/pi-mcp-0123456789abcdef.txt"
+          },
+          "structuredContent": {
+            "content": [
+              {
+                "type": "image",
+                "data": "BBBB",
+                "mimeType": "image/png"
+              }
+            ],
+            "structuredContent": {
+              "count": 0,
+              "empty": ""
+            },
+            "isError": true
+          }
+        }
+      }
+    },
+    {
+      "name": "keep an already complete native structured result",
+      "original": {
+        "type": "tool_execution_end",
+        "toolCallId": "call",
+        "toolName": "mcp__probe__long_text",
+        "isError": true,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Complete native output",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
             }
+          ],
+          "details": {
+            "server": "probe",
+            "tool": "long_text",
+            "fullOutputPath": "/native-tmp/pi-mcp-0123456789abcdef.txt"
+          },
+          "structuredContent": {
+            "content": [
+              {
+                "type": "image",
+                "data": "BBBB",
+                "mimeType": "image/png"
+              }
+            ],
+            "structuredContent": {
+              "count": 0,
+              "empty": ""
+            },
+            "isError": true
+          }
+        }
+      },
+      "supplemental": {
+        "toolCallId": "call",
+        "toolName": "mcp__probe__long_text",
+        "outputFile": {
+          "path": "/native-tmp/pi-mcp-0123456789abcdef.txt",
+          "text": "Complete native output"
+        }
+      },
+      "expected": {
+        "type": "tool_execution_end",
+        "toolCallId": "call",
+        "toolName": "mcp__probe__long_text",
+        "isError": true,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Complete native output",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "details": {
+            "server": "probe",
+            "tool": "long_text",
+            "fullOutputPath": "/native-tmp/pi-mcp-0123456789abcdef.txt"
+          },
+          "structuredContent": {
+            "content": [
+              {
+                "type": "image",
+                "data": "BBBB",
+                "mimeType": "image/png"
+              }
+            ],
+            "structuredContent": {
+              "count": 0,
+              "empty": ""
+            },
+            "isError": true
           }
         }
       }
@@ -1428,7 +1423,7 @@
       }
     },
     {
-      "name": "retain a start frame with an artifact supplement",
+      "name": "retain a start frame with an obsolete saved-text supplement",
       "original": {
         "type": "tool_execution_start",
         "toolCallId": "tool-1",
@@ -1451,6 +1446,949 @@
         "toolName": "bash",
         "args": {
           "command": "printf partial"
+        }
+      }
+    },
+    {
+      "name": "keep native codemode output and keep the header and image order",
+      "original": {
+        "type": "tool_execution_end",
+        "toolCallId": "script",
+        "toolName": "codemode",
+        "isError": false,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Script completed\nWall time 0.0 seconds\nOutput:\n",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "text",
+              "text": "Short script output",
+              "annotations": {
+                "audience": [
+                  "assistant"
+                ]
+              }
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "details": {
+            "calls": [
+              {
+                "id": "script/1",
+                "name": "mcp__probe__echo",
+                "args": "{}",
+                "status": "ok",
+                "durationMs": 0
+              }
+            ],
+            "fullOutputPath": "/native-tmp/pi-codemode-0123456789abcdef.txt"
+          }
+        }
+      },
+      "supplemental": {
+        "toolCallId": "script",
+        "toolName": "codemode",
+        "outputFile": {
+          "path": "/native-tmp/pi-codemode-0123456789abcdef.txt",
+          "text": "Complete script output\nLast line"
+        }
+      },
+      "expected": {
+        "type": "tool_execution_end",
+        "toolCallId": "script",
+        "toolName": "codemode",
+        "isError": false,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Script completed\nWall time 0.0 seconds\nOutput:\n",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "text",
+              "text": "Short script output",
+              "annotations": {
+                "audience": [
+                  "assistant"
+                ]
+              }
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "details": {
+            "calls": [
+              {
+                "id": "script/1",
+                "name": "mcp__probe__echo",
+                "args": "{}",
+                "status": "ok",
+                "durationMs": 0
+              }
+            ],
+            "fullOutputPath": "/native-tmp/pi-codemode-0123456789abcdef.txt"
+          }
+        }
+      }
+    },
+    {
+      "name": "keep native failed codemode output and keep its failure header",
+      "original": {
+        "type": "tool_execution_end",
+        "toolCallId": "script",
+        "toolName": "codemode",
+        "isError": true,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Script failed\nWall time 0.0 seconds\nOutput:\n",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "text",
+              "text": "Short script output",
+              "annotations": {
+                "audience": [
+                  "assistant"
+                ]
+              }
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "details": {
+            "calls": [
+              {
+                "id": "script/1",
+                "name": "mcp__probe__echo",
+                "args": "{}",
+                "status": "ok",
+                "durationMs": 0
+              }
+            ],
+            "fullOutputPath": "/native-tmp/pi-codemode-0123456789abcdef.txt"
+          }
+        }
+      },
+      "supplemental": {
+        "toolCallId": "script",
+        "toolName": "codemode",
+        "outputFile": {
+          "path": "/native-tmp/pi-codemode-0123456789abcdef.txt",
+          "text": "Complete script output\nLast line"
+        }
+      },
+      "expected": {
+        "type": "tool_execution_end",
+        "toolCallId": "script",
+        "toolName": "codemode",
+        "isError": true,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Script failed\nWall time 0.0 seconds\nOutput:\n",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "text",
+              "text": "Short script output",
+              "annotations": {
+                "audience": [
+                  "assistant"
+                ]
+              }
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "details": {
+            "calls": [
+              {
+                "id": "script/1",
+                "name": "mcp__probe__echo",
+                "args": "{}",
+                "status": "ok",
+                "durationMs": 0
+              }
+            ],
+            "fullOutputPath": "/native-tmp/pi-codemode-0123456789abcdef.txt"
+          }
+        }
+      }
+    },
+    {
+      "name": "reject codemode without its output block",
+      "original": {
+        "type": "tool_execution_end",
+        "toolCallId": "script",
+        "toolName": "codemode",
+        "isError": false,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Script completed\nWall time 0.0 seconds\nOutput:\n",
+              "annotations": {
+                "priority": 0
+              }
+            }
+          ],
+          "details": {
+            "calls": [
+              {
+                "id": "script/1",
+                "name": "mcp__probe__echo",
+                "args": "{}",
+                "status": "ok",
+                "durationMs": 0
+              }
+            ],
+            "fullOutputPath": "/native-tmp/pi-codemode-0123456789abcdef.txt"
+          }
+        }
+      },
+      "supplemental": {
+        "toolCallId": "script",
+        "toolName": "codemode",
+        "outputFile": {
+          "path": "/native-tmp/pi-codemode-0123456789abcdef.txt",
+          "text": "Complete script output\nLast line"
+        }
+      },
+      "expected": {
+        "type": "tool_execution_end",
+        "toolCallId": "script",
+        "toolName": "codemode",
+        "isError": false,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Script completed\nWall time 0.0 seconds\nOutput:\n",
+              "annotations": {
+                "priority": 0
+              }
+            }
+          ],
+          "details": {
+            "calls": [
+              {
+                "id": "script/1",
+                "name": "mcp__probe__echo",
+                "args": "{}",
+                "status": "ok",
+                "durationMs": 0
+              }
+            ],
+            "fullOutputPath": "/native-tmp/pi-codemode-0123456789abcdef.txt"
+          }
+        }
+      }
+    },
+    {
+      "name": "reject codemode with a nontext header",
+      "original": {
+        "type": "tool_execution_end",
+        "toolCallId": "script",
+        "toolName": "codemode",
+        "isError": false,
+        "result": {
+          "content": [
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            },
+            {
+              "type": "text",
+              "text": "Short script output",
+              "annotations": {
+                "audience": [
+                  "assistant"
+                ]
+              }
+            }
+          ],
+          "details": {
+            "calls": [
+              {
+                "id": "script/1",
+                "name": "mcp__probe__echo",
+                "args": "{}",
+                "status": "ok",
+                "durationMs": 0
+              }
+            ],
+            "fullOutputPath": "/native-tmp/pi-codemode-0123456789abcdef.txt"
+          }
+        }
+      },
+      "supplemental": {
+        "toolCallId": "script",
+        "toolName": "codemode",
+        "outputFile": {
+          "path": "/native-tmp/pi-codemode-0123456789abcdef.txt",
+          "text": "Complete script output\nLast line"
+        }
+      },
+      "expected": {
+        "type": "tool_execution_end",
+        "toolCallId": "script",
+        "toolName": "codemode",
+        "isError": false,
+        "result": {
+          "content": [
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            },
+            {
+              "type": "text",
+              "text": "Short script output",
+              "annotations": {
+                "audience": [
+                  "assistant"
+                ]
+              }
+            }
+          ],
+          "details": {
+            "calls": [
+              {
+                "id": "script/1",
+                "name": "mcp__probe__echo",
+                "args": "{}",
+                "status": "ok",
+                "durationMs": 0
+              }
+            ],
+            "fullOutputPath": "/native-tmp/pi-codemode-0123456789abcdef.txt"
+          }
+        }
+      }
+    },
+    {
+      "name": "reject codemode with a malformed header text",
+      "original": {
+        "type": "tool_execution_end",
+        "toolCallId": "script",
+        "toolName": "codemode",
+        "isError": false,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": null
+            },
+            {
+              "type": "text",
+              "text": "Short script output",
+              "annotations": {
+                "audience": [
+                  "assistant"
+                ]
+              }
+            }
+          ],
+          "details": {
+            "calls": [
+              {
+                "id": "script/1",
+                "name": "mcp__probe__echo",
+                "args": "{}",
+                "status": "ok",
+                "durationMs": 0
+              }
+            ],
+            "fullOutputPath": "/native-tmp/pi-codemode-0123456789abcdef.txt"
+          }
+        }
+      },
+      "supplemental": {
+        "toolCallId": "script",
+        "toolName": "codemode",
+        "outputFile": {
+          "path": "/native-tmp/pi-codemode-0123456789abcdef.txt",
+          "text": "Complete script output\nLast line"
+        }
+      },
+      "expected": {
+        "type": "tool_execution_end",
+        "toolCallId": "script",
+        "toolName": "codemode",
+        "isError": false,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": null
+            },
+            {
+              "type": "text",
+              "text": "Short script output",
+              "annotations": {
+                "audience": [
+                  "assistant"
+                ]
+              }
+            }
+          ],
+          "details": {
+            "calls": [
+              {
+                "id": "script/1",
+                "name": "mcp__probe__echo",
+                "args": "{}",
+                "status": "ok",
+                "durationMs": 0
+              }
+            ],
+            "fullOutputPath": "/native-tmp/pi-codemode-0123456789abcdef.txt"
+          }
+        }
+      }
+    },
+    {
+      "name": "reject codemode with a nontext output",
+      "original": {
+        "type": "tool_execution_end",
+        "toolCallId": "script",
+        "toolName": "codemode",
+        "isError": false,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Script completed\nWall time 0.0 seconds\nOutput:\n",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "details": {
+            "calls": [
+              {
+                "id": "script/1",
+                "name": "mcp__probe__echo",
+                "args": "{}",
+                "status": "ok",
+                "durationMs": 0
+              }
+            ],
+            "fullOutputPath": "/native-tmp/pi-codemode-0123456789abcdef.txt"
+          }
+        }
+      },
+      "supplemental": {
+        "toolCallId": "script",
+        "toolName": "codemode",
+        "outputFile": {
+          "path": "/native-tmp/pi-codemode-0123456789abcdef.txt",
+          "text": "Complete script output\nLast line"
+        }
+      },
+      "expected": {
+        "type": "tool_execution_end",
+        "toolCallId": "script",
+        "toolName": "codemode",
+        "isError": false,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Script completed\nWall time 0.0 seconds\nOutput:\n",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "details": {
+            "calls": [
+              {
+                "id": "script/1",
+                "name": "mcp__probe__echo",
+                "args": "{}",
+                "status": "ok",
+                "durationMs": 0
+              }
+            ],
+            "fullOutputPath": "/native-tmp/pi-codemode-0123456789abcdef.txt"
+          }
+        }
+      }
+    },
+    {
+      "name": "reject codemode with malformed output text",
+      "original": {
+        "type": "tool_execution_end",
+        "toolCallId": "script",
+        "toolName": "codemode",
+        "isError": false,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Script completed\nWall time 0.0 seconds\nOutput:\n",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "text",
+              "text": false
+            }
+          ],
+          "details": {
+            "calls": [
+              {
+                "id": "script/1",
+                "name": "mcp__probe__echo",
+                "args": "{}",
+                "status": "ok",
+                "durationMs": 0
+              }
+            ],
+            "fullOutputPath": "/native-tmp/pi-codemode-0123456789abcdef.txt"
+          }
+        }
+      },
+      "supplemental": {
+        "toolCallId": "script",
+        "toolName": "codemode",
+        "outputFile": {
+          "path": "/native-tmp/pi-codemode-0123456789abcdef.txt",
+          "text": "Complete script output\nLast line"
+        }
+      },
+      "expected": {
+        "type": "tool_execution_end",
+        "toolCallId": "script",
+        "toolName": "codemode",
+        "isError": false,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Script completed\nWall time 0.0 seconds\nOutput:\n",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "text",
+              "text": false
+            }
+          ],
+          "details": {
+            "calls": [
+              {
+                "id": "script/1",
+                "name": "mcp__probe__echo",
+                "args": "{}",
+                "status": "ok",
+                "durationMs": 0
+              }
+            ],
+            "fullOutputPath": "/native-tmp/pi-codemode-0123456789abcdef.txt"
+          }
+        }
+      }
+    },
+    {
+      "name": "reject a completed result without a call ID",
+      "original": {
+        "type": "tool_execution_end",
+        "toolName": "mcp__probe__long_text",
+        "isError": true,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Short output",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "details": {
+            "server": "probe",
+            "tool": "long_text",
+            "fullOutputPath": "/native-tmp/pi-mcp-0123456789abcdef.txt"
+          },
+          "structuredContent": {
+            "content": [
+              {
+                "type": "image",
+                "data": "BBBB",
+                "mimeType": "image/png"
+              }
+            ],
+            "structuredContent": {
+              "count": 0,
+              "empty": ""
+            },
+            "isError": true
+          }
+        }
+      },
+      "supplemental": {
+        "toolCallId": "call",
+        "toolName": "mcp__probe__long_text",
+        "outputFile": {
+          "path": "/native-tmp/pi-mcp-0123456789abcdef.txt",
+          "text": "Complete native output"
+        }
+      },
+      "expected": {
+        "type": "tool_execution_end",
+        "toolName": "mcp__probe__long_text",
+        "isError": true,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Short output",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "details": {
+            "server": "probe",
+            "tool": "long_text",
+            "fullOutputPath": "/native-tmp/pi-mcp-0123456789abcdef.txt"
+          },
+          "structuredContent": {
+            "content": [
+              {
+                "type": "image",
+                "data": "BBBB",
+                "mimeType": "image/png"
+              }
+            ],
+            "structuredContent": {
+              "count": 0,
+              "empty": ""
+            },
+            "isError": true
+          }
+        }
+      }
+    },
+    {
+      "name": "reject a completed result without a tool name",
+      "original": {
+        "type": "tool_execution_end",
+        "toolCallId": "call",
+        "isError": true,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Short output",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "details": {
+            "server": "probe",
+            "tool": "long_text",
+            "fullOutputPath": "/native-tmp/pi-mcp-0123456789abcdef.txt"
+          },
+          "structuredContent": {
+            "content": [
+              {
+                "type": "image",
+                "data": "BBBB",
+                "mimeType": "image/png"
+              }
+            ],
+            "structuredContent": {
+              "count": 0,
+              "empty": ""
+            },
+            "isError": true
+          }
+        }
+      },
+      "supplemental": {
+        "toolCallId": "call",
+        "toolName": "mcp__probe__long_text",
+        "outputFile": {
+          "path": "/native-tmp/pi-mcp-0123456789abcdef.txt",
+          "text": "Complete native output"
+        }
+      },
+      "expected": {
+        "type": "tool_execution_end",
+        "toolCallId": "call",
+        "isError": true,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Short output",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "details": {
+            "server": "probe",
+            "tool": "long_text",
+            "fullOutputPath": "/native-tmp/pi-mcp-0123456789abcdef.txt"
+          },
+          "structuredContent": {
+            "content": [
+              {
+                "type": "image",
+                "data": "BBBB",
+                "mimeType": "image/png"
+              }
+            ],
+            "structuredContent": {
+              "count": 0,
+              "empty": ""
+            },
+            "isError": true
+          }
+        }
+      }
+    },
+    {
+      "name": "reject a completed result with null details",
+      "original": {
+        "type": "tool_execution_end",
+        "toolCallId": "call",
+        "toolName": "mcp__probe__long_text",
+        "isError": true,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Short output",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "details": null,
+          "structuredContent": {
+            "content": [
+              {
+                "type": "image",
+                "data": "BBBB",
+                "mimeType": "image/png"
+              }
+            ],
+            "structuredContent": {
+              "count": 0,
+              "empty": ""
+            },
+            "isError": true
+          }
+        }
+      },
+      "supplemental": {
+        "toolCallId": "call",
+        "toolName": "mcp__probe__long_text",
+        "outputFile": {
+          "path": "/native-tmp/pi-mcp-0123456789abcdef.txt",
+          "text": "Complete native output"
+        }
+      },
+      "expected": {
+        "type": "tool_execution_end",
+        "toolCallId": "call",
+        "toolName": "mcp__probe__long_text",
+        "isError": true,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Short output",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "details": null,
+          "structuredContent": {
+            "content": [
+              {
+                "type": "image",
+                "data": "BBBB",
+                "mimeType": "image/png"
+              }
+            ],
+            "structuredContent": {
+              "count": 0,
+              "empty": ""
+            },
+            "isError": true
+          }
+        }
+      }
+    },
+    {
+      "name": "reject a completed result with an empty native output path",
+      "original": {
+        "type": "tool_execution_end",
+        "toolCallId": "call",
+        "toolName": "mcp__probe__long_text",
+        "isError": true,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Short output",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "details": {
+            "server": "probe",
+            "tool": "long_text",
+            "fullOutputPath": ""
+          },
+          "structuredContent": {
+            "content": [
+              {
+                "type": "image",
+                "data": "BBBB",
+                "mimeType": "image/png"
+              }
+            ],
+            "structuredContent": {
+              "count": 0,
+              "empty": ""
+            },
+            "isError": true
+          }
+        }
+      },
+      "supplemental": {
+        "toolCallId": "call",
+        "toolName": "mcp__probe__long_text",
+        "outputFile": {
+          "path": "/native-tmp/pi-mcp-0123456789abcdef.txt",
+          "text": "Complete native output"
+        }
+      },
+      "expected": {
+        "type": "tool_execution_end",
+        "toolCallId": "call",
+        "toolName": "mcp__probe__long_text",
+        "isError": true,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "Short output",
+              "annotations": {
+                "priority": 0
+              }
+            },
+            {
+              "type": "image",
+              "data": "AAAA",
+              "mimeType": "image/png"
+            }
+          ],
+          "details": {
+            "server": "probe",
+            "tool": "long_text",
+            "fullOutputPath": ""
+          },
+          "structuredContent": {
+            "content": [
+              {
+                "type": "image",
+                "data": "BBBB",
+                "mimeType": "image/png"
+              }
+            ],
+            "structuredContent": {
+              "count": 0,
+              "empty": ""
+            },
+            "isError": true
+          }
         }
       }
     }

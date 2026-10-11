@@ -1,9 +1,8 @@
-// Package sessionstore holds the readers that several providers share to list
-// the sessions in another program's session store: a read-only SQLite handle, a
-// newest-first directory walk, and a capped JSONL read. The record and the query
-// are provider-neutral, so they live in package agent. Which directory to walk,
-// which table to query and where the title lives are provider decisions, so each
-// provider keeps them in its own package behind Provider.ListStoredSessions.
+// Package sessionstore holds the readers that several providers share for
+// another program's session store: a read-only SQLite handle, a newest-first
+// directory walk, a capped JSONL read, and a checked archive-file read. The
+// session record and listing query are provider-neutral. Providers choose the
+// directory, table, title field, archive path, and ancestor-symlink rule.
 //
 // Every store here belongs to another program. Nothing in this package or its
 // callers may write to a store's DATA. The read is not free of every side
@@ -473,29 +472,53 @@ func EpochMillis(ms int64) time.Time {
 	return time.UnixMilli(ms).UTC()
 }
 
-// ContentBlockText pulls the readable text out of a message's content, which is
-// either a plain string or an array of typed blocks.
+// ContentBlock is one block of a message's content: its type, and its text when
+// the block carries text.
+type ContentBlock struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+// ContentBlocks decodes a message's content, which is either a plain string or
+// an array of typed blocks. A plain string is one text block.
 //
-// The encoding is shared, not one provider's: Claude Code and Pi both write it,
-// so it sits here rather than in either reader. Only a `text` block is taken. A
-// user record also carries `tool_result` blocks, and a tool result is machine
-// output that says nothing about what the session is for.
-func ContentBlockText(content json.RawMessage) string {
+// The encoding is shared, not one provider's: Claude Code, Qoder, Pi and Oh My
+// Pi all write it, so it sits here rather than in any one reader. Which block
+// holds the prompt is each CLI's own rule, so each reader applies its rule to
+// these blocks. An array item that is not a block object, or whose type or text
+// is not a string, carries no block and is skipped. Content of any other shape
+// gives nil.
+func ContentBlocks(content json.RawMessage) []ContentBlock {
 	if len(content) == 0 {
-		return ""
+		return nil
 	}
 	var text string
 	if json.Unmarshal(content, &text) == nil {
-		return strings.TrimSpace(text)
+		return []ContentBlock{{Type: "text", Text: text}}
 	}
-	var blocks []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
+	var items []json.RawMessage
+	if json.Unmarshal(content, &items) != nil {
+		return nil
 	}
-	if json.Unmarshal(content, &blocks) != nil {
-		return ""
+	blocks := make([]ContentBlock, 0, len(items))
+	for _, item := range items {
+		var block ContentBlock
+		if json.Unmarshal(item, &block) != nil {
+			continue
+		}
+		blocks = append(blocks, block)
 	}
-	for _, block := range blocks {
+	return blocks
+}
+
+// ContentBlockText returns the first non-blank `text` block of a message's
+// content, trimmed.
+//
+// Only a `text` block is taken. A user record also carries `tool_result`
+// blocks, and a tool result is machine output that says nothing about what the
+// session is for.
+func ContentBlockText(content json.RawMessage) string {
+	for _, block := range ContentBlocks(content) {
 		if block.Type == "text" && strings.TrimSpace(block.Text) != "" {
 			return strings.TrimSpace(block.Text)
 		}
@@ -505,8 +528,9 @@ func ContentBlockText(content json.RawMessage) string {
 
 // Query runs one SQL-backed store's listing query.
 //
-// Five providers keep their sessions in a SQLite database, and the steps around
-// the query are the same for every one of them: refuse an empty working
+// Several providers keep their sessions in a SQLite database -- Codex, Goose,
+// and the OpenCode store that OpenCode, Kilo, ZCode and MiMo Code read -- and
+// the steps around the query are the same for every one of them: refuse an empty working
 // directory, open the store read-only, turn an ABSENT store into the empty
 // result rather than a failure, bind the cleaned working directory and the
 // limit, skip a row this reader cannot scan, and order the survivors. Only the

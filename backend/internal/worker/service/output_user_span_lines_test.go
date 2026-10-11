@@ -77,7 +77,7 @@ func setupAgentWithWatcher(t *testing.T, svc *Service, w *testResponseWriter, ag
 // notification-thread tests terse now that the signature returns (bool, error).
 func persistNotif(t *testing.T, sink agent.ProviderServices, source leapmuxv1.MessageSource, content []byte) {
 	t.Helper()
-	_, err := sink.PersistNotification(source, content)
+	_, err := sink.PersistNotification(source, agent.MessageContent{Original: content})
 	require.NoError(t, err)
 }
 

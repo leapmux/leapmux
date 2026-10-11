@@ -5,6 +5,7 @@ import (
 	"log/slog"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
@@ -99,10 +100,10 @@ type copilotControlDecision struct {
 // copilotNativeAnswer maps one neutral decision onto the native response value for
 // the control kind that the stored request states.
 //
-// The second result reports whether this build can express the decision. A false
-// answer withholds the forward, which leaves the runtime waiting and the request
-// answerable rather than sending it a value it would refuse.
-func copilotNativeAnswer(eventType string, data json.RawMessage, decision copilotControlDecision) (any, bool) {
+// The second result is the reason the reader sees when this build cannot express
+// the decision. A non-empty answer withholds the forward, which leaves the runtime
+// waiting and the request answerable rather than sending it a value it would refuse.
+func copilotNativeAnswer(eventType string, data json.RawMessage, decision copilotControlDecision) (any, string) {
 	switch eventType {
 	case contracts.CopilotEventPermissionRequested:
 		if !decision.allow {
@@ -112,29 +113,29 @@ func copilotNativeAnswer(eventType string, data json.RawMessage, decision copilo
 			if decision.message != "" {
 				answer["feedback"] = decision.message
 			}
-			return answer, true
+			return answer, ""
 		}
 		scoped := decision.scope == contracts.CopilotApprovalScopeSession || decision.scope == contracts.CopilotApprovalScopeProject
 		if !scoped {
-			return map[string]any{"kind": copilotDecisionApproveOnce}, true
+			return map[string]any{"kind": copilotDecisionApproveOnce}, ""
 		}
 		var request struct {
 			PermissionRequest copilotPermissionRequest `json:"permissionRequest"`
 		}
 		if json.Unmarshal(data, &request) != nil {
-			return nil, false
+			return nil, agent.RefusalUnreadableRequest
 		}
 		approval := copilotSessionApproval(request.PermissionRequest)
 		if approval == nil {
-			return nil, false
+			return nil, agent.RefusalUnofferedOption(leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, decision.scope+" scope")
 		}
 		if decision.scope == contracts.CopilotApprovalScopeSession {
-			return map[string]any{"kind": copilotDecisionApproveForSession, "approval": approval}, true
+			return map[string]any{"kind": copilotDecisionApproveForSession, "approval": approval}, ""
 		}
 		// The project key is absent here on purpose. This resolution is pure, and only
 		// the runtime can turn a working directory into its own location key, so the
 		// running agent fills the field before it sends the answer.
-		return map[string]any{"kind": copilotDecisionApproveForLocation, "approval": approval}, true
+		return map[string]any{"kind": copilotDecisionApproveForLocation, "approval": approval}, ""
 
 	case contracts.CopilotEventUserInputRequested:
 		// A question has one native answer field, and no decline. A refusal is the
@@ -142,9 +143,9 @@ func copilotNativeAnswer(eventType string, data json.RawMessage, decision copilo
 		// would answer a question the user refused to answer. An explicit empty
 		// answer stays empty: the runtime accepts it, and the user chose it.
 		if decision.allow {
-			return map[string]any{"answer": decision.answer, "wasFreeform": decision.wasFreeform}, true
+			return map[string]any{"answer": decision.answer, "wasFreeform": decision.wasFreeform}, ""
 		}
-		return map[string]any{"answer": decision.message, "wasFreeform": true}, true
+		return map[string]any{"answer": decision.message, "wasFreeform": true}, ""
 
 	case contracts.CopilotEventExitPlanModeRequested:
 		if !decision.allow {
@@ -152,7 +153,7 @@ func copilotNativeAnswer(eventType string, data json.RawMessage, decision copilo
 			if decision.message != "" {
 				answer["feedback"] = decision.message
 			}
-			return answer, true
+			return answer, ""
 		}
 		var request struct {
 			RecommendedAction string `json:"recommendedAction"`
@@ -161,18 +162,18 @@ func copilotNativeAnswer(eventType string, data json.RawMessage, decision copilo
 		if json.Unmarshal(data, &request) == nil && request.RecommendedAction != "" {
 			answer["selectedAction"] = request.RecommendedAction
 		}
-		return answer, true
+		return answer, ""
 
 	case contracts.CopilotEventElicitationRequested:
 		// A refusal declines rather than submitting an empty form. An acceptance
 		// carries the form's own content, which copilotElicitationAnswer reads.
 		if !decision.allow {
-			return map[string]any{"action": contracts.MCPElicitationActionDecline}, true
+			return map[string]any{"action": contracts.MCPElicitationActionDecline}, ""
 		}
-		return nil, false
+		return nil, agent.RefusalUnreadableAnswer
 
 	default:
-		return nil, false
+		return nil, agent.RefusalUnreadableRequest
 	}
 }
 
@@ -205,7 +206,7 @@ func copilotResolveControlAnswer(ctx agent.ControlResponseContext) (agent.Contro
 		if native, ok := copilotElicitationAnswer(ctx.ResponseContent); ok {
 			content, err := copilotControlResponseContent(ctx.RequestID, native)
 			if err != nil {
-				result.Withhold = true
+				result.Refuse(agent.RefusalUnencodableReply)
 				return result, true
 			}
 			result.Content = content
@@ -217,25 +218,25 @@ func copilotResolveControlAnswer(ctx agent.ControlResponseContext) (agent.Contro
 		// Not a decision this build can read. Withholding leaves the runtime waiting
 		// and the request answerable, which a frame it cannot parse would not.
 		slog.Warn("Copilot control response carried no decision", "request_id", ctx.RequestID)
-		result.Withhold = true
+		result.Refuse(agent.RefusalNoDecision)
 		return result, true
 	}
 	if requestID != "" && ctx.RequestID != "" && requestID != ctx.RequestID {
 		slog.Warn("Copilot control response addressed another request", "answered", requestID, "stored", ctx.RequestID)
-		result.Withhold = true
+		result.Refuse(agent.RefusalOtherRequest)
 		return result, true
 	}
 	decision := copilotControlDecision{allow: behavior == agent.ControlBehaviorAllow, message: message}
 	copilotReadDecisionFields(ctx.ResponseContent, &decision)
-	native, expressible := copilotNativeAnswer(eventType, data, decision)
-	if !expressible {
-		slog.Warn("Copilot cannot express this control decision", "event", eventType, "request_id", ctx.RequestID)
-		result.Withhold = true
+	native, refusal := copilotNativeAnswer(eventType, data, decision)
+	if refusal != "" {
+		slog.Warn("Copilot cannot express this control decision", "event", eventType, "request_id", ctx.RequestID, "reason", refusal)
+		result.Refuse(refusal)
 		return result, true
 	}
 	content, err := copilotControlResponseContent(ctx.RequestID, native)
 	if err != nil {
-		result.Withhold = true
+		result.Refuse(agent.RefusalUnencodableReply)
 		return result, true
 	}
 	result.Content = content

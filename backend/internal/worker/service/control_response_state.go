@@ -112,9 +112,12 @@ func (svc *Service) broadcastControlResponseState(currentAgent db.Agent, request
 		request = db.ControlRequest{RequestID: requestID, ClaimToken: claimToken, Payload: answer.RequestPayload, AgentSessionID: answer.AgentSessionID, SourceSeq: answer.SourceSeq}
 		provider = answer.AgentProvider
 	}
-	event := buildAgentControlRequest(svc.Queries, currentAgent.ID, provider, agent.ControlRequest{
+	event, stateErr := buildAgentControlRequest(svc.Queries, currentAgent.ID, provider, agent.ControlRequest{
 		RequestID: requestID, Payload: request.Payload, SourceSeq: request.SourceSeq, AgentSessionID: request.AgentSessionID,
 	}, claimToken)
+	if stateErr != nil {
+		slog.Error("could not read the control response state", "agent_id", currentAgent.ID, "request_id", requestID, "error", stateErr)
+	}
 	svc.Watchers.BroadcastAgentEvent(currentAgent.ID, &leapmuxv1.AgentEvent{
 		AgentId: currentAgent.ID,
 		Event:   &leapmuxv1.AgentEvent_ControlResponseChanged{ControlResponseChanged: event},

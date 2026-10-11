@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/leapmux/leapmux/internal/worker/agent"
+	agentapi "github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/stretchr/testify/assert"
@@ -22,7 +22,7 @@ func TestACPAgent_Interrupt_SendsSessionCancelNotification(t *testing.T) {
 		func(string) agenttest.RPCReply { return agenttest.RPCReply{Result: json.RawMessage(`{}`)} })
 	// Helper sets sessionID="session-1" by default.
 
-	require.NoError(t, agent.Interrupt())
+	require.NoError(t, agent.Interrupt(agentapi.StopContext{}))
 
 	// session/cancel is a notification — drain briefly.
 	deadline := time.Now().Add(time.Second)
@@ -49,10 +49,10 @@ func TestACPAgent_Interrupt_AnswersAnOutstandingPermissionRequest(t *testing.T) 
 
 	a, requests := newGooseAgentForRPCWithResponder(t,
 		func(string) agenttest.RPCReply { return agenttest.RPCReply{Result: json.RawMessage(`{}`)} })
-	a.SetSinkForTest(agent.NewProviderServices(&agenttest.Sink{}))
+	a.SetSinkForTest(agentapi.NewProviderServices(&agenttest.Sink{}))
 	a.HandleOutput([]byte(`{"jsonrpc":"2.0","id":7,"method":"session/request_permission","params":{"sessionId":"session-1","options":[{"optionId":"allow_once","kind":"allow_once","name":"allow_once"}]}}`))
 
-	require.NoError(t, a.Interrupt())
+	require.NoError(t, a.Interrupt(agentapi.StopContext{}))
 
 	var answer string
 	require.Eventually(t, func() bool {
@@ -74,11 +74,11 @@ func TestACPAgent_Interrupt_SkipsARequestTheReaderAlreadyAnswered(t *testing.T) 
 
 	a, requests := newGooseAgentForRPCWithResponder(t,
 		func(string) agenttest.RPCReply { return agenttest.RPCReply{Result: json.RawMessage(`{}`)} })
-	a.SetSinkForTest(agent.NewProviderServices(&agenttest.Sink{}))
+	a.SetSinkForTest(agentapi.NewProviderServices(&agenttest.Sink{}))
 	a.HandleOutput([]byte(`{"jsonrpc":"2.0","id":7,"method":"session/request_permission","params":{"sessionId":"session-1"}}`))
-	require.NoError(t, a.SendRawInput([]byte(`{"jsonrpc":"2.0","id":7,"result":{"outcome":{"outcome":"selected","optionId":"allow_once"}}}`)))
+	require.NoError(t, a.SendRawInput([]byte(`{"jsonrpc":"2.0","id":7,"result":{"outcome":{"outcome":"selected","optionId":"allow_once"}}}`), agentapi.StopContext{}))
 
-	require.NoError(t, a.Interrupt())
+	require.NoError(t, a.Interrupt(agentapi.StopContext{}))
 
 	require.Eventually(t, func() bool {
 		for _, recorded := range requests() {
@@ -109,7 +109,7 @@ func TestACPAgent_Interrupt_NoSessionIsNoop(t *testing.T) {
 	agent.SetSessionIDForTest("")
 	agent.Mu.Unlock()
 
-	require.NoError(t, agent.Interrupt())
+	require.NoError(t, agent.Interrupt(agentapi.StopContext{}))
 	time.Sleep(50 * time.Millisecond)
 	assert.Empty(t, requests(),
 		"Interrupt before session/new completes must be a no-op")
@@ -122,7 +122,7 @@ func TestACPAgent_Interrupt_AfterStopErrors(t *testing.T) {
 		func(string) agenttest.RPCReply { return agenttest.RPCReply{Result: json.RawMessage(`{}`)} })
 	agent.SetStoppedForTest(true)
 
-	err := agent.Interrupt()
+	err := agent.Interrupt(agentapi.StopContext{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "stopped")
 }

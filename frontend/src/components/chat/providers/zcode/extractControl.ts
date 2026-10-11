@@ -1,7 +1,9 @@
+import type { PermissionOption } from '../../model/controlPrompt'
 import type { ControlExtractionInput, ExtractedControlRequest } from '../registry'
 import { ZCODE_TOOL } from '~/generated/contracts/zcode-protocol'
-import { pickObject, pickString } from '~/lib/jsonPick'
+import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { getToolInput, getToolName } from '~/utils/controlResponse'
+import { KIND_ALLOW_ALWAYS, KIND_ALLOW_ONCE, KIND_REJECT_ONCE } from '../../model/controlPrompt'
 
 /**
  * `Provider.extractControl` for ZCode.
@@ -17,6 +19,47 @@ import { getToolInput, getToolName } from '~/utils/controlResponse'
  * purpose: `askUserQuestion.isRequest` recognizes it, and the control surface asks
  * that before any provider's reader runs.
  */
+
+/** The canonical kind one native option kind belongs to. An unknown kind stays as it arrived, so the row keeps the option in its additional buttons instead of guessing a slot for it. */
+function zcodeOptionKind(kind: string): string {
+  switch (kind) {
+    case 'allow_once': return KIND_ALLOW_ONCE
+    case 'allow_always':
+    case 'allow_project':
+    case 'allow_session': return KIND_ALLOW_ALWAYS
+    case 'deny':
+    case 'deny_once': return KIND_REJECT_ONCE
+    default: return kind
+  }
+}
+
+/**
+ * The native options one permission request offers, in payload order.
+ *
+ * The app-server embeds the COMPLETE reply of each option -- an "always allow"
+ * choice carries its permission-rule updates inside its `response` -- so the ids
+ * are what the answer echoes, and the names are the words the pills draw.
+ */
+export function zcodePermissionOptions(payload: Record<string, unknown>): PermissionOption[] {
+  const params = pickObject(payload, 'params')
+  const offered = isObject(params) ? params.options : undefined
+  if (!Array.isArray(offered))
+    return []
+  const options: PermissionOption[] = []
+  for (const option of offered) {
+    if (!isObject(option))
+      continue
+    const optionId = pickString(option, 'optionId', '')
+    if (optionId === '')
+      continue
+    const name = pickString(option, 'name', undefined)
+    options.push(name === undefined
+      ? { optionId, kind: zcodeOptionKind(pickString(option, 'kind', '')) }
+      : { optionId, kind: zcodeOptionKind(pickString(option, 'kind', '')), name })
+  }
+  return options
+}
+
 export function zcodeExtractControl(input: ControlExtractionInput): ExtractedControlRequest | null {
   const { payload } = input
   const toolName = getToolName(payload)
@@ -39,7 +82,7 @@ export function zcodeExtractControl(input: ControlExtractionInput): ExtractedCon
       ...(reason !== undefined ? { reason } : {}),
       input: toolInput,
       ...(command !== undefined ? { command } : {}),
-      options: [],
+      options: zcodePermissionOptions(payload),
     },
   }
 }

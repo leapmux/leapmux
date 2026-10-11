@@ -39,9 +39,10 @@ var providerDirs = map[leapmuxv1.AgentProvider]string{
 //
 // The ACP providers run the turn, busy-refusal, session-input and
 // control-response suites once, over the shared base in package acp, because
-// the base implements those rules for all five of them. OpenCode also runs the
+// the base implements those rules for all eight of them. OpenCode also runs the
 // busy refusal over its own agent type.
 var requiredSuites = map[string][]string{
+
 	"acp": {
 		"AssertTurnFrames", "AssertRisingTurnTokens", "AssertBusyRefusalRepublishesTheTurn",
 		"AssertRejectsMissingAndReplacedSessions",
@@ -51,38 +52,38 @@ var requiredSuites = map[string][]string{
 	"claude": {
 		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
 		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
-		"AssertPreservesTheResponseWithoutARequest", "AssertTokenResumeRule",
+		"AssertPreservesTheResponseWithoutARequest", "AssertTokenResumeRule", "AssertChildCapabilities",
 	},
 	"codex": {
 		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
 		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
 		"AssertPreservesTheResponseWithoutARequest", "AssertWithholdsTheResponseForAMalformedRequest",
-		"AssertTokenResumeRule", "AssertControlIdentitiesStaySeparate", "RunSupplementConformance",
+		"AssertTokenResumeRule", "AssertControlIdentitiesStaySeparate", "RunSupplementConformance", "AssertChildCapabilities",
 	},
 	"copilot": {
 		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
-		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
+		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions", "AssertChildCapabilities",
 	},
 	"cursor": {
 		"RequireReadsSessionStore", "AssertTokenResumeRule", "AssertControlIdentitiesStaySeparate",
-		"RequireToolStoreHandlesClosed",
+		"RequireToolStoreHandlesClosed", "AssertChildCapabilities",
 	},
-	"goose": {"RequireReadsSessionStore"},
-	"kilo":  {"RequireReadsSessionStore"},
+	"goose": {"RequireReadsSessionStore", "AssertChildCapabilities"},
+	"kilo":  {"RequireReadsSessionStore", "AssertChildCapabilities"},
 	"opencode": {
 		"RequireReadsSessionStore", "AssertBusyRefusalRepublishesTheTurn", "AssertTokenResumeRule",
-		"AssertControlIdentitiesStaySeparate",
+		"AssertControlIdentitiesStaySeparate", "AssertChildCapabilities",
 	},
 	"pi": {
 		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
 		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
-		"AssertPreservesTheResponseWithoutARequest", "AssertWithholdsTheResponseForAMalformedRequest",
+		"AssertPreservesTheResponseWithoutARequest", "AssertWithholdsTheResponseForAMalformedRequest", "AssertChildCapabilities",
 	},
-	"reasonix": {"RequireReadsSessionStore", "AssertControlIdentitiesStaySeparate"},
+	"reasonix": {"RequireReadsSessionStore", "AssertControlIdentitiesStaySeparate", "AssertChildCapabilities"},
 	"zcode": {
 		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
 		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
-		"AssertTokenResumeRule", "RequireToolStoreHandlesClosed",
+		"AssertTokenResumeRule", "RequireToolStoreHandlesClosed", "AssertChildCapabilities",
 	},
 }
 

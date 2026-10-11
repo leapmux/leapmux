@@ -2,9 +2,11 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/agentlabels"
 )
 
 // ControlResponseContext is the pure provider input for interpreting a frontend
@@ -28,8 +30,11 @@ type ControlResponseResolution struct {
 	Feedback      string
 	SelfDisplayed bool
 	// Withhold prevents forwarding a response that the provider cannot read.
-	// Withhold covers that case alone. The service returns an error and keeps the
-	// request available for another answer.
+	// Withhold covers that case alone. The service returns Refusal as the error
+	// of the answer and keeps the request available for another answer.
+	//
+	// Set it through Refuse, which also states the reason that the browser shows.
+	// A Withhold that is set directly states ControlResponseRefusedText.
 	//
 	// The service refuses an answer whose control request row is gone, and that
 	// refusal runs before the service reads Withhold. A withheld resolution
@@ -38,6 +43,62 @@ type ControlResponseResolution struct {
 	// Empty Content cannot express this decision because the service restores the original response bytes.
 	Withhold        bool
 	PlanModeControl PlanModeControlKind
+	// refusalReason states why the provider withholds the response. It is
+	// unexported, so only Refuse sets it, and always together with Withhold.
+	refusalReason string
+}
+
+// ControlResponseRefusedText is the reason that a withheld response states when
+// its provider gives none. The browser shows it after "The response was not
+// sent: ". It is the one copy of this text.
+const ControlResponseRefusedText = "the agent provider could not read this control response"
+
+// Reasons that several providers give for a refusal. Like every reason, each one
+// completes the browser's sentence "The response was not sent: ...".
+const (
+	// RefusalUnreadableRequest: the stored control request does not decode, or it
+	// lacks a field that the reply needs.
+	RefusalUnreadableRequest = "LeapMux cannot read the stored request that this answer is for"
+	// RefusalUnreadableAnswer: the answer does not decode into the fields that the
+	// reply needs.
+	RefusalUnreadableAnswer = "LeapMux cannot read this answer"
+	// RefusalNoDecision: the answer is not the neutral decision envelope, or its
+	// behavior is neither allow nor deny.
+	RefusalNoDecision = "the answer states neither allow nor deny"
+	// RefusalOtherRequest: the answer identifies a request other than the stored
+	// one.
+	RefusalOtherRequest = "the answer is for a different request"
+	// RefusalUnencodableReply: the reply to the agent cannot be encoded.
+	RefusalUnencodableReply = "LeapMux cannot encode the reply to the agent"
+	// RefusalAnswersDoNotFit: the answers of a question request do not match the
+	// questions of the stored request.
+	RefusalAnswersDoNotFit = "the answers do not fit the questions of the request"
+)
+
+// RefusalUnofferedOption states that a provider did not offer an option, in the
+// provider's own display name: "Factory Droid did not offer proceed_always".
+func RefusalUnofferedOption(provider leapmuxv1.AgentProvider, option string) string {
+	return agentlabels.DisplayName(provider) + " did not offer " + option
+}
+
+// Refuse withholds the response and states why, in one sentence for the reader.
+// An empty reason states ControlResponseRefusedText.
+func (r *ControlResponseResolution) Refuse(reason string) {
+	r.Withhold = true
+	r.refusalReason = strings.TrimSpace(reason)
+}
+
+// Refusal is the error that the service returns for a withheld response: the
+// provider's reason, or ControlResponseRefusedText when it gave none. It is nil
+// for a response that the service forwards.
+func (r ControlResponseResolution) Refusal() error {
+	if !r.Withhold {
+		return nil
+	}
+	if r.refusalReason != "" {
+		return errors.New(r.refusalReason)
+	}
+	return errors.New(ControlResponseRefusedText)
 }
 
 func DefaultControlResponseResolution(ctx ControlResponseContext) ControlResponseResolution {
@@ -84,8 +145,56 @@ type ControlBehaviorEnvelope struct {
 		Response  struct {
 			Behavior string `json:"behavior"`
 			Message  string `json:"message"`
+			// Choice is the id of one of the choices a control request offered
+			// beside its plain approve and reject: a plan's own approach, a
+			// refusal that also ends plan mode. Empty for a plain decision. The
+			// browser's plan control writes it (withControlChoice in
+			// frontend/src/utils/controlResponse.ts), and each provider maps the
+			// id onto its own wire answer.
+			Choice string `json:"choice"`
 		} `json:"response"`
 	} `json:"response"`
+}
+
+// DecodeControlChoice returns the trimmed choice a control response carries
+// beside its behavior, or "" for a plain decision and for bytes that are not
+// JSON. See ControlBehaviorEnvelope.
+func DecodeControlChoice(content []byte) string {
+	var cr ControlBehaviorEnvelope
+	if err := json.Unmarshal(content, &cr); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(cr.Response.Response.Choice)
+}
+
+// DecodeControlUpdatedInput returns the modified tool input a control response
+// carries beside its behavior, or nil when it carries none.
+//
+// It is the reader for `buildAllowResponse`'s `updatedInput`
+// (frontend/src/utils/controlResponse.ts): the browser sends the whole tool
+// input back with the answer it changed -- an AskUserQuestion reply folds its
+// answers into that input -- and a provider that forwards a modified input to
+// its own CLI reads it here. DecodeControlBehavior leaves it alone, so its
+// callers keep the shape they had.
+//
+// A present but non-object value reads as absent, because a tool input is an
+// object and anything else is a payload this reader must not hand on as one.
+func DecodeControlUpdatedInput(content []byte) map[string]any {
+	var cr struct {
+		Response struct {
+			Response struct {
+				UpdatedInput json.RawMessage `json:"updatedInput"`
+			} `json:"response"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal(content, &cr); err != nil {
+		return nil
+	}
+	var updated map[string]any
+	if err := json.Unmarshal(cr.Response.Response.UpdatedInput, &updated); err != nil {
+		return nil
+	}
+	return updated
 }
 
 // DecodeControlBehavior decodes the frontend's neutral approve/reject control-response envelope

@@ -47,7 +47,7 @@ function extractSubagentNotificationSources(payload: Record<string, unknown>): A
   const details = pickObject(message, 'details')
   if (!details)
     return null
-  const reports = notificationReports(piContentText(payload, 'text'))
+  const reports = notificationReports(piContentText(payload))
   const entries = [details, ...(Array.isArray(details.others) ? details.others : [])]
   const sources: AgentRun[] = []
   for (const entry of entries) {

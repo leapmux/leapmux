@@ -1,11 +1,13 @@
 package acp
 
 import (
+	"bytes"
 	"encoding/json"
 	"sort"
 	"strings"
 	"sync"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
@@ -40,6 +42,19 @@ type acpTurnSnapshot struct {
 	incompleteTools   []acpIncompleteTool
 }
 
+// acpPromptBoundary is the end of a prompt's output while an agent turn waits
+// behind that prompt (Base.BeginAgentTurn). The agent started its turn, so the
+// prompt's work is over, but the base processes the prompt's end later, on its
+// own goroutine. Everything that the agent streams in between belongs to the
+// agent turn. The boundary keeps what is still the prompt's.
+type acpPromptBoundary struct {
+	// completedToolUses counts the prompt's tool calls that completed, including
+	// a call of the prompt that completes after the boundary.
+	completedToolUses int
+	// openTools is the tool calls that the prompt left open at the boundary.
+	openTools map[string]struct{}
+}
+
 // acpTurnOutput protects assembled text and incomplete tool state with turnMu.
 // Callers can hold session, update, or terminal lifecycle locks.
 // Session replacement acquires turnMu before the protocol-state lock.
@@ -48,6 +63,11 @@ type acpTurnOutput struct {
 
 	turnAssistantText strings.Builder
 	turnThoughtText   strings.Builder
+	// assistantMessageID and thoughtMessageID identify the message of the last
+	// chunk of each kind, for a provider that states it (Hooks.ChunkMessageID).
+	// "" until such a chunk arrives in the turn.
+	assistantMessageID string
+	thoughtMessageID   string
 
 	toolUpdateState     map[string]*acpToolUpdateState
 	toolRequestContents map[string]*acpToolRequestContent
@@ -55,6 +75,14 @@ type acpTurnOutput struct {
 	nextToolUpdateOrder uint64
 	spawnSpansReleased  map[string]struct{}
 	turnToolUses        int
+	// endedTools is the tool calls that a final update ended in this turn, so a
+	// repeated final update counts the call no second time (see completeTool). A
+	// prompt boundary keeps it, because a call of the prompt that ended before the
+	// boundary must not count for the agent turn after it.
+	endedTools map[string]struct{}
+	// promptBoundary is set while an agent turn waits behind a prompt, and nil
+	// otherwise.
+	promptBoundary *acpPromptBoundary
 }
 
 func (o *acpTurnOutput) appendAssistant(text string) {
@@ -71,6 +99,25 @@ func (o *acpTurnOutput) appendThought(text string) (fresh bool) {
 	fresh = o.turnThoughtText.Len() == 0
 	providerkit.AppendText(&o.turnThoughtText, text, providerkit.JoinVerbatim)
 	return fresh
+}
+
+// switchMessage records id as the message of the next chunk of kind. It reports
+// whether the buffered text of that kind belongs to another message, which the
+// caller then stores first. A chunk that states no id continues the buffered
+// text, whatever message that text belongs to.
+func (o *acpTurnOutput) switchMessage(kind agent.AssembledMessageKind, id string) bool {
+	if id == "" {
+		return false
+	}
+	o.turnMu.Lock()
+	defer o.turnMu.Unlock()
+	current, buffered := &o.assistantMessageID, &o.turnAssistantText
+	if kind == agent.AssembledMessageKindReasoning {
+		current, buffered = &o.thoughtMessageID, &o.turnThoughtText
+	}
+	previous := *current
+	*current = id
+	return previous != "" && previous != id && buffered.Len() > 0
 }
 
 func (o *acpTurnOutput) takeText(kind agent.AssembledMessageKind) string {
@@ -91,6 +138,205 @@ func (o *acpTurnOutput) drainTurn() acpTurnSnapshot {
 	return o.drainTurnLocked()
 }
 
+// holdsOpenTool reports whether the tool call toolCallID opened and did not end.
+func (o *acpTurnOutput) holdsOpenTool(toolCallID string) bool {
+	o.turnMu.Lock()
+	defer o.turnMu.Unlock()
+	_, open := o.toolUpdateState[toolCallID]
+	return open
+}
+
+// latestOpenToolWithoutInput returns the id of the most recently opened tool
+// call whose stored request states no raw input, or "" when every open call has
+// one. A filesystem runtime opens the call and only then asks the host to read
+// or write the file, so the host sees the arguments first -- as that request.
+// The caller folds them into the row (see conversation.noteToolRequestFields).
+func (o *acpTurnOutput) latestOpenToolWithoutInput() string {
+	o.turnMu.Lock()
+	defer o.turnMu.Unlock()
+	bestID := ""
+	var best uint64
+	for id, state := range o.toolUpdateState {
+		if toolRequestStatesInput(state) {
+			continue
+		}
+		if bestID == "" || state.order > best {
+			bestID, best = id, state.order
+		}
+	}
+	return bestID
+}
+
+// toolRequestStatesInput reports whether a stored request carries a raw input
+// that states something (see requestFieldStates).
+func toolRequestStatesInput(state *acpToolUpdateState) bool {
+	return requestFieldStates(state.fields[contracts.ACPSupplementRequestRawInput])
+}
+
+// acpLateInputKeys are the request fields that a frame other than the call's
+// own can state late: the input of the call. The title and the kind identify
+// the call, and the frames of the call state them. The schema requires a title
+// in a tool_call (ToolCall.title). A permission request words the title for its
+// dialog, and it can state another kind: Goose 1.53 opens a write with no kind
+// and asks for it with `kind: "other"`. So a permission request never fills
+// the title or the kind.
+var acpLateInputKeys = []string{contracts.ACPSupplementRequestRawInput, contracts.ACPSupplementRequestLocations}
+
+// unstatedInputFields returns the input fields of offered (see acpLateInputKeys)
+// that the open call toolCallID never stated in a frame of its own. It returns
+// only a field that states something (see requestFieldStates). It returns nil
+// when the call is not open, and when the call stated each field that offered
+// states.
+//
+// The function reads the fields that the frames of the call merged
+// (acpToolUpdateState), never the supplement of the request row. The caller
+// folds the returned fields into that supplement only. So the call still
+// states no input to latestOpenToolWithoutInput, and a later fs/* request of
+// the host still folds the complete arguments into the row.
+func (o *acpTurnOutput) unstatedInputFields(toolCallID string, offered map[string]json.RawMessage) map[string]json.RawMessage {
+	o.turnMu.Lock()
+	defer o.turnMu.Unlock()
+	state := o.toolUpdateState[toolCallID]
+	if state == nil {
+		return nil
+	}
+	var unstated map[string]json.RawMessage
+	for _, key := range acpLateInputKeys {
+		value := offered[key]
+		if !requestFieldStates(value) || requestFieldStates(state.fields[key]) {
+			continue
+		}
+		if unstated == nil {
+			unstated = make(map[string]json.RawMessage, len(acpLateInputKeys))
+		}
+		unstated[key] = value
+	}
+	return unstated
+}
+
+// requestFieldStates reports whether one request field of a frame states
+// something that a reader can use. These values state nothing:
+//
+//   - An absent field.
+//   - null.
+//   - An empty string.
+//   - An empty object. OpenCode sends it as the rawInput of a call that it
+//     fills later.
+//   - An empty array.
+//
+// Every other value states something, a scalar input included. raw holds one
+// JSON value, as json.Unmarshal leaves each field of a map of json.RawMessage.
+// The function reads the bytes at the two ends of the value and decodes
+// nothing, because a rawInput can hold the whole text of a file.
+func requestFieldStates(raw json.RawMessage) bool {
+	value := bytes.TrimSpace(raw)
+	if len(value) == 0 {
+		return false
+	}
+	switch value[0] {
+	case 'n':
+		return false
+	case '"':
+		return len(value) > len(`""`)
+	case '{', '[':
+		return len(value) > 2 && len(bytes.TrimSpace(value[1:len(value)-1])) > 0
+	default:
+		return true
+	}
+}
+
+// markPromptBoundaryLocked records the end of the prompt's output, because an
+// agent turn now waits behind the prompt. It returns the prompt's text, which
+// the caller persists at once, so the agent turn's text starts a segment of its
+// own. The tool calls that are open now stay the prompt's, and drainPromptTurn
+// closes them at the prompt's end. A second call before that end changes
+// nothing: one agent turn at most waits behind a prompt. The caller holds
+// turnMu.
+func (o *acpTurnOutput) markPromptBoundaryLocked() (assistantText, thoughtText string) {
+	if o.promptBoundary != nil {
+		return "", ""
+	}
+	boundary := &acpPromptBoundary{
+		completedToolUses: o.turnToolUses,
+		openTools:         make(map[string]struct{}, len(o.toolUpdateState)),
+	}
+	for toolCallID := range o.toolUpdateState {
+		boundary.openTools[toolCallID] = struct{}{}
+	}
+	o.promptBoundary = boundary
+	o.turnToolUses = 0
+	assistantText, thoughtText = o.turnAssistantText.String(), o.turnThoughtText.String()
+	o.turnAssistantText.Reset()
+	o.turnThoughtText.Reset()
+	return assistantText, thoughtText
+}
+
+// takeUnownedOutputLocked ends the output that no turn owns, because a turn
+// starts now. That output is what the base recorded after the last turn
+// drained and before this turn started. Several sources reach it:
+//
+//   - The replay of a session/load. The agent sends it before its reply, and
+//     the base dispatches it after the startup, while no prompt runs.
+//   - A chunk that trails the end of a turn.
+//   - Content that an agent sends while it is idle.
+//
+// It returns the buffered text, which the caller persists as segments of their
+// own before the turn writes anything. Without this, the first segment of the
+// turn started with that text, and one row held both. It also drops the count
+// of the tool calls that completed meanwhile: each of them already has its row,
+// and the turn-end row counts the tools of its own turn only. A tool call that
+// is still open stays open, because only its own update can end it. The caller
+// holds turnMu.
+func (o *acpTurnOutput) takeUnownedOutputLocked() (assistantText, thoughtText string) {
+	assistantText, thoughtText = o.turnAssistantText.String(), o.turnThoughtText.String()
+	o.turnAssistantText.Reset()
+	o.turnThoughtText.Reset()
+	o.turnToolUses = 0
+	o.endedTools = nil
+	return assistantText, thoughtText
+}
+
+// dropPromptBoundaryLocked removes the boundary that a queued agent turn set,
+// because that turn will not run. The output after the boundary goes back to
+// the prompt, and the prompt's count of the tools that finished before the
+// boundary counts again. It reports whether a boundary was there: false states
+// that the prompt's end already took its part. The caller holds turnMu.
+func (o *acpTurnOutput) dropPromptBoundaryLocked() bool {
+	boundary := o.promptBoundary
+	if boundary == nil {
+		return false
+	}
+	o.turnToolUses += boundary.completedToolUses
+	o.promptBoundary = nil
+	return true
+}
+
+// drainPromptTurn drains the output of the prompt that ends now. With no
+// boundary, that is the whole turn output. With a boundary, it is only the tool
+// calls that the prompt left open, and hasPromptBoundary is true: the prompt's text was
+// persisted at the boundary, and everything else belongs to the agent turn that
+// waits, which keeps it.
+func (o *acpTurnOutput) drainPromptTurn() (snapshot acpTurnSnapshot, hasPromptBoundary bool) {
+	o.turnMu.Lock()
+	defer o.turnMu.Unlock()
+	boundary := o.promptBoundary
+	if boundary == nil {
+		return o.drainTurnLocked(), false
+	}
+	o.promptBoundary = nil
+	snapshot.completedToolUses = boundary.completedToolUses
+	for toolCallID := range boundary.openTools {
+		if _, open := o.toolUpdateState[toolCallID]; open {
+			snapshot.incompleteTools = append(snapshot.incompleteTools, o.incompleteToolLocked(toolCallID))
+		}
+	}
+	o.sortIncompleteToolsLocked(snapshot.incompleteTools)
+	for _, tool := range snapshot.incompleteTools {
+		o.forgetToolLocked(tool.toolCallID)
+	}
+	return snapshot, true
+}
+
 // replaceSession drains turn output and invokes updateProtocol while turnMu stays held.
 // updateProtocol may acquire the protocol-state lock. It must not perform I/O.
 func (o *acpTurnOutput) replaceSession(updateProtocol func()) acpTurnSnapshot {
@@ -102,14 +348,18 @@ func (o *acpTurnOutput) replaceSession(updateProtocol func()) acpTurnSnapshot {
 }
 
 func (o *acpTurnOutput) resetTurnLocked() {
+	o.promptBoundary = nil
 	o.turnAssistantText.Reset()
 	o.turnThoughtText.Reset()
+	o.assistantMessageID = ""
+	o.thoughtMessageID = ""
 	o.toolUpdateState = nil
 	o.toolRequestContents = nil
 	o.toolSubagentRows = nil
 	o.nextToolUpdateOrder = 0
 	o.spawnSpansReleased = nil
 	o.turnToolUses = 0
+	o.endedTools = nil
 }
 
 func (o *acpTurnOutput) drainTurnLocked() acpTurnSnapshot {
@@ -119,19 +369,33 @@ func (o *acpTurnOutput) drainTurnLocked() acpTurnSnapshot {
 		completedToolUses: o.turnToolUses,
 		incompleteTools:   make([]acpIncompleteTool, 0, len(o.toolUpdateState)),
 	}
-	for toolCallID, state := range o.toolUpdateState {
-		encoded, err := json.Marshal(state.fields)
-		snapshot.incompleteTools = append(snapshot.incompleteTools, acpIncompleteTool{
-			toolCallID: toolCallID,
-			original:   state.original,
-			content:    encoded,
-			rowKey:     o.toolSubagentRows[toolCallID],
-			encodeErr:  err,
-		})
+	for toolCallID := range o.toolUpdateState {
+		snapshot.incompleteTools = append(snapshot.incompleteTools, o.incompleteToolLocked(toolCallID))
 	}
-	sort.Slice(snapshot.incompleteTools, func(left, right int) bool {
-		leftID := snapshot.incompleteTools[left].toolCallID
-		rightID := snapshot.incompleteTools[right].toolCallID
+	o.sortIncompleteToolsLocked(snapshot.incompleteTools)
+	o.resetTurnLocked()
+	return snapshot
+}
+
+// incompleteToolLocked returns the row data of one open tool call.
+func (o *acpTurnOutput) incompleteToolLocked(toolCallID string) acpIncompleteTool {
+	state := o.toolUpdateState[toolCallID]
+	encoded, err := json.Marshal(state.fields)
+	return acpIncompleteTool{
+		toolCallID: toolCallID,
+		original:   state.original,
+		content:    encoded,
+		rowKey:     o.toolSubagentRows[toolCallID],
+		encodeErr:  err,
+	}
+}
+
+// sortIncompleteToolsLocked orders tools as the agent opened them. Every tool
+// must still be in toolUpdateState.
+func (o *acpTurnOutput) sortIncompleteToolsLocked(tools []acpIncompleteTool) {
+	sort.Slice(tools, func(left, right int) bool {
+		leftID := tools[left].toolCallID
+		rightID := tools[right].toolCallID
 		leftOrder := o.toolUpdateState[leftID].order
 		rightOrder := o.toolUpdateState[rightID].order
 		if leftOrder != rightOrder {
@@ -139,8 +403,17 @@ func (o *acpTurnOutput) drainTurnLocked() acpTurnSnapshot {
 		}
 		return leftID < rightID
 	})
-	o.resetTurnLocked()
-	return snapshot
+}
+
+// forgetToolLocked removes every record of one tool call, and returns the row
+// key of the subagent that the call spawned, or "".
+func (o *acpTurnOutput) forgetToolLocked(toolCallID string) string {
+	delete(o.toolUpdateState, toolCallID)
+	delete(o.toolRequestContents, toolCallID)
+	rowKey := o.toolSubagentRows[toolCallID]
+	delete(o.toolSubagentRows, toolCallID)
+	delete(o.spawnSpansReleased, toolCallID)
+	return rowKey
 }
 
 // rememberIncompleteTool records the opening frame of a tool call. An earlier frame
@@ -173,16 +446,32 @@ func (o *acpTurnOutput) toolUpdateStateLocked(toolCallID string, size int) *acpT
 	return state
 }
 
+// completeTool records that one tool call ended, and counts it for the turn
+// that it belongs to: a call that the prompt left open at a boundary counts for
+// the prompt, and any other call for the running turn.
+//
+// A call counts once. An agent can repeat the final update of one call: Junie
+// sends its own `failed` update for a command that a stop ended, then one more
+// for each exit report of the client terminal.
 func (o *acpTurnOutput) completeTool(toolCallID string) string {
 	o.turnMu.Lock()
 	defer o.turnMu.Unlock()
+	if _, ended := o.endedTools[toolCallID]; ended {
+		return o.forgetToolLocked(toolCallID)
+	}
+	if o.endedTools == nil {
+		o.endedTools = make(map[string]struct{})
+	}
+	o.endedTools[toolCallID] = struct{}{}
+	if boundary := o.promptBoundary; boundary != nil {
+		if _, ofPrompt := boundary.openTools[toolCallID]; ofPrompt {
+			delete(boundary.openTools, toolCallID)
+			boundary.completedToolUses++
+			return o.forgetToolLocked(toolCallID)
+		}
+	}
 	o.turnToolUses++
-	delete(o.toolUpdateState, toolCallID)
-	delete(o.toolRequestContents, toolCallID)
-	rowKey := o.toolSubagentRows[toolCallID]
-	delete(o.toolSubagentRows, toolCallID)
-	delete(o.spawnSpansReleased, toolCallID)
-	return rowKey
+	return o.forgetToolLocked(toolCallID)
 }
 
 // mergeToolUpdate folds one update into the call's merged fields and records the

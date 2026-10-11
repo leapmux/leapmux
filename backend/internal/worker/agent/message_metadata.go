@@ -91,6 +91,9 @@ func mergeMessageMetadata(content MessageContent) []byte {
 // two supplements say the same thing uses JSONCanonicalEqual rather than a byte
 // compare.
 func EncodeMessageSupplement(content MessageContent) ([]byte, error) {
+	if err := ValidateIncomingMessageMetadata(content.Metadata); err != nil {
+		return nil, err
+	}
 	fields := make(map[string]json.RawMessage, 2)
 	if len(content.Supplemental) > 0 {
 		fields[contracts.MessageSupplementFieldProvider] = content.Supplemental

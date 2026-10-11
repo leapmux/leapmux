@@ -6,6 +6,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/leapmux/leapmux/internal/worker/gitutil"
 )
@@ -63,4 +64,17 @@ func TestSpawnEnv_ExtraEnvLandsLastAndReplacesInheritedRemoteValues(t *testing.T
 	assert.Equal(t, "LEAPMUX_CONTROL_SOCKET=/fresh/sock", env[len(env)-1],
 		"ExtraEnv lands last so it wins over everything the pins set")
 	assert.Contains(t, env, "TERM=xterm-256color", "the pins survive the ExtraEnv append")
+}
+
+// The provider-helper variable points at one agent's helper spec. A terminal
+// that inherits it would run a plain `leapmux` as that agent's helper, so the
+// spawn strips it, whatever else it inherits.
+func TestSpawnEnv_StripsTheAgentHelperVariable(t *testing.T) {
+	t.Parallel()
+
+	for _, extra := range [][]string{nil, {"LEAPMUX_CONTROL_SOCKET=/fresh/sock"}} {
+		env := spawnEnv([]string{"PATH=/usr/bin", contracts.EnvAgentHelper + "=/tmp/agent/helper.json"}, extra)
+		assert.Empty(t, envutil.ValuesFor(env, contracts.EnvAgentHelper))
+		assert.Contains(t, env, "PATH=/usr/bin")
+	}
 }

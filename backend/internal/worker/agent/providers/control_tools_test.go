@@ -51,8 +51,10 @@ func TestOnlyCodexSynthesizesAnInterruptNotice(t *testing.T) {
 // Shared service code consumes only these provider-neutral classifications, so
 // provider wire names do not leak back into service-level plan-mode policy.
 //
-// Claude, Codex and ZCode each pin their own reading in their own package. ZCode
-// is here although its tools are its own: its names equal Claude's.
+// Claude, Codex, ZCode, Kimi Code, MiMo Code, CodeBuddy Code and Qoder CLI each
+// pin their own reading in their own package. ZCode, Kimi Code, CodeBuddy and Qoder
+// are here although their tools are their own: their names equal Claude's. MiMo
+// reads its own `plan_exit` approval.
 func TestOnlyThePlanModeProvidersReadAPlanModeTool(t *testing.T) {
 	t.Parallel()
 
@@ -104,15 +106,15 @@ func TestOnlyCursorTransformsACreatePlanAnswer(t *testing.T) {
 	assert.NotEqual(t, response, res.Content, "Cursor answers create_plan with its own outcome")
 }
 
-// TestOnlyCodexHasLocalPlanApprovalSettings pins that no provider but Codex
-// states local settings for a plan approval. Codex's own settings are pinned by
-// TestPlanApprovalOptions_PerProvider in its package.
-func TestOnlyCodexHasLocalPlanApprovalSettings(t *testing.T) {
+// TestProvidersWithLocalPlanApprovalSettings checks the providers that
+// supply local settings for a plan approval. Their packages test the settings.
+func TestProvidersWithLocalPlanApprovalSettings(t *testing.T) {
 	t.Parallel()
 
 	registry := Registry()
 	for _, provider := range append(agentlabels.AllProviders(), leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED) {
-		if provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX {
+		if provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX ||
+			false { // qoder/deepseek carve-outs return with their providers
 			continue
 		}
 		assert.Empty(t, registry.Plugin(provider).PlanApprovalOptions(""), "provider %v has no local plan approval settings", provider)

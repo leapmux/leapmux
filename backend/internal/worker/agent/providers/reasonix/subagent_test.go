@@ -18,8 +18,8 @@ func TestReasonixSubagentOutcomeWithoutReference(t *testing.T) {
 		outcome string
 		want    bgtask.Status
 	}{
-		{"completed", bgtask.StatusCompleted},
-		{"partial", bgtask.StatusCompleted},
+		{"completed", bgtask.StatusSucceeded},
+		{"partial", bgtask.StatusFailed},
 		{"failed", bgtask.StatusFailed},
 		{"cancelled", bgtask.StatusStopped},
 	} {
@@ -45,7 +45,7 @@ func TestReasonixReadOnlyTaskCompletionDoesNotParseReportAsStatus(t *testing.T) 
 		require.NoError(t, json.Unmarshal([]byte(`{"toolCallId":"task","status":"completed","title":"read_only_task","rawInput":{"prompt":"Read an example"},"content":[{"type":"content","content":{"type":"text","text":`+string(text)+`}}]}`), &update))
 		observation := reasonixSubagentFromToolCallUpdate(update)
 		require.NotNil(t, observation)
-		assert.Equal(t, bgtask.StatusCompleted, observation.Status)
+		assert.Equal(t, bgtask.StatusSucceeded, observation.Status)
 	}
 }
 
@@ -246,4 +246,158 @@ func TestReasonixSubagentDetectorsClaimOnlyTheSpawn(t *testing.T) {
 	}
 	assert.Nil(t, reasonixSubagentFromToolCall(acp.ToolCallEnvelope{
 		ToolCallID: "call-plain", Kind: "read", Title: "Read", RawInput: json.RawMessage(`{"path":"/tmp/a"}`)}), "an ordinary tool call is no subagent")
+}
+
+func reasonixTaskObservationFixture() (*acp.Base, *agenttest.Sink) {
+	sink := &agenttest.Sink{}
+	base := &acp.Base{}
+	base.SetSinkForTest(agent.NewProviderServices(sink))
+	*base.HooksForTest() = acp.Hooks{
+		SubagentFromToolCall:       reasonixSubagentFromToolCall,
+		SubagentFromToolCallUpdate: reasonixSubagentFromToolCallUpdate,
+	}
+	return base, sink
+}
+
+func TestReasonixBackgroundLaunchKeepsTheChildOutcomeUnknown(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name        string
+		tool        string
+		wrapped     bool
+		background  bool
+		outerStatus string
+		text        string
+		want        bgtask.Status
+		report      string
+	}{
+		{name: "direct native launch", tool: "task", background: true, outerStatus: "completed", text: "Started background task \"job-1\" (Inspect sample).\nSubagent reference: sa_background\nIt runs across turns.", want: bgtask.StatusEndedWithUnknownOutcome},
+		{name: "capability native launch", tool: "task", wrapped: true, background: true, outerStatus: "completed", text: "Started background task \"job-1\" (Inspect sample).\nSubagent reference: sa_background\nIt runs across turns.", want: bgtask.StatusEndedWithUnknownOutcome},
+		{name: "notice without repeated background argument", tool: "task", outerStatus: "completed", text: "Started background task \"job-1\" (Inspect sample).", want: bgtask.StatusEndedWithUnknownOutcome},
+		{name: "confirmed child outcome", tool: "task", background: true, outerStatus: "completed", text: "Subagent outcome: status=completed retryable=false\n\nFinal answer:\nThe sample is valid.", want: bgtask.StatusSucceeded, report: "The sample is valid."},
+		{name: "failed launch", tool: "task", background: true, outerStatus: "failed", text: "Cannot start the native child.", want: bgtask.StatusFailed, report: "Cannot start the native child."},
+		{name: "read-only quoted launch", tool: "read_only_task", outerStatus: "completed", text: "Started background task \"example-job\" (An example).", want: bgtask.StatusSucceeded, report: "Started background task \"example-job\" (An example)."},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			base, sink := reasonixTaskObservationFixture()
+			arguments := map[string]any{"description": "Inspect sample", "prompt": "Read sample.py"}
+			if test.background {
+				arguments["run_in_background"] = true
+			}
+			title := test.tool
+			var input any = arguments
+			if test.wrapped {
+				title = "use_capability"
+				input = map[string]any{"action": "call", "capability_id": "tool:" + test.tool, "arguments": arguments}
+			}
+			opening, err := json.Marshal(map[string]any{
+				"sessionUpdate": "tool_call", "toolCallId": "native-task", "title": title,
+				"kind": "other", "status": "pending", "rawInput": input,
+			})
+			require.NoError(t, err)
+			base.HandleToolCallForTest(opening)
+			before := sink.BackgroundTasks()
+			require.Len(t, before, 1)
+			assert.Equal(t, bgtask.KindSubagent, before[0].Kind)
+			assert.Equal(t, bgtask.StatusRunning, before[0].Status)
+			require.NotEmpty(t, before[0].ChildAgentID)
+			update, err := json.Marshal(map[string]any{
+				"sessionUpdate": "tool_call_update", "toolCallId": "native-task", "status": test.outerStatus,
+				"content": []any{map[string]any{"type": "content", "content": map[string]any{"type": "text", "text": test.text}}},
+			})
+			require.NoError(t, err)
+			original := append([]byte(nil), update...)
+			base.HandleToolCallUpdateForTest(update)
+			rows := sink.BackgroundTasks()
+			require.Len(t, rows, 1)
+			assert.Equal(t, test.want, rows[0].Status)
+			assert.Equal(t, before[0].ChildAgentID, rows[0].ChildAgentID)
+			assert.True(t, rows[0].Status.IsFinished())
+			assert.False(t, rows[0].Status.IsWorking())
+			assert.Equal(t, original, update)
+			child := sink.Child(rows[0].ChildAgentID)
+			require.NotNil(t, child)
+			reports := child.LeapMuxNotifications()
+			if test.report == "" {
+				assert.Empty(t, reports, "a launch acknowledgement supplies no child result")
+			} else {
+				require.Len(t, reports, 1)
+				assert.Equal(t, test.report, reports[0]["text"])
+			}
+		})
+	}
+}
+
+func TestReasonixPartialOutcomeKeepsNativeFailureAndReport(t *testing.T) {
+	t.Parallel()
+	for _, code := range []string{"completion_uncertain", "final_readiness", "review_unavailable", "max_steps", "incomplete_read"} {
+		for _, outerStatus := range []string{"completed", "failed"} {
+			t.Run(code+"/"+outerStatus, func(t *testing.T) {
+				base, sink := reasonixTaskObservationFixture()
+				opening := json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"partial-task","title":"task","kind":"other","status":"pending","rawInput":{"description":"Inspect sample","prompt":"Read sample.py"}}`)
+				base.HandleToolCallForTest(opening)
+				before := sink.BackgroundTasks()
+				require.Len(t, before, 1)
+				assert.Equal(t, bgtask.StatusRunning, before[0].Status)
+				text := "Subagent reference: sa_partial\nSubagent outcome: status=partial retryable=true error_code=" + code + "\n\nFinal answer:\nUseful partial findings."
+				update, err := json.Marshal(map[string]any{
+					"sessionUpdate": "tool_call_update", "toolCallId": "partial-task", "status": outerStatus,
+					"content": []any{map[string]any{"type": "content", "content": map[string]any{"type": "text", "text": text}}},
+				})
+				require.NoError(t, err)
+				original := append([]byte(nil), update...)
+				base.HandleToolCallUpdateForTest(update)
+				rows := sink.BackgroundTasks()
+				require.Len(t, rows, 1)
+				assert.Equal(t, bgtask.StatusFailed, rows[0].Status)
+				assert.Equal(t, before[0].ChildAgentID, rows[0].ChildAgentID)
+				assert.True(t, rows[0].Status.IsFinished())
+				assert.False(t, rows[0].Status.IsWorking())
+				assert.Equal(t, original, update)
+				child := sink.Child(rows[0].ChildAgentID)
+				require.NotNil(t, child)
+				reports := child.LeapMuxNotifications()
+				require.Len(t, reports, 1)
+				assert.Equal(t, "Useful partial findings.", reports[0]["text"])
+			})
+		}
+	}
+	for _, test := range []struct {
+		name        string
+		tool        string
+		outerStatus string
+		want        bgtask.Status
+	}{
+		{name: "native cancellation", tool: "task", outerStatus: "cancelled", want: bgtask.StatusStopped},
+		{name: "read-only quoted partial", tool: "read_only_task", outerStatus: "completed", want: bgtask.StatusSucceeded},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			base, sink := reasonixTaskObservationFixture()
+			opening, err := json.Marshal(map[string]any{
+				"sessionUpdate": "tool_call", "toolCallId": "quoted-partial", "title": test.tool, "kind": "other", "status": "pending",
+				"rawInput": map[string]any{"description": "Read an example", "prompt": "Read sample.py"},
+			})
+			require.NoError(t, err)
+			base.HandleToolCallForTest(opening)
+			text := "Subagent outcome: status=partial retryable=true error_code=completion_uncertain\n\nFinal answer:\nQuoted partial prose."
+			update, err := json.Marshal(map[string]any{
+				"sessionUpdate": "tool_call_update", "toolCallId": "quoted-partial", "status": test.outerStatus,
+				"content": []any{map[string]any{"type": "content", "content": map[string]any{"type": "text", "text": text}}},
+			})
+			require.NoError(t, err)
+			base.HandleToolCallUpdateForTest(update)
+			rows := sink.BackgroundTasks()
+			require.Len(t, rows, 1)
+			assert.Equal(t, test.want, rows[0].Status)
+			child := sink.Child(rows[0].ChildAgentID)
+			require.NotNil(t, child)
+			reports := child.LeapMuxNotifications()
+			require.Len(t, reports, 1)
+			if test.tool == "read_only_task" {
+				assert.Equal(t, text, reports[0]["text"])
+			} else {
+				assert.Equal(t, "Quoted partial prose.", reports[0]["text"])
+			}
+		})
+	}
 }

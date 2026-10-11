@@ -1,7 +1,7 @@
 import type { MessageCategory } from '../../messageClassifier'
 import type { ClassificationInput } from '../registry'
-import { ZCODE_EVENT } from '~/generated/contracts/zcode-protocol'
-import { pickObject, pickString } from '~/lib/jsonPick'
+import { ZCODE_EVENT, ZCODE_METHOD } from '~/generated/contracts/zcode-protocol'
+import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { isPlainNotificationType } from '~/lib/notificationTypes'
 import { isNotificationThreadWrapper } from '../../messageUtils'
 import { notificationClassifierFor } from '../../notificationClassification'
@@ -70,6 +70,8 @@ export function classifyZCodeMessage(input: ClassificationInput): MessageCategor
   // later `wrapper.messages` read need a cast to compile.
   if (wrapper && wrapper.messages.length === 0)
     return { kind: 'hidden' }
+  if (wrapper && wrapper.messages.some(message => isObject(message) && pickString(message, 'method') === ZCODE_METHOD.StateUpdated))
+    return notification(wrapper.messages, 'hidden')
   if (isNotificationThreadWrapper(wrapper, ZCODE_NOTIFICATION_TYPES)) {
     // A thread of only unrenderable notifications collapses to hidden rather than
     // falling through to a raw-JSON bubble.
@@ -83,6 +85,9 @@ export function classifyZCodeMessage(input: ClassificationInput): MessageCategor
   // an `ExitPlanMode` call that carries a plan in its arguments.
   if (zcodePlanText(parent, input.spanType, input.supplementalContent) !== null)
     return { kind: 'assistant_plan' }
+
+  if (pickString(parent, 'method') === ZCODE_METHOD.StateUpdated)
+    return notification([parent], 'hidden')
 
   // A user row the service layer persisted is the LeapMux-neutral `{content}`
   // shape, with no ZCode `type`. It is matched BEFORE the event dispatch so a user

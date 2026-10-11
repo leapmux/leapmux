@@ -13,6 +13,11 @@ import (
 // it is the same.
 const kiloQuestionToolEnv = "KILO_ENABLE_QUESTION_TOOL"
 
+// kiloDisableAutoUpdateEnv is Kilo's spelling of openCodeDisableAutoUpdateEnv.
+// Kilo's TUI installs a patch release through npm, yarn, pnpm or bun after the
+// same one-second delay, and `kilo acp` never starts the check.
+const kiloDisableAutoUpdateEnv = "KILO_DISABLE_AUTOUPDATE"
+
 var _ agent.StartFunc = Start
 
 // Start starts a Kilo ACP agent process and performs the handshake.
@@ -24,7 +29,8 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		// tool; see kiloQuestionToolEnv. Its allowed client list adds `vscode`, and
 		// its own `kilo acp` handler assigns `KILO_CLIENT="acp"` the same way, so the
 		// flag is the only route here too.
-		QuestionToolEnv:     kiloQuestionToolEnv,
-		DefaultPrimaryAgent: PrimaryAgentCode,
+		QuestionToolEnv:      kiloQuestionToolEnv,
+		DisableAutoUpdateEnv: kiloDisableAutoUpdateEnv,
+		DefaultPrimaryAgent:  PrimaryAgentCode,
 	}, func() *Agent { return &Agent{} }, func(a *Agent) *opencode.FamilyBase { return &a.FamilyBase })
 }

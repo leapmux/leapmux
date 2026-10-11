@@ -34,7 +34,7 @@ func TestACPInterruptAnswersEveryOpenControlRequestByKind(t *testing.T) {
 	b.HandleOutput([]byte(`{"jsonrpc":"2.0","id":11,"method":"session/request_permission","params":{}}`))
 	b.HandleOutput([]byte(`{"jsonrpc":"2.0","id":"e-1","method":"` + contracts.MCPElicitationMethodACP + `","params":{}}`))
 	require.Len(t, sink.PublishedControls(), 2)
-	require.NoError(t, b.Interrupt())
+	require.NoError(t, b.Interrupt(agent.StopContext{}))
 	answers := agenttest.JSONRPCResultsByID(t, stdin.String())
 	assert.JSONEq(t, `{"outcome":{"outcome":"cancelled"}}`, answers[`11`])
 	assert.JSONEq(t, `{"action":"cancel"}`, answers[`"e-1"`])
@@ -54,7 +54,7 @@ func TestACPCancelNotificationPrunesTheOutstandingRecord(t *testing.T) {
 	assert.Equal(t, []string{"jsonrpc:11"}, sink.CanceledControls())
 	assert.Zero(t, b.OutstandingControlCountForTest())
 	stdin.Reset()
-	require.NoError(t, b.Interrupt())
+	require.NoError(t, b.Interrupt(agent.StopContext{}))
 	assert.Empty(t, agenttest.JSONRPCResultsByID(t, stdin.String()), "a withdrawn request must not receive a cancel answer")
 }
 

@@ -94,7 +94,7 @@ func TestOpenAgent_DelayedStartupBroadcastsActive(t *testing.T) {
 	// Watch the agent to capture broadcasts.
 	wWatch := newTestWriter()
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
-		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
+		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}},
 	}, wWatch)
 
 	require.Eventually(t, func() bool {
@@ -182,7 +182,7 @@ func TestOpenAgent_SettingsChangedDuringStartupSurviveActiveBroadcast(t *testing
 
 	wWatch := newTestWriter()
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
-		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
+		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}},
 	}, wWatch)
 	// handleWatchEvents returns once the request is SUBMITTED; the session
 	// goroutine registers the watch afterwards. Releasing startup before that
@@ -356,7 +356,7 @@ func TestOpenAgent_RawPermissionModeChangedDuringStartupSurvivesActiveBroadcast(
 
 	wWatch := newTestWriter()
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
-		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
+		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}},
 	}, wWatch)
 	// handleWatchEvents returns once the request is SUBMITTED; the session
 	// goroutine registers the watch afterwards. Releasing startup before that
@@ -1038,7 +1038,7 @@ func TestOpenAgent_CatchUpReplaySurfacesStartupMessage(t *testing.T) {
 
 	wWatch := newTestWriter()
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
-		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
+		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}},
 	}, wWatch)
 	waitWatchUpdateAck(t, wWatch)
 
@@ -1093,7 +1093,7 @@ func TestOpenAgent_ActiveBroadcastCarriesGitStatus(t *testing.T) {
 
 	wWatch := newTestWriter()
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
-		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
+		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}},
 	}, wWatch)
 
 	require.Eventually(t, func() bool {
@@ -1221,7 +1221,7 @@ func TestOpenAgent_StartupFailurePhaseCarriesGitStatus(t *testing.T) {
 
 	wWatch := newTestWriter()
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
-		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
+		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}},
 	}, wWatch)
 
 	require.Eventually(t, func() bool {

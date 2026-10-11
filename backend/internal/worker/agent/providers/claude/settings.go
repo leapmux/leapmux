@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -67,8 +68,9 @@ func (a *Agent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
 		// model. Surface it (and a concrete effort, when set) as READ-ONLY groups so
 		// `remote agent get`/list and the UI show what's running instead of a blank --
 		// the model isn't user-changeable here, so the groups are non-mutable. The model
-		// name is humanized (claudeFallbackDisplayName) so the readout matches the
-		// selectable catalog's friendly names rather than showing the raw bracketed id.
+		// name is humanized (claudeFallbackDisplayName) so the readout shows the
+		// friendly name of the static catalog row, or a derived name for a model
+		// with no row, rather than the raw bracketed id.
 		groups = append(groups, providerkit.ReadOnlyModelAndEffortGroups(model, claudeFallbackDisplayName(model), effort)...)
 	}
 
@@ -185,21 +187,31 @@ func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult 
 	flagSettings := map[string]interface{}{}
 	changedFlagOptionIDs := make([]string, 0, len(claudeFlagOptionIDs))
 
-	if reqModel != "" && reqModel != curModel {
+	modelChanged := reqModel != "" && reqModel != curModel
+	if modelChanged {
 		flagSettings["model"] = reqModel
 		changedFlagOptionIDs = append(changedFlagOptionIDs, agent.OptionIDModel)
 	}
 	// Resolve the requested effort against the model it will run under (the new model
 	// when this update also switches model) so a combined model+effort change can't
 	// push an unsupported effort -- e.g. {model:"sonnet", ultracode:true} -- to the
-	// CLI. The UI sends single-field updates, so this only bites non-UI/raw callers,
-	// but it keeps the live path consistent with buildModelEffortArgs's launch-time
+	// CLI. It keeps the live path consistent with buildModelEffortArgs's launch-time
 	// downgrade.
 	targetModel := curModel
 	if reqModel != "" {
 		targetModel = reqModel
 	}
-	effortSettings := a.effortResolver().updateFlagSettings(targetModel, reqEffort, curEffort)
+	resolver := a.effortResolver()
+	effortSettings := resolver.updateFlagSettings(targetModel, reqEffort, curEffort)
+	// The worker keeps a held effort across a model switch when the new model offers it, so
+	// reqEffort then equals curEffort and the delta above is empty. A session that launched
+	// without --effort holds no pinned level, and the CLI would run the new model's own
+	// default instead of the held effort. Pin the held effort in the same request. A session
+	// that hides the model and effort controls takes no effort push (see
+	// reconcileStartupEffortFlags).
+	if len(effortSettings) == 0 && modelChanged && !a.hidesModelEffortUI() {
+		effortSettings = resolver.pinFlagSettings(targetModel, reqEffort)
+	}
 	if len(effortSettings) > 0 {
 		maps.Copy(flagSettings, effortSettings)
 		changedFlagOptionIDs = append(changedFlagOptionIDs, agent.OptionIDEffort)
@@ -216,14 +228,25 @@ func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult 
 		flagSettings[OptionFastMode] = flagSettingOnOff(v)
 		changedFlagOptionIDs = append(changedFlagOptionIDs, OptionFastMode)
 	}
+	thinkingChange := ""
 	if v := options[OptionAlwaysThinking]; v != "" && v != curThinking {
 		flagSettings[OptionAlwaysThinking] = flagSettingThinking(v)
 		changedFlagOptionIDs = append(changedFlagOptionIDs, OptionAlwaysThinking)
+		thinkingChange = v
 	}
 
 	if len(flagSettings) > 0 {
 		if err := a.sendApplyFlagSettings(a.Context(), flagSettings, a.APITimeout()); err != nil {
 			slog.Error("apply_flag_settings failed", "agent_id", a.AgentID(), "error", err)
+			return agent.RestartRequiredSettings(options)
+		}
+	}
+	// After the flag, which the "on" case resolves against. A refusal leaves the
+	// running session thinking the old way, so the live apply did not land, and a
+	// relaunch applies the value from the start instead.
+	if thinkingChange != "" {
+		if err := a.applySessionThinking(a.Context(), thinkingChange, a.APITimeout()); err != nil {
+			slog.Error("set_max_thinking_tokens failed", "agent_id", a.AgentID(), "error", err)
 			return agent.RestartRequiredSettings(options)
 		}
 	}
@@ -508,9 +531,46 @@ func flagSettingOnOff(v string) interface{} {
 // Anything else returns nil, which removes the key from flagSettings and
 // lets Claude Code fall back to its default-on behavior — internally picking
 // type:"adaptive" or type:"enabled" per its own model gate.
+//
+// The flag changes the SETTINGS only. applySessionThinking states why the
+// running session needs a second request.
 func flagSettingThinking(v string) interface{} {
 	if v == AlwaysThinkingOff {
 		return false
 	}
 	return nil
+}
+
+// sessionThinkingTokens maps an "on"/"off" string to the set_max_thinking_tokens
+// value that applies it to the running session. "off" → 0 (thinking disabled).
+// Anything else returns nil, which returns the session to the default that
+// alwaysThinkingEnabled selects.
+func sessionThinkingTokens(v string) *int {
+	if v == AlwaysThinkingOff {
+		disabled := 0
+		return &disabled
+	}
+	return nil
+}
+
+// applySessionThinking applies an Extended Thinking value to the running session.
+//
+// apply_flag_settings alone is not enough. It changes alwaysThinkingEnabled in
+// the settings, which get_settings reads back, but Claude Code computes the
+// session's thinking configuration ONCE, at startup (verified against the 2.1.289
+// binary: the print-mode session keeps that value, and no settings change
+// refreshes it). A flag change alone therefore left every later request thinking
+// as it did at startup, while the readback and the UI reported "Off".
+// set_max_thinking_tokens is the control request that changes the running value.
+//
+// A disabled session reaches the request only for a model that accepts disabled
+// thinking. For a model whose CLI catalog entry carries rejects_disabled_thinking
+// (2.1.289: Sonnet 5.5, Opus 5.5 and Fable), the CLI sends no `thinking` field
+// for a disabled session, and its own toggle refuses to turn thinking off.
+//
+// Call it AFTER the apply_flag_settings that carries the same value. The CLI
+// resolves the null of the "on" case against alwaysThinkingEnabled, so the flag
+// must already be cleared, or "on" resolves to disabled thinking again.
+func (a *Agent) applySessionThinking(ctx context.Context, v string, timeout time.Duration) error {
+	return a.sendSetMaxThinkingTokens(ctx, sessionThinkingTokens(v), timeout)
 }

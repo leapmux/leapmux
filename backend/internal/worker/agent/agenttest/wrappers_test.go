@@ -20,7 +20,7 @@ var errInnerInterrupt = errors.New("inner interrupt")
 type capableAgent struct{ IdleAgent }
 
 func (capableAgent) AgentID() string                                  { return "inner" }
-func (capableAgent) Interrupt() error                                 { return errInnerInterrupt }
+func (capableAgent) Interrupt(stop agent.StopContext) error           { return errInnerInterrupt }
 func (capableAgent) SteerInput(string, []*leapmuxv1.Attachment) error { return nil }
 func (capableAgent) SupportsSteering() bool                           { return true }
 func (capableAgent) InterruptEscalationReady() bool                   { return false }
@@ -50,7 +50,7 @@ func TestNonSteerableHidesTheSteeringOfTheInnerAgent(t *testing.T) {
 	assert.False(t, steers, "the wrapper must not promote SteerInput or SupportsSteering")
 	_, probes := a.(escalationProbe)
 	assert.False(t, probes, "the wrapper must not promote the escalation probe")
-	assert.NoError(t, a.Interrupt(), "the interrupt succeeds at once")
+	assert.NoError(t, a.Interrupt(agent.StopContext{}), "the interrupt succeeds at once")
 	assert.Equal(t, "inner", a.AgentID(), "every other method reaches the inner agent")
 }
 
@@ -65,7 +65,7 @@ func TestIgnoredStopStatesThatTheEscalationIsReady(t *testing.T) {
 	assert.True(t, probe.InterruptEscalationReady(), "the wrapper answers, not the inner agent")
 	_, steers := a.(agent.InputSteerer)
 	assert.False(t, steers, "the wrapper must not promote SteerInput or SupportsSteering")
-	assert.NoError(t, a.Interrupt(), "the interrupt succeeds at once")
+	assert.NoError(t, a.Interrupt(agent.StopContext{}), "the interrupt succeeds at once")
 	assert.Equal(t, "inner", a.AgentID(), "every other method reaches the inner agent")
 }
 

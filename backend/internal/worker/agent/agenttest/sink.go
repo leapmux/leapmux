@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"cmp"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -32,17 +33,10 @@ type ModeChange struct {
 	New string
 }
 
-// childSpawnSpanTable is the child-agent-id -> spawn-span map the whole sink
-// tree shares. It stands in for the `agents` row, which is one table the worker
-// reads by primary key however it got there -- so a root sink, a child sink and
-// a sink built after a restart must all give one answer.
-type childSpawnSpanTable struct {
-	mu        sync.Mutex
-	byChildID map[string]string
-}
-
 // Sink is a test implementation of ProviderServices that records calls.
 type Sink struct {
+	// nativeChildKey belongs to this sink's direct parent and uses that parent's childSinkMu.
+	nativeChildKey string
 	// PersistErr, when set, is what PersistMessage returns. Read without the
 	// lock: a test sets it at construction and never changes it afterwards.
 	PersistErr        error
@@ -52,6 +46,8 @@ type Sink struct {
 	progress          []agent.ProgressUpdate
 	progressCount     agent.ProgressCounter
 	sessionIDs        []string
+	sessionFact       *testSessionFact
+	transcriptScope   *testTranscriptScope
 	permissionModes   []string
 	modeChanges       []ModeChange
 	settingsRefreshes []SettingsRefresh
@@ -62,17 +58,21 @@ type Sink struct {
 	leapMuxNotifications []map[string]interface{}
 	openSpans            []SpanOpen
 	closedSpans          []string
-	// TurnActiveCalls records every SetTurnState value in order. The ORDER is
-	// the observable that matters: a provider that clears its turn flag before
-	// it publishes the turn-end envelope, or that never clears it on a path the
-	// happy case does not reach, latches the agent busy forever.
+	// TurnActiveCalls records each SetTurnState value in order.
+	// A provider must publish its turn-end envelope before it clears the active flag.
+	// A missing or early clear can leave the agent busy forever.
 	TurnActiveCalls []bool
 	// turnKinds records the queue classification that accompanied each turn
 	// state.
 	turnStates []agent.TurnState
-	// interruptIgnoredReports records when a provider proves that an accepted
-	// interrupt did not end its turn.
-	interruptIgnoredReports int
+	// requeuedInputs records each RequeueDroppedInput call in order, including repeats.
+	// The Worker ignores a repeated drop.
+	// The test sink retains repeats so a test can detect the provider defect.
+	requeuedInputs []RequeuedInput
+	// RequeueErr makes RequeueDroppedInput return an error instead of recording the call.
+	// The provider must report that the queue refused the input.
+	// Set this field at construction. Reads require no lock.
+	RequeueErr error
 	// turnLifecycle interleaves the turn-end envelope with the turn-flag
 	// transitions, which the two slices above cannot show apart. See
 	// TurnLifecycle.
@@ -84,10 +84,9 @@ type Sink struct {
 	resetSpanCount int
 	turnSeqs       []uint64
 	statusActives  []string
-	// goals records every UpsertGoal in arrival order, and goalClears counts
-	// ClearGoal. A provider's goal parser is tested through these: they hold the
-	// neutral GoalUpdate, so a test asserts what the parser MEANT rather than
-	// the provider bytes it read.
+	// goals records each UpsertGoal in arrival order. goalClears counts ClearGoal calls.
+	// Both fields retain neutral GoalUpdate values.
+	// A parser test can check the meaning without reading native protocol bytes.
 	goals       []agent.GoalUpdate
 	currentGoal *agent.GoalUpdate
 	goalClears  int
@@ -102,17 +101,18 @@ type Sink struct {
 	// childSinkMu + children let Sink serve ChildSink as a per-child Sink
 	// so provider tests can assert what got routed into a subagent transcript.
 	childSinkMu sync.Mutex
-	children    map[string]*Sink
+	children    map[childSinkIdentity]*Sink
 	childIDMu   sync.Mutex
 	childIDVal  string
-	// spawnSpans is the child-agent-id -> spawn-span table ChildSpawnSpan reads.
-	// Every sink of one tree holds the SAME pointer, because production answers
-	// the same for a root sink, a child sink and a sink built after a restart.
-	// EnsureChildAgent creates it under childSinkMu, so a sink that never spawned
-	// a child holds nil and answers "" -- which is what production answers for an
-	// id no row carries. Nil is therefore a usable zero value, and a bare
-	// &Sink{} needs no constructor.
-	spawnSpans *childSpawnSpanTable
+	// spawnSpans records this sink's direct children under childSinkMu.
+	// The Worker requires the same direct parent when it reads a child row.
+	spawnSpans map[string]string
+	// registryRoot links a child sink to the sink whose registry it shares.
+	// Production keys every registry row by the ROOT agent (the sink's
+	// rootAgentID), so a grandchild's row is physically the root's: a child
+	// sink reads and writes the same registry its root does. Nil on the root
+	// itself, which is its own registry.
+	registryRoot *Sink
 	// bgTasks records the latest registry state per row key (owner == this sink).
 	bgTasks map[string]bgtask.Item
 	// bgTaskStatuses records distinct status values per row key, in order.
@@ -121,27 +121,30 @@ type Sink struct {
 	// (no-op upsert, absorbed reject) are skipped so length asserts stay
 	// meaningful.
 	bgTaskStatuses map[string][]bgtask.Status
-	// OnCloseBackgroundTask runs at the START of CloseBackgroundTask, before the lock,
-	// so a test can observe what the rest of the process can see at the moment a
-	// row reaches its final status. Set it before the first close.
+	// OnCloseBackgroundTask runs before CloseBackgroundTask takes the lock.
+	// A test can observe the process state when a row reaches its final status.
+	// Set this hook before the first close.
 	OnCloseBackgroundTask func(rowKey string, status bgtask.Status)
 	// revivedTasks records every row key ReviveBackgroundTask actually reopened,
 	// in order. The effect alone cannot prove the call: a revive leaves the row
 	// running, which is also how it looked before it ever finished.
 	revivedTasks []string
-	// ReviveErr, when set, is what ReviveBackgroundTask returns INSTEAD of
-	// reopening the row. The only way to exercise the caller's failure path: a
-	// revive that cannot fail leaves the "arm is spent, message is lost" branch
-	// unreachable from a test. Read without the lock -- set at construction.
+	// ReviveErr makes ReviveBackgroundTask return an error without reopening the row.
+	// A test can reach the failure path where a late message cannot reopen a finished task.
+	// Set this field at construction. Reads require no lock.
 	ReviveErr error
 	// LookupErr, when set, is what LookupBackgroundTask returns instead of an
 	// answer -- the "registry unreadable" third case, which a miss cannot stand
 	// in for. Read without the lock: set at construction.
 	LookupErr error
-	// SpawnSpanErr, when set, is what ChildSpawnSpan returns instead of a span --
-	// the same "could not be read" third case LookupErr covers, and the only way
-	// to reach the branch that decides what a restart does when the child's spawn
-	// span is unknowable. Read without the lock: set at construction.
+	// lookups counts the LookupBackgroundTask calls for each row key, so a test
+	// can prove that a caller keeps an answer rather than reading it again.
+	// Guarded by bgTasksMu.
+	lookups map[string]int
+	// SpawnSpanErr makes ChildSpawnSpan return an error instead of a span.
+	// This differs from a missing child, as LookupErr differs from a missing registry row.
+	// A restart test can check the path where the spawn span cannot be read.
+	// Set this field at construction. Reads require no lock.
 	SpawnSpanErr error
 	bgTasksMu    sync.Mutex
 	// SuppressNotificationBroadcast makes PersistNotification report false. It
@@ -149,8 +152,12 @@ type Sink struct {
 	// existing thread tail. The zero value reports a broadcast.
 	SuppressNotificationBroadcast bool
 	// reportIDs models the database uniqueness rule for provider-neutral reports.
-	reportIDs map[string]struct{}
+	reportIDs   map[string]struct{}
+	messageKeys map[nativeMessageIdentity]struct{}
+	turnEndKeys map[nativeMessageIdentity]struct{}
 }
+
+type nativeMessageIdentity struct{ sessionID, key string }
 
 // Sink implements the service facets. A test passes it to a provider through
 // NewProviderServices, as the production sink does.
@@ -158,11 +165,13 @@ var _ agent.ServiceFacets = (*Sink)(nil)
 
 type Message struct {
 	Source               leapmuxv1.MessageSource
+	AgentSessionID       string
 	Content              []byte
 	SupplementalContent  []byte
 	Metadata             []byte
 	SupplementalRevision int64
 	Completion           agent.MessageCompletion
+	TranscriptOnly       bool
 	ParentSpanID         string
 	ConnectorSpanID      string
 	SpanID               string
@@ -170,19 +179,18 @@ type Message struct {
 	Closing              bool
 	SpanColor            int32
 	MarkType             leapmuxv1.MarkType
-	// NoSpan mirrors SpanInfo.NoSpan: the row carries a span id but owns no
-	// span, so its span_color of 0 is the answer and the persist path must not
-	// fill it from the connector.
+	// NoSpan mirrors SpanInfo.NoSpan.
+	// The row carries a span ID but owns no span.
+	// Its span_color stays zero. Persistence must not copy a color from the connector.
 	NoSpan bool
 	// TurnEnd is set on entries recorded by PersistTurnEnd so tests can
 	// distinguish the turn-end divider from regular AGENT messages
 	// without inspecting the inner content.
 	TurnEnd bool
-	// SpansOpenAtPersist snapshots the spans this sink held open at the moment
-	// the message was persisted. The real sink derives a row's span_lines from
-	// exactly that state, so it is the observable that pins the ordering rule:
-	// a tool_use row must persist BEFORE its own span opens (empty span_lines),
-	// and its tool_result must persist WHILE the span is open (connector_end).
+	// SpansOpenAtPersist records the open spans when the message reaches persistence.
+	// The Worker derives span_lines from the same state.
+	// Persist tool_use before its span opens, with empty span_lines.
+	// Persist tool_result while its span remains open, with connector_end.
 	SpansOpenAtPersist []SpanOpen
 }
 
@@ -206,21 +214,90 @@ func (s *Sink) liveSpansLocked() []SpanOpen {
 	return open
 }
 
-// PersistMessage records the row. Set PersistErr to make it fail, which is the
-// only way to exercise a caller's error path: every caller LOGS the error and
-// carries on, so a test that cannot make the persist fail cannot tell "carries
-// on" from "returns early".
+// PersistMessage records each write attempt. Set PersistErr to exercise the provider's failure path.
+// Failed attempts remain observable but claim no native message key.
 func (s *Sink) PersistMessage(source leapmuxv1.MessageSource, content agent.MessageContent, span agent.SpanInfo) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.messages = append(s.messages, Message{Source: source, Content: append([]byte(nil), content.Original...), SupplementalContent: append([]byte(nil), content.Supplemental...),
-		Metadata: append([]byte(nil), content.Metadata...), Completion: content.Completion, ParentSpanID: span.ParentSpanID, ConnectorSpanID: span.ConnectorSpanID, SpanID: span.SpanID, SpanType: span.SpanType, Closing: span.Closing, SpanColor: span.SpanColor, MarkType: span.MarkType, NoSpan: span.NoSpan, SpansOpenAtPersist: s.liveSpansLocked()})
+	return s.persistMessageLocked(source, content, span, false)
+}
+
+// persistMessageLocked records failed attempts but claims only successful native keys. The caller holds mu.
+func (s *Sink) persistMessageLocked(source leapmuxv1.MessageSource, content agent.MessageContent, span agent.SpanInfo, turnEnd bool) error {
+	if err := agent.ValidateMessageCompletion(content); err != nil {
+		return err
+	}
+	owner, err := s.capturedOwnerLocked(content)
+	if err != nil {
+		return err
+	}
+	if err := agent.ValidateIncomingMessageMetadata(content.Metadata); err != nil {
+		return err
+	}
+	identity := s.messageIdentityLocked(content)
+	if identity.key != "" && s.PersistErr == nil {
+		if _, exists := s.messageKeys[identity]; exists {
+			return nil
+		}
+		if s.messageKeys == nil {
+			s.messageKeys = make(map[nativeMessageIdentity]struct{})
+		}
+		s.messageKeys[identity] = struct{}{}
+	}
+	spans := s.liveSpansLocked()
+	if owner != nil {
+		spans = slices.Clone(owner.spans)
+	}
+	s.messages = append(s.messages, Message{Source: source, AgentSessionID: identity.sessionID, Content: append([]byte(nil), content.Original...), SupplementalContent: append([]byte(nil), content.Supplemental...),
+		Metadata: append([]byte(nil), content.Metadata...), Completion: content.Completion, ParentSpanID: span.ParentSpanID, ConnectorSpanID: span.ConnectorSpanID, SpanID: span.SpanID, SpanType: span.SpanType, Closing: span.Closing, SpanColor: span.SpanColor, MarkType: span.MarkType, NoSpan: span.NoSpan, TurnEnd: turnEnd, SpansOpenAtPersist: spans})
+	if s.PersistErr == nil {
+		content.WriteReceipt.RecordStoredMessage(int64(len(s.messages)))
+		content.WriteReceipt.RecordStoredWrite(true)
+	}
 	return s.PersistErr
 }
 
+func (s *Sink) capturedOwnerLocked(content agent.MessageContent) (*testTranscriptOwner, error) {
+	if content.Publication == nil {
+		return nil, nil
+	}
+	owner, valid := content.Publication.Owner().(*testTranscriptOwner)
+	if !valid || owner == nil || owner.sink != s || owner.key.sessionID != content.AgentSessionID {
+		return nil, errors.New("the captured transcript owner does not match its destination")
+	}
+	return owner, nil
+}
+
+// messageIdentityLocked uses the message's native session or the sink's current session. The caller holds mu.
+func (s *Sink) messageIdentityLocked(content agent.MessageContent) nativeMessageIdentity {
+	identity := nativeMessageIdentity{sessionID: content.AgentSessionID, key: content.IdempotencyKey}
+	if identity.sessionID == "" && content.Publication == nil {
+		identity.sessionID = s.currentSessionIDLocked()
+	}
+	return identity
+}
+
+// currentSessionIDLocked returns the current native session. The caller holds mu.
+func (s *Sink) currentSessionIDLocked() string {
+	if s.sessionFact == nil {
+		return ""
+	}
+	return s.sessionFact.id
+}
+
 func (s *Sink) EnrichMessage(change agent.MessageEnrichment) (bool, error) {
+	if change.SpanID == "" || change.Seq < 0 || change.PreviousRevision < 0 {
+		return false, nil
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	sessionID := s.currentSessionIDLocked()
+	if change.Publication != nil {
+		if _, err := s.capturedOwnerLocked(agent.MessageContent{Publication: change.Publication, AgentSessionID: change.AgentSessionID}); err != nil {
+			return false, err
+		}
+		sessionID = change.AgentSessionID
+	}
 	if s.PersistErr != nil {
 		return false, s.PersistErr
 	}
@@ -229,6 +306,9 @@ func (s *Sink) EnrichMessage(change agent.MessageEnrichment) (bool, error) {
 			continue
 		}
 		message := &s.messages[index]
+		if (change.Publication != nil || change.Seq == 0) && message.AgentSessionID != sessionID {
+			continue
+		}
 		if message.SpanID == change.SpanID && message.Source == leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT {
 			// The real sink asks whether the supplement SAYS anything new, not
 			// whether its bytes differ. See JSONCanonicalEqual.
@@ -238,6 +318,7 @@ func (s *Sink) EnrichMessage(change agent.MessageEnrichment) (bool, error) {
 			if bytes.Equal(message.Content, change.OriginalContent) && message.SupplementalRevision == change.PreviousRevision {
 				message.SupplementalContent = append([]byte(nil), change.SupplementalContent...)
 				message.SupplementalRevision++
+				change.WriteReceipt.RecordStoredEnrichment(change.PreviousRevision, message.SupplementalRevision, change.SupplementalContent)
 				return true, nil
 			}
 			break
@@ -259,17 +340,38 @@ func (s *Sink) ReadToolRequest(spanID string) (*agent.StoredMessage, error) {
 
 func (s *Sink) ReadToolResult(spanID string) (*agent.StoredMessage, error) {
 	s.mu.Lock()
+	sessionID := s.currentSessionIDLocked()
+	s.mu.Unlock()
+	return s.ReadToolResultForSession(spanID, sessionID)
+}
+
+func (s *Sink) ReadToolResultForSession(spanID, sessionID string) (*agent.StoredMessage, error) {
+	s.mu.Lock()
 	defer s.mu.Unlock()
 	for index := len(s.messages) - 1; index >= 0; index-- {
-		if s.spanRowMatches(s.messages[index], spanID) {
+		message := s.messages[index]
+		if spanID != "" && message.SpanID == spanID && message.Source == leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT && message.AgentSessionID == sessionID {
 			return s.storedSpanRow(index), nil
 		}
 	}
 	return nil, nil
 }
 
+func (s *Sink) ReadToolResultBySeq(seq int64) (*agent.StoredMessage, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if seq <= 0 || seq > int64(len(s.messages)) {
+		return nil, nil
+	}
+	message := s.messages[seq-1]
+	if message.Source != leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT || message.SpanID == "" {
+		return nil, nil
+	}
+	return s.storedSpanRow(int(seq - 1)), nil
+}
+
 func (s *Sink) spanRowMatches(message Message, spanID string) bool {
-	return spanID != "" && message.SpanID == spanID && message.Source == leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT
+	return spanID != "" && message.SpanID == spanID && message.Source == leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT && message.AgentSessionID == s.currentSessionIDLocked()
 }
 
 // storedSpanRow copies one row out. The seq is the 1-based index, which is what the
@@ -277,28 +379,33 @@ func (s *Sink) spanRowMatches(message Message, spanID string) bool {
 func (s *Sink) storedSpanRow(index int) *agent.StoredMessage {
 	message := s.messages[index]
 	return &agent.StoredMessage{Seq: int64(index + 1), Revision: message.SupplementalRevision, Content: agent.MessageContent{
-		Original: append([]byte(nil), message.Content...), Supplemental: append([]byte(nil), message.SupplementalContent...), Metadata: append([]byte(nil), message.Metadata...),
+		AgentSessionID: message.AgentSessionID, Original: append([]byte(nil), message.Content...), Supplemental: append([]byte(nil), message.SupplementalContent...), Metadata: append([]byte(nil), message.Metadata...),
 	}}
 }
 
 func (s *Sink) PersistTurnEnd(content agent.MessageContent, span agent.SpanInfo) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.messages = append(s.messages, Message{
-		Source:              leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
-		Content:             append([]byte(nil), content.Original...),
-		SupplementalContent: append([]byte(nil), content.Supplemental...),
-		Metadata:            append([]byte(nil), content.Metadata...),
-		Completion:          content.Completion,
-		ParentSpanID:        span.ParentSpanID,
-		ConnectorSpanID:     span.ConnectorSpanID,
-		SpanID:              span.SpanID,
-		SpanType:            span.SpanType,
-		Closing:             span.Closing,
-		MarkType:            span.MarkType,
-		TurnEnd:             true,
-		SpansOpenAtPersist:  s.liveSpansLocked(),
-	})
+	if _, err := s.capturedOwnerLocked(content); err != nil {
+		return err
+	}
+	identity := s.messageIdentityLocked(content)
+	if identity.key != "" && s.PersistErr == nil {
+		if _, exists := s.turnEndKeys[identity]; exists {
+			return nil
+		}
+	}
+	err := s.persistMessageLocked(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, span, true)
+	if err != nil {
+		return err
+	}
+	if identity.key != "" {
+		if s.turnEndKeys == nil {
+			s.turnEndKeys = make(map[nativeMessageIdentity]struct{})
+		}
+		s.turnEndKeys[identity] = struct{}{}
+	}
+	content.WriteReceipt.RecordStoredWrite(true)
 	s.turnLifecycle = append(s.turnLifecycle, "turn_end")
 	return nil
 }
@@ -308,22 +415,48 @@ func (s *Sink) PersistTurnEnd(content agent.MessageContent, span agent.SpanInfo)
 func (s *Sink) SetTurnState(state agent.TurnState, seq uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	previousActive := len(s.TurnActiveCalls) > 0 && s.TurnActiveCalls[len(s.TurnActiveCalls)-1]
+	if s.transcriptScope == nil || previousActive != state.Active {
+		s.transcriptScope = &testTranscriptScope{active: state.Active}
+	}
 	s.TurnActiveCalls = append(s.TurnActiveCalls, state.Active)
 	s.turnStates = append(s.turnStates, state)
 	s.turnSeqs = append(s.turnSeqs, seq)
 	s.turnLifecycle = append(s.turnLifecycle, fmt.Sprintf("turn_active:%t", state.Active))
 }
 
-func (s *Sink) ReportInterruptIgnored() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.interruptIgnoredReports++
+// RequeuedInput is one input that a provider handed back through
+// RequeueDroppedInput.
+type RequeuedInput struct {
+	DropID      string
+	Content     string
+	Attachments []*leapmuxv1.Attachment
+	// TurnActive is the last turn state that the provider published before the
+	// call, and false when it published none.
+	TurnActive bool
 }
 
-func (s *Sink) InterruptIgnoredReports() int {
+// RequeueDroppedInput records the input that the provider handed back. It also
+// records the call in TurnLifecycle as `requeue:<dropID>`, so a test can assert
+// that the input reached the queue before the turn ended.
+func (s *Sink) RequeueDroppedInput(dropID, content string, attachments []*leapmuxv1.Attachment) error {
+	if s.RequeueErr != nil {
+		return s.RequeueErr
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.interruptIgnoredReports
+	active := len(s.TurnActiveCalls) > 0 && s.TurnActiveCalls[len(s.TurnActiveCalls)-1]
+	s.requeuedInputs = append(s.requeuedInputs, RequeuedInput{DropID: dropID, Content: content, Attachments: attachments, TurnActive: active})
+	s.turnLifecycle = append(s.turnLifecycle, "requeue:"+dropID)
+	return nil
+}
+
+// RequeuedInputs returns every RequeueDroppedInput call that the sink took, in
+// order.
+func (s *Sink) RequeuedInputs() []RequeuedInput {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]RequeuedInput(nil), s.requeuedInputs...)
 }
 
 // TurnKinds returns the queue classification of each publish, in arrival
@@ -341,25 +474,22 @@ func (s *Sink) TurnKinds() []leapmuxv1.AgentInputKind {
 	return kinds
 }
 
-// TurnSeqs returns the ordering token of each publish, in arrival order. A
-// provider test asserts these to pin that the token comes from the same
-// critical section as the flag: without that, two goroutines publish out of
-// order and the Worker latches a turn that is over.
+// TurnSeqs returns each published ordering token in arrival order.
+// The provider must compute the token and active flag in one critical section.
+// Otherwise, concurrent publishers can leave the Worker with an active flag for a finished turn.
 func (s *Sink) TurnSeqs() []uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]uint64(nil), s.turnSeqs...)
 }
 
-// TurnLifecycle returns the turn-end envelopes and the turn-flag transitions in
-// the one order the provider produced them.
+// TurnLifecycle returns turn-end envelopes, flag changes, and returned input in their combined arrival order.
 //
-// The order is a REQUIREMENT on every provider, not an implementation detail:
-// PersistTurnEnd hands the finished turn's tool-call count to the Worker's
-// activity latch, and the clear that follows is the settle edge that spends it.
-// A provider that clears first settles the agent with no count, and the client
-// then rings the completion sound for a turn that used no tool. Two slices
-// cannot show that, because neither records the other's position.
+// Every provider must preserve this order.
+// PersistTurnEnd supplies the finished turn's tool count to the Worker activity latch.
+// The following clear completes the turn with that count.
+// An early clear loses the count and causes a completion sound for a turn that used no tool.
+// Separate slices cannot show the relative order.
 func (s *Sink) TurnLifecycle() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -373,10 +503,9 @@ func (s *Sink) TurnActives() []bool {
 	return append([]bool(nil), s.TurnActiveCalls...)
 }
 
-// LastTurnActive returns the most recently published turn state, and whether
-// anything was published at all. A provider that never published is a distinct
-// failure from one that published the wrong value: the first latches whatever
-// the agent last showed, so it never clears.
+// LastTurnActive returns the last published turn state and whether any state exists.
+// A missing publish differs from an incorrect value.
+// A provider that never publishes a clear leaves the previous active flag in place.
 func (s *Sink) LastTurnActive() (bool, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -386,18 +515,78 @@ func (s *Sink) LastTurnActive() (bool, bool) {
 	return s.TurnActiveCalls[len(s.TurnActiveCalls)-1], true
 }
 
-func (s *Sink) PersistNotification(source leapmuxv1.MessageSource, content []byte) (bool, error) {
+func (s *Sink) PersistNotification(source leapmuxv1.MessageSource, content agent.MessageContent) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.notifications = append(s.notifications, Message{Source: source, Content: append([]byte(nil), content...)})
+	owner, err := s.capturedOwnerLocked(content)
+	if err != nil {
+		return false, err
+	}
+	if err := agent.ValidateMessageCompletion(content); err != nil {
+		return false, err
+	}
+	identity := s.messageIdentityLocked(content)
+	if identity.key != "" {
+		for _, message := range s.notifications {
+			if message.AgentSessionID != identity.sessionID {
+				continue
+			}
+			stored, err := testNotificationSupplement(message)
+			if err != nil {
+				return false, err
+			}
+			entries, err := agent.DecodeNotificationJournal(stored)
+			if err != nil {
+				return false, err
+			}
+			for _, entry := range entries {
+				if entry.IdempotencyKey != identity.key {
+					continue
+				}
+				expected, err := agent.NewNotificationEntry(leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED, source, content)
+				if err != nil {
+					return false, err
+				}
+				if message.Source != source || entry.Fingerprint != expected.Fingerprint {
+					return false, fmt.Errorf("notification identity conflict for key %q", identity.key)
+				}
+				return false, nil
+			}
+		}
+	}
+	entry, err := agent.NewNotificationEntry(leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED, source, content)
+	if err != nil {
+		return false, err
+	}
+	stored, err := agent.AppendNotificationJournal(nil, content, entry)
+	if err != nil {
+		return false, err
+	}
+	decoded, err := agent.DecodeMessageSupplement(content.Original, stored)
+	if err != nil {
+		return false, err
+	}
+	s.notifications = append(s.notifications, Message{Source: source, AgentSessionID: identity.sessionID,
+		Content: slices.Clone(content.Original), SupplementalContent: decoded.Supplemental, Metadata: decoded.Metadata, Completion: content.Completion,
+		TranscriptOnly: owner != nil && !owner.currentLocked()})
+	content.WriteReceipt.RecordStoredWrite(!s.SuppressNotificationBroadcast)
 	return !s.SuppressNotificationBroadcast, nil
 }
 
-// The span methods DELEGATE to a real SpanTracker rather than re-implementing
-// it. The double used to keep its own active set and span-type map, which drifted
-// from the engine twice: a closed span kept its type here after the tracker
-// stopped keeping it, and again after it started. Recording slices stay
-// alongside, because a test still wants to assert WHICH calls were made.
+// testNotificationSupplement rebuilds the stored envelope from one recorded notification.
+func testNotificationSupplement(message Message) ([]byte, error) {
+	fields := map[string]json.RawMessage{"metadata": message.Metadata}
+	if len(message.SupplementalContent) > 0 {
+		fields["provider"] = message.SupplementalContent
+	}
+	return json.Marshal(fields)
+}
+
+// The span methods call the real SpanTracker.
+// The previous local active set and type map drifted twice from the tracker.
+// They retained a closed span's type after the tracker removed it.
+// They drifted again after the tracker began to retain it.
+// Separate recording slices let tests check each call.
 func (s *Sink) OpenSpan(spanID string, parentSpanID string) {
 	s.mu.Lock()
 	s.openSpans = append(s.openSpans, SpanOpen{SpanID: spanID, ParentSpanID: parentSpanID})
@@ -412,11 +601,10 @@ func (s *Sink) CloseSpan(spanID string) {
 	s.tracker.CloseSpan(spanID)
 }
 
-// ResetSpans joins the turn lifecycle, because WHERE it falls relative to the
-// clear is a requirement on every provider: the clear releases the Worker's
-// input queue, and the next message must find the finished turn's spans already
-// reset. A passthrough column captured before the reset draws the dead turn's
-// bars beside the new message.
+// ResetSpans records its position in the turn lifecycle.
+// The provider must reset the finished turn's spans before it clears the active flag.
+// That clear releases the Worker input queue.
+// Otherwise, a passthrough column can draw the finished turn's span beside the next message.
 func (s *Sink) ResetSpans() {
 	s.mu.Lock()
 	s.resetSpanCount++
@@ -433,19 +621,17 @@ func (s *Sink) GetSpanType(spanID string) string {
 	return s.tracker.GetSpanType(spanID)
 }
 
-// ReserveSpanColor records which spans asked for a color, and under which
-// parent. A span that never opens must never reserve one either: the real
-// tracker parks the reservation on its single pending slot, which blocks that
-// color from the next real span. The parent is recorded because it decides the
-// column the reservation is computed for, and the child transcript reserves
-// under the spawn span rather than at the root.
+// ReserveSpanColor records the requested span and its parent.
+// A span that never opens must never reserve a color.
+// The tracker retains one pending reservation, which prevents the next span from using that color.
+// The parent determines the column.
+// A child transcript reserves its color under the spawn span.
 func (s *Sink) ReserveSpanColor(spanID, parentSpanID string) int32 {
 	s.mu.Lock()
 	s.reservedColorSpans = append(s.reservedColorSpans, SpanOpen{SpanID: spanID, ParentSpanID: parentSpanID})
 	s.mu.Unlock()
-	// Delegated, so the reservation really is parked on the tracker's single
-	// pending slot: a span that reserves and never opens then blocks that color
-	// exactly as it would in production.
+	// The real tracker retains this reservation in its pending slot.
+	// A span that reserves a color without opening prevents the next span from using that color.
 	return s.tracker.ReserveSpanColor(spanID, parentSpanID)
 }
 
@@ -497,6 +683,9 @@ func (s *Sink) UpdateSessionID(sessionID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sessionIDs = append(s.sessionIDs, sessionID)
+	if s.sessionFact == nil || s.sessionFact.id != sessionID {
+		s.sessionFact = &testSessionFact{id: sessionID}
+	}
 }
 func (s *Sink) UpdatePermissionMode(mode string) {
 	s.mu.Lock()
@@ -566,7 +755,7 @@ func (s *Sink) PersistSubagentReport(write agent.SubagentReportWrite) (bool, err
 	if s.reportIDs == nil {
 		s.reportIDs = make(map[string]struct{})
 	}
-	reportID := strings.TrimSpace(write.ReportID)
+	reportID := write.ReportID
 	if _, duplicate := s.reportIDs[reportID]; duplicate {
 		s.mu.Unlock()
 		return false, nil
@@ -577,16 +766,18 @@ func (s *Sink) PersistSubagentReport(write agent.SubagentReportWrite) (bool, err
 	return true, nil
 }
 func (s *Sink) PersistChildSubagentReport(write agent.ChildSubagentReportWrite) (bool, error) {
-	rowKey := strings.TrimSpace(write.RowKey)
-	if rowKey == "" {
+	// The COMPLETE native key, never a trimmed one: trimming maps two provider
+	// identities onto one string, and the report then lands on a different
+	// child than the one the provider named.
+	if write.RowKey == "" {
 		return false, fmt.Errorf("child subagent report has no row key")
 	}
-	childID, _, found, err := s.LookupBackgroundTask(rowKey)
+	childID, _, found, err := s.LookupBackgroundTask(write.RowKey)
 	if err != nil {
 		return false, err
 	}
 	if !found || childID == "" {
-		return false, fmt.Errorf("subagent report child for row %q is unavailable", rowKey)
+		return false, fmt.Errorf("subagent report child for row %q is unavailable", write.RowKey)
 	}
 	return s.ChildSink(childID).PersistSubagentReport(write.Write)
 }
@@ -604,14 +795,11 @@ func (s *Sink) LoadAndDeletePlanModeToolUse(toolUseID string) (string, bool) {
 
 func (s *Sink) UpdatePlan([]byte, leapmuxv1.ContentCompression, string) {}
 
-// ownsGoal mirrors the production sink: only a ROOT sink may write a goal, and
-// a child sink refuses and records nothing.
-//
-// The fake has to refuse too, or it hides the bug the production guard exists
-// to catch. A provider that wrote a goal through a child sink would replace the
-// session's objective with a subagent's; with an accepting fake, every
-// provider's goal test still passes and only one service-level test could see
-// it. A child Sink carries the child id this sink was created for.
+// ownsGoal matches the Worker: only a root sink can write a goal.
+// A child sink refuses the write and records nothing.
+// An accepting test sink would hide a provider that replaces the session objective with a child objective.
+// Only the service test would detect that defect.
+// A child Sink retains its child ID.
 func (s *Sink) ownsGoal() bool { return s.childAgentID() == "" }
 
 // UpsertGoal and ClearGoal record what a provider reported, so a parser test
@@ -653,9 +841,9 @@ func (s *Sink) ClearGoal(snapshot bool) {
 	s.goalClearSnapshots = append(s.goalClearSnapshots, snapshot)
 }
 
-// PublishGoalCapabilities is counted rather than ignored: the Manager calls it
-// once per start, and a provider test asserting the goal path needs to see that
-// the capability was published after registration rather than during it.
+// PublishGoalCapabilities records each call.
+// The Manager calls it once per start.
+// A provider test must check that publication follows registration.
 func (s *Sink) PublishGoalCapabilities() {
 	if !s.ownsGoal() {
 		return
@@ -715,70 +903,108 @@ func (s *Sink) CancelAutoContinue(reason agent.AutoContinueReason) {
 
 // --- Subagent transcripts and the background-task registry (test recording) ---
 
-// EnsureChildAgent returns a stable synthetic child id keyed by spawnSpanID so
-// provider tests can assert child resolution without a DB. The same span always
-// resolves to the same id (idempotent replay).
-func (s *Sink) EnsureChildAgent(spawnSpanID, providerChildKey, title string) (string, error) {
-	// Resolve by ROW KEY before spawn span, as the real sink does. That order is
-	// load-bearing, not an optimization: Claude re-registers a revived subagent
-	// under the tool_use id of the call that restarted it, so a spawn-span-only
-	// lookup would miss and hand back a SECOND transcript for the same subagent.
-	// A double that resolved differently would report a split the real sink does
-	// not have, and hide one it does.
-	if providerChildKey != "" {
-		s.bgTasksMu.Lock()
-		existing := s.bgTasks[providerChildKey].ChildAgentID
-		s.bgTasksMu.Unlock()
-		if existing != "" {
-			return existing, nil
-		}
+type childSinkIdentity struct{ spanID, providerKey, lateChildID string }
+
+// EnsureChildAgent resolves a child by its spawn span or native key without a database.
+// Replaying the same identity returns the same child ID.
+func (s *Sink) EnsureChildAgent(spec agent.ChildAgentSpec) (string, error) {
+	if spec.SpawnSpanID == "" && spec.ProviderChildKey == "" {
+		return "", errors.New("a child requires a native key or a spawn span")
+	}
+	rowKey := ""
+	if spec.ProviderChildKey != "" {
+		rowKey = bgtask.NormalizeRowKey(spec.ProviderChildKey)
 	}
 	s.childSinkMu.Lock()
 	defer s.childSinkMu.Unlock()
 	if s.children == nil {
-		s.children = make(map[string]*Sink)
+		s.children = make(map[childSinkIdentity]*Sink)
 	}
-	if c, ok := s.children[spawnSpanID]; ok {
-		return c.childAgentID(), nil
+	var child *Sink
+	registry := s.registry()
+	if rowKey != "" {
+		registry.bgTasksMu.Lock()
+		childID := registry.bgTasks[rowKey].ChildAgentID
+		registry.bgTasksMu.Unlock()
+		for _, candidate := range s.children {
+			if childID != "" && candidate.childAgentID() == childID {
+				child = candidate
+				break
+			}
+		}
 	}
-	cid := "child-of-" + spawnSpanID
-	child := &Sink{}
-	child.setChildAgentID(cid)
-	// Recorded BEFORE the child takes the pointer, so the child inherits a table
-	// that already exists. The child shares that table and the injected read
-	// failure, so a child handle answers exactly as the root does -- production
-	// reaches the same row through the same query whichever sink holds it.
-	s.recordSpawnSpan(cid, spawnSpanID)
-	child.spawnSpans = s.spawnSpans
-	child.SpawnSpanErr = s.SpawnSpanErr
-	s.children[spawnSpanID] = child
-	if providerChildKey != "" {
-		// Normalized here for the reason the other three registry methods do it:
-		// production derives a usable key for an unusable one, so the fake must
-		// key its row the same way or a provider test reads a row under a
-		// string the registry never stores.
-		providerChildKey = bgtask.NormalizeRowKey(providerChildKey)
-		s.bgTasksMu.Lock()
-		if s.bgTasks == nil {
-			s.bgTasks = make(map[string]bgtask.Item)
+	identity := childSinkIdentity{spanID: spec.SpawnSpanID}
+	if spec.SpawnSpanID == "" {
+		identity = childSinkIdentity{providerKey: spec.ProviderChildKey}
+	}
+	if child == nil {
+		child = s.children[identity]
+	}
+	if child != nil && child.nativeChildKey != "" && spec.ProviderChildKey != "" && child.nativeChildKey != spec.ProviderChildKey {
+		return "", fmt.Errorf("the child spawn span belongs to another native child: %w", agent.ErrChildIdentityRefused)
+	}
+	if child != nil && spec.AgentSessionID != "" && child.LastSessionID() != spec.AgentSessionID {
+		return "", fmt.Errorf("the child belongs to another native session: %w", agent.ErrChildIdentityRefused)
+	}
+	if child == nil {
+		child = &Sink{nativeChildKey: spec.ProviderChildKey, registryRoot: s.registry()}
+		if spec.AgentSessionID != "" {
+			child.UpdateSessionID(spec.AgentSessionID)
 		}
-		item := s.bgTasks[providerChildKey]
-		item.RowKey = providerChildKey
-		item.ChildAgentID = cid
-		item.Kind = bgtask.KindSubagent
-		if title != "" {
-			item.Title = title
+		cid := "child-of-" + spec.SpawnSpanID
+		if spec.SpawnSpanID == "" {
+			cid = "child-key-" + rowKey
 		}
-		s.bgTasks[providerChildKey] = item
-		s.bgTasksMu.Unlock()
+		child.setChildAgentID(cid)
+		if len(spec.Options) > 0 {
+			child.PersistSettingsRefresh(spec.Options)
+		}
+		child.SpawnSpanErr = s.SpawnSpanErr
+		s.children[identity] = child
+	} else if child.nativeChildKey == "" && spec.ProviderChildKey != "" {
+		child.nativeChildKey = spec.ProviderChildKey
+	}
+	cid := child.childAgentID()
+	if spec.SpawnSpanID != "" {
+		if s.spawnSpans == nil {
+			s.spawnSpans = make(map[string]string)
+		}
+		if s.spawnSpans[cid] == "" {
+			s.spawnSpans[cid] = spec.SpawnSpanID
+		}
+	}
+	if rowKey != "" {
+		registry.bgTasksMu.Lock()
+		if registry.bgTasks == nil {
+			registry.bgTasks = make(map[string]bgtask.Item)
+		}
+		item := registry.bgTasks[rowKey]
+		item.RowKey, item.ChildAgentID, item.Kind = rowKey, cid, bgtask.KindSubagent
+		if item.ParentAgentID == "" {
+			item.ParentAgentID = s.childAgentID()
+		}
+		if spec.Title != "" {
+			item.Title = spec.Title
+		}
+		registry.bgTasks[rowKey] = item
+		registry.bgTasksMu.Unlock()
 	}
 	return cid, nil
 }
 
-// childAgentID is the synthetic id this Sink reports for itself when it is
-// used as a child sink (set by EnsureChildAgent). The field is read under the
-// childSinkMu of the PARENT sink, so it lives here on the child as its own lock
-// to avoid a parent->child lock ordering hazard.
+// registry returns the sink that physically owns the background-task registry:
+// the root of this sink's descendant tree. Every registry mutation and lookup
+// routes through it, so a row a grandchild opens is the row its root closes.
+func (s *Sink) registry() *Sink {
+	if s.registryRoot != nil {
+		return s.registryRoot
+	}
+	return s
+}
+
+// childAgentID returns the synthetic ID that EnsureChildAgent assigns to this child sink.
+// The parent reads it while it holds childSinkMu.
+// The child uses its own lock for this field, which prevents a parent-to-child lock ordering hazard.
 func (s *Sink) childAgentID() string {
 	s.childIDMu.Lock()
 	defer s.childIDMu.Unlock()
@@ -791,31 +1017,8 @@ func (s *Sink) setChildAgentID(id string) {
 	s.childIDVal = id
 }
 
-// recordSpawnSpan files the span EnsureChildAgent created a child for, in the
-// table every sink of this tree shares. Caller must hold s.childSinkMu, which is
-// what makes the lazy creation safe.
-func (s *Sink) recordSpawnSpan(childAgentID, span string) {
-	if s.spawnSpans == nil {
-		s.spawnSpans = &childSpawnSpanTable{}
-	}
-	s.spawnSpans.mu.Lock()
-	defer s.spawnSpans.mu.Unlock()
-	if s.spawnSpans.byChildID == nil {
-		s.spawnSpans.byChildID = make(map[string]string)
-	}
-	s.spawnSpans.byChildID[childAgentID] = span
-}
-
-// ChildSpawnSpan mirrors the real sink: production runs a PRIMARY KEY read that
-// ignores which sink asks (TestChildSpawnSpan_AnswersFromTheChildRow pins it by
-// asking a sink built from a fresh OutputHandler), so this answers from the
-// shared table rather than from the receiver's own `children`. A per-sink scan
-// answered "" for a child sink asking about itself, and it read whichever entry
-// Go's random map order reached first once ChildSink minted a "late:" child
-// carrying the same id.
-//
-// The empty id comes FIRST, as production has it: an empty id asks nothing of
-// the database, so no read can fail for one.
+// ChildSpawnSpan reads a span only for this sink's direct child, as the Worker does.
+// An empty ID requires no read and returns no error.
 func (s *Sink) ChildSpawnSpan(childAgentID string) (string, error) {
 	if childAgentID == "" {
 		return "", nil
@@ -823,12 +1026,9 @@ func (s *Sink) ChildSpawnSpan(childAgentID string) (string, error) {
 	if s.SpawnSpanErr != nil {
 		return "", s.SpawnSpanErr
 	}
-	if s.spawnSpans == nil {
-		return "", nil
-	}
-	s.spawnSpans.mu.Lock()
-	defer s.spawnSpans.mu.Unlock()
-	return s.spawnSpans.byChildID[childAgentID], nil
+	s.childSinkMu.Lock()
+	defer s.childSinkMu.Unlock()
+	return s.spawnSpans[childAgentID], nil
 }
 
 // ChildSink returns the services of Child(childAgentID), so messages routed into
@@ -849,12 +1049,12 @@ func (s *Sink) Child(childAgentID string) *Sink {
 	}
 	// A child id that was not EnsureChildAgent'd (e.g. an explicit PersistChild*):
 	// create a fresh recording sink so the call still records.
-	c := &Sink{}
+	c := &Sink{registryRoot: s.registry()}
 	c.setChildAgentID(childAgentID)
 	if s.children == nil {
-		s.children = make(map[string]*Sink)
+		s.children = make(map[childSinkIdentity]*Sink)
 	}
-	s.children["late:"+childAgentID] = c
+	s.children[childSinkIdentity{lateChildID: childAgentID}] = c
 	return c
 }
 
@@ -868,9 +1068,9 @@ func (s *Sink) PersistChildTurnEnd(childAgentID string, content agent.MessageCon
 	return cs.PersistTurnEnd(content, span)
 }
 
-// PersistChildPrompt mirrors the real sink's contract: a USER message carrying
-// {"content": prompt}, written only into a child transcript that has no message
-// yet, and skipped for a blank prompt. Tests assert on the child's Messages().
+// PersistChildPrompt writes a USER message with {"content": prompt} into an empty child transcript.
+// It ignores a blank prompt.
+// Tests read the child's Messages snapshot.
 func (s *Sink) PersistChildPrompt(childAgentID, prompt string) error {
 	if childAgentID == "" || strings.TrimSpace(prompt) == "" {
 		return nil
@@ -886,10 +1086,9 @@ func (s *Sink) PersistChildPrompt(childAgentID, prompt string) error {
 	return cs.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: content}, agent.SpanInfo{})
 }
 
-// PersistChildUserMessage mirrors the real sink: it APPENDS, with no emptiness
-// guard, and carries the scroll-rail mark the opening prompt does not. The
-// missing guard is the whole difference from PersistChildPrompt above -- a
-// delivered message belongs wherever the transcript currently ends.
+// PersistChildUserMessage appends to an existing child transcript, as the Worker does.
+// It ignores a blank message or an empty child ID.
+// Its scroll-rail mark differs from the opening prompt's mark.
 func (s *Sink) PersistChildUserMessage(childAgentID, text string) error {
 	if childAgentID == "" || strings.TrimSpace(text) == "" {
 		return nil
@@ -904,43 +1103,50 @@ func (s *Sink) PersistChildUserMessage(childAgentID, text string) error {
 	})
 }
 
-// testFakeEndedAt is the instant the fake stamps on an active -> final
-// transition. A fixed value, because the fake models WHETHER ended_at is set,
-// not when: an assertion that the stamp is absent for a non-final status was
-// vacuously true while nothing ever set it.
+// testFakeEndedAt supplies a fixed instant for each active-to-final transition.
+// The test sink models whether ended_at exists, rather than its exact time.
+// A non-final status check proved nothing when the test sink never set this field.
 //
-// updated_at is deliberately NOT modeled, although every production applier
-// stamps it. Nothing in this package can read it: LookupBackgroundTask hands
-// back a status and a child id rather than an Item, so the field reaches no
-// provider decision. Stamping a fixed instant would make "the second write
-// advanced updated_at" fail against correct code, and stamping the real clock
-// would make the fake non-deterministic. A test that needs the stamp belongs in
-// the service package, against the real registry.
+// The test sink does not model updated_at, although every production update sets it.
+// LookupBackgroundTask returns a status and child ID rather than an Item.
+// No provider decision can read updated_at through that method.
+// A fixed instant cannot prove that a later write advances updated_at.
+// The real clock would make the test sink nondeterministic.
+// Test that timestamp in the service package with the real registry.
 var testFakeEndedAt = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 func (s *Sink) UpsertBackgroundTask(task bgtask.Upsert) error {
-	s.bgTasksMu.Lock()
-	defer s.bgTasksMu.Unlock()
-	if s.bgTasks == nil {
-		s.bgTasks = make(map[string]bgtask.Item)
+	// An upsert with no key has no identity to open a row under: the registry
+	// refuses it, as production does, rather than deriving a key for bytes no
+	// provider sent. A caller with no linkage skips the call entirely.
+	if task.RowKey == "" {
+		return fmt.Errorf("background task upsert has no row key")
 	}
-	// task.Clean().ToItem().PreservingBlanksFrom(existing), the SAME chain
-	// the production applier uses. No link may be hand-written here: the clean
-	// so a provider test sees the title the registry really stores, the
-	// projection so a new field on Upsert reaches this fake too, and the merge
-	// so blank-means-keep holds for every descriptive field, not just the child
-	// id. A partial upsert (Claude's task_notification carries only status +
-	// description) blanked the Title against this fake while production
-	// preserved it, so a test that asserted the real contract failed against
-	// correct code.
-	// The FIRST link of the chain, and the one the production sink applies
-	// before the closure runs (see agentOutputSink.applyAndBroadcast): an
-	// unusable provider key becomes a derived one rather than dropping the row.
-	// A fake that kept the raw key would report a row under a string production
-	// never stores, and a provider test asserting it would pass against code
-	// that behaves differently.
+	// The parent agent id is the sink that owns THIS call, as production sets
+	// it: the root for a root upsert, the child for a grandchild spawn. The
+	// registry stays physically shared while BackgroundTasks projects each
+	// owner's own rows.
+	if task.ParentAgentID == "" {
+		task.ParentAgentID = s.childAgentID()
+	}
+	r := s.registry()
+	r.bgTasksMu.Lock()
+	defer r.bgTasksMu.Unlock()
+	if r.bgTasks == nil {
+		r.bgTasks = make(map[string]bgtask.Item)
+	}
+	// The Worker uses task.Clean().ToItem().PreservingBlanksFrom(existing).
+	// Keep the same chain here.
+	// Clean supplies the stored title. ToItem includes each new Upsert field.
+	// PreservingBlanksFrom keeps each existing descriptive field when the update supplies a blank value.
+	// Claude task_notification can supply only status and description.
+	// The previous test sink cleared Title for that update, although production retained it.
+	//
+	// Normalize the row key before this chain, as agentOutputSink.applyAndBroadcast does.
+	// An unusable native key gets a derived key rather than losing the row.
+	// A test sink that retains the raw key would accept a row key that production never stores.
 	task.RowKey = bgtask.NormalizeRowKey(task.RowKey)
-	existing := s.bgTasks[task.RowKey]
+	existing := r.bgTasks[task.RowKey]
 	item := task.Clean().ToItem().PreservingBlanksFrom(existing)
 	// A final status is absorbing, as in the registry: a replayed non-final
 	// upsert must not resurrect a row that already ended. Without this the fake
@@ -953,8 +1159,8 @@ func (s *Sink) UpsertBackgroundTask(task bgtask.Upsert) error {
 	if !existing.Status.IsFinished() && item.Status.IsFinished() && item.EndedAt.IsZero() {
 		item.EndedAt = testFakeEndedAt
 	}
-	s.bgTasks[task.RowKey] = item
-	s.recordBgTaskStatusLocked(task.RowKey, item.Status)
+	r.bgTasks[task.RowKey] = item
+	r.recordBgTaskStatusLocked(task.RowKey, item.Status)
 	return nil
 }
 
@@ -971,9 +1177,10 @@ func (s *Sink) recordBgTaskStatusLocked(rowKey string, status bgtask.Status) {
 
 func (s *Sink) UpdateBackgroundTaskStatus(rowKey string, status bgtask.Status, activeForm string) error {
 	rowKey = bgtask.NormalizeRowKey(rowKey)
-	s.bgTasksMu.Lock()
-	defer s.bgTasksMu.Unlock()
-	if item, ok := s.bgTasks[rowKey]; ok {
+	r := s.registry()
+	r.bgTasksMu.Lock()
+	defer r.bgTasksMu.Unlock()
+	if item, ok := r.bgTasks[rowKey]; ok {
 		// Monotonic and absorbing, as in the registry: a late or replayed
 		// non-final update must not resurrect a finished row.
 		if item.Status.IsFinished() && !status.IsFinished() {
@@ -984,8 +1191,8 @@ func (s *Sink) UpdateBackgroundTaskStatus(rowKey string, status bgtask.Status, a
 		}
 		item.Status = status
 		item.ActiveForm = activeForm
-		s.bgTasks[rowKey] = item
-		s.recordBgTaskStatusLocked(rowKey, status)
+		r.bgTasks[rowKey] = item
+		r.recordBgTaskStatusLocked(rowKey, status)
 	}
 	return nil
 }
@@ -995,9 +1202,10 @@ func (s *Sink) CloseBackgroundTask(rowKey string, status bgtask.Status) error {
 		s.OnCloseBackgroundTask(rowKey, status)
 	}
 	rowKey = bgtask.NormalizeRowKey(rowKey)
-	s.bgTasksMu.Lock()
-	defer s.bgTasksMu.Unlock()
-	if item, ok := s.bgTasks[rowKey]; ok {
+	r := s.registry()
+	r.bgTasksMu.Lock()
+	defer r.bgTasksMu.Unlock()
+	if item, ok := r.bgTasks[rowKey]; ok {
 		// First close wins, as in the registry: a re-close cannot relabel a row
 		// that already ended.
 		if item.Status.IsFinished() {
@@ -1005,24 +1213,65 @@ func (s *Sink) CloseBackgroundTask(rowKey string, status bgtask.Status) error {
 		}
 		item.Status = status
 		item.EndedAt = testFakeEndedAt
-		s.bgTasks[rowKey] = item
-		s.recordBgTaskStatusLocked(rowKey, status)
+		r.bgTasks[rowKey] = item
+		r.recordBgTaskStatusLocked(rowKey, status)
 	}
 	return nil
 }
 
 func (s *Sink) LookupBackgroundTask(rowKey string) (string, bgtask.Status, bool, error) {
 	var noStatus bgtask.Status
+	r := s.registry()
+	r.bgTasksMu.Lock()
+	defer r.bgTasksMu.Unlock()
+	if r.lookups == nil {
+		r.lookups = make(map[string]int)
+	}
+	r.lookups[rowKey]++
 	if s.LookupErr != nil {
 		return "", noStatus, false, s.LookupErr
 	}
-	s.bgTasksMu.Lock()
-	defer s.bgTasksMu.Unlock()
-	item, ok := s.bgTasks[rowKey]
+	if rowKey == "" {
+		return "", noStatus, false, nil
+	}
+	rowKey = bgtask.NormalizeRowKey(rowKey)
+	item, ok := r.bgTasks[rowKey]
 	if !ok {
 		return "", noStatus, false, nil
 	}
 	return item.ChildAgentID, item.Status, true, nil
+}
+
+// LookupChildIdentity resolves a stored registry key to its durable child by
+// its exact spelling, mirroring the service: the registry row states the child
+// agent id, and the child sink retains the provider's own native key bytes.
+func (s *Sink) LookupChildIdentity(identity bgtask.RowIdentity) (agent.ChildIdentity, bool, error) {
+	r := s.registry()
+	r.bgTasksMu.Lock()
+	item, found := r.bgTasks[identity.String()]
+	r.bgTasksMu.Unlock()
+	if !found || item.ChildAgentID == "" {
+		return agent.ChildIdentity{}, false, nil
+	}
+	native := ""
+	s.childSinkMu.Lock()
+	for _, child := range s.children {
+		if child.childAgentID() == item.ChildAgentID {
+			native = child.nativeChildKey
+			break
+		}
+	}
+	s.childSinkMu.Unlock()
+	return agent.ChildIdentity{AgentID: item.ChildAgentID, ProviderChildKey: native}, true, nil
+}
+
+// LookupBackgroundTaskCalls returns how many times LookupBackgroundTask read
+// rowKey.
+func (s *Sink) LookupBackgroundTaskCalls(rowKey string) int {
+	r := s.registry()
+	r.bgTasksMu.Lock()
+	defer r.bgTasksMu.Unlock()
+	return r.lookups[rowKey]
 }
 
 // ReviveBackgroundTask mirrors the registry's revive: a finished row returns to
@@ -1040,11 +1289,10 @@ func (s *Sink) ReviveBackgroundTask(rowKey string) error {
 		return nil
 	}
 	item.Status = bgtask.StatusRunning
-	// ActiveForm AND Description, the pair the real ReviveAgentBackgroundTask
-	// clears. Both describe the run that ENDED -- the last activity text, and the
-	// output file its task_notification identified -- so a fake that cleared only
-	// one would pass a test that asserts the finished run's output path survives
-	// a restart, which the registry makes certain it does not.
+	// ReviveAgentBackgroundTask clears both ActiveForm and Description.
+	// These fields describe the finished run's activity and output file.
+	// The test sink must clear both fields also.
+	// Otherwise, a test could incorrectly accept an output path that survives a restart.
 	item.ActiveForm = ""
 	item.Description = ""
 	item.EndedAt = time.Time{}
@@ -1054,29 +1302,28 @@ func (s *Sink) ReviveBackgroundTask(rowKey string) error {
 	return nil
 }
 
-// UnlinkBackgroundTask clears a row's child linkage, leaving the row and the
-// child transcript in place. This is the one state a provider can still meet in
-// which a finished subagent's row identifies no transcript: EnsureChildAgent
-// created the child agent row and the registry upsert that links it then failed.
-// Cap eviction does NOT produce it -- a linked row survives the display cap in
-// the store (see registryOps.retention) -- so a test must not use eviction to
-// reach it.
+// UnlinkBackgroundTask clears the child linkage but retains the row and child transcript.
+// This models a child that EnsureChildAgent creates before its registry linkage write fails.
+// A finished child can then exist without a linked transcript in the registry row.
+// Display-cap eviction does not create this state.
+// The stored linkage survives that cap, as registryOps.retention requires.
+// Do not use eviction to test missing linkage.
 func (s *Sink) UnlinkBackgroundTask(rowKey string) {
-	s.bgTasksMu.Lock()
-	defer s.bgTasksMu.Unlock()
-	item, ok := s.bgTasks[rowKey]
+	r := s.registry()
+	r.bgTasksMu.Lock()
+	defer r.bgTasksMu.Unlock()
+	item, ok := r.bgTasks[rowKey]
 	if !ok {
 		return
 	}
 	item.ChildAgentID = ""
-	s.bgTasks[rowKey] = item
+	r.bgTasks[rowKey] = item
 }
 
-// ChildAgentIDs lists every child transcript this sink handed out, so a test can
-// assert that a resolution did NOT open a second one. It returns the child agent
-// IDS, not the spawn spans that key the map: an assertion reads
-// "child-of-<span>", which no spawn span can ever equal, so returning the keys
-// made every NotContains on it pass whatever the code did.
+// ChildAgentIDs lists each child transcript that this sink supplies.
+// A test can detect a second transcript after resolution.
+// Return child IDs rather than the spawn spans that identify the map entries.
+// Returning the keys made existing NotContains checks pass without testing the expected behavior.
 func (s *Sink) ChildAgentIDs() []string {
 	s.childSinkMu.Lock()
 	defer s.childSinkMu.Unlock()
@@ -1089,9 +1336,10 @@ func (s *Sink) ChildAgentIDs() []string {
 
 // RevivedTasks returns the row keys ReviveBackgroundTask actually reopened.
 func (s *Sink) RevivedTasks() []string {
-	s.bgTasksMu.Lock()
-	defer s.bgTasksMu.Unlock()
-	return append([]string(nil), s.revivedTasks...)
+	r := s.registry()
+	r.bgTasksMu.Lock()
+	defer r.bgTasksMu.Unlock()
+	return append([]string(nil), r.revivedTasks...)
 }
 
 func (s *Sink) RenameBackgroundTask(oldKey, newKey string) error {
@@ -1103,25 +1351,25 @@ func (s *Sink) RenameBackgroundTask(oldKey, newKey string) error {
 	// BOTH keys, as production does: normalizing one and not the other is how a
 	// rename stops finding its own row.
 	oldKey, newKey = bgtask.NormalizeRowKey(oldKey), bgtask.NormalizeRowKey(newKey)
-	s.bgTasksMu.Lock()
-	defer s.bgTasksMu.Unlock()
-	item, ok := s.bgTasks[oldKey]
+	r := s.registry()
+	r.bgTasksMu.Lock()
+	defer r.bgTasksMu.Unlock()
+	item, ok := r.bgTasks[oldKey]
 	if !ok || oldKey == newKey {
 		return nil
 	}
-	// (owner, row_key) is the PRIMARY KEY, so production resolves a rename onto an
-	// OCCUPIED key by keeping the row already at newKey -- it carries the lifecycle
-	// that reached the rename -- and dropping the duplicate at oldKey. A fake that
-	// overwrote the destination instead let a test assert the opposite outcome
-	// under the same row key, which is exactly what the key-set assertions cannot
-	// see: Claude's restart rename reaches this collision on every reorder.
-	if _, occupied := s.bgTasks[newKey]; occupied {
-		delete(s.bgTasks, oldKey)
+	// The Worker keeps the existing destination when a rename reaches an occupied (owner, row_key) primary key.
+	// It removes the duplicate source row and retains the destination lifecycle.
+	// The test sink must preserve that behavior.
+	// Overwriting the destination would let tests accept the opposite result.
+	// Claude restart events can reach this collision after each reorder.
+	if _, occupied := r.bgTasks[newKey]; occupied {
+		delete(r.bgTasks, oldKey)
 		return nil
 	}
-	delete(s.bgTasks, oldKey)
+	delete(r.bgTasks, oldKey)
 	item.RowKey = newKey
-	s.bgTasks[newKey] = item
+	r.bgTasks[newKey] = item
 	return nil
 }
 
@@ -1140,15 +1388,19 @@ func RowKeys(sink *Sink) []string {
 // per-child cleanup use the real OutputHandler via svc.Output.NewSink.
 func (s *Sink) CleanupChildAgent(childAgentID string) {}
 
-// BackgroundTasks returns a snapshot of the recorded registry rows, SORTED by
-// row key. The rows live in a map, so an unsorted snapshot ordered them at
-// random and every caller that wanted a specific row scanned the slice by hand.
-// A stable order lets a test assert the whole list.
+// BackgroundTasks returns the shared registry as a snapshot sorted by row key,
+// exactly what the Worker broadcasts for the root: every descendant's row is
+// physically the root registry's, and each row's ParentAgentID states the
+// parent that owns it. A test that wants one owner's rows filters on that
+// linkage.
+// The map does not supply a stable order.
+// Sorting lets a test check the complete list without searching for each row.
 func (s *Sink) BackgroundTasks() []bgtask.Item {
-	s.bgTasksMu.Lock()
-	defer s.bgTasksMu.Unlock()
-	out := make([]bgtask.Item, 0, len(s.bgTasks))
-	for _, item := range s.bgTasks {
+	r := s.registry()
+	r.bgTasksMu.Lock()
+	defer r.bgTasksMu.Unlock()
+	out := make([]bgtask.Item, 0, len(r.bgTasks))
+	for _, item := range r.bgTasks {
 		out = append(out, item)
 	}
 	slices.SortFunc(out, func(a, b bgtask.Item) int { return cmp.Compare(a.RowKey, b.RowKey) })
@@ -1191,11 +1443,37 @@ func (s *Sink) LeapMuxNotifications() []map[string]interface{} {
 	return append([]map[string]interface{}(nil), s.leapMuxNotifications...)
 }
 
+// AgentErrorTexts returns the text of each agent error notification in
+// notifications, in order. Pass the result of Sink.LeapMuxNotifications or of
+// ControlSink.Notifications. A notification that states no text gives an empty
+// string.
+func AgentErrorTexts(notifications []map[string]interface{}) []string {
+	var texts []string
+	for _, notification := range notifications {
+		if notification[contracts.NotificationFieldType] == contracts.NotificationTypeAgentError {
+			text, _ := notification[contracts.NotificationFieldError].(string)
+			texts = append(texts, text)
+		}
+	}
+	return texts
+}
+
 // Messages returns a copy of all persisted messages.
 func (s *Sink) Messages() []Message {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]Message(nil), s.messages...)
+	if len(s.messages) == 0 {
+		return nil
+	}
+	messages := make([]Message, len(s.messages))
+	for index, message := range s.messages {
+		message.Content = slices.Clone(message.Content)
+		message.SupplementalContent = slices.Clone(message.SupplementalContent)
+		message.Metadata = slices.Clone(message.Metadata)
+		message.SpansOpenAtPersist = slices.Clone(message.SpansOpenAtPersist)
+		messages[index] = message
+	}
+	return messages
 }
 
 // SessionIDCount returns the number of UpdateSessionID calls.
@@ -1209,10 +1487,7 @@ func (s *Sink) SessionIDCount() int {
 func (s *Sink) LastSessionID() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(s.sessionIDs) == 0 {
-		return ""
-	}
-	return s.sessionIDs[len(s.sessionIDs)-1]
+	return s.currentSessionIDLocked()
 }
 
 func (s *Sink) SettingsRefreshCount() int {
@@ -1327,29 +1602,39 @@ func Nop() agent.ProviderServices { return agent.NewProviderServices(nop{}) }
 func (nop) PersistMessage(leapmuxv1.MessageSource, agent.MessageContent, agent.SpanInfo) error {
 	return nil
 }
-func (nop) EnrichMessage(agent.MessageEnrichment) (bool, error)               { return false, nil }
-func (nop) ReadToolRequest(string) (*agent.StoredMessage, error)              { return nil, nil }
-func (nop) ReadToolResult(string) (*agent.StoredMessage, error)               { return nil, nil }
-func (nop) PersistTurnEnd(agent.MessageContent, agent.SpanInfo) error         { return nil }
-func (nop) SetTurnState(agent.TurnState, uint64)                              {}
-func (nop) ReportInterruptIgnored()                                           {}
-func (nop) PersistNotification(leapmuxv1.MessageSource, []byte) (bool, error) { return true, nil }
-func (nop) OpenSpan(string, string)                                           {}
-func (nop) CloseSpan(string)                                                  {}
-func (nop) ResetSpans()                                                       {}
-func (nop) SetSpanType(string, string)                                        {}
-func (nop) GetSpanType(string) string                                         { return "" }
-func (nop) ReserveSpanColor(string, string) int32                             { return 0 }
-func (nop) ReportProgress(agent.ProgressUpdate)                               {}
-func (nop) PublishControlRequest(agent.ControlRequest) error                  { return nil }
-func (nop) CancelControlRequest(string)                                       {}
-func (nop) UpdateSessionID(string)                                            {}
-func (nop) UpdatePermissionMode(string)                                       {}
-func (nop) NotifyPermissionModeChanged(string, string)                        {}
-func (nop) PersistSettingsRefresh(optionmap.Map)                              {}
-func (nop) BroadcastStatusActive(string)                                      {}
-func (nop) BroadcastSessionInfo(map[string]interface{})                       {}
-func (nop) PersistLeapMuxNotification(map[string]interface{})                 {}
+func (nop) LookupChildIdentity(bgtask.RowIdentity) (agent.ChildIdentity, bool, error) {
+	return agent.ChildIdentity{}, false, nil
+}
+func (nop) EnrichMessage(agent.MessageEnrichment) (bool, error)                   { return false, nil }
+func (nop) ReadToolRequest(string) (*agent.StoredMessage, error)                  { return nil, nil }
+func (nop) ReadToolResult(string) (*agent.StoredMessage, error)                   { return nil, nil }
+func (nop) ReadToolResultBySeq(int64) (*agent.StoredMessage, error)               { return nil, nil }
+func (nop) ReadToolResultForSession(string, string) (*agent.StoredMessage, error) { return nil, nil }
+func (nop) PersistTurnEnd(agent.MessageContent, agent.SpanInfo) error             { return nil }
+func (nop) SetTurnState(agent.TurnState, uint64)                                  {}
+func (nop) RequeueDroppedInput(string, string, []*leapmuxv1.Attachment) error     { return nil }
+func (nop) PersistNotification(leapmuxv1.MessageSource, agent.MessageContent) (bool, error) {
+	return true, nil
+}
+func (nop) CaptureMessage(content agent.MessageContent, _ agent.SpanInfo) agent.MessageContent {
+	return content.Clone()
+}
+func (nop) OpenSpan(string, string)                           {}
+func (nop) CloseSpan(string)                                  {}
+func (nop) ResetSpans()                                       {}
+func (nop) SetSpanType(string, string)                        {}
+func (nop) GetSpanType(string) string                         { return "" }
+func (nop) ReserveSpanColor(string, string) int32             { return 0 }
+func (nop) ReportProgress(agent.ProgressUpdate)               {}
+func (nop) PublishControlRequest(agent.ControlRequest) error  { return nil }
+func (nop) CancelControlRequest(string)                       {}
+func (nop) UpdateSessionID(string)                            {}
+func (nop) UpdatePermissionMode(string)                       {}
+func (nop) NotifyPermissionModeChanged(string, string)        {}
+func (nop) PersistSettingsRefresh(optionmap.Map)              {}
+func (nop) BroadcastStatusActive(string)                      {}
+func (nop) BroadcastSessionInfo(map[string]interface{})       {}
+func (nop) PersistLeapMuxNotification(map[string]interface{}) {}
 func (nop) PersistSubagentReport(write agent.SubagentReportWrite) (bool, error) {
 	payload, err := write.NotificationPayload()
 	return payload != nil, err
@@ -1362,11 +1647,14 @@ func (nop) UpsertGoal(agent.GoalUpdate)                                         
 func (nop) UpdateGoalStatus(agent.GoalStatus, agent.GoalStatus)                     {}
 func (nop) ClearGoal(bool)                                                          {}
 func (nop) PublishGoalCapabilities()                                                {}
-func (nop) ScheduleAutoContinue(agent.AutoContinueSchedule)                         {}
-func (nop) CancelAutoContinue(agent.AutoContinueReason)                             {}
-func (nop) EnsureChildAgent(string, string, string) (string, error)                 { return "", nil }
-func (nop) ChildSpawnSpan(string) (string, error)                                   { return "", nil }
-func (nop) ChildSink(string) agent.ProviderServices                                 { return Nop() }
+func (nop) GoalWriterFor(agent.CapturedTranscript) (agent.CapturedGoalWriter, error) {
+	return nil, errors.New("the nop sink captures no goal authority")
+}
+func (nop) ScheduleAutoContinue(agent.AutoContinueSchedule)       {}
+func (nop) CancelAutoContinue(agent.AutoContinueReason)           {}
+func (nop) EnsureChildAgent(agent.ChildAgentSpec) (string, error) { return "", nil }
+func (nop) ChildSpawnSpan(string) (string, error)                 { return "", nil }
+func (nop) ChildSink(string) agent.ProviderServices               { return Nop() }
 func (nop) PersistChildMessage(string, leapmuxv1.MessageSource, []byte, agent.SpanInfo) error {
 	return nil
 }
@@ -1462,15 +1750,17 @@ func (s *Sink) ProgressSnapshot() agent.ProgressSnapshot {
 // BackgroundTask returns the latest registry state of rowKey, and whether the
 // sink holds a row for it.
 func (s *Sink) BackgroundTask(rowKey string) (bgtask.Item, bool) {
-	s.bgTasksMu.Lock()
-	defer s.bgTasksMu.Unlock()
-	row, ok := s.bgTasks[rowKey]
+	r := s.registry()
+	r.bgTasksMu.Lock()
+	defer r.bgTasksMu.Unlock()
+	row, ok := r.bgTasks[rowKey]
 	return row, ok
 }
 
 // BackgroundTaskStatuses returns the distinct statuses rowKey took, in order.
 func (s *Sink) BackgroundTaskStatuses(rowKey string) []bgtask.Status {
-	s.bgTasksMu.Lock()
-	defer s.bgTasksMu.Unlock()
-	return slices.Clone(s.bgTaskStatuses[rowKey])
+	r := s.registry()
+	r.bgTasksMu.Lock()
+	defer r.bgTasksMu.Unlock()
+	return slices.Clone(r.bgTaskStatuses[rowKey])
 }

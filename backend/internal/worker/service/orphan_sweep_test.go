@@ -121,12 +121,8 @@ func TestCleanupChildAgentsBatchPrunesWithoutRootScan(t *testing.T) {
 	for _, childID := range []string{"child-a", "child-b", "child-c"} {
 		svc.Output.childTracker(childID)
 	}
-	// Cache a child sink on the root so ForgetChildSinks has something to clear.
-	rootSink.childMu.Lock()
-	rootSink.childSinks = map[string]*agentOutputSink{
-		"child-a": {agentID: "child-a", rootAgentID: "root-batch"},
-	}
-	rootSink.childMu.Unlock()
+	// Register a real child so retirement checks its exact sink identity.
+	rootSink.ChildSink("child-a")
 
 	tracked := svc.Output.TrackedAgentIDs()
 	for _, childID := range []string{"child-a", "child-b", "child-c"} {

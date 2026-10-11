@@ -49,19 +49,52 @@ type TurnState struct {
 	Steerable bool
 }
 
+// TurnStateLease keeps one accepted provider state current through a store mutation.
+// Release the lease before a provider call or observer delivery.
+type TurnStateLease interface{ Release() }
+
+// TurnStateAdmission retains the exact authority that accepted a provider state.
+// Acquire requires its exact sequence. IsCurrent permits a later identical report.
+type TurnStateAdmission interface {
+	Acquire() (TurnState, TurnStateLease)
+	IsCurrent() bool
+}
+
 // MessageContent keeps provider bytes and supplemental data separate during persistence and extraction.
 type MessageContent struct {
 	Original []byte
+	// IdempotencyKey identifies one immutable provider record within its native session.
+	// An empty key preserves ordinary transcript writes.
+	IdempotencyKey string
 	// AgentSessionID identifies the provider session that produced these bytes.
 	AgentSessionID string
 	// Supplemental holds recovered provider data. Metadata holds worker-calculated fields.
 	Supplemental []byte
 	Metadata     []byte
 	Completion   MessageCompletion
+	// Publication retains the original live owner, including an unknown native session.
+	Publication TranscriptPublication
+	// WriteReceipt records the storage result of this captured write.
+	WriteReceipt *TranscriptWriteReceipt
+}
+
+// TranscriptOwner identifies the original live publication state of one record.
+type TranscriptOwner interface {
+	IsCurrent() bool
+	PublishSessionInfo(info map[string]interface{}) bool
+}
+
+// TranscriptPublication lets a provider decorate progress without replacing its owner.
+type TranscriptPublication interface {
+	Owner() TranscriptOwner
+	ReportProgress(update ProgressUpdate)
 }
 
 // MessageEnrichment describes a conditional update to separate rendering data.
 type MessageEnrichment struct {
+	Publication         TranscriptPublication
+	WriteReceipt        *MessageEnrichmentReceipt
+	AgentSessionID      string
 	Seq                 int64
 	SpanID              string
 	OriginalContent     []byte
@@ -79,6 +112,9 @@ type StoredMessage struct {
 
 // TranscriptServices persists provider output and turn boundaries.
 type TranscriptServices interface {
+	// CaptureMessage freezes the native session and live owner before a delayed write.
+	// A supplied publication keeps its original owner.
+	CaptureMessage(content MessageContent, span SpanInfo) MessageContent
 	// ReadToolRequest resolves the persisted opener. A missing opener returns nil without an error.
 	ReadToolRequest(spanID string) (*StoredMessage, error)
 	// ReadToolResult resolves the LATEST persisted row of one tool-call span, which is
@@ -86,6 +122,11 @@ type TranscriptServices interface {
 	// the same span, so the two answer different questions and neither substitutes for
 	// the other. A span with no row returns nil without an error.
 	ReadToolResult(spanID string) (*StoredMessage, error)
+	// ReadToolResultBySeq reads the exact committed result row of this agent.
+	// A nonpositive sequence or absent tool row returns nil.
+	ReadToolResultBySeq(seq int64) (*StoredMessage, error)
+	// ReadToolResultForSession keeps the supplied native session, including an empty session.
+	ReadToolResultForSession(spanID, sessionID string) (*StoredMessage, error)
 	PersistMessage(source leapmuxv1.MessageSource, content MessageContent, span SpanInfo) error
 	// EnrichMessage stores rendering data separately from the original provider bytes.
 	// It returns false when the original content or supplemental revision no longer matches.
@@ -96,7 +137,7 @@ type TranscriptServices interface {
 	// that collapses byte-identically into the existing thread tail is persisted
 	// without a broadcast, and callers (the thinking-token reset decorator) use
 	// this to stay in lockstep with the frontend, which only clears on a broadcast.
-	PersistNotification(source leapmuxv1.MessageSource, content []byte) (broadcast bool, err error)
+	PersistNotification(source leapmuxv1.MessageSource, content MessageContent) (broadcast bool, err error)
 	// PersistTurnEnd persists the agent's turn-end divider envelope and
 	// fires the sink-level git-status auto-broadcast. Each provider's
 	// closing envelope (Claude type:"result", Codex turn/completed,
@@ -153,10 +194,16 @@ type TurnServices interface {
 	// authoritative -- so each provider's tests pin the clear on every path that
 	// ends a turn.
 	SetTurnState(state TurnState, seq uint64)
-	// ReportInterruptIgnored reports that the provider accepted an interrupt but
-	// kept the same turn running. The Worker restores the activity that the
-	// interrupt request hid, including the Interrupt button for a later attempt.
-	ReportInterruptIgnored()
+	// RequeueDroppedInput hands back input that the provider accepted into the
+	// running turn and that the agent dropped before the model read it. The
+	// Worker queues it as the reader's next message, under the queue's own rules,
+	// and states in the transcript why the message appears again. dropID
+	// identifies the drop within the agent, so a second call for the same drop
+	// queues nothing and writes nothing.
+	//
+	// An error means that the queue did not take the input, and the provider
+	// must then tell the reader that the model never read it.
+	RequeueDroppedInput(dropID, content string, attachments []*leapmuxv1.Attachment) error
 }
 
 // SpanServices owns transcript span state.
@@ -184,6 +231,10 @@ type ProgressServices interface {
 
 // ControlRequest keeps the native payload separate from its optional transcript source.
 type ControlRequest struct {
+	// AgentSessionID is the provider session that the request belongs to. The
+	// worker accepts an answer only while the agent is in that session. An empty
+	// value makes the sink store the session that it holds when it stores the
+	// request, and that session is empty until the first UpdateSessionID.
 	AgentSessionID string
 	RequestID      string
 	Payload        []byte
@@ -299,6 +350,35 @@ type GoalServices interface {
 	// for an agent that reports no goal capability -- so an answer that is
 	// merely early leaves the feature unreachable for the life of the session.
 	PublishGoalCapabilities()
+
+	// GoalWriterFor builds the goal writer of one captured publication.
+	//
+	// A provider that defers its goal writes (Muse runs them after its dispatch
+	// lock releases) must capture the writer when the native goal event ARRIVES,
+	// not when the deferred write executes: a context replacement between the
+	// two would give old native goal data the new session's authority. The
+	// captured transcript freezes the publication owner and the native session
+	// fact at observation; the returned writer refuses with an error once that
+	// authority expires, and ordinary later turns in the same native session
+	// keep it valid.
+	//
+	// The captured content's AgentSessionID must name the captured native
+	// session fact: a capture whose expected session disagrees with the live
+	// owner's session is not this observation's writer.
+	//
+	// The direct methods above stay capture-now operations through the same
+	// admission machinery; a provider with no delay between observation and
+	// write needs no factory.
+	GoalWriterFor(captured CapturedTranscript) (CapturedGoalWriter, error)
+}
+
+// CapturedGoalWriter applies goal writes under one captured publication's
+// authority. Both methods refuse with an error after that authority expires;
+// the refusal and a failed persistence share one error policy, so a caller
+// that retries treats them the same.
+type CapturedGoalWriter interface {
+	UpsertGoal(update GoalUpdate) error
+	ClearGoal() error
 }
 
 // AutoContinueServices schedules automatic continuation.
@@ -307,38 +387,39 @@ type AutoContinueServices interface {
 	CancelAutoContinue(reason AutoContinueReason)
 }
 
+// ChildAgentSpec supplies a native child identity and its initial stored options.
+// A child without a known spawn span must supply its exact provider key.
+type ChildAgentSpec struct {
+	SpawnSpanID      string
+	ProviderChildKey string
+	Title            string
+	Options          optionmap.Map
+	// AgentSessionID supplies the initial native session for a new child.
+	// A nonempty value must match an existing child's stored session.
+	AgentSessionID string
+}
+
 // ChildServices owns child transcripts and their in-memory state.
 type ChildServices interface {
 
 	// --- Subagent transcripts and the background-task registry ---
 
-	// EnsureChildAgent resolves (and creates on first sight) the virtual child
-	// agent spawned by the tool_use span spawnSpanID in THIS sink's transcript,
-	// linked to the provider's child key. Idempotent across replays and worker
-	// restarts. providerChildKey doubles as the registry row_key when non-empty.
+	// EnsureChildAgent resolves the virtual child that spec identifies in this sink's transcript.
+	// It creates an absent child and stores its initial options before publication.
+	// Replays and Worker restarts resolve the same stored child.
+	// A nonempty ProviderChildKey supplies the registry key also.
 	//
-	// title is the MODEL's, so the sink cleans it with validate.CleanName --
-	// the same rule every other writer of a title column applies, and the one
-	// place that documents its steps. A provider passes what it has, and does
-	// not cap or strip it first. Pass "" when the provider has no title: the
-	// sink keeps the registry row's current title and gives the agent row a
-	// pooled fallback name.
-	EnsureChildAgent(spawnSpanID, providerChildKey, title string) (childAgentID string, err error)
+	// The sink cleans the model's Title with the common validate.CleanName rule.
+	// The provider must supply its original title without a separate cap or character filter.
+	// An empty Title preserves the registry title and gives a new agent a pooled fallback title.
+	EnsureChildAgent(spec ChildAgentSpec) (childAgentID string, err error)
 
-	// ChildSpawnSpan returns the tool_use span in THIS sink's transcript that
-	// spawned childAgentID. It is the first argument EnsureChildAgent took, read
-	// back. The answer is "" for an id this sink spawned no child under.
-	//
-	// It exists because that span is the only DURABLE link between a provider's
-	// events and its forwarded output. A provider indexes the span in memory, and
-	// that index cannot survive a worker restart; the child row can.
-	//
-	// A provider needs it when its CLI restarts a finished subagent under an id
-	// that is not the original spawn. See the Claude implementation for the shape
-	// that motivated it.
-	//
-	// err is non-nil when the row could not be READ, which is a third answer and
-	// not a miss, for the reason LookupBackgroundTask states.
+	// ChildSpawnSpan returns the stored spawn span for childAgentID under this sink.
+	// It returns the SpawnSpanID that EnsureChildAgent received, or an empty string for an absent child.
+	// The stored child preserves this link after the provider's in-memory index disappears during a Worker restart.
+	// A provider uses the link when its CLI restarts a completed child under a different native ID.
+	// Claude uses this link to route resumed child output.
+	// A read failure returns an error. It differs from an absent row, as LookupBackgroundTask specifies.
 	ChildSpawnSpan(childAgentID string) (spawnSpanID string, err error)
 
 	// ChildSink returns a ProviderServices value for the child transcript.
@@ -402,6 +483,17 @@ type ChildServices interface {
 }
 
 // BackgroundTaskServices owns the provider-neutral task registry.
+// ChildIdentity is the durable half of a registry row's child linkage: the
+// child agent id, and the provider's own native key exactly as first observed.
+// The native key is the bytes the provider recognizes on its own wire; the
+// registry spelling of the same row can be a derived or escaped digest, which
+// no provider command accepts.
+type ChildIdentity struct {
+	AgentID string
+	// ProviderChildKey is the provider's own key bytes; empty for a span-only child.
+	ProviderChildKey string
+}
+
 type BackgroundTaskServices interface {
 
 	// Registry writes. All are keyed under the ROOT owner of this sink.
@@ -443,6 +535,21 @@ type BackgroundTaskServices interface {
 	// first. A key that identifies nothing (a display name, another session, a
 	// foreign address) simply misses.
 	LookupBackgroundTask(rowKey string) (childAgentID string, status bgtask.Status, ok bool, err error)
+
+	// LookupChildIdentity resolves a STORED registry key to its durable child:
+	// the child agent id and the provider's own native key bytes. The identity
+	// arrives typed because its spelling is already stored: re-deriving it as
+	// fresh provider input would ESCAPE a derived key and address a row that
+	// exists nowhere, so this is the one registry read that takes
+	// bgtask.RowIdentity instead of a fresh provider key.
+	//
+	// ok is false when the root's registry holds no row under that exact
+	// spelling or the row owns no child transcript. A span-only child exists
+	// with an empty ProviderChildKey: the child is durable, its native key is
+	// not. A caller that needs a native key for a wire command treats the empty
+	// ProviderChildKey as "no native route" and must not fall back to the
+	// registry spelling.
+	LookupChildIdentity(identity bgtask.RowIdentity) (ChildIdentity, bool, error)
 
 	// ReviveBackgroundTask returns a FINISHED row to Running, clears its
 	// ended_at, and lets the reopened transcript be closed again by the next
@@ -605,7 +712,7 @@ type Agent interface {
 	// lives on the interface rather than in each provider's SendInput so a new
 	// provider cannot leave it out.
 	PublishTurnActive() TurnState
-	SendRawInput(data []byte) error
+	SendRawInput(data []byte, stop StopContext) error
 	Stop()
 	IsStopped() bool
 	DiscardOutput()
@@ -631,13 +738,19 @@ type Agent interface {
 	// Returns nil on success or if the agent is not currently in a turn;
 	// returns a non-nil error only when the interrupt mechanism itself
 	// failed (e.g. stdin write error).
-	Interrupt() error
+	Interrupt(stop StopContext) error
 }
 
 // ContextCompactor runs a provider-native context compaction. Providers that
 // do not expose compaction do not implement this interface.
 type ContextCompactor interface {
 	CompactContext() error
+}
+
+// NativeTurnRestarter reports a launch-only change made by a native tool.
+// The Worker replaces the process with the same session before it sends queued input.
+type NativeTurnRestarter interface {
+	NativeTurnRestartRequired() bool
 }
 
 // InputSteerer adds input to an active turn. The queue calls it only for an
@@ -717,7 +830,7 @@ type ChildSteerer interface {
 // ChildInterrupter lets a provider stop a child turn without claiming that the
 // provider can send direct input to that child.
 type ChildInterrupter interface {
-	InterruptChild(childKey string) error
+	InterruptChild(childKey string, stop StopContext) error
 }
 
 // ErrChildOperationUnsupported is returned when a running agent lacks the
@@ -745,3 +858,7 @@ var ErrChildOperationUnsupported = errors.New("agent provider does not support t
 // (SendChildInput) passes it to classifyQueueDeliveryError, which decides how
 // the queue records the failed delivery.
 var ErrChildRouteNotReady = errors.New("subagent route is not ready in the running owner process; retry")
+
+// ErrChildIdentityRefused reports a conflict with the child's stored identity.
+// A later successful identity check can authorize the route again.
+var ErrChildIdentityRefused = errors.New("subagent identity does not match the stored child")

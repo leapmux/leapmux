@@ -441,6 +441,32 @@ func TestListAgentSessions_ExcludesATabOpenInAnotherDirectory(t *testing.T) {
 	// under dirA.
 	seedResumableAgent(t, svc, "a-live", "ses_x", "Open elsewhere", dirB,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, false)
+	seedOpenCodeStoredSession(t, svc, dirA, "ses_x")
+
+	resp := listAgentSessions(t, d, w, leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, dirA)
+	assert.Empty(t, summaryHandles(resp.GetSessions()),
+		"a handle a live process holds is never offered, whichever directory holds the tab")
+}
+
+func TestListAgentSessions_ExcludesAPendingResumeClaim(t *testing.T) {
+	t.Parallel()
+	svc, d, w := setupTestService(t)
+	dirA := t.TempDir()
+	dirB := t.TempDir()
+	require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{
+		ID: "a-pending", WorkingDir: dirB, HomeDir: svc.HomeDir,
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
+		Resumed:       1, PendingResumeSessionID: "ses_x",
+	}))
+	seedOpenCodeStoredSession(t, svc, dirA, "ses_x")
+
+	resp := listAgentSessions(t, d, w, leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, dirA)
+	assert.Empty(t, summaryHandles(resp.GetSessions()),
+		"a pending manual resume hides the handle before native startup confirms it")
+}
+
+func seedOpenCodeStoredSession(t *testing.T, svc *Service, workingDir, sessionID string) {
+	t.Helper()
 
 	store := filepath.Join(svc.HomeDir, ".local", "share", "opencode", "opencode.db")
 	require.NoError(t, os.MkdirAll(filepath.Dir(store), 0o755))
@@ -451,13 +477,9 @@ func TestListAgentSessions_ExcludesATabOpenInAnotherDirectory(t *testing.T) {
 		time_created integer NOT NULL, time_updated integer, time_archived integer)`)
 	require.NoError(t, err)
 	_, err = sqlDB.Exec(`INSERT INTO session (id, directory, title, time_created, time_updated) VALUES
-		('ses_x', ?, 'The CLI still files it here', 1000, 3000)`, dirA)
+		(?, ?, 'The CLI still files it here', 1000, 3000)`, sessionID, workingDir)
 	require.NoError(t, err)
 	require.NoError(t, sqlDB.Close())
-
-	resp := listAgentSessions(t, d, w, leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, dirA)
-	assert.Empty(t, summaryHandles(resp.GetSessions()),
-		"a handle a live process holds is never offered, whichever directory holds the tab")
 }
 
 func TestListAgentSessions_EmptyStoreAndNoRecordsIsAnEmptyList(t *testing.T) {
@@ -566,4 +588,37 @@ func TestListAgentSessions_RanksBySessionsLatestMessageTime(t *testing.T) {
 	resp := listAgentSessions(t, d, w, provider, dir)
 	assert.Equal(t, []string{"handle-recent", "handle-older"}, summaryHandles(resp.GetSessions()),
 		"the picker sorted the session that just ran below an older one")
+}
+
+// queryRecordingPlugin records the query a provider's store reader receives.
+type queryRecordingPlugin struct {
+	agent.ProviderDefaults
+	got chan agent.StoredSessionQuery
+}
+
+func (p queryRecordingPlugin) ListStoredSessions(_ context.Context, q agent.StoredSessionQuery) ([]agent.StoredSession, error) {
+	p.got <- q
+	return nil, nil
+}
+
+// TestListAgentSessions_HandsTheReaderTheAgentShell pins that a provider whose
+// sessions only its own CLI can list runs that CLI through the shell the
+// worker launches agents through. Amp is the case: its threads live on its
+// server, and a CLI started without the login environment would not find the
+// login that the agent itself uses.
+func TestListAgentSessions_HandsTheReaderTheAgentShell(t *testing.T) {
+	t.Parallel()
+	plugin := queryRecordingPlugin{got: make(chan agent.StoredSessionQuery, 1)}
+	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE
+	svc, d, w := setupTestService(t, withRegistry(registryWithPlugin(t, provider, plugin)))
+	svc.UseLoginShell = true
+	dir := t.TempDir()
+
+	listAgentSessions(t, d, w, provider, dir)
+
+	q := <-plugin.got
+	assert.Equal(t, svc.agentShell(), q.Shell)
+	assert.NotEmpty(t, q.Shell, "the default shell resolves to a real shell")
+	assert.True(t, q.LoginShell, "the reader runs the login shell when agents do")
+	assert.Equal(t, svc.HomeDir, q.HomeDir)
 }

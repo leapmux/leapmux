@@ -47,6 +47,7 @@ const (
 	codexPendingHookCompleted
 	codexPendingMcpOauthCompleted
 	codexPendingMcpStartupUpdated
+	codexPendingRawExecution
 )
 
 type codexPendingChildEvent struct {
@@ -103,11 +104,11 @@ type codexChildRoute struct {
 // codexCollabTransition maps a collab agentsStates status to one child
 // transition. An interrupted child remains resumable.
 //
-// A resumable "interrupted" child stays Running in the registry (with a paused
-// activity line). This is an IN-SESSION Codex collab pause, not a worker
+// A resumable "interrupted" child stays open as Paused in the registry. This
+// is an in-session Codex collab pause, not a worker
 // restart: the child thread is paused inside the running owner process and
-// resumeAgent restarts it in the same process, so the same row_key legitimately
-// cycles running -> interrupted -> running. The wire "interrupted" must NOT map
+// resumeAgent restarts it in the same process, so the same row key can move
+// from Running to Paused and back to Running. The wire "interrupted" cannot map
 // to StatusInterrupted: that status is final (IsFinished reports true), so
 // the registry's monotonic-final guard would absorb the later "running"
 // upsert that arrives when resumeAgent resumes the child, leaving the row stuck
@@ -119,13 +120,13 @@ func codexCollabTransition(s string) codexChildTransition {
 	case "pendingInit", "running":
 		return codexChildTransition{status: bgtask.StatusRunning}
 	case "completed":
-		return codexChildTransition{status: bgtask.StatusCompleted, completion: agent.MessageCompletionComplete}
+		return codexChildTransition{status: bgtask.StatusSucceeded, completion: agent.MessageCompletionComplete}
 	case "errored", "notFound":
 		return codexChildTransition{status: bgtask.StatusFailed, completion: agent.MessageCompletionError}
 	case "shutdown":
 		return codexChildTransition{status: bgtask.StatusStopped, completion: agent.MessageCompletionInterrupted}
 	case "interrupted":
-		return codexChildTransition{status: bgtask.StatusRunning, activity: "paused"}
+		return codexChildTransition{status: bgtask.StatusPaused, activity: "paused"}
 	default:
 		return codexChildTransition{status: bgtask.StatusRunning}
 	}
@@ -145,11 +146,11 @@ func codexChildTurnTransition(params json.RawMessage) codexChildTransition {
 	}
 	switch strings.ToLower(value.Turn.Status) {
 	case "completed":
-		return codexChildTransition{status: bgtask.StatusCompleted, completion: agent.MessageCompletionComplete}
+		return codexChildTransition{status: bgtask.StatusSucceeded, completion: agent.MessageCompletionComplete}
 	case "failed":
 		return codexChildTransition{status: bgtask.StatusFailed, completion: agent.MessageCompletionError}
 	case "cancelled", "canceled", "interrupted", "aborted":
-		return codexChildTransition{status: bgtask.StatusRunning, activity: "paused"}
+		return codexChildTransition{status: bgtask.StatusPaused, activity: "paused"}
 	default:
 		return codexChildTransition{status: bgtask.StatusRunning}
 	}
@@ -251,7 +252,8 @@ func (a *Agent) upsertCollabChildRow(up bgtask.Upsert) error {
 // handleCodexSubAgentActivity handles a v2 subAgentActivity item (registry
 // only; never persisted). The started item is the V2 spawn authority: it
 // supplies the spawn call ID, child thread ID, and canonical task path. The
-// completed and interrupted items close the run. Interacted keeps it active.
+// completed item closes the run. An interrupted item pauses it. Interacted
+// keeps it active.
 func (a *Agent) handleCodexSubAgentActivity(item json.RawMessage, parentThreadID string) bool {
 	var act struct {
 		Type          string `json:"type"`
@@ -275,16 +277,14 @@ func (a *Agent) handleCodexSubAgentActivity(item json.RawMessage, parentThreadID
 	}
 	if act.Kind == "completed" {
 		a.completeCodexChildRun(act.AgentThreadID, codexChildTransition{
-			status:     bgtask.StatusCompleted,
+			status:     bgtask.StatusSucceeded,
 			completion: agent.MessageCompletionComplete,
 		})
 		return true
 	}
 	if act.Kind == "interrupted" {
-		a.completeCodexChildRun(act.AgentThreadID, codexChildTransition{
-			status:     bgtask.StatusFailed,
-			completion: agent.MessageCompletionError,
-		})
+		providerkit.LogRegistryRefusal("codex", "pause child",
+			a.sink.UpdateBackgroundTaskStatus(act.AgentThreadID, bgtask.StatusPaused, "paused"))
 		return true
 	}
 
@@ -501,6 +501,11 @@ func (a *Agent) completeCodexChildRun(threadID string, transition codexChildTran
 	hadTurn := state.turnID != ""
 	state.turnID = ""
 	finalized := state.transcriptFinalized
+	// Copy the SELECTED transition before the flush and close consumers: the
+	// first outcome a closing run chose stays that run's outcome, so a later
+	// completed activity retries a failed close with the original failed
+	// outcome instead of substituting its own.
+	transition = state.finalTransition
 	a.Mu.Unlock()
 
 	route, routed := a.ensureCodexChildRoute(threadID)
@@ -633,8 +638,23 @@ func (a *Agent) takeCollabChildPrompt(threadID string) string {
 }
 
 // InterruptChild aborts a child's current turn inside the owner process.
-func (a *Agent) InterruptChild(childKey string) error {
+//
+// childKey is the registry row's STORED key, which can be a derived or escaped
+// digest of the native thread id. The interrupt goes to the native thread id
+// itself: the durable child identity carries the provider's own bytes, and a
+// normalized registry key never reaches Codex's wire as a thread id.
+func (a *Agent) InterruptChild(childKey string, stop agent.StopContext) error {
 	threadID := childKey
+	if a.sink != nil {
+		if identity, err := bgtask.ParseRowIdentity(childKey); err == nil {
+			if child, found, lookupErr := a.sink.LookupChildIdentity(identity); lookupErr == nil && found {
+				if child.ProviderChildKey == "" {
+					return fmt.Errorf("%w: the subagent has no native codex thread", agent.ErrChildRouteNotReady)
+				}
+				threadID = child.ProviderChildKey
+			}
+		}
+	}
 	if !a.knownCollabChild(threadID) {
 		// The live route can be empty after a restart while the registry row
 		// still resolves. Report a retryable failure.

@@ -39,6 +39,7 @@ func TestMigrate(t *testing.T) {
 	tables := []string{
 		"agents",
 		"messages",
+		"agent_turn_ends",
 		"control_requests",
 		"terminals",
 		"worktrees",

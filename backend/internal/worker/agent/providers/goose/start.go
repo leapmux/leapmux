@@ -26,7 +26,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 				PreferredFirstMode: contracts.GooseModeSmartApprove,
 				// Goose's reasoning-effort axis is the convention id "thinking_effort", not the
 				// well-known "effort" -- declare it so the env-effort override maps onto it.
-				EffortConfigID: ConfigThinkingEffort,
+				EffortConfigID: contracts.GooseConfigThinkingEffort,
 				// Subagent tool-request observations: Goose surfaces tool REQUESTS
 				// (never results) over ACP via _meta.toolNotification, so the hook
 				// runs on tool_call_update. The spawn tool_call's final update

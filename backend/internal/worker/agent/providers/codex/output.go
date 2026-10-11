@@ -41,7 +41,7 @@ func handleCodexOutput(a *Agent, line *providerkit.ParsedLine) {
 	slog.Debug("codex HandleOutput", "agent_id", a.AgentID(), "method", line.Method, "len", len(line.Raw))
 
 	if _, ok := codexSystemMetadataMethods[line.Method]; ok {
-		if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, line.Raw); err != nil {
+		if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: line.Raw}); err != nil {
 			slog.Error("codex persist system metadata", "agent_id", a.AgentID(), "method", line.Method, "error", err)
 		}
 		return
@@ -98,9 +98,12 @@ func handleCodexOutput(a *Agent, line *providerkit.ParsedLine) {
 		a.handleMcpStartupStatusUpdated(line.Raw, line.Params)
 
 	case contracts.CodexMethodRawResponseItemCompleted:
-		if !a.handleRawResponseItemCompleted(line.Params) {
-			a.persistUnknownCodexNotification(line)
-		}
+		// Native exec has no typed mirror. Other raw items retain their existing filtering.
+		a.handleRawResponseItemCompleted(line.Params)
+		a.handleCodexRawExecution(line.Raw, line.Params)
+
+	case "rawResponse/completed":
+		// The typed turn and token-usage notifications already carry this state.
 
 	case contracts.CodexMethodThreadStatusChanged:
 		// turn/started and turn/completed own the Worker's turn state. Codex sends
@@ -319,7 +322,7 @@ func (a *Agent) handleCodexItemStartedForSink(
 			}
 			a.Mu.Unlock()
 		}
-		if _, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, event.raw); err != nil {
+		if _, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: event.raw}); err != nil {
 			slog.Error("codex persist compacting notification", "agent_id", agentID, "error", err)
 		}
 	case contracts.CodexItemTypeCommandExecution, contracts.CodexItemTypeFileChange, contracts.CodexItemTypeMcpToolCall, contracts.CodexItemTypeDynamicToolCall, contracts.CodexItemTypeImageGeneration, contracts.CodexItemTypeImageView, contracts.CodexItemTypeReasoning:
@@ -449,7 +452,7 @@ func (a *Agent) handleCodexItemCompletedForSink(
 	case contracts.CodexItemTypeReasoning:
 		a.persistCompletedReasoningItem(sink, event, agentID)
 	case contracts.CodexItemTypeContextCompaction:
-		if _, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, event.raw); err != nil {
+		if _, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: event.raw}); err != nil {
 			slog.Error("codex persist contextCompaction/completed", "agent_id", agentID, "error", err)
 		}
 	default:
@@ -483,6 +486,7 @@ func (a *Agent) handleTurnCompleted(params json.RawMessage) {
 	completion := codexTurnCompletion(params)
 	a.flushCodexGeneration(completion)
 	incompleteToolUses := a.persistIncompleteCodexTools("", false, completion)
+	incompleteToolUses += a.finishCodexRawExecutions(notif.ThreadID, completion)
 
 	// Enrich the params with num_tool_uses so the frontend can distinguish
 	// simple text-only exchanges from complex multi-tool turns.
@@ -598,6 +602,7 @@ func (a *Agent) handleChildTurnCompleted(threadID string, params json.RawMessage
 	completion := codexTurnCompletion(params)
 	a.flushCodexChildGeneration(threadID, completion)
 	a.persistIncompleteCodexTools(threadID, false, completion)
+	a.finishCodexRawExecutions(threadID, completion)
 	if reportID, label, report, ok := a.takeCodexChildReportCandidate(threadID); ok {
 		providerkit.PersistSubagentReport(route.parentSink, agent.SubagentReportWrite{
 			ReportID: reportID,
@@ -617,7 +622,7 @@ func (a *Agent) handleChildTurnCompleted(threadID string, params json.RawMessage
 		a.completeCodexChildRun(threadID, transition)
 	} else if transition.activity != "" {
 		providerkit.LogRegistryRefusal("codex", "update status",
-			a.sink.UpdateBackgroundTaskStatus(threadID, bgtask.StatusRunning, transition.activity))
+			a.sink.UpdateBackgroundTaskStatus(threadID, transition.status, transition.activity))
 	}
 }
 
@@ -807,12 +812,12 @@ func (a *Agent) persistCodexThreadFailure(threadID string, kind codexPendingChil
 }
 
 func (a *Agent) persistCodexFailureForSink(sink agent.ProviderServices, agentID string, kind codexPendingChildEventKind, content json.RawMessage) {
-	if _, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content); err != nil {
+	if _, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: content}); err != nil {
 		slog.Error("codex persist failure notification", "agent_id", agentID, "kind", kind, "error", err)
 	}
 }
 
-func (a *Agent) handleRawResponseItemCompleted(params json.RawMessage) bool {
+func (a *Agent) handleRawResponseItemCompleted(params json.RawMessage) {
 	var notification struct {
 		ThreadID string `json:"threadId"`
 		Item     struct {
@@ -826,16 +831,15 @@ func (a *Agent) handleRawResponseItemCompleted(params json.RawMessage) bool {
 	if json.Unmarshal(params, &notification) != nil || !a.isMainThreadID(notification.ThreadID) ||
 		notification.Item.Type != "function_call" || notification.Item.Name != "spawn_agent" ||
 		notification.Item.Namespace != codexMultiAgentV2Namespace || notification.Item.CallID == "" {
-		return false
+		return
 	}
 	var arguments struct {
 		Message string `json:"message"`
 	}
 	if json.Unmarshal([]byte(notification.Item.Arguments), &arguments) != nil {
-		return false
+		return
 	}
 	a.rememberCodexSpawnPrompt(notification.Item.CallID, arguments.Message)
-	return true
 }
 
 func codexMcpStartupState(params json.RawMessage) string {

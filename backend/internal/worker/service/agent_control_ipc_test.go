@@ -181,7 +181,7 @@ func TestEnsureAgentRunning_MintsAControlSocket(t *testing.T) {
 	rec.install(svc)
 	seedOpenAgent(t, svc, "agent-1", true)
 
-	require.NoError(t, svc.ensureAgentRunning("agent-1", nil, interactiveStart))
+	require.NoError(t, svc.ensureAgentRunning("agent-1", resumeIfConversation, interactiveStart))
 
 	env := rec.envFor("agent-1")
 	assert.Contains(t, env, "LEAPMUX_CONTROL_TAB_ID=agent-1")
@@ -202,7 +202,7 @@ func TestEnsureAgentRunning_MintsForTheWorkerOwner(t *testing.T) {
 	newStartRecorder().install(svc)
 	seedOpenAgent(t, svc, "agent-1", true)
 
-	require.NoError(t, svc.ensureAgentRunning("agent-1", nil, interactiveStart))
+	require.NoError(t, svc.ensureAgentRunning("agent-1", resumeIfConversation, interactiveStart))
 
 	owners := ipc.spawnOwners()
 	require.Len(t, owners, 1)
@@ -227,8 +227,8 @@ func TestEnsureAgentRunning_RetiresTheOldTokenBeforeMinting(t *testing.T) {
 	rec.install(svc)
 	seedOpenAgent(t, svc, "agent-1", true)
 
-	require.NoError(t, svc.ensureAgentRunning("agent-1", nil, interactiveStart))
-	require.NoError(t, svc.ensureAgentRunning("agent-1", nil, interactiveStart))
+	require.NoError(t, svc.ensureAgentRunning("agent-1", resumeIfConversation, interactiveStart))
+	require.NoError(t, svc.ensureAgentRunning("agent-1", resumeIfConversation, interactiveStart))
 
 	assert.Equal(t, []string{"mint:token-1", "cleanup:token-1", "mint:token-2"}, ipc.log(),
 		"the second relaunch must retire the first spawn's listener BEFORE it binds the same socket path again")
@@ -250,8 +250,8 @@ func TestEnsureAgentRunning_RefusesASocketPathStillInUse(t *testing.T) {
 	rec.install(svc)
 	seedOpenAgent(t, svc, "agent-1", true)
 
-	require.NoError(t, svc.ensureAgentRunning("agent-1", nil, interactiveStart))
-	require.NoError(t, svc.ensureAgentRunning("agent-1", nil, interactiveStart))
+	require.NoError(t, svc.ensureAgentRunning("agent-1", resumeIfConversation, interactiveStart))
+	require.NoError(t, svc.ensureAgentRunning("agent-1", resumeIfConversation, interactiveStart))
 
 	assert.Contains(t, rec.envFor("agent-1"), "LEAPMUX_CONTROL_TOKEN=token-2",
 		"the relaunch must bind its own socket; a still-open listener means it came up with no remote control at all")
@@ -272,14 +272,14 @@ func TestEnsureAgentRunning_ADegradedMintLeavesNoClaimBehind(t *testing.T) {
 	rec.install(svc)
 	seedOpenAgent(t, svc, "agent-1", true)
 
-	require.NoError(t, svc.ensureAgentRunning("agent-1", nil, interactiveStart))
+	require.NoError(t, svc.ensureAgentRunning("agent-1", resumeIfConversation, interactiveStart))
 
 	// The factory recovers. The next relaunch must KEEP the socket it mints.
 	ipc.mu.Lock()
 	ipc.failWith = nil
 	ipc.mu.Unlock()
 	svc.Agents.StopAndWaitAgent("agent-1")
-	require.NoError(t, svc.ensureAgentRunning("agent-1", nil, interactiveStart))
+	require.NoError(t, svc.ensureAgentRunning("agent-1", resumeIfConversation, interactiveStart))
 
 	assert.Equal(t, []string{"mint:token-1"}, ipc.log(),
 		"a stranded claim would make register retire the fresh token at once, so the mint would be followed by its own cleanup")
@@ -299,7 +299,7 @@ func TestEnsureAgentRunning_MissingIdentityRefusesTheSpawn(t *testing.T) {
 	rec.install(svc)
 	seedOpenAgent(t, svc, "agent-1", true)
 
-	err := svc.ensureAgentRunning("agent-1", nil, interactiveStart)
+	err := svc.ensureAgentRunning("agent-1", resumeIfConversation, interactiveStart)
 	require.ErrorIs(t, err, ErrMissingIdentity)
 	assert.Empty(t, rec.ids(), "no process may start when its control socket cannot be scoped to a user")
 }
@@ -317,7 +317,7 @@ func TestEnsureAgentRunning_DegradableFactoryFailureStillStarts(t *testing.T) {
 	rec.install(svc)
 	seedOpenAgent(t, svc, "agent-1", true)
 
-	require.NoError(t, svc.ensureAgentRunning("agent-1", nil, interactiveStart))
+	require.NoError(t, svc.ensureAgentRunning("agent-1", resumeIfConversation, interactiveStart))
 	assert.Equal(t, []string{"agent-1"}, rec.ids())
 	assert.Empty(t, rec.envFor("agent-1"))
 }
@@ -451,7 +451,7 @@ func TestEnsureAgentRunning_RefusesAClosedRow(t *testing.T) {
 	_, err := svc.Queries.CloseAgent(context.Background(), "agent-1")
 	require.NoError(t, err)
 
-	require.Error(t, svc.ensureAgentRunning("agent-1", nil, interactiveStart))
+	require.Error(t, svc.ensureAgentRunning("agent-1", resumeIfConversation, interactiveStart))
 	assert.Empty(t, rec.ids(), "a closed tab must never be given a process")
 	assert.Empty(t, ipc.log(),
 		"the refusal must come before the mint, so a closed tab leaves no listening socket behind")
@@ -551,7 +551,7 @@ func TestRemintControlIPC_ADegradedMintKeepsAnEarlierCloseMark(t *testing.T) {
 	svc.agentCleanups.closeTab("agent-1")
 
 	// A relaunch whose factory degrades: it registers nothing and abandons.
-	require.NoError(t, svc.ensureAgentRunning("agent-1", nil, interactiveStart))
+	require.NoError(t, svc.ensureAgentRunning("agent-1", resumeIfConversation, interactiveStart))
 	require.Empty(t, ipc.log(), "fixture check: the degraded factory minted nothing")
 
 	// The factory recovers. The close mark must still be honoured.
@@ -559,7 +559,7 @@ func TestRemintControlIPC_ADegradedMintKeepsAnEarlierCloseMark(t *testing.T) {
 	ipc.failWith = nil
 	ipc.mu.Unlock()
 	svc.Agents.StopAndWaitAgent("agent-1")
-	require.NoError(t, svc.ensureAgentRunning("agent-1", nil, interactiveStart))
+	require.NoError(t, svc.ensureAgentRunning("agent-1", resumeIfConversation, interactiveStart))
 
 	assert.Equal(t, []string{"mint:token-1", "cleanup:token-1"}, ipc.log(),
 		"the degraded mint erased the close mark, so this socket was stored for a tab that is already gone")
@@ -664,9 +664,9 @@ func TestRemintControlIPC_KeepsTheDelegationOffZeroAcrossTheSwap(t *testing.T) {
 	newStartRecorder().install(svc)
 	seedOpenAgent(t, svc, "agent-1", true)
 
-	require.NoError(t, svc.ensureAgentRunning("agent-1", nil, interactiveStart))
+	require.NoError(t, svc.ensureAgentRunning("agent-1", resumeIfConversation, interactiveStart))
 	svc.Agents.StopAndWaitAgent("agent-1")
-	require.NoError(t, svc.ensureAgentRunning("agent-1", nil, interactiveStart))
+	require.NoError(t, svc.ensureAgentRunning("agent-1", resumeIfConversation, interactiveStart))
 
 	ipc.mu.Lock()
 	zeroed, refs := ipc.zeroed, ipc.delegationRefs
@@ -688,13 +688,13 @@ func TestRemintControlIPC_AFailedMintStillReleasesTheDelegation(t *testing.T) {
 	newStartRecorder().install(svc)
 	seedOpenAgent(t, svc, "agent-1", true)
 
-	require.NoError(t, svc.ensureAgentRunning("agent-1", nil, interactiveStart))
+	require.NoError(t, svc.ensureAgentRunning("agent-1", resumeIfConversation, interactiveStart))
 	svc.Agents.StopAndWaitAgent("agent-1")
 
 	ipc.mu.Lock()
 	ipc.failWith = assert.AnError
 	ipc.mu.Unlock()
-	require.NoError(t, svc.ensureAgentRunning("agent-1", nil, interactiveStart))
+	require.NoError(t, svc.ensureAgentRunning("agent-1", resumeIfConversation, interactiveStart))
 
 	ipc.mu.Lock()
 	zeroed, refs := ipc.zeroed, ipc.delegationRefs
@@ -738,7 +738,7 @@ func TestEnsureAgentRunning_RefusesWhileAnotherStartupHoldsTheAgent(t *testing.T
 	t.Cleanup(func() { svc.AgentStartup.finishEntry(openHandle) })
 
 	errCh := make(chan error, 1)
-	go func() { errCh <- svc.ensureAgentRunning("agent-1", nil, interactiveStart) }()
+	go func() { errCh <- svc.ensureAgentRunning("agent-1", resumeIfConversation, interactiveStart) }()
 
 	// The CLIENT's budget, not the process's. Every interactive caller holds
 	// its RPC response open across this wait, and the client abandons that RPC
@@ -800,7 +800,7 @@ func TestEnsureAgentRunning_WaitsForTheStartupThatHoldsTheAgent(t *testing.T) {
 	require.NotNil(t, openHandle)
 
 	errCh := make(chan error, 1)
-	go func() { errCh <- svc.ensureAgentRunning("agent-1", nil, interactiveStart) }()
+	go func() { errCh <- svc.ensureAgentRunning("agent-1", resumeIfConversation, interactiveStart) }()
 
 	call := newTimer.MustWait(ctx)
 	assert.Equal(t, svc.agentAPITimeout(), call.Duration)
@@ -840,7 +840,7 @@ func TestEnsureAgentRunning_BackgroundStartDoesNotWaitForAnotherStartup(t *testi
 	require.NotNil(t, openHandle)
 	t.Cleanup(func() { svc.AgentStartup.finishEntry(openHandle) })
 
-	require.Error(t, svc.ensureAgentRunning("agent-1", nil, backgroundStart))
+	require.Error(t, svc.ensureAgentRunning("agent-1", resumeIfConversation, backgroundStart))
 	assert.Empty(t, rec.ids())
 
 	_, running := clock.Peek()
@@ -875,7 +875,7 @@ func TestEnsureAgentRunning_RefusesWhenACloseEndedTheStartupItWaitedFor(t *testi
 	t.Cleanup(func() { svc.AgentStartup.finishEntry(openHandle) })
 
 	errCh := make(chan error, 1)
-	go func() { errCh <- svc.ensureAgentRunning("agent-1", nil, interactiveStart) }()
+	go func() { errCh <- svc.ensureAgentRunning("agent-1", resumeIfConversation, interactiveStart) }()
 	call := newTimer.MustWait(ctx)
 	assert.Equal(t, svc.agentAPITimeout(), call.Duration)
 	call.MustRelease(ctx)
@@ -928,7 +928,7 @@ func TestRemintControlIPC_ARelaunchRacingASpawnClaimKeepsItsSocket(t *testing.T)
 	// The open path's window: the row is durable, the cleanup is not in yet.
 	svc.agentCleanups.claim("agent-1")
 
-	require.NoError(t, svc.ensureAgentRunning("agent-1", nil, interactiveStart))
+	require.NoError(t, svc.ensureAgentRunning("agent-1", resumeIfConversation, interactiveStart))
 
 	assert.Equal(t, []string{"mint:token-1"}, ipc.log(),
 		"the relaunch retired its own fresh socket; a spawn claim was misread as a close")
@@ -952,7 +952,7 @@ func TestRemintControlIPC_ARelaunchAfterARealCloseRetiresItsSocket(t *testing.T)
 	svc.agentCleanups.claim("agent-1")
 	svc.agentCleanups.closeTab("agent-1")
 
-	require.NoError(t, svc.ensureAgentRunning("agent-1", nil, interactiveStart))
+	require.NoError(t, svc.ensureAgentRunning("agent-1", resumeIfConversation, interactiveStart))
 
 	assert.Equal(t, []string{"mint:token-1", "cleanup:token-1"}, ipc.log(),
 		"a socket minted for a tab that is already closed must be retired at once, not left listening")

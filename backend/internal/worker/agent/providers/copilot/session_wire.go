@@ -8,6 +8,14 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
+// copilotFeatureAutoApproval is the runtime's feature flag for Assisted permission
+// mode. A session with the flag off refuses `assisted` at session.permissions.setMode
+// and answers `{"success":false}`. Copilot 1.0.87 behaves so for session.create and
+// for session.resume. A session turns the flag on through the `featureFlags` map of its
+// own configuration or through the runtime configuration file. The `isExperimentalMode`
+// switch does not turn it on.
+const copilotFeatureAutoApproval = "AUTO_APPROVAL"
+
 // copilotSessionConfig preserves the configured workspace features when the native SDK opens a session.
 type copilotSessionConfig struct {
 	SessionID                      string `json:"sessionId"`
@@ -15,6 +23,7 @@ type copilotSessionConfig struct {
 	WorkingDirectory               string `json:"workingDirectory"`
 	Model                          string `json:"model,omitempty"`
 	ReasoningEffort                string `json:"reasoningEffort,omitempty"`
+	ReasoningSummary               string `json:"reasoningSummary"`
 	EnableConfigDiscovery          bool   `json:"enableConfigDiscovery"`
 	EnableSkills                   bool   `json:"enableSkills"`
 	EnableSessionStore             bool   `json:"enableSessionStore"`
@@ -26,6 +35,9 @@ type copilotSessionConfig struct {
 	Streaming                      bool   `json:"streaming"`
 	IncludeSubAgentStreamingEvents bool   `json:"includeSubAgentStreamingEvents"`
 	ContinuePendingWork            *bool  `json:"continuePendingWork,omitempty"`
+	// FeatureFlags turns on the runtime features that LeapMux offers. Both session.create
+	// and session.resume read it.
+	FeatureFlags map[string]bool `json:"featureFlags"`
 }
 
 type copilotSessionInfo struct {
@@ -42,10 +54,13 @@ type copilotSessionInfo struct {
 func newCopilotSessionConfig(opts agent.Options, sessionID string, resume bool) copilotSessionConfig {
 	config := copilotSessionConfig{
 		SessionID: sessionID, ClientName: "leapmux", WorkingDirectory: opts.WorkingDir,
-		Model: opts.Model(), ReasoningEffort: opts.Effort(),
+		Model: opts.Model(), ReasoningEffort: opts.Effort(), ReasoningSummary: "detailed",
 		EnableConfigDiscovery: true, EnableSkills: true, EnableSessionStore: true, RequestExtensions: true,
 		RequestPermission: true, RequestElicitation: true,
 		Streaming: true, IncludeSubAgentStreamingEvents: true,
+		// LeapMux offers Assisted mode and starts a new session in it, so each session,
+		// new, resumed or replaced, asks for the flag that the runtime gates it with.
+		FeatureFlags: map[string]bool{copilotFeatureAutoApproval: true},
 	}
 	// Explicit event interests retain tool IDs that the SDK's question and plan callbacks omit.
 	// The caller registers those interests before it sends input.
@@ -99,6 +114,9 @@ func (c *copilotConnection) sendNativeSessionConfig(method string, config copilo
 	}
 	if session.SessionID != config.SessionID {
 		return copilotSessionInfo{}, fmt.Errorf("the Copilot response has a different session ID: expected %q, received %q", config.SessionID, session.SessionID)
+	}
+	if _, err := c.requestSession(config.SessionID, "options.update", map[string]any{"enableReasoningSummaries": true}, timeout); err != nil {
+		return copilotSessionInfo{}, fmt.Errorf("enable Copilot reasoning summaries: %w", err)
 	}
 	return session, nil
 }

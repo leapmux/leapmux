@@ -30,8 +30,8 @@ func handleZCodeOutput(a *Agent, line *providerkit.ParsedLine) {
 			return
 		}
 		a.dispatchZCodeEvent(event)
-	case NotifyStateUpdated:
-		a.handleZCodeStateUpdated(line.Params)
+	case contracts.ZCodeMethodStateUpdated:
+		a.handleZCodeStateUpdated(line.Params, line.Raw)
 	case "":
 		// An id with no method and no pending request: a reply nobody waited for. It
 		// happens when a request timed out and its answer arrived afterwards.
@@ -186,32 +186,34 @@ func (a *Agent) persistZCodeNotification(event zcodeEventEnvelope) {
 	if content == nil {
 		return
 	}
-	if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content); err != nil {
+	if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: content}); err != nil {
 		slog.Error("zcode persist notification", "agent_id", a.AgentID(), "type", event.Type, "error", err)
 	}
 }
 
 // --- turn lifecycle ---
 
-// PublishTurnActive republishes the Worker-visible turn state from turnActive,
-// the single source. Call it after EVERY critical section that writes that
-// field.
+// PublishTurnActive republishes the Worker-visible prompt and compaction state.
+// Call it after every critical section that changes either state.
 //
 // It re-reads rather than taking a value, so a caller cannot publish something
 // the field does not say, and a missing call is the only way the two can drift.
 // Never called with a.Mu held: the sink broadcasts, and a broadcast can block on
 // a slow transport.
 //
-// A BACKGROUND turn counts as active here, deliberately. It persists no divider
+// ZCode has no input-steering method, so neither a prompt nor a compaction is
+// steerable. A BACKGROUND turn counts as active here, deliberately. It persists no divider
 // and closes none of the user's spans, but the agent IS processing, and
 // turnActive is already what Interrupt and Stop read to decide the session is
 // live.
 func (a *Agent) PublishTurnActive() agent.TurnState {
 	a.Mu.Lock()
-	active := a.turnActive
+	state := agent.TurnState{
+		Active: a.turnActive || a.compactionSessionID != "",
+	}
 	seq := a.NextTurnSeq()
 	a.Mu.Unlock()
-	return providerkit.PublishSteerableTurnActiveTo(a.sink, active, seq)
+	return providerkit.PublishTurnStateTo(a.sink, state, seq)
 }
 
 // zcodeTurnStarted is the turn.started payload.
@@ -239,6 +241,8 @@ func (a *Agent) handleZCodeTurnStarted(event zcodeEventEnvelope) {
 	background := payload.InputSource != ""
 
 	a.Mu.Lock()
+	a.turnGeneration++
+	a.cancelStoppedZCodeTurnLocked()
 	a.turnActive = true
 	a.backgroundTurn = background
 	if !background {
@@ -274,7 +278,7 @@ func (a *Agent) handleZCodeTurnCompleted(event zcodeEventEnvelope) {
 	if payload.Usage != nil {
 		a.recordZCodeUsage(*payload.Usage)
 	}
-	a.finishZCodeTurn(event, payload.ToolCallCount)
+	a.finishZCodeTurn(event, zcodeTurnEnd{toolCallCount: payload.ToolCallCount, cancelled: payload.ResultType == contracts.ZCodeResultCancelled})
 	// A completed turn is not an error, so any pending auto-continue for one is stale.
 	providerkit.ScheduleOrCancelAPIErrorAutoContinue(a.sink, false, event.persistBytes())
 }
@@ -307,8 +311,8 @@ func (a *Agent) handleZCodeTurnFailed(event zcodeEventEnvelope) {
 		completion = agent.MessageCompletionInterrupted
 	}
 	a.flushZCodeGeneration(completion)
-	a.persistIncompleteZCodeTools(completion)
-	a.finishZCodeTurn(event, 0)
+	closed := a.persistIncompleteZCodeTools(completion)
+	a.finishZCodeTurn(event, zcodeTurnEnd{closedCalls: closed})
 	providerkit.ScheduleOrCancelAPIErrorAutoContinue(a.sink, zcodeFailureIsRetryable(payload), content)
 }
 
@@ -326,13 +330,27 @@ func zcodeFailureIsRetryable(payload zcodeTurnFailed) bool {
 	return payload.Error.Retryable != nil && *payload.Error.Retryable
 }
 
+// zcodeTurnEnd is what one turn end states beside its event.
+type zcodeTurnEnd struct {
+	// toolCallCount is ZCode's own count of the turn's calls, or 0 when the event
+	// states none. A stopped turn states 0 for a call that the stop cut.
+	toolCallCount int32
+	// cancelled states that a stop ended the turn. ZCode reports a stopped turn as
+	// turn.completed with resultType "cancelled".
+	cancelled bool
+	// closedCalls is the calls of the turn that the caller already closed at the
+	// turn end, because they never reported their own end.
+	closedCalls int
+}
+
 // finishZCodeTurn closes out a turn: persist the divider, reset the spans, and
 // refresh the authoritative usage.
 //
 // A BACKGROUND turn takes none of it. Its completion says nothing about the user's
 // turn, and closing the spans there would tear down the cards of tool calls the
 // user's own turn is still running.
-func (a *Agent) finishZCodeTurn(event zcodeEventEnvelope, toolCallCount int32) {
+func (a *Agent) finishZCodeTurn(event zcodeEventEnvelope, end zcodeTurnEnd) {
+	toolCallCount := end.toolCallCount
 	a.Mu.Lock()
 	background := a.backgroundTurn
 	// The turn reported its own end, so the stop's window has nothing left to watch.
@@ -347,6 +365,12 @@ func (a *Agent) finishZCodeTurn(event zcodeEventEnvelope, toolCallCount int32) {
 	a.turnActive = false
 	if !background && toolCallCount > 0 {
 		a.TurnToolUses = int(toolCallCount)
+	}
+	if !background {
+		// The approved exit runs inside the turn that asked for it. A stored plan-exit
+		// mode that the turn end finds was never released, and no later event is its
+		// exit.
+		a.pendingExitMode = ""
 	}
 	a.backgroundTurn = false
 	a.Mu.Unlock()
@@ -376,9 +400,16 @@ func (a *Agent) finishZCodeTurn(event zcodeEventEnvelope, toolCallCount int32) {
 		a.persistZCodeNotification(event)
 		return
 	}
+	closed := end.closedCalls
 	if event.Type == contracts.ZCodeEventTurnCompleted {
-		a.flushZCodeGeneration(agent.MessageCompletionComplete)
-		a.persistIncompleteZCodeTools(agent.MessageCompletionError)
+		// A completed turn finished its text, and a call that never reported its end
+		// was lost. A stop cut both, so they end as interrupted.
+		text, calls := agent.MessageCompletionComplete, agent.MessageCompletionError
+		if end.cancelled {
+			text, calls = agent.MessageCompletionInterrupted, agent.MessageCompletionInterrupted
+		}
+		a.flushZCodeGeneration(text)
+		closed += a.persistIncompleteZCodeTools(calls)
 	}
 
 	// Recover any tool call that never reached a final update (an aborted turn), so
@@ -386,7 +417,15 @@ func (a *Agent) finishZCodeTurn(event zcodeEventEnvelope, toolCallCount int32) {
 	a.ResetCumulativeOutput()
 	a.sink.ReportProgress(agent.ResetModelProgress())
 
-	if err := a.sink.PersistTurnEnd(zcodeTurnContent(content, a.usageSnapshot()), agent.SpanInfo{}); err != nil {
+	// ZCode's own count holds every call of the turn when it states one. Without it,
+	// the turn made the calls that reported their end and the calls closed here.
+	a.Mu.Lock()
+	toolUses := a.TurnToolUses
+	a.Mu.Unlock()
+	if toolCallCount == 0 {
+		toolUses += closed
+	}
+	if err := a.sink.PersistTurnEnd(agent.WithToolUseCount(zcodeTurnContent(content, a.usageSnapshot()), toolUses), agent.SpanInfo{}); err != nil {
 		slog.Error("zcode persist turn end", "agent_id", a.AgentID(), "type", event.Type, "error", err)
 	}
 	a.sink.ResetSpans()
@@ -711,7 +750,10 @@ func (a *Agent) closeZCodeToolCall(event zcodeEventEnvelope, payload zcodeToolUp
 	a.closeZCodeToolCallInto(a.zcodeSinkForToolCall(payload.ToolCallID), event, payload, nil)
 }
 
-func (a *Agent) persistIncompleteZCodeTools(completion agent.MessageCompletion) {
+// persistIncompleteZCodeTools closes each announced call that never reported its end,
+// with completion, and returns how many it closed. A turn end counts them as calls of
+// the turn (see finishZCodeTurn).
+func (a *Agent) persistIncompleteZCodeTools(completion agent.MessageCompletion) int {
 	a.Mu.Lock()
 	toolCallIDs := make([]string, 0, len(a.toolCalls))
 	frames := make(map[string][]byte)
@@ -737,7 +779,7 @@ func (a *Agent) persistIncompleteZCodeTools(completion agent.MessageCompletion) 
 	}
 	a.Mu.Unlock()
 	if a.IsDiscardingOutput() {
-		return
+		return len(toolCallIDs)
 	}
 	sort.Slice(toolCallIDs, func(left, right int) bool {
 		if orders[toolCallIDs[left]] != orders[toolCallIDs[right]] {
@@ -767,6 +809,7 @@ func (a *Agent) persistIncompleteZCodeTools(completion agent.MessageCompletion) 
 		a.children.forgetTitle(toolCallID)
 		a.toolCallPrompts.Take(toolCallID)
 	}
+	return len(toolCallIDs)
 }
 
 // applyZCodeToolBatch backfills the calls a batch summary lists.
@@ -839,7 +882,7 @@ func zcodeBatchTaskStatus(batch zcodeToolUpdated) bgtask.Status {
 	if batch.ErrorCount > 0 {
 		return bgtask.StatusStopped
 	}
-	return bgtask.StatusCompleted
+	return bgtask.StatusSucceeded
 }
 
 // --- session.updated ---
@@ -870,11 +913,21 @@ func (a *Agent) handleZCodeSessionUpdated(event zcodeEventEnvelope) {
 		// are the discriminator.
 		AgentID          string `json:"agentId"`
 		ParentToolCallID string `json:"parentToolCallId"`
+
+		// A SessionModeChanged event: the native mode and the plan flag. Both stay
+		// raw, so a payload of another shape that gives either key another JSON type
+		// cannot fail the decode for the cases above.
+		Mode        json.RawMessage `json:"mode"`
+		PlanEnabled json.RawMessage `json:"planEnabled"`
+		// Source tells which part of ZCode changed the mode. It stays raw for the
+		// same reason as the two fields above.
+		Source json.RawMessage `json:"source"`
 	}
 	if err := json.Unmarshal(event.Payload, &payload); err != nil {
 		slog.Warn("zcode session.updated unmarshal failed", "agent_id", a.AgentID(), "error", err)
 		return
 	}
+	mode, planEnabled, isModeChange := parseZCodeModeChange(payload.Mode, payload.PlanEnabled)
 
 	switch {
 	case payload.TaskID != "":
@@ -893,11 +946,47 @@ func (a *Agent) handleZCodeSessionUpdated(event zcodeEventEnvelope) {
 			a.recordZCodeUsage(*payload.Usage)
 		}
 		a.persistZCodeAssistantMessage(event, *payload.Content)
+	case isModeChange:
+		if exitMode := a.handleZCodeModeChanged(mode, planEnabled, parseZCodeModeSource(payload.Source)); exitMode != "" {
+			a.sendDeferredZCodeExitMode(exitMode)
+		}
 	default:
 		// The remaining shapes are telemetry: the per-request model/iteration counters
 		// and the provider request record (baseURL, requestId, maxAttempts). They carry
 		// no conversation, and persisting them would fill the transcript.
 	}
+}
+
+// parseZCodeModeChange reads a SessionModeChanged payload. ok is true only for a
+// non-empty string mode beside a boolean plan flag: no other session.updated payload
+// carries that pair, and a mode without the flag cannot say whether plan mode is on.
+func parseZCodeModeChange(rawMode, rawPlanEnabled json.RawMessage) (mode string, planEnabled bool, ok bool) {
+	if len(rawMode) == 0 || len(rawPlanEnabled) == 0 {
+		return "", false, false
+	}
+	if json.Unmarshal(rawMode, &mode) != nil || mode == "" {
+		return "", false, false
+	}
+	// A JSON null decodes into a bool with no error, so it is refused by its bytes.
+	if string(rawPlanEnabled) == "null" || json.Unmarshal(rawPlanEnabled, &planEnabled) != nil {
+		return "", false, false
+	}
+	return mode, planEnabled, true
+}
+
+// zcodeModeSourceTool is the `source` of a SessionModeChanged event that a plan tool
+// caused: EnterPlanMode or ExitPlanMode. A session/setMode request states `command`.
+// Source: the app-server bundle of ZCode 3.14.4 (`createRuntimeSessionModePort`).
+const zcodeModeSourceTool = "tool"
+
+// parseZCodeModeSource reads the `source` of a SessionModeChanged payload. It is empty
+// for a payload that states none or states a value that is not a string.
+func parseZCodeModeSource(raw json.RawMessage) string {
+	var source string
+	if len(raw) == 0 || json.Unmarshal(raw, &source) != nil {
+		return ""
+	}
+	return source
 }
 
 func (a *Agent) flushZCodeGenerationScope(scopeID string, completion agent.MessageCompletion) {
@@ -997,7 +1086,7 @@ type zcodeBackgroundTask struct {
 func zcodeBackgroundStatus(status string) (bgtask.Status, bool) {
 	switch status {
 	case "completed":
-		return bgtask.StatusCompleted, true
+		return bgtask.StatusSucceeded, true
 	case "failed", "spawn_error", "timed_out":
 		return bgtask.StatusFailed, true
 	case "cancelled":

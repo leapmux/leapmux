@@ -12,10 +12,8 @@ import (
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
-// TestPersistNotification_StandaloneCapturesActiveSpans verifies that a
-// brand-new notification (createNotificationStandalone) captures the
-// currently-active spans, so a LeapMux notification arriving while a
-// subagent's tool_use is open renders with passthrough vertical bars.
+// A new notification captures the active spans through PersistNotification.
+// It displays vertical passthrough lines when a subagent tool span remains open.
 func TestPersistNotification_StandaloneCapturesActiveSpans(t *testing.T) {
 	t.Parallel()
 
@@ -48,11 +46,8 @@ func TestPersistNotification_StandaloneCapturesActiveSpans(t *testing.T) {
 	assert.Equal(t, rows[0].SpanLines, broadcastSpanLinesByID(t, w, rows[0].ID), "broadcast SpanLines must match persisted SpanLines")
 }
 
-// TestPersistNotification_AppendRefreshesSpanLines verifies that when a
-// later notification appends to an existing thread, the row's span_lines
-// is re-snapshotted at append time. The thread's seq is bumped to the
-// latest position, so its bars must reflect the spans active *now* — not
-// whatever was active when the thread was first created.
+// A later notification refreshes span_lines when it appends to an existing thread.
+// The thread moves to the latest sequence, so its lines must describe the currently active spans.
 func TestPersistNotification_AppendRefreshesSpanLines(t *testing.T) {
 	t.Parallel()
 
@@ -99,10 +94,8 @@ func TestPersistNotification_AppendRefreshesSpanLines(t *testing.T) {
 	assert.Equal(t, rows[0].SpanLines, broadcastSpanLinesByID(t, w, threadID), "the latest broadcast for the thread must carry the refreshed SpanLines")
 }
 
-// TestPersistNotification_AppendDropsClosedSpan complements the above:
-// when a span has closed by the time the next notification appends, the
-// thread row's span_lines must shrink accordingly, not retain the stale
-// bar.
+// An append removes a closed span from the thread row's span_lines.
+// The row must retain no stale vertical line for that span.
 func TestPersistNotification_AppendDropsClosedSpan(t *testing.T) {
 	t.Parallel()
 
@@ -132,9 +125,7 @@ func TestPersistNotification_AppendDropsClosedSpan(t *testing.T) {
 	assert.Equal(t, "[]", rows[0].SpanLines, "a closed span must not linger as stale bars on a re-appended thread row")
 }
 
-// TestPersistNotification_StandaloneEmptyTracker is the regression guard
-// for notifications that arrive with no active spans. They should look
-// exactly the same as before this change — no left-side bars.
+// A notification with no active spans displays no vertical lines.
 func TestPersistNotification_StandaloneEmptyTracker(t *testing.T) {
 	t.Parallel()
 

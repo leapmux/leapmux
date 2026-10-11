@@ -5,6 +5,7 @@ import { codexPermissionPresets } from './codex/permissionPresets'
 import { copilotPermissionPresets } from './copilot/permissionPresets'
 import { goosePermissionPresets } from './goose/permissionPresets'
 import { reasonixPermissionPresets } from './reasonix/permissionPresets'
+import { zcodePermissionPresets } from './zcode/permissionPresets'
 
 /** List every provider explicitly. A new enum value requires a metadata decision. */
 export const PROVIDER_PERMISSION_PRESETS = {
@@ -18,7 +19,7 @@ export const PROVIDER_PERMISSION_PRESETS = {
   [AgentProvider.GOOSE]: goosePermissionPresets,
   [AgentProvider.PI]: undefined,
   [AgentProvider.REASONIX]: reasonixPermissionPresets,
-  [AgentProvider.ZCODE]: undefined,
+  [AgentProvider.ZCODE]: zcodePermissionPresets,
 } satisfies Record<AgentProvider, ProviderPermissionPresets | undefined>
 
 /** Read canonical preset data without importing a rendering plugin. */

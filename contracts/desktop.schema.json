@@ -20,11 +20,12 @@
     "envVars": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["devEndpoint", "binaryHash", "devFrontend"],
+      "required": ["devEndpoint", "binaryHash", "devFrontend", "agentHelper"],
       "properties": {
         "devEndpoint": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" },
         "binaryHash": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" },
-        "devFrontend": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" }
+        "devFrontend": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" },
+        "agentHelper": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" }
       }
     },
     "devFrontendUrl": {

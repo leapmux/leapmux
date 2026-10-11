@@ -91,7 +91,7 @@ func watchAgent(t *testing.T, d *channel.Dispatcher, agentID string) *testRespon
 		Agents: []*leapmuxv1.WatchAgentEntry{{
 			AgentId: agentID,
 			Replay:  leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST,
-			Mode:    leapmuxv1.WatchMode_WATCH_MODE_FULL,
+			Mode:    leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1,
 		}},
 	}, w)
 	return w

@@ -121,13 +121,13 @@ func piSubagentFromDetails(details json.RawMessage, toolCallID, title string) *b
 func piFinalStatus(s string) (bgtask.Status, bool) {
 	switch s {
 	case "completed", "steered":
-		return bgtask.StatusCompleted, true
+		return bgtask.StatusSucceeded, true
 	case "error":
 		return bgtask.StatusFailed, true
 	case "stopped", "aborted":
 		return bgtask.StatusStopped, true
 	default:
-		return bgtask.StatusCompleted, false
+		return bgtask.StatusSucceeded, false
 	}
 }
 
@@ -141,7 +141,7 @@ func piEnsureSubagentChild(sink subagentServices, spawnSpanID, rowKey, providerC
 		return ""
 	}
 	if !found || childID == "" {
-		childID, err = sink.EnsureChildAgent(spawnSpanID, providerChildKey, title)
+		childID, err = sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: spawnSpanID, ProviderChildKey: providerChildKey, Title: title})
 		if err != nil {
 			slog.Warn("pi ensure subagent child failed", "row_key", rowKey, "error", err)
 			return ""

@@ -35,7 +35,6 @@ const MODEL_DIR = join(CHAT_DIR, 'model')
 const DRAWING_ALLOWED = [
   'codex/CodexControlActions.tsx',
   'cursor/CursorControlActions.tsx',
-  'pi/PiControlActions.tsx',
   'pi/PiPlanApprovalActions.tsx',
 ]
 

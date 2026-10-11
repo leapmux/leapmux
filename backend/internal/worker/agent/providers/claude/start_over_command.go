@@ -21,29 +21,14 @@ import (
 func StartOverCommand(ctx context.Context, cancel context.CancelFunc, cmd *exec.Cmd, opts agent.Options, sink agent.ProviderServices) (*Agent, error) {
 	cmd.Dir = opts.WorkingDir
 
-	stdin, err := cmd.StdinPipe()
+	pipes, err := providerkit.SetupProcessPipes(cmd, cancel)
 	if err != nil {
-		cancel()
 		return nil, err
 	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		cancel()
-		return nil, err
-	}
-	cmd.Stderr = nil
+	stdout := pipes.Stdout()
 
 	a := &Agent{
-		Process: providerkit.NewProcessFrom(providerkit.ProcessConfig{
-			AgentID:     opts.AgentID,
-			Cmd:         cmd,
-			Stdin:       stdin,
-			Ctx:         ctx,
-			Cancel:      cancel,
-			StderrDone:  make(chan struct{}),
-			ProcessDone: make(chan struct{}),
-			APITimeout:  opts.EffectiveAPITimeout(),
-		}),
+		Process: providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "claude", ShutdownGrace: Registration().ShutdownGrace}, pipes, ctx, cancel),
 		// Mirror Start: a.model is initialized from the normalized launch
 		// model, not the raw stored value, so the mock keeps the same "a.model lives
 		// in the normalized alias space" invariant (e.g. a stored "opus" becomes
@@ -55,9 +40,9 @@ func StartOverCommand(ctx context.Context, cancel context.CancelFunc, cmd *exec.
 		sink:           sink,
 		pendingControl: make(map[string]chan<- claudeCodeControlResult),
 	}
-	a.SkipStderr()
+	a.DrainStderr(pipes.Stderr())
 
-	if err := cmd.Start(); err != nil {
+	if err := a.StartCmd(); err != nil {
 		cancel()
 		return nil, err
 	}

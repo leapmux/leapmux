@@ -5,6 +5,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
+	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir"
 	"github.com/leapmux/leapmux/internal/worker/config"
 )
 
@@ -39,6 +40,11 @@ type Options struct {
 	// service.Service populates this with LEAPMUX_CONTROL_* so the
 	// running agent can drive the worker via the leapmux control CLI.
 	ExtraEnv []string
+	// AgentDirs is where an agent creates its private directory, with the
+	// spec that its Registration states. The Manager sets it to the
+	// directories that PrepareAgentDirs prepared. nil when the worker prepared
+	// none; a provider that needs a directory then refuses to start.
+	AgentDirs *agentdir.Dirs
 }
 
 // Get returns the resolved value of an option-group id, or "" if absent. The

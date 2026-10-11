@@ -1,7 +1,6 @@
 package opencode
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -16,8 +15,9 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/util/procutil"
 	gopsnet "github.com/shirou/gopsutil/v4/net"
-	"github.com/shirou/gopsutil/v4/process"
 )
 
 // The OpenCode family asks the reader a question through its `question` tool, and
@@ -253,45 +253,18 @@ func openCodePidPorts(ctx context.Context, pid int32) []int {
 	return ports
 }
 
-// openCodeDescendants returns the process and the descendants below it, breadth
-// first, to openCodeDiscoveryDepth.
-//
-// ONE read of the process table, indexed by parent. process.Children() re-runs a full
-// scan for each node, which costs depth x (full scan) for the same answer -- the same
-// reason the terminal package's own walk reads the table once.
+// openCodeDescendants returns the process and its descendants in breadth-first order.
+// The shared table reads and indexes each process once.
+// Discovery keeps readable rows when another process's parent data is unavailable.
 func openCodeDescendants(ctx context.Context, pid int32) []int32 {
 	found := []int32{pid}
-	processes, err := process.ProcessesWithContext(ctx)
-	if err != nil {
+	table, _ := procutil.SnapshotProcessTable(ctx)
+	if table == nil || ctx.Err() != nil {
 		return found
 	}
-	byParent := make(map[int32][]int32, len(processes))
-	for _, candidate := range processes {
-		parent, err := candidate.PpidWithContext(ctx)
-		if err != nil {
-			// A process that exits between the listing and this read never aborts
-			// the walk, and neither does one this user may not read.
-			continue
-		}
-		byParent[parent] = append(byParent[parent], candidate.Pid)
-	}
-	// The visited set keeps a stale parent pointer at a recycled pid from closing a
-	// loop, which would otherwise hang the discovery goroutine for the session.
-	visited := map[int32]struct{}{pid: {}}
-	generation := []int32{pid}
-	for depth := 0; depth < openCodeDiscoveryDepth && len(generation) > 0; depth++ {
-		var next []int32
-		for _, parent := range generation {
-			for _, child := range byParent[parent] {
-				if _, repeated := visited[child]; repeated {
-					continue
-				}
-				visited[child] = struct{}{}
-				found = append(found, child)
-				next = append(next, child)
-			}
-		}
-		generation = next
+	children, _ := table.DescendantPIDs(int(pid), openCodeDiscoveryDepth, 0, nil)
+	for _, child := range children {
+		found = append(found, int32(child))
 	}
 	return found
 }
@@ -413,37 +386,13 @@ func (q *openCodeQuestions) consume(ctx context.Context) error {
 }
 
 // readEvents reads server-sent events and hands each one's data to handleEvent.
-//
-// One event's data may span several `data:` lines, which the standard joins with a
-// newline, and a blank line ends the event. The daemon writes one line per event
-// today; reading the general form costs little and keeps a longer question from
-// arriving as two halves that each parse as nothing.
+// providerkit.ReadSSE states the event-stream rules, including the discard of
+// an event that the stream ends in the middle of: the reconnect that follows
+// restates the pending list, so no question is lost with it.
 func (q *openCodeQuestions) readEvents(ctx context.Context, body io.Reader) error {
-	scanner := bufio.NewScanner(body)
-	scanner.Buffer(make([]byte, 0, 64<<10), openCodeQuestionMaxEvent)
-	var data []byte
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(bytes.TrimSpace(line)) == 0 {
-			if len(data) > 0 {
-				q.handleEvent(ctx, data)
-				data = nil
-			}
-			continue
-		}
-		field, ok := bytes.CutPrefix(line, []byte("data:"))
-		if !ok {
-			continue
-		}
-		if len(data) > 0 {
-			data = append(data, '\n')
-		}
-		data = append(data, bytes.TrimPrefix(field, []byte(" "))...)
-	}
-	if len(data) > 0 {
-		q.handleEvent(ctx, data)
-	}
-	return scanner.Err()
+	return providerkit.ReadSSE(body, openCodeQuestionMaxEvent, func(event providerkit.SSEEvent) {
+		q.handleEvent(ctx, event.Data)
+	})
 }
 
 func (q *openCodeQuestions) handleEvent(ctx context.Context, data []byte) {

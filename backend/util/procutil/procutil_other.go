@@ -5,17 +5,10 @@ package procutil
 
 import (
 	"os/exec"
-	"sync/atomic"
 	"syscall"
-	"time"
 )
 
-// sighupGrace is how long Terminate waits between SIGHUP and SIGKILL to let
-// an interactive shell propagate SIGHUP to its job process groups.
-const sighupGrace = 200 * time.Millisecond
-
-// HideConsoleWindow suppresses the child's console window on Windows;
-// no-op on Unix.
+// HideConsoleWindow does nothing on Unix.
 func HideConsoleWindow(*exec.Cmd) {}
 
 // DetachFromTerminal starts the child in a new session (Setsid).
@@ -47,76 +40,6 @@ func DetachFromTerminal(cmd *exec.Cmd) {
 	cmd.SysProcAttr.Setctty = false
 }
 
-// JobObject is a process-tree kill group. On Unix it wraps a process group
-// leader PID: Terminate sends SIGHUP (letting an interactive shell propagate
-// to its jobs), waits briefly, then SIGKILLs the group. Methods are safe on
-// a nil receiver and idempotent.
-type JobObject struct {
-	pgid atomic.Int32 // 0 once Terminate/Close consumes it
-}
-
-// AssignCmd records cmd.Process as a process-group leader to tear down
-// on Terminate/Close. The child must already be a group leader (Setsid
-// or Setpgid). DetachFromTerminal provides that for no-pty login shells.
-func AssignCmd(cmd *exec.Cmd) (*JobObject, error) {
-	return AssignPID(cmd.Process.Pid)
-}
-
-// AssignPID records pid as the leader of a process group to be torn down on
-// Terminate/Close. The caller is responsible for ensuring pid was started
-// such that it is its own process group leader (e.g. with SysProcAttr.Setsid
-// or Setpgid). go-pty's pty.Cmd sets Setsid on Unix, so PTY-spawned shells
-// satisfy this contract.
-func AssignPID(pid int) (*JobObject, error) {
-	j := &JobObject{}
-	j.pgid.Store(int32(pid))
-	return j, nil
-}
-
-// Terminate kills every process in the group. Sends SIGHUP first — interactive
-// shells handle SIGHUP by forwarding it to their own jobs (which run in
-// distinct process groups) — then SIGKILLs the leader's group after a short
-// grace period. Safe on nil receiver; idempotent.
-func (j *JobObject) Terminate() error {
-	if j == nil {
-		return nil
-	}
-	pgid := j.pgid.Swap(0)
-	if pgid == 0 {
-		return nil
-	}
-	_ = syscall.Kill(-int(pgid), syscall.SIGHUP)
-	// Poll for the group's exit instead of sleeping the whole grace: an
-	// already-exited group paid the full 200ms for nothing on every agent
-	// teardown, while a group that needs the grace still gets all of it.
-	deadline := time.Now().Add(sighupGrace)
-	for time.Now().Before(deadline) {
-		// Signal 0 probes existence without delivering anything. ESRCH means
-		// the group is gone; Darwin answers EPERM for a group that has
-		// exited, which means the same thing here.
-		if err := syscall.Kill(-int(pgid), 0); err != nil {
-			break
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
-	// The SIGKILL backstop for whatever the grace did not take. Darwin
-	// returns EPERM for kill(-pgid) after the group exits, not ESRCH.
-	// The group is gone either way. On Linux EPERM means a group member is
-	// not signalable (a setuid descendant): the kill still reached every
-	// member that is, so reporting success is the honest answer -- the
-	// alternative would tell a caller that the whole tree survived.
-	if err := syscall.Kill(-int(pgid), syscall.SIGKILL); err != nil && err != syscall.ESRCH && err != syscall.EPERM {
-		return err
-	}
-	return nil
-}
-
-// Close is equivalent to Terminate on Unix since there is no separate
-// handle to release. Safe on nil receiver; idempotent.
-func (j *JobObject) Close() error {
-	return j.Terminate()
-}
-
 // SignalProcessGroup sends sig to the child's process group. The child
 // must be a group leader (Setsid or Setpgid). A nil cmd or Process is
 // a no-op.
@@ -125,17 +48,4 @@ func SignalProcessGroup(cmd *exec.Cmd, sig syscall.Signal) error {
 		return nil
 	}
 	return syscall.Kill(-cmd.Process.Pid, sig)
-}
-
-// GracefulGroupCancel configures one child's teardown: cancel sends SIGTERM
-// to the child's whole process group, and WaitDelay abandons the I/O pipes
-// five seconds later so os/exec does not block forever on a descendant that
-// inherited them. The pair is one contract, stated once for the agent
-// processes and the ACP terminal sessions that had each spelled it by hand
-// -- and could then drift, leaving one path torn down differently.
-func GracefulGroupCancel(cmd *exec.Cmd) {
-	cmd.Cancel = func() error {
-		return SignalProcessGroup(cmd, syscall.SIGTERM)
-	}
-	cmd.WaitDelay = 5 * time.Second
 }

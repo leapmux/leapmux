@@ -2,6 +2,7 @@ package service
 
 import (
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -18,6 +19,85 @@ func newTestStartupCore(t *testing.T) startupCore {
 func TestNewStartupCoreRejectsNilClock(t *testing.T) {
 	t.Parallel()
 	assert.Panics(t, func() { newStartupCore(nil) })
+}
+
+func TestStartupCoreCloseAdmissionCountsOverlappingCloses(t *testing.T) {
+	t.Parallel()
+	core := newTestStartupCore(t)
+	first := core.holdCloseAdmission("tab-1")
+	second := core.holdCloseAdmission("tab-1")
+	defer first()
+	defer second()
+	entry, outcome := core.beginColdStart("tab-1", func() {})
+	assert.Nil(t, entry)
+	assert.Equal(t, claimRefusedClosing, outcome)
+
+	first()
+	entry, outcome = core.beginColdStart("tab-1", func() {})
+	assert.Nil(t, entry, "the second close still prevents a new start")
+	assert.Equal(t, claimRefusedClosing, outcome)
+
+	second()
+	entry, outcome = core.beginColdStart("tab-1", func() {})
+	require.NotNil(t, entry, "a failed close that leaves a tab open permits a later start")
+	assert.Equal(t, claimAdmitted, outcome)
+	core.succeed("tab-1", entry)
+	core.finishEntry(entry)
+}
+
+// TestStartupCore_ColdStartRefusesAFailedEntry pins the one difference between
+// beginColdStart and begin. A failed entry records a startup that failed for
+// good. A cold start that replaced it would launch the refused startup again
+// and erase the failure that the next input must find. begin keeps replacing
+// it, because an open and a terminal restart are starts that a user asks for.
+func TestStartupCore_ColdStartRefusesAFailedEntry(t *testing.T) {
+	t.Parallel()
+
+	clock := testutil.NewQuartzMock(t)
+	core := newStartupCore(clock)
+	first := core.begin("tab-1", func() {})
+	require.NotNil(t, first)
+	core.fail(first, "could not resume session")
+	core.finishEntry(first)
+
+	cancelled := false
+	entry, outcome := core.beginColdStart("tab-1", func() { cancelled = true })
+	assert.Nil(t, entry)
+	assert.Equal(t, claimRefusedFailed, outcome)
+	assert.False(t, cancelled, "a refused claim owns no context, so it must not touch the caller's")
+	failed, startupError, _, tracked := core.snapshot("tab-1")
+	assert.True(t, tracked, "the refused cold start must leave the failure in place")
+	assert.True(t, failed)
+	assert.Equal(t, "could not resume session", startupError)
+	delay, running := clock.Peek()
+	assert.True(t, running, "the refusal must keep the failure's eviction timer")
+	assert.Equal(t, failedEntryTTL, delay)
+
+	core.cancelAndClear("tab-1", keepWorktreeOnClose)
+	core.WaitForInFlight()
+}
+
+// TestStartupCore_ColdStartRefusesAStartupInFlight pins the claim's other
+// refusal for a cold start, so the caller can report it apart from a failure.
+func TestStartupCore_ColdStartRefusesAStartupInFlight(t *testing.T) {
+	t.Parallel()
+
+	core := newTestStartupCore(t)
+	holder := core.begin("tab-1", func() {})
+	require.NotNil(t, holder)
+
+	entry, outcome := core.beginColdStart("tab-1", func() {})
+	assert.Nil(t, entry)
+	assert.Equal(t, claimRefusedInFlight, outcome)
+
+	core.succeed("tab-1", holder)
+	core.finishEntry(holder)
+	entry, outcome = core.beginColdStart("tab-1", func() {})
+	require.NotNil(t, entry, "a cold start claims a tab whose startup succeeded and released the id")
+	assert.Equal(t, claimAdmitted, outcome)
+	core.succeed("tab-1", entry)
+	core.finishEntry(entry)
+	core.WaitForInFlight()
 }
 
 // beginForTest records an entry and returns a cleanup that pairs with
@@ -580,9 +660,10 @@ func TestStartupCore_AwaitInFlightWaitsForTheStartupThatHoldsTheID(t *testing.T)
 
 	// `closed` tells the three transitions apart, and it is the whole reason the
 	// wait reports more than "it settled": a caller that must have a process
-	// starts one on a startup that ENDED, and must not on one a close TORE
-	// DOWN -- the tab is going away, and the row that says so is not written
-	// yet.
+	// can start one after a startup that ENDED, and must not after one a close
+	// TORE DOWN -- the tab is going away, and the row that says so is not
+	// written yet. A startup that FAILED needs no flag: its entry stays in the
+	// map, and beginColdStart refuses it.
 	for _, tc := range []struct {
 		name string
 		end  func(core *startupCore, h *startupEntry)
@@ -766,4 +847,293 @@ func TestStartupCore_ReleasingTheSameStartupTwiceIsSafe(t *testing.T) {
 			core.WaitForInFlight()
 		})
 	}
+}
+
+// TestStartupCore_AbandonFreesTheIDAndTheInFlightCount pins what an open that
+// fails before it launches a goroutine relies on. The id must settle and be
+// claimable again, the waiters must wake with no close recorded, the context
+// that begin received must end, and the in-flight count must return to zero, or
+// Shutdown's WaitForInFlight blocks for ever.
+func TestStartupCore_AbandonFreesTheIDAndTheInFlightCount(t *testing.T) {
+	t.Parallel()
+
+	core := newTestStartupCore(t)
+	cancelled := false
+	h := core.begin("tab-1", func() { cancelled = true })
+	require.NotNil(t, h)
+
+	core.abandon(h)
+
+	assert.True(t, cancelled, "the context of a startup that never ran must end")
+	_, _, _, tracked := core.snapshot("tab-1")
+	assert.False(t, tracked, "an abandoned startup must not report STARTING")
+	assert.Equal(t, startupWait{settled: true}, core.awaitInFlight("tab-1", time.Hour),
+		"nothing is in flight once the startup is abandoned")
+	assert.Nil(t, core.cancelForArchive("tab-1"), "an abandoned startup leaves no handle for an archive to find")
+	select {
+	case <-h.finished:
+	default:
+		t.Fatal("an abandoned startup must mark its handle as finished")
+	}
+	drained := make(chan struct{})
+	go func() { core.WaitForInFlight(); close(drained) }()
+	select {
+	case <-drained:
+	case <-time.After(inputQueueWait):
+		t.Fatal("WaitForInFlight must return once the startup is abandoned")
+	}
+	again := core.begin("tab-1", func() {})
+	require.NotNil(t, again, "an abandoned id must be claimable again")
+	core.abandon(again)
+}
+
+// A waiter that joined the startup stops waiting when the startup is abandoned,
+// and no close is recorded: nobody closed the tab.
+func TestStartupCore_AbandonWakesAWaiterWithoutRecordingAClose(t *testing.T) {
+	t.Parallel()
+
+	clock := testutil.NewQuartzMock(t)
+	core := newStartupCore(clock)
+	ctx := testutil.DeadlineContext(t)
+	h := core.begin("tab-1", func() {})
+	require.NotNil(t, h)
+	newTimer := clock.Trap().NewTimer(startupAwaitTimerTag)
+	defer newTimer.Close()
+	stopTimer := clock.Trap().TimerStop(startupAwaitTimerTag)
+	defer stopTimer.Close()
+
+	done := make(chan startupWait, 1)
+	go func() { done <- core.awaitInFlight("tab-1", time.Hour) }()
+	newTimer.MustWait(ctx).MustRelease(ctx)
+
+	core.abandon(h)
+
+	stopTimer.MustWait(ctx).MustRelease(ctx)
+	select {
+	case got := <-done:
+		assert.Equal(t, startupWait{settled: true}, got, "the waiter must settle with no close recorded")
+	case <-ctx.Done():
+		require.FailNow(t, "the wait never returned after the startup was abandoned")
+	}
+	core.WaitForInFlight()
+}
+
+// An abandon through a stale handle leaves the replacement startup alone: the
+// slot belongs to whoever claimed it last.
+func TestStartupCore_AbandonThroughAStaleHandleKeepsTheReplacement(t *testing.T) {
+	t.Parallel()
+
+	core := newTestStartupCore(t)
+	stale := core.begin("tab-1", func() {})
+	require.NotNil(t, stale)
+	core.cancelAndClear("tab-1", keepWorktreeOnClose)
+	replacement := core.begin("tab-1", func() {})
+	require.NotNil(t, replacement)
+
+	core.abandon(stale)
+
+	_, _, _, tracked := core.snapshot("tab-1")
+	assert.True(t, tracked, "a stale handle must not retire the replacement startup")
+	core.abandon(replacement)
+	core.WaitForInFlight()
+}
+
+// A nil handle means that begin claimed nothing, so abandon has nothing to give
+// back. It must not touch the in-flight count of another startup.
+func TestStartupCore_AbandonOfNilHandleChangesNothing(t *testing.T) {
+	t.Parallel()
+
+	core := newTestStartupCore(t)
+	h := core.begin("tab-1", func() {})
+	require.NotNil(t, h)
+
+	assert.NotPanics(t, func() { core.abandon(nil) })
+
+	core.abandon(h)
+	core.WaitForInFlight()
+}
+
+// A replacement entry makes the agent read STARTING, as every entry does, and it
+// is no startup window: the settings handoff that the window defers a refresh to
+// belongs to an open and to a cold start. Every other entry is a window, and so is
+// a failed one.
+func TestStartupCore_ReplacementIsNoStartupWindow(t *testing.T) {
+	t.Parallel()
+
+	core := newTestStartupCore(t)
+	replacement := core.beginReplacement("tab-1")
+	require.NotNil(t, replacement)
+	_, _, _, tracked := core.snapshot("tab-1")
+	assert.True(t, tracked, "a replacement must make the agent read STARTING")
+	assert.False(t, core.startupWindowOpen("tab-1"), "a replacement must not defer the refresh of a new process")
+	core.abandon(replacement)
+	assert.False(t, core.startupWindowOpen("tab-1"), "no entry is no window")
+
+	open := core.begin("tab-1", func() {})
+	require.NotNil(t, open)
+	assert.True(t, core.startupWindowOpen("tab-1"), "an open is a window")
+	core.fail(open, "boom")
+	core.finishEntry(open)
+	assert.True(t, core.startupWindowOpen("tab-1"), "a failed startup stays a window until it is evicted or replaced")
+	core.cancelAndClear("tab-1", keepWorktreeOnClose)
+	core.WaitForInFlight()
+}
+
+// A replacement refuses the id when anything else holds it, and it leaves that
+// holder in place.
+func TestStartupCore_ReplacementRefusesAnIDThatIsHeld(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		hold func(core *startupCore) (end func())
+	}{
+		{"a startup in flight", func(core *startupCore) func() {
+			h := core.begin("tab-1", func() {})
+			require.NotNil(t, h)
+			return func() { core.abandon(h) }
+		}},
+		{"a startup that failed", func(core *startupCore) func() {
+			h := core.begin("tab-1", func() {})
+			require.NotNil(t, h)
+			core.fail(h, "boom")
+			core.finishEntry(h)
+			return func() { core.cancelAndClear("tab-1", keepWorktreeOnClose) }
+		}},
+		{"a close in progress", func(core *startupCore) func() {
+			return core.holdCloseAdmission("tab-1")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			core := newTestStartupCore(t)
+			end := tc.hold(&core)
+			wasTracked := func() bool { _, _, _, tracked := core.snapshot("tab-1"); return tracked }
+			before := wasTracked()
+
+			assert.Nil(t, core.beginReplacement("tab-1"))
+
+			assert.Equal(t, before, wasTracked(), "a refused replacement must leave the holder's entry alone")
+			end()
+			core.WaitForInFlight()
+		})
+	}
+}
+
+// beginEndedStartup claims id as the startup of an open does, and ends the claim
+// as runAgentStartup does before its tail. The entry leaves the map, and the
+// goroutine of the startup still runs, so it did not return. cancelled reports
+// whether the context of that startup ended.
+func beginEndedStartup(t *testing.T, core *startupCore, id string) (open *startupEntry, cancelled *bool) {
+	t.Helper()
+	cancelled = new(bool)
+	open = core.begin(id, func() { *cancelled = true })
+	require.NotNil(t, open)
+	core.succeed(id, open)
+	return open, cancelled
+}
+
+// A process replacement claims the id while the goroutine of an earlier startup
+// still runs its tail. A close reaches both. The goroutine of the startup reads
+// the disposition of the close from its own entry, and a caller that joined the
+// replacement reads it from the entry of the replacement.
+func TestStartupCore_ACloseReachesTheStartupBehindAReplacement(t *testing.T) {
+	t.Parallel()
+
+	core := newTestStartupCore(t)
+	open, openCancelled := beginEndedStartup(t, &core, "tab-1")
+	replacement := core.beginReplacement("tab-1")
+	require.NotNil(t, replacement, "an ended startup leaves the id free for a replacement")
+
+	core.cancelAndClear("tab-1", removeWorktreeOnClose)
+
+	disposition, raced := core.dispositionOf(open)
+	assert.True(t, raced, "the goroutine of the startup that ended must learn that a close landed")
+	assert.Equal(t, removeWorktreeOnClose, disposition)
+	disposition, raced = core.dispositionOf(replacement)
+	assert.True(t, raced, "a caller that joined the replacement must learn that a close landed")
+	assert.Equal(t, removeWorktreeOnClose, disposition)
+	assert.True(t, *openCancelled, "a close ends the context of every startup that it reaches")
+
+	core.abandon(replacement)
+	core.finishEntry(open)
+	requireStartupsReleased(t, &core)
+}
+
+// An archive stops the startup behind a replacement too, and the caller waits
+// for both before it clears the runtime state of the tab. The wait ends only
+// after the goroutine of the earlier startup returned.
+func TestStartupCore_AnArchiveStopsAndWaitsForTheStartupBehindAReplacement(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		core := newTestStartupCore(t)
+		open, _ := beginEndedStartup(t, &core, "tab-1")
+		replacement := core.beginReplacement("tab-1")
+		require.NotNil(t, replacement)
+
+		archived := core.cancelForArchive("tab-1")
+
+		require.Same(t, replacement, archived, "the archive resolves the newest claim of the id")
+		assert.True(t, core.archiveStopped(open), "the goroutine of the startup that ended must learn that an archive landed")
+		core.abandon(replacement)
+		waited := make(chan struct{})
+		go func() {
+			core.waitForFinished(archived)
+			close(waited)
+		}()
+		synctest.Wait()
+		select {
+		case <-waited:
+			require.FailNow(t, "the wait ended while the goroutine of the earlier startup still ran")
+		default:
+		}
+
+		core.finishEntry(open)
+		synctest.Wait()
+		select {
+		case <-waited:
+		default:
+			require.FailNow(t, "the wait did not end after every claim of the id returned")
+		}
+		requireStartupsReleased(t, &core)
+	})
+}
+
+// The end of a replacement hands the id back to the startup behind it, which
+// still runs its tail. A close or an archive that lands afterwards must find
+// that startup, and no claim of the id may outlive its goroutine.
+func TestStartupCore_AReplacementThatEndsLeavesTheStartupBehindItReachable(t *testing.T) {
+	t.Parallel()
+
+	core := newTestStartupCore(t)
+	open, _ := beginEndedStartup(t, &core, "tab-1")
+	replacement := core.beginReplacement("tab-1")
+	require.NotNil(t, replacement)
+	core.abandon(replacement)
+
+	assert.Same(t, open, core.cancelForArchive("tab-1"), "the startup that still runs its tail must stay reachable")
+
+	core.finishEntry(open)
+	assert.Nil(t, core.cancelForArchive("tab-1"), "a startup that returned is not reachable")
+	requireStartupsReleased(t, &core)
+}
+
+// The goroutine of the earlier startup can return before the replacement ends.
+// The replacement then holds the id alone, and its own end leaves nothing behind.
+func TestStartupCore_ClaimsOfOneIDThatReturnOutOfOrderLeaveNothingBehind(t *testing.T) {
+	t.Parallel()
+
+	core := newTestStartupCore(t)
+	open, _ := beginEndedStartup(t, &core, "tab-1")
+	replacement := core.beginReplacement("tab-1")
+	require.NotNil(t, replacement)
+
+	core.finishEntry(open)
+	assert.Same(t, replacement, core.cancelForArchive("tab-1"), "the replacement still holds the id")
+	core.abandon(replacement)
+
+	assert.Nil(t, core.cancelForArchive("tab-1"))
+	requireStartupsReleased(t, &core)
 }

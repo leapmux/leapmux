@@ -15,26 +15,21 @@
 package bgtask
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/util/validate"
 )
 
-// MaxTasks caps how many rows OF EACH KIND an agent's background-task registry
-// ships to clients and holds in memory. Finished rows are evicted past this cap
-// (oldest first); active rows are never evicted. Matches the agent_todos
-// guardrail.
-//
-// PER KIND, not per registry: a run that opens hundreds of shells would
-// otherwise evict every finished subagent, and the subagent rows are the ones
-// that carry a transcript worth revisiting. Each kind gets its own pool, so a
-// burst of one cannot push out the other.
+// MaxTasks caps the display rows for each background-task kind.
+// Eviction selects the oldest finished row first. A full pool with no finished row evicts its oldest active display row.
+// A row linked to a child transcript remains in storage after display eviction.
+// An unlinked row leaves storage also.
+// Separate pools keep a burst of shell tasks from evicting subagent display rows.
 const MaxTasks = 64
 
 // RowKeyByteLimit caps a provider-supplied registry row key.
@@ -110,13 +105,13 @@ func ValidateRowKey(s string) error {
 
 // derivedRowKeyPrefix marks a row key this package derived because the
 // provider's own key was unusable. It is not a namespace a provider can reach:
-// a provider that sent this exact prefix followed by 64 hex characters would
-// have to be sending the sha256 of some other string it never sent.
-const derivedRowKeyPrefix = "leapmux-derived-key:"
+// fresh native input that starts with a reserved prefix is escaped before it
+// is stored (see row_key.go), so a provider would have to send the sha256 of
+// some other string it never sent to collide with one.
 
 // NormalizeRowKey returns the row key to store for the provider-supplied key s:
-// s itself when ValidateRowKey accepts it, and a key derived from it when it
-// does not.
+// s itself when ValidateRowKey accepts it and it carries no reserved prefix,
+// and a hashed key under a reserved prefix when it does not.
 //
 // TOTAL, and that is the point. ValidateRowKey states exactly what makes a key
 // unusable, and every caller answered a refusal by failing the write -- so a
@@ -125,23 +120,29 @@ const derivedRowKeyPrefix = "leapmux-derived-key:"
 // running with nothing on screen to say so, which is a worse answer than an
 // unreadable label.
 //
-// A DERIVED KEY IS STILL AN IDENTITY, which is what lets it replace the
-// refusal. The row key is the second half of the (owner_agent_id, row_key)
+// A DERIVED OR ESCAPED KEY IS STILL AN IDENTITY, which is what lets it replace
+// the refusal. The row key is the second half of the (owner_agent_id, row_key)
 // primary key, and every later upsert, status change, close and rename
 // addresses the row by it, so the rule that produces it must be a function of
 // the provider's key alone and must not map two keys onto one:
 //
 //   - A function of s alone. The same provider key normalizes to the same
-//     derived key on every call, in every process, so the upsert that opens the
+//     stored key on every call, in every process, so the upsert that opens the
 //     row and the close that finishes it land on the same row across a worker
 //     restart.
 //   - Injective in practice. A CUT is not: providers build keys by prefixing a
 //     fixed namespace to a payload, so two keys that pass RowKeyByteLimit share
 //     their first 256 bytes far more readily than at random. Two keys collide
 //     here only through a sha256 collision.
-//   - Bounded and valid UTF-8 by construction, so the derived key satisfies
-//     ValidateRowKey itself. Normalizing an already-derived key returns it
-//     unchanged, so a value that passes through twice is stable.
+//   - Bounded and valid UTF-8 by construction, so the hashed key satisfies
+//     ValidateRowKey itself.
+//
+// A USABLE key that starts with a reserved prefix is ESCAPED rather than
+// stored: a native key shaped like a derived one must not address another
+// task's row. The escape is why a stored key may never pass through here again
+// -- loading one is ParseRowIdentity's job -- and NewRowKey is the typed form
+// that makes the fresh-native and stored-identity directions impossible to
+// confuse.
 //
 // It answers the invalid-UTF-8 refusal as well as the over-long one, which is
 // the case wireString cannot help with: `Id` is the one proto string on a
@@ -150,13 +151,6 @@ const derivedRowKeyPrefix = "leapmux-derived-key:"
 //
 // The caller decides whether to say anything. `key != s` is the whole test, and
 // ValidateRowKey supplies the reason for the log line.
-func NormalizeRowKey(s string) string {
-	if ValidateRowKey(s) == nil {
-		return s
-	}
-	sum := sha256.Sum256([]byte(s))
-	return derivedRowKeyPrefix + hex.EncodeToString(sum[:])
-}
 
 // ValidateGroupKey reports why a provider-supplied GROUP key is unusable, or
 // nil when it is usable. The empty key is accepted and means "this row is not
@@ -298,31 +292,33 @@ var Kinds = [...]Kind{KindSubagent, KindShell, KindWorkflow}
 type Status leapmuxv1.BackgroundTaskStatus
 
 const (
-	StatusUnspecified = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_UNSPECIFIED)
-	StatusPending     = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_PENDING)
-	StatusRunning     = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_RUNNING)
-	StatusCompleted   = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_COMPLETED)
-	StatusFailed      = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_FAILED)
-	StatusStopped     = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_STOPPED)
-	StatusInterrupted = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_INTERRUPTED)
+	StatusUnspecified             = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_UNSPECIFIED)
+	StatusPending                 = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_PENDING)
+	StatusRunning                 = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_RUNNING)
+	StatusPaused                  = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_PAUSED)
+	StatusSucceeded               = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_SUCCEEDED)
+	StatusFailed                  = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_FAILED)
+	StatusStopped                 = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_STOPPED)
+	StatusInterrupted             = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_INTERRUPTED)
+	StatusEndedWithUnknownOutcome = Status(leapmuxv1.BackgroundTaskStatus_BACKGROUND_TASK_STATUS_ENDED_WITH_UNKNOWN_OUTCOME)
 )
 
-// MinFinalStatus is the lowest FINAL ordinal, and the whole predicate the SQL
-// needs: `status >= MinFinalStatus` selects the final rows and `status <`
-// selects the active ones. The queries bind it rather than listing four status
-// words, so the split follows a renumber instead of going stale.
-//
-// It states a property of the ORDER of the enum, which nothing in proto
-// enforces, so TestBackgroundTaskFinalStatusesAreTheTopOfTheRange checks it
-// against IsFinished for every value. A new status on the wrong side of the
-// boundary fails that test rather than silently joining the other pool.
-const MinFinalStatus = StatusCompleted
+// MinFinalStatus is the lowest final ordinal.
+// SQL selects final rows with status >= MinFinalStatus and open rows with status < MinFinalStatus.
+// The queries bind this ordinal, so a renumber changes the selection with it.
+// TestBackgroundTaskFinalStatusesAreTheTopOfTheRange verifies this split for every declared status.
+const MinFinalStatus = StatusSucceeded
 
-// IsFinished reports whether s is a final status -- one that makes a row
-// eligible for cap-eviction. Unspecified, Pending and Running rows are never
-// evicted; a row leaves only through a transition into a final status.
+// IsFinished reports whether a final status permits row eviction.
+// Every other status stays open.
 func (s Status) IsFinished() bool {
-	return s == StatusCompleted || s == StatusFailed || s == StatusStopped || s == StatusInterrupted
+	return s == StatusSucceeded || s == StatusFailed || s == StatusStopped || s == StatusInterrupted || s == StatusEndedWithUnknownOutcome
+}
+
+// IsWorking reports whether a task currently contributes to agent activity.
+// A paused task stays open for a later turn but does not keep its tab busy.
+func (s Status) IsWorking() bool {
+	return s == StatusPending || s == StatusRunning
 }
 
 // Item mirrors leapmuxv1.BackgroundTaskItem in a plain-Go shape so the
@@ -614,34 +610,29 @@ func ItemsToProto(items []Item) []*leapmuxv1.BackgroundTaskItem {
 	return out
 }
 
-// StatusWire returns the lowercase token the worker writes as the `status`
-// field of a subagent_ended notification, which the browser's
-// notificationRenderers reads to word the closing transcript divider.
-//
-// It is NOT the storage format: agent_background_tasks.status holds the ordinal
-// directly. This is a payload vocabulary with a reader in another language, and
-// the only caller is the divider that applyBackgroundTaskClose writes.
-//
-// StatusUnspecified yields "", not "pending". The browser renders an
-// unrecognized token as a plain "ended" divider, which is the honest line for a
-// status nobody set; wording it "pending" would state a live state on the row
-// that just closed.
+// StatusWire returns the status token that child reports carry to the browser.
+// Storage uses the proto ordinal instead of this token.
+// An unspecified status returns an empty token rather than an invented outcome.
 func StatusWire(s Status) string {
 	switch s {
 	case StatusRunning:
-		return "running"
-	case StatusCompleted:
-		return "completed"
+		return contracts.BackgroundTaskStatusTokenRunning
+	case StatusPaused:
+		return contracts.BackgroundTaskStatusTokenPaused
+	case StatusSucceeded:
+		return contracts.BackgroundTaskStatusTokenSucceeded
 	case StatusFailed:
-		return "failed"
+		return contracts.BackgroundTaskStatusTokenFailed
 	case StatusStopped:
-		return "stopped"
+		return contracts.BackgroundTaskStatusTokenStopped
 	case StatusInterrupted:
-		return "interrupted"
+		return contracts.BackgroundTaskStatusTokenInterrupted
+	case StatusEndedWithUnknownOutcome:
+		return contracts.BackgroundTaskStatusTokenEndedWithUnknownOutcome
 	case StatusPending:
-		return "pending"
+		return contracts.BackgroundTaskStatusTokenPending
 	default:
-		return ""
+		return contracts.BackgroundTaskStatusTokenUnspecified
 	}
 }
 

@@ -39,9 +39,8 @@ func controlResponsePlanFromAnswer(registry *agent.Registry, answer db.ControlRe
 		if err := protojson.Unmarshal(answer.PlanApprovalSettings, plan.settings); err != nil {
 			return controlResponsePlan{}, fmt.Errorf("read saved plan approval settings: %w", err)
 		}
-		// Keep the STORED bytes rather than re-encode the message. The transcript
-		// row must repeat what the claim row holds, and protojson gives a
-		// different byte string for each marshal of one message.
+		// Keep the stored bytes so the transcript row repeats the claim row exactly.
+		// Protobuf JSON output can differ across builds, even when the message is unchanged.
 		plan.settingsJSON = answer.PlanApprovalSettings
 	}
 	// Recovery must retain the actual prepared bytes, even if the provider encoder changes.
@@ -75,6 +74,13 @@ func (svc *Service) finalizeControlResponse(answer db.ControlResponseAnswer) err
 		write = &prepared
 	}
 	ctx := bgCtx()
+	_, _, release := svc.Output.lockControlMutation(agentID, "")
+	publication := controlPublication{}
+	defer func() {
+		if release != nil {
+			svc.Output.finishControlPublication(agentID, "", publication, release)
+		}
+	}()
 	var seq int64
 	var removed db.ControlRequest
 	apply := func(tx *sql.Tx) error {
@@ -133,10 +139,13 @@ func (svc *Service) finalizeControlResponse(answer db.ControlResponseAnswer) err
 		}
 	}
 	// Every subscriber must retire the response, even if its provider request disappeared earlier.
-	svc.Output.broadcastControlCancel(agentID, answer.RequestID, answer.ClaimToken)
+	publication.enqueueCancellation(svc.Output, agentID, answer.RequestID, answer.ClaimToken)
 	if write != nil {
 		svc.Output.publishMessageWrite(*write, seq)
 	}
+	unlock := release
+	release = nil
+	svc.Output.finishControlPublication(agentID, "", publication, unlock)
 	if answer.InputID != "" {
 		svc.InputQueue.NotifyDependencyReady(agentID)
 	}
@@ -159,5 +168,27 @@ func (svc *Service) recordControlResponsePlanMode(agentID string, provider leapm
 	if current.AgentProvider != provider || current.AgentSessionID != plan.requestMeta.AgentSessionID {
 		return nil
 	}
+	plugin := svc.Agents.Registry().Plugin(provider)
+	if plan.resolution.PlanModeControl == agent.PlanModeControlExit && plan.behavior() == agent.ControlBehaviorAllow {
+		mode := resolveTargetMode(plan.settings.GetPermissionMode(), plugin.PlanModePermissionMode(agent.PlanModeControlExit))
+		if options := plugin.PlanApprovalOptions(mode); len(options) > 0 {
+			_, err := svc.applyPlanOptionsLocked(current, options)
+			return err
+		}
+		svc.handPlanExitModeToRunningProvider(agentID, mode)
+	}
 	return svc.applyControlResponsePlanModeMutations(current, plan)
+}
+
+// handPlanExitModeToRunningProvider gives the approved plan exit's mode to a
+// running provider that defers it (see agent.PlanExitModeDeferrer). A provider
+// that does not defer keeps the persist-only path. The caller holds the
+// lifecycle lock, so this reads the agent without locking it again.
+func (svc *Service) handPlanExitModeToRunningProvider(agentID, mode string) {
+	if mode == "" {
+		return
+	}
+	if deferrer, ok := svc.Agents.RunningAgent(agentID).(agent.PlanExitModeDeferrer); ok {
+		deferrer.DeferPlanExitMode(mode)
+	}
 }

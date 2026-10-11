@@ -102,7 +102,11 @@ func startNativeCopilot(ctx context.Context, opts agent.Options, sink agent.Prov
 		}
 	}
 	if len(startupSettings) > 0 {
-		applied := a.UpdateSettings(startupSettings)
+		// A permission mode that LeapMux chose for the user falls back to Manual when the
+		// runtime refuses it. A mode that the user chose fails the startup instead.
+		a.sessionMu.Lock()
+		applied := a.applyOpeningSettings(startupSettings, opts.NewSessionDefaultOptionIDs)
+		a.sessionMu.Unlock()
 		for key := range startupSettings {
 			if applied.Settlements[key].State != agent.OptionSettlementConfirmed {
 				return cleanup(fmt.Errorf("the Copilot runtime did not confirm the requested %s setting", key))

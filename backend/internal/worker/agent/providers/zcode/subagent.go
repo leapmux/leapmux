@@ -254,7 +254,7 @@ func decodeZCodeSubagentLifecycleTransition(event zcodeEventEnvelope) (zcodeSuba
 	final := false
 	switch payload.Status {
 	case "completed", "success":
-		status, final = bgtask.StatusCompleted, true
+		status, final = bgtask.StatusSucceeded, true
 	case "failed":
 		status, final = bgtask.StatusFailed, true
 	case "cancelled", "stopped":
@@ -420,7 +420,7 @@ func (a *Agent) ensureZCodeSubagentTranscript(rowKey, spawnSpanID, fallbackTitle
 	if childID, found := a.children.child(rowKey); found {
 		return childID, title, true
 	}
-	childID, err := a.sink.EnsureChildAgent(spawnSpanID, rowKey, title)
+	childID, err := a.sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: spawnSpanID, ProviderChildKey: rowKey, Title: title})
 	if err != nil {
 		slog.Warn("zcode subagent ensure child failed", "agent_id", a.AgentID(), "row_key", rowKey, "error", err)
 		return "", "", false
@@ -730,7 +730,7 @@ func (a *Agent) applyZCodeSubagentEnd(payload zcodeToolUpdated, recovered *zcode
 	// A recovered close states the status itself: the agent reported no result, so
 	// the payload cannot say whether the subagent finished, and reading Completed out
 	// of its absence would claim work that never ended.
-	status := bgtask.StatusCompleted
+	status := bgtask.StatusSucceeded
 	switch {
 	case recovered != nil:
 		status = recovered.status

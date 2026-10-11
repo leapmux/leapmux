@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"runtime"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -116,6 +117,81 @@ func TestListAgents_MixExistingAndNonexistent(t *testing.T) {
 	var resp leapmuxv1.ListAgentsResponse
 	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
 	assert.Len(t, resp.GetAgents(), 2)
+}
+
+// --- refreshRunningAgentRows ---
+
+func TestRefreshRunningAgentRows_ReadsTheRowsOfRunningAgentsAgain(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	for _, id := range []string{"running", "idle"} {
+		require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+			ID: id, WorkingDir: "/tmp", HomeDir: "/tmp",
+		}))
+	}
+	// Both rows predate a startup that stored a session ID for each agent.
+	agents, err := svc.Queries.ListAgentsByIDs(ctx, []string{"running", "idle"})
+	require.NoError(t, err)
+	require.Len(t, agents, 2)
+	for _, id := range []string{"running", "idle"} {
+		require.NoError(t, svc.Queries.UpdateAgentSessionID(ctx, db.UpdateAgentSessionIDParams{ID: id, AgentSessionID: "session-" + id}))
+	}
+	running := make([]bool, len(agents))
+	for i := range agents {
+		running[i] = agents[i].ID == "running"
+	}
+
+	require.NoError(t, svc.refreshRunningAgentRows(ctx, agents, running))
+
+	for _, row := range agents {
+		if row.ID == "running" {
+			assert.Equal(t, "session-running", row.AgentSessionID)
+		} else {
+			assert.Empty(t, row.AgentSessionID, "a row of an agent that does not run stays as it was read")
+		}
+	}
+}
+
+func TestRefreshRunningAgentRows_KeepsTheRowThatACloseRemoved(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		ID: "closing", WorkingDir: "/tmp", HomeDir: "/tmp",
+	}))
+	agents, err := svc.Queries.ListAgentsByIDs(ctx, []string{"closing"})
+	require.NoError(t, err)
+	require.NoError(t, closeErr(svc.Queries.CloseAgent(ctx, "closing")))
+
+	require.NoError(t, svc.refreshRunningAgentRows(ctx, agents, []bool{true}))
+
+	require.Len(t, agents, 1)
+	assert.Equal(t, "closing", agents[0].ID, "the row of a closed agent stays as the first read returned it")
+}
+
+func TestRefreshRunningAgentRows_ReadsNothingWhenNoAgentRuns(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	var statements atomic.Int32
+	svc, _, _ := setupTestService(t, withQueryRewrite(func(query string) string {
+		statements.Add(1)
+		return query
+	}))
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		ID: "a1", WorkingDir: "/tmp", HomeDir: "/tmp",
+	}))
+	agents, err := svc.Queries.ListAgentsByIDs(ctx, []string{"a1"})
+	require.NoError(t, err)
+	before := statements.Load()
+
+	require.NoError(t, svc.refreshRunningAgentRows(ctx, agents, []bool{false}))
+	require.NoError(t, svc.refreshRunningAgentRows(ctx, nil, nil))
+
+	assert.Equal(t, before, statements.Load(), "no statement runs when no agent runs")
 }
 
 // --- ListTerminals by IDs ---

@@ -288,14 +288,20 @@ const codexMethodThreadSettingsUpdated = contracts.CodexMethodThreadSettingsUpda
 // agent already holds, announces nothing.
 func (a *Agent) handleThreadSettingsUpdated(params json.RawMessage) {
 	var notif struct {
+		ThreadID       string `json:"threadId"`
 		ThreadSettings *struct {
 			Model             string `json:"model"`
 			Effort            string `json:"effort"`
-			CollaborationMode string `json:"collaborationMode"`
+			CollaborationMode *struct {
+				Mode string `json:"mode"`
+			} `json:"collaborationMode"`
 		} `json:"threadSettings"`
 	}
 	if err := json.Unmarshal(params, &notif); err != nil || notif.ThreadSettings == nil {
 		slog.Warn("codex thread/settings/updated unmarshal failed", "agent_id", a.AgentID(), "error", err)
+		return
+	}
+	if notif.ThreadID == "" || !a.isMainThreadID(notif.ThreadID) {
 		return
 	}
 	settings := notif.ThreadSettings
@@ -309,8 +315,8 @@ func (a *Agent) handleThreadSettingsUpdated(params json.RawMessage) {
 	if settings.Effort != "" {
 		a.effort = settings.Effort
 	}
-	if settings.CollaborationMode != "" {
-		a.collaborationMode = settings.CollaborationMode
+	if settings.CollaborationMode != nil && settings.CollaborationMode.Mode != "" {
+		a.collaborationMode = settings.CollaborationMode.Mode
 	}
 	vals := a.codexAxisValuesLocked()
 	a.Mu.Unlock()

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -12,7 +13,7 @@ func TestWatcherOwnershipRejectsAnUninitializedSession(t *testing.T) {
 	manager := NewWatcherManager()
 	require.False(t, manager.isOwner("channel", 0))
 	sender := newTestWatcher("channel")
-	manager.SetAgentWatchesForSession("channel", 0, []watchEntry{{id: "agent", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, sender)
+	require.NoError(t, manager.SetAgentWatchesForSession("channel", 0, []watchEntry{{id: "agent", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, replay: agentReplayTuple{replayID: 1}}}, sender))
 	manager.SetTerminalWatchesForSession("channel", 0, []watchEntry{{id: "terminal", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, sender)
 	require.Empty(t, manager.AgentModesForChannel("channel"))
 	require.Empty(t, manager.TerminalModesForChannel("channel"))
@@ -42,7 +43,7 @@ func TestWatcherOwnershipSurvivesConcurrentReplacement(t *testing.T) {
 						latestID, latest = id, sender
 					}
 					latestMu.Unlock()
-					manager.SetAgentWatchesForSession("channel", id, []watchEntry{{id: "agent", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, sender)
+					assert.NoError(t, manager.SetAgentWatchesForSession("channel", id, []watchEntry{{id: "agent", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, replay: agentReplayTuple{replayID: id}}}, sender))
 					manager.SetTerminalWatchesForSession("channel", id, []watchEntry{{id: "terminal", mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}}, sender)
 					previous = id
 				}

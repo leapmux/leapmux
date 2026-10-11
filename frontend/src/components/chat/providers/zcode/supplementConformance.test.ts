@@ -36,7 +36,7 @@ describe('zcode retained-tool supplement conformance', () => {
   })
 
   it('answers a row that carries no supplement with nothing', () => {
-    expect(zcodeToolSupplement(undefined)).toEqual({ nativeTool: undefined, artifacts: undefined })
-    expect(zcodeToolSupplement({ type: 'tool.updated' })).toEqual({ nativeTool: undefined, artifacts: undefined })
+    expect(zcodeToolSupplement(undefined)).toEqual({ nativeTool: undefined, outputFiles: undefined })
+    expect(zcodeToolSupplement({ type: 'tool.updated' })).toEqual({ nativeTool: undefined, outputFiles: undefined })
   })
 })

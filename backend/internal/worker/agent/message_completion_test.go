@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -71,4 +72,14 @@ func TestMessageMetadataUsesTheAssembledCompletion(t *testing.T) {
 	}`)})
 	assert.Equal(t, leapmuxv1.AssembledMessageKind_ASSEMBLED_MESSAGE_KIND_TEXT, kind)
 	assert.Equal(t, leapmuxv1.MessageCompletion_MESSAGE_COMPLETION_COMPLETE, completion)
+}
+
+func TestFinishedMessageCompletionRetainsFinalityWithoutAnOutcome(t *testing.T) {
+	t.Parallel()
+	raw := []byte(`{"method":"turn/completed","params":{"terminal":"futureFinal"}}`)
+	content := MessageContent{Original: raw, Completion: MessageCompletionFinished}
+	_, completion := MessageMetadata(content)
+	assert.Equal(t, leapmuxv1.MessageCompletion_MESSAGE_COMPLETION_FINISHED, completion)
+	assert.Equal(t, raw, content.Original)
+	assert.Equal(t, bgtask.StatusEndedWithUnknownOutcome, IncompleteTaskStatus(content.Completion))
 }

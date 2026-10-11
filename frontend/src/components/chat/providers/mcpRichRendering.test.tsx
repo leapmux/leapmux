@@ -59,6 +59,11 @@ function richToolCases(blocks: Record<string, unknown>[]): RichToolCase[] {
       request: { item: { id: 'call', type: 'mcpToolCall', status: 'inProgress', server: 'probe', tool: 'echo', arguments: { query: 'native args' } } },
       result: { item: { id: 'call', type: 'mcpToolCall', status: 'completed', server: 'probe', tool: 'echo', arguments: { query: 'native args' }, result: { content: blocks } } },
     },
+    {
+      provider: AgentProvider.PI,
+      request: { type: 'tool_execution_start', toolCallId: 'call', toolName: 'mcp__probe__echo', args: { query: 'native args' } },
+      result: { type: 'tool_execution_end', toolCallId: 'call', toolName: 'mcp__probe__echo', result: { content: [], details: { server: 'probe', tool: 'echo' }, structuredContent: { content: blocks } } },
+    },
   ]
 }
 

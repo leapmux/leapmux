@@ -2,7 +2,7 @@
   "_readme": "The ZCode retained-tool supplement, pinned on BOTH sides of the language boundary. The worker reads ZCode's own store for a call whose result never reached the stream, and stores the native record with the artifact bodies it refers to; the browser plugin reads both back out. Neither side resolves this payload into the frame, so there is no shared resolve to replay -- the STORED BYTES are the contract instead. `TestZCodeToolSupplementConformance` asserts the worker writes `supplement` for `record`, and the browser's `zcodeToolSupplement` asserts it reads `expected` out of the same bytes. The key names come from contracts/zcode-protocol.json.",
   "cases": [
     {
-      "name": "a retained call keeps its native record and every artifact body",
+      "name": "a retained call keeps its native record and every output files body",
       "original": {
         "type": "tool.updated",
         "payload": {
@@ -28,7 +28,7 @@
             }
           }
         },
-        "artifacts": {
+        "outputFiles": {
           "artifact://out-1": "the whole output\n"
         }
       },
@@ -54,7 +54,7 @@
             }
           }
         },
-        "artifacts": {
+        "outputFiles": {
           "artifact://out-1": "the whole output\n"
         }
       },
@@ -75,13 +75,13 @@
             }
           }
         },
-        "artifacts": {
+        "outputFiles": {
           "artifact://out-1": "the whole output\n"
         }
       }
     },
     {
-      "name": "a record that refers to no artifact stores an empty set",
+      "name": "a record that refers to no output files stores an empty set",
       "original": {
         "type": "tool.updated",
         "payload": {
@@ -103,7 +103,7 @@
             }
           }
         },
-        "artifacts": {}
+        "outputFiles": {}
       },
       "supplement": {
         "type": "tool.updated",
@@ -124,7 +124,7 @@
             }
           }
         },
-        "artifacts": {}
+        "outputFiles": {}
       },
       "expected": {
         "nativeTool": {
@@ -140,7 +140,7 @@
             }
           }
         },
-        "artifacts": {}
+        "outputFiles": {}
       }
     },
     {
@@ -159,7 +159,7 @@
           "messageId": "message-2",
           "data": null
         },
-        "artifacts": {}
+        "outputFiles": {}
       },
       "supplement": {
         "type": "tool.updated",
@@ -173,7 +173,7 @@
           "messageId": "message-2",
           "data": null
         },
-        "artifacts": {}
+        "outputFiles": {}
       },
       "expected": {
         "nativeTool": {
@@ -182,7 +182,7 @@
           "messageId": "message-2",
           "data": null
         },
-        "artifacts": {}
+        "outputFiles": {}
       }
     }
   ]

@@ -166,7 +166,7 @@ func AssertAnswersAQuestionThroughTheBridge(t *testing.T, ag agent.Agent, eventR
 	// Through the interface, which is how the worker service calls it. The stdin
 	// writer is nil, so a frame that fell through to the stream fails rather than
 	// passing unnoticed.
-	require.NoError(t, ag.SendRawInput([]byte(`{"jsonrpc":"2.0","id":"opencode-question:que_1","result":{"answers":[["Inspect"]]}}`)))
+	require.NoError(t, ag.SendRawInput([]byte(`{"jsonrpc":"2.0","id":"opencode-question:que_1","result":{"answers":[["Inspect"]]}}`), agent.StopContext{}))
 	answers := daemon.Answers()
 	require.Len(t, answers, 1)
 	assert.Equal(t, "reply", answers[0].Action)

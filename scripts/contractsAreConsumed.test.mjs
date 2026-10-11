@@ -265,18 +265,6 @@ const PENDING_READERS = new Set([
   'junie-protocol', 'kimi-protocol', 'kiro-protocol', 'letta-protocol',
   'mimo-protocol', 'muse-protocol', 'ohmypi-protocol', 'qoder-protocol',
   'qwen-protocol',
-  'acp-protocol.permissionOutcomes',
-  'claude-protocol.frameKinds',
-  'claude-protocol.systemSubtypes',
-  'codex-protocol.executables',
-  'codex-protocol.rawFields',
-  'codex-protocol.rawItems',
-  'codex-protocol.rawNamespaces',
-  'codex-protocol.rawTools',
-  'copilot-protocol.toolErrorCodes',
-  'goose-protocol.configIds',
-  'goose-protocol.todo',
-  'reasonix-protocol.methods',
 ])
 
 const cases = PROVIDER_PROTOCOLS.flatMap(spec =>

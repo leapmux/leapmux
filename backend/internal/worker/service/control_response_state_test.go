@@ -104,13 +104,15 @@ func TestControlRequestReplayRetainsResponseState(t *testing.T) {
 			_, err := svc.DB.ExecContext(t.Context(), `INSERT INTO control_response_answers (agent_id,request_id,claim_token,state,agent_provider) VALUES (?,?,?,?,?)`,
 				"agent-1", "request", "claim", int64(state), int64(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX))
 			require.NoError(t, err)
-			replayed := buildAgentControlRequest(svc.Queries, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+			replayed, err := buildAgentControlRequest(svc.Queries, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 				agent.ControlRequest{RequestID: "request", Payload: payload}, "claim")
+			require.NoError(t, err)
 			require.Equal(t, payload, replayed.Payload)
 			// The column holds the enum, so the state written is the state read.
 			require.Equal(t, state, replayed.ResponseState)
-			newRequest := buildAgentControlRequest(svc.Queries, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+			newRequest, err := buildAgentControlRequest(svc.Queries, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 				agent.ControlRequest{RequestID: "request", Payload: payload}, "replacement-claim")
+			require.NoError(t, err)
 			require.Equal(t, leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_CANCELED, newRequest.ResponseState)
 		})
 	}
@@ -168,7 +170,7 @@ func TestControlResponseReplayRecoversADeletedRequest(t *testing.T) {
 				})
 			}
 			replay := newTestWriter()
-			svc.replayAgentCatchUp(newReplaySink(replay), &leapmuxv1.WatchAgentEntry{AgentId: "agent-1"}, row, nil)
+			svc.replayAgentCatchUp(newReplaySink(replay, 0), &leapmuxv1.WatchAgentEntry{AgentId: "agent-1"}, row, nil)
 			var recovered *leapmuxv1.AgentControlRequest
 			for _, stream := range replay.streamsSnapshot() {
 				request := decodeWatchAgentEvent(t, stream).GetControlRequest()

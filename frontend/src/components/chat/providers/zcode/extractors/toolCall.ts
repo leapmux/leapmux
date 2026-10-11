@@ -452,6 +452,8 @@ export const ZCODE_TOOL_READERS: ToolCallSpecReaderTable<ZCodeToolFacts> = {
     }
     if (facts.failed)
       return { kind: 'mcp', request, result: failedResult(facts.text) }
+    if (facts.display?.kind === 'images')
+      return { kind: 'mcp', request, result: { content: zcodeTextAndNodeImages(facts) } }
     return { kind: 'mcp', request, result: unparsedResult(facts.text) }
   },
   task: (facts): ToolCallSpecVariant<'task'> => {
@@ -712,12 +714,17 @@ function zcodeGenericToolResult(facts: ZCodeToolFacts): { result?: GenericToolRe
   // node-image row attached its pictures where nothing draws them.
   return {
     result: {
-      content: [
-        ...(facts.text ? [{ type: 'text' as const, text: facts.text }] : []),
-        ...facts.nodeImages.map(source => ({ type: 'image' as const, source })),
-      ],
+      content: zcodeTextAndNodeImages(facts),
     },
   }
+}
+
+/** Keep native Node pictures with their text in generic and MCP result bodies. */
+function zcodeTextAndNodeImages(facts: ZCodeToolFacts): Array<{ type: 'text', text: string } | { type: 'image', source: ImageResultSource }> {
+  return [
+    ...(facts.text ? [{ type: 'text' as const, text: facts.text }] : []),
+    ...facts.nodeImages.map(source => ({ type: 'image' as const, source })),
+  ]
 }
 
 /**

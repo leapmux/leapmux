@@ -243,6 +243,12 @@ func TestPersistTerminalOnExit_Idempotent(t *testing.T) {
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	startTestTerminal(t, svc, ctx, "term-1")
+	// The exit handler runs only after the shell exited and its reader
+	// drained, so nothing else writes between two persist calls. A live test
+	// shell writes its prompt at a moment the test does not control, and a
+	// prompt that lands between the two calls moves the notice off the end of
+	// the screen, which is the state the suffix check reads.
+	testutil.FreezeTerminalOutput(t, svc.Terminals, "term-1")
 
 	// Seed the live screen with some baseline content so the notice has
 	// something to follow — the empty-screen path hits a different branch
@@ -272,6 +278,11 @@ func TestPersistTerminalOnExit_ShutdownDoesNotClobberRealExitCode(t *testing.T) 
 	ctx := context.Background()
 	svc, _, _ := setupTestService(t)
 	startTestTerminal(t, svc, ctx, "term-race")
+	// The exit handler runs only after the shell exited and its reader
+	// drained. Freeze the shell the same way, or its late prompt lands between
+	// the two calls and the second call no longer sees the first call's notice
+	// at the end of the screen.
+	testutil.FreezeTerminalOutput(t, svc.Terminals, "term-race")
 	require.True(t, svc.Terminals.AppendOutput("term-race", []byte("hello")))
 
 	// Exit handler arrives first with a real exit code.

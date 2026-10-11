@@ -75,7 +75,7 @@ func reasonixSubagentFromToolCallUpdate(tcu acp.ToolCallUpdateEnvelope) *acp.Sub
 		outcome := reasonixOutcomeHeader.FindStringSubmatch(acp.ToolCallText(tcu.Content))
 		if len(outcome) > 1 {
 			switch outcome[1] {
-			case "failed":
+			case "failed", "partial":
 				status = bgtask.StatusFailed
 			case "cancelled":
 				status = bgtask.StatusStopped
@@ -93,10 +93,9 @@ func reasonixSubagentFromToolCallUpdate(tcu acp.ToolCallUpdateEnvelope) *acp.Sub
 	hasOutcomeEnvelope := toolName != contracts.ReasonixToolReadOnlyTask
 	report := reasonixSubagentReport(acp.ToolCallText(tcu.Content), hasOutcomeEnvelope)
 	if backgroundLaunch {
-		// Reasonix exposes the launch call but does not forward the background
-		// job's later lifecycle over ACP. Close the observable call here so the
-		// registry does not claim that LeapMux still receives task updates. The
-		// acknowledgement is not the subagent's report.
+		// Reasonix sends the launch acknowledgement but no later child lifecycle over ACP.
+		// Close the child row without claiming its outcome. An acknowledgement supplies no child report.
+		status = bgtask.StatusEndedWithUnknownOutcome
 		report = ""
 	}
 	return &acp.SubagentObservation{

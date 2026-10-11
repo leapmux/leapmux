@@ -1,28 +1,25 @@
 /**
- * Helpers for building Pi extension_ui_response bodies.
+ * Build Pi extension_ui_response bodies.
  *
- * Pi's extension UI sub-protocol blocks the agent in `select`, `confirm`,
- * `input`, and `editor` dialogs until the client posts a matching response
- * line on stdin. The wire shapes are:
+ * Pi blocks until the client posts a matching response line on stdin.
+ * The native dialog methods use these response shapes:
  *
  *   select / input / editor → { type, id, value }
  *   confirm                 → { type, id, confirmed }
  *   any cancel              → { type, id, cancelled: true }
  *
- * The response is encoded as UTF-8 bytes and shipped via the shared
- * SendControlResponse RPC; the worker's providerkit.Process.SendRawInput appends a
- * trailing newline before forwarding to Pi's stdin.
+ * SendControlResponse sends UTF-8 bytes. The worker's providerkit.Process.SendRawInput
+ * adds a trailing newline before it writes to Pi's stdin.
  */
 
 import type { ControlAnswerState, ControlResponseSender } from '../../controls/types'
 import type { ControlResponseSummary } from '../../model/controlResponse'
 import type { ControlQuestion } from '../../model/question'
 import type { PersistedControlResponse } from '../../persistedControlResponse'
-import { PI_DIALOG_METHOD, PI_EVENT, PI_MCP_APPROVAL_CHOICE, PI_PLAN_ACTION } from '~/generated/contracts/pi-protocol'
+import { PI_DIALOG_METHOD, PI_EVENT, PI_PLAN_ACTION } from '~/generated/contracts/pi-protocol'
 import { pickString } from '~/lib/jsonPick'
 import { sendResponse } from '../../controls/types'
 import { label } from '../../persistedControlResponse'
-import { isPiMcpApproval } from './mcpApproval'
 import { isPiPlanApproval } from './planRequest'
 
 const RESPONSE_TYPE = PI_EVENT.ExtensionUIResponse
@@ -60,8 +57,8 @@ export function piCancelResponse(requestId: string): PiCancelledResponse {
 }
 
 /**
- * Resolve the current answer value from a shared ControlAnswerState — prefers
- * the first selected option, falling back to the first custom-text entry.
+ * Read the current answer from ControlAnswerState.
+ * Prefer the first selected option. Use the first custom-text entry when no option exists.
  */
 export function piAskAnswerValue(answerState: ControlAnswerState, questions?: ControlQuestion[], payload?: Record<string, unknown>): string {
   const selections = answerState.selections()[0] ?? []
@@ -74,9 +71,8 @@ export function piAskAnswerValue(answerState: ControlAnswerState, questions?: Co
 }
 
 /**
- * Sends an extension_ui_response back to the running Pi agent. `onRespond` is
- * the shared sender supplied by the control-bubble harness — it ultimately
- * calls workerRpc.sendControlResponse.
+ * Send an extension_ui_response to Pi.
+ * The control banner supplies onRespond, which calls workerRpc.sendControlResponse.
  */
 export function sendPiExtensionResponse(
   onRespond: ControlResponseSender,
@@ -92,15 +88,6 @@ export function piControlResponseSummary(cr: PersistedControlResponse): ControlR
     return null
   if (response.cancelled === true)
     return label('Cancelled')
-
-  if (cr.request && isPiMcpApproval(cr.request)) {
-    if (response.value === PI_MCP_APPROVAL_CHOICE.AllowOnce)
-      return label('Approved')
-    if (response.value === PI_MCP_APPROVAL_CHOICE.AllowForSession)
-      return label('Approved for this session')
-    if (response.value === PI_MCP_APPROVAL_CHOICE.Deny)
-      return label('Rejected')
-  }
 
   if (cr.request && isPiPlanApproval(cr.request)) {
     if (response.value === PI_PLAN_ACTION.ImplementHere || response.value === PI_PLAN_ACTION.ImplementFresh)

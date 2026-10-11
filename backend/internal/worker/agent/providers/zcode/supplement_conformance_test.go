@@ -18,8 +18,8 @@ func TestZCodeToolSupplementConformance(t *testing.T) {
 		Cases []struct {
 			agenttest.StoredSupplementCase
 			Record struct {
-				Native    json.RawMessage   `json:"native"`
-				Artifacts map[string]string `json:"artifacts"`
+				Native      json.RawMessage   `json:"native"`
+				OutputFiles map[string]string `json:"outputFiles"`
 			} `json:"record"`
 		} `json:"cases"`
 	}
@@ -32,7 +32,7 @@ func TestZCodeToolSupplementConformance(t *testing.T) {
 			t.Parallel()
 			var native contracts.ZCodeStoredTool
 			require.NoError(t, json.Unmarshal(tc.Record.Native, &native))
-			encoded, err := zcodeToolResultSupplement(tc.Original, zcodeToolRecord{native: native, artifacts: tc.Record.Artifacts})
+			encoded, err := zcodeToolResultSupplement(tc.Original, zcodeToolRecord{native: native, outputFiles: tc.Record.OutputFiles})
 			require.NoError(t, err)
 			assert.JSONEq(t, string(tc.Supplement), string(encoded))
 		})

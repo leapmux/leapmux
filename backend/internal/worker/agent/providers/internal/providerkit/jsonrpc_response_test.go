@@ -68,6 +68,58 @@ func TestJSONRPCResponseRejectsARealResultBesideAnError(t *testing.T) {
 	require.ErrorContains(t, err, "both a result and an error")
 }
 
+// An agent can state the cause of an error only in the JSON-RPC `data` member.
+// The probed shapes: the ACP TypeScript SDK wraps an unexpected failure of
+// Qwen Code 0.24.7 as `{"details": ...}`, and Grok Build 1.0.46 writes
+// `{"message": ..., "http_status": ...}`. The error keeps the member and states
+// it, so a failure note shows the cause and not only "Internal error".
+func TestJSONRPCResponseErrorStatesItsData(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		data     string
+		wantText string
+	}{
+		{name: "an ACP SDK object", data: `{"details":"400 NATIVEERRORprobe"}`, wantText: `json-rpc error -32603: Internal error: {"details":"400 NATIVEERRORprobe"}`},
+		{name: "an object with spaces", data: `{ "message" : "API error (status 400): NATIVEERRORprobe", "http_status" : 400 }`, wantText: `json-rpc error -32603: Internal error: {"message":"API error (status 400): NATIVEERRORprobe","http_status":400}`},
+		{name: "a string", data: `"400 NATIVEERRORprobe"`, wantText: `json-rpc error -32603: Internal error: 400 NATIVEERRORprobe`},
+		{name: "a string with outer spaces", data: `"  400 NATIVEERRORprobe  "`, wantText: `json-rpc error -32603: Internal error: 400 NATIVEERRORprobe`},
+		{name: "a number", data: `7`, wantText: `json-rpc error -32603: Internal error: 7`},
+		{name: "an array", data: `["first", 2]`, wantText: `json-rpc error -32603: Internal error: ["first",2]`},
+		{name: "null", data: `null`, wantText: `json-rpc error -32603: Internal error`},
+		{name: "an empty string", data: `""`, wantText: `json-rpc error -32603: Internal error`},
+		{name: "a blank string", data: `"   "`, wantText: `json-rpc error -32603: Internal error`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := json.RawMessage(`{"jsonrpc":"2.0","id":3,"error":{"code":-32603,"message":"Internal error","data":` + tc.data + `}}`)
+			_, err := decodeJSONRPCResponse(raw)
+			var responseError *JSONRPCResponseError
+			require.ErrorAs(t, err, &responseError)
+			require.Equal(t, -32603, responseError.Code)
+			require.Equal(t, "Internal error", responseError.Message)
+			if tc.data == "null" {
+				require.Nil(t, responseError.Data, "a null member is no data")
+			} else {
+				require.JSONEq(t, tc.data, string(responseError.Data), "the error keeps the data as the agent sent it")
+			}
+			require.Equal(t, tc.wantText, err.Error())
+			require.True(t, HasJSONRPCErrorCode(err, -32603), "the data changes no code")
+		})
+	}
+}
+
+// An error with no data reads as it did, and an error whose message is empty
+// still states its data.
+func TestJSONRPCResponseErrorTextWithoutDataOrMessage(t *testing.T) {
+	_, err := decodeJSONRPCResponse(json.RawMessage(`{"error":{"code":-32603,"message":"Internal error"}}`))
+	var responseError *JSONRPCResponseError
+	require.ErrorAs(t, err, &responseError)
+	require.Nil(t, responseError.Data)
+	require.Equal(t, "json-rpc error -32603: Internal error", err.Error())
+
+	_, err = decodeJSONRPCResponse(json.RawMessage(`{"error":{"code":-32000,"message":"","data":{"details":"cause"}}}`))
+	require.Equal(t, `json-rpc error -32000: {"details":"cause"}`, err.Error())
+}
+
 func TestJSONRPCResponseRetainsAnErrorWithAnEmptyMessage(t *testing.T) {
 	_, err := decodeJSONRPCResponse(json.RawMessage(`{"error":{"code":0,"message":""}}`))
 	var responseError *JSONRPCResponseError

@@ -21,12 +21,20 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/sqltime"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude/claudetest"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/inputqueue"
 )
+
+// inputQueueWait limits each wait for work that the input queue does on a
+// goroutine of its own: a dispatch, a cold start, a broadcast. A wait that
+// succeeds returns at once, so the limit is generous for a loaded machine: a
+// short limit fails a correct test when the machine is busy.
+const inputQueueWait = 30 * time.Second
 
 func TestQueueSnapshotFitsDefaultWireBudgetWithLargeTextItems(t *testing.T) {
 	t.Parallel()
@@ -92,6 +100,77 @@ func TestAgentInputQueueRPCsReturnAuthoritativeSnapshots(t *testing.T) {
 	assert.Equal(t, "input-1", listed.GetSnapshot().GetItems()[0].GetId())
 }
 
+func TestReadOnlyChildUserMessageIsRefusedBeforeQueueMutation(t *testing.T) {
+	t.Parallel()
+	for _, active := range []bool{false, true} {
+		t.Run(fmt.Sprintf("active_%t", active), func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			svc, dispatcher, _ := setupTestService(t)
+			const provider = leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX
+			require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+				ID: "readonly-parent", WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: provider,
+			}))
+			childID, err := svc.Output.NewSink("readonly-parent", provider).EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "readonly-spawn", ProviderChildKey: "native-child", Title: "native child"})
+			require.NoError(t, err)
+			if active {
+				_, err = svc.InputQueue.TurnStarted(ctx, childID, false)
+				require.NoError(t, err)
+			}
+			before, err := svc.InputQueue.Snapshot(ctx, childID)
+			require.NoError(t, err)
+			writer := newTestWriter()
+			dispatch(dispatcher, "EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+				AgentId: childID, InputId: "refused-input", Text: "MUST_NOT_REACH_NATIVE_CHILD",
+				Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+			}, writer)
+			require.Len(t, writer.errors, 1)
+			assert.Equal(t, int32(codes.InvalidArgument), writer.errors[0].code)
+			assert.Equal(t, "invalid queued agent input: this agent does not accept that input", writer.errors[0].message)
+			require.Empty(t, writer.responses)
+			after, err := svc.InputQueue.Snapshot(ctx, childID)
+			require.NoError(t, err)
+			assert.Equal(t, before, after, "refusal must change no durable queue state")
+			rows, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{AgentID: childID, Seq: 0, Limit: 10})
+			require.NoError(t, err)
+			assert.Empty(t, rows, "the refused input must produce no native transcript")
+		})
+	}
+}
+
+func TestChildInputAdmissionKeepsSupportedMessagesAndControlFeedback(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		provider leapmuxv1.AgentProvider
+		kind     leapmuxv1.AgentInputKind
+	}{
+		{"readonly_child_control_feedback", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			svc, dispatcher, _ := setupTestService(t)
+			require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+				ID: "admission-parent", WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: tc.provider,
+			}))
+			childID, err := svc.Output.NewSink("admission-parent", tc.provider).EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "admission-spawn", ProviderChildKey: "native-child", Title: "native child"})
+			require.NoError(t, err)
+			_, err = svc.InputQueue.SetPaused(ctx, childID, true)
+			require.NoError(t, err)
+			writer := newTestWriter()
+			dispatch(dispatcher, "EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+				AgentId: childID, InputId: "accepted-input", Text: "accepted native input", Kind: tc.kind,
+			}, writer)
+			require.Empty(t, writer.errors)
+			response := decodeQueueResponse(t, writer, &leapmuxv1.EnqueueAgentInputResponse{})
+			require.Len(t, response.GetSnapshot().GetItems(), 1)
+			assert.Equal(t, "accepted-input", response.GetSnapshot().GetItems()[0].GetId())
+			assert.Equal(t, tc.kind, response.GetSnapshot().GetItems()[0].GetKind())
+		})
+	}
+}
+
 func TestAgentInfoPublishesEffectiveSteeringCapability(t *testing.T) {
 	t.Parallel()
 
@@ -110,9 +189,9 @@ func TestAgentInfoPublishesEffectiveSteeringCapability(t *testing.T) {
 	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
 	require.NoError(t, err)
 
-	assert.True(t, svc.agentToProto(&dbAgent, true, nil).GetSupportsSteering())
+	assert.True(t, svc.agentToProto(&dbAgent, agentLiveness{running: true}, nil).GetSupportsSteering())
 	assert.True(t, svc.buildAgentActiveStatus(&dbAgent, nil).GetSupportsSteering())
-	assert.False(t, svc.agentToProto(&dbAgent, false, nil).GetSupportsSteering())
+	assert.False(t, svc.agentToProto(&dbAgent, agentLiveness{}, nil).GetSupportsSteering())
 }
 
 // TestAgentInfoPublishesEffectivePreemptionCapability mirrors the steering
@@ -148,19 +227,19 @@ func TestAgentInfoPublishesEffectivePreemptionCapability(t *testing.T) {
 
 	steerable, err := svc.Queries.GetAgentByID(ctx, "steerable")
 	require.NoError(t, err)
-	assert.False(t, svc.agentToProto(&steerable, true, nil).GetSupportsPreemption(),
+	assert.False(t, svc.agentToProto(&steerable, agentLiveness{running: true}, nil).GetSupportsPreemption(),
 		"a provider that steers must not also offer Preempt")
-	assert.True(t, svc.agentToProto(&steerable, true, nil).GetSupportsSteering())
+	assert.True(t, svc.agentToProto(&steerable, agentLiveness{running: true}, nil).GetSupportsSteering())
 
 	interruptOnly, err := svc.Queries.GetAgentByID(ctx, "interrupt-only")
 	require.NoError(t, err)
-	assert.True(t, svc.agentToProto(&interruptOnly, true, nil).GetSupportsPreemption())
+	assert.True(t, svc.agentToProto(&interruptOnly, agentLiveness{running: true}, nil).GetSupportsPreemption())
 	assert.True(t, svc.buildAgentActiveStatus(&interruptOnly, nil).GetSupportsPreemption())
-	assert.False(t, svc.agentToProto(&interruptOnly, true, nil).GetSupportsSteering())
+	assert.False(t, svc.agentToProto(&interruptOnly, agentLiveness{running: true}, nil).GetSupportsSteering())
 
 	cold, err := svc.Queries.GetAgentByID(ctx, "cold")
 	require.NoError(t, err)
-	assert.False(t, svc.agentToProto(&cold, true, nil).GetSupportsPreemption(),
+	assert.False(t, svc.agentToProto(&cold, agentLiveness{running: true}, nil).GetSupportsPreemption(),
 		"an agent that owns no process has nothing to interrupt with")
 	assert.False(t, svc.buildAgentActiveStatus(&cold, nil).GetSupportsPreemption())
 }
@@ -502,7 +581,7 @@ func TestAgentInputQueueBroadcastsSnapshotToTwoClients(t *testing.T) {
 				}
 			}
 			return false
-		}, time.Second, 10*time.Millisecond)
+		}, inputQueueWait, 10*time.Millisecond)
 	}
 }
 
@@ -530,7 +609,7 @@ func TestQueuedClearStartsColdAgentOnlyOnce(t *testing.T) {
 	require.Eventually(t, func() bool {
 		snapshot, snapshotErr := svc.InputQueue.Snapshot(ctx, "agent-1")
 		return snapshotErr == nil && len(snapshot.Items) == 0
-	}, time.Second, 10*time.Millisecond)
+	}, inputQueueWait, 10*time.Millisecond)
 	assert.Equal(t, int32(1), starts.Load())
 }
 
@@ -560,13 +639,15 @@ func TestQueuedClearCreatesBoundaryBeforeLaterInputRuns(t *testing.T) {
 	require.Eventually(t, func() bool {
 		snapshot, snapshotErr := svc.InputQueue.Snapshot(ctx, "agent-1")
 		return snapshotErr == nil && len(snapshot.Items) == 0 && snapshot.ActiveTurn
-	}, time.Second, 10*time.Millisecond)
+	}, inputQueueWait, 10*time.Millisecond)
 
 	messages, err := svc.Queries.ListAllMessagesByAgentID(ctx, db.ListAllMessagesByAgentIDParams{AgentID: "agent-1", Seq: 0})
 	require.NoError(t, err)
 	require.Len(t, messages, 3)
 	assert.Equal(t, "clear-1", messages[0].ID)
-	assert.Equal(t, []string{contracts.NotificationTypeContextCleared}, decodeMessageTypes(t, messageToProto(&messages[1])))
+	boundary, err := messageToProto(&messages[1])
+	require.NoError(t, err)
+	assert.Equal(t, []string{contracts.NotificationTypeContextCleared}, decodeMessageTypes(t, boundary))
 	assert.Equal(t, "message-1", messages[2].ID)
 	assert.Less(t, messages[0].Seq, messages[1].Seq)
 	assert.Less(t, messages[1].Seq, messages[2].Seq)
@@ -612,11 +693,224 @@ func TestQueuedClearFailureKeepsInputOutOfTranscript(t *testing.T) {
 		snapshot, snapshotErr := svc.InputQueue.Snapshot(ctx, "agent-1")
 		return snapshotErr == nil && snapshot.Paused && len(snapshot.Items) == 1 &&
 			snapshot.Items[0].State == leapmuxv1.AgentInputState_AGENT_INPUT_STATE_FAILED
-	}, time.Second, 10*time.Millisecond)
+	}, inputQueueWait, 10*time.Millisecond)
 	messages, err := svc.Queries.ListAllMessagesByAgentID(ctx, db.ListAllMessagesByAgentIDParams{AgentID: "agent-1", Seq: 0})
 	require.NoError(t, err)
 	require.Len(t, messages, 1)
-	assert.Equal(t, []string{contracts.NotificationTypeAgentError}, decodeMessageTypes(t, messageToProto(&messages[0])))
+	message, err := messageToProto(&messages[0])
+	require.NoError(t, err)
+	assert.Equal(t, []string{contracts.NotificationTypeAgentError}, decodeMessageTypes(t, message))
+}
+
+// TestQueuedClearDropsTheClearedSession pins that a clear leaves no handle of
+// the session that it cleared.
+//
+// A provider can state its new session only after the launch. Amp does: it
+// states a new thread on the init line of the thread's first message. The
+// stand-in launch here states no session, as Amp does until that message. The
+// row must then hold no session at all. If the row kept the cleared session,
+// the agent would report that session, and the next cold start would resume it
+// and bring back the context that the reader cleared.
+func TestQueuedClearDropsTheClearedSession(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	const agentID = "agent-1"
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: agentID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	require.NoError(t, svc.Queries.UpdateAgentSessionID(ctx, db.UpdateAgentSessionIDParams{
+		AgentSessionID: "cleared-thread",
+		ID:             agentID,
+	}))
+	_, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{
+		ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
+		ID:                 "message-1",
+		AgentID:            agentID,
+		Source:             leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
+		Content:            []byte(`{"content":"keep this in the cleared thread"}`),
+		AgentProvider:      leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		CreatedAt:          sqltime.NewSQLiteTime(time.Now()),
+	})
+	require.NoError(t, err)
+	require.Equal(t, "cleared-thread", svc.resolveResumeSessionIDForAgent(agentID, requireAgentRow(t, svc, agentID)),
+		"the setup must hold a session that a cold start resumes")
+
+	var launches []string
+	var launchesMu sync.Mutex
+	svc.startAgentFn = func(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (map[string]string, error) {
+		launchesMu.Lock()
+		launches = append(launches, opts.ResumeSessionID)
+		launchesMu.Unlock()
+		return svc.Agents.StartAgentWith(ctx, opts, sink, claudetest.StartSilent)
+	}
+	t.Cleanup(func() { svc.Agents.StopAgent(agentID) })
+
+	require.Empty(t, enqueueAndSettle(t, svc, agentID, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CLEAR_CONTEXT, "/clear"))
+
+	launchesMu.Lock()
+	assert.Equal(t, []string{""}, launches, "the clear must launch a fresh session")
+	launchesMu.Unlock()
+	row := requireAgentRow(t, svc, agentID)
+	assert.Empty(t, row.AgentSessionID, "the row still holds the session that the clear ended")
+	assert.Empty(t, row.PendingResumeSessionID)
+	assert.Empty(t, svc.resolveResumeSessionIDForAgent(agentID, row),
+		"a cold start after the clear resumes the session that the clear ended")
+}
+
+// TestQueuedClearKeepsTheSessionThatItsLaunchStates pins the order of the
+// clear: it forgets the cleared session BEFORE the launch, so a launch that
+// states its new session at once, as most providers do, keeps that session.
+func TestQueuedClearKeepsTheSessionThatItsLaunchStates(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	const agentID = "agent-1"
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: agentID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	}))
+	require.NoError(t, svc.Queries.UpdateAgentSessionID(ctx, db.UpdateAgentSessionIDParams{
+		AgentSessionID: "cleared-thread",
+		ID:             agentID,
+	}))
+	svc.startAgentFn = startWith(svc.Agents, func(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
+		started, err := claudetest.StartSilent(ctx, opts, sink)
+		if err == nil {
+			sink.UpdateSessionID("fresh-thread")
+		}
+		return started, err
+	})
+	t.Cleanup(func() { svc.Agents.StopAgent(agentID) })
+
+	require.Empty(t, enqueueAndSettle(t, svc, agentID, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CLEAR_CONTEXT, "/clear"))
+
+	assert.Equal(t, "fresh-thread", requireAgentRow(t, svc, agentID).AgentSessionID,
+		"the clear must keep the session that its own launch stated")
+}
+
+// TestQueuedInputResumesTheSessionThatTheRowHoldsAfterTheJoin pins where queue
+// dispatch resolves the session that its cold start resumes.
+//
+// The dispatch reads the agent row before it joins a startup that is in flight.
+// That startup can change the stored session and still end with no process: a
+// cold start whose provider reported a new session and then failed records no
+// startup failure, so the dispatch makes its own cold start after the join.
+// That start must resume the session that the row holds then. A session ID that
+// the dispatch resolved before the join identifies the conversation as it was
+// before the joined startup moved it.
+func TestQueuedInputResumesTheSessionThatTheRowHoldsAfterTheJoin(t *testing.T) {
+	t.Parallel()
+
+	// Quartz controls the join timer. The trap proves that the dispatch read
+	// the row and joined the cold start before that start moved the session.
+	clock := testutil.NewQuartzMock(t)
+	svc, _, _ := setupTestService(t, withClock(clock))
+	t.Cleanup(func() { drainAllInFlight(svc) })
+	ctx := testutil.DeadlineContext(t)
+	joinTimer := clock.Trap().NewTimer(startupAwaitTimerTag)
+	defer joinTimer.Close()
+	seedOpenAgent(t, svc, "agent-1", true)
+
+	const reported = "session-reported-by-the-joined-start"
+	var launchMu sync.Mutex
+	var resumeIDs []string
+	firstLaunched := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	svc.startAgentFn = func(_ context.Context, opts agent.Options, _ agent.ProviderServices) (map[string]string, error) {
+		launchMu.Lock()
+		resumeIDs = append(resumeIDs, opts.ResumeSessionID)
+		first := len(resumeIDs) == 1
+		launchMu.Unlock()
+		if !first {
+			return map[string]string{}, nil
+		}
+		close(firstLaunched)
+		<-releaseFirst
+		// The provider reports a new session in its handshake, and then the
+		// start fails. A failed cold start records no startup failure.
+		if err := svc.Queries.UpdateAgentSessionID(context.Background(), db.UpdateAgentSessionIDParams{
+			ID: "agent-1", AgentSessionID: reported,
+		}); err != nil {
+			return nil, err
+		}
+		return nil, errors.New("the provider exited after its handshake")
+	}
+	launched := func() []string {
+		launchMu.Lock()
+		defer launchMu.Unlock()
+		return append([]string(nil), resumeIDs...)
+	}
+
+	// A control request cold-starts the agent.
+	coldStart := make(chan error, 1)
+	go func() { coldStart <- svc.ensureAgentRunning("agent-1", resumeIfConversation, interactiveStart) }()
+	select {
+	case <-firstLaunched:
+	case <-ctx.Done():
+		require.FailNow(t, "the control request never launched the agent")
+	}
+
+	// A queued message reads the row and joins that cold start.
+	_, err := svc.InputQueue.Enqueue(ctx, inputqueue.NewItem{
+		ID: newTestAgentInputID(), AgentID: "agent-1", Text: "hello",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+	})
+	require.NoError(t, err)
+	joinTimer.MustWait(ctx).MustRelease(ctx)
+
+	close(releaseFirst)
+	select {
+	case err := <-coldStart:
+		require.Error(t, err, "fixture check: the joined cold start must fail")
+	case <-ctx.Done():
+		require.FailNow(t, "the joined cold start never returned")
+	}
+
+	require.Eventually(t, func() bool { return len(launched()) == 2 }, inputQueueWait, 10*time.Millisecond,
+		"the dispatch never made its own cold start after the joined one failed")
+	assert.Equal(t, []string{"session-agent-1", reported}, launched(),
+		"the dispatch resumed the session that it read before the join, not the one that the row holds now")
+}
+
+// TestQueuedFirstMessageToAnIdleAgentStartsAFreshSession pins the reason that
+// queue dispatch needs no resume session resolved in advance.
+//
+// A session that holds no user message has no conversation to resume, and a
+// provider refuses to resume it. The resolution asks HasUserMessages, so it
+// must run before the user message lands. The queue writes the transcript row
+// only after the dispatch returns, so a resolution inside ensureAgentRunning
+// cannot count the message that it starts the agent for.
+func TestQueuedFirstMessageToAnIdleAgentStartsAFreshSession(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	t.Cleanup(func() { drainAllInFlight(svc) })
+	rec := newStartRecorder()
+	rec.install(svc)
+	// The row of a tab that was opened, started and never used: its provider
+	// reported a session, and no message reached it.
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "agent-idle", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	require.NoError(t, svc.Queries.UpdateAgentSessionID(ctx, db.UpdateAgentSessionIDParams{
+		ID: "agent-idle", AgentSessionID: "session-idle",
+	}))
+
+	_, err := svc.InputQueue.Enqueue(ctx, inputqueue.NewItem{
+		ID: newTestAgentInputID(), AgentID: "agent-idle", Text: "hello",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+	})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { return len(rec.ids()) == 1 }, inputQueueWait, 10*time.Millisecond,
+		"the queued message never cold-started the agent")
+	assert.Empty(t, rec.resumeFor("agent-idle"),
+		"the cold start resumed a session that holds no conversation; the provider refuses that resume")
 }
 
 func TestChildSteerReturnsOwnerDeliveryError(t *testing.T) {
@@ -640,7 +934,7 @@ func TestChildQueuePublishesOnlyEffectiveSteeringCapability(t *testing.T) {
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE,
 	}))
 	sink := svc.Output.NewSink(rootID, leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE)
-	childID, err := sink.EnsureChildAgent("zcode-span", "zcode-child", "read-only child")
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "zcode-span", ProviderChildKey: "zcode-child", Title: "read-only child"})
 	require.NoError(t, err)
 	_, err = svc.Agents.StartAgentWith(ctx, agent.Options{
 		AgentID: rootID, WorkingDir: t.TempDir(),
@@ -734,10 +1028,10 @@ func startGoalTextAgent(t *testing.T, svc *Service, agentID string) {
 	require.NoError(t, err)
 	t.Cleanup(func() { svc.Agents.StopAndWaitAgent(agentID) })
 	require.NoError(t, svc.Agents.SendRawInput(agentID, []byte(
-		"{\"type\":\"system\",\"subtype\":\"init\",\"slash_commands\":[\"goal\"]}\n")))
+		"{\"type\":\"system\",\"subtype\":\"init\",\"slash_commands\":[\"goal\"]}\n"), agent.StopContext{}))
 	require.Eventually(t, func() bool {
 		return len(svc.Agents.SupportedGoalActions(agentID)) > 0
-	}, time.Second, 5*time.Millisecond)
+	}, inputQueueWait, 5*time.Millisecond)
 }
 
 // A text-route goal command enters the durable input queue. The local goal row
@@ -775,7 +1069,7 @@ func TestUpdateAgentGoalQueuesTextUntilDelivery(t *testing.T) {
 	require.Eventually(t, func() bool {
 		loaded, loadErr := svc.Output.LoadGoal(ctx, "agent-1")
 		return loadErr == nil && loaded.Goal.GetObjective() == "ship the release"
-	}, time.Second, 5*time.Millisecond)
+	}, inputQueueWait, 5*time.Millisecond)
 }
 
 func TestUpdateAgentGoalReturnsTheQueueFullMessage(t *testing.T) {
@@ -1041,7 +1335,7 @@ func requireInterruptReachedAgent(t *testing.T, svc *Service, agentID string) {
 			}
 		}
 		return false
-	}, 5*time.Second, 10*time.Millisecond, "the interrupt never reached the agent process")
+	}, inputQueueWait, 10*time.Millisecond, "the interrupt never reached the agent process")
 }
 
 // stopInputQueue stops the queue manager, so every later queue write returns
@@ -1212,12 +1506,12 @@ func TestInterruptAgentCancelsTheRequestsTheTurnWasBlockedOn(t *testing.T) {
 
 	svc, dispatcher, _ := setupTestService(t)
 	startEchoAgent(t, svc, "agent-1")
-	_, err := svc.Queries.StoreControlRequest(context.Background(), db.StoreControlRequestParams{
-		AgentID:   "agent-1",
+	sink := svc.Output.sinkForAgent("agent-1")
+	require.NotNil(t, sink)
+	require.NoError(t, sink.PublishControlRequest(agent.ControlRequest{
 		RequestID: "request-1",
 		Payload:   []byte(`{"type":"control_request","request_id":"request-1","request":{"subtype":"can_use_tool"}}`),
-	})
-	require.NoError(t, err)
+	}))
 
 	// The raw frame is the stop path that waits for no answer, so the stop it sends is
 	// DELIVERED rather than merely attempted. That is the bar the cancel runs behind.
@@ -1228,7 +1522,7 @@ func TestInterruptAgentCancelsTheRequestsTheTurnWasBlockedOn(t *testing.T) {
 	}, writer)
 	assert.Empty(t, writer.rejections())
 
-	_, err = svc.Queries.GetControlRequest(context.Background(), db.GetControlRequestParams{
+	_, err := svc.Queries.GetControlRequest(context.Background(), db.GetControlRequestParams{
 		AgentID: "agent-1", RequestID: "request-1",
 	})
 	assert.Error(t, err, "the question belonged to the turn the stop ended")
@@ -1263,7 +1557,7 @@ func TestRawInterruptFrameRunsWhenTheQueuePauseFails(t *testing.T) {
 	require.Eventually(t, func() bool {
 		echoed = recorder.requests()
 		return len(echoed) > 0
-	}, 5*time.Second, 10*time.Millisecond, "the interrupt never reached the agent process")
+	}, inputQueueWait, 10*time.Millisecond, "the interrupt never reached the agent process")
 	require.Len(t, echoed, 1)
 	assert.Equal(t, "raw-interrupt-1", echoed[0].RequestID,
 		"the agent received a frame with a different request id")
@@ -1543,4 +1837,154 @@ func TestResolveControlInputStatesAStoreFaultAsItsPauseReason(t *testing.T) {
 	assert.Equal(t, inputqueue.DispatchNotReady, delivery.Outcome)
 	assert.Equal(t, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_STORE_FAULT,
 		delivery.PauseReason)
+}
+
+// newRequeueFixture creates a Codewhale agent whose paused queue holds what a
+// provider hands back, so the test reads the queue before anything dispatches.
+func newRequeueFixture(t *testing.T) (*Service, agent.ProviderServices) {
+	t.Helper()
+	ctx := context.Background()
+	svc, _, _ := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	}))
+	_, err := svc.InputQueue.SetPaused(ctx, "agent-1", true)
+	require.NoError(t, err)
+	return svc, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+}
+
+// requeuedNotices counts the rows that state why a message appears again.
+func requeuedNotices(t *testing.T, svc *Service) int {
+	t.Helper()
+	return len(findNotificationsByType(readAllNotifications(t, svc.Queries, "agent-1"), contracts.NotificationTypeInputRequeued))
+}
+
+// TestRequeueDroppedInputQueuesTheInputAndStatesWhyOnce pins the hand-back of a
+// dropped input: the queue holds it as the reader's own message, one row states
+// why it appears again, and a repeat of the same drop adds neither.
+func TestRequeueDroppedInputQueuesTheInputAndStatesWhyOnce(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, sink := newRequeueFixture(t)
+	attachments := []*leapmuxv1.Attachment{{Filename: "notes.txt", MimeType: "text/plain", Data: []byte("body")}}
+
+	require.NoError(t, sink.RequeueDroppedInput("turn-1/1", "Also check the tests.", attachments))
+	snapshot, err := svc.InputQueue.Snapshot(ctx, "agent-1")
+	require.NoError(t, err)
+	require.Len(t, snapshot.Items, 1)
+	item := snapshot.Items[0]
+	assert.Equal(t, droppedInputID("agent-1", "turn-1/1"), item.ID)
+	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, item.Kind)
+	assert.Equal(t, "Also check the tests.", item.Text)
+	assert.True(t, item.ReclassifyOnEdit, "an edit of the hand-back reads its text again, as an edit of a typed message does")
+	require.Len(t, item.Metadata, 1)
+	assert.Equal(t, "notes.txt", item.Metadata[0].Filename)
+	assert.Equal(t, int64(4), item.Metadata[0].Size)
+	assert.Equal(t, 1, requeuedNotices(t, svc))
+
+	require.NoError(t, sink.RequeueDroppedInput("turn-1/1", "Also check the tests.", attachments), "a repeat is not a failure")
+	snapshot, err = svc.InputQueue.Snapshot(ctx, "agent-1")
+	require.NoError(t, err)
+	assert.Len(t, snapshot.Items, 1, "a repeat of one drop queues nothing")
+	assert.Equal(t, 1, requeuedNotices(t, svc), "a repeat of one drop writes no second row")
+
+	require.NoError(t, sink.RequeueDroppedInput("turn-1/2", "And the docs.", nil))
+	snapshot, err = svc.InputQueue.Snapshot(ctx, "agent-1")
+	require.NoError(t, err)
+	require.Len(t, snapshot.Items, 2)
+	assert.Equal(t, "And the docs.", snapshot.Items[1].Text, "the queue appends a hand-back behind what it holds")
+	assert.Equal(t, 2, requeuedNotices(t, svc))
+}
+
+// TestRequeueDroppedInputReportsARefusalAndStatesNothing pins the failure paths.
+// The provider states the drop to the reader itself when the queue refuses, so a
+// refusal must write no row that claims the message comes again.
+func TestRequeueDroppedInputReportsARefusalAndStatesNothing(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a stopped queue", func(t *testing.T) {
+		t.Parallel()
+		svc, sink := newRequeueFixture(t)
+		stopInputQueue(t, svc, "agent-1")
+		err := sink.RequeueDroppedInput("turn-1/1", "Also check the tests.", nil)
+		require.ErrorIs(t, err, inputqueue.ErrManagerStopped)
+		assert.Zero(t, requeuedNotices(t, svc))
+	})
+
+	t.Run("the same drop with different text", func(t *testing.T) {
+		t.Parallel()
+		svc, sink := newRequeueFixture(t)
+		require.NoError(t, sink.RequeueDroppedInput("turn-1/1", "Also check the tests.", nil))
+		err := sink.RequeueDroppedInput("turn-1/1", "Something else.", nil)
+		require.ErrorIs(t, err, inputqueue.ErrConflict)
+		assert.Equal(t, 1, requeuedNotices(t, svc))
+	})
+
+	t.Run("an empty input", func(t *testing.T) {
+		t.Parallel()
+		svc, sink := newRequeueFixture(t)
+		err := sink.RequeueDroppedInput("turn-1/1", "", nil)
+		require.Error(t, err)
+		assert.Zero(t, requeuedNotices(t, svc))
+	})
+
+	t.Run("a subagent", func(t *testing.T) {
+		t.Parallel()
+		svc, sink := newRequeueFixture(t)
+		childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn-span", ProviderChildKey: "row-key", Title: "child task"})
+		require.NoError(t, err)
+		err = sink.ChildSink(childID).RequeueDroppedInput("turn-1/1", "Also check the tests.", nil)
+		require.ErrorContains(t, err, "has no input queue")
+		snapshot, err := svc.InputQueue.Snapshot(context.Background(), childID)
+		require.NoError(t, err)
+		assert.Empty(t, snapshot.Items)
+	})
+
+	t.Run("no queue wired", func(t *testing.T) {
+		t.Parallel()
+		svc, sink := newRequeueFixture(t)
+		svc.Output.SetRequeueDroppedInputFunc(nil)
+		err := sink.RequeueDroppedInput("turn-1/1", "Also check the tests.", nil)
+		require.ErrorContains(t, err, "no input queue is wired")
+		assert.Zero(t, requeuedNotices(t, svc))
+	})
+}
+
+// A provider can hand back one drop from two goroutines at once, for example a
+// turn end and a stop that race. The queue adds the item once, and one row
+// states why the message appears again.
+func TestRequeueDroppedInputAddsOneDropOnceAcrossConcurrentCalls(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, sink := newRequeueFixture(t)
+	const callers = 8
+	var wg sync.WaitGroup
+	for range callers {
+		wg.Go(func() {
+			assert.NoError(t, sink.RequeueDroppedInput("turn-1/1", "Also check the tests.", nil))
+		})
+	}
+	wg.Wait()
+
+	snapshot, err := svc.InputQueue.Snapshot(ctx, "agent-1")
+	require.NoError(t, err)
+	assert.Len(t, snapshot.Items, 1)
+	assert.Equal(t, 1, requeuedNotices(t, svc))
+}
+
+func TestDroppedInputIDKeepsEachAgentAndDropApart(t *testing.T) {
+	t.Parallel()
+
+	id := droppedInputID("agent-1", "turn-1/1")
+	assert.Regexp(t, `^dropped-[0-9a-f]{32}$`, id)
+	assert.Equal(t, id, droppedInputID("agent-1", "turn-1/1"), "one drop gives one id")
+	assert.NotEqual(t, id, droppedInputID("agent-2", "turn-1/1"), "the id is unique across the Worker")
+	assert.NotEqual(t, id, droppedInputID("agent-1", "turn-1/2"))
+	// A drop id is the provider's own text, so no separator keeps the pair apart.
+	assert.NotEqual(t, droppedInputID("a\x00b", "c"), droppedInputID("a", "b\x00c"))
+	assert.NotEqual(t, droppedInputID("ab", "c"), droppedInputID("a", "bc"))
+	assert.NotEqual(t, droppedInputID("", "x"), droppedInputID("x", ""))
 }

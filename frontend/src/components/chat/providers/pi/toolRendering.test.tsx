@@ -47,31 +47,33 @@ describe('pi tool rendering', () => {
       expect(container.textContent).not.toContain(invented)
   })
 
-  it('resolves stored MCP artifacts through the same path for the transcript and image viewer', () => {
+  it('resolves stored MCP full tool output through the same path for the transcript and image viewer', () => {
     const data = pngBase64(12, 8)
-    const path = '/tmp/pi-mcp-output-Ab123C/mcp-result-1234abcd.txt'
+    const path = '/project/.tmp/pi-mcp-1234567890abcdef.txt'
     const message = makeMessage({
       agentProvider: AgentProvider.PI,
       spanId: 'artifact',
-      content: rawContent({ type: 'tool_execution_end', toolCallId: 'artifact', toolName: 'mcp', result: {
+      content: rawContent({ type: 'tool_execution_end', toolCallId: 'artifact', toolName: 'mcp__sample__image', result: {
         content: [{ type: 'text', text: 'Short preview' }],
-        details: { server: 'sample', tool: 'image', mcpResult: { omitted: true, fullResultPath: path } },
+        details: { server: 'sample', tool: 'image', fullOutputPath: path },
+        structuredContent: { content: [{ type: 'text', text: 'Full stored text' }, { type: 'image', data, mimeType: 'image/png' }] },
       } }),
-      supplementalContent: rawContent({ provider: { toolCallId: 'artifact', toolName: 'mcp', mcpResultFile: { path, result: { content: [{ type: 'image', data, mimeType: 'image/png' }] } } } }),
+      supplementalContent: rawContent({ provider: { toolCallId: 'artifact', toolName: 'mcp__sample__image', outputFile: { path, text: 'Full stored text' } } }),
     })
     const original = message.content.slice()
     const { container } = render(() => <PreferencesProvider><MessageBubble message={message} /></PreferencesProvider>)
     expect(container.querySelectorAll('img')).toHaveLength(1)
+    expect(container.textContent).toContain('Full stored text')
     expect(container.textContent).not.toContain('Short preview')
     expect(messageToolResultImages(message)[0]?.data).toBe(data)
     expect(message.content).toEqual(original)
   })
 
-  it('renders native MCP script failures through the shared error layout', () => {
-    const { container } = renderTool('mcpScript', { code: 'throw new Error("probe")' }, {
+  it('renders native codemode failures through the shared error layout', () => {
+    const { container } = renderTool('codemode', { code: 'throw new Error("probe")' }, {
       content: content('Error: MCP_SCRIPT_PROBE_FAILURE'),
-      details: { mode: 'script', error: 'script_error', timeoutMs: 30000 },
-    })
+      details: { calls: [] },
+    }, true)
     expect(container.textContent).toContain('MCP_SCRIPT_PROBE_FAILURE')
     expect(container.querySelector('.lucide-circle-alert')).not.toBeNull()
   })
@@ -80,13 +82,14 @@ describe('pi tool rendering', () => {
     const data = 'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEUlEQVR4nGP4z8DwH4QZYAwAR8oH+WdZbrcAAAAASUVORK5CYII='
     const result = {
       content: [{ type: 'image', data, mimeType: 'image/png' }],
-      details: { server: 'sample', resourceUri: 'probe://image', mcpResult: { contents: [{ uri: 'probe://image', blob: data, mimeType: 'image/png' }] } },
+      details: { server: 'sample', tool: 'read_mcp_resource' },
+      structuredContent: { server: 'sample', uri: 'probe://image', contents: [{ uri: 'probe://image', blob: data, mimeType: 'image/png' }] },
     }
-    const { container } = renderTool('sample_read_resource', {}, result)
+    const { container } = renderTool('read_mcp_resource', { server: 'sample', uri: 'probe://image' }, result)
     expect(container.querySelectorAll('img')).toHaveLength(1)
     expect(container.textContent).not.toContain(data)
-    const payload = { type: 'tool_execution_end', toolCallId: 'image', toolName: 'sample_read_resource', result: { ...result, content: [] } }
-    const images = providerRowImages(AgentProvider.PI, payload, { spanType: 'sample_read_resource' })
+    const payload = { type: 'tool_execution_end', toolCallId: 'image', toolName: 'read_mcp_resource', result: { ...result, content: [] } }
+    const images = providerRowImages(AgentProvider.PI, payload, { spanType: 'read_mcp_resource' })
     expect(images).toHaveLength(1)
     expect(images?.[0]?.data).toBe(data)
   })
@@ -125,9 +128,10 @@ describe('pi tool rendering', () => {
   })
 
   it('exposes native MCP images to the shared image viewer', () => {
-    const payload = { type: 'tool_execution_end', toolCallId: 'mcp-image', toolName: 'mcp', result: {
+    const payload = { type: 'tool_execution_end', toolCallId: 'mcp-image', toolName: 'mcp__sample__image', result: {
       content: [],
-      details: { mode: 'call', server: 'sample', tool: 'image', mcpResult: { content: [{ type: 'image', mimeType: 'image/png', data: 'image-bytes' }] } },
+      details: { server: 'sample', tool: 'image' },
+      structuredContent: { content: [{ type: 'image', mimeType: 'image/png', data: 'image-bytes' }] },
     } }
     const images = providerRowImages(AgentProvider.PI, payload, { spanType: 'mcp' })
     expect(images).toHaveLength(1)

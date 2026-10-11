@@ -20,6 +20,7 @@ import (
 // a default ZCode simply takes needs no method here.
 type zcodeProvider struct {
 	agent.ProviderDefaults
+	storageQuery zcodeStoragePathQuery
 }
 
 // Classify groups ZCode's consolidatable notifications.
@@ -28,6 +29,22 @@ type zcodeProvider struct {
 // a chat that shows each one separately is unreadable. The key includes the tool
 // name so two different tools' denials stay distinguishable.
 func (zcodeProvider) Classify(raw json.RawMessage) agent.NotificationClassification {
+	var state struct {
+		Method string `json:"method"`
+		Params struct {
+			Reason string `json:"reason"`
+		} `json:"params"`
+	}
+	if json.Unmarshal(raw, &state) == nil && state.Method == contracts.ZCodeMethodStateUpdated {
+		switch state.Params.Reason {
+		case contracts.ZCodeStateReasonCompactStarted:
+			return agent.NotificationClassification{Kind: agent.NotificationKindStatus, Key: "zcode:compaction"}
+		case contracts.ZCodeStateReasonSessionCompacted,
+			contracts.ZCodeStateReasonSessionCompactFailed,
+			contracts.ZCodeStateReasonSessionCompactCancelled:
+			return agent.NotificationClassification{Kind: agent.NotificationKindCompactionBoundary, Key: "zcode:compaction"}
+		}
+	}
 	var env zcodeEventEnvelope
 	if err := json.Unmarshal(raw, &env); err != nil {
 		return agent.NotificationClassification{}
@@ -88,11 +105,17 @@ func (zcodeProvider) PlanModeControl(toolName string) agent.PlanModeControlKind 
 	}
 }
 
-// PlanModePermissionMode gives ZCode's own two modes. ZCode's mode axis is
-// plan/build/edit/yolo, so an approved exit lands on `build` -- the mode the frontend
-// plugin already declares as the plan banner's default. Claude's `acceptEdits` is not a
-// value `session/setMode` accepts, and a session told that word stays where it was while
-// the settings bar claims otherwise.
+// PlanModePermissionMode gives ZCode's own two mode words. The axis of LeapMux for
+// ZCode is plan/build/edit/yolo, where `plan` is the plan flag of ZCode. An approved
+// ExitPlanMode turns the flag off, and the session keeps the native mode that it had
+// under plan mode. LeapMux then applies the mode that the plan banner chose. The
+// banner default is `build`: the frontend plugin declares it, and this method
+// returns it. An approval with no choice therefore ends in `build`, also for a
+// session that entered plan mode from `edit`. The exit event reports `edit` first
+// (handleZCodeModeChanged), and the deferred mode replaces it (DeferPlanExitMode).
+// Claude's `acceptEdits` is not a value that `session/setMode` accepts. A session
+// that receives that word stays where it was, while the settings bar claims
+// otherwise.
 func (zcodeProvider) PlanModePermissionMode(kind agent.PlanModeControlKind) string {
 	switch kind {
 	case agent.PlanModeControlEnter:
@@ -130,36 +153,33 @@ func (zcodeProvider) ResolveResumeHandle(handle, _ string) (string, error) {
 // ListStoredSessions reads ZCode's own CLI session database. See
 // sessions.go for the path, and opencode/sessions.go for the query --
 // ZCode's `session` table is OpenCode's.
-func (zcodeProvider) ListStoredSessions(ctx context.Context, q agent.StoredSessionQuery) ([]agent.StoredSession, error) {
-	return zcodeStoredSessions(ctx, q)
+func (p zcodeProvider) ListStoredSessions(ctx context.Context, q agent.StoredSessionQuery) ([]agent.StoredSession, error) {
+	return zcodeStoredSessions(ctx, q, p.storageQuery)
 }
 
-// TurnEndToolUses reads the tool-call count off ZCode's turn end, which states it
-// directly.
+// TurnEndToolUses reads the tool-call count of a turn end. The Worker's own count,
+// which finishZCodeTurn writes onto every divider, comes first: a stopped turn's
+// turn.completed states toolCallCount 0 for the call that the stop cut. ZCode's own
+// toolCallCount answers for a turn end that carries no Worker count.
 func (zcodeProvider) TurnEndToolUses(content []byte) (int32, bool) {
-	var env zcodeEventEnvelope
-	if err := json.Unmarshal(content, &env); err != nil {
-		return agent.DefaultTurnEndToolUses(content)
+	if count, ok := agent.DefaultTurnEndToolUses(content); ok {
+		return count, true
 	}
-	if env.Type != contracts.ZCodeEventTurnCompleted || len(env.Payload) == 0 {
-		return agent.DefaultTurnEndToolUses(content)
+	var env zcodeEventEnvelope
+	if err := json.Unmarshal(content, &env); err != nil || env.Type != contracts.ZCodeEventTurnCompleted || len(env.Payload) == 0 {
+		return 0, false
 	}
 	var payload struct {
 		ToolCallCount *int32 `json:"toolCallCount"`
 	}
 	if err := json.Unmarshal(env.Payload, &payload); err != nil || payload.ToolCallCount == nil {
-		return agent.DefaultTurnEndToolUses(content)
+		return 0, false
 	}
 	return *payload.ToolCallCount, true
 }
 
-// EndsSubagentTranscript is false: a ZCode subagent's child transcript simply stops,
-// so the worker's neutral subagent-end divider closes it.
-func (zcodeProvider) EndsSubagentTranscript([]byte) bool { return false }
-
-// SupportsChildSteering is false: a ZCode subagent runs to completion and takes no
+// ChildCapabilities.AcceptsMessages is false: a ZCode subagent runs to completion and takes no
 // further message.
-func (zcodeProvider) SupportsChildSteering() bool { return false }
 
 // ReportsDefaultModelSentinel is false: ZCode's catalog names every model
 // explicitly, so no entry stands for the account default.
@@ -204,13 +224,13 @@ func (zcodeProvider) ResolveControlResponse(ctx agent.ControlResponseContext) ag
 		// after the winner deleted it). There is nothing to address the reply to, and
 		// forwarding the frontend envelope would put a frame the app-server cannot
 		// parse on its stdin.
-		res.Withhold = true
+		res.Refuse(agent.RefusalUnreadableRequest)
 		return res
 	}
 
 	var stored zcodeControlRequestPayload
 	if !providerkit.WarnUnmarshal(ctx.RequestPayload, &stored, "zcode control response request") {
-		res.Withhold = true
+		res.Refuse(agent.RefusalUnreadableRequest)
 		return res
 	}
 	res.PlanModeControl = zcodeProvider{}.PlanModeControl(stored.Request.ToolName)
@@ -220,31 +240,31 @@ func (zcodeProvider) ResolveControlResponse(ctx agent.ControlResponseContext) ag
 		// Not a recognizable allow/deny. Withholding the forward is the safe answer:
 		// the app-server keeps waiting (and the user can answer again) rather than
 		// receiving a frame that means nothing.
-		res.Withhold = true
+		res.Refuse(agent.RefusalNoDecision)
 		return res
 	}
 	if requestID != "" && stored.RequestID != "" && requestID != stored.RequestID {
 		slog.Warn("zcode control response addressed another request",
 			"answered", requestID, "stored", stored.RequestID)
-		res.Withhold = true
+		res.Refuse(agent.RefusalOtherRequest)
 		return res
 	}
 	if len(stored.WireID) == 0 {
 		slog.Warn("zcode stored control request carried no wire id", "request_id", stored.RequestID)
-		res.Withhold = true
+		res.Refuse(agent.RefusalUnreadableRequest)
 		return res
 	}
 
 	reply, err := zcodeReplyForAnswer(stored, behavior, message, ctx.ResponseContent)
 	if err != nil {
 		slog.Warn("zcode build control reply failed", "request_id", stored.RequestID, "error", err)
-		res.Withhold = true
+		res.Refuse(agent.RefusalUnreadableRequest)
 		return res
 	}
 	encoded, err := json.Marshal(zcodeReplyFrame{ID: stored.WireID, Result: reply})
 	if err != nil {
 		slog.Warn("zcode marshal control reply failed", "request_id", stored.RequestID, "error", err)
-		res.Withhold = true
+		res.Refuse(agent.RefusalUnencodableReply)
 		return res
 	}
 	res.Content = encoded

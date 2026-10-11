@@ -8,9 +8,12 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/util/testutil"
@@ -101,7 +104,7 @@ func TestNativeCopilotSessionLifecycle(t *testing.T) {
 	require.NoError(t, a.SendInput(content, []*leapmuxv1.Attachment{{Filename: "image.png", MimeType: "image/png", Data: image}}))
 	require.True(t, a.PublishTurnActive().Active)
 	require.ErrorIs(t, a.SendInput("second input", nil), agent.ErrAgentBusy)
-	require.NoError(t, a.Interrupt())
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	require.False(t, a.PublishTurnActive().Active)
 	before := len(sink.Messages())
 	a.HandleOutput([]byte(`{"method":"session.event","params":{"sessionId":"foreign-session","event":{"type":"assistant.turn_start","data":{}}}}`))
@@ -187,6 +190,111 @@ func TestNativeCopilotSteerSendsImmediateMode(t *testing.T) {
 	require.Equal(t, "steered", sends[1].Params["prompt"])
 }
 
+// readRecordedCopilotRequests returns the requests that the fake runtime logged, in order.
+func readRecordedCopilotRequests(t *testing.T, path string) []agenttest.RecordedRequest {
+	t.Helper()
+	file, err := os.Open(path)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, file.Close()) }()
+	decoder := json.NewDecoder(file)
+	var requests []agenttest.RecordedRequest
+	for decoder.More() {
+		var request agenttest.RecordedRequest
+		require.NoError(t, decoder.Decode(&request))
+		requests = append(requests, request)
+	}
+	return requests
+}
+
+// Copilot 1.0.87 refuses Assisted mode unless the session opens with the
+// AUTO_APPROVAL feature flag on. LeapMux offers Assisted and starts a new session in
+// it, so every session must ask for the flag. Without it the startup read the
+// refusal as an unconfirmed setting and the agent never started.
+func TestNativeCopilotAsksForAssistedApprovalWhenItOpensASession(t *testing.T) {
+	for _, resume := range []bool{false, true} {
+		name := "create"
+		if resume {
+			name = "resume"
+		}
+		t.Run(name, func(t *testing.T) {
+			requestsPath := filepath.Join(t.TempDir(), "requests.jsonl")
+			agenttest.InstallFakeCLI(t, agenttest.FakeCLI{
+				Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection",
+				WantEnv: "LEAPMUX_TEST_COPILOT_NATIVE",
+				Env:     []string{"LEAPMUX_TEST_COPILOT_REQUIRE_APPROVAL_FLAG=1", "LEAPMUX_TEST_COPILOT_SESSION_REQUESTS=" + requestsPath},
+			})
+			opts := agent.Options{
+				AgentID: "native-approval-flag", WorkingDir: t.TempDir(), Shell: testutil.TestShell(),
+				APITimeout: time.Second,
+				Options:    optionmap.Map{agent.OptionIDPermissionMode: "assisted"},
+			}
+			if resume {
+				opts.ResumeSessionID = "stored-session"
+			}
+			sink := &agenttest.Sink{}
+			provider, err := startNativeCopilot(t.Context(), opts, agent.NewProviderServices(sink))
+			require.NoError(t, err)
+			t.Cleanup(func() { provider.Stop(); _ = provider.Wait() })
+			require.Equal(t, "assisted", provider.(*Agent).SettingsSnapshot().SurfacedOptions[agent.OptionIDPermissionMode])
+
+			opening := "session.create"
+			if resume {
+				opening = "session.resume"
+			}
+			var seen int
+			for _, request := range readRecordedCopilotRequests(t, requestsPath) {
+				if request.Method != opening {
+					continue
+				}
+				seen++
+				require.Equal(t, map[string]any{"AUTO_APPROVAL": true}, request.Params["featureFlags"])
+			}
+			require.Equal(t, 1, seen)
+		})
+	}
+}
+
+// A context clear opens a replacement session in the same process. The runtime
+// resets its permission mode to Manual for that session and gates Assisted again, so
+// the replacement must ask for the flag too, and the restored mode must hold.
+func TestNativeCopilotKeepsAssistedApprovalAfterAContextClear(t *testing.T) {
+	requestsPath := filepath.Join(t.TempDir(), "requests.jsonl")
+	agenttest.InstallFakeCLI(t, agenttest.FakeCLI{
+		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection",
+		WantEnv: "LEAPMUX_TEST_COPILOT_NATIVE",
+		Env:     []string{"LEAPMUX_TEST_COPILOT_REQUIRE_APPROVAL_FLAG=1", "LEAPMUX_TEST_COPILOT_SESSION_REQUESTS=" + requestsPath},
+	})
+	provider, err := startNativeCopilot(t.Context(), agent.Options{
+		AgentID: "native-approval-clear", WorkingDir: t.TempDir(), Shell: testutil.TestShell(),
+		APITimeout: time.Second,
+		Options:    optionmap.Map{agent.OptionIDPermissionMode: "assisted"},
+	}, agent.NewProviderServices(&agenttest.Sink{}))
+	require.NoError(t, err)
+	t.Cleanup(func() { provider.Stop(); _ = provider.Wait() })
+	a := provider.(*Agent)
+	_, err = a.ClearContext()
+	require.NoError(t, err)
+	require.Equal(t, "assisted", a.SettingsSnapshot().SurfacedOptions[agent.OptionIDPermissionMode])
+	var created int
+	for _, request := range readRecordedCopilotRequests(t, requestsPath) {
+		if request.Method == "session.create" {
+			created++
+			require.Equal(t, map[string]any{"AUTO_APPROVAL": true}, request.Params["featureFlags"])
+		}
+	}
+	require.Equal(t, 2, created)
+}
+
+func TestCopilotNativeSessionConfigAsksForAssistedApproval(t *testing.T) {
+	for _, resume := range []bool{false, true} {
+		raw, err := json.Marshal(newCopilotSessionConfig(agent.Options{WorkingDir: "/project"}, "session", resume))
+		require.NoError(t, err)
+		var fields map[string]any
+		require.NoError(t, json.Unmarshal(raw, &fields))
+		require.Equal(t, map[string]any{"AUTO_APPROVAL": true}, fields["featureFlags"], "resume=%v", resume)
+	}
+}
+
 func TestCopilotNativeSessionConfig(t *testing.T) {
 	for _, resume := range []bool{false, true} {
 		// Both sentinels mean "let the runtime choose", and neither word is one the
@@ -269,6 +377,66 @@ func TestCopilotNativeSessionRejectsAnEmptyIdentity(t *testing.T) {
 	require.ErrorContains(t, err, "session ID is empty")
 }
 
+func TestCopilotNativeSessionReportsReasoningSummaryOptionFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		resume bool
+	}{{name: "create"}, {name: "resume", resume: true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			agenttest.InstallFakeCLI(t, agenttest.FakeCLI{
+				Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection",
+				WantEnv: "LEAPMUX_TEST_COPILOT_NATIVE",
+				Env:     []string{"LEAPMUX_TEST_COPILOT_REJECT_REASONING_SUMMARIES=1"},
+			})
+			opts := agent.Options{AgentID: "native-summary", WorkingDir: t.TempDir(), Shell: testutil.TestShell()}
+			connection, err := startCopilotConnectionForTest(t, opts, func(*providerkit.ParsedLine) {})
+			require.NoError(t, err)
+			t.Cleanup(func() { connection.Stop(); _ = connection.Wait() })
+			_, err = connection.openSession(opts, "expected-session", tc.resume, time.Second)
+			require.ErrorContains(t, err, "enable Copilot reasoning summaries")
+			var nativeError *providerkit.JSONRPCResponseError
+			require.ErrorAs(t, err, &nativeError)
+			require.ErrorContains(t, nativeError, "Reasoning summaries refused")
+		})
+	}
+}
+
+func TestCopilotNativeSessionRequestsReasoningSummaryOnCreateAndResume(t *testing.T) {
+	requestsPath := filepath.Join(t.TempDir(), "requests.jsonl")
+	agenttest.InstallFakeCLI(t, agenttest.FakeCLI{
+		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection",
+		WantEnv: "LEAPMUX_TEST_COPILOT_NATIVE",
+		Env:     []string{"LEAPMUX_TEST_COPILOT_SESSION_REQUESTS=" + requestsPath},
+	})
+	opts := agent.Options{AgentID: "native-summary", WorkingDir: t.TempDir(), Shell: testutil.TestShell()}
+	connection, err := startCopilotConnectionForTest(t, opts, func(*providerkit.ParsedLine) {})
+	require.NoError(t, err)
+	t.Cleanup(func() { connection.Stop(); _ = connection.Wait() })
+	for _, resume := range []bool{false, true} {
+		_, err := connection.openSession(opts, "native-summary-session", resume, time.Second)
+		require.NoError(t, err)
+	}
+
+	file, err := os.Open(requestsPath)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, file.Close()) }()
+	decoder := json.NewDecoder(file)
+	openCalls := 0
+	for decoder.More() {
+		var request struct {
+			Method string         `json:"method"`
+			Params map[string]any `json:"params"`
+		}
+		require.NoError(t, decoder.Decode(&request))
+		if request.Method != "session.create" && request.Method != "session.resume" {
+			continue
+		}
+		openCalls++
+		require.Equal(t, "detailed", request.Params["reasoningSummary"], request.Method)
+	}
+	require.Equal(t, 2, openCalls)
+}
+
 func TestCopilotUsesNativeSessionProtocol(t *testing.T) {
 	requestsPath := filepath.Join(t.TempDir(), "requests.jsonl")
 	argsPath := filepath.Join(t.TempDir(), "args")
@@ -296,6 +464,9 @@ func TestCopilotUsesNativeSessionProtocol(t *testing.T) {
 	defer func() { require.NoError(t, file.Close()) }()
 	decoder := json.NewDecoder(file)
 	var created map[string]any
+	var summaryOptions map[string]any
+	createdIndex, summaryIndex := -1, -1
+	requestIndex := 0
 	for decoder.More() {
 		var request struct {
 			Method string         `json:"method"`
@@ -304,9 +475,18 @@ func TestCopilotUsesNativeSessionProtocol(t *testing.T) {
 		require.NoError(t, decoder.Decode(&request))
 		if request.Method == "session.create" {
 			created = request.Params
+			createdIndex = requestIndex
 		}
+		if request.Method == "session.options.update" && request.Params["enableReasoningSummaries"] == true {
+			summaryOptions = request.Params
+			summaryIndex = requestIndex
+		}
+		requestIndex++
 	}
 	require.NotNil(t, created)
+	require.NotNil(t, summaryOptions, "the runtime must surface reasoning summary events")
+	require.Greater(t, summaryIndex, createdIndex, "the summary option needs an open session")
+	require.Equal(t, created["sessionId"], summaryOptions["sessionId"])
 	require.Equal(t, workingDir, created["workingDirectory"])
 	require.Equal(t, "probe-model", created["model"])
 	require.Equal(t, "high", created["reasoningEffort"])
@@ -322,5 +502,375 @@ func TestCopilotUsesNativeSessionProtocol(t *testing.T) {
 	}
 	for _, field := range []string{"availableTools", "excludedTools", "mcpServers"} {
 		require.NotContains(t, created, field, "session creation must retain the configured tool set")
+	}
+}
+
+// permissionFallbackLog is the part of the warning that the startup writes once for a
+// default permission mode that the runtime refused.
+const permissionFallbackLog = "refused the default permission mode"
+
+// installCopilotThatRefusesAMode installs the fake runtime with a policy that refuses
+// `mode`, from the opened session that `fromOpen` counts (the first one is 1). The
+// runtime refuses even when the session sends the AUTO_APPROVAL flag. An empty `mode`
+// refuses no mode. It returns the path of the log that records each request.
+func installCopilotThatRefusesAMode(t *testing.T, mode string, fromOpen int, env ...string) string {
+	t.Helper()
+	requestsPath := filepath.Join(t.TempDir(), "requests.jsonl")
+	agenttest.InstallFakeCLI(t, agenttest.FakeCLI{
+		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection",
+		WantEnv: "LEAPMUX_TEST_COPILOT_NATIVE",
+		Env: append([]string{
+			"LEAPMUX_TEST_COPILOT_SESSION_REQUESTS=" + requestsPath,
+			"LEAPMUX_TEST_COPILOT_REFUSE_MODE=" + mode,
+			"LEAPMUX_TEST_COPILOT_REFUSE_FROM_OPEN=" + strconv.Itoa(fromOpen),
+		}, env...),
+	})
+	return requestsPath
+}
+
+// copilotLaunchWithPermissionMode returns launch options that ask for `mode`.
+// `defaulted` states that LeapMux chose the mode as the safe default for a new session.
+// Otherwise the user chose it, and the option map carries no such record.
+func copilotLaunchWithPermissionMode(t *testing.T, mode string, defaulted bool) agent.Options {
+	t.Helper()
+	opts := agent.Options{
+		AgentID: "native-permission-fallback", WorkingDir: t.TempDir(), Shell: testutil.TestShell(),
+		APITimeout: 10 * time.Second,
+		Options:    optionmap.Map{agent.OptionIDPermissionMode: mode},
+	}
+	if defaulted {
+		opts.NewSessionDefaultOptionIDs = map[string]bool{agent.OptionIDPermissionMode: true}
+	}
+	return opts
+}
+
+// recordedPermissionModes lists, in order, the modes that LeapMux sent to
+// session.permissions.setMode.
+func recordedPermissionModes(t *testing.T, requestsPath string) []string {
+	t.Helper()
+	var modes []string
+	for _, request := range readRecordedCopilotRequests(t, requestsPath) {
+		if request.Method != "session.permissions.setMode" {
+			continue
+		}
+		mode, ok := request.Params["mode"].(string)
+		require.True(t, ok, "the permission mode request carries a mode word")
+		modes = append(modes, mode)
+	}
+	return modes
+}
+
+// A policy can block Assisted although the session sends AUTO_APPROVAL. The runtime's own
+// `defaultPermissionMode` setting says that Assisted is "ignored when it is off or policy
+// blocks auto-approval". LeapMux chose Assisted for the user as the default of a new
+// session, so a runtime that refuses it must not stop the agent. The agent keeps running
+// in Manual, the safe mode, and its settings state Manual.
+func TestNativeCopilotFallsBackToManualWhenTheRuntimeRefusesTheDefaultPermissionMode(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		resume  bool
+		refusal string
+	}{
+		{name: "create", refusal: "result"},
+		{name: "resume", resume: true, refusal: "result"},
+		{name: "create with an error reply", refusal: "error"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logs := testutil.CaptureDefaultLogger(t)
+			requestsPath := installCopilotThatRefusesAMode(t, contracts.CopilotPermissionModeAssisted, 1,
+				"LEAPMUX_TEST_COPILOT_REFUSAL="+tc.refusal)
+			opts := copilotLaunchWithPermissionMode(t, contracts.CopilotPermissionModeAssisted, true)
+			if tc.resume {
+				opts.ResumeSessionID = "stored-session"
+			}
+			sink := &agenttest.Sink{}
+			provider, err := startNativeCopilot(t.Context(), opts, agent.NewProviderServices(sink))
+			require.NoError(t, err, "a refused default must not fail the startup")
+			t.Cleanup(func() { provider.Stop(); _ = provider.Wait() })
+
+			snapshot := provider.(*Agent).SettingsSnapshot()
+			require.Equal(t, contracts.CopilotPermissionModeManual, snapshot.SurfacedOptions[agent.OptionIDPermissionMode])
+			require.Equal(t, contracts.CopilotPermissionModeManual, snapshot.ConfirmedOptions()[agent.OptionIDPermissionMode],
+				"the Manager persists the confirmed options, so the row must state Manual")
+			require.Equal(t, contracts.CopilotPermissionModeManual, sink.LastSettingsRefresh().PermissionMode)
+			require.Equal(t, []string{contracts.CopilotPermissionModeAssisted, contracts.CopilotPermissionModeManual},
+				recordedPermissionModes(t, requestsPath), "the agent asks for the default once, then for the safe mode")
+			require.Equal(t, 1, strings.Count(logs.String(), permissionFallbackLog), "the fallback writes one warning")
+			require.Contains(t, logs.String(), "level=WARN")
+			require.NoError(t, provider.SendInput("The agent still takes input.", nil))
+		})
+	}
+}
+
+// A context clear opens a replacement session in the same process. A runtime that
+// refused Assisted for the replacement only is the same refusal as at startup, and it
+// must not fail the clear. The rollback to the previous session would meet the same
+// refusal and stop the agent for good.
+func TestNativeCopilotClearContextFallsBackToManualWhenTheReplacementRefusesTheDefaultPermissionMode(t *testing.T) {
+	logs := testutil.CaptureDefaultLogger(t)
+	requestsPath := installCopilotThatRefusesAMode(t, contracts.CopilotPermissionModeAssisted, 2)
+	sink := &agenttest.Sink{}
+	provider, err := startNativeCopilot(t.Context(),
+		copilotLaunchWithPermissionMode(t, contracts.CopilotPermissionModeAssisted, true), agent.NewProviderServices(sink))
+	require.NoError(t, err)
+	t.Cleanup(func() { provider.Stop(); _ = provider.Wait() })
+	a := provider.(*Agent)
+	require.Equal(t, contracts.CopilotPermissionModeAssisted, a.SettingsSnapshot().SurfacedOptions[agent.OptionIDPermissionMode],
+		"the first session accepts the default")
+
+	_, err = a.ClearContext()
+	require.NoError(t, err, "a refused default must not fail the context clear")
+
+	require.False(t, a.IsStopped())
+	require.Equal(t, contracts.CopilotPermissionModeManual, a.SettingsSnapshot().SurfacedOptions[agent.OptionIDPermissionMode])
+	require.Equal(t, contracts.CopilotPermissionModeManual, sink.LastSettingsRefresh().PermissionMode)
+	require.Equal(t, []string{
+		contracts.CopilotPermissionModeAssisted,
+		contracts.CopilotPermissionModeAssisted, contracts.CopilotPermissionModeManual,
+	}, recordedPermissionModes(t, requestsPath))
+	require.Equal(t, 1, strings.Count(logs.String(), permissionFallbackLog))
+	require.NoError(t, a.SendInput("The replacement session takes input.", nil))
+}
+
+// A goal clear closes the session and opens it again under the same identity. It
+// restores the settings of the session in the same way as a context clear does.
+func TestNativeCopilotGoalClearFallsBackToManualWhenTheReopenedSessionRefusesTheDefaultPermissionMode(t *testing.T) {
+	logs := testutil.CaptureDefaultLogger(t)
+	requestsPath := installCopilotThatRefusesAMode(t, contracts.CopilotPermissionModeAssisted, 2)
+	sink := &agenttest.Sink{}
+	provider, err := startNativeCopilot(t.Context(),
+		copilotLaunchWithPermissionMode(t, contracts.CopilotPermissionModeAssisted, true), agent.NewProviderServices(sink))
+	require.NoError(t, err)
+	t.Cleanup(func() { provider.Stop(); _ = provider.Wait() })
+	a := provider.(*Agent)
+	_, err = a.PerformGoalAction(agent.GoalActionSet, "Remove this objective")
+	require.NoError(t, err)
+
+	_, err = a.PerformGoalAction(agent.GoalActionClear, "")
+	require.NoError(t, err, "a refused default must not fail the goal clear")
+
+	require.False(t, a.IsStopped())
+	require.Positive(t, sink.GoalClears())
+	require.Equal(t, contracts.CopilotPermissionModeManual, a.SettingsSnapshot().SurfacedOptions[agent.OptionIDPermissionMode])
+	require.Equal(t, []string{
+		contracts.CopilotPermissionModeAssisted,
+		contracts.CopilotPermissionModeAssisted, contracts.CopilotPermissionModeManual,
+	}, recordedPermissionModes(t, requestsPath))
+	require.Equal(t, 1, strings.Count(logs.String(), permissionFallbackLog))
+	require.NoError(t, a.SendInput("The reopened session takes input.", nil))
+}
+
+// A mode that the user chose is a different case. Manual would ignore that choice, so the
+// startup fails with the existing error, and the agent sends no request for Manual.
+func TestNativeCopilotStillFailsStartupWhenTheRuntimeRefusesAPermissionModeThatTheUserChose(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		resume    bool
+		defaulted map[string]bool
+	}{
+		{name: "create"},
+		{name: "resume", resume: true},
+		{name: "a default of another option", defaulted: map[string]bool{agent.OptionIDModel: true}},
+		{name: "a default that the record marks false", defaulted: map[string]bool{agent.OptionIDPermissionMode: false}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logs := testutil.CaptureDefaultLogger(t)
+			requestsPath := installCopilotThatRefusesAMode(t, contracts.CopilotPermissionModeAssisted, 1)
+			opts := copilotLaunchWithPermissionMode(t, contracts.CopilotPermissionModeAssisted, false)
+			opts.NewSessionDefaultOptionIDs = tc.defaulted
+			if tc.resume {
+				opts.ResumeSessionID = "stored-session"
+			}
+			_, err := startNativeCopilot(t.Context(), opts, agent.NewProviderServices(&agenttest.Sink{}))
+			require.ErrorContains(t, err, "the Copilot runtime did not confirm the requested permissionMode setting")
+			require.Equal(t, []string{contracts.CopilotPermissionModeAssisted}, recordedPermissionModes(t, requestsPath),
+				"a refused choice of the user never reaches the safe mode")
+			require.NotContains(t, logs.String(), permissionFallbackLog)
+		})
+	}
+}
+
+// The runtime setting `defaultPermissionMode` can start a session in a mode that is wider
+// than Manual. The agent must not keep the mode that the runtime reports after the
+// refusal, because that mode is a choice that nobody made for this agent. It asks for
+// Manual in a request of its own.
+func TestNativeCopilotFallbackAsksForManualWhenTheRefusingSessionStartedInAnotherMode(t *testing.T) {
+	requestsPath := installCopilotThatRefusesAMode(t, contracts.CopilotPermissionModeAssisted, 1,
+		"LEAPMUX_TEST_COPILOT_INITIAL_PERMISSION_MODE="+contracts.CopilotPermissionModeAllowAll)
+	provider, err := startNativeCopilot(t.Context(),
+		copilotLaunchWithPermissionMode(t, contracts.CopilotPermissionModeAssisted, true), agent.NewProviderServices(&agenttest.Sink{}))
+	require.NoError(t, err)
+	t.Cleanup(func() { provider.Stop(); _ = provider.Wait() })
+	require.Equal(t, contracts.CopilotPermissionModeManual,
+		provider.(*Agent).SettingsSnapshot().SurfacedOptions[agent.OptionIDPermissionMode])
+	require.Equal(t, []string{contracts.CopilotPermissionModeAssisted, contracts.CopilotPermissionModeManual},
+		recordedPermissionModes(t, requestsPath))
+}
+
+// The fallback needs the runtime to confirm Manual. A runtime that refuses that mode too
+// leaves the agent in a mode that nobody chose, so the startup fails with the existing error.
+func TestNativeCopilotFailsStartupWhenTheRuntimeRefusesTheSafeModeToo(t *testing.T) {
+	requestsPath := installCopilotThatRefusesAMode(t,
+		contracts.CopilotPermissionModeAssisted+","+contracts.CopilotPermissionModeManual, 1,
+		"LEAPMUX_TEST_COPILOT_INITIAL_PERMISSION_MODE="+contracts.CopilotPermissionModeAllowAll)
+	_, err := startNativeCopilot(t.Context(),
+		copilotLaunchWithPermissionMode(t, contracts.CopilotPermissionModeAssisted, true), agent.NewProviderServices(&agenttest.Sink{}))
+	require.ErrorContains(t, err, "the Copilot runtime did not confirm the requested permissionMode setting")
+	require.Equal(t, []string{contracts.CopilotPermissionModeAssisted, contracts.CopilotPermissionModeManual},
+		recordedPermissionModes(t, requestsPath))
+}
+
+// A failed read of the permission mode shows no refusal. The agent cannot tell that the
+// runtime refused the default, so it must not warn and must not change the mode.
+func TestNativeCopilotKeepsTheDefaultRequestWhenThePermissionModeReadFails(t *testing.T) {
+	logs := testutil.CaptureDefaultLogger(t)
+	requestsPath := installCopilotThatRefusesAMode(t, "", 1, "LEAPMUX_TEST_COPILOT_FAIL_PERMISSION_READS_AFTER=1")
+	_, err := startNativeCopilot(t.Context(),
+		copilotLaunchWithPermissionMode(t, contracts.CopilotPermissionModeAssisted, true), agent.NewProviderServices(&agenttest.Sink{}))
+	require.ErrorContains(t, err, "the Copilot runtime did not confirm the requested permissionMode setting")
+	require.Equal(t, []string{contracts.CopilotPermissionModeAssisted}, recordedPermissionModes(t, requestsPath))
+	require.NotContains(t, logs.String(), permissionFallbackLog)
+}
+
+// A runtime that accepts the default needs no fallback. The agent sends the default once
+// and writes no warning, at startup and at a context clear.
+func TestNativeCopilotDoesNotFallBackWhenTheRuntimeAcceptsTheDefaultPermissionMode(t *testing.T) {
+	for _, resume := range []bool{false, true} {
+		name := "create"
+		if resume {
+			name = "resume"
+		}
+		t.Run(name, func(t *testing.T) {
+			logs := testutil.CaptureDefaultLogger(t)
+			requestsPath := installCopilotThatRefusesAMode(t, "", 1, "LEAPMUX_TEST_COPILOT_REQUIRE_APPROVAL_FLAG=1")
+			opts := copilotLaunchWithPermissionMode(t, contracts.CopilotPermissionModeAssisted, true)
+			if resume {
+				opts.ResumeSessionID = "stored-session"
+			}
+			provider, err := startNativeCopilot(t.Context(), opts, agent.NewProviderServices(&agenttest.Sink{}))
+			require.NoError(t, err)
+			t.Cleanup(func() { provider.Stop(); _ = provider.Wait() })
+			a := provider.(*Agent)
+			require.Equal(t, contracts.CopilotPermissionModeAssisted, a.SettingsSnapshot().SurfacedOptions[agent.OptionIDPermissionMode])
+			require.Equal(t, []string{contracts.CopilotPermissionModeAssisted}, recordedPermissionModes(t, requestsPath))
+
+			_, err = a.ClearContext()
+			require.NoError(t, err)
+			require.Equal(t, contracts.CopilotPermissionModeAssisted, a.SettingsSnapshot().SurfacedOptions[agent.OptionIDPermissionMode])
+			require.Equal(t, []string{contracts.CopilotPermissionModeAssisted, contracts.CopilotPermissionModeAssisted},
+				recordedPermissionModes(t, requestsPath))
+			require.NotContains(t, logs.String(), permissionFallbackLog)
+		})
+	}
+}
+
+// The safe mode that replaced a refused default is the confirmed state of the session.
+// A later context clear restores Manual, and the agent neither asks for Assisted again
+// nor writes a second warning.
+func TestNativeCopilotClearContextRestoresTheSafeModeThatReplacedARefusedDefault(t *testing.T) {
+	logs := testutil.CaptureDefaultLogger(t)
+	requestsPath := installCopilotThatRefusesAMode(t, contracts.CopilotPermissionModeAssisted, 1)
+	provider, err := startNativeCopilot(t.Context(),
+		copilotLaunchWithPermissionMode(t, contracts.CopilotPermissionModeAssisted, true), agent.NewProviderServices(&agenttest.Sink{}))
+	require.NoError(t, err)
+	t.Cleanup(func() { provider.Stop(); _ = provider.Wait() })
+	a := provider.(*Agent)
+
+	_, err = a.ClearContext()
+	require.NoError(t, err)
+
+	require.Equal(t, contracts.CopilotPermissionModeManual, a.SettingsSnapshot().SurfacedOptions[agent.OptionIDPermissionMode])
+	require.Equal(t, []string{
+		contracts.CopilotPermissionModeAssisted, contracts.CopilotPermissionModeManual,
+		contracts.CopilotPermissionModeManual,
+	}, recordedPermissionModes(t, requestsPath))
+	require.Equal(t, 1, strings.Count(logs.String(), permissionFallbackLog))
+}
+
+// A replacement session that refuses a mode that the user chose fails the clear. The
+// user chose the mode at launch, or changed to it afterwards. The agent then sends no
+// request for Manual: it would replace the user's choice.
+func TestNativeCopilotClearContextStillFailsWhenTheReplacementRefusesAPermissionModeThatTheUserChose(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// launch is the mode at launch, and defaulted states that LeapMux chose it.
+		launch    string
+		defaulted bool
+		// later is the mode that the user selects after the launch. It is empty when the
+		// user selects none.
+		later string
+	}{
+		{name: "chosen at launch", launch: contracts.CopilotPermissionModeAssisted},
+		{name: "changed after launch", launch: contracts.CopilotPermissionModeAssisted, defaulted: true, later: contracts.CopilotPermissionModeAllowAll},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			refused := tc.launch
+			if tc.later != "" {
+				refused = tc.later
+			}
+			logs := testutil.CaptureDefaultLogger(t)
+			requestsPath := installCopilotThatRefusesAMode(t, refused, 2)
+			provider, err := startNativeCopilot(t.Context(),
+				copilotLaunchWithPermissionMode(t, tc.launch, tc.defaulted), agent.NewProviderServices(&agenttest.Sink{}))
+			require.NoError(t, err)
+			t.Cleanup(func() { provider.Stop(); _ = provider.Wait() })
+			a := provider.(*Agent)
+			if tc.later != "" {
+				changed := a.UpdateSettings(optionmap.Map{agent.OptionIDPermissionMode: tc.later})
+				require.Equal(t, agent.OptionSettlementConfirmed, changed.Settlements[agent.OptionIDPermissionMode].State)
+			}
+
+			newID, err := a.ClearContext()
+			require.ErrorContains(t, err, "the Copilot runtime did not restore the permissionMode setting")
+			require.Empty(t, newID)
+			require.NotContains(t, recordedPermissionModes(t, requestsPath), contracts.CopilotPermissionModeManual)
+			require.NotContains(t, logs.String(), permissionFallbackLog)
+		})
+	}
+}
+
+func TestUnchangedDefaultOptionIDs(t *testing.T) {
+	launch := agent.Options{
+		Options: optionmap.Map{
+			agent.OptionIDPermissionMode: contracts.CopilotPermissionModeAssisted,
+			agent.OptionIDModel:          "probe-model",
+		},
+		NewSessionDefaultOptionIDs: map[string]bool{agent.OptionIDPermissionMode: true},
+	}
+	for _, tc := range []struct {
+		name    string
+		launch  agent.Options
+		current optionmap.Map
+		want    map[string]bool
+	}{
+		{
+			name: "keeps a default whose value did not change", launch: launch,
+			current: optionmap.Map{agent.OptionIDPermissionMode: contracts.CopilotPermissionModeAssisted, agent.OptionIDModel: "other-model"},
+			want:    map[string]bool{agent.OptionIDPermissionMode: true},
+		},
+		{
+			name: "drops a default whose value changed", launch: launch,
+			current: optionmap.Map{agent.OptionIDPermissionMode: contracts.CopilotPermissionModeManual},
+			want:    map[string]bool{},
+		},
+		{
+			name: "drops a default that the record marks false",
+			launch: agent.Options{
+				Options:                    launch.Options,
+				NewSessionDefaultOptionIDs: map[string]bool{agent.OptionIDPermissionMode: false},
+			},
+			current: launch.Options,
+			want:    map[string]bool{},
+		},
+		{
+			name:    "returns an empty set when LeapMux chose no value",
+			launch:  agent.Options{Options: launch.Options},
+			current: launch.Options,
+			want:    map[string]bool{},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, unchangedDefaultOptionIDs(tc.launch, tc.current))
+		})
 	}
 }

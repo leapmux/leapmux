@@ -285,7 +285,7 @@ func (a *Agent) piMessageEndContent(raw []byte) agent.MessageContent {
 		} `json:"message"`
 	}
 	if json.Unmarshal(raw, &envelope) != nil || envelope.Type != contracts.PiEventMessageEnd ||
-		envelope.Message == nil || envelope.Message.Role != RoleAssistant || envelope.Message.Usage == nil {
+		envelope.Message == nil || envelope.Message.Role != contracts.PiRoleAssistant || envelope.Message.Usage == nil {
 		return content
 	}
 	usage := *envelope.Message.Usage

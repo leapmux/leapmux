@@ -34,14 +34,15 @@ func terminalStartingLabel(shell string) string {
 }
 
 // beginTerminalStartup registers a fresh startup for terminalID with a
-// cancellable background context, seeds the "Starting <shell>…" message
-// on the registry, and broadcasts STARTING to watchers. gs is the git
-// status to attach; both current callers pass nil and let the async
-// goroutine re-broadcast once git status returns (the frontend keeps
-// existing git fields when STARTING arrives without them, so a nil
-// first broadcast is non-clobbering). Returns the ctx AND the startup handle
+// cancellable background context, and seeds the "Starting <shell>…" message on
+// the registry. It broadcasts nothing: announceTerminalStarting does that. The
+// two are separate because OpenTerminal registers BEFORE it writes the row, and
+// announces only after the row exists. Returns the ctx AND the startup handle
 // the caller passes into runTerminalStartup / runTerminalRestart.
-func (svc *Service) beginTerminalStartup(terminalID, shell string, gs *leapmuxv1.GitRepoStatus) (context.Context, *startupEntry) {
+//
+// It returns a nil handle when another startup holds the id. The caller then
+// started nothing.
+func (svc *Service) beginTerminalStartup(terminalID, shell string) (context.Context, *startupEntry) {
 	startupCtx, cancel := context.WithCancel(context.Background())
 	h := svc.TerminalStartup.begin(terminalID, cancel)
 	if h == nil {
@@ -52,10 +53,17 @@ func (svc *Service) beginTerminalStartup(terminalID, shell string, gs *leapmuxv1
 		cancel()
 		return nil, nil
 	}
-	msg := terminalStartingLabel(shell)
-	svc.TerminalStartup.setMessage(terminalID, msg)
-	svc.broadcastTerminalStarting(terminalID, msg, gs)
+	svc.TerminalStartup.setMessage(terminalID, terminalStartingLabel(shell))
 	return startupCtx, h
+}
+
+// announceTerminalStarting broadcasts STARTING to the watchers of terminalID. It
+// carries no git status: the async goroutine fetches git status and re-broadcasts
+// with the branch and origin once it lands, and the frontend keeps its existing
+// git fields when STARTING arrives without them, so a first broadcast with no
+// status does not clobber them.
+func (svc *Service) announceTerminalStarting(terminalID, shell string) {
+	svc.broadcastTerminalStarting(terminalID, terminalStartingLabel(shell), nil)
 }
 
 // terminalProcessScanTimeout caps one InspectTerminalProcesses call. The scan is
@@ -195,6 +203,27 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 			outputFn := svc.makeTerminalOutputFn(terminalID)
 			exitFn := svc.makeTerminalExitFn()
 
+			// Register the startup in the registry BEFORE the row becomes
+			// visible, with a cancel ctx so CloseTerminal during phase 0 aborts
+			// executeGitMode. A reader that finds the row of a terminal with no
+			// entry and no PTY takes it for a dead shell. A second quake open
+			// finds the row by its directory, and quakeShellIsLive then answers
+			// from the registry: with no entry it closes the row of a shell that
+			// is about to start. OpenAgent registers first for the same reason.
+			//
+			// From here, every return that does not hand the claim to
+			// runTerminalStartup must release it with abandon. A claim that
+			// nobody releases reports STARTING for ever and blocks Shutdown's
+			// WaitForInFlight.
+			startupCtx, startupHandle := svc.beginTerminalStartup(terminalID, shell)
+			if startupHandle == nil {
+				// Unreachable in practice -- terminalID was minted a few lines
+				// above -- but the claim is the authority, so honour it rather
+				// than run a startup that owns no registry entry.
+				sendFailedPrecondition(sender, "a startup for this terminal is already in progress")
+				return
+			}
+
 			// Persist the initial terminal record using the planned working
 			// dir, so tab sync and post-refresh reads see the eventual path
 			// even before git-mode execution creates the worktree.
@@ -226,6 +255,8 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 				Screen:        []byte{},
 				IsQuake:       isQuake,
 			}); upsertErr != nil {
+				// The row does not exist, so no startup will ever run for it.
+				svc.TerminalStartup.abandon(startupHandle)
 				// Losing the quake race lands here: the check above found no
 				// quake terminal for this directory, another client inserted
 				// one in the window, and the unique partial index refused this
@@ -251,21 +282,12 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 			// cleanupRegistry.claim.
 			svc.terminalCleanups.claim(terminalID)
 
-			// Register the startup in the registry with a cancel ctx so
-			// CloseTerminal during phase 0 aborts executeGitMode, and seed
-			// the STARTING broadcast with the provider label. Phase 0 will
+			// Broadcast STARTING with the provider label. Phase 0 will
 			// overwrite the message with a mode-specific label (e.g.
-			// `Creating worktree "feature/x"…`) before mutation begins. gs
-			// is nil here because the post-mutation working dir isn't
-			// known yet; phase 1 re-broadcasts with the real value.
-			startupCtx, startupHandle := svc.beginTerminalStartup(terminalID, shell, nil)
-			if startupHandle == nil {
-				// Unreachable in practice -- terminalID was minted a few lines
-				// above -- but the claim is the authority, so honour it rather
-				// than run a startup that owns no registry entry.
-				sendFailedPrecondition(sender, "a startup for this terminal is already in progress")
-				return
-			}
+			// `Creating worktree "feature/x"…`) before mutation begins. The
+			// git status is nil here because the post-mutation working dir
+			// isn't known yet; phase 1 re-broadcasts with the real value.
+			svc.announceTerminalStarting(terminalID, shell)
 
 			sendProtoResponse(sender, &leapmuxv1.OpenTerminalResponse{
 				TerminalId: terminalID,
@@ -360,7 +382,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 			// re-broadcasts with branch/origin once it lands. Mirrors
 			// runTerminalStartup's phase-1 pattern so the RPC round-trip
 			// doesn't block on a slow `git status` against a large worktree.
-			startupCtx, startupHandle := svc.beginTerminalStartup(terminalID, shell, nil)
+			startupCtx, startupHandle := svc.beginTerminalStartup(terminalID, shell)
 			if startupHandle == nil {
 				// Two RestartTerminal RPCs for one terminal. The in-flight check
 				// above and this claim straddle no lock, and the dispatcher gives
@@ -370,6 +392,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 				sendFailedPrecondition(sender, "a restart for this terminal is already in progress")
 				return
 			}
+			svc.announceTerminalStarting(terminalID, shell)
 
 			sendProtoResponse(sender, &leapmuxv1.RestartTerminalResponse{})
 
@@ -672,13 +695,31 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 			}
 		}
 
-		// Collect from the in-memory manager and DB-only rows, recording
-		// each terminal's resolved git directory (see gitutil.ResolveGitDir)
-		// so BatchGetGitStatus can dedupe across terminals that share a repo.
+		// Run git FIRST. It is the one slow step of this call: a large working
+		// tree takes seconds. The reply leaves the Worker after the last step, and
+		// the client takes it as the state of each terminal. A state that the call
+		// read before git is older than every event that the Worker broadcast
+		// while git ran. A client that applied such an event, such as the READY at
+		// the end of a startup or the close of a shell, then takes the older reply
+		// over it, and nothing sends the event again. The call therefore reads the
+		// registry and the Manager after git, with no slow step between the read
+		// and the reply.
+		//
+		// The row of a terminal holds the directory that the terminal finally runs
+		// in (see gitModePlan.PlannedWorkingDir), and the Manager takes the same
+		// directory. Git therefore needs no state that the call reads later.
+		gitStatuses := svc.terminalGitStatuses(ctx, tabIDs, dbTerminals)
+
+		// Collect from the in-memory manager and DB-only rows. This is the read of
+		// the runtime state: see the note above the call to git.
+		//
+		// A terminal can register in the Manager after the read of ListByIDs. The
+		// DB-only pass below therefore reads the registry first and the Manager
+		// last. A startup that ends in between then reads READY and running, and
+		// never READY and exited.
 		entries := svc.Terminals.ListByIDs(tabIDs)
 		seen := make(map[string]bool, len(entries))
 		var terminals []*leapmuxv1.TerminalInfo
-		var gitDirs []string
 		for _, e := range entries {
 			seen[e.ID] = true
 			ti := &leapmuxv1.TerminalInfo{
@@ -693,6 +734,7 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 				Title:           e.Meta.Title,
 				Status:          leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY,
 				Quake:           quakeByTerminalID[e.ID],
+				GitStatus:       gitStatuses[e.ID],
 			}
 			if sup, errStr, msg, ok := svc.TerminalStartup.status(e.ID); ok {
 				ti.Status = sup
@@ -700,7 +742,6 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 				ti.StartupMessage = msg
 			}
 			terminals = append(terminals, ti)
-			gitDirs = append(gitDirs, gitutil.ResolveGitDir(e.Meta.ShellStartDir, e.Meta.WorkingDir))
 		}
 
 		for _, ts := range dbTerminals {
@@ -729,15 +770,9 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 				StartupError:    startupError,
 				StartupMessage:  startupMessage,
 				Quake:           quakeByTerminalID[ts.ID],
+				GitStatus:       gitStatuses[ts.ID],
 			}
 			terminals = append(terminals, ti)
-			gitDirs = append(gitDirs, gitutil.ResolveGitDir(ts.ShellStartDir, ts.WorkingDir))
-		}
-		gitStatuses := gitutil.BatchGetGitStatus(ctx, gitDirs)
-		for i, gs := range gitStatuses {
-			if gs != nil {
-				terminals[i].GitStatus = gs
-			}
 		}
 
 		sendProtoResponse(sender, &leapmuxv1.ListTerminalsResponse{
@@ -1086,13 +1121,22 @@ func (svc *Service) runTerminalRestart(
 }
 
 // succeedTerminalStartup is the shared READY tail for runTerminalStartup
-// and runTerminalRestart: clear the persisted startup_error, broadcast
-// READY, and mark the registry succeeded last so observers see a durable
-// terminal state.
+// and runTerminalRestart: clear the persisted startup_error, retire the
+// registry entry, and broadcast READY last.
+//
+// The registry comes before the broadcast for the reason failStartup states:
+// ListTerminals lets the registry override the READY of a live terminal, so a
+// client that receives READY and then lists a registry that still says
+// STARTING keeps STARTING, and no later event corrects it.
+//
+// The other order has a cost of its own, and it is the smaller one. A restart
+// can claim the terminal between the two steps, and its STARTING can then
+// reach the client before this READY. That restart ends in its own READY or
+// STARTUP_FAILED broadcast, which corrects the client.
 func (svc *Service) succeedTerminalStartup(terminalID string, h *startupEntry) {
 	svc.persistTerminalStartupError(terminalID, "")
-	svc.broadcastTerminalReady(terminalID)
 	svc.TerminalStartup.succeed(terminalID, h)
+	svc.broadcastTerminalReady(terminalID)
 }
 
 // runTerminalPhase0 broadcasts the per-mode label and executes the
@@ -1102,10 +1146,9 @@ func (svc *Service) runTerminalPhase0(ctx context.Context, terminalID string, pl
 }
 
 // failTerminalStartup is the common tail for every failure after the sync
-// prologue: rolls back any partial git-mode mutation, persists the
-// error, broadcasts STARTUP_FAILED, and marks the registry failed. The
-// shared `failStartup` enforces the ordering (DB before broadcast
-// before registry) so observers see a durable terminal state.
+// prologue: it rolls back any partial git-mode mutation, persists the
+// error, marks the registry failed, and broadcasts STARTUP_FAILED. The
+// shared `failStartup` states and enforces that order.
 func (svc *Service) failTerminalStartup(terminalID string, gm gitModeResult, cause error, h *startupEntry) {
 	svc.failStartup(gm, cause, svc.terminalStartupCallbacks(terminalID, h))
 }
@@ -1159,6 +1202,44 @@ func buildTerminalReadyStatus(terminalID string) *leapmuxv1.TerminalStatusChange
 		TerminalId: terminalID,
 		Status:     leapmuxv1.TerminalStatus_TERMINAL_STATUS_READY,
 	}
+}
+
+// terminalGitStatuses runs git for the terminals in ids and returns the status
+// of each terminal by its id. A terminal in a directory that is no repository
+// has no entry in the result.
+//
+// A terminal gives its git directory through the Manager when its shell is
+// registered there, and through its row otherwise. The Manager wins when both
+// exist, because the shell started in the directory that its metadata states.
+// ResolveGitDir states which of the start directory and the working directory
+// counts. One call to BatchGetGitStatus runs git once for each distinct
+// directory, so terminals that share a repository share one git process.
+func (svc *Service) terminalGitStatuses(ctx context.Context, ids []string, rows []db.Terminal) map[string]*leapmuxv1.GitRepoStatus {
+	dirByID := make(map[string]string, len(rows))
+	for i := range rows {
+		dirByID[rows[i].ID] = gitutil.ResolveGitDir(rows[i].ShellStartDir, rows[i].WorkingDir)
+	}
+	for _, id := range ids {
+		if meta, ok := svc.Terminals.GetMeta(id); ok {
+			dirByID[id] = gitutil.ResolveGitDir(meta.ShellStartDir, meta.WorkingDir)
+		}
+	}
+
+	terminalIDs := make([]string, 0, len(dirByID))
+	dirs := make([]string, 0, len(dirByID))
+	for id, dir := range dirByID {
+		terminalIDs = append(terminalIDs, id)
+		dirs = append(dirs, dir)
+	}
+	statuses := gitutil.BatchGetGitStatus(ctx, dirs)
+
+	byID := make(map[string]*leapmuxv1.GitRepoStatus, len(statuses))
+	for i, gs := range statuses {
+		if gs != nil {
+			byID[terminalIDs[i]] = gs
+		}
+	}
+	return byID
 }
 
 // deriveTerminalStatus computes (status, startupError, startupMessage)
@@ -1466,11 +1547,24 @@ func (svc *Service) closeQuakeTerminalOnShellExit(terminalID string) {
 // a terminal TAB, so there is no way out but to close every tab in the
 // directory.
 func (svc *Service) quakeShellIsLive(terminalID string) bool {
-	if svc.Terminals.IsRunning(terminalID) {
+	return svc.shellIsLive(terminalID, func() bool { return svc.Terminals.IsRunning(terminalID) })
+}
+
+// shellIsLive reports whether the shell of terminalID runs or is about to run:
+// a startup that is in flight and has not failed says that it is about to, and
+// shellRuns says that it runs. It calls shellRuns at most once.
+//
+// The order of the two reads is fixed. A startup ends in this order: the Manager
+// registers the PTY, then the registry drops the entry. The answer reads the
+// registry first and the shell second, so it finds the entry, or the shell, or
+// both. Read in the other order, it can find neither, and the caller then closes
+// the row of a shell that runs. See agentLiveness for the same rule.
+func (svc *Service) shellIsLive(terminalID string, shellRuns func() bool) bool {
+	status, _, _, inFlight := svc.TerminalStartup.status(terminalID)
+	if inFlight && status != leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED {
 		return true
 	}
-	status, _, _, inFlight := svc.TerminalStartup.status(terminalID)
-	return inFlight && status != leapmuxv1.TerminalStatus_TERMINAL_STATUS_STARTUP_FAILED
+	return shellRuns()
 }
 
 // adoptExistingQuakeTerminal answers the caller with the directory's existing

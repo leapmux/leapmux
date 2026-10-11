@@ -20,10 +20,10 @@
           "record": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["native", "artifacts"],
+            "required": ["native", "outputFiles"],
             "properties": {
               "native": { "type": "object" },
-              "artifacts": { "type": "object", "additionalProperties": { "type": "string" } }
+              "outputFiles": { "type": "object", "additionalProperties": { "type": "string" } }
             }
           },
           "supplement": { "type": "object" },

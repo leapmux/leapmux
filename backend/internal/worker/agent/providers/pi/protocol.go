@@ -37,6 +37,7 @@ package pi
 // "response", id} envelope.
 const (
 	CommandPrompt             = "prompt"
+	CommandCompact            = "compact"
 	CommandAbort              = "abort"
 	CommandSetModel           = "set_model"
 	CommandSetThinkingLevel   = "set_thinking_level"
@@ -70,17 +71,12 @@ const piGoalDisplayKey = "goal"
 // fresh turn.
 const StreamingBehaviorSteer = "steer"
 
-// Pi tool-result content-block types — `tool_execution_*` partialResult
-// and result envelopes carry an array of typed content blocks; the
-// streaming delta walker concatenates only "text" blocks.
-const ContentBlockText = "text"
-
-// Pi message roles — the `role` field on entries inside `agent_end.messages`
-// and on `message_end.message`. Only assistant entries carry the final
-// stop-reason for a turn.
-const RoleAssistant = "assistant"
-
-// Pi assistant stop reasons — the `stopReason` field on the final
-// assistant entry of an `agent_end` envelope. "error" pairs with a
-// non-empty `errorMessage` describing the failure.
-const StopReasonError = "error"
+// Pi content-block types. The `tool_execution_*` partialResult and result
+// envelopes carry an array of typed content blocks, and the streaming delta
+// walker concatenates only "text" blocks. An assistant message's content holds
+// "thinking" blocks beside them, which the worker persists as a reasoning row of
+// their own (persistPiThinking).
+const (
+	ContentBlockText     = "text"
+	ContentBlockThinking = "thinking"
+)

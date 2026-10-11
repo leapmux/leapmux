@@ -26,6 +26,24 @@ func setupTodoTest(t *testing.T) (agent.ProviderServices, string, func() []db.Ag
 	return setupTodoTestForProvider(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 }
 
+func TestOutputTodos_BlockedSnapshotPersistsAsUnfinishedWork(t *testing.T) {
+	t.Parallel()
+	svc, _, ownerID, _ := setupBgTaskTestWithService(t)
+	item := todoevents.Item{ID: "blocked", Content: "Request access", Status: todoevents.StatusBlocked}
+	result, err := svc.Output.persistMessageWithTodoEvent(ownerID,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		agent.MessageContent{Original: []byte(`{"type":"assistant"}`)}, agent.SpanInfo{}, svc.Output.rootTracker(ownerID),
+		todoevents.Event{Kind: todoevents.KindSnapshot, Snapshot: []todoevents.Item{item}})
+	require.NoError(t, err)
+	assert.NoError(t, result.todoError)
+	rows, err := svc.Queries.ListAgentTodosNewestFirst(context.Background(), db.ListAgentTodosNewestFirstParams{AgentID: ownerID, Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, leapmuxv1.TodoStatus_TODO_STATUS_BLOCKED, rows[0].Status)
+	assert.False(t, item.Status.IsFinished())
+}
+
 // setupTodoTestForProvider is setupTodoTest for an agent of a stated provider. The
 // provider decides which extractor reads the message, so a test that feeds one
 // provider's shape has to create an agent of THAT provider.
@@ -213,6 +231,9 @@ func TestOutputTodos_ZCodeToolUpdatedSnapshotPersists(t *testing.T) {
 	assert.Len(t, rows, 2)
 }
 
+// MiMo keeps its to-do items per session, and a subagent's calls reach the
+// subagent's own transcript, so a call can change an item that this transcript
+// never saw created. The tool row must still land, and the item joins the list.
 // One provider's to-do shape must never populate another provider's list. The dispatch
 // through the plugin is the whole mechanism, and this is what proves it: before it, a
 // shared extractor tried every shape on every message, so the reader was decided by the
@@ -690,9 +711,10 @@ func TestOutputTodos_AcpPlanSnapshotPopulates(t *testing.T) {
 	assert.Equal(t, leapmuxv1.TodoStatus(todoevents.StatusCompleted), rows[1].Status)
 }
 
-// cursorTodoRow persists the row that CLOSES one Cursor tool call and returns the
-// bytes the enrichment must state back as the original content.
-func cursorTodoRow(t *testing.T, sink agent.ProviderServices, toolCallID string) []byte {
+// closingToolCallRow persists the row that CLOSES one ACP tool call (Cursor's,
+// Gemini's) and returns the bytes the enrichment must state back as the original
+// content.
+func closingToolCallRow(t *testing.T, sink agent.ProviderServices, toolCallID string) []byte {
 	t.Helper()
 	original := marshalJSON(t, map[string]any{
 		"sessionUpdate": "tool_call_update", "toolCallId": toolCallID, "status": "completed",
@@ -726,7 +748,7 @@ func TestOutputTodos_CursorExtensionFrameFeedsTheStore(t *testing.T) {
 	t.Parallel()
 
 	sink, _, listRows := setupTodoTestForProvider(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR)
-	original := cursorTodoRow(t, sink, "call-1")
+	original := closingToolCallRow(t, sink, "call-1")
 	replace := `{"toolCallId":"call-1","todos":[` +
 		`{"id":"1","content":"one","status":"in_progress"},` +
 		`{"id":"2","content":"two","status":"pending"}],"merge":false}`
@@ -743,13 +765,17 @@ func TestOutputTodos_CursorExtensionFrameFeedsTheStore(t *testing.T) {
 	assert.Equal(t, leapmuxv1.TodoStatus(todoevents.StatusPending), rows[1].Status)
 }
 
+// Gemini CLI states a to-do list only in its session record, and the record
+// reaches the completed row as a supplement, after the row is stored. The list
+// must reach the store through that enrichment, replace an earlier list, and
+// clear it when the record states an empty list.
 // A merge frame states the rows that CHANGED. Reading it as a snapshot would delete
 // every row it stayed silent about, which is every row after the first update.
 func TestOutputTodos_CursorMergeFrameLeavesTheRowsItOmits(t *testing.T) {
 	t.Parallel()
 
 	sink, _, listRows := setupTodoTestForProvider(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR)
-	first := cursorTodoRow(t, sink, "call-1")
+	first := closingToolCallRow(t, sink, "call-1")
 	replace := `{"toolCallId":"call-1","todos":[` +
 		`{"id":"1","content":"one","status":"in_progress"},` +
 		`{"id":"2","content":"two","status":"pending"},` +
@@ -760,7 +786,7 @@ func TestOutputTodos_CursorMergeFrameLeavesTheRowsItOmits(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, written)
 
-	second := cursorTodoRow(t, sink, "call-2")
+	second := closingToolCallRow(t, sink, "call-2")
 	merge := `{"toolCallId":"call-2","todos":[` +
 		`{"id":"1","content":"one","status":"completed"},` +
 		`{"id":"2","content":"two","status":"in_progress"}],"merge":true}`
@@ -790,7 +816,7 @@ func TestOutputTodos_EnrichmentNeverReplaysTheFrameTheSupplementAlreadyCarried(t
 	t.Parallel()
 
 	sink, _, listRows := setupTodoTestForProvider(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR)
-	first := cursorTodoRow(t, sink, "call-1")
+	first := closingToolCallRow(t, sink, "call-1")
 	snapshot := `{"toolCallId":"call-1","todos":[` +
 		`{"id":"1","content":"one","status":"in_progress"},` +
 		`{"id":"2","content":"two","status":"pending"}],"merge":false}`
@@ -800,7 +826,7 @@ func TestOutputTodos_EnrichmentNeverReplaysTheFrameTheSupplementAlreadyCarried(t
 	require.NoError(t, err)
 	require.True(t, written)
 
-	second := cursorTodoRow(t, sink, "call-2")
+	second := closingToolCallRow(t, sink, "call-2")
 	merge := `{"toolCallId":"call-2","todos":[` +
 		`{"id":"3","content":"three","status":"pending"}],"merge":true}`
 	written, err = sink.EnrichMessage(agent.MessageEnrichment{
@@ -1386,7 +1412,7 @@ func TestPairedToolUseLookup_ReadsTheToolUseHalfOfTheSpan(t *testing.T) {
 		SpanID: "span-1", SpanType: "TaskCreate",
 	}))
 
-	read := svc.Output.pairedToolUseLookup("agent-1", agent.SpanInfo{SpanID: "span-1"})
+	read := svc.Output.pairedToolUseLookup("agent-1", svc.Output.messageSessionID("agent-1"), agent.SpanInfo{SpanID: "span-1"})
 	assert.JSONEq(t, string(body), string(read()))
 	assert.JSONEq(t, string(body), string(read()), "a second read answers from the memo")
 }
@@ -1396,9 +1422,9 @@ func TestPairedToolUseLookup_AnswersNilWhenThereIsNothingToRead(t *testing.T) {
 
 	svc, _, _ := setupTestService(t)
 
-	assert.Nil(t, svc.Output.pairedToolUseLookup("agent-1", agent.SpanInfo{})(),
+	assert.Nil(t, svc.Output.pairedToolUseLookup("agent-1", svc.Output.messageSessionID("agent-1"), agent.SpanInfo{})(),
 		"a message with no span has no tool_use half")
-	assert.Nil(t, svc.Output.pairedToolUseLookup("agent-1", agent.SpanInfo{SpanID: "never-persisted"})(),
+	assert.Nil(t, svc.Output.pairedToolUseLookup("agent-1", svc.Output.messageSessionID("agent-1"), agent.SpanInfo{SpanID: "never-persisted"})(),
 		"a rolled-up tool_use, or one this result raced, is absent rather than an error")
 }
 
@@ -1416,7 +1442,7 @@ func TestPairedToolUseLookup_MemoizesTheMiss(t *testing.T) {
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
-	read := svc.Output.pairedToolUseLookup("agent-1", agent.SpanInfo{SpanID: "span-1"})
+	read := svc.Output.pairedToolUseLookup("agent-1", svc.Output.messageSessionID("agent-1"), agent.SpanInfo{SpanID: "span-1"})
 	require.Nil(t, read())
 
 	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)

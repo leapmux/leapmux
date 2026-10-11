@@ -3,11 +3,13 @@ package service
 import (
 	"context"
 	"log/slog"
+	"sort"
 	"sync"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -153,11 +155,15 @@ func (s *watchSession) apply(r *leapmuxv1.WatchEventsRequest) {
 
 	// Snapshot prior modes from the registry BEFORE replacing watches so
 	// promotion detection has a single source of truth (no session-local maps).
-	prevAgentModes := s.svc.Watchers.AgentModesForChannel(s.channelID)
 	prevTermModes := s.svc.Watchers.TerminalModesForChannel(s.channelID)
-
-	if agentResult.applied {
-		s.svc.Watchers.SetAgentWatchesForSession(s.channelID, s.sessionID, agentResult.entries, s.sender)
+	previousAgents, currentAgents, owned, err := s.svc.Watchers.ApplyAgentWatchesForSession(s.channelID, s.sessionID, agentResult.entries, agentResult.applied, s.sender)
+	if !owned {
+		return
+	}
+	if err != nil {
+		s.cancel()
+		sendStreamError(s.sender, codes.InvalidArgument, err.Error())
+		return
 	}
 	if termResult.applied {
 		s.svc.Watchers.SetTerminalWatchesForSession(s.channelID, s.sessionID, termResult.entries, s.sender)
@@ -178,6 +184,15 @@ func (s *watchSession) apply(r *leapmuxv1.WatchEventsRequest) {
 		RejectedAgents:    agentResult.rejections,
 		RejectedTerminals: termResult.rejections,
 	}
+	agentIDs := make([]string, 0, len(currentAgents))
+	for id := range currentAgents {
+		agentIDs = append(agentIDs, id)
+	}
+	sort.Strings(agentIDs)
+	for _, id := range agentIDs {
+		entry := currentAgents[id]
+		ack.AgentStates = append(ack.AgentStates, &leapmuxv1.WatchAgentState{AgentId: id, Mode: entry.mode, ReplayId: entry.replay.replayID})
+	}
 	_ = broadcastWatchEvent(s.sender, &leapmuxv1.WatchEventsResponse{
 		Event: &leapmuxv1.WatchEventsResponse_UpdateAck{UpdateAck: ack},
 	})
@@ -187,7 +202,8 @@ func (s *watchSession) apply(r *leapmuxv1.WatchEventsRequest) {
 	var promotedAgentRows []db.Agent
 	if agentResult.applied {
 		for i, e := range agentResult.entries {
-			if isModePromotion(e.mode, prevAgentModes[e.id]) {
+			prior, exists := previousAgents[e.id]
+			if modeIsFull(e.mode) && (!exists || !modeIsFull(prior.mode) || prior.replay.replayID != e.replay.replayID) {
 				promotedAgents = append(promotedAgents, agentResult.agentReqs[i])
 				promotedAgentRows = append(promotedAgentRows, agentResult.agentRows[i])
 			}
@@ -214,15 +230,15 @@ func (s *watchSession) apply(r *leapmuxv1.WatchEventsRequest) {
 
 	// Re-check ownership before the (expensive, multi-send) catch-up burst:
 	// OnCancel or a successor BeginSession can retire this session during the
-	// resolve/register window above, and the replay loop only gates sends on
-	// transport-death (replaySink.alive), not on ownership. Without this check
+	// resolve/register window above, and the replay loop stops sends only on
+	// transport/preparation failure (replaySink.alive), not on ownership. Without this check
 	// a superseded/cancelled session ships a full catch-up burst via a sender
 	// the client no longer reads.
 	if s.ctx.Err() != nil || !s.svc.Watchers.isOwner(s.channelID, s.sessionID) {
 		return
 	}
 
-	sink := newReplaySink(s.sender)
+	sink := newReplaySink(s.sender, r.GetUpdateId())
 
 	// The git-status batch feeds only the agent replay below, so start it
 	// BEFORE the terminal catch-up and let the two overlap: the terminal
@@ -273,6 +289,7 @@ func (s *watchSession) apply(r *leapmuxv1.WatchEventsRequest) {
 		if !sink.alive() {
 			break
 		}
+		sink.replayID = agentEntry.GetReplayId()
 		s.svc.replayAgentCatchUp(sink, agentEntry, promotedAgentRows[i], replayGitStatuses[i])
 	}
 	if !sink.alive() {
@@ -353,7 +370,14 @@ func (s *watchSession) resolveAgents(agents []*leapmuxv1.WatchAgentEntry) resolv
 			continue
 		}
 		mode := normalizeMode(a.GetMode())
-		outEntries = append(outEntries, watchEntry{id: id, mode: mode})
+		replay := agentReplayTuple{replayID: a.GetReplayId()}
+		if modeIsFull(mode) {
+			replay.replayMode = a.GetReplay()
+			replay.cursorSeq = a.GetCursorSeq()
+			replay.windowTailSet = a.WindowTailSeq != nil
+			replay.windowTailSeq = a.GetWindowTailSeq()
+		}
+		outEntries = append(outEntries, watchEntry{id: id, mode: mode, replay: replay})
 		outReqs = append(outReqs, a)
 		outRows = append(outRows, row)
 	}

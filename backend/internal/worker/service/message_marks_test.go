@@ -13,6 +13,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/channel"
+	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -25,7 +26,7 @@ func seedMark(t *testing.T, svc *Service, agentID, id string, mark leapmuxv1.Mar
 		Source:        leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
 		Content:       []byte("hi"),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-		MarkType:      mark,
+		MarkType:      workerdb.OptionalStorageEnum(mark),
 		CreatedAt:     sqltime.NewSQLiteTime(time.Now()),
 	})
 	require.NoError(t, err)
@@ -185,7 +186,7 @@ func TestPersistAndBroadcast_ThreadsMarkType(t *testing.T) {
 	rows, err := svc.Queries.ListAllMessagesByAgentID(ctx, db.ListAllMessagesByAgentIDParams{AgentID: "agent-1", Seq: 0})
 	require.NoError(t, err)
 	require.Len(t, rows, 1)
-	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, rows[0].MarkType, "persisted row must carry the mark")
+	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, workerdb.StorageEnumValue(rows[0].MarkType), "persisted row must carry the mark")
 
 	// The broadcast must carry the same mark so live watchers dot it without a refetch.
 	var broadcastMark leapmuxv1.MarkType
@@ -218,7 +219,7 @@ func TestPersistSyntheticUserMessage_LeavesInterruptNoticeUnmarked(t *testing.T)
 	require.NoError(t, err)
 	require.Len(t, rows, 1)
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, rows[0].Source)
-	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_UNSPECIFIED, rows[0].MarkType, "the interrupt notice stays unmarked")
+	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_UNSPECIFIED, workerdb.StorageEnumValue(rows[0].MarkType), "the interrupt notice stays unmarked")
 }
 
 // TestPersistControlResponseAnswerRows_SingleStructuredRow pins the structural "exactly one answer
@@ -258,7 +259,7 @@ func TestPersistControlResponseAnswerRows_SingleStructuredRow(t *testing.T) {
 		rows, err := svc.Queries.ListAllMessagesByAgentID(ctx, db.ListAllMessagesByAgentIDParams{AgentID: "agent-1", Seq: 0})
 		require.NoError(t, err)
 		require.Len(t, rows, 1)
-		assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, rows[0].MarkType)
+		assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, workerdb.StorageEnumValue(rows[0].MarkType))
 	})
 
 	t.Run("self-displayed clear-context persists exactly one marked structured row", func(t *testing.T) {
@@ -271,7 +272,7 @@ func TestPersistControlResponseAnswerRows_SingleStructuredRow(t *testing.T) {
 		rows, err := svc.Queries.ListAllMessagesByAgentID(ctx, db.ListAllMessagesByAgentIDParams{AgentID: "agent-1", Seq: 0})
 		require.NoError(t, err)
 		require.Len(t, rows, 1, "the wiped tool_result's mark moves to the single structured row, never a second echo")
-		assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, rows[0].MarkType)
+		assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, workerdb.StorageEnumValue(rows[0].MarkType))
 	})
 
 	t.Run("self-displayed without clear-context persists no row", func(t *testing.T) {
@@ -307,7 +308,7 @@ func TestReplayAgentCatchUp_ReplaysControlRequestAgentProvider(t *testing.T) {
 	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
 	require.NoError(t, err)
 
-	svc.replayAgentCatchUp(newReplaySink(w), &leapmuxv1.WatchAgentEntry{AgentId: "agent-1"}, dbAgent, nil)
+	svc.replayAgentCatchUp(newReplaySink(w, 0), &leapmuxv1.WatchAgentEntry{AgentId: "agent-1"}, dbAgent, nil)
 
 	var replayed *leapmuxv1.AgentControlRequest
 	for _, stream := range w.streamsSnapshot() {

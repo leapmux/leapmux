@@ -1,20 +1,22 @@
 /** Pi tool names that only the frontend interprets. Shared names stay in the generated contract. */
 export const PI_POWERSHELL_TOOL = 'powershell'
 
-export const PI_MCP_TOOL = {
-  Gateway: 'mcp',
-  Script: 'mcpScript',
+/** Native MCP names can contain sanitized text or a hash. Result details supply the original identity. */
+export const PI_MCP_TOOL_PREFIX = 'mcp__'
+
+export const PI_MCP_RESOURCE_TOOL = {
+  List: 'list_mcp_resources',
+  ListTemplates: 'list_mcp_resource_templates',
+  Read: 'read_mcp_resource',
 } as const
 
-/**
- * The prefix of pi-mcp-adapter's NAMESPACE PROXY tool, which carries one server per
- * tool name (`mcp__github`) and the tool itself in its arguments.
- *
- * The adapter's other spelling, `<server>_<tool>`, states the pair in one word with no
- * mark between the halves, so nothing can split it without the server list. That row
- * takes its identity from the paired result instead; see `piMcpIdentity`.
- */
-export const PI_MCP_PROXY_PREFIX = 'mcp__'
+/** The worker preserves these fields without interpreting them. */
+export const PI_MCP_RESULT_FIELD = {
+  StructuredContent: 'structuredContent',
+  Contents: 'contents',
+  Server: 'server',
+  Tool: 'tool',
+} as const
 
 export const PI_SEARCH_TOOL = {
   Grep: 'grep',
@@ -26,4 +28,22 @@ export const PI_SEARCH_TOOL = {
 export const PI_AGENT_TOOL = {
   GetResult: 'get_subagent_result',
   Steer: 'steer_subagent',
+} as const
+
+/** Native fields for tool result pointers. */
+export const PI_CONTENT_BLOCK = {
+  Type: 'type',
+  Text: 'text',
+} as const
+
+/** Native fields for tool result pointers. */
+export const PI_BLOCK_TYPE = {
+  Text: 'text',
+} as const
+
+/** Native fields for tool result pointers. */
+export const PI_TOOL_RESULT_FIELD = {
+  Details: 'details',
+  Content: 'content',
+  FullOutputPath: 'fullOutputPath',
 } as const

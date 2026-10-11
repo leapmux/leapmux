@@ -75,7 +75,8 @@ var _ agent.StartFunc = Start
 func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
 	ctx, cancel := context.WithCancel(ctx)
 
-	launchSpec, err := providerkit.ResolveLaunch(ctx, opts, Registration())
+	registration := Registration()
+	launchSpec, err := providerkit.ResolveLaunch(ctx, opts, registration)
 	if err != nil {
 		cancel()
 		return nil, err
@@ -97,22 +98,23 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	})
 	cmd.Env = providerkit.FinalizeAgentEnv(cmd.Environ(), opts)
 
-	stdin, stdout, stderrPipe, err := providerkit.SetupProcessPipes(cmd, cancel)
+	pipes, err := providerkit.SetupProcessPipes(cmd, cancel)
 	if err != nil {
 		return nil, err
 	}
+	stdout, stderrPipe := pipes.Stdout(), pipes.Stderr()
 
 	a := &Agent{
-		Process:       providerkit.NewProcess(opts, "pi", cmd, stdin, ctx, cancel, preambleDelimiter, metaPrefix),
+		Process:       providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "pi", ShutdownGrace: registration.ShutdownGrace, PreambleDelimiter: preambleDelimiter, PreambleMetaPrefix: metaPrefix}, pipes, ctx, cancel),
 		model:         opts.Model(),
 		thinkingLevel: opts.Effort(),
 		provider:      cmp.Or(opts.Options[OptionProvider], DefaultProvider),
 		workingDir:    opts.WorkingDir,
 		sink:          sink,
 	}
-	a.sink = agent.NewModelProgressResetSink(newPiToolTranscript(ctx, a.sink))
+	a.sink = agent.NewModelProgressResetSink(a.sink)
 
-	if err := a.StartCmd(cmd, cancel); err != nil {
+	if err := a.StartCmd(); err != nil {
 		return nil, err
 	}
 	a.DrainStderr(stderrPipe)

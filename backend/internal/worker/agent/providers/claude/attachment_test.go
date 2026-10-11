@@ -36,18 +36,19 @@ func TestBuildClaudeContentBlocks_imageAttachment(t *testing.T) {
 	blocks := buildClaudeContentBlocks("look at this", agent.ClassifyAttachments(attachments))
 	require.Len(t, blocks, 2)
 
-	// First block: text
-	textBlock := blocks[0].(map[string]interface{})
-	assert.Equal(t, "text", textBlock["type"])
-	assert.Equal(t, "look at this", textBlock["text"])
-
-	// Second block: image
-	imgBlock := blocks[1].(map[string]interface{})
-	assert.Equal(t, "image", imgBlock["type"])
-	source := imgBlock["source"].(map[string]interface{})
+	// First block: the image. Claude Code reads the prompt from the last block.
+	imgBlock := blocks[0].(map[string]interface{})
+	require.Equal(t, "image", imgBlock["type"])
+	source, ok := imgBlock["source"].(map[string]interface{})
+	require.True(t, ok, "an image block must carry a source")
 	assert.Equal(t, "base64", source["type"])
 	assert.Equal(t, "image/png", source["media_type"])
 	assert.Equal(t, base64.StdEncoding.EncodeToString(data), source["data"])
+
+	// Last block: the prompt text.
+	textBlock := blocks[1].(map[string]interface{})
+	assert.Equal(t, "text", textBlock["type"])
+	assert.Equal(t, "look at this", textBlock["text"])
 }
 
 func TestBuildClaudeContentBlocks_pdfAttachment(t *testing.T) {
@@ -76,10 +77,14 @@ func TestBuildClaudeContentBlocks_textAttachment(t *testing.T) {
 	blocks := buildClaudeContentBlocks("review", agent.ClassifyAttachments(attachments))
 	require.Len(t, blocks, 2)
 
-	textBlock := blocks[1].(map[string]interface{})
-	assert.Equal(t, "text", textBlock["type"])
-	assert.Contains(t, textBlock["text"], "BEGIN ATTACHED FILE: styles.css")
-	assert.Contains(t, textBlock["text"], "body {}")
+	fileBlock := blocks[0].(map[string]interface{})
+	assert.Equal(t, "text", fileBlock["type"])
+	assert.Equal(t, "<attached-file name=\"styles.css\" mime-type=\"text/css\">\nbody {}\n</attached-file>", fileBlock["text"])
+	assert.Contains(t, fileBlock["text"], "body {}")
+
+	// The prompt text is the last block, so Claude Code reads it, not the file.
+	promptBlock := blocks[1].(map[string]interface{})
+	assert.Equal(t, map[string]interface{}{"type": "text", "text": "review"}, promptBlock)
 }
 
 func TestBuildClaudeContentBlocks_noAttachments(t *testing.T) {
@@ -141,11 +146,11 @@ func TestClaudeCodeAgent_SendInput_withAttachments(t *testing.T) {
 	// Content should be an array (multimodal), not a string.
 	var blocks []map[string]interface{}
 	require.NoError(t, json.Unmarshal(envelope.Message.Content, &blocks))
-	require.Len(t, blocks, 2) // text + image
+	require.Len(t, blocks, 2) // image + text
 
-	assert.Equal(t, "text", blocks[0]["type"])
-	assert.Equal(t, "look at this image", blocks[0]["text"])
-	assert.Equal(t, "image", blocks[1]["type"])
+	assert.Equal(t, "image", blocks[0]["type"])
+	assert.Equal(t, "text", blocks[1]["type"])
+	assert.Equal(t, "look at this image", blocks[1]["text"])
 }
 
 func TestClaudeCodeAgent_SendInput_withoutAttachments_producesStringContent(t *testing.T) {

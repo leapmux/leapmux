@@ -89,12 +89,10 @@ func (a *Agent) handleCursorExtension(method string, params json.RawMessage) boo
 		slog.Warn("Store the Cursor extension frame on its tool row",
 			"method", method, "tool_call_id", frame.ToolCallID, "error", err)
 	case !written:
-		// A false with no error is a REFUSAL, not a failure: no row carries the tool
-		// call, or EnrichMessage declined a write whose PreviousRevision no longer
-		// matches the row. The frame is lost either way -- a `cursor/update_todos`
-		// row then draws as a plain tool call with no checklist -- and this is the
-		// only line that states it, because the error branch above sees nothing.
-		slog.Debug("No row took the Cursor extension frame",
+		// The transcript retains a matched observation after a compare-and-swap refusal.
+		// A later pass can store it without another native frame or acknowledgement.
+		// A missing row still supplies no destination for the frame.
+		slog.Debug("The Cursor extension frame produced no immediate stored change",
 			"method", method, "tool_call_id", frame.ToolCallID)
 	}
 	return true

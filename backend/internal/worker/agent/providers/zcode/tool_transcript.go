@@ -65,14 +65,14 @@ type zcodeToolSource struct {
 	// store keeps the one database handle of the agent. The agent's transcript and
 	// every child transcript share it, and the store's own mutex serializes the reads.
 	store *zcodeToolStore
-	// resolveLocation reports the agent's database, artifact root and current session.
+	// resolveLocation reports the agent's database, output file root and current session.
 	// The agent holds its own mutex for that answer, so both goroutines may ask.
 	resolveLocation func() zcodeToolStoreLocation
 
-	// artifacts holds the decoded artifact bodies of THIS transcript's turn. Each
+	// output files holds the decoded output file bodies of THIS transcript's turn. Each
 	// transcript owns one, so a subagent's turn end empties its own and never the
-	// parent's. See zcodeArtifactCache.
-	artifacts *zcodeArtifactCache
+	// parent's. See zcodeOutputFileCache.
+	outputFiles *zcodeOutputFileCache
 
 	mu       sync.Mutex
 	requests map[string]zcodeToolLookup
@@ -90,7 +90,7 @@ func newZCodeToolSource(store *zcodeToolStore, resolveLocation func() zcodeToolS
 	return &zcodeToolSource{
 		store:           store,
 		resolveLocation: resolveLocation,
-		artifacts:       &zcodeArtifactCache{},
+		outputFiles:     &zcodeOutputFileCache{},
 		requests:        make(map[string]zcodeToolLookup),
 	}
 }
@@ -129,9 +129,9 @@ func (z *zcodeToolSource) ResetRecords() { z.clearRequests() }
 func (z *zcodeToolSource) FinishTurn() { z.clearRequests() }
 
 // clearRequests drops what this source holds for a turn or a session that ended,
-// AND the artifact bodies it read for that turn. Only a pass of the same turn can
+// AND the output file bodies it read for that turn. Only a pass of the same turn can
 // read one of those, because the turn end clears the pending set a later pass asks
-// about -- so keeping them past this point retains every artifact of the session
+// about -- so keeping them past this point retains every output file of the session
 // for nothing.
 //
 // The cache is this source's own, not the store's. Its drop therefore takes no lock
@@ -143,13 +143,13 @@ func (z *zcodeToolSource) clearRequests() {
 	z.mu.Lock()
 	clear(z.requests)
 	z.mu.Unlock()
-	z.artifacts.drop()
+	z.outputFiles.drop()
 }
 
 // NewChild builds a source on the SAME store, which is how each child transcript
-// shares the agent's one database handle. It gets its OWN artifact cache, because a
+// shares the agent's one database handle. It gets its OWN output file cache, because a
 // child's turn ends the instant its Agent result lands and the parent's has not.
-func (z *zcodeToolSource) NewChild() tooltranscript.Source {
+func (z *zcodeToolSource) NewChild(_ string, _ agent.ProviderServices) tooltranscript.Source {
 	return newZCodeToolSource(z.store, z.resolveLocation)
 }
 
@@ -171,7 +171,7 @@ func (z *zcodeToolSource) ReadSupplements(ctx context.Context, _ string, pending
 		}
 	}
 	z.mu.Unlock()
-	records, readErr := readZCodeToolRecords(ctx, z.store, z.artifacts, location, lookups)
+	records, readErr := readZCodeToolRecords(ctx, z.store, z.outputFiles, location, lookups)
 	out := make(map[string][]byte)
 	answered := make([]string, 0, len(records))
 	for id, record := range records {
@@ -202,10 +202,10 @@ func zcodeToolResultSupplement(original []byte, record zcodeToolRecord) ([]byte,
 		return nil, fmt.Errorf("invalid ZCode tool result")
 	}
 	encoded, err := json.Marshal(contracts.ZCodeToolResultEnvelope{
-		Type:       contracts.ZCodeEventToolUpdated,
-		Payload:    contracts.ZCodeSupplementRef{Kind: ref.Kind, ToolCallID: ref.ToolCallID},
-		NativeTool: record.native,
-		Artifacts:  record.artifacts,
+		Type:        contracts.ZCodeEventToolUpdated,
+		Payload:     contracts.ZCodeSupplementRef{Kind: ref.Kind, ToolCallID: ref.ToolCallID},
+		NativeTool:  record.native,
+		OutputFiles: record.outputFiles,
 	})
 	if err != nil {
 		return nil, err

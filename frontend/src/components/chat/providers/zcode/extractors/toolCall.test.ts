@@ -3,10 +3,11 @@ import type { ToolCall } from '../../../model/toolCall'
 import type { ToolKind } from '../../../model/toolKind'
 import type { ZCodeRow } from '../extractors/toolCommon'
 import type { ParsedMessageContent } from '~/lib/messageParser'
+import { Buffer } from 'node:buffer'
 import { describe, expect, it } from 'vitest'
 import { ZCODE_TOOL, ZCODE_TOOL_KIND } from '~/generated/contracts/zcode-protocol'
-import { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
-import { todoTitleOf } from '~/test-support/toolCallFixture'
+import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
+import { providerToolCall, providerToolMeta, todoTitleOf } from '~/test-support/toolCallFixture'
 import { toolCallRow } from '../../../model/row'
 import { isUnparsedToolResult, typedResult } from '../../../model/toolCall'
 import { TOOL_KINDS } from '../../../model/toolKind'
@@ -17,6 +18,8 @@ import { zcodeExtractTool, zcodeRow } from '../extractors/toolCommon'
 import { ZCODE_DISPLAY } from '../protocol'
 import { zcodeToolKind } from '../toolKinds'
 import { ZCODE_TOOL_READERS, ZCODE_TOOL_REQUEST_OVERRIDES, zcodeReclassify, zcodeToolCall, zcodeToolFacts } from './toolCall'
+
+import '../plugin'
 
 function event(kind: string, fields: Record<string, unknown>): Record<string, unknown> {
   return { type: 'tool.updated', payload: { kind, toolCallId: 'call', ...fields } }
@@ -74,6 +77,41 @@ describe('zcodeToolCall bodies', () => {
     expect(call.kind).toBe('mcp')
     expect(call.kind === 'mcp' && call.request.server).toBe('docs')
     expect(JSON.stringify(call.request)).toContain('renderer')
+  })
+
+  it('keeps native Node image bytes in the MCP result', () => {
+    const text = '[Attached image/png: MCP image]\n\nnode-image-probe.png'
+    const call = presentationOf('mcp__node_repl__js', { code: 'nodeRepl.emitImage(...)' }, {
+      success: true,
+      content: text,
+      display: { kind: 'node_repl_images', images: [{ base64: 'AQID', mimeType: 'image/png' }] },
+    })
+    expect(call.kind).toBe('mcp')
+    const content = call.kind === 'mcp' && call.result && 'content' in call.result ? call.result.content : []
+    expect(content).toEqual([
+      { type: 'text', text },
+      { type: 'image', source: { mimeType: 'image/png', data: 'AQID' } },
+    ])
+  })
+
+  it('keeps text when a native Node result has no image', () => {
+    const call = presentationOf('mcp__node_repl__js', { code: 'nodeRepl.write("done")' }, {
+      success: true,
+      content: 'done',
+      display: { kind: 'node_repl_images', images: [] },
+    })
+    expect(call.kind).toBe('mcp')
+    expect(call.kind === 'mcp' && call.result && 'content' in call.result ? call.result.content : []).toEqual([{ type: 'text', text: 'done' }])
+  })
+
+  it('keeps a failed native Node result as an error', () => {
+    const call = presentationOf('mcp__node_repl__js', { code: 'throw Error("failed")' }, {
+      success: false,
+      content: 'The Node tool failed.',
+      display: { kind: 'node_repl_images', images: [{ base64: 'AQID', mimeType: 'image/png' }] },
+    })
+    expect(call.status).toBe('failed')
+    expect(call.result).toEqual({ failure: true, text: 'The Node tool failed.' })
   })
 
   it('maps a task-stop display to the shared status result', () => {
@@ -871,5 +909,54 @@ describe('the tool kinds ZCode produces', () => {
       'think',
       'wait',
     ])
+  })
+})
+
+describe('native ZCode serialization paths', () => {
+  it('keeps the native serialization path and original preview in the result and Copy', () => {
+    const uri = 'zcode-artifact://session/tool-result-11111111-1111-4111-8111-111111111111'
+    const path = '/native/cli/artifacts/session/call-tool-result-11111111-1111-4111-8111-111111111111.txt'
+    const complete = `<run_id>dwfrun-native</run_id>\n<status>completed</status>\n<result>\n${'x'.repeat(260000)}computed77${'y'.repeat(260000)}\n</result>`
+    const preview = `<persisted-output>\nOutput too large (500 KB). Full output saved to: ${path}\n\nPreview (first 2 KB):\nhead\n...\n</persisted-output>`
+    const native = { ...event(ZCODE_TOOL_KIND.Result, { result: { success: true, content: preview, truncated: true } }), sessionId: 'session' }
+    const request = input(event(ZCODE_TOOL_KIND.Scheduled, { toolName: ZCODE_TOOL.GetWorkflowRun, input: { run_id: 'dwfrun-native' } }))
+    const supplementalContent = {
+      type: 'tool.updated',
+      payload: { kind: 'result', toolCallId: 'call' },
+      nativeTool: {
+        id: 'part',
+        sessionId: 'session',
+        messageId: 'message',
+        data: {
+          type: 'tool',
+          callID: 'call',
+          tool: ZCODE_TOOL.GetWorkflowRun,
+          state: {
+            status: 'completed',
+            input: { run_id: 'dwfrun-native' },
+            output: preview,
+            metadata: { serialization: { budgetStrategy: 'artifact', truncated: true, originalBytes: Buffer.byteLength(complete), returnedBytes: Buffer.byteLength(preview), artifactPath: path } },
+          },
+        },
+      },
+      outputFiles: { [uri]: `data:text/plain;base64,${Buffer.from(complete).toString('base64')}` },
+    }
+    const options = { spanId: 'call', spanType: ZCODE_TOOL.GetWorkflowRun, agentSessionId: 'session', request, supplementalContent }
+    const before = JSON.stringify({ native, request, supplementalContent })
+    const call = providerToolCall(AgentProvider.ZCODE, native, options)
+    expect(call?.kind).toBe('task')
+    if (!call || call.kind !== 'task')
+      throw new Error('The native workflow read did not produce a task result.')
+    const output = typedResult(call)?.output
+    expect(output?.length).toBe(preview.length)
+    expect(output).toBe(preview)
+    expect(output).not.toContain('computed77')
+    expect(call.outputFilePaths).toEqual([path])
+    const meta = providerToolMeta(AgentProvider.ZCODE, native, options)
+    const copied = meta?.copyableContent()
+    expect(copied?.length).toBe(preview.length)
+    expect(copied).toBe(preview)
+    expect(copied).not.toContain('computed77')
+    expect(JSON.stringify({ native, request, supplementalContent })).toBe(before)
   })
 })

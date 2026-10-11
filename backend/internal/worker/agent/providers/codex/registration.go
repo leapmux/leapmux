@@ -11,11 +11,6 @@ import (
 // The browser reads the other option defaults from contracts/codex-protocol.json.
 const DefaultApprovalPolicy = "on-request"
 
-// codexBinaryCandidates lists the executable names to probe for Codex, in
-// preference order. The second entry is the full Rust host triple produced
-// by `cargo install` on Windows when a shorter `codex` shim is absent.
-var codexBinaryCandidates = []string{"codex", "codex-x86_64-pc-windows-msvc"}
-
 // codexStaticOptionGroups holds Codex's option groups that do not depend on the
 // model catalog: fast mode, workflow, approval policy, sandbox policy and network
 // access. The factory registration and Agent.OptionGroups both read this one
@@ -81,7 +76,9 @@ var codexStaticOptionGroups = []*leapmuxv1.AvailableOptionGroup{
 }
 
 // codexLocator finds the Codex CLI on the user's PATH, the preferred name first.
-var codexLocator = launch.Binaries(codexBinaryCandidates...)
+// contracts/codex-protocol.json lists the names and states why each one exists.
+// The E2E suite reads the same list to decide whether the worker can start Codex.
+var codexLocator = launch.Binaries(contracts.CodexExecutableKeys...)
 
 // Registration states everything the worker knows about Codex before any of
 // its agents runs.

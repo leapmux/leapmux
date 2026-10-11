@@ -47,7 +47,7 @@ func (s *steerableStub) SteerChildInput(childKey, content string, attachments []
 	return s.sendInputErr
 }
 
-func (s *steerableStub) InterruptChild(childKey string) error {
+func (s *steerableStub) InterruptChild(childKey string, stop agent.StopContext) error {
 	s.interruptCalls = append(s.interruptCalls, childKey)
 	return s.interruptErr
 }
@@ -126,7 +126,7 @@ func TestManager_InterruptChildDispatch(t *testing.T) {
 	st := &steerableStub{interruptErr: nil}
 	m.PutAgentForTest("root", st)
 
-	require.NoError(t, m.InterruptChild("root", "child-2"))
+	require.NoError(t, m.InterruptChild("root", "child-2", agent.StopContext{}))
 	require.Len(t, st.interruptCalls, 1)
 	assert.Equal(t, "child-2", st.interruptCalls[0])
 }
@@ -135,6 +135,6 @@ func TestManager_InterruptChildUnsupportedProvider(t *testing.T) {
 	t.Parallel()
 	m := agent.NewManager(testRegistry, nil)
 	m.PutAgentForTest("root", &stubProvider{})
-	err := m.InterruptChild("root", "child-1")
+	err := m.InterruptChild("root", "child-1", agent.StopContext{})
 	assert.ErrorIs(t, err, agent.ErrChildOperationUnsupported)
 }

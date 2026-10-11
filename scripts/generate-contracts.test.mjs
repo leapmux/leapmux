@@ -1839,19 +1839,21 @@ describe('checkSessionInfo', () => {
 })
 
 describe('checkWorkerVocab / checkDesktop', () => {
+  const backgroundTaskEnumValues = enumValues(DESCRIPTOR, 'leapmux/v1/agent.proto', 'BackgroundTaskStatus')
   const workerVocab = overrides => ({
+    backgroundTaskStatusTokens: readContract('worker-vocab').backgroundTaskStatusTokens,
     notificationTypes: { AgentError: 'agent_error' },
     workerWrittenNotificationTypes: ['AgentError'],
     goalStatusTokens: { None: '', Running: 'running' },
     goalTransitions: { GoalCreated: 'goal_created', GoalUpdated: 'goal_updated' },
-    messageMetadataFields: { DurationMs: 'duration_ms', ToolUses: 'num_tool_uses' },
+    messageMetadataFields: { DurationMs: 'duration_ms', ToolUses: 'num_tool_uses', ToolOutcome: 'tool_outcome' },
     messageSupplementFields: { Provider: 'provider', Metadata: 'metadata' },
     notificationFields: { PlanTitle: 'plan_title', PlanFilePath: 'plan_file_path' },
     assembledMessage: {
       fields: { Type: 'type', Kind: 'kind', Text: 'text', Completion: 'completion' },
       types: { Assembled: 'assembled_message' },
       kinds: { Text: 'text', Reasoning: 'reasoning', Plan: 'plan' },
-      completions: { Complete: 'complete', Interrupted: 'interrupted', Error: 'error' },
+      completions: { Complete: 'complete', Interrupted: 'interrupted', Error: 'error', Finished: 'finished' },
     },
     notificationThreadWrapperType: 'notification_thread',
     codexRateLimitReachedTimeWindow: 'rate_limit_reached',
@@ -1895,14 +1897,14 @@ describe('checkWorkerVocab / checkDesktop', () => {
 
   it('rejects a missing or empty DEV frontend URL', () => {
     expectContractError(() => checkDesktop({
-      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z' },
+      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z', agentHelper: 'E_V' },
       tauriEvents: events(),
       windowBehavior: behavior(),
       launchVisibility: launch(),
       windowMode: windowMode(),
     }), 'devFrontendUrl must be a non-empty URL string')
     expectContractError(() => checkDesktop({
-      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z' },
+      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z', agentHelper: 'E_V' },
       devFrontendUrl: '',
       tauriEvents: events(),
       windowBehavior: behavior(),
@@ -1914,14 +1916,14 @@ describe('checkWorkerVocab / checkDesktop', () => {
   it('rejects a worker-written type that is not a notification type', () => {
     expectContractError(() => checkWorkerVocab(workerVocab({
       workerWrittenNotificationTypes: ['NotAType'],
-    })), 'not a notificationTypes key')
+    }), backgroundTaskEnumValues), 'not a notificationTypes key')
   })
 
   it('rejects two notification types sharing one token', () => {
     expectContractError(() => checkWorkerVocab(workerVocab({
       notificationTypes: { A: 'same_token', B: 'same_token' },
       workerWrittenNotificationTypes: ['A'],
-    })), 'share one wire token')
+    }), backgroundTaskEnumValues), 'share one wire token')
   })
 
   it('rejects a thread-wrapper token that collides with a notification type', () => {
@@ -1929,19 +1931,19 @@ describe('checkWorkerVocab / checkDesktop', () => {
     // equal notification token would enter the wrong processing case.
     expectContractError(() => checkWorkerVocab(workerVocab({
       notificationTypes: { AgentError: 'notification_thread' },
-    })), 'collides with a notificationTypes token')
+    }), backgroundTaskEnumValues), 'collides with a notificationTypes token')
   })
 
   it('rejects model sentinels that collide', () => {
     expectContractError(() => checkWorkerVocab(workerVocab({
       modelSentinels: { accountDefaultModel: 'same', effortAuto: 'same' },
-    })), 'sentinels must be distinct')
+    }), backgroundTaskEnumValues), 'sentinels must be distinct')
   })
 
   it('rejects duplicate notification fields', () => {
     expectContractError(() => checkWorkerVocab(workerVocab({
       notificationFields: { PlanTitle: 'same', PlanFilePath: 'same' },
-    })), 'two notification fields share one wire token')
+    }), backgroundTaskEnumValues), 'two notification fields share one wire token')
   })
 
   it('rejects duplicate assembled-message tokens', () => {
@@ -1951,18 +1953,31 @@ describe('checkWorkerVocab / checkDesktop', () => {
         ...assembledMessage,
         kinds: { Text: 'same', Reasoning: 'same', Plan: 'plan' },
       },
-    })), 'assembled-message kinds entries share one wire token')
+    }), backgroundTaskEnumValues), 'assembled-message kinds entries share one wire token')
   })
 
   it('emits assembled-message constants for Go and TypeScript', () => {
     const vocab = readContract('worker-vocab')
     expect(emitGoWorkerVocab(vocab)).toContain('AssembledMessageCompletionInterrupted = "interrupted"')
     expect(emitTsWorkerVocab(vocab)).toContain('CompletionInterrupted: "interrupted"')
+    expect(emitGoWorkerVocab(vocab)).toMatch(/^\tAssembledMessageCompletionFinished\s+= "finished"$/m)
+    expect(emitTsWorkerVocab(vocab)).toContain('CompletionFinished: "finished"')
+  })
+
+  it('requires the finished completion in the worker vocabulary schema', () => {
+    const schema = JSON.parse(readFileSync(join(ROOT, 'contracts/worker-vocab.schema.json'), 'utf8'))
+    const validate = buildAjv().compile(schema)
+    const vocab = readContract('worker-vocab')
+    vocab.assembledMessage.completions.Finished = 'finished'
+    expect(validate(vocab)).toBe(true)
+    delete vocab.assembledMessage.completions.Finished
+    expect(validate(vocab)).toBe(false)
+    expect(validate.errors).toContainEqual(expect.objectContaining({ keyword: 'required', params: { missingProperty: 'Finished' } }))
   })
 
   it('rejects two Tauri events sharing one name', () => {
     expectContractError(() => checkDesktop({
-      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z' },
+      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z', agentHelper: 'E_V' },
       devFrontendUrl: 'http://localhost:4328',
       tauriEvents: { channelMessage: 'same:event', channelClose: 'same:event', userEventsMessage: 'u:m', userEventsClose: 'u:c' },
       windowBehavior: behavior(),
@@ -1973,7 +1988,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
 
   it('rejects two desktop env vars sharing one name', () => {
     expectContractError(() => checkDesktop({
-      envVars: { devEndpoint: 'SAME_X', binaryHash: 'SAME_X', devFrontend: 'C_Z' },
+      envVars: { devEndpoint: 'SAME_X', binaryHash: 'SAME_X', devFrontend: 'C_Z', agentHelper: 'E_V' },
       devFrontendUrl: 'http://localhost:4328',
       tauriEvents: events(),
       windowBehavior: behavior(),
@@ -1984,7 +1999,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
 
   it('rejects a desktop value with no name-table entry instead of emitting nothing', () => {
     expectContractError(() => checkDesktop({
-      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z', extra: 'D_W' },
+      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z', agentHelper: 'E_V', extra: 'D_W' },
       devFrontendUrl: 'http://localhost:4328',
       tauriEvents: { channelMessage: 'c:m', channelClose: 'c:c', userEventsMessage: 'u:m', userEventsClose: 'u:c' },
       windowBehavior: behavior(),
@@ -1992,7 +2007,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
       windowMode: windowMode(),
     }), 'has no DESKTOP_GO_ENV_NAMES entry')
     expectContractError(() => checkDesktop({
-      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z' },
+      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z', agentHelper: 'E_V' },
       devFrontendUrl: 'http://localhost:4328',
       tauriEvents: { channelMessage: 'c:m', channelClose: 'c:c', userEventsMessage: 'u:m', userEventsClose: 'u:c', extra: 'e:x' },
       windowBehavior: behavior(),
@@ -2000,7 +2015,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
       windowMode: windowMode(),
     }), 'has no DESKTOP_RS_EVENT_NAMES entry')
     expectContractError(() => checkDesktop({
-      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z' },
+      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z', agentHelper: 'E_V' },
       devFrontendUrl: 'http://localhost:4328',
       tauriEvents: events(),
       windowBehavior: { ...behavior(), extra: { one: 'x', two: 'y' } },
@@ -2015,7 +2030,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
     DESKTOP_RS_MACOS_ONLY_EVENTS.add('noSuchEvent')
     try {
       expectContractError(() => checkDesktop({
-        envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z' },
+        envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z', agentHelper: 'E_V' },
         devFrontendUrl: 'http://localhost:4328',
         tauriEvents: { channelMessage: 'c:m', channelClose: 'c:c', userEventsMessage: 'u:m', userEventsClose: 'u:c' },
         windowBehavior: behavior(),
@@ -2029,7 +2044,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
   it('rejects one setting whose two tokens are the same string', () => {
     // Equal tokens give the pill group two options that store one value.
     expectContractError(() => checkDesktop({
-      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z' },
+      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z', agentHelper: 'E_V' },
       devFrontendUrl: 'http://localhost:4328',
       tauriEvents: events(),
       windowBehavior: { ...behavior(), trayOnClose: { tray: 'tray', quit: 'tray' } },
@@ -2043,7 +2058,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
   // that setting.
   it('checks token uniqueness for a setting no name table knows yet', () => {
     expectContractError(() => checkDesktop({
-      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z' },
+      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z', agentHelper: 'E_V' },
       devFrontendUrl: 'http://localhost:4328',
       tauriEvents: events(),
       windowBehavior: { ...behavior(), closeToDock: { dock: 'dock', tray: 'dock' } },
@@ -2066,7 +2081,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
   // wrong state.
   it('rejects two launch-visibility states sharing one token', () => {
     expectContractError(() => checkDesktop({
-      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z' },
+      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z', agentHelper: 'E_V' },
       devFrontendUrl: 'http://localhost:4328',
       tauriEvents: events(),
       windowBehavior: behavior(),
@@ -2077,7 +2092,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
 
   it('rejects a launch-visibility key with no name-table entry', () => {
     expectContractError(() => checkDesktop({
-      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z' },
+      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z', agentHelper: 'E_V' },
       devFrontendUrl: 'http://localhost:4328',
       tauriEvents: events(),
       windowBehavior: behavior(),
@@ -2091,7 +2106,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
   // replaces three manual copies.
   it('rejects two window modes sharing one token', () => {
     expectContractError(() => checkDesktop({
-      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z' },
+      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z', agentHelper: 'E_V' },
       devFrontendUrl: 'http://localhost:4328',
       tauriEvents: events(),
       windowBehavior: behavior(),
@@ -2133,6 +2148,16 @@ describe('checkWorkerVocab / checkDesktop', () => {
     expect(d.envVars.devFrontend).toBe('LEAPMUX_HUB_DEV_FRONTEND')
     expect(emitGoDesktop(d)).toContain('EnvDevFrontend = "LEAPMUX_HUB_DEV_FRONTEND"')
     expect(emitRsDesktop(d)).toContain('pub const ENV_DEV_FRONTEND: &str = "LEAPMUX_HUB_DEV_FRONTEND"')
+  })
+
+  it('emits the agent helper env var to Go and Rust', () => {
+    // The worker sets it for an agent whose CLI starts the worker's executable again
+    // as a helper, and the Rust shell removes an inherited copy from the sidecar. A
+    // one-sided change lets that copy turn the sidecar into a helper.
+    const d = readContract('desktop')
+    expect(d.envVars.agentHelper).toBe('LEAPMUX_AGENT_HELPER')
+    expect(emitGoDesktop(d)).toContain('EnvAgentHelper = "LEAPMUX_AGENT_HELPER"')
+    expect(emitRsDesktop(d)).toContain('pub const ENV_AGENT_HELPER: &str = "LEAPMUX_AGENT_HELPER"')
   })
 
   it('emits the frame cap to Go and Rust from one contract value', () => {
@@ -2360,3 +2385,81 @@ describe('emitGoExternalApps and emitTsExternalApps', () => {
   })
 })
 
+describe('background-task status vocabulary', () => {
+  const tokens = {
+    Unspecified: '',
+    Pending: 'pending',
+    Running: 'running',
+    Paused: 'paused',
+    Succeeded: 'succeeded',
+    Failed: 'failed',
+    Stopped: 'stopped',
+    Interrupted: 'interrupted',
+    EndedWithUnknownOutcome: 'ended_with_unknown_outcome',
+  }
+  const enumNames = [
+    'BACKGROUND_TASK_STATUS_UNSPECIFIED',
+    'BACKGROUND_TASK_STATUS_PENDING',
+    'BACKGROUND_TASK_STATUS_RUNNING',
+    'BACKGROUND_TASK_STATUS_PAUSED',
+    'BACKGROUND_TASK_STATUS_SUCCEEDED',
+    'BACKGROUND_TASK_STATUS_FAILED',
+    'BACKGROUND_TASK_STATUS_STOPPED',
+    'BACKGROUND_TASK_STATUS_INTERRUPTED',
+    'BACKGROUND_TASK_STATUS_ENDED_WITH_UNKNOWN_OUTCOME',
+  ]
+  const vocabulary = () => ({ ...readContract('worker-vocab'), backgroundTaskStatusTokens: { ...tokens } })
+
+  it('emits the distinct success and unknown-outcome tokens for Go and TypeScript', () => {
+    const vocab = vocabulary()
+    const go = emitGoWorkerVocab(vocab)
+    const ts = emitTsWorkerVocab(vocab)
+    expect(go).toMatch(/^\tBackgroundTaskStatusTokenSucceeded\s+= "succeeded"$/m)
+    expect(go).toMatch(/^\tBackgroundTaskStatusTokenEndedWithUnknownOutcome\s+= "ended_with_unknown_outcome"$/m)
+    expect(ts).toContain('export const BACKGROUND_TASK_STATUS_TOKEN = {')
+    expect(ts).toContain('Succeeded: "succeeded"')
+    expect(ts).toContain('EndedWithUnknownOutcome: "ended_with_unknown_outcome"')
+    expect(ts).toContain('export type BackgroundTaskStatusToken =')
+  })
+
+  it('accepts the complete enum vocabulary without changing assembled-message finality', () => {
+    const vocab = vocabulary()
+    expect(() => checkWorkerVocab(vocab, enumNames)).not.toThrow()
+    expect(emitGoWorkerVocab(vocab)).toMatch(/^\tAssembledMessageCompletionFinished\s+= "finished"$/m)
+    expect(emitTsWorkerVocab(vocab)).toContain('CompletionFinished: "finished"')
+  })
+
+  it('rejects two background-task states that share one token', () => {
+    const vocab = vocabulary()
+    vocab.backgroundTaskStatusTokens.EndedWithUnknownOutcome = vocab.backgroundTaskStatusTokens.Succeeded
+    expectContractError(() => checkWorkerVocab(vocab, enumNames), 'two background-task statuses share one wire token')
+  })
+
+  it('rejects an unspecified background-task token that claims an outcome', () => {
+    const vocab = vocabulary()
+    vocab.backgroundTaskStatusTokens.Unspecified = 'unspecified'
+    expectContractError(() => checkWorkerVocab(vocab, enumNames), 'backgroundTaskStatusTokens.Unspecified must be the empty token')
+  })
+
+  it('rejects a missing background-task enum entry', () => {
+    const vocab = vocabulary()
+    delete vocab.backgroundTaskStatusTokens.EndedWithUnknownOutcome
+    expectContractError(() => checkWorkerVocab(vocab, enumNames), 'BACKGROUND_TASK_STATUS_ENDED_WITH_UNKNOWN_OUTCOME has no backgroundTaskStatusTokens entry')
+  })
+
+  it('rejects a background-task entry that the enum does not declare', () => {
+    const vocab = vocabulary()
+    vocab.backgroundTaskStatusTokens.Invented = 'invented'
+    expectContractError(() => checkWorkerVocab(vocab, enumNames), 'backgroundTaskStatusTokens.Invented matches no BackgroundTaskStatus enum value')
+  })
+
+  it('requires the complete background-task table in the Worker vocabulary schema', () => {
+    const schema = JSON.parse(readFileSync(join(ROOT, 'contracts/worker-vocab.schema.json'), 'utf8'))
+    const validate = buildAjv().compile(schema)
+    const vocab = vocabulary()
+    expect(validate(vocab)).toBe(true)
+    delete vocab.backgroundTaskStatusTokens
+    expect(validate(vocab)).toBe(false)
+    expect(validate.errors).toContainEqual(expect.objectContaining({ keyword: 'required', params: { missingProperty: 'backgroundTaskStatusTokens' } }))
+  })
+})

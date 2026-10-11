@@ -324,6 +324,35 @@ func TestFlagSettingThinking(t *testing.T) {
 	assert.Nil(t, flagSettingThinking("anything-else"), "unknown → nil")
 }
 
+func TestSessionThinkingTokens(t *testing.T) {
+	t.Parallel()
+
+	off := sessionThinkingTokens(AlwaysThinkingOff)
+	require.NotNil(t, off, "off sends an explicit token budget")
+	assert.Equal(t, 0, *off, "a zero budget disables the session's thinking")
+	assert.Nil(t, sessionThinkingTokens(AlwaysThinkingOn), "on returns the session to the default")
+	assert.Nil(t, sessionThinkingTokens(""), "an empty value returns the session to the default")
+	assert.Nil(t, sessionThinkingTokens("anything-else"), "an unknown value returns the session to the default")
+}
+
+// TestSendSetMaxThinkingTokens_SendsAnExplicitNull: Claude Code reads an ABSENT
+// max_thinking_tokens as "keep the current configuration", so the "on" request
+// must carry the field as null. The mock applies exactly that rule, and records
+// the result: an absent field would leave the session disabled.
+func TestSendSetMaxThinkingTokens_SendsAnExplicitNull(t *testing.T) {
+	t.Parallel()
+
+	recordPath := filepath.Join(t.TempDir(), "thinking.txt")
+	a := newTestAgentWithControlProtocolEnv(t, "GO_HELPER_RECORD_THINKING="+recordPath)
+	defer stopTestAgent(a)
+
+	disabled := 0
+	require.NoError(t, a.sendSetMaxThinkingTokens(a.Context(), &disabled, a.APITimeout()))
+	require.Equal(t, "disabled", readRecordedSessionThinking(t, recordPath))
+	require.NoError(t, a.sendSetMaxThinkingTokens(a.Context(), nil, a.APITimeout()))
+	assert.Equal(t, "adaptive", readRecordedSessionThinking(t, recordPath))
+}
+
 // --- Unit tests for CurrentSettings ---
 
 func TestCurrentSettings_IncludesExtraSettings(t *testing.T) {
@@ -419,6 +448,113 @@ func TestUpdateSettings_ModelChange(t *testing.T) {
 	})
 	assert.True(t, result.AppliedLive, "should return true for model change via apply_flag_settings")
 	assert.Equal(t, "sonnet", a.model, "model should be updated from get_settings response")
+}
+
+// modelSwitchFlags runs one UpdateSettings against a mock CLI whose unpinned effort follows the
+// model (see GO_HELPER_MODEL_DEFAULT_EFFORT), and returns the agent, the result, and the
+// apply_flag_settings payloads that the CLI received. The agent starts on opus[1m] with the held
+// effort, as the startup readback of an unpinned session would have left it.
+func modelSwitchFlags(t *testing.T, heldEffort string, options map[string]string, mutate func(*Agent)) (*Agent, agent.SettingsApplyResult, []map[string]any) {
+	t.Helper()
+	recordPath := filepath.Join(t.TempDir(), "flags.jsonl")
+	a := newTestAgentWithControlProtocolEnv(t,
+		"GO_HELPER_RECORD_REQUESTS="+recordPath,
+		"GO_HELPER_MODEL_DEFAULT_EFFORT=opus[1m]=xhigh,sonnet=low")
+	t.Cleanup(func() { stopTestAgent(a) })
+	a.effort = heldEffort
+	if mutate != nil {
+		mutate(a)
+	}
+	result := a.UpdateSettings(options)
+	return a, result, readRecordedFlagSettings(t, recordPath)
+}
+
+// TestUpdateSettings_ModelSwitchKeepsTheHeldEffort is the regression guard for the Opus-to-Sonnet
+// switch of a session whose effort is not pinned in the CLI. The CLI reports the default effort of
+// its current model for such a session, so LeapMux holds the value that Opus reports (xhigh) but the
+// CLI keeps no xhigh to carry across. The worker keeps the held effort because Sonnet offers it, so
+// the request carries xhigh next to the model. A request that carried only the model left the CLI
+// on Sonnet's own default, and the readback then replaced the kept xhigh with that default.
+func TestUpdateSettings_ModelSwitchKeepsTheHeldEffort(t *testing.T) {
+	t.Parallel()
+
+	a, result, sent := modelSwitchFlags(t, agent.EffortXHigh,
+		map[string]string{agent.OptionIDModel: "sonnet", agent.OptionIDEffort: agent.EffortXHigh}, nil)
+
+	require.True(t, result.AppliedLive)
+	assert.Equal(t, "sonnet", a.model)
+	assert.Equal(t, agent.EffortXHigh, a.effort, "the CLI runs the held effort on the new model")
+	require.NotNil(t, result.Settlements[agent.OptionIDEffort].Value)
+	assert.Equal(t, agent.EffortXHigh, *result.Settlements[agent.OptionIDEffort].Value, "the confirmed effort is the kept one")
+	require.Len(t, sent, 1, "the model and the effort travel in one request")
+	assert.Equal(t, "sonnet", sent[0]["model"])
+	assert.Equal(t, agent.EffortXHigh, sent[0]["effortLevel"], "the kept effort is pinned for the session")
+	assert.NotContains(t, sent[0], "ultracode", "a plain level has no ultracode key")
+}
+
+// TestUpdateSettings_ModelSwitchKeepsUltracode pins the same rule for Ultracode, which the CLI
+// models as a pinned xhigh plus the ultracode boolean.
+func TestUpdateSettings_ModelSwitchKeepsUltracode(t *testing.T) {
+	t.Parallel()
+
+	_, result, sent := modelSwitchFlags(t, EffortUltracode,
+		map[string]string{agent.OptionIDModel: "sonnet", agent.OptionIDEffort: EffortUltracode}, nil)
+
+	require.True(t, result.AppliedLive)
+	require.Len(t, sent, 1)
+	assert.Equal(t, "sonnet", sent[0]["model"])
+	assert.Equal(t, agent.EffortXHigh, sent[0]["effortLevel"])
+	assert.Equal(t, true, sent[0]["ultracode"])
+}
+
+// TestUpdateSettings_ModelSwitchPinsNoEffortWithoutAConcreteHeldEffort covers the cases in which
+// there is nothing to pin: an automatic effort leaves the choice to the CLI, a request without an
+// effort states none, an unchanged model changes nothing, and a session that hides the model and
+// effort controls takes no effort push.
+func TestUpdateSettings_ModelSwitchPinsNoEffortWithoutAConcreteHeldEffort(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		held    string
+		options map[string]string
+		mutate  func(*Agent)
+	}{
+		{
+			name:    "an automatic effort",
+			held:    agent.EffortAuto,
+			options: map[string]string{agent.OptionIDModel: "sonnet", agent.OptionIDEffort: agent.EffortAuto},
+		},
+		{
+			name:    "a request without an effort",
+			held:    agent.EffortXHigh,
+			options: map[string]string{agent.OptionIDModel: "sonnet"},
+		},
+		{
+			name:    "an unchanged model",
+			held:    agent.EffortXHigh,
+			options: map[string]string{agent.OptionIDModel: "opus[1m]", agent.OptionIDEffort: agent.EffortXHigh, OptionFastMode: FastModeOn},
+		},
+		{
+			name:    "a session that hides the model and effort controls",
+			held:    agent.EffortXHigh,
+			options: map[string]string{agent.OptionIDModel: "sonnet", agent.OptionIDEffort: agent.EffortXHigh},
+			mutate:  func(a *Agent) { a.thirdPartyFromSettings = true },
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, result, sent := modelSwitchFlags(t, tc.held, tc.options, tc.mutate)
+
+			require.True(t, result.AppliedLive)
+			for _, settings := range sent {
+				assert.NotContains(t, settings, "effortLevel")
+				assert.NotContains(t, settings, "ultracode")
+			}
+		})
+	}
 }
 
 func TestUpdateSettings_FlagReadbackFailureIsUnresolved(t *testing.T) {
@@ -888,6 +1024,165 @@ func TestUpdateSettings_ToggleRoundTripTracksConfirmedValue(t *testing.T) {
 	})
 }
 
+// TestUpdateSettings_ThinkingReachesTheRunningSession is the regression for an
+// Extended Thinking toggle that changed only the settings layer. Claude Code
+// 2.1.289 fixes the running session's thinking at startup, so
+// apply_flag_settings alone left every later request on adaptive thinking while
+// get_settings, and therefore the UI, reported "Off". The order of the "on"
+// step matters too: the CLI resolves set_max_thinking_tokens:null against
+// alwaysThinkingEnabled, so the flag must clear first.
+func TestUpdateSettings_ThinkingReachesTheRunningSession(t *testing.T) {
+	t.Parallel()
+
+	recordPath := filepath.Join(t.TempDir(), "thinking.txt")
+	a := newTestAgentWithControlProtocolEnv(t, "GO_HELPER_RECORD_THINKING="+recordPath)
+	defer stopTestAgent(a)
+
+	for _, step := range []struct{ set, want string }{
+		{AlwaysThinkingOff, "disabled"},
+		{AlwaysThinkingOn, "adaptive"},
+		{AlwaysThinkingOff, "disabled"},
+	} {
+		require.True(t, a.UpdateSettings(map[string]string{OptionAlwaysThinking: step.set}).AppliedLive)
+		assert.Equal(t, step.set, a.alwaysThinking, "the confirmed value after setting thinking=%s", step.set)
+		assert.Equal(t, step.want, readRecordedSessionThinking(t, recordPath),
+			"the running session's thinking after setting thinking=%s", step.set)
+	}
+}
+
+// TestUpdateSettings_ThinkingRidesAlongOtherFlags covers a combined update: the
+// thinking change still reaches the session when it shares one apply with
+// another flag, and a change that leaves thinking alone does not touch it.
+func TestUpdateSettings_ThinkingRidesAlongOtherFlags(t *testing.T) {
+	t.Parallel()
+
+	recordPath := filepath.Join(t.TempDir(), "thinking.txt")
+	a := newTestAgentWithControlProtocolEnv(t, "GO_HELPER_RECORD_THINKING="+recordPath)
+	defer stopTestAgent(a)
+
+	require.True(t, a.UpdateSettings(map[string]string{OptionFastMode: FastModeOn, OptionAlwaysThinking: AlwaysThinkingOff}).AppliedLive)
+	assert.Equal(t, FastModeOn, a.fastMode)
+	assert.Equal(t, "disabled", readRecordedSessionThinking(t, recordPath))
+
+	require.True(t, a.UpdateSettings(map[string]string{OptionOutputStyle: "Explanatory"}).AppliedLive)
+	assert.Equal(t, "disabled", readRecordedSessionThinking(t, recordPath),
+		"a change to another flag leaves the session's thinking as it was")
+}
+
+// TestUpdateSettings_ThinkingSessionApplyFailureRequiresRestart: when the CLI
+// refuses set_max_thinking_tokens, the running session still thinks the old
+// way, so the live apply did not land. A restart applies the value from launch.
+func TestUpdateSettings_ThinkingSessionApplyFailureRequiresRestart(t *testing.T) {
+	t.Parallel()
+
+	a := newTestAgentWithControlProtocolEnv(t, "GO_HELPER_ERROR_MAX_THINKING_TOKENS=1")
+	defer stopTestAgent(a)
+
+	result := a.UpdateSettings(map[string]string{OptionAlwaysThinking: AlwaysThinkingOff})
+	assert.False(t, result.AppliedLive, "a refused session thinking change asks for a restart")
+}
+
+// TestRunStartupHandshake_PersistedThinkingOffReachesTheRunningSession: a
+// session launched (or relaunched) with thinking stored as "off" must run with
+// thinking disabled. The CLI computed its startup thinking from the settings at
+// launch, before the handshake applied the stored flag.
+func TestRunStartupHandshake_PersistedThinkingOffReachesTheRunningSession(t *testing.T) {
+	t.Parallel()
+
+	recordPath := filepath.Join(t.TempDir(), "thinking.txt")
+	opts := agent.Options{
+		AgentID:    "test-startup-thinking",
+		Options:    map[string]string{agent.OptionIDModel: "opus[1m]", OptionAlwaysThinking: AlwaysThinkingOff},
+		WorkingDir: t.TempDir(),
+		APITimeout: 5 * time.Second,
+	}
+	a, err := spawnMockClaudeAgent(context.Background(), "TestHelperProcessWithControlProtocol",
+		[]string{"GO_WANT_HELPER_PROCESS_CONTROL=1", "GO_HELPER_RECORD_THINKING=" + recordPath}, opts, agenttest.Nop())
+	require.NoError(t, err)
+	defer stopTestAgent(a)
+	a.alwaysThinking = AlwaysThinkingOn // what Start initializes before the handshake
+
+	require.NoError(t, a.runStartupHandshake(context.Background(), opts))
+
+	assert.Equal(t, AlwaysThinkingOff, a.alwaysThinking)
+	assert.Equal(t, "disabled", readRecordedSessionThinking(t, recordPath))
+	assert.Equal(t, agent.OptionSettlementConfirmed, a.SettingsSnapshot().Settlements[OptionAlwaysThinking].State)
+}
+
+// TestRunStartupHandshake_ThinkingSessionApplyFailureIsUnresolved: the stored
+// flag still reads back as "off" from get_settings, so the readback alone would
+// confirm a value that the running session does not use. The axis must stay
+// unresolved instead.
+func TestRunStartupHandshake_ThinkingSessionApplyFailureIsUnresolved(t *testing.T) {
+	t.Parallel()
+
+	opts := agent.Options{
+		AgentID:    "test-startup-thinking-refused",
+		Options:    map[string]string{agent.OptionIDModel: "opus[1m]", OptionAlwaysThinking: AlwaysThinkingOff},
+		WorkingDir: t.TempDir(),
+		APITimeout: 5 * time.Second,
+	}
+	a, err := spawnMockClaudeAgent(context.Background(), "TestHelperProcessWithControlProtocol",
+		[]string{"GO_WANT_HELPER_PROCESS_CONTROL=1", "GO_HELPER_ERROR_MAX_THINKING_TOKENS=1"}, opts, agenttest.Nop())
+	require.NoError(t, err)
+	defer stopTestAgent(a)
+	a.alwaysThinking = AlwaysThinkingOn
+
+	require.NoError(t, a.runStartupHandshake(context.Background(), opts), "a refused thinking change does not fail the start")
+
+	assert.Equal(t, agent.OptionSettlementUnresolved, a.SettingsSnapshot().Settlements[OptionAlwaysThinking].State)
+}
+
+// TestRunStartupHandshake_RefusedFlagLeavesTheSessionThinking: when the stored
+// flag does not land, get_settings reads thinking back as "on". Disabling the
+// session's thinking anyway would make the session contradict that readback, so
+// the handshake leaves the session alone and the state stays consistent.
+func TestRunStartupHandshake_RefusedFlagLeavesTheSessionThinking(t *testing.T) {
+	t.Parallel()
+
+	recordPath := filepath.Join(t.TempDir(), "thinking.txt")
+	opts := agent.Options{
+		AgentID:    "test-startup-thinking-flag-refused",
+		Options:    map[string]string{agent.OptionIDModel: "opus[1m]", OptionAlwaysThinking: AlwaysThinkingOff},
+		WorkingDir: t.TempDir(),
+		APITimeout: 5 * time.Second,
+	}
+	a, err := spawnMockClaudeAgent(context.Background(), "TestHelperProcessWithControlProtocol",
+		[]string{"GO_WANT_HELPER_PROCESS_CONTROL=1", "GO_HELPER_ERROR_APPLY_FLAG_SETTINGS=1", "GO_HELPER_RECORD_THINKING=" + recordPath}, opts, agenttest.Nop())
+	require.NoError(t, err)
+	defer stopTestAgent(a)
+	a.alwaysThinking = AlwaysThinkingOn
+
+	require.NoError(t, a.runStartupHandshake(context.Background(), opts))
+
+	assert.Equal(t, AlwaysThinkingOn, a.alwaysThinking, "the readback reports the flag that did not land")
+	assert.Equal(t, "adaptive", readRecordedSessionThinking(t, recordPath), "the session keeps thinking, as the readback states")
+}
+
+// TestRunStartupHandshake_DefaultThinkingSendsNoSessionChange: the default
+// ("on") is what the CLI starts with, so the handshake leaves the session alone.
+func TestRunStartupHandshake_DefaultThinkingSendsNoSessionChange(t *testing.T) {
+	t.Parallel()
+
+	opts := agent.Options{
+		AgentID:    "test-startup-thinking-default",
+		Options:    map[string]string{agent.OptionIDModel: "opus[1m]", OptionAlwaysThinking: AlwaysThinkingOn},
+		WorkingDir: t.TempDir(),
+		APITimeout: 5 * time.Second,
+	}
+	// The refusal proves the handshake never asks: a request would mark the axis unresolved.
+	a, err := spawnMockClaudeAgent(context.Background(), "TestHelperProcessWithControlProtocol",
+		[]string{"GO_WANT_HELPER_PROCESS_CONTROL=1", "GO_HELPER_ERROR_MAX_THINKING_TOKENS=1"}, opts, agenttest.Nop())
+	require.NoError(t, err)
+	defer stopTestAgent(a)
+	a.alwaysThinking = AlwaysThinkingOn
+
+	require.NoError(t, a.runStartupHandshake(context.Background(), opts))
+
+	assert.Equal(t, AlwaysThinkingOn, a.alwaysThinking)
+	assert.Equal(t, agent.OptionSettlementConfirmed, a.SettingsSnapshot().Settlements[OptionAlwaysThinking].State)
+}
+
 func TestUpdateSettings_ApplyFlagSettingsFails(t *testing.T) {
 	t.Parallel()
 
@@ -1088,6 +1383,23 @@ func TestHelperProcessWithControlProtocol(t *testing.T) {
 		"fastMode":              nil,
 		"alwaysThinkingEnabled": nil,
 	}
+	// sessionThinking models the thinking configuration of the running session.
+	// Claude Code 2.1.289 fixes it at startup from the settings, so
+	// apply_flag_settings changes only the settings layer above. Only
+	// set_max_thinking_tokens changes this value: 0 disables thinking, null
+	// returns to the default that alwaysThinkingEnabled selects, and an absent
+	// field keeps the current value.
+	sessionThinking := "adaptive"
+	recordThinking := func() {
+		recordPath := os.Getenv("GO_HELPER_RECORD_THINKING")
+		if recordPath == "" {
+			return
+		}
+		if f, ferr := os.OpenFile(recordPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); ferr == nil {
+			_, _ = fmt.Fprintln(f, sessionThinking)
+			_ = f.Close()
+		}
+	}
 
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
@@ -1105,6 +1417,8 @@ func TestHelperProcessWithControlProtocol(t *testing.T) {
 				Subtype  string                 `json:"subtype"`
 				Mode     string                 `json:"mode"`
 				Settings map[string]interface{} `json:"settings"`
+				// RawMessage keeps an explicit null apart from an absent field.
+				MaxThinkingTokens json.RawMessage `json:"max_thinking_tokens"`
 			} `json:"request"`
 		}
 		if err := json.Unmarshal([]byte(line), &msg); err != nil || msg.Type != "control_request" {
@@ -1141,6 +1455,18 @@ func TestHelperProcessWithControlProtocol(t *testing.T) {
 			state["mode"] = mode
 			responseBody = map[string]interface{}{"mode": mode}
 		case "apply_flag_settings":
+			if os.Getenv("GO_HELPER_ERROR_APPLY_FLAG_SETTINGS") == "1" {
+				errResp, _ := json.Marshal(map[string]interface{}{
+					"type": "control_response",
+					"response": map[string]interface{}{
+						"subtype":    "error",
+						"request_id": msg.RequestID,
+						"error":      "apply_flag_settings rejected",
+					},
+				})
+				_, _ = fmt.Fprintln(os.Stdout, string(errResp))
+				continue
+			}
 			// When GO_HELPER_RECORD_REQUESTS names a file, append each apply_flag_settings'
 			// settings map (one JSON object per line) so a test can assert WHICH flags were
 			// sent -- e.g. that a re-spelled-but-identical model sends no "model" flag.
@@ -1157,6 +1483,34 @@ func TestHelperProcessWithControlProtocol(t *testing.T) {
 				} else {
 					state[k] = v
 				}
+			}
+			responseBody = map[string]interface{}{}
+		case "set_max_thinking_tokens":
+			if os.Getenv("GO_HELPER_ERROR_MAX_THINKING_TOKENS") == "1" {
+				errResp, _ := json.Marshal(map[string]interface{}{
+					"type": "control_response",
+					"response": map[string]interface{}{
+						"subtype":    "error",
+						"request_id": msg.RequestID,
+						"error":      "set_max_thinking_tokens rejected",
+					},
+				})
+				_, _ = fmt.Fprintln(os.Stdout, string(errResp))
+				continue
+			}
+			switch tokens := strings.TrimSpace(string(msg.Request.MaxThinkingTokens)); tokens {
+			case "":
+				// An absent field keeps the session's current thinking.
+			case "null":
+				if enabled, ok := state["alwaysThinkingEnabled"].(bool); ok && !enabled {
+					sessionThinking = "disabled"
+				} else {
+					sessionThinking = "adaptive"
+				}
+			case "0":
+				sessionThinking = "disabled"
+			default:
+				sessionThinking = "enabled"
 			}
 			responseBody = map[string]interface{}{}
 		case "get_settings":
@@ -1192,7 +1546,20 @@ func TestHelperProcessWithControlProtocol(t *testing.T) {
 			if v, ok := state["model"].(string); ok {
 				model = v
 			}
+			// A session that holds no pinned effortLevel reports the default effort of
+			// its CURRENT model, so the reported value moves with a model switch.
+			// GO_HELPER_MODEL_DEFAULT_EFFORT lists the `model=effort` defaults. A
+			// pinned effortLevel (an apply_flag_settings key) wins over the default.
+			// Verified against Claude Code 2.1.289 with an isolated-HOME probe: an
+			// unpinned Opus session at xhigh reports Sonnet's own default after
+			// apply_flag_settings {model:"sonnet"}, and xhigh after
+			// {model:"sonnet", effortLevel:"xhigh"}.
 			effort := "high"
+			for _, pair := range strings.Split(os.Getenv("GO_HELPER_MODEL_DEFAULT_EFFORT"), ",") {
+				if name, level, ok := strings.Cut(pair, "="); ok && name == model {
+					effort = level
+				}
+			}
 			if v, ok := state["effortLevel"].(string); ok {
 				effort = v
 			}
@@ -1209,6 +1576,9 @@ func TestHelperProcessWithControlProtocol(t *testing.T) {
 			responseBody = map[string]interface{}{}
 		}
 
+		// Record BEFORE the response, so the record is complete by the time the
+		// agent that waits for this response returns to the test.
+		recordThinking()
 		resp := map[string]interface{}{
 			"type": "control_response",
 			"response": map[string]interface{}{
@@ -1223,6 +1593,16 @@ func TestHelperProcessWithControlProtocol(t *testing.T) {
 	}
 
 	os.Exit(0)
+}
+
+// readRecordedSessionThinking returns the session thinking that the mock
+// recorded after its last control request (GO_HELPER_RECORD_THINKING).
+func readRecordedSessionThinking(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	require.NoError(t, err, "the mock records the session thinking after every control request")
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	return lines[len(lines)-1]
 }
 
 // newTestAgentWithControlProtocol creates an Agent backed by a mock

@@ -12,7 +12,7 @@ describe('PROVIDER_PERMISSION_PRESETS', () => {
     expect(PROVIDER_PERMISSION_PRESETS[AgentProvider.UNSPECIFIED]).toBeUndefined()
   })
 
-  it.each(providers.filter(provider => provider !== AgentProvider.UNSPECIFIED && provider !== AgentProvider.ZCODE))('retains the exact production plugin preset object for provider %s', (provider) => {
+  it.each(providers.filter(provider => provider !== AgentProvider.UNSPECIFIED))('retains the exact production plugin preset object for provider %s', (provider) => {
     const plugin = providerFor(provider)
     expect(plugin, 'Every concrete provider must register its actual browser plugin.').toBeDefined()
     expect(permissionPresetsFor(provider)).toBe(plugin?.controls?.permissionPresets)

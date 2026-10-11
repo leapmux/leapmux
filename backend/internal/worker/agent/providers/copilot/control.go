@@ -225,7 +225,7 @@ func (a *Agent) abortNativeControlSession(sessionID string) {
 }
 
 // SendRawInput accepts the shared control envelope and forwards the exact native response value.
-func (a *Agent) SendRawInput(raw []byte) error {
+func (a *Agent) SendRawInput(raw []byte, stop agent.StopContext) error {
 	var envelope struct {
 		Response struct {
 			RequestID string          `json:"request_id"`
@@ -237,7 +237,7 @@ func (a *Agent) SendRawInput(raw []byte) error {
 	}
 	identifier := envelope.Response.RequestID
 	if identifier == "" {
-		return a.copilotConnection.SendRawInput(raw)
+		return a.copilotConnection.SendRawInput(raw, stop)
 	}
 	a.controlMu.Lock()
 	pending := a.controls[identifier]

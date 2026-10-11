@@ -7,6 +7,7 @@ import (
 	"slices"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
 type piCustomQuestionAnswer struct{ Text string }
@@ -51,7 +52,7 @@ func (a *Agent) preparePiQuestionDialog(id string, raw []byte) (*piQuestionSourc
 		a.Mu.Unlock()
 		response, err := json.Marshal(map[string]any{"type": contracts.PiEventExtensionUIResponse, "id": id, "value": answer.Text})
 		if err == nil {
-			err = a.Process.SendRawInput(response)
+			err = a.Process.SendRawInput(response, agent.StopContext{})
 		}
 		if err == nil {
 			return source, true
@@ -83,7 +84,7 @@ func (a *Agent) preparePiQuestionDialog(id string, raw []byte) (*piQuestionSourc
 
 // SendRawInput converts one custom answer into rpiv's select-then-input exchange.
 // Ordinary responses and unrelated Pi commands retain their original bytes.
-func (a *Agent) SendRawInput(data []byte) error {
+func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) (sendErr error) {
 	var response struct {
 		Type      string  `json:"type"`
 		ID        string  `json:"id"`
@@ -91,21 +92,40 @@ func (a *Agent) SendRawInput(data []byte) error {
 		Cancelled bool    `json:"cancelled"`
 	}
 	if json.Unmarshal(data, &response) != nil || response.Type != contracts.PiEventExtensionUIResponse {
-		return a.Process.SendRawInput(data)
+		return a.Process.SendRawInput(data, stop)
 	}
-	// Both forwarding paths below carry the value unchanged, and only a plan
-	// menu ever offers it, so the mark is set before the dialog lookup rather
-	// than duplicated in each branch.
+	a.dialogCancelMu.Lock()
+	defer a.dialogCancelMu.Unlock()
+	// Pi can send its settings dialog before the stdin write returns.
+	// Keep this mark ready before sending the approval.
 	if response.Value != nil && *response.Value == contracts.PiPlanActionImplementFresh {
 		a.notePiPlanFreshApproval()
 	}
+	// A failed write leaves the dialog open for another answer or an interrupt.
+	defer func() {
+		if sendErr != nil {
+			return
+		}
+		a.dialogDeadlines.Disarm(response.ID)
+		a.forgetOpenDialog(response.ID)
+	}()
 	a.Mu.Lock()
 	dialog := a.questionDialogs[response.ID]
 	delete(a.questionDialogs, response.ID)
 	if dialog == nil {
 		a.Mu.Unlock()
-		return a.Process.SendRawInput(data)
+		return a.Process.SendRawInput(data, stop)
 	}
+	defer func() {
+		if sendErr == nil {
+			return
+		}
+		a.Mu.Lock()
+		if a.piQuestionActiveLocked(dialog) && a.questionDialogs[response.ID] == nil {
+			a.questionDialogs[response.ID] = dialog
+		}
+		a.Mu.Unlock()
+	}()
 	active := a.piQuestionActiveLocked(dialog)
 	if response.Cancelled {
 		delete(a.customQuestionAnswers, dialog.Key)
@@ -114,7 +134,7 @@ func (a *Agent) SendRawInput(data []byte) error {
 		!slices.Contains(dialog.Dialog.Options, *response.Value) && len(dialog.Dialog.Options) > 0
 	if !custom {
 		a.Mu.Unlock()
-		return a.Process.SendRawInput(data)
+		return a.Process.SendRawInput(data, stop)
 	}
 	answer := &piCustomQuestionAnswer{Text: *response.Value}
 	if a.customQuestionAnswers == nil {
@@ -133,7 +153,7 @@ func (a *Agent) SendRawInput(data []byte) error {
 		encoded, err = json.Marshal(fields)
 	}
 	if err == nil {
-		err = a.Process.SendRawInput(encoded)
+		err = a.Process.SendRawInput(encoded, stop)
 	}
 	if err == nil {
 		return nil
@@ -141,9 +161,6 @@ func (a *Agent) SendRawInput(data []byte) error {
 	a.Mu.Lock()
 	if a.customQuestionAnswers[dialog.Key] == answer {
 		delete(a.customQuestionAnswers, dialog.Key)
-	}
-	if a.piQuestionActiveLocked(dialog) && a.questionDialogs[response.ID] == nil {
-		a.questionDialogs[response.ID] = dialog
 	}
 	a.Mu.Unlock()
 	return fmt.Errorf("start pi custom answer: %w", err)

@@ -188,7 +188,7 @@ func (a *Agent) clearNativeGoal() error {
 		a.stopNativeConnection()
 		return err
 	}
-	if err := a.prepareNativeSession(opts.Options); err != nil {
+	if err := a.prepareNativeSession(opts); err != nil {
 		a.stopNativeConnection()
 		return err
 	}
@@ -323,36 +323,4 @@ func (a *Agent) refreshNativeGoal(snapshot bool) {
 // run on the goroutine that handles the event.
 func (a *Agent) refreshNativeGoalInBackground() {
 	a.offReader(copilotReadGoal, func() { a.refreshNativeGoal(false) })
-}
-
-// sessionLaunchOptions snapshots the launch options with the CONFIRMED option set
-// the running session reported.
-//
-// It takes stateMu itself, and no caller holds it here. Both session-replacement
-// paths need the same four lines, and they must agree exactly: the reopened session
-// is configured from this snapshot, so a divergence would open it with settings
-// nobody chose.
-func (a *Agent) sessionLaunchOptions() agent.Options {
-	opts := a.opts
-	a.stateMu.Lock()
-	opts.Options = a.options.Clone()
-	a.stateMu.Unlock()
-	return opts
-}
-
-// resumeNativeSessionWithoutPendingWork restores a session's conversation and tells
-// the runtime NOT to continue the work the session had in flight.
-//
-// The pending work belongs to the turn that the clear or the context reset ended, so
-// continuing it would resume work the reader already discarded.
-//
-// It returns the transport error UNWRAPPED, because reopenNativeSessionAfterClear
-// tests it with errors.As for a providerkit.JSONRPCResponseError: only the runtime's own refusal
-// permits the create that follows, and a wrapped error would hide that distinction.
-func (a *Agent) resumeNativeSessionWithoutPendingWork(opts agent.Options, sessionID string) error {
-	config := newCopilotSessionConfig(opts, sessionID, true)
-	continueWork := false
-	config.ContinuePendingWork = &continueWork
-	_, err := a.sendNativeSessionConfig("session.resume", config, a.APITimeout())
-	return err
 }

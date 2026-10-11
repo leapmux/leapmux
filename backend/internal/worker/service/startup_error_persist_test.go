@@ -35,32 +35,32 @@ func TestDeriveAgentStatus_AllBranches(t *testing.T) {
 	agentHandle := svc.AgentStartup.begin("agent-1", func() {})
 	require.NotNil(t, agentHandle)
 	dbAgent.StartupError = "stale error"
-	status, errStr, _ := svc.deriveAgentStatus(&dbAgent, true)
+	status, errStr, _ := deriveAgentStatus(&dbAgent, liveness(svc, "agent-1", true))
 	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE, status)
 	assert.Empty(t, errStr)
 
 	// 2. Registry STARTING: isRunning=false + registry populated.
 	dbAgent.StartupError = ""
-	status, errStr, _ = svc.deriveAgentStatus(&dbAgent, false)
+	status, errStr, _ = deriveAgentStatus(&dbAgent, liveness(svc, "agent-1", false))
 	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_STARTING, status)
 	assert.Empty(t, errStr)
 
 	// 3. Registry STARTUP_FAILED: fail() wins over DB column.
 	dbAgent.StartupError = "stale db error"
 	svc.AgentStartup.fail(agentHandle, "registry error")
-	status, errStr, _ = svc.deriveAgentStatus(&dbAgent, false)
+	status, errStr, _ = deriveAgentStatus(&dbAgent, liveness(svc, "agent-1", false))
 	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED, status)
 	assert.Equal(t, "registry error", errStr)
 
 	// 4. Clear the registry; DB column now drives STARTUP_FAILED.
 	svc.AgentStartup.cancelAndClear("agent-1", keepWorktreeOnClose)
-	status, errStr, _ = svc.deriveAgentStatus(&dbAgent, false)
+	status, errStr, _ = deriveAgentStatus(&dbAgent, liveness(svc, "agent-1", false))
 	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED, status)
 	assert.Equal(t, "stale db error", errStr)
 
 	// 5. No registry entry, no DB column, not running → INACTIVE.
 	dbAgent.StartupError = ""
-	status, errStr, _ = svc.deriveAgentStatus(&dbAgent, false)
+	status, errStr, _ = deriveAgentStatus(&dbAgent, liveness(svc, "agent-1", false))
 	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_INACTIVE, status)
 	assert.Empty(t, errStr)
 }
@@ -294,7 +294,7 @@ func TestWatchEvents_CatchUpBroadcastsStartupFailedFromDBColumn(t *testing.T) {
 
 	wWatch := newTestWriter()
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
-		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
+		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: agentID, Replay: leapmuxv1.WatchReplayMode_WATCH_REPLAY_MODE_LATEST, Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}},
 	}, wWatch)
 
 	deadline := time.Now().Add(5 * time.Second)
@@ -400,9 +400,8 @@ func TestListTerminals_ReportsStartupFailedFromDBColumnAfterRegistryWipe(t *test
 func TestDeriveAgentStatus_ActiveClearsLingeringDBError(t *testing.T) {
 	t.Parallel()
 
-	svc, _, _ := setupTestService(t)
 	dbAgent := db.Agent{ID: "agent-a", StartupError: "lingering"}
-	status, errStr, _ := svc.deriveAgentStatus(&dbAgent, true)
+	status, errStr, _ := deriveAgentStatus(&dbAgent, agentLiveness{running: true})
 	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_ACTIVE, status)
 	assert.Empty(t, errStr, "runtime ACTIVE must suppress a lingering DB error")
 }

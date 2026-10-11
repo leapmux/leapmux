@@ -402,11 +402,11 @@ func (r *AgentResumer) resumeOne(ctx context.Context, agentID string) resumeOutc
 	// ordered StopAll every other agent goes through.
 	//
 	// backgroundStart is the whole reason this caller differs from the other
-	// three. It is the one spawn nobody is waiting on, so it is the one that
+	// two. It is the one spawn nobody is waiting on, so it is the one that
 	// draws on the startup permit pool.
 	//
-	// Resume the session the row points at, rather than letting
-	// ensureAgentRunning re-derive one. Its resolveResumeSessionID asks
+	// Resume the session the row points at (resumeStoredSession), rather than
+	// the conversation rule that the other callers use. That rule asks
 	// HasUserMessages, which is scoped to the CURRENT session:
 	// UpdateAgentSessionID stamps session_start_seq with the message high-water
 	// mark, so it answers false for exactly the row skipReason exists to rescue
@@ -417,12 +417,14 @@ func (r *AgentResumer) resumeOne(ctx context.Context, agentID string) resumeOutc
 	// worker database, but the only pointer to the provider's side of it is
 	// gone, unprompted, on a path no user asked for.
 	//
-	// skipReason already established that a process ran for this agent, so the
-	// row's session id is the thing to restore. A provider that refuses to
-	// resume it fails this one start, which leaves the tab exactly as cold as it
-	// is now and retryable on the next message.
-	resumeSessionID := dbAgent.AgentSessionID
-	if err := svc.ensureAgentRunning(agentID, &resumeSessionID, backgroundStart); err != nil {
+	// skipReason already established that a process ran or the user selected a
+	// native session, so the confirmed ID or pending claim is what to restore.
+	// ensureAgentRunning reads it from the row that it re-reads under the
+	// lifecycle lock, not from dbAgent: this sweep reaches a candidate long
+	// after it listed it, and a start in between can move the stored session.
+	// A provider that refuses to resume it fails this one start, which leaves
+	// the tab exactly as cold as it is now and retryable on the next message.
+	if err := svc.ensureAgentRunning(agentID, resumeStoredSession, backgroundStart); err != nil {
 		slog.Warn("agent resume: failed to start agent", "agent_id", agentID, "error", err)
 		return outcomeFailed
 	}
@@ -462,7 +464,8 @@ const (
 // mark, so once a provider issues a fresh session id mid-conversation (Claude
 // Code does, on its first turn) it answers false for an agent that the user
 // still talks to in the same conversation. Every such agent then stays cold.
-// resumeOne passes the row's own session id for the same reason.
+// resumeOne resumes the row's own session id (resumeStoredSession) for the
+// same reason.
 //
 // This is derived on every sweep rather than recorded in a column, so there is
 // nothing to keep in step with the truth. A "was running" flag would be a second
@@ -497,10 +500,13 @@ func (r *AgentResumer) skipReason(dbAgent db.Agent) resumeSkipReason {
 	if dbAgent.ClosedAt.Valid {
 		return resumeSkipClosed
 	}
-	// Apply the same permanent-failure check as queue dispatch. Respawning an
-	// agent whose last startup failed would burn a slot on a CLI that is going to
-	// fail again, and the row already tells the user to open a new agent.
-	if dbAgent.StartupError != "" {
+	// Apply the same permanent-failure check as queue dispatch, through the
+	// same predicate. Respawning an agent whose last startup failed would burn a
+	// slot on a CLI that is going to fail again, and the row already tells the
+	// user the ways forward: a /clear or a new agent. ensureAgentRunning refuses
+	// it as well; the check stays here so the sweep reports a skip rather than a
+	// failed start.
+	if r.svc.agentStartupFailed(&dbAgent) {
 		return resumeSkipStartupFailed
 	}
 	if dbAgent.WorkspaceArchived {

@@ -62,7 +62,7 @@ type answeringPublishSink struct {
 func (s *answeringPublishSink) PublishControlRequest(agent.ControlRequest) error {
 	// The ordinary answer path: the frame carries the request's own id, and
 	// SendRawInput forgets the record after it writes.
-	if err := s.base.SendRawInput([]byte(`{"jsonrpc":"2.0","id":7,"result":{"outcome":"allow"}}`)); err != nil {
+	if err := s.base.SendRawInput([]byte(`{"jsonrpc":"2.0","id":7,"result":{"outcome":"allow"}}`), agent.StopContext{}); err != nil {
 		return err
 	}
 	return nil
@@ -106,7 +106,7 @@ func TestControlRegistryForgetsAnAnsweredRequestAfterTheWrite(t *testing.T) {
 	base, stdin := newRegistryBase()
 	sink := &agenttest.ControlSink{}
 	base.PublishControlRequest(sink, []byte(`{"jsonrpc":"2.0","id":7,"method":"session/request_permission"}`), MCPElicitationCancelAnswer())
-	require.NoError(t, base.SendRawInput([]byte(`{"jsonrpc":"2.0","id":7,"result":{"outcome":{"optionId":"once"}}}`)))
+	require.NoError(t, base.SendRawInput([]byte(`{"jsonrpc":"2.0","id":7,"result":{"outcome":{"optionId":"once"}}}`), agent.StopContext{}))
 	stdin.Reset()
 	base.WithdrawAllControlRequests(sink)
 	assert.Empty(t, stdin.String(), "the answered request must not receive a second answer")
@@ -117,7 +117,7 @@ func TestControlRegistryKeepsARequestWhoseAnswerCouldNotBeWritten(t *testing.T) 
 	base := &JSONRPCProcess{Process: NewProcessFrom(ProcessConfig{AgentID: "agent", Stdin: agenttest.FailingStdin{}})}
 	sink := &agenttest.ControlSink{}
 	base.PublishControlRequest(sink, []byte(`{"jsonrpc":"2.0","id":7,"method":"session/request_permission"}`), MCPElicitationCancelAnswer())
-	require.Error(t, base.SendRawInput([]byte(`{"jsonrpc":"2.0","id":7,"result":{}}`)))
+	require.Error(t, base.SendRawInput([]byte(`{"jsonrpc":"2.0","id":7,"result":{}}`), agent.StopContext{}))
 	base.outstandingMu.Lock()
 	_, found := base.outstandingControls["jsonrpc:7"]
 	base.outstandingMu.Unlock()
@@ -187,4 +187,45 @@ func TestControlRegistryAnswersEachKindWithItsOwnCancelAnswer(t *testing.T) {
 			assert.Equal(t, []string{"jsonrpc:7"}, sink.CanceledControls())
 		})
 	}
+}
+
+// An open request that the provider withdraws by its own event loses its card, and
+// the provider gets no answer: it withdrew the request itself.
+func TestWithdrawOutstandingControlRequestRetiresAnOpenRequest(t *testing.T) {
+	t.Parallel()
+	base, stdin := newRegistryBase()
+	sink := &agenttest.ControlSink{}
+	base.PublishControlRequest(sink, []byte(`{"jsonrpc":"2.0","id":7,"method":"session/request_permission"}`), map[string]any{"outcome": "cancelled"})
+
+	assert.True(t, base.WithdrawOutstandingControlRequest(sink, "jsonrpc:7"))
+	drainStdin(t, base)
+	assert.Equal(t, "{}\n", stdin.String(), "the provider withdrew the request, so nothing answers it")
+	assert.Equal(t, []string{"jsonrpc:7"}, sink.CanceledControls())
+
+	// A second withdrawal finds nothing open and cancels nothing again.
+	assert.False(t, base.WithdrawOutstandingControlRequest(sink, "jsonrpc:7"))
+	assert.Equal(t, []string{"jsonrpc:7"}, sink.CanceledControls())
+}
+
+// The reader answered first. The provider's event then echoes that answer, and the
+// card the reader decided must not read as cancelled.
+func TestWithdrawOutstandingControlRequestLeavesAnAnsweredRequest(t *testing.T) {
+	t.Parallel()
+	base, _ := newRegistryBase()
+	sink := &agenttest.ControlSink{}
+	base.PublishControlRequest(sink, []byte(`{"jsonrpc":"2.0","id":7,"method":"session/request_permission"}`), nil)
+	require.NoError(t, base.SendRawInput([]byte(`{"jsonrpc":"2.0","id":7,"result":{"outcome":{"outcome":"selected","optionId":"allow"}}}`), agent.StopContext{}))
+
+	assert.False(t, base.WithdrawOutstandingControlRequest(sink, "jsonrpc:7"))
+	assert.Empty(t, sink.CanceledControls())
+}
+
+// An id the registry never held is not an open request.
+func TestWithdrawOutstandingControlRequestIgnoresAnUnknownRequest(t *testing.T) {
+	t.Parallel()
+	base, _ := newRegistryBase()
+	sink := &agenttest.ControlSink{}
+
+	assert.False(t, base.WithdrawOutstandingControlRequest(sink, "jsonrpc:404"))
+	assert.Empty(t, sink.CanceledControls())
 }

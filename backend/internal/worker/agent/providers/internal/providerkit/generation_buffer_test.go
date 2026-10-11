@@ -3,6 +3,8 @@ package providerkit
 import (
 	"encoding/json"
 	"errors"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -98,4 +100,87 @@ func TestGenerationBufferKeepsReasoningDeltasVerbatim(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, ok)
 	assert.Contains(t, string(raw), `"text":"first\n\n\n\nsecond"`)
+}
+
+func TestGenerationBufferScopeSnapshotKeepsIndependentScopes(t *testing.T) {
+	t.Parallel()
+	var buffer GenerationBuffer
+	for _, target := range []string{"", "missing"} {
+		kind, text, present := buffer.ScopeSnapshot(target)
+		assert.False(t, present)
+		assert.Empty(t, kind)
+		assert.Empty(t, text)
+	}
+	buffer.Append("first", agent.AssembledMessageKindText, "first", JoinVerbatim)
+	buffer.Append("second", agent.AssembledMessageKindReasoning, "second", JoinVerbatim)
+	kind, snapshot, present := buffer.ScopeSnapshot("first")
+	require.True(t, present)
+	assert.Equal(t, agent.AssembledMessageKindText, kind)
+	assert.Equal(t, "first", snapshot)
+	buffer.Append("first", agent.AssembledMessageKindText, " appended", JoinVerbatim)
+	_, current, present := buffer.ScopeSnapshot("first")
+	require.True(t, present)
+	assert.Equal(t, "first appended", current)
+	assert.Equal(t, "first", snapshot)
+	_, second, present := buffer.ScopeSnapshot("second")
+	require.True(t, present)
+	assert.Equal(t, "second", second)
+	_, present, err := buffer.Finish("first", agent.MessageCompletionComplete)
+	require.NoError(t, err)
+	require.True(t, present)
+	_, _, present = buffer.ScopeSnapshot("first")
+	assert.False(t, present)
+	assert.Equal(t, "first appended", current)
+	buffer.Discard("second")
+	_, _, present = buffer.ScopeSnapshot("second")
+	assert.False(t, present)
+	assert.Equal(t, "second", second)
+	buffer.Append("third", agent.AssembledMessageKindText, "third", JoinVerbatim)
+	_, third, present := buffer.ScopeSnapshot("third")
+	require.True(t, present)
+	buffer.Reset()
+	_, _, present = buffer.ScopeSnapshot("third")
+	assert.False(t, present)
+	assert.Equal(t, "third", third)
+}
+
+func TestGenerationBufferScopeSnapshotReadsAnEmptyStoredSegment(t *testing.T) {
+	t.Parallel()
+	buffer := GenerationBuffer{segments: map[string]*generationSegment{
+		"empty": {kind: agent.AssembledMessageKindReasoning},
+	}}
+	kind, text, present := buffer.ScopeSnapshot("empty")
+	assert.True(t, present)
+	assert.Equal(t, agent.AssembledMessageKindReasoning, kind)
+	assert.Empty(t, text)
+	_, present, err := buffer.Finish("empty", agent.MessageCompletionComplete)
+	require.NoError(t, err)
+	assert.False(t, present)
+}
+
+func TestGenerationBufferScopeSnapshotDuringConcurrentAppends(t *testing.T) {
+	t.Parallel()
+	var buffer GenerationBuffer
+	buffer.Append("scope", agent.AssembledMessageKindText, "prefix", JoinVerbatim)
+	var group sync.WaitGroup
+	group.Add(2)
+	go func() {
+		defer group.Done()
+		for range 1000 {
+			buffer.Append("scope", agent.AssembledMessageKindText, ".", JoinVerbatim)
+		}
+	}()
+	go func() {
+		defer group.Done()
+		for range 1000 {
+			kind, text, present := buffer.ScopeSnapshot("scope")
+			assert.True(t, present)
+			assert.Equal(t, agent.AssembledMessageKindText, kind)
+			assert.True(t, strings.HasPrefix(text, "prefix"))
+		}
+	}()
+	group.Wait()
+	_, text, present := buffer.ScopeSnapshot("scope")
+	require.True(t, present)
+	assert.Len(t, text, 1006)
 }

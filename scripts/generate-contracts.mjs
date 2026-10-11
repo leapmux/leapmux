@@ -584,7 +584,7 @@ function toolOutcomeEntries(v) {
   ]
 }
 
-export function checkWorkerVocab(v) {
+export function checkWorkerVocab(v, backgroundTaskEnumValues) {
   const entries = Object.entries(v.notificationTypes)
   const tokens = entries.map(([, token]) => token)
   mustBe(new Set(tokens).size === tokens.length, 'worker-vocab.json', 'two notification types share one wire token')
@@ -621,6 +621,21 @@ export function checkWorkerVocab(v) {
   // The outcome note is a metadata FIELD, so its key must exist there. Without it the
   // worker would write a note under a name the browser never reads.
   mustBe(v.messageMetadataFields.ToolOutcome != null, 'worker-vocab.json', 'messageMetadataFields must hold ToolOutcome, the field the tool-outcome note is stored under')
+  const backgroundTokens = Object.values(v.backgroundTaskStatusTokens)
+  mustBe(new Set(backgroundTokens).size === backgroundTokens.length, 'worker-vocab.json', 'two background-task statuses share one wire token')
+  mustBe(v.backgroundTaskStatusTokens.Unspecified === '', 'worker-vocab.json', 'backgroundTaskStatusTokens.Unspecified must be the empty token')
+  mustBe(Array.isArray(backgroundTaskEnumValues) && backgroundTaskEnumValues.length > 0, 'worker-vocab.json', 'BackgroundTaskStatus enum values must be present')
+  const backgroundEntries = new Map(Object.keys(v.backgroundTaskStatusTokens).map(key => [
+    `BACKGROUND_TASK_STATUS_${key.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toUpperCase()}`,
+    key,
+  ]))
+  for (const enumValue of backgroundTaskEnumValues) {
+    mustBe(backgroundEntries.has(enumValue), 'worker-vocab.json', `${enumValue} has no backgroundTaskStatusTokens entry`)
+  }
+  const enumSet = new Set(backgroundTaskEnumValues)
+  for (const [enumValue, key] of backgroundEntries) {
+    mustBe(enumSet.has(enumValue), 'worker-vocab.json', `backgroundTaskStatusTokens.${key} matches no BackgroundTaskStatus enum value`)
+  }
   return {}
 }
 
@@ -629,6 +644,8 @@ export function emitGoWorkerVocab(v) {
     .map(([key, token]) => ({ name: `NotificationType${key}`, value: jsonString(token) })))
   const goalStatusBlock = goConstBlock(Object.entries(v.goalStatusTokens)
     .map(([key, token]) => ({ name: `GoalStatusToken${key}`, value: jsonString(token) })))
+  const backgroundStatusBlock = goConstBlock(Object.entries(v.backgroundTaskStatusTokens)
+    .map(([key, token]) => ({ name: `BackgroundTaskStatusToken${key}`, value: jsonString(token) })))
   const goalTransitionBlock = goConstBlock(Object.entries(v.goalTransitions)
     .map(([key, token]) => ({ name: `GoalTransition${key}`, value: jsonString(token) })))
   const assembledMessageBlock = goConstBlock(assembledMessageEntries(v.assembledMessage)
@@ -687,6 +704,11 @@ const (
 ${goalStatusBlock}
 )
 
+// BackgroundTaskStatusToken* identifies neutral background-task payload states.
+const (
+${backgroundStatusBlock}
+)
+
 // GoalTransition* name what a goal change DID. The applier holds the row from
 // before the write, so it is the only place that can tell a resume from a fresh
 // set -- both end with the status "active".
@@ -725,6 +747,9 @@ export function emitTsWorkerVocab(v) {
     .map(key => `  ${jsonString(v.notificationTypes[key])},`)
     .join('\n')
   const goalStatusEntries = Object.entries(v.goalStatusTokens)
+    .map(([key, token]) => `  ${key}: ${jsonString(token)},`)
+    .join('\n')
+  const backgroundStatusEntries = Object.entries(v.backgroundTaskStatusTokens)
     .map(([key, token]) => `  ${key}: ${jsonString(token)},`)
     .join('\n')
   const goalTransitionEntries = Object.entries(v.goalTransitions)
@@ -782,9 +807,16 @@ export const CODEX_RATE_LIMIT_REACHED_TIME_WINDOW = ${jsonString(v.codexRateLimi
 /** Stable session-info member for a Codex billing or workspace block. */
 export const CODEX_RATE_LIMIT_ACCOUNT_BLOCK_KEY = ${jsonString(v.codexRateLimitAccountBlockKey)} as const
 
+/** Neutral background-task status tokens in payloads. Storage uses enum ordinals. */
+export const BACKGROUND_TASK_STATUS_TOKEN = {
+${backgroundStatusEntries}
+} as const
+
+export type BackgroundTaskStatusToken = typeof BACKGROUND_TASK_STATUS_TOKEN[keyof typeof BACKGROUND_TASK_STATUS_TOKEN]
+
 /**
- * The tokens the worker ships in the goal_updated payload. The empty token
- * means "no goal". The agents row stores an ordinal, not one of these.
+ * The worker sends these tokens in goal_updated payloads.
+ * The empty token means "no goal". The agents row stores an ordinal.
  */
 export const GOAL_STATUS_TOKEN = {
 ${goalStatusEntries}
@@ -1742,12 +1774,14 @@ export const DESKTOP_GO_ENV_NAMES = {
   devEndpoint: 'EnvDevEndpoint',
   binaryHash: 'EnvBinaryHash',
   devFrontend: 'EnvDevFrontend',
+  agentHelper: 'EnvAgentHelper',
 }
 
 export const DESKTOP_RS_ENV_NAMES = {
   devEndpoint: 'ENV_DEV_ENDPOINT',
   binaryHash: 'ENV_BINARY_HASH',
   devFrontend: 'ENV_DEV_FRONTEND',
+  agentHelper: 'ENV_AGENT_HELPER',
 }
 
 export const DESKTOP_RS_EVENT_NAMES = {
@@ -1926,10 +1960,10 @@ export function emitGoDesktop(d) {
   return `${GO_HEADER('desktop.json')}package contracts
 
 // The desktop shell's cross-language vocabulary: the env vars the Rust
-// shell passes when spawning the Go sidecar (the sidecar reads them in
-// main.go), and the frame cap both programs enforce on the sidecar IPC
-// wire. The Tauri event names are Rust<->webview only and ride in the
-// Rust/TS outputs.
+// shell sets or removes when spawning the Go sidecar (the sidecar reads them
+// in main.go and worker.RunAgentHelper), and the frame cap both programs
+// enforce on the sidecar IPC wire. The Tauri event names are Rust<->webview
+// only and ride in the Rust/TS outputs.
 const (
 ${goConstBlock(Object.keys(DESKTOP_GO_ENV_NAMES).map(k => ({ name: DESKTOP_GO_ENV_NAMES[k], value: jsonString(d.envVars[k]) })))}
 )
@@ -2283,13 +2317,14 @@ export const PROVIDER_PROTOCOLS = [
     title: 'ZCode',
     // goTable/tsTable name the emitted symbol per table; the key set is the contract's.
     tables: [
-      { key: 'methods', goTable: 'Method', tsTable: 'METHOD', tsType: 'ZCodeMethod', doc: 'interaction request methods' },
+      { key: 'methods', frameKind: 'name', goTable: 'Method', tsTable: 'METHOD', tsType: 'ZCodeMethod', doc: 'interaction request and state notification methods' },
+      { key: 'stateReasons', goTable: 'StateReason', tsTable: 'STATE_REASON', tsType: 'ZCodeStateReason', doc: 'state.updated reasons for context compaction' },
       { key: 'actions', goTable: 'Action', tsTable: 'ACTION', tsType: 'ZCodeAction', doc: 'native input response actions' },
       { key: 'replyFields', goTable: 'ReplyField', tsTable: 'REPLY_FIELD', tsType: 'ZCodeReplyField', doc: 'native input response fields' },
       { key: 'answerFields', goTable: 'AnswerField', tsTable: 'ANSWER_FIELD', tsType: 'ZCodeAnswerField', doc: 'native answer fields' },
       { key: 'planControls', goTable: 'PlanControl', tsTable: 'PLAN_CONTROL', tsType: 'ZCodePlanControl', doc: 'native plan approval values' },
-      { key: 'interactions', goTable: 'Interaction', tsTable: 'INTERACTION', tsType: 'ZCodeInteraction', doc: 'control interaction types' },
-      { key: 'events', goTable: 'Event', tsTable: 'EVENT', tsType: 'ZCodeEvent', doc: 'session event types -- the envelope `type`' },
+      { key: 'interactions', frameKind: 'name', goTable: 'Interaction', tsTable: 'INTERACTION', tsType: 'ZCodeInteraction', doc: 'control interaction types' },
+      { key: 'events', frameKind: 'name', goTable: 'Event', tsTable: 'EVENT', tsType: 'ZCodeEvent', doc: 'session event types -- the envelope `type`' },
       { key: 'toolPrefixes', goTable: 'ToolPrefix', tsTable: 'TOOL_PREFIX', tsType: 'ZCodeToolPrefix', doc: 'prefixes for projected tool-call IDs' },
       { key: 'toolKinds', goTable: 'ToolKind', tsTable: 'TOOL_KIND', tsType: 'ZCodeToolKind', doc: '`tool.updated` kinds -- the tool-call lifecycle' },
       { key: 'toolNames', goTable: 'ToolName', tsTable: 'TOOL', tsType: 'ZCodeTool', doc: 'tool names both sides dispatch on' },
@@ -2303,7 +2338,7 @@ export const PROVIDER_PROTOCOLS = [
       { key: 'storedPartTypes', goTable: 'StoredPartType', tsTable: 'STORED_PART_TYPE', tsType: 'ZCodeStoredPartType', doc: 'the `type` a stored part must state to be a tool call' },
       { key: 'storedPartStatuses', goTable: 'StoredPartStatus', tsTable: 'STORED_PART_STATUS', tsType: 'ZCodeStoredPartStatus', doc: 'the two `state.status` words a finished part states' },
       // This table covers THREE records, so the doc must be true of all of them.
-      // `Attachments` is a field of `storedPart.state`, `ArtifactURI` is a field of the
+      // `Attachments` is a field of `storedPart.state`, `OutputFileURI` is a field of the
       // nested `metadata`, and the rest are the attachment record's own. Splitting it
       // would rename ZCODE_STORED_ATTACHMENT.* at every browser call site, which buys
       // nothing the wording does not.
@@ -2464,21 +2499,18 @@ export const PROVIDER_PROTOCOLS = [
     tsPrefix: 'PI',
     title: 'Pi',
     tables: [
-      { key: 'mcpApprovalChoices', goTable: 'MCPApprovalChoice', tsTable: 'MCP_APPROVAL_CHOICE', tsType: 'PiMcpApprovalChoice', doc: 'MCP approval response values' },
-      { key: 'mcpApprovalText', goTable: 'MCPApprovalText', tsTable: 'MCP_APPROVAL_TEXT', tsType: 'PiMcpApprovalText', doc: 'MCP approval dialog delimiters' },
       { key: 'planDialogs', goTable: 'PlanDialog', tsTable: 'PLAN_DIALOG', tsType: 'PiPlanDialog', readers: ['ts'], readersWhy: 'the browser detects the plan-approval dialog by title; the worker answers only the FRESH-implementation dialog, whose two titles stay hand-written in providers/pi/protocol.go because no browser code reads them', doc: 'plan approval dialog titles' },
       { key: 'planActions', goTable: 'PlanAction', tsTable: 'PLAN_ACTION', tsType: 'PiPlanAction', doc: 'plan approval response values' },
-      { key: 'events', goTable: 'Event', tsTable: 'EVENT', tsType: 'PiEvent', doc: 'RPC envelope `type` values' },
-      { key: 'assistantEvents', goTable: 'AssistantEvent', tsTable: 'ASSISTANT_EVENT', tsType: 'PiAssistantEvent', readers: ['go'], readersWhy: 'the worker JOINS a run of these deltas into one assembled-message row, so no delta ever reaches the browser and no browser code spells one', doc: 'assistant message-update sub-types' },
-      { key: 'customTypes', goTable: 'CustomType', tsTable: 'CUSTOM_TYPE', tsType: 'PiCustomType', doc: 'custom message types from Pi extensions' },
-      { key: 'dialogMethods', goTable: 'DialogMethod', tsTable: 'DIALOG_METHOD', tsType: 'PiDialogMethod', doc: 'extension_ui_request methods that BLOCK on a response' },
-      { key: 'extensionMethods', goTable: 'ExtensionMethod', tsTable: 'EXTENSION_METHOD', tsType: 'PiExtensionMethod', doc: 'fire-and-forget extension_ui_request methods' },
+      { key: 'roles', goTable: 'Role', tsTable: 'ROLE', tsType: 'PiRole', doc: 'message roles that both readers compare' },
+      { key: 'stopReasons', goTable: 'StopReason', tsTable: 'STOP_REASON', tsType: 'PiStopReason', doc: 'assistant stop reasons that both readers compare' },
+      { key: 'events', frameKind: 'name', goTable: 'Event', tsTable: 'EVENT', tsType: 'PiEvent', doc: 'RPC envelope `type` values' },
+      { key: 'assistantEvents', frameKind: 'name', goTable: 'AssistantEvent', tsTable: 'ASSISTANT_EVENT', tsType: 'PiAssistantEvent', readers: ['go'], readersWhy: 'the worker JOINS a run of these deltas into one assembled-message row, so no delta ever reaches the browser and no browser code spells one', doc: 'assistant message-update sub-types' },
+      { key: 'customTypes', frameKind: 'name', goTable: 'CustomType', tsTable: 'CUSTOM_TYPE', tsType: 'PiCustomType', doc: 'custom message types from Pi extensions' },
+      { key: 'dialogMethods', frameKind: 'name', goTable: 'DialogMethod', tsTable: 'DIALOG_METHOD', tsType: 'PiDialogMethod', doc: 'extension_ui_request methods that BLOCK on a response' },
+      { key: 'extensionMethods', frameKind: 'name', goTable: 'ExtensionMethod', tsTable: 'EXTENSION_METHOD', tsType: 'PiExtensionMethod', doc: 'fire-and-forget extension_ui_request methods' },
       { key: 'toolNames', goTable: 'Tool', tsTable: 'TOOL', tsType: 'PiTool', doc: 'tool names the renderers dispatch on' },
       { key: 'supplement', goTable: 'Supplement', tsTable: 'SUPPLEMENT', tsType: 'PiSupplementField', owner: 'LeapMux chose these', doc: 'keys of the envelope a retained or truncated Pi call keeps beside its frame' },
-      { key: 'artifact', goTable: 'Artifact', tsTable: 'ARTIFACT', tsType: 'PiArtifactField', owner: 'LeapMux chose these', doc: 'fields of one stored artifact inside that envelope' },
-      { key: 'resultFields', goTable: 'ResultField', tsTable: 'RESULT_FIELD', tsType: 'PiResultField', doc: 'fields of a tool-execution frame, and of the result inside it, that both sides read to place an artifact' },
-      { key: 'contentBlock', goTable: 'ContentBlock', tsTable: 'CONTENT_BLOCK', tsType: 'PiContentBlockField', doc: 'fields of the content block a recovered output is written into' },
-      { key: 'blockTypes', goTable: 'BlockType', tsTable: 'BLOCK_TYPE', tsType: 'PiBlockType', doc: 'content block `type` values both sides dispatch on' },
+      { key: 'resultFields', goTable: 'ResultField', tsTable: 'RESULT_FIELD', tsType: 'PiResultField', doc: 'native fields that identify a tool call and its result' },
     ],
   },
   {
@@ -4013,9 +4045,11 @@ const DOMAINS = [
   },
   {
     name: 'worker-vocab',
-    emit(out, read) {
+    requiresDescriptor: true,
+    emit(out, read, descriptorSet) {
       const v = read('worker-vocab')
-      checkWorkerVocab(v)
+      const backgroundTaskEnumValues = enumValues(descriptorSet, 'leapmux/v1/agent.proto', 'BackgroundTaskStatus')
+      checkWorkerVocab(v, backgroundTaskEnumValues)
       out['backend/generated/contracts/worker-vocab.go'] = emitGoWorkerVocab(v)
       out['frontend/src/generated/contracts/worker-vocab.ts'] = emitTsWorkerVocab(v)
     },

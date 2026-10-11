@@ -44,8 +44,9 @@ type optionState struct {
 	// valued id could be evicted, stranding its value, its template, and its pending "" delete. nil
 	// outside apply.
 	pendingValues map[string]string
-	// known records every config option id the server has ADVERTISED this session (whether or
-	// not it surfaced a concrete value). It gates the two write paths: setConfigOption
+	// known records every config option id that the latest complete configOptions payload
+	// ADVERTISED (whether or not it surfaced a concrete value). A complete payload that omits an
+	// id removes it (forgetUnadvertised). It gates the two write paths: setConfigOption
 	// accepts a write only for an advertised id, and applyStartupOptions re-pushes a
 	// persisted preference only for one -- so an option advertised with an empty current at
 	// handshake stays writable/re-pushable. LRU-bounded (boundedIDSet) so a non-conforming
@@ -55,9 +56,10 @@ type optionState struct {
 	// When a later (complete) configOptions payload drops one -- reports a smaller option set
 	// than before -- mergeOptionValues emits the dropped id as an explicit "" so the uniform refresh
 	// merge DELETES its stale stored value instead of preserving it (an absent key is
-	// preserved). It is a strict subset of `known`: an id advertised but never valued has no
-	// stored value to delete, so emitting "" for it would be a redundant no-op (and could wipe
-	// a persisted preference awaiting re-push). LRU-bounded, like `known`.
+	// preserved). An id advertised but never valued is not in it: it has no stored value to
+	// delete, so emitting "" for it would be a redundant no-op (and could wipe a persisted
+	// preference awaiting re-push). An id that a complete payload drops leaves `known` and stays
+	// here, so its delete is still emitted. LRU-bounded, like `known`.
 	surfaced *boundedIDSet
 	// templates holds the last-advertised ConfigOption for each known id, so a write the
 	// server accepts but does NOT echo in a refreshed configOptions (off-spec) can still
@@ -76,9 +78,50 @@ type optionState struct {
 	// change happened during it (a reader-only change merely fires a harmless idempotent broadcast,
 	// as it did before). Bumped under the owning Base.Mu, like the rest of optionState.
 	structureGen uint64
+	// persists counts the settings refreshes that BroadcastSettingsRefresh persisted. A live
+	// UpdateSettings compares it before and after its writes: a difference means that a refresh
+	// persisted a value that a later write of the same span may have replaced, so the span
+	// persists its final state again. Bumped under the owning Base.Mu, like structureGen.
+	persists uint64
 	// unresolved records axes whose successful write returned no authoritative
 	// config-options snapshot. A later complete snapshot clears the set.
 	unresolved *boundedIDSet
+	// folds counts the complete configOptions payloads that apply folded. Each
+	// one is newer than every payload before it.
+	folds uint64
+	// sessionStart is what the last session swap recorded. See markSessionStart.
+	sessionStart optionSessionStart
+}
+
+// optionSessionStart is the option state at a session swap: the fold count and
+// the groups that the reader saw last.
+type optionSessionStart struct {
+	folds  uint64
+	groups []*leapmuxv1.AvailableOptionGroup
+}
+
+// markSessionStart records the option state at a session swap. The ClearContext
+// refresh reads the session/new response, and every payload that folds after
+// the swap is newer than that response: a reapply write returns the options of
+// the new session. The record lets the refresh tell the two apart. Caller holds
+// the owning Base.Mu.
+func (g *optionState) markSessionStart() {
+	// A shallow copy: recordOptimistic replaces a group proto in its slot, and a
+	// shared backing array would carry that replacement into the record.
+	g.sessionStart = optionSessionStart{folds: g.folds, groups: slices.Clone(g.groups)}
+}
+
+// foldedSinceSessionStart reports whether a complete payload folded after the
+// last session swap. Caller holds the owning Base.Mu.
+func (g *optionState) foldedSinceSessionStart() bool {
+	return g.folds != g.sessionStart.folds
+}
+
+// groupsChangedSinceSessionStart reports whether the groups differ from the
+// groups at the last session swap, which are the groups that the reader saw
+// last. Caller holds the owning Base.Mu.
+func (g *optionState) groupsChangedSinceSessionStart() bool {
+	return !agent.OptionGroupSetEqualExact(g.sessionStart.groups, g.groups)
 }
 
 func (g *optionState) markUnresolved(id string) {
@@ -155,6 +198,17 @@ func (s *boundedIDSet) add(id string, protected func(string) bool) (evicted stri
 	return "", false
 }
 
+// remove deletes id from the set. A nil set and an absent id are no-ops.
+func (s *boundedIDSet) remove(id string) {
+	if s == nil {
+		return
+	}
+	if e, ok := s.elems[id]; ok {
+		s.order.Remove(e)
+		delete(s.elems, id)
+	}
+}
+
 // has reports whether id is in the set.
 func (s *boundedIDSet) has(id string) bool {
 	if s == nil {
@@ -201,6 +255,24 @@ func (g *optionState) markKnown(option ConfigOption) {
 		delete(g.templates, evicted)
 	}
 	g.templates[option.ID] = option
+}
+
+// forgetUnadvertised removes every known id that the complete payload just folded does not
+// advertise, together with its template. An option that a complete payload omits no longer
+// applies (a model change dropped it), and the server refuses a write to it. The union of the
+// known ids drives every write batch, so a stale id would turn the stored value of the dropped
+// option into a refused write on the next model change, and the refusal would restart the agent.
+// The id stays in `surfaced`, so mergeOptionValues still deletes its stored value. An option
+// that the payload advertises with an empty current stays known: it is writable.
+// advertised is the winner map that apply built from this payload. Caller holds the owning
+// Base.Mu.
+func (g *optionState) forgetUnadvertised(advertised map[string]ConfigOption) {
+	for _, id := range g.known.keys() {
+		if _, ok := advertised[id]; !ok {
+			g.known.remove(id)
+			delete(g.templates, id)
+		}
+	}
 }
 
 // valued reports whether a config-option id currently carries a value (so it has a persisted
@@ -412,10 +484,10 @@ func buildOptionGroup(option ConfigOption, current, effortConfigID string) *leap
 // double-rendered as a option group.
 //
 // Complete-snapshot semantics: every configOptions payload is the COMPLETE set of the
-// options that currently apply -- verified across all five ACP providers (Goose, Kilo,
-// OpenCode, Cursor, Reasonix); none emits a partial/delta payload, and an option
-// is omitted ONLY when it no longer applies (e.g. OpenCode and Kilo drop effort for a
-// model with no variants).
+// options that currently apply -- verified across all eight ACP providers (Goose, Kilo,
+// OpenCode, Cursor, Reasonix, Qwen Code, Grok Build, Kiro). None emits a partial or
+// delta payload, and an option is omitted ONLY when it no longer applies (e.g.
+// OpenCode and Kilo drop effort for a model with no variants).
 // So an option absent from a NON-EMPTY payload no longer applies and is dropped --
 // optionState.mergeOptionValues then deletes its stale persisted value via its `surfaced` set.
 // The only preserve case is an EMPTY payload (len(options) == 0): no configOptions were
@@ -451,6 +523,7 @@ func (g *optionState) apply(options []ConfigOption, authority payloadAuthority, 
 	if len(options) == 0 {
 		return false, false
 	}
+	g.folds++
 	// Capture the claimed model/mode options by identity so we exclude exactly those
 	// entries -- an unclaimed selector with a coincidental id is still surfaced.
 	claimedModelID, claimedModel := "", false
@@ -483,7 +556,7 @@ func (g *optionState) apply(options []ConfigOption, authority payloadAuthority, 
 	// DETERMINISTICALLY (acpConfigOptionContentLess) -- regardless of the order the server lists the
 	// duplicates -- so the surfaced group can't flip its value/options between two payloads that list
 	// the same duplicates in different orders (which would fire a redundant status broadcast + catalog
-	// write each push). This mirrors acpSelectableConfigOptionByID's tie-break for the claimed
+	// write each push). This mirrors acpConfigOptionByCategory's tie-break for the claimed
 	// model/mode axes. A single winner per id is required regardless: two groups sharing a key corrupt
 	// the frontend's <For each={groupIds()}> reconciliation (it keys rows by id). First-occurrence
 	// order is kept for display; the change comparators below are order-INSENSITIVE, so only the per-id
@@ -524,6 +597,8 @@ func (g *optionState) apply(options []ConfigOption, authority payloadAuthority, 
 		values[id] = current
 		g.markSurfaced(id)
 	}
+	// The payload is complete, so an id that it does not advertise no longer applies.
+	g.forgetUnadvertised(winner)
 
 	// A complete payload with no surfaced options genuinely has none now, so rebuild to the
 	// empty set -- this clears an option the latest payload dropped (and mergeOptionValues then

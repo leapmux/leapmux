@@ -19,6 +19,20 @@ type stubProvider struct {
 	clearContextFn func() (string, error)
 }
 
+type nonComparableProvider struct {
+	agenttest.IdleAgent
+	values []string
+}
+
+func TestManagerAcceptsANonComparableProvider(t *testing.T) {
+	t.Parallel()
+	m := agent.NewManager(testRegistry, nil)
+	provider := nonComparableProvider{values: []string{"a provider value"}}
+	require.NotPanics(t, func() { m.PutAgentForTest("value", provider) })
+	assert.True(t, m.AgentAlive("value"))
+	assert.NotPanics(t, func() { m.LiveOptionGroups("value", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE) })
+}
+
 func (s *stubProvider) AgentID() string                                 { return "stub" }
 func (s *stubProvider) SendInput(string, []*leapmuxv1.Attachment) error { return nil }
 func (s *stubProvider) SendInputForSession(string, string, []*leapmuxv1.Attachment) error {
@@ -30,10 +44,10 @@ func (s *stubProvider) SendInputForSession(string, string, []*leapmuxv1.Attachme
 func (s *stubProvider) PublishTurnActive() agent.TurnState {
 	return agent.TurnState{}
 }
-func (s *stubProvider) SendRawInput([]byte) error { return nil }
-func (s *stubProvider) Stop()                     {}
-func (s *stubProvider) IsStopped() bool           { return false }
-func (s *stubProvider) DiscardOutput()            {}
+func (s *stubProvider) SendRawInput(data []byte, stop agent.StopContext) error { return nil }
+func (s *stubProvider) Stop()                                                  {}
+func (s *stubProvider) IsStopped() bool                                        { return false }
+func (s *stubProvider) DiscardOutput()                                         {}
 func (s *stubProvider) ClearContext() (string, error) {
 	if s.clearContextFn != nil {
 		return s.clearContextFn()
@@ -50,7 +64,7 @@ func (s *stubProvider) SettingsSnapshot() agent.SettingsApplyResult {
 func (s *stubProvider) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult {
 	return agent.ConfirmedSettings(options)
 }
-func (s *stubProvider) Interrupt() error { return nil }
+func (s *stubProvider) Interrupt(stop agent.StopContext) error { return nil }
 
 func TestManager_ClearContextWaitsForLifecycleLock(t *testing.T) {
 	t.Parallel()
@@ -520,6 +534,79 @@ func TestManager_UnstampedCacheRebuiltForModelDependentProvider(t *testing.T) {
 	// An unknown requested model still trusts the cache (can't tell it's stale).
 	assert.NotNil(t, optionids.GroupByID(m.OptionGroups("a1", modelDependentProvider, ""), "outputStyle"),
 		"an unknown requested model trusts the unstamped cache")
+}
+
+// TestManager_StaleStampServesTheLiveModelListAndTheTiersOfTheNewModel pins the catalog that a
+// not-running agent serves after a model edit. The cached catalog is the live catalog of the last
+// run. It lists the models that the CLI reported, and each model carries its own effort tiers.
+// The static seed of the provider lists other models, so a rebuild from the seed drops the live
+// model list and cannot describe the new model at all. The model-dependent groups must come from
+// the cached model group when it lists the new model.
+func TestManager_StaleStampServesTheLiveModelListAndTheTiersOfTheNewModel(t *testing.T) {
+	tiers := func(ids ...string) []*agent.EffortInfo {
+		out := make([]*agent.EffortInfo, 0, len(ids))
+		for _, id := range ids {
+			out = append(out, &agent.EffortInfo{Id: id, Name: id})
+		}
+		return out
+	}
+	live := []*agent.ModelInfo{
+		{Id: "live-a", DefaultEffort: "high", SupportedEfforts: tiers("high", "low")},
+		{Id: "live-b", DefaultEffort: "high", SupportedEfforts: tiers("max", "high", "low")},
+		{Id: "live-plain"},
+	}
+	// The cache holds the catalog of a run on live-a, plus a group that only the live run discovers.
+	cached := func() []*leapmuxv1.AvailableOptionGroup {
+		return []*leapmuxv1.AvailableOptionGroup{
+			agent.ModelOptionGroup(live, "live-a", agent.EffortSubGroups),
+			agent.EffortGroupForModel(live[0], "low", agent.EffortGroupLabel),
+			{Id: "outputStyle", Label: "Output Style", Options: []*leapmuxv1.AvailableOption{{Id: "default"}}},
+		}
+	}
+	optionIDs := func(groups []*leapmuxv1.AvailableOptionGroup, id string) []string {
+		var ids []string
+		for _, o := range optionids.GroupByID(groups, id).GetOptions() {
+			ids = append(ids, o.GetId())
+		}
+		return ids
+	}
+
+	t.Run("the new model offers more tiers", func(t *testing.T) {
+		m := agent.NewManager(catalogRegistry(), nil)
+		m.PreloadCache("a1", cached())
+
+		got := m.OptionGroups("a1", modelDependentProvider, "live-b")
+
+		assert.Equal(t, []string{"live-a", "live-b", "live-plain"}, optionIDs(got, agent.OptionIDModel),
+			"the live model list survives the model edit")
+		assert.Equal(t, []string{"max", "high", "low"}, optionIDs(got, agent.OptionIDEffort),
+			"the effort group describes the new model")
+		assert.Equal(t, "high", optionids.GroupByID(got, agent.OptionIDEffort).GetDefaultValue())
+		assert.NotNil(t, optionids.GroupByID(got, "outputStyle"), "a discovered group survives the model edit")
+	})
+
+	t.Run("the new model offers no effort", func(t *testing.T) {
+		m := agent.NewManager(catalogRegistry(), nil)
+		m.PreloadCache("a1", cached())
+
+		got := m.OptionGroups("a1", modelDependentProvider, "live-plain")
+
+		assert.Equal(t, []string{"live-a", "live-b", "live-plain"}, optionIDs(got, agent.OptionIDModel))
+		assert.Nil(t, optionids.GroupByID(got, agent.OptionIDEffort), "the effort group of the old model must not stay")
+	})
+
+	t.Run("the cached catalog does not list the new model", func(t *testing.T) {
+		m := agent.NewManager(catalogRegistry(), nil)
+		m.PreloadCache("a1", cached())
+
+		got := m.OptionGroups("a1", modelDependentProvider, "haiku")
+
+		// The static seed lists haiku, and the seed gives haiku no effort tiers. So the rebuild
+		// from the seed still applies, and the effort group of live-a must not stay.
+		assert.Contains(t, optionIDs(got, agent.OptionIDModel), "haiku")
+		assert.Nil(t, optionids.GroupByID(got, agent.OptionIDEffort), "the effort group of the old model must not stay")
+		assert.NotNil(t, optionids.GroupByID(got, "outputStyle"))
+	})
 }
 
 func TestManager_AvailableOptionGroupsPrefersRuntimeGroups(t *testing.T) {

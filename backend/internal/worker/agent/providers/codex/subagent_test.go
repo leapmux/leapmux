@@ -52,7 +52,7 @@ func TestCodex_AChildTurnStartedDoesNotReleaseTheSend(t *testing.T) {
 func TestCodex_MultiAgentV2ChildDoesNotAdvertiseDirectInput(t *testing.T) {
 	t.Parallel()
 
-	assert.False(t, codexProvider{}.SupportsChildSteering(),
+	assert.False(t, codexProvider{}.ChildCapabilities(nil).AcceptsMessages,
 		"Codex rejects direct app-server input for Multi-Agent V2 children")
 	_, sendsDirectInput := any(&Agent{}).(agent.ChildSteerer)
 	assert.False(t, sendsDirectInput)
@@ -66,7 +66,7 @@ func TestCodex_MultiAgentV2ChildDoesNotAdvertiseDirectInput(t *testing.T) {
 func TestCodex_InterruptChildUnknownThreadReturnsRetryable(t *testing.T) {
 	t.Parallel()
 	a := &Agent{}
-	err := a.InterruptChild("unknown-thread")
+	err := a.InterruptChild("unknown-thread", agent.StopContext{})
 	assert.ErrorIs(t, err, agent.ErrChildRouteNotReady)
 }
 

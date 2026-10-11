@@ -645,7 +645,7 @@ func spawnChildWithTitle(t *testing.T, title string) (*Service, *testResponseWri
 	svc, w := newRegistryRoot(t)
 	registerAgentWatch(svc, w.channelID, "root-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
-	childID, err := registryRootSink(svc).EnsureChildAgent("span-1", "task-1", title)
+	childID, err := registryRootSink(svc).EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: title})
 	require.NoError(t, err)
 	require.NotEmpty(t, childID)
 	return svc, w, childID
@@ -734,7 +734,7 @@ func TestEnsureChildAgent_CleansTheModelSuppliedTitle(t *testing.T) {
 // (bgtask.Item.PreservingBlanksFrom), which is how a provider refreshes a row's
 // status without restating its title. Writing the pooled name there would
 // overwrite a real subagent title with a placeholder.
-func TestEnsureChildAgent_NamesTheAgentRowWhenCleaningEmptiesTheTitle(t *testing.T) {
+func TestEnsureChildAgent_AssignsTheTitleWhenCleaningEmptiesTheTitle(t *testing.T) {
 	t.Parallel()
 
 	svc, _, childID := spawnChildWithTitle(t, emptyingTitle)
@@ -770,7 +770,7 @@ func TestEnsureChildAgent_AnEmptiedTitleKeepsTheRegistryRowTitle(t *testing.T) {
 		RowKey: "task-1", Kind: bgtask.KindSubagent,
 		Title: "Ship the parser", Status: bgtask.StatusRunning,
 	}))
-	childID, err := sink.EnsureChildAgent("span-1", "task-1", emptyingTitle)
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: emptyingTitle})
 	require.NoError(t, err)
 
 	row := registryRow(t, svc)
@@ -909,13 +909,13 @@ func TestUpsertBackgroundTask_ABlankTitleKeepsTheStoredTitle(t *testing.T) {
 	}))
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
 		RowKey: "task-1", Kind: bgtask.KindSubagent,
-		Description: "/tmp/out.txt", Status: bgtask.StatusCompleted,
+		Description: "/tmp/out.txt", Status: bgtask.StatusSucceeded,
 	}))
 
 	row := registryRow(t, svc)
 	assert.Equal(t, "Ship the parser", row.Title, "a blank title still means 'keep the stored one'")
 	assert.Equal(t, "/tmp/out.txt", row.Description, "the rest of the partial upsert still lands")
-	assert.Equal(t, leapmuxv1.BackgroundTaskStatus(bgtask.StatusCompleted), row.Status)
+	assert.Equal(t, leapmuxv1.BackgroundTaskStatus(bgtask.StatusSucceeded), row.Status)
 }
 
 // Claude's real sequence for a Task spawn: task_started upserts the registry
@@ -944,7 +944,7 @@ func TestUpsertBackgroundTask_PassesAnAlreadyCleanedTitleThrough(t *testing.T) {
 
 	// EnsureChildAgent cleans before it reaches the same path, so the link
 	// upsert hands over `cleaned` and must not change the row's title.
-	childID, err := sink.EnsureChildAgent("span-1", "task-1", raw)
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: raw})
 	require.NoError(t, err)
 
 	row := registryRow(t, svc)

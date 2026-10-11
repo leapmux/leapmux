@@ -1,11 +1,12 @@
 import type { ControlRequest } from '~/stores/control.store'
-import { fireEvent, render } from '@solidjs/testing-library'
+import { fireEvent, render, within } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { ZCODE_METHOD, ZCODE_MODE, ZCODE_TOOL } from '~/generated/contracts/zcode-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { ControlRequestActions, ControlRequestContent } from '~/test-support/controlRequestBanner'
 import { permissionPillGroup } from '~/test-support/controlRequests'
 import { createControlAnswerState } from '../../controls/types'
+import { zcodeExtractControl } from './extractControl'
 import './plugin'
 
 /**
@@ -265,5 +266,77 @@ describe('zcode permission control', () => {
       />
     ))
     expect(container.textContent ?? '').toContain('unfamiliar')
+  })
+})
+
+/** The options a live Bash permission request offered, captured from the app-server: an always-allow choice carries its permission-rule updates inside its own response. */
+const ZCODE_CAPTURED_OPTIONS = [
+  { optionId: 'allow_once', kind: 'allow_once', name: 'Allow once', response: { decision: 'allow', reason: 'Approved once' } },
+  { optionId: 'allow_project', kind: 'allow_always', name: 'Always allow in this project', response: { decision: 'allow', permissionUpdates: [{ type: 'addRules' }] } },
+  { optionId: 'deny', kind: 'deny', name: 'Deny', response: { decision: 'deny' } },
+]
+
+describe('zcode offered permission options', () => {
+  it('exposes the offered options with their native ids and names', () => {
+    const extracted = zcodeExtractControl({
+      payload: request(ZCODE_TOOL.Bash, { command: 'rm -rf build' }, { options: ZCODE_CAPTURED_OPTIONS }).payload,
+    })
+    expect(extracted?.kind).toBe('permission')
+    expect(extracted && 'permission' in extracted ? extracted.permission.options : []).toEqual([
+      { optionId: 'allow_once', kind: 'allow_once', name: 'Allow once' },
+      { optionId: 'allow_project', kind: 'allow_always', name: 'Always allow in this project' },
+      { optionId: 'deny', kind: 'reject_once', name: 'Deny' },
+    ])
+  })
+
+  it('keeps an unknown native kind instead of guessing a canonical slot', () => {
+    const extracted = zcodeExtractControl({
+      payload: request(ZCODE_TOOL.Bash, { command: 'ls' }, { options: [{ optionId: 'escalate', kind: 'escalate', name: 'Escalate' }] }).payload,
+    })
+    expect(extracted && 'permission' in extracted ? extracted.permission.options : []).toEqual([
+      { optionId: 'escalate', kind: 'escalate', name: 'Escalate' },
+    ])
+  })
+
+  it('offers the once and project scope pills and answers with the chosen option id', async () => {
+    const onRespond = vi.fn().mockResolvedValue(undefined)
+    const { getByRole, getByTestId } = render(() => (
+      <ControlRequestActions
+        agentProvider={AgentProvider.ZCODE}
+        request={request(ZCODE_TOOL.Bash, { command: 'rm -rf build' }, { options: ZCODE_CAPTURED_OPTIONS })}
+        answerState={createControlAnswerState()}
+        onRespond={onRespond}
+        hasEditorContent={false}
+        onTriggerSend={vi.fn()}
+      />
+    ))
+    const group = within(getByRole('radiogroup', { name: 'Allow scope' }))
+    expect(group.getByRole('radio', { name: 'Once' })).toBeChecked()
+    fireEvent.click(group.getByRole('radio', { name: 'Project' }))
+    expect(group.getByRole('radio', { name: 'Project' })).toBeChecked()
+    fireEvent.click(getByTestId('control-allow-btn'))
+    await vi.waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
+    expect(decode(onRespond.mock.calls[0]?.[0])).toMatchObject({
+      response: { response: { behavior: 'allow', choice: 'allow_project' } },
+    })
+  })
+
+  it('answers a non-allow option id with a deny, mirroring the backend fail-safe', async () => {
+    const onRespond = vi.fn().mockResolvedValue(undefined)
+    const { getByRole } = render(() => (
+      <ControlRequestActions
+        agentProvider={AgentProvider.ZCODE}
+        request={request(ZCODE_TOOL.Bash, { command: 'rm -rf build' }, { options: ZCODE_CAPTURED_OPTIONS })}
+        answerState={createControlAnswerState()}
+        onRespond={onRespond}
+        hasEditorContent={false}
+        onTriggerSend={vi.fn()}
+      />
+    ))
+    fireEvent.click(getByRole('button', { name: 'Deny' }))
+    await vi.waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
+    expect(decode(onRespond.mock.calls[0]?.[0])).toMatchObject({
+      response: { response: { behavior: 'deny', choice: 'deny' } },
+    })
   })
 })

@@ -1,12 +1,6 @@
-// Package providers is the composition root of the agent providers. It states,
-// in one explicit list, every provider this worker supports, and builds the
-// agent.Registry the worker runs on from that list.
-//
-// The list is explicit on purpose. A provider package that registered itself
-// from init() would be wired by a blank import somewhere else, and a missing
-// import would make every lookup for that provider quietly answer the neutral
-// defaults. Here a provider missing from the list is a startup panic, and
-// providers_test.go fails first.
+// Package providers explicitly registers every provider that the Worker supports.
+// It constructs the single agent.Registry from those registrations.
+// A missing registration fails before the Worker starts.
 package providers
 
 import (

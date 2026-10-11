@@ -55,6 +55,7 @@ const (
 	StatusInProgress  = Status(leapmuxv1.TodoStatus_TODO_STATUS_IN_PROGRESS)
 	StatusCompleted   = Status(leapmuxv1.TodoStatus_TODO_STATUS_COMPLETED)
 	StatusDeleted     = Status(leapmuxv1.TodoStatus_TODO_STATUS_DELETED)
+	StatusBlocked     = Status(leapmuxv1.TodoStatus_TODO_STATUS_BLOCKED)
 )
 
 // String states the status with the proto enum's own generated name, for logs.
@@ -209,6 +210,8 @@ func StatusFromProviderWord(word string) Status {
 		return StatusInProgress
 	case "completed":
 		return StatusCompleted
+	case "blocked":
+		return StatusBlocked
 	case "deleted", "cancelled", "canceled":
 		// A provider that CANCELS a task reports the same end state that
 		// StatusDeleted tombstones: the row stays visible and stops being work.

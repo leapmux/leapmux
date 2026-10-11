@@ -365,6 +365,7 @@ func TestCodexThreadParams(t *testing.T) {
 	// A non-default service tier is included.
 	fast := codexThreadParams("gpt-5.4", "/work", DefaultApprovalPolicy, contracts.CodexOptionDefaultSandboxPolicy, ServiceTierFast)
 	assert.Equal(t, map[string]interface{}{"model_reasoning_summary": "detailed"}, fast["config"])
+	assert.Equal(t, true, fast["experimentalRawEvents"], "spawn arguments must reach the live child transcript")
 	assert.Equal(t, "gpt-5.4", fast["model"])
 	assert.Equal(t, "/work", fast["cwd"])
 	assert.Equal(t, DefaultApprovalPolicy, fast["approvalPolicy"])
@@ -519,6 +520,59 @@ func TestCodexUpdateSettings_ConcreteModelAppliesLive(t *testing.T) {
 	assert.Equal(t, "gpt-5.6-luna", ag.model)
 }
 
+// TestCodexModelSwitchCarriesTheHeldAxesIntoTheNextTurn pins a model switch that keeps the held
+// effort and service tier. The worker passes the whole merged option set, so the update carries the
+// new model next to the kept effort and tier. Codex applies a setting as an override for "this turn
+// and subsequent turns", and the next turn/start states every axis again. So the switch sends no
+// request of its own, and the next turn names the new model, the kept effort, the kept tier, and
+// the same model and effort inside the collaboration mode.
+func TestCodexModelSwitchCarriesTheHeldAxesIntoTheNextTurn(t *testing.T) {
+	t.Parallel()
+
+	var a *Agent
+	var requests func() []codexRecordedRequest
+	a, _, requests = newCodexAgentForRPC(t, func(method string) agenttest.RPCReply {
+		if method == "turn/start" {
+			a.Mu.Lock()
+			ack := a.turnStartAck
+			a.turnStartAck = nil
+			a.Mu.Unlock()
+			if ack != nil {
+				close(ack)
+			}
+		}
+		return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+	})
+	a.threadID = "thread-1"
+	a.model = "gpt-5.6-sol"
+	a.effort = "xhigh"
+	a.serviceTier = ServiceTierFast
+
+	result := a.UpdateSettings(map[string]string{
+		agent.OptionIDModel:              "gpt-5.6-luna",
+		agent.OptionIDEffort:             "xhigh",
+		contracts.CodexOptionServiceTier: ServiceTierFast,
+	})
+	require.True(t, result.AppliedLive, "a concrete model with a kept effort applies without a relaunch")
+	assert.Empty(t, requests(), "the switch itself sends no request: the next turn states the settings")
+	assert.Equal(t, "xhigh", a.effort)
+	assert.Equal(t, ServiceTierFast, a.serviceTier)
+
+	require.NoError(t, a.SendInput("hi", nil))
+	require.Eventually(t, func() bool { return len(requests()) == 1 }, time.Second, time.Millisecond)
+	sent := requests()[0]
+	assert.Equal(t, "turn/start", sent.Method)
+	assert.Equal(t, "gpt-5.6-luna", sent.Params["model"])
+	assert.Equal(t, "xhigh", sent.Params["effort"])
+	assert.Equal(t, ServiceTierFast, sent.Params["serviceTier"])
+	collaboration, ok := sent.Params["collaborationMode"].(map[string]interface{})
+	require.True(t, ok, "the collaboration mode carries the model and effort")
+	settings, ok := collaboration["settings"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, "gpt-5.6-luna", settings["model"])
+	assert.Equal(t, "xhigh", settings["reasoning_effort"])
+}
+
 // TestCodexSendTurnStartOmitsAccountDefaultModel covers the wire shape directly:
 // turn/start must carry no model key for the account default, exactly as
 // codexThreadParams omits it for thread/start.
@@ -577,6 +631,69 @@ func TestCodexSendTurnStartOmitsAccountDefaultModel(t *testing.T) {
 			} else {
 				assert.Equal(t, test.model, sent[0].Params["model"])
 			}
+		})
+	}
+}
+
+func TestCodexSendTurnStartClearsFastServiceTier(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name string
+		tier string
+	}{
+		{name: "default tier", tier: contracts.CodexOptionDefaultServiceTier},
+		{name: "unset tier"},
+		{name: "unknown tier", tier: "unsupported"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			type nativeTierState struct {
+				present bool
+				value   interface{}
+				tier    string
+			}
+			observed := make(chan nativeTierState, 2)
+			nativeTier := ""
+			var a *Agent
+			var requests func() []codexRecordedRequest
+			a, _, requests = newCodexAgentForRPC(t, func(method string) agenttest.RPCReply {
+				if method == "turn/start" {
+					sent := requests()
+					value, present := sent[len(sent)-1].Params["serviceTier"]
+					// Codex keeps the thread's previous tier when this field is absent.
+					if present {
+						nativeTier, _ = value.(string)
+					}
+					observed <- nativeTierState{present: present, value: value, tier: nativeTier}
+					a.Mu.Lock()
+					ack := a.turnStartAck
+					a.turnStartAck = nil
+					a.Mu.Unlock()
+					if ack != nil {
+						close(ack)
+					}
+				}
+				return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+			})
+			a.threadID = "thread-1"
+
+			for _, tier := range []string{ServiceTierFast, test.tier} {
+				err := a.sendTurnStart("thread-1", []map[string]interface{}{{"type": "text", "text": "hi"}}, turnSettings{
+					model:       "gpt-5.6-luna",
+					serviceTier: tier,
+				})
+				require.NoError(t, err)
+			}
+
+			first, second := <-observed, <-observed
+			require.True(t, first.present, "Fast supplies a native tier override")
+			require.Equal(t, ServiceTierFast, first.value)
+			require.Equal(t, ServiceTierFast, first.tier)
+			assert.True(t, second.present, "Default must replace the previous native tier")
+			assert.Nil(t, second.value, "an explicit null clears the native tier override")
+			assert.Empty(t, second.tier, "the native thread no longer uses Fast")
 		})
 	}
 }

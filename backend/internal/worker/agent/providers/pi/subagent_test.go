@@ -50,7 +50,7 @@ func TestPi_SubagentReportTextPreservesTextBlockBoundaries(t *testing.T) {
 func TestPi_FinalStatus(t *testing.T) {
 	s, ok := piFinalStatus("completed")
 	assert.True(t, ok)
-	assert.Equal(t, bgtask.StatusCompleted, s)
+	assert.Equal(t, bgtask.StatusSucceeded, s)
 	s, ok = piFinalStatus("error")
 	assert.True(t, ok)
 	assert.Equal(t, bgtask.StatusFailed, s)
@@ -68,7 +68,7 @@ func TestPi_ApplySubagentEnd_FinalStatus(t *testing.T) {
 	tasks := sink.BackgroundTasks()
 	require.Len(t, tasks, 1)
 	assert.Equal(t, "a-1", tasks[0].RowKey)
-	assert.Equal(t, bgtask.StatusCompleted, tasks[0].Status)
+	assert.Equal(t, bgtask.StatusSucceeded, tasks[0].Status)
 	require.NotEmpty(t, tasks[0].ChildAgentID)
 	child := sink.Child(tasks[0].ChildAgentID)
 	require.Len(t, child.Messages(), 1)
@@ -136,7 +136,7 @@ func TestPi_ApplySubagentNotification_FinalStatus(t *testing.T) {
 	piApplySubagentNotification(sink, append(append([]byte(`{"message":`), msg...), byte('}')))
 	tasks := sink.BackgroundTasks()
 	require.Len(t, tasks, 1)
-	assert.Equal(t, bgtask.StatusCompleted, tasks[0].Status)
+	assert.Equal(t, bgtask.StatusSucceeded, tasks[0].Status)
 }
 
 func TestPi_ApplySubagentNotification_GroupOthers(t *testing.T) {
@@ -349,7 +349,7 @@ func TestPi_NativeSubagentResultAndNotification(t *testing.T) {
 	handlePiOutput(a, providerkit.ParseLine(notification))
 	tasks = sink.BackgroundTasks()
 	require.Len(t, tasks, 1)
-	assert.Equal(t, bgtask.StatusCompleted, tasks[0].Status)
+	assert.Equal(t, bgtask.StatusSucceeded, tasks[0].Status)
 	assert.Equal(t, notification, sink.Messages()[2].Content)
 	child := sink.Child(tasks[0].ChildAgentID)
 	reports := child.LeapMuxNotifications()
@@ -382,7 +382,7 @@ func TestPi_WorkflowLaunchOpensNoSpan(t *testing.T) {
 	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"message_end","message":{"role":"custom","customType":"subagent-notification","content":"Workflow complete","details":{"id":"wf_probe","description":"Workflow probe","status":"completed"}}}`)))
 	tasks = sink.BackgroundTasks()
 	require.Len(t, tasks, 1)
-	assert.Equal(t, bgtask.StatusCompleted, tasks[0].Status)
+	assert.Equal(t, bgtask.StatusSucceeded, tasks[0].Status)
 	for _, message := range sink.Messages() {
 		assert.Empty(t, message.SpansOpenAtPersist)
 	}
@@ -426,7 +426,7 @@ func TestPiApplySubagentEndClosesTheOriginalRowWhenTheRenameFails(t *testing.T) 
 	assert.Equal(t, "tc-1", tasks[0].RowKey)
 	// piApplySubagentNotification writes to the agent id, and no row holds that key,
 	// so a skipped final status would leave the row Running for the whole session.
-	assert.Equal(t, bgtask.StatusCompleted, tasks[0].Status)
+	assert.Equal(t, bgtask.StatusSucceeded, tasks[0].Status)
 }
 
 func TestPiApplySubagentEndKeepsTheToolCallRowWhenTheBackgroundRenameFails(t *testing.T) {

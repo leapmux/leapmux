@@ -1,53 +1,30 @@
 import type { McpCallFacts } from '../../../model/mcpToolCall'
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import { PI_EVENT, PI_RESULT_FIELD } from '~/generated/contracts/pi-protocol'
+import { PI_EVENT, PI_TOOL } from '~/generated/contracts/pi-protocol'
 import { asContentArray } from '~/lib/contentBlocks'
-import { prettifyArgsJson, prettifyStructuredJson } from '~/lib/jsonFormat'
-import { pickObject, pickString } from '~/lib/jsonPick'
+import { prettifyArgsJson, prettifyJson } from '~/lib/jsonFormat'
+import { pickObject } from '~/lib/jsonPick'
 import { parseMcpContentItem } from '../../../model/mcpToolCall'
-import { PI_MCP_PROXY_PREFIX, PI_MCP_TOOL } from '../protocol'
-import { isPiMcpAdapter, piNativeMcpContent } from './mcp'
+import { PI_MCP_RESOURCE_TOOL, PI_MCP_RESULT_FIELD, PI_TOOL_RESULT_FIELD } from '../protocol'
+import { piNativeMcpContent, piNativeMcpIdentity } from './mcp'
 import { piExtractTool, piPairedRequest, piPairedResult } from './toolCommon'
 
-/**
- * The MCP server and tool one Pi row states, or undefined for a row that is not an
- * MCP call.
- *
- * pi-mcp-adapter states the pair in the RESULT's `details`. A REQUEST row carries no
- * such record and its tool name is `<server>_<tool>`, which no splitter can divide
- * without the server list -- so the paired result is what supplies it, exactly as it
- * supplies the body below.
- *
- * The namespace proxy is the one name that states its own server: Pi spells it
- * `mcp__<server>` and puts the tool in the arguments, so a request row of that shape
- * answers on its own.
- */
+/** Read native MCP identity from this result or the exact paired result. */
 export function piMcpIdentity(
   payload: Record<string, unknown>,
-  request?: ParsedMessageContent,
   pairedResult?: ParsedMessageContent,
 ): { server: string, tool: string } | undefined {
   const tool = piExtractTool(payload)
   if (!tool)
     return undefined
-  if (tool.toolName.startsWith(PI_MCP_PROXY_PREFIX)) {
-    const server = tool.toolName.slice(PI_MCP_PROXY_PREFIX.length)
-    const args = pickObject(piPairedRequest(payload, request)?.parentObject, 'args') ?? tool.args
-    if (server)
-      return { server, tool: pickString(args, 'tool') || server }
-  }
-  const identity = piMcpDetails(payload, pairedResult)
-  if (!isPiMcpAdapter(tool.toolName, identity))
-    return undefined
-  const server = pickString(identity, 'server')
-  return server ? { server, tool: pickString(identity, 'tool') || tool.toolName } : undefined
+  return piNativeMcpIdentity(tool.toolName, piMcpDetails(payload, pairedResult))
 }
 
 /** The `details` record that identifies the MCP call: this row's own, else the paired result's. */
 function piMcpDetails(payload: Record<string, unknown>, pairedResult?: ParsedMessageContent): Record<string, unknown> | undefined {
   const result = pickObject(payload, 'result') ?? pickObject(payload, 'partialResult')
-  return pickObject(result, PI_RESULT_FIELD.Details)
-    ?? pickObject(pickObject(piPairedResult(payload, pairedResult)?.parentObject, 'result'), PI_RESULT_FIELD.Details)
+  return pickObject(result, PI_TOOL_RESULT_FIELD.Details)
+    ?? pickObject(pickObject(piPairedResult(payload, pairedResult)?.parentObject, 'result'), PI_TOOL_RESULT_FIELD.Details)
     ?? undefined
 }
 
@@ -57,29 +34,35 @@ export function piGenericToolSource(payload: Record<string, unknown>, request?: 
   if (!tool)
     return null
   const result = pickObject(payload, 'result') ?? pickObject(payload, 'partialResult')
-  const details = pickObject(result, PI_RESULT_FIELD.Details)
+  const details = pickObject(result, PI_TOOL_RESULT_FIELD.Details)
   const args = pickObject(piPairedRequest(payload, request)?.parentObject, 'args') ?? tool.args
-  const identity = piMcpDetails(payload, pairedResult)
-  const native = pickObject(details, PI_RESULT_FIELD.McpResult)
-  const adapter = isPiMcpAdapter(tool.toolName, identity)
+  const identity = piMcpIdentity(payload, pairedResult)
+  const native = identity ? pickObject(result, PI_MCP_RESULT_FIELD.StructuredContent) : undefined
   const nativeContent = piNativeMcpContent(tool.toolName, result)
   let structured: unknown
-  if (tool.toolName === PI_MCP_TOOL.Script || !adapter) {
+  if (!identity) {
     if (details && Object.keys(details).length > 0)
       structured = details
   }
-  else if (native?.omitted !== true) {
-    structured = native?.structuredContent
+  else if (tool.toolName === PI_MCP_RESOURCE_TOOL.List || tool.toolName === PI_MCP_RESOURCE_TOOL.ListTemplates) {
+    structured = native
   }
-  const structuredJson = structured !== undefined && structured !== null ? prettifyStructuredJson(structured) : undefined
+  else if (tool.toolName !== PI_MCP_RESOURCE_TOOL.Read) {
+    structured = native?.[PI_MCP_RESULT_FIELD.StructuredContent]
+  }
+  const structuredJson = structured !== undefined && structured !== null ? prettifyJson(JSON.stringify(structured)) : undefined
+  const structuredJsonRole: McpCallFacts['structuredJsonRole'] = structuredJson !== undefined && !identity && tool.toolName === PI_TOOL.Codemode
+    ? 'metadata'
+    : undefined
   return {
-    server: adapter ? pickString(identity, 'server') : '',
-    tool: adapter ? pickString(identity, 'tool') || pickString(args, 'tool') || tool.toolName : tool.toolName,
-    argsJson: prettifyArgsJson(tool.toolName === PI_MCP_TOOL.Gateway && typeof args.tool === 'string' ? args.args : args),
+    server: identity?.server ?? '',
+    tool: identity?.tool ?? tool.toolName,
+    argsJson: prettifyArgsJson(args),
     content: (nativeContent ?? asContentArray(result?.content) ?? []).map(parseMcpContentItem),
     ...(structuredJson !== undefined ? { structuredJson } : {}),
+    ...(structuredJsonRole !== undefined ? { structuredJsonRole } : {}),
     ...(payload.type !== PI_EVENT.ToolExecutionStart && payload.type !== PI_EVENT.ToolExecutionUpdate
-      && (tool.isError || (adapter && (native?.isError === true || !!pickString(details, 'error'))))
+      && (tool.isError || (identity && (result?.isError === true || native?.isError === true)))
       ? { failed: true }
       : {}),
   }

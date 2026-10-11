@@ -27,6 +27,15 @@ func getAgentSpanMessages(t *testing.T, dispatcher *channel.Dispatcher, agentID,
 	return &response, writer
 }
 
+func TestMessageSupplementProjectionSpanRejectsShadowedPrivateState(t *testing.T) {
+	t.Parallel()
+	svc, dispatcher, _ := setupTestService(t)
+	agentID, spanID, _ := createShadowedPrivateProjectionRow(t, svc)
+	writer := newTestWriter()
+	dispatch(dispatcher, contracts.RPCMethodGetAgentSpanMessages, &leapmuxv1.GetAgentSpanMessagesRequest{AgentId: agentID, SpanId: spanID}, writer)
+	assertPrivateProjectionRefusal(t, writer)
+}
+
 func TestGetAgentSpanMessagesScopesAndOrdersRelatedMessages(t *testing.T) {
 	t.Parallel()
 	service, dispatcher, _ := setupTestService(t)

@@ -101,3 +101,24 @@ func TestSafePermissionDefaultsAreNeverAProviderBypassMode(t *testing.T) {
 		})
 	}
 }
+
+// Grok Build's and Kiro's bypass presets set a provider option rather than the
+// permission mode -- Grok's approval mode, Kiro's policy preset -- so the same
+// rule applies to the value of that option that every new agent takes.
+//
+// Go cannot import the frontend bypass presets. This table records their
+// current values. A change to a frontend preset must update this table.
+func TestProviderOptionDefaultsAreNeverABypassValue(t *testing.T) {
+	t.Parallel()
+
+	registry := Registry()
+	bypassValues := map[leapmuxv1.AgentProvider]struct{ option, bypass string }{}
+	for provider, tc := range bypassValues {
+		t.Run(provider.String(), func(t *testing.T) {
+			defaults := registry.ProviderOptionDefaults(provider)
+			require.Contains(t, defaults, tc.option)
+			assert.NotEqual(t, tc.bypass, defaults[tc.option],
+				"a new agent must not open in the value the bypass shortcut selects")
+		})
+	}
+}

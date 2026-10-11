@@ -41,7 +41,7 @@ func TestBuildCodexInputBlocks_textAttachment(t *testing.T) {
 	blocks := buildCodexInputBlocks("", agent.ClassifyAttachments(attachments))
 	require.Len(t, blocks, 1)
 	assert.Equal(t, "text", blocks[0]["type"])
-	assert.Contains(t, blocks[0]["text"], "BEGIN ATTACHED FILE: report.csv")
+	assert.Contains(t, blocks[0]["text"], `<attached-file name="report.csv" mime-type="text/csv">`)
 	assert.Contains(t, blocks[0]["text"], "name,value")
 }
 

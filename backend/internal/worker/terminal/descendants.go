@@ -2,8 +2,9 @@ package terminal
 
 import (
 	"context"
+	"errors"
 
-	"github.com/shirou/gopsutil/v4/process"
+	"github.com/leapmux/leapmux/util/procutil"
 )
 
 // maxReportedProcesses caps how many descendants one walk returns. A `make -j64`
@@ -28,67 +29,6 @@ type ProcessInfo struct {
 	Name string
 }
 
-// procSnapshot is one process's identity in a scan. The walk takes it through a
-// seam so the traversal is testable without a process table.
-type procSnapshot struct {
-	pid  int32
-	ppid int32
-}
-
-// snapshotProcesses reads the whole process table once and returns each entry's
-// pid and parent pid, plus a name lookup for the survivors of the cap.
-//
-// ONE pass, deliberately. `process.Children()` re-runs a full scan per node on
-// every platform, so a BFS built from it costs depth x (full scan) for an
-// identical answer; and on Windows it is also less correct, because a *Process
-// that did not come from Processes() resolves its name through OpenProcess,
-// which returns ACCESS_DENIED for elevated processes -- exactly the ones a user
-// most wants named.
-//
-// Names are resolved separately, and only for the processes that survive the
-// cap, which skips a syscall for every process on the machine outside this
-// tab's subtree -- typically almost all of them.
-//
-// process.Status() is never called: on macOS it forks /bin/ps once per process,
-// so one tab close would fork /bin/ps once for every process on the machine.
-func snapshotProcesses(ctx context.Context) ([]procSnapshot, func(int32) string, error) {
-	procs, err := process.ProcessesWithContext(ctx)
-	if err != nil {
-		return nil, nil, err
-	}
-	byPID := make(map[int32]*process.Process, len(procs))
-	out := make([]procSnapshot, 0, len(procs))
-	for _, p := range procs {
-		// gopsutil ignores ctx for these calls on Linux and macOS -- they are
-		// plain file reads and sysctls with no cancellation plumbing -- so a
-		// deadline bounds only THIS loop, and only because it is checked here.
-		if err := ctx.Err(); err != nil {
-			return nil, nil, err
-		}
-		ppid, err := p.PpidWithContext(ctx)
-		if err != nil {
-			// One unreadable process never aborts the walk: a process can exit
-			// between the listing and this read, and another user's may refuse
-			// the read outright.
-			continue
-		}
-		byPID[p.Pid] = p
-		out = append(out, procSnapshot{pid: p.Pid, ppid: ppid})
-	}
-	nameOf := func(pid int32) string {
-		p, ok := byPID[pid]
-		if !ok {
-			return ""
-		}
-		name, err := p.NameWithContext(ctx)
-		if err != nil {
-			return ""
-		}
-		return name
-	}
-	return out, nameOf, nil
-}
-
 // processScan is ONE read of the machine's process table, walked once per
 // terminal in the request that took it.
 //
@@ -98,30 +38,22 @@ func snapshotProcesses(ctx context.Context) ([]procSnapshot, func(int32) string,
 // itself: two passes taken milliseconds apart can show a process under one tab
 // and not the other.
 type processScan struct {
-	// byParent indexes the table children-by-parent ONCE. The index is derived
-	// from the same read every terminal in the request walks, so it belongs to
-	// the request too: building it per terminal made the batch pay one full pass
-	// over the process table per tab, which is the cost this type exists to pay
-	// only once.
-	byParent map[int32][]int32
-	nameOf   func(int32) string
+	// table keeps one parent index for every terminal in the request.
+	table  *procutil.ProcessTable
+	nameOf func(int32) string
 }
 
 func newProcessScan(ctx context.Context) (*processScan, error) {
-	snap, nameOf, err := snapshotProcesses(ctx)
-	if err != nil {
+	table, err := procutil.SnapshotProcessTable(ctx)
+	if contextErr := ctx.Err(); contextErr != nil {
+		return nil, errors.Join(err, contextErr)
+	}
+	if table == nil {
 		return nil, err
 	}
-	return &processScan{byParent: indexByParent(snap), nameOf: nameOf}, nil
-}
-
-// indexByParent groups a scan's entries by parent pid.
-func indexByParent(snap []procSnapshot) map[int32][]int32 {
-	byParent := make(map[int32][]int32, len(snap))
-	for _, p := range snap {
-		byParent[p.ppid] = append(byParent[p.ppid], p.pid)
-	}
-	return byParent
+	// The close dialog keeps readable rows when another user's parent data is unavailable.
+	// Ownership cleanup uses the same table and retains its diagnostic separately.
+	return &processScan{table: table, nameOf: func(pid int32) string { return table.Name(ctx, int(pid)) }}, nil
 }
 
 // descendantsOf walks the process tree below shellPID, excluding the shell and
@@ -130,7 +62,7 @@ func (s *processScan) descendantsOf(shellPID int, limit int) ([]ProcessInfo, int
 	// The shell's own name comes out of the same table read, so asking costs
 	// nothing. reportsAsWork needs it because the group filter only means
 	// anything for a shell that implements job control.
-	pids, total := descendantPIDs(s.byParent, int32(shellPID), limit,
+	pids, total := descendantPIDs(s.table, int32(shellPID), limit,
 		reportsAsWork(shellPID, s.nameOf(int32(shellPID))))
 	out := make([]ProcessInfo, 0, len(pids))
 	for _, pid := range pids {
@@ -224,26 +156,18 @@ const (
 // parent index is not an atomic snapshot of the machine, so a stale ppid
 // pointing at a recycled pid can close a loop; that costs nothing to exclude
 // here and hangs the worker if it is not.
-func descendantPIDs(byParent map[int32][]int32, root int32, limit int, report func(int32) bool) ([]int32, int) {
-	visited := map[int32]struct{}{root: {}}
+func descendantPIDs(table *procutil.ProcessTable, root int32, limit int, report func(int32) bool) ([]int32, int) {
+	if limit < 0 {
+		limit = 0
+	}
+	var include func(int) bool
+	if report != nil {
+		include = func(pid int) bool { return report(int32(pid)) }
+	}
+	pids, total := table.DescendantPIDs(int(root), 0, limit, include)
 	var kept []int32
-	total := 0
-	queue := append([]int32(nil), byParent[root]...)
-	for len(queue) > 0 {
-		pid := queue[0]
-		queue = queue[1:]
-		if _, seen := visited[pid]; seen {
-			continue
-		}
-		visited[pid] = struct{}{}
-		queue = append(queue, byParent[pid]...)
-		if report != nil && !report(pid) {
-			continue
-		}
-		total++
-		if limit <= 0 || len(kept) < limit {
-			kept = append(kept, pid)
-		}
+	for _, pid := range pids {
+		kept = append(kept, int32(pid))
 	}
 	return kept, total
 }

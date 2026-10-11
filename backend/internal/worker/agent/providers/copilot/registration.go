@@ -31,6 +31,11 @@ var copilotNativePermissionModes = []agent.OptionDef{
 	{Id: contracts.CopilotPermissionModeAllowAll, Name: "Allow All", Description: "Approve every tool call without asking."},
 }
 
+// copilotSafePermissionMode is the permission mode that asks before each tool call. The
+// runtime starts every session in it. A session with no stored mode takes it, and so does
+// a session whose default mode the runtime refuses (see applyOpeningSettings).
+const copilotSafePermissionMode = contracts.CopilotPermissionModeManual
+
 func copilotSessionModeGroup(current string) *leapmuxv1.AvailableOptionGroup {
 	return agent.SelectGroup(copilotOptionSessionMode, "Mode", agent.OptionOrderProviderFirst, current, copilotNativeModes)
 }
@@ -59,10 +64,12 @@ func Registration() agent.Registration {
 			// A new session asks for Assisted: it approves what a safety check finds
 			// safe and asks about everything else, which is the narrowest mode that
 			// does not stop at every read. A RESUMED session keeps the mode it had.
+			// A runtime that refuses this default makes the agent run in Manual instead
+			// (see applyOpeningSettings).
 			NewSession: map[string]string{agent.OptionIDPermissionMode: contracts.CopilotPermissionModeAssisted},
 			// A session with no stored mode runs Manual, which is the mode the runtime
 			// itself starts in.
-			Fallback: contracts.CopilotPermissionModeManual,
+			Fallback: copilotSafePermissionMode,
 		},
 		// Each model states its own reasoning-effort tiers, and the account decides which
 		// models exist -- so the catalog above is nil and only the open session can report

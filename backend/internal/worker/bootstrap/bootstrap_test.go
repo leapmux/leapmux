@@ -585,3 +585,7 @@ func TestWire_WorkerIdentityTriggersAReconcilerPass(t *testing.T) {
 		5*time.Second, 10*time.Millisecond,
 		"the identity nudge dropped the delivery it wraps")
 }
+
+// C-M5: the worker sweeps the agent directories that ended workers left when it
+// starts, before any agent of their provider starts. A crash then leaves no
+// secret, and no daemon, behind until that provider starts again.

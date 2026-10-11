@@ -9,8 +9,9 @@ import (
 
 // AssertWithholdsTheResponseForAMalformedRequest pins what provider does with a
 // response whose request is not valid JSON. The provider cannot validate the
-// native id against that request, so it withholds the response. It keeps the
-// bytes, which a recovery reads.
+// native id against that request, so it withholds the response, and it states
+// the shared reason for a request that it cannot read. It keeps the bytes, which
+// a recovery reads.
 func AssertWithholdsTheResponseForAMalformedRequest(t *testing.T, provider agent.Provider) {
 	t.Helper()
 	content := []byte(`{"jsonrpc":"2.0","id":7,"result":{"decision":"accept"}}`)
@@ -20,6 +21,7 @@ func AssertWithholdsTheResponseForAMalformedRequest(t *testing.T, provider agent
 	})
 	assert.Equal(t, content, res.Content)
 	assert.True(t, res.Withhold)
+	assert.EqualError(t, res.Refusal(), agent.RefusalUnreadableRequest)
 }
 
 // AssertPreservesTheResponseWithoutARequest pins that an absent request does not

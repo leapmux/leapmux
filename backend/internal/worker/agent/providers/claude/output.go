@@ -192,7 +192,7 @@ func (a *Agent) handleClaudeOutput(content []byte, msgType string) {
 		if msgType == contracts.NotificationTypeInterrupted {
 			a.sink.ResetSpans()
 		}
-		if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, content); err != nil {
+		if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, agent.MessageContent{Original: content}); err != nil {
 			slog.Error("persist agent notification", "agent_id", a.AgentID(), "type", msgType, "error", err)
 		}
 
@@ -237,7 +237,7 @@ func (a *Agent) claudeHandleConversationReset() {
 		slog.Error("build claude context-cleared notice", "agent_id", a.AgentID(), "error", err)
 		return
 	}
-	if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, notice); err != nil {
+	if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, agent.MessageContent{Original: notice}); err != nil {
 		slog.Error("persist agent notification", "agent_id", a.AgentID(), "type", contracts.NotificationTypeContextCleared, "error", err)
 	}
 }
@@ -286,10 +286,47 @@ type messageEnvelope struct {
 	ModelUsage map[string]json.RawMessage `json:"modelUsage"`
 	IsError    bool                       `json:"is_error"`
 	Result     string                     `json:"result"`
+	// TerminalReason is the CLI's own statement of why the turn ended, on a
+	// `result`. Claude Code 2.1.289 writes it on every `result` of a turn. A frame
+	// from a build that does not write it leaves the field empty.
+	TerminalReason string `json:"terminal_reason"`
 
 	// contentBlocks is lazily populated from RawContent.
 	contentBlocks []contentBlock
 	contentParsed bool
+}
+
+// The `terminal_reason` values that state a turn ended in an abort, as the CLI's own
+// vocabulary spells them. Claude Code 2.1.289 writes the first when a stop arrives while
+// the model streams, and the second when it arrives while a tool runs.
+const (
+	claudeTerminalReasonAbortedStreaming = "aborted_streaming"
+	claudeTerminalReasonAbortedTools     = "aborted_tools"
+)
+
+// statesAbortedTurn reports whether a `result` states that the stop took effect, so
+// the turn ended in an abort. A turn that ended some other way before the CLI read the
+// stop keeps its own outcome.
+//
+// `terminal_reason` decides when the frame states it. It outranks `subtype` and
+// `is_error`, because neither tells an abort from a failure: an abort and a failed tool
+// both write `subtype: error_during_execution`, and an API failure writes
+// `subtype: success` with `is_error: true`. A turn that finished writes
+// `terminal_reason: completed`, and an API failure writes `api_error`.
+//
+// A `result` that states no reason falls back to `is_error`: `true` reads as an abort,
+// and `false` reads as a turn that ended without one. The fallback covers a frame that
+// omits the field. Qoder also states no reason for an abort of the model, and its
+// provider reads `is_error` the same way.
+func (e *messageEnvelope) statesAbortedTurn() bool {
+	switch e.TerminalReason {
+	case claudeTerminalReasonAbortedStreaming, claudeTerminalReasonAbortedTools:
+		return true
+	case "":
+		return e.IsError
+	default:
+		return false
+	}
 }
 
 // claudeUserEnvelopeMarkType classifies a persisted Claude `user`-envelope row for
@@ -547,7 +584,7 @@ func (a *Agent) handlePersistableMessage(content []byte, msgType string) {
 			// threaded subtypes — the renderer extracts `subtype`/`status`
 			// from the raw envelope so future fields like `tokensBefore`/
 			// `durationMs` don't get discarded.
-			if _, err := a.sink.PersistNotification(source, content); err != nil {
+			if _, err := a.sink.PersistNotification(source, agent.MessageContent{Original: content}); err != nil {
 				slog.Error("persist notification-threaded system message", "agent_id", a.AgentID(), "error", err)
 			}
 			return
@@ -599,7 +636,11 @@ func (a *Agent) handlePersistableMessage(content []byte, msgType string) {
 	messageContent := agent.MessageContent{Original: content}
 	if msgType == claudeMsgTypeResult {
 		messageContent = a.MessageWithToolUses(content)
-		if a.takeInterruptRequest() {
+		// One `result` ends one turn, so it spends the note whatever it states. The
+		// note marks the turn end only when the frame also states that the stop took
+		// effect: a turn that ended before the CLI read the stop keeps its outcome.
+		stopRequested := a.takeInterruptRequest()
+		if stopRequested && env.statesAbortedTurn() {
 			messageContent.Completion = agent.MessageCompletionInterrupted
 		}
 	}
@@ -947,7 +988,7 @@ func (a *Agent) claudeCodeHandleControlRequest(content []byte) {
 			slog.Error("encode claude control failure", "agent_id", a.AgentID(), "error", marshalErr)
 			return
 		}
-		if err := a.SendRawInput(response); err != nil {
+		if err := a.SendRawInput(response, agent.StopContext{}); err != nil {
 			slog.Warn("send claude control failure", "agent_id", a.AgentID(), "error", err)
 		}
 	}
@@ -1090,7 +1131,7 @@ func (a *Agent) claudeCodeHandleRateLimitEvent(content []byte) {
 	// (providers/claude/extractors/notification.ts) read `rate_limit_info` from this raw
 	// Claude-native shape (camelCase) -- the persisted side stays in the SDK's
 	// format so notification rendering remains a passthrough.
-	if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content); err != nil {
+	if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: content}); err != nil {
 		slog.Error("persist rate_limit notification", "agent_id", a.AgentID(), "error", err)
 	}
 

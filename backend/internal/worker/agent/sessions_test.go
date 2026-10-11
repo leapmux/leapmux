@@ -3,6 +3,8 @@ package agent_test
 import (
 	"os"
 	"path/filepath"
+	"runtime"
+	"sync"
 	"testing"
 	"time"
 
@@ -131,4 +133,76 @@ func TestStoredSessionQueryReadsTheProcessWithoutASeam(t *testing.T) {
 	home, err := os.UserHomeDir()
 	require.NoError(t, err)
 	assert.Equal(t, home, q.Home())
+}
+
+func TestStoredSessionQueryUsesAnOrderedEnvironmentSnapshot(t *testing.T) {
+	t.Parallel()
+	entries := []string{"FIRST=one", "DUP=old", "MALFORMED", "=ignored", "WITH_EQUALS=a=b", "DUP=new", "EMPTY=old", "EMPTY="}
+	q := agent.StoredSessionQuery{EnvEntries: entries, Getenv: func(string) string { return "conflicting lookup" }}
+	assert.Equal(t, "one", q.Env("FIRST"))
+	assert.Equal(t, "new", q.Env("DUP"))
+	assert.Equal(t, "a=b", q.Env("WITH_EQUALS"))
+	assert.Empty(t, q.Env("EMPTY"))
+	assert.Empty(t, q.Env("MALFORMED"))
+	assert.Empty(t, q.Env(""))
+	assert.Empty(t, q.Env("MISSING"))
+	assert.Equal(t, entries, q.Environ())
+	copy := q.Environ()
+	copy[0] = "FIRST=changed"
+	assert.Equal(t, "one", q.Env("FIRST"), "enumeration must not expose the query's input slice")
+	assert.Equal(t, entries, q.Environ())
+}
+
+func TestStoredSessionQueryKeepsEmptyAndUnknownEnvironmentsDistinct(t *testing.T) {
+	t.Parallel()
+	q := agent.StoredSessionQuery{EnvEntries: []string{}, Getenv: func(string) string { return "must not read" }}
+	assert.Empty(t, q.Env("HOME"))
+	assert.Empty(t, q.Home())
+	require.NotNil(t, q.Environ(), "an empty snapshot is known, rather than unavailable")
+	assert.Empty(t, q.Environ())
+	lookup := agent.StoredSessionQuery{Getenv: func(string) string { return "lookup value" }}
+	assert.Equal(t, "lookup value", lookup.Env("KEY"))
+	assert.Nil(t, lookup.Environ(), "a lookup function cannot supply environment order")
+}
+
+func TestStoredSessionQueryMatchesNativeEnvironmentCaseAndHome(t *testing.T) {
+	t.Parallel()
+	q := agent.StoredSessionQuery{EnvEntries: []string{"KEY=upper", "key=lower", "HOME=/unix-home", "USERPROFILE=C:\\native-home"}}
+	if runtime.GOOS == "windows" {
+		assert.Equal(t, "lower", q.Env("KEY"))
+		assert.Equal(t, "C:\\native-home", q.Home())
+	} else {
+		assert.Equal(t, "upper", q.Env("KEY"))
+		assert.Equal(t, "lower", q.Env("key"))
+		assert.Equal(t, "/unix-home", q.Home())
+	}
+	q.HomeDir = "explicit-home"
+	assert.Equal(t, "explicit-home", q.Home())
+	assert.Empty(t, (agent.StoredSessionQuery{EnvEntries: []string{"OTHER=value"}}).Home())
+}
+
+func TestStoredSessionQueryEnumeratesTheProcessWithoutASeam(t *testing.T) {
+	t.Setenv("LEAPMUX_TEST_ORDERED_SESSION_ENV", "process value")
+	q := agent.StoredSessionQuery{}
+	assert.Equal(t, os.Environ(), q.Environ())
+	entries := q.Environ()
+	require.NotEmpty(t, entries)
+	entries[0] = "LEAPMUX_TEST_ORDERED_SESSION_ENV=modified copy"
+	assert.Equal(t, "process value", q.Env("LEAPMUX_TEST_ORDERED_SESSION_ENV"))
+}
+
+func TestStoredSessionQuerySupportsConcurrentSnapshotReads(t *testing.T) {
+	t.Parallel()
+	q := agent.StoredSessionQuery{EnvEntries: []string{"KEY=value"}}
+	var readers sync.WaitGroup
+	for range 16 {
+		readers.Go(func() {
+			assert.Equal(t, "value", q.Env("KEY"))
+			entries := q.Environ()
+			entries[0] = "KEY=private copy"
+			assert.Equal(t, "value", q.Env("KEY"))
+		})
+	}
+	readers.Wait()
+	assert.Equal(t, []string{"KEY=value"}, q.Environ())
 }

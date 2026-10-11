@@ -2,6 +2,7 @@ package pi
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -28,7 +29,7 @@ func TestPiCustomQuestionAnswerBridgesNativeDialogs(t *testing.T) {
 	a, sink, output := piQuestionResponseFixture()
 	answer := []byte(`{"type":"extension_ui_response","id":"select","value":"My custom answer"}`)
 	original := append([]byte(nil), answer...)
-	require.NoError(t, a.SendRawInput(answer))
+	require.NoError(t, a.SendRawInput(answer, agent.StopContext{}))
 	assert.Equal(t, original, answer)
 	assert.JSONEq(t, `{"type":"extension_ui_response","id":"select","value":"3. Type something."}`, output.String())
 	a.handlePiExtensionUIRequest([]byte(`{"type":"extension_ui_request","id":"input","method":"input","title":"Choose\n\nType your answer:","placeholder":""}`))
@@ -47,7 +48,7 @@ func TestPiQuestionResponsePreservesOrdinaryReplies(t *testing.T) {
 		`{"type":"get_state","id":"command"}`,
 	} {
 		a, _, output := piQuestionResponseFixture()
-		require.NoError(t, a.SendRawInput([]byte(reply)))
+		require.NoError(t, a.SendRawInput([]byte(reply), agent.StopContext{}))
 		assert.Equal(t, reply+"\n", output.String())
 	}
 }
@@ -55,7 +56,7 @@ func TestPiQuestionResponsePreservesOrdinaryReplies(t *testing.T) {
 func TestPiCustomQuestionAnswerDoesNotSurviveToolCompletion(t *testing.T) {
 	t.Parallel()
 	a, sink, output := piQuestionResponseFixture()
-	require.NoError(t, a.SendRawInput([]byte(`{"type":"extension_ui_response","id":"select","value":"custom"}`)))
+	require.NoError(t, a.SendRawInput([]byte(`{"type":"extension_ui_response","id":"select","value":"custom"}`), agent.StopContext{}))
 	handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"tool_execution_end","toolCallId":"question","toolName":"ask_user_question","result":{"content":[]}}`)))
 	a.handlePiExtensionUIRequest([]byte(`{"type":"extension_ui_request","id":"late","method":"input","title":"Choose\n\nType your answer:"}`))
 	assert.Len(t, strings.Split(strings.TrimSpace(output.String()), "\n"), 1)
@@ -68,11 +69,71 @@ func TestPiCustomQuestionAnswerCanRetryAfterWriteFailure(t *testing.T) {
 	a, _, output := piQuestionResponseFixture()
 	a.SetStdinForTest(agenttest.FailingStdin{})
 	reply := []byte(`{"type":"extension_ui_response","id":"select","value":"custom"}`)
-	require.Error(t, a.SendRawInput(reply))
+	require.Error(t, a.SendRawInput(reply, agent.StopContext{}))
 	a.SetStdinForTest(agenttest.NopStdin(output))
-	require.NoError(t, a.SendRawInput(reply))
+	require.NoError(t, a.SendRawInput(reply, agent.StopContext{}))
 	a.handlePiExtensionUIRequest([]byte(`{"type":"extension_ui_request","id":"input","method":"input","title":"Choose\n\nType your answer:"}`))
 	assert.Len(t, strings.Split(strings.TrimSpace(output.String()), "\n"), 2)
+}
+
+func TestPiFailedStopKeepsTheSelectInputQuestionExchange(t *testing.T) {
+	t.Parallel()
+	for _, active := range []bool{false, true} {
+		t.Run(map[bool]string{false: "failed idle dialog cancellation", true: "failed active abort"}[active], func(t *testing.T) {
+			t.Parallel()
+			a, sink, output := piQuestionResponseFixture()
+			if active {
+				a.Mu.Lock()
+				a.currentTurnActive = true
+				a.Mu.Unlock()
+			}
+			a.SetStdinForTest(agenttest.FailingStdin{})
+			require.Error(t, a.Interrupt(agent.StopContext{}))
+			assert.Empty(t, sink.CanceledControls())
+			a.SetStdinForTest(agenttest.NopStdin(output))
+			require.NoError(t, a.SendRawInput([]byte(`{"type":"extension_ui_response","id":"select","value":"My custom answer"}`), agent.StopContext{}))
+			a.handlePiExtensionUIRequest([]byte(`{"type":"extension_ui_request","id":"input","method":"input","title":"Choose\n\nType your answer:","placeholder":""}`))
+			frames := strings.Split(strings.TrimSpace(output.String()), "\n")
+			require.Len(t, frames, 2, "the failed stop must retain both native answer steps")
+			assert.JSONEq(t, `{"type":"extension_ui_response","id":"select","value":"3. Type something."}`, frames[0])
+			assert.JSONEq(t, `{"type":"extension_ui_response","id":"input","value":"My custom answer"}`, frames[1])
+			assert.Len(t, sink.PublishedControls(), 1, "the user must not type the same answer again")
+		})
+	}
+}
+
+func TestPiFailedAbortKeepsACustomAnswerWaitingForItsInputDialog(t *testing.T) {
+	t.Parallel()
+	a, sink, output := piQuestionResponseFixture()
+	a.Mu.Lock()
+	a.currentTurnActive = true
+	a.Mu.Unlock()
+	require.NoError(t, a.SendRawInput([]byte(`{"type":"extension_ui_response","id":"select","value":"My custom answer"}`), agent.StopContext{}))
+	a.SetStdinForTest(agenttest.FailingStdin{})
+	require.Error(t, a.Interrupt(agent.StopContext{}))
+	a.SetStdinForTest(agenttest.NopStdin(output))
+	a.handlePiExtensionUIRequest([]byte(`{"type":"extension_ui_request","id":"input","method":"input","title":"Choose\n\nType your answer:","placeholder":""}`))
+	frames := strings.Split(strings.TrimSpace(output.String()), "\n")
+	require.Len(t, frames, 2, "the retained text must answer the native input step")
+	assert.JSONEq(t, `{"type":"extension_ui_response","id":"input","value":"My custom answer"}`, frames[1])
+	assert.Len(t, sink.PublishedControls(), 1)
+}
+
+func TestPiFailedQuestionAnswerKeepsTheDialogForInterrupt(t *testing.T) {
+	t.Parallel()
+	for _, value := range []string{"1. A — first", "custom"} {
+		t.Run(value, func(t *testing.T) {
+			t.Parallel()
+			a, sink, output := piQuestionResponseFixture()
+			a.SetStdinForTest(agenttest.FailingStdin{})
+			reply := []byte(`{"type":"extension_ui_response","id":"select","value":"` + value + `"}`)
+			require.Error(t, a.SendRawInput(reply, agent.StopContext{}))
+			a.SetStdinForTest(agenttest.NopStdin(output))
+			require.NoError(t, a.Interrupt(agent.StopContext{}))
+			assert.JSONEq(t, `{"type":"extension_ui_response","id":"select","cancelled":true}`, output.String())
+			assert.Equal(t, []string{"select"}, sink.CanceledControls())
+		})
+	}
 }
 
 type piBlockedQuestionWriter struct {
@@ -94,7 +155,7 @@ func TestPiQuestionWriteFailureCannotRestoreClearedState(t *testing.T) {
 	a.SetStdinForTest(writer)
 	done := make(chan error, 1)
 	go func() {
-		done <- a.SendRawInput([]byte(`{"type":"extension_ui_response","id":"select","value":"custom"}`))
+		done <- a.SendRawInput([]byte(`{"type":"extension_ui_response","id":"select","value":"custom"}`), agent.StopContext{})
 	}()
 	<-writer.entered
 	a.discardIncompletePiTools()
@@ -107,7 +168,7 @@ func TestPiQuestionWriteFailureCannotRestoreClearedState(t *testing.T) {
 func TestPiCustomQuestionAnswerSurvivesAFailedAutoResponse(t *testing.T) {
 	t.Parallel()
 	a, sink, output := piQuestionResponseFixture()
-	require.NoError(t, a.SendRawInput([]byte(`{"type":"extension_ui_response","id":"select","value":"My custom answer"}`)))
+	require.NoError(t, a.SendRawInput([]byte(`{"type":"extension_ui_response","id":"select","value":"My custom answer"}`), agent.StopContext{}))
 	// Pi asks for the text. The automatic answer cannot reach stdin.
 	a.SetStdinForTest(agenttest.FailingStdin{})
 	a.handlePiExtensionUIRequest([]byte(`{"type":"extension_ui_request","id":"input","method":"input","title":"Choose\n\nType your answer:","placeholder":""}`))
@@ -120,4 +181,37 @@ func TestPiCustomQuestionAnswerSurvivesAFailedAutoResponse(t *testing.T) {
 	require.Len(t, frames, 2)
 	assert.JSONEq(t, `{"type":"extension_ui_response","id":"retry","value":"My custom answer"}`, frames[1])
 	assert.Len(t, sink.PublishedControls(), 2, "a retained answer must not ask the user to type it again")
+}
+
+func TestPiOldDialogCancellationPreservesAReusedRequestID(t *testing.T) {
+	t.Parallel()
+	a, sink, output := piQuestionResponseFixture()
+	setPiInterruptWriter(a, func(data []byte) (int, error) {
+		var response struct {
+			Cancelled bool `json:"cancelled"`
+		}
+		if err := json.Unmarshal(data, &response); err != nil {
+			return 0, err
+		}
+		if !response.Cancelled {
+			return output.Write(data)
+		}
+		a.HandleOutput([]byte(`{"type":"agent_start"}`))
+		a.HandleOutput([]byte(`{"type":"tool_execution_start","toolCallId":"replacement-question","toolName":"ask_user_question","args":{"questions":[{"question":"Choose again","options":[{"label":"A","description":"first"},{"label":"B","description":"second"}]}]}}`))
+		a.HandleOutput([]byte(`{"type":"extension_ui_request","id":"select","method":"select","title":"Choose again","options":["1. A — first","2. B — second","3. Type something."]}`))
+		return len(data), nil
+	})
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
+	assert.Empty(t, sink.CanceledControls(), "the old write must not withdraw the new card with the same ID")
+	a.Mu.Lock()
+	assert.Contains(t, a.openDialogs, "select")
+	assert.Equal(t, "replacement-question", a.questionDialogs["select"].Key.ToolCallID)
+	a.Mu.Unlock()
+	require.NoError(t, a.SendRawInput([]byte(`{"type":"extension_ui_response","id":"select","value":"My new answer"}`), agent.StopContext{}))
+	a.HandleOutput([]byte(`{"type":"extension_ui_request","id":"input","method":"input","title":"Choose again\n\nType your answer:","placeholder":""}`))
+	frames := strings.Split(strings.TrimSpace(output.String()), "\n")
+	require.Len(t, frames, 2)
+	assert.JSONEq(t, `{"type":"extension_ui_response","id":"select","value":"3. Type something."}`, frames[0])
+	assert.JSONEq(t, `{"type":"extension_ui_response","id":"input","value":"My new answer"}`, frames[1])
+	assert.Len(t, sink.PublishedControls(), 2)
 }

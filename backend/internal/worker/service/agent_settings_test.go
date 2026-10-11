@@ -203,10 +203,11 @@ func TestResolveResumeSessionID_NotAffectedByJustPersistedMessage(t *testing.T) 
 		ID:             "agent-idle",
 	}))
 
-	// Resolve BEFORE the user message is persisted — this is the fix.
-	// Without the fix, the caller would persist the message first, and
-	// resolveResumeSessionID would see the just-created message and
-	// incorrectly return the session ID.
+	// The resolution must run BEFORE the user message is persisted. A message
+	// persisted first would count as a prior conversation, and the resolution
+	// would return the session ID. The input queue keeps that order: it writes
+	// the transcript row after the dispatch, whose cold start resolves the
+	// session (TestQueuedFirstMessageToAnIdleAgentStartsAFreshSession).
 	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-idle")
 	require.NoError(t, err)
 	result := svc.resolveResumeSessionID("agent-idle", dbAgent.AgentSessionID, dbAgent.Resumed)
@@ -224,9 +225,8 @@ func TestResolveResumeSessionID_NotAffectedByJustPersistedMessage(t *testing.T) 
 	})
 	require.NoError(t, err)
 
-	// After the message is persisted, resolveResumeSessionID would
-	// now find it — but the caller already has the pre-resolved value,
-	// so the agent starts without --resume.
+	// After the message is persisted, resolveResumeSessionID finds it. This
+	// is why the resolution must not run after the persist.
 	postResult := svc.resolveResumeSessionID("agent-idle", dbAgent.AgentSessionID, dbAgent.Resumed)
 	assert.Equal(t, "session-idle", postResult,
 		"after the message is in the DB, HasUserMessages returns true (demonstrates the ordering bug)")
@@ -356,8 +356,8 @@ func TestUpdateAgentSettings_BroadcastsGenericExtraSettingChanges(t *testing.T) 
 // TestUpdateAgentSettings_CursorModelSwitchOmitsEffortChange reproduces the spurious
 // "effort (auto)" notification: switching the model on a Cursor agent (an ACP provider
 // with no effort axis) must NOT stamp effort=auto and therefore must not surface an
-// effort change. Only catalog-effort providers (Claude/Codex/Pi) reset effort on a
-// model switch.
+// effort change. Only providers with a model-dependent effort catalog
+// (Registry.ManagesEffort) ever reset effort on a model switch.
 func TestUpdateAgentSettings_CursorModelSwitchOmitsEffortChange(t *testing.T) {
 	t.Parallel()
 
@@ -452,6 +452,102 @@ func TestUpdateAgentSettings_ModelSwitchEffortBySupport(t *testing.T) {
 				"effort persisted after the model switch")
 		})
 	}
+}
+
+// TestUpdateAgentSettings_ModelSwitchKeepsSupportedInheritedEffort is the regression guard for
+// the Opus-to-Sonnet switch. The client sends the model alone, because the user changed only the
+// model. The stored xhigh must survive when Sonnet offers xhigh. The old rule reset every such
+// switch to auto, so the CLI chose its own default (medium) for Sonnet.
+func TestUpdateAgentSettings_ModelSwitchKeepsSupportedInheritedEffort(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name       string
+		newModel   string
+		wantEffort string
+	}{
+		{"the new model offers the tier", "sonnet", "xhigh"},
+		{"the new model has no effort axis", "haiku", agent.EffortAuto},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			svc, d, w := setupTestService(t)
+
+			require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+				ID:            "agent-1",
+				WorkingDir:    t.TempDir(),
+				HomeDir:       t.TempDir(),
+				AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+				Options:       marshalOptions(map[string]string{agent.OptionIDModel: "opus[1m]", agent.OptionIDEffort: "xhigh"}),
+			}))
+			registerAgentWatch(svc, w.channelID, "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
+
+			dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
+				AgentId: "agent-1",
+				Settings: &leapmuxv1.AgentSettings{
+					Options: map[string]string{agent.OptionIDModel: tc.newModel},
+				},
+			}, w)
+
+			require.Empty(t, w.errors)
+
+			dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
+			require.NoError(t, err)
+			opts := loadOptions(testRegistry, dbAgent.Options, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+			assert.Equal(t, tc.newModel, opts[agent.OptionIDModel])
+			assert.Equal(t, tc.wantEffort, opts[agent.OptionIDEffort], "effort persisted after the model switch")
+		})
+	}
+}
+
+// TestUpdateAgentSettings_StoppedAgentModelSwitchKeepsTheEffortTheLiveCatalogOffers guards an
+// offline model switch. A stopped Pi agent carries the catalog that its last run reported, and that
+// catalog lists the new model with its thinking levels. Pi's static seed lists a single model, so a
+// switch to any other model must read the persisted live catalog, not the seed. The worker reset the
+// held level to auto, because the seed does not describe the new model, and the next launch ran
+// Pi's own default level.
+func TestUpdateAgentSettings_StoppedAgentModelSwitchKeepsTheEffortTheLiveCatalogOffers(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, d, w := setupTestService(t)
+	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_PI
+
+	levels := []*agent.EffortInfo{
+		{Id: agent.EffortAuto, Name: "Auto"}, {Id: "high", Name: "High"}, {Id: "low", Name: "Low"},
+	}
+	models := []*agent.ModelInfo{
+		{Id: "glm-5.3", DisplayName: "GLM-5.3", DefaultEffort: "low", SupportedEfforts: levels},
+		{Id: "glm-5.3-flash", DisplayName: "GLM-5.3 Flash", DefaultEffort: "low", SupportedEfforts: levels},
+	}
+	liveCatalog := []*leapmuxv1.AvailableOptionGroup{
+		agent.ModelOptionGroup(models, "glm-5.3", agent.EffortSubGroupsLabeled("Thinking Level")),
+	}
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID:            "agent-1",
+		WorkingDir:    t.TempDir(),
+		HomeDir:       t.TempDir(),
+		AgentProvider: provider,
+		Options:       marshalOptions(map[string]string{agent.OptionIDModel: "glm-5.3", agent.OptionIDEffort: "high"}),
+	}))
+	require.NoError(t, svc.Queries.SetAgentOptionGroups(ctx, db.SetAgentOptionGroupsParams{
+		OptionGroups: mustMarshalOptionGroups(t, liveCatalog), ID: "agent-1",
+	}))
+	svc.Agents.PreloadCache("agent-1", liveCatalog)
+	registerAgentWatch(svc, w.channelID, "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
+
+	dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
+		AgentId:  "agent-1",
+		Settings: &leapmuxv1.AgentSettings{Options: map[string]string{agent.OptionIDModel: "glm-5.3-flash"}},
+	}, w)
+	require.Empty(t, w.errors)
+
+	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
+	require.NoError(t, err)
+	opts := loadOptions(testRegistry, dbAgent.Options, provider)
+	assert.Equal(t, "glm-5.3-flash", opts[agent.OptionIDModel])
+	assert.Equal(t, "high", opts[agent.OptionIDEffort], "the live catalog lists the new model with the held level")
 }
 
 // TestUpdateAgentSettings_UnknownModelKeepsExplicitEffort guards that a CLI `agent set --model <new>
@@ -644,8 +740,9 @@ func TestCASPersistAgentOptions_PreservesConcurrentKeyOnRetry(t *testing.T) {
 	}))
 
 	// Persist our edit against the STALE snapshot: the CAS must re-read and re-merge.
-	settled, wrote, err := casPersistAgentOptions(ctx, svc.Queries, "agent-1", stale,
+	result, err := casPersistAgentOptions(ctx, svc.Queries, "agent-1", stale,
 		map[string]string{agent.OptionIDModel: "sonnet"})
+	settled, wrote := result.options, result.wrote
 	require.NoError(t, err)
 	assert.True(t, wrote, "the delta changed the latest row, so a write lands")
 
@@ -680,8 +777,9 @@ func TestCASPersistAgentOptions_ReassertsOverConcurrentClear(t *testing.T) {
 	// Re-confirm the agent's snapshot (effort still high): a no-op against `stale`, but NOT against
 	// the cleared live row, so the CAS must re-assert effort rather than short-circuit on the stale
 	// snapshot.
-	settled, wrote, err := casPersistAgentOptions(ctx, svc.Queries, "agent-1", stale,
+	result, err := casPersistAgentOptions(ctx, svc.Queries, "agent-1", stale,
 		map[string]string{agent.OptionIDModel: "opus[1m]", agent.OptionIDEffort: "high"})
+	settled, wrote := result.options, result.wrote
 	require.NoError(t, err)
 	assert.True(t, wrote, "the refresh re-asserts effort over the concurrent clear (no-op decided against the live row)")
 	assert.Equal(t, "high", parseOptions(settled)[agent.OptionIDEffort],
@@ -704,8 +802,9 @@ func TestCASPersistAgentOptions_TrueNoOpAgainstLiveRow(t *testing.T) {
 		Options:       row,
 	}))
 
-	settled, wrote, err := casPersistAgentOptions(ctx, svc.Queries, "agent-1", row,
+	result, err := casPersistAgentOptions(ctx, svc.Queries, "agent-1", row,
 		map[string]string{agent.OptionIDModel: "opus[1m]", agent.OptionIDEffort: "high"})
+	settled, wrote := result.options, result.wrote
 	require.NoError(t, err)
 	assert.False(t, wrote, "a genuine no-op against the live row writes nothing")
 	assert.Equal(t, "high", parseOptions(settled)[agent.OptionIDEffort], "the live row is returned as settled")
@@ -1111,7 +1210,7 @@ func TestApplySettingsViaRestartDrainsInputAfterTheReplacedTurn(t *testing.T) {
 	require.Eventually(t, func() bool {
 		snapshot, snapshotErr := svc.InputQueue.Snapshot(ctx, agentID)
 		return snapshotErr == nil && len(snapshot.Items) == 0
-	}, time.Second, 10*time.Millisecond)
+	}, inputQueueWait, 10*time.Millisecond)
 }
 
 func mockAgentStarter(t *testing.T, svc *Service, onStart func(agent.Options)) func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error) {

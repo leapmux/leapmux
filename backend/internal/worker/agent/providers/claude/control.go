@@ -62,7 +62,7 @@ func (a *Agent) sendControlAndWaitWithID(ctx context.Context, requestBody string
 	a.registerPendingControl(requestID, ch)
 
 	msg := fmt.Sprintf(`{"type":"control_request","request_id":"%s","request":%s}`, requestID, requestBody)
-	if err := a.SendRawInput([]byte(msg)); err != nil {
+	if err := a.SendRawInput([]byte(msg), agent.StopContext{}); err != nil {
 		a.unregisterPendingControl(requestID)
 		// A write failure almost always means the child closed its stdin —
 		// i.e. it exited before we could hand off the request. Wait briefly
@@ -115,6 +115,26 @@ func (a *Agent) sendApplyFlagSettings(ctx context.Context, flagSettings map[stri
 		"settings": flagSettings,
 	})
 	_, err := a.sendControlAndWait(ctx, string(body), timeout)
+	return err
+}
+
+// sendSetMaxThinkingTokens sends set_max_thinking_tokens, the control request
+// that changes the thinking configuration of the RUNNING session. tokens is 0
+// to disable thinking, or nil to return the session to the default that
+// alwaysThinkingEnabled selects.
+//
+// The field is always present: nil marshals to an explicit null. Claude Code
+// reads an ABSENT max_thinking_tokens as "keep the current configuration", so
+// omitting it would turn the "on" request into a no-op.
+func (a *Agent) sendSetMaxThinkingTokens(ctx context.Context, tokens *int, timeout time.Duration) error {
+	body, err := json.Marshal(map[string]interface{}{
+		"subtype":             "set_max_thinking_tokens",
+		"max_thinking_tokens": tokens,
+	})
+	if err != nil {
+		return err
+	}
+	_, err = a.sendControlAndWait(ctx, string(body), timeout)
 	return err
 }
 

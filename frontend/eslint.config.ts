@@ -220,7 +220,6 @@ export default antfu({
     'src/components/chat/providers/**/*.test.tsx',
     'src/components/chat/providers/codex/CodexControlActions.tsx',
     'src/components/chat/providers/cursor/CursorControlActions.tsx',
-    'src/components/chat/providers/pi/PiControlActions.tsx',
     'src/components/chat/providers/pi/PiPlanApprovalActions.tsx',
     'src/components/chat/providers/acp/testUtils.tsx',
     'src/components/chat/providers/zcode/testUtils.tsx',

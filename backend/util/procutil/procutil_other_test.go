@@ -49,12 +49,15 @@ func TestDetachFromTerminalStartSucceedsAfterSetpgidWasSet(t *testing.T) {
 func TestAssignCmdRecordsThePidAsPgid(t *testing.T) {
 	cmd := exec.Command("sleep", "30")
 	DetachFromTerminal(cmd)
-	require.NoError(t, cmd.Start())
-	job, err := AssignCmd(cmd)
+	owner := PrepareProcess(cmd)
+	t.Cleanup(func() { require.NoError(t, owner.Close()) })
+	require.NoError(t, owner.Start())
+	require.Equal(t, cmd.Process.Pid, owner.PID())
+	pgid, err := syscall.Getpgid(owner.PID())
 	require.NoError(t, err)
-	require.NotNil(t, job)
-	require.NoError(t, job.Terminate())
-	err = cmd.Wait()
+	require.Equal(t, owner.PID(), pgid, "the owned child must lead its detached process group")
+	require.NoError(t, owner.Terminate())
+	err = owner.Wait()
 	require.Error(t, err, "Terminate must kill the Setsid child")
 }
 

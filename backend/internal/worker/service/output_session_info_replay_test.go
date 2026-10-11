@@ -206,7 +206,7 @@ func TestWatchEvents_CatchUpReplaysTheSessionCounters(t *testing.T) {
 	})
 
 	dispatch(d, "WatchEvents", &leapmuxv1.WatchEventsRequest{
-		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL}},
+		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}},
 	}, w)
 	require.Eventually(t, func() bool {
 		return countCatchUpCompletes(w) == 1

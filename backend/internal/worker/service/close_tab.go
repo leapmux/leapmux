@@ -532,6 +532,15 @@ func (svc *Service) closeAgentTabCommon(userID, agentID string, action leapmuxv1
 		}
 		return &leapmuxv1.CloseTabResult{}, childDescendants
 	}
+	// A cold start can hold the lifecycle lock while its provider handshake
+	// ignores cancellation. Close admission before the stop and database stamp,
+	// without waiting for that lock. The start path stops a late process.
+	releaseCloseAdmission := svc.AgentStartup.holdCloseAdmission(agentID)
+	defer releaseCloseAdmission()
+	svc.AgentStartup.cancelAndClear(agentID, closeWorktreeDispositionFor(action, linkPolicy))
+	if svc.beforeAgentCloseTeardownFn != nil {
+		svc.beforeAgentCloseTeardownFn(agentID)
+	}
 
 	rootTeardown := func() {
 		// The QUAKE terminal of this agent's directory goes with it, but only
@@ -550,7 +559,6 @@ func (svc *Service) closeAgentTabCommon(userID, agentID string, action leapmuxv1
 		// closeQuakeTerminalIfUnused treats as "no directory to reap" and the
 		// orphan reconciler picks up on its next pass.
 		svc.closeQuakeTerminalIfUnused(userID, dbAgent.WorkingDir, leapmuxv1.TabType_TAB_TYPE_AGENT, agentID, linkPolicy)
-		svc.AgentStartup.cancelAndClear(agentID, closeWorktreeDispositionFor(action, linkPolicy))
 		// Close the root AND every virtual descendant in one tree. Closing only
 		// the root row would orphan child rows (they have no worktree_tabs link
 		// and are invisible to the reconciler). Free each child's span

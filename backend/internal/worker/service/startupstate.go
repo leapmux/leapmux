@@ -90,19 +90,58 @@ type startupEntry struct {
 	closeRaced       bool
 	archiveStopped   bool
 	phase0Complete   bool
+	// replacement marks an entry that holds the id for a PROCESS REPLACEMENT: a
+	// restart, a clear or a forced stop, which stops a running process and
+	// launches another. Such an entry makes the agent read STARTING, as every
+	// entry does. It is not a startup window: the settings handoff that the
+	// window defers a refresh to belongs to an open and to a cold start, and a
+	// replacement keeps the refresh behavior that it had before it held an entry.
+	replacement bool
 	// done is closed when this startup stops being IN FLIGHT -- when succeed,
 	// fail or cancelAndClear takes the entry out of the map. awaitInFlight
 	// waits on it, so a caller that finds the id claimed can wait for the claim
 	// holder instead of refusing.
 	//
 	// Only an entry that begin created carries one. The entry fail installs is a
-	// finished record with no goroutine behind it, and awaitInFlight skips a
-	// failed entry for the same reason begin does not refuse on one.
+	// finished record with no goroutine behind it, so awaitInFlight skips a
+	// failed entry: nothing behind it is left to wait for.
 	done chan struct{}
 	// finished closes after the startup goroutine completes its trailing
 	// rollback and cleanup work. Archival waits on it before it permits an
 	// unarchive resume to register replacement resources for the same tab.
 	finished chan struct{}
+	// enclosing is the claim of this id whose goroutine still ran when this entry
+	// claimed the id, or nil. An entry leaves the map at succeed, fail or a
+	// close, and its goroutine returns later. A later claim can therefore find
+	// the id free while the goroutine of the earlier claim runs its tail. A
+	// process replacement does so on the goroutine of the open that it follows.
+	// A close or an archive that reaches this entry must reach that goroutine
+	// too, and an archive waits for it. claim sets the field once, before it
+	// publishes the entry, and nothing changes it afterwards.
+	enclosing *startupEntry
+}
+
+// hasFinished reports whether the goroutine of this claim returned. finishEntry
+// closes `finished` while it holds startupCore.mu, so a caller that holds the
+// lock reads a state that finishEntry cannot change at the same time.
+func (e *startupEntry) hasFinished() bool {
+	select {
+	case <-e.finished:
+		return true
+	default:
+		return false
+	}
+}
+
+// unfinishedEnclosing returns the nearest enclosing claim whose goroutine did not
+// return, or nil. The caller holds startupCore.mu.
+func (e *startupEntry) unfinishedEnclosing() *startupEntry {
+	for enclosing := e.enclosing; enclosing != nil; enclosing = enclosing.enclosing {
+		if !enclosing.hasFinished() {
+			return enclosing
+		}
+	}
+	return nil
 }
 
 // release closes e.done, so every awaitInFlight waiting on this startup stops
@@ -139,10 +178,17 @@ func (e *startupEntry) stopEviction() {
 // work so callers — test cleanups and future graceful-shutdown paths —
 // observe the filesystem and DB in a quiescent state.
 type startupCore struct {
-	mu       sync.Mutex
-	entries  map[string]*startupEntry
+	mu      sync.Mutex
+	entries map[string]*startupEntry
+	// inflight holds the newest claim of each id whose goroutine did not return
+	// (see finishEntry). The claims behind it are reachable through
+	// startupEntry.enclosing. A close and an archive reach, through this map, a
+	// goroutine whose entry left `entries`.
 	inflight map[string]*startupEntry
-	wg       sync.WaitGroup
+	// closeInProgress prevents a new start after close cancels the old one
+	// but before close stamps the row under the lifecycle lock.
+	closeInProgress map[string]int
+	wg              sync.WaitGroup
 	// clock supplies all startup timers. newStartupCore requires a non-nil clock
 	// and sets it once, and nothing replaces it after construction, so
 	// awaitInFlight, fail and waitForPendingResize read it without r.mu. A test
@@ -156,23 +202,51 @@ func newStartupCore(clock quartz.Clock) startupCore {
 		panic("service: startup clock must not be nil")
 	}
 	return startupCore{
-		entries:  make(map[string]*startupEntry),
-		inflight: make(map[string]*startupEntry),
-		clock:    clock,
+		entries:         make(map[string]*startupEntry),
+		inflight:        make(map[string]*startupEntry),
+		closeInProgress: make(map[string]int),
+		clock:           clock,
 	}
+}
+
+// holdCloseAdmission refuses starts until the caller finishes its close.
+// Each concurrent close releases only its own hold. The caller sets this hold
+// before it cancels a startup and releases it after the database close.
+func (r *startupCore) holdCloseAdmission(id string) func() {
+	r.mu.Lock()
+	r.closeInProgress[id]++
+	r.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			r.mu.Lock()
+			if r.closeInProgress[id] <= 1 {
+				delete(r.closeInProgress, id)
+			} else {
+				r.closeInProgress[id]--
+			}
+			r.mu.Unlock()
+		})
+	}
+}
+
+func (r *startupCore) closing(id string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.closeInProgress[id] > 0
 }
 
 // begin records an entry in STARTING state, adds one to the in-flight counter,
 // and returns the entry as the startup goroutine's HANDLE. The cancel function
 // should be the one tied to that goroutine's context. Must be paired with a
-// deferred finish() inside the goroutine.
+// deferred finishEntry() inside the goroutine.
 //
 // The handle is what lets a close reach the goroutine after cancelAndClear has
 // removed the entry from the map: the goroutine reads its own object, not an
 // id-keyed lookup that a later fail() may have replaced.
 //
-// It CLAIMS the id, and returns nil when a startup already holds it. A caller
-// that gets nil started nothing and must not call finish(). The claim is what
+// It claims the id, and returns nil when another startup or a close holds it.
+// A caller that gets nil started nothing and must not call finishEntry(). The claim
 // keeps two startups for one tab from sharing one map slot: the second used to
 // overwrite the first, which stranded the first goroutine's handle -- a later
 // cancelAndClear then cancelled the wrong context and stamped its close
@@ -181,16 +255,105 @@ func newStartupCore(clock quartz.Clock) startupCore {
 // arrives during an open's startup window takes the auto-start path: the send
 // gate refuses only a permanent startup failure, and the manager holds no entry
 // yet, so HasAgent is false.
+//
+// begin replaces a FAILED entry. A failed entry is a finished startup that
+// lingers for failedEntryTTL so a status query can still read the error, and a
+// start that a user asks for (an open, a terminal restart) must not wait five
+// minutes for it. An automatic cold start uses beginColdStart, which refuses it.
+//
+// An open that creates the row of its tab calls begin BEFORE it writes the row.
+// The registry is the only source of STARTING, so a reader that finds a row with
+// no entry and no process takes the tab for one that is not starting. An open
+// that fails before it launches the startup goroutine gives the claim back with
+// abandon.
 func (r *startupCore) begin(id string, cancel context.CancelFunc) *startupEntry {
+	entry, _ := r.claim(id, cancel, claimMode{replaceFailed: true})
+	return entry
+}
+
+// beginReplacement is begin for a process replacement. See startupEntry.replacement.
+//
+// It refuses a FAILED entry, as beginColdStart does, because a replacement must
+// not erase the record of a startup that failed. It returns nil when the claim
+// is refused, and the caller then replaces the process with no entry. The holder
+// of the id already keeps the agent from reading INACTIVE, or a close holds it.
+func (r *startupCore) beginReplacement(id string) *startupEntry {
+	entry, _ := r.claim(id, func() {}, claimMode{replacement: true})
+	return entry
+}
+
+// startupWindowOpen reports whether a startup holds id and owns the settings
+// handoff. A replacement does not, although its entry reports STARTING. A
+// FAILED entry still counts, as it did before replacements held entries.
+func (r *startupCore) startupWindowOpen(id string) bool {
 	r.mu.Lock()
-	// Refuse only an IN-FLIGHT startup. A failed entry is a finished one that
-	// lingers for failedEntryTTL so a status query can still read the error;
-	// refusing on it would lock a tab out of every retry for those five minutes.
+	defer r.mu.Unlock()
+	entry, held := r.entries[id]
+	return held && !entry.replacement
+}
+
+// claimMode states how claim treats the id and what the new entry means.
+type claimMode struct {
+	// replaceFailed lets the claim replace a FAILED entry. See begin.
+	replaceFailed bool
+	// replacement marks the new entry as a process replacement.
+	replacement bool
+}
+
+// claimOutcome states whether a claim admitted the caller, and why it refused
+// when it did not.
+type claimOutcome int
+
+const (
+	// claimAdmitted: the caller holds the claim and must pair it with
+	// finishEntry.
+	claimAdmitted claimOutcome = iota
+	// claimRefusedClosing: a close holds the id.
+	claimRefusedClosing
+	// claimRefusedInFlight: another startup holds the id.
+	claimRefusedInFlight
+	// claimRefusedFailed: the last startup for the id failed, and the caller
+	// may not replace that failure.
+	claimRefusedFailed
+)
+
+// beginColdStart is begin for a start that the Worker makes on its own: a
+// queued input, a control request, or the resume sweep reaches a tab that has
+// no process. It reports why it refused, so the caller can tell the user.
+//
+// It refuses a FAILED entry, and that refusal is the reason it exists. The
+// entry records a startup that failed for good (see failStartup), and the
+// queue already refuses input to that tab. A cold start that replaced the entry
+// would launch the refused startup again, and it would erase the failure that
+// the next input must find. A provider can also damage its stored copy of a
+// session on each launch, so a repeated refused resume can make the session
+// impossible to resume.
+//
+// The refusal sits under r.mu, together with the claim. A check of the status
+// before the claim cannot carry it alone: fail() can land between that check
+// and the claim, and the claim then replaces the entry that fail() just wrote.
+func (r *startupCore) beginColdStart(id string, cancel context.CancelFunc) (*startupEntry, claimOutcome) {
+	return r.claim(id, cancel, claimMode{})
+}
+
+// claim is the one body of begin, beginColdStart and beginReplacement. The mode
+// states whether the caller may replace a failed entry, and what the new entry
+// means; see the three callers.
+func (r *startupCore) claim(id string, cancel context.CancelFunc, mode claimMode) (*startupEntry, claimOutcome) {
+	r.mu.Lock()
+	if r.closeInProgress[id] > 0 {
+		r.mu.Unlock()
+		return nil, claimRefusedClosing
+	}
 	var replaced *startupEntry
 	if existing, claimed := r.entries[id]; claimed {
 		if !existing.failed {
 			r.mu.Unlock()
-			return nil
+			return nil, claimRefusedInFlight
+		}
+		if !mode.replaceFailed {
+			r.mu.Unlock()
+			return nil, claimRefusedFailed
 		}
 		// A failed entry this startup replaces leaves the map below, so its
 		// pending eviction has nothing left to evict. Stopping it after the
@@ -203,13 +366,15 @@ func (r *startupCore) begin(id string, cancel context.CancelFunc) *startupEntry 
 		resizeSignal: make(chan struct{}, 1),
 		done:         make(chan struct{}),
 		finished:     make(chan struct{}),
+		replacement:  mode.replacement,
+		enclosing:    r.inflight[id],
 	}
 	r.entries[id] = entry
 	r.inflight[id] = entry
 	r.wg.Add(1)
 	r.mu.Unlock()
 	replaced.stopEviction()
-	return entry
+	return entry, claimAdmitted
 }
 
 // startupWait is what awaitInFlight learned about the startup it waited for.
@@ -221,13 +386,18 @@ type startupWait struct {
 	// failure of its own. A caller must not start a replacement process on this
 	// outcome: the tab is going away, and the DB row that says so is written
 	// several steps later, so the closed_at guard downstream still reads false.
+	//
+	// A FAILED end needs no field here. fail() leaves the failure in the map,
+	// and beginColdStart refuses it, so the record that the caller reads next is
+	// the one that stops a replacement process.
 	closed bool
 }
 
 // awaitInFlight blocks until no startup for id is in flight, and reports what
 // ended it. It settles at once when the id is unclaimed, and when the entry
-// holding it already FAILED -- the two states in which begin hands out the
-// claim.
+// holding it already FAILED: in both states no startup is in flight to wait
+// for. A failed entry is not an outcome to start a replacement on; see
+// beginColdStart.
 //
 // It exists so a caller that must have a running process can wait for the
 // startup that is already producing one, rather than refuse. The refusal is
@@ -282,16 +452,43 @@ func (r *startupCore) awaitInFlight(id string, limit time.Duration) startupWait 
 // The entry carries no other cleanup: its close disposition lives on the handle
 // the goroutine is about to drop, so the garbage collector takes the entry with
 // that handle.
+//
+// When the entry is the newest claim of its id, the slot goes back to the nearest
+// claim behind it whose goroutine still runs, so a close that lands later still
+// reaches that goroutine. The slot is empty when no such claim exists.
 func (r *startupCore) finishEntry(entry *startupEntry) {
 	if entry != nil {
 		r.mu.Lock()
+		close(entry.finished)
 		if r.inflight[entry.id] == entry {
-			delete(r.inflight, entry.id)
+			if behind := entry.unfinishedEnclosing(); behind != nil {
+				r.inflight[entry.id] = behind
+			} else {
+				delete(r.inflight, entry.id)
+			}
 		}
 		r.mu.Unlock()
-		close(entry.finished)
 	}
 	r.wg.Done()
+}
+
+// abandon ends a startup that no goroutine will ever run, because the open that
+// claimed the id failed before it launched one. It takes the claim out of the
+// map as succeed does, so the id derives its status from the manager again. Then
+// it cancels the context that begin received, and it releases the in-flight
+// count, which Shutdown's WaitForInFlight joins.
+//
+// A startup that failed in a way that the user must see is not abandoned. fail
+// records that outcome.
+func (r *startupCore) abandon(entry *startupEntry) {
+	if entry == nil {
+		return
+	}
+	r.succeed(entry.id, entry)
+	if entry.cancel != nil {
+		entry.cancel()
+	}
+	r.finishEntry(entry)
 }
 
 // WaitForInFlight blocks until every startup goroutine counted by begin
@@ -429,6 +626,13 @@ func (r *startupCore) cancelForArchive(id string) *startupEntry {
 // already FAILED, because fail() installed a different entry under the same id
 // and the close's worktree decision belongs on that one; an archive must not,
 // because a failed startup owns no process for it to stop.
+//
+// The entry that answers is not the only claim that the caller must reach. The
+// goroutine of an earlier claim can still run its tail behind it (see
+// startupEntry.enclosing), and that goroutine reads the stamp from its own entry.
+// So the body stamps and cancels the entry and every enclosing claim whose
+// goroutine did not return. It returns the entry that answered, and
+// waitForFinished follows the same links.
 func (r *startupCore) cancelStartup(id string, preferFinished bool, stamp func(*startupEntry)) *startupEntry {
 	r.mu.Lock()
 	var entry *startupEntry
@@ -438,27 +642,38 @@ func (r *startupCore) cancelStartup(id string, preferFinished bool, stamp func(*
 	if entry == nil {
 		entry = r.inflight[id]
 	}
+	var reached []*startupEntry
 	if entry != nil {
-		stamp(entry)
+		reached = append(reached, entry)
+		for behind := entry.unfinishedEnclosing(); behind != nil; behind = behind.unfinishedEnclosing() {
+			reached = append(reached, behind)
+		}
+		for _, claim := range reached {
+			stamp(claim)
+		}
 		if r.entries[id] == entry {
 			delete(r.entries, id)
 			entry.release()
 		}
 	}
 	r.mu.Unlock()
-	if entry == nil {
-		return nil
-	}
-	entry.stopEviction()
-	if entry.cancel != nil {
-		entry.cancel()
+	for _, claim := range reached {
+		claim.stopEviction()
+		if claim.cancel != nil {
+			claim.cancel()
+		}
 	}
 	return entry
 }
 
+// waitForFinished blocks until the goroutine of entry returned, and the goroutine
+// of every claim behind it. The links never change after a claim set them, so no
+// lock is needed.
 func (r *startupCore) waitForFinished(entry *startupEntry) {
-	if entry != nil && entry.finished != nil {
-		<-entry.finished
+	for ; entry != nil; entry = entry.enclosing {
+		if entry.finished != nil {
+			<-entry.finished
+		}
 	}
 }
 

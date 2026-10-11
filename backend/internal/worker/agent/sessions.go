@@ -3,9 +3,12 @@ package agent
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 )
 
 // This file holds the provider-neutral half of session-store discovery: the
@@ -47,32 +50,79 @@ type StoredSessionQuery struct {
 	// directory name, which is why the comparison belongs to each reader), and
 	// a session picker offered inside a directory answers for that directory.
 	WorkingDir string
-	// HomeDir locates a store under the user's home. Empty falls back to the
-	// process's own home directory.
+	// HomeDir supplies the explicit home directory for store paths.
+	// Empty reads EnvEntries when present, or the process home otherwise.
 	HomeDir string
-	// Getenv reads the environment that locates a store (CODEX_HOME,
-	// XDG_DATA_HOME, ...). Nil means os.Getenv.
+	// EnvEntries supplies the ordered native environment when it is non-nil.
+	// An empty slice supplies an empty environment. It takes precedence over Getenv.
+	EnvEntries []string
+	// RuntimeLocator supplies a trusted native command locator for this query.
+	// Nil uses the provider registration. An invalid supplied locator must fail.
+	RuntimeLocator *launch.Locator
+	// Getenv supplies single-key lookups when EnvEntries is nil.
+	// A nil lookup reads the process environment.
 	//
-	// The worker's own environment is the right answer, not a stored copy:
-	// FinalizeAgentEnv deliberately PRESERVES every home/config-dir variable
-	// when it spawns an agent, so what this process sees is what the CLI sees.
+	// Session discovery normally reads the Worker's process environment.
+	// A running provider can supply its exact child environment through EnvEntries.
 	Getenv func(string) string
 	// Limit caps the returned records. Zero means DefaultStoredSessionLimit.
 	Limit int
+	// Shell and LoginShell are the shell the worker launches agents through, for
+	// a provider whose sessions only its own CLI can list (Amp keeps its threads
+	// on its server, and `amp threads list` is the one reader). The CLI then runs
+	// with the PATH and the login environment the agent itself would get, so the
+	// list comes from the same account. Empty for a caller that states no shell;
+	// such a provider falls back to the platform's default shell.
+	Shell      string
+	LoginShell bool
 }
 
 // Env reads one environment variable through the query's seam.
 func (q StoredSessionQuery) Env(key string) string {
+	if q.EnvEntries != nil {
+		if key == "" {
+			return ""
+		}
+		for index := len(q.EnvEntries) - 1; index >= 0; index-- {
+			entryKey, value, valid := strings.Cut(q.EnvEntries[index], "=")
+			if !valid || entryKey == "" {
+				continue
+			}
+			if entryKey == key || (runtime.GOOS == "windows" && strings.EqualFold(entryKey, key)) {
+				return value
+			}
+		}
+		return ""
+	}
 	if q.Getenv != nil {
 		return q.Getenv(key)
 	}
 	return os.Getenv(key)
 }
 
+// Environ returns an independent ordered snapshot, or nil for a lookup-only seam.
+func (q StoredSessionQuery) Environ() []string {
+	if q.EnvEntries != nil {
+		entries := make([]string, len(q.EnvEntries))
+		copy(entries, q.EnvEntries)
+		return entries
+	}
+	if q.Getenv != nil {
+		return nil
+	}
+	return os.Environ()
+}
+
 // Home is the directory to resolve a store path against.
 func (q StoredSessionQuery) Home() string {
 	if q.HomeDir != "" {
 		return q.HomeDir
+	}
+	if q.EnvEntries != nil {
+		if runtime.GOOS == "windows" {
+			return q.Env("USERPROFILE")
+		}
+		return q.Env("HOME")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -90,7 +140,7 @@ func (q StoredSessionQuery) EffectiveLimit() int {
 }
 
 // XDGDataHome resolves the XDG data directory the way the `xdg-basedir` npm
-// package does, which is what OpenCode, Kilo and Goose are built on: it reads
+// package does, which is what OpenCode, Kilo, MiMo Code and Goose are built on: it reads
 // XDG_DATA_HOME and falls back to `~/.local/share` on EVERY platform, macOS
 // included. Resolving to `~/Library/Application Support` there would look more
 // native and find nothing.

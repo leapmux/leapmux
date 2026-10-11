@@ -8,6 +8,7 @@ import (
 // Agent manages a single Kilo ACP process.
 type Agent struct {
 	opencode.FamilyBase
+	steers kiloSteerState
 }
 
 // Compile-time proof that Agent implements Agent. acp.Start is generic over
@@ -16,7 +17,6 @@ type Agent struct {
 // "does not implement Agent".
 var _ agent.Agent = (*Agent)(nil)
 
-// Agent steers through the family base, which it embeds, so a fork cannot lose
-// the capability by not restating it. This assertion makes that regression a
-// compile error.
+// Kilo steers through a second ACP prompt and keeps its late answer as a turn.
+// This assertion keeps the capability when the family or Kilo agent changes.
 var _ agent.InputSteerer = (*Agent)(nil)

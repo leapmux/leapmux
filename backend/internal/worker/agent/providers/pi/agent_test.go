@@ -30,15 +30,18 @@ type piRecordedRequest struct {
 // echoes responses for the requests it sees. The peer also records every
 // request so tests can assert wire format.
 type piTestRig struct {
-	agent      *Agent
-	requests   func() []piRecordedRequest
-	cleanup    func()
-	cancel     context.CancelFunc
-	readPipe   *os.File
-	writePipe  *os.File
-	respondMu  sync.Mutex
-	responder  func(req piRecordedRequest) (data json.RawMessage, success bool, errMsg string)
-	stdoutPipe *os.File
+	agent         *Agent
+	requests      func() []piRecordedRequest
+	cleanup       func()
+	cancel        context.CancelFunc
+	readPipe      *os.File
+	writePipe     *os.File
+	respondMu     sync.Mutex
+	responder     func(req piRecordedRequest) (data json.RawMessage, success bool, errMsg string)
+	holdMethod    string
+	holdReply     <-chan struct{}
+	stdoutPipe    *os.File
+	recordingDone chan struct{}
 }
 
 // newPiTestRig sets up an Agent suitable for unit tests. The agent's stdin is
@@ -72,19 +75,22 @@ func newPiTestRig(t *testing.T, sink agent.ProviderServices) *piTestRig {
 	a.SkipStderr()
 
 	rig := &piTestRig{
-		agent:      a,
-		cancel:     cancel,
-		readPipe:   stdinReader,
-		writePipe:  stdinWriter,
-		stdoutPipe: stdoutWriter,
+		agent:         a,
+		cancel:        cancel,
+		readPipe:      stdinReader,
+		writePipe:     stdinWriter,
+		stdoutPipe:    stdoutWriter,
+		recordingDone: make(chan struct{}),
 	}
 
 	var (
 		mu       sync.Mutex
 		captured []piRecordedRequest
+		stdoutMu sync.Mutex
 	)
 
 	go func() {
+		defer close(rig.recordingDone)
 		scanner := bufio.NewScanner(stdinReader)
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 		for scanner.Scan() {
@@ -101,6 +107,8 @@ func newPiTestRig(t *testing.T, sink agent.ProviderServices) *piTestRig {
 
 			rig.respondMu.Lock()
 			responder := rig.responder
+			hold := rig.holdMethod == method && rig.holdReply != nil
+			release := rig.holdReply
 			rig.respondMu.Unlock()
 
 			data := json.RawMessage(`null`)
@@ -124,7 +132,23 @@ func newPiTestRig(t *testing.T, sink agent.ProviderServices) *piTestRig {
 			}
 			respBytes, _ := json.Marshal(resp)
 			respBytes = append(respBytes, '\n')
-			if _, err := stdoutWriter.Write(respBytes); err != nil {
+			writeResponse := func() error {
+				stdoutMu.Lock()
+				defer stdoutMu.Unlock()
+				_, err := stdoutWriter.Write(respBytes)
+				return err
+			}
+			if hold {
+				go func() {
+					select {
+					case <-release:
+						_ = writeResponse()
+					case <-ctx.Done():
+					}
+				}()
+				continue
+			}
+			if err := writeResponse(); err != nil {
 				return
 			}
 		}
@@ -174,6 +198,13 @@ func (r *piTestRig) setResponder(fn func(req piRecordedRequest) (json.RawMessage
 	r.respondMu.Lock()
 	defer r.respondMu.Unlock()
 	r.responder = fn
+}
+
+// holdResponse leaves one command reply pending while later commands still reach the fake peer.
+func (r *piTestRig) holdResponse(method string, release <-chan struct{}) {
+	r.respondMu.Lock()
+	defer r.respondMu.Unlock()
+	r.holdMethod, r.holdReply = method, release
 }
 
 func TestPi_SendPiCommand_RoundTripsResponse(t *testing.T) {
@@ -253,7 +284,8 @@ func TestPi_HandlePiResponse_RoutesByStringID(t *testing.T) {
 	a := &Agent{
 		Process: providerkit.NewProcessFrom(providerkit.ProcessConfig{AgentID: "test-agent"}),
 	}
-	ch, release := a.Register("leapmux-1")
+	ch, release, registerErr := a.Register("leapmux-1")
+	require.NoError(t, registerErr)
 	defer release()
 
 	consumed := a.handlePiResponse(providerkit.ParseLine([]byte(
@@ -309,6 +341,100 @@ func TestPi_SendInput_FreshTurnOmitsSteer(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("prompt command never reached the fake peer")
 	}
+}
+
+func TestPiManualCompactUsesNativeRPCCommand(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name         string
+		input        string
+		instructions string
+	}{
+		{name: "plain", input: "/compact"},
+		{name: "custom instructions", input: "/compact Keep the test findings.", instructions: "Keep the test findings."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newPiTestRig(t, agenttest.Nop())
+			got := make(chan piRecordedRequest, 1)
+			rig.setResponder(func(req piRecordedRequest) (json.RawMessage, bool, string) {
+				got <- req
+				return nil, true, ""
+			})
+			require.NoError(t, rig.agent.SendInput(tc.input, nil))
+			select {
+			case request := <-got:
+				assert.Equal(t, "compact", request.Type)
+				if tc.instructions == "" {
+					assert.NotContains(t, request.Payload, "customInstructions")
+				} else {
+					assert.Equal(t, tc.instructions, request.Payload["customInstructions"])
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("the compact command never reached the fake peer")
+			}
+		})
+	}
+}
+
+func TestPiManualCompactRefusesAttachments(t *testing.T) {
+	t.Parallel()
+	rig := newPiTestRig(t, agenttest.Nop())
+	attachment := &leapmuxv1.Attachment{Filename: "note.txt", MimeType: "text/plain", Data: []byte("note")}
+	assert.ErrorContains(t, rig.agent.SendInput("/compact", []*leapmuxv1.Attachment{attachment}), "attachments")
+	assert.Empty(t, rig.requests())
+}
+
+func TestPiManualCompactLeavesSimilarPromptsAndSteeringAlone(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		input string
+		steer bool
+	}{
+		{name: "longer command", input: "/compaction"},
+		{name: "leading space", input: " /compact"},
+		{name: "steer text", input: "/compact", steer: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newPiTestRig(t, agenttest.Nop())
+			if tc.steer {
+				rig.agent.Mu.Lock()
+				rig.agent.currentTurnActive = true
+				rig.agent.Mu.Unlock()
+			}
+			got := make(chan piRecordedRequest, 1)
+			rig.setResponder(func(req piRecordedRequest) (json.RawMessage, bool, string) {
+				got <- req
+				return nil, true, ""
+			})
+			var err error
+			if tc.steer {
+				err = rig.agent.SteerInput(tc.input, nil)
+			} else {
+				err = rig.agent.SendInput(tc.input, nil)
+			}
+			require.NoError(t, err)
+			select {
+			case request := <-got:
+				assert.Equal(t, CommandPrompt, request.Type)
+				assert.Equal(t, tc.input, request.Payload["message"])
+			case <-time.After(2 * time.Second):
+				t.Fatal("the prompt never reached the fake peer")
+			}
+		})
+	}
+}
+
+func TestPiManualCompactReturnsTheNativeError(t *testing.T) {
+	t.Parallel()
+	rig := newPiTestRig(t, agenttest.Nop())
+	rig.setResponder(func(req piRecordedRequest) (json.RawMessage, bool, string) {
+		if req.Type == CommandCompact {
+			return nil, false, "the session has no conversation to compact"
+		}
+		return nil, true, ""
+	})
+	assert.ErrorContains(t, rig.agent.SendInput("/compact", nil), "the session has no conversation to compact")
 }
 
 func TestPi_SteerInput_DuringTurnSetsSteer(t *testing.T) {
@@ -672,14 +798,9 @@ func TestPi_Stop_SendsAbortBeforeClosingStdin(t *testing.T) {
 	rig.agent.currentTurnActive = true
 	rig.agent.Mu.Unlock()
 
-	// Process.Stop blocks until processDone closes — without a real
-	// subprocess, simulate the post-stdin-close exit by closing processDone
-	// from a helper goroutine. This isolates the "abort RPC was sent on the
-	// way out" assertion.
-	go func() {
-		time.Sleep(20 * time.Millisecond)
-		rig.agent.SimulateExitForTest()
-	}()
+	// The fake process exits when Stop closes stdin.
+	// The native abort acknowledgement must arrive before that close.
+	rig.agent.SetStdinForTest(&piExitOnCloseWriter{WriteCloser: rig.writePipe, exit: rig.agent.SimulateExitForTest})
 	rig.agent.Stop()
 
 	select {
@@ -712,17 +833,10 @@ func TestPi_Stop_SkipsAbortWhenIdle(t *testing.T) {
 
 	// currentTurnActive defaults to false; Stop should skip abort entirely so
 	// idle agents tear down without burning a 1s timeout each.
-	go func() {
-		time.Sleep(20 * time.Millisecond)
-		rig.agent.SimulateExitForTest()
-	}()
+	rig.agent.SetStdinForTest(&piExitOnCloseWriter{WriteCloser: rig.writePipe, exit: rig.agent.SimulateExitForTest})
 	rig.agent.Stop()
-
-	select {
-	case <-abortSeen:
-		t.Fatal("Stop sent abort despite no turn being active")
-	case <-time.After(50 * time.Millisecond):
-	}
+	awaitPiWrite(t, rig.recordingDone)
+	assert.Empty(t, rig.requests(), "an idle stop closes the recorder without an abort command")
 }
 
 func TestPi_ClearContext_RoundtripsNewSessionAndGetState(t *testing.T) {
@@ -956,6 +1070,188 @@ func TestPi_UpdateSettings_KeepsTheRequestedModelWhenTheStateReadFails(t *testin
 	assert.Equal(t, "openai", rig.agent.provider)
 }
 
+// piThinkingPeer answers the commands that touch Pi's thinking level the way Pi 1.0.0 does. An
+// isolated-agent-dir probe verified each rule:
+//   - set_model takes the level from settings.defaultThinkingLevel when the user configured one,
+//     and keeps the current level otherwise (AgentSession._getThinkingLevelForModelSwitch);
+//   - set_thinking_level clamps the level to what the model supports (xhigh becomes high);
+//   - get_state reports the level that results.
+//
+// settingsDefault is "" when the user configured no default. clamp maps (model, level) to the
+// level that the model runs.
+type piThinkingPeer struct {
+	mu              sync.Mutex
+	model           string
+	level           string
+	settingsDefault string
+	clamp           func(model, level string) string
+}
+
+func (p *piThinkingPeer) respond(req piRecordedRequest) (json.RawMessage, bool, string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	switch req.Type {
+	case CommandSetModel:
+		p.model, _ = req.Payload["modelId"].(string)
+		if p.settingsDefault != "" {
+			p.level = p.settingsDefault
+		}
+		p.level = p.clamp(p.model, p.level)
+	case CommandSetThinkingLevel:
+		level, _ := req.Payload["level"].(string)
+		p.level = p.clamp(p.model, level)
+	case CommandGetState:
+		state, _ := json.Marshal(map[string]any{
+			"model":         map[string]any{"id": p.model, "provider": "openai"},
+			"thinkingLevel": p.level,
+		})
+		return state, true, ""
+	}
+	return nil, true, ""
+}
+
+// thinkingLevelCommands returns the set_thinking_level levels that the peer received, in order.
+func thinkingLevelCommands(reqs []piRecordedRequest) []string {
+	var levels []string
+	for _, r := range reqs {
+		if r.Type == CommandSetThinkingLevel {
+			level, _ := r.Payload["level"].(string)
+			levels = append(levels, level)
+		}
+	}
+	return levels
+}
+
+func noClamp(_, level string) string { return level }
+
+// xhighClamp models a model that lacks xhigh: Pi runs it at high.
+func xhighClamp(_, level string) string {
+	if level == ThinkingXHigh {
+		return ThinkingHigh
+	}
+	return level
+}
+
+// newPiThinkingRig returns a rig whose agent runs gpt-5.4 at heldLevel against a peer that follows
+// Pi's thinking-level rules.
+func newPiThinkingRig(t *testing.T, heldLevel, settingsDefault string, clamp func(model, level string) string) (*piTestRig, *agenttest.Sink) {
+	t.Helper()
+	sink := &agenttest.Sink{}
+	rig := newPiTestRig(t, agent.NewProviderServices(sink))
+	rig.agent.model = "gpt-5.4"
+	rig.agent.provider = "openai"
+	rig.agent.thinkingLevel = heldLevel
+	peer := &piThinkingPeer{model: "gpt-5.4", level: heldLevel, settingsDefault: settingsDefault, clamp: clamp}
+	rig.setResponder(peer.respond)
+	return rig, sink
+}
+
+// TestPi_UpdateSettings_KeepsTheHeldLevelAcrossAModelSwitch is the regression guard for a model
+// switch that moves Pi's level without the user asking. The worker keeps the held level when the
+// new model offers it, so the request carries that level next to the model. Pi takes the level for
+// the new model from settings.defaultThinkingLevel before it takes the current level, so a user
+// who set that default saw the level fall to it. UpdateSettings compared the kept level with the
+// level that the agent held BEFORE the switch, found them equal, and sent nothing.
+func TestPi_UpdateSettings_KeepsTheHeldLevelAcrossAModelSwitch(t *testing.T) {
+	t.Parallel()
+
+	rig, sink := newPiThinkingRig(t, ThinkingHigh, ThinkingLow, noClamp)
+
+	result := rig.agent.UpdateSettings(map[string]string{
+		agent.OptionIDModel:  "gpt-5.5",
+		agent.OptionIDEffort: ThinkingHigh,
+	})
+	require.True(t, result.AppliedLive)
+
+	assert.Equal(t, []string{ThinkingHigh}, thinkingLevelCommands(rig.requests()), "the kept level is applied after the switch moved it")
+	rig.agent.Mu.Lock()
+	defer rig.agent.Mu.Unlock()
+	assert.Equal(t, "gpt-5.5", rig.agent.model)
+	assert.Equal(t, ThinkingHigh, rig.agent.thinkingLevel, "Pi runs the kept level")
+	assert.Equal(t, ThinkingHigh, sink.LastSettingsRefresh().Effort, "the persisted level is the kept one")
+}
+
+// TestPi_UpdateSettings_SendsNoLevelWhenTheSwitchKeepsIt covers the usual case: Pi keeps the
+// current level across a model switch, so the held level needs no command.
+func TestPi_UpdateSettings_SendsNoLevelWhenTheSwitchKeepsIt(t *testing.T) {
+	t.Parallel()
+
+	rig, sink := newPiThinkingRig(t, ThinkingHigh, "", noClamp)
+
+	result := rig.agent.UpdateSettings(map[string]string{
+		agent.OptionIDModel:  "gpt-5.5",
+		agent.OptionIDEffort: ThinkingHigh,
+	})
+	require.True(t, result.AppliedLive)
+
+	assert.Empty(t, thinkingLevelCommands(rig.requests()))
+	rig.agent.Mu.Lock()
+	defer rig.agent.Mu.Unlock()
+	assert.Equal(t, ThinkingHigh, rig.agent.thinkingLevel)
+	assert.Equal(t, ThinkingHigh, sink.LastSettingsRefresh().Effort)
+}
+
+// TestPi_UpdateSettings_TakesPisClampOfTheKeptLevel guards the other side of the same rule. The
+// catalog offers xhigh for every reasoning model, but Pi clamps xhigh to high on a model that lacks
+// it. The agent then holds the level that Pi runs, not the level that the request names.
+func TestPi_UpdateSettings_TakesPisClampOfTheKeptLevel(t *testing.T) {
+	t.Parallel()
+
+	rig, sink := newPiThinkingRig(t, ThinkingXHigh, "", xhighClamp)
+
+	result := rig.agent.UpdateSettings(map[string]string{
+		agent.OptionIDModel:  "gpt-5.5",
+		agent.OptionIDEffort: ThinkingXHigh,
+	})
+	require.True(t, result.AppliedLive)
+
+	rig.agent.Mu.Lock()
+	defer rig.agent.Mu.Unlock()
+	assert.Equal(t, ThinkingHigh, rig.agent.thinkingLevel, "Pi's level, not the request")
+	assert.Equal(t, ThinkingHigh, sink.LastSettingsRefresh().Effort)
+}
+
+// TestPi_UpdateSettings_TakesTheLevelFromPiOwnState guards a level change without a model change.
+// set_thinking_level answers no level, and Pi clamps the request, so the answer comes from Pi's own
+// state, as it does for a model switch.
+func TestPi_UpdateSettings_TakesTheLevelFromPiOwnState(t *testing.T) {
+	t.Parallel()
+
+	rig, sink := newPiThinkingRig(t, ThinkingMedium, "", xhighClamp)
+
+	result := rig.agent.UpdateSettings(map[string]string{agent.OptionIDEffort: ThinkingXHigh})
+	require.True(t, result.AppliedLive)
+
+	assert.Equal(t, []string{ThinkingXHigh}, thinkingLevelCommands(rig.requests()))
+	rig.agent.Mu.Lock()
+	defer rig.agent.Mu.Unlock()
+	assert.Equal(t, ThinkingHigh, rig.agent.thinkingLevel, "Pi clamped xhigh, and the agent holds what Pi runs")
+	assert.Equal(t, ThinkingHigh, sink.LastSettingsRefresh().Effort)
+}
+
+// A get_state that fails after an ACCEPTED set_thinking_level leaves the requested level in place,
+// as it does for set_model: the command succeeded, so the prior level is certainly wrong.
+func TestPi_UpdateSettings_KeepsTheRequestedLevelWhenTheStateReadFails(t *testing.T) {
+	t.Parallel()
+
+	rig, _ := newPiThinkingRig(t, ThinkingMedium, "", noClamp)
+	peer := &piThinkingPeer{model: "gpt-5.4", level: ThinkingMedium, clamp: noClamp}
+	// Only get_state fails. The peer answers everything else, so the responder replaces the rig's.
+	rig.setResponder(func(req piRecordedRequest) (json.RawMessage, bool, string) {
+		if req.Type == CommandGetState {
+			return nil, false, "state unavailable"
+		}
+		return peer.respond(req)
+	})
+
+	result := rig.agent.UpdateSettings(map[string]string{agent.OptionIDEffort: ThinkingHigh})
+	require.True(t, result.AppliedLive, "set_thinking_level landed, so the change applied live")
+
+	rig.agent.Mu.Lock()
+	defer rig.agent.Mu.Unlock()
+	assert.Equal(t, ThinkingHigh, rig.agent.thinkingLevel)
+}
+
 func TestPi_HandlePiResponse_RoutesNumericIDLeftoverFromJSONRPCMix(t *testing.T) {
 	t.Parallel()
 
@@ -963,7 +1259,8 @@ func TestPi_HandlePiResponse_RoutesNumericIDLeftoverFromJSONRPCMix(t *testing.T)
 	// though Pi mints string ids itself, defensive callers should not break
 	// when a server emits a JSON-RPC-shaped numeric id.
 	a := &Agent{Process: providerkit.NewProcessFrom(providerkit.ProcessConfig{AgentID: "test-agent"})}
-	ch, release := a.Register("42")
+	ch, release, registerErr := a.Register("42")
+	require.NoError(t, registerErr)
 	defer release()
 
 	consumed := a.handlePiResponse(providerkit.ParseLine([]byte(

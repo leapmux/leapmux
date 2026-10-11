@@ -4,6 +4,8 @@ package copilot
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -232,7 +234,11 @@ func TestNativeCopilotGoalStatusMapping(t *testing.T) {
 // store held nothing to restore, so opening it under the same identity loses nothing.
 // See CP-012.
 func TestNativeCopilotGoalClearReopensASessionTheStoreNeverRecorded(t *testing.T) {
-	a, sink := startNativeCopilotForGoal(t, "LEAPMUX_TEST_COPILOT_UNRESUMABLE=1")
+	requestsPath := filepath.Join(t.TempDir(), "requests.jsonl")
+	a, sink := startNativeCopilotForGoal(t,
+		"LEAPMUX_TEST_COPILOT_UNRESUMABLE=1",
+		"LEAPMUX_TEST_COPILOT_SESSION_REQUESTS="+requestsPath,
+	)
 	_, err := a.PerformGoalAction(agent.GoalActionSet, "Remove this objective")
 	require.NoError(t, err)
 	sessionID := a.currentNativeSessionID()
@@ -244,6 +250,31 @@ func TestNativeCopilotGoalClearReopensASessionTheStoreNeverRecorded(t *testing.T
 	assert.Equal(t, sessionID, a.currentNativeSessionID(), "the transcript keeps its session identity")
 
 	require.NoError(t, a.SendInput("Carry on.", nil))
+	file, err := os.Open(requestsPath)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, file.Close()) }()
+	decoder := json.NewDecoder(file)
+	var sessionCalls []string
+	for decoder.More() {
+		var request struct {
+			Method string         `json:"method"`
+			Params map[string]any `json:"params"`
+		}
+		require.NoError(t, decoder.Decode(&request))
+		switch request.Method {
+		case "session.create", "session.resume":
+			sessionCalls = append(sessionCalls, request.Method)
+		case "session.options.update":
+			if request.Params["enableReasoningSummaries"] == true {
+				require.Equal(t, sessionID, request.Params["sessionId"])
+				sessionCalls = append(sessionCalls, request.Method)
+			}
+		}
+	}
+	require.Equal(t, []string{
+		"session.create", "session.options.update",
+		"session.resume", "session.create", "session.options.update",
+	}, sessionCalls)
 }
 
 // A goal clear disposes of the session, so a turn that ran when it started can never

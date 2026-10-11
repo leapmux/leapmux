@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -13,7 +14,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
-	"github.com/leapmux/leapmux/internal/worker/agent"
+	agentapi "github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
@@ -25,11 +26,10 @@ func TestCodexControlPublicationFailureReturnsProtocolError(t *testing.T) {
 	t.Parallel()
 	output := &agenttest.Stdin{}
 	sink := &agenttest.ControlSink{PublicationError: errors.New("storage unavailable")}
-	a := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	a.SetStdinForTest(agenttest.NopStdin(output))
 	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"jsonrpc":"2.0","id":37,"method":"item/tool/requestUserInput","params":{"threadId":"main-thread","questions":[]}}`)))
-	// handleCodexOutput runs on the goroutine that drains Codex's stdout, so the
-	// failure reply is QUEUED rather than written before it returns.
+	// handleCodexOutput drains Codex stdout, so queue the failure response and return before waiting for the stdin write.
 	var answer string
 	require.Eventually(t, func() bool {
 		answer = output.String()
@@ -73,16 +73,17 @@ type recordingCodexEnsureSink struct {
 	childSinkCalls int
 }
 
-func (s *recordingCodexEnsureSink) EnsureChildAgent(spawnSpanID, providerChildKey, title string) (string, error) {
+func (s *recordingCodexEnsureSink) EnsureChildAgent(spec agentapi.ChildAgentSpec) (string, error) {
+	spawnSpanID, providerChildKey, title := spec.SpawnSpanID, spec.ProviderChildKey, spec.Title
 	s.ensureCalls = append(s.ensureCalls, codexEnsureCall{
 		spawnSpanID:      spawnSpanID,
 		providerChildKey: providerChildKey,
 		title:            title,
 	})
-	return s.Sink.EnsureChildAgent(spawnSpanID, providerChildKey, title)
+	return s.Sink.EnsureChildAgent(spec)
 }
 
-func (s *recordingCodexEnsureSink) ChildSink(childAgentID string) agent.ProviderServices {
+func (s *recordingCodexEnsureSink) ChildSink(childAgentID string) agentapi.ProviderServices {
 	s.childSinkCalls++
 	return s.Sink.ChildSink(childAgentID)
 }
@@ -96,26 +97,26 @@ func (s *transientCodexCloseFailureSink) CloseBackgroundTask(rowKey string, stat
 	return s.Sink.CloseBackgroundTask(rowKey, status)
 }
 
-func (s *transientCodexEnsureFailureSink) EnsureChildAgent(spawnSpanID, providerChildKey, title string) (string, error) {
+func (s *transientCodexEnsureFailureSink) EnsureChildAgent(spec agentapi.ChildAgentSpec) (string, error) {
 	if s.ensureFailures > 0 {
 		s.ensureFailures--
 		return "", fmt.Errorf("transient child creation failure")
 	}
-	return s.Sink.EnsureChildAgent(spawnSpanID, providerChildKey, title)
+	return s.Sink.EnsureChildAgent(spec)
 }
 
-func (s *blockingCodexEnsureSink) EnsureChildAgent(spawnSpanID, providerChildKey, title string) (string, error) {
+func (s *blockingCodexEnsureSink) EnsureChildAgent(spec agentapi.ChildAgentSpec) (string, error) {
 	close(s.started)
 	<-s.release
-	return s.Sink.EnsureChildAgent(spawnSpanID, providerChildKey, title)
+	return s.Sink.EnsureChildAgent(spec)
 }
 
-func (s *notificationPersistGuardSink) PersistMessage(source leapmuxv1.MessageSource, content agent.MessageContent, span agent.SpanInfo) error {
+func (s *notificationPersistGuardSink) PersistMessage(source leapmuxv1.MessageSource, content agentapi.MessageContent, span agentapi.SpanInfo) error {
 	s.t.Fatalf("notification must not be persisted as a regular message: source=%v content=%s", source, string(content.Original))
 	return nil
 }
 
-func newCodexAgentWithSink(sink agent.ProviderServices) *Agent {
+func newCodexAgentWithSink(sink agentapi.ProviderServices) *Agent {
 	a := &Agent{
 		JSONRPCProcess: providerkit.JSONRPCProcess{Process: providerkit.NewProcessFrom(providerkit.ProcessConfig{
 			AgentID: "test-agent",
@@ -123,7 +124,7 @@ func newCodexAgentWithSink(sink agent.ProviderServices) *Agent {
 		sink:     sink,
 		threadID: "main-thread",
 	}
-	a.sink = agent.NewModelProgressResetSink(a.sink)
+	a.sink = agentapi.NewModelProgressResetSink(a.sink)
 	return a
 }
 
@@ -131,7 +132,7 @@ func TestHandleCodexOutput_TurnStartedOpensTheTurn(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.ControlSink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
 	input := `{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"turn-42"}}}`
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(input)))
@@ -145,9 +146,8 @@ func TestHandleCodexOutput_TurnStartedOpensTheTurn(t *testing.T) {
 	assert.Equal(t, "turn-42", turnID, "interrupts and steering target this turn")
 	assert.Equal(t, []bool{true}, sink.TurnActives(),
 		"turn/started opens the Worker's activity state AND its input queue's turn")
-	// The turn id used to ride an ephemeral session-info frame as well, for a
-	// browser-side working-state heuristic that no longer exists. Nothing reads
-	// it now, so nothing sends it.
+	// The preceding browser activity heuristic also used a temporary session-info turn ID.
+	// No current reader consumes that ID, so the provider sends no additional frame for it.
 	assert.Equal(t, 0, sessionInfoCount, "turn/started broadcasts no session info")
 }
 
@@ -155,10 +155,10 @@ func TestHandleCodexOutput_TurnStartedFallbackIsNoop(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.ControlSink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
-	// turn/started with no turn.id has no per-turn state to broadcast;
-	// git status now refreshes at turn-end via the sink layer.
+	// turn/started without turn.id supplies no turn-specific state to broadcast.
+	// The sink refreshes git status at turn end.
 	input := `{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"t1"}}`
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(input)))
 
@@ -172,7 +172,7 @@ func TestHandleCodexOutput_RequestUserInput(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.ControlSink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
 	input := `{"jsonrpc":"2.0","id":42,"method":"item/tool/requestUserInput","params":{"threadId":"t1","turnId":"turn1","itemId":"item1","questions":[{"id":"q1","header":"Header","question":"Which option?","options":[{"label":"A"}]}]}}`
 
@@ -183,7 +183,7 @@ func TestHandleCodexOutput_RequestUserInput(t *testing.T) {
 	rec := sink.LastPublishedControl()
 	assert.Equal(t, "jsonrpc:42", rec.RequestID)
 
-	// Verify payload is the original content.
+	// Verify that the payload preserves the original content.
 	var parsed struct {
 		Method string `json:"method"`
 		ID     int    `json:"id"`
@@ -192,7 +192,7 @@ func TestHandleCodexOutput_RequestUserInput(t *testing.T) {
 	assert.Equal(t, "item/tool/requestUserInput", parsed.Method)
 	assert.Equal(t, 42, parsed.ID)
 
-	// Should NOT be persisted as a regular message.
+	// The handler does not persist an ordinary message.
 	assert.Equal(t, 0, sink.MessageCount())
 }
 
@@ -200,7 +200,7 @@ func TestHandleCodexOutput_CommandExecutionApproval(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.ControlSink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
 	input := `{"jsonrpc":"2.0","id":7,"method":"item/commandExecution/requestApproval","params":{"command":"rm -rf /","reason":"cleanup"}}`
 
@@ -216,7 +216,7 @@ func TestHandleCodexOutput_FileChangeApproval(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.ControlSink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
 	input := `{"jsonrpc":"2.0","id":8,"method":"item/fileChange/requestApproval","params":{"reason":"editing file"}}`
 
@@ -232,7 +232,7 @@ func TestHandleCodexOutput_PermissionsApproval(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.ControlSink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
 	input := `{"jsonrpc":"2.0","id":9,"method":"item/permissions/requestApproval","params":{"reason":"needs access"}}`
 
@@ -248,7 +248,7 @@ func TestHandleCodexOutput_ContextCompactionStartPersistsRawAsAgent(t *testing.T
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
 	input := `{"method":"item/started","params":{"item":{"type":"contextCompaction","id":"compact-1"},"threadId":"main-thread","turnId":"turn1"}}`
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(input)))
@@ -267,7 +267,7 @@ func TestHandleCodexOutput_McpStartupNonFailuresDoNotReachTheTranscript(t *testi
 
 	for _, status := range []string{`"starting"`, `"ready"`, `"cancelled"`, `{"state":"ready"}`} {
 		sink := &notificationPersistGuardSink{t: t}
-		agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+		agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
 		input := fmt.Sprintf(`{"method":"mcpServer/startupStatus/updated","params":{"name":"codex_apps","status":%s}}`, status)
 		handleCodexOutput(agent, providerkit.ParseLine([]byte(input)))
@@ -282,7 +282,7 @@ func TestHandleCodexOutput_McpStartupFailuresPersistAsAgent(t *testing.T) {
 
 	for _, status := range []string{`"failed"`, `"futureFailure"`, `{"state":"failed","error":"nested failure"}`} {
 		sink := &notificationPersistGuardSink{t: t}
-		agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+		agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
 		input := fmt.Sprintf(`{"method":"mcpServer/startupStatus/updated","params":{"name":"codex_apps","status":%s,"error":"startup failed"}}`, status)
 		handleCodexOutput(agent, providerkit.ParseLine([]byte(input)))
@@ -299,7 +299,7 @@ func TestHandleCodexOutput_McpProgressDoesNotReachTheTranscript(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"item/mcpToolCall/progress","params":{"threadId":"main-thread","turnId":"turn-1","itemId":"mcp-1","message":"Working"}}`)))
 
@@ -311,7 +311,7 @@ func TestHandleCodexOutput_McpOauthSuccessDoesNotReachTheTranscript(t *testing.T
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"mcpServer/oauthLogin/completed","params":{"name":"docs","threadId":"main-thread","success":true}}`)))
 
@@ -323,7 +323,7 @@ func TestHandleCodexOutput_McpOauthFailurePersistsAsAgent(t *testing.T) {
 	t.Parallel()
 
 	sink := &notificationPersistGuardSink{t: t}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	input := `{"method":"mcpServer/oauthLogin/completed","params":{"name":"docs","threadId":"main-thread","success":false,"error":"authorization failed"}}`
 
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(input)))
@@ -355,7 +355,7 @@ func TestHandleCodexOutput_SubagentFailuresRouteToTheChildTranscript(t *testing.
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sink := &agenttest.Sink{}
-			agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+			agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 			handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn-1","item":{"type":"collabAgentToolCall","id":"spawn-1","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"inspect","agentsStates":{}}}}`)))
 			parentCount := sink.MessageCount()
 
@@ -374,7 +374,7 @@ func TestHandleCodexOutput_SubagentFailureWaitsForItsRoute(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	failure := `{"method":"hook/completed","params":{"threadId":"child-1","turnId":"child-turn","run":{"id":"hook-1","status":"blocked","statusMessage":"policy blocked the hook"}}}`
 
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(failure)))
@@ -392,7 +392,7 @@ func TestHandleCodexOutput_MultiAgentV2PersistsPromptAndMirrorsFinalReport(t *te
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"rawResponseItem/completed","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"function_call","name":"spawn_agent","namespace":"collaboration","arguments":"{\"message\":\"Inspect the parser.\",\"task_name\":\"parser-review\"}","call_id":"spawn-1"}}}`)))
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"spawn-1","kind":"started","agentThreadId":"child-1","agentPath":"/root/parser-review"}}}`)))
@@ -413,11 +413,28 @@ func TestHandleCodexOutput_MultiAgentV2PersistsPromptAndMirrorsFinalReport(t *te
 	assert.Equal(t, "parser-review", reports[0]["label"])
 }
 
+func TestHandleCodexOutput_RawResponseMirrorsAddNoTranscriptRows(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+	for _, raw := range []string{
+		`{"method":"rawResponseItem/completed","params":{"threadId":"main-thread","item":{"type":"function_call","name":"exec_command","arguments":"{}","call_id":"call-1"}}}`,
+		`{"method":"rawResponseItem/completed","params":{"threadId":"main-thread","item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"answer"}]}}}`,
+		`{"method":"rawResponse/completed","params":{"threadId":"main-thread","responseId":"response-1"}}`,
+	} {
+		handleCodexOutput(a, providerkit.ParseLine([]byte(raw)))
+	}
+
+	assert.Zero(t, sink.MessageCount())
+	assert.Zero(t, sink.NotificationCount())
+}
+
 func TestHandleCodexOutput_V1ChildMirrorsFinalReportWithoutAnAgentPath(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"collabAgentToolCall","id":"spawn-1","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"Inspect the parser.","agentsStates":{}}}}`)))
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"item/completed","params":{"threadId":"child-1","turnId":"child-turn","item":{"type":"agentMessage","id":"report-1","text":"Parser report","phase":"final_answer"}}}`)))
 
@@ -431,7 +448,7 @@ func TestHandleCodexOutput_PublishedChildReportDropsRetainedText(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"spawn-1","kind":"started","agentThreadId":"child-1","agentPath":"/root/reviewer"}}}`)))
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"item/completed","params":{"threadId":"child-1","turnId":"child-turn","item":{"type":"agentMessage","id":"report-1","text":"A long report","phase":"final_answer"}}}`)))
 
@@ -447,7 +464,7 @@ func TestHandleCodexOutput_ThreadNameUpdatedPersistsRawAsAgent(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.ControlSink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
 	input := `{"method":"thread/name/updated","params":{"threadId":"thread-1","name":"Refactoring auth"}}`
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(input)))
@@ -467,7 +484,7 @@ func TestHandleCodexOutput_SkillsChangedDoesNotReachTranscript(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"skills/changed","params":{}}`)))
 
@@ -481,7 +498,7 @@ func TestHandleCodexOutput_RemoteControlStatusChangedDoesNotReachTranscript(t *t
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"remoteControl/status/changed","params":{"status":"disabled","serverName":"OpenAI","installationId":"install-1","environmentId":null}}`)))
 
@@ -495,27 +512,27 @@ func TestHandleCodexOutput_RateLimitExceededSchedulesResume(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
 	input := `{"method":"account/rateLimits/updated","params":{"rateLimits":{"primary":{"usedPercent":100,"windowDurationMins":300,"resetsAt":1893456000},"secondary":{"usedPercent":20,"windowDurationMins":10080,"resetsAt":1894000000}}}}`
 	handleCodexOutput(a, providerkit.ParseLine([]byte(input)))
 
 	require.Equal(t, 1, sink.AutoScheduleCount())
 	schedule := sink.LastAutoSchedule()
-	require.Equal(t, agent.AutoContinueReasonRateLimit, schedule.Reason)
+	require.Equal(t, agentapi.AutoContinueReasonRateLimit, schedule.Reason)
 	require.True(t, schedule.DueAt.Equal(time.Unix(1893456000, 0).UTC()))
 
 	assert.Zero(t, sink.NotificationCount(), "account state must not become transcript history")
 }
 
-// Codex reports the account rate limits after EVERY model call, so one ordinary turn
-// with a tool call wrote the same sentence to the transcript twice. The snapshot is a
-// state, not an event: an unchanged one states nothing the previous row did not.
+// Codex reports account rate limits after every model call.
+// One turn with a tool call formerly persisted the same rate-limit sentence twice.
+// A repeated unchanged snapshot supplies no new state and therefore needs no transcript row.
 func TestHandleCodexOutput_RateLimitsStayOutOfTheTranscript(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
 	input := `{"method":"account/rateLimits/updated","params":{"rateLimits":{"primary":{"usedPercent":92,"windowDurationMins":10080,"resetsAt":1893456000}}},"emittedAtMs":1}`
 	repeat := `{"method":"account/rateLimits/updated","params":{"rateLimits":{"primary":{"usedPercent":92,"windowDurationMins":10080,"resetsAt":1893456000}}},"emittedAtMs":2}`
@@ -531,15 +548,13 @@ func TestHandleCodexOutput_RateLimitsStayOutOfTheTranscript(t *testing.T) {
 	assert.Equal(t, 3, sink.SessionInfoCount(), "every report refreshes the popover")
 }
 
-// TestHandleCodexOutput_RateLimitBroadcastsSnakeCaseWire locks in the
-// snake_case wire shape for Codex's session-info `rate_limits` payload.
-// Both Codex and Claude broadcast the same tier shape so the frontend
-// can consume one format regardless of provider.
+// TestHandleCodexOutput_RateLimitBroadcastsSnakeCaseWire verifies the snake_case rate_limits shape in Codex session information.
+// Codex and Claude broadcast the same tier fields, so the frontend reads one format.
 func TestHandleCodexOutput_RateLimitBroadcastsSnakeCaseWire(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
 	input := `{"method":"account/rateLimits/updated","params":{"rateLimits":{"primary":{"usedPercent":85,"windowDurationMins":300,"resetsAt":1893456000},"secondary":{"usedPercent":10,"windowDurationMins":10080,"resetsAt":1894000000}}}}`
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(input)))
@@ -568,23 +583,22 @@ func TestHandleCodexOutput_RateLimitClearCancelsResume(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
 	input := `{"method":"account/rateLimits/updated","params":{"rateLimits":{"primary":{"usedPercent":75,"windowDurationMins":300,"resetsAt":1893456000},"secondary":{"usedPercent":10,"windowDurationMins":10080,"resetsAt":1894000000}}}}`
 	handleCodexOutput(a, providerkit.ParseLine([]byte(input)))
 
 	require.Equal(t, 1, sink.AutoCancelCount())
-	require.Equal(t, agent.AutoContinueReasonRateLimit, sink.LastAutoCancel())
+	require.Equal(t, agentapi.AutoContinueReasonRateLimit, sink.LastAutoCancel())
 }
 
-// TestHandleCodexOutput_ReachedTypeRateLimitReachedSchedules verifies that newer
-// Codex builds that emit the authoritative rateLimitReachedType schedule a resume
-// when a time-windowed rate limit is reached.
+// TestHandleCodexOutput_ReachedTypeRateLimitReachedSchedules covers a native rateLimitReachedType that confirms a timed rate-limit window.
+// Schedule a resume when that window blocks the request.
 func TestHandleCodexOutput_ReachedTypeRateLimitReachedSchedules(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
 	input := `{"method":"account/rateLimits/updated","params":{"rateLimits":{"rateLimitReachedType":"rate_limit_reached","primary":{"usedPercent":100,"windowDurationMins":300,"resetsAt":1893456000},"secondary":{"usedPercent":20,"windowDurationMins":10080,"resetsAt":1894000000}}}}`
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(input)))
@@ -593,21 +607,20 @@ func TestHandleCodexOutput_ReachedTypeRateLimitReachedSchedules(t *testing.T) {
 	assert.True(t, sink.LastAutoSchedule().DueAt.Equal(time.Unix(1893456000, 0).UTC()))
 }
 
-// TestHandleCodexOutput_ReachedTypeCreditsDepletedCancels is the key carve-out:
-// a credit-depletion block does NOT reset on the rolling-window timer, so even at
-// 100% usage it must cancel rather than schedule a doomed-to-re-hit resume.
+// TestHandleCodexOutput_ReachedTypeCreditsDepletedCancels verifies that credit depletion has no rolling-window reset.
+// Cancel automatic resume even at 100% usage because another timed attempt cannot restore those credits.
 func TestHandleCodexOutput_ReachedTypeCreditsDepletedCancels(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
 	input := `{"method":"account/rateLimits/updated","params":{"rateLimits":{"rateLimitReachedType":"workspace_owner_credits_depleted","primary":{"usedPercent":100,"windowDurationMins":300,"resetsAt":1893456000}}}}`
 	handleCodexOutput(a, providerkit.ParseLine([]byte(input)))
 
 	assert.Equal(t, 0, sink.AutoScheduleCount(), "credit depletion must not schedule an auto-continue")
 	require.Equal(t, 1, sink.AutoCancelCount())
-	assert.Equal(t, agent.AutoContinueReasonRateLimit, sink.LastAutoCancel())
+	assert.Equal(t, agentapi.AutoContinueReasonRateLimit, sink.LastAutoCancel())
 	require.Equal(t, 1, sink.SessionInfoCount())
 	rateLimits, ok := sink.LastSessionInfo()["rate_limits"].(map[string]interface{})
 	require.True(t, ok)
@@ -619,13 +632,13 @@ func TestHandleCodexOutput_ReachedTypeCreditsDepletedCancels(t *testing.T) {
 	assert.Equal(t, "exceeded", accountBlock["status"])
 }
 
-// TestHandleCodexOutput_ReachedTypeUsageLimitReachedCancels verifies a usage cap
-// (admin-set, not time-windowed) is treated like credit depletion: no resume.
+// TestHandleCodexOutput_ReachedTypeUsageLimitReachedCancels verifies an administrator's usage cap without a timed reset.
+// As with credit depletion, schedule no resume.
 func TestHandleCodexOutput_ReachedTypeUsageLimitReachedCancels(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
 	input := `{"method":"account/rateLimits/updated","params":{"rateLimits":{"rateLimitReachedType":"workspace_member_usage_limit_reached","primary":{"usedPercent":100,"windowDurationMins":300,"resetsAt":1893456000}}}}`
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(input)))
@@ -634,15 +647,13 @@ func TestHandleCodexOutput_ReachedTypeUsageLimitReachedCancels(t *testing.T) {
 	require.Equal(t, 1, sink.AutoCancelCount())
 }
 
-// TestHandleCodexOutput_ReachedTypeRoundingElevatesAndSchedules covers the case
-// where the authoritative reached-type fires but integer-rounded usedPercent has
-// not ticked to 100. The most-utilized window must both bind the resume time and
-// surface as "exceeded" in the popover broadcast.
+// TestHandleCodexOutput_ReachedTypeRoundingElevatesAndSchedules covers a confirmed native rate limit while rounded usedPercent remains below 100.
+// Use the window with highest usage to determine resume time and mark that window exceeded in the popover broadcast.
 func TestHandleCodexOutput_ReachedTypeRoundingElevatesAndSchedules(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
 	input := `{"method":"account/rateLimits/updated","params":{"rateLimits":{"rateLimitReachedType":"rate_limit_reached","primary":{"usedPercent":99,"windowDurationMins":300,"resetsAt":1893456000},"secondary":{"usedPercent":20,"windowDurationMins":10080,"resetsAt":1894000000}}}}`
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(input)))
@@ -661,19 +672,17 @@ func TestHandleCodexOutput_ReachedTypeRoundingElevatesAndSchedules(t *testing.T)
 	assert.Equal(t, "exceeded", primary["status"], "binding window must show as exceeded despite 99%%")
 }
 
-// TestHandleCodexOutput_ReachedTypeBindingWindowMissingResetFallsBack covers a
-// time-windowed block whose most-utilized (binding) window carries NO resetsAt
-// while a sibling window does. The resume must fall back to the sibling's reset
-// rather than cancel and strand a block that WILL lift on the rolling-window timer.
+// TestHandleCodexOutput_ReachedTypeBindingWindowMissingResetFallsBack covers a timed block whose highest-usage window omits resetsAt while another window supplies it.
+// Use the other window's reset instead of cancelling resume for a limit that still resets on its timer.
 func TestHandleCodexOutput_ReachedTypeBindingWindowMissingResetFallsBack(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
-	// primary (five_hour) is the most-utilized window (binds the resume) but reports
-	// no resetsAt; secondary (seven_day) carries one. Before the fallback the nil
-	// binding reset cancelled the resume entirely.
+	// primary, the five_hour window, has highest usage but no resetsAt.
+	// secondary, the seven_day window, supplies a reset.
+	// The preceding implementation cancelled resume when the selected window's reset was absent.
 	input := `{"method":"account/rateLimits/updated","params":{"rateLimits":{"rateLimitReachedType":"rate_limit_reached","primary":{"usedPercent":99,"windowDurationMins":300},"secondary":{"usedPercent":20,"windowDurationMins":10080,"resetsAt":1894000000}}}}`
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(input)))
 
@@ -683,9 +692,8 @@ func TestHandleCodexOutput_ReachedTypeBindingWindowMissingResetFallsBack(t *test
 		"resume falls back to the latest available window reset")
 }
 
-// TestSummarizeCodexRateLimits_ResumeFallsBackToLatestReset exercises the pure
-// summarizer's elevate + resume edges directly (no agent), covering the
-// binding-window-without-reset fallback that the handler test drives end to end.
+// TestSummarizeCodexRateLimits_ResumeFallsBackToLatestReset directly exercises status elevation and resume selection without an agent.
+// It covers the missing selected-window reset that the handler test exercises through output handling.
 func TestSummarizeCodexRateLimits_ResumeFallsBackToLatestReset(t *testing.T) {
 	t.Parallel()
 
@@ -704,16 +712,15 @@ func TestSummarizeCodexRateLimits_ResumeFallsBackToLatestReset(t *testing.T) {
 	require.NotNil(t, resume, "must resume via the sibling reset, not cancel")
 	assert.True(t, resume.Equal(time.Unix(resetSecondary, 0).UTC()))
 
-	// The rounding elevate still surfaces the most-utilized window as exceeded.
+	// The rounded-limit correction still marks the highest-usage window exceeded.
 	five, ok := s.rateLimits["five_hour"].(map[string]interface{})
 	require.True(t, ok)
 	assert.Equal(t, "exceeded", five["status"])
 }
 
-// TestSummarizeCodexRateLimits_ExceededWindowGatesElevate locks the elevate gate to
-// the per-window status (any window at >=100% suppresses the elevate), matching the
-// frontend replay path so the popover and the live broadcast can't disagree. The
-// already-exceeded window keeps its status; a low sibling is never lifted.
+// TestSummarizeCodexRateLimits_ExceededWindowPreventsElevation verifies that any window at or above 100% suppresses additional elevation.
+// The frontend replay applies the same rule, keeping its popover consistent with live broadcasts.
+// Preserve the already-exceeded window's status and never raise a lower-usage sibling's status.
 func TestSummarizeCodexRateLimits_ExceededWindowGatesElevate(t *testing.T) {
 	t.Parallel()
 
@@ -735,14 +742,14 @@ func TestHandleCodexOutput_TurnFailedServerOverloadedSchedulesResume(t *testing.
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	ag := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	ag := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
 	input := `{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"019d8b39-6599-7081-8901-53f80c6c56b7","items":[],"status":"failed","error":{"message":"Selected model is at capacity. Please try a different model.","codexErrorInfo":"serverOverloaded","additionalDetails":null}}}}`
 	handleCodexOutput(ag, providerkit.ParseLine([]byte(input)))
 
 	require.Equal(t, 1, sink.AutoScheduleCount())
 	schedule := sink.LastAutoSchedule()
-	require.Equal(t, agent.AutoContinueReasonAPIError, schedule.Reason)
+	require.Equal(t, agentapi.AutoContinueReasonAPIError, schedule.Reason)
 	require.False(t, schedule.DueAt.IsZero())
 	require.NotEmpty(t, schedule.SourcePayload)
 }
@@ -751,20 +758,20 @@ func TestHandleCodexOutput_TurnFailedNonOverloadedCancelsAPIErrorResume(t *testi
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
 	input := `{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","items":[],"status":"failed","error":{"message":"Something else failed","codexErrorInfo":"invalidRequest","additionalDetails":null}}}}`
 	handleCodexOutput(a, providerkit.ParseLine([]byte(input)))
 
 	require.Equal(t, 1, sink.AutoCancelCount())
-	require.Equal(t, agent.AutoContinueReasonAPIError, sink.LastAutoCancel())
+	require.Equal(t, agentapi.AutoContinueReasonAPIError, sink.LastAutoCancel())
 }
 
 func TestHandleCodexOutput_TurnCompletedFailedRetryableSchedulesAPIError(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	a.threadID = "main-thread"
 
 	input := `{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"failed","items":[],"error":{"message":"stream disconnected before completion: An error occurred while processing your request.","codexErrorInfo":"other","additionalDetails":null}}}}`
@@ -773,7 +780,7 @@ func TestHandleCodexOutput_TurnCompletedFailedRetryableSchedulesAPIError(t *test
 	require.Equal(t, 1, sink.MessageCount())
 	require.Equal(t, 1, sink.AutoScheduleCount())
 	schedule := sink.LastAutoSchedule()
-	require.Equal(t, agent.AutoContinueReasonAPIError, schedule.Reason)
+	require.Equal(t, agentapi.AutoContinueReasonAPIError, schedule.Reason)
 	require.Equal(t, string(sink.Messages()[0].Content), string(schedule.SourcePayload))
 	require.Equal(t, 0, sink.AutoCancelCount())
 }
@@ -806,7 +813,7 @@ func TestHandleCodexOutput_TurnCompletedFailedNonRetryableCancelsAPIError(t *tes
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	a.threadID = "main-thread"
 
 	input := `{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"failed","items":[],"error":{"message":"Request was aborted by the user.","codexErrorInfo":"other","additionalDetails":null}}}}`
@@ -814,14 +821,14 @@ func TestHandleCodexOutput_TurnCompletedFailedNonRetryableCancelsAPIError(t *tes
 
 	require.Equal(t, 0, sink.AutoScheduleCount())
 	require.Equal(t, 1, sink.AutoCancelCount())
-	require.Equal(t, agent.AutoContinueReasonAPIError, sink.LastAutoCancel())
+	require.Equal(t, agentapi.AutoContinueReasonAPIError, sink.LastAutoCancel())
 }
 
 func TestHandleCodexOutput_TurnCompletedSuccessCancelsAPIError(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	a.threadID = "main-thread"
 
 	input := `{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"completed","items":[],"error":null}}}`
@@ -829,19 +836,20 @@ func TestHandleCodexOutput_TurnCompletedSuccessCancelsAPIError(t *testing.T) {
 
 	require.Equal(t, 0, sink.AutoScheduleCount())
 	require.Equal(t, 1, sink.AutoCancelCount())
-	require.Equal(t, agent.AutoContinueReasonAPIError, sink.LastAutoCancel())
+	require.Equal(t, agentapi.AutoContinueReasonAPIError, sink.LastAutoCancel())
 }
 
-// Current Codex models select Multi-Agent V2. That protocol does not emit a
-// spawnAgent collab item. The parent receives a subAgentActivity pair first,
-// then the child thread's own lifecycle, then a completed activity pair.
-// Replaying that exact order must create one readable child, keep its output
-// out of the parent transcript, and close its registry row.
+// Current Codex models use Multi-Agent V2 without a spawnAgent collaboration item.
+// The parent first receives subAgentActivity, followed by the child's lifecycle and a completed activity pair.
+// Replay that order and require these results:
+//   - Create one readable child transcript.
+//   - Keep child output outside the parent transcript.
+//   - Close the child registry row.
 func TestHandleCodexOutput_MultiAgentV2LifecycleOwnsTheChildTranscript(t *testing.T) {
 	t.Parallel()
 
 	sink := &recordingCodexEnsureSink{Sink: &agenttest.Sink{}}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
 	activityStarted := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"call-spawn","kind":"started","agentThreadId":"child-thread","agentPath":"/root/probe_child"}}}`
 	activityStartedCompleted := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"call-spawn","kind":"started","agentThreadId":"child-thread","agentPath":"/root/probe_child"}}}`
@@ -887,14 +895,14 @@ func TestHandleCodexOutput_MultiAgentV2LifecycleOwnsTheChildTranscript(t *testin
 
 	rows = sink.BackgroundTasks()
 	require.Len(t, rows, 1)
-	assert.Equal(t, bgtask.StatusCompleted, rows[0].Status)
+	assert.Equal(t, bgtask.StatusSucceeded, rows[0].Status)
 }
 
 func TestCodexChildRouteReusesTheResolvedSink(t *testing.T) {
 	t.Parallel()
 
 	sink := &recordingCodexEnsureSink{Sink: &agenttest.Sink{}}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"call-spawn","kind":"started","agentThreadId":"child-thread","agentPath":"/root/probe_child"}}}`)))
 	sink.childSinkCalls = 0
 
@@ -916,7 +924,7 @@ func TestHandleCodexOutput_MultiAgentV2DoesNotRegisterTheRootPath(t *testing.T) 
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"item/completed","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"root-call","kind":"started","agentThreadId":"main-thread","agentPath":"/root"}}}`)))
 
 	assert.Empty(t, sink.BackgroundTasks(), "the canonical root path is the primary agent, not a subagent")
@@ -927,7 +935,7 @@ func TestHandleCodexOutput_MultiAgentV2FailedTurnClosesWithoutAnActivity(t *test
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"call-spawn","kind":"started","agentThreadId":"child-thread","agentPath":"/root/failing_child"}}}`)))
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"turn/started","params":{"threadId":"child-thread","turn":{"id":"child-turn"}}}`)))
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"turn/completed","params":{"threadId":"child-thread","turn":{"id":"child-turn","status":"failed","items":[],"error":{"message":"child failed"}}}}`)))
@@ -945,14 +953,14 @@ func TestHandleCodexOutput_MultiAgentV2CompletedActivityClosesWithoutATurnEnd(t 
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"call-spawn","kind":"started","agentThreadId":"child-thread","agentPath":"/root/completing_child"}}}`)))
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"turn/started","params":{"threadId":"child-thread","turn":{"id":"child-turn"}}}`)))
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"subagent-completed-child-turn","kind":"completed","agentThreadId":"child-thread","agentPath":"/root/completing_child"}}}`)))
 
 	rows := sink.BackgroundTasks()
 	require.Len(t, rows, 1)
-	assert.Equal(t, bgtask.StatusCompleted, rows[0].Status)
+	assert.Equal(t, bgtask.StatusSucceeded, rows[0].Status)
 	assert.Empty(t, agent.childTurnID("child-thread"), "the final activity clears steering state")
 	child := sink.Child("child-of-call-spawn")
 	assert.Equal(t, []bool{true, false}, child.TurnActives())
@@ -965,7 +973,7 @@ func TestHandleCodexOutput_MultiAgentV2DuplicateCompletionRetriesARegistryFailur
 		Sink:          &agenttest.Sink{},
 		closeFailures: 1,
 	}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	started := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"call-spawn","kind":"started","agentThreadId":"child-thread","agentPath":"/root/retry_child"}}}`
 	completed := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"child-completed","kind":"completed","agentThreadId":"child-thread","agentPath":"/root/retry_child"}}}`
 
@@ -980,15 +988,49 @@ func TestHandleCodexOutput_MultiAgentV2DuplicateCompletionRetriesARegistryFailur
 	_, status, found, err = sink.LookupBackgroundTask("child-thread")
 	require.NoError(t, err)
 	require.True(t, found)
-	assert.Equal(t, bgtask.StatusCompleted, status, "the duplicate completion retries the close")
+	assert.Equal(t, bgtask.StatusSucceeded, status, "the duplicate completion retries the close")
 	assert.Equal(t, 2, sink.closeAttempts)
+}
+
+func TestHandleCodexOutput_MultiAgentV2CompletionRetryKeepsTheFailedOutcome(t *testing.T) {
+	t.Parallel()
+
+	sink := &transientCodexCloseFailureSink{
+		Sink:          &agenttest.Sink{},
+		closeFailures: 1,
+	}
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"call-spawn","kind":"started","agentThreadId":"child-thread","agentPath":"/root/failing_child"}}}`)))
+	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"turn/started","params":{"threadId":"child-thread","turn":{"id":"child-turn"}}}`)))
+	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"turn/completed","params":{"threadId":"child-thread","turn":{"id":"child-turn","status":"failed","items":[],"error":{"message":"child failed"}}}}`)))
+
+	_, status, found, err := sink.LookupBackgroundTask("child-thread")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, bgtask.StatusRunning, status, "the failed first close leaves the row open")
+	require.Equal(t, 1, sink.closeAttempts)
+	child := sink.Child("child-of-call-spawn")
+	beforeRetry := child.Messages()
+	require.Len(t, beforeRetry, 1)
+	require.True(t, beforeRetry[0].TurnEnd)
+
+	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"child-completed","kind":"completed","agentThreadId":"child-thread","agentPath":"/root/failing_child"}}}`)))
+
+	_, status, found, err = sink.LookupBackgroundTask("child-thread")
+	require.NoError(t, err)
+	require.True(t, found)
+	assert.Equal(t, bgtask.StatusFailed, status, "the completed activity must preserve the failed child outcome")
+	assert.Equal(t, 2, sink.closeAttempts)
+	assert.Equal(t, beforeRetry, child.Messages(), "the registry retry must not repeat transcript finalization")
+	assert.Equal(t, []bool{true, false}, child.TurnActives())
+	assert.Len(t, sink.BackgroundTasks(), 1)
 }
 
 func TestHandleCodexOutput_MultiAgentV2LateDuplicateStartDoesNotReviveCompletedRun(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	started := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"spawn-call","kind":"started","agentThreadId":"child-thread","agentPath":"/root/idempotent_child"}}}`
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(started)))
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"turn/completed","params":{"threadId":"child-thread","turn":{"id":"child-turn","status":"completed","items":[],"error":null}}}`)))
@@ -998,7 +1040,7 @@ func TestHandleCodexOutput_MultiAgentV2LateDuplicateStartDoesNotReviveCompletedR
 	_, status, found, err := sink.LookupBackgroundTask("child-thread")
 	require.NoError(t, err)
 	require.True(t, found)
-	assert.Equal(t, bgtask.StatusCompleted, status)
+	assert.Equal(t, bgtask.StatusSucceeded, status)
 	assert.Empty(t, sink.RevivedTasks(), "a duplicate spawn activity cannot start a second run")
 }
 
@@ -1009,7 +1051,7 @@ func TestHandleCodexOutput_MultiAgentV2ReplaysChildItemsAfterRouteRecovery(t *te
 		Sink:           &agenttest.Sink{},
 		ensureFailures: 2,
 	}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	started := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"call-spawn","kind":"started","agentThreadId":"child-thread","agentPath":"/root/recovered_child"}}}`
 	childAnswer := `{"method":"item/completed","params":{"threadId":"child-thread","turnId":"child-turn","item":{"type":"agentMessage","id":"child-message","text":"RECOVERED_CHILD_DONE","phase":"final_answer"}}}`
 
@@ -1029,7 +1071,7 @@ func TestHandleCodexOutput_MultiAgentV2CompletionBeforeStartStillClosesTheRun(t 
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	completed := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"completion-call","kind":"completed","agentThreadId":"child-thread","agentPath":"/root/reordered_child"}}}`
 	started := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"spawn-call","kind":"started","agentThreadId":"child-thread","agentPath":"/root/reordered_child"}}}`
 
@@ -1038,7 +1080,7 @@ func TestHandleCodexOutput_MultiAgentV2CompletionBeforeStartStillClosesTheRun(t 
 
 	rows := sink.BackgroundTasks()
 	require.Len(t, rows, 1)
-	assert.Equal(t, bgtask.StatusCompleted, rows[0].Status,
+	assert.Equal(t, bgtask.StatusSucceeded, rows[0].Status,
 		"the authoritative start must apply a completion that arrived first")
 	assert.Equal(t, "child-of-spawn-call", rows[0].ChildAgentID)
 }
@@ -1047,7 +1089,7 @@ func TestHandleCodexOutput_MultiAgentV2StartOwnsIdentityAfterEarlierInteraction(
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	interacted := `{"method":"item/completed","params":{"threadId":"unrelated-thread","turnId":"other-turn","item":{"type":"subAgentActivity","id":"interaction-call","kind":"interacted","agentThreadId":"child-thread","agentPath":"/root/identity_child"}}}`
 	started := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"spawn-call","kind":"started","agentThreadId":"child-thread","agentPath":"/root/identity_child"}}}`
 
@@ -1072,7 +1114,7 @@ func TestHandleCodexOutput_MultiAgentV2CompletionClearsTurnWhenRouteRecoveryFail
 		Sink:           &agenttest.Sink{},
 		ensureFailures: 3,
 	}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	started := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"spawn-call","kind":"started","agentThreadId":"child-thread","agentPath":"/root/failing_route"}}}`
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(started)))
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"turn/started","params":{"threadId":"child-thread","turn":{"id":"child-turn"}}}`)))
@@ -1086,7 +1128,7 @@ func TestHandleCodexOutput_NestedV2CollaborationToolUsesTheChildTranscript(t *te
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"item/completed","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"spawn-parent","kind":"started","agentThreadId":"parent-thread","agentPath":"/root/parent"}}}`)))
 	waitStarted := `{"method":"item/started","params":{"threadId":"parent-thread","turnId":"parent-turn","item":{"type":"collabAgentToolCall","id":"wait-call","tool":"wait","status":"inProgress","senderThreadId":"parent-thread","receiverThreadIds":[],"prompt":null,"agentsStates":{}}}}`
 	waitCompleted := `{"method":"item/completed","params":{"threadId":"parent-thread","turnId":"parent-turn","item":{"type":"collabAgentToolCall","id":"wait-call","tool":"wait","status":"completed","senderThreadId":"parent-thread","receiverThreadIds":[],"prompt":null,"agentsStates":{}}}}`
@@ -1104,7 +1146,7 @@ func TestHandleCodexOutput_UnresolvedChildGenerationHasAMemoryCap(t *testing.T) 
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	chunk := strings.Repeat("x", 768<<10)
 	for range 2 {
 		raw, err := json.Marshal(map[string]any{
@@ -1129,7 +1171,7 @@ func TestCodex_ReplayReportsAFullPendingQueueWithNoRetainedEvent(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"item/completed","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"spawn-call","kind":"started","agentThreadId":"child-thread","agentPath":"/root/limited_child"}}}`)))
 	route, routed := agent.lookupCodexChildRoute("child-thread")
 	require.True(t, routed)
@@ -1149,7 +1191,7 @@ func TestHandleCodexOutput_MultiAgentV2ReusesTheChildTranscript(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	started := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"call-spawn","kind":"started","agentThreadId":"child-thread","agentPath":"/root/reuse_child"}}}`
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(started)))
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"turn/started","params":{"threadId":"child-thread","turn":{"id":"child-turn-1"}}}`)))
@@ -1173,14 +1215,14 @@ func TestHandleCodexOutput_MultiAgentV2ReusesTheChildTranscript(t *testing.T) {
 	rows := sink.BackgroundTasks()
 	require.Len(t, rows, 1)
 	assert.Equal(t, "child-of-call-spawn", rows[0].ChildAgentID)
-	assert.Equal(t, bgtask.StatusCompleted, rows[0].Status)
+	assert.Equal(t, bgtask.StatusSucceeded, rows[0].Status)
 }
 
 func TestHandleCodexOutput_MultiAgentV2NestedChildUsesItsDirectParent(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"call-parent","kind":"started","agentThreadId":"parent-thread","agentPath":"/root/parent_child"}}}`)))
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"item/started","params":{"threadId":"parent-thread","turnId":"parent-turn","item":{"type":"subAgentActivity","id":"call-grandchild","kind":"started","agentThreadId":"grandchild-thread","agentPath":"/root/parent_child/grandchild"}}}`)))
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"item/completed","params":{"threadId":"grandchild-thread","turnId":"grandchild-turn","item":{"type":"agentMessage","id":"grandchild-message","text":"NESTED_DONE","phase":"final_answer"}}}`)))
@@ -1208,16 +1250,14 @@ func TestHandleCodexOutput_MultiAgentV2NestedChildUsesItsDirectParent(t *testing
 	assert.Contains(t, string(grandchild.Messages()[0].Content), "NESTED_DONE")
 }
 
-// A spawnAgent tool call owns NO span: the subagent's output lives in its own
-// child transcript, so a rail held open for the whole run would only push every
-// concurrent tool one column right. The row still carries the span id (the
-// frontend pairs the started and completed rows by it) and the span type (which
-// item/completed reads back).
+// A spawnAgent call owns no span because child output belongs to its separate transcript.
+// Keeping its rail through the run would move concurrent tools one additional column right.
+// The row still retains its span ID for frontend pairing and its span type for item/completed.
 func TestHandleCodexOutput_SpawnAgentStartedOpensNoSpan(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
 	input := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{}}}}`
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(input)))
@@ -1237,7 +1277,7 @@ func TestHandleCodexOutput_SpawnAgentCompletedLeavesNoSpan(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
 	started := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{}}}}`
 	completed := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{"child-1":{"status":"completed","message":"done"}}}}}`
@@ -1253,21 +1293,19 @@ func TestHandleCodexOutput_SpawnAgentCompletedLeavesNoSpan(t *testing.T) {
 	assert.Empty(t, messages[1].SpansOpenAtPersist, "and it draws no rail")
 }
 
-// A collab child that runs again after its row went final. The upsert absorbs a
-// non-final status against a final row -- deliberately, because a replayed
-// snapshot cannot prove a restart -- so without the revive the sidebar row and
-// the tab chip read "finished" for the whole second run.
+// A collaboration child can start another run after its row becomes final.
+// An upsert deliberately preserves that final state because a replayed snapshot proves no restart.
+// Explicit revival is therefore required to show the second run as active in the sidebar and tab chip.
 func TestHandleCodexOutput_ARerunCollabChildReopensItsRow(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
 	started := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{}}}}`
 	completed := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{"child-1":{"status":"completed","message":"done"}}}}}`
-	// The root resumes the finished child: item/started re-registers the receiver,
-	// which is the proof a replayed snapshot never carries. The child's own
-	// turn/started then reports it working again.
+	// The root resumes the ended child through item/started, which registers the receiver again and supplies proof absent from a replayed snapshot.
+	// The child's turn/started then reports active work.
 	resumed := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn2","item":{"type":"collabAgentToolCall","id":"call-2","tool":"resumeAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"more work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{}}}}`
 	childTurn := `{"method":"turn/started","params":{"threadId":"child-1","turn":{"id":"turn-c2"}}}`
 
@@ -1292,7 +1330,7 @@ func TestHandleCodexOutput_AReplayedRunningStateWaitsForALiveChildTurn(t *testin
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
 	started := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{}}}}`
 	completed := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{"child-1":{"status":"completed","message":"done"}}}}}`
@@ -1307,7 +1345,7 @@ func TestHandleCodexOutput_AReplayedRunningStateWaitsForALiveChildTurn(t *testin
 	assert.Empty(t, sink.RevivedTasks(), "a snapshot alone cannot prove a restart")
 	_, status, ok, _ := sink.LookupBackgroundTask("child-1")
 	require.True(t, ok)
-	assert.Equal(t, bgtask.StatusCompleted, status, "the row keeps its final status")
+	assert.Equal(t, bgtask.StatusSucceeded, status, "the row keeps its final status")
 
 	liveTurn := `{"method":"turn/started","params":{"threadId":"child-1","turn":{"id":"turn-c9"}}}`
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(liveTurn)))
@@ -1317,13 +1355,12 @@ func TestHandleCodexOutput_AReplayedRunningStateWaitsForALiveChildTurn(t *testin
 	assert.Equal(t, bgtask.StatusRunning, status)
 }
 
-// A subagent spawn that starts while an unrelated command is running draws that
-// command's rail and nothing more -- one column, not two.
+// A spawn during another active command draws only that command's rail, with one column rather than two.
 func TestHandleCodexOutput_SpawnInsideOpenCommandDrawsOneColumn(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
 	cmdStarted := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"commandExecution","id":"cmd-1","status":"inProgress","command":"ls","cwd":"/tmp","processId":"123","commandActions":[]}}}`
 	spawnStarted := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{}}}}`
@@ -1345,7 +1382,7 @@ func TestHandleCodexOutput_WaitIsAFlatToolSpan(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
 	spawnStarted := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{}}}}`
 	waitStarted := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-2","tool":"wait","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{}}}}`
@@ -1361,8 +1398,8 @@ func TestHandleCodexOutput_WaitIsAFlatToolSpan(t *testing.T) {
 	require.Equal(t, "", messages[1].ParentSpanID, "wait started is flat")
 	require.Equal(t, "", messages[2].ParentSpanID, "wait completed is flat")
 
-	// Only the spawn loses its span. wait blocks on the subagent but stays an
-	// ordinary tool span, so it opens one and closes it at completion.
+	// Only the spawn releases its span.
+	// wait blocks for the child but retains an ordinary tool span until its own completion.
 	open := sink.OpenSpans()
 	require.Len(t, open, 1, "the spawn opens nothing; wait opens one span")
 	assert.Equal(t, "call-2", open[0].SpanID)
@@ -1377,7 +1414,7 @@ func TestHandleCodexOutput_SubagentCommandRoutesToChildTranscript(t *testing.T) 
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
 	spawnStarted := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{}}}}`
 	cmdStarted := `{"method":"item/started","params":{"threadId":"child-1","turnId":"turn2","item":{"type":"commandExecution","id":"cmd-1","status":"inProgress","command":"ls","cwd":"/tmp","processId":"123","commandActions":[]}}}`
@@ -1401,7 +1438,7 @@ func TestHandleCodexOutput_SpawnAgentCompletedClosesSpawnSpan(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
 	// Start the spawn span first.
 	started := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{}}}}`
@@ -1410,8 +1447,8 @@ func TestHandleCodexOutput_SpawnAgentCompletedClosesSpawnSpan(t *testing.T) {
 	completed := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{"child-1":{"status":"running","message":null}}}}}`
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(completed)))
 
-	// The spawn span CLOSES at spawn completion (children route to their own
-	// transcripts; they no longer nest under it).
+	// The spawn span closes when the spawn call completes.
+	// Child output belongs to its separate transcript and does not nest under that span.
 	require.Contains(t, sink.ClosedSpans(), "call-1")
 }
 
@@ -1419,7 +1456,7 @@ func TestHandleCodexOutput_SpawnAgentCompletedRegistersLateReceiverThreads(t *te
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
 	started := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":[],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{}}}}`
 	completed := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{"child-1":{"status":"running","message":null}}}}}`
@@ -1436,8 +1473,7 @@ func TestHandleCodexOutput_SpawnAgentCompletedRegistersLateReceiverThreads(t *te
 	child := sink.Child("child-of-call-1")
 	childMessages := child.Messages()
 	require.Len(t, childMessages, 2, "child transcript opens on the spawn prompt, then the command")
-	// The transcript opens on the instruction the subagent was given, so the tab
-	// shows what was asked rather than starting mid-work.
+	// The child transcript opens on its instruction so the reader sees the assigned task before the child's reply.
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, childMessages[0].Source)
 	assert.JSONEq(t, `{"content":"do work"}`, string(childMessages[0].Content))
 	assert.Equal(t, "cmd-1", childMessages[1].SpanID, "then the child's own command")
@@ -1447,16 +1483,19 @@ func TestHandleCodexOutput_WaitCompletedClosesFinalSubagentSpan(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
 	started := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-2","tool":"wait","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{}}}}`
 	completed := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-2","tool":"wait","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{"child-1":{"status":"completed","message":"done"}}}}}`
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(started)))
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(completed)))
 
-	// wait is a flat tool span that CLOSES at completion (like every other collab
-	// tool). The old code ran CloseSpan only for `collab.Tool == "spawnAgent"`,
-	// leaving wait/sendInput/resumeAgent/closeAgent spans open until turn reset.
+	// wait closes its ordinary tool span at completion, as every collaboration tool does.
+	// The preceding code closed only spawnAgent and left these spans open until turn reset:
+	//   - wait.
+	//   - sendInput.
+	//   - resumeAgent.
+	//   - closeAgent.
 	require.Contains(t, sink.ClosedSpans(), "call-2", "wait span closes at completion")
 }
 
@@ -1464,11 +1503,11 @@ func TestHandleCodexOutput_WaitCompletedDoesNotAffectSpawnSpan(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
-	// A wait completion with a non-final agent state must close the WAIT
-	// tool span (its own lifecycle) but must NOT touch a spawn span. There is no
-	// spawn here, so ClosedSpans contains only the wait span.
+	// A wait result closes its own tool span even when the reported child state remains non-final.
+	// It must close no spawn span.
+	// This fixture opens no spawn span, so ClosedSpans contains only wait.
 	input := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-2","tool":"wait","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1","child-2"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{"child-1":{"status":"running","message":null}}}}}`
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(input)))
 
@@ -1482,7 +1521,7 @@ func TestHandleCodexOutput_CloseAgentCompletedClosesSubagentSpan(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
 	started := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-3","tool":"closeAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{}}}}`
 	completed := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-3","tool":"closeAgent","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{"child-1":{"status":"shutdown","message":null}}}}}`
@@ -1496,15 +1535,15 @@ func TestHandleCodexOutput_WaitCompletedClosesOnlyFinalReceivers(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
 	started := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-4","tool":"wait","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1","child-2","child-3"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{}}}}`
 	completed := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-4","tool":"wait","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1","child-2","child-3"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{"child-1":{"status":"completed","message":"done"},"child-2":{"status":"running","message":null},"child-3":{"status":"notFound","message":null}}}}}`
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(started)))
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(completed)))
 
-	// The collab span closes at completion regardless of which receivers are
-	// finished -- the span lifecycle is about the tool_call, not the children.
+	// Close the collaboration tool span when that call completes, regardless of receiver state.
+	// Its lifecycle belongs to the tool call independently of the children.
 	require.Contains(t, sink.ClosedSpans(), "call-4", "wait span closes at completion")
 }
 
@@ -1512,7 +1551,7 @@ func TestHandleCodexOutput_WaitIsFlatNoDrain(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
 	spawnStarted := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1","child-2"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{}}}}`
 	waitCompletedFirst := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-2","tool":"wait","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":null,"model":null,"reasoningEffort":null,"agentsStates":{"child-1":{"status":"completed","message":"done"}}}}}`
@@ -1534,14 +1573,14 @@ func TestHandleCodexOutput_CommandExecutionOutputDelta(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
 	input := `{"method":"item/commandExecution/outputDelta","params":{"itemId":"cmd-1","delta":"hello\n","threadId":"t1","turnId":"turn1"}}`
 	handleCodexOutput(a, providerkit.ParseLine([]byte(input)))
 
 	updates := sink.ProgressUpdates()
 	require.Len(t, updates, 1)
-	require.Equal(t, agent.ProgressOutputDelta, updates[0].Operation)
+	require.Equal(t, agentapi.ProgressOutputDelta, updates[0].Operation)
 	require.Equal(t, "cmd-1", updates[0].ScopeID)
 	require.Equal(t, int64(6), updates[0].Value)
 	require.Equal(t, 0, sink.MessageCount())
@@ -1551,7 +1590,7 @@ func TestHandleCodexOutput_ReasoningPersistFailureKeepsLiveStream(t *testing.T) 
 	t.Parallel()
 
 	sink := &agenttest.Sink{PersistErr: fmt.Errorf("database unavailable")}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	key := codexReasoningKey("main-thread", "reason-1")
 	agent.reasoningStreamKind = map[string]string{key: codexReasoningKindSummary}
 
@@ -1592,7 +1631,7 @@ func TestHandleCodexOutput_EmptyReasoningItemsDoNotPersist(t *testing.T) {
 			t.Parallel()
 
 			sink := &agenttest.Sink{}
-			agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+			agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 			agent.threadID = "main-thread"
 
 			handleCodexOutput(agent, providerkit.ParseLine([]byte(tc.input)))
@@ -1612,7 +1651,7 @@ func TestHandleCodexOutput_ReasoningItemsWithVisibleTextPersist(t *testing.T) {
 		`{"type":"reasoning","id":"reason-1","summary":[],"content":[],"text":"legacy text"}`,
 	} {
 		sink := &agenttest.Sink{}
-		agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+		agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 		agent.threadID = "main-thread"
 
 		handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn-1","item":`+item+`}}`)))
@@ -1625,21 +1664,20 @@ func TestHandleCodexOutput_FileChangeOutputDelta(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	ag := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	ag := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
 	input := `{"method":"item/fileChange/outputDelta","params":{"itemId":"fc-1","delta":"diff --git a.txt b.txt\n","threadId":"t1","turnId":"turn1"}}`
 	handleCodexOutput(ag, providerkit.ParseLine([]byte(input)))
 
 	updates := sink.ProgressUpdates()
 	require.Len(t, updates, 1)
-	require.Equal(t, agent.OutputDeltaProgress("fc-1", 23), updates[0])
+	require.Equal(t, agentapi.OutputDeltaProgress("fc-1", 23), updates[0])
 	require.Equal(t, 0, sink.MessageCount())
 }
 
-// Both image items are ordinary tool items and take the ordinary tool path.
-// They used to fall to handleItemCompleted's default branch instead: the completed
-// row persisted with a span id that nothing had opened and nothing then closed,
-// so the transcript drew a rail that stayed open for the rest of the turn.
+// Both image item types use the ordinary tool path.
+// The preceding handleItemCompleted default persisted their results without opening or closing the corresponding span.
+// The transcript then displayed a rail that remained open through the turn.
 func TestHandleCodexOutput_ImageItemsOpenAndCloseASpan(t *testing.T) {
 	t.Parallel()
 
@@ -1668,7 +1706,7 @@ func TestHandleCodexOutput_ImageItemsOpenAndCloseASpan(t *testing.T) {
 			t.Parallel()
 
 			sink := &agenttest.Sink{}
-			agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+			agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
 			handleCodexOutput(agent, providerkit.ParseLine([]byte(tc.started)))
 			handleCodexOutput(agent, providerkit.ParseLine([]byte(tc.completed)))
@@ -1683,8 +1721,8 @@ func TestHandleCodexOutput_ImageItemsOpenAndCloseASpan(t *testing.T) {
 			require.Len(t, messages, 2)
 			assert.False(t, messages[0].Closing)
 			assert.True(t, messages[1].Closing)
-			// The tool_use row persists BEFORE its own span opens, and the
-			// result row WHILE it is open -- that is what draws the connector.
+			// Persist tool_use before opening its span and persist the result while that span remains open.
+			// That order produces the correct connector.
 			assert.Empty(t, messages[0].SpansOpenAtPersist)
 			require.Len(t, messages[1].SpansOpenAtPersist, 1)
 			assert.Equal(t, tc.id, messages[1].SpansOpenAtPersist[0].SpanID)
@@ -1698,9 +1736,9 @@ func TestHandleCodexOutput_ApprovalWithoutID(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.ControlSink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
-	// Missing "id" field — should be ignored (logged as warning).
+	// Ignore a missing id and log the warning.
 	input := `{"method":"item/tool/requestUserInput","params":{"questions":[]}}`
 
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(input)))
@@ -1712,7 +1750,7 @@ func TestHandleCodexOutput_TokenUsageUpdatedBroadcastsContextUsageWithoutPersist
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
 	input := `{"method":"thread/tokenUsage/updated","params":{"threadId":"thread-1","turnId":"turn-1","tokenUsage":{"total":{"totalTokens":200,"inputTokens":100,"cachedInputTokens":25,"outputTokens":50,"reasoningOutputTokens":9},"last":{"totalTokens":23,"inputTokens":10,"cachedInputTokens":5,"outputTokens":7,"reasoningOutputTokens":1},"modelContextWindow":4096}}}`
 	agent.threadID = "thread-1"
@@ -1738,7 +1776,7 @@ func TestHandleCodexOutput_ThreadStatusChangedDoesNotReachTheTranscript(t *testi
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	agent.threadID = "thread-1"
 
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"thread/status/changed","params":{"threadId":"thread-1","status":{"type":"active","activeFlags":["waitingOnApproval"]}}}`)))
@@ -1757,7 +1795,7 @@ func TestHandleCodexOutput_SuccessfulHookLifecycleDoesNotReachTheTranscript(t *t
 		`{"method":"hook/completed","params":{"threadId":"thread-1","turnId":"turn-1","run":{"id":"hook-1","status":"completed"}}}`,
 	} {
 		sink := &agenttest.Sink{}
-		agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+		agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 		agent.threadID = "thread-1"
 
 		handleCodexOutput(agent, providerkit.ParseLine([]byte(input)))
@@ -1772,7 +1810,7 @@ func TestHandleCodexOutput_UnsuccessfulHookCompletionPersists(t *testing.T) {
 
 	for _, status := range []string{"failed", "blocked", "stopped"} {
 		sink := &agenttest.Sink{}
-		agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+		agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 		agent.threadID = "thread-1"
 		input := fmt.Sprintf(`{"method":"hook/completed","params":{"threadId":"thread-1","turnId":"turn-1","run":{"id":"hook-1","status":%q,"statusMessage":"hook did not complete"}}}`, status)
 
@@ -1784,14 +1822,13 @@ func TestHandleCodexOutput_UnsuccessfulHookCompletionPersists(t *testing.T) {
 	}
 }
 
-// Codex reports a cache WRITE beside the cache read, and it reached nothing: the
-// breakdown showed a flat zero for it on every Codex turn while every other provider
-// reported one.
+// Codex reports cache writes as well as reads.
+// The preceding mapping omitted writes, so every Codex turn displayed zero cache-write usage while other providers supplied a value.
 func TestHandleCodexOutput_TokenUsageCarriesTheCacheWrite(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	agent.threadID = "thread-1"
 	input := `{"method":"thread/tokenUsage/updated","params":{"threadId":"thread-1","tokenUsage":{"last":{"totalTokens":140,"inputTokens":100,"cachedInputTokens":20,"cacheWriteInputTokens":30,"outputTokens":40,"reasoningOutputTokens":12},"modelContextWindow":4096}}}`
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(input)))
@@ -1804,13 +1841,13 @@ func TestHandleCodexOutput_TokenUsageCarriesTheCacheWrite(t *testing.T) {
 	assert.Equal(t, int64(140), usage["context_tokens"])
 }
 
-// The session's CUMULATIVE spend grows past the context window and answers a
-// different question than the live occupancy, so the gauge must never read it.
+// Cumulative session usage can exceed the context window and does not measure live occupancy.
+// The context gauge must never use that cumulative value.
 func TestHandleCodexOutput_TokenUsageIgnoresTheCumulativeTotal(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	agent.threadID = "thread-1"
 	input := `{"method":"thread/tokenUsage/updated","params":{"threadId":"thread-1","tokenUsage":{"total":{"totalTokens":999999,"inputTokens":900000,"outputTokens":99999},"last":{"totalTokens":23,"inputTokens":10,"cachedInputTokens":5,"outputTokens":7},"modelContextWindow":4096}}}`
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(input)))
@@ -1826,7 +1863,7 @@ func TestHandleCodexOutput_TokenUsageOmitsAnAbsentTotal(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	agent.threadID = "thread-1"
 	input := `{"method":"thread/tokenUsage/updated","params":{"threadId":"thread-1","tokenUsage":{"last":{"inputTokens":10,"cachedInputTokens":5,"outputTokens":7},"modelContextWindow":4096}}}`
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(input)))
@@ -1840,7 +1877,7 @@ func TestHandleCodexOutput_TokenUsageUpdatedFallsBackToModelContextWindow(t *tes
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	agent.model = "gpt-5.4"
 	agent.availableModels = codexDefaultModels
 	agent.threadID = "thread-1"
@@ -1858,7 +1895,7 @@ func TestHandleCodexOutput_TokenUsageUpdatedIgnoresSubagentThreads(t *testing.T)
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	agent.threadID = "main-thread"
 
 	input := `{"method":"thread/tokenUsage/updated","params":{"threadId":"child-thread","turnId":"turn-1","tokenUsage":{"total":{"totalTokens":200,"inputTokens":100,"cachedInputTokens":25,"outputTokens":50,"reasoningOutputTokens":9},"last":{"totalTokens":23,"inputTokens":10,"cachedInputTokens":5,"outputTokens":7,"reasoningOutputTokens":1},"modelContextWindow":4096}}}`
@@ -1872,7 +1909,7 @@ func TestHandleCodexOutput_TurnCompletedIgnoresSubagentThreads(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	agent.threadID = "main-thread"
 
 	input := `{"method":"turn/completed","params":{"threadId":"child-thread","turn":{"id":"turn-1","status":"completed","items":[],"error":null}}}`
@@ -1883,16 +1920,14 @@ func TestHandleCodexOutput_TurnCompletedIgnoresSubagentThreads(t *testing.T) {
 	require.Equal(t, 0, sink.SessionInfoCount())
 }
 
-// TestHandleCodexOutput_TurnCompletedChildPersistsChildTurnEnd verifies a
-// registered child thread's turn/completed persists a turn-end divider into the
-// CHILD transcript (mirrors the main-thread PersistTurnEnd), rather than being
-// a silent no-op. The child must be registered first via a spawnAgent
-// item/started so the route can resolve the child agent ID.
+// TestHandleCodexOutput_TurnCompletedChildPersistsChildTurnEnd verifies a registered child thread's turn/completed boundary.
+// Persist the turn-end divider in its child transcript through the same PersistTurnEnd behavior as the main thread.
+// First register the child through spawnAgent item/started so its route can resolve the child agent ID.
 func TestHandleCodexOutput_TurnCompletedChildPersistsChildTurnEnd(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	agent.threadID = "main-thread"
 
 	// Register child-1 -> call-1 in the child route (spawnAgent item/started).
@@ -1913,9 +1948,8 @@ func TestHandleCodexOutput_TurnCompletedChildPersistsChildTurnEnd(t *testing.T) 
 	}
 	assert.Equal(t, 1, turnEnds,
 		"child turn/completed must persist a turn-end divider into the child transcript")
-	// publishTurnActive covers the MAIN thread alone, so a collab child's turn
-	// is published against the CHILD's sink -- which is what the child tab's
-	// own input queue follows.
+	// publishTurnActive handles only the main thread.
+	// Publish the collaboration child's turn through its own sink, which supplies the child tab's input queue.
 	assert.Equal(t, []bool{true, false}, child.TurnActives(),
 		"the child's own turn opens and releases the child input queue")
 	assert.Equal(t, []leapmuxv1.AgentInputKind{
@@ -1928,7 +1962,7 @@ func TestHandleCodexOutput_InterruptedChildTurnPersistsBufferedText(t *testing.T
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	a.threadID = "main-thread"
 
 	spawnStarted := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","agentsStates":{}}}}`
@@ -1953,7 +1987,7 @@ func TestHandleCodexOutput_InterruptedChildTurnPersistsBufferedText(t *testing.T
 		"text":"partial child answer",
 		"completion":"interrupted"
 	}`, string(bufferedMessage))
-	assert.Equal(t, agent.ProgressSnapshot{}, child.ProgressSnapshot(),
+	assert.Equal(t, agentapi.ProgressSnapshot{}, child.ProgressSnapshot(),
 		"the completed child turn must not replay an active token count")
 }
 
@@ -1961,10 +1995,10 @@ func TestFlushCodexGenerationHonorsDiscardOutput(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newCodexAgentWithSink(agent.NewProviderServices(sink))
-	a.generationBuffer.Append("message-1", agent.AssembledMessageKindText, "restart noise", providerkit.JoinVerbatim)
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+	a.generationBuffer.Append("message-1", agentapi.AssembledMessageKindText, "restart noise", providerkit.JoinVerbatim)
 	a.DiscardOutput()
-	a.flushCodexGeneration(agent.MessageCompletionInterrupted)
+	a.flushCodexGeneration(agentapi.MessageCompletionInterrupted)
 
 	assert.Empty(t, sink.Messages())
 }
@@ -1973,10 +2007,10 @@ func TestCodexWaitMarksAnIntentionalStopAsInterrupted(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	a.SimulateExitForTest()
 	a.SetStoppedForTest(true)
-	a.generationBuffer.Append("message-1", agent.AssembledMessageKindText, "partial answer", providerkit.JoinVerbatim)
+	a.generationBuffer.Append("message-1", agentapi.AssembledMessageKindText, "partial answer", providerkit.JoinVerbatim)
 
 	require.NoError(t, a.Wait())
 	require.Len(t, sink.Messages(), 1)
@@ -1987,7 +2021,7 @@ func TestHandleCodexOutput_InterruptedTurnPersistsIncompleteCommandOutput(t *tes
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	ag := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	ag := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	ag.threadID = "main-thread"
 	handleCodexOutput(ag, providerkit.ParseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn-1","item":{"type":"commandExecution","id":"command-1","status":"inProgress","command":"printf partial"}}}`)))
 	handleCodexOutput(ag, providerkit.ParseLine([]byte(`{"method":"item/commandExecution/outputDelta","params":{"itemId":"command-1","delta":"partial output"}}`)))
@@ -1996,9 +2030,8 @@ func TestHandleCodexOutput_InterruptedTurnPersistsIncompleteCommandOutput(t *tes
 	require.GreaterOrEqual(t, sink.MessageCount(), 3)
 	result := sink.Messages()[1]
 	assert.True(t, result.Closing)
-	// The row is the agent's own item/started frame, byte for byte. The output is a
-	// run of delta events that LeapMux joined, so the joined text is recovered
-	// provider data and rides in the supplement.
+	// The row preserves the exact item/started frame.
+	// LeapMux assembles output deltas into recovered provider text and stores that text in the supplement.
 	assert.JSONEq(t, `{
 		"threadId":"main-thread",
 		"turnId":"turn-1",
@@ -2009,14 +2042,14 @@ func TestHandleCodexOutput_InterruptedTurnPersistsIncompleteCommandOutput(t *tes
 		"itemType":"commandExecution",
 		"aggregatedOutput":"partial output"
 	}`, string(result.SupplementalContent))
-	assert.Equal(t, agent.MessageCompletionInterrupted, result.Completion)
+	assert.Equal(t, agentapi.MessageCompletionInterrupted, result.Completion)
 
 	// Both halves read back as one item, so every extractor sees the output.
 	assert.JSONEq(t, `{
 		"threadId":"main-thread",
 		"turnId":"turn-1",
 		"item":{"type":"commandExecution","id":"command-1","status":"inProgress","command":"printf partial","aggregatedOutput":"partial output"}
-	}`, string(Registration().Plugin.ResolveProviderData(agent.MessageContent{
+	}`, string(Registration().Plugin.ResolveProviderData(agentapi.MessageContent{
 		Original: result.Content, Supplemental: result.SupplementalContent,
 	})))
 }
@@ -2032,7 +2065,7 @@ func TestCodexResolveProviderData_RefusesASupplementForAnotherItem(t *testing.T)
 		`{"itemId":"command-1","itemType":"commandExecution"}`,
 	} {
 		assert.JSONEq(t, string(original),
-			string(Registration().Plugin.ResolveProviderData(agent.MessageContent{
+			string(Registration().Plugin.ResolveProviderData(agentapi.MessageContent{
 				Original: original, Supplemental: []byte(supplement),
 			})), supplement)
 	}
@@ -2042,7 +2075,7 @@ func TestHandleCodexOutput_InterruptedReasoningPreservesSummaryParts(t *testing.
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	agent.threadID = "main-thread"
 	for _, raw := range []string{
 		`{"method":"item/reasoning/summaryTextDelta","params":{"threadId":"main-thread","itemId":"reason-1","summaryIndex":0,"delta":"**Verifying terminal release synchronization"}}`,
@@ -2062,7 +2095,7 @@ func TestHandleCodexOutput_DuplicateSummaryPartDoesNotAddAParagraph(t *testing.T
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	agent.threadID = "main-thread"
 	for _, raw := range []string{
 		`{"method":"item/reasoning/summaryTextDelta","params":{"threadId":"main-thread","itemId":"reason-1","summaryIndex":0,"delta":"one"}}`,
@@ -2083,7 +2116,7 @@ func TestHandleCodexOutput_KeepsReasoningTextDeltasVerbatim(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	agent.threadID = "main-thread"
 	for _, raw := range []string{
 		`{"method":"item/reasoning/textDelta","params":{"threadId":"main-thread","itemId":"reason-1","delta":"**Verifying terminal release synchronization"}}`,
@@ -2102,7 +2135,7 @@ func TestHandleCodexOutput_InterruptedReasoningPrefersLateSummary(t *testing.T) 
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	agent.threadID = "main-thread"
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"item/reasoning/textDelta","params":{"threadId":"main-thread","itemId":"reason-1","delta":"raw detail"}}`)))
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"item/reasoning/summaryTextDelta","params":{"threadId":"main-thread","itemId":"reason-1","summaryIndex":0,"delta":"summary"}}`)))
@@ -2117,21 +2150,21 @@ func TestHandleCodexOutput_InterruptedMCPItemGetsAClosingRowAndToolCount(t *test
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	a.threadID = "main-thread"
 	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","item":{"type":"mcpToolCall","id":"mcp-1","status":"inProgress","server":"docs","tool":"search"}}}`)))
 	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"completed","items":[]}}}`)))
 
 	require.GreaterOrEqual(t, sink.MessageCount(), 3)
 	assert.True(t, sink.Messages()[1].Closing)
-	assert.Equal(t, agent.MessageCompletionInterrupted, sink.Messages()[1].Completion)
+	assert.Equal(t, agentapi.MessageCompletionInterrupted, sink.Messages()[1].Completion)
 	assert.Contains(t, string(sink.Messages()[2].Metadata), `"num_tool_uses":1`)
 }
 
 func TestCodexTurnCounterPreservesOriginalBytes(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}
-	a := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	a.threadID = "main-thread"
 	a.TurnToolUses = 2
 	raw := json.RawMessage(`{"threadId":"main-thread", "turn":{"id":"turn-1","status":"completed","items":[]}, "future":9007199254740993}`)
@@ -2147,7 +2180,7 @@ func TestHandleCodexOutput_LateChildRegistrationMovesBufferedText(t *testing.T) 
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	agent.threadID = "main-thread"
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"item/agentMessage/delta","params":{"threadId":"child-1","itemId":"message-1","delta":"early child text"}}`)))
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"item/completed","params":{"threadId":"main-thread","item":{"type":"collabAgentToolCall","id":"spawn-1","tool":"spawnAgent","status":"completed","receiverThreadIds":["child-1"],"prompt":"work","agentsStates":{"child-1":{"status":"running"}}}}}`)))
@@ -2168,7 +2201,7 @@ func TestHandleCodexOutput_CompletedItemDiscardsTheIdlessDeltaFallback(t *testin
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	agent.threadID = "main-thread"
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"item/agentMessage/delta","params":{"threadId":"main-thread","delta":"complete answer"}}`)))
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"item/completed","params":{"threadId":"main-thread","item":{"type":"agentMessage","id":"message-1","text":"complete answer"}}}`)))
@@ -2190,7 +2223,7 @@ func TestHandleCodexOutput_TurnCompletedPlanModePersistsRealPlanAndPrompts(t *te
 	t.Parallel()
 
 	sink := &agenttest.ControlSink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	agent.threadID = "main-thread"
 	agent.collaborationMode = CollaborationPlan
 
@@ -2211,15 +2244,14 @@ func TestHandleCodexOutput_TurnCompletedPlanModePersistsRealPlanAndPrompts(t *te
 	require.Equal(t, 1, sink.PublishedControlCount())
 }
 
-// Two plan turns share ONE stored plan, because UpdatePlan replaces it. The card
-// is keyed by TURN, so a second plan turn leaves two cards open -- and the composer
-// renders the OLDEST, so the newer one is invisible. Approving the card the reader
-// can see would then execute the plan it never showed.
+// UpdatePlan replaces one stored plan across multiple plan turns.
+// Keying approval cards by turn formerly left two cards open, while the composer displayed only the oldest.
+// Approving that visible card could then execute the newer plan without showing it.
 func TestHandleCodexOutput_ASecondPlanPromptRetiresTheFirst(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.ControlSink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	agent.threadID = "main-thread"
 	agent.collaborationMode = CollaborationPlan
 
@@ -2238,7 +2270,7 @@ func TestHandleCodexOutput_TurnCompletedPlanModeIgnoresAssistantTextWithoutPlanI
 	t.Parallel()
 
 	sink := &agenttest.ControlSink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	agent.threadID = "main-thread"
 	agent.collaborationMode = CollaborationPlan
 
@@ -2256,7 +2288,7 @@ func TestHandleCodexOutput_TurnCompletedPlanModeWithoutRealPlanDoesNotPrompt(t *
 	t.Parallel()
 
 	sink := &agenttest.ControlSink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	agent.threadID = "main-thread"
 	agent.collaborationMode = CollaborationPlan
 
@@ -2271,7 +2303,7 @@ func TestHandleCodexOutput_TurnCompletedPlanModeWithEmptyPlanTextDoesNotPersist(
 	t.Parallel()
 
 	sink := &agenttest.ControlSink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	agent.threadID = "main-thread"
 	agent.collaborationMode = CollaborationPlan
 
@@ -2289,10 +2321,10 @@ func TestHandleCodexOutput_AgentMessageDeltaAccumulatesThinkingTokens(t *testing
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
-	// 8-char delta -> 8/4 = 2 tokens; a second 8-char delta accumulates to
-	// 16/4 = 4. The estimate climbs cumulatively across deltas of the same phase.
+	// An eight-character delta estimates two tokens through 8/4.
+	// A second delta increases the same phase's cumulative estimate to four tokens through 16/4.
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"item/agentMessage/delta","params":{"delta":"abcdefgh"}}`)))
 	assert.Equal(t, int64(2), sink.LastThinkingTokens())
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"item/agentMessage/delta","params":{"delta":"ijklmnop"}}`)))
@@ -2316,7 +2348,7 @@ func TestHandleCodexOutput_ReasoningAndPlanDeltasAccumulateThinkingTokens(t *tes
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sink := &agenttest.Sink{}
-			agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+			agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 			agent.threadID = "main-thread"
 
 			handleCodexOutput(agent, providerkit.ParseLine([]byte(fmt.Sprintf(tc.input, "abcdefgh"))))
@@ -2331,12 +2363,12 @@ func TestHandleCodexOutput_ReasoningSummaryAndRawCountOncePerItem(t *testing.T) 
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	agent.threadID = "main-thread"
 
-	// Codex can stream BOTH a summary and the raw reasoning for one reasoning item
-	// (same itemId, same generation surfaced twice). The summary arrives first and
-	// locks item r1 onto "summary" (8 chars -> 2 tokens).
+	// Codex can report summary text and raw reasoning for the same item and generation.
+	// The first summary selects the summary source for r1.
+	// Its eight characters estimate two tokens.
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"item/reasoning/summaryTextDelta","params":{"itemId":"r1","delta":"abcdefgh","threadId":"main-thread"}}`)))
 	require.Equal(t, int64(2), sink.LastThinkingTokens())
 
@@ -2368,7 +2400,7 @@ func TestHandleCodexOutput_ReasoningCountsWhicheverStreamArrivesFirst(t *testing
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sink := &agenttest.Sink{}
-			agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+			agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 			agent.threadID = "main-thread"
 
 			handleCodexOutput(agent, providerkit.ParseLine([]byte(fmt.Sprintf(
@@ -2382,7 +2414,7 @@ func TestHandleCodexOutput_ReasoningItemCompletedReleasesStreamLock(t *testing.T
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	agent.threadID = "main-thread"
 
 	// Item r1 locks onto "summary".
@@ -2402,7 +2434,7 @@ func TestHandleCodexOutput_ItemCompletedResetsThinkingTokens(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	agent.threadID = "main-thread"
 
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"item/agentMessage/delta","params":{"delta":"abcdefghijklmnop"}}`)))
@@ -2430,7 +2462,7 @@ func TestHandleCodexOutput_ItemStartedAndApprovalResetThinkingTokens(t *testing.
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sink := &agenttest.ControlSink{}
-			agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+			agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 			agent.threadID = "main-thread"
 
 			handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"item/agentMessage/delta","params":{"delta":"abcdefghijklmnop"}}`)))
@@ -2448,7 +2480,7 @@ func TestHandleCodexOutput_ChildThreadTurnStartedDoesNotResetThinkingTokens(t *t
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink)) // threadID = "main-thread"
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink)) // threadID = "main-thread"
 
 	// Accumulate a main-thread estimate (16 chars -> 4 tokens).
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"item/agentMessage/delta","params":{"delta":"abcdefghijklmnop","threadId":"main-thread"}}`)))
@@ -2469,7 +2501,7 @@ func TestHandleCodexOutput_ChildThreadTurnStartedDoesNotReplaceInterruptTurn(t *
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"main-turn"}}}`)))
 	require.Equal(t, []bool{true}, sink.TurnActives())
@@ -2499,7 +2531,7 @@ func TestHandleCodexOutput_TurnStartedClearsReasoningStreamLocksOnMainThreadOnly
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sink := &agenttest.Sink{}
-			agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+			agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 			agent.threadID = "main-thread"
 
 			// Lock reasoning item r1 onto its first-seen sub-stream kind.
@@ -2528,7 +2560,7 @@ func TestHandleCodexOutput_ReasoningItemCompletedResetsThinkingTokens(t *testing
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	agent.threadID = "main-thread"
 
 	// Reasoning streams and climbs (16 chars -> 4 tokens).
@@ -2558,7 +2590,7 @@ func TestHandleCodexOutput_TurnBoundariesResetThinkingTokens(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sink := &agenttest.Sink{}
-			agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+			agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 			agent.threadID = "main-thread"
 
 			handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"item/agentMessage/delta","params":{"delta":"abcdefghijklmnop"}}`)))
@@ -2590,12 +2622,11 @@ func TestCodexCollabStatusToRegistry_ResumableInterrupted(t *testing.T) {
 	}{
 		{"running", bgtask.StatusRunning, false, false},
 		{"pendingInit", bgtask.StatusRunning, false, false},
-		{"completed", bgtask.StatusCompleted, true, false},
+		{"completed", bgtask.StatusSucceeded, true, false},
 		{"errored", bgtask.StatusFailed, true, false},
 		{"notFound", bgtask.StatusFailed, true, false},
 		{"shutdown", bgtask.StatusStopped, true, false},
-		// The fix: interrupted stays Running (resumable), NOT final.
-		{"interrupted", bgtask.StatusRunning, false, true},
+		{"interrupted", bgtask.StatusPaused, false, true},
 	}
 	for _, tc := range cases {
 		tc := tc
@@ -2624,12 +2655,12 @@ func TestCodexChildTurnRegistryStatus(t *testing.T) {
 		wantFinished   bool
 		wantActivity   string
 	}{
-		{providerStatus: "completed", wantStatus: bgtask.StatusCompleted, wantFinished: true},
+		{providerStatus: "completed", wantStatus: bgtask.StatusSucceeded, wantFinished: true},
 		{providerStatus: "failed", wantStatus: bgtask.StatusFailed, wantFinished: true},
-		{providerStatus: "cancelled", wantStatus: bgtask.StatusRunning, wantActivity: "paused"},
-		{providerStatus: "canceled", wantStatus: bgtask.StatusRunning, wantActivity: "paused"},
-		{providerStatus: "interrupted", wantStatus: bgtask.StatusRunning, wantActivity: "paused"},
-		{providerStatus: "aborted", wantStatus: bgtask.StatusRunning, wantActivity: "paused"},
+		{providerStatus: "cancelled", wantStatus: bgtask.StatusPaused, wantActivity: "paused"},
+		{providerStatus: "canceled", wantStatus: bgtask.StatusPaused, wantActivity: "paused"},
+		{providerStatus: "interrupted", wantStatus: bgtask.StatusPaused, wantActivity: "paused"},
+		{providerStatus: "aborted", wantStatus: bgtask.StatusPaused, wantActivity: "paused"},
 		{providerStatus: "futureStatus", wantStatus: bgtask.StatusRunning},
 	}
 	for _, test := range tests {
@@ -2650,21 +2681,28 @@ func TestCodexChildTurnRegistryStatus(t *testing.T) {
 	assert.Empty(t, transition.activity)
 }
 
-// Codex uses the activity item as its own liveness signal. Interrupted stops
-// liveness just like completed, so the registry must release the active count.
-func TestCodexSubAgentActivity_InterruptedFailsTheRun(t *testing.T) {
+// An interrupted activity pauses the row. A later interaction resumes it.
+func TestCodexSubAgentActivity_InterruptedPausesTheRun(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	started := json.RawMessage(`{"type":"subAgentActivity","id":"spawn-1","agentThreadId":"thr-1","agentPath":"/root/reviewer","kind":"started"}`)
 	assert.True(t, a.handleCodexSubAgentActivity(started, "main-thread"))
 	item := json.RawMessage(`{"type":"subAgentActivity","id":"interrupt-1","agentThreadId":"thr-1","agentPath":"/root/reviewer","kind":"interrupted"}`)
 	assert.True(t, a.handleCodexSubAgentActivity(item, "main-thread"), "consumed the activity item")
 	rows := sink.BackgroundTasks()
 	require.Len(t, rows, 1)
-	assert.Equal(t, bgtask.StatusFailed, rows[0].Status)
-	assert.True(t, rows[0].Status.IsFinished(), "the interrupted run no longer counts as active")
+	assert.Equal(t, bgtask.StatusPaused, rows[0].Status)
+	assert.False(t, rows[0].Status.IsFinished(), "the interrupted run stays open")
+	assert.False(t, rows[0].Status.IsWorking(), "the interrupted run is idle")
+
+	interacted := json.RawMessage(`{"type":"subAgentActivity","id":"interact-1","agentThreadId":"thr-1","agentPath":"/root/reviewer","kind":"interacted"}`)
+	assert.True(t, a.handleCodexSubAgentActivity(interacted, "main-thread"))
+	rows = sink.BackgroundTasks()
+	require.Len(t, rows, 1)
+	assert.Equal(t, bgtask.StatusRunning, rows[0].Status)
+	assert.True(t, rows[0].Status.IsWorking())
 }
 
 // subAgentActivity is the THIRD writer that reports a collab child active again,
@@ -2676,7 +2714,7 @@ func TestHandleCodexOutput_ASubAgentActivityReopensAFinishedChild(t *testing.T) 
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
 	started := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{}}}}`
 	completed := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{"child-1":{"status":"completed","message":"done"}}}}}`
@@ -2704,7 +2742,7 @@ func TestHandleCodexOutput_ASubAgentActivityReopensWithoutALegacyCollabItem(t *t
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
 	started := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{}}}}`
 	completed := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"completed","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{"child-1":{"status":"completed","message":"done"}}}}}`
@@ -2727,7 +2765,7 @@ func TestHandleCodexOutput_ChildTurnEndSurvivesALostSpanIndex(t *testing.T) {
 	// durable child ID must still route that event when the spawn correlation is
 	// missing. Otherwise, the child holds all later input behind a stale turn.
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	agent.threadID = "main-thread"
 
 	spawnStarted := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn1","item":{"type":"collabAgentToolCall","id":"call-1","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["child-1"],"prompt":"do work","model":"gpt-5.4","reasoningEffort":"medium","agentsStates":{}}}}`
@@ -2751,7 +2789,7 @@ func TestHandleCodexOutput_ChildTurnEndSurvivesALostSpanIndex(t *testing.T) {
 
 func TestCodexResolveProviderData_PreservesUnknownFieldsAndLargeNumbers(t *testing.T) {
 	t.Parallel()
-	resolved := Registration().Plugin.ResolveProviderData(agent.MessageContent{
+	resolved := Registration().Plugin.ResolveProviderData(agentapi.MessageContent{
 		Original:     []byte(`{"item":{"id":"call","type":"commandExecution","counter":9007199254740993,"_leapmux":"provider"}}`),
 		Supplemental: []byte(`{"itemId":"call","itemType":"commandExecution","aggregatedOutput":"partial"}`),
 	})
@@ -2764,7 +2802,7 @@ func TestCodexResolveProviderData_KeepsAFrameItCannotRead(t *testing.T) {
 	t.Parallel()
 	for _, original := range []string{`null`, `{}`, `{"item":null}`, `{"item":[]}`, `not json`} {
 		assert.Equal(t, original,
-			string(Registration().Plugin.ResolveProviderData(agent.MessageContent{
+			string(Registration().Plugin.ResolveProviderData(agentapi.MessageContent{
 				Original:     []byte(original),
 				Supplemental: []byte(`{"itemId":"call","itemType":"commandExecution","aggregatedOutput":"partial"}`),
 			})), original)
@@ -2778,7 +2816,7 @@ func TestHandleCodexOutput_InterruptedToolWithNoOutputStoresTheFrameAlone(t *tes
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	agent.threadID = "main-thread"
 	started := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn-1","item":{"type":"commandExecution","id":"command-1","status":"inProgress","command":"printf partial"}}}`
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(started)))
@@ -2808,7 +2846,7 @@ func TestHandleCodexOutput_AnswersAnUnsupportedRequest(t *testing.T) {
 
 	sink := &agenttest.ControlSink{}
 	stdin := &agenttest.Stdin{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	agent.SetStdinForTest(agenttest.NopStdin(stdin))
 
 	raw := []byte(`{"jsonrpc":"2.0","id":9007199254740993,"method":"item/somethingNew","params":{}}`)
@@ -2835,7 +2873,7 @@ func TestHandleCodexOutput_AnswersNoUnsupportedNotification(t *testing.T) {
 
 	sink := &agenttest.ControlSink{}
 	stdin := &agenttest.Stdin{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	agent.SetStdinForTest(agenttest.NopStdin(stdin))
 
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"jsonrpc":"2.0","method":"item/somethingNew","params":{}}`)))
@@ -2853,7 +2891,7 @@ func TestHandleCodexOutput_AnswersNoUnsupportedNotification(t *testing.T) {
 // already gone. Nothing could answer it and the thinking indicator never stopped.
 func TestCodexInterruptKeepsAnApprovalCardWhenTheInterruptFails(t *testing.T) {
 	sink := &agenttest.ControlSink{}
-	a := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	// A closed pipe: the turn/interrupt request cannot be written, so Interrupt fails
 	// exactly as it does when the app-server refuses it or the request times out.
 	a.SetContextForTest(context.Background())
@@ -2866,7 +2904,7 @@ func TestCodexInterruptKeepsAnApprovalCardWhenTheInterruptFails(t *testing.T) {
 	request := sink.LastPublishedControl()
 	require.NotEmpty(t, request.RequestID, "the approval card is published")
 
-	require.Error(t, a.Interrupt(), "the interrupt cannot be written")
+	require.Error(t, a.Interrupt(agentapi.StopContext{}), "the interrupt cannot be written")
 
 	assert.NotContains(t, sink.CanceledControls(), request.RequestID,
 		"an interrupt that failed must not delete the only control that can answer")
@@ -2881,7 +2919,7 @@ func TestCodexInterruptKeepsAnApprovalCardWhenTheInterruptFails(t *testing.T) {
 // elicitation stays blocked inside the CLI for the rest of the session.
 func TestCodexInterruptAnswersAnElicitationBeforeItInterrupts(t *testing.T) {
 	sink := &agenttest.ControlSink{}
-	a := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	a.SetContextForTest(context.Background())
 	a.SetStdinForTest(agenttest.NopStdin(refusingWriter{}))
 	a.Mu.Lock()
@@ -2892,7 +2930,7 @@ func TestCodexInterruptAnswersAnElicitationBeforeItInterrupts(t *testing.T) {
 	request := sink.LastPublishedControl()
 	require.NotEmpty(t, request.RequestID)
 
-	require.Error(t, a.Interrupt())
+	require.Error(t, a.Interrupt(agentapi.StopContext{}))
 
 	assert.Contains(t, sink.CanceledControls(), request.RequestID,
 		"an elicitation is released even when the interrupt then fails")
@@ -2912,7 +2950,7 @@ func TestHandleCodexOutput_OutputDeltaReportsTheAccumulatedTail(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
 	start := `{"method":"item/started","params":{"item":{"id":"cmd-1","type":"commandExecution","command":"ls","status":"inProgress"},"threadId":"main-thread","turnId":"turn1"}}`
 	handleCodexOutput(a, providerkit.ParseLine([]byte(start)))
@@ -2921,15 +2959,15 @@ func TestHandleCodexOutput_OutputDeltaReportsTheAccumulatedTail(t *testing.T) {
 		handleCodexOutput(a, providerkit.ParseLine([]byte(line)))
 	}
 
-	var tails []agent.ProgressUpdate
+	var tails []agentapi.ProgressUpdate
 	for _, update := range sink.ProgressUpdates() {
-		if update.Operation == agent.ProgressOutputTail {
+		if update.Operation == agentapi.ProgressOutputTail {
 			tails = append(tails, update)
 		}
 	}
 	require.Len(t, tails, 2)
-	assert.Equal(t, agent.OutputTailProgress("cmd-1", "first\n", false), tails[0])
-	assert.Equal(t, agent.OutputTailProgress("cmd-1", "first\nsecond\n", false), tails[1])
+	assert.Equal(t, agentapi.OutputTailProgress("cmd-1", "first\n", false), tails[0])
+	assert.Equal(t, agentapi.OutputTailProgress("cmd-1", "first\nsecond\n", false), tails[1])
 }
 
 // Codex moves a thread's own settings for reasons LeapMux never asked for: a
@@ -2939,17 +2977,17 @@ func TestHandleCodexOutput_ThreadSettingsUpdatedRefreshesTheSettings(t *testing.
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	agent.model, agent.effort, agent.collaborationMode = "gpt-5", "medium", contracts.CodexOptionDefaultCollaborationMode
 
-	line := `{"method":"thread/settings/updated","params":{"threadId":"main-thread","threadSettings":{"model":"gpt-5.4","effort":"high","collaborationMode":"pair"}}}`
+	line := `{"method":"thread/settings/updated","params":{"threadId":"main-thread","threadSettings":{"model":"gpt-5.4","effort":"high","collaborationMode":{"mode":"plan","settings":{"model":"gpt-5.4","reasoning_effort":"high","developer_instructions":null}}}}}`
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(line)))
 
 	require.Equal(t, 1, sink.SettingsRefreshCount())
 	refresh := sink.LastSettingsRefresh()
 	assert.Equal(t, "gpt-5.4", refresh.Model)
 	assert.Equal(t, "high", refresh.Effort)
-	assert.Equal(t, "pair", refresh.Options[contracts.CodexOptionCollaborationMode])
+	assert.Equal(t, "plan", refresh.Options[contracts.CodexOptionCollaborationMode])
 	// The frame is a settings fact, never a transcript row.
 	assert.Equal(t, 0, sink.MessageCount())
 }
@@ -2960,8 +2998,8 @@ func TestHandleCodexOutput_ThreadSettingsUpdatedKeepsAnAxisItOmits(t *testing.T)
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
-	agent.model, agent.effort, agent.collaborationMode = "gpt-5", "medium", "pair"
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+	agent.model, agent.effort, agent.collaborationMode = "gpt-5", "medium", "plan"
 
 	line := `{"method":"thread/settings/updated","params":{"threadId":"main-thread","threadSettings":{"model":"gpt-5.4"}}}`
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(line)))
@@ -2969,7 +3007,7 @@ func TestHandleCodexOutput_ThreadSettingsUpdatedKeepsAnAxisItOmits(t *testing.T)
 	refresh := sink.LastSettingsRefresh()
 	assert.Equal(t, "gpt-5.4", refresh.Model)
 	assert.Equal(t, "medium", refresh.Effort)
-	assert.Equal(t, "pair", refresh.Options[contracts.CodexOptionCollaborationMode])
+	assert.Equal(t, "plan", refresh.Options[contracts.CodexOptionCollaborationMode])
 }
 
 // The live tail keeps advancing after the retention cap stops recording the output.
@@ -2981,7 +3019,7 @@ func TestHandleCodexOutput_ThreadSettingsUpdatedKeepsAnAxisItOmits(t *testing.T)
 func TestAppendCodexToolEventAdvancesTheTailPastTheRetentionCap(t *testing.T) {
 	t.Parallel()
 
-	a := newCodexAgentWithSink(agent.NewProviderServices(&agenttest.Sink{}))
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(&agenttest.Sink{}))
 	a.Mu.Lock()
 	a.incompleteTools = map[string]*codexIncompleteTool{"cmd-1": {}}
 	a.appendCodexToolEventLocked("cmd-1", strings.Repeat("x", codexIncompleteOutputLimit), false)
@@ -3006,7 +3044,7 @@ func TestAppendCodexToolEventAdvancesTheTailPastTheRetentionCap(t *testing.T) {
 func TestAppendCodexToolEventCutsTheCapAtARuneBoundary(t *testing.T) {
 	t.Parallel()
 
-	a := newCodexAgentWithSink(agent.NewProviderServices(&agenttest.Sink{}))
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(&agenttest.Sink{}))
 	a.Mu.Lock()
 	// Four bytes of budget remain, and each Hangul syllable is three bytes, so the
 	// cap lands inside the second one.
@@ -3032,7 +3070,7 @@ func TestAppendCodexToolEventCutsTheCapAtARuneBoundary(t *testing.T) {
 func TestAppendCodexToolEventRecordsNothingWhenNoRuneFits(t *testing.T) {
 	t.Parallel()
 
-	a := newCodexAgentWithSink(agent.NewProviderServices(&agenttest.Sink{}))
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(&agenttest.Sink{}))
 	a.Mu.Lock()
 	a.incompleteTools = map[string]*codexIncompleteTool{
 		"cmd-1": {outputBytes: codexIncompleteOutputLimit - 2},
@@ -3045,4 +3083,340 @@ func TestAppendCodexToolEventRecordsNothingWhenNoRuneFits(t *testing.T) {
 	assert.Empty(t, events)
 	assert.Equal(t, codexIncompleteOutputLimit-2, bytes, "nothing was stored, so nothing was counted")
 	assert.True(t, truncated)
+}
+
+func codexRawExecFrames(t testing.TB) ([]byte, []byte) {
+	t.Helper()
+	return []byte(`{"method":"rawResponseItem/completed","params":{"threadId":"main-thread","turnId":"raw-turn","item":{"type":"custom_tool_call","id":"private-response-success-0-item","status":"completed","call_id":"raw-exec-call","name":"exec","input":"text(\"NATIVE_CODE_SUCCESS_\" + (40 + 2));","internal_chat_message_metadata_passthrough":{"turn_id":"raw-turn"}}},"emittedAtMs":1790872800691}`), []byte(`{"method":"rawResponseItem/completed","params":{"threadId":"main-thread","turnId":"raw-turn","item":{"type":"custom_tool_call_output","id":"ctco_01a0f856-4dd1-7df3-baad-37767de04096","call_id":"raw-exec-call","output":[{"type":"input_text","text":"Script completed\nWall time 0.0 seconds\nOutput:\n"},{"type":"input_text","text":"NATIVE_CODE_SUCCESS_42"}],"internal_chat_message_metadata_passthrough":{"turn_id":"raw-turn","create_time":1790872800.721981}}},"emittedAtMs":1790872800722}`)
+}
+
+func TestCodexRawExecPersistsCapturedNativeLifecycle(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+	a.turnID = "raw-turn"
+	request, output := codexRawExecFrames(t)
+	handleCodexOutput(a, providerkit.ParseLine(request))
+	messages := sink.Messages()
+	require.Len(t, messages, 1)
+	assert.Equal(t, request, messages[0].Content)
+	assert.Equal(t, "raw-exec-call", messages[0].SpanID)
+	assert.Equal(t, "exec", messages[0].SpanType)
+	assert.False(t, messages[0].Closing)
+	handleCodexOutput(a, providerkit.ParseLine(output))
+	messages = sink.Messages()
+	require.Len(t, messages, 2)
+	assert.Equal(t, output, messages[1].Content)
+	assert.Equal(t, messages[0].SpanID, messages[1].SpanID)
+	assert.True(t, messages[1].Closing)
+	assert.Equal(t, 1, a.TurnToolUses)
+}
+
+func TestCodexRawExecSuppressesDuplicatesAndUnpairedOutputs(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+	a.turnID = "raw-turn"
+	request, output := codexRawExecFrames(t)
+	handleCodexOutput(a, providerkit.ParseLine(output))
+	assert.Empty(t, sink.Messages())
+	handleCodexOutput(a, providerkit.ParseLine(request))
+	handleCodexOutput(a, providerkit.ParseLine(request))
+	handleCodexOutput(a, providerkit.ParseLine(output))
+	handleCodexOutput(a, providerkit.ParseLine(output))
+	assert.Len(t, sink.Messages(), 2)
+	assert.Equal(t, 1, a.TurnToolUses)
+}
+
+func TestCodexRawExecRejectsWrongIdentityAndTool(t *testing.T) {
+	t.Parallel()
+	for _, scenario := range []string{"wrong thread", "wrong turn", "wrong call", "absent call", "absent input", "nonexec tool", "foreign namespace"} {
+		t.Run(scenario, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+			a.turnID = "raw-turn"
+			request, output := codexRawExecFrames(t)
+			var frame map[string]any
+			require.NoError(t, json.Unmarshal(request, &frame))
+			params, ok := frame["params"].(map[string]any)
+			require.True(t, ok)
+			item, ok := params["item"].(map[string]any)
+			require.True(t, ok)
+			switch scenario {
+			case "wrong thread":
+				params["threadId"] = "other-thread"
+			case "wrong turn":
+				params["turnId"] = "other-turn"
+			case "wrong call":
+				item["call_id"] = "other-call"
+			case "absent call":
+				delete(item, "call_id")
+			case "absent input":
+				delete(item, "input")
+			case "nonexec tool":
+				item["name"] = "other"
+			case "foreign namespace":
+				item["namespace"] = "other"
+			}
+			changed, err := json.Marshal(frame)
+			require.NoError(t, err)
+			handleCodexOutput(a, providerkit.ParseLine(changed))
+			handleCodexOutput(a, providerkit.ParseLine(output))
+			if scenario == "wrong call" {
+				require.Len(t, sink.Messages(), 1)
+				assert.False(t, sink.Messages()[0].Closing)
+			} else {
+				assert.Empty(t, sink.Messages())
+			}
+		})
+	}
+}
+
+func TestCodexRawExecClearsPendingCallsAtTurnEnd(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+	a.turnID = "raw-turn"
+	request, output := codexRawExecFrames(t)
+	handleCodexOutput(a, providerkit.ParseLine(request))
+	require.Len(t, sink.Messages(), 1)
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"raw-turn","status":"interrupted"}}}`)))
+	retained := sink.Messages()[1]
+	assert.Equal(t, request, retained.Content)
+	assert.True(t, retained.Closing)
+	assert.Equal(t, agentapi.MessageCompletionInterrupted, retained.Completion)
+	before := len(sink.Messages())
+	handleCodexOutput(a, providerkit.ParseLine(output))
+	assert.Len(t, sink.Messages(), before)
+}
+
+func TestCodexThreadSettingsReadsCapturedCollaborationObject(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+	a.model, a.effort, a.collaborationMode = "old", "low", "default"
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"thread/settings/updated","params":{"threadId":"main-thread","threadSettings":{"disabledPluginIds":[],"cwd":"/Users/trustin/Workspaces/leapmux/.tmp/codex159-raw-exec-probe/workspace","approvalPolicy":"never","approvalsReviewer":"user","sandboxPolicy":{"type":"dangerFullAccess"},"activePermissionProfile":null,"model":"gpt-5.6-luna","modelProvider":"private-probe","serviceTier":null,"effort":"medium","summary":null,"collaborationMode":{"mode":"plan","settings":{"model":"gpt-5.6-luna","reasoning_effort":"medium","developer_instructions":null}},"multiAgentMode":"explicitRequestOnly","personality":null}},"emittedAtMs":1790872800652}`)))
+	require.Equal(t, 1, sink.SettingsRefreshCount())
+	refresh := sink.LastSettingsRefresh()
+	assert.Equal(t, "gpt-5.6-luna", refresh.Model)
+	assert.Equal(t, "medium", refresh.Effort)
+	assert.Equal(t, "plan", refresh.Options[contracts.CodexOptionCollaborationMode])
+	assert.Empty(t, sink.Messages())
+}
+
+func TestCodexRawExecPreservesFailureHeaderAndImages(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+	a.turnID = "raw-turn"
+	request, _ := codexRawExecFrames(t)
+	output := []byte(`{"method":"rawResponseItem/completed","params":{"threadId":"main-thread","turnId":"raw-turn","item":{"type":"custom_tool_call_output","call_id":"raw-exec-call","output":[{"type":"input_text","text":"Script failed\nWall time 0.0 seconds\nOutput:\n"},{"type":"input_text","text":"Script error:\nError: NATIVE_CODE_FAILURE"},{"type":"input_image","image_url":"data:image/png;base64,AAAA"}]}}}`)
+	handleCodexOutput(a, providerkit.ParseLine(request))
+	handleCodexOutput(a, providerkit.ParseLine(output))
+	messages := sink.Messages()
+	require.Len(t, messages, 2)
+	assert.Equal(t, output, messages[1].Content)
+	assert.True(t, messages[1].Closing)
+}
+
+func TestCodexThreadSettingsIgnoresForeignThread(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+	a.model = "main-model"
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"thread/settings/updated","params":{"threadId":"foreign-thread","threadSettings":{"model":"foreign-model"}}}`)))
+	assert.Equal(t, "main-model", a.model)
+	assert.Zero(t, sink.SettingsRefreshCount())
+}
+
+type codexRawExecFailingSink struct {
+	agenttest.Sink
+	failures int
+}
+
+func (s *codexRawExecFailingSink) PersistMessage(source leapmuxv1.MessageSource, content agentapi.MessageContent, span agentapi.SpanInfo) error {
+	if s.failures > 0 {
+		s.failures--
+		return errors.New("the raw exec row could not be stored")
+	}
+	return s.Sink.PersistMessage(source, content, span)
+}
+
+func TestCodexRawExecRetriesOnlyFailedPersistence(t *testing.T) {
+	t.Parallel()
+	sink := &codexRawExecFailingSink{failures: 1}
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+	a.turnID = "raw-turn"
+	request, output := codexRawExecFrames(t)
+	handleCodexOutput(a, providerkit.ParseLine(request))
+	assert.Empty(t, sink.Messages())
+	handleCodexOutput(a, providerkit.ParseLine(request))
+	require.Len(t, sink.Messages(), 1)
+	sink.failures = 1
+	handleCodexOutput(a, providerkit.ParseLine(output))
+	assert.Len(t, sink.Messages(), 1)
+	handleCodexOutput(a, providerkit.ParseLine(output))
+	handleCodexOutput(a, providerkit.ParseLine(output))
+	assert.Len(t, sink.Messages(), 2)
+	assert.Equal(t, 1, a.TurnToolUses)
+}
+
+func TestCodexRawExecKeepsChildOutputInItsOwnTranscript(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"collabAgentToolCall","id":"spawn-raw-child","tool":"spawnAgent","status":"inProgress","senderThreadId":"main-thread","receiverThreadIds":["raw-child"],"prompt":"Run the script.","agentsStates":{}}}}`)))
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"turn/started","params":{"threadId":"raw-child","turn":{"id":"raw-turn"}}}`)))
+	before := len(sink.Messages())
+	request, output := codexRawExecFrames(t)
+	request = []byte(strings.ReplaceAll(string(request), `"threadId":"main-thread"`, `"threadId":"raw-child"`))
+	output = []byte(strings.ReplaceAll(string(output), `"threadId":"main-thread"`, `"threadId":"raw-child"`))
+	handleCodexOutput(a, providerkit.ParseLine(request))
+	handleCodexOutput(a, providerkit.ParseLine(output))
+	assert.Len(t, sink.Messages(), before)
+	child := sink.Child("child-of-spawn-raw-child")
+	messages := child.Messages()
+	var execRows []agenttest.Message
+	for _, message := range messages {
+		if message.SpanID == "raw-exec-call" {
+			execRows = append(execRows, message)
+		}
+	}
+	require.Len(t, execRows, 2)
+	assert.Equal(t, request, execRows[0].Content)
+	assert.Equal(t, output, execRows[1].Content)
+	assert.True(t, execRows[1].Closing)
+}
+
+func TestCodexRawExecDoesNotReusePairAcrossTurns(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+	a.turnID = "raw-turn"
+	request, output := codexRawExecFrames(t)
+	handleCodexOutput(a, providerkit.ParseLine(request))
+	handleCodexOutput(a, providerkit.ParseLine(output))
+	require.Len(t, sink.Messages(), 2)
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"raw-turn","status":"completed"}}}`)))
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"next-turn"}}}`)))
+	request = []byte(strings.ReplaceAll(string(request), `"turnId":"raw-turn"`, `"turnId":"next-turn"`))
+	output = []byte(strings.ReplaceAll(string(output), `"turnId":"raw-turn"`, `"turnId":"next-turn"`))
+	before := len(sink.Messages())
+	handleCodexOutput(a, providerkit.ParseLine(output))
+	assert.Len(t, sink.Messages(), before)
+	handleCodexOutput(a, providerkit.ParseLine(request))
+	handleCodexOutput(a, providerkit.ParseLine(output))
+	assert.Len(t, sink.Messages(), before+2)
+}
+
+func TestCodexRawExecPreservesExplicitEmptySource(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+	a.turnID = "raw-turn"
+	request := []byte(`{"method":"rawResponseItem/completed","params":{"threadId":"main-thread","turnId":"raw-turn","item":{"type":"custom_tool_call","call_id":"empty-script","name":"exec","input":""}}}`)
+	handleCodexOutput(a, providerkit.ParseLine(request))
+	require.Len(t, sink.Messages(), 1)
+	assert.Equal(t, request, sink.Messages()[0].Content)
+	assert.False(t, sink.Messages()[0].Closing)
+}
+
+func TestCodexThreadSettingsKeepsAxesWhenNativeObjectIsPartial(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+	a.model, a.effort, a.collaborationMode = "model", "high", "plan"
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"thread/settings/updated","params":{"threadId":"main-thread","threadSettings":{"collaborationMode":{"mode":"default","settings":{"model":"ignored-inner-model"}}}}}`)))
+	require.Equal(t, 1, sink.SettingsRefreshCount())
+	assert.Equal(t, "model", a.model)
+	assert.Equal(t, "high", a.effort)
+	assert.Equal(t, "default", a.collaborationMode)
+}
+
+func TestCodexThreadSettingsRejectsMalformedNativeMode(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{`"obsolete-string"`, `{"mode":4}`, `[]`} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+			a.model, a.effort, a.collaborationMode = "model", "high", "plan"
+			raw := []byte(`{"method":"thread/settings/updated","params":{"threadId":"main-thread","threadSettings":{"model":"new-model","collaborationMode":` + mode + `}}}`)
+			handleCodexOutput(a, providerkit.ParseLine(raw))
+			assert.Equal(t, "model", a.model)
+			assert.Equal(t, "plan", a.collaborationMode)
+			assert.Zero(t, sink.SettingsRefreshCount())
+		})
+	}
+}
+
+func TestCodexRawExecAcceptsNativeDefaultNamespace(t *testing.T) {
+	t.Parallel()
+	for _, namespace := range []string{"", "functions"} {
+		t.Run(namespace, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+			a.turnID = "raw-turn"
+			request, output := codexRawExecFrames(t)
+			request = []byte(strings.Replace(string(request), `"name":"exec"`, `"name":"exec","namespace":`+strconv.Quote(namespace), 1))
+			output = []byte(strings.Replace(string(output), `"call_id":"raw-exec-call"`, `"call_id":"raw-exec-call","name":"exec","namespace":`+strconv.Quote(namespace), 1))
+			handleCodexOutput(a, providerkit.ParseLine(request))
+			handleCodexOutput(a, providerkit.ParseLine(output))
+			require.Len(t, sink.Messages(), 2)
+			assert.Equal(t, request, sink.Messages()[0].Content)
+			assert.Equal(t, output, sink.Messages()[1].Content)
+		})
+	}
+}
+
+func TestCodexRawExecRejectsForeignResultIdentity(t *testing.T) {
+	t.Parallel()
+	for _, fields := range []string{`"namespace":"foreign"`, `"name":"other-tool"`} {
+		t.Run(fields, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+			a.turnID = "raw-turn"
+			request, output := codexRawExecFrames(t)
+			output = []byte(strings.Replace(string(output), `"call_id":"raw-exec-call"`, `"call_id":"raw-exec-call",`+fields, 1))
+			handleCodexOutput(a, providerkit.ParseLine(request))
+			handleCodexOutput(a, providerkit.ParseLine(output))
+			require.Len(t, sink.Messages(), 1)
+			assert.False(t, sink.Messages()[0].Closing)
+		})
+	}
+}
+
+// The Worker stores a native file item as Codex sent it. The item's own status
+// is its completion, so neither row states a Worker completion, and the stored
+// completion reads UNSPECIFIED. The E2E proof of an applied file change
+// (frontend/tests/e2e/codex/appliedFileChange.ts) reads exactly this shape.
+func TestHandleCodexOutput_FileChangeRowsStoreNoWorkerCompletion(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+
+	started := `{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn-1","item":{"type":"fileChange","id":"patch-1","status":"inProgress","changes":[]}}}`
+	completed := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn-1","item":{"type":"fileChange","id":"patch-1","status":"completed","changes":[{"path":"/work/a.txt","kind":{"type":"add"},"diff":"a\n"}]}}}`
+	handleCodexOutput(a, providerkit.ParseLine([]byte(started)))
+	handleCodexOutput(a, providerkit.ParseLine([]byte(completed)))
+
+	var rows []agenttest.Message
+	for _, message := range sink.Messages() {
+		if message.SpanID == "patch-1" {
+			rows = append(rows, message)
+		}
+	}
+	require.Len(t, rows, 2, "one started row and one completed row")
+	assert.False(t, rows[0].Closing)
+	assert.True(t, rows[1].Closing)
+	for _, row := range rows {
+		assert.Equal(t, contracts.CodexItemTypeFileChange, row.SpanType)
+		assert.Empty(t, row.Completion, "the native item states its own completion")
+		_, stored := agentapi.MessageMetadata(agentapi.MessageContent{Original: row.Content, Completion: row.Completion})
+		assert.Equal(t, leapmuxv1.MessageCompletion_MESSAGE_COMPLETION_UNSPECIFIED, stored)
+	}
 }

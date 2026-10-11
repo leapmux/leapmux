@@ -10,6 +10,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/tooltranscript"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
 const cursorPendingTaskReportLimit = 256
@@ -112,6 +113,10 @@ func (a *Agent) observeCursorTaskRecord(toolCallID string, record cursorToolReco
 		return
 	}
 	a.Mu.Lock()
+	if _, native := a.nativeTasks[bgtask.NormalizeRowKey(toolCallID)]; native {
+		a.Mu.Unlock()
+		return
+	}
 	state := a.cursorTaskReportStateLocked(toolCallID)
 	state.report = report
 	a.taskReports[toolCallID] = state
@@ -124,6 +129,10 @@ func (a *Agent) observeCursorTaskRecord(toolCallID string, record cursorToolReco
 
 func (a *Agent) noteCursorTaskExtension(toolCallID string) {
 	a.Mu.Lock()
+	if _, native := a.nativeTasks[bgtask.NormalizeRowKey(toolCallID)]; native {
+		a.Mu.Unlock()
+		return
+	}
 	state := a.cursorTaskReportStateLocked(toolCallID)
 	state.extensionSeen = true
 	a.taskReports[toolCallID] = state
@@ -136,7 +145,7 @@ func (a *Agent) noteCursorTaskExtension(toolCallID string) {
 
 func (a *Agent) persistReadyCursorTaskReport(toolCallID, report string) {
 	_, err := a.Sink().PersistChildSubagentReport(agent.ChildSubagentReportWrite{
-		RowKey: toolCallID,
+		RowKey: bgtask.NormalizeRowKey(toolCallID),
 		Write: agent.SubagentReportWrite{
 			ReportID: toolCallID,
 			Report:   agent.SubagentReport{Label: "Cursor subagent", Text: report},

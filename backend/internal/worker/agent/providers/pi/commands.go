@@ -72,3 +72,16 @@ func (a *Agent) isPiExtensionCommand(message string) bool {
 	defer a.Mu.Unlock()
 	return a.extensionCommands[command]
 }
+
+// piCompactInstruction recognizes Pi's built-in manual compact command. RPC
+// mode does not parse slash commands in prompt messages, so the worker sends
+// this one through the native compact RPC.
+func piCompactInstruction(message string) (string, bool) {
+	if message == "/compact" {
+		return "", true
+	}
+	if !strings.HasPrefix(message, "/compact ") {
+		return "", false
+	}
+	return strings.TrimSpace(strings.TrimPrefix(message, "/compact ")), true
+}

@@ -1,5 +1,7 @@
 import type { AgentTab } from './tab.types'
+import type { BackgroundTaskStatusToken } from '~/generated/contracts/worker-vocab'
 import type { BackgroundTaskItem as ProtoBackgroundTaskItem } from '~/generated/proto/leapmux/v1/agent_pb'
+import { BACKGROUND_TASK_STATUS_TOKEN } from '~/generated/contracts/worker-vocab'
 import { BackgroundTaskKind, BackgroundTaskStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { assignDefined } from '~/lib/jsonPick'
 import { isSubagentTab, rootAgentIdFor } from './tab.helpers'
@@ -37,7 +39,7 @@ export interface BackgroundTaskItem {
   titleIsCommand?: boolean
   description?: string
   activity: string
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'stopped' | 'interrupted'
+  status: Exclude<BackgroundTaskStatusToken, typeof BACKGROUND_TASK_STATUS_TOKEN.Unspecified>
   createdAt?: string
   updatedAt?: string
   endedAt?: string
@@ -95,44 +97,30 @@ function normalizeBackgroundTaskKind(kind: BackgroundTaskKind): Pick<BackgroundT
 function normalizeBackgroundTaskStatus(s: BackgroundTaskStatus): BackgroundTaskItem['status'] {
   switch (s) {
     case BackgroundTaskStatus.RUNNING:
-      return 'running'
-    case BackgroundTaskStatus.COMPLETED:
-      return 'completed'
+      return BACKGROUND_TASK_STATUS_TOKEN.Running
+    case BackgroundTaskStatus.PAUSED:
+      return BACKGROUND_TASK_STATUS_TOKEN.Paused
+    case BackgroundTaskStatus.SUCCEEDED:
+      return BACKGROUND_TASK_STATUS_TOKEN.Succeeded
     case BackgroundTaskStatus.FAILED:
-      return 'failed'
+      return BACKGROUND_TASK_STATUS_TOKEN.Failed
     case BackgroundTaskStatus.STOPPED:
-      return 'stopped'
+      return BACKGROUND_TASK_STATUS_TOKEN.Stopped
     case BackgroundTaskStatus.INTERRUPTED:
-      return 'interrupted'
+      return BACKGROUND_TASK_STATUS_TOKEN.Interrupted
+    case BackgroundTaskStatus.ENDED_WITH_UNKNOWN_OUTCOME:
+      return BACKGROUND_TASK_STATUS_TOKEN.EndedWithUnknownOutcome
     default:
-      return 'pending'
-  }
-}
-
-/**
- * Narrow a background-task status WIRE string to the union.
- *
- * The worker persists the subagent-end divider with the same four final wire
- * strings the registry uses (`bgtask.StatusWire`), so the divider's renderer
- * narrows through here rather than re-listing them. `normalizeBackgroundTaskStatus`
- * cannot serve: it maps the proto ENUM, not the JSON string.
- */
-export function backgroundTaskStatusFromWire(s: string): BackgroundTaskItem['status'] | undefined {
-  switch (s) {
-    case 'pending':
-    case 'running':
-    case 'completed':
-    case 'failed':
-    case 'stopped':
-    case 'interrupted':
-      return s
-    default:
-      return undefined
+      return BACKGROUND_TASK_STATUS_TOKEN.Pending
   }
 }
 
 export function isActiveBackgroundTaskStatus(s: BackgroundTaskItem['status']): boolean {
-  return s === 'pending' || s === 'running'
+  return s === BACKGROUND_TASK_STATUS_TOKEN.Pending || s === BACKGROUND_TASK_STATUS_TOKEN.Running
+}
+
+export function isOpenBackgroundTaskStatus(s: BackgroundTaskItem['status']): boolean {
+  return isActiveBackgroundTaskStatus(s) || s === BACKGROUND_TASK_STATUS_TOKEN.Paused
 }
 
 /**
@@ -257,10 +245,12 @@ export function opensSubagentTranscript(item: BackgroundTaskItem): boolean {
 // pending from running.
 export function backgroundTaskStatusLabel(s: BackgroundTaskItem['status']): string {
   switch (s) {
-    case 'pending':
+    case BACKGROUND_TASK_STATUS_TOKEN.Pending:
       return 'Pending'
-    case 'running':
+    case BACKGROUND_TASK_STATUS_TOKEN.Running:
       return 'Running'
+    case BACKGROUND_TASK_STATUS_TOKEN.Paused:
+      return 'Paused'
     default:
       return backgroundTaskEndLabel(s)
   }
@@ -269,14 +259,16 @@ export function backgroundTaskStatusLabel(s: BackgroundTaskItem['status']): stri
 // backgroundTaskEndLabel renders the final-status secondary line.
 export function backgroundTaskEndLabel(s: BackgroundTaskItem['status']): string {
   switch (s) {
-    case 'completed':
-      return 'Completed'
-    case 'failed':
+    case BACKGROUND_TASK_STATUS_TOKEN.Succeeded:
+      return 'Succeeded'
+    case BACKGROUND_TASK_STATUS_TOKEN.Failed:
       return 'Failed'
-    case 'stopped':
+    case BACKGROUND_TASK_STATUS_TOKEN.Stopped:
       return 'Stopped'
-    case 'interrupted':
+    case BACKGROUND_TASK_STATUS_TOKEN.Interrupted:
       return 'Interrupted'
+    case BACKGROUND_TASK_STATUS_TOKEN.EndedWithUnknownOutcome:
+      return 'Ended with unknown outcome'
     default:
       return ''
   }
@@ -287,29 +279,40 @@ export function backgroundTaskEndLabel(s: BackgroundTaskItem['status']): string 
 // interrupted status is a worker/agent-process restart cutting the task off,
 // which is not obvious from the bare "Interrupted" label.
 export function backgroundTaskEndTooltip(s: BackgroundTaskItem['status']): string | undefined {
-  if (s === 'interrupted')
+  if (s === BACKGROUND_TASK_STATUS_TOKEN.Interrupted)
     return 'stopped by a worker restart'
+  if (s === BACKGROUND_TASK_STATUS_TOKEN.EndedWithUnknownOutcome)
+    return 'The provider reports an end without a known outcome'
   return undefined
 }
 
-// sortBackgroundTasks returns a NEW array ordered active-first (running before
-// pending), then finished; stable within each half (input order preserved).
+// sortBackgroundTasks returns a new array ordered running, pending, paused,
+// then finished. It preserves input order within each status group.
 export function sortBackgroundTasks(items: BackgroundTaskItem[]): BackgroundTaskItem[] {
-  const active: BackgroundTaskItem[] = []
+  const open: BackgroundTaskItem[] = []
   const finished: BackgroundTaskItem[] = []
   for (const it of items) {
-    if (isActiveBackgroundTaskStatus(it.status))
-      active.push(it)
+    if (isOpenBackgroundTaskStatus(it.status))
+      open.push(it)
     else
       finished.push(it)
   }
-  // Running before pending, stable.
-  active.sort((a, b) => {
-    const ar = a.status === 'running' ? 0 : 1
-    const br = b.status === 'running' ? 0 : 1
+  const order: Record<BackgroundTaskItem['status'], number> = {
+    [BACKGROUND_TASK_STATUS_TOKEN.Running]: 0,
+    [BACKGROUND_TASK_STATUS_TOKEN.Pending]: 1,
+    [BACKGROUND_TASK_STATUS_TOKEN.Paused]: 2,
+    [BACKGROUND_TASK_STATUS_TOKEN.Succeeded]: 3,
+    [BACKGROUND_TASK_STATUS_TOKEN.Failed]: 3,
+    [BACKGROUND_TASK_STATUS_TOKEN.Stopped]: 3,
+    [BACKGROUND_TASK_STATUS_TOKEN.Interrupted]: 3,
+    [BACKGROUND_TASK_STATUS_TOKEN.EndedWithUnknownOutcome]: 3,
+  }
+  open.sort((a, b) => {
+    const ar = order[a.status]
+    const br = order[b.status]
     return ar - br
   })
-  return [...active, ...finished]
+  return [...open, ...finished]
 }
 
 // groupBackgroundTasks splits sorted items into an ungrouped block first, then

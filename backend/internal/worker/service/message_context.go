@@ -17,7 +17,22 @@ func (s *agentOutputSink) ReadToolRequest(spanID string) (*agent.StoredMessage, 
 }
 
 func (s *agentOutputSink) ReadToolResult(spanID string) (*agent.StoredMessage, error) {
-	return s.h.readToolResult(s.agentID, s.currentMessageSessionID(), spanID)
+	return s.ReadToolResultForSession(spanID, s.currentMessageSessionID())
+}
+
+func (s *agentOutputSink) ReadToolResultForSession(spanID, sessionID string) (*agent.StoredMessage, error) {
+	return s.h.readToolResult(s.agentID, sessionID, spanID)
+}
+
+func (s *agentOutputSink) ReadToolResultBySeq(seq int64) (*agent.StoredMessage, error) {
+	if seq <= 0 {
+		return nil, nil
+	}
+	row, err := s.h.queries.GetMessageByAgentIDAndSeq(bgCtx(), db.GetMessageByAgentIDAndSeqParams{AgentID: s.agentID, Seq: seq})
+	if err == nil && (row.Source != leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT || row.SpanID == "") {
+		return nil, nil
+	}
+	return storedSpanMessage(s.agentID, row.SpanID, "result", row, err)
 }
 
 func (s *agentOutputSink) restoreMessageSession() {
@@ -31,17 +46,24 @@ func (s *agentOutputSink) restoreMessageSession() {
 		}
 		return
 	}
-	s.messageSessionID = row.AgentSessionID
+	s.messageSession = &nativeSessionFact{id: row.AgentSessionID}
 }
 
 func (s *agentOutputSink) currentMessageSessionID() string {
-	s.messageSessionMu.RLock()
-	defer s.messageSessionMu.RUnlock()
-	return s.messageSessionID
+	return s.currentMessageSessionFact().id
+}
+
+func (s *agentOutputSink) currentMessageSessionFact() *nativeSessionFact {
+	s.messageSessionMu.Lock()
+	defer s.messageSessionMu.Unlock()
+	if s.messageSession == nil {
+		s.messageSession = &nativeSessionFact{}
+	}
+	return s.messageSession
 }
 
 func (s *agentOutputSink) scopeMessage(content agent.MessageContent) agent.MessageContent {
-	if content.AgentSessionID == "" {
+	if content.AgentSessionID == "" && content.Publication == nil {
 		content.AgentSessionID = s.currentMessageSessionID()
 	}
 	return content

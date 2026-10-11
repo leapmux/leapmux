@@ -15,6 +15,7 @@ import (
 	pty "github.com/aymanbagabas/go-pty"
 	"github.com/coder/quartz"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/leapmux/leapmux/internal/worker/gitutil"
 	"github.com/leapmux/leapmux/util/procutil"
@@ -306,10 +307,9 @@ type Terminal struct {
 	// site covers every spawn path and a restart's new pid falls out of the
 	// swap. A mirrored copy is a second source of truth a future restart path
 	// can forget to update.
-	shellPID  int
-	cmd       *pty.Cmd
-	ptmx      pty.Pty
-	jobObject *procutil.JobObject
+	shellPID int
+	owner    *procutil.ProcessOwner
+	ptmx     pty.Pty
 	// clock supplies the two timers waitForReadDrainedWithin arms. The
 	// constructor requires it, so a Terminal cannot exist without one and a
 	// timer added later in this file finds the right clock already in scope.
@@ -331,7 +331,7 @@ type Terminal struct {
 	exitCode  int
 	exitCh    chan struct{}
 	// readDoneCh is closed when readOutput returns. exitCh tracks
-	// cmd.Wait() in a separate goroutine, so a closed exitCh does NOT
+	// owner.Wait() in a separate goroutine, so a closed exitCh does NOT
 	// imply screenBuf writes have stopped — wait on this instead.
 	readDoneCh chan struct{}
 	// childSideClosedCh is closed once the natural-exit path finished closing
@@ -404,7 +404,10 @@ type Options struct {
 // of the spawn a test can assert on: `exec.Cmd` resolves duplicates last-wins,
 // so a layered pin is invisible to the child process and visible only here.
 func spawnEnv(environ, extraEnv []string) []string {
-	env := envutil.ScrubAppImageEnvSlice(envutil.PinEnv(environ,
+	// The provider-helper variable points at one agent's helper spec (see
+	// agent.HelperFunc). A terminal that inherited it would run a plain
+	// `leapmux` as that agent's helper, so the spawn never passes it on.
+	env := envutil.ScrubAppImageEnvSlice(envutil.PinEnv(envutil.FilterEnv(environ, contracts.EnvAgentHelper),
 		"TERM=xterm-256color",
 		gitutil.GitOptionalLocksOff,
 	))
@@ -456,9 +459,11 @@ func startWithScreenBuffer(
 		return nil, fmt.Errorf("new pty: %w", err)
 	}
 
-	cmd := ptmx.CommandContext(ctx, shell, args...)
-	cmd.Dir = opts.WorkingDir
-	cmd.Env = spawnEnv(os.Environ(), opts.ExtraEnv)
+	owner, err := procutil.PreparePTYProcess(ctx, ptmx, procutil.PTYLaunch{Program: shell, Args: args, Dir: opts.WorkingDir, Env: spawnEnv(os.Environ(), opts.ExtraEnv)})
+	if err != nil {
+		_ = ptmx.Close()
+		return nil, fmt.Errorf("prepare pty process: %w", err)
+	}
 	// No procutil.HideConsoleWindow here: on Windows, CREATE_NO_WINDOW is
 	// incompatible with ConPTY — the pseudo console already serves as the
 	// child's console, and the flag would leave it with none.
@@ -475,21 +480,9 @@ func startWithScreenBuffer(
 		return nil, fmt.Errorf("resize pty: %w", err)
 	}
 
-	if err := cmd.Start(); err != nil {
+	if err := owner.Start(); err != nil {
 		_ = ptmx.Close()
 		return nil, fmt.Errorf("start pty: %w", err)
-	}
-
-	// Put the shell and its descendants into a kill group so closing the
-	// tab reaps the whole tree, not just the direct shell. Failure is
-	// non-fatal: the terminal still works, it just loses the tree-kill
-	// guarantee for this session.
-	jobObject, err := procutil.AssignPID(cmd.Process.Pid)
-	if err != nil {
-		slog.Warn("terminal attach job object failed",
-			"terminal_id", opts.ID,
-			"error", err,
-		)
 	}
 
 	// The buffer owns the serialization, not this closure: Respawn hands
@@ -504,11 +497,10 @@ func startWithScreenBuffer(
 
 	t := &Terminal{
 		id:                opts.ID,
-		shellPID:          cmd.Process.Pid,
+		shellPID:          owner.PID(),
 		clock:             clock,
-		cmd:               cmd,
+		owner:             owner,
 		ptmx:              ptmx,
-		jobObject:         jobObject,
 		outputFn:          wrappedOutput,
 		screenBuf:         screenBuf,
 		exitCh:            make(chan struct{}),
@@ -526,7 +518,7 @@ func startWithScreenBuffer(
 		"terminal_id", opts.ID,
 		"shell", shell,
 		"args", args,
-		"pid", cmd.Process.Pid,
+		"pid", owner.PID(),
 	)
 
 	return t, nil
@@ -590,18 +582,18 @@ func (t *Terminal) Stop() {
 	t.stopped = true
 	t.mu.Unlock()
 
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	if err := t.owner.Capture(ctx); err != nil {
+		slog.Warn("capture terminal process ownership", "terminal_id", t.id, "error", err)
+	}
+	cancel()
 	t.closeChildSide()
 	t.closeWorkerSide()
-	if err := t.jobObject.Terminate(); err != nil {
-		slog.Debug("terminal job object terminate failed",
+	if err := t.owner.Terminate(); err != nil {
+		slog.Warn("terminate owned terminal processes",
 			"terminal_id", t.id,
 			"error", err,
 		)
-	}
-	if t.jobObject == nil && t.cmd.Process != nil {
-		// Fallback when AssignPID failed at startup; better than leaking
-		// the direct shell process even if we lose the tree guarantee.
-		_ = t.cmd.Process.Kill()
 	}
 }
 
@@ -836,23 +828,24 @@ func (t *Terminal) readOutput() {
 }
 
 func (t *Terminal) waitForExit() {
-	err := t.cmd.Wait()
+	err := t.owner.Wait()
 	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
 			t.exitCode = exitErr.ExitCode()
 		} else {
 			t.exitCode = -1
 		}
 	}
-	if closeErr := t.jobObject.Close(); closeErr != nil {
-		slog.Debug("terminal job object close failed",
+	if closeErr := t.owner.Close(); closeErr != nil {
+		slog.Warn("close owned terminal processes",
 			"terminal_id", t.id,
 			"error", closeErr,
 		)
 	}
 	close(t.exitCh)
 
-	// End the reader now that the shell and its kill group are gone. Nothing
+	// End the reader after the owner cleans up the verified process tree. Nothing
 	// else will: the pty stays open for a terminal that exited on its own --
 	// the manager keeps the entry so restart-via-Enter can respawn into the
 	// same screen buffer -- and this process holds the child side of it, so

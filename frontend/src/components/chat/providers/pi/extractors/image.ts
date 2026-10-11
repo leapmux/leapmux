@@ -12,7 +12,7 @@ import { piPairedRequest } from './toolCommon'
  * Pi's tool results are first-class multimodal: `result.content` is a
  * `(TextContent | ImageContent)[]` where `ImageContent` is
  * `{type:'image', data, mimeType}` -- the MCP shape. `read` on an image file
- * produces one, as do its MCP bridges and screenshot tools.
+ * produces one, as do native MCP and screenshot tools.
  *
  * The path comes from the paired `tool_execution_start`, because the `end`
  * event carries no args. Absent that pairing the image still renders; only the

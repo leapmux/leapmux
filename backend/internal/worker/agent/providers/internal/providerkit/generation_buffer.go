@@ -42,6 +42,18 @@ func (b *GenerationBuffer) Append(scopeID string, kind agent.AssembledMessageKin
 	b.mu.Unlock()
 }
 
+// ScopeSnapshot reads one retained segment without changing its lifetime.
+// The returned text stays unchanged after later buffer operations.
+func (b *GenerationBuffer) ScopeSnapshot(scopeID string) (agent.AssembledMessageKind, string, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	segment := b.segments[scopeID]
+	if scopeID == "" || segment == nil {
+		return "", "", false
+	}
+	return segment.kind, segment.text.String(), true
+}
+
 func (b *GenerationBuffer) Finish(scopeID string, completion agent.MessageCompletion) ([]byte, bool, error) {
 	b.mu.Lock()
 	segment, ok := b.segments[scopeID]

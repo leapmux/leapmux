@@ -99,7 +99,7 @@ func TestZCodeInterrupt_IdleIsANoop(t *testing.T) {
 	stdin := &zcodeRecordedStdin{}
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
 
-	require.NoError(t, a.Interrupt())
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	assert.Empty(t, stdin.Frames(), "Interrupt with no active turn must not write")
 }
 
@@ -115,7 +115,7 @@ func TestZCodeInterrupt_SendsSessionStop(t *testing.T) {
 	// is what this test is about.
 	a.CancelForTest()
 
-	_ = a.Interrupt()
+	_ = a.Interrupt(agent.StopContext{})
 
 	requests := stdin.Requests(t)
 	require.Len(t, requests, 1)
@@ -146,7 +146,7 @@ func TestZCodeInterrupt_EndsTheTurnTheAppServerNeverAnnounces(t *testing.T) {
 
 	// The app-server's own answer to a stop: an empty object, and no event after it.
 	answerZCodeRequest(t, a, stdin, MethodSessionStop, `{}`)
-	require.NoError(t, a.Interrupt())
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	require.NotNil(t, timer.fire, "the stop arms the silence window")
 	timer.fire()
 
@@ -179,7 +179,7 @@ func TestZCodeInterrupt_LeavesARunningToolCallOpen(t *testing.T) {
 	a.Mu.Unlock()
 
 	answerZCodeRequest(t, a, stdin, MethodSessionStop, `{}`)
-	require.NoError(t, a.Interrupt())
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
 
 	assert.Empty(t, sink.Messages(), "the call keeps its running card until its own update arrives")
 	a.Mu.Lock()
@@ -201,7 +201,7 @@ func TestZCodeInterrupt_ARefusedStopLeavesTheTurnRunning(t *testing.T) {
 	a.Mu.Unlock()
 
 	refuseZCodeRequest(t, a, stdin, MethodSessionStop, -32000, "the session is busy")
-	require.Error(t, a.Interrupt())
+	require.Error(t, a.Interrupt(agent.StopContext{}))
 
 	a.Mu.Lock()
 	turnActive := a.turnActive
@@ -219,7 +219,7 @@ func TestZCodeInterrupt_StoppedAgentReturnsError(t *testing.T) {
 	a.turnActive = true
 	a.Mu.Unlock()
 
-	err := a.Interrupt()
+	err := a.Interrupt(agent.StopContext{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "stopped")
 	assert.Empty(t, stdin.Frames())
@@ -235,7 +235,7 @@ func TestZCodeInterrupt_NoSessionIsANoop(t *testing.T) {
 	a.sessionID = ""
 	a.Mu.Unlock()
 
-	require.NoError(t, a.Interrupt())
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	assert.Empty(t, stdin.Frames())
 }
 
@@ -540,6 +540,7 @@ func TestZCodeClearContext_OpensAFreshSessionAndDropsPerSessionState(t *testing.
 	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
 	a.Mu.Lock()
 	a.turnActive = true
+	a.compactionSessionID = "sess-1"
 	a.backgroundTurn = true
 	a.lastSeq = 99
 	a.toolCalls["call-1"] = &zcodeToolCall{name: "Bash", input: json.RawMessage(`{"command":"ls"}`), final: true}
@@ -571,6 +572,7 @@ func TestZCodeClearContext_OpensAFreshSessionAndDropsPerSessionState(t *testing.
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
 	assert.False(t, a.turnActive)
+	assert.Empty(t, a.compactionSessionID)
 	assert.False(t, a.backgroundTurn)
 	assert.Empty(t, a.toolCalls, "one record per call, so a session replace drops every fact about it")
 	assert.Empty(t, a.pendingControls)
@@ -584,6 +586,43 @@ func TestZCodeClearContext_OpensAFreshSessionAndDropsPerSessionState(t *testing.
 	_, hasTool := a.children.toolChild("sub-1")
 	assert.False(t, hasTool)
 	assert.Empty(t, a.children.title("spawn-2"))
+}
+
+// A context clear opens the fresh session in the mode the user runs in. ZCode keeps
+// plan mode in a flag beside the native mode, so a session in plan mode reads `build`
+// in settings.mode.current. The create request must still ask for plan, or the clear
+// drops the user out of plan mode.
+func TestZCodeClearContext_KeepsPlanMode(t *testing.T) {
+	t.Parallel()
+
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.ControlSink{}), stdin)
+	// ZCode's EnterPlanMode tool turned the plan flag on and kept the native mode.
+	a.HandleOutput(zcodeModeChangedLine(t, 1, zcodePlanEntered))
+
+	go func() {
+		create := waitZCodeRequest(t, stdin, MethodSessionCreate)
+		// session/create folds `mode:"plan"` into the flag, so its reply reads build.
+		a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, create), json.RawMessage(
+			`{"session":{"sessionId":"sess-fresh"},"runtime":{"eventSeq":0},`+
+				`"settings":{"mode":{"current":"build"}}}`)))
+		sub := waitZCodeRequest(t, stdin, MethodSessionSubscribe)
+		a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, sub), json.RawMessage(`{"eventSeq":0}`)))
+	}()
+
+	_, clearErr := a.ClearContext()
+	require.NoError(t, clearErr)
+
+	creates := zcodeRequestsFor(t, stdin, MethodSessionCreate)
+	require.Len(t, creates, 1)
+	var params struct {
+		Mode string `json:"mode"`
+	}
+	require.NoError(t, json.Unmarshal(creates[0].Params, &params))
+	assert.Equal(t, contracts.ZCodeModePlan, params.Mode)
+	assert.Empty(t, zcodeRequestsFor(t, stdin, MethodSetMode),
+		"session/create already opened the fresh session in plan mode")
+	assert.Equal(t, contracts.ZCodeModePlan, zcodePermissionMode(t, a))
 }
 
 func TestZCodeClearContextKeepsTheCurrentSessionWhenCreationFails(t *testing.T) {
