@@ -1,6 +1,7 @@
 import type { ProviderPermissionPresets } from '../providerSettings'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { claudePermissionPresets } from './claude/permissionPresets'
+import { codewhalePermissionPresets } from './codewhale/permissionPresets'
 import { codexPermissionPresets } from './codex/permissionPresets'
 import { copilotPermissionPresets } from './copilot/permissionPresets'
 import { goosePermissionPresets } from './goose/permissionPresets'
@@ -20,6 +21,7 @@ export const PROVIDER_PERMISSION_PRESETS = {
   [AgentProvider.PI]: undefined,
   [AgentProvider.REASONIX]: reasonixPermissionPresets,
   [AgentProvider.ZCODE]: zcodePermissionPresets,
+  [AgentProvider.CODEWHALE]: codewhalePermissionPresets,
 } satisfies Record<AgentProvider, ProviderPermissionPresets | undefined>
 
 /** Read canonical preset data without importing a rendering plugin. */

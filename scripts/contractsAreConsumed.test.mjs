@@ -259,8 +259,7 @@ function tagPinReaders(spec, table, contract) {
  * and the set is deleted once the last reader lands.
  */
 const PENDING_READERS = new Set([
-  'amp-protocol', 'cline-protocol', 'codebuddy-protocol', 'codewhale-protocol',
-  'commandcode-protocol', 'deepseek-harness-protocol', 'dirac-protocol',
+  'amp-protocol', 'cline-protocol', 'codebuddy-protocol',   'commandcode-protocol', 'deepseek-harness-protocol', 'dirac-protocol',
   'droid-protocol', 'fastagent-protocol', 'gemini-protocol', 'grok-protocol',
   'junie-protocol', 'kimi-protocol', 'kiro-protocol', 'letta-protocol',
   'mimo-protocol', 'muse-protocol', 'ohmypi-protocol', 'qoder-protocol',

@@ -56,6 +56,11 @@
       "parseAliases": [
         "glm"
       ]
+    },
+    "AGENT_PROVIDER_CODEWHALE": {
+      "displayName": "Codewhale",
+      "cliAlias": "codewhale",
+      "parseAliases": []
     }
   }
 }

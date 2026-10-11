@@ -10,6 +10,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/codewhale"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/codex"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/copilot"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/cursor"
@@ -36,6 +37,7 @@ func Registrations() []agent.Registration {
 		pi.Registration(),
 		reasonix.Registration(),
 		zcode.Registration(),
+		codewhale.Registration(),
 	}
 }
 

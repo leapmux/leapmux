@@ -379,4 +379,40 @@ export const ROW_KIND_CASES: RowKindCase[] = [
     category: 'unsupported_provider',
   },
 
+  {
+    provider: Provider.CODEWHALE,
+    name: 'reply',
+    payload: { event: 'item.completed', payload: { item: { kind: 'agent_message', status: 'completed', detail: 'Hello there.' } } },
+    category: 'assistant_text',
+  },
+  {
+    provider: Provider.CODEWHALE,
+    name: 'reasoning',
+    payload: { event: 'item.completed', payload: { item: { kind: 'agent_reasoning', status: 'completed', detail: 'Thinking.' } } },
+    category: 'assistant_thinking',
+  },
+  {
+    provider: Provider.CODEWHALE,
+    name: 'tool started',
+    payload: { event: 'item.started', payload: { item: { kind: 'tool_call', metadata: { tool_use_id: 'w1', tool_name: 'bash' } }, tool: { id: 'w1', name: 'bash', input: { command: 'ls' } } } },
+    category: 'tool_use',
+  },
+  {
+    provider: Provider.CODEWHALE,
+    name: 'tool finished',
+    payload: { event: 'item.completed', payload: { item: { kind: 'tool_call', detail: 'a.ts', metadata: { tool_use_id: 'w1', tool_name: 'bash', exit_code: 0 } } } },
+    category: 'tool_result',
+  },
+  {
+    provider: Provider.CODEWHALE,
+    name: 'status',
+    payload: { event: 'item.completed', payload: { item: { kind: 'status', status: 'completed', detail: 'Checkpoint saved' } } },
+    category: 'notification',
+  },
+  {
+    provider: Provider.CODEWHALE,
+    name: 'turn end',
+    payload: { event: 'turn.completed', payload: { turn: { status: 'completed' } } },
+    category: 'result_divider',
+  },
 ]

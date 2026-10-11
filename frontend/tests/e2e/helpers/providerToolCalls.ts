@@ -1,5 +1,6 @@
 import type { MockModelToolCall } from './mockModelScript'
 import { createHash } from 'node:crypto'
+import { CODEWHALE_TOOL } from '../../../src/generated/contracts/codewhale-protocol'
 // Use a relative import.
 // The note in ../agentSettings.ts explains standalone native probes.
 import { COPILOT_TOOL } from '../../../src/generated/contracts/copilot-protocol'
@@ -984,6 +985,74 @@ const TOOL_VOCABULARY = {
     codeExecution: (id, source) => ({ id, name: 'mcp__node_repl__js', arguments: { code: source, title: 'Run the native script' } }),
     workflowTools: [ZCODE_TOOL.CreateWorkflow],
   },
+  [AgentProvider.CODEWHALE]: {
+    bash: (id, command) => ({ id, name: 'bash', arguments: { command } }),
+    // The edit tool accepts a replacement list.
+    // Each replacement matches the original file.
+    // The path resolves against the workspace.
+    edit: (id, { path, before, after }) => ({ id, name: 'edit', arguments: { path, edits: [{ oldText: before, newText: after }] } }),
+    write: (id, { path, content }) => ({ id, name: 'write', arguments: { path, content } }),
+    read: (id, path) => ({ id, name: 'read', arguments: { path } }),
+    // Plan mode is a thread setting, and no tool enters or leaves it.
+    enterPlanMode: null,
+    exitPlanMode: null,
+    exitPlanModeFromFile: null,
+    // The runtime defers request_user_input.
+    // The first call returns its schema and asks no question.
+    // Script the second call to raise the question.
+    // Each question requires an ID that the answer repeats.
+    // The native multi_select field controls multiple choices.
+    // The native allow_free_text field states that the question invites a typed answer. Codewhale 0.10.0 offers the
+    // typed "Other" answer on every question all the same: the field is a hint to the model, and no gate.
+    askUserQuestion: questionBuilder((id, questions) => ({
+      id,
+      name: 'request_user_input',
+      arguments: {
+        questions: questions.map((question, index) => ({
+          id: `question_${index + 1}`,
+          header: question.header,
+          question: question.question,
+          options: question.options.map(({ label, description }) => ({ label, description })),
+          allow_free_text: question.freeText ?? false,
+          multi_select: question.multiSelect ?? false,
+        })),
+      },
+    })),
+    // The agent tool handles each subagent action.
+    // Its start action returns the child ID before the child completes.
+    // The name field identifies the child session and requires an identifier.
+    // The explore role permits reads only.
+    spawnSubagent: (id, { description, prompt, background }) => ({
+      id,
+      name: 'agent',
+      arguments: { action: 'start', name: identifierFrom(description), type: 'explore', prompt, detached: background ?? false },
+    }),
+    spawnSubagentBatch: null,
+    // The bash tool refuses a background argument.
+    // Use the deferred task_shell_start tool for a background command.
+    // The first call loads its schema.
+    // Script the second call to start the command.
+    backgroundBash: (id, command) => ({ id, name: 'task_shell_start', arguments: { command } }),
+    // `todo_write` replaces the whole list, and its rows say `content` where the
+    // shared shape says `step`. The schema of the 0.10.1 source also states `cancelled`; no probe of the installed
+    // 0.10.0 confirmed it, so the builder takes the three statuses alone.
+    updateTodos: (id, steps) => ({
+      id,
+      name: 'todo_write',
+      arguments: { todos: steps.map(step => ({ content: step.step, status: acceptedTodoStatus('Codewhale todo_write', BASE_TODO_STATUSES, step.status) })) },
+    }),
+    // A goal is a thread setting that LeapMux writes, so the model creates none.
+    createGoal: null,
+    // The native update_goal tool ends the goal loop.
+    // The complete status requires a verification receipt that this scripted turn cannot supply.
+    // The test uses blocked to end the loop.
+    completeGoal: null,
+    blockGoal: (id, reason) => ({ id, name: 'update_goal', arguments: { status: 'blocked', blocker: reason } }),
+    mcpTool: (id, { server, tool, input }) => ({ id, name: `mcp_${server}_${tool}`, arguments: input }),
+    codeExecution: (id, source) => ({ id, name: CODEWHALE_TOOL.ExecuteTools, arguments: { code: source } }),
+    workflowTools: [CODEWHALE_TOOL.Workflow],
+  },
+
   // Amp's tool code and native probes define these calls.
   // The mock Amp service leases each non-subagent tool to the CLI executor.
   // Those calls execute in the real agent directory.
@@ -1390,6 +1459,14 @@ export function askUserQuestionToolCall(provider: AgentProvider, id: string, que
 }
 
 /** Enter plan mode, in the provider's own tool. */
+export function codewhaleToolSearchToolCall(id: string, query: string): MockModelToolCall {
+  return { id, name: CODEWHALE_TOOL.ToolSearch, arguments: { query } }
+}
+
+export function codewhaleReadMediaToolCall(id: string, path: string): MockModelToolCall {
+  return { id, name: CODEWHALE_TOOL.ReadMedia, arguments: { path } }
+}
+
 export function enterPlanModeToolCall(provider: AgentProvider, id: string): MockModelToolCall {
   return requireBuilder(vocabulary(provider).enterPlanMode, provider, 'enter plan mode')(id)
 }

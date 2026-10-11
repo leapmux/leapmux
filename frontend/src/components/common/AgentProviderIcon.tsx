@@ -230,7 +230,7 @@ function ZCodeIcon(props: { size: number, class?: string }): JSX.Element {
   )
 }
 
-export function CodewhaleIcon(props: { size: number, class?: string }): JSX.Element {
+function CodewhaleIcon(props: { size: number, class?: string }): JSX.Element {
   // Codewhale's own gradient whale mark (brand/mark-gradient.svg in its
   // repository). The glyph takes 90% of the square viewBox: the mark is a
   // compact silhouette, and at the 85% margin of the Cursor and Goose marks it
@@ -637,6 +637,9 @@ export function AgentProviderIcon(props: AgentProviderIconProps): JSX.Element {
       </Match>
       <Match when={props.provider === AgentProvider.ZCODE}>
         <ZCodeIcon size={props.size} {...classProps()} />
+      </Match>
+      <Match when={props.provider === AgentProvider.CODEWHALE}>
+        <CodewhaleIcon size={props.size} {...classProps()} />
       </Match>
     </Switch>
   )

@@ -74,6 +74,7 @@ describe('AgentProviderIcon', () => {
     // copy inside a hidden subtree would paint nothing at all.
     const gradientProviders = [
       AgentProvider.CODEX,
+      AgentProvider.CODEWHALE,
     ]
     const { container } = render(() => (
       <>

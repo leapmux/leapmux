@@ -4,6 +4,7 @@ import process from 'node:process'
 import { requireLoopbackHttpURL } from './agentEnvironmentInputs'
 import { agentSearchPathEnv } from './binaryOnPath'
 import { createClaudeEnvironment } from './claudeEnvironment'
+import { createCodewhaleEnvironment } from './codewhaleEnvironment'
 import { createCodexEnvironment } from './codexEnvironment'
 import { createCopilotEnvironment } from './copilotEnvironment'
 import { createCursorEnvironment } from './cursorEnvironment'
@@ -341,6 +342,7 @@ export async function createMockAgentEnvironment(
       ...createCursorEnvironment({ homeDir, origin, modelKey: MODEL_KEY }),
       ...createCopilotEnvironment({ homeDir, origin, modelKey: MODEL_KEY, githubToken: MOCK_COPILOT_GITHUB_TOKEN }),
       ...createZcodeEnvironment({ runDirectory: runDir, homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, providerID: MOCK_PROVIDER_IDS.zcode, modelID: MOCK_MODELS.zai, alternateModelID: MOCK_MODELS.pi, plainModelID: ZCODE_PLAIN_MODEL_WIRE_ID }),
+      ...createCodewhaleEnvironment({ homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, modelID: MOCK_MODELS.deepseek, visionModelID: CODEWHALE_VISION_MODEL_ID, mcpEchoServer }),
       ...credentialStoreShimEnv(cliShimsDir, searchPathEnv.PATH ?? process.env.PATH),
     },
   }
