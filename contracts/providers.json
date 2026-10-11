@@ -75,6 +75,13 @@
       "parseAliases": [
         "mimo"
       ]
+    },
+    "AGENT_PROVIDER_QWEN_CODE": {
+      "displayName": "Qwen Code",
+      "cliAlias": "qwen-code",
+      "parseAliases": [
+        "qwen"
+      ]
     }
   }
 }

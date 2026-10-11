@@ -297,7 +297,7 @@ function MiMoCodeIcon(props: { size: number, class?: string }): JSX.Element {
   )
 }
 
-export function QwenCodeIcon(props: { size: number, class?: string }): JSX.Element {
+function QwenCodeIcon(props: { size: number, class?: string }): JSX.Element {
   // The Qwen mark, which the Qwen Code repository also uses as its own logo.
   // Centered, and 85% of the square viewBox.
   const gradId = createUniqueId()
@@ -637,6 +637,9 @@ export function AgentProviderIcon(props: AgentProviderIconProps): JSX.Element {
       </Match>
       <Match when={props.provider === AgentProvider.ZCODE}>
         <ZCodeIcon size={props.size} {...classProps()} />
+      </Match>
+      <Match when={props.provider === AgentProvider.QWEN_CODE}>
+        <QwenCodeIcon size={props.size} {...classProps()} />
       </Match>
       <Match when={props.provider === AgentProvider.MIMO_CODE}>
         <MiMoCodeIcon size={props.size} {...classProps()} />

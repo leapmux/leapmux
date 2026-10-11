@@ -5,7 +5,7 @@
 // to resolve here although a sibling spec may use it.
 import { OPTION_ID_EFFORT, OPTION_ID_MODEL } from '../../src/components/chat/settingsGroups'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
-import { KIMI_MOCK_MODELS, MOCK_MODELS, MOCK_PROVIDER_IDS } from './helpers/mockAgentEnvironment'
+import { KIMI_MOCK_MODELS, MOCK_MODELS, MOCK_PROVIDER_IDS, QWEN_MODEL_ID } from './helpers/mockAgentEnvironment'
 
 /** The model, and the reasoning effort where the provider has one. */
 export interface AgentE2ESettings {
@@ -41,6 +41,7 @@ export const AGENT_E2E_SETTINGS = {
   [AgentProvider.KILO]: { model: `${MOCK_PROVIDER_IDS.openCode}/${MOCK_MODELS.zai}`, effort: 'high' },
   [AgentProvider.OPENCODE]: { model: `${MOCK_PROVIDER_IDS.openCode}/${MOCK_MODELS.zai}`, effort: 'high' },
   [AgentProvider.ZCODE]: { model: `${MOCK_PROVIDER_IDS.zcode}/${MOCK_MODELS.zai}`, effort: 'high' },
+  [AgentProvider.QWEN_CODE]: { model: QWEN_MODEL_ID, effort: 'high' },
   [AgentProvider.MIMO_CODE]: { model: `${MOCK_PROVIDER_IDS.openCode}/${MOCK_MODELS.zai}`, effort: 'high' },
   [AgentProvider.KIMI_CODE]: { model: KIMI_MOCK_MODELS.thinking, effort: 'high' },
   [AgentProvider.CODEWHALE]: { model: MOCK_MODELS.deepseek },

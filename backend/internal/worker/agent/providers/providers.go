@@ -20,6 +20,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/mimo"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/opencode"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/pi"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/qwen"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/reasonix"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/zcode"
 )
@@ -42,6 +43,7 @@ func Registrations() []agent.Registration {
 		codewhale.Registration(),
 		kimi.Registration(),
 		mimo.Registration(),
+		qwen.Registration(),
 	}
 }
 

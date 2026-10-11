@@ -7,6 +7,7 @@ import { COPILOT_TOOL } from '../../../src/generated/contracts/copilot-protocol'
 import { KIMI_TOOL } from '../../../src/generated/contracts/kimi-protocol'
 import { MIMO_ACTOR_ACTION, MIMO_TOOL } from '../../../src/generated/contracts/mimo-protocol'
 import { PI_TOOL } from '../../../src/generated/contracts/pi-protocol'
+import { QWEN_TOOL } from '../../../src/generated/contracts/qwen-protocol'
 import { ZCODE_TOOL } from '../../../src/generated/contracts/zcode-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { escapeRegExp } from '../../../src/lib/regexp'
@@ -987,6 +988,38 @@ const TOOL_VOCABULARY = {
     codeExecution: (id, source) => ({ id, name: 'mcp__node_repl__js', arguments: { code: source, title: 'Run the native script' } }),
     workflowTools: [ZCODE_TOOL.CreateWorkflow],
   },
+  [AgentProvider.QWEN_CODE]: {
+    // Read off the tool schemas in Qwen Code 0.24.4's own model request.
+    bash: (id, command) => ({ id, name: 'run_shell_command', arguments: { command, description: 'Run the scripted command' } }),
+    edit: (id, { path, before, after }) => ({ id, name: 'edit', arguments: { file_path: path, old_string: before, new_string: after } }),
+    write: (id, { path, content }) => ({ id, name: 'write_file', arguments: { file_path: path, content } }),
+    read: (id, path) => ({ id, name: 'read_file', arguments: { file_path: path } }),
+    enterPlanMode: id => ({ id, name: 'enter_plan_mode', arguments: {} }),
+    exitPlanMode: (id, plan) => ({ id, name: 'exit_plan_mode', arguments: { plan } }),
+    exitPlanModeFromFile: null,
+    askUserQuestion: questionBuilder((id, questions) => ({ id, name: 'ask_user_question', arguments: { questions: questions.map(withMultiSelect) } })),
+    // Qwen 0.24 defaults to a background agent run.
+    // Set run_in_background explicitly to select the intended path.
+    spawnSubagent: (id, { description, prompt, background }) => ({
+      id,
+      name: 'agent',
+      arguments: { description, prompt, subagent_type: 'general-purpose', run_in_background: background ?? false },
+    }),
+    spawnSubagentBatch: null,
+    backgroundBash: (id, command) => ({ id, name: 'run_shell_command', arguments: { command, description: 'Run the scripted command in the background', is_background: true } }),
+    updateTodos: (id, steps) => ({
+      id,
+      name: 'todo_write',
+      arguments: { todos: steps.map((step, index) => ({ id: String(index + 1), content: step.step, status: acceptedTodoStatus('Qwen Code todo_write', BASE_TODO_STATUSES, step.status) })) },
+    }),
+    createGoal: null,
+    completeGoal: null,
+    blockGoal: null,
+    mcpTool: (id, { server, tool, input }) => ({ id, name: `mcp__${server}__${tool}`, arguments: input }),
+    codeExecution: (id, source) => ({ id, name: 'exec', arguments: { source } }),
+    workflowTools: [QWEN_TOOL.Workflow],
+  },
+
   [AgentProvider.MIMO_CODE]: {
     // `description` is REQUIRED by the schema, and MiMo refuses a call without it.
     bash: (id, command) => ({ id, name: 'bash', arguments: { command, description: 'Run the scripted command' } }),

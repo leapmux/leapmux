@@ -7,6 +7,7 @@ import { copilotPermissionPresets } from './copilot/permissionPresets'
 import { goosePermissionPresets } from './goose/permissionPresets'
 import { kimiPermissionPresets } from './kimi/permissionPresets'
 import { mimoPermissionPresets } from './mimo/permissionPresets'
+import { qwenPermissionPresets } from './qwen/permissionPresets'
 import { reasonixPermissionPresets } from './reasonix/permissionPresets'
 import { zcodePermissionPresets } from './zcode/permissionPresets'
 
@@ -25,6 +26,7 @@ export const PROVIDER_PERMISSION_PRESETS = {
   [AgentProvider.ZCODE]: zcodePermissionPresets,
   [AgentProvider.CODEWHALE]: codewhalePermissionPresets,
   [AgentProvider.KIMI_CODE]: kimiPermissionPresets,
+  [AgentProvider.QWEN_CODE]: qwenPermissionPresets,
   [AgentProvider.MIMO_CODE]: mimoPermissionPresets,
 } satisfies Record<AgentProvider, ProviderPermissionPresets | undefined>
 

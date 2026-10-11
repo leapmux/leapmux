@@ -75,6 +75,7 @@ describe('AgentProviderIcon', () => {
     const gradientProviders = [
       AgentProvider.CODEX,
       AgentProvider.CODEWHALE,
+      AgentProvider.QWEN_CODE,
     ]
     const { container } = render(() => (
       <>

@@ -263,7 +263,7 @@ const PENDING_READERS = new Set([
   'droid-protocol', 'fastagent-protocol', 'gemini-protocol', 'grok-protocol',
   'junie-protocol', 'kiro-protocol', 'letta-protocol',
   'muse-protocol', 'ohmypi-protocol', 'qoder-protocol',
-  'qwen-protocol',
+ ,
 ])
 
 const cases = PROVIDER_PROTOCOLS.flatMap(spec =>

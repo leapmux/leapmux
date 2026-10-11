@@ -491,4 +491,26 @@ export const ROW_KIND_CASES: RowKindCase[] = [
     payload: errorFrame('APIError', 'Provider returned 500'),
     category: 'notification',
   },
+  {
+    provider: Provider.QWEN_CODE,
+    name: 'tool call, named in _meta',
+    payload: {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'call_e4a50b50ee',
+      status: 'pending',
+      title: 'Shell',
+      content: [],
+      locations: [],
+      kind: 'execute',
+      rawInput: {},
+      _meta: { toolName: 'run_shell_command', provenance: 'builtin', phase: 'preparing' },
+    },
+    category: 'tool_use',
+  },
+  {
+    provider: Provider.QWEN_CODE,
+    name: 'end of a turn Qwen started',
+    payload: { jsonrpc: '2.0', method: '_qwencode/end_turn', params: { sessionId: 's', reason: 'end_turn', source: 'goal' } },
+    category: 'result_divider',
+  },
 ]
