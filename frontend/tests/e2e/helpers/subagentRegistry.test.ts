@@ -1,84 +1,74 @@
 /**
- * Unit tests for the background-task / session-goal E2E helper.
+ * The unit tests check the source rules for shared registry locators.
+ * claude-code/background-tasks-sidebar.spec.ts checks actual Worker state before hydration.
+ * ./goalsAndTodos.test.ts checks the locators of the Goals & To-dos section.
  *
- * A `.test.ts` under `tests/e2e/` runs under vitest, not Playwright: it needs
- * no browser and no hub, so it costs milliseconds and belongs to
- * `task test-frontend`. Both runner configs are pinned to that rule, and
- * `src/test-support/testFileNaming.test.ts` fails the suite if this file is
- * ever renamed to `.spec.ts`.
- *
- * It asserts over the helper's SOURCE and imports nothing from it, which is not
- * a shortcut: `./subagentRegistry.ts` imports the Playwright fixtures, so a
- * unit test that imported it would drag a browser-only module graph into
- * vitest and fail to load. The logic that CAN be imported lives in
- * `./goalTransitions.ts` and is tested beside itself.
+ * The .test.ts extension selects Vitest. The .spec.ts extension selects Playwright.
+ * Both runner configurations and testFileNaming.test.ts enforce that distinction.
  */
+import type { Locator, Page } from '@playwright/test'
+import type { ModelScript } from './modelScriptFixture'
+import type { HeldChildCase, HeldChildContext } from './subagentRegistry'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { exportedFunctionBody, selectorsIn } from '~/test-support/locatorSource'
+import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { ohMyPiYieldToolCall, spawnSubagentToolCall } from './providerToolCalls'
+import { backgroundTaskRows, backgroundTaskRowsIncludingHidden, exerciseHeldChildRow, expectRowBecomesFinal, HELD_CHILD_NAME, HELD_CHILD_REPORT, HELD_CHILD_TASK, HELD_CHILD_TITLE, heldChildAnswer, openChildTabFromRow, openHeldChildTab, requireRegistryRow } from './subagentRegistry'
+import { startWaitLimitForTests } from './testDeadline'
+
+/** The end of the wait limit that a failure case starts, so that a wait which never passes ends inside the case. */
+let endWaitLimit: (() => void) | undefined
+
+afterEach(() => {
+  endWaitLimit?.()
+  endWaitLimit = undefined
+})
+
+/** The Worker registry that the fake snapshot read returns, and the order of the reads and model script calls. */
+const registry = vi.hoisted(() => ({ tasks: [] as unknown[], log: [] as string[], rules: [] as unknown[], steps: [] as unknown[] }))
+
+vi.mock('./nativeSidebarSnapshot', async importOriginal => ({
+  ...await importOriginal<typeof import('./nativeSidebarSnapshot')>(),
+  readNativeSidebarSnapshot: async () => {
+    registry.log.push('registry')
+    return { backgroundTasks: registry.tasks }
+  },
+}))
 
 const source = readFileSync(join(import.meta.dirname, 'subagentRegistry.ts'), 'utf-8')
 
-// The body excludes only the DELIMITER, via a lookahead, rather than every
-// quote character: a selector is `'[data-testid="x"]'`, so a class that banned
-// all three quotes stopped at the first inner `"` and matched nothing at all --
-// which would have made these assertions vacuous.
-const LOCATOR = /page\.locator\(\s*(['"`])((?:(?!\1).)*)\1/g
-
-// `getByTestId` is the SECOND way this file names an element, and the rule
-// covers it too. A helper written entirely in that form escaped the scan
-// completely, while `locators.length > 5` still passed on the older calls --
-// so the guard reported green over a locator family nobody checked. The
-// captured id is normalized to the selector spelling, so one predicate below
-// judges both forms.
-const TEST_ID = /page\.getByTestId\(\s*(['"`])((?:(?!\1).)*)\1/g
-
-function selectorsIn(text: string): string[] {
-  // Group 2 always participates (a starred group matches empty rather than
-  // abstaining), so the fallback is type-level only.
-  return [
-    ...[...text.matchAll(LOCATOR)].map(match => match[2] ?? ''),
-    ...[...text.matchAll(TEST_ID)].map(match => `[data-testid="${match[2]}"]`),
-  ]
-}
-
 /** The source of one exported helper, from its signature to its closing brace. */
 function bodyOf(name: string): string {
-  const start = source.indexOf(`export async function ${name}(`)
-  const end = start < 0 ? -1 : source.indexOf('\n}\n', start)
-  if (end < 0)
-    throw new Error(`${name} is no longer an exported function of subagentRegistry.ts`)
-  return source.slice(start, end)
+  return exportedFunctionBody(source, name, 'subagentRegistry.ts')
 }
 
 /**
- * Which locators of this helper carry `:visible`, and which must not.
+ * Check the visible scope for shared locators.
+ * ChatView can render a hidden premeasure copy of an unmeasured row.
+ * The sidebar also has desktop and mobile mounts.
+ * A bare test ID can match both copies and fail strict mode.
+ * An unscoped first() can select a hidden copy and inspect state that the user cannot see.
  *
- * The sidebar is mounted twice (the desktop tree and the mobile one both
- * render) and ChatView renders each unmeasured row twice, so a bare test id
- * matches two elements. Playwright's strict mode then throws on every call --
- * or, worse, `.first()` silently picks the off-screen copy and the assertion
- * reads state nobody can see. So a locator that must MATCH an element is
- * `:visible`-scoped.
- *
- * A locator that asserts an ABSENCE is the opposite case, and the rule inverts
- * for it. See `ABSENCE_HELPERS` below.
- *
- * Asserted over the SOURCE rather than a rendered page, because that is what
- * makes it cheap enough to run on every commit; the alternative is discovering
- * it from a spec timeout.
+ * Present-element locators require :visible.
+ * Sidebar section locators select the first visible mount that receives Worker metadata.
+ * Absence locators require every copy to be absent, including hidden rows.
+ * ABSENCE_HELPERS identifies that separate rule.
+ * Source checks detect these defects before a slow browser spec times out.
  */
 describe('registry locators', () => {
-  /** Test ids that name a surface the app mounts more than once. */
-  const DUPLICATED = ['bg-task-', 'goal-', 'section-header-']
+  it.each(['backgroundTasksSection'])('selects the first visible sidebar mount in %s', (name) => {
+    const body = bodyOf(name)
+    expect(selectorsIn(body)).toHaveLength(1)
+    expect(body).toMatch(/return page\.locator\([^\n]*:visible[^\n]*\)\.first\(\)/)
+  })
+  /** Test IDs for surfaces that the app mounts more than once. */
+  const DUPLICATED = ['bg-task-', 'section-header-']
 
   /**
-   * The helpers that assert a count of ZERO, where `:visible` is wrong.
-   *
-   * Two reasons, and the second is the one that bites. A count of zero is
-   * already immune to the double mount, because neither copy may exist. And
-   * `:visible` matches nothing while the section is COLLAPSED, so the rows are
-   * present, hidden, and the assertion reads zero and passes.
+   * A zero-count assertion requires both mounts to contain no rows.
+   * A :visible scope could hide rows in a collapsed section and falsely report zero.
    */
   const ABSENCE_HELPERS = ['expectNoRegistryRows']
 
@@ -86,9 +76,7 @@ describe('registry locators', () => {
     const locators = selectorsIn(
       ABSENCE_HELPERS.reduce((rest, name) => rest.replace(bodyOf(name), ''), source),
     )
-    // The scan has to find something, or a rewrite of the helper -- or a
-    // pattern that silently stops matching -- would make this pass by finding
-    // nothing to check.
+    // Require selectors so a parser or helper change cannot pass through an empty scan.
     expect(locators.length).toBeGreaterThan(5)
 
     const offenders = locators.filter(selector =>
@@ -97,33 +85,457 @@ describe('registry locators', () => {
     expect(offenders).toEqual([])
   })
 
-  /**
-   * The scan reads BOTH ways this file can name an element.
-   *
-   * The rule is about the element a locator resolves to, not about the call
-   * that builds it, so a helper written in `getByTestId` form must not escape
-   * it. It did: the scan matched `page.locator` alone, and the count assertion
-   * above stayed healthy on the older calls while a whole locator family went
-   * unchecked. Asserted here against a FIXTURE rather than against the source,
-   * because the helper is free to use one form only -- and it does today, so a
-   * source-based liveness check would fail for the right code.
-   */
-  it('reads a getByTestId locator, not only a page.locator one', () => {
-    const sample = `
-      page.locator('[data-testid="goal-card"]:visible')
-      page.getByTestId('agent-input-queue')
-    `
-    expect(selectorsIn(sample)).toEqual([
-      '[data-testid="goal-card"]:visible',
-      '[data-testid="agent-input-queue"]',
-    ])
-  })
-
   it('leaves an absence assertion unscoped, so a collapsed section cannot pass it', () => {
     for (const name of ABSENCE_HELPERS) {
       const locators = selectorsIn(bodyOf(name))
       expect(locators.length, `${name} should build at least one locator`).toBeGreaterThan(0)
       expect(locators.filter(selector => selector.includes(':visible'))).toEqual([])
     }
+  })
+})
+
+/**
+ * CI runs no E2E. A provider whose registry row shows a subagent name takes that
+ * name from its spawn call, so a change to the name that a builder derives fails
+ * here, before a browser spec waits on a row title that never appears.
+ */
+describe('HELD_CHILD_NAME', () => {
+  const request = { description: HELD_CHILD_TITLE, prompt: `${HELD_CHILD_TASK}.` }
+
+  it('is the task_name that the Codex spawn call derives from the held child description', () => {
+    expect(spawnSubagentToolCall(AgentProvider.CODEX, 'spawn-held-child', request).arguments).toMatchObject({ task_name: HELD_CHILD_NAME })
+  })
+
+  it('keeps the name, the description, and the task distinct, so a row title assertion identifies the field that the row shows', () => {
+    expect(HELD_CHILD_TITLE).not.toContain(HELD_CHILD_NAME)
+    expect(HELD_CHILD_TASK).not.toContain(HELD_CHILD_NAME)
+    expect(HELD_CHILD_TASK).not.toContain(HELD_CHILD_TITLE)
+  })
+})
+
+/**
+ * CI runs no E2E. The held child's answer decides whether a provider nudges its
+ * child into extra turns after the hold releases, and the composition that pins
+ * the hold gate onto a provider's own answer is checked here.
+ */
+describe('heldChildAnswer', () => {
+  const base: Pick<HeldChildCase, 'heldAnswer'> = {}
+
+  it('answers with the shared text under the hold gate by default', () => {
+    const answer = heldChildAnswer(base)
+    expect(answer.text).toBe('One, two, three.')
+    expect(answer.gate).toBeTruthy()
+  })
+
+  it('keeps the provider answer and applies the hold gate to it', () => {
+    const answer = heldChildAnswer({ ...base, heldAnswer: { toolCalls: [ohMyPiYieldToolCall('held-child-yield', HELD_CHILD_REPORT)] } })
+    expect(answer.toolCalls).toEqual([{ id: 'held-child-yield', name: 'yield', arguments: { data: HELD_CHILD_REPORT } }])
+    expect(answer.gate).toBe(heldChildAnswer(base).gate)
+  })
+
+  it('overrides a gate that the provider answer carries, so the hold cannot be dropped', () => {
+    const answer = heldChildAnswer({ ...base, heldAnswer: { text: 'Done.', gate: 'caller-gate' } })
+    expect(answer.text).toBe('Done.')
+    expect(answer.gate).toBe(heldChildAnswer(base).gate)
+  })
+})
+
+interface NavigationState {
+  ids: string[]
+  selectedId: string
+  childId: string | null
+}
+
+/**
+ * Narrow adapters test the real navigation helper without a browser-install dependency.
+ * The adapters provide only the methods that the helper calls.
+ * Any new unsupported method fails the test rather than supplying a default result.
+ */
+function navigation(state: NavigationState, change: () => void) {
+  const locator = (selector: string): Locator => {
+    const selected = /\[data-tab-id="([^"\]]+)"\]/.exec(selector)?.[1]
+    const ids = () => selected === undefined ? state.ids : state.ids.filter(id => id === selected)
+    const attributes = (name: string) => name === 'data-tab-id'
+      ? selected ?? ids()[0] ?? null
+      : name === 'aria-selected' ? String(state.selectedId === (selected ?? ids()[0])) : null
+    const probe = Object.assign({} as Locator, {
+      readCount: () => ids().length,
+      readAttribute: attributes,
+      count: async () => ids().length,
+      getAttribute: async (name: string) => attributes(name),
+      evaluateAll: async (read: (elements: Element[]) => unknown) => read(ids().map((id) => {
+        return Object.assign({} as Element, { getAttribute: (name: string) => name === 'data-tab-id' ? id : null })
+      })),
+      filter: () => probe,
+      first: () => probe,
+      isVisible: async () => ids().length > 0,
+    })
+    return probe
+  }
+  const page = Object.assign({} as Page, { locator })
+  const click = vi.fn(async () => change())
+  const row = Object.assign({} as Locator, { getAttribute: async () => state.childId, click })
+  return { page, row, click }
+}
+
+vi.mock('@playwright/test', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@playwright/test')>()
+  const check = (value: unknown, message?: string) => {
+    if (typeof value === 'object' && value !== null && 'readCount' in value && typeof value.readCount === 'function'
+      && 'readAttribute' in value && typeof value.readAttribute === 'function') {
+      const count = value.readCount
+      const attribute = value.readAttribute
+      return {
+        toHaveCount: async (expected: number) => expect(count(), message).toBe(expected),
+        toBeVisible: async () => expect(count(), message).toBeGreaterThan(0),
+        toHaveAttribute: async (key: string, expected: string) => {
+          if ('observeAttributeAssertion' in value && typeof value.observeAttributeAssertion === 'function')
+            value.observeAttributeAssertion(key, expected)
+          expect(attribute(key), message).toBe(expected)
+        },
+        toHaveText: async (expected: string) => {
+          if (!('readText' in value) || typeof value.readText !== 'function')
+            throw new Error('The locator probe supplies no text reader')
+          expect(value.readText(), message).toBe(expected)
+        },
+        // The negated form without a value, as `expandSidebarSection` checks that the section carries no `data-closed`.
+        not: { toHaveAttribute: async (key: string) => expect(attribute(key), message).toBeNull() },
+      }
+    }
+    return expect(value, message)
+  }
+  // A fake poll reads once. A read that throws rejects the assertion with that error, as the last attempt of a real poll does.
+  return { ...actual, expect: Object.assign(check, {
+    poll: (read: () => Promise<unknown>, options?: { message?: string }) => ({
+      toBe: async (expected: unknown) => expect(await read(), options?.message).toBe(expected),
+      toMatch: async (expected: RegExp) => expect(await read(), options?.message).toMatch(expected),
+      not: {
+        toBe: async (expected: unknown) => expect(await read(), options?.message).not.toBe(expected),
+        toBeNull: async () => expect(await read(), options?.message).not.toBeNull(),
+      },
+    }),
+  }) }
+})
+
+/** A page whose locator returns its selector, so a case reads the selector that a helper builds. */
+const selectorPage = Object.assign({} as Page, { locator: (selector: string) => selector as unknown as Locator })
+
+describe('backgroundTaskRows', () => {
+  it('selects every visible row when the selection is empty', () => {
+    expect(backgroundTaskRows(selectorPage)).toBe('[data-testid="bg-task-row"]:visible')
+  })
+
+  it('selects the visible rows of the kind, the task ID, and the child agent ID of the selection', () => {
+    expect(backgroundTaskRows(selectorPage, { kind: 'workflow', taskId: 'workflow:run-1' }))
+      .toBe('[data-testid="bg-task-row"][data-kind="workflow"][data-task-id="workflow:run-1"]:visible')
+    expect(backgroundTaskRows(selectorPage, { kind: 'subagent', childAgentId: 'child-1' }))
+      .toBe('[data-testid="bg-task-row"][data-kind="subagent"][data-child-agent-id="child-1"]:visible')
+  })
+
+  it.each([
+    ['a quote', 'task"1', 'task\\"1'],
+    ['a backslash', 'task\\1', 'task\\\\1'],
+    ['a line break', 'task\n1', 'task\\a 1'],
+  ])('escapes %s in an ID, so the value stays one quoted CSS string', (_label, id, escaped) => {
+    expect(backgroundTaskRows(selectorPage, { taskId: id, childAgentId: id }))
+      .toBe(`[data-testid="bg-task-row"][data-task-id="${escaped}"][data-child-agent-id="${escaped}"]:visible`)
+  })
+
+  it('keeps an empty ID as an empty attribute value, so it matches no real row', () => {
+    expect(backgroundTaskRows(selectorPage, { taskId: '' })).toBe('[data-testid="bg-task-row"][data-task-id=""]:visible')
+  })
+})
+
+describe('backgroundTaskRowsIncludingHidden', () => {
+  it('selects the rows of the selection with no visible scope, so an absence check also sees a hidden row', () => {
+    expect(backgroundTaskRowsIncludingHidden(selectorPage)).toBe('[data-testid="bg-task-row"]')
+    expect(backgroundTaskRowsIncludingHidden(selectorPage, { kind: 'shell' })).toBe('[data-testid="bg-task-row"][data-kind="shell"]')
+  })
+})
+
+describe('requireRegistryRow', () => {
+  /** A page whose every locator is one probe row. The probe also stands for the open section header. */
+  function registry(isVisible: () => Promise<boolean>) {
+    const selectors: string[] = []
+    const row: Locator = Object.assign({} as Locator, {
+      first: () => row,
+      isVisible,
+      // `expandSidebarSection` reads the header. An open header needs no click, and it carries no `data-closed`,
+      // which the fake `expect` below reads to confirm that the section is open.
+      evaluate: async () => true,
+      readCount: () => 1,
+      readAttribute: () => null,
+    })
+    const page = Object.assign({} as Page, {
+      locator: (selector: string) => {
+        selectors.push(selector)
+        return row
+      },
+    })
+    return { page, row, selectors }
+  }
+
+  it('returns the first visible row of the requested kind', async () => {
+    const view = registry(async () => true)
+    expect(await requireRegistryRow(view.page, 'shell')).toBe(view.row)
+    expect(view.selectors).toContain('[data-testid="bg-task-row"][data-kind="shell"]:visible')
+  })
+
+  it('states the missing subagent row in its failure', async () => {
+    endWaitLimit = startWaitLimitForTests(300)
+    const view = registry(async () => false)
+    await expect(requireRegistryRow(view.page)).rejects.toThrow('the scripted spawn produced no subagent row in the registry')
+  })
+
+  it('states the missing shell row in its failure', async () => {
+    endWaitLimit = startWaitLimitForTests(300)
+    const view = registry(async () => false)
+    await expect(requireRegistryRow(view.page, 'shell')).rejects.toThrow('the scripted command produced no shell row in the registry')
+  })
+
+  it('reads again after a row read that throws, and returns the row that then shows', async () => {
+    const reads = [async () => {
+      throw new Error('Element is not attached to the DOM')
+    }, async () => false, async () => true]
+    const view = registry(async () => (reads.shift() ?? (async () => true))())
+    expect(await requireRegistryRow(view.page)).toBe(view.row)
+    expect(reads).toEqual([])
+  })
+
+  it('keeps the error of a row read that always fails as the error and the cause of its failure', async () => {
+    endWaitLimit = startWaitLimitForTests(300)
+    const closed = new Error('Target page, context or browser has been closed')
+    const view = registry(async () => {
+      throw closed
+    })
+    const failure = await requireRegistryRow(view.page).catch((error: unknown) => error)
+    expect(failure).toBeInstanceOf(Error)
+    expect((failure as Error).message.split('\n')[0]).toBe(closed.message)
+    expect((failure as Error).cause).toBe(closed)
+  })
+})
+
+/** A locator probe that the fake `expect` reads, with a count and attributes. */
+function probe(count: number, attributes: Record<string, string> = {}): Locator {
+  const locator: Locator = Object.assign({} as Locator, {
+    readCount: () => count,
+    readAttribute: (name: string) => attributes[name] ?? null,
+    first: () => locator,
+    getAttribute: async (name: string) => attributes[name] ?? null,
+  })
+  return locator
+}
+
+/**
+ * A context with one root agent tab and an empty registry in the DOM.
+ * The model script logs each call and keeps each rule. Its queue fails, which ends the setup after the spawn is
+ * scripted.
+ */
+function context(): HeldChildContext {
+  const page = Object.assign({} as Page, {
+    locator: (selector: string) => {
+      if (selector.includes('[data-tab-type="agent"]'))
+        return probe(1, { 'data-tab-id': 'root-agent' })
+      if (selector.startsWith('[data-testid="bg-task-'))
+        return probe(0)
+      throw new Error(`The fake page has no locator for ${selector}.`)
+    },
+  })
+  const modelScript = Object.assign({} as ModelScript, {
+    prompt: (text: string) => text,
+    rule: async (...rules: unknown[]) => {
+      registry.log.push('rule')
+      registry.rules.push(...rules)
+    },
+    queue: async (...steps: unknown[]) => {
+      registry.log.push('queue')
+      registry.steps.push(...steps)
+      throw new Error('The fake model script stops after the queue.')
+    },
+    releaseGateIfHeld: async () => {
+      registry.log.push('release')
+      return false
+    },
+  })
+  return { page, modelScript, provider: AgentProvider.CLAUDE_CODE, leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'unused', workerId: 'unused' } }
+}
+
+describe('openHeldChildTab', () => {
+  beforeEach(() => {
+    registry.tasks = []
+    registry.log = []
+  })
+
+  const heldCase: HeldChildCase = { childTurn: { user: HELD_CHILD_TASK }, rootTurnsAfterSpawn: [{ text: 'The root completed.' }] }
+
+  it('reads the Worker registry before it scripts the spawn, and releases the hold when the setup fails', async () => {
+    await expect(openHeldChildTab(context(), heldCase)).rejects.toThrow('stops after the queue')
+    expect(registry.log).toEqual(['registry', 'rule', 'queue', 'release'])
+  })
+
+  it('refuses a Worker registry that holds a row before it scripts the spawn', async () => {
+    registry.tasks = [{ id: 'earlier-task', childAgentId: 'earlier-child' }]
+    await expect(openHeldChildTab(context(), heldCase)).rejects.toThrow('the Worker registry must hold no task rows before a spawn')
+    expect(registry.log).toEqual(['registry'])
+  })
+})
+
+describe('exerciseHeldChildRow', () => {
+  beforeEach(() => {
+    registry.tasks = []
+    registry.log = []
+    registry.rules = []
+    registry.steps = []
+  })
+
+  it('holds the child turn of the shared task, answers the root once after the spawn, and releases the hold on a failure', async () => {
+    await expect(exerciseHeldChildRow(context())).rejects.toThrow('stops after the queue')
+    expect(registry.log).toEqual(['registry', 'rule', 'queue', 'release'])
+    expect(registry.rules).toEqual([expect.objectContaining({ when: { user: HELD_CHILD_TASK }, respond: heldChildAnswer({}) })])
+    expect(registry.steps.slice(1)).toEqual([{ text: 'The actual native child completed.' }])
+  })
+
+  it('holds the answer that the provider gives in place of text', async () => {
+    const heldAnswer = { toolCalls: [ohMyPiYieldToolCall('held-child-yield', 'Counted.')] }
+    await expect(exerciseHeldChildRow(context(), { rowTitle: HELD_CHILD_NAME, heldAnswer })).rejects.toThrow('stops after the queue')
+    expect(registry.rules).toEqual([expect.objectContaining({ respond: heldChildAnswer({ heldAnswer }) })])
+  })
+})
+
+describe('openChildTabFromRow', () => {
+  it('opens the exact absent child and preserves the added-tab check', async () => {
+    const state: NavigationState = { ids: ['parent'], selectedId: 'parent', childId: 'actual-child' }
+    const view = navigation(state, () => {
+      state.ids.push('actual-child')
+      state.selectedId = 'actual-child'
+    })
+    expect(await openChildTabFromRow(view.page, view.row)).toBe('actual-child')
+    expect(view.click).toHaveBeenCalledTimes(1)
+    expect(state.ids).toEqual(['parent', 'actual-child'])
+    expect(state.selectedId).toBe('actual-child')
+  })
+
+  it('selects the existing native child without requiring another tab', async () => {
+    const state: NavigationState = { ids: ['parent', 'actual-child'], selectedId: 'parent', childId: 'actual-child' }
+    const view = navigation(state, () => state.selectedId = 'actual-child')
+    expect(await openChildTabFromRow(view.page, view.row)).toBe('actual-child')
+    expect(state.ids).toEqual(['parent', 'actual-child'])
+    expect(state.selectedId).toBe('actual-child')
+  })
+
+  it('keeps an already selected child on a repeated row click', async () => {
+    const state: NavigationState = { ids: ['parent', 'actual-child'], selectedId: 'actual-child', childId: 'actual-child' }
+    const view = navigation(state, () => {})
+    expect(await openChildTabFromRow(view.page, view.row)).toBe('actual-child')
+    expect(view.click).toHaveBeenCalledTimes(1)
+    expect(state.ids).toEqual(['parent', 'actual-child'])
+  })
+
+  it.each([null, '', '   '])('refuses an absent native child ID before clicking: %j', async (childId) => {
+    const state: NavigationState = { ids: ['parent'], selectedId: 'parent', childId }
+    const view = navigation(state, () => {
+      state.ids.push('unrelated-child')
+      state.selectedId = 'unrelated-child'
+    })
+    // The poll for the child ID of the row never reads a nonblank value.
+    await expect(openChildTabFromRow(view.page, view.row)).rejects.toThrow(/to match \/\\S\//)
+    expect(view.click).not.toHaveBeenCalled()
+  })
+
+  it('refuses an unrelated new tab even when the count increases correctly', async () => {
+    const state: NavigationState = { ids: ['parent'], selectedId: 'parent', childId: 'actual-child' }
+    const view = navigation(state, () => {
+      state.ids.push('other-child')
+      state.selectedId = 'other-child'
+    })
+    await expect(openChildTabFromRow(view.page, view.row)).rejects.toThrow('the row selects only its exact native child tab')
+  })
+
+  it('requires the exact opened child to become selected', async () => {
+    const state: NavigationState = { ids: ['parent'], selectedId: 'parent', childId: 'actual-child' }
+    const view = navigation(state, () => state.ids.push('actual-child'))
+    // The tab of the child opens, but its `aria-selected` stays false.
+    await expect(openChildTabFromRow(view.page, view.row)).rejects.toThrow('expected \'false\' to be \'true\'')
+  })
+
+  it('refuses duplicate rendered tab IDs before clicking', async () => {
+    const state: NavigationState = { ids: ['parent', 'parent'], selectedId: 'parent', childId: 'actual-child' }
+    const view = navigation(state, () => state.ids.push('actual-child'))
+    await expect(openChildTabFromRow(view.page, view.row)).rejects.toThrow('rendered agent tab IDs are unique')
+    expect(view.click).not.toHaveBeenCalled()
+  })
+})
+
+describe('expectRowBecomesFinal', () => {
+  function finalRow(status: string, label: string, appearance: { title?: string, dotLabel?: string, secondaryPresent?: boolean } = {}) {
+    const observed: string[] = []
+    const title = appearance.title ?? 'Task'
+    const dotLabel = appearance.dotLabel ?? label
+    const secondaryPresent = appearance.secondaryPresent ?? true
+    const header = Object.assign(probe(1), { evaluate: async () => true })
+    const page = Object.assign({} as Page, { locator: () => header })
+    const row = Object.assign(probe(1, { 'data-status': status }), {
+      locator: (selector: string) => {
+        if (selector === '[data-testid="bg-task-status-dot"]:visible') {
+          return Object.assign(probe(1, { 'aria-label': dotLabel }), {
+            observeAttributeAssertion: (_key: string, expected: string) => observed.push(expected),
+          })
+        }
+        if (selector === '[data-testid="bg-task-secondary"]:visible, :scope:not(:has([data-testid="bg-task-secondary"]:visible)) [data-testid="bg-task-title"]:visible')
+          return Object.assign(probe(1), { readText: () => secondaryPresent ? label : title })
+        throw new Error(`The final-row probe does not support selector ${selector}`)
+      },
+      filter: ({ hasText }: { hasText: string }) => {
+        const text = secondaryPresent ? `${title} ${label}` : title
+        return probe(text.toLowerCase().includes(hasText.toLowerCase()) ? 1 : 0)
+      },
+    })
+    return { page, row, observed }
+  }
+
+  it.each([
+    ['succeeded', 'Succeeded'],
+    ['failed', 'Failed'],
+    ['stopped', 'Stopped'],
+    ['interrupted', 'Interrupted'],
+    ['ended_with_unknown_outcome', 'Ended with unknown outcome'],
+  ])('accepts the final %s row and requires its exact label', async (status, label) => {
+    const view = finalRow(status, label)
+    await expect(expectRowBecomesFinal(view.page, view.row)).resolves.toBeUndefined()
+    expect(view.observed).toEqual([label])
+  })
+
+  it.each(['pending', 'running', 'paused', ''])('refuses the open or absent row status %j', async (status) => {
+    const view = finalRow(status, 'Running')
+    await expect(expectRowBecomesFinal(view.page, view.row)).rejects.toThrow('not to be null')
+    expect(view.observed).toEqual([])
+  })
+
+  it('refuses a wrong status-dot label when the title contains the expected end label', async () => {
+    const view = finalRow('succeeded', 'Succeeded', { title: 'Succeeded task', dotLabel: 'Failed' })
+    await expect(expectRowBecomesFinal(view.page, view.row)).rejects.toThrow('expected')
+  })
+
+  it('refuses a wrong end-line label when the title and status dot contain the expected label', async () => {
+    const view = finalRow('succeeded', 'Failed', { title: 'Succeeded task', dotLabel: 'Succeeded' })
+    await expect(expectRowBecomesFinal(view.page, view.row)).rejects.toThrow('expected')
+  })
+
+  it('accepts the canonical title when the repeated end line is absent', async () => {
+    const view = finalRow('succeeded', 'Succeeded', { title: 'Succeeded', secondaryPresent: false })
+    await expect(expectRowBecomesFinal(view.page, view.row)).resolves.toBeUndefined()
+    expect(view.observed).toEqual(['Succeeded'])
+  })
+
+  it('checks the secondary when a longer title contains the canonical word', async () => {
+    const view = finalRow('succeeded', 'Succeeded', { title: 'Succeeded task' })
+    await expect(expectRowBecomesFinal(view.page, view.row)).resolves.toBeUndefined()
+    expect(view.observed).toEqual(['Succeeded'])
+  })
+
+  it('refuses a final row whose visible label states a different outcome', async () => {
+    const view = finalRow('failed', 'Succeeded')
+    await expect(expectRowBecomesFinal(view.page, view.row)).rejects.toThrow('expected')
+    expect(view.observed).toEqual(['Failed'])
   })
 })

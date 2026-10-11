@@ -1,4 +1,5 @@
-import { expect, test } from './fixtures'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
 
 /**
  * The shared tab must not carry one spec's emulation into the next.

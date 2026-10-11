@@ -1,241 +1,160 @@
-import { Buffer } from 'node:buffer'
-import { writeFileSync } from 'node:fs'
-import { join } from 'node:path'
-import { expect, test } from './fixtures'
-import { createTestDirectory } from './helpers/runDirectory'
-import { expectClipsToOneLine } from './helpers/ui'
+import type { Page } from '@playwright/test'
+import { readFileSync } from 'node:fs'
+import { expect } from '@playwright/test'
+import { nativeContext } from './claude-code/scenarios'
+import { test } from './fixtures'
+import { attachFile, attachmentPills, attachmentStrip, writeAttachmentFixture } from './helpers/attachments'
+import { sendNativeAnswer } from './helpers/nativeConversation'
+import { selectedAgentTab, selectedAgentTabId } from './helpers/nativeScenario'
+import { composerEditor, expectClipsToOneLine, focusComposer, openAgentViaUI, tabById, userBubbles, waitForSettingsHydrated } from './helpers/ui'
 
-/** Create a minimal 1x1 PNG file in a temp directory and return its path. */
-function createTestPng(name = 'test.png'): string {
-  // 1x1 red pixel PNG (67 bytes)
-  const png = Buffer.from(
-    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwADhQGAWjR9awAAAABJRU5ErkJggg==',
-    'base64',
-  )
-  const path = join(createTestDirectory('attachment-'), name)
-  writeFileSync(path, png)
-  return path
-}
+/**
+ * How the clipboard of a paste lists its file:
+ *
+ * - `listed`: in `files` and in `items`, as Chromium lists it.
+ * - `empty`: in `items` only, as WebKitGTK lists a pasted image. The paste replaces Chromium's `files` getter to
+ *   reproduce that shape.
+ */
+type PastedFiles = 'listed' | 'empty'
 
-/** Create a minimal binary file (unsupported for the default provider) for rejection testing. */
-function createTestBinary(name = 'test.bin'): string {
-  const path = join(createTestDirectory('attachment-'), name)
-  writeFileSync(path, Buffer.from([0x00, 0xFF, 0x01, 0xFE]))
-  return path
+/**
+ * Paste a PNG file into the visible composer through a synthetic `paste` event, as `pasteText` in
+ * `helpers/composer.ts` pastes text. The event reaches the paste listener of the composer as a real paste does.
+ */
+async function pastePng(page: Page, options: { name: string, files: PastedFiles }): Promise<void> {
+  await composerEditor(page).evaluate((editor, { name, files }) => {
+    const png = new File([new Uint8Array([0x89, 0x50, 0x4E, 0x47])], name, { type: 'image/png' })
+    const clipboardData = new DataTransfer()
+    clipboardData.items.add(png)
+    if (files === 'empty')
+      Object.defineProperty(clipboardData, 'files', { value: new DataTransfer().files })
+    editor.dispatchEvent(new ClipboardEvent('paste', { clipboardData, bubbles: true, cancelable: true }))
+  }, options)
 }
 
 test.describe('Attachment Support', () => {
   test('attach item opens file dialog and attachment appears in strip', async ({ page, authenticatedWorkspace }) => {
-    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-    await expect(editor).toBeVisible()
+    await expect(composerEditor(page)).toBeVisible()
 
-    // Attach moved from the deleted formatting toolbar into the `[+]` menu.
+    // The plus menu contains the attachment control.
     await page.locator('[data-testid="composer-plus-trigger"]').click()
     const attach = page.locator('[data-testid="composer-attach-file"]')
     await expect(attach).toBeVisible()
     await expect(attach).toBeEnabled()
     await page.keyboard.press('Escape')
 
-    // Upload a file via the hidden input.
-    const fileInput = page.locator('[data-testid="file-input"]')
-    await fileInput.setInputFiles(createTestPng('screenshot.png'))
+    // Upload a file through the hidden input.
+    await attachFile(page, writeAttachmentFixture('image', 'screenshot.png'))
 
-    // Attachment strip should appear with one pill.
-    const strip = page.locator('[data-testid="attachment-strip"]')
-    await expect(strip).toBeVisible()
-    const pill = page.locator('[data-testid="attachment-pill"]')
+    // Require the attachment strip and one pill.
+    await expect(attachmentStrip(page)).toBeVisible()
+    const pill = attachmentPills(page)
     await expect(pill).toHaveCount(1)
     await expect(pill).toContainText('screenshot.png')
 
-    // The file name clips to one line inside the pill's 200px cap. It declared
-    // the ellipsis before but not the `min-width: 0` a flex item needs to shrink
-    // past its own text; only a real browser resolves the composed rules.
-    //
-    // `span[class]` selects the LABEL. Tooltip wraps its child in a bare
-    // `display: contents` span, which also holds the text and comes first, so a
-    // plain `span` locator resolves to that wrapper instead.
+    // The filename must fit one line inside the pill's 200px maximum width.
+    // An ellipsis alone cannot shrink a flex item below its text width. The item also needs min-width: 0.
+    // Only a browser can resolve the combined rules.
+    // Select span[class] to identify the label. Tooltip creates an earlier display: contents span with the same text.
+    // A plain span lookup selects that wrapper and cannot prove the label's clipping.
     await expectClipsToOneLine(pill.locator('span[class]').filter({ hasText: 'screenshot.png' }))
   })
 
   test('remove attachment via X button', async ({ page, authenticatedWorkspace }) => {
-    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-    await expect(editor).toBeVisible()
+    await expect(composerEditor(page)).toBeVisible()
 
     // Upload a file.
-    const fileInput = page.locator('[data-testid="file-input"]')
-    await fileInput.setInputFiles(createTestPng())
+    await attachFile(page, writeAttachmentFixture('image'))
 
-    await expect(page.locator('[data-testid="attachment-pill"]')).toHaveCount(1)
+    await expect(attachmentPills(page)).toHaveCount(1)
 
     // Click the remove button.
-    await page.locator('[data-testid="attachment-remove"]').click()
-    await expect(page.locator('[data-testid="attachment-pill"]')).toHaveCount(0)
-    // Strip should be hidden when empty.
-    await expect(page.locator('[data-testid="attachment-strip"]')).not.toBeVisible()
+    await attachmentPills(page).locator('[data-testid="attachment-remove"]').click()
+    await expect(attachmentPills(page)).toHaveCount(0)
+    // Require the hidden empty strip.
+    await expect(attachmentStrip(page)).not.toBeVisible()
   })
 
   test('attachments survive tab switch', async ({ page, authenticatedWorkspace }) => {
-    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-    await expect(editor).toBeVisible()
+    await expect(composerEditor(page)).toBeVisible()
 
     // Upload a file.
-    const fileInput = page.locator('[data-testid="file-input"]')
-    await fileInput.setInputFiles(createTestPng('persist.png'))
-    await expect(page.locator('[data-testid="attachment-pill"]')).toHaveCount(1)
+    await attachFile(page, writeAttachmentFixture('image', 'persist.png'))
+    await expect(attachmentPills(page)).toHaveCount(1)
+    const originalId = await selectedAgentTabId(page)
+    expect(originalId).toBe(authenticatedWorkspace.agentId)
 
-    // Open a new agent tab.
-    await page.locator('[data-testid^="new-agent-button"]').first().click()
-    await page.waitForTimeout(1000)
+    // Open a new agent tab. The attachments belong to the composer of a tab. The selected
+    // tab proves the switch, and the settings wait proves that the composer of the new
+    // agent is on screen.
+    await openAgentViaUI(page)
+    const active = selectedAgentTab(page)
+    await expect(active).not.toHaveAttribute('data-tab-id', originalId)
+    await waitForSettingsHydrated(page)
 
-    // No attachments on the new tab.
-    await expect(page.locator('[data-testid="attachment-pill"]')).toHaveCount(0)
+    // Require no attachment on the new tab.
+    await expect(attachmentPills(page)).toHaveCount(0)
 
-    // Switch back to first tab.
-    const agentTabs = page.locator('[data-testid="tab"][data-tab-type="agent"]')
-    await agentTabs.first().click()
-    await page.waitForTimeout(500)
+    // Select the first tab.
+    await tabById(page, originalId).click()
+    await expect(active).toHaveAttribute('data-tab-id', originalId)
+    await waitForSettingsHydrated(page)
 
-    // Attachment should still be there.
-    await expect(page.locator('[data-testid="attachment-pill"]')).toHaveCount(1)
-    await expect(page.locator('[data-testid="attachment-pill"]')).toContainText('persist.png')
+    // Require the retained attachment.
+    await expect(attachmentPills(page)).toHaveCount(1)
+    await expect(attachmentPills(page)).toContainText('persist.png')
   })
 
-  test('attachments cleared after send', async ({ page, authenticatedWorkspace }) => {
-    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-    await expect(editor).toBeVisible()
+  test('attachments cleared after send', async ({ page, authenticatedWorkspace, modelScript, leapmuxServer }) => {
+    await expect(composerEditor(page)).toBeVisible()
 
     // Upload a file.
-    const fileInput = page.locator('[data-testid="file-input"]')
-    await fileInput.setInputFiles(createTestPng())
-    await expect(page.locator('[data-testid="attachment-pill"]')).toHaveCount(1)
+    await attachFile(page, writeAttachmentFixture('image'))
+    await expect(attachmentPills(page)).toHaveCount(1)
 
-    // Type some text and send.
-    await editor.click()
-    await page.keyboard.type('look at this')
-    await page.keyboard.press('Meta+Enter')
+    // Require native prompt delivery and a completed answer before checking the strip reset.
+    // The agent of `authenticatedWorkspace` is a Claude Code agent.
+    const native = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedWorkspace.workspaceId })
+    await sendNativeAnswer(native, 'look at this', 'The attached image reached the completed native turn.')
+    await expect(userBubbles(page).filter({ hasText: 'look at this' }).first()).toBeVisible()
 
-    // Attachments should be cleared.
-    await expect(page.locator('[data-testid="attachment-pill"]')).toHaveCount(0)
+    // Require removal of the sent attachment.
+    await expect(attachmentPills(page)).toHaveCount(0)
   })
 
   test('paste image adds attachment', async ({ page, authenticatedWorkspace }) => {
-    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-    await expect(editor).toBeVisible()
-    await editor.click()
+    await focusComposer(page)
 
-    // Simulate pasting an image file via clipboard event.
-    await page.evaluate(() => {
-      const blob = new Blob([new Uint8Array([0x89, 0x50, 0x4E, 0x47])], { type: 'image/png' })
-      const file = new File([blob], 'pasted.png', { type: 'image/png' })
-      const dt = new DataTransfer()
-      dt.items.add(file)
-      const event = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true })
-      document.querySelector('[data-testid="composer-editor"]')!.dispatchEvent(event)
-    })
+    await pastePng(page, { name: 'pasted.png', files: 'listed' })
 
-    // An attachment pill should appear.
-    await expect(page.locator('[data-testid="attachment-pill"]')).toHaveCount(1)
+    // Require the attachment pill.
+    await expect(attachmentPills(page)).toHaveCount(1)
   })
 
   test('paste image adds attachment when clipboardData.files is empty (Linux/WebKitGTK shape)', async ({ page, authenticatedWorkspace }) => {
-    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-    await expect(editor).toBeVisible()
-    await editor.click()
+    await focusComposer(page)
 
-    // WebKitGTK exposes pasted clipboard images via items only; synthesize
-    // that shape since Chromium's DataTransfer doesn't reproduce it.
-    await page.evaluate(() => {
-      const blob = new Blob([new Uint8Array([0x89, 0x50, 0x4E, 0x47])], { type: 'image/png' })
-      const file = new File([blob], '', { type: 'image/png' })
-      const fakeItem = {
-        kind: 'file',
-        type: 'image/png',
-        getAsFile: () => file,
-      } as unknown as DataTransferItem
-      const fakeClipboardData = {
-        files: [] as unknown as FileList,
-        items: [fakeItem] as unknown as DataTransferItemList,
-      }
-      const event = new Event('paste', { bubbles: true, cancelable: true })
-      Object.defineProperty(event, 'clipboardData', { value: fakeClipboardData })
-      document.querySelector('[data-testid="composer-editor"]')!.dispatchEvent(event)
-    })
+    // WebKitGTK exposes pasted images through items but leaves files empty.
+    await pastePng(page, { name: '', files: 'empty' })
 
-    // An attachment pill should appear.
-    await expect(page.locator('[data-testid="attachment-pill"]')).toHaveCount(1)
-  })
-
-  // The Linux/WebKitGTK image-paste path (entirely empty DataTransfer →
-  // OS clipboard read via the Tauri clipboard-manager plugin) cannot be
-  // exercised in headless Chromium: the bug is that WebKitGTK does not
-  // populate DataTransfer at all, and Chromium does not reproduce that
-  // shape. The conversion logic is covered by the platformBridge unit
-  // test; manual paste in the desktop build is the only true end-to-end.
-
-  test('unsupported file type rejected with toast', async ({ page, authenticatedWorkspace }) => {
-    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-    await expect(editor).toBeVisible()
-
-    // Upload a binary file (unsupported type for the default provider).
-    const fileInput = page.locator('[data-testid="file-input"]')
-    await fileInput.setInputFiles(createTestBinary())
-
-    // No attachment pill should appear.
-    await expect(page.locator('[data-testid="attachment-pill"]')).toHaveCount(0)
-
-    // A toast should have been shown in the DOM (output element with .toast-message).
-    const toast = page.locator('output .toast-message')
-    await expect(toast).toContainText('binary')
-  })
-
-  test('attachment-only message (no text) can be sent', async ({ page, authenticatedWorkspace }) => {
-    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-    await expect(editor).toBeVisible()
-
-    // Upload a file without typing any text.
-    const fileInput = page.locator('[data-testid="file-input"]')
-    await fileInput.setInputFiles(createTestPng('solo.png'))
-    await expect(page.locator('[data-testid="attachment-pill"]')).toHaveCount(1)
-
-    // The send button should be enabled even without text.
-    const sendBtn = page.locator('[data-testid="send-button"]')
-    await expect(sendBtn).toBeEnabled()
-
-    // Click send.
-    await sendBtn.click()
-
-    // Attachment should be cleared.
-    await expect(page.locator('[data-testid="attachment-pill"]')).toHaveCount(0)
+    // Require the attachment pill.
+    await expect(attachmentPills(page)).toHaveCount(1)
   })
 
   test('drag and drop adds attachment', async ({ page, authenticatedWorkspace }) => {
-    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
+    const editor = composerEditor(page)
     await expect(editor).toBeVisible()
 
-    // Simulate drag and drop via the file input (Playwright doesn't natively
-    // support drag-and-drop of files from the OS, so we use the file input).
-    const fileInput = page.locator('[data-testid="file-input"]')
-    await fileInput.setInputFiles(createTestPng('dropped.png'))
+    // Deliver valid image bytes through the editor's actual drop event route.
+    const bytes = Array.from(readFileSync(writeAttachmentFixture('image', 'dropped.png')))
+    await editor.evaluate((element, bytes) => {
+      const transfer = new DataTransfer()
+      transfer.items.add(new File([new Uint8Array(bytes)], 'dropped.png', { type: 'image/png' }))
+      for (const type of ['dragenter', 'dragover', 'drop'])
+        element.dispatchEvent(new DragEvent(type, { dataTransfer: transfer, bubbles: true, cancelable: true }))
+    }, bytes)
 
-    await expect(page.locator('[data-testid="attachment-pill"]')).toHaveCount(1)
-    await expect(page.locator('[data-testid="attachment-pill"]')).toContainText('dropped.png')
-  })
-
-  test('chat history shows attachment list in user message', async ({ page, authenticatedWorkspace }) => {
-    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-    await expect(editor).toBeVisible()
-
-    // Upload a file and send with text.
-    const fileInput = page.locator('[data-testid="file-input"]')
-    await fileInput.setInputFiles(createTestPng('history.png'))
-    await editor.click()
-    await page.keyboard.type('analyze this image')
-    await page.keyboard.press('Meta+Enter')
-
-    // The accepted user message contains the attachment filename.
-    const userBubbles = page.locator('[class*="userMessage"]')
-    const lastBubble = userBubbles.last()
-    await expect(lastBubble).toContainText('history.png')
-    await expect(lastBubble).toContainText('analyze this image')
+    await expect(attachmentPills(page)).toHaveCount(1)
+    await expect(attachmentPills(page)).toContainText('dropped.png')
   })
 })

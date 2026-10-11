@@ -1,5 +1,21 @@
-import type { Page } from '@playwright/test'
+import type { Locator, Page } from '@playwright/test'
 import { expect } from '@playwright/test'
+import { cssAttributeValue } from './cssAttribute'
+import { waitTimeoutBeforeTestDeadline } from './testDeadline'
+
+/**
+ * The xterm surface of each terminal that is the visible tab of its tile.
+ * A hidden terminal tab stays mounted, with an `.xterm` element of its own, so a bare `.xterm` locator matches every
+ * open terminal. With one tile the locator matches one surface.
+ */
+export function activeXterm(page: Page): Locator {
+  return page.locator('[data-terminal-id][data-active="true"] .xterm')
+}
+
+/** The xterm surface of the terminal `terminalId`, wherever it is mounted. */
+export function terminalXterm(page: Page, terminalId: string): Locator {
+  return page.locator(`[data-terminal-id="${cssAttributeValue(terminalId)}"] .xterm`)
+}
 
 /**
  * Read terminal text content from the active xterm's buffer. The WebGL
@@ -24,12 +40,27 @@ export async function getTerminalText(page: Page): Promise<string> {
   })
 }
 
-/** Wait until terminal text contains the expected string. */
-export async function waitForTerminalText(page: Page, text: string, timeout?: number) {
+/**
+ * Read the row count of the active terminal. Return 0 while xterm has not registered the hook of TerminalView, so a
+ * caller polls for a positive count.
+ */
+export async function getTerminalRows(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const read = (window as any).__getActiveTerminalRows
+    return typeof read === 'function' ? read() as number : 0
+  })
+}
+
+/**
+ * Wait until the text of the active terminal contains `text`.
+ * The wait ends before the deadline of the test, so a text that never shows fails here with its own message.
+ */
+export async function waitForTerminalText(page: Page, text: string): Promise<void> {
+  if (text === '')
+    throw new Error('A terminal text wait needs text, because every terminal contains the empty string.')
   await expect(async () => {
-    const content = await getTerminalText(page)
-    expect(content).toContain(text)
-  }).toPass(timeout != null ? { timeout } : undefined)
+    expect(await getTerminalText(page), 'the active terminal shows the text').toContain(text)
+  }).toPass({ timeout: waitTimeoutBeforeTestDeadline() })
 }
 
 /**
@@ -52,7 +83,7 @@ export async function waitForTerminalReady(page: Page): Promise<void> {
   await expect(async () => {
     await typeInTerminal(page, `echo ${marker.slice(0, 3)}""${marker.slice(3)}`)
     expect(await getTerminalText(page)).toContain(marker)
-  }).toPass()
+  }).toPass({ timeout: waitTimeoutBeforeTestDeadline() })
 }
 
 /**
@@ -109,7 +140,7 @@ export async function clickTerminalText(page: Page, text: string): Promise<void>
       text,
     )
     expect(point, `no terminal cell shows ${text}`).not.toBeNull()
-  }).toPass()
+  }).toPass({ timeout: waitTimeoutBeforeTestDeadline() })
 
   // Hover ANOTHER cell first. xterm activates a link on mouseup, and only for
   // the link its last hover resolved -- so a modal that opened over the

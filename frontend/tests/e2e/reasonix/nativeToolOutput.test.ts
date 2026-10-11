@@ -1,0 +1,68 @@
+import { describe, expect, it } from 'vitest'
+import { reasonixNativeOutput } from './nativeToolOutput'
+
+function fixture() {
+  const text = `native head\n${'x'.repeat(9000)}\ncomputed middle77\nnative tail`
+  const prefix = text.slice(0, 8000)
+  const excerpt = `${prefix}\n…(${text.length - prefix.length} more chars truncated)`
+  const original = { sessionUpdate: 'tool_call_update', toolCallId: 'native-call', status: 'completed', content: [{ type: 'content', content: { type: 'text', text: excerpt } }] }
+  const provider = { sessionUpdate: original.sessionUpdate, toolCallId: original.toolCallId, status: original.status, rawOutput: { reasonix: { role: 'tool', tool_call_id: 'native-call', name: 'bash', content: text, raw_content: text } } }
+  return { original, provider, supplemental: { provider }, text }
+}
+
+describe('reasonixNativeOutput', () => {
+  it('keeps complete native content outside the actual excerpt', () => {
+    const { original, supplemental, text } = fixture()
+    const result = reasonixNativeOutput(original, supplemental, 'native-call')
+    expect(result.text).toBe(text)
+    expect(result.excerpt).not.toContain('middle77')
+  })
+  it('uses the complete raw record when its model record is clipped', () => {
+    const { original, supplemental, provider, text } = fixture()
+    provider.rawOutput.reasonix.content = original.content[0]?.content.text ?? ''
+    expect(reasonixNativeOutput(original, supplemental, 'native-call').text).toBe(text)
+  })
+
+  it('keeps the full native record and removes only its final receipt from the copied preview', () => {
+    const current = fixture()
+    const text = `${current.text}\n[receipt r_actual]`
+    current.provider.rawOutput.reasonix.content = text
+    current.provider.rawOutput.reasonix.raw_content = text
+    current.original.content[0]!.content.text = `${text.slice(0, 8000)}\n…(${text.length - 8000} more chars truncated)`
+    const result = reasonixNativeOutput(current.original, current.supplemental, 'native-call')
+    expect(result.text).toBe(text)
+    expect(result.previewText).toBe(current.text)
+  })
+  // The identity fields of the stored record must equal the frame, the record must belong to the call and to bash, and
+  // the excerpt must be the record's text or its truncated prefix with the exact omitted count.
+  it.each([
+    ['call', 'belongs to another result'],
+    ['status', 'belongs to another result'],
+    ['native-call', 'has another tool identity'],
+    ['tool', 'has another tool identity'],
+    ['omitted', 'does not match its actual excerpt'],
+    ['content', 'does not match its actual excerpt'],
+  ])('rejects a conflicting %s result', (field, error) => {
+    const { original, supplemental, provider } = fixture()
+    if (field === 'call')
+      provider.toolCallId = 'other'
+    if (field === 'status')
+      provider.status = 'in_progress'
+    if (field === 'native-call')
+      provider.rawOutput.reasonix.tool_call_id = 'other'
+    if (field === 'tool')
+      provider.rawOutput.reasonix.name = 'read_file'
+    if (field === 'omitted')
+      original.content[0]!.content.text = 'native head\n\n…(1 more chars truncated)'
+    if (field === 'content') {
+      provider.rawOutput.reasonix.content = 'other content'
+      provider.rawOutput.reasonix.raw_content = 'other content'
+    }
+    expect(() => reasonixNativeOutput(original, supplemental, 'native-call')).toThrow(error)
+  })
+  it('does not claim a native output for complete inline output', () => {
+    const { original, supplemental, text } = fixture()
+    original.content[0]!.content.text = text
+    expect(() => reasonixNativeOutput(original, supplemental, 'native-call')).toThrow('no omitted native output content')
+  })
+})

@@ -1,58 +1,129 @@
 /**
- * The Cursor half of the mock endpoint.
+ * Serve Cursor's native remote endpoints and Run stream.
  *
- * `cursor-agent` speaks neither the OpenAI nor the Anthropic model API. It talks
- * to its own backend, so this module answers that surface instead of a model
- * protocol, and hands the prompt it decodes to the same scenario machinery every
- * other provider uses. See `./cursorWire` for the wire format.
+ * cursor-agent calls its own service. This module decodes its requests and selects answers through the shared script.
+ * See ./cursorWire for the native wire format.
+ * Native probes confirmed the following requirements.
  *
- * THREE FACTS DECIDE THE SHAPE HERE, and each cost a probe run to establish.
+ * Startup calls use default protobuf fields unless they request model data.
+ * A zero-byte protobuf response is valid and keeps the CLI on this endpoint.
+ * A real GetServerConfig response selects the CLI's built-in endpoint instead.
  *
- * The startup calls answer ALL-DEFAULTS, not real data. A zero-byte protobuf
- * body IS a valid message -- every field takes its default -- and that is what
- * keeps the agent pointed at this endpoint. A proxy that forwarded those twenty
- * calls to the real backend produced a correct answer and then never sent the
- * turn here at all: no response body carries a host name, so a REAL
- * `GetServerConfig` switches the agent to its built-in endpoint.
+ * Three model calls require native catalog data:
+ * - AvailableModels supplies the model catalog.
+ * - GetDefaultModelForCli selects the initial model.
+ * - GetUsableModels supplies the usable models.
  *
- * The THREE model calls are the exception, and each must answer real data.
- * `AvailableModels` supplies the catalogue: an all-defaults answer is an empty
- * model list, `session/new` then reports `availableModels: []`, and LeapMux has
- * no model to start a turn with. Nothing reports this, because the CLI CATCHES
- * the failure and substitutes an empty list -- so a mis-encoded body and an
- * honestly empty catalogue look identical from outside. `GetDefaultModelForCli`
- * and `GetUsableModels` then say which entry to begin on; without them the agent
- * refuses `session/new` with "No model found. Please check your model settings."
+ * The CLI replaces an invalid catalog response with an empty list.
+ * session/new then reports availableModels: [], and LeapMux cannot start a model turn.
+ * Missing default or usable model data causes "No model found. Please check your model settings."
  *
- * The turn arrives over HTTP/2 while everything else is HTTP/1.1, on the same
- * port. The caller supplies a listener that serves both; see
- * `createDualVersionListener`.
+ * Run uses HTTP/2. Startup uses HTTP/1.1 on the same port.
+ * createDualVersionListener serves both protocols.
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import type { CursorModel, CursorTaskCall } from './cursorWire'
-import type { MockModelToolCall } from './mockModelScript'
+import type { CursorRunRequestWitness } from './cursorRequestWire'
+import type { CursorContextRule, CursorExecutionCall, CursorGenerateImageCall, CursorInteractionCall, CursorInteractionReply, CursorMcpCall, CursorModel, CursorTaskCall, CursorTodoCall, CursorTodoStatus } from './cursorWire'
+import type { InstructionFileGuard, MockModelScriptHost, MockSurface, ModelRequestContext, SelectedModelAnswer } from './mockModelRequest'
+import type { MockModelDeliveredError, MockModelError, MockModelServerContext, MockModelToolCall, MockModelUsage } from './mockModelScript'
+import type { ModelStream } from './modelStream'
 import { Buffer } from 'node:buffer'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
+import { gunzipSync } from 'node:zlib'
+import { isObject } from '../../../src/lib/jsonPick'
+import { cursorErrorResponse } from './cursorErrors'
+import { CursorExecution, cursorExecutionCallFrom } from './cursorExecution'
+import { cursorRunRequestWitness } from './cursorRequestWire'
+import { CursorSubagentExecution } from './cursorSubagentExecution'
 import {
   connectEndOfStream,
   connectFrame,
+  cursorAttachmentPayloads,
   cursorAvailableModels,
+  cursorConversationIdOf,
   cursorDefaultModel,
+  cursorGenerateImageCompleted,
+  cursorGenerateImageStarted,
+  cursorInteractionQuery,
+  cursorInteractionResponseOf,
+  cursorMcpExec,
+  cursorMcpResponseOf,
   cursorPromptOf,
+  cursorRequestContextExec,
+  cursorRequestContextResponseOf,
   cursorSetBlob,
   cursorTaskCompleted,
+  cursorTaskProgress,
   cursorTaskStarted,
   cursorTextDelta,
+  cursorThinkingDelta,
+  cursorTodoCompleted,
+  cursorTodoStarted,
   cursorTurnEnded,
   cursorUsableModels,
+  cursorWebFetchCompleted,
+  cursorWebFetchStarted,
   takeConnectFrames,
 } from './cursorWire'
+import { mockCredentialReceipt } from './mockCredentials'
+import { MAX_MOCK_REQUEST_BYTES, writeResponseHeaders } from './mockHttp'
+import { AMBIENT_SCENARIO_ID, scenarioIDFromTexts } from './mockModelScript'
+import { createModelStream } from './modelStream'
 
 /** The bidirectional stream that carries one whole Cursor turn. */
 export const CURSOR_RUN_PATH = '/agent.v1.AgentService/Run'
 
 /** Cursor's subagent tool, whose calls this surface turns into Run-stream updates. */
 export const CURSOR_TASK_TOOL = 'task'
+
+/** Cursor's native image-generation tool in a Run-stream tool call. */
+export const CURSOR_GENERATE_IMAGE_TOOL = 'generateImage'
+
+/** Cursor's native question query in a Run stream. */
+export const CURSOR_QUESTION_TOOL = 'askQuestion'
+
+/** Cursor's native plan query in a Run stream. */
+export const CURSOR_CREATE_PLAN_TOOL = 'createPlan'
+
+/** Cursor's web-fetch approval query in a Run stream. */
+export const CURSOR_WEB_FETCH_TOOL = 'webFetch'
+
+/** Cursor's local MCP execution request in a Run stream. */
+export const CURSOR_MCP_TOOL = 'cursorMcp'
+
+/**
+ * A scripted request context query in a Run stream.
+ *
+ * The backend asks the CLI for the rules that it loaded from the project, and the CLI states them in its answer. The
+ * surface asks once at the start of each turn and records the rules in the Run request witness. A scripted query asks
+ * again before the turn ends, and its answer replaces the recorded rules.
+ */
+export const CURSOR_REQUEST_CONTEXT_TOOL = 'cursorRequestContext'
+
+/** Cursor's to-do list tool in a Run-stream tool call. */
+export const CURSOR_UPDATE_TODOS_TOOL = 'updateTodos'
+
+/**
+ * Cursor's own to-do status words, by the neutral status that each one carries.
+ * The encoder in `providerToolCalls.ts` writes them, and this surface reads them.
+ */
+export const CURSOR_TODO_STATUS_WORDS = {
+  pending: 'TODO_STATUS_PENDING',
+  in_progress: 'TODO_STATUS_IN_PROGRESS',
+  completed: 'TODO_STATUS_COMPLETED',
+  cancelled: 'TODO_STATUS_CANCELLED',
+} as const satisfies Record<CursorTodoStatus, string>
+
+/**
+ * The tools that Cursor delegates to the local client, by the neutral operation of
+ * each one. Each tool name is also the kind of its `CursorExecutionCall`.
+ */
+export const CURSOR_EXECUTION_TOOLS = {
+  bash: 'shell',
+  read: 'read',
+  write: 'write',
+  edit: 'edit',
+} as const satisfies Record<string, CursorExecutionCall['kind']>
 
 /** The three startup calls that need a real answer; see the note at the top. */
 const CURSOR_AVAILABLE_MODELS_PATH = '/aiserver.v1.AiService/AvailableModels'
@@ -76,22 +147,22 @@ export const CURSOR_MOCK_MODELS: readonly CursorModel[] = [
     name: 'default',
     displayName: 'Auto',
     aliases: ['auto'],
-    variants: [{ id: 'default[]', displayName: 'Auto', isDefault: true }],
+    variants: [{ id: 'default[]', displayName: 'Auto', isDefault: true, parameters: [] }],
   },
   {
     name: 'mock-sonnet',
     displayName: 'Mock Sonnet',
     variants: [
-      { id: 'mock-sonnet[context=200k,effort=low]', displayName: 'Mock Sonnet Low' },
-      { id: 'mock-sonnet[context=200k,effort=high]', displayName: 'Mock Sonnet High' },
+      { id: 'mock-sonnet[context=200k,effort=low]', displayName: 'Mock Sonnet Low', parameters: [{ id: 'context', value: '200k' }, { id: 'effort', value: 'low' }] },
+      { id: 'mock-sonnet[context=200k,effort=high]', displayName: 'Mock Sonnet High', parameters: [{ id: 'context', value: '200k' }, { id: 'effort', value: 'high' }] },
     ],
   },
   {
     name: 'mock-grok',
     displayName: 'Mock Grok',
     variants: [
-      { id: 'mock-grok[context=256k,reasoning_effort=low]', displayName: 'Mock Grok Low' },
-      { id: 'mock-grok[context=256k,reasoning_effort=xhigh]', displayName: 'Mock Grok Extra High' },
+      { id: 'mock-grok[context=256k,reasoning_effort=low]', displayName: 'Mock Grok Low', parameters: [{ id: 'context', value: '256k' }, { id: 'reasoning_effort', value: 'low' }] },
+      { id: 'mock-grok[context=256k,reasoning_effort=xhigh]', displayName: 'Mock Grok Extra High', parameters: [{ id: 'context', value: '256k' }, { id: 'reasoning_effort', value: 'xhigh' }] },
     ],
   },
 ]
@@ -107,17 +178,135 @@ export function isCursorPath(pathname: string): boolean {
   return pathname.startsWith(CURSOR_SERVICE_PREFIX) || pathname === CURSOR_RUN_PATH || pathname === CURSOR_TRACE_PATH
 }
 
+interface CursorConversationState {
+  scenarioID: string
+  messages: MockModelServerContext['messages']
+}
+
+/** The Cursor service, which keeps each remote conversation until its scenario ends. */
+export interface CursorSurface extends MockSurface {
+  handleHttp: (request: IncomingMessage, response: ServerResponse, url: URL) => Promise<boolean>
+  clearScenario: (scenarioID: string) => void
+  close: () => void
+}
+
 /**
- * Answer one of Cursor's startup calls.
+ * Own Cursor's native Run route and its retained remote conversation context.
  *
- * `AvailableModels` takes the catalogue. A JSON request takes `{}` and
- * everything else takes a zero-byte protobuf body; neither states anything,
- * which is the point. See the note at the top for both halves.
+ * Each turn asks the CLI for its request context, and `instructionFiles` checks the rules that the CLI states
+ * (./ancestorInstructions.ts). No setting keeps Cursor from the sentinel files of the run root, so they stay a known
+ * escape.
+ */
+export function createCursorSurface(host: MockModelScriptHost, instructionFiles: InstructionFileGuard): CursorSurface {
+  const conversations = new Map<string, CursorConversationState>()
+  return {
+    clearScenario: (id) => {
+      for (const [conversationID, state] of conversations) {
+        if (state.scenarioID === id)
+          conversations.delete(conversationID)
+      }
+    },
+    close: () => conversations.clear(),
+    handleHttp: async (request, response, url) => {
+      if (!isCursorPath(url.pathname))
+        return false
+      if (url.pathname !== CURSOR_RUN_PATH) {
+        answerCursorStartup(request, response, url.pathname)
+        return true
+      }
+      let completedTurn: ((text: string) => void) | undefined
+      let activeAnswer: Extract<SelectedModelAnswer, { kind: 'step' }> | undefined
+      let nativeError: MockModelDeliveredError | undefined
+      // The request of the turn, and the witness that its record keeps. The rules that the CLI states later reach both.
+      let turnContext: ModelRequestContext | undefined
+      let runWitness: CursorRunRequestWitness | undefined
+      const receiveContextRules = (rules: readonly CursorContextRule[]) => {
+        if (!turnContext)
+          throw new Error('The native Cursor request context arrived before its turn.')
+        if (runWitness)
+          runWitness.contextRules = rules.map(rule => ({ ...rule }))
+        instructionFiles.check(turnContext, rules, 'known-escape')
+      }
+      await serveCursorRun(request, response, {
+        contextRules: receiveContextRules,
+        answer: async (prompt, requestFrame) => {
+          const conversationID = cursorConversationIdOf(requestFrame)
+          const currentScenarioID = scenarioIDFromTexts([prompt])
+          let scenarioID = currentScenarioID
+          let conversation: CursorConversationState | undefined
+          if (conversationID) {
+            conversation = conversations.get(conversationID)
+            if (currentScenarioID === AMBIENT_SCENARIO_ID)
+              scenarioID = conversation?.scenarioID ?? currentScenarioID
+            if (host.hasScenario(scenarioID) && conversation?.scenarioID !== scenarioID) {
+              conversation = { scenarioID, messages: [] }
+              conversations.set(conversationID, conversation)
+            }
+          }
+          // The record keeps this object, so the rules that a later query states reach it.
+          runWitness = cursorRunRequestWitness(requestFrame)
+          const witness = runWitness
+          const context: ModelRequestContext = {
+            // The matcher category is OpenAI Responses. The native request remains protobuf.
+            protocol: 'openai-responses',
+            path: url.pathname,
+            body: { prompt, attachments: cursorAttachmentPayloads(requestFrame), conversationId: conversationID },
+            systemText: '',
+            userText: prompt,
+            scenarioID,
+            mockCredential: mockCredentialReceipt(request.headers),
+            nativeRequest: witness,
+            ...(conversationID && conversation ? { serverContext: { conversationId: conversationID, messages: conversation.messages.map(message => ({ ...message })) } } : {}),
+          }
+          turnContext = context
+          const answer = host.select(context, { allowServiceToolMetadata: true })
+          if (answer.kind !== 'step')
+            return undefined
+          const { step } = answer
+          activeAnswer = answer
+          answer.recordHttpResponse(response, () => nativeError)
+          if (!await answer.holdStep({ request, response }))
+            return undefined
+          if (step.error)
+            return { error: step.error }
+          const toolCalls = cursorToolCallsFrom(step.toolCalls)
+          if (step.text === undefined && step.reasoning === undefined && toolCalls.length === 0)
+            return undefined
+          const ownedConversation = conversation
+          if (conversationID && ownedConversation) {
+            completedTurn = (text) => {
+              if (answer.isClosed() || conversations.get(conversationID) !== ownedConversation)
+                return
+              ownedConversation.messages.push({ role: 'user', content: prompt }, { role: 'assistant', content: text })
+            }
+          }
+          return {
+            text: step.text,
+            reasoning: step.reasoning,
+            toolCalls,
+            usage: step.usage,
+            requestContextRules: receiveContextRules,
+            ...(step.stream ? { stream: answer.stream(response, request) } : {}),
+          }
+        },
+        completed: (_prompt, _frame, text) => completedTurn?.(text),
+        errorResponse: error => (nativeError = error),
+        holdToolCompletion: (_callID, name) => activeAnswer ? activeAnswer.holdGate(name, { request, response }) : Promise.resolve(false),
+      })
+      return true
+    },
+  }
+}
+
+/**
+ * Answer one Cursor startup call.
  *
- * The body goes back UNCOMPRESSED. The real backend gzips its larger answers,
- * and a recording replayed with those bytes but no `content-encoding` made the
- * client read gzip magic as protobuf -- `0x1f` parses as field 3, wire type 7,
- * which is not a wire type at all.
+ * Model routes receive their native catalog data.
+ * Other JSON requests receive {}. Other protobuf requests receive a zero-byte default message.
+ *
+ * Responses use uncompressed bytes.
+ * Without content-encoding, the CLI reads gzip magic as protobuf.
+ * The first byte, 0x1f, indicates field 3 with invalid wire type 7.
  */
 export function answerCursorStartup(request: IncomingMessage, response: ServerResponse, pathname: string): void {
   const models = modelAnswerFor(pathname)
@@ -133,12 +322,11 @@ export function answerCursorStartup(request: IncomingMessage, response: ServerRe
 }
 
 /**
- * The model answer this path takes, or undefined when it takes an all-defaults one.
+ * Return catalog data for a model route, or undefined for a default startup response.
  *
- * The default model is the one holding the variant marked `isDefault`, so the
- * catalogue and the starting selection cannot name different models. A catalogue
- * that marks none falls back to its first entry rather than to no model, because
- * "no model" is the state the agent refuses to start in.
+ * The variant with isDefault selects the initial model from the same catalog.
+ * A catalog without that flag selects its first entry.
+ * The CLI refuses to start when no model exists.
  */
 function modelAnswerFor(pathname: string): Uint8Array | undefined {
   switch (pathname) {
@@ -157,17 +345,16 @@ function modelAnswerFor(pathname: string): Uint8Array | undefined {
 }
 
 function writeCursor(response: ServerResponse, status: number, headers: Record<string, string>, body: Buffer): void {
-  response.writeHead(status, headers)
+  writeResponseHeaders(response, status, headers)
   response.end(body)
 }
 
 /**
- * The two transcript records one Task call leaves in the session store.
+ * Build the two native transcript records for one Task call.
  *
- * Their shape is Cursor's own, read off a real store: a `tool-call` block on an
- * ASSISTANT record and a `tool-result` block on a TOOL record, matched by
- * `toolCallId`. LeapMux reads the result block for the report that ACP omits,
- * and the call block for the arguments.
+ * Cursor stores tool-call on an assistant record and tool-result on a tool record.
+ * Both records use the same toolCallId.
+ * LeapMux reads arguments from the call and the report that Agent Client Protocol (ACP) omits from the result.
  */
 function taskTranscriptRecords(task: CursorScriptedTask): string[] {
   const toolCall = {
@@ -197,14 +384,14 @@ function taskTranscriptRecords(task: CursorScriptedTask): string[] {
 }
 
 /**
- * Write one task's transcript records over the KV channel.
+ * Write transcript records through Cursor's KV channel.
  *
- * The blob id is the SHA-256 of the record, which is how Cursor's own ids read:
- * content-addressed, and 64 hex characters once the client encodes these bytes.
+ * The blob ID is the SHA-256 of the record. Cursor encodes these 32 bytes as
+ * 64 lowercase hex characters in its session database.
  */
-function writeTaskTranscript(response: ServerResponse, task: CursorScriptedTask, firstMessageID: number): number {
+function writeTranscriptRecords(response: ServerResponse, records: readonly string[], firstMessageID: number): number {
   let messageID = firstMessageID
-  for (const record of taskTranscriptRecords(task)) {
+  for (const record of records) {
     const data = new TextEncoder().encode(record)
     const blobID = new Uint8Array(createHash('sha256').update(data).digest())
     response.write(Buffer.from(connectFrame(cursorSetBlob(messageID, blobID, data))))
@@ -213,8 +400,19 @@ function writeTaskTranscript(response: ServerResponse, task: CursorScriptedTask,
   return messageID
 }
 
+/** Cursor writes each turn's text to the same KV store as its tool results. */
+function textTranscriptRecord(role: 'user' | 'assistant', text: string): string {
+  return JSON.stringify({
+    role,
+    id: randomUUID(),
+    providerOptions: {},
+    content: [{ type: 'text', text }],
+  })
+}
+
 /** What a scripted answer supplies for one Cursor turn. */
 export interface CursorTurnAnswer {
+  error?: MockModelError
   /**
    * The assistant text, delivered as one delta. Absent when the step has none.
    *
@@ -222,99 +420,410 @@ export interface CursorTurnAnswer {
    * refuses a caller that passes the field through from an optional source.
    */
   text?: string | undefined
-  /**
-   * The Task tool calls to run before the text.
-   *
-   * Each one opens and closes in the same turn, which is what a foreground
-   * subagent does. The report is the child's answer, and the agent puts it in
-   * the row and in the child transcript.
-   */
-  taskCalls?: readonly CursorScriptedTask[]
+  /** Native reasoning text emitted before the final answer. */
+  reasoning?: string | undefined
+  /** Native calls and queries run before the final text in the same Run stream. */
+  toolCalls?: readonly CursorScriptedToolCall[]
+  /** Token counts of the scripted turn, sent in the native end update. */
+  usage?: MockModelUsage | undefined
+  /** Scenario-owned chunk and release controller. */
+  stream?: ModelStream
+  /** Receive the rules that the CLI states in its answer to a request context query. */
+  requestContextRules?: (rules: readonly CursorContextRule[]) => void
 }
 
-/** One scripted Task tool call, with the report its child returns. */
-export interface CursorScriptedTask extends CursorTaskCall {
+/** One scripted tool call in Cursor's Run stream. */
+export type CursorScriptedToolCall
+  = | { kind: 'task', call: CursorTaskCall, report: string, completionGate?: string, taskProgress?: string, nativeExecution?: { modelId: string } }
+    | { kind: 'execution', call: CursorExecutionCall }
+    | { kind: 'todo', call: CursorTodoCall }
+    | { kind: 'generateImage', call: CursorGenerateImageCall }
+    | { kind: 'mcp', call: CursorMcpCall }
+    | { kind: 'requestContext', callID: string }
+    | CursorInteractionCall
+
+interface CursorScriptedTask extends CursorTaskCall {
   report: string
 }
 
-/**
- * The Task calls inside one scripted step, in Cursor's own wire shape.
- *
- * Cursor resolves a subagent LOCALLY: the CLI never asks the endpoint for the
- * child's turn, so unlike every other provider the child's answer cannot come
- * from a rule. The scripted call carries it as a `report` argument instead, and
- * this is where that convention is read.
- */
-export function cursorTaskCallsFrom(toolCalls: readonly MockModelToolCall[] | undefined): CursorScriptedTask[] {
-  return (toolCalls ?? [])
-    .filter(call => call.name === CURSOR_TASK_TOOL)
-    .map((call) => {
-      const args = call.arguments ?? {}
-      return {
-        callID: call.id,
-        description: String(args.description ?? ''),
-        prompt: String(args.prompt ?? ''),
+/** Decode Cursor's native Todo status words before writing their enum ordinals. */
+function cursorTodoStatus(value: unknown): CursorTodoStatus {
+  const entry = Object.entries(CURSOR_TODO_STATUS_WORDS).find(([, word]) => word === value)
+  if (!entry)
+    throw new Error(`Cursor Todo has an unsupported status: ${String(value)}`)
+  return entry[0] as CursorTodoStatus
+}
+
+/** The execution kind of a scripted tool name, or undefined for a tool that the client does not run. */
+function cursorExecutionKind(name: string): CursorExecutionCall['kind'] | undefined {
+  return Object.values(CURSOR_EXECUTION_TOOLS).find(kind => kind === name)
+}
+
+/** Keep native calls in their scripted order and refuse unknown tool names. */
+// A Task can use the remote report path or request actual native child execution.
+export function cursorToolCallsFrom(toolCalls: readonly MockModelToolCall[] | undefined): CursorScriptedToolCall[] {
+  return (toolCalls ?? []).flatMap((call): CursorScriptedToolCall[] => {
+    const args = call.arguments ?? {}
+    if (call.name === CURSOR_TASK_TOOL) {
+      if (call.nativeExecution && call.taskProgress !== undefined)
+        throw new Error('Actual native child execution cannot use scripted child progress.')
+      return [{
+        kind: 'task',
+        call: { callID: call.id, description: String(args.description ?? ''), prompt: String(args.prompt ?? '') },
         report: String(args.report ?? ''),
+        ...(call.completionGate !== undefined ? { completionGate: call.completionGate } : {}),
+        ...(call.taskProgress !== undefined ? { taskProgress: call.taskProgress } : {}),
+        ...(call.nativeExecution !== undefined ? { nativeExecution: call.nativeExecution } : {}),
+      }]
+    }
+    if (call.completionGate !== undefined || call.taskProgress !== undefined || call.nativeExecution !== undefined)
+      throw new Error('Only a native Cursor task supports provider-service tool metadata')
+    const executionKind = cursorExecutionKind(call.name)
+    if (executionKind)
+      return [{ kind: 'execution', call: cursorExecutionCallFrom(call, executionKind) }]
+    if (call.name === CURSOR_GENERATE_IMAGE_TOOL) {
+      if (typeof args.description !== 'string' || typeof args.filePath !== 'string' || typeof args.imageData !== 'string')
+        throw new Error('Cursor GenerateImage needs a description, file path, and image data')
+      return [{
+        kind: 'generateImage',
+        call: { callID: call.id, description: args.description, filePath: args.filePath, imageData: args.imageData },
+      }]
+    }
+    if (call.name === CURSOR_QUESTION_TOOL) {
+      if (typeof args.title !== 'string' || !Array.isArray(args.questions) || args.questions.length === 0)
+        throw new Error('Cursor AskQuestion needs a title and questions')
+      const questions = args.questions.map((value, questionIndex) => {
+        if (!isObject(value) || typeof value.id !== 'string' || typeof value.prompt !== 'string' || !Array.isArray(value.options))
+          throw new Error(`Cursor question ${questionIndex + 1} needs an id, prompt, and options`)
+        const options = value.options.map((option, optionIndex) => {
+          if (!isObject(option) || typeof option.id !== 'string' || typeof option.label !== 'string')
+            throw new Error(`Cursor question option ${optionIndex + 1} needs an id and label`)
+          return { id: option.id, label: option.label }
+        })
+        return { id: value.id, prompt: value.prompt, options, allowMultiple: value.allowMultiple === true }
+      })
+      return [{ kind: 'question', callID: call.id, title: args.title, questions }]
+    }
+    if (call.name === CURSOR_CREATE_PLAN_TOOL) {
+      if (typeof args.name !== 'string' || typeof args.overview !== 'string' || typeof args.plan !== 'string')
+        throw new Error('Cursor CreatePlan needs a name, overview, and plan')
+      return [{ kind: 'plan', callID: call.id, name: args.name, overview: args.overview, plan: args.plan }]
+    }
+    if (call.name === CURSOR_WEB_FETCH_TOOL) {
+      if (typeof args.url !== 'string' || !/^https?:\/\//.test(args.url))
+        throw new Error('Cursor WebFetch needs an HTTP URL')
+      return [{ kind: 'webFetch', callID: call.id, url: args.url }]
+    }
+    if (call.name === CURSOR_REQUEST_CONTEXT_TOOL)
+      return [{ kind: 'requestContext', callID: call.id }]
+    if (call.name === CURSOR_MCP_TOOL) {
+      if (typeof args.server !== 'string' || !args.server || typeof args.tool !== 'string' || !args.tool || !isObject(args.input))
+        throw new Error('Cursor MCP needs a server, tool, and object input')
+      return [{ kind: 'mcp', call: { callID: call.id, server: args.server, tool: args.tool, input: args.input } }]
+    }
+    if (call.name !== CURSOR_UPDATE_TODOS_TOOL)
+      throw new Error(`Cursor mock has no native encoder for ${call.name}`)
+    if (!Array.isArray(args.todos))
+      throw new Error('Cursor UpdateTodos needs a todos list')
+    const todos = args.todos.map((value, index) => {
+      if (!isObject(value) || typeof value.content !== 'string')
+        throw new Error(`Cursor Todo row ${index + 1} needs content`)
+      return {
+        id: typeof value.id === 'string' && value.id ? value.id : String(index + 1),
+        content: value.content,
+        status: cursorTodoStatus(value.status),
       }
     })
+    return [{ kind: 'todo', call: { callID: call.id, todos, merge: args.merge === true } }]
+  })
 }
 
 export interface CursorRunHandlers {
   /**
-   * Answer the turn this prompt opens, or report that nothing scripted it.
+   * Answer the turn this prompt opens, with its complete Run request frame.
    *
    * Returning undefined closes the stream with no text, which surfaces in the
    * agent as an empty answer rather than as a hang.
    */
-  answer: (prompt: string) => Promise<CursorTurnAnswer | undefined>
+  answer: (prompt: string, requestFrame: Uint8Array) => Promise<CursorTurnAnswer | undefined>
+  /** Receipt for a successful native turn, after its final text and end update. */
+  completed?: (prompt: string, requestFrame: Uint8Array, text: string) => void
+  /** The native error encoder supplies the code that this response sends. */
+  errorResponse?: (error: MockModelDeliveredError) => void
+  holdToolCompletion?: (callId: string, gate: string) => Promise<boolean>
+  /**
+   * Receive the rules that the CLI loaded for the turn. With this handler, the Run asks the CLI for its request context
+   * at the start of each turn, after the user record and before the first tool call, as Cursor's own backend asks
+   * before it builds the model's prompt.
+   */
+  contextRules?: (rules: readonly CursorContextRule[]) => void
+}
+
+/** The ID of the tool call that a turn's own request context query states. No scripted tool call takes this form. */
+function turnContextCallID(id: number): string {
+  return `leapmux-e2e-request-context-${id}`
 }
 
 /**
- * Serve one `agent.v1.AgentService/Run` stream.
+ * The text that the mock answers a question with: the selected option IDs, then the text that the reader typed for
+ * each question that holds some, as `<question ID>: "<text>"`. A test reads the typed text in the model's answer, as
+ * Cursor's own model reads it in the answer of the client.
+ */
+function cursorQuestionSummary(reply: Extract<CursorInteractionReply, { kind: 'question' }>): string {
+  if (reply.rejectedReason)
+    return `Cursor question rejected: ${reply.rejectedReason}`
+  const selected = `Cursor question selected: ${reply.answers.flatMap(answer => answer.selectedOptionIDs).join(', ') || '(none)'}`
+  const typed = reply.answers.flatMap(answer => answer.freeformText === undefined ? [] : [`${answer.questionID}: ${JSON.stringify(answer.freeformText)}`])
+  return typed.length === 0 ? selected : `${selected}; typed: ${typed.join(', ')}`
+}
+
+function cursorInteractionSummary(call: CursorInteractionCall, reply: CursorInteractionReply): string {
+  if (call.kind !== reply.kind)
+    throw new Error(`Cursor replied to ${call.kind} with ${reply.kind}`)
+  switch (reply.kind) {
+    case 'question':
+      return cursorQuestionSummary(reply)
+    case 'plan':
+      return reply.accepted ? 'Cursor plan accepted' : `Cursor plan rejected: ${reply.error ?? 'no reason'}`
+    case 'webFetch':
+      return reply.approved ? 'Cursor web fetch approved' : `Cursor web fetch rejected: ${reply.reason ?? 'no reason'}`
+  }
+}
+
+async function finishCursorTurn(response: ServerResponse, answer: CursorTurnAnswer | undefined, blobMessageID: number, nativeReply?: string): Promise<string | undefined> {
+  if (response.destroyed || response.writableEnded)
+    return undefined
+  const text = [answer?.text, nativeReply].filter((part): part is string => part !== undefined && part !== '').join('\n')
+  if (text && !answer?.stream)
+    writeTranscriptRecords(response, [textTranscriptRecord('assistant', text)], blobMessageID)
+  const stream = answer?.stream ?? createModelStream(response)
+  for await (const chunk of stream.chunks(answer?.reasoning))
+    response.write(Buffer.from(connectFrame(cursorThinkingDelta(chunk))))
+  for await (const chunk of stream.chunks(text || undefined))
+    response.write(Buffer.from(connectFrame(cursorTextDelta(chunk))))
+  if (!stream.active)
+    return undefined
+  if (text && answer?.stream)
+    writeTranscriptRecords(response, [textTranscriptRecord('assistant', text)], blobMessageID)
+  response.write(Buffer.from(connectFrame(cursorTurnEnded(answer?.usage))))
+  response.end(Buffer.from(connectEndOfStream()))
+  return text
+}
+
+/**
+ * Serve one agent.v1.AgentService/Run stream.
  *
- * The client sends Connect frames as it goes, and only the frame that OPENS the
- * turn carries a prompt -- a heartbeat and a tool result travel on the same
- * stream and decode to no prompt at all. The first frame that yields one is
- * therefore the turn, and the answer follows it.
+ * Only the opening Connect frame carries a prompt.
+ * Heartbeats and tool results share the stream but contain no prompt.
+ * The first frame with a prompt starts the turn and selects its answer.
  */
 export async function serveCursorRun(
   request: IncomingMessage,
   response: ServerResponse,
   handlers: CursorRunHandlers,
 ): Promise<void> {
-  response.writeHead(200, { 'content-type': String(request.headers['content-type'] ?? 'application/connect+proto') })
+  writeResponseHeaders(response, 200, { 'content-type': String(request.headers['content-type'] ?? 'application/connect+proto') })
   let pending = Buffer.alloc(0)
-  let answered = false
+  let opening: { prompt: string, frame: Uint8Array } | undefined
+  let answer: CursorTurnAnswer | undefined
+  let blobMessageID = 1
+  let toolIndex = 0
+  let nextExecutionId = 300
+  let nextInteractionId = 299
+  let pendingInteraction: { id: number, call: CursorInteractionCall } | undefined
+  let pendingMcp: { id: number } | undefined
+  // The request context query that waits for its answer: the turn's own query, or a scripted one.
+  let pendingContext: { id: number, deliver: (rules: readonly CursorContextRule[]) => void } | undefined
+  let pendingExecution: CursorExecution | undefined
+  let pendingSubagent: { execution: CursorSubagentExecution, callID: string, completionGate?: string } | undefined
+  const replies: string[] = []
+
+  const advance = async (): Promise<'waiting' | 'finished'> => {
+    const tools = answer?.toolCalls ?? []
+    while (toolIndex < tools.length) {
+      const tool = tools[toolIndex++]!
+      if (response.destroyed || response.writableEnded)
+        return 'finished'
+      switch (tool.kind) {
+        case 'task':
+          if (tool.nativeExecution) {
+            const parentConversationID = opening && cursorConversationIdOf(opening.frame)
+            if (!parentConversationID)
+              throw new Error('Actual native Cursor child execution requires its parent conversation ID.')
+            const execution = new CursorSubagentExecution({ ...tool.call, modelID: tool.nativeExecution.modelId, parentConversationID }, ++nextExecutionId)
+            pendingSubagent = { execution, callID: tool.call.callID, ...(tool.completionGate === undefined ? {} : { completionGate: tool.completionGate }) }
+            response.write(Buffer.from(connectFrame(execution.started)))
+            response.write(Buffer.from(connectFrame(execution.request())))
+            return 'waiting'
+          }
+          response.write(Buffer.from(connectFrame(cursorTaskStarted(tool.call))))
+          if (tool.taskProgress !== undefined)
+            response.write(Buffer.from(connectFrame(cursorTaskProgress(tool.call.callID, tool.taskProgress))))
+          if (tool.completionGate !== undefined) {
+            if (!handlers.holdToolCompletion)
+              throw new Error('A native Cursor task completion gate requires a scenario handler')
+            if (!await handlers.holdToolCompletion(tool.call.callID, tool.completionGate))
+              return 'finished'
+          }
+          response.write(Buffer.from(connectFrame(cursorTaskCompleted(tool.call, tool.report))))
+          blobMessageID = writeTranscriptRecords(response, taskTranscriptRecords({ ...tool.call, report: tool.report }), blobMessageID)
+          break
+        case 'todo':
+          response.write(Buffer.from(connectFrame(cursorTodoStarted(tool.call))))
+          response.write(Buffer.from(connectFrame(cursorTodoCompleted(tool.call))))
+          break
+        case 'generateImage':
+          response.write(Buffer.from(connectFrame(cursorGenerateImageStarted(tool.call))))
+          response.write(Buffer.from(connectFrame(cursorGenerateImageCompleted(tool.call))))
+          break
+        case 'execution':
+          pendingExecution = new CursorExecution(tool.call, () => ++nextExecutionId)
+          response.write(Buffer.from(connectFrame(pendingExecution.started)))
+          response.write(Buffer.from(connectFrame(pendingExecution.request())))
+          return 'waiting'
+        case 'requestContext':
+          pendingContext = {
+            id: ++nextExecutionId,
+            deliver: (rules) => {
+              if (!answer?.requestContextRules)
+                throw new Error('A native Cursor request context query requires a scenario handler')
+              answer.requestContextRules(rules)
+            },
+          }
+          response.write(Buffer.from(connectFrame(cursorRequestContextExec(pendingContext.id, tool.callID))))
+          return 'waiting'
+        case 'mcp':
+          pendingMcp = { id: ++nextExecutionId }
+          response.write(Buffer.from(connectFrame(cursorMcpExec(pendingMcp.id, tool.call))))
+          return 'waiting'
+        case 'question':
+        case 'plan':
+        case 'webFetch':
+          pendingInteraction = { id: ++nextInteractionId, call: tool }
+          if (tool.kind === 'webFetch')
+            response.write(Buffer.from(connectFrame(cursorWebFetchStarted(tool))))
+          response.write(Buffer.from(connectFrame(cursorInteractionQuery(pendingInteraction.id, tool))))
+          return 'waiting'
+      }
+    }
+    const text = await finishCursorTurn(response, answer, blobMessageID, replies.length > 0 ? replies.join('\n') : undefined)
+    if (answer && opening && text !== undefined)
+      handlers.completed?.(opening.prompt, opening.frame, text)
+    return 'finished'
+  }
 
   for await (const chunk of request) {
     pending = Buffer.concat([pending, Buffer.from(chunk)])
     const { frames, rest } = takeConnectFrames(new Uint8Array(pending))
     pending = Buffer.from(rest)
-    for (const frame of frames) {
-      const prompt = cursorPromptOf(frame)
-      if (prompt === undefined || answered)
+    for (const encoded of frames) {
+      if ((encoded.flags & ~0x03) !== 0)
+        throw new Error('The native Cursor request has unsupported Connect flags.')
+      if ((encoded.flags & 0x02) !== 0)
         continue
-      answered = true
-      const answer = await handlers.answer(prompt)
-      // A tool call goes out BEFORE the text, in the order a real turn uses:
-      // the agent opens the row, runs the child, then speaks.
-      let blobMessageID = 1
-      for (const task of answer?.taskCalls ?? []) {
-        response.write(Buffer.from(connectFrame(cursorTaskStarted(task))))
-        response.write(Buffer.from(connectFrame(cursorTaskCompleted(task, task.report))))
-        // The updates above draw the row; these WRITE the transcript, which is
-        // the only place the child's report survives. See `cursorSetBlob`.
-        blobMessageID = writeTaskTranscript(response, task, blobMessageID)
+      const compressed = (encoded.flags & 0x01) !== 0
+      const encoding = request.headers['connect-content-encoding']
+      if (compressed && (typeof encoding !== 'string' || encoding.trim().toLowerCase() !== 'gzip'))
+        throw new Error('The native Cursor compressed request requires gzip encoding.')
+      const frame = compressed ? new Uint8Array(gunzipSync(encoded.payload, { maxOutputLength: MAX_MOCK_REQUEST_BYTES })) : encoded.payload
+      if (pendingSubagent) {
+        const result = pendingSubagent.execution.acceptReply(frame)
+        if (!result)
+          continue
+        if (pendingSubagent.completionGate !== undefined) {
+          if (!handlers.holdToolCompletion)
+            throw new Error('The native Cursor child completion requires a scenario gate controller.')
+          if (!await handlers.holdToolCompletion(pendingSubagent.callID, pendingSubagent.completionGate))
+            return
+        }
+        response.write(Buffer.from(connectFrame(result.update)))
+        replies.push(result.reply.success ? result.reply.finalMessage ?? '' : result.reply.error)
+        pendingSubagent = undefined
+        if (await advance() === 'finished')
+          return
+        continue
       }
-      if (answer?.text !== undefined && answer.text !== '')
-        response.write(Buffer.from(connectFrame(cursorTextDelta(answer.text))))
-      response.write(Buffer.from(connectFrame(cursorTurnEnded())))
-      response.end(Buffer.from(connectEndOfStream()))
-      return
+      if (pendingExecution) {
+        const result = pendingExecution.acceptReply(frame)
+        if (!result)
+          continue
+        if (result.state === 'request') {
+          response.write(Buffer.from(connectFrame(result.request)))
+          continue
+        }
+        response.write(Buffer.from(connectFrame(result.update)))
+        replies.push(result.receipt.text)
+        pendingExecution = undefined
+        if (await advance() === 'finished')
+          return
+        continue
+      }
+      if (pendingContext) {
+        const reply = cursorRequestContextResponseOf(frame)
+        if (!reply)
+          continue
+        if (reply.id !== pendingContext.id)
+          throw new Error(`Cursor replied to request context query ${pendingContext.id} with id ${reply.id}`)
+        pendingContext.deliver(reply.rules)
+        pendingContext = undefined
+        if (await advance() === 'finished')
+          return
+        continue
+      }
+      if (pendingMcp) {
+        const reply = cursorMcpResponseOf(frame)
+        if (!reply)
+          continue
+        if (reply.id !== pendingMcp.id)
+          throw new Error(`Cursor replied to MCP execution ${pendingMcp.id} with id ${reply.id}`)
+        replies.push(reply.success ? reply.text : `Cursor MCP failed: ${reply.text}`)
+        pendingMcp = undefined
+        if (await advance() === 'finished')
+          return
+        continue
+      }
+      if (pendingInteraction) {
+        const reply = cursorInteractionResponseOf(frame)
+        if (!reply)
+          continue
+        if (reply.id !== pendingInteraction.id)
+          throw new Error(`Cursor replied to query ${pendingInteraction.id} with id ${reply.id}`)
+        const summary = cursorInteractionSummary(pendingInteraction.call, reply)
+        if (pendingInteraction.call.kind === 'webFetch' && reply.kind === 'webFetch')
+          response.write(Buffer.from(connectFrame(cursorWebFetchCompleted(pendingInteraction.call, reply))))
+        replies.push(summary)
+        pendingInteraction = undefined
+        if (await advance() === 'finished')
+          return
+        continue
+      }
+      const prompt = cursorPromptOf(frame)
+      if (prompt === undefined || opening)
+        continue
+      opening = { prompt, frame }
+      answer = await handlers.answer(prompt, frame)
+      if (response.destroyed || response.writableEnded)
+        return
+      if (answer?.error) {
+        const native = cursorErrorResponse(answer.error)
+        handlers.errorResponse?.(native.error)
+        response.end(Buffer.from(native.frame))
+        return
+      }
+      // The native store needs the user blob before any tool or text update.
+      blobMessageID = writeTranscriptRecords(response, [textTranscriptRecord('user', prompt)], 1)
+      if (handlers.contextRules) {
+        // The turn goes on when the CLI answers. The answer reaches the handler through the same path as a scripted query.
+        const id = ++nextExecutionId
+        pendingContext = { id, deliver: handlers.contextRules }
+        response.write(Buffer.from(connectFrame(cursorRequestContextExec(id, turnContextCallID(id)))))
+        continue
+      }
+      if (await advance() === 'finished')
+        return
     }
   }
-  // The client closed without ever opening a turn. Close the stream cleanly so
-  // it reads an empty answer rather than a transport fault.
-  if (!answered)
+  // An unanswered native request creates no completed-turn receipt.
+  if (!response.destroyed && !response.writableEnded)
     response.end(Buffer.from(connectEndOfStream()))
 }

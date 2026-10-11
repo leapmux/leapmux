@@ -5,7 +5,9 @@
  */
 import type { Buffer } from 'node:buffer'
 import type { ChildProcess } from 'node:child_process'
+import type { CLIConfigDir } from './cli'
 import { rmSync } from 'node:fs'
+import { join } from 'node:path'
 import {
   closeTestChannels,
   getUserId,
@@ -15,11 +17,12 @@ import {
   TEST_ADMIN_PASSWORD,
   TEST_ADMIN_USERNAME,
 } from './api'
-import { cleanupOnFailure, finishCleanup } from './cleanup'
+import { cleanupOnFailure, finishCleanup, withCleanup } from './cleanup'
+import { mintCLITokenForAdmin } from './cli'
 import { stopProcess } from './process'
 import { spawnTestProcess } from './processRegistry'
 import { createTestDirectory } from './runDirectory'
-import { findFreePort, getGlobalState, hubSpawnEnv, waitForServer } from './server'
+import { getGlobalState, hubDataDir, hubSpawnEnv, waitForHubStart } from './server'
 
 export interface DevServerHandle {
   hubUrl: string
@@ -66,10 +69,8 @@ export async function startDevServer(opts: StartDevServerOptions = {}): Promise<
 export async function startUnseededDevServer(opts: StartDevServerOptions = {}): Promise<UnseededDevServerHandle> {
   const { binaryPath } = getGlobalState()
   const dataDir = createTestDirectory(`${opts.dataDirPrefix ?? 'leapmux-e2e-'}-`)
-  const port = await findFreePort()
-  const hubUrl = `http://localhost:${port}`
 
-  const proc = spawnTestProcess(binaryPath, ['dev', '-listen', `:${port}`, '-data-dir', dataDir], {
+  const proc = spawnTestProcess(binaryPath, ['dev', '-listen', '127.0.0.1:0', '-data-dir', dataDir], {
     stdio: ['ignore', 'pipe', 'pipe'],
     env: hubSpawnEnv(opts.env),
   })
@@ -83,9 +84,9 @@ export async function startUnseededDevServer(opts: StartDevServerOptions = {}): 
     proc.stderr?.resume()
   }
 
-  const handle = { hubUrl, proc, dataDir }
+  const handle = { hubUrl: '', proc, dataDir }
   return cleanupOnFailure(async () => {
-    await waitForServer(hubUrl)
+    handle.hubUrl = (await waitForHubStart(join(hubDataDir(dataDir), 'state.json'), proc)).hubUrl
     return handle
   }, () => stopDevServer(handle))
 }
@@ -97,9 +98,31 @@ export async function stopDevServer(handle: DevServerHandle | UnseededDevServerH
     rmSync(p, { recursive: true, force: true })
 }
 
+/**
+ * Start a private dev server, let `configure` change it through the control CLI as its administrator, and run `use`
+ * with it. A spec uses it for a hub setting that must not reach the shared hub, such as the captcha provider.
+ *
+ * The server and the credential directory of the CLI go away after `use`, and also after a failed setup. A failed
+ * `configure` never reaches `use`.
+ */
+export async function withAdminConfiguredDevServer(
+  dataDirPrefix: string,
+  configure: (cli: CLIConfigDir, server: DevServerHandle) => Promise<void>,
+  use: (server: DevServerHandle) => Promise<void>,
+): Promise<void> {
+  const server = await startDevServer({ dataDirPrefix })
+  const extraPaths: string[] = []
+  await withCleanup(async () => {
+    const cli = await mintCLITokenForAdmin(server)
+    extraPaths.push(cli.path)
+    await configure(cli, server)
+    await use(server)
+  }, () => stopDevServer(server, extraPaths))
+}
+
 export interface SoloServerHandle {
   hubUrl: string
-  /** The address `-listen` was given, so a spec can assert what the panel shows. */
+  /** The resolved primary TCP address, which the network panel shows. */
   listen: string
   proc: ChildProcess
   dataDir: string
@@ -123,11 +146,9 @@ export interface StartSoloServerOptions extends StartDevServerOptions {
 export async function startSoloServer(opts: StartSoloServerOptions = {}): Promise<SoloServerHandle> {
   const { binaryPath } = getGlobalState()
   const dataDir = createTestDirectory(`${opts.dataDirPrefix ?? 'leapmux-e2e-solo'}-`)
-  const port = await findFreePort()
-  const listen = `${opts.listenHost ?? '127.0.0.1'}:${port}`
-  const hubUrl = `http://127.0.0.1:${port}`
+  const requestedListen = `${opts.listenHost ?? '127.0.0.1'}:0`
 
-  const proc = spawnTestProcess(binaryPath, ['solo', '-listen', listen, '-data-dir', dataDir], {
+  const proc = spawnTestProcess(binaryPath, ['solo', '-listen', requestedListen, '-data-dir', dataDir], {
     stdio: ['ignore', 'pipe', 'pipe'],
     env: hubSpawnEnv(opts.env),
   })
@@ -141,9 +162,11 @@ export async function startSoloServer(opts: StartSoloServerOptions = {}): Promis
     proc.stderr?.resume()
   }
 
-  const handle = { hubUrl, listen, proc, dataDir }
+  const handle = { hubUrl: '', listen: '', proc, dataDir }
   return cleanupOnFailure(async () => {
-    await waitForServer(hubUrl)
+    const { hubUrl, listen } = await waitForHubStart(join(hubDataDir(dataDir), 'state.json'), proc, '127.0.0.1')
+    handle.hubUrl = hubUrl
+    handle.listen = listen
     return handle
   }, () => stopSoloServer(handle))
 }

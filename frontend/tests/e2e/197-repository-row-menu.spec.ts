@@ -1,7 +1,7 @@
-import type { Page } from '@playwright/test'
 import { execSync } from 'node:child_process'
-import { expect, test } from './fixtures'
-import { clickRepoMenuItem, loginViaToken, openRepoMenu, openWorkspace, repoGroupRow, repoMenuItem } from './helpers/ui'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
+import { clickRepoMenuItem, loginViaToken, openRepoMenu, openWorkspace, repoGroupRow, repoMenuItem, sidebarLeaves, visibleOnly, workspaceChildren } from './helpers/ui'
 import { createGitRepo, createWorkspaceWithWorktreeViaAPI } from './helpers/worktree'
 
 /**
@@ -36,11 +36,6 @@ function createRepoWithOrigin(dataDir: string, name: string): string {
   return repoDir
 }
 
-/** This workspace's own subtree, so another spec's expanded rows stay out. */
-function workspaceSubtree(page: Page, workspaceId: string) {
-  return page.locator(`[data-testid="workspace-children-${workspaceId}"]`)
-}
-
 test.describe('repository row menu', () => {
   test('the kebab and a right-click both open it, with the repository block and the collapse item', async ({
     page,
@@ -49,7 +44,7 @@ test.describe('repository row menu', () => {
     const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createRepoWithOrigin(dataDir, 'repo-menu-repo')
 
-    const workspaceId = await createWorkspaceWithWorktreeViaAPI(
+    const { workspaceId } = await createWorkspaceWithWorktreeViaAPI(
       hubUrl,
       adminToken,
       workerId,
@@ -61,7 +56,7 @@ test.describe('repository row menu', () => {
     await loginViaToken(page, adminToken)
     await openWorkspace(page, workspaceId)
 
-    const repoRow = repoGroupRow(workspaceSubtree(page, workspaceId))
+    const repoRow = repoGroupRow(workspaceChildren(page, workspaceId))
     await expect(repoRow).toBeVisible()
 
     // ── The kebab ───────────────────────────────────────────────────────────
@@ -111,7 +106,7 @@ test.describe('repository row menu', () => {
     const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createRepoWithOrigin(dataDir, 'repo-collapse-repo')
 
-    const workspaceId = await createWorkspaceWithWorktreeViaAPI(
+    const { workspaceId } = await createWorkspaceWithWorktreeViaAPI(
       hubUrl,
       adminToken,
       workerId,
@@ -123,8 +118,9 @@ test.describe('repository row menu', () => {
     await loginViaToken(page, adminToken)
     await openWorkspace(page, workspaceId)
 
-    const subtree = workspaceSubtree(page, workspaceId)
-    const leaves = subtree.locator('[data-testid="tab-tree-leaf"]:visible')
+    const subtree = workspaceChildren(page, workspaceId)
+    // A folded branch keeps its leaves in the DOM, hidden, so the count reads the visible leaves.
+    const leaves = visibleOnly(sidebarLeaves(page, workspaceId))
     await expect(leaves.first()).toBeVisible()
 
     const repoRow = repoGroupRow(subtree)

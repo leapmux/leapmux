@@ -123,7 +123,7 @@ describe('test process registry', () => {
     writeFileSync(join(root, 'processes'), 'not a directory')
     const { emitter, proc } = createProcessStub()
     vi.mocked(spawn).mockReturnValue(proc)
-    expect(() => spawnTestProcess('fixture-child', [], {})).toThrow()
+    expect(() => spawnTestProcess('fixture-child', [], {})).toThrow(expect.objectContaining({ code: 'EEXIST' }))
     expect(emitter.kill).toHaveBeenCalledExactlyOnceWith('SIGKILL')
   })
 

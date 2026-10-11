@@ -2,6 +2,7 @@ import type { Page } from '@playwright/test'
 import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { expect } from '@playwright/test'
 import {
   BOOT_SPLASH_CORE_PHASES,
   BOOT_SPLASH_ICON_HEIGHT,
@@ -15,7 +16,7 @@ import {
   BOOT_SPLASH_TEST_ID,
   bootSplashDocumentCss,
 } from '../../src/lib/bootSplashTheme'
-import { expect, test } from './fixtures'
+import { test } from './fixtures'
 import { applySimulatedSafeArea, IPHONE_PORTRAIT, ZERO_INSETS } from './helpers/safeArea'
 import { appMenuTrigger, loginViaToken } from './helpers/ui'
 

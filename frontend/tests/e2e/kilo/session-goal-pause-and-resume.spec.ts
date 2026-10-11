@@ -1,0 +1,8 @@
+import { kiloTest } from '../kilo-fixtures'
+import { exerciseKiloGoal, KILO_ACP_IDLE_FALLBACK_MS } from './goalScenario'
+
+kiloTest.setTimeout(KILO_ACP_IDLE_FALLBACK_MS * 4)
+
+kiloTest('session-goal-pause-and-resume: sets, pauses, resumes, and clears the native goal', async ({ native }) => {
+  await exerciseKiloGoal(native)
+})

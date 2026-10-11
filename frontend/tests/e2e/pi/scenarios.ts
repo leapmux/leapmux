@@ -1,0 +1,29 @@
+import type { ManagedNativeScenarioContext, NativeContextFixtures } from '../helpers/nativeScenario'
+import type { NativeStartupLaunch } from '../helpers/nativeStartupWrapper'
+import type { ProviderAgent } from '../helpers/workspace'
+import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { managedNativeContext } from '../helpers/nativeScenario'
+import { resolveNativeStartupLaunch } from '../helpers/nativeStartupWrapper'
+import { piTodoToolCall } from '../helpers/providerToolCalls'
+import { exerciseRelatedTodo, RELATED_TODO_CALL_ID, RELATED_TODO_ITEM } from '../helpers/relatedTodoProof'
+
+/** How a Pi agent opens. */
+export const PI_AGENT: ProviderAgent = { provider: AgentProvider.PI, prefix: 'pi-e2e' }
+
+/** Build the scenario context of Pi. Its native protocol needs no field beyond the provider. */
+export async function nativeContext(fixtures: NativeContextFixtures): Promise<ManagedNativeScenarioContext> {
+  return managedNativeContext(fixtures, PI_AGENT)
+}
+
+/** Select the actual isolated executable and hold only its native runtime invocation. */
+export function nativeLaunch(context: ManagedNativeScenarioContext): NativeStartupLaunch {
+  return resolveNativeStartupLaunch(context.leapmuxServer.agentEnv, { binaryName: 'pi', holdWhen: ['--mode', 'rpc'] })
+}
+
+/**
+ * The related proof of a missing-setting cell: a native to-do call fills the sidebar.
+ * Pi's vocabulary has no update-todos call, so the proof gives Pi's own to-do call for the default item.
+ */
+export async function relatedNativeProof(context: ManagedNativeScenarioContext): Promise<void> {
+  await exerciseRelatedTodo(context, { toolCall: piTodoToolCall(RELATED_TODO_CALL_ID, { action: 'create', subject: RELATED_TODO_ITEM }) })
+}

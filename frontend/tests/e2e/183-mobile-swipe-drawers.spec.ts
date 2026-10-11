@@ -1,6 +1,8 @@
 import type { Locator, Page } from '@playwright/test'
-import { expect, test } from './fixtures'
-import { COARSE_POINTER_METRICS, touchSwipe } from './helpers/touch'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
+import { COARSE_POINTER_METRICS, touchDown, touchSwipe } from './helpers/touch'
+import { composerEditor } from './helpers/ui'
 
 /**
  * The mobile drawers, driven by a finger instead of the tab bar's toggles.
@@ -65,7 +67,33 @@ async function expectMobileShellIdle(page: Page) {
   // neither its presence nor `toBeVisible` can tell the two states apart.
   // `pointer-events` is what actually differs.
   await expect(page.getByTestId('tab-sheet-overlay')).toHaveCSS('pointer-events', 'none')
+  await expectTabHydrated(page)
   await expectMainThreadIdle(page)
+}
+
+/**
+ * The agent tab shows the agent's own details, so the details have arrived.
+ *
+ * The shell reveals the tab before the agent's details arrive. When they arrive,
+ * the app renders the tab chip again and adds the model chip under the composer,
+ * on the main thread. {@link expectMainThreadIdle} alone can take its grants in
+ * the quiet moment before that, and the swipe then runs while the main thread
+ * renders the details. That is the race that `~/src/lib/horizontalSwipe.ts`
+ * describes: the swipe is lost, and no drawer arrives.
+ *
+ * The model chip renders only when the agent states its model, so it marks the
+ * end of that work.
+ *
+ * It does NOT mark the end of the agent startup. The chip renders beside the
+ * "Starting ..." banner, and the startup ends a fraction of a second after the
+ * page opens, which can be in the middle of the swipe. The app then replaces
+ * the banner, which is the element under the finger. The recognizer must keep
+ * the swipe through that replacement, so this helper does not wait for the
+ * startup. The test 'a swipe survives the removal of the element under the
+ * finger' holds that property without a race.
+ */
+async function expectTabHydrated(page: Page) {
+  await expect(page.getByTestId('composer-model-trigger')).toBeVisible()
 }
 
 /**
@@ -109,24 +137,30 @@ async function expectMainThreadIdle(page: Page) {
  */
 async function transcriptY(page: Page): Promise<number> {
   const bar = (await page.getByTestId('tab-bar').boundingBox())!
-  const editor = (await page.getByTestId('composer-editor').boundingBox())!
+  const editor = (await composerEditor(page).boundingBox())!
   return (bar.y + bar.height + editor.y) / 2
 }
 
 /**
- * What is actually under the finger, as a short description.
+ * The region under the finger: `transcript`, the test id of the drawer, or a
+ * short description of anything else.
  *
  * A swipe that misses reports nothing, and "the drawer never opened" is the
  * same failure whether the recognizer declined or the finger simply landed on
- * the composer. Asserting the landing separates the two.
+ * something else. Asserting the landing separates the two.
  */
-async function elementUnder(page: Page, x: number, y: number): Promise<string> {
+async function regionUnder(page: Page, x: number, y: number): Promise<string> {
   return page.evaluate(([px, py]) => {
     const el = document.elementFromPoint(px, py)
     if (!el)
       return 'nothing'
-    const owner = el.closest('[data-chat-scroll-container], [data-testid]')
-    return `${el.tagName}|${owner?.getAttribute('data-testid') ?? (owner ? 'chat-scroll-container' : 'no-owner')}`
+    const drawer = el.closest('[data-testid="mobile-drawer-left"], [data-testid="mobile-drawer-right"]')
+    if (drawer)
+      return drawer.getAttribute('data-testid')!
+    if (el.closest('[data-chat-scroll-container="true"]'))
+      return 'transcript'
+    const owner = el.closest('[data-testid]')
+    return `${el.tagName}|${owner?.getAttribute('data-testid') ?? 'no-owner'}`
   }, [x, y] as const)
 }
 
@@ -154,12 +188,12 @@ async function swipeBand(page: Page, direction: 'left' | 'right') {
   const y = await transcriptY(page)
   const travel = width * SWIPE_TRAVEL_RATIO * (direction === 'right' ? 1 : -1)
   const fromX = direction === 'right' ? width * 0.25 : width * 0.75
-  // The finger must start on the transcript or on the drawer over it. A landing
-  // on the composer or the tab bar is a mis-aimed swipe, and it must fail as
-  // that rather than as "the drawer never opened".
-  const landing = await elementUnder(page, fromX, y)
+  // The finger must start on the transcript or on the drawer over it. Any other
+  // landing is a mis-aimed swipe, and it must fail as that rather than as "the
+  // drawer never opened".
+  const landing = await regionUnder(page, fromX, y)
   const where = `the swipe start at (${Math.round(fromX)}, ${Math.round(y)})`
-  expect(landing, where).not.toMatch(/composer-editor|tab-bar|nothing/)
+  expect(landing, where).toMatch(/^(?:transcript|mobile-drawer-left|mobile-drawer-right)$/)
   await touchSwipe(page, { from: { x: fromX, y }, to: { x: fromX + travel, y } })
 }
 
@@ -215,6 +249,70 @@ test.describe('mobile drawer swipes (phone)', () => {
     await expect(right).not.toBeInViewport()
   })
 
+  /**
+   * The element under the finger leaves the document while the finger moves.
+   *
+   * The app does this for real when the agent finishes the startup: it replaces
+   * the "Starting ..." banner, and the banner fills the empty transcript, so a
+   * finger that lands there lands on it. Chromium then sends the rest of that
+   * finger's `touchmove` events to the removed element, and they never reach the
+   * region. A recognizer that waits for them there never refuses the browser's
+   * scroll, the browser cancels the pointer, and no drawer arrives. Nothing
+   * reports the loss, and every other assertion still passes. The startup
+   * timing makes the real case a race, so this test removes the element at a
+   * fixed point instead (after the first move, when the travel is still under
+   * the swipe threshold).
+   *
+   * The element is INJECTED, like the sideways scroller in a later test but
+   * with the whole region as its extent, because the test must control the
+   * removal and the app owns the real banner.
+   */
+  test('a swipe survives the removal of the element under the finger', async ({ page, authenticatedWorkspace }) => {
+    const { left, right } = drawers(page)
+    await page.evaluate(() => {
+      const region = document.querySelector('[data-testid="mobile-drawer-left"]')!.parentElement!
+      const cover = document.createElement('div')
+      cover.dataset.testid = 'e2e-press-target'
+      Object.assign(cover.style, {
+        position: 'absolute',
+        inset: '0',
+        // Over the tiles, under the drawers (which sit at z-index 100).
+        zIndex: '2',
+        background: 'var(--card)',
+      })
+      region.appendChild(cover)
+    })
+
+    const width = page.viewportSize()!.width
+    const y = await transcriptY(page)
+    const fromX = width * 0.25
+    // The finger must land on the injected element. Any other landing proves
+    // nothing about the removal.
+    const landing = await page.evaluate(
+      ([px, py]) => document.elementFromPoint(px, py)?.getAttribute('data-testid') ?? 'nothing',
+      [fromX, y] as const,
+    )
+    expect(landing, `the press at (${Math.round(fromX)}, ${Math.round(y)})`).toBe('e2e-press-target')
+
+    const steps = 5
+    const stepX = (width * SWIPE_TRAVEL_RATIO) / steps
+    const finger = await touchDown(page, fromX, y)
+    // `finally`, for the reason `touchSwipe` states: a failed step must still
+    // lift the finger.
+    try {
+      await finger.moveTo(fromX + stepX, y)
+      await page.evaluate(() => document.querySelector('[data-testid="e2e-press-target"]')!.remove())
+      for (let step = 2; step <= steps; step++)
+        await finger.moveTo(fromX + stepX * step, y)
+    }
+    finally {
+      await finger.end()
+    }
+
+    await expect(left).toBeInViewport()
+    await expect(right).not.toBeInViewport()
+  })
+
   // The transcript is the region's main scroller and every read of it is a
   // vertical drag. A recognizer that took those would make the chat unusable.
   test('a drag up the transcript opens no drawer', async ({ page, authenticatedWorkspace }) => {
@@ -230,7 +328,7 @@ test.describe('mobile drawer swipes (phone)', () => {
   // A finger sweeping the composer is placing a caret or extending a selection.
   // The recognizer declines every press inside an editing host for that reason.
   test('a swipe across the composer opens no drawer', async ({ page, authenticatedWorkspace }) => {
-    const editorBox = (await page.locator('[data-testid="composer-editor"] .ProseMirror').boundingBox())!
+    const editorBox = (await composerEditor(page).boundingBox())!
     const y = editorBox.y + editorBox.height / 2
     await touchSwipe(page, {
       from: { x: editorBox.x + editorBox.width * 0.25, y },

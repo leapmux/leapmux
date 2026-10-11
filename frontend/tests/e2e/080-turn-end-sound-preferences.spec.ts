@@ -1,64 +1,46 @@
+import type { Page } from '@playwright/test'
 import type { ModelScript } from './helpers/modelScriptFixture'
-import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
-import { expect, test } from './fixtures'
-import { bashToolCall } from './helpers/providerToolCalls'
-import { armTurnEndSound, expectDoorbellCount, expectDoorbellQuiet } from './helpers/turnEndSound'
-import { getBrowserPref, loginViaToken, openAgentViaUI, openSettingsAt, sendMessage, waitForAgentIdle, waitForWorkspaceReady } from './helpers/ui'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
+import { nativeAgentById } from './helpers/nativeScenario'
+import { openPreferencesAs, preferenceScopeChip, setPreferenceScope } from './helpers/preferences'
+import { retryUntilPass } from './helpers/retryUntilPass'
+import { armTurnEndSound, expectDoorbellCount, expectDoorbellQuiet, sendToolUsingTurn, waitForIdleSoundReceipt } from './helpers/turnEndSound'
+import { agentTabs, expectAgentTabCount, getBrowserPref, openAgentViaUI, openSettingsAt, tabById, waitForAgentIdle, waitForWorkspaceReady } from './helpers/ui'
 
-/**
- * A prompt the agent cannot answer from the prompt alone, so the turn reports
- * `numToolUses > 0`. That matters: `useAgentSettled` deliberately suppresses the
- * ding for trivial single-exchange turns, so a plain arithmetic question would
- * make every assertion below pass for the wrong reason.
- */
-const TOOL_USING_PROMPT = 'Run the command `pwd` and tell me the result.'
+// The doorbell fires on a turn that USED a tool, so each turn here makes a real
+// tool call through `sendToolUsingTurn` -- a text-only answer is the negative
+// case, and the spec has its own test for that.
 
-/**
- * Script the tool turn this spec listens for.
- *
- * The doorbell fires on a turn that USED a tool, so the turn has to make a real
- * tool call — a text-only answer is the negative case, and the spec has its own
- * test for that.
- */
-async function sendToolTurn(page: Parameters<typeof sendMessage>[0], script: ModelScript): Promise<void> {
-  await script.queue(
-    { toolCalls: [bashToolCall(AgentProvider.CLAUDE_CODE, 'pwd-call', 'pwd')] },
-    { text: 'The working directory is above.' },
-  )
-  await sendMessage(page, script.prompt(TOOL_USING_PROMPT))
-  await script.waitForSteps()
+/** Expire the native sound handler's sixty-second cooldown before a UI-only negative case. */
+async function prepareUiSoundProbe(page: Page, userId: string, script: ModelScript): Promise<void> {
+  await page.clock.install()
+  await armTurnEndSound(page, userId, 'ding-dong')
+  await waitForWorkspaceReady(page)
+  const boundary = await sendToolUsingTurn(page, script)
+  await waitForIdleSoundReceipt(page, boundary)
+  await expectDoorbellCount(page, 1)
+  await page.clock.fastForward(61_000)
 }
 
-/** The scope chip on the turn-end sound row (dual: browser override vs account). */
-function turnEndSoundScope(page: import('@playwright/test').Page) {
-  return page.getByTestId('scope-chip-notifications.turnEndSound')
-}
-
-/** Switch the turn-end sound row onto the browser (override) tier. */
-async function overrideOnDevice(page: import('@playwright/test').Page) {
-  await turnEndSoundScope(page).click()
-  await page.getByRole('menuitemradio', { name: 'Override on this device' }).click()
-}
+/** The setting ID of the turn-end sound row (dual: browser override vs account). */
+const TURN_END_SOUND = 'notifications.turnEndSound'
 
 test.describe('Turn End Sound Preferences', () => {
   test('should show the Turn End Sound row in the Notifications category', async ({ page, leapmuxServer }) => {
-    await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/')
-    const dialog = await openSettingsAt(page, 'notifications')
+    const dialog = await openPreferencesAs(page, leapmuxServer.adminToken, 'notifications')
     await expect(dialog.getByText('Turn-end sound', { exact: true })).toBeVisible()
     await expect(dialog.getByRole('radio', { name: 'None' })).toBeVisible()
     await expect(dialog.getByRole('radio', { name: 'Ding Dong' })).toBeVisible()
   })
 
   test('should persist browser-level turn end sound in browser storage', async ({ page, leapmuxServer }) => {
-    await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/')
-    const dialog = await openSettingsAt(page, 'notifications')
+    const dialog = await openPreferencesAs(page, leapmuxServer.adminToken, 'notifications')
     await expect(dialog.getByText('Turn-end sound', { exact: true })).toBeVisible()
 
     // The dual row edits whichever tier the scope chip selects; persisting to
     // browser storage means switching to the this-device override first.
-    await overrideOnDevice(page)
+    await setPreferenceScope(page, TURN_END_SOUND, 'device')
 
     // Click "Ding Dong"
     await dialog.getByRole('radio', { name: 'Ding Dong' }).click()
@@ -70,19 +52,16 @@ test.describe('Turn End Sound Preferences', () => {
 
     // Back to the account tier: the chip's "Use account default" deletes the
     // stored override rather than writing an account-value copy of it.
-    await turnEndSoundScope(page).click()
-    await page.getByRole('menuitemradio', { name: 'Use account default' }).click()
+    await setPreferenceScope(page, TURN_END_SOUND, 'account')
     await expect.poll(() => getBrowserPref(page, leapmuxServer.adminUserId, 'turnEndSound')).toBeNull()
   })
 
   test('should persist account-level turn end sound via API', async ({ page, leapmuxServer }) => {
-    await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/')
-    const dialog = await openSettingsAt(page, 'notifications')
+    const dialog = await openPreferencesAs(page, leapmuxServer.adminToken, 'notifications')
     await expect(dialog.getByText('Turn-end sound', { exact: true })).toBeVisible()
     // Default scope: the row edits the ACCOUNT tier (the chip reads
     // "Account default" until an override exists).
-    await expect(turnEndSoundScope(page)).toHaveText(/Account default/)
+    await expect(preferenceScopeChip(page, TURN_END_SOUND)).toHaveText(/Account default/)
 
     // Select "Ding Dong" and wait for the choice to be reflected before reloading:
     // the write is an API round trip, and reloading mid-flight would race it.
@@ -97,12 +76,7 @@ test.describe('Turn End Sound Preferences', () => {
     const reopened = await openSettingsAt(page, 'notifications')
     await expect(reopened.getByText('Turn-end sound', { exact: true })).toBeVisible()
     await expect(reopened.getByRole('radio', { name: 'Ding Dong' })).toBeChecked()
-
-    // Restore to "None" so the account default cannot leak into a later test
-    // on this worker's shared hub instance.
-    const none = reopened.getByRole('radio', { name: 'None' })
-    await none.click()
-    await expect(none).toBeChecked()
+    // The suite reset restores the account setting before the next test.
   })
 
   test('should play ding-dong sound when turn ends', async ({ page, authenticatedWorkspace, leapmuxServer, modelScript }) => {
@@ -110,7 +84,7 @@ test.describe('Turn End Sound Preferences', () => {
     await armTurnEndSound(page, leapmuxServer.adminUserId, 'ding-dong')
     await waitForWorkspaceReady(page)
 
-    await sendToolTurn(page, modelScript)
+    await sendToolUsingTurn(page, modelScript)
 
     await expectDoorbellCount(page, 1)
   })
@@ -125,19 +99,14 @@ test.describe('Turn End Sound Preferences', () => {
     // preference said, so this would pass with the preference plumbing removed
     // entirely -- which is exactly what it did while `setInitialBrowserPref`
     // was silently writing an entry the app discarded.
-    await sendToolTurn(page, modelScript)
+    const boundary = await sendToolUsingTurn(page, modelScript)
     await waitForAgentIdle(page)
-
-    await expectDoorbellQuiet(page, 0)
+    await expectDoorbellQuiet(page, 0, boundary)
   })
 
   test('should NOT play sound when opening and closing Preferences dialog', async ({ page, authenticatedWorkspace, leapmuxServer, modelScript }) => {
     void authenticatedWorkspace // fixture trigger
-    await armTurnEndSound(page, leapmuxServer.adminUserId, 'ding-dong')
-    await waitForWorkspaceReady(page)
-
-    await sendToolTurn(page, modelScript)
-    await expectDoorbellCount(page, 1)
+    await prepareUiSoundProbe(page, leapmuxServer.adminUserId, modelScript)
 
     // Open and close the Preferences dialog (no full navigation)
     const dialog = await openSettingsAt(page)
@@ -148,36 +117,30 @@ test.describe('Turn End Sound Preferences', () => {
   })
 
   test('should NOT play sound when closing an agent tab', async ({ page, authenticatedWorkspace, leapmuxServer, modelScript }) => {
-    void authenticatedWorkspace // fixture trigger
-    await armTurnEndSound(page, leapmuxServer.adminUserId, 'ding-dong')
-    await waitForWorkspaceReady(page)
-
-    await sendToolTurn(page, modelScript)
-    await expectDoorbellCount(page, 1)
-    await waitForAgentIdle(page)
+    await prepareUiSoundProbe(page, leapmuxServer.adminUserId, modelScript)
 
     // Open a second agent tab so we have somewhere to land after closing
     await openAgentViaUI(page)
 
-    // Switch back to the first agent tab (the one with a completed turn)
-    const agentTabs = page.locator('[data-testid="tab"][data-tab-type="agent"]')
-    await agentTabs.first().click()
-    await expect(agentTabs.first()).toHaveAttribute('aria-selected', 'true')
+    // Switch back to the agent of the fixture, the one with a completed turn.
+    const closingId = authenticatedWorkspace.agentId
+    const closing = tabById(page, closingId)
+    await closing.click()
+    await expect(closing).toHaveAttribute('aria-selected', 'true')
 
     // Close it. Closing a tab whose turn already ended must not re-ring.
-    await agentTabs.first().locator('[data-testid="tab-close"]').click()
-    await expect(agentTabs).toHaveCount(1)
+    await closing.locator('[data-testid="tab-close"]').click()
+    await expectAgentTabCount(page, 1)
+    await retryUntilPass(async () => {
+      expect(await nativeAgentById({ leapmuxServer }, closingId), 'the Worker lists the closed agent no more').toBeNull()
+    })
 
     await expectDoorbellQuiet(page, 1)
   })
 
   test('should NOT play sound when opening a new tab', async ({ page, authenticatedWorkspace, leapmuxServer, modelScript }) => {
     void authenticatedWorkspace // fixture trigger
-    await armTurnEndSound(page, leapmuxServer.adminUserId, 'ding-dong')
-    await waitForWorkspaceReady(page)
-
-    await sendToolTurn(page, modelScript)
-    await expectDoorbellCount(page, 1)
+    await prepareUiSoundProbe(page, leapmuxServer.adminUserId, modelScript)
 
     // Opening a new agent tab revises the WatchEvents interest set (no stream
     // restart). A catch-up replay must not be mistaken for a live turn end.
@@ -188,19 +151,15 @@ test.describe('Turn End Sound Preferences', () => {
 
   test('should NOT play sound when switching between agent tabs', async ({ page, authenticatedWorkspace, leapmuxServer, modelScript }) => {
     void authenticatedWorkspace // fixture trigger
-    await armTurnEndSound(page, leapmuxServer.adminUserId, 'ding-dong')
-    await waitForWorkspaceReady(page)
-
-    await sendToolTurn(page, modelScript)
-    await expectDoorbellCount(page, 1)
+    await prepareUiSoundProbe(page, leapmuxServer.adminUserId, modelScript)
 
     // Open a second agent tab, then switch back and forth
     await openAgentViaUI(page)
-    const agentTabs = page.locator('[data-testid="tab"][data-tab-type="agent"]')
-    await agentTabs.first().click()
-    await expect(agentTabs.first()).toHaveAttribute('aria-selected', 'true')
-    await agentTabs.nth(1).click()
-    await expect(agentTabs.nth(1)).toHaveAttribute('aria-selected', 'true')
+    const tabs = agentTabs(page)
+    await tabs.first().click()
+    await expect(tabs.first()).toHaveAttribute('aria-selected', 'true')
+    await tabs.nth(1).click()
+    await expect(tabs.nth(1)).toHaveAttribute('aria-selected', 'true')
 
     await expectDoorbellQuiet(page, 1)
   })
@@ -211,16 +170,16 @@ test.describe('Turn End Sound Preferences', () => {
     await waitForWorkspaceReady(page)
 
     await openAgentViaUI(page)
-    const agentTabs = page.locator('[data-testid="tab"][data-tab-type="agent"]')
-    await expect(agentTabs).toHaveCount(2)
+    const tabs = agentTabs(page)
+    await expectAgentTabCount(page, 2)
 
-    await agentTabs.first().click()
-    await sendToolTurn(page, modelScript)
+    await tabs.first().click()
+    await sendToolUsingTurn(page, modelScript)
     // Hide the working agent before the turn ends — NOTIFY must still ring.
-    await agentTabs.nth(1).click()
-    await expect(agentTabs.nth(1)).toHaveAttribute('aria-selected', 'true')
+    await tabs.nth(1).click()
+    await expect(tabs.nth(1)).toHaveAttribute('aria-selected', 'true')
 
     await expectDoorbellCount(page, 1)
-    await expect(agentTabs.first().locator('[data-testid="tab-notification"]')).toBeVisible()
+    await expect(tabs.first().locator('[data-testid="tab-notification"]')).toBeVisible()
   })
 })

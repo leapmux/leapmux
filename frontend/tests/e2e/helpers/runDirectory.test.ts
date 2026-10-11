@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createTestDirectory } from './runDirectory'
+import { createTestDirectory, isFileNameComponent } from './runDirectory'
 
 let runDir: string
 vi.mock('./server', () => ({ getGlobalState: () => ({ tmpDir: runDir }) }))
@@ -25,7 +25,27 @@ describe('run-owned directories', () => {
     expect(existsSync(second)).toBe(true)
   })
 
-  it.each(['', '.', '..', '../outside', '/outside', 'folder\\outside'])('rejects a prefix that is not one filename component: %s', (prefix) => {
+  it.each(['', '.', '..', '../outside', '/outside', 'folder\\outside', 'agent\0-'])('rejects a prefix that is not one filename component: %j', (prefix) => {
     expect(() => createTestDirectory(prefix)).toThrow('one filename component')
+  })
+})
+
+describe('isFileNameComponent', () => {
+  it.each(['agent', 'agent-', '.hidden', 'a.b', '...', 'name with space', 'é'])('accepts one file-name component: %j', (value) => {
+    expect(isFileNameComponent(value)).toBe(true)
+  })
+
+  it.each([
+    { value: '', why: 'an empty name' },
+    { value: '.', why: 'the current directory' },
+    { value: '..', why: 'the parent directory' },
+    { value: 'a/b', why: 'a POSIX separator' },
+    { value: 'a/', why: 'a trailing POSIX separator' },
+    { value: '/', why: 'a root' },
+    { value: 'a\\b', why: 'a Windows separator' },
+    { value: 'a\0b', why: 'a NUL' },
+    { value: '\0', why: 'a NUL alone' },
+  ])('refuses $why: $value', ({ value }) => {
+    expect(isFileNameComponent(value)).toBe(false)
   })
 })

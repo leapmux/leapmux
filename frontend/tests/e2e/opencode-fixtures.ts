@@ -1,31 +1,22 @@
 /**
  * OpenCode-specific e2e test fixtures.
  */
-import type { ACPFixtureConfig } from './acp-fixture-factory'
-import type { WorkspaceFixture } from './helpers/workspace'
-import { AgentProvider, authenticateACPWorkspace, createACPWorkspace, detectACPSkipReason } from './acp-fixture-factory'
-import { test as base, expect } from './fixtures'
+import type { AgentWorkspace } from './helpers/workspace'
+import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
+import { test as base } from './fixtures'
+import { missingBinaryReason } from './helpers/binaryOnPath'
+import { authenticatedAgentWorkspace } from './helpers/workspace'
+import { nativeContext, OPENCODE_AGENT } from './opencode/scenarios'
+import { cliSkipFixture } from './provider-fixture-factory'
 
-const opencodeConfig: ACPFixtureConfig = {
-  agentProvider: AgentProvider.OPENCODE,
-  cliBinary: 'opencode',
-  skipMessage: 'OpenCode E2E requires opencode CLI on PATH',
-  workspacePrefix: 'opencode-e2e',
-}
+export const OPENCODE_E2E_SKIP_REASON: string | null = missingBinaryReason('opencode', 'OpenCode E2E requires opencode CLI on PATH')
 
-export const OPENCODE_E2E_SKIP_REASON = detectACPSkipReason(opencodeConfig)
-
-export const opencodeTest = base.extend<{
-  opencodeWorkspace: WorkspaceFixture
-  authenticatedOpencodeWorkspace: WorkspaceFixture
+export const opencodeTest = base.extend<CliSkipFixture & NativeFixture & {
+  authenticatedOpencodeWorkspace: AgentWorkspace
 }>({
-  opencodeWorkspace: async ({ leapmuxServer }, use) => {
-    await createACPWorkspace(leapmuxServer, opencodeConfig, use)
-  },
-
-  authenticatedOpencodeWorkspace: async ({ page, opencodeWorkspace, leapmuxServer }, use) => {
-    await authenticateACPWorkspace(page, opencodeWorkspace, leapmuxServer.adminToken, use)
+  cliSkip: cliSkipFixture(OPENCODE_E2E_SKIP_REASON),
+  authenticatedOpencodeWorkspace: authenticatedAgentWorkspace(OPENCODE_AGENT),
+  native: async ({ page, modelScript, leapmuxServer, authenticatedOpencodeWorkspace }, use) => {
+    await use(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedOpencodeWorkspace.workspaceId }))
   },
 })
-
-export { expect }

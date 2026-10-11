@@ -1,11 +1,15 @@
-import { expect, test } from './fixtures'
-import { deletePasskeyResponse, deletePasskeyViaAPI, elevateSessionViaAPI, ELEVATION_REQUIRED_HEADER, listPasskeysViaAPI, loginViaAPI, signUpViaAPI, TEST_ADMIN_PASSWORD, TEST_ADMIN_USERNAME } from './helpers/api'
+import { expect } from '@playwright/test'
+import { ELEVATION_REQUIRED_HEADER } from '~/generated/contracts/headers'
+import { test } from './fixtures'
+import { deletePasskeyResponse, deletePasskeyViaAPI, elevateSessionViaAPI, freshAdminSessionViaAPI, listPasskeysViaAPI, loginViaAPI, signUpViaAPI, TEST_ADMIN_PASSWORD } from './helpers/api'
 import {
-  loginViaToken,
+  answerElevationPrompt,
+  elevationPrompt,
   loginViaUI,
   loginWithPasskeyViaUI,
   logoutViaUI,
   openAccountSettings,
+  openAppAs,
   signUpWithPasskeyViaUI,
 } from './helpers/ui'
 import {
@@ -38,14 +42,12 @@ test.describe('Passkey authentication', () => {
     const username = `passkey-api-${Date.now()}`
     const email = `${username}@test.local`
     const cookie = await signUpWithPasskeyViaAPIInBrowser(page, leapmuxServer.hubUrl, username, email, 'Passkey API')
-    await loginViaToken(page, cookie)
-    await page.goto('/')
+    await openAppAs(page, cookie)
     await expect(page).toHaveURL(APP_HOME_URL_RE)
 
     await logoutViaUI(page)
     const loginCookie = await loginWithPasskeyViaAPIInBrowser(page, leapmuxServer.hubUrl, username)
-    await loginViaToken(page, loginCookie)
-    await page.goto('/')
+    await openAppAs(page, loginCookie)
     await expect(page).toHaveURL(APP_HOME_URL_RE)
   })
 
@@ -62,8 +64,7 @@ test.describe('Passkey authentication', () => {
       `${username}@test.local`,
     )
 
-    await loginViaToken(page, cookie)
-    await page.goto('/')
+    await openAppAs(page, cookie)
     await expect(page).toHaveURL(APP_HOME_URL_RE)
 
     await addPasskeyViaAPIInBrowser(page, leapmuxServer.hubUrl, cookie, password)
@@ -87,8 +88,7 @@ test.describe('Passkey authentication', () => {
       `${username}@test.local`,
     )
 
-    await loginViaToken(page, cookie)
-    await page.goto('/')
+    await openAppAs(page, cookie)
     await addPasskeyViaAPIInBrowser(page, leapmuxServer.hubUrl, cookie, password)
 
     await logoutViaUI(page)
@@ -108,8 +108,7 @@ test.describe('Passkey authentication', () => {
       'Remove Passkey',
       `${username}@test.local`,
     )
-    await loginViaToken(page, cookie)
-    await page.goto('/')
+    await openAppAs(page, cookie)
     await addPasskeyViaAPIInBrowser(page, leapmuxServer.hubUrl, cookie, password)
 
     const before = await listPasskeysViaAPI(leapmuxServer.hubUrl, cookie)
@@ -133,8 +132,7 @@ test.describe('Passkey authentication', () => {
       'Unelevated',
       `${username}@test.local`,
     )
-    await loginViaToken(page, cookie)
-    await page.goto('/')
+    await openAppAs(page, cookie)
     await addPasskeyViaAPIInBrowser(page, leapmuxServer.hubUrl, cookie, password)
     const before = await listPasskeysViaAPI(leapmuxServer.hubUrl, cookie)
     expect(before.length).toBeGreaterThan(0)
@@ -176,16 +174,11 @@ test.describe('Passkey authentication', () => {
 
   test('asks for a factor once, then covers the next action in the window', async ({ page, leapmuxServer }) => {
     await enableVirtualAuthenticator(page)
-    // A FRESH admin session, never the worker-scoped `adminToken`.
-    //
-    // An elevation lasts two hours and that shared cookie outlives this file,
-    // so a test that reuses it depends on the fact that no earlier test
-    // elevated it, and it leaves the cookie elevated -- with a new passkey on
-    // the account -- for every spec that runs after. 009-elevation.spec.ts and
-    // 143-cli-elevation.spec.ts both mint their own for the same reason.
-    const cookie = await loginViaAPI(leapmuxServer.hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD)
-    await loginViaToken(page, cookie)
-    await page.goto('/')
+    // A FRESH admin session, never the worker-scoped `adminToken`: see
+    // `freshAdminSessionViaAPI`. The shared cookie is elevated, so the prompt
+    // under test would never show on it.
+    const cookie = await freshAdminSessionViaAPI(leapmuxServer.hubUrl)
+    await openAppAs(page, cookie)
     await expect(page).toHaveURL(APP_HOME_URL_RE)
 
     const prefs = await openAccountSettings(page)
@@ -210,17 +203,15 @@ test.describe('Passkey authentication', () => {
     // ONE prompt, on top, and the dialog beneath is inert for as long as it is
     // up -- which is what lets the two credential prompts arrive in the order a
     // person expects without either surface opting in.
-    const verifyDialog = page.getByRole('dialog', { name: 'Verify your identity' })
-    await expect(verifyDialog).toBeVisible()
-    await expect(page.getByRole('dialog', { name: 'Verify your identity' })).toHaveCount(1)
+    await expect(elevationPrompt(page)).toBeVisible()
+    await expect(elevationPrompt(page)).toHaveCount(1)
     await expect(addDialog).toHaveAttribute('inert', '')
-    await verifyDialog.getByTestId('elevate-password').fill(TEST_ADMIN_PASSWORD)
-    await verifyDialog.getByTestId('elevate-password-submit').click()
+    await answerElevationPrompt(page, TEST_ADMIN_PASSWORD)
 
     // The refused action is retried for the caller, so the registration runs
     // with no second prompt and no second click.
     await expect(prefs.getByText('Passkey added.')).toBeVisible()
-    await expect(page.getByRole('dialog', { name: 'Verify your identity' })).toHaveCount(0)
+    await expect(elevationPrompt(page)).toHaveCount(0)
 
     // A SECOND sensitive action in the same window: no second prompt.
     await prefs.getByRole('button', { name: 'Rename' }).first().click()
@@ -228,6 +219,6 @@ test.describe('Passkey authentication', () => {
     // substring name and is disabled while the profile is unchanged.
     await prefs.getByRole('button', { name: 'Save', exact: true }).first().click()
     await expect(prefs.getByText('Passkey renamed.')).toBeVisible()
-    await expect(page.getByRole('dialog', { name: 'Verify your identity' })).toHaveCount(0)
+    await expect(elevationPrompt(page)).toHaveCount(0)
   })
 })

@@ -1,20 +1,18 @@
-import { expect, test } from './fixtures'
-import { getRecordedToasts } from './helpers/toast'
-import { loginViaToken, workspaceRow } from './helpers/ui'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
+import { dangerToasts } from './helpers/toast'
+import { deleteWorkspaceViaUI, openAppAs, openNewWorkspaceDialog, workspaceRow } from './helpers/ui'
 import { withTestWorkspace } from './helpers/workspace'
-import { openNewWorkspaceDialog } from './helpers/worktree'
 
 test.describe('workspace navigation', () => {
   test('activates the first workspace on a fresh app load', async ({ page, emptyWorkspace, leapmuxServer }) => {
-    await loginViaToken(page, leapmuxServer.adminToken)
     // Do not preselect the workspace. A stored selection would hide a broken initial selection.
-    await page.goto('/')
+    await openAppAs(page, leapmuxServer.adminToken)
     await expect(workspaceRow(page, emptyWorkspace.workspaceId)).toHaveAttribute('data-active', 'true')
   })
 
   test('opens the workspace dialog from the section header', async ({ page, leapmuxServer }) => {
-    await loginViaToken(page, leapmuxServer.adminToken)
-    await page.goto('/')
+    await openAppAs(page, leapmuxServer.adminToken)
     await openNewWorkspaceDialog(page)
     await page.keyboard.press('Escape')
     await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeHidden()
@@ -33,7 +31,7 @@ test.describe('workspace navigation', () => {
       await expect(page.getByRole('heading', { name: title })).toBeVisible()
       await page.keyboard.press('Escape')
       await expect(page.getByRole('heading', { name: title })).toBeHidden()
-      expect((await getRecordedToasts(page)).filter(toast => toast.variant === 'danger')).toEqual([])
+      expect(await dangerToasts(page)).toEqual([])
     })
   }
 
@@ -43,13 +41,7 @@ test.describe('workspace navigation', () => {
       const survivor = workspaceRow(page, second.workspaceId)
       await expect(first).toHaveAttribute('data-active', 'true')
       await expect(survivor).toBeVisible()
-      await first.getByTestId('workspace-row-menu-trigger').click()
-      await first.getByRole('menuitem', { name: 'Delete', exact: true }).click()
-      const dialog = page.getByRole('dialog')
-      await expect(dialog).toBeVisible()
-      await dialog.getByRole('button', { name: 'Delete', exact: true }).click()
-      await dialog.getByRole('button', { name: 'Confirm?' }).click()
-      await expect(first).toBeHidden()
+      await deleteWorkspaceViaUI(page, authenticatedEmptyWorkspace.workspaceId)
       await expect(survivor).toHaveAttribute('data-active', 'true')
     })
   })

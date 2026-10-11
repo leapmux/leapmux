@@ -1,22 +1,24 @@
 import type { Locator } from '@playwright/test'
+import { expect } from '@playwright/test'
 import { POPOVER_CARD_PADDING } from '../../src/styles/popoverTokens'
-import { expect, test } from './fixtures'
-import { ARITHMETIC_ANSWER, ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, assistantBubbles, closeComposerMenus, expectAssistantAnswer, openAgentViaUI, openPlusMenu, sendMessage, stableBox, waitForAgentIdle } from './helpers/ui'
+import { test } from './fixtures'
+import { settleFrames } from './helpers/frames'
+import { sendScriptedTurn } from './helpers/scriptedTurn'
+import { selectedText } from './helpers/selection'
+import { waitTimeoutBeforeTestDeadline } from './helpers/testDeadline'
+import { closeComposerMenus, composerEditor, openAgentInfoCard, openAgentViaUI, openPlusMenu, resolvedColor, stableBox } from './helpers/ui'
 
 const HAS_TEXT_RE = /.+/
 
 /**
- * The popover's top-left offset from its anchoring trigger.
+ * Measure the popover's offset from its trigger.
  *
- * Both rects are read inside ONE page evaluation rather than as two
- * `boundingBox()` round-trips. Two round-trips can straddle a re-render of the
- * editor footer the trigger lives in, which cost this test twice: the footer
- * re-mounting between them threw a bare "popover or trigger has no bounding
- * box", and any layout shift landing between them was charged to the drag as
- * drift. Measuring both in the same JS turn removes the skew entirely.
- *
- * Retried because the trigger can be transiently absent mid-re-render, which is
- * a property of the page, not of the drag this test is about.
+ * Read both rectangles in one page evaluation.
+ * Two separate boundingBox calls can span an editor-footer update.
+ * That update can remove the trigger and produce a missing-box failure.
+ * A layout shift between those calls can also appear as drag drift.
+ * One JavaScript evaluation measures both rectangles before another render can change them.
+ * Retry the observation because the page can temporarily remove the trigger during a render.
  */
 interface PopoverGeometry {
   dx: number
@@ -54,12 +56,12 @@ async function offsetFromTrigger(popover: Locator, triggerTestId: string): Promi
     // measuring it produces a garbage offset instead of a readable failure.
     expect(geometry, 'popover and trigger must both be laid out').not.toBeNull()
     expect(geometry!.width, 'popover must still be open and laid out').toBeGreaterThan(0)
-    // Bounded: a bare toPass() inherits no timeout and runs to the 300s TEST
-    // budget, so a popover that genuinely closed reported "Test timeout of
-    // 300000ms exceeded" five minutes later instead of naming the assertion.
-    // Nothing inside this loop waits -- the assertions read an already-captured
-    // value -- so the bound only decides how long we keep re-measuring.
-  }).toPass({ timeout: 30_000 })
+    // Ended before the test deadline: a bare toPass() inherits no timeout and
+    // runs to the test timeout, so a popover that genuinely closed reported
+    // "Test timeout exceeded" instead of naming the assertion. Nothing inside
+    // this loop waits -- the assertions read an already-captured value -- so
+    // the limit only decides how long we keep re-measuring.
+  }).toPass({ timeout: waitTimeoutBeforeTestDeadline() })
   return geometry!
 }
 
@@ -78,33 +80,18 @@ test.describe('DropdownMenu Popover – Focus and Positioning', () => {
     // Ensure an agent tab is open
     await openAgentViaUI(page)
 
-    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
+    const editor = composerEditor(page)
     await expect(editor).toBeVisible()
 
     // Send a message so the agent session starts and context info appears
-    await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
-    await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
-    await modelScript.waitForSteps(1)
-
-    // Wait for the assistant response in the active chat view. The agent
-    // may emit multiple message-content nodes (thought blocks, final
-    // reply, status text); use `.first()` so the strict-mode check
-    // doesn't trip when more than one bubble matches the answer.
-    await expect(
-      assistantBubbles(page).locator('[data-testid="message-content"]')
-        .filter({ hasText: ARITHMETIC_ANSWER })
-        .first(),
-    ).toBeVisible()
+    await sendScriptedTurn(page, modelScript)
 
     // Wait for the ContextUsageGrid trigger to appear
-    const infoTrigger = page.locator('[data-testid="agent-info-trigger"]')
-    const contextGrid = infoTrigger.getByTestId('context-usage-grid')
+    const contextGrid = page.locator('[data-testid="agent-info-trigger"]').getByTestId('context-usage-grid')
     await expect(contextGrid).toBeVisible()
 
     // Open the popover by clicking the trigger
-    await infoTrigger.click()
-    const popover = page.locator('[data-testid="agent-info-popover"]')
-    await expect(popover).toBeVisible()
+    const popover = await openAgentInfoCard(page)
 
     // Verify directory is shown in the popover (worker name may not be
     // populated in E2EE mode where agent data comes from the Worker)
@@ -139,16 +126,14 @@ test.describe('DropdownMenu Popover – Focus and Positioning', () => {
     // Wait for the popover to close via light-dismiss
     await expect(popover).not.toBeVisible()
 
-    // Give the browser a moment to settle focus.
-    await page.waitForTimeout(200)
+    // The light-dismiss moves focus while it hides the popover, and the
+    // `toggle` event of the close comes in a later task. The next frames run
+    // after both, so a focus change that the close causes has landed.
+    await settleFrames(page)
 
-    // The editor should retain focus after the popover closes.
-    const editorHasFocus = await page.evaluate(() => {
-      const proseMirror = document.querySelector('[data-testid="composer-editor"] .ProseMirror')
-      if (!proseMirror)
-        return false
-      return proseMirror.contains(document.activeElement) || proseMirror === document.activeElement
-    })
+    // The editor should retain focus after the popover closes. `contains` is also
+    // true for the editor itself.
+    const editorHasFocus = await editor.evaluate(proseMirror => proseMirror.contains(document.activeElement))
     expect(editorHasFocus).toBe(true)
   })
 
@@ -164,40 +149,20 @@ test.describe('DropdownMenu Popover – Focus and Positioning', () => {
     // Ensure an agent tab is open
     await openAgentViaUI(page)
 
-    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-    await expect(editor).toBeVisible()
+    // Send a message so the agent session starts and context info appears.
+    // The helper also lets the TURN finish before anything is measured. The
+    // answer bubble is not the end of the layout churn: the turn-end divider,
+    // the context-usage update and the git-status refresh all land after it,
+    // and each one grows the chat column and nudges the anchored popover. That
+    // is what produced a 2.49px drift against this test's 2px tolerance -- the
+    // popover was still settling, not being repositioned by the drag.
+    await sendScriptedTurn(page, modelScript)
 
-    // Send a message so the agent session starts and context info appears
-    await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
-    await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
-    await modelScript.waitForSteps(1)
-
-    // Wait for the assistant response in the active chat view. The agent
-    // may emit multiple message-content nodes (thought blocks, final
-    // reply, status text); use `.first()` so the strict-mode check
-    // doesn't trip when more than one bubble matches the answer.
-    await expect(
-      assistantBubbles(page).locator('[data-testid="message-content"]')
-        .filter({ hasText: ARITHMETIC_ANSWER })
-        .first(),
-    ).toBeVisible()
-
-    // Let the TURN finish before measuring anything. The answer bubble is not
-    // the end of the layout churn: the turn-end divider, the context-usage
-    // update and the git-status refresh all land after it, and each one grows
-    // the chat column and nudges the anchored popover. That is what produced a
-    // 2.49px drift against this test's 2px tolerance -- the popover was still
-    // settling, not being repositioned by the drag.
-    await waitForAgentIdle(page)
-
-    const infoTrigger = page.locator('[data-testid="agent-info-trigger"]')
-    const contextGrid = infoTrigger.getByTestId('context-usage-grid')
+    const contextGrid = page.locator('[data-testid="agent-info-trigger"]').getByTestId('context-usage-grid')
     await expect(contextGrid).toBeVisible()
 
     // Open the popover
-    await infoTrigger.click()
-    const popover = page.locator('[data-testid="agent-info-popover"]')
-    await expect(popover).toBeVisible()
+    const popover = await openAgentInfoCard(page)
 
     // Wait for the LAST row to arrive before measuring anything. The Session ID
     // row is `<Show when={agent.agentSessionId}>` -- absent until the CLI
@@ -244,9 +209,10 @@ test.describe('DropdownMenu Popover – Focus and Positioning', () => {
     const dragFromX = textBox!.x + textBox!.width / 2
     // Sweep right, staying inside the element the whole way.
     const dragToX = textBox!.x + textBox!.width - 2
+    // Each step is rendered before the next one, as a real drag paces itself.
     for (let i = 1; i <= 5; i++) {
       await page.mouse.move(dragFromX + ((dragToX - dragFromX) * i) / 5, dragY)
-      await page.waitForTimeout(50)
+      await settleFrames(page)
     }
     await page.mouse.up()
 
@@ -290,30 +256,26 @@ test.describe('DropdownMenu Popover – Focus and Positioning', () => {
   })
 })
 
-/**
- * The four padding sides of an element, as computed values.
- *
- * Runs inside the page, so it must not close over anything in this file.
- */
+/** Read all four computed padding values inside the page without a closure over this file. */
 function readPadding(el: Element): string {
   const style = getComputedStyle(el)
   return [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft].join(' ')
 }
 
 /**
- * Both insets a card can take, measured from throwaway elements: Oat's own (which a card that
- * FILLS the page, like the auth forms, still uses) and the compact one a FLOATING card takes.
+ * Measure the normal and compact card insets through temporary elements.
+ * Oat supplies the normal inset for a card that fills the page, including authentication forms.
+ * A floating card uses the compact inset.
  *
- * Measured rather than written down as `24px` and `8px 12px`, because every half comes from Oat's
- * spacing scale -- a literal would keep passing on the day that scale changes and the cards
- * silently stop matching the rest of the app. The compact inset arrives as an ARGUMENT, from
- * `~/styles/popoverTokens.ts`, which `popover.css.ts` also reads: Playwright runs no
- * vanilla-extract, so the spec cannot import the class, but it can import the plain value the
- * class is built from, and then there is no second copy to drift.
+ * Read both from Oat's spacing scale instead of fixed pixel values.
+ * Fixed values could still pass after the scale changes and the cards stop matching the app.
+ * The caller supplies the compact value from ~/styles/popoverTokens.ts.
+ * The popover stylesheet reads that same value.
+ * Playwright applies no vanilla-extract transform, so the test imports the plain value rather than the styled class.
  *
- * ONE function for both probes, with its `read` helper defined INSIDE it: Playwright serializes
- * this function into the page, so it must not close over anything in this file -- which also rules
- * out passing `read` in, because a function argument is not serializable either.
+ * Both probes use this function. Define its read helper inside the function.
+ * Playwright serializes the function into the page, so it cannot close over this file.
+ * A function argument cannot cross that serialization boundary either.
  */
 function resolveCardPaddings(popoverPadding: string): { oat: string, popover: string } {
   const read = (configure: (el: HTMLElement) => void): string => {
@@ -343,17 +305,9 @@ test.describe('agent info card', () => {
    */
   test('both surfaces inset the card by the shared popover-card padding', async ({ page, authenticatedWorkspace, modelScript }) => {
     await openAgentViaUI(page)
-    await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
-    await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
-    await modelScript.waitForSteps(1)
-    await expectAssistantAnswer(page)
-    await waitForAgentIdle(page)
+    await sendScriptedTurn(page, modelScript)
 
-    const infoTrigger = page.locator('[data-testid="agent-info-trigger"]')
-    await expect(infoTrigger).toBeVisible()
-    await infoTrigger.click()
-    const statusBarCard = page.locator('[data-testid="agent-info-popover"]')
-    await expect(statusBarCard).toBeVisible()
+    const statusBarCard = await openAgentInfoCard(page)
     const statusBarPadding = await statusBarCard.evaluate(readPadding)
 
     // One card at a time: the `[+]` menu opens over the status bar, and its own
@@ -398,17 +352,10 @@ test.describe('agent info card', () => {
    */
   test('a click inside the card leaves it open, so its text stays selectable', async ({ page, authenticatedWorkspace, modelScript }) => {
     await openAgentViaUI(page)
-    await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
-    await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
-    await modelScript.waitForSteps(1)
-    await expectAssistantAnswer(page)
-    await waitForAgentIdle(page)
+    await sendScriptedTurn(page, modelScript)
 
     const infoTrigger = page.locator('[data-testid="agent-info-trigger"]')
-    await expect(infoTrigger).toBeVisible()
-    await infoTrigger.click()
-    const popover = page.locator('[data-testid="agent-info-popover"]')
-    await expect(popover).toBeVisible()
+    const popover = await openAgentInfoCard(page)
 
     const sessionId = popover.locator('[data-testid="session-id-value"]')
     await expect(sessionId).toBeVisible()
@@ -435,36 +382,10 @@ test.describe('agent info card', () => {
 
     await expect(infoTrigger).toHaveAttribute('aria-expanded', 'true')
     await expect(popover).toBeVisible()
-    const selected = await page.evaluate(() => window.getSelection()?.toString() ?? '')
+    const selected = await selectedText(page)
     expect(selected.length, 'the drag must leave text selected').toBeGreaterThan(0)
   })
 })
-
-/**
- * Resolve CSS custom properties to the COMPUTED colour form.
- *
- * Reading a token straight off `:root` returns the authored text
- * (`rgb(34 32 30)`), which never string-matches a computed `rgb(34, 32, 30)`.
- * Assigning each to a throwaway element and reading it back puts them through
- * the same conversion the values under test went through.
- *
- * Runs inside the page, so it must not close over anything in this file.
- */
-function resolveColors(names: string[]): Record<string, string> {
-  const probe = document.createElement('div')
-  document.body.append(probe)
-  try {
-    const resolved: Record<string, string> = {}
-    for (const name of names) {
-      probe.style.backgroundColor = `var(${name})`
-      resolved[name] = getComputedStyle(probe).backgroundColor
-    }
-    return resolved
-  }
-  finally {
-    probe.remove()
-  }
-}
 
 test.describe('menu item appearance', () => {
   /**
@@ -484,7 +405,8 @@ test.describe('menu item appearance', () => {
     const item = page.getByRole('menuitem', { name: 'Preferences' })
     await expect(item).toBeVisible()
 
-    const tokens = await page.evaluate(resolveColors, ['--foreground', '--primary-foreground'])
+    const foreground = await resolvedColor(page, 'var(--foreground)')
+    const primaryForeground = await resolvedColor(page, 'var(--primary-foreground)')
     const computed = await item.evaluate((el) => {
       const style = getComputedStyle(el)
       return {
@@ -504,8 +426,8 @@ test.describe('menu item appearance', () => {
     // near-white in light theme and near-black on near-black in dark. Checking
     // only the fill leaves that unreadable state green.
     expect(computed.color, `menu item should take body text colour, got ${computed.color}`)
-      .toBe(tokens['--foreground'])
-    expect(computed.color).not.toBe(tokens['--primary-foreground'])
+      .toBe(foreground)
+    expect(computed.color).not.toBe(primaryForeground)
   })
 
   test('menu items still take Oat\'s hover affordance', async ({ page, authenticatedWorkspace }) => {
@@ -528,27 +450,23 @@ test.describe('menu item appearance', () => {
     // `transition: background-color var(--transition-fast)`, so the fill is
     // still mid-interpolation for a frame or two after the pointer arrives and
     // a single read races it.
-    const accent = await page.evaluate(resolveColors, ['--accent'])
+    const accent = await resolvedColor(page, 'var(--accent)')
     const backgroundColor = () => item.evaluate(el => getComputedStyle(el).backgroundColor)
-    await expect.poll(backgroundColor).toBe(accent['--accent'])
+    await expect.poll(backgroundColor).toBe(accent)
   })
 })
 
 /**
- * A `popover=auto` nested inside another `popover=auto`.
+ * Test an automatic popover inside another automatic popover.
  *
- * The browser has to treat the inner popover as a DESCENDANT of the outer one.
- * A browser that did not would light-dismiss the outer popover the instant the
- * inner one opened, and every control the inner popover holds would be
- * unreachable from that host. Only a real browser answers that, so it is
- * answered here.
+ * The browser must retain the outer popover when the inner popover opens.
+ * Otherwise the outer popover closes immediately and makes every inner control inaccessible.
+ * Only a browser can establish this behavior.
  *
- * The `[+]` menu and its Agent-info card are the DETERMINISTIC pair: both are
- * always present for any agent, and neither depends on model output. The
- * session goal renders the same nesting inside the to-dos popover, and
- * `180-codex-session-goal.spec.ts` covers that host -- but its chip appears
- * only once the model emits a to-do list, so a run that produced prose instead
- * used to leave the nesting untested everywhere.
+ * The plus menu and Agent info card supply this pair for every agent without requiring model output.
+ * The to-do popover contains the same nesting for a session goal.
+ * codex/session-goal-set-and-clear.spec.ts tests that host after the model publishes its to-do list.
+ * A previous model turn that returned prose left that nested view untested.
  */
 test.describe('nested popovers', () => {
   test('an inner card survives opening inside an outer menu', async ({ page, authenticatedWorkspace, modelScript }) => {
@@ -558,10 +476,7 @@ test.describe('nested popovers', () => {
     // One turn first. "Agent info" appears only once the agent HAS a session --
     // `showInfoTrigger` reads `agentSessionId` -- and an agent that was opened
     // but never prompted has none.
-    await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
-    await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
-    await modelScript.waitForSteps(1)
-    await waitForAgentIdle(page)
+    await sendScriptedTurn(page, modelScript)
 
     const plusMenu = await openPlusMenu(page)
     await expect(plusMenu).toBeVisible()
@@ -650,17 +565,21 @@ test.describe('a menu whose click also focuses the tile', () => {
 
     const trigger = page.locator('[data-testid="tab-more-menu"]:visible').first()
     await expect(trigger).toBeVisible()
-    await page.locator('[data-testid="tab-bar"]:visible').first().evaluate((el) => {
-      ;(globalThis as unknown as { __tabBar: Element }).__tabBar = el
-    })
+    const originalTabBar = await page.locator('[data-testid="tab-bar"]:visible').first().elementHandle()
+    if (!originalTabBar)
+      throw new Error('The visible tab bar has no element handle.')
+    try {
+      await trigger.click()
 
-    await trigger.click()
-
-    await expect(trigger).toHaveAttribute('aria-expanded', 'true')
-    await expect(page.locator('menu[popover]:popover-open')).toBeVisible()
-    expect(
-      await page.evaluate(() => (globalThis as unknown as { __tabBar: Element }).__tabBar.isConnected),
-      'the tab bar is the SAME element the click started on',
-    ).toBe(true)
+      await expect(trigger).toHaveAttribute('aria-expanded', 'true')
+      await expect(page.locator('menu[popover]:popover-open')).toBeVisible()
+      expect(
+        await originalTabBar.evaluate(element => element.isConnected),
+        'the original tab bar remains connected after the click',
+      ).toBe(true)
+    }
+    finally {
+      await originalTabBar.dispose()
+    }
   })
 })

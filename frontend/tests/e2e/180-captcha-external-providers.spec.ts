@@ -1,7 +1,10 @@
 import type { DevServerHandle } from './helpers/devServer'
-import { test as base, expect } from '@playwright/test'
-import { mintCLITokenForAdmin, runCLI } from './helpers/cli'
-import { startDevServer, stopDevServer } from './helpers/devServer'
+import { expect } from '@playwright/test'
+import { devServerTest } from './dev-server-fixtures'
+import { callHub } from './helpers/api'
+import { runCLI } from './helpers/cli'
+import { withAdminConfiguredDevServer } from './helpers/devServer'
+import { retryUntilPass } from './helpers/retryUntilPass'
 
 // Cloudflare's documented dummy keys: the site key always passes client
 // side and the secret always passes verification, so the spec never
@@ -52,55 +55,41 @@ const FAKE_RECAPTCHA_SCRIPT = `
   };
 `
 
+/** The external captcha providers that this spec selects, as the CLI spells them. */
+type ExternalCaptchaProvider = 'turnstile' | 'recaptcha_v3'
+
+// Connect-JSON renders proto enums as their protojson name strings, so the
+// wait below compares against the wire spelling.
+function providerWireName(provider: ExternalCaptchaProvider): string {
+  return `CAPTCHA_PROVIDER_${provider.toUpperCase()}`
+}
+
 // The hub caches the captcha config for ~30s and the dev-server seeding
 // (via the default altcha provider) primes that cache, so the provider
 // switch is only confirmed once system info reports the target provider —
 // everything after that is guaranteed to exercise the external field
 // rather than a stale altcha widget.
-// Connect-JSON renders proto enums as their protojson name strings, so
-// the raw-fetch poll compares against the wire spelling.
-function providerWireName(provider: 'turnstile' | 'recaptcha_v3'): string {
-  return `CAPTCHA_PROVIDER_${provider.replace('recaptcha_v3', 'RECAPTCHA_V3').toUpperCase()}`
-}
-
-async function waitForSystemInfoProvider(hubUrl: string, provider: string, timeoutMs = 90_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    try {
-      const res = await fetch(`${hubUrl}/leapmux.v1.AuthService/GetSystemInfo`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
-      })
-      if (res.ok) {
-        const data = await res.json() as { captchaProvider?: string }
-        if (data.captchaProvider === providerWireName(provider as 'turnstile' | 'recaptcha_v3'))
-          return
-      }
-    }
-    catch {
-      // The dev server restarts during setup; retry until the deadline.
-    }
-    await new Promise(resolve => setTimeout(resolve, 500))
-  }
-  throw new Error(`hub did not report captcha provider ${provider} within ${timeoutMs}ms`)
+// A read can fail while the hub applies the change, so a failed read starts
+// the next attempt. The wait ends before the test's own deadline, and its
+// failure states the last read.
+async function waitForSystemInfoProvider(hubUrl: string, provider: ExternalCaptchaProvider): Promise<void> {
+  await retryUntilPass(async () => {
+    const info = await callHub<{ captchaProvider?: string }>(hubUrl, 'AuthService/GetSystemInfo', {}, { operation: 'waitForSystemInfoProvider' })
+    expect(info.captchaProvider, `the hub reports the captcha provider ${provider}`).toBe(providerWireName(provider))
+  })
 }
 
 async function setupServerWithProvider(
-  provider: 'turnstile' | 'recaptcha_v3',
+  provider: ExternalCaptchaProvider,
   siteKey: string,
   secret: string,
   use: (server: DevServerHandle) => Promise<void>,
 ): Promise<void> {
-  const server = await startDevServer({ dataDirPrefix: `leapmux-e2e-captcha-${provider}` })
-  let cliConfigDir: string | undefined
-  try {
-    // Captcha configuration is an ONLINE admin RPC: `leapmux control admin
-    // captcha set` against the running hub, authenticated as the admin.
-    // There is no offline captcha verb any more, so the CLI needs a minted
-    // bearer rather than the hub's data dir.
-    const cfg = await mintCLITokenForAdmin(server)
-    cliConfigDir = cfg.path
+  // Captcha configuration is an ONLINE admin RPC: `leapmux control admin
+  // captcha set` against the running hub, authenticated as the admin.
+  // There is no offline captcha verb any more, so the CLI needs a minted
+  // bearer rather than the hub's data dir.
+  await withAdminConfiguredDevServer(`leapmux-e2e-captcha-${provider}`, async (cfg, server) => {
     await runCLI(cfg, [
       'admin',
       'captcha',
@@ -119,32 +108,15 @@ async function setupServerWithProvider(
     const shown = await runCLI(cfg, ['admin', 'captcha', 'show']) as Record<string, { effective_json?: unknown }>
     expect(shown['captcha.selected']?.effective_json).toBe(provider)
     expect(JSON.stringify(shown)).not.toContain(secret)
-
-    await use(server)
-  }
-  finally {
-    await stopDevServer(server, cliConfigDir ? [cliConfigDir] : [])
-  }
+  }, use)
 }
 
 // One dedicated hub per provider, mirroring the 179 spec's per-algorithm
 // servers: the provider switch must not leak into the shared fixture's
 // hub.
-const turnstileTest = base.extend<{ server: DevServerHandle }>({
-  // eslint-disable-next-line no-empty-pattern
-  server: async ({}, use) => setupServerWithProvider('turnstile', TURNSTILE_SITE_KEY, TURNSTILE_SECRET, use),
-  baseURL: async ({ server }, use) => {
-    await use(server.hubUrl)
-  },
-})
+const turnstileTest = devServerTest<DevServerHandle>(use => setupServerWithProvider('turnstile', TURNSTILE_SITE_KEY, TURNSTILE_SECRET, use))
 
-const recaptchaTest = base.extend<{ server: DevServerHandle }>({
-  // eslint-disable-next-line no-empty-pattern
-  server: async ({}, use) => setupServerWithProvider('recaptcha_v3', 'recaptcha-site-key', 'recaptcha-secret', use),
-  baseURL: async ({ server }, use) => {
-    await use(server.hubUrl)
-  },
-})
+const recaptchaTest = devServerTest<DevServerHandle>(use => setupServerWithProvider('recaptcha_v3', 'recaptcha-site-key', 'recaptcha-secret', use))
 
 turnstileTest.describe('captcha provider: turnstile', () => {
   turnstileTest('fake checkbox solves, submit unlocks, denial stays uniform', async ({ page }) => {

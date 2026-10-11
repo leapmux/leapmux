@@ -1,18 +1,17 @@
+import { expect } from '@playwright/test'
+import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { CODE_BLOCK_TINT_PERCENT } from '../../src/styles/codePalette'
 import { colorAlpha } from '../../src/test-support/color'
-import { expect, test } from './fixtures'
+import { test } from './fixtures'
 import { enterAndExitPlanMode } from './helpers/plan-mode'
-import { readAttached, resolvedColor, stableBox, userBubbles } from './helpers/ui'
+import { focusComposer, planReviewButton, PLATFORM_MOD, readAttached, resolvedColor, stableBox, userBubbles } from './helpers/ui'
 
 const MONOSPACE_FONT_RE = /HackNerdFont|Menlo|Monaco|Courier New|monospace/
 
 test.describe('Markdown Editor', () => {
   test('should grow editor beyond old 120px limit', async ({ page, authenticatedWorkspace }) => {
-    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-    await expect(editor).toBeVisible()
-
-    // Default mode is Cmd+Enter-to-send, so Enter creates newlines
-    await editor.click()
+    // By default the platform modifier plus Enter sends, so Enter alone creates a new line.
+    await focusComposer(page)
 
     // Type many lines to exceed the old 120px limit
     for (let i = 0; i < 15; i++) {
@@ -20,22 +19,21 @@ test.describe('Markdown Editor', () => {
       await page.keyboard.press('Enter')
     }
 
-    // The editor wrapper should have grown (capped at 75% of container)
-    const wrapper = page.locator('[data-testid="composer-editor"]')
+    // The editor wrapper should have grown (capped at 75% of container).
+    // The wrapper, not `composerEditor`: the wrapper holds the cap, and the
+    // ProseMirror element inside it grows with its text whether the cap moved or not.
+    const wrapper = page.locator('[data-testid="composer-editor"]:visible')
     const height = await wrapper.evaluate(el => el.getBoundingClientRect().height)
     expect(height).toBeGreaterThan(60)
   })
 
   test('should use --mono-font-family CSS variable for code elements', async ({ page, authenticatedWorkspace }) => {
-    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-    await expect(editor).toBeVisible()
-
-    await editor.click()
+    const editor = await focusComposer(page)
     await page.keyboard.type('some code')
 
     // Select all text, then type the supported mark-toggle character. Typing a
     // complete Markdown string arrives as one input event and does not invoke it.
-    await page.keyboard.press('Meta+a')
+    await page.keyboard.press(`${PLATFORM_MOD}+a`)
     await page.keyboard.type('`')
 
     // Check that the code element's computed font-family includes the fallback
@@ -74,9 +72,7 @@ test.describe('Code block field', () => {
 
   test('paints the composer code block a field that composites on its host, in both polarities', async ({ page, authenticatedWorkspace }) => {
     void authenticatedWorkspace
-    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-    await expect(editor).toBeVisible()
-    await editor.click()
+    const editor = await focusComposer(page)
 
     // The ``` input rule fires on the third backtick.
     await page.keyboard.type('```')
@@ -108,15 +104,13 @@ test.describe('Code block field', () => {
 
   test('paints a sent code block the same field as the one in the composer', async ({ page, authenticatedWorkspace }) => {
     void authenticatedWorkspace
-    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-    await expect(editor).toBeVisible()
-    await editor.click()
+    const editor = await focusComposer(page)
     await page.keyboard.type('```')
     await page.keyboard.type('const answer = 42')
 
     const composed = await blockBackground(editor.locator('pre'))
 
-    await page.keyboard.press('Meta+Enter')
+    await page.keyboard.press(`${PLATFORM_MOD}+Enter`)
     await expect(editor).toHaveText('')
 
     // The transcript renders through a different stylesheet than the editor
@@ -160,9 +154,7 @@ test.describe('Code block field', () => {
 
   test('shows the block through, rather than tinting it twice, for a child that fills the background', async ({ page, authenticatedWorkspace }) => {
     void authenticatedWorkspace
-    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-    await expect(editor).toBeVisible()
-    await editor.click()
+    const editor = await focusComposer(page)
     await page.keyboard.type('```')
     const block = editor.locator('pre')
     await expect(block).toBeVisible()
@@ -193,9 +185,7 @@ test.describe('Code block field', () => {
 
   test('gives inline code and a <kbd> the same step as a fenced block', async ({ page, authenticatedWorkspace }) => {
     void authenticatedWorkspace
-    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-    await expect(editor).toBeVisible()
-    await editor.click()
+    const editor = await focusComposer(page)
 
     // Inline code first, then a fenced block below it, so both are measured on
     // the same host in the same frame.
@@ -232,9 +222,7 @@ test.describe('Code block field', () => {
 
 test.describe('Code Language Label', () => {
   test('clicking language label opens popover and selecting language updates it', async ({ page, authenticatedWorkspace }) => {
-    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-    await expect(editor).toBeVisible()
-    await editor.click()
+    const editor = await focusComposer(page)
 
     // Create a code block. The ``` input rule fires on the third backtick.
     await page.keyboard.type('```')
@@ -281,9 +269,7 @@ test.describe('Code Language Label', () => {
   })
 
   test('re-clicking the language label closes the popover instead of reopening it', async ({ page, authenticatedWorkspace }) => {
-    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-    await expect(editor).toBeVisible()
-    await editor.click()
+    const editor = await focusComposer(page)
     await page.keyboard.type('```')
 
     const langLabel = editor.locator('.code-lang-label')
@@ -311,18 +297,17 @@ test.describe('Code Language Label', () => {
 
 test.describe('send feedback button labels', () => {
   test('ExitPlanMode banner shows Reject when editor is empty and Send feedback when typing', async ({ page, authenticatedWorkspace, modelScript }) => {
-    // Enter plan mode, write a dummy plan, and exit
-    const banner = await enterAndExitPlanMode(page, modelScript)
+    // Enter plan mode, write a dummy plan, and exit. The agent of `authenticatedWorkspace` is a Claude Code agent.
+    const banner = await enterAndExitPlanMode({ page, modelScript, provider: AgentProvider.CLAUDE_CODE })
     await expect(banner.getByText('Plan Ready for Review')).toBeVisible()
 
-    const rejectBtn = page.locator('[data-testid="plan-reject-btn"]')
+    const rejectBtn = planReviewButton(page, 'reject')
 
     // With empty editor, button should say "Reject"
     await expect(rejectBtn).toHaveText('Reject')
 
     // Type feedback into the editor. The button must switch to "Send feedback".
-    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-    await editor.click()
+    await focusComposer(page)
     await page.keyboard.type('Please reconsider this approach')
     await expect(rejectBtn).toHaveText('Send feedback')
   })
@@ -331,9 +316,7 @@ test.describe('send feedback button labels', () => {
 test.describe('Markdown Editor links', () => {
   test('a link URL can be corrected after it is created', async ({ page, authenticatedWorkspace }) => {
     void authenticatedWorkspace
-    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-    await expect(editor).toBeVisible()
-    await editor.click()
+    const editor = await focusComposer(page)
 
     // Typed markdown is one of the two ways to create a link; Mod-K over a
     // selection is the other (covered below).
@@ -362,9 +345,7 @@ test.describe('Markdown Editor links', () => {
 
   test('Enter in the URL field applies and dismisses the popover', async ({ page, authenticatedWorkspace }) => {
     void authenticatedWorkspace
-    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-    await expect(editor).toBeVisible()
-    await editor.click()
+    const editor = await focusComposer(page)
 
     await page.keyboard.type('[docs](https://old.test)')
     await editor.locator('a').click()
@@ -381,20 +362,18 @@ test.describe('Markdown Editor links', () => {
 
   test('mod+K links the selected text', async ({ page, authenticatedWorkspace }) => {
     void authenticatedWorkspace
-    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-    await expect(editor).toBeVisible()
-    await editor.click()
+    const editor = await focusComposer(page)
 
     // Select-all rather than a run of Shift+ArrowLeft: the arrow presses race
     // ProseMirror's input handling and drop some, which silently narrows the
     // selection. WHICH range a partial selection resolves to is pinned exactly
     // by linkPlugin.test.ts (`linkShortcutTarget`); this spec covers the wiring.
     await page.keyboard.type('design doc')
-    await page.keyboard.press('ControlOrMeta+a')
+    await page.keyboard.press(`${PLATFORM_MOD}+a`)
 
     // The popover opens EMPTY: a selection is a request to link that text, not
     // to edit an existing URL.
-    await page.keyboard.press('ControlOrMeta+k')
+    await page.keyboard.press(`${PLATFORM_MOD}+k`)
     const url = page.locator('[data-testid="link-url-input"]')
     await expect(url).toBeVisible()
     await expect(url).toHaveValue('')
@@ -411,9 +390,7 @@ test.describe('Markdown Editor links', () => {
 
   test('mod+K on a caret in a link edits that link, and over it overrides it', async ({ page, authenticatedWorkspace }) => {
     void authenticatedWorkspace
-    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-    await expect(editor).toBeVisible()
-    await editor.click()
+    const editor = await focusComposer(page)
 
     await page.keyboard.type('[docs](https://old.test)')
     await expect(editor.locator('a')).toHaveAttribute('href', 'https://old.test')
@@ -422,7 +399,7 @@ test.describe('Markdown Editor links', () => {
     await editor.locator('a').click()
     await page.locator('[data-testid="link-url-input"]').press('Escape')
     await editor.locator('a').click()
-    await page.keyboard.press('ControlOrMeta+k')
+    await page.keyboard.press(`${PLATFORM_MOD}+k`)
     const url = page.locator('[data-testid="link-url-input"]')
     await expect(url).toBeVisible()
     await expect(url).toHaveValue('https://old.test')
@@ -431,8 +408,8 @@ test.describe('Markdown Editor links', () => {
     // A SELECTION spanning the link: the popover opens empty, and applying
     // OVERRIDES the link rather than leaving the text carrying two.
     await editor.click()
-    await page.keyboard.press('ControlOrMeta+a')
-    await page.keyboard.press('ControlOrMeta+k')
+    await page.keyboard.press(`${PLATFORM_MOD}+a`)
+    await page.keyboard.press(`${PLATFORM_MOD}+k`)
     await expect(url).toBeVisible()
     await expect(url).toHaveValue('')
 
@@ -445,9 +422,7 @@ test.describe('Markdown Editor links', () => {
 
   test('a link can be unmade, keeping its text', async ({ page, authenticatedWorkspace }) => {
     void authenticatedWorkspace
-    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-    await expect(editor).toBeVisible()
-    await editor.click()
+    const editor = await focusComposer(page)
 
     await page.keyboard.type('[docs](https://old.test)')
     await expect(editor.locator('a')).toHaveCount(1)
@@ -462,9 +437,7 @@ test.describe('Markdown Editor links', () => {
 
   test('saving dismisses the popover, and it reopens cleanly afterwards', async ({ page, authenticatedWorkspace }) => {
     void authenticatedWorkspace
-    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-    await expect(editor).toBeVisible()
-    await editor.click()
+    const editor = await focusComposer(page)
     await page.keyboard.type('[docs](https://old.test)')
 
     const url = page.locator('[data-testid="link-url-input"]')
@@ -491,9 +464,7 @@ test.describe('Markdown Editor links', () => {
 
   test('the link popover fits its own box, with no horizontal overflow', async ({ page, authenticatedWorkspace }) => {
     void authenticatedWorkspace
-    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-    await expect(editor).toBeVisible()
-    await editor.click()
+    const editor = await focusComposer(page)
     await page.keyboard.type('[docs](https://a-fairly-long-example-url.test/some/path)')
 
     await editor.locator('a').click()

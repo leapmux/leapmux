@@ -1,8 +1,10 @@
 import type { Locator, Page } from '@playwright/test'
-import path from 'node:path'
-import { expect, test } from './fixtures'
-import { createWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { clickRowMenuItem, openRowMenu, workspaceRow } from './helpers/ui'
+import { expect } from '@playwright/test'
+import { frontendRoot } from '~/test-support/sourceTree'
+import { test } from './fixtures'
+import { openAgentViaAPI } from './helpers/api'
+import { archiveWorkspaceViaUI, clickRowMenuItem, clickWorkspaceMenuItem, expandWorkspaceRow, openRowMenu, sidebarSectionHeader, workspaceRow } from './helpers/ui'
+import { createWorkspaceWithAgentsViaAPI } from './helpers/workspace'
 
 /**
  * The section header's menu, which replaced the `+`.
@@ -20,18 +22,12 @@ import { clickRowMenuItem, openRowMenu, workspaceRow } from './helpers/ui'
  * beside a repository row).
  */
 
-const frontendDir = path.resolve(import.meta.dirname, '../..')
-
 function sectionMenuTrigger(page: Page, slug: string): Locator {
   return page.locator(`[data-testid="sidebar-section-menu-${slug}"]:visible`).first()
 }
 
 function sectionMenuPopover(page: Page, slug: string): Locator {
   return page.locator(`[data-testid="sidebar-section-menu-${slug}-popover"]`)
-}
-
-function sectionHeader(page: Page, slug: string): Locator {
-  return page.locator(`[data-testid="section-header-${slug}"]:visible`).first()
 }
 
 /**
@@ -57,22 +53,12 @@ async function clickSectionMenuItem(page: Page, slug: string, itemName: string) 
   await clickRowMenuItem(null, sectionMenuTrigger(page, slug), item)
 }
 
-/** Archive the fixture's workspace through its row menu. */
-async function archiveWorkspace(page: Page, workspaceId: string) {
-  const row = workspaceRow(page, workspaceId)
-  await row.hover()
-  await row.locator('button').first().click()
-  await page.getByRole('menuitem', { name: 'Archive', exact: true }).click()
-  await page.locator('dialog').getByRole('button', { name: 'Archive' }).click()
-  await expect(sectionHeader(page, 'workspaces_archived')).toBeVisible()
-}
-
 test.describe('sidebar section menu', () => {
   test('a repository row pre-fills the New workspace dialog', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
     const { hubUrl, adminToken, workerId } = leapmuxServer
     // A second agent in this repository's own checkout, so the section's tabs
     // carry a git toplevel the menu can offer.
-    await openAgentViaAPI(hubUrl, adminToken, workerId, authenticatedWorkspace.workspaceId, frontendDir)
+    await openAgentViaAPI({ hubUrl, adminToken, workerId }, authenticatedWorkspace.workspaceId, frontendRoot)
     await page.reload()
     await expect(workspaceRow(page, authenticatedWorkspace.workspaceId)).toBeVisible()
 
@@ -98,11 +84,11 @@ test.describe('sidebar section menu', () => {
   })
 
   test('the archived section menu opens while the section is COLLAPSED', async ({ page, authenticatedWorkspace }) => {
-    await archiveWorkspace(page, authenticatedWorkspace.workspaceId)
+    await archiveWorkspaceViaUI(page, authenticatedWorkspace.workspaceId)
 
     // Archiving auto-expands the section; collapse it again so the menu is
     // asked for from the state the section actually ships in.
-    await sectionHeader(page, 'workspaces_archived').click()
+    await sidebarSectionHeader(page, 'workspaces_archived').click()
 
     const popover = await openSectionMenu(page, 'workspaces_archived', 'Unarchive all')
     await expect(popover.getByRole('menuitem', { name: 'Empty archive...', exact: true })).toBeVisible()
@@ -117,13 +103,13 @@ test.describe('sidebar section menu', () => {
   // follows. jsdom cannot show this: a collapsed body is `visibility: hidden`
   // inside a zero-height row, which only a real layout produces.
   test('Filter workspaces expands the section it belongs to', async ({ page, authenticatedWorkspace }) => {
-    await archiveWorkspace(page, authenticatedWorkspace.workspaceId)
+    await archiveWorkspaceViaUI(page, authenticatedWorkspace.workspaceId)
     // Archiving auto-expands the section; collapse it again. `data-closed` is
     // the section's own state -- a collapsed BODY still reports a box, so the
     // rows inside it are not a usable signal here.
-    const section = sectionHeader(page, 'workspaces_archived')
+    const section = sidebarSectionHeader(page, 'workspaces_archived')
     // The SUMMARY row is the toggle; the pane around it is not.
-    await page.locator('[data-testid="section-header-workspaces_archived-summary"]:visible').first().click()
+    await section.getByTestId('section-header-workspaces_archived-summary').click()
     await expect(section).toHaveAttribute('data-closed', '')
 
     // By its test id, not by role: this row is a `menuitemcheckbox`, so the
@@ -142,7 +128,7 @@ test.describe('sidebar section menu', () => {
   })
 
   test('Unarchive all empties the archive back into In progress', async ({ page, authenticatedWorkspace }) => {
-    await archiveWorkspace(page, authenticatedWorkspace.workspaceId)
+    await archiveWorkspaceViaUI(page, authenticatedWorkspace.workspaceId)
 
     await clickSectionMenuItem(page, 'workspaces_archived', 'Unarchive all')
 
@@ -173,26 +159,18 @@ test.describe('sidebar section menu', () => {
   // ids, and a regression to writing the whole set back would still pass a
   // test that owns every row on screen.
   test('Collapse all leaves ANOTHER section\'s rows expanded', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
-    const second = await createWorkspaceViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, 'second-ws')
-    await openAgentViaAPI(
-      leapmuxServer.hubUrl,
-      leapmuxServer.adminToken,
-      leapmuxServer.workerId,
-      second,
-      frontendDir,
-    )
+    const { workspaceId: second } = await createWorkspaceWithAgentsViaAPI(leapmuxServer, 'second-ws', { workingDir: frontendRoot })
     await page.reload()
 
     const first = workspaceRow(page, authenticatedWorkspace.workspaceId)
     const other = workspaceRow(page, second)
     await expect(other).toBeVisible()
 
-    // Both expanded, both in In progress; then archive the second so the two
-    // sit in DIFFERENT sections.
-    await archiveWorkspace(page, second)
-    await expect(sectionHeader(page, 'workspaces_archived')).toBeVisible()
-    await page.locator(`[data-testid="workspace-chevron-${second}"]:visible`).first().click()
-    await expect(other).toHaveAttribute('data-expanded', 'true')
+    // Archive the second so the two sit in DIFFERENT sections, then expand
+    // it. The helper waits for the archived section. The first is active, so
+    // the app expanded it.
+    await archiveWorkspaceViaUI(page, second)
+    await expandWorkspaceRow(page, second)
     await expect(first).toHaveAttribute('data-expanded', 'true')
 
     await clickSectionMenuItem(page, 'workspaces_in_progress', 'Collapse all')
@@ -211,7 +189,7 @@ test.describe('sidebar section menu', () => {
     await dialog.getByTestId('title-input').fill('Reviews')
     await dialog.getByRole('button', { name: 'Create' }).click()
 
-    const custom = page.locator('[data-testid="section-header-workspaces_custom"]:visible').first()
+    const custom = sidebarSectionHeader(page, 'workspaces_custom')
     await expect(custom).toBeVisible()
     await expect(custom).toContainText('Reviews')
 
@@ -228,12 +206,7 @@ test.describe('sidebar section menu', () => {
     // the `Open in ...` list inside it) is otherwise covered only under vitest,
     // where `showPopover`/`hidePopover` are stubbed, so a nested popover that
     // never opens would pass everything.
-    const row = workspaceRow(page, authenticatedWorkspace.workspaceId)
-    await clickRowMenuItem(
-      row,
-      row.locator('button').first(),
-      page.getByRole('menuitem', { name: 'Move to', exact: true }),
-    )
+    await clickWorkspaceMenuItem(page, authenticatedWorkspace.workspaceId, 'Move to')
     const moveTo = page.locator('[data-testid="workspace-move-to-popover"]')
     await expect(moveTo.getByRole('menuitem', { name: 'Code review', exact: true })).toBeVisible()
     // `isMoveTargetSection` keeps a workspace out of a section it cannot live

@@ -1,20 +1,23 @@
 import type { SuiteServerState } from './helpers/suiteServer'
 import { readFileSync, writeFileSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, isAbsolute, join } from 'node:path'
 import process from 'node:process'
-import { fileURLToPath } from 'node:url'
+import { runBinaryPath } from './helpers/runBinary'
+import { isInsideDirectory, RUN_ROOT_ENV } from './helpers/runRoot'
 import { startSuiteServer } from './helpers/suiteServer'
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
 const runnerRequired = 'Run end-to-end tests with `bun run test:e2e` so the launcher verifies the build.'
 
 export interface E2EGlobalState extends SuiteServerState {
   binaryPath: string
   tmpDir: string
+  /** The run root that holds `tmpDir` (./helpers/runRoot.ts). */
+  runRoot: string
 }
 
 export default async function globalSetup(): Promise<(() => Promise<void>) | undefined> {
-  // The launcher builds once and gives each run a private directory and nonce.
+  // The launcher builds once and gives each run a private directory, a nonce,
+  // and a private copy of the binary.
   const noncePath = process.env.LEAPMUX_E2E_NONCE_PATH
   const expectedNonce = process.env.LEAPMUX_E2E_NONCE
   if (!noncePath || !expectedNonce)
@@ -28,9 +31,15 @@ export default async function globalSetup(): Promise<(() => Promise<void>) | und
   }
 
   const tmpDir = dirname(noncePath)
+  // The launcher states the run root beside the nonce, and the private directory of this run lies in it.
+  const runRoot = process.env[RUN_ROOT_ENV]
+  if (!runRoot || !isAbsolute(runRoot) || !isInsideDirectory(tmpDir, runRoot))
+    throw new Error(runnerRequired)
   const baseState = {
-    binaryPath: join(root, process.platform === 'win32' ? 'leapmux.exe' : 'leapmux'),
+    // Never the build output at the repository root. See runBinaryPath.
+    binaryPath: runBinaryPath(tmpDir),
     tmpDir,
+    runRoot,
   }
   const server = await startSuiteServer(baseState)
   const state: E2EGlobalState = { ...baseState, ...server.state }

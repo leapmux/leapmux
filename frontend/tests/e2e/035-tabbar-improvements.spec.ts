@@ -1,5 +1,9 @@
-import { expect, test } from './fixtures'
-import { messageContents, openAgentViaUI } from './helpers/ui'
+import { expect } from '@playwright/test'
+import { PROVIDER_DISPLAY_NAME } from '../../src/generated/contracts/providers'
+import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
+import { test } from './fixtures'
+import { sayExactly, sendScriptedTurn } from './helpers/scriptedTurn'
+import { composerEditor, expectAgentTabCount, openAgentInfoCard, openAgentViaUI } from './helpers/ui'
 
 /**
  * Smoke test for the tab bar's new-agent flow. The TabBar component's
@@ -12,26 +16,20 @@ import { messageContents, openAgentViaUI } from './helpers/ui'
  */
 
 test.describe('TabBar Improvements', () => {
-  test('new agent tab focuses editor and surfaces session ID after first turn', async ({ page, authenticatedWorkspace }) => {
+  test('new agent tab focuses editor and surfaces session ID after first turn', async ({ page, authenticatedWorkspace, modelScript }) => {
     await openAgentViaUI(page)
 
-    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
+    const editor = composerEditor(page)
     await expect(editor).toBeVisible()
     await expect(editor).toBeFocused()
 
-    await editor.click()
-    await page.keyboard.type('Say "hello". Reply with just the word, nothing else.')
-    await page.keyboard.press('Meta+Enter')
+    // A scripted turn: the init message that carries the session ID arrives
+    // alongside the first response, and the helper waits for that response in
+    // an ASSISTANT bubble. The prompt also says "hello", so a wait on any
+    // message text would pass on the user's own bubble.
+    await sendScriptedTurn(page, modelScript, sayExactly('hello'))
 
-    // Wait for the assistant turn to land — the init message that carries
-    // the session ID arrives alongside the first response.
-    await expect(messageContents(page).filter({ hasText: 'hello' })).toBeVisible()
-
-    await expect(page.locator('[data-testid="agent-info-trigger"]')).toBeVisible()
-    await page.locator('[data-testid="agent-info-trigger"]').click()
-
-    const popover = page.locator('[data-testid="agent-info-popover"]')
-    await expect(popover).toBeVisible()
+    const popover = await openAgentInfoCard(page)
     // Scoped to THIS popover. The same card also hangs off the `[+]` menu's
     // "Agent info" item, and a popover keeps its children mounted while closed,
     // so both copies of every row are in the DOM at all times -- an unscoped row
@@ -71,5 +69,44 @@ test.describe('TabBar Improvements', () => {
 
     await menu.locator('[data-testid="tab-menu-rename"]').click()
     await expect(page.locator('[data-testid="tab-rename-input"]:visible')).toBeFocused()
+  })
+
+  /**
+   * The bar draws one new-agent button per available provider it tracks. Each
+   * button must open an agent OF THAT provider: a click grows the tab count and
+   * the new tab's info card names the button's own provider. The assertions
+   * moved from the Codex startup spec, which proved them for its button alone.
+   */
+  test('the new-agent button of each available provider opens an agent of that provider', async ({ page, authenticatedWorkspace }) => {
+    void authenticatedWorkspace
+    // The bar draws one button per available provider it tracks, after the
+    // worker's provider scan settles. The disabled fallback button carries no
+    // provider suffix, so keep only the ids that name a provider.
+    const readProviders = () => page.locator('[data-testid^="new-agent-button-"]').evaluateAll(
+      buttons => buttons
+        .map(button => button.getAttribute('data-testid') ?? '')
+        .filter(id => /^new-agent-button-\d+$/.test(id))
+        .map(id => Number(id.replace(/^new-agent-button-/, ''))),
+    )
+    await expect.poll(readProviders, 'the tab bar offers at least one new-agent button').not.toHaveLength(0)
+    const providers = await readProviders()
+
+    for (const provider of providers) {
+      expect(provider in AgentProvider, `the button's test id states a known provider: ${provider}`).toBe(true)
+      const button = page.getByTestId(`new-agent-button-${provider}`).filter({ visible: true }).first()
+
+      const tabsBefore = await page.locator('[data-testid="tab"]:visible').count()
+      await button.click()
+      await expectAgentTabCount(page, tabsBefore + 1)
+
+      // The new tab is active, so its info card states the agent the button opened.
+      // The row's last span is its value; the first is the row label. The display
+      // name comes from the same generated contract the picker renders.
+      const popover = await openAgentInfoCard(page)
+      await expect(popover.locator('[data-testid="info-row-agent-type"] span').last())
+        .toContainText(PROVIDER_DISPLAY_NAME[provider as AgentProvider] ?? 'Unknown')
+      await page.keyboard.press('Escape')
+      await expect(popover).not.toBeVisible()
+    }
   })
 })

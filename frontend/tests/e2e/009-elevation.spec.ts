@@ -13,9 +13,12 @@
  * password change on the shared admin would break every later spec.
  */
 
-import { expect, test } from './fixtures'
+import type { Locator } from '@playwright/test'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
 import { elevateSessionViaAPI, listMyAPITokensViaAPI, signUpViaAPI } from './helpers/api'
-import { loginViaToken, openAccountSettings, openSettingsAt } from './helpers/ui'
+import { openPreferencesAs } from './helpers/preferences'
+import { answerElevationPrompt, elevationPrompt, openAccountSettings, openAppAs } from './helpers/ui'
 
 const APP_HOME_URL_RE = /\/$/
 const PASSWORD = 'password123'
@@ -26,50 +29,43 @@ async function freshAccount(hubUrl: string, prefix: string): Promise<string> {
   return signUpViaAPI(hubUrl, username, PASSWORD, 'Elevation User', `${username}@test.local`)
 }
 
+/** Ask the Account panel `prefs` to change the password to `password`. The caller asserts the outcome. */
+async function changePassword(prefs: Locator, password: string): Promise<void> {
+  await prefs.getByLabel('New Password').fill(password)
+  await prefs.getByLabel('Confirm Password').fill(password)
+  await prefs.getByRole('button', { name: 'Change Password' }).click()
+}
+
 test.describe('session elevation', () => {
   test('prompts once, then covers a second sensitive action', async ({ page, leapmuxServer }) => {
     const cookie = await freshAccount(leapmuxServer.hubUrl, 'elev-once')
-    await loginViaToken(page, cookie)
-    await page.goto('/')
+    await openAppAs(page, cookie)
     await expect(page).toHaveURL(APP_HOME_URL_RE)
 
     const prefs = await openAccountSettings(page)
-    await prefs.getByLabel('New Password').fill('elevated-pass-1')
-    await prefs.getByLabel('Confirm Password').fill('elevated-pass-1')
-    await prefs.getByRole('button', { name: 'Change Password' }).click()
+    await changePassword(prefs, 'elevated-pass-1')
 
     // The hub refuses the un-elevated session and the client prompts. The
     // password field belongs to the PROMPT: the change-password form itself
     // no longer carries a current-password field at all.
-    const verify = page.getByRole('dialog', { name: 'Verify your identity' })
-    await expect(verify).toBeVisible()
+    await expect(elevationPrompt(page)).toBeVisible()
     await expect(prefs.getByLabel('Current Password')).toHaveCount(0)
-    await verify.getByTestId('elevate-password').fill(PASSWORD)
-    await verify.getByTestId('elevate-password-submit').click()
+    await answerElevationPrompt(page, PASSWORD)
 
     await expect(prefs.getByText('Password changed.')).toBeVisible()
 
     // A SECOND sensitive action in the same window: no second prompt.
-    await prefs.getByLabel('New Password').fill('elevated-pass-2')
-    await prefs.getByLabel('Confirm Password').fill('elevated-pass-2')
-    await prefs.getByRole('button', { name: 'Change Password' }).click()
+    await changePassword(prefs, 'elevated-pass-2')
     await expect(prefs.getByText('Password changed.')).toBeVisible()
-    await expect(page.getByRole('dialog', { name: 'Verify your identity' })).toHaveCount(0)
+    await expect(elevationPrompt(page)).toHaveCount(0)
   })
 
   test('reports the wrong password without granting the window', async ({ page, leapmuxServer }) => {
     const cookie = await freshAccount(leapmuxServer.hubUrl, 'elev-wrong')
-    await loginViaToken(page, cookie)
-    await page.goto('/')
+    const prefs = await openPreferencesAs(page, cookie, 'account')
+    await changePassword(prefs, 'should-not-apply')
 
-    const prefs = await openAccountSettings(page)
-    await prefs.getByLabel('New Password').fill('should-not-apply')
-    await prefs.getByLabel('Confirm Password').fill('should-not-apply')
-    await prefs.getByRole('button', { name: 'Change Password' }).click()
-
-    const verify = page.getByRole('dialog', { name: 'Verify your identity' })
-    await verify.getByTestId('elevate-password').fill('definitely-not-the-password')
-    await verify.getByTestId('elevate-password-submit').click()
+    const verify = await answerElevationPrompt(page, 'definitely-not-the-password')
 
     // The prompt stays open with the refusal, and the queued action did not
     // run: a wrong factor must not admit the change it restricted.
@@ -85,13 +81,11 @@ test.describe('session elevation', () => {
     const cookie = await freshAccount(leapmuxServer.hubUrl, 'elev-devices')
     expect(await listMyAPITokensViaAPI(leapmuxServer.hubUrl, cookie)).toEqual([])
 
-    await loginViaToken(page, cookie)
-    await page.goto('/')
     // Connected apps lives in the APPS section, not Account.
-    const prefs = await openSettingsAt(page, 'apps')
+    const prefs = await openPreferencesAs(page, cookie, 'apps')
     await expect(prefs.getByTestId('connected-apps')).toBeVisible()
     await expect(prefs.getByText('No connected apps.', { exact: false })).toBeVisible()
-    await expect(page.getByRole('dialog', { name: 'Verify your identity' })).toHaveCount(0)
+    await expect(elevationPrompt(page)).toHaveCount(0)
   })
 
   // The window is ONE window across every sensitive action, not one per
@@ -99,8 +93,7 @@ test.describe('session elevation', () => {
   // other, is the case that proves it: a per-action secret would ask twice.
   test('covers a second action of a different kind', async ({ page, leapmuxServer }) => {
     const cookie = await freshAccount(leapmuxServer.hubUrl, 'elev-cross')
-    await loginViaToken(page, cookie)
-    await page.goto('/')
+    await openAppAs(page, cookie)
     await expect(page).toHaveURL(APP_HOME_URL_RE)
 
     const prefs = await openAccountSettings(page)
@@ -109,21 +102,16 @@ test.describe('session elevation', () => {
 
     // Moving the account email requires elevation: it receives the account-recovery
     // link, so a session alone must not move it.
-    const verify = page.getByRole('dialog', { name: 'Verify your identity' })
-    await expect(verify).toBeVisible()
-    await verify.getByTestId('elevate-password').fill(PASSWORD)
-    await verify.getByTestId('elevate-password-submit').click()
+    await answerElevationPrompt(page, PASSWORD)
 
     // Either branch is a success: the hub applies the change immediately or
     // sends a verification message, depending on the deployment's settings.
     await expect(prefs.getByText(/Email updated\.|Verification email sent\./)).toBeVisible()
 
     // A DIFFERENT kind of sensitive action, inside the same window.
-    await prefs.getByLabel('New Password').fill('elevated-pass-x')
-    await prefs.getByLabel('Confirm Password').fill('elevated-pass-x')
-    await prefs.getByRole('button', { name: 'Change Password' }).click()
+    await changePassword(prefs, 'elevated-pass-x')
     await expect(prefs.getByText('Password changed.')).toBeVisible()
-    await expect(page.getByRole('dialog', { name: 'Verify your identity' })).toHaveCount(0)
+    await expect(elevationPrompt(page)).toHaveCount(0)
   })
 
   test('never prompts an already-elevated session', async ({ page, leapmuxServer }) => {
@@ -132,15 +120,11 @@ test.describe('session elevation', () => {
     // would have.
     await elevateSessionViaAPI(leapmuxServer.hubUrl, cookie, PASSWORD)
 
-    await loginViaToken(page, cookie)
-    await page.goto('/')
-    const prefs = await openAccountSettings(page)
-    await prefs.getByLabel('New Password').fill('rotated-pass-1')
-    await prefs.getByLabel('Confirm Password').fill('rotated-pass-1')
-    await prefs.getByRole('button', { name: 'Change Password' }).click()
+    const prefs = await openPreferencesAs(page, cookie, 'account')
+    await changePassword(prefs, 'rotated-pass-1')
 
     await expect(prefs.getByText('Password changed.')).toBeVisible()
-    await expect(page.getByRole('dialog', { name: 'Verify your identity' })).toHaveCount(0)
+    await expect(elevationPrompt(page)).toHaveCount(0)
   })
 })
 
@@ -155,21 +139,16 @@ test.describe('session elevation', () => {
 test.describe('the verified-session state', () => {
   test('appears above the account rows once the user proves a factor', async ({ page, leapmuxServer }) => {
     const cookie = await freshAccount(leapmuxServer.hubUrl, 'elev-panel')
-    await loginViaToken(page, cookie)
-    await page.goto('/')
+    await openAppAs(page, cookie)
     await expect(page).toHaveURL(APP_HOME_URL_RE)
 
     const prefs = await openAccountSettings(page)
     // Nothing proven yet.
     await expect(prefs.getByTestId('elevation-status')).toHaveCount(0)
 
-    await prefs.getByLabel('New Password').fill('elevated-pass-panel')
-    await prefs.getByLabel('Confirm Password').fill('elevated-pass-panel')
-    await prefs.getByRole('button', { name: 'Change Password' }).click()
+    await changePassword(prefs, 'elevated-pass-panel')
 
-    const verify = page.getByRole('dialog', { name: 'Verify your identity' })
-    await verify.getByTestId('elevate-password').fill(PASSWORD)
-    await verify.getByTestId('elevate-password-submit').click()
+    await answerElevationPrompt(page, PASSWORD)
     await expect(prefs.getByText('Password changed.')).toBeVisible()
 
     const status = prefs.getByTestId('elevation-status')
@@ -194,19 +173,14 @@ test.describe('the verified-session state', () => {
   test('ends the window on demand', async ({ page, leapmuxServer }) => {
     const cookie = await freshAccount(leapmuxServer.hubUrl, 'elev-drop')
     await elevateSessionViaAPI(leapmuxServer.hubUrl, cookie, PASSWORD)
-    await loginViaToken(page, cookie)
-    await page.goto('/')
-
-    const prefs = await openAccountSettings(page)
+    const prefs = await openPreferencesAs(page, cookie, 'account')
     await expect(prefs.getByTestId('elevation-status')).toBeVisible()
     await prefs.getByTestId('elevation-drop').click()
     await expect(prefs.getByTestId('elevation-status')).toHaveCount(0)
 
     // And the next sensitive action asks again, which is the whole point of
     // the control.
-    await prefs.getByLabel('New Password').fill('after-drop-pass')
-    await prefs.getByLabel('Confirm Password').fill('after-drop-pass')
-    await prefs.getByRole('button', { name: 'Change Password' }).click()
-    await expect(page.getByRole('dialog', { name: 'Verify your identity' })).toBeVisible()
+    await changePassword(prefs, 'after-drop-pass')
+    await expect(elevationPrompt(page)).toBeVisible()
   })
 })

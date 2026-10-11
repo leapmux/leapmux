@@ -258,8 +258,3 @@ export async function deactivatePasskeyAuthViaAPIInBrowser(
     newPassword,
   })
 }
-
-/** Remove a virtual authenticator installed by {@link enableVirtualAuthenticator}. */
-export async function removeVirtualAuthenticator(auth: VirtualAuthenticator): Promise<void> {
-  await auth.cdp.send('WebAuthn.removeVirtualAuthenticator', { authenticatorId: auth.authenticatorId })
-}

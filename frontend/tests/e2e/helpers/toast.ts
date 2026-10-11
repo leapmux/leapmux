@@ -1,4 +1,5 @@
-import type { Page } from '@playwright/test'
+import type { Page, TestInfo } from '@playwright/test'
+import { expect } from '@playwright/test'
 
 // ──────────────────────────────────────────────
 // Toast recording for e2e debugging
@@ -16,6 +17,10 @@ export interface RecordedToast {
  *
  * Must be called **before** navigating to the app (e.g. before loginViaUI).
  * Works across page reloads because it uses `addInitScript`.
+ *
+ * The page fixtures of `../fixtures.ts` and `../process-control-fixtures.ts` install it on every test page already.
+ * Call it only for a page that a test creates itself. Each call adds one more init script to the page, and a shared
+ * page keeps that script for the rest of the worker's run.
  *
  * Recording is done by WATCHING THE DOM, not by patching oat. The previous
  * version monkey-patched `window.ot.toast` / `window.ot.toastEl`, and recorded
@@ -90,6 +95,50 @@ export async function installToastRecorder(page: Page) {
  */
 export async function getRecordedToasts(page: Page): Promise<RecordedToast[]> {
   return page.evaluate(() => (window as any).__recordedToasts ?? [])
+}
+
+/**
+ * Wait until the recorder holds a toast whose message contains `text`, or matches it.
+ *
+ * Use this, not a locator on the visible toast: a toast shows for about 3 seconds, and the recorder keeps it after
+ * it leaves, so the check cannot miss a toast that came and went before the assertion ran.
+ * The recorder holds every toast since the last page load or `clearRecordedToasts`. Clear it before the action
+ * when an earlier toast could also match.
+ */
+export async function expectToastRecorded(page: Page, text: string | RegExp): Promise<void> {
+  if (text === '')
+    throw new Error('A toast check needs text, because every toast contains an empty text.')
+  const matcher = typeof text === 'string' ? expect.stringContaining(text) : expect.stringMatching(text)
+  await expect.poll(async () => (await getRecordedToasts(page)).map(toast => toast.message), {
+    message: `the page shows a toast that holds ${typeof text === 'string' ? JSON.stringify(text) : String(text)}`,
+  }).toContainEqual(matcher)
+}
+
+/** The recorded toasts of the danger variant, which the app uses for an error. */
+export async function dangerToasts(page: Page): Promise<RecordedToast[]> {
+  return (await getRecordedToasts(page)).filter(toast => toast.variant === 'danger')
+}
+
+/**
+ * Format the recorded toasts with one line for each toast: `[<ISO time>] [<variant>] <message>`.
+ * A toast with no variant reads as `info`.
+ */
+export function formatToastLog(toasts: readonly RecordedToast[]): string {
+  return toasts.map(toast => `[${new Date(toast.timestamp).toISOString()}] [${toast.variant || 'info'}] ${toast.message}`).join('\n')
+}
+
+/**
+ * Attach the toasts that the page recorded to the test report, as `name`.
+ * The fixture page uses the default name. Give each other page of the test a name of its own, so that the report
+ * keeps the logs apart.
+ * The function attaches nothing when the page recorded no toast. It also attaches nothing when the page cannot answer,
+ * as after a crash or a close, because a missing toast log must not hide the failure of the test.
+ */
+export async function attachToastLog(page: Page, testInfo: TestInfo, name = 'toast-log'): Promise<void> {
+  const toasts = await getRecordedToasts(page).catch(() => [])
+  if (toasts.length === 0)
+    return
+  await testInfo.attach(name, { body: formatToastLog(toasts), contentType: 'text/plain' })
 }
 
 /**

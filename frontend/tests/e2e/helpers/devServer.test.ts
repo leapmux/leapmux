@@ -1,83 +1,160 @@
-import { mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs'
+import type { ChildProcess } from 'node:child_process'
+import type { DevServerHandle } from './devServer'
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { join, resolve } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createProcessStub } from '~/test-support/childProcess'
-import { closeTestChannels, getUserId, getWorkerId, signUpViaAPI } from './api'
-import { startDevServer, startSoloServer, stopDevServer } from './devServer'
-import { spawnTestProcess } from './processRegistry'
-import { waitForServer } from './server'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { mintCLITokenForAdmin } from './cli'
+import { startSoloServer, startUnseededDevServer, withAdminConfiguredDevServer } from './devServer'
+import { stopProcess } from './process'
 
-let root: string
-
-vi.mock('./api', () => ({
-  closeTestChannels: vi.fn(async () => {}),
-  getUserId: vi.fn(),
-  getWorkerId: vi.fn(),
-  signUpViaAPI: vi.fn(),
-  TEST_ADMIN_DISPLAY_NAME: 'Admin',
-  TEST_ADMIN_PASSWORD: 'password',
-  TEST_ADMIN_USERNAME: 'admin',
-}))
-vi.mock('./processRegistry', () => ({ spawnTestProcess: vi.fn() }))
-vi.mock('./server', () => ({
-  getGlobalState: () => ({ binaryPath: 'leapmux', tmpDir: root }),
-  findFreePort: async () => 12345,
-  hubSpawnEnv: (env: unknown) => env,
-  waitForServer: vi.fn(),
+const state = vi.hoisted(() => ({
+  tmpDir: '',
+  args: [] as string[],
+  waitedURL: '',
 }))
 
-beforeEach(() => {
-  const scratch = resolve(import.meta.dirname, '../../../..', '.tmp')
-  mkdirSync(scratch, { recursive: true })
-  root = mkdtempSync(join(scratch, 'dev-server-test-'))
-  vi.mocked(waitForServer).mockReset().mockResolvedValue(undefined)
-  vi.mocked(signUpViaAPI).mockReset().mockResolvedValue('session')
-  vi.mocked(getUserId).mockReset().mockResolvedValue('user')
-  vi.mocked(getWorkerId).mockReset().mockResolvedValue('worker')
-  vi.mocked(closeTestChannels).mockClear()
+vi.mock('./server', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./server')>()
+  return {
+    ...actual,
+    getGlobalState: () => ({ binaryPath: 'mock-leapmux', tmpDir: state.tmpDir }),
+    hubSpawnEnv: () => ({}),
+    findFreePort: () => { throw new Error('the hub must assign its own port') },
+    // The state file is real. No server answers the readiness request, so the mock records its URL instead.
+    waitForHubStart: async (statePath: string, proc: ChildProcess, browserHost?: string) => {
+      const raw = await actual.waitForHubStateFile(statePath, proc)
+      const hubUrl = actual.hubUrlFromStateJson(raw, browserHost)
+      state.waitedURL = hubUrl
+      return { hubUrl, listen: actual.resolvedHubTCPFromStateJson(raw) }
+    },
+  }
 })
 
-afterEach(() => rmSync(root, { recursive: true, force: true }))
+vi.mock('./api', async importOriginal => ({
+  ...await importOriginal<typeof import('./api')>(),
+  closeTestChannels: vi.fn(async () => {}),
+  getUserId: vi.fn(async () => 'admin-user'),
+  getWorkerId: vi.fn(async () => 'worker-1'),
+  signUpViaAPI: vi.fn(async () => 'leapmux-session=admin'),
+}))
 
-function child() {
-  const stub = createProcessStub()
-  stub.emitter.kill.mockImplementation(() => {
-    stub.emitter.exitCode = 0
-    stub.emitter.emit('exit', 0, null)
-    return true
-  })
-  vi.mocked(spawnTestProcess).mockReturnValue(stub.proc)
-  return stub
+vi.mock('./cli', () => ({ mintCLITokenForAdmin: vi.fn() }))
+
+vi.mock('./process', () => ({ stopProcess: vi.fn(async () => {}) }))
+
+vi.mock('./processRegistry', async (importOriginal) => {
+  const { EventEmitter } = await import('node:events')
+  const { mkdirSync, writeFileSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  return {
+    ...await importOriginal<typeof import('./processRegistry')>(),
+    spawnTestProcess: (_binary: string, args: string[]) => {
+      state.args = args
+      const dataDir = args[args.indexOf('-data-dir') + 1]
+      if (!dataDir)
+        throw new Error('the hub needs its data directory')
+      const stateDir = join(dataDir, 'hub')
+      mkdirSync(stateDir, { recursive: true })
+      const requested = args[args.indexOf('-listen') + 1] ?? ''
+      const host = requested.slice(0, requested.lastIndexOf(':'))
+      writeFileSync(join(stateDir, 'state.json'), JSON.stringify({ listen: [`${host}:49123`] }))
+      return Object.assign(new EventEmitter(), {
+        stdout: { resume() {} },
+        stderr: { resume() {} },
+        exitCode: null,
+        signalCode: null,
+      })
+    },
+  }
+})
+
+const roots: string[] = []
+
+function createScratchRoot(): void {
+  const scratch = resolve(import.meta.dirname, '../../../../.tmp')
+  mkdirSync(scratch, { recursive: true })
+  state.tmpDir = mkdtempSync(join(scratch, 'dev-server-test-'))
+  roots.push(state.tmpDir)
 }
 
-describe('private server lifetime', () => {
-  it.each(['readiness', 'signup', 'user', 'worker'])('cleans a dev process and its directory after a failed %s step', async (stage) => {
-    const stub = child()
-    const error = new Error(`${stage} failed`)
-    const operation = { readiness: waitForServer, signup: signUpViaAPI, user: getUserId, worker: getWorkerId }[stage]
-    vi.mocked(operation!).mockRejectedValueOnce(error)
-    await expect(startDevServer()).rejects.toBe(error)
-    expect(stub.emitter.kill).toHaveBeenCalledExactlyOnceWith('SIGTERM')
-    expect(readdirSync(root)).toEqual([])
+afterEach(() => {
+  for (const root of roots.splice(0))
+    rmSync(root, { recursive: true, force: true })
+  state.tmpDir = ''
+  state.args = []
+  state.waitedURL = ''
+})
+
+describe('startUnseededDevServer', () => {
+  it('uses a kernel-assigned port and the resolved address from the hub state file', async () => {
+    createScratchRoot()
+
+    const server = await startUnseededDevServer()
+
+    expect(state.args.slice(0, 3)).toEqual(['dev', '-listen', '127.0.0.1:0'])
+    expect(server.hubUrl).toBe('http://localhost:49123')
+    expect(state.waitedURL).toBe(server.hubUrl)
   })
 
-  it('transfers a ready process to its caller and closes it on request', async () => {
-    const stub = child()
-    const handle = await startDevServer()
-    expect(stub.emitter.kill).not.toHaveBeenCalled()
-    expect(readdirSync(root)).toHaveLength(1)
-    await stopDevServer(handle)
-    expect(closeTestChannels).toHaveBeenCalledExactlyOnceWith(handle.hubUrl)
-    expect(stub.emitter.kill).toHaveBeenCalledExactlyOnceWith('SIGTERM')
-    expect(readdirSync(root)).toEqual([])
+  it('uses the resolved Solo bind address while the browser stays on loopback', async () => {
+    createScratchRoot()
+
+    const server = await startSoloServer({ listenHost: '0.0.0.0' })
+
+    expect(state.args.slice(0, 3)).toEqual(['solo', '-listen', '0.0.0.0:0'])
+    expect(server.listen).toBe('0.0.0.0:49123')
+    expect(server.hubUrl).toBe('http://127.0.0.1:49123')
+    expect(state.waitedURL).toBe(server.hubUrl)
+  })
+})
+
+describe('withAdminConfiguredDevServer', () => {
+  /** Mint a CLI credential directory that exists on disk, as the real mint writes one. */
+  function mintCredentialDirectory(): string {
+    const path = join(state.tmpDir, 'cli-credentials')
+    mkdirSync(path, { recursive: true })
+    vi.mocked(mintCLITokenForAdmin).mockResolvedValue({ path, hubURL: 'http://localhost:49123' } as Awaited<ReturnType<typeof mintCLITokenForAdmin>>)
+    return path
+  }
+
+  it('configures the seeded server through the CLI, runs the test, then stops the server and removes the credentials', async () => {
+    createScratchRoot()
+    vi.mocked(stopProcess).mockClear()
+    const credentials = mintCredentialDirectory()
+    const steps: string[] = []
+    let served: DevServerHandle | undefined
+    await withAdminConfiguredDevServer('captcha-test', async (cli, server) => {
+      steps.push(`configure ${cli.path === credentials} ${server.adminToken}`)
+    }, async (server) => {
+      served = server
+      steps.push(`use ${server.hubUrl}`)
+      expect(stopProcess).not.toHaveBeenCalled()
+    })
+    expect(steps).toEqual(['configure true leapmux-session=admin', 'use http://localhost:49123'])
+    expect(stopProcess).toHaveBeenCalledTimes(1)
+    expect(existsSync(credentials)).toBe(false)
+    expect(existsSync(served!.dataDir)).toBe(false)
   })
 
-  it('preserves cleanup after solo readiness fails', async () => {
-    const stub = child()
-    const error = new Error('solo not ready')
-    vi.mocked(waitForServer).mockRejectedValueOnce(error)
-    await expect(startSoloServer()).rejects.toBe(error)
-    expect(stub.emitter.kill).toHaveBeenCalledExactlyOnceWith('SIGTERM')
-    expect(readdirSync(root)).toEqual([])
+  it('stops the server and removes the credentials when the configuration fails, and never runs the test', async () => {
+    createScratchRoot()
+    vi.mocked(stopProcess).mockClear()
+    const credentials = mintCredentialDirectory()
+    const failure = new Error('The captcha setting was refused.')
+    const use = vi.fn(async () => {})
+    await expect(withAdminConfiguredDevServer('captcha-test', async () => {
+      throw failure
+    }, use)).rejects.toBe(failure)
+    expect(use).not.toHaveBeenCalled()
+    expect(stopProcess).toHaveBeenCalledTimes(1)
+    expect(existsSync(credentials)).toBe(false)
+  })
+
+  it('stops the server when the CLI credential cannot be minted', async () => {
+    createScratchRoot()
+    vi.mocked(stopProcess).mockClear()
+    vi.mocked(mintCLITokenForAdmin).mockRejectedValue(new Error('The mint was refused.'))
+    await expect(withAdminConfiguredDevServer('captcha-test', async () => {}, async () => {})).rejects.toThrow('The mint was refused.')
+    expect(stopProcess).toHaveBeenCalledTimes(1)
   })
 })

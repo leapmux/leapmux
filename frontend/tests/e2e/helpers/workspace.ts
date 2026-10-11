@@ -1,30 +1,87 @@
+import type { Page, TestInfo } from '@playwright/test'
 import type { ChildProcess } from 'node:child_process'
 import type { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { agentOpenOptions, agentSettings } from '../agentSettings'
+import type { AgentOpenOverrides } from '../agentSettings'
+import type { AgentServer } from './api'
+import type { ProviderWorkingDir } from './providerWorkingDir'
+import { agentOpenOptions } from '../agentSettings'
 import { createWorkspaceViaAPI, deleteWorkspaceViaAPI, openAgentViaAPI } from './api'
 import { withCleanup } from './cleanup'
-import { createTestDirectory } from './runDirectory'
+import { newProviderWorkingDir } from './providerWorkingDir'
+import { loginViaToken, openWorkspace } from './ui'
 
 export interface WorkspaceFixture {
   workspaceId: string
+  /**
+   * The agent's working directory, when the fixture opened an agent.
+   *
+   * A tool-result image test writes a PNG here so the provider's own read tool
+   * can open it. A workspace-only fixture has none.
+   */
+  workingDir?: string
 }
 
-interface WorkspaceServer {
+/** A workspace fixture with the one agent that the fixture opened in it. */
+export interface AgentWorkspaceFixture extends WorkspaceFixture {
+  agentId: string
+}
+
+/**
+ * The value of a workspace fixture after it opened `agentId` in `workingDir`.
+ * An undefined `workingDir` means the Worker's default directory, which the test does not know, so the field stays absent.
+ */
+export function agentWorkspaceFixture(workspace: WorkspaceFixture, agentId: string, workingDir: string | undefined): AgentWorkspaceFixture {
+  return {
+    workspaceId: workspace.workspaceId,
+    agentId,
+    ...(workingDir === undefined ? {} : { workingDir }),
+  }
+}
+
+/** A workspace with one agent of a provider, and the directory that the agent works in. */
+export interface AgentWorkspace {
+  workspaceId: string
+  /** The directory that the rule of the provider made. Another agent of the provider can open there too. */
+  workingDir: ProviderWorkingDir
+}
+
+/**
+ * The hub where a test creates a workspace. A workspace needs no Worker, so a hub with several Workers also fits.
+ * The hub process, when the test owns one, tells the cleanup whether the hub can still answer.
+ */
+export interface WorkspaceHub {
   hubUrl: string
   adminToken: string
-  workerId: string
   hubProc?: ChildProcess
   serverProc?: ChildProcess
 }
 
-interface AgentOpenOverrides {
-  model?: string
-  optionValues?: Record<string, string>
+type WorkspaceServer = WorkspaceHub & AgentServer
+
+/**
+ * How the agents of one provider open in the E2E suite.
+ * The scenario module of the provider directory (`<provider>/scenarios.ts`) states it once. These read it:
+ *
+ * - The workspace fixtures of the provider fixture file.
+ * - The scenario context that `managedNativeContext` builds (`./nativeScenario.ts`). Each helper that opens a native
+ *   agent of the context reads it there (`newNativeWorkingDir` in `./nativeAgentOpen.ts`).
+ * - `openProviderAgent`, and `newProviderWorkingDir` (`./providerWorkingDir.ts`).
+ */
+export interface ProviderAgent {
+  provider: AgentProvider
+  /** The prefix of the workspace name and of the default working directory. */
+  prefix: string
+  /**
+   * Create a working directory whose name starts with the given prefix. Omit it for a fresh private directory of the
+   * run, which suits every provider that reads no configuration from the git repository around it. A provider that
+   * reads such configuration states `gitRepositoryWorkingDir` (`./providerWorkingDir.ts`).
+   */
+  workingDir?: (prefix: string) => ProviderWorkingDir
 }
 
 /** Keep workspace creation and disposal identical across agent providers. */
 export async function withTestWorkspace(
-  server: WorkspaceServer,
+  server: WorkspaceHub,
   prefix: string,
   use: (workspace: WorkspaceFixture) => Promise<void>,
 ): Promise<void> {
@@ -37,28 +94,182 @@ export async function withTestWorkspace(
   })
 }
 
-/** Open a real agent in a private working directory and close it after use. */
+/**
+ * Open a real agent in a private working directory and close it after use.
+ * The open request applies the one merge rule of `agentOpenOptions` to `openOptions`.
+ */
 export async function withAgentWorkspace(
   server: WorkspaceServer,
-  options: {
-    provider: AgentProvider
-    prefix: string
-    openOptions?: AgentOpenOverrides
-  },
-  use: (workspace: WorkspaceFixture) => Promise<void>,
+  options: ProviderAgent & { openOptions?: AgentOpenOverrides },
+  use: (workspace: AgentWorkspace) => Promise<void>,
 ): Promise<void> {
+  // Build the request first, so open options that the merge rule refuses create no workspace.
+  const request = agentOpenOptions(options.provider, options.openOptions)
   await withTestWorkspace(server, options.prefix, async (workspace) => {
-    const workingDir = createTestDirectory(`${options.prefix}-wd-`)
-    const defaults = agentOpenOptions(agentSettings(options.provider))
-    await openAgentViaAPI(server.hubUrl, server.adminToken, server.workerId, workspace.workspaceId, workingDir, {
-      agentProvider: options.provider,
-      ...defaults,
-      ...options.openOptions,
-      optionValues: {
-        ...defaults.optionValues,
-        ...options.openOptions?.optionValues,
-      },
-    })
-    await use(workspace)
+    const workingDir = newProviderWorkingDir(options)
+    await openAgentViaAPI(server, workspace.workspaceId, workingDir, request)
+    await use({ workspaceId: workspace.workspaceId, workingDir })
   })
+}
+
+/** A workspace that `createWorkspaceWithAgentsViaAPI` created, with its agents in the order that they opened. */
+export interface WorkspaceWithAgents {
+  workspaceId: string
+  agentIds: string[]
+}
+
+/**
+ * The agents that `createWorkspaceWithAgentsViaAPI` opens, and the directory that they work in. A test states either
+ * `agentCount`, for that many agents with no title (one by default), or `agentTitles`, for one agent with each title.
+ * The type refuses both at once.
+ */
+export type WorkspaceAgentsOptions = { workingDir?: string } & (
+  | { agentCount?: number, agentTitles?: never }
+  | { agentTitles: readonly string[], agentCount?: never }
+)
+
+/**
+ * The title of each agent to open, in open order. An agent with no title has an undefined entry.
+ * A wrong count or an empty title fails here, before the caller writes anything.
+ */
+function workspaceAgentTitles(options: WorkspaceAgentsOptions): ReadonlyArray<string | undefined> {
+  if (options.agentTitles !== undefined) {
+    if (options.agentTitles.some(agentTitle => agentTitle.trim() === ''))
+      throw new Error('An agent title must hold visible text. Omit `agentTitles` for agents with no title.')
+    return options.agentTitles
+  }
+  const agentCount = options.agentCount ?? 1
+  if (!Number.isSafeInteger(agentCount) || agentCount < 0)
+    throw new RangeError(`An agent count must be a nonnegative integer, not ${agentCount}.`)
+  return Array.from<undefined>({ length: agentCount }).fill(undefined)
+}
+
+/**
+ * Create a workspace on the suite hub with its agents, and return the workspace and the agents in open order.
+ * The agents open one after another with the provider default, so their tabs keep that order.
+ * `agentTitles` gives each agent a visible title, which an agent that the API opens otherwise lacks.
+ *
+ * A spec on the suite hub deletes nothing afterwards: the per-test reset of `./fixtures.ts` deletes every workspace
+ * before the next test and reports a failed delete. A spec on its own hub uses `withTestWorkspace` instead.
+ */
+export async function createWorkspaceWithAgentsViaAPI(
+  server: AgentServer,
+  title: string,
+  options: WorkspaceAgentsOptions = {},
+): Promise<WorkspaceWithAgents> {
+  const agentTitles = workspaceAgentTitles(options)
+  const workspaceId = await createWorkspaceViaAPI(server.hubUrl, server.adminToken, title)
+  const agentIds: string[] = []
+  for (const agentTitle of agentTitles)
+    agentIds.push(await openAgentViaAPI(server, workspaceId, options.workingDir, agentTitle === undefined ? undefined : { title: agentTitle }))
+  return { workspaceId, agentIds }
+}
+
+/**
+ * Create a workspace with its agents through `createWorkspaceWithAgentsViaAPI`, sign the page in, and show the
+ * workspace. For a test that needs a working directory of its own, which the `agentWorkingDir` option of its file
+ * cannot state for one test alone.
+ */
+export async function showWorkspaceWithAgents(
+  page: Page,
+  server: AgentServer,
+  title: string,
+  options: WorkspaceAgentsOptions = {},
+): Promise<WorkspaceWithAgents> {
+  const created = await createWorkspaceWithAgentsViaAPI(server, title, options)
+  await loginViaToken(page, server.adminToken)
+  await openWorkspace(page, created.workspaceId)
+  return created
+}
+
+/** What a test states for one more agent that it opens in an existing workspace. */
+export interface ProviderAgentOpenOptions extends AgentOpenOverrides {
+  /**
+   * An existing directory that the agent works in: one that the rule of the provider made, or a layout that
+   * `deliberateWorkingDir` states. The default is a new directory of the provider.
+   */
+  workingDir?: ProviderWorkingDir
+  /**
+   * The prefix of the name of the new directory, which `newProviderWorkingDir` creates by the rule of the provider.
+   * The default is `<agent prefix>-wd-`. An existing `workingDir` takes no prefix.
+   */
+  directoryPrefix?: string
+  /** Write into the working directory before the agent starts, for a configuration that the agent reads at its start. */
+  prepare?: (workingDir: ProviderWorkingDir) => void
+}
+
+/**
+ * Open one more agent of a provider in an existing workspace, with the pinned settings and the test's overrides.
+ * The open request applies the one merge rule of `agentOpenOptions`.
+ */
+export async function openProviderAgent(
+  server: AgentServer,
+  workspaceId: string,
+  agent: ProviderAgent,
+  options: ProviderAgentOpenOptions = {},
+): Promise<{ agentId: string, workingDir: ProviderWorkingDir }> {
+  if (options.workingDir !== undefined && options.directoryPrefix !== undefined)
+    throw new Error('An agent opens in an existing directory or in a new one, not in both.')
+  // Build the request first, so an override that the merge rule refuses creates and prepares no directory.
+  const request = agentOpenOptions(agent.provider, options)
+  const workingDir = options.workingDir ?? newProviderWorkingDir(agent, options.directoryPrefix)
+  options.prepare?.(workingDir)
+  const agentId = await openAgentViaAPI(server, workspaceId, workingDir, request)
+  return { agentId, workingDir }
+}
+
+/** The fixtures that an authenticated agent workspace fixture reads. */
+interface AuthenticatedWorkspaceFixtures {
+  page: Page
+  leapmuxServer: WorkspaceServer & { agentEnv: Record<string, string> }
+}
+
+/** What an authenticated agent workspace fixture states. */
+export interface AuthenticatedAgentWorkspaceOptions extends ProviderAgent {
+  openOptions?: AgentOpenOverrides
+  /**
+   * Attach the native diagnostics of the provider after a failed test, while the agent still runs.
+   * A failed diagnostic never replaces the failure of the test: the fixture attaches its error instead.
+   */
+  onFailure?: (testInfo: TestInfo, server: AuthenticatedWorkspaceFixtures['leapmuxServer']) => Promise<void>
+}
+
+/**
+ * A Playwright fixture that opens one agent of a provider, signs in, and shows its workspace.
+ * Each provider fixture file states its workspace fixtures through this factory.
+ */
+export function authenticatedAgentWorkspace(options: AuthenticatedAgentWorkspaceOptions) {
+  return async ({ page, leapmuxServer }: AuthenticatedWorkspaceFixtures, use: (workspace: AgentWorkspace) => Promise<void>, testInfo: TestInfo): Promise<void> => {
+    await withAgentWorkspace(leapmuxServer, options, async (workspace) => {
+      await loginViaToken(page, leapmuxServer.adminToken)
+      await openWorkspace(page, workspace.workspaceId)
+      try {
+        await use(workspace)
+      }
+      finally {
+        if (options.onFailure && testInfo.status !== testInfo.expectedStatus)
+          await attachFailureDiagnostics(options.onFailure, testInfo, leapmuxServer)
+      }
+    })
+  }
+}
+
+/**
+ * Run a diagnostic of a failed test. Its own failure becomes an attachment, so it cannot replace the test failure.
+ * An attachment that fails as well reaches the report beside the test failure.
+ */
+async function attachFailureDiagnostics(
+  onFailure: NonNullable<AuthenticatedAgentWorkspaceOptions['onFailure']>,
+  testInfo: TestInfo,
+  server: AuthenticatedWorkspaceFixtures['leapmuxServer'],
+): Promise<void> {
+  try {
+    await onFailure(testInfo, server)
+  }
+  catch (error) {
+    await testInfo.attach('native-diagnostics-error', {
+      body: error instanceof Error ? error.stack ?? error.message : String(error),
+      contentType: 'text/plain',
+    })
+  }
 }

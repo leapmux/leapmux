@@ -1,4 +1,5 @@
-import { expect, test } from './fixtures'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
 
 /**
  * The phone-band creation dialog: one scroll for the whole body.

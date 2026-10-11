@@ -1,5 +1,6 @@
 import type { SafeInsets } from './helpers/safeArea'
-import { expect, test } from './fixtures'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
 import {
   applySimulatedSafeArea,
   IPHONE_LANDSCAPE_NOTCH_RIGHT,
@@ -31,7 +32,7 @@ import { openSettingsAt } from './helpers/ui'
 /**
  * Open New Workspace.
  *
- * A LOCAL copy, not `helpers/worktree`'s. It differs on three things this spec
+ * A LOCAL copy, not `helpers/ui`'s. It differs on three things this spec
  * is about, and folding it in would leak all of them into 070-073:
  *   - a THIRD branch for the desktop drawer, which the shared helper has no
  *     concept of;

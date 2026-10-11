@@ -1,6 +1,7 @@
 import type { CDPSession, Page } from '@playwright/test'
-import { expect, test } from './fixtures'
-import { focusActiveTerminal, waitForTerminalText } from './helpers/terminal'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
+import { focusActiveTerminal, waitForTerminalReady, waitForTerminalText } from './helpers/terminal'
 import { openTerminalViaUI } from './helpers/ui'
 
 /**
@@ -84,8 +85,8 @@ async function composeInTerminal(cdp: CDPSession, compositions: Composition[]): 
  * — land in xterm.
  */
 async function openFocusedTerminal(page: Page): Promise<void> {
+  // The open waits for the xterm of the new terminal.
   await openTerminalViaUI(page)
-  await expect(page.locator('.xterm')).toBeVisible()
   await focusActiveTerminal(page)
 }
 
@@ -160,6 +161,10 @@ test.describe('Terminal IME input', () => {
   test('negotiates CSI-u input and sends Shift+Enter as a distinct sequence', async ({ page, authenticatedWorkspace }) => {
     void authenticatedWorkspace
     await openFocusedTerminal(page)
+    // This test needs the SHELL to run its first command, not only to echo it.
+    // A command typed before the shell is ready loses its leading characters,
+    // and the CSI-u request then never reaches xterm.
+    await waitForTerminalReady(page)
 
     await page.keyboard.type('printf \'\\033[>1u\'; printf \'KITTY_\'\'MODE_ACTIVE\\n\'', { delay: 30 })
     await page.keyboard.press('Enter')

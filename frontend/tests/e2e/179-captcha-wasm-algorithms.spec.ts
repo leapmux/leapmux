@@ -1,8 +1,10 @@
 import type { DevServerHandle } from './helpers/devServer'
-import { test as base, expect } from '@playwright/test'
+import { expect } from '@playwright/test'
+import { devServerTest } from './dev-server-fixtures'
 import { fetchAltchaChallenge } from './helpers/altcha'
-import { mintCLITokenForAdmin, runCLI, setHubSetting } from './helpers/cli'
-import { startDevServer, stopDevServer } from './helpers/devServer'
+import { runCLI, setHubSetting } from './helpers/cli'
+import { withAdminConfiguredDevServer } from './helpers/devServer'
+import { retryUntilPass } from './helpers/retryUntilPass'
 import { loginViaUI } from './helpers/ui'
 
 /**
@@ -18,38 +20,26 @@ import { loginViaUI } from './helpers/ui'
  * switch only once the challenge endpoint actually issues the target
  * algorithm — everything after that certainly exercises the WASM worker
  * path rather than a stale default challenge.
+ *
+ * A read can fail while the hub applies the change, so a failed read starts
+ * the next attempt. The wait ends before the test's own deadline, and its
+ * failure states the last read.
  */
-async function waitForChallengeAlgorithm(hubUrl: string, algorithm: string, timeoutMs = 90_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    try {
-      const challenge = await fetchAltchaChallenge(hubUrl)
-      if (challenge?.parameters.algorithm === algorithm) {
-        return
-      }
-    }
-    catch {
-      // Transient startup failures retry on the next poll.
-    }
-    await new Promise(r => setTimeout(r, 1000))
-  }
-  throw new Error(`hub did not issue ${algorithm} challenges within ${timeoutMs}ms`)
+async function waitForChallengeAlgorithm(hubUrl: string, algorithm: string): Promise<void> {
+  await retryUntilPass(async () => {
+    const challenge = await fetchAltchaChallenge(hubUrl)
+    expect(challenge?.parameters.algorithm, `the hub issues ${algorithm} challenges`).toBe(algorithm)
+  })
 }
 
 async function setupServerWithAlgorithm(
-  // eslint-disable-next-line no-empty-pattern
-  {}: object,
   use: (server: DevServerHandle) => Promise<void>,
   algorithm: string,
   args: string[],
 ): Promise<void> {
-  const server = await startDevServer({ dataDirPrefix: 'leapmux-e2e-captcha-wasm' })
-  let cliConfigDir: string | undefined
-  try {
-    // Captcha configuration is an ONLINE admin RPC against the running
-    // hub; the offline captcha verb no longer exists.
-    const cfg = await mintCLITokenForAdmin(server)
-    cliConfigDir = cfg.path
+  // Captcha configuration is an ONLINE admin RPC against the running
+  // hub; the offline captcha verb no longer exists.
+  await withAdminConfiguredDevServer('leapmux-e2e-captcha-wasm', async (cfg, server) => {
     // ALTCHA runs only where a browser can solve it AND there is somebody
     // to protect, and the hub reads its own settings for both. A dev server
     // publishes nothing and terminates no TLS, so it deactivates ALTCHA --
@@ -59,11 +49,7 @@ async function setupServerWithAlgorithm(
     await setHubSetting(cfg, 'public_url', 'https://hub.e2e.test')
     await runCLI(cfg, ['admin', 'captcha', 'set', ...args])
     await waitForChallengeAlgorithm(server.hubUrl, algorithm)
-    await use(server)
-  }
-  finally {
-    await stopDevServer(server, cliConfigDir ? [cliConfigDir] : [])
-  }
+  }, use)
 }
 
 const cases = [
@@ -81,13 +67,7 @@ const cases = [
 ] as const
 
 for (const { algorithm, args } of cases) {
-  const test = base.extend<{ server: DevServerHandle }>({
-    // eslint-disable-next-line no-empty-pattern
-    server: async ({}, use) => setupServerWithAlgorithm({}, use, algorithm, [...args]),
-    baseURL: async ({ server }, use) => {
-      await use(server.hubUrl)
-    },
-  })
+  const test = devServerTest<DevServerHandle>(use => setupServerWithAlgorithm(use, algorithm, [...args]))
 
   test.describe(`captcha WASM solvers (${algorithm})`, () => {
     test(`login solves a ${algorithm} challenge through the dynamically loaded worker`, async ({ page }) => {

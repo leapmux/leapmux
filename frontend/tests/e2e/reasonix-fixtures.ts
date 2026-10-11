@@ -1,31 +1,22 @@
 /**
  * Reasonix (DeepSeek) e2e test fixtures.
  */
-import type { ACPFixtureConfig } from './acp-fixture-factory'
-import type { WorkspaceFixture } from './helpers/workspace'
-import { AgentProvider, authenticateACPWorkspace, createACPWorkspace, detectACPSkipReason } from './acp-fixture-factory'
-import { test as base, expect } from './fixtures'
+import type { AgentWorkspace } from './helpers/workspace'
+import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
+import { test as base } from './fixtures'
+import { missingBinaryReason } from './helpers/binaryOnPath'
+import { authenticatedAgentWorkspace } from './helpers/workspace'
+import { cliSkipFixture } from './provider-fixture-factory'
+import { nativeContext, REASONIX_AGENT } from './reasonix/scenarios'
 
-const reasonixConfig: ACPFixtureConfig = {
-  agentProvider: AgentProvider.REASONIX,
-  cliBinary: 'reasonix',
-  skipMessage: 'Reasonix E2E requires a reasonix CLI on PATH',
-  workspacePrefix: 'reasonix-e2e',
-}
+export const REASONIX_E2E_SKIP_REASON: string | null = missingBinaryReason('reasonix', 'Reasonix E2E requires a reasonix CLI on PATH')
 
-export const REASONIX_E2E_SKIP_REASON = detectACPSkipReason(reasonixConfig)
-
-export const reasonixTest = base.extend<{
-  reasonixWorkspace: WorkspaceFixture
-  authenticatedReasonixWorkspace: WorkspaceFixture
+export const reasonixTest = base.extend<CliSkipFixture & NativeFixture & {
+  authenticatedReasonixWorkspace: AgentWorkspace
 }>({
-  reasonixWorkspace: async ({ leapmuxServer }, use) => {
-    await createACPWorkspace(leapmuxServer, reasonixConfig, use)
-  },
-
-  authenticatedReasonixWorkspace: async ({ page, reasonixWorkspace, leapmuxServer }, use) => {
-    await authenticateACPWorkspace(page, reasonixWorkspace, leapmuxServer.adminToken, use)
+  cliSkip: cliSkipFixture(REASONIX_E2E_SKIP_REASON),
+  authenticatedReasonixWorkspace: authenticatedAgentWorkspace(REASONIX_AGENT),
+  native: async ({ page, modelScript, leapmuxServer, authenticatedReasonixWorkspace }, use) => {
+    await use(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedReasonixWorkspace.workspaceId }))
   },
 })
-
-export { expect }

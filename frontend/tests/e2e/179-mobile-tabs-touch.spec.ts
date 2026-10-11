@@ -1,8 +1,12 @@
 import type { Locator, Page } from '@playwright/test'
-import { expect, test } from './fixtures'
+import type { AgentServer } from './helpers/api'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
 import { openAgentViaAPI } from './helpers/api'
-import { COARSE_POINTER_METRICS, settleFrames, touchDown, touchDragGripOnto } from './helpers/touch'
-import { workspaceRow } from './helpers/ui'
+import { boxCenter, mouseDragOnto } from './helpers/drag'
+import { retryUntilPass } from './helpers/retryUntilPass'
+import { COARSE_POINTER_METRICS, touchDown, touchDragGripOnto } from './helpers/touch'
+import { chatScrollContainer, composerEditor, stableBox, workspaceRow } from './helpers/ui'
 
 /**
  * The mobile tab UI and the touch drag model.
@@ -21,17 +25,9 @@ import { workspaceRow } from './helpers/ui'
  */
 
 /** Open two titled agent tabs through the API. */
-async function openTwoAgentTabs(opts: { hubUrl: string, adminToken: string, workerId: string, workspaceId: string }) {
-  await openAgentViaAPI(opts.hubUrl, opts.adminToken, opts.workerId, opts.workspaceId, undefined, { title: 'Alpha' })
-  await openAgentViaAPI(opts.hubUrl, opts.adminToken, opts.workerId, opts.workspaceId, undefined, { title: 'Beta' })
-}
-
-function serverOf(leapmuxServer: { hubUrl: string, adminToken: string, workerId: string }) {
-  return {
-    hubUrl: leapmuxServer.hubUrl,
-    adminToken: leapmuxServer.adminToken,
-    workerId: leapmuxServer.workerId,
-  }
+async function openTwoAgentTabs(server: AgentServer, workspaceId: string) {
+  await openAgentViaAPI(server, workspaceId, undefined, { title: 'Alpha' })
+  await openAgentViaAPI(server, workspaceId, undefined, { title: 'Beta' })
 }
 
 /** Position of the row/tab whose text contains `needle`, throwing if absent. */
@@ -40,6 +36,17 @@ async function textIndex(rows: Locator, needle: string): Promise<number> {
   const index = texts.findIndex(text => text.includes(needle))
   expect(index, `a row containing "${needle}" (have: ${texts.join(' | ')})`).toBeGreaterThanOrEqual(0)
   return index
+}
+
+/**
+ * Wait until the row that contains `earlier` comes before the row that contains `later`.
+ * The store confirms a reorder after the pointer lifts. `textIndex` throws for an absent row, and the wait retries that
+ * read, so a row that the list draws late does not end the wait.
+ */
+async function expectRowBefore(rows: Locator, earlier: string, later: string): Promise<void> {
+  await retryUntilPass(async () => {
+    expect(await textIndex(rows, earlier), `the row of "${earlier}" comes before the row of "${later}"`).toBeLessThan(await textIndex(rows, later))
+  })
 }
 
 /**
@@ -56,12 +63,7 @@ async function openSheet(page: Page): Promise<Locator> {
   await expect(chip).toHaveAttribute('aria-expanded', 'true')
   const rows = page.getByTestId('tab-sheet-row')
   await expect(rows.nth(0)).toBeInViewport()
-  await expect.poll(async () => {
-    const first = await rows.nth(0).boundingBox()
-    await page.waitForTimeout(60)
-    const second = await rows.nth(0).boundingBox()
-    return first !== null && second !== null && first.y === second.y
-  }).toBe(true)
+  await stableBox(rows.nth(0))
   return rows
 }
 
@@ -70,7 +72,7 @@ test.describe('mobile tab sheet (phone)', () => {
   test.use(COARSE_POINTER_METRICS)
 
   test('the chip replaces the strip and its sheet switches tabs', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
-    await openTwoAgentTabs({ ...serverOf(leapmuxServer), workspaceId: authenticatedWorkspace.workspaceId })
+    await openTwoAgentTabs(leapmuxServer, authenticatedWorkspace.workspaceId)
 
     // No strip on mobile — that is the point of the redesign.
     await expect(page.getByTestId('tab-list')).toHaveCount(0)
@@ -95,7 +97,7 @@ test.describe('mobile tab sheet (phone)', () => {
   })
 
   test('touch drag from a sheet grip reorders; a press on the row body does not', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
-    await openTwoAgentTabs({ ...serverOf(leapmuxServer), workspaceId: authenticatedWorkspace.workspaceId })
+    await openTwoAgentTabs(leapmuxServer, authenticatedWorkspace.workspaceId)
     const rows = await openSheet(page)
     const alphaRow = rows.filter({ hasText: 'Alpha' })
     await expect(alphaRow).toBeInViewport()
@@ -123,11 +125,11 @@ test.describe('mobile tab sheet (phone)', () => {
       draggedRow: alphaRow,
       draggingClass: /tabDragging/,
     })
-    await expect.poll(async () => await textIndex(rows, 'Beta') < await textIndex(rows, 'Alpha')).toBe(true)
+    await expectRowBefore(rows, 'Beta', 'Alpha')
   })
 
   test('a long press on a sheet row body opens its menu, not an unintended drag', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
-    await openTwoAgentTabs({ ...serverOf(leapmuxServer), workspaceId: authenticatedWorkspace.workspaceId })
+    await openTwoAgentTabs(leapmuxServer, authenticatedWorkspace.workspaceId)
     const rows = await openSheet(page)
     const alphaRow = rows.filter({ hasText: 'Alpha' })
     await expect(alphaRow).toBeInViewport()
@@ -155,7 +157,7 @@ test.describe('mobile tab sheet (phone)', () => {
   })
 
   test('closing a tab from the sheet removes its row and updates the chip count', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
-    await openTwoAgentTabs({ ...serverOf(leapmuxServer), workspaceId: authenticatedWorkspace.workspaceId })
+    await openTwoAgentTabs(leapmuxServer, authenticatedWorkspace.workspaceId)
     const rows = await openSheet(page)
     const before = await rows.count()
 
@@ -303,7 +305,7 @@ test.describe('soft-keyboard viewport contract (phone)', () => {
     const bar = page.getByTestId('tab-bar')
     await expect(bar).toBeVisible()
 
-    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
+    const editor = composerEditor(page)
     await editor.click()
     await expect(editor).toBeFocused()
 
@@ -334,7 +336,7 @@ test.describe('soft-keyboard viewport contract (phone)', () => {
   // the first half is the phone-with-a-hardware-keyboard case, where dropping
   // the caret would reclaim nothing.
   test('a send releases focus only while the keyboard takes screen space', async ({ page, authenticatedWorkspace }) => {
-    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
+    const editor = composerEditor(page)
     const size = page.viewportSize()!
 
     await editor.click()
@@ -369,8 +371,8 @@ test.describe('soft-keyboard viewport contract (phone)', () => {
   // composer that overlays its centre. Hit-testing is the browser's job; what
   // is ours is what the handler makes of the gesture.
   test('a tap on the transcript releases the composer only while the keyboard takes screen space', async ({ page, authenticatedWorkspace }) => {
-    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-    const transcript = page.locator('[data-chat-scroll-container="true"]')
+    const editor = composerEditor(page)
+    const transcript = chatScrollContainer(page)
     const size = page.viewportSize()!
 
     /**
@@ -461,7 +463,7 @@ test.describe('tablet touch (desktop layout)', () => {
   })
 
   test('a mouse drag from the tab body reorders (the desktop regression guard)', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
-    await openTwoAgentTabs({ ...serverOf(leapmuxServer), workspaceId: authenticatedWorkspace.workspaceId })
+    await openTwoAgentTabs(leapmuxServer, authenticatedWorkspace.workspaceId)
 
     await expect(page.getByTestId('tab-list')).toBeVisible()
     const tabs = page.locator('[data-testid="tab"]')
@@ -476,41 +478,25 @@ test.describe('tablet touch (desktop layout)', () => {
     // makes the tab narrower than a fixed offset (an earlier `x + 60`
     // pressed the tab's NEIGHBOR), and the `tabDragging` class is the
     // activation oracle — a press that never claims the pointer fails
-    // HERE, not as a mysteriously unchanged order later.
-    //
-    // The gesture is the same shape `touchDragGripOnto` uses, and for the same
-    // reason: every window below ends on a STATE, never on a timer. A mouse
-    // press activates on the first move past `ACTIVATION_DISTANCE_PX` (the
-    // 250ms hold timer is the other route, and this never waits for it), so a
-    // short move followed by the class assertion is what "the sensor claimed
-    // the press" looks like. The 100ms sleeps this replaced only guessed at
-    // that: a wall-clock window elapses on schedule while a loaded main thread
-    // has processed nothing, which is how this test failed under load.
-    const alphaBox = (await alphaTab.boundingBox())!
-    const betaBox = (await betaTab.boundingBox())!
-    await page.mouse.move(alphaBox.x + alphaBox.width / 2, alphaBox.y + alphaBox.height / 2)
-    await page.mouse.down()
-
-    // Past the 10px activation distance, offset on BOTH axes so it does not
-    // depend on which side of Alpha the Beta tab sits.
-    await page.mouse.move(alphaBox.x + alphaBox.width / 2 + 8, alphaBox.y + alphaBox.height / 2 + 20)
-    await expect(alphaTab).toHaveClass(/tabDragging/)
-
-    await page.mouse.move(betaBox.x + betaBox.width / 2, betaBox.y + betaBox.height / 2, { steps: 12 })
-    await settleFrames(page)
-    await page.mouse.up()
-
-    // The lift ended the drag: a press whose pointerup the pipeline lost would
+    // HERE, not as a mysteriously unchanged order later. The class must also
+    // go away on the lift: a press whose pointerup the pipeline lost would
     // leave the row lifted and the reorder would never be attempted.
-    await expect(alphaTab).not.toHaveClass(/tabDragging/)
+    //
+    // Every window of the gesture ends on a STATE, never on a timer: see
+    // `mouseDragOnto` in ./helpers/drag.ts.
+    await mouseDragOnto(page, {
+      from: await boxCenter(alphaTab),
+      to: await boxCenter(betaTab),
+      dragged: { row: alphaTab, draggingClass: /tabDragging/ },
+    })
     // Dropping Alpha ONTO Beta inserts it at Beta's slot — landing AFTER
     // Beta, whatever else the strip holds. Polled: the reorder lands when
     // the store confirms it, which can be after mouse.up returns.
-    await expect.poll(async () => await textIndex(tabs, 'Beta') < await textIndex(tabs, 'Alpha')).toBe(true)
+    await expectRowBefore(tabs, 'Beta', 'Alpha')
   })
 
   test('a touch drag from a grip reorders', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
-    await openTwoAgentTabs({ ...serverOf(leapmuxServer), workspaceId: authenticatedWorkspace.workspaceId })
+    await openTwoAgentTabs(leapmuxServer, authenticatedWorkspace.workspaceId)
 
     await expect(page.getByTestId('tab-list')).toBeVisible()
     const tabs = page.locator('[data-testid="tab"]')
@@ -534,6 +520,6 @@ test.describe('tablet touch (desktop layout)', () => {
     // Dropping Alpha ONTO Beta inserts it at Beta's slot — landing AFTER
     // Beta, from any starting order. Polled: the reorder lands when the
     // store confirms it, which can be after the lift.
-    await expect.poll(async () => await textIndex(tabs, 'Beta') < await textIndex(tabs, 'Alpha')).toBe(true)
+    await expectRowBefore(tabs, 'Beta', 'Alpha')
   })
 })

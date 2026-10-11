@@ -1,21 +1,33 @@
-import { mkdirSync } from 'node:fs'
-import path, { join } from 'node:path'
-import { expect, test } from './fixtures'
-import { createWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { branchGroupRow, loginViaToken, openWorkspace } from './helpers/ui'
-import {
-  createGitRepo,
-  createWorkspaceWithWorktreeViaAPI,
-  openNewAgentDialog,
-  openNewWorkspaceDialog,
-  setWorkingDir,
-  waitForAppPageReady,
-  waitForWorker,
-} from './helpers/worktree'
+import type { Page } from '@playwright/test'
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { expect } from '@playwright/test'
+import { frontendRoot } from '~/test-support/sourceTree'
+import { test } from './fixtures'
+import { branchGroupRow, chooseGitMode, openNewAgentDialog, openNewTerminalDialog, openNewWorkspaceDialogAt, openWorkspace, setWorkingDir, waitForWorker, workspaceChildren } from './helpers/ui'
+import { showWorkspaceWithAgents } from './helpers/workspace'
+import { addWorktree, createGitRepo, createWorkspaceWithWorktreeViaAPI } from './helpers/worktree'
 
-const frontendDir = path.resolve(import.meta.dirname, '../..')
+/**
+ * Move the open dialog from a repository root to `dir`, and require that the git mode options hide.
+ *
+ * The dialog shows the options of the repository root first. Between two directories it keeps the options of the
+ * last answer while the probe of the next directory runs (`useGitPathInfo` skips its loading state when the options
+ * show), so the options hide only when the probe of `dir` answers. An assertion on a dialog that opened at `dir`
+ * directly can pass before that probe answers, because the options do not show yet either way.
+ */
+async function expectGitOptionsHideOnlyAfterTheProbe(page: Page, dir: string): Promise<void> {
+  await expect(page.getByText('Use current state'), 'the repository root shows its options first').toBeVisible()
+  await setWorkingDir(page, dir)
+  await expect(page.getByText('Use current state')).not.toBeVisible()
+  await expect(page.getByText('Create new worktree', { exact: true })).not.toBeVisible()
+}
 
 test.describe('Worktree Detection', () => {
+  // The dialogs below open from a workspace whose agent works in the frontend
+  // directory. The dialog's own working directory is set per case.
+  test.use({ agentWorkingDir: frontendRoot })
+
   test('non-git directory hides git options in new workspace dialog', async ({
     page,
     leapmuxServer,
@@ -26,22 +38,9 @@ test.describe('Worktree Detection', () => {
     const nonGitDir = join(dataDir, 'not-a-repo')
     mkdirSync(nonGitDir, { recursive: true })
 
-    await loginViaToken(page, adminToken)
-    await page.goto('/')
-    await waitForAppPageReady(page)
-
-    await openNewWorkspaceDialog(page)
-    await waitForWorker(page)
-
-    // Set working directory to a known non-git directory
-    await setWorkingDir(page, nonGitDir)
-
-    // Wait for the git info check to complete.
-    await page.waitForTimeout(2000)
-
-    // Verify git mode radio options are not visible
-    await expect(page.getByText('Use current state')).not.toBeVisible()
-    await expect(page.getByText('Create new worktree', { exact: true })).not.toBeVisible()
+    // Set working directory to a known non-git directory, after a repository root.
+    await openNewWorkspaceDialogAt(page, adminToken, createGitRepo(dataDir, 'test-repo-before-plain'))
+    await expectGitOptionsHideOnlyAfterTheProbe(page, nonGitDir)
 
     await page.getByRole('button', { name: 'Cancel' }).click()
   })
@@ -57,22 +56,10 @@ test.describe('Worktree Detection', () => {
     const subDir = join(repoDir, 'src', 'components')
     mkdirSync(subDir, { recursive: true })
 
-    await loginViaToken(page, adminToken)
-    await page.goto('/')
-    await waitForAppPageReady(page)
-
-    await openNewWorkspaceDialog(page)
-    await waitForWorker(page)
-
-    // Set working directory to a subdirectory of the git repo
-    await setWorkingDir(page, subDir)
-
-    // Wait for the git info check to complete.
-    await page.waitForTimeout(2000)
-
-    // Verify git mode radio options are not visible (even though it's inside a git repo)
-    await expect(page.getByText('Use current state')).not.toBeVisible()
-    await expect(page.getByText('Create new worktree', { exact: true })).not.toBeVisible()
+    // Set working directory to a subdirectory of the git repo, after the repository root.
+    // The options stay hidden even though the directory is inside a git repo.
+    await openNewWorkspaceDialogAt(page, adminToken, repoDir)
+    await expectGitOptionsHideOnlyAfterTheProbe(page, subDir)
 
     await page.getByRole('button', { name: 'Cancel' }).click()
   })
@@ -84,13 +71,7 @@ test.describe('Worktree Detection', () => {
     const { adminToken, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'test-repo-ws')
 
-    await loginViaToken(page, adminToken)
-    await page.goto('/')
-    await waitForAppPageReady(page)
-
-    await openNewWorkspaceDialog(page)
-    await waitForWorker(page)
-    await setWorkingDir(page, repoDir)
+    await openNewWorkspaceDialogAt(page, adminToken, repoDir)
 
     // All five radio options should appear
     await expect(page.getByText('Use current state')).toBeVisible()
@@ -104,14 +85,14 @@ test.describe('Worktree Detection', () => {
     await expect(page.getByText('Worktree path:')).not.toBeVisible()
 
     // Select "Create new branch" — sub-controls should appear (branch name + base, no worktree path)
-    await page.getByText('Create new branch', { exact: true }).click()
+    await chooseGitMode(page, 'Create new branch')
     const dialog = page.getByRole('dialog')
     await expect(dialog.getByText('Branch Name')).toBeVisible()
     await expect(dialog.getByText('Base Branch')).toBeVisible()
     await expect(page.getByText('Worktree path:')).not.toBeVisible()
 
     // Select "Create new worktree" — sub-controls should appear
-    await page.getByText('Create new worktree', { exact: true }).click()
+    await chooseGitMode(page, 'Create new worktree')
     await expect(dialog.getByText('Branch Name')).toBeVisible()
     await expect(page.getByText('Worktree path:')).toBeVisible()
 
@@ -120,16 +101,11 @@ test.describe('Worktree Detection', () => {
 
   test('git mode radio options appear in new agent dialog for git repo', async ({
     page,
+    authenticatedWorkspace,
     leapmuxServer,
   }) => {
-    const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
-    const repoDir = createGitRepo(dataDir, 'test-repo-agent')
-
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Agent WT Dialog Test')
-    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
-
-    await loginViaToken(page, adminToken)
-    await openWorkspace(page, workspaceId)
+    void authenticatedWorkspace
+    const repoDir = createGitRepo(leapmuxServer.dataDir, 'test-repo-agent')
 
     await openNewAgentDialog(page)
     await waitForWorker(page)
@@ -145,22 +121,13 @@ test.describe('Worktree Detection', () => {
 
   test('git mode radio options appear in new terminal dialog for git repo', async ({
     page,
+    authenticatedWorkspace,
     leapmuxServer,
   }) => {
-    const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
-    const repoDir = createGitRepo(dataDir, 'test-repo-terminal')
+    void authenticatedWorkspace
+    const repoDir = createGitRepo(leapmuxServer.dataDir, 'test-repo-terminal')
 
-    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Terminal WT Dialog Test')
-    await openAgentViaAPI(hubUrl, adminToken, workerId, workspaceId, frontendDir)
-
-    await loginViaToken(page, adminToken)
-    await openWorkspace(page, workspaceId)
-
-    const addMenu = page.locator('[data-testid="tab-more-menu"]').first()
-    await addMenu.click()
-    await page.getByRole('menuitem', { name: 'New terminal...' }).click()
-
-    await expect(page.getByRole('heading', { name: 'New Terminal' })).toBeVisible()
+    await openNewTerminalDialog(page)
 
     await waitForWorker(page)
 
@@ -179,25 +146,13 @@ test.describe('Worktree Detection', () => {
   }) => {
     const { adminToken, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'test-repo-wt-root')
-    const { realpathSync } = await import('node:fs')
-    const { execSync } = await import('node:child_process')
-    const { existsSync } = await import('node:fs')
-    const realDataDir = realpathSync(dataDir)
 
     // Create a worktree manually
-    const worktreeDir = join(realDataDir, 'test-repo-wt-root-wt')
-    execSync(`git worktree add ${join(dataDir, 'test-repo-wt-root-wt')} -b wt-root-branch`, { cwd: repoDir })
+    const worktreeDir = addWorktree(repoDir, dataDir, 'test-repo-wt-root-wt', 'wt-root-branch')
     expect(existsSync(worktreeDir)).toBe(true)
 
-    await loginViaToken(page, adminToken)
-    await page.goto('/')
-    await waitForAppPageReady(page)
-
-    await openNewWorkspaceDialog(page)
-    await waitForWorker(page)
-
     // Set working directory to the worktree root
-    await setWorkingDir(page, worktreeDir)
+    await openNewWorkspaceDialogAt(page, adminToken, worktreeDir)
 
     // Git mode radio options should appear for an existing worktree root
     await expect(page.getByText('Use current state')).toBeVisible()
@@ -217,13 +172,11 @@ test.describe('Worktree Detection', () => {
     const { hubUrl, adminToken, workerId, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'test-repo-row-icons')
 
-    const branchWs = await createWorkspaceViaAPI(hubUrl, adminToken, 'Main Repo WS')
-    await openAgentViaAPI(hubUrl, adminToken, workerId, branchWs, repoDir)
+    const { workspaceId: branchWs } = await showWorkspaceWithAgents(page, leapmuxServer, 'Main Repo WS', { workingDir: repoDir })
 
-    await loginViaToken(page, adminToken)
-    await openWorkspace(page, branchWs)
-
-    const branchRow = branchGroupRow(page)
+    // Each branch row is read inside its own workspace's subtree, because both
+    // workspaces stay expanded after the switch below.
+    const branchRow = branchGroupRow(workspaceChildren(page, branchWs))
     await expect(branchRow.getByTestId('branch-icon')).toBeVisible()
     await expect(branchRow.getByTestId('worktree-icon')).toHaveCount(0)
 
@@ -237,7 +190,7 @@ test.describe('Worktree Detection', () => {
     await expect(branchTip.getByTestId('working-tree-directory')).toContainText('test-repo-row-icons')
 
     // Now the same repo through a linked worktree.
-    const worktreeWs = await createWorkspaceWithWorktreeViaAPI(
+    const { workspaceId: worktreeWs } = await createWorkspaceWithWorktreeViaAPI(
       hubUrl,
       adminToken,
       workerId,
@@ -247,7 +200,7 @@ test.describe('Worktree Detection', () => {
     )
     await openWorkspace(page, worktreeWs)
 
-    const worktreeRow = branchGroupRow(page)
+    const worktreeRow = branchGroupRow(workspaceChildren(page, worktreeWs))
     await expect(worktreeRow.getByTestId('worktree-icon')).toBeVisible()
     await expect(worktreeRow.getByTestId('branch-icon')).toHaveCount(0)
 
@@ -275,23 +228,14 @@ test.describe('Worktree Detection', () => {
   }) => {
     const { adminToken, dataDir } = leapmuxServer
     const repoDir = createGitRepo(dataDir, 'test-repo-dirty-warn')
-    const { writeFileSync } = await import('node:fs')
 
     // Make the repo dirty
     writeFileSync(join(repoDir, 'dirty-file.txt'), 'uncommitted\n')
 
-    await loginViaToken(page, adminToken)
-    await page.goto('/')
-    await waitForAppPageReady(page)
-
-    await openNewWorkspaceDialog(page)
-    await waitForWorker(page)
-
-    await setWorkingDir(page, repoDir)
+    await openNewWorkspaceDialogAt(page, adminToken, repoDir)
 
     // Wait for git options to load, then select "Create new worktree"
-    await expect(page.getByText('Create new worktree', { exact: true })).toBeVisible()
-    await page.getByText('Create new worktree', { exact: true }).click()
+    await chooseGitMode(page, 'Create new worktree')
 
     // Warning about uncommitted changes should be visible
     await expect(page.getByText('uncommitted changes that will not be transferred')).toBeVisible()

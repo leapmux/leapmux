@@ -3,7 +3,7 @@
 // `~` mapping for an importer outside `include` -- see that file's own comment.
 // This module is not a `.test.ts`, so `~/components/chat/settingsGroups` fails
 // to resolve here although a sibling spec may use it.
-import { OPTION_ID_EFFORT } from '../../src/components/chat/settingsGroups'
+import { OPTION_ID_EFFORT, OPTION_ID_MODEL } from '../../src/components/chat/settingsGroups'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { MOCK_MODELS, MOCK_PROVIDER_IDS } from './helpers/mockAgentEnvironment'
 
@@ -17,11 +17,14 @@ export interface AgentE2ESettings {
 /**
  * Concrete settings for every end-to-end agent fixture.
  *
- * EVERY provider reaches the mock model endpoint. Nine take a model out of
- * `MOCK_MODELS`, which the isolated agent configuration writes. Cursor takes
- * `auto`, because its model does not come from a local runtime at all: the CLI
- * asks its own backend for a catalogue, and `helpers/cursorSurface.ts` answers
- * that call with `CURSOR_MOCK_MODELS`, whose default variant answers to `auto`.
+ * EVERY provider reaches the mock model endpoint. Every provider but Cursor and
+ * Kimi Code takes a model out of `MOCK_MODELS`, which the isolated agent
+ * configuration writes. Kimi Code takes an alias out of `KIMI_MOCK_MODELS`,
+ * because it addresses a model by the key of its configured model table rather
+ * than by the model identifier. Cursor takes `auto`, because its model does not
+ * come from a local runtime at all: the CLI asks its own backend for a
+ * catalogue, and `helpers/cursorSurface.ts` answers that call with
+ * `CURSOR_MOCK_MODELS`, whose default variant answers to `auto`.
  *
  * Keep this catalog explicit so an account default cannot change what a test
  * observes. `satisfies` makes a new provider a typecheck failure here rather
@@ -31,15 +34,12 @@ export const AGENT_E2E_SETTINGS = {
   [AgentProvider.CLAUDE_CODE]: { model: MOCK_MODELS.anthropic, effort: 'medium' },
   [AgentProvider.CODEX]: { model: MOCK_MODELS.openai, effort: 'medium' },
   [AgentProvider.GITHUB_COPILOT]: { model: MOCK_MODELS.openai, effort: 'medium' },
-  // `auto` is the alias of the mock catalogue's default variant, and the one
-  // LeapMux normalizes to. See the note above.
   [AgentProvider.CURSOR]: { model: 'auto' },
-  [AgentProvider.GOOSE]: { model: MOCK_MODELS.zai, effort: 'high' },
-  [AgentProvider.KILO]: { model: `${MOCK_PROVIDER_IDS.openCode}/${MOCK_MODELS.zai}`, effort: 'high' },
-  [AgentProvider.OPENCODE]: { model: `${MOCK_PROVIDER_IDS.openCode}/${MOCK_MODELS.zai}`, effort: 'high' },
+  [AgentProvider.GOOSE]: { model: MOCK_MODELS.goose },
   [AgentProvider.PI]: { model: MOCK_MODELS.pi, effort: 'high' },
   [AgentProvider.REASONIX]: { model: MOCK_MODELS.deepseek },
-  // ZCode requires the provider-qualified identifier of its configured model.
+  [AgentProvider.KILO]: { model: `${MOCK_PROVIDER_IDS.openCode}/${MOCK_MODELS.zai}`, effort: 'high' },
+  [AgentProvider.OPENCODE]: { model: `${MOCK_PROVIDER_IDS.openCode}/${MOCK_MODELS.zai}`, effort: 'high' },
   [AgentProvider.ZCODE]: { model: `${MOCK_PROVIDER_IDS.zcode}/${MOCK_MODELS.zai}`, effort: 'high' },
 } as const satisfies Record<Exclude<AgentProvider, AgentProvider.UNSPECIFIED>, AgentE2ESettings>
 
@@ -51,19 +51,50 @@ export function agentSettings(provider: AgentProvider): AgentE2ESettings {
   return settings
 }
 
+/** What a test changes in the pinned settings of the agent that it opens. */
+export interface AgentOpenOverrides {
+  /** The model. The default is the pinned model of the provider. */
+  model?: string
+  /**
+   * Option values over the pinned values. A value of the same option ID replaces the pinned one.
+   * A model here throws: give it as `model`, the one place a model comes from.
+   */
+  optionValues?: Record<string, string>
+}
+
+/** The provider, the model, and the option values of one agent open request. */
+export interface AgentOpenOptions {
+  agentProvider: AgentProvider
+  model: string
+  optionValues: Record<string, string>
+}
+
 /**
- * Builds the initial option map for one agent test fixture.
+ * Build the open request of one agent: the pinned settings of the provider, merged with the test's overrides.
+ *
+ * This is the one merge rule of the E2E suite. The model comes only from `overrides.model`, and the pinned model is
+ * the default. The option values start from the pinned effort, and each override replaces the value of its own ID.
+ * A spread of pinned settings followed by a second `optionValues` dropped the pinned effort, and a model given as an
+ * option value lost to the pinned model, because the open request writes the model last. This function makes
+ * both mistakes impossible.
  *
  * The effort travels under the well-known `effort` id whatever the provider's
  * own axis is called: the worker maps it onto that axis at startup (see
  * `applyStartupOptions` and `startupEffortConfigID` in the Go worker).
  */
-export function agentOpenOptions(settings: AgentE2ESettings) {
+export function agentOpenOptions(provider: AgentProvider, overrides: AgentOpenOverrides = {}): AgentOpenOptions {
+  if (overrides.optionValues && Object.hasOwn(overrides.optionValues, OPTION_ID_MODEL))
+    throw new Error('agentOpenOptions: give the model as `model`, not as an option value.')
+  if (overrides.model !== undefined && overrides.model.trim() === '')
+    throw new Error('agentOpenOptions: a model override needs a model ID.')
+  const pinned = agentSettings(provider)
   return {
-    model: settings.model,
-    ...(settings.effort
-      ? { optionValues: { [OPTION_ID_EFFORT]: settings.effort } }
-      : {}),
+    agentProvider: provider,
+    model: overrides.model ?? pinned.model,
+    optionValues: {
+      ...(pinned.effort ? { [OPTION_ID_EFFORT]: pinned.effort } : {}),
+      ...overrides.optionValues,
+    },
   }
 }
 
@@ -71,11 +102,12 @@ export function agentOpenOptions(settings: AgentE2ESettings) {
  * The `LEAPMUX_*_DEFAULT_*` pairs a spawned hub or worker needs, so the catalog
  * states the mapping once instead of at each `spawn` call.
  *
- * Claude Code, Codex and Copilot each read a model and an effort: Copilot's
- * native protocol drives its reasoning axis through the well-known effort id
- * (`session.model.setReasoningEffort`). The other Agent Client Protocol providers
- * register neither key, so their fixtures pin the settings through the open
- * request (`agentOpenOptions`).
+ * The pairs cover Claude Code, Codex and Copilot, the providers of the specs
+ * that spawn their own hub or worker. Copilot's native protocol drives its
+ * reasoning axis through the well-known effort id
+ * (`session.model.setReasoningEffort`). Most other providers register such keys
+ * also, but no spec spawns a process for them: their fixtures pin the settings
+ * through the open request (`agentOpenOptions`).
  *
  * `LEAPMUX_WORKER_NAME` stays at each call site, because it differs by site.
  */

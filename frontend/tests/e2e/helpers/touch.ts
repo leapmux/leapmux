@@ -1,5 +1,7 @@
 import type { Locator, Page } from '@playwright/test'
 import { devices, expect } from '@playwright/test'
+import { settleFrames } from './frames'
+import { uniqueMarker } from './shellArguments'
 
 /**
  * Real touch input for the E2E specs, plus the device metrics that give Blink a coarse pointer.
@@ -134,23 +136,38 @@ export async function touchSwipe(
   }
 }
 
+/** The `click` events that a page received after {@link recordClicks}, oldest first. */
+export interface RecordedClicks {
+  /** The text of the selection at the moment of each click. */
+  selections: () => Promise<string[]>
+}
+
 /**
- * Wait until the input events already dispatched are RENDERED.
+ * Record each `click` that the page receives from now on, with the text of the selection at that moment.
  *
- * CDP acknowledges the dispatch of a pointer event, not its processing on the
- * main thread, so a lift issued straight after the last move can race the
- * dragOver that decides where the drop lands. Two frames is the guarantee: the
- * first callback runs after the main thread consumes the pending work, the
- * second after that work paints.
- *
- * This is what a drag settles on instead of a sleep. A wall-clock wait elapses
- * on schedule however far behind the main thread runs, which makes it exactly
- * wrong under load -- the condition it exists to cover.
+ * A tap synthesizes `mousedown`, `mouseup` and `click`, in that order, for the pages that listen only for a mouse.
+ * So a recorded click is the end of the mouse events of one tap, and its selection text states what the selection
+ * held after the default action of that tap's `mousedown`. A wait on it replaces a wait sized in milliseconds.
+ * The listener runs in the capture phase on `window`, so no handler of the app can stop it first. A navigation ends
+ * the record.
  */
-export async function settleFrames(page: Page): Promise<void> {
-  await page.evaluate(() => new Promise<void>(resolve =>
-    requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
-  ))
+export async function recordClicks(page: Pick<Page, 'evaluate'>): Promise<RecordedClicks> {
+  const key = `__e2eRecordedClicks_${uniqueMarker()}`
+  await page.evaluate((name) => {
+    const record: string[] = []
+    Object.defineProperty(window, name, { value: record, configurable: true })
+    window.addEventListener('click', () => {
+      record.push(window.getSelection()?.toString() ?? '')
+    }, { capture: true })
+  }, key)
+  return {
+    selections: () => page.evaluate((name) => {
+      const record: unknown = Reflect.get(window, name)
+      if (!Array.isArray(record))
+        throw new Error('The click record of this page is gone: a navigation replaced the page after recordClicks.')
+      return record.map(String)
+    }, key),
+  }
 }
 
 /**

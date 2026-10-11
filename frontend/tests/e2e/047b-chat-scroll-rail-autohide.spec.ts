@@ -1,7 +1,9 @@
-import type { ModelScript } from './helpers/modelScriptFixture'
-import { expect, test } from './fixtures'
+import type { Locator } from '@playwright/test'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
+import { RAIL, RAIL_FILLER_MESSAGE, seedOverflowingConversation, THUMB } from './helpers/chatScrollRail'
 import { COARSE_POINTER_METRICS } from './helpers/touch'
-import { readAttached, sendMessage, userBubbles, waitForAgentIdle } from './helpers/ui'
+import { CHAT_SCROLL_CONTAINER, chatScrollContainer, readAttached, sendMessage, waitForAgentIdle } from './helpers/ui'
 
 /**
  * The scroll rail's floating auto-hide, which is E2E-only by construction. Everything that
@@ -14,47 +16,37 @@ import { readAttached, sendMessage, userBubbles, waitForAgentIdle } from './help
  * The rail's geometry, dots, drag and seek are covered by 047; nothing here re-asserts them.
  */
 
-/**
- * Byte-for-byte 047's filler, deliberately. These specs drive a REAL agent, so the prompt
- * is the test's runtime: a 2.5x longer filler pushed the turn past waitForAgentIdle's
- * 120s bound under parallel load. Keep this string in step with 047's; make the VIEWPORT
- * shorter, never the message longer, when a test needs more overflow.
- *
+/*
  * One message per test, not 047's two: 047 needs two jump dots and nothing here does, and
  * an agent turn is the most expensive thing in the suite.
  */
-const LONG_MESSAGE = `Please just reply with "ok". Ignore this filler: ${'the quick brown fox jumps over the lazy dog. '.repeat(12)}`
 
 /**
- * A wait that comfortably outlasts the rail's idle window (RAIL_VISIBLE_IDLE_MS in
- * ~/components/chat/ChatView, 1200ms). Not imported: pulling a component into the e2e type
+ * A run of the page clock that comfortably outlasts the rail's idle window (RAIL_VISIBLE_IDLE_MS
+ * in ~/components/chat/ChatView, 1200ms). Not imported: pulling a component into the e2e type
  * program drags `import.meta.env` with it, which that tsconfig does not model. Only a LOWER
  * bound is needed here, so a generous local value cannot make the test wrong -- if the window
  * ever grew past this, the test would stop proving anything rather than start failing.
+ *
+ * The test runs the page's fake clock instead of waiting: `clock.runFor` fires every timer that
+ * falls due inside the run, the idle timer included, before it returns.
  */
 const PAST_RAIL_IDLE_MS = 4000
 
-const RAIL = '[data-testid="chat-scroll-rail"]'
-const SCROLLER = '[data-chat-scroll-container="true"]'
-
 /**
- * Send one tall message so the conversation overflows and the rail takes over scrolling.
- * Asserts the rail is present before returning: without overflow the rail correctly hides
- * itself, and every test here would then fail on a confusing missing-element error rather
- * than on "the viewport was too tall for one message".
+ * The fade state of the rail: its opacity, and how many transitions run on it. The idle class
+ * fades the rail through a CSS transition that starts at once, so a rail that the idle timer just
+ * faded still reads an opacity near 1 for a moment, but it already runs a transition.
  */
-async function seedOverflowingConversation(page: import('@playwright/test').Page, script: ModelScript) {
-  const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-  await expect(editor).toBeVisible()
-  // Let the agent finish starting so the send takes the fast path (see 010).
-  await expect(page.getByText(/^Starting /)).not.toBeVisible()
-  await script.queue({ text: 'ok' })
-  await sendMessage(page, script.prompt(LONG_MESSAGE))
-  await script.waitForSteps()
-  await waitForAgentIdle(page)
-  await expect(userBubbles(page)).toHaveCount(1)
-  await expect(page.locator(RAIL)).toBeVisible()
+async function railFade(rail: Locator): Promise<{ opacity: string, transitions: number }> {
+  return rail.evaluate(element => ({
+    opacity: getComputedStyle(element).opacity,
+    transitions: element.getAnimations().length,
+  }))
 }
+
+/** A rail that is lit and runs no fade. */
+const LIT_AND_SETTLED = { opacity: '1', transitions: 0 } as const
 
 test.describe('chat scroll rail auto-hide', () => {
   test('fades the rail when scrolling stops and brings it back on the next scroll', async ({ page, authenticatedWorkspace, modelScript }) => {
@@ -70,7 +62,7 @@ test.describe('chat scroll rail auto-hide', () => {
     await expect(rail).toHaveCSS('opacity', '0')
 
     // A real user scroll relights it...
-    await page.locator(SCROLLER).hover()
+    await chatScrollContainer(page).hover()
     await page.mouse.wheel(0, -240)
     await expect(rail).toHaveCSS('opacity', '1')
 
@@ -83,6 +75,11 @@ test.describe('chat scroll rail auto-hide', () => {
     // the rail used to fade out from under the reader sitting on it. Only a real browser
     // covers this: it needs the live idle timer, a real hover, and the CSS opacity it drives.
     await page.setViewportSize({ width: 1024, height: 600 })
+    // The fake clock flows with real time until a step below runs it ahead. The reload starts the
+    // app under it, so every timer and every `performance.now()` of the app reads the one clock.
+    // This spec is in ISOLATED_CONTEXT_SPECS, because no API removes the clock from its context.
+    await page.clock.install()
+    await page.reload()
     await seedOverflowingConversation(page, modelScript)
 
     const rail = page.locator(RAIL)
@@ -94,8 +91,9 @@ test.describe('chat scroll rail auto-hide', () => {
     await expect(rail).toHaveCSS('opacity', '1')
 
     // Well past the idle window the cursor has not moved, and the rail is still there.
-    await page.waitForTimeout(PAST_RAIL_IDLE_MS)
-    await expect(rail).toHaveCSS('opacity', '1')
+    await expect.poll(() => railFade(rail), 'the fade-in ends').toEqual(LIT_AND_SETTLED)
+    await page.clock.runFor(PAST_RAIL_IDLE_MS)
+    expect(await railFade(rail), 'the idle window passed, and the rail under the cursor did not fade').toEqual(LIT_AND_SETTLED)
 
     // Leaving hands it back to the window, which fades it.
     await page.mouse.move(railBox!.x - 200, railBox!.y + railBox!.height / 2, { steps: 5 })
@@ -115,7 +113,7 @@ test.describe('chat scroll rail auto-hide', () => {
     // Start a turn WITHOUT touching the scroller. sendMessage types into the editor, a
     // sibling of the scroll container, so its keystrokes never reach the list's handlers.
     await modelScript.queue({ text: 'ok' })
-    await sendMessage(page, modelScript.prompt(LONG_MESSAGE))
+    await sendMessage(page, modelScript.prompt(RAIL_FILLER_MESSAGE))
 
     // Sample every frame from inside the page: a round trip per sample could straddle the
     // window and miss a flash. `toHaveCSS('opacity', '0')` cannot express this at all --
@@ -139,7 +137,7 @@ test.describe('chat scroll rail auto-hide', () => {
         maxOpacity = Math.max(maxOpacity, Number.parseFloat(getComputedStyle(rail).opacity))
       }
       return { autoScrolls, maxOpacity }
-    }, { railSel: RAIL, scrollerSel: SCROLLER })
+    }, { railSel: RAIL, scrollerSel: CHAT_SCROLL_CONTAINER })
 
     // The auto-scroll really ran, so a maxOpacity of 0 is evidence and not a vacuous pass.
     expect(observed.autoScrolls).toBeGreaterThan(0)
@@ -151,7 +149,7 @@ test.describe('chat scroll rail auto-hide', () => {
   test('keeps the message list gutters uniform above the phone breakpoint', async ({ page, authenticatedWorkspace }) => {
     // Only the PHONE breakpoint shrinks the gutters (reclaiming text width on a narrow
     // viewport). Above it both sides match, so a desktop column stays balanced.
-    const scroller = page.locator(SCROLLER)
+    const scroller = chatScrollContainer(page)
     await expect(scroller).toBeVisible()
 
     await page.setViewportSize({ width: 900, height: 600 })
@@ -174,12 +172,12 @@ test.describe('chat scroll rail auto-hide', () => {
     await page.setViewportSize({ width: 1024, height: 600 })
     await seedOverflowingConversation(page, modelScript)
 
-    const thumb = page.locator('[data-testid="chat-scroll-rail-thumb"]')
+    const thumb = page.locator(THUMB)
     await expect(thumb).toBeVisible()
 
     const thumbBox = await thumb.boundingBox()
     const railBox = await page.locator(RAIL).boundingBox()
-    const gutter = await page.locator(SCROLLER).evaluate((el) => {
+    const gutter = await chatScrollContainer(page).evaluate((el) => {
       const rect = el.getBoundingClientRect()
       const paddingRight = Number.parseFloat(globalThis.getComputedStyle(el).paddingRight)
       // Where the message column stops, and how wide the strip beyond it is.
@@ -231,7 +229,7 @@ test.describe('chat scroll rail auto-hide', () => {
     // Read through readAttached: this toolbar is inside a chat row, and a row that
     // remounts between the resolve and the read reports no computed style at all.
     const toolbarRight = () => readAttached(
-      page.locator(`${SCROLLER} [data-band] [data-testid="message-toolbar"]`).first(),
+      chatScrollContainer(page).locator('[data-band] [data-testid="message-toolbar"]').first(),
       'the row toolbar inset',
       (matches) => {
         const el = matches.find(candidate => candidate.isConnected)
@@ -265,7 +263,7 @@ test.describe('chat scroll rail auto-hide', () => {
     const clickX = railBox!.x + railBox!.width / 2
     const clickY = railBox!.y + railBox!.height - 6
 
-    const scroller = page.locator(SCROLLER)
+    const scroller = chatScrollContainer(page)
     await scroller.evaluate((el: HTMLElement) => {
       el.scrollTop = 0
     })

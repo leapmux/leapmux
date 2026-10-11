@@ -1,18 +1,21 @@
-import { expect, test } from './fixtures'
-import { solveCaptchaViaAPI } from './helpers/altcha'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
 import {
-  authedHeaders,
+  attemptLoginViaAPI,
   clearSmtpViaAPI,
   configureBrokenSmtpViaAPI,
   expirePendingEmailCooldown,
+  hubRefusal,
+  logoutViaAPI,
   readPendingEmailToken,
   signUpViaAPI,
   waitForEmailEnabled,
 } from './helpers/api'
-import { solveCaptchaViaUI } from './helpers/captcha'
 import { withCaptureSmtp } from './helpers/mail'
+import { openPreferencesAs } from './helpers/preferences'
+import { retryUntilPass } from './helpers/retryUntilPass'
 import { hubDataDir } from './helpers/server'
-import { loginViaToken, openAccountSettings, readSessionCookie, signUpViaUI } from './helpers/ui'
+import { readSessionCookie, signUpViaUI, submitLoginForm } from './helpers/ui'
 
 test.describe('Email verification', () => {
   test('signup with SMTP configured routes to verify-email and accepts the code', async ({ page, leapmuxServer }) => {
@@ -21,11 +24,8 @@ test.describe('Email verification', () => {
       await signUpViaUI(page, username, 'password123', 'Verify User', `${username}@test.local`)
       await expect(page).toHaveURL(/\/verify-email/)
 
-      let token = ''
-      await expect.poll(async () => {
-        token = await readPendingEmailToken(hubDataDir(leapmuxServer.dataDir), username)
-        return token
-      }).not.toBe('')
+      // The read throws while the Hub stores no code yet, so the wait retries it.
+      const token = await retryUntilPass(() => readPendingEmailToken(hubDataDir(leapmuxServer.dataDir), username))
       await page.getByTestId('verify-email-code-input').fill(token)
       await page.getByTestId('verify-email-submit').click()
       await expect(page).toHaveURL(/\/$/)
@@ -64,18 +64,11 @@ test.describe('Email verification', () => {
       await expect(page).toHaveURL(/\/verify-email/)
 
       const cookie = await readSessionCookie(page, 'sign-up')
-      await fetch(`${leapmuxServer.hubUrl}/leapmux.v1.AuthService/Logout`, {
-        method: 'POST',
-        headers: authedHeaders(cookie),
-        body: '{}',
-      })
+      await logoutViaAPI(leapmuxServer.hubUrl, cookie)
       await page.goto('/login')
       await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible()
 
-      await page.getByLabel('Username').fill(username)
-      await page.getByLabel('Password').fill('password123')
-      await solveCaptchaViaUI(page)
-      await page.getByRole('button', { name: 'Sign in' }).click()
+      await submitLoginForm(page, username, 'password123')
       await expect(page).toHaveURL(/\/verify-email/)
     })
   })
@@ -85,31 +78,13 @@ test.describe('Email verification', () => {
     await waitForEmailEnabled(leapmuxServer.hubUrl)
 
     const username = `failclosed-${Date.now()}`
-    await page.goto('/signup')
-    await page.getByLabel('Username').fill(username)
-    await page.getByLabel('Display Name').fill('Fail Closed')
-    await page.getByLabel('Email').fill(`${username}@test.local`)
-    await page.getByLabel('New Password').fill('password123')
-    await page.getByLabel('Confirm Password').fill('password123')
-    await solveCaptchaViaUI(page)
-    await page.getByRole('button', { name: 'Sign up' }).click()
+    await signUpViaUI(page, username, 'password123', 'Fail Closed', `${username}@test.local`)
     await expect(page.getByText(/sign-up failed|unavailable|failed/i)).toBeVisible()
     await expect(page).toHaveURL(/\/signup/)
 
-    const captcha = await solveCaptchaViaAPI(leapmuxServer.hubUrl)
-    const loginResp = await fetch(`${leapmuxServer.hubUrl}/leapmux.v1.AuthService/Login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        username,
-        password: 'password123',
-        captchaPayload: captcha.captchaPayload,
-        honeypot: captcha.honeypot,
-      }),
-    })
-    expect(loginResp.ok).toBe(false)
-    const loginBody = await loginResp.json() as { code?: string }
-    expect(String(loginBody.code ?? '')).toMatch(/unauthenticated/i)
+    // A signup that failed closed must leave no account that its password signs in to.
+    const loginRefusal = await hubRefusal(await attemptLoginViaAPI(leapmuxServer.hubUrl, username, 'password123'))
+    expect(loginRefusal.code).toBe('unauthenticated')
   })
 
   test('enabling SMTP later restricts previously unverified users', async ({ page, leapmuxServer }) => {
@@ -126,10 +101,7 @@ test.describe('Email verification', () => {
 
     await withCaptureSmtp(leapmuxServer, async () => {
       await page.goto('/login')
-      await page.getByLabel('Username').fill(username)
-      await page.getByLabel('Password').fill('password123')
-      await solveCaptchaViaUI(page)
-      await page.getByRole('button', { name: 'Sign in' }).click()
+      await submitLoginForm(page, username, 'password123')
       await expect(page).toHaveURL(/\/verify-email/)
     })
   })
@@ -158,9 +130,7 @@ test.describe('the account panel on an unverified address', () => {
     )
 
     await withCaptureSmtp(leapmuxServer, async () => {
-      await loginViaToken(page, cookie)
-      await page.goto('/')
-      const prefs = await openAccountSettings(page)
+      const prefs = await openPreferencesAs(page, cookie, 'account')
 
       await expect(prefs.getByRole('link', { name: 'Enter the code' })).toBeVisible()
       await expect(prefs.getByRole('button', { name: 'Resend code' })).toBeVisible()

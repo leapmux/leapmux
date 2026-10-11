@@ -1,31 +1,22 @@
 /**
  * Goose-specific e2e test fixtures.
  */
-import type { ACPFixtureConfig } from './acp-fixture-factory'
-import type { WorkspaceFixture } from './helpers/workspace'
-import { AgentProvider, authenticateACPWorkspace, createACPWorkspace, detectACPSkipReason } from './acp-fixture-factory'
-import { test as base, expect } from './fixtures'
+import type { AgentWorkspace } from './helpers/workspace'
+import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
+import { test as base } from './fixtures'
+import { GOOSE_AGENT, nativeContext } from './goose/scenarios'
+import { missingBinaryReason } from './helpers/binaryOnPath'
+import { authenticatedAgentWorkspace } from './helpers/workspace'
+import { cliSkipFixture } from './provider-fixture-factory'
 
-const gooseConfig: ACPFixtureConfig = {
-  agentProvider: AgentProvider.GOOSE,
-  cliBinary: 'goose',
-  skipMessage: 'Goose E2E requires a goose CLI on PATH',
-  workspacePrefix: 'goose-e2e',
-}
+export const GOOSE_E2E_SKIP_REASON: string | null = missingBinaryReason('goose', 'Goose E2E requires a goose CLI on PATH')
 
-export const GOOSE_E2E_SKIP_REASON = detectACPSkipReason(gooseConfig)
-
-export const gooseTest = base.extend<{
-  gooseWorkspace: WorkspaceFixture
-  authenticatedGooseWorkspace: WorkspaceFixture
+export const gooseTest = base.extend<CliSkipFixture & NativeFixture & {
+  authenticatedGooseWorkspace: AgentWorkspace
 }>({
-  gooseWorkspace: async ({ leapmuxServer }, use) => {
-    await createACPWorkspace(leapmuxServer, gooseConfig, use)
-  },
-
-  authenticatedGooseWorkspace: async ({ page, gooseWorkspace, leapmuxServer }, use) => {
-    await authenticateACPWorkspace(page, gooseWorkspace, leapmuxServer.adminToken, use)
+  cliSkip: cliSkipFixture(GOOSE_E2E_SKIP_REASON),
+  authenticatedGooseWorkspace: authenticatedAgentWorkspace(GOOSE_AGENT),
+  native: async ({ page, modelScript, leapmuxServer, authenticatedGooseWorkspace }, use) => {
+    await use(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedGooseWorkspace.workspaceId }))
   },
 })
-
-export { expect }

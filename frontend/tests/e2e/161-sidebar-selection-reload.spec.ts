@@ -1,5 +1,6 @@
 import type { Locator, Page } from '@playwright/test'
-import { expect, test } from './fixtures'
+import { expect } from '@playwright/test'
+import { test } from './fixtures'
 import { openTerminalViaUI, sidebarLeaves, waitForWorkspaceReady } from './helpers/ui'
 
 /**

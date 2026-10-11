@@ -1,58 +1,246 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { delimiter, join, resolve } from 'node:path'
+import process from 'node:process'
+import { requireLoopbackHttpURL } from './agentEnvironmentInputs'
+import { agentSearchPathEnv } from './binaryOnPath'
+import { createClaudeEnvironment } from './claudeEnvironment'
+import { createCodexEnvironment } from './codexEnvironment'
+import { createCopilotEnvironment } from './copilotEnvironment'
+import { createCursorEnvironment } from './cursorEnvironment'
+import { createGooseEnvironment } from './gooseEnvironment'
+import { writeMcpEchoServer } from './mcpEchoServer'
+import { createOpenCodeEnvironment } from './openCodeEnvironment'
+import { createPiEnvironment, piAgentDirectory } from './piEnvironment'
+import { createReasonixEnvironment } from './reasonixEnvironment'
+import { quotePosixShellArgument } from './shellArguments'
+import { createZcodeEnvironment } from './zcodeEnvironment'
 
-const MODEL_KEY = 'leapmux-e2e-model-key'
-const COPILOT_TOKEN = 'github_pat_leapmuxe2e000000000000000000000000000000000000000000'
+/*
+ * The isolated agent environment of an E2E run: the catalog of mock identities that
+ * the fixtures and the specs pin, and `createMockAgentEnvironment`, which writes each
+ * provider's private configuration through the provider's own module and returns the
+ * process environment of every agent.
+ */
+
+/** The default Command Code model, which offers the low and high efforts. */
+export const COMMAND_CODE_MODEL_ID = 'leapmux-e2e/command-code-e2e'
+/** The second Command Code model, which declares no reasoning and so offers no effort. */
+export const COMMAND_CODE_ALT_MODEL_ID = 'leapmux-e2e/command-code-e2e-alt'
+/** The third Command Code model, which offers the low, medium, and high efforts. */
+export const COMMAND_CODE_REASONING_MODEL_ID = 'leapmux-e2e/command-code-e2e-reasoning'
+export const GEMINI_MODEL_ID = 'gemini-2.5-pro'
+
+export const MODEL_KEY = 'leapmux-e2e-model-key'
+export const MOCK_IDENTITY_TOKEN = 'leapmux-e2e-token'
+export const MOCK_SESSION_TOKEN = 'leapmux-e2e-session-token'
+export const MOCK_COPILOT_GITHUB_TOKEN = 'github_pat_leapmuxe2e000000000000000000000000000000000000000000'
 
 /**
- * The model identifiers the isolated agent configuration pins.
+ * Keep one catalog of model identifiers for isolated provider configuration and mock responses.
  *
- * This is the one source for them. The provider configuration below writes
- * them, the pinned settings catalog selects them, and the mock server
- * advertises them, so a model the agent asks for is always a model the
- * endpoint lists.
+ * The configuration writers and pinned settings use these identifiers.
+ * The mock advertises the same identifiers, so each selected model exists in its catalog.
  */
 export const MOCK_MODELS = {
   /** Claude Code, over the Anthropic Messages protocol. */
   anthropic: 'sonnet',
   /** Codex and GitHub Copilot, over the OpenAI protocols. */
   openai: 'gpt-5.6-luna',
-  /** Goose, Kilo, OpenCode, and ZCode. */
+  /** Kilo, MiMo Code, OpenCode, and ZCode. */
   zai: 'glm-5.3-flash',
-  /** Pi. */
+  /** Goose sends images and tool calls through this Chat Completions model. */
+  goose: 'gpt-4o',
+  /** Goose and Copilot use this reasoning model in focused tests. */
+  gooseReasoning: 'gpt-5.4',
+  /** Pi, and the second model of MiMo Code, which a settings spec switches to. */
   pi: 'glm-5.3',
-  /** Reasonix. */
+  /** Oh My Pi. */
+  ohMyPi: 'glm-5.3',
+  /** Reasonix and Codewhale. */
   deepseek: 'deepseek-flash',
+  /** Grok Build uses the same model identifier in config.toml, LeapMux state, and native model requests. */
+  grok: 'grok-e2e',
+  /**
+   * Qwen Code. Qwen states a model to its client as `<id>(<auth type>)`, so a
+   * fixture that pins one uses `QWEN_MODEL_ID`.
+   */
+  qwen: 'qwen-e2e',
+  /**
+   * Cline. Its DeepSeek provider sends the configured model id unchanged.
+   * The worker adds this custom id to the native provider's catalog.
+   */
+  cline: 'cline-e2e',
+  /** Factory Droid. Its BYOK custom-model entry sends this id unchanged. */
+  droid: 'droid-e2e',
+  /** Factory Droid's alternate BYOK model for a native settings check. */
+  droidAlt: 'droid-e2e-alt',
+  /** Letta Code. The model handle is `provider/model`. */
+  letta: 'letta-e2e',
+  /** CodeBuddy Code. */
+  codebuddy: 'codebuddy-e2e',
+  /** Qoder CLI. */
+  qoder: 'qoder-e2e',
+  /** Junie. */
+  junie: 'junie-e2e',
+  /** Dirac. */
+  dirac: 'dirac-e2e',
+  /** Fast Agent. */
+  fastagent: 'fastagent-e2e',
+  /** Muse Code uses the native Responses provider. */
+  muse: 'muse-spark-1.2',
+  /** Muse Code's second bundled Spark route, which a settings spec switches to. */
+  museAlt: 'muse-spark-1.3',
 } as const
 
 /**
- * The provider identifiers that qualify a model id.
+ * Keep the provider identifiers that qualify native model IDs.
  *
- * OpenCode, Kilo and ZCode each address a model as `<provider>/<model>`, so a
- * fixture that pins a model needs the same identifier this file registers.
+ * OpenCode, Kilo, MiMo Code, and ZCode address each model as <provider>/<model>.
+ * The selected identifier must match the provider registration of each provider module.
  */
 export const MOCK_PROVIDER_IDS = {
   /**
-   * The OpenCode and Kilo provider block below.
+   * Identify the isolated provider for OpenCode, Kilo, and MiMo Code.
    *
-   * The identifier must belong to no public catalog. OpenCode and Kilo merge a
-   * configured provider onto the built-in entry of the same id, and Kilo's
-   * gateway then keeps its own base URL: the agent answered from the real
-   * endpoint and the mock saw no request at all.
+   * The identifier must not exist in a public catalog.
+   * OpenCode and Kilo merge configuration into a built-in entry with the same ID.
+   * Kilo then retains its gateway URL and sends the model request to the real service.
    */
   openCode: 'leapmux-e2e',
-  /** The ZCode personal provider block below. */
+  /** The ZCode personal provider block of ./zcodeEnvironment. */
   zcode: 'personal:leapmux-e2e',
+  /** The Kimi Code provider table of ./kimiEnvironment, which also qualifies its model aliases. */
+  kimi: 'leapmux-e2e',
+  /** The Oh My Pi `models.yml` provider of ./ohMyPiEnvironment, which qualifies its model as `<provider>/<id>`. */
+  ohMyPi: 'leapmux-e2e',
 } as const
 
-/** Pi addresses a model through a named provider in its own `models.json`. */
-const PI_PROVIDER_ID = 'zai'
+/**
+ * The model aliases Kimi Code's configuration declares.
+ *
+ * Kimi addresses a model by its ALIAS, the key of a `[models."..."]` table, and
+ * sends the table's `model` to the endpoint. Each alias maps onto an identifier
+ * that `MOCK_MODELS` already holds. A new identifier would enter the catalog
+ * route that the mock serves to every provider, and Copilot reads that route.
+ *
+ * Three aliases, so a test can switch the model:
+ * - `thinking` thinks and takes an effort. It is the default model.
+ * - `plain` does neither, so a switch to it also changes the effort axis.
+ * - `alternateThinking` thinks and takes the same effort ladder as `thinking`, but starts at
+ *   another default level, so a switch that keeps a level differs from a switch
+ *   that takes the default.
+ */
+export const KIMI_MOCK_MODELS = {
+  thinking: `${MOCK_PROVIDER_IDS.kimi}/${MOCK_MODELS.zai}`,
+  plain: `${MOCK_PROVIDER_IDS.kimi}/${MOCK_MODELS.pi}`,
+  alternateThinking: `${MOCK_PROVIDER_IDS.kimi}/${MOCK_MODELS.deepseek}`,
+} as const
 
-/** Reasonix names its provider block, and `default_model` qualifies with it. */
-const REASONIX_PROVIDER_ID = 'deepseek'
+/** The private omp profile. See `ohMyPiAgentDirectory` for why omp needs one. */
+export const OH_MY_PI_PROFILE = 'leapmux-e2e'
+
+/**
+ * The hosts that every client reaches directly, past the refusing proxy: the
+ * loopback addresses where the mock listens.
+ */
+const LOOPBACK_NO_PROXY = '127.0.0.1,localhost,::1'
+
+/**
+ * The model of the OpenCode family that does not reason, so it declares no reasoning variant and offers no effort.
+ * OpenCode, Kilo, and MiMo Code each list it beside the two reasoning models.
+ */
+export const OPENCODE_FAMILY_PLAIN_MODEL_WIRE_ID = 'glm-5.3-plain'
+export const OPENCODE_FAMILY_PLAIN_MODEL_ID = `${MOCK_PROVIDER_IDS.openCode}/${OPENCODE_FAMILY_PLAIN_MODEL_WIRE_ID}`
+
+/** The second Reasonix provider, which a spec switches to. */
+export const REASONIX_ALT_PROVIDER_ID = 'leapmux-e2e-alt'
+export const REASONIX_ALT_MODEL_ID = `${REASONIX_ALT_PROVIDER_ID}/${MOCK_MODELS.pi}`
+/** The third Reasonix provider, which states no reasoning protocol and no effort. */
+export const REASONIX_PLAIN_PROVIDER_ID = 'leapmux-e2e-plain'
+export const REASONIX_PLAIN_MODEL_ID = `${REASONIX_PLAIN_PROVIDER_ID}/${MOCK_MODELS.zai}`
+
+/**
+ * A second model of Dirac's OpenAI provider, so a spec can switch models. Dirac 0.5.17 lists it beside the configured
+ * model; the mock environment configures no such model.
+ */
+export const DIRAC_ALT_MODEL_ID = 'gpt-6-astra'
+
+/**
+ * The model that Codex runs for a thread that states no model, which is what the Default model entry resolves to. It
+ * differs from the pinned model of the Codex fixture (`MOCK_MODELS.openai`), so a resolution to it cannot pass for a
+ * kept model.
+ */
+export const CODEX_NATIVE_DEFAULT_MODEL = 'gpt-5.6-terra'
+
+/** The built-in Codewhale model whose route accepts image input. */
+export const CODEWHALE_VISION_MODEL_ID = 'deepseek-v4-flash-vision-exp'
+/** The model id Qwen reports for the model its configuration pins. */
+const QWEN_AUTH_TYPE = 'api_key'
+export const QWEN_MODEL_ID = `${MOCK_MODELS.qwen}(${QWEN_AUTH_TYPE})`
+export const QWEN_ALT_MODEL_WIRE_ID = 'qwen-e2e-alt'
+export const QWEN_ALT_MODEL_ID = `${QWEN_ALT_MODEL_WIRE_ID}(${QWEN_AUTH_TYPE})`
+/** The Qwen model that states no reasoning capability, so it offers no effort. */
+export const QWEN_PLAIN_MODEL_WIRE_ID = 'qwen-e2e-plain'
+export const QWEN_PLAIN_MODEL_ID = `${QWEN_PLAIN_MODEL_WIRE_ID}(${QWEN_AUTH_TYPE})`
+/** The second Grok model, which offers no reasoning effort. */
+export const GROK_ALT_MODEL_ID = 'grok-e2e-alt'
+/** The third Grok model, which offers the effort ladder of the default model and starts at another level. */
+export const GROK_REASONING_MODEL_ID = 'grok-e2e-reasoning'
+/** The Pi model that does not reason, so Pi offers it only Auto and Off. */
+export const PI_PLAIN_MODEL_ID = 'glm-5.3-plain'
+/**
+ * The ZCode model whose reasoning is off. ZCode then offers it only the thought levels Enabled and Disabled, so it lacks
+ * every level of the two GLM models.
+ */
+export const ZCODE_PLAIN_MODEL_WIRE_ID = 'zcode-e2e-plain'
+export const ZCODE_PLAIN_MODEL_ID = `${MOCK_PROVIDER_IDS.zcode}/${ZCODE_PLAIN_MODEL_WIRE_ID}`
+export const OH_MY_PI_ALT_MODEL_WIRE_ID = 'glm-5.3-alt'
+export const OH_MY_PI_ALT_MODEL_ID = `${MOCK_PROVIDER_IDS.ohMyPi}/${OH_MY_PI_ALT_MODEL_WIRE_ID}`
+export const JUNIE_MOCK_MODEL = 'custom:mock-model'
+export const JUNIE_RESPONSES_MODEL = 'custom:mock-responses'
+export const JUNIE_NATIVE_EFFORT_MODEL = 'gpt-5.3-codex'
+export const JUNIE_PROXY_PROVIDER = 'leapmux-e2e-openai'
+export const FAST_AGENT_MOCK_MODEL = 'gpt-4o'
+
+/**
+ * The model id a fixture pins for a provider that addresses a custom entry by
+ * a QUALIFIED handle. CodeBuddy takes `custom-local:<id>`, Qoder
+ * `<provider>/<model>`, and Letta Code `provider/model`. A bare
+ * `MOCK_MODELS` value selects no custom entry for these three.
+ */
+export const CODEBUDDY_MODEL_ID = `custom-local:${MOCK_MODELS.deepseek}`
+export const CODEBUDDY_ALT_MODEL_WIRE_ID = 'leapmux-e2e-alt'
+export const CODEBUDDY_ALT_MODEL_ID = `custom-local:${CODEBUDDY_ALT_MODEL_WIRE_ID}`
+export const QODER_MODEL_ID = `mockprov/${MOCK_MODELS.deepseek}`
+export const QODER_ALTERNATE_MODEL_ID = `mockprov/${MOCK_MODELS.qoder}`
+export const LETTA_MODEL_ID = `openai-compatible/${MOCK_MODELS.letta}`
+export const LETTA_VISION_MODEL_ID = 'openai/gpt-4o'
+export const LETTA_REASONING_MODEL_ID = 'openai/gpt-5.4'
+
+/**
+ * Supply Kiro's isolated bearer key.
+ *
+ * Kiro validates only the local API key prefix, ksk_.
+ * The mock refuses any other bearer, including credentials from stores that HOME cannot isolate, such as the macOS keychain.
+ * The refusal stays visible in the request log.
+ */
+export const KIRO_E2E_API_KEY = 'ksk_leapmux_e2e'
+
+/**
+ * Cline's provider in the isolated settings: the generic OpenAI Chat Completions
+ * client, which takes any base URL and any model id. It reads `reasoning_content`
+ * as thinking, which the mock sends.
+ */
+export const CLINE_PROVIDER_ID = 'deepseek'
 
 /** Every pinned identifier, for the mock endpoint's catalog route. */
 export const MOCK_MODEL_IDS: readonly string[] = [...new Set(Object.values(MOCK_MODELS))]
+
+/** The custom-model handles Droid reads from its isolated settings. */
+export const DROID_MOCK_MODEL_IDS = {
+  primary: 'custom:Droid-0',
+  alternate: 'custom:Droid-1',
+} as const
 
 export interface MockAgentEnvironment {
   env: Record<string, string>
@@ -65,287 +253,132 @@ interface MockAgentEnvironmentOptions {
 }
 
 /** Write isolated agent configuration and return its process environment. */
-export function createMockAgentEnvironment(
+export async function createMockAgentEnvironment(
   runDir: string,
   serverURL: string,
   options: MockAgentEnvironmentOptions = {},
-): MockAgentEnvironment {
-  const origin = mockServerOrigin(serverURL)
+): Promise<MockAgentEnvironment> {
+  const origin = requireLoopbackHttpURL(serverURL, 'The mock model server URL', { originOnly: true }).origin
+  const temporaryDirectory = resolve(runDir, 'tmp')
+  mkdirSync(temporaryDirectory, { recursive: true, mode: 0o700 })
+  const temporaryEnv = { TMPDIR: temporaryDirectory, TEMP: temporaryDirectory, TMP: temporaryDirectory }
   const openAIBaseURL = `${origin}/v1`
   const homeDir = join(runDir, 'agent-home')
-  const codexHome = join(homeDir, '.codex')
-  const piAgentDir = join(homeDir, '.pi', 'agent')
-  const reasonixHome = join(homeDir, '.reasonix')
-  const zcodeDir = join(homeDir, '.zcode', 'v2')
-  // Cursor's config directory is ISOLATED like every other provider's. It used
-  // to be the real home's, because Cursor was the one provider that still
-  // needed a live account's stored credentials. It answers to the mock now, so
-  // a test neither reads nor writes the developer's own Cursor configuration.
-  const cursorConfigDir = join(homeDir, '.cursor')
-  const copilotHome = join(homeDir, '.copilot')
-  for (const directory of [codexHome, piAgentDir, reasonixHome, zcodeDir, copilotHome, cursorConfigDir])
+  const cliShimsDir = join(runDir, 'cli-shims')
+  const xdgDirectories = xdgBaseDirectories(homeDir)
+  // A spec that asserts a private path needs the directory before an agent writes to it,
+  // so the environment creates each directory that one of its variables points at. Each
+  // provider module creates the directories of its own variables.
+  for (const directory of [homeDir, ...Object.values(xdgDirectories), cliShimsDir])
     mkdirSync(directory, { recursive: true })
 
-  writeFileSync(join(codexHome, 'config.toml'), codexConfig(openAIBaseURL), { mode: 0o600 })
-  writeJSON(join(piAgentDir, 'models.json'), piModels(openAIBaseURL))
-  writeJSON(join(piAgentDir, 'settings.json'), {
-    defaultProvider: PI_PROVIDER_ID,
-    defaultModel: MOCK_MODELS.pi,
-    packages: piPackagePaths(options.realHomeDir),
-  })
-  writeFileSync(join(reasonixHome, 'config.toml'), reasonixConfig(openAIBaseURL), { mode: 0o600 })
-  const zcodeConfigPath = join(zcodeDir, 'config.json')
-  const zcodePersonalConfigPath = join(zcodeDir, 'provider_config.json')
-  writeJSON(zcodeConfigPath, zcodeLegacyConfig(openAIBaseURL))
-  writeJSON(zcodePersonalConfigPath, zcodePersonalConfig(openAIBaseURL))
+  // macOS zsh's system login profile rebuilds PATH. Reapply the private shims
+  // after that profile, so Junie's `security` probe cannot reach the keychain.
+  const privatePath = `export PATH=${quotePosixShellArgument(cliShimsDir)}:"$PATH"\n`
+  for (const file of ['.zshrc', '.zlogin'])
+    writeFileSync(join(homeDir, file), privatePath, { mode: 0o600 })
 
-  const openCodeConfig = JSON.stringify(openCodeFamilyConfig(openAIBaseURL))
+  // Each configuration registers a server under the name that the server states, so a tool call reaches it
+  // under that name.
+  const mcpEchoServer = writeMcpEchoServer(runDir)
+  const openCodeFamily = {
+    baseURL: openAIBaseURL,
+    modelKey: MODEL_KEY,
+    providerID: MOCK_PROVIDER_IDS.openCode,
+    models: [
+      { id: MOCK_MODELS.zai, name: 'GLM-5.3 Flash' },
+      { id: MOCK_MODELS.pi, name: 'GLM-5.3' },
+      { id: OPENCODE_FAMILY_PLAIN_MODEL_WIRE_ID, name: 'GLM-5.3 Plain', reasoning: false },
+    ],
+    mcpEchoServer,
+  }
+  const searchPathEnv = agentSearchPathEnv()
   return {
     homeDir,
-    piAgentDir,
+    piAgentDir: piAgentDirectory(homeDir),
     env: {
       HOME: homeDir,
       USERPROFILE: homeDir,
+      ...temporaryEnv,
+      // A user's ZDOTDIR can make the login shell load real startup files.
+      // Those files can replace PATH and expose the system keychain to Junie.
+      ZDOTDIR: homeDir,
+      // The developer's PATH, with the real install directory of each mise tool
+      // before mise's shims, which cannot start a tool under the isolated HOME
+      // above. See `agentSearchPath`.
+      ...searchPathEnv,
+      // Amp reads its settings, its history and its cache under these, and a value in
+      // the developer's own environment would otherwise point it at theirs. Each one
+      // is the directory the isolated HOME implies anyway, so no provider that
+      // derives the same path from HOME sees a change.
+      ...xdgDirectories,
       LEAPMUX_E2E_MODEL_API_KEY: MODEL_KEY,
-      NO_PROXY: '127.0.0.1,localhost',
-      no_proxy: '127.0.0.1,localhost',
-
-      ANTHROPIC_API_KEY: MODEL_KEY,
-      ANTHROPIC_BASE_URL: origin,
-      CLAUDE_CONFIG_DIR: join(homeDir, '.claude'),
-      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
-      DISABLE_TELEMETRY: '1',
-
-      CODEX_HOME: codexHome,
+      NO_PROXY: LOOPBACK_NO_PROXY,
+      no_proxy: LOOPBACK_NO_PROXY,
+      // The mock is also the HTTPS proxy of the `leapmux dev` process, and so of
+      // the hub, the worker, the terminal shells and every agent. It refuses each
+      // tunnel, so a request to a real host fails at once instead of leaving the
+      // machine. Kiro needs this: its engine opens remote sessions on Kiro's own
+      // host, and no setting moves that request.
+      //
+      // There is NO plain-HTTP proxy, and none may be added. The mock's own origin
+      // is plain HTTP, and Cursor's HTTP/2 pool reads HTTP_PROXY for an `http:` URL
+      // and never reads NO_PROXY, so a plain-HTTP proxy carries even Cursor's calls
+      // to the mock into the refusal, and every Cursor turn fails. Every real host
+      // is HTTPS, so the HTTPS proxy alone keeps each one closed.
+      HTTPS_PROXY: origin,
+      https_proxy: origin,
+      // The generic OpenAI credentials, which Goose's OpenAI provider reads.
       OPENAI_API_KEY: MODEL_KEY,
       OPENAI_BASE_URL: openAIBaseURL,
 
-      OPENCODE_CONFIG_CONTENT: openCodeConfig,
-      OPENCODE_DISABLE_PROJECT_CONFIG: 'true',
-      KILO_CONFIG_CONTENT: openCodeConfig,
-      KILO_DISABLE_PROJECT_CONFIG: 'true',
-
-      GOOSE_PROVIDER: 'openai',
-      GOOSE_MODEL: MOCK_MODELS.zai,
-
-      REASONIX_HOME: reasonixHome,
-
-      PI_CODING_AGENT_DIR: piAgentDir,
-      PI_CODING_AGENT_SESSION_DIR: join(runDir, 'pi-sessions'),
-
-      CURSOR_CONFIG_DIR: cursorConfigDir,
-      // Cursor talks to its OWN backend, not a model API, so this points at the
-      // mock's Cursor surface rather than at a model route. See
-      // `./cursorSurface` for the three facts that shape it -- above all that
-      // the startup calls answer all-defaults, because a REAL answer makes the
-      // agent use its built-in endpoint and the turn never arrives here.
-      CURSOR_API_ENDPOINT: origin,
-      // The ACP entrypoint refuses `session/new` without a token, which
-      // `cursor-agent --print` never asked for. The value is not checked
-      // against anything -- the mock reads no credential -- but its ABSENCE is,
-      // and it is refused locally, before any request reaches the endpoint.
-      CURSOR_AUTH_TOKEN: MODEL_KEY,
-      // Keep the CLI out of the developer's macOS keychain. Its default
-      // credential store is the keychain, and a fresh `CURSOR_CONFIG_DIR` has
-      // nothing to read, so the CLI asks for one and macOS raises a MODAL
-      // dialog ("A keychain cannot be found to store cursor-user"). Nothing
-      // answers it on a test machine, so the agent starts, blocks, and never
-      // opens its turn stream -- which reads as a provider that hangs.
-      // `memory` writes nothing anywhere: CURSOR_AUTH_TOKEN supplies the
-      // credential on every spawn, so a test has nothing worth persisting, and
-      // no stale credential can outlive the run that made it.
-      AGENT_CLI_CREDENTIAL_STORE: 'memory',
-
-      COPILOT_API_URL: origin,
-      COPILOT_DEBUG_GITHUB_API_URL: origin,
-      COPILOT_GITHUB_TOKEN: COPILOT_TOKEN,
-      COPILOT_HOME: copilotHome,
-      GITHUB_COPILOT_API_TOKEN: MODEL_KEY,
-
-      ZCODE_MODEL_TELEMETRY_ENABLED: 'false',
-      ZCODE_PERSONAL_PROVIDER_CONFIG_FILE: zcodePersonalConfigPath,
-      ZCODE_STORAGE_DIR: join(runDir, 'zcode-storage'),
+      ...createClaudeEnvironment({ homeDir, modelURL: origin, modelKey: MODEL_KEY }),
+      ...createCodexEnvironment({ homeDir, baseURL: openAIBaseURL, defaultModelID: CODEX_NATIVE_DEFAULT_MODEL }),
+      ...createOpenCodeEnvironment(openCodeFamily),
+      ...createGooseEnvironment({ homeDir, modelID: MOCK_MODELS.goose }),
+      ...createReasonixEnvironment({ homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, modelID: MOCK_MODELS.deepseek, alternateProviderID: REASONIX_ALT_PROVIDER_ID, alternateModelID: MOCK_MODELS.pi, plainProviderID: REASONIX_PLAIN_PROVIDER_ID, plainModelID: MOCK_MODELS.zai }),
+      ...createPiEnvironment({ homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, modelID: MOCK_MODELS.pi, flashModelID: MOCK_MODELS.zai, plainModelID: PI_PLAIN_MODEL_ID, mcpEchoServer, realHomeDir: options.realHomeDir, shimsDirectory: cliShimsDir }),
+      ...createCursorEnvironment({ homeDir, origin, modelKey: MODEL_KEY }),
+      ...createCopilotEnvironment({ homeDir, origin, modelKey: MODEL_KEY, githubToken: MOCK_COPILOT_GITHUB_TOKEN }),
+      ...createZcodeEnvironment({ runDirectory: runDir, homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, providerID: MOCK_PROVIDER_IDS.zcode, modelID: MOCK_MODELS.zai, alternateModelID: MOCK_MODELS.pi, plainModelID: ZCODE_PLAIN_MODEL_WIRE_ID }),
+      ...credentialStoreShimEnv(cliShimsDir, searchPathEnv.PATH ?? process.env.PATH),
     },
   }
 }
 
-function mockServerOrigin(value: string): string {
-  const url = new URL(value)
-  const loopback = url.hostname === '127.0.0.1' || url.hostname === 'localhost' || url.hostname === '[::1]'
-  if (url.protocol !== 'http:' || !loopback || url.pathname !== '/' || url.username || url.password || url.search || url.hash)
-    throw new Error('The mock model server URL must be a loopback HTTP origin')
-  return url.origin
-}
-
-function codexConfig(baseURL: string): string {
-  return `model_provider = "leapmux-e2e"
-check_for_update_on_startup = false
-disable_response_storage = true
-
-# Codex consolidates its own memories in a background turn, against a model of
-# its own choice and with no user prompt. That turn would reach the mock
-# endpoint outside any test's script.
-[memories]
-generate_memories = false
-use_memories = false
-dedicated_tools = false
-
-[model_providers.leapmux-e2e]
-name = "LeapMux E2E"
-base_url = "${baseURL}"
-env_key = "LEAPMUX_E2E_MODEL_API_KEY"
-wire_api = "responses"
-requires_openai_auth = false
-supports_websockets = false
-request_max_retries = 0
-stream_max_retries = 0
-`
-}
-
-function openCodeFamilyConfig(baseURL: string): Record<string, unknown> {
+/** The XDG base directories that the isolated HOME implies. */
+function xdgBaseDirectories(homeDir: string): Record<'XDG_CONFIG_HOME' | 'XDG_DATA_HOME' | 'XDG_CACHE_HOME' | 'XDG_STATE_HOME', string> {
   return {
-    formatter: false,
-    lsp: false,
-    model: `${MOCK_PROVIDER_IDS.openCode}/${MOCK_MODELS.zai}`,
-    provider: {
-      [MOCK_PROVIDER_IDS.openCode]: {
-        name: 'LeapMux E2E',
-        id: MOCK_PROVIDER_IDS.openCode,
-        env: [],
-        npm: '@ai-sdk/openai-compatible',
-        models: {
-          [MOCK_MODELS.zai]: {
-            id: MOCK_MODELS.zai,
-            name: 'GLM-5.3 Flash',
-            attachment: false,
-            reasoning: true,
-            temperature: false,
-            tool_call: true,
-            release_date: '2026-01-01',
-            limit: { context: 128_000, output: 16_000 },
-            cost: { input: 0, output: 0 },
-            options: {},
-            variants: { low: {}, medium: {}, high: {}, xhigh: {}, max: {} },
-          },
-        },
-        options: { apiKey: MODEL_KEY, baseURL },
-      },
-    },
+    XDG_CONFIG_HOME: join(homeDir, '.config'),
+    XDG_DATA_HOME: join(homeDir, '.local', 'share'),
+    XDG_CACHE_HOME: join(homeDir, '.cache'),
+    XDG_STATE_HOME: join(homeDir, '.local', 'state'),
   }
 }
 
-function piModels(baseURL: string): Record<string, unknown> {
-  return {
-    providers: {
-      [PI_PROVIDER_ID]: {
-        baseUrl: baseURL,
-        api: 'openai-completions',
-        apiKey: MODEL_KEY,
-        models: [{
-          id: MOCK_MODELS.pi,
-          name: 'GLM-5.3',
-          reasoning: true,
-          input: ['text'],
-          contextWindow: 128_000,
-          maxTokens: 16_000,
-          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        }],
-      },
-    },
+/**
+ * Prevent native credential-store calls through private PATH wrappers.
+ *
+ * Junie runs which security and the __junie_availability_check_ keychain check to select its secret store.
+ * That check would access the user's keychain.
+ * A private security wrapper refuses every call, so Junie uses its file store under JUNIE_HOME.
+ * Linux uses the same mechanism with secret-tool.
+ * Windows uses the Win32 credential manager, which PATH cannot replace.
+ *
+ * macOS zsh rebuilds PATH in its system login profile.
+ * Private zsh startup files restore the wrapper directory after that profile.
+ * The Junie wrapper of ./junieEnvironment also restores it before it starts the installed CLI.
+ */
+export const CREDENTIAL_STORE_SHIM_LOG = 'credential-store-attempts.log'
+
+function credentialStoreShimEnv(shimsDir: string, searchPath: string | undefined): Record<string, string> {
+  if (process.platform === 'win32')
+    return {}
+  const stubbed = process.platform === 'darwin' ? ['security'] : ['secret-tool']
+  const logPath = join(shimsDir, CREDENTIAL_STORE_SHIM_LOG)
+  for (const name of stubbed) {
+    const stub = join(shimsDir, name)
+    writeFileSync(stub, `#!/bin/sh\nprintf '%s\\n' ${quotePosixShellArgument(name)} >> ${quotePosixShellArgument(logPath)}\necho "leapmux e2e: refusing to touch the system credential store" >&2\nexit 1\n`, { mode: 0o755 })
   }
-}
-
-function piPackagePaths(realHomeDir: string | undefined): string[] {
-  if (!realHomeDir)
-    return []
-  const modules = join(realHomeDir, '.pi', 'agent', 'npm', 'node_modules')
-  return [
-    '@gotgenes/pi-nocd',
-    '@juicesharp/rpiv-args',
-    '@tintinweb/pi-subagents',
-    '@juicesharp/rpiv-ask-user-question',
-    '@narumitw/pi-plan-mode',
-    'pi-goal-x',
-    '@juicesharp/rpiv-todo',
-    'pi-mcp-adapter',
-  ].map(packageName => join(modules, packageName))
-}
-
-function reasonixConfig(baseURL: string): string {
-  return `default_model = "${REASONIX_PROVIDER_ID}/${MOCK_MODELS.deepseek}"
-
-[[providers]]
-name = "${REASONIX_PROVIDER_ID}"
-kind = "openai"
-base_url = "${baseURL}"
-model = "${MOCK_MODELS.deepseek}"
-api_key_env = "LEAPMUX_E2E_MODEL_API_KEY"
-context_window = 128000
-max_output_tokens = 16000
-reasoning_protocol = "openai"
-supported_efforts = ["low", "medium", "high"]
-default_effort = "high"
-`
-}
-
-function zcodeLegacyConfig(baseURL: string): Record<string, unknown> {
-  return {
-    provider: {
-      [MOCK_PROVIDER_IDS.zcode]: {
-        name: 'LeapMux E2E',
-        kind: 'openai-compatible',
-        source: 'custom',
-        enabled: true,
-        options: { apiKey: MODEL_KEY, baseURL },
-        models: {
-          [MOCK_MODELS.zai]: {
-            name: MOCK_MODELS.zai,
-            reasoning: { enabled: true, variants: ['low', 'medium', 'high'], defaultVariant: 'high' },
-            limit: { context: 128_000, output: 16_000 },
-            modalities: { input: ['text'], output: ['text'] },
-            zcode: { priority: 0 },
-          },
-        },
-      },
-    },
-  }
-}
-
-function zcodePersonalConfig(baseURL: string): Record<string, unknown> {
-  const providerID = MOCK_PROVIDER_IDS.zcode
-  const modelID = MOCK_MODELS.zai
-  return {
-    schemaVersion: 1,
-    config: {
-      providerOrder: [providerID],
-      providerConfigRules: {
-        providerRules: [{
-          providerId: providerID,
-          providerName: 'LeapMux E2E',
-          enabled: true,
-          config: {
-            group: 'standard-personal',
-            access: { type: 'api-key', apiKey: MODEL_KEY },
-            api: { type: 'openai-chat-completions', baseUrl: baseURL },
-            personalModelIds: [modelID],
-            modelOrder: [modelID],
-            visibility: 'visible',
-          },
-        }],
-      },
-      modelConfigRules: {
-        providerModelRules: [{ providerId: providerID, modelId: modelID, config: { enabled: true } }],
-        manualProviderModelRules: [],
-      },
-      defaultModelSelection: {
-        providerId: providerID,
-        modelId: modelID,
-        options: { reasoningLevel: 'high' },
-      },
-    },
-  }
-}
-
-function writeJSON(path: string, value: unknown): void {
-  writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 })
+  return { PATH: [shimsDir, searchPath ?? process.env.PATH ?? ''].join(delimiter) }
 }

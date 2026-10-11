@@ -1,18 +1,32 @@
+import type { JsonValue } from '@bufbuild/protobuf'
 import type { Locator, Page } from '@playwright/test'
+import type { ToolSpanRowPosition } from '../../../src/components/chat/model/row'
+import type { AgentInfo } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { FileSortOrder } from '../../../src/lib/fileSort'
-import { mkdirSync } from 'node:fs'
-import { join } from 'node:path'
 import process from 'node:process'
-
+import { fromJson } from '@bufbuild/protobuf'
 import { expect } from '@playwright/test'
+import { permissionPresetsFor } from '../../../src/components/chat/providers/permissionPresets'
+import { permissionPresetAvailable } from '../../../src/components/chat/providerSettings'
+import { hasOptions } from '../../../src/components/chat/settingsGroups'
+import { AgentStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { LocateTabResponseSchema, TabType } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
 import { accountStorageKey, getTtlForKey, KEY_BROWSER_PREFS, PREFIX_EDITOR_DRAFT, PREFIX_FILES_SORT_ORDER } from '../../../src/lib/browserStorage'
+import { isObject } from '../../../src/lib/jsonPick'
+import { callHub, SESSION_COOKIE_NAME, TEST_ADMIN_PASSWORD, TEST_ADMIN_USERNAME } from './api'
 import { solveCaptchaViaUI } from './captcha'
+import { cssAttributeValue } from './cssAttribute'
+import { nativeAgentById, nativeOptionGroup, nativeOptionValue, selectedAgentTab, selectedAgentTabId } from './nativeScenario'
+import { retryUntilPass } from './retryUntilPass'
 import { E2E_BROWSER_HOST } from './server'
-import { readEntry, storageKeys, writeEntry } from './storage'
+import { readEntry, waitForStoredEntry, writeEntry } from './storage'
+import { AGENT_TAB_SELECTOR, tabIdSelector } from './tabSelectors'
+import { terminalXterm } from './terminal'
+import { waitTimeoutBeforeTestDeadline } from './testDeadline'
 
-/** Check if a locator is visible, returning false on timeout or error. */
-export async function isMaybeVisible(locator: Locator, timeout?: number): Promise<boolean> {
-  return locator.isVisible(timeout != null ? { timeout } : undefined).catch(() => false)
+/** Read immediate locator visibility. Return false when the read fails. */
+export async function isMaybeVisible(locator: Locator): Promise<boolean> {
+  return locator.isVisible().catch(() => false)
 }
 
 /** Wait until at least one locator in the list is visible. */
@@ -46,9 +60,9 @@ export async function expectClipsToOneLine(label: Locator) {
 
 /**
  * Check that a long label clips without widening an ancestor scroller.
- * Style declarations alone cannot detect a container that grows to its widest row.
- * Temporarily replace the text and restore it within one synchronous browser operation. This forces layout while retaining Solid references to the same node.
- * Check ancestors with overflow-x:auto or scroll. The label itself must have scrollWidth greater than clientWidth to clip.
+ * Style declarations cannot detect a container that grows to its widest row.
+ * Replace the text and restore it within the same synchronous browser operation. This forces layout and keeps Solid references to the same node.
+ * Check ancestors with overflow-x:auto or scroll. The label must have scrollWidth greater than clientWidth.
  * Allow one pixel for subpixel rounding in ancestor measurements.
  */
 export async function expectClipsLongText(label: Locator) {
@@ -80,29 +94,181 @@ export async function expectClipsLongText(label: Locator) {
 }
 
 // ──────────────────────────────────────────────
+// Sidebar sections
+// ──────────────────────────────────────────────
+
+/**
+ * Locate the visible header of one sidebar section by its slug, such as `workers` or `workspaces_archived`.
+ * The desktop and mobile sidebars mount one copy each, so the locator takes the first visible copy.
+ */
+export function sidebarSectionHeader(page: Page, slug: string): Locator {
+  return page.locator(`[data-testid="section-header-${slug}"]:visible`).first()
+}
+
+/**
+ * Expand a collapsed sidebar section through its header button, leave an open section unchanged, and require that
+ * the section is open at the end.
+ * Pass the section header locator, which carries `data-closed` while the section is collapsed.
+ * The open state is read once and not waited for, because the header button toggles: a click on an open section
+ * closes it. A header that the read cannot reach counts as open, and the final check then fails with the reason.
+ */
+export async function expandSidebarSection(section: Locator): Promise<void> {
+  const isOpen = await section.evaluate(el => !el.hasAttribute('data-closed')).catch(() => true)
+  if (!isOpen)
+    await section.locator('> [role="button"]').click()
+  await expect(section, 'the sidebar section is open').not.toHaveAttribute('data-closed')
+}
+
+// ──────────────────────────────────────────────
 // Common UI interaction helpers
 // ──────────────────────────────────────────────
+
+/**
+ * How a test enters the text of a message into the composer.
+ * `type` sends key events for each character.
+ * `insert` sends each line with one insertion, for a text that typing would take longer than the test.
+ */
+export type MessageEntry = 'type' | 'insert'
+
+/**
+ * Put the text into the focused composer. `insert` presses Enter for each line break, as typing does,
+ * and inserts each line at once. Both modes give the same text for a line of prose.
+ * A line with a markdown trigger, such as backticks, can differ, because only typing presses each key.
+ * Use `type` for such a line.
+ */
+export async function enterMessageText(page: Page, text: string, entry: MessageEntry): Promise<void> {
+  if (entry === 'type') {
+    await page.keyboard.type(text)
+    return
+  }
+  for (const [index, line] of text.split('\n').entries()) {
+    if (index > 0)
+      await page.keyboard.press('Enter')
+    if (line !== '')
+      await page.keyboard.insertText(line)
+  }
+}
+
+/**
+ * The modifier key of the `$mod` chords of the app on `platform`: Meta on macOS, Control on every other platform.
+ * tinykeys maps `$mod` the same way.
+ */
+export function platformModifier(platform: NodeJS.Platform): 'Meta' | 'Control' {
+  return platform === 'darwin' ? 'Meta' : 'Control'
+}
+
+/**
+ * The modifier key of the `$mod` chords of the app on this host. Press it in place of a fixed Meta: a fixed Meta is a
+ * different chord on Linux and Windows, and the composer accepts either modifier for a send, so such a spec can pass
+ * without the chord under test. The browser runs on the host of the test runner, so the platform of the runner decides.
+ */
+export const PLATFORM_MOD = platformModifier(process.platform)
+
+/** The CSS selector of the composer. */
+const COMPOSER_SELECTOR = '[data-testid="composer-editor"]'
+
+/** The CSS selector of the editable node inside the composer. */
+const COMPOSER_EDIT_NODE_SELECTOR = '.ProseMirror'
+
+/**
+ * The CSS selector of the editable area of a composer, with no visibility scope. A `page.evaluate` body, which cannot
+ * take a locator, takes it as an argument. Everywhere else, `composerEditor` locates the visible one.
+ */
+export const COMPOSER_EDITOR_SELECTOR = `${COMPOSER_SELECTOR} ${COMPOSER_EDIT_NODE_SELECTOR}`
+
+/**
+ * Locate the editable area of the visible composer.
+ * The shell mounts one composer at most, for the focused agent tab. The locator still requires a visible composer,
+ * because only a visible composer can take the input.
+ */
+export function composerEditor(page: Page): Locator {
+  return page.locator(`${COMPOSER_SELECTOR}:visible ${COMPOSER_EDIT_NODE_SELECTOR}`)
+}
+
+/** Wait for the composer on screen, click it so that it holds the focus, and return it. */
+export async function focusComposer(page: Page): Promise<Locator> {
+  const editor = composerEditor(page)
+  await expect(editor).toBeVisible()
+  await editor.click()
+  return editor
+}
+
+/**
+ * Locate the pause toggle of the input queue in the visible composer. Its label is "Pause Queue" or "Resume Queue".
+ * A composer that takes no input, such as a read-only subagent tab, shows no toggle.
+ */
+export function queuePauseButton(page: Page): Locator {
+  return page.locator('[data-testid="queue-pause-button"]:visible')
+}
+
+/**
+ * Locate the Interrupt button of the visible composer. It shows while the browser holds the agent on screen as working
+ * or as waiting for the user, so a count of 0 states that the browser holds no running turn of that agent.
+ */
+export function interruptButton(page: Page): Locator {
+  return page.locator('[data-testid="interrupt-button"]:visible')
+}
+
+/** Locate the input queue of the visible composer: the messages that wait for the end of the running turn. */
+export function inputQueue(page: Page): Locator {
+  return page.locator('[data-testid="agent-input-queue"]:visible')
+}
+
+/**
+ * Resume a paused input queue.
+ * The queue must be paused. A running queue fails the call, so a pause that never happened cannot pass.
+ */
+export async function resumePausedQueue(page: Page): Promise<void> {
+  const button = queuePauseButton(page)
+  await expect(button).toHaveText('Resume Queue')
+  await button.click()
+  await expect(button).toHaveText('Pause Queue')
+}
+
+/**
+ * The state of the input queue after a failed turn.
+ *
+ * The Worker pauses the queue for a stop, for a process exit that nobody asked for, and for an input that it could
+ * not deliver. A provider that reports a failed model call as the end of its turn leaves the queue running: its
+ * `SendInput` returns at delivery, before the model call, and a turn end never pauses the queue.
+ */
+export type QueueAfterFailure = 'paused' | 'running'
+
+/**
+ * Require the queue state that a failed turn leaves, and resume a paused queue, so the next prompt reaches the agent.
+ * The caller states the state of its provider. A check that accepted either state would let a lost pause pass, and
+ * also a pause that a provider crash causes.
+ */
+export async function resumeQueueAfterFailure(page: Page, state: QueueAfterFailure): Promise<void> {
+  if (state === 'paused') {
+    await resumePausedQueue(page)
+    return
+  }
+  await expect(queuePauseButton(page)).toHaveText('Pause Queue')
+}
 
 /**
  * Send a message through the ProseMirror editor with no inter-key delay.
  * ProseMirror handles the ordered key events synchronously. The former 100ms delay added about five seconds to each arithmetic prompt.
  * Tests of input rules, mention triggers, and slash commands retain their deliberate local typing intervals.
  */
-export async function sendMessage(page: Page, text: string) {
-  const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-  await expect(editor).toBeVisible()
-  await editor.click()
-  await page.keyboard.type(text)
-  await page.keyboard.press('Meta+Enter')
-  // Wait for the composer to clear after it accepts the send. This prevents the caller from proceeding before that local acknowledgement.
-  await expect(editor).toHaveText('')
-}
-
-/** Wait for the control request banner to appear and return a scoped locator. */
-export async function waitForControlBanner(page: Page) {
-  const banner = page.locator('[data-testid="control-banner"]')
-  await expect(banner).toBeVisible()
-  return banner
+export async function sendMessage(page: Page, text: string, entry: MessageEntry = 'type') {
+  const editor = await focusComposer(page)
+  // The send can raise a control request at once (a native editor request, an MCP form), and its banner then hides
+  // this composer. A `:visible` locator stops matching the hidden composer, and an unscoped one is ambiguous when
+  // another tab mounts its own composer. So the clear check holds the element that received the text.
+  const sent = await editor.elementHandle()
+  try {
+    await enterMessageText(page, text, entry)
+    await page.keyboard.press(`${PLATFORM_MOD}+Enter`)
+    // Wait for the composer to clear after it accepts the send. This prevents the caller from proceeding before that local acknowledgement.
+    await expect.poll(() => sent.evaluate(element => element.textContent ?? ''), {
+      message: 'the composer that received the message must clear after the send',
+    }).toBe('')
+  }
+  finally {
+    await sent.dispose()
+  }
 }
 
 /**
@@ -145,6 +311,195 @@ export function messageContents(page: Page) {
   return page.locator(`[data-testid="message-content"]${VISIBLE}`)
 }
 
+/** The place of one tool row in its span: the call, a live update, or the result. */
+export type ToolCallRowRole = ToolSpanRowPosition['role']
+
+/** Locate the visible row of one tool call in one role. The result row by default. */
+export function toolCallRow(page: Page, callId: string, role: ToolCallRowRole = 'result'): Locator {
+  return page.locator(`[data-testid="message-bubble"][data-tool-call-id="${cssAttributeValue(callId)}"][data-tool-row-role="${role}"]${VISIBLE}`)
+}
+
+/** Locate every visible tool row, whatever its call or role. */
+export function toolRows(page: Page): Locator {
+  return page.locator(`[data-tool-message]${VISIBLE}`)
+}
+
+/**
+ * Locate every visible row that draws at least one span rail.
+ * A tool call opens a span, and each row of the span draws its rail. `data-span-columns` states how many rails a row
+ * draws, and a row without a rail states zero. No component gives a span a test ID, so the attribute is the one handle.
+ */
+export function railedRows(page: Page): Locator {
+  return page.locator(`[data-span-columns]:not([data-span-columns="0"])${VISIBLE}`)
+}
+
+/**
+ * Locate the visible bubble in which a subagent's report reached its parent, and which holds `report`.
+ * The bubble header reads "<reporter> reported", and "Subagent" is the reporter when the provider gives no label.
+ */
+export function subagentReportBubble(page: Page, report: string | RegExp, reporter = 'Subagent'): Locator {
+  return messageBubbles(page).filter({ hasText: `${reporter} reported` }).filter({ hasText: report })
+}
+
+/**
+ * State why the rows do not hold `texts` in order, or return '' when they do.
+ * Each text must sit in its own row, and the rows of the texts must follow one another in the order of `texts`.
+ * A row holds a text when the text is part of the row's text. The first row that holds a text decides its place.
+ */
+export function rowOrderProblem(rowTexts: readonly string[], texts: readonly string[]): string {
+  const places = texts.map(text => rowTexts.findIndex(row => row.includes(text)))
+  const missing = texts.filter((_, index) => places[index] === -1)
+  if (missing.length > 0)
+    return `no row holds ${missing.map(text => JSON.stringify(text)).join(', ')}`
+  for (let index = 1; index < texts.length; index++) {
+    const earlier = JSON.stringify(texts[index - 1])
+    const later = JSON.stringify(texts[index])
+    if (places[index] === places[index - 1])
+      return `${earlier} and ${later} are in one row (row ${places[index]})`
+    if (places[index]! < places[index - 1]!)
+      return `${later} (row ${places[index]}) comes before ${earlier} (row ${places[index - 1]})`
+  }
+  return ''
+}
+
+/**
+ * Require each of `texts` in its own row of `rows`, in the order of `texts`.
+ * An order check through `findIndex` passes when the earlier text is missing, because a missing text reads as -1.
+ * This check fails for a missing text, for a reversed order, and for two texts in one row.
+ */
+export async function expectRowsInOrder(rows: Locator, texts: readonly string[]): Promise<void> {
+  if (texts.length < 2)
+    throw new Error('A row order needs at least two texts.')
+  if (texts.includes(''))
+    throw new Error('A row order needs texts that are not empty, because every row holds an empty text.')
+  // The poll reports the last problem as the received value.
+  await expect.poll(async () => rowOrderProblem(await rows.allTextContents(), texts), {
+    message: `the rows hold ${texts.map(text => JSON.stringify(text)).join(', ')} in this order`,
+  }).toBe('')
+}
+
+/** Locate every visible control request banner without narrowing its count. */
+export function controlBanner(page: Page): Locator {
+  return page.getByTestId('control-banner').filter({ visible: true })
+}
+
+/**
+ * Wait for the visible control request banner and return it.
+ * The wait is strict, so a second visible banner fails it.
+ */
+export async function waitForControlBanner(page: Page): Promise<Locator> {
+  const banner = controlBanner(page)
+  await expect(banner).toBeVisible()
+  return banner
+}
+
+/**
+ * Require that the page holds no control request banner, visible or hidden.
+ * The locator has no `:visible` scope on purpose. A zero count of `controlBanner` accepts a hidden banner,
+ * and this check refuses one.
+ */
+export async function expectNoControlBanner(page: Page): Promise<void> {
+  await expect(page.getByTestId('control-banner'), 'the page holds no control request banner').toHaveCount(0)
+}
+
+/**
+ * The action of a control request button:
+ * - `allow` and `deny`: the decision buttons of a permission or plan request. With text in the composer, `deny` sends
+ *   that text as feedback.
+ * - `submit`: the button that sends the answers of a question.
+ * - `stop`: the question button that refuses the question.
+ * - `yolo`: the question button that fills each unanswered question with the recommended option and sends the answers.
+ */
+export type ControlAction = 'allow' | 'deny' | 'submit' | 'stop' | 'yolo'
+
+/** Locate every visible button of one control request action. */
+export function controlButton(page: Page, action: ControlAction): Locator {
+  return page.getByTestId(`control-${action}-btn`).filter({ visible: true })
+}
+
+/**
+ * Locate the visible page buttons of a question request with more than one question.
+ * The page buttons sit in the action row of the request, beside Submit, and the action row is outside the banner.
+ * So a locator inside the banner finds no page button, and this locator starts at the page, as `controlButton` does.
+ */
+export function questionPagination(page: Page): Locator {
+  return page.getByTestId('control-pagination').filter({ visible: true })
+}
+
+/**
+ * Locate the visible fieldset of the control request actions.
+ * The composer draws it outside `control-banner`, so the scope choices and the decision buttons of a request are in it,
+ * not in the banner.
+ */
+export function controlActions(page: Page): Locator {
+  return page.getByTestId('control-actions').filter({ visible: true })
+}
+
+/**
+ * Click the visible Allow or Deny button of the control request.
+ * The click is strict, so a second visible button, as from a duplicate banner, fails it.
+ */
+export async function answerControl(page: Page, decision: 'allow' | 'deny'): Promise<void> {
+  await controlButton(page, decision).click()
+}
+
+/** The decision that a plan review button sends. */
+export type PlanReviewDecision = 'approve' | 'reject'
+
+/** The test ID of each plan review button, by the decision that it sends. */
+const PLAN_REVIEW_BUTTON_TEST_ID = {
+  approve: 'plan-approve-btn',
+  reject: 'plan-reject-btn',
+} as const satisfies Record<PlanReviewDecision, string>
+
+/**
+ * The test IDs of the two buttons of a plan review.
+ * A proof that no plan review appears watches both, whether or not the provider has a plan mode.
+ */
+export const PLAN_REVIEW_BUTTON_TEST_IDS = [PLAN_REVIEW_BUTTON_TEST_ID.approve, PLAN_REVIEW_BUTTON_TEST_ID.reject] as const
+
+/**
+ * Locate every visible Approve or Reject button of a plan review.
+ * With text in the composer, the Reject button sends that text as feedback.
+ */
+export function planReviewButton(page: Page, decision: PlanReviewDecision): Locator {
+  return page.getByTestId(PLAN_REVIEW_BUTTON_TEST_ID[decision]).filter({ visible: true })
+}
+
+/**
+ * Click the visible Approve or Reject button of a plan review.
+ * The click is strict, as the click of `answerControl` is.
+ */
+export async function answerPlanReview(page: Page, decision: PlanReviewDecision): Promise<void> {
+  await planReviewButton(page, decision).click()
+}
+
+/**
+ * Type `reason` into the composer, which holds the feedback of an open control request.
+ * Most requests then relabel the Deny button "Send feedback". The caller checks the label, because it differs by request.
+ */
+export async function enterControlFeedback(page: Page, reason: string): Promise<void> {
+  if (reason.trim() === '')
+    throw new Error('A control feedback needs text, because an empty composer sends no feedback.')
+  await focusComposer(page)
+  await enterMessageText(page, reason, 'type')
+}
+
+/** Join all visible chat content with the original single-space separator. */
+export async function chatText(page: Page): Promise<string> {
+  return (await messageContents(page).allTextContents()).join(' ')
+}
+
+/** Locate every visible transcript row, including rows outside message bubbles. */
+export function transcriptRows(page: Page) {
+  return page.locator('[data-seq]:visible')
+}
+
+/** Locate the saved control answer text and preserve its full visible count. */
+export function savedControlAnswer(page: Page) {
+  return page.locator('[data-testid="control-response-text"]:visible')
+}
+
 /**
  * Locate visible message-band rows. Restrict kind to text or thought when needed.
  * The row supplies the full-width background and border, so the marker belongs to the row.
@@ -158,9 +513,28 @@ export function bandRows(page: Page, kind?: 'text' | 'thought') {
 /** The chat's scrolling element, which the app publishes for exactly this purpose. */
 export const CHAT_SCROLL_CONTAINER = '[data-chat-scroll-container="true"]'
 
-/** Return a locator for the chat's scrolling element. */
+/**
+ * Return a locator for the chat's visible scrolling element.
+ * Each agent tab of a tile mounts its own ChatView, so only the visible one is the chat on screen.
+ */
 export function chatScrollContainer(page: Page) {
-  return page.locator(CHAT_SCROLL_CONTAINER)
+  return page.locator(CHAT_SCROLL_CONTAINER + VISIBLE)
+}
+
+/**
+ * Find a visible row that contains `path` and a diff badge.
+ * A new-file Write row has no badge. Its `renderWriteTitle` title contains the line count, so this helper cannot match that row.
+ * For a new file, find the tool row by its path and line count. Find its diff through `[data-file-diff]`.
+ * `codex/file-tool-execution.spec.ts` uses those new-file checks.
+ *
+ * Both filters are necessary. The user prompt contains the same path and appears first. A text-only filter can select that prompt.
+ * The `has` filter requires the diff badge. The `:visible` filter removes the hidden copy that ChatView uses for unmeasured rows.
+ */
+export function fileChangeRow(page: Page, path: string): Locator {
+  return page.locator('[data-seq]:visible')
+    .filter({ has: page.getByTestId('git-diff-stats') })
+    .filter({ hasText: path })
+    .first()
 }
 
 /**
@@ -189,11 +563,21 @@ export async function readAttached<R>(
   what: string,
   read: (possiblyDetachedMatches: (SVGElement | HTMLElement)[], chatScrollContainerSelector: string) => R | null,
 ): Promise<R> {
+  return readAttachedWithArgument(locator, what, read, CHAT_SCROLL_CONTAINER)
+}
+
+/** Read attached elements with an explicit serializable argument. */
+export async function readAttachedWithArgument<R, A>(
+  locator: Locator,
+  what: string,
+  read: Exclude<Parameters<typeof locator.evaluateAll<R | null, A>>[0], string>,
+  argument: A,
+): Promise<R> {
   // Held on an object rather than in a `let`: the assignment happens inside the
   // retry closure, which control-flow narrowing cannot see through.
   const held: { value: R | null } = { value: null }
   await expect(async () => {
-    held.value = await locator.evaluateAll(read, CHAT_SCROLL_CONTAINER)
+    held.value = await locator.evaluateAll(read, argument)
     expect(held.value, `${what}: matched no element that was still in the document`).not.toBeNull()
   }).toPass({ timeout: ATTACHED_READ_TIMEOUT_MS })
   return held.value!
@@ -237,8 +621,8 @@ function readChatBoxGeometry(
   possiblyDetachedMatches: (SVGElement | HTMLElement)[],
   chatScrollContainerSelector: string,
 ): ChatBoxGeometry | ChatBoxOutsideList | null {
-  // A row that remounted between the resolve and this read is gone for good, and
-  // reports a zero rect and an empty computed style rather than an error.
+  // A row can remount between resolution and this read. Its old element then reports a zero rectangle and empty computed style.
+  // The browser returns those values instead of an error.
   const el = possiblyDetachedMatches.find(candidate => candidate.isConnected)
   if (!el)
     return null
@@ -279,9 +663,8 @@ async function measureChatBox(locator: Locator, what: string): Promise<ChatBoxGe
 }
 
 /**
- * Measure a full-bleed chat element against the width it must span: the chat
- * scroll container's `clientWidth`, which IS its padding box (the scrollbar
- * excluded), and which is exactly what a band or a turn-end rule reaches.
+ * Measure the chat element against the scroll container's `clientWidth`.
+ * That value includes the padding box and excludes the scrollbar. A band or turn-end rule must span that width.
  */
 export async function measureAgainstChatList(locator: Locator): Promise<{ width: number, listWidth: number }> {
   const { width, listWidth } = await measureChatBox(locator, 'measureAgainstChatList')
@@ -291,12 +674,9 @@ export async function measureAgainstChatList(locator: Locator): Promise<{ width:
 /** Where an end-of-line card's sides sit, and the corner it turns at the edge. */
 export interface BubbleEdges {
   /**
-   * The list's padding-box width, which the two gaps are measured against.
-   *
-   * Carried so a failure reports the SHAPE and not just the symptom: with it, a
-   * card measured against the wrong list is one glance away from a card the
-   * bleed rule simply missed. The card's own width is `listWidth - leftGap -
-   * rightGap`, so it is not repeated here.
+   * Store the list's padding-box width to explain a failure.
+   * That width distinguishes measurement against the wrong list from a missing bleed rule.
+   * Calculate the card width from `listWidth - leftGap - rightGap`. Do not store that derived value again.
    */
   listWidth: number
   /** Distance from the card's right side to the list's padding-box right edge. */
@@ -323,11 +703,8 @@ export async function measureBubbleEdges(locator: Locator): Promise<BubbleEdges>
 }
 
 /**
- * Restrict `locator` to the elements the user can see.
- *
- * For page-rooted chat assertions that match by text rather than test id --
- * `getByText` matches the hidden premeasure copy just as readily as the real
- * row.
+ * Restrict `locator` to visible elements.
+ * Text queries such as `getByText` also match hidden premeasure copies. Apply this filter to page-rooted chat assertions that use text.
  */
 export function visibleOnly(locator: Locator): Locator {
   return locator.filter({ visible: true })
@@ -357,10 +734,12 @@ export function firstAssistantMessageRow(page: Page) {
 }
 
 /**
- * Standard arithmetic chat probe shared across the agent e2e specs. The answer
- * (6912) is a distinctive 4-digit number that won't match incidental UI text
- * (model names like gpt-5.4, durations, token counts, dates) the way a single
- * digit would.
+ * Share this arithmetic chat probe across agent end-to-end tests. Its answer, 6912, contains four distinct digits.
+ * A single digit can match incidental UI text. These examples contain such digits:
+ * - Model IDs such as gpt-5.4.
+ * - Durations.
+ * - Token counts.
+ * - Dates.
  */
 export const ARITHMETIC_PROMPT = 'What is 1234 + 5678? Reply with just the number.'
 
@@ -392,24 +771,36 @@ export const SECOND_ARITHMETIC_ANSWER = /\b3,?333\b/
 export const SECOND_ARITHMETIC_ANSWER_TEXT = '3333'
 
 /**
- * Assert the agent answered {@link ARITHMETIC_PROMPT}: the answer appears in
- * SOME assistant bubble. Scanning every bubble (rather than only the last one)
- * is robust to a trailing "Turn ended" result divider, which is itself an
- * agent-role bubble and would otherwise be picked up by lastAssistantBubble().
+ * Require the `ARITHMETIC_PROMPT` answer in at least one visible assistant bubble. Check all assistant bubbles.
+ * A trailing "Turn ended" divider is an agent-role bubble. `lastAssistantBubble()` can select that divider instead of the actual answer.
  */
-export async function expectAssistantAnswer(page: Page, opts?: { answer?: RegExp, timeout?: number }) {
+export async function expectAssistantAnswer(page: Page, opts?: { answer?: RegExp }) {
   const answer = opts?.answer ?? ARITHMETIC_ANSWER
-  const matches = assistantBubbles(page).filter({ hasText: answer })
-  await expect(matches).not.toHaveCount(0, opts?.timeout != null ? { timeout: opts.timeout } : undefined)
+  await expect(assistantBubbles(page).filter({ hasText: answer })).not.toHaveCount(0)
 }
 
 /**
- * Assert SOME visible user bubble contains `text` -- the mirror of
- * {@link expectAssistantAnswer} for the prompt side, used by the restart specs
- * to check that history survived.
+ * Require `text` in at least one visible user bubble.
+ * The restart specs use this prompt guard to verify stored history.
  */
 export async function expectUserMessage(page: Page, text: string) {
   await expect(userBubbles(page).filter({ hasText: text })).not.toHaveCount(0)
+}
+
+/**
+ * Wait until the agent of the visible tab ends its startup.
+ *
+ * - The visible composer proves that the agent tab rendered.
+ * - The startup overlay shows while the agent is STARTING, so the wait requires that no visible overlay remains.
+ * - A failed startup shows `agent-startup-error`, which fails the wait here and not later as a send that went nowhere.
+ *
+ * The overlay is matched by its test ID, never by its text. The overlay shows the startup message of the provider when
+ * the provider reports one, so a check for "Starting ..." passes while the startup still runs.
+ */
+export async function waitForAgentStarted(page: Page): Promise<void> {
+  await expect(composerEditor(page), 'the agent tab shows its composer').toBeVisible()
+  await expect(visibleOnly(page.getByTestId('agent-startup-overlay')), 'the agent ends its startup').toHaveCount(0)
+  await expect(visibleOnly(page.getByTestId('agent-startup-error')), 'the agent starts with no error').toHaveCount(0)
 }
 
 /**
@@ -418,16 +809,24 @@ export async function expectUserMessage(page: Page, text: string) {
  */
 const APPEARANCE_PROBE_MS = 2000
 
-/** Wait for the agent to finish its current turn (thinking indicator gone). */
-export async function waitForAgentIdle(page: Page, timeoutMs = 120_000) {
-  const thinking = page.locator('[data-testid="thinking-indicator"]')
+/**
+ * Wait for the agent to finish its current turn (thinking indicator gone).
+ *
+ * The helper takes no limit. It waits until `WAIT_REPORT_MARGIN_MS` (`./testDeadline`) before the test's own
+ * deadline, as the model-script waits do. A turn that never ends then fails here, at the idle step, and the margin
+ * leaves time for the fixtures to attach the model script. A test that needs more time raises its own timeout.
+ */
+export async function waitForAgentIdle(page: Page) {
+  // Each tab in a tile mounts its own ChatView. Hidden panes keep their thinking indicator.
+  // Scope the indicator to the visible pane. Otherwise a second tab creates two matches and a strict-mode failure.
+  const thinking = page.locator('[data-testid="thinking-indicator"]:visible')
   // Observe the indicator before checking that it is hidden. An immediate absence check could precede the start of a turn.
   // An expired observation is permitted because a fast turn can finish before the first check.
   // Use the short explicit interval instead of the 30-second action timeout.
   // This helper alone cannot distinguish a completed turn from one that starts after the observation interval.
   // Callers must also check the expected response or operation result.
   await thinking.waitFor({ state: 'visible', timeout: APPEARANCE_PROBE_MS }).catch(() => {})
-  await expect(thinking).not.toBeVisible({ timeout: timeoutMs })
+  await expect(thinking).not.toBeVisible({ timeout: waitTimeoutBeforeTestDeadline() })
 }
 
 // ──────────────────────────────────────────────
@@ -472,20 +871,67 @@ export async function openAboutDialog(page: Page): Promise<Locator> {
 }
 
 /**
+ * Require that `dialog` is open and does not close.
+ *
+ * `Dialog` defers its unmount by `motion.fast` ms while it plays the fade-out, so a visibility check alone also passes
+ * on a dialog that closes. `Dialog` sets `data-closing` in the same task as the key press or the click that closes it,
+ * so a dialog without the attribute after that action does not close. The opacity and the animations decide nothing:
+ * they change while the dialog fades in after it opens, as well as while it fades out.
+ */
+export async function expectDialogStaysOpen(dialog: Locator, message: string): Promise<void> {
+  await expect(dialog, message).toBeVisible()
+  await expect(dialog, message).not.toHaveAttribute('data-closing')
+}
+
+/**
+ * Locate the step-up prompt that asks the user to prove a factor ("Verify your identity").
+ * The hub refuses a sensitive action on a session that proved no factor, and the client then opens this prompt.
+ */
+export function elevationPrompt(page: Page): Locator {
+  return page.getByRole('dialog', { name: 'Verify your identity' })
+}
+
+/**
+ * Require the step-up prompt, answer it with `password`, and return it.
+ * The caller asserts the outcome: the refused action runs again after a correct password, and the prompt shows an
+ * alert after a wrong one.
+ * `prompt` is the dialog of the app by default. The standalone `/elevate` page, where the hub sends a browser from an
+ * authorization request, carries the same password form, so a caller passes that page's card instead.
+ */
+export async function answerElevationPrompt(page: Page, password: string, prompt: Locator = elevationPrompt(page)): Promise<Locator> {
+  await expect(prompt, 'the hub asks the session to prove a factor').toBeVisible()
+  await prompt.getByTestId('elevate-password').fill(password)
+  await prompt.getByTestId('elevate-password-submit').click()
+  return prompt
+}
+
+/**
+ * Open the agent info card and return its popover.
+ *
+ * The card is the popover of the status-bar info trigger. It carries the
+ * context-usage and the rate-limit rows, so those helpers share this
+ * navigation rather than repeat the open sequence.
+ */
+export async function openAgentInfoCard(page: Page): Promise<Locator> {
+  const infoTrigger = page.locator('[data-testid="agent-info-trigger"]')
+  await expect(infoTrigger).toBeVisible()
+  await infoTrigger.click()
+  const popover = page.locator('[data-testid="agent-info-popover"]')
+  await expect(popover).toBeVisible()
+  return popover
+}
+
+/**
  * Open Preferences and select a category.
  * Desktop uses sidebar tabs, and phones use a section menu.
  * category specifies the navigation ID. If absent, keep the dialog default.
  */
 export async function openPreferencesDialog(page: Page, category?: string) {
   const dialog = page.getByRole('dialog', { name: 'Preferences' })
-  // The `prefs` query parameter restores the open dialog and its category after
-  // a reload. Reuse that dialog rather than open a second one: its modal overlay
-  // makes the app-menu trigger inert, so a click there never lands.
-  //
-  // Read the PARAMETER, not the dialog's current visibility. Straight after a
-  // reload the restored dialog has not mounted yet, so a visibility check says
-  // "closed", this helper clicks the trigger, and the dialog then arrives and
-  // swallows the click — which reads as an app-menu trigger that stopped working.
+  // The `prefs` query parameter restores the open dialog and its category after reload. Use that restored dialog.
+  // Its modal overlay blocks the app-menu trigger.
+  // Read the query parameter to select the route. The restored dialog may not mount before a visibility check.
+  // Opening another dialog in that interval lets the restored overlay intercept the trigger click and cause a timeout.
   if (new URL(page.url()).searchParams.has('prefs')) {
     await expect(dialog).toBeVisible()
   }
@@ -517,15 +963,25 @@ const LOGIN_ATTEMPTS = 3
 const LOGIN_ATTEMPT_TIMEOUT_MS = 60_000
 
 /**
- * Login via the UI form. Navigates to /login, fills credentials, solves the
- * captcha, and returns once the authenticated app shell is on screen.
+ * Fill the sign-in form on the current page, solve its captcha, and submit it.
+ * The caller asserts the outcome: a test of a refused sign-in reads the error, and `loginViaUI` waits for the app.
  */
-export async function loginViaUI(page: Page, username = 'admin', password = 'admin123') {
-  await page.goto('/login')
+export async function submitLoginForm(page: Page, username: string, password: string): Promise<void> {
   await page.getByLabel('Username').fill(username)
   await page.getByLabel('Password').fill(password)
   await solveCaptchaViaUI(page)
   await page.getByRole('button', { name: 'Sign in' }).click()
+}
+
+/**
+ * Login via the UI form. Navigates to /login, fills credentials, solves the
+ * captcha, and returns once the authenticated app shell is on screen.
+ * Use it for a test of the sign-in itself. A test that only needs a signed-in app uses `openAppAs`, which costs no
+ * captcha solve.
+ */
+export async function loginViaUI(page: Page, username = TEST_ADMIN_USERNAME, password = TEST_ADMIN_PASSWORD) {
+  await page.goto('/login')
+  await submitLoginForm(page, username, password)
 
   // Login selects /. Workspace activation does not change the path, so the URL check can match exactly.
   // Wait for the authenticated shell trigger. Do not wait for networkidle after an ALTCHA challenge.
@@ -563,8 +1019,8 @@ export async function loginViaUI(page: Page, username = 'admin', password = 'adm
           await page.getByRole('button', { name: 'Sign in' }).click()
         }
         catch (resubmitError) {
-          // The form cannot be resubmitted, so another attempt reports the
-          // same failure. Report THIS error, which names the step that broke.
+          // The form cannot submit again. Another attempt returns the same failure.
+          // Report this error, which identifies the failed step.
           lastError = resubmitError
           break
         }
@@ -582,17 +1038,6 @@ export async function loginViaUI(page: Page, username = 'admin', password = 'adm
 }
 
 /**
- * Navigate to the registration page and approve the worker.
- */
-export async function approveWorkerViaUI(page: Page, token: string, name: string) {
-  await page.goto(`/register/${token}`)
-  await expect(page.getByRole('heading', { name: 'Approve Worker' })).toBeVisible()
-  await page.getByPlaceholder('e.g. my-workstation').fill(name)
-  await page.getByRole('button', { name: 'Approve' }).click()
-  await expect(page.getByText('Worker Registered Successfully')).toBeVisible()
-}
-
-/**
  * Open a new agent in the currently selected workspace.
  * Clicks the agent button in the tab bar which directly creates an agent.
  */
@@ -602,13 +1047,13 @@ export async function openAgentViaUI(page: Page) {
   // An early click therefore creates no tab and would leave the later count check waiting until timeout.
   await waitForActiveTabContext(page)
   // Count existing agent tabs so we can wait for the new one to appear.
-  const tabsBefore = await page.locator('[data-testid="tab"][data-tab-type="agent"]').count()
+  const tabsBefore = await agentTabs(page).count()
   await page.locator('[data-testid^="new-agent-button"]').first().click()
   // Wait for the new agent tab to appear (the API call is async)
-  await expect(page.locator('[data-testid="tab"][data-tab-type="agent"]')).toHaveCount(tabsBefore + 1)
+  await expectAgentTabCount(page, tabsBefore + 1)
   // Wait for the new tab to become selected and its editor to be ready
-  await expect(page.locator('[data-testid="tab"][data-tab-type="agent"][aria-selected="true"]')).toBeVisible()
-  await expect(page.locator('[data-testid="composer-editor"] .ProseMirror')).toBeVisible()
+  await expect(selectedAgentTab(page)).toBeVisible()
+  await expect(composerEditor(page)).toBeVisible()
 }
 
 /**
@@ -625,13 +1070,26 @@ export async function waitForActiveTabContext(page: Page) {
 }
 
 /**
- * Open a terminal through the tab-bar button. Wait for the active tab directory first.
- * The handler reads the directory synchronously. If absent, it opens a directory dialog without retrying.
- * An early click therefore creates no terminal, and later terminal assertions would time out.
+ * Open a terminal through the tab-bar button, wait until its xterm shows, and return the ID of the new terminal.
+ *
+ * - Wait for the active tab directory first. The handler reads the directory synchronously. If absent, it opens a
+ *   directory dialog without retrying, so an early click creates no terminal.
+ * - The new terminal is the terminal tab that was not there before the click. The tab list is optimistic state, so
+ *   the wait then requires the xterm of THAT terminal: a bare `.xterm` matches each mounted terminal, and a hidden
+ *   terminal tab stays mounted.
  */
-export async function openTerminalViaUI(page: Page) {
+export async function openTerminalViaUI(page: Page): Promise<string> {
   await waitForActiveTabContext(page)
+  const tabIds = () => terminalTabs(page).evaluateAll(tabs => tabs.map(tab => tab.getAttribute('data-tab-id') ?? ''))
+  const before = new Set(await tabIds())
   await page.locator('[data-testid="new-terminal-button"]').click()
+  let opened = ''
+  await expect.poll(async () => {
+    opened = (await tabIds()).find(id => id !== '' && !before.has(id)) ?? ''
+    return opened
+  }, { message: 'the button opens a terminal tab' }).not.toBe('')
+  await expect(terminalXterm(page, opened), 'the new terminal shows its xterm').toBeVisible()
+  return opened
 }
 
 /**
@@ -686,11 +1144,9 @@ export async function loginWithPasskeyViaUI(page: Page, username: string) {
 }
 
 /**
- * Open Preferences on the given section and return the dialog locator, so
- * the dialog's accessible name is stated once. A spec that needs the dialog
- * after opening it at a section reads `const dialog = await
- * openSettingsAt(page, 'apps')` instead of re-deriving the role lookup at
- * every call site -- a rename of the dialog could not be half-applied.
+ * Open Preferences at the requested section and return its canonical dialog locator.
+ * Reuse `const dialog = await openSettingsAt(page, 'apps')` to keep the accessible name in one place.
+ * This avoids inconsistent role lookups if that name changes.
  */
 export async function openSettingsAt(page: Page, category?: string) {
   await openPreferencesDialog(page, category)
@@ -709,31 +1165,6 @@ export async function logoutViaUI(page: Page) {
   await openAppMenu(page)
   await page.getByText('Log out').click()
   await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible()
-}
-
-/**
- * Open the context menu for a workspace item in the sidebar.
- * Finds the workspace by title text, then clicks the "..." menu trigger.
- */
-export async function openWorkspaceContextMenu(page: Page, workspaceTitle: string) {
-  const item = page.locator('[data-testid^="workspace-item-"]').filter({ hasText: workspaceTitle })
-  // Hover to reveal the menu trigger (it may be hidden until hover)
-  await item.hover()
-  // Click the "..." button (DropdownMenu.Trigger inside the workspace item)
-  await item.locator('button').first().click()
-}
-
-/**
- * Take a screenshot if E2E_SCREENSHOTS=1 is set.
- * Screenshots are saved to test-results/screenshots/{theme}/{name}.png
- */
-export async function screenshotIfEnabled(page: Page, name: string) {
-  if (process.env.E2E_SCREENSHOTS !== '1')
-    return
-  const theme = process.env.E2E_THEME || 'system'
-  const dir = join('test-results', 'screenshots', theme)
-  mkdirSync(dir, { recursive: true })
-  await page.screenshot({ path: join(dir, `${name}.png`), fullPage: false })
 }
 
 /**
@@ -776,7 +1207,7 @@ export async function getBrowserPrefValue(page: Page, userId: string, field: str
 
 /**
  * Set one browser preference for the supplied account ID.
- * Pass leapmuxServer.adminUserId because the page did not sign in yet.
+ * Pass leapmuxServer.adminUserId to select that account's stored preferences.
  * The page must already use the app origin. Await this write before reloading, so IndexedDB holds the value before the app reads it.
  * The value can be any supported preference type. For example, terminal size and opacity require numbers.
  * PreferencesContext rejects a numeric value stored as a string and uses the default instead.
@@ -791,9 +1222,6 @@ export async function setInitialBrowserPref(page: Page, userId: string, field: s
   await writeEntry(page, storedKey, prefs, Date.now() + BROWSER_PREFS_TTL_MS)
 }
 
-/** The hub's session cookie name, as `readSessionCookie` looks it up. */
-const SESSION_COOKIE_NAME = 'leapmux-session'
-
 /**
  * The session cookie the browser context currently holds, as the
  * "leapmux-session=<value>" token `loginViaToken` takes. Its inverse.
@@ -806,6 +1234,16 @@ export async function readSessionCookie(page: Page, step: string): Promise<strin
   if (!session?.value)
     throw new Error(`${step} did not set a session cookie on the browser context`)
   return `${SESSION_COOKIE_NAME}=${session.value}`
+}
+
+/**
+ * Sign in with the session `token`, load the app, and wait for the authenticated shell.
+ * The shell trigger proves that the app accepted the session, so a later step does not act on the sign-in page.
+ */
+export async function openAppAs(page: Page, token: string): Promise<void> {
+  await loginViaToken(page, token)
+  await page.goto('/')
+  await expect(appMenuTrigger(page), 'the app accepts the session').toBeVisible()
 }
 
 /**
@@ -832,43 +1270,26 @@ export async function loginViaToken(page: Page, token: string) {
 }
 
 /**
- * Wait for the next layout save event. Uses a generation counter so the
- * event can fire before the returned promise is awaited without being lost.
+ * Wait for the next layout save event. The promise retains an event that arrives before the caller awaits it.
  *
  * Usage:
  *   const saved = waitForLayoutSave(page)
  *   await doSomethingThatTriggersLayoutSave()
  *   await saved
  */
-export function waitForLayoutSave(page: Page): Promise<void> {
-  // Capture the current generation and install a one-shot listener that
-  // resolves a promise on the next event. The generation counter guards
-  // against the event firing between the evaluate call and the listener
-  // being attached (the counter is incremented by a persistent listener
-  // installed once per page).
+export function waitForLayoutSave(page: Pick<Page, 'evaluate'>): Promise<void> {
   return page.evaluate(() => {
-    const w = window as any
-    if (w.__layoutSaveGenInstalled == null) {
-      w.__layoutSaveGen = 0
-      window.addEventListener('leapmux:layout-saved', () => {
-        w.__layoutSaveGen++
-      })
-      w.__layoutSaveGenInstalled = true
-    }
-    const genBefore = w.__layoutSaveGen as number
     return new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('layout save timeout')), 30_000)
-      const check = () => {
-        if ((w.__layoutSaveGen as number) > genBefore) {
-          clearTimeout(timer)
-          resolve()
-        }
+      const timer = setTimeout(() => {
+        window.removeEventListener('leapmux:layout-saved', onSaved)
+        reject(new Error('layout save timeout'))
+      }, 30_000)
+      function onSaved(): void {
+        clearTimeout(timer)
+        window.removeEventListener('leapmux:layout-saved', onSaved)
+        resolve()
       }
-      window.addEventListener('leapmux:layout-saved', () => {
-        check()
-      }, { once: true })
-      // Also check immediately in case it fired between genBefore read and listener attach.
-      check()
+      window.addEventListener('leapmux:layout-saved', onSaved, { once: true })
     })
   })
 }
@@ -895,6 +1316,18 @@ export async function expectSettingsChip(page: Page, text: string | RegExp) {
 /** Assert that NO status-bar chip displays `text`. */
 export async function expectNoSettingsChip(page: Page, text: string | RegExp) {
   await expect(settingsChips(page).filter({ hasText: text })).toHaveCount(0)
+}
+
+/**
+ * Press Shift+Tab in the composer, which moves the session to its next mode, and require `expectedChip` after the
+ * press. The check does not prove that the chip was absent before the press. The press reaches the composer only while
+ * the composer holds the focus.
+ */
+export async function toggleModeWithShortcut(page: Page, expectedChip: string): Promise<void> {
+  await focusComposer(page)
+  await page.keyboard.press('Shift+Tab')
+  await waitForSettingsIdle(page)
+  await expectSettingsChip(page, expectedChip)
 }
 
 /**
@@ -937,11 +1370,9 @@ async function ensureExpanded(trigger: Locator) {
 }
 
 /**
- * Whether the agent's permission-mode picker currently offers one option id.
- *
- * A permission shortcut is drawn only when the session offers every value its preset
- * sets, so a spec that must know which shortcut to expect asks the picker rather than
- * guessing from the provider. Leaves every composer menu closed.
+ * Return whether the permission picker offers an option ID.
+ * A shortcut appears only when the session offers every value that its preset sets.
+ * Read the picker to select the expected shortcut. Close all composer menus before return.
  */
 export async function permissionModeOffered(page: Page, modeId: string): Promise<boolean> {
   const group = await openSettingsMenu(page, 'permissionMode')
@@ -950,11 +1381,171 @@ export async function permissionModeOffered(page: Page, modeId: string): Promise
   return offered
 }
 
-/** Apply one composer permission preset and wait for the settings round-trip. */
-export async function applyPermissionPreset(page: Page, kind: 'smart' | 'bypass') {
-  const menu = await openPlusMenu(page)
-  await menu.getByTestId(`composer-${kind}-permissions`).click()
+/** The native settings and Worker identity of the selected agent. */
+interface NativeSettingsAgent {
+  agent: AgentInfo
+  context: Parameters<typeof nativeAgentById>[0]
+}
+
+/**
+ * Return the hub that serves the page.
+ * A spec can run its own hub and Worker, and the session cookie of that hub is not valid on the suite hub.
+ */
+function pageHubUrl(page: Page): string {
+  const url = new URL(page.url())
+  if (url.protocol !== 'http:' && url.protocol !== 'https:')
+    throw new Error(`The native settings lookup needs a page that a hub serves, not a ${url.protocol} page.`)
+  return url.origin
+}
+
+/** Resolve only the tab identity through the Hub. Read its actual settings from the owning Worker. */
+async function nativeSettingsAgent(page: Page): Promise<NativeSettingsAgent> {
+  const hubUrl = pageHubUrl(page)
+  // A previous settings RPC can replace the process. Read the Worker catalog after that RPC settles.
   await waitForSettingsIdle(page)
+  const agentId = await selectedAgentTabId(page)
+  const cookie = await readSessionCookie(page, 'The native settings lookup')
+  const located = await callHub<JsonValue>(hubUrl, 'WorkspaceService/LocateTab', { tabId: agentId, tabType: TabType.AGENT }, {
+    cookie,
+    operation: 'The native settings tab lookup',
+  })
+  const { tab } = fromJson(LocateTabResponseSchema, located)
+  if (!tab || tab.tabId !== agentId || tab.tabType !== TabType.AGENT || !tab.workerId)
+    throw new Error('The native settings tab lookup returned no matching Worker identity.')
+  const context = { leapmuxServer: { hubUrl, adminToken: cookie, workerId: tab.workerId } }
+  let agent = await nativeAgentById(context, agentId)
+  if (agent?.status === AgentStatus.STARTING) {
+    agent = await retryUntilPass(async () => {
+      const current = await nativeAgentById(context, agentId)
+      if (!current)
+        throw new Error(`The Worker holds no native settings agent ${agentId}.`)
+      expect(current.status, 'the Worker ends the startup of the native settings agent').not.toBe(AgentStatus.STARTING)
+      return current
+    })
+  }
+  if (agent?.status === AgentStatus.STARTUP_FAILED)
+    throw new Error(`The native settings agent failed to start: ${agent.startupError || 'The Worker supplied no startup error.'}`)
+  if (!agent || agent.status !== AgentStatus.ACTIVE)
+    throw notActiveSettingsAgentError(agent)
+  return { agent, context }
+}
+
+/**
+ * The error for a settings agent that the owning Worker does not report as ACTIVE.
+ * It states the status that the Worker reported, or that it listed no row, because a
+ * reader needs that fact to tell a restart, a stop, and a missing tab apart.
+ */
+function notActiveSettingsAgentError(agent: AgentInfo | null | undefined): Error {
+  const reported = agent ? (AgentStatus[agent.status] ?? String(agent.status)) : 'no row'
+  return new Error(`The native settings agent is not active on its owning Worker (${reported}).`)
+}
+
+/** Reject an unavailable native group or value before any menu retry begins. */
+async function validateNativeSettingsOption(page: Page, testId: string): Promise<void> {
+  const groupId = settingsGroupIdOf(testId)
+  const value = testId.slice(groupId.length + 1)
+  const { agent } = await nativeSettingsAgent(page)
+  const group = nativeOptionGroup(agent, groupId)
+  if (!group)
+    throw new Error(`The native catalog has no option group ${groupId}.`)
+  if (!group.options.some(option => option.id === value))
+    throw new Error(`The native catalog has no value ${value} for option group ${groupId}.`)
+  if (!group.mutable)
+    throw new Error(`The native option group ${groupId} is read-only.`)
+}
+
+/** Apply an available preset, or verify its active values, through the actual Worker. */
+export async function applyPermissionPreset(page: Page, kind: 'smart' | 'bypass') {
+  const snapshot = await nativeSettingsAgent(page)
+  const preset = permissionPresetsFor(snapshot.agent.agentProvider)?.[kind]
+  if (!permissionPresetAvailable(preset, snapshot.agent.optionGroups))
+    throw new Error(`The actual native catalog offers no mutable ${kind} permission preset.`)
+  const entries = Object.entries(preset.sets)
+  const active = entries.every(([groupId, value]) => nativeOptionValue(snapshot.agent, groupId) === value)
+  const offered = await openPermissionShortcut(page, kind)
+  if (active) {
+    await expect(offered).toBeDisabled()
+    for (const [groupId, value] of entries) {
+      const groupMenu = await openSettingsMenu(page, groupId)
+      const selected = groupMenu.getByTestId(`${groupId}-${value}`)
+      await expect(selected).toBeEnabled()
+      const selectedAttribute = (await selected.getAttribute('role')) === 'option' ? 'aria-selected' : 'aria-checked'
+      await expect(selected).toHaveAttribute(selectedAttribute, 'true')
+    }
+    await closeComposerMenus(page)
+    return
+  }
+  await expect(offered).toBeEnabled()
+  await offered.click()
+  await waitForSettingsIdle(page)
+  await retryUntilPass(async () => {
+    const current = await nativeAgentById(snapshot.context, snapshot.agent.id)
+    if (!current)
+      throw new Error(`The Worker holds no native agent ${snapshot.agent.id}.`)
+    expect(Object.fromEntries(entries.map(([groupId]) => [groupId, nativeOptionValue(current, groupId)])), 'the Worker applies every option of the preset')
+      .toEqual(Object.fromEntries(entries))
+  })
+}
+
+/**
+ * Open the composer's `[+]` menu with the permission shortcut for `kind`, and return that shortcut.
+ * An open menu keeps its row list, and a shortcut that arrives later enters the next row list.
+ * When the shortcut is absent, open and close one probe menu so that the next open shows it.
+ * This function reads no native settings, so a spec can drive it on a static page.
+ */
+export async function openPermissionShortcut(page: Page, kind: 'smart' | 'bypass'): Promise<Locator> {
+  const testId = `composer-${kind}-permissions`
+  const action = page.locator('[data-testid="composer-plus-popover"]').getByTestId(testId)
+  await closeComposerMenus(page)
+  if (await action.count() === 0) {
+    await openPlusMenu(page)
+    await closeComposerMenus(page)
+  }
+  await expect(action).toHaveCount(1)
+  const menu = await openPlusMenu(page)
+  const offered = menu.getByTestId(testId)
+  await expect(offered).toBeVisible()
+  return offered
+}
+
+/**
+ * How the `[+]` menu offers a permission shortcut:
+ * - `offered`: the shortcut is there and enabled.
+ * - `disabled`: the shortcut is there and disabled, as it is while its preset is active.
+ * - `absent`: the menu has no such shortcut.
+ */
+export type PermissionShortcutState = 'offered' | 'disabled' | 'absent'
+
+/**
+ * Require the stated state of each permission shortcut in the composer's `[+]` menu, then close the menus.
+ * An open menu keeps its row list, and a shortcut that arrives later enters the next row list. So the function opens
+ * and closes one probe menu first, as `openPermissionShortcut` does, and checks the rows of the next menu.
+ */
+export async function expectPermissionShortcuts(
+  page: Page,
+  expected: Partial<Record<'smart' | 'bypass', PermissionShortcutState>>,
+): Promise<void> {
+  const kinds = (['smart', 'bypass'] as const).filter(kind => expected[kind] !== undefined)
+  if (kinds.length === 0)
+    throw new Error('The permission shortcut check needs the state of at least one shortcut.')
+  await closeComposerMenus(page)
+  await openPlusMenu(page)
+  await closeComposerMenus(page)
+  const menu = await openPlusMenu(page)
+  for (const kind of kinds) {
+    const shortcut = menu.getByTestId(`composer-${kind}-permissions`)
+    const state = expected[kind]
+    if (state === 'absent') {
+      await expect(shortcut, `the menu has no ${kind} permission shortcut`).toHaveCount(0)
+      continue
+    }
+    await expect(shortcut, `the menu offers the ${kind} permission shortcut`).toBeVisible()
+    if (state === 'disabled')
+      await expect(shortcut, `the ${kind} permission shortcut is disabled`).toBeDisabled()
+    else
+      await expect(shortcut, `the ${kind} permission shortcut is enabled`).toBeEnabled()
+  }
+  await closeComposerMenus(page)
 }
 
 /** Open the composer's `[+]` menu and leave it open. */
@@ -993,41 +1584,79 @@ export async function openSettingsMenu(page: Page, groupId: string): Promise<Loc
     await ensureExpanded(plus)
     await ensureExpanded(submenu)
   }).toPass()
-  // Scope every option lookup to THIS popover. The status-bar chip renders the
-  // same group with the same per-option test ids, so an unscoped locator
-  // resolves to two elements and fails Playwright's strict-mode check.
+  // Look up every option inside this popover.
+  // The status-bar chip uses the same group and per-option test IDs. A page-rooted query matches two elements and fails strict mode.
   return page.locator(`[data-testid="composer-group-${groupId}-popover"]`)
 }
 
 /**
- * Pick `testId` out of the agent settings menu, opening its group first.
- *
- * Open-then-click is retried as ONE unit: a settings round-trip landing
- * between the two re-renders the dropdown and can close it, and an open that
- * has already been awaited cannot be re-established by the click itself. The
- * caller's invariant is "this option got chosen", so that is what is retried.
+ * Open the group before clicking `testId`. Treat open and click as one attempt.
+ * A settings reply between those steps can rerender and close the dropdown. A click retry alone cannot repeat the completed open step.
+ * Repeat the open and click operations until the click completes.
  */
 export async function chooseSettingsOption(page: Page, testId: string) {
+  await validateNativeSettingsOption(page, testId)
   await expect(async () => {
     const menu = await openSettingsMenu(page, settingsGroupIdOf(testId))
-    await menu.locator(`[data-testid="${testId}"]`).click()
+    await menu.getByTestId(testId).click()
   }).toPass()
+}
+
+/**
+ * Return the values that the settings menu offers for one option group, in menu order.
+ * The menu draws up to seven options as radio items and a longer list as a filterable list box. Both carry the test
+ * ID `<groupId>-<value>`. The function reads the option rows by their role, so a row's label element and the filter
+ * box, which carry test IDs with the same prefix, stay out of the list. It closes the menus before it returns.
+ */
+export async function offeredSettingsOptions(page: Page, groupId: string): Promise<string[]> {
+  const menu = await openSettingsMenu(page, groupId)
+  const testIds = await menu.locator('[role="menuitemradio"], [role="option"]')
+    .evaluateAll(rows => rows.map(row => row.getAttribute('data-testid') ?? ''))
+  await closeComposerMenus(page)
+  const prefix = `${groupId}-`
+  return testIds.map((testId) => {
+    if (!testId.startsWith(prefix) || testId.length === prefix.length)
+      throw new Error(`The ${groupId} settings menu holds an option whose test ID is not "${prefix}<value>": "${testId}".`)
+    return testId.slice(prefix.length)
+  })
+}
+
+/**
+ * Require `testId` as the selected option in the settings menu.
+ * The status bar shows chips for these groups:
+ * - The model.
+ * - The plugin's `configuration.effortGroupKey`, which defaults to `effort`.
+ * - The mode.
+ * Other axes show their choices only in the menu.
+ */
+export async function expectSettingsOptionChosen(page: Page, testId: string) {
+  await expect(async () => {
+    const menu = await openSettingsMenu(page, settingsGroupIdOf(testId))
+    const option = menu.locator(`[data-testid="${testId}"]`)
+    const selectedAttribute = (await option.getAttribute('role')) === 'option' ? 'aria-selected' : 'aria-checked'
+    await expect(option).toHaveAttribute(selectedAttribute, 'true')
+  }).toPass()
+  await closeComposerMenus(page)
 }
 
 /**
  * Locate a directory-tree row by its displayed name and row test ID.
  * A Tooltip duplicates truncated text, so a text-only locator can match twice.
  * Apply :visible before first() because the sidebar has another mounted copy. The other copy can intercept or reject pointer actions.
+ * The name matches as a substring by default. Pass `exact` where a longer name can contain it, such as `src` in
+ * `src-tauri`: the exact form compares the row's label, not the row's text, which also holds its menu items.
  */
-export function treeRow(page: Page, name: string): Locator {
-  return page.locator(`[data-testid="tree-row"]${VISIBLE}`).filter({ hasText: name }).first()
+export function treeRow(page: Page, name: string, options: { exact?: boolean } = {}): Locator {
+  const rows = page.locator(`[data-testid="tree-row"]${VISIBLE}`)
+  const matching = options.exact
+    ? rows.filter({ has: page.getByTestId('tree-row-name').getByText(name, { exact: true }) })
+    : rows.filter({ hasText: name })
+  return matching.first()
 }
 
 /**
- * Every visible tree row's NAME, in display order — for asserting on the sort.
- *
- * A row's own text is not its name: the three-dot menu renders inside the row
- * and stays mounted while closed, so the row carries its menu items' text too.
+ * Read every visible tree row's label in display order to check sorting.
+ * The row text also contains its mounted three-dot menu items, even when that menu is closed. Read the label alone.
  */
 export function treeRowNames(page: Page): Locator {
   return page.locator(`[data-testid="tree-row"]${VISIBLE} [data-testid="tree-row-name"]`)
@@ -1035,30 +1664,22 @@ export function treeRowNames(page: Page): Locator {
 
 /**
  * Wait until the draft reaches durable browser storage before reload.
- * The debounce and write queue can both delay persistence. A fixed sleep cannot account for delayed timers on a busy host.
- * The caller lacks the agent ID, so inspect draft rows for its account.
- * Build the prefix with accountStorageKey and compare with startsWith. A regular expression would interpret metacharacters in the key.
+ * The caller lacks the agent ID, so inspect the draft rows of its account.
  */
 export async function waitForEditorDraft(page: Page, userId: string, text: string) {
-  const prefix = accountStorageKey(userId, PREFIX_EDITOR_DRAFT)
-  await expect.poll(async () => {
-    for (const key of await storageKeys(page)) {
-      if (!key.startsWith(prefix))
-        continue
-      const row = await readEntry(page, key)
-      const content = (row?.v as { content?: unknown } | undefined)?.content
-      if (typeof content === 'string' && content.includes(text))
-        return true
-    }
-    return false
-  }, `the editor draft "${text}" must be persisted before the reload`).toBe(true)
+  await waitForStoredEntry(
+    page,
+    accountStorageKey(userId, PREFIX_EDITOR_DRAFT),
+    value => isObject(value) && typeof value.content === 'string' && value.content.includes(text),
+    `the editor draft "${text}" must be persisted before the reload`,
+  )
 }
 
 /**
  * Wait until the Files sort preference reaches durable browser storage.
- * The write queue can outlive the click. pagehide flush also awaits a connection, so it does not complete synchronously.
- * Match the prefix, worker ID, and stored value. The worker can canonicalize the directory path, such as /var to /private/var on macOS.
- * One agent per test makes this lookup unambiguous.
+ * The pagehide flush also awaits a connection, so it does not complete synchronously.
+ * Match the worker ID and the stored value, not the directory: the worker can canonicalize the directory path, such
+ * as /var to /private/var on macOS. One agent per test makes this lookup unambiguous.
  */
 export async function waitForFilesSortOrder(
   page: Page,
@@ -1066,18 +1687,12 @@ export async function waitForFilesSortOrder(
   workerId: string,
   expected: FileSortOrder,
 ) {
-  const prefix = accountStorageKey(userId, `${PREFIX_FILES_SORT_ORDER}${workerId}:`)
-  await expect.poll(async () => {
-    for (const key of await storageKeys(page)) {
-      if (!key.startsWith(prefix))
-        continue
-      const row = await readEntry(page, key)
-      const stored = row?.v as { key?: unknown, direction?: unknown } | undefined
-      if (stored?.key === expected.key && stored?.direction === expected.direction)
-        return true
-    }
-    return false
-  }, `the sort order ${expected.key}/${expected.direction} must be persisted before the reload`).toBe(true)
+  await waitForStoredEntry(
+    page,
+    accountStorageKey(userId, `${PREFIX_FILES_SORT_ORDER}${workerId}:`),
+    value => isObject(value) && value.key === expected.key && value.direction === expected.direction,
+    `the sort order ${expected.key}/${expected.direction} must be persisted before the reload`,
+  )
 }
 
 /**
@@ -1095,10 +1710,12 @@ export async function renameTabViaUI(page: Page, tab: Locator, newTitle: string)
 }
 
 /**
- * Open a sidebar row menu and wait for the requested item.
- * Retry hover, trigger click, and item lookup together. Git refreshes and turn completion can replace a row during the interaction.
- * Workspace, worker, and todo changes can also update the sidebar. An open-menu check alone cannot ensure that the requested item remains.
- * File-tree and branch-group menus share this helper and supply their own trigger locators.
+ * Open a sidebar row menu and wait for the requested item. Retry these steps together:
+ * - Hover the row.
+ * - Click its trigger.
+ * - Find the requested item.
+ * Git refresh and turn completion can replace the row during this sequence. Workspace, Worker, and to-do updates can also replace sidebar rows.
+ * An open-menu check cannot guarantee that the requested item remains. File-tree and branch-group menus supply their own trigger locators.
  */
 export async function openRowMenu(row: Locator | null, trigger: Locator, item: Locator) {
   await expect(async () => {
@@ -1114,11 +1731,8 @@ export async function openRowMenu(row: Locator | null, trigger: Locator, item: L
 }
 
 /**
- * Open a row's menu and click one of its items, retried together.
- *
- * Same reasoning as {@link openRowMenu}: the menu can vanish between opening it
- * and clicking, so the caller's invariant -- "this item got clicked" -- is what
- * gets retried.
+ * Open a row menu and click an item as one attempt.
+ * The menu can close between open and click. Retry the whole operation until the item click completes.
  */
 export async function clickRowMenuItem(row: Locator | null, trigger: Locator, item: Locator) {
   await expect(async () => {
@@ -1138,22 +1752,35 @@ function treeMenuTrigger(row: Locator): Locator {
  * `requiredItem` defaults to the one entry every variant of the menu carries,
  * for callers that only need it open.
  */
-export async function openTreeContextMenu(page: Page, row: Locator, requiredItem = 'tree-copy-path-button') {
-  await openRowMenu(row, treeMenuTrigger(row), page.locator(`[data-testid="${requiredItem}"]:visible`))
+export async function openTreeContextMenu(row: Locator, requiredItem = 'tree-copy-path-button') {
+  await openRowMenu(row, treeMenuTrigger(row), treeMenuItem(row, requiredItem))
 }
 
 /** Open a tree row's context menu and click one of its items. */
-export async function clickTreeContextItem(page: Page, row: Locator, itemTestId: string) {
-  await clickRowMenuItem(row, treeMenuTrigger(row), page.locator(`[data-testid="${itemTestId}"]:visible`))
+export async function clickTreeContextItem(row: Locator, itemTestId: string) {
+  await clickRowMenuItem(row, treeMenuTrigger(row), treeMenuItem(row, itemTestId))
 }
 
 /**
- * Locate the first visible branch-group row.
+ * One item of a tree row's context menu.
+ *
+ * The menu lies inside its row, so a lookup below the row never matches the
+ * menu of another row. A page-wide lookup can: a closed popover stays laid out
+ * while it fades out, and Playwright counts it as visible at any opacity.
+ */
+export function treeMenuItem(row: Locator, testId: string): Locator {
+  return row.locator(`[data-testid="${testId}"]:visible`)
+}
+
+/**
+ * Locate the first visible branch-group row below `root`.
  * The sidebar has two mounted copies. An unfiltered first() can select a covered copy that rejects pointer actions.
+ * Pass `workspaceChildren(page, id)` as the root when another workspace can also stay expanded, or when the row must
+ * belong to one workspace. A page-level lookup selects the first expanded workspace in the whole sidebar.
  * Use aria-expanded to identify the menu trigger. A last-button lookup can instead select a hidden menu item inside the popover.
  */
-export function branchGroupRow(page: Page): Locator {
-  return page.locator(`[data-testid="tab-tree-branch-group"]${VISIBLE}`).first()
+export function branchGroupRow(root: Page | Locator): Locator {
+  return root.locator(`[data-testid="tab-tree-branch-group"]${VISIBLE}`).first()
 }
 
 function branchMenuTrigger(row: Locator): Locator {
@@ -1176,11 +1803,9 @@ function repoMenuTrigger(row: Locator): Locator {
 }
 
 /**
- * Open a repository group's three-dot menu, with `requiredItem` on screen.
- *
- * The item is looked up INSIDE the row, not on the page: `DropdownMenu` renders
- * its children eagerly, so every other repository row on screen holds a hidden
- * copy of the same item and a page-rooted `getByRole` resolves to several.
+ * Open the repository group's three-dot menu and require `requiredItem` inside that row.
+ * `DropdownMenu` mounts its children eagerly. Each other repository row can contain a hidden copy of the same item.
+ * A page-rooted role query matches several copies. Scope the query to this row.
  */
 export async function openRepoMenu(row: Locator, requiredItem = 'Collapse all branches') {
   await openRowMenu(row, repoMenuTrigger(row), repoMenuItem(row, requiredItem))
@@ -1203,12 +1828,66 @@ export function repoMenuItem(row: Locator, name: string): Locator {
 }
 
 /**
- * Open a branch group's three-dot menu, with `requiredItem` on screen.
- *
- * Reopening the SAME menu right after a dialog closes needs a wait in between:
- * the menu stays open behind a modal dialog, so `openRowMenu` sees the item as
- * visible, skips the trigger, and then clicks an item that disappears with the
- * dialog. Wait for `menu[popover]:visible` to reach 0 first.
+ * The three-dot trigger of a workspace row, by its test ID.
+ * A lookup by position, such as the first button of the row, finds another control when a button is added before it.
+ */
+function workspaceMenuTrigger(row: Locator): Locator {
+  return row.getByTestId('workspace-row-menu-trigger')
+}
+
+/**
+ * One item of a workspace row's menu, by its exact name.
+ * The menu lies inside its row, so the lookup never matches the menu of another row. `exact`, because the menu's
+ * info block joins every info row into one accessible name, so a loose `Delete` also matches that block.
+ */
+export function workspaceMenuItem(page: Page, workspaceId: string, name: string): Locator {
+  return workspaceRow(page, workspaceId).getByRole('menuitem', { name, exact: true })
+}
+
+/**
+ * Open the three-dot menu of a workspace row, with `requiredItem` on screen. The open is retried, because the
+ * sidebar replaces a row on each workspace, Worker, or to-do update.
+ * An archived workspace has no Rename item, so pass an item that its menu holds, such as `Unarchive`.
+ */
+export async function openWorkspaceRowMenu(page: Page, workspaceId: string, requiredItem = 'Rename'): Promise<void> {
+  const row = workspaceRow(page, workspaceId)
+  await openRowMenu(row, workspaceMenuTrigger(row), workspaceMenuItem(page, workspaceId, requiredItem))
+}
+
+/** Open a workspace row's menu and click one of its items, as one retried attempt. */
+export async function clickWorkspaceMenuItem(page: Page, workspaceId: string, name: string): Promise<void> {
+  const row = workspaceRow(page, workspaceId)
+  await clickRowMenuItem(row, workspaceMenuTrigger(row), workspaceMenuItem(page, workspaceId, name))
+}
+
+/**
+ * Archive a workspace through its row menu and the confirmation dialog, and wait for the Archived section.
+ * For a test that archives as a precondition. A test of the dialog itself drives each step and reads the dialog text.
+ */
+export async function archiveWorkspaceViaUI(page: Page, workspaceId: string): Promise<void> {
+  await clickWorkspaceMenuItem(page, workspaceId, 'Archive')
+  const dialog = page.getByRole('dialog', { name: 'Archive workspace' })
+  await dialog.getByRole('button', { name: 'Archive', exact: true }).click()
+  await expect(dialog).toBeHidden()
+  await expect(sidebarSectionHeader(page, 'workspaces_archived')).toBeVisible()
+}
+
+/**
+ * Delete a workspace through its row menu and both steps of the confirm button, and wait until its row is gone.
+ * The first click arms the button, and its name changes to `Confirm?`. The second click deletes.
+ */
+export async function deleteWorkspaceViaUI(page: Page, workspaceId: string): Promise<void> {
+  await clickWorkspaceMenuItem(page, workspaceId, 'Delete')
+  const dialog = page.getByRole('dialog', { name: 'Delete workspace' })
+  await dialog.getByRole('button', { name: 'Delete', exact: true }).click()
+  await dialog.getByRole('button', { name: 'Confirm?' }).click()
+  await expect(workspaceRow(page, workspaceId)).toBeHidden()
+}
+
+/**
+ * Wait for no visible `menu[popover]` before reopening the branch menu after a dialog closes.
+ * The old menu stays open behind the modal dialog. `openRowMenu` can see its item and skip the trigger.
+ * The item then disappears as the dialog closes. Waiting for zero visible menus prevents that stale click.
  */
 export async function openBranchMenu(page: Page, row: Locator, requiredItem = 'Switch to branch...') {
   await openRowMenu(row, branchMenuTrigger(row), page.getByRole('menuitem', { name: requiredItem }))
@@ -1220,63 +1899,83 @@ export async function clickBranchMenuItem(page: Page, row: Locator, itemName: st
 }
 
 /**
- * Wait for the in-flight settings indicator to clear.
- *
- * The marker rides the composer's always-present `[+]` trigger, NOT the status
- * bar: the bar is a preference that menu can switch off, which would otherwise
- * take the only in-flight feedback with it.
+ * Wait for the pending settings indicator to clear.
+ * The always-present composer `[+]` trigger carries the marker. A preference can hide the status bar.
+ * Keeping the marker on the trigger preserves feedback when the status bar is hidden.
  */
 export async function waitForSettingsIdle(page: Page) {
   await expect(page.locator('[data-testid="settings-loading-spinner"]')).not.toBeVisible()
 }
 
 /**
- * Wait for an option catalog through the model submenu.
- * Status-bar chips can be hidden by a preference. The plus menu remains available.
+ * Wait for an option catalog through a submenu that the provider offers.
+ * A preference can hide the status-bar chips. The plus menu stays available.
  * A submenu exists only when the agent supplies a group with at least one option.
- * Close and reopen the menu on each attempt so a previous empty menu cannot hide newly supplied options.
+ * The default `model` group is correct only for a provider whose running agent offers a model group.
+ * A shared helper that serves every provider must call `waitForNativeSettingsHydrated` instead.
  */
-export async function waitForSettingsHydrated(page: Page) {
+export async function waitForSettingsHydrated(page: Page, groupId = 'model') {
+  await waitForSettingsGroupsOffered(page, async () => [groupId])
+}
+
+/**
+ * Wait until the plus menu offers each option group of the live Worker catalog of the active agent.
+ * A fixed group ID is not correct for every provider:
+ * - A running Fast Agent or Amp agent has no model group, so the default wait of `waitForSettingsHydrated` never ends.
+ * - The Worker adds a read-only model group to the catalog of an agent that does not run.
+ *   A wait for the model group can thus end before the live catalog arrives.
+ * Each attempt reads the catalog again, because a provider can change its groups after its start.
+ */
+export async function waitForNativeSettingsHydrated(page: Page): Promise<void> {
+  const { agent, context } = await nativeSettingsAgent(page)
+  await waitForSettingsGroupsOffered(page, async () => {
+    const current = await nativeAgentById(context, agent.id)
+    if (current?.status !== AgentStatus.ACTIVE)
+      throw notActiveSettingsAgentError(current)
+    const offered = current.optionGroups.filter(hasOptions).map(group => group.id)
+    if (offered.length === 0)
+      throw new Error('The live native catalog has no group with an option, so the settings menu cannot show that catalog.')
+    return offered
+  })
+}
+
+/**
+ * Wait until the plus menu offers each group that `expectedGroupIds` returns.
+ * Close and reopen the menu on each attempt so a previous empty menu cannot hide newly supplied options.
+ * So each attempt reads each group once, without waiting. A waiting assertion there would hold an early,
+ * empty menu for the whole expect timeout before the next attempt could reopen it.
+ */
+async function waitForSettingsGroupsOffered(page: Page, expectedGroupIds: () => Promise<readonly string[]>): Promise<void> {
   const plus = page.locator('[data-testid="composer-plus-trigger"]')
   await expect(plus).toBeVisible()
   await expect(async () => {
+    const groupIds = await expectedGroupIds()
     await closeComposerMenus(page)
     await ensureExpanded(plus)
-    await expect(settingsGroupTrigger(page, 'model')).toBeVisible()
+    await expect(page.locator('[data-testid="composer-plus-popover"]')).toBeVisible()
+    for (const groupId of groupIds)
+      expect(await settingsGroupTrigger(page, groupId).isVisible(), `the menu offers the ${groupId} group`).toBe(true)
   }).toPass()
   await closeComposerMenus(page)
 }
 
 /**
- * Wait for a workspace page to be fully loaded.
- * Waits for either a tab or the empty tile actions/hint.
- *
- * Each locator uses `.first()` because workspaces can have multiple
- * tabs visible; without `.first()`, Playwright's strict-mode check
- * throws on multi-match — `isMaybeVisible` swallows the error and
- * returns false, masking that the workspace IS ready.
- *
- * `timeoutMs` is forwarded to the underlying `expect.poll` so callers
- * driving the dev-mode worker (where worker subprocess spawn extends
- * first-render latency beyond the default expect timeout) can extend
- * the wait without re-implementing the readiness shape.
+ * Wait for a tab or the empty-tile actions or hint to prove that the workspace page is ready.
+ * Use `.first()` for each locator because several tabs can be visible.
+ * Without that restriction, strict mode throws. `isMaybeVisible` catches the error and returns false, which hides the actual ready state.
  */
-export async function waitForWorkspaceReady(page: Page, timeoutMs?: number) {
-  const pollOpts = timeoutMs != null ? { timeout: timeoutMs } : undefined
+export async function waitForWorkspaceReady(page: Page) {
   await expect.poll(async () => {
-    if (await page.locator('[data-testid="tab"]').first().isVisible().catch(() => false))
+    if (await isMaybeVisible(page.locator('[data-testid="tab"]').first()))
       return true
-    // Mobile layout: there is no tab strip, and a workspace that HAS tabs
-    // never shows the empty-tile placeholder either — the current-tab chip
-    // is the one signal that the workspace shell rendered with its tabs.
-    if (await page.locator('[data-testid="tab-chip"]').first().isVisible().catch(() => false))
+    // Mobile has no tab strip. A workspace with tabs also hides the empty-tile placeholder.
+    // Its current-tab chip proves that the workspace shell rendered the tabs.
+    if (await isMaybeVisible(page.locator('[data-testid="tab-chip"]').first()))
       return true
-    if (await page.locator('[data-testid="empty-tile-actions"]').first().isVisible().catch(() => false))
+    if (await isMaybeVisible(page.locator('[data-testid="empty-tile-actions"]').first()))
       return true
-    if (await page.locator('[data-testid="empty-tile-hint"]').first().isVisible().catch(() => false))
-      return true
-    return false
-  }, pollOpts).toBe(true)
+    return isMaybeVisible(page.locator('[data-testid="empty-tile-hint"]').first())
+  }).toBe(true)
 }
 
 /**
@@ -1301,14 +2000,81 @@ export function workspaceChevron(page: Page, workspaceId: string): Locator {
 }
 
 /**
+ * Locate the title of the visible sidebar row of workspaceId. Click it, not the row, to select the workspace.
+ *
+ * A title longer than the sidebar makes the row wider than the sidebar, and the three-dot trigger stays pinned to
+ * the visible right edge. The center of such a row can lie under that trigger, so a click on the row opens the row
+ * menu instead of selecting the workspace. The trigger is inside the row, so the actionability check of Playwright
+ * accepts that click. The title is not an ancestor of the trigger, so a click on it is checked against the trigger.
+ */
+export function workspaceRowTitle(page: Page, workspaceId: string): Locator {
+  return workspaceRow(page, workspaceId).getByTestId('workspace-title')
+}
+
+/**
+ * Bring the sidebar row of workspaceId to the `expanded` state through its chevron, and require that state at the end.
+ *
+ * The chevron toggles, so the helper clicks it only when the row is in the other state. A row can be expanded before
+ * the test touches it, for two reasons:
+ * - The app restores the expanded rows of the previous load.
+ * - The app expands the active workspace when it has a tab. `openWorkspace` loads `/` first, so the cold start can
+ *   activate another workspace for a moment and expand it before the selection moves on.
+ */
+async function setWorkspaceRowExpanded(page: Page, workspaceId: string, expanded: boolean): Promise<void> {
+  const row = workspaceRow(page, workspaceId)
+  const state = expanded ? 'true' : 'false'
+  if (await row.getAttribute('data-expanded') !== state)
+    await workspaceChevron(page, workspaceId).click()
+  await expect(row, `the sidebar row of ${workspaceId} is ${expanded ? 'expanded' : 'collapsed'}`).toHaveAttribute('data-expanded', state)
+}
+
+/** Expand the sidebar row of workspaceId, leave an expanded row unchanged, and require the expanded state. */
+export async function expandWorkspaceRow(page: Page, workspaceId: string): Promise<void> {
+  await setWorkspaceRowExpanded(page, workspaceId, true)
+}
+
+/** Collapse the sidebar row of workspaceId, leave a collapsed row unchanged, and require the collapsed state. */
+export async function collapseWorkspaceRow(page: Page, workspaceId: string): Promise<void> {
+  await setWorkspaceRowExpanded(page, workspaceId, false)
+}
+
+/**
+ * Locate the visible active workspace row.
+ * The app keeps the active workspace in browser storage, not in the URL, so this row is the one place that shows it.
+ */
+export function activeWorkspaceRow(page: Page): Locator {
+  return page.locator(`[data-testid^="workspace-item-"][data-active="true"]${VISIBLE}`).first()
+}
+
+/** The ID of the active workspace, read from its visible sidebar row. The read waits for the row. */
+export async function activeWorkspaceId(page: Page): Promise<string> {
+  const row = activeWorkspaceRow(page)
+  await expect(row, 'the sidebar shows an active workspace').toBeVisible()
+  const testId = await row.getAttribute('data-testid')
+  const prefix = 'workspace-item-'
+  if (!testId?.startsWith(prefix) || testId.length === prefix.length)
+    throw new Error(`The active workspace row has an unexpected test ID: ${testId}.`)
+  return testId.slice(prefix.length)
+}
+
+/**
+ * Locate the children wrapper of the visible workspace row: the subtree that holds its branch, repository, and tab rows.
+ * The wrapper follows the row as its next sibling. The lookup starts at the visible row, because the other mounted
+ * sidebar copy holds a wrapper with the same test ID, and that copy can be hidden or unhydrated.
+ * The test ID check makes a change of that structure fail here, not as a missing row later.
+ */
+export function workspaceChildren(page: Page, workspaceId: string): Locator {
+  return workspaceRow(page, workspaceId)
+    .locator(`xpath=following-sibling::*[1][@data-testid="workspace-children-${workspaceId}"]`)
+}
+
+/**
  * Locate tab leaves below the visible workspace row.
  * The other mounted sidebar copy can retain unhydrated labels, so a page query can read a permanent generic Agent label.
- * The children wrapper follows the workspace row as a sibling. Use that sibling relationship for the lookup.
+ * A collapsed workspace keeps its leaves in the DOM with `visibility: hidden`, so add `:visible` to count what a user sees.
  */
 export function sidebarLeaves(page: Page, workspaceId: string): Locator {
-  return workspaceRow(page, workspaceId)
-    .locator('xpath=following-sibling::*[1]')
-    .locator('[data-testid="tab-tree-leaf"]')
+  return workspaceChildren(page, workspaceId).locator('[data-testid="tab-tree-leaf"]')
 }
 
 /**
@@ -1350,14 +2116,12 @@ export async function openWorkspace(page: Page, workspaceId: string) {
   const row = workspaceRow(page, workspaceId)
   await row.waitFor()
   if (await row.getAttribute('data-active') !== 'true') {
-    // On the mobile layout the rows live in a drawer that starts closed;
-    // open it so the click can land (selecting a workspace closes the
-    // drawers again). `isVisible` on the off-screen drawer content would
-    // also pass, which is why the row wait alone cannot tell.
+    // Open the mobile sidebar drawer before clicking a row. Sidebar drawers start closed. Selecting a workspace closes them again.
+    // `isVisible` can pass for off-screen drawer content, so a row wait cannot prove that the drawer is open.
     const toggle = page.getByRole('button', { name: 'Toggle workspaces' })
     if (await toggle.isVisible().catch(() => false))
       await toggle.click()
-    await row.click()
+    await workspaceRowTitle(page, workspaceId).click()
   }
   await expect(row).toHaveAttribute('data-active', 'true')
   await waitForWorkspaceReady(page)
@@ -1383,56 +2147,57 @@ export async function reopenWorkspace(page: Page, workspaceId: string) {
 export async function gotoWorkspace(page: Page, token: string, workspaceId: string) {
   await loginViaToken(page, token)
   await openWorkspace(page, workspaceId)
-  // Wait for the bootstrap event so subsequent mutations reach the
-  // store via the WS round-trip rather than the fallback projection.
-  await page.locator('[data-testid="tile"]').first().waitFor()
-}
-
-/**
- * Read the rendered titles of every agent tab in the tabbar, stripping
- * the close / notification / remote-badge child nodes so the returned
- * text matches the visible label. Used by specs that assert dragged or
- * restored tabs keep their metadata.
- */
-export async function tabbarAgentLabels(page: Page): Promise<string[]> {
-  return page.locator('[data-testid="tab"][data-tab-type="agent"]').evaluateAll(els =>
-    els.map((el) => {
-      const clone = el.cloneNode(true) as HTMLElement
-      // A row's context menu keeps its items in the DOM behind the popover
-      // attribute while closed; they are not part of the label. Strip every
-      // popover alongside the close button and the badges.
-      clone.querySelectorAll('[data-testid="tab-close"], [data-testid="tab-notification"], [data-testid="tab-remote-badge"], [popover]').forEach(n => n.remove())
-      return (clone.textContent ?? '').trim()
-    }),
-  )
+  // Wait for the first tile to mount before the caller changes the layout.
+  await tiles(page).first().waitFor()
 }
 
 /** Locate a tab by its hub-side `tab_id`. */
 export function tabById(page: Page, tabId: string): Locator {
-  return page.locator(`[data-testid="tab"][data-tab-id="${tabId}"]`)
+  return page.locator(`[data-testid="tab"]${tabIdSelector(tabId)}`)
+}
+
+/** Locate every agent tab of every tile's tab bar. */
+export function agentTabs(page: Page): Locator {
+  return page.locator(AGENT_TAB_SELECTOR)
+}
+
+/** Locate every terminal tab of every tile's tab bar. */
+export function terminalTabs(page: Page): Locator {
+  return page.locator('[data-testid="tab"][data-tab-type="terminal"]')
+}
+
+/** Locate every tile of the workspace layout. */
+export function tiles(page: Page): Locator {
+  return page.locator('[data-testid="tile"]')
 }
 
 /**
- * Bounding box of `locator`, after waiting for it to be visible.
- *
- * `boundingBox()` returns null for an element that is not laid out yet, and a
- * bare `expect(...).toHaveCount(n)` beforehand does NOT guarantee layout — it
- * settles the count, not the paint. Every drag test needs a real box to compute
- * pointer coordinates from, so a null there surfaces as "Could not get bounding
- * boxes" with nothing else wrong. Waiting first removes the race.
+ * Require `count` agent tabs in the tab bars.
+ * This is an assertion about the view, not a readiness wait. The tab list is optimistic state, so a tab can show
+ * before its agent starts and can leave before its agent stops. Wait on the Worker for an agent's state.
+ */
+export async function expectAgentTabCount(page: Page, count: number): Promise<void> {
+  if (!Number.isSafeInteger(count) || count < 0)
+    throw new Error(`An agent tab count must be a nonnegative integer, not ${count}.`)
+  await expect(agentTabs(page)).toHaveCount(count)
+}
+
+/**
+ * Wait for `locator` to become visible before reading its rectangle.
+ * `boundingBox()` can return null before layout. A count assertion does not guarantee layout.
+ * Drag tests need a real rectangle for pointer coordinates. Waiting prevents the unrelated "Could not get bounding boxes" failure.
  */
 export async function boxOf(locator: Locator): Promise<{ x: number, y: number, width: number, height: number }> {
-  // Return the geometry captured inside the poll.
+  // Return the geometry captured inside the wait.
   // A separate read could follow a workspace switch that replaces the tile and tab strip.
-  // expect.poll retries through the global assertion timeout.
-  let box: { x: number, y: number, width: number, height: number } | null = null
-  await expect.poll(async () => {
-    box = await locator.boundingBox()
-    return box !== null
-  }).toBe(true)
-  if (!box)
-    throw new Error(`No bounding box for ${locator}`)
-  return box
+  // `boundingBox` throws when no element appears within the action timeout, as during that replacement, so the wait
+  // retries a read that throws.
+  return retryUntilPass(async () => {
+    const box = await locator.boundingBox()
+    if (!box)
+      throw new Error(`No bounding box for ${locator}`)
+    return box
+  })
 }
 
 /**
@@ -1442,21 +2207,17 @@ export async function boxOf(locator: Locator): Promise<{ x: number, y: number, w
  * AGENTS.md), so `selectOption` has nothing to drive. A menu keeps its items
  * mounted, so this helper scopes the click to the row that owns them.
  */
-// The testids used here are WRITTEN by `~/components/common/LoadingMenu`, and
-// the Vitest counterpart in `src/test-support/menu.ts` encodes the same two
-// templates. The two cannot share query code -- one drives the DOM, the other a
-// Playwright Locator -- so a rename has to be applied in all three files.
+// `~/components/common/LoadingMenu` writes these test IDs. `src/test-support/menu.ts` holds the equivalent Vitest query templates.
+// DOM queries and Playwright locators use different APIs, so they cannot share query code. Apply test-ID changes in all three files.
 export async function pickMenuOption(scope: Locator, base: string, value: string): Promise<void> {
   await openMenu(scope, base)
   await scope.getByTestId(base).getByTestId(`loading-menu-option-${value}`).first().click()
 }
 
 /**
- * Open a `LoadingMenu` if it is not already open.
- *
- * IDEMPOTENT on purpose. A caller that reads the options and then picks one
- * would otherwise toggle the menu shut between the two, and the click would
- * land on an item hidden from the accessibility tree.
+ * Open `LoadingMenu` only when it is closed.
+ * A caller can then read its options and select one without closing the menu between those operations.
+ * An unconditional toggle would hide the item from the accessibility tree before the click.
  */
 export async function openMenu(scope: Locator, base: string): Promise<void> {
   const trigger = scope.getByTestId(`${base}-trigger`)
@@ -1465,14 +2226,10 @@ export async function openMenu(scope: Locator, base: string): Promise<void> {
 }
 
 /**
- * The colour `value` resolves to, as the browser computes it.
- *
- * `getPropertyValue('--code-block-background')` answers with the SPECIFIED
- * token, which for a derived field is the `color-mix()` expression itself and
- * never changes with the theme. Assigning the value to a probe element and
- * reading `background-color` back gives the resolved `rgb(...)`, in the same
- * normalized form `getComputedStyle` reports for a real element -- so a token
- * and an element can be compared to each other.
+ * Resolve `value` through the browser's color parser.
+ * `getPropertyValue('--code-block-background')` returns the specified token. A derived token can retain its `color-mix()` expression when the theme changes.
+ * Assign that token to a probe element. Read its computed `background-color`.
+ * The normalized `rgb(...)` result can be compared with the computed color of a real element.
  */
 export async function resolvedColor(page: Page, value: string): Promise<string> {
   return page.evaluate((css) => {
@@ -1491,19 +2248,10 @@ export async function pickTheme(scope: Locator, themeId: string): Promise<void> 
   await scope.getByTestId(`theme-option-${themeId}`).click()
 }
 
-/** The theme chooser's variant menu, keyed by variant id. */
-export async function pickThemeVariant(scope: Locator, variantId: string): Promise<void> {
-  await scope.getByTestId('theme-chooser-variant').click()
-  await scope.getByTestId(`variant-option-${variantId}`).click()
-}
-
 /**
- * The option labels a `LoadingMenu` offers, opening it first.
- *
- * A closed popover is hidden from the accessibility tree, so a role query
- * against it matches nothing — indistinguishable from "the list is empty" and,
- * under `expect`, from a hang. The `<select>` this replaced needed no open:
- * every `<option>` was readable from the collapsed control.
+ * Open `LoadingMenu` before reading its option labels. A closed popover is absent from the accessibility tree.
+ * A role query cannot distinguish that closed menu from an empty list, so an assertion can wait until the test deadline.
+ * The previous native `<select>` exposed its `<option>` values while closed.
  */
 export async function menuOptionTexts(scope: Locator, base: string): Promise<string[]> {
   await openMenu(scope, base)
@@ -1511,13 +2259,9 @@ export async function menuOptionTexts(scope: Locator, base: string): Promise<str
 }
 
 /**
- * One option row's LABEL, which is not the same as its text.
- *
- * A row also carries its DETAIL -- the age of a session -- and an age is a
- * moving target: read the whole row and an assertion can lose to the clock
- * between the read and the compare. `DropdownMenuCheckableItem` derives this
- * test id from the row's own, and `src/test-support/menu.ts` spells the same
- * suffix for the vitest side.
+ * Read the option row's label. Its complete text also includes detail, such as a session age.
+ * The age can change between read and comparison. `DropdownMenuCheckableItem` builds the label test ID from the row ID.
+ * `src/test-support/menu.ts` uses the same suffix for Vitest.
  */
 export function menuOptionLabel(row: Locator): Locator {
   return row.locator('[data-testid$="-label"]')
@@ -1532,31 +2276,177 @@ export interface ElementBox {
 }
 
 /**
- * An element's box, read only once it has STOPPED MOVING.
- *
- * An anchored popover repositions on every layout change beneath it, and its own
- * content is one of those: a long list renders over several frames, and each
- * growth re-anchors it. A box sampled mid-settle therefore measures the settle
- * rather than whatever the caller meant to measure -- and a CLICK aimed during
- * it can land on the popover instead of on the trigger underneath, which is how
- * a re-click test fails only under load.
- *
- * Two consecutive identical reads are the settle signal; `expect.poll` caps the
- * wait at the project's own timeout.
+ * Read the element rectangle after movement stops.
+ * An anchored popover moves after each underlying layout change. A long list grows across several frames and repositions the popover each time.
+ * A sample during movement measures that shift. A click can hit the popover instead of the underlying trigger, which causes failures under load.
+ * Two consecutive identical reads prove that movement stopped. A read that throws, as when no element appears within
+ * the action timeout, starts the next attempt.
  */
 export async function stableBox(element: Locator): Promise<ElementBox> {
   let previous: string | null = null
-  let box: ElementBox | null = null
-  await expect.poll(async () => {
-    box = await element.boundingBox()
-    if (!box)
-      return false
+  return retryUntilPass(async () => {
+    const box = await element.boundingBox()
+    if (!box) {
+      previous = null
+      throw new Error('the element reports no bounding box')
+    }
     const key = `${box.x},${box.y},${box.width},${box.height}`
     const settled = key === previous
     previous = key
-    return settled
-  }).toBe(true)
-  if (!box)
-    throw new Error('the element never reported a bounding box')
-  return box
+    if (!settled)
+      throw new Error(`the element moved to ${key}`)
+    return box
+  })
+}
+
+/**
+ * Wait for the app home to be ready (sidebar sections loaded).
+ * Unlike waitForWorkspaceReady, this works on non-workspace routes like /.
+ */
+export async function waitForAppPageReady(page: Page) {
+  await expect(sidebarSectionHeader(page, 'workspaces_in_progress')).toBeVisible()
+}
+
+/**
+ * Open the "New Workspace" dialog by whichever route is available.
+ *
+ * The In-progress section header carries a MENU now, and "New workspace..." is
+ * an item inside it -- so the availability probe has to read the TRIGGER, not
+ * the item. A closed `popover="auto"` is `display: none`, so probing the item
+ * would answer "not visible" every single time, send every caller down the
+ * empty-state fallback, and time out wherever that button does not exist.
+ *
+ * The left sidebar may still be collapsed (rail mode), which hides the section
+ * header entirely; the empty-state `create-workspace-button` is the fallback
+ * for that.
+ *
+ * Open-and-click is retried as one unit, following `clickRowMenuItem`: the
+ * sidebar re-renders on workspace, worker and todo changes, so the menu can
+ * vanish between opening it and clicking inside it.
+ */
+export async function openNewWorkspaceDialog(page: Page) {
+  const sectionMenu = page.locator('[data-testid="sidebar-section-menu-workspaces_in_progress"]')
+  const createBtn = page.locator('[data-testid="create-workspace-button"]')
+  await expectAnyVisible(sectionMenu, createBtn)
+  if (await isMaybeVisible(sectionMenu)) {
+    const item = page.locator('[data-testid="sidebar-new-workspace"]:visible')
+    await expect(async () => {
+      // Idempotent open, the way `ensureExpanded` does it: a second click on an
+      // already-open trigger CLOSES the menu, which is exactly what a naive
+      // retry would do.
+      if (!await item.isVisible())
+        await sectionMenu.click()
+      await expect(item).toBeVisible()
+      await item.click()
+    }).toPass()
+  }
+  else {
+    await createBtn.click()
+  }
+  await expect(page.getByRole('heading', { name: 'New Workspace' })).toBeVisible()
+}
+
+/**
+ * Open the "New Agent" dialog from within a workspace via the tab menu.
+ */
+export async function openNewAgentDialog(page: Page) {
+  await openTabMenuDialog(page, 'New agent...', 'New Agent')
+}
+
+/**
+ * Open the "New Terminal" dialog from within a workspace via the tab menu.
+ */
+export async function openNewTerminalDialog(page: Page) {
+  await openTabMenuDialog(page, 'New terminal...', 'New Terminal')
+}
+
+/** Click one item of the tab bar's `+` menu, and wait for the heading of the dialog that it opens. */
+async function openTabMenuDialog(page: Page, item: string, heading: string): Promise<void> {
+  await page.locator('[data-testid="tab-more-menu"]').first().click()
+  await page.getByRole('menuitem', { name: item }).click()
+  await expect(page.getByRole('heading', { name: heading })).toBeVisible()
+}
+
+/**
+ * Sign in, open the app home, open the New Workspace dialog, wait for a Worker, and set the working directory to
+ * `dir`. The dialog then shows the git options of `dir`.
+ */
+export async function openNewWorkspaceDialogAt(page: Page, token: string, dir: string): Promise<void> {
+  await loginViaToken(page, token)
+  await page.goto('/')
+  await waitForAppPageReady(page)
+  await openNewWorkspaceDialog(page)
+  await waitForWorker(page)
+  await setWorkingDir(page, dir)
+}
+
+/**
+ * Replace the title that the New Workspace dialog generates with `title`.
+ * By ROLE and NAME, not by placeholder. The placeholder became "Type a name" when the dialog started to generate a
+ * title, so a lookup by the old placeholder matches nothing and waits out its whole timeout. `fill` replaces the
+ * generated name.
+ */
+export async function fillWorkspaceTitle(page: Page, title: string): Promise<void> {
+  await page.getByRole('dialog').getByRole('textbox', { name: 'Title' }).fill(title)
+}
+
+/**
+ * Select one git mode of the open dialog by its label, such as "Create new worktree".
+ * The options appear only after the Worker reports the git state of the working directory, so the label is awaited first.
+ */
+export async function chooseGitMode(page: Page, label: string): Promise<void> {
+  const option = page.getByRole('dialog').getByText(label, { exact: true })
+  await expect(option).toBeVisible()
+  await option.click()
+}
+
+/**
+ * Submit the New Workspace dialog with its Create button, and wait until the dialog closes and the workspace titled
+ * `title` is the active one. The dialog closes when the create RPC returns, and a new workspace activates in place,
+ * so no URL changes.
+ */
+export async function submitNewWorkspaceDialog(page: Page, title: string): Promise<void> {
+  const dialog = page.getByRole('dialog')
+  await dialog.getByRole('button', { name: 'Create', exact: true }).click()
+  await expect(dialog).not.toBeVisible()
+  await expect(activeWorkspaceRow(page)).toContainText(title)
+}
+
+/** Wait for a worker to be available (retry with backoff). */
+export async function waitForWorker(page: Page) {
+  const dialog = page.getByRole('dialog')
+  // The worker picker is a menu. Its TRIGGER shows only the selected worker,
+  // where the `<select>` this replaced held every option's text at once -- so
+  // this reads the trigger, which is the worker the dialog would actually use.
+  const workerSelect = dialog.getByTestId('worker-select-menu-trigger')
+  const refreshBtn = dialog.getByLabel('Refresh workers')
+  for (let attempt = 0; attempt < 6; attempt++) {
+    try {
+      await expect(workerSelect).toContainText('Local')
+      break
+    }
+    catch {
+      if (attempt === 5)
+        throw new Error('No online worker found')
+      await refreshBtn.click()
+    }
+  }
+}
+
+/**
+ * Set the working directory in a dialog by filling the path input and pressing Enter.
+ * SolidJS uses event delegation (document-level listeners keyed by `$$eventType`).
+ * Playwright's fill() sets el.value directly but may not trigger a bubbling InputEvent
+ * that SolidJS's delegation picks up. We dispatch a real InputEvent manually to ensure
+ * the SolidJS signal updates before pressing Enter.
+ */
+export async function setWorkingDir(page: Page, dirPath: string) {
+  const dialog = page.getByRole('dialog')
+  const pathInput = dialog.getByPlaceholder('Enter path...')
+  await pathInput.click()
+  await pathInput.evaluate((el: HTMLInputElement, value: string) => {
+    el.value = value
+    el.dispatchEvent(new InputEvent('input', { bubbles: true }))
+  }, dirPath)
+  await pathInput.press('Enter')
 }

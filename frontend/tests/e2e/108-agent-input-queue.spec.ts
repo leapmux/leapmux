@@ -1,38 +1,38 @@
 import type { Page } from '@playwright/test'
-import { Buffer } from 'node:buffer'
+import { expect } from '@playwright/test'
 import { getUserId } from './helpers/api'
+import { attachFile, attachmentPills, writeAttachmentFixture } from './helpers/attachments'
+import { boxCenter, mouseDragOnto } from './helpers/drag'
+import { withExtraClients } from './helpers/multiClient'
+import { sendScriptedTurn } from './helpers/scriptedTurn'
 import { COARSE_POINTER_METRICS, touchDragGripOnto } from './helpers/touch'
-import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, loginViaToken, openWorkspace, sendMessage, waitForAgentIdle, waitForEditorDraft } from './helpers/ui'
-import { ensureWorkerOnline, expect, restartWorker, processTest as test } from './process-control-fixtures'
-
-const MOD = process.platform === 'darwin' ? 'Meta' : 'Control'
+import { composerEditor, focusComposer, loginViaToken, openWorkspace, PLATFORM_MOD, queuePauseButton, resumePausedQueue, sendMessage, waitForEditorDraft } from './helpers/ui'
+import { ensureWorkerOnline, restartWorker, processTest as test } from './process-control-fixtures'
 
 /**
- * Pause the queue and wait for the button to confirm it.
- *
- * The label is the app's own acknowledgement. Without waiting for it a send can
- * land while the queue is still running, and the input then reaches the agent
- * instead of the queue — which reads as a queue that never rendered.
+ * Pause the queue and wait for its confirmation button.
+ * The button label acknowledges the new state.
+ * A send before that acknowledgement can reach the agent instead of the queue.
+ * The resulting missing row can look like a rendering failure.
+ * The queue must be running. A paused queue fails the call, because a click on the toggle would resume it.
  */
 async function pauseQueue(page: Page) {
-  await page.getByTestId('queue-pause-button').click()
-  await expect(page.getByTestId('queue-pause-button')).toHaveText('Resume Queue')
+  const button = queuePauseButton(page)
+  await expect(button).toHaveText('Pause Queue')
+  await button.click()
+  await expect(button).toHaveText('Resume Queue')
 }
 
 /**
- * Pause the queue, park two inputs in it, and hand back the locators that both
- * drag tests need.
- *
- * Kept in this spec rather than under `helpers/`, where the repo's
- * co-located-test rule would ask for a `.test.ts` beside a function that only
- * drives a browser.
- *
- * The row pattern is ANCHORED (`/^queued-input-/`). The two copies of this
- * setup had already drifted onto two different patterns, and the unanchored one
- * matches more than the row.
+ * Pause the queue and add two inputs for the drag tests.
+ * Return their shared locators.
+ * This local helper drives only the browser and needs no separate unit-test module.
+ * Anchor the row pattern at /^queued-input-/.
+ * An unanchored pattern can match a descendant instead of the input row.
+ * Two previous copies used different patterns and produced that mismatch.
  */
 async function seedTwoQueuedRows(page: Page) {
-  await expect(page.locator('[data-testid="composer-editor"] .ProseMirror')).toBeVisible()
+  await expect(composerEditor(page)).toBeVisible()
   await pauseQueue(page)
   await sendMessage(page, 'first queued')
   await sendMessage(page, 'second queued')
@@ -49,32 +49,20 @@ async function seedTwoQueuedRows(page: Page) {
 
 test.describe('agent input queue', () => {
   test('persists paused input across clients, a reload, and a Worker restart, then supports queue changes', async ({ page, browser, authenticatedWorkspace, separateHubWorker, modelScript }) => {
-    await expect(page.locator('[data-testid="composer-editor"] .ProseMirror')).toBeVisible()
     // Establish a provider session before the Worker restart. A fresh Claude
     // process reports an id before it stores a resumable conversation.
-    await modelScript.queue({ text: ARITHMETIC_ANSWER_TEXT })
-    await sendMessage(page, modelScript.prompt(ARITHMETIC_PROMPT))
-    await modelScript.waitForSteps()
-    await waitForAgentIdle(page)
-    await page.getByTestId('queue-pause-button').click()
-    await expect(page.getByTestId('queue-pause-button')).toHaveText('Resume Queue')
+    await sendScriptedTurn(page, modelScript)
+    await pauseQueue(page)
 
-    const secondContext = await browser.newContext({ baseURL: separateHubWorker.hubUrl })
-    const secondPage = await secondContext.newPage()
-    await loginViaToken(secondPage, separateHubWorker.adminToken)
-    await openWorkspace(secondPage, authenticatedWorkspace.workspaceId)
-    await expect(secondPage.locator('[data-testid="composer-editor"] .ProseMirror')).toBeVisible()
-
-    try {
-      await expect(secondPage.getByTestId('queue-pause-button')).toHaveText('Resume Queue')
+    await withExtraClients(browser, separateHubWorker, 1, async ([secondPage]) => {
+      await loginViaToken(secondPage, separateHubWorker.adminToken)
+      await openWorkspace(secondPage, authenticatedWorkspace.workspaceId)
+      await expect(composerEditor(secondPage)).toBeVisible()
+      await expect(queuePauseButton(secondPage)).toHaveText('Resume Queue')
 
       const queuedFirst = `${'x'.repeat(1200)} full text tail`
       const queuedFirstPreview = queuedFirst.slice(0, 80)
-      await page.getByTestId('file-input').setInputFiles({
-        name: 'queued-input.txt',
-        mimeType: 'text/plain',
-        buffer: Buffer.from('queued attachment'),
-      })
+      await attachFile(page, writeAttachmentFixture('text', 'queued-input.txt'))
       await sendMessage(page, queuedFirst)
       await sendMessage(page, 'queued second')
       for (const clientPage of [page, secondPage]) {
@@ -91,41 +79,34 @@ test.describe('agent input queue', () => {
       await expect(page.getByTestId('agent-input-queue')).toContainText(queuedFirstPreview)
       await expect(page.getByTestId('agent-input-queue')).toContainText('queued second')
 
-      const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
+      const editor = composerEditor(page)
       await editor.fill('normal draft')
-      await page.getByTestId('file-input').setInputFiles({
-        name: 'normal-draft.txt',
-        mimeType: 'text/plain',
-        buffer: Buffer.from('normal attachment'),
-      })
-      await expect(page.getByTestId('attachment-pill')).toContainText('normal-draft.txt')
+      await attachFile(page, writeAttachmentFixture('text', 'normal-draft.txt'))
+      await expect(attachmentPills(page)).toContainText('normal-draft.txt')
       const first = page.getByTestId(/queued-input-/).filter({ hasText: queuedFirstPreview })
       await first.getByRole('button', { name: 'Edit', exact: true }).click()
       await expect(editor).toContainText('full text tail')
-      await expect(page.getByTestId('attachment-pill')).toContainText('queued-input.txt')
+      await expect(attachmentPills(page)).toContainText('queued-input.txt')
       await editor.fill('edited first')
-      await page.keyboard.press('Meta+Enter')
+      await page.keyboard.press(`${PLATFORM_MOD}+Enter`)
       for (const clientPage of [page, secondPage])
         await expect(clientPage.getByTestId('agent-input-queue')).toContainText('edited first')
       await expect(page.getByTestId('agent-input-queue')).toContainText('queued-input.txt')
       await expect(editor).toHaveText('normal draft')
-      await expect(page.getByTestId('attachment-pill')).toContainText('normal-draft.txt')
+      await expect(attachmentPills(page)).toContainText('normal-draft.txt')
 
       const edited = page.getByTestId(/queued-input-/).filter({ hasText: 'edited first' })
       await edited.getByRole('button', { name: 'Edit', exact: true }).click()
       await expect(editor).toHaveText('edited first')
       await editor.fill('unsaved queue edit')
-      // The draft has to reach the store before the reload, or the reload
-      // races the write and the assertion below fails for the wrong reason.
-      // Drafts live in IndexedDB (see `~/lib/browserStorage`), so a
-      // localStorage walk would poll a store the value never reaches and time
-      // out. `waitForEditorDraft` scans this account's draft rows, which is
-      // where a queue edit lands: its key carries the `editor-draft:` prefix.
+      // Wait for the stored draft before reload. Otherwise reload can race its write and cause a false restoration failure.
+      // Drafts use IndexedDB through ~/lib/browserStorage. A localStorage lookup cannot find them.
+      // waitForEditorDraft reads this account's draft rows. Queue edits use the editor-draft: prefix.
       const adminUserId = await getUserId(separateHubWorker.hubUrl, separateHubWorker.adminToken)
       await waitForEditorDraft(page, adminUserId, 'unsaved queue edit')
       await page.reload()
       await expect(editor).toHaveText('unsaved queue edit')
-      await expect(page.getByTestId('attachment-pill')).toContainText('queued-input.txt')
+      await expect(attachmentPills(page)).toContainText('queued-input.txt')
       const resumedEdit = page.getByTestId(/queued-input-/).filter({ hasText: 'edited first' })
       await resumedEdit.getByRole('button', { name: 'Cancel Edit' }).click()
       await expect(editor).toHaveText('normal draft')
@@ -133,7 +114,7 @@ test.describe('agent input queue', () => {
       await edited.getByRole('button', { name: 'Edit', exact: true }).click()
       const secondClientItem = secondPage.getByTestId(/queued-input-/).filter({ hasText: 'edited first' })
       await secondClientItem.getByRole('button', { name: 'Take Over' }).click()
-      await expect(secondPage.locator('[data-testid="composer-editor"] .ProseMirror')).toHaveText('edited first')
+      await expect(composerEditor(secondPage)).toHaveText('edited first')
       await expect(editor).toHaveText('normal draft')
       await secondClientItem.getByRole('button', { name: 'Cancel Edit' }).click()
 
@@ -142,16 +123,11 @@ test.describe('agent input queue', () => {
       const previews = page.getByTestId('agent-input-queue').locator('div').filter({ hasText: /^(edited first|queued second)$/ })
       await expect(previews.first()).toHaveText('queued second')
 
-      // Delete arms on the first click and removes the input on the second, so
-      // each of the two rows takes a pair.
-      //
-      // Each pass is pinned to ONE row's own test id, and the pass waits for
-      // that row to go before starting the next. `.first()` would not do:
-      // Playwright re-resolves a locator on every action, the removal is not
-      // optimistic (the row survives until the Worker's snapshot returns), and
-      // `ConfirmButton` returns to "Delete" the instant the confirming click
-      // fires -- so a second pass through `.first()` can arm the row the first
-      // pass already deleted, and then find no armed button once it goes.
+      // The first Delete click requests confirmation. The second click removes the input.
+      // Select each row by its own test ID and wait for its removal before selecting the next row.
+      // Playwright resolves the locator again for every action.
+      // The row remains until the Worker returns its snapshot, and ConfirmButton restores Delete immediately after the confirmation click.
+      // A second first() lookup can therefore select the old row again and request confirmation just before that row disappears.
       const rowIds = await page.getByTestId(/queued-input-/).evaluateAll(rows =>
         rows.map(row => row.getAttribute('data-testid')!),
       )
@@ -164,27 +140,23 @@ test.describe('agent input queue', () => {
       }
       for (const clientPage of [page, secondPage])
         await expect(clientPage.getByTestId('agent-input-queue')).toHaveCount(0)
-      await page.getByTestId('queue-pause-button').click()
-      await expect(page.getByTestId('queue-pause-button')).toHaveText('Pause Queue')
-      await expect(secondPage.getByTestId('queue-pause-button')).toHaveText('Pause Queue')
-    }
-    finally {
-      await secondContext.close()
-    }
+      await resumePausedQueue(page)
+      await expect(queuePauseButton(secondPage)).toHaveText('Pause Queue')
+    })
   })
 
   test.describe('touch reorder (phone)', () => {
-    // A coarse primary pointer is what shows the grip at all: below `sm` it is
-    // the ONLY way to reorder, because a finger cannot drag a row body -- the
-    // body's activators refuse touch so a swipe still scrolls the queue.
+    // A coarse primary pointer shows the grip.
+    // Below the sm threshold, the grip is the only control that can reorder an input.
+    // The row body refuses touch dragging, so a finger swipe scrolls the queue.
     test.use(COARSE_POINTER_METRICS)
 
     test('reorders a queued input by dragging its grip with a finger', async ({ page, authenticatedWorkspace }) => {
       void authenticatedWorkspace
       const { rows, source, target } = await seedTwoQueuedRows(page)
       const grip = source.locator('[data-drag-handle]')
-      // The grip is visible ONLY here. On a fine pointer it is display:none,
-      // which is the workspace list's own rule.
+      // The coarse pointer shows the grip. A fine pointer hides it through display: none.
+      // The workspace list uses the same rule.
       await expect(grip).toBeVisible()
       const gripBox = (await grip.boundingBox())!
       const targetBox = (await target.boundingBox())!
@@ -197,15 +169,14 @@ test.describe('agent input queue', () => {
         draggingClass: /itemDragging/,
       })
 
-      // Polled: the Worker owns the order, so the reorder lands when the
-      // snapshot confirms it, which can be after the lift.
-      await expect.poll(async () => (await rows.first().textContent())?.includes('second queued')).toBe(true)
+      // Wait for the Worker snapshot to confirm the new order. It can arrive after the pointer lifts.
+      await expect(rows.first()).toContainText('second queued')
     })
   })
 
   test('shows no drag affordance when the queue contains one input', async ({ page, authenticatedWorkspace }) => {
     void authenticatedWorkspace
-    await expect(page.locator('[data-testid="composer-editor"] .ProseMirror')).toBeVisible()
+    await expect(composerEditor(page)).toBeVisible()
     await pauseQueue(page)
     await sendMessage(page, 'only queued input')
 
@@ -217,131 +188,78 @@ test.describe('agent input queue', () => {
 
   test('reorders a queued input by dragging its row', async ({ page, authenticatedWorkspace }) => {
     void authenticatedWorkspace
-    // A mouse is a FINE pointer, so the grip is hidden and the row body is what
-    // drags -- exactly as it is in the workspace list. The grip carries the
-    // touch path, which a mouse-driven browser cannot exercise.
+    // A mouse is a fine pointer, so the row body handles the drag and the grip stays hidden.
+    // The workspace list uses the same rule. A mouse cannot exercise the grip's touch path.
     const { rows, source, target } = await seedTwoQueuedRows(page)
-    const from = (await source.boundingBox())!
-    const to = (await target.boundingBox())!
-    await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2)
-    await page.mouse.down()
-    try {
-      // Past the sensor's 10px activation distance, then onto the target's
-      // centre in a second step so the collision detector sees the move.
-      await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2 + 20)
-      await expect(source).toHaveClass(/itemDragging/)
-      // The dragged row travels on the queue's own axis alone, so it never
-      // widens the scrollable area. Assert the OUTCOME -- nothing to scroll
-      // sideways to -- rather than a declaration, so a row that starts drifting
-      // sideways again fails here whatever produces it.
-      await expect
+    await mouseDragOnto(page, {
+      from: await boxCenter(source),
+      to: await boxCenter(target),
+      dragged: { row: source, draggingClass: /itemDragging/ },
+      // The row must move only along the queue axis and add no horizontal scroll area.
+      // Check the actual scroll width so any source of sideways movement fails this assertion.
+      // The activation move of the drag has a sideways part, so the check also covers a
+      // pointer that leaves the axis.
+      whileLifted: () => expect
         .poll(() => page.getByTestId('agent-input-queue')
           .evaluate(queue => queue.scrollWidth - queue.clientWidth))
-        .toBe(0)
-      await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2)
-    }
-    finally {
-      await page.mouse.up()
-    }
+        .toBe(0),
+    })
 
-    // The Worker owns the order, so the reorder is real only once it comes back.
+    // Require the returned Worker order before accepting the reorder.
     await expect(rows.first()).toContainText('second queued')
   })
 
-  // `$mod+Enter` is bound to the queue steer, and the composer's own Cmd+Enter
-  // sends. Both live on one chord, and only the emptiness context tells them
-  // apart -- so the dangerous direction is the shortcut CLAIMING a keypress that
-  // was meant to send. Every other spec in the suite sends with this chord, so a
-  // regression there is loud; what needs its own case is the boundary.
-  // `MOD` and not a literal `Meta`: tinykeys resolves `$mod` to Meta on an
-  // Apple platform and to Control everywhere else, so a hardcoded Meta misses
-  // the keybinding layer entirely on Linux and Windows and lands only on the
-  // composer's own send plugin -- which accepts either modifier. Both
-  // assertions below would then pass for the wrong reason, and the claim this
-  // test exists to catch would go unexercised.
+  // The queue steering shortcut and composer send control share the same key combination.
+  // Only an empty composer permits the steering shortcut to consume it.
+  // This case protects a send keypress from that shortcut.
+  // Use PLATFORM_MOD because tinykeys maps $mod to Meta on Apple platforms and Control elsewhere.
+  // A fixed Meta key would bypass the queue shortcut on Linux and Windows.
+  // The composer accepts either modifier, so both assertions could pass without testing the intended shortcut.
   test('leaves the send chord to the composer whenever there is something to send', async ({ page, authenticatedWorkspace }) => {
     void authenticatedWorkspace
     const { rows } = await seedTwoQueuedRows(page)
 
-    // Empty composer, no running turn: the head is not steerable, so the chord
-    // is claimed and does nothing. Nothing is sent, and nothing is queued.
-    const editor = page.locator('[data-testid="composer-editor"] .ProseMirror')
-    await editor.click()
-    await page.keyboard.press(`${MOD}+Enter`)
+    // With an empty composer and no active turn, the first queued input cannot steer.
+    // The shortcut consumes the keypress without sending or queueing anything.
+    const editor = await focusComposer(page)
+    await page.keyboard.press(`${PLATFORM_MOD}+Enter`)
     await expect(rows).toHaveCount(2)
 
-    // The same chord with text in the composer still sends, which is the whole
-    // point of requiring an empty composer for the steer.
+    // With composer text present, the same key combination must send the prompt.
     await editor.click()
     await page.keyboard.type('typed then sent')
-    await page.keyboard.press(`${MOD}+Enter`)
+    await page.keyboard.press(`${PLATFORM_MOD}+Enter`)
     await expect(editor).toHaveText('')
     await expect(rows).toHaveCount(3)
     await expect(rows.last()).toContainText('typed then sent')
   })
 
-  test('offers Steer for input queued during a Claude turn', async ({ page, authenticatedWorkspace, modelScript }) => {
-    void authenticatedWorkspace
-
-    // Keep the first turn active long enough to put the next message in the
-    // durable queue. The Interrupt button is the Worker's turn-state signal.
-    // The HOLD is what keeps it active: against the mock endpoint a long prompt
-    // finishes as fast as a short one, so the turn has to be held open.
-    await modelScript.queue({ text: 'A report.', delayMs: 60_000 })
-    modelScript.allowUnconsumed('the steer ends the turn before the held answer arrives')
-    await sendMessage(page, modelScript.prompt('Write a 2,000-word technical report about Go concurrency.'))
-    await modelScript.waitForSteps()
-    await expect(page.getByTestId('interrupt-button')).toBeVisible()
-
-    await sendMessage(page, modelScript.prompt('Stop the report now and reply with the single word STEERED.'))
-    const queued = page.getByTestId(/^queued-input-/).filter({ hasText: 'Stop the report' })
-    await expect(queued).toBeVisible()
-    const steer = queued.getByRole('button', { name: 'Steer' })
-    await expect(steer).toBeVisible()
-
-    await steer.click()
-    await expect(queued).toHaveCount(0)
-  })
-
   test('spaces the pause banner, the queue, the attachments and the composer alike', async ({ page, authenticatedWorkspace }) => {
     void authenticatedWorkspace
-    await expect(page.locator('[data-testid="composer-editor"] .ProseMirror')).toBeVisible()
+    await expect(composerEditor(page)).toBeVisible()
     await pauseQueue(page)
     await sendMessage(page, 'a queued input')
     await expect(page.getByTestId('agent-input-queue')).toContainText('a queued input')
-    await page.getByTestId('file-input').setInputFiles({
-      name: 'notes.txt',
-      mimeType: 'text/plain',
-      buffer: Buffer.from('an attachment'),
-    })
-    await expect(page.getByTestId('attachment-pill')).toContainText('notes.txt')
+    await attachFile(page, writeAttachmentFixture('text', 'notes.txt'))
+    await expect(attachmentPills(page)).toContainText('notes.txt')
 
-    // Measure the composer column's own flex children, not their contents: the
-    // editor's ProseMirror host sits inside a bordered, padded container, so a
-    // box taken from it reports that chrome as part of the gap.
-    //
-    // The gap between each neighbouring pair must be the SAME. `inputArea` owns
-    // it with one `gap` and every child keeps its vertical padding at zero.
-    // When each child owned its own spacing instead, two of them met and their
-    // paddings ADDED -- padding never collapses the way margin does -- so one
-    // boundary was double the rest, and its size changed with which optional
-    // children happened to render.
+    // Measure the composer column's flex children.
+    // The inner ProseMirror element excludes its container border and padding, so its rectangle cannot measure the actual gap.
+    // inputArea supplies one common gap, and each child has zero vertical padding.
+    // Separate child padding adds at adjacent children because padding does not collapse like margins.
+    // That previous design doubled one gap and changed its size when optional children appeared.
     const measured = await page.getByTestId('agent-input-queue').evaluate((queue) => {
       const column = queue.parentElement!
       const children = Array.from(column.children).filter((child) => {
         const style = getComputedStyle(child)
-        // The live region is absolutely positioned and the file input is
-        // `display: none`. Neither is a flex item, so neither takes a gap.
+        // Exclude the absolute live region and hidden file input. Neither participates in flex spacing.
         return style.display !== 'none' && style.position !== 'absolute'
       })
       const boxes = children.map(child => child.getBoundingClientRect())
       return {
         gaps: boxes.slice(1).map((rect, index) => rect.top - (boxes[index]!.top + boxes[index]!.height)),
-        // The OTHER half of the contract, and the half a gap cannot see. A
-        // child's own vertical padding lives INSIDE its border box, so
-        // restoring it changes no measured gap at all while the visible
-        // spacing goes uneven again -- which is the very regression this test
-        // exists to catch.
+        // Check each child's vertical padding separately.
+        // Padding inside its border box changes the visible spacing without changing the measured gaps.
         paddings: children.map((child) => {
           const style = getComputedStyle(child)
           return [style.paddingTop, style.paddingBottom]
@@ -349,13 +267,15 @@ test.describe('agent input queue', () => {
       }
     })
 
-    // Four children: the banner, the queue, the attachment strip, the composer.
+    // The column contains these four children:
+    // - The banner.
+    // - The queue.
+    // - The attachment strip.
+    // - The composer.
     expect(measured.gaps).toHaveLength(3)
-    // Rounded: sub-pixel layout puts a fraction on each measurement, and the
-    // claim is that the gaps MATCH, not that they are integers.
+    // Round the subpixel measurements to compare equal gaps without requiring integer layout coordinates.
     const rounded = measured.gaps.map(gap => Math.round(gap))
-    // Equal AND non-zero: three collapsed gaps are equal too, and that is a
-    // different bug rather than a pass.
+    // Require a positive gap. Three collapsed gaps would also compare equal.
     expect(rounded[0]).toBeGreaterThan(0)
     expect(rounded, `gaps between the composer column's children (raw: ${measured.gaps.join(', ')})`)
       .toEqual([rounded[0], rounded[0], rounded[0]])
@@ -365,37 +285,34 @@ test.describe('agent input queue', () => {
 
   test('keeps the composer action row clear of the [+] button on a phone', async ({ page, authenticatedWorkspace }) => {
     void authenticatedWorkspace // fixture trigger
-    // Narrower than any phone this app targets, so the action row has the
-    // least space it will ever have.
+    // Use a viewport narrower than the supported phone sizes to test the action row's minimum available space.
     await page.setViewportSize({ width: 320, height: 720 })
-    await expect(page.locator('[data-testid="composer-editor"] .ProseMirror')).toBeVisible()
+    await expect(composerEditor(page)).toBeVisible()
 
     const plus = page.getByTestId('composer-plus-trigger')
     const footer = page.getByTestId('composer-footer-slot')
     await expect(plus).toBeVisible()
     await expect(footer).toBeVisible()
 
-    // The two slots are absolutely positioned on the same bottom line, one
-    // anchored left and one anchored right, so nothing but the footer's
-    // `max-width` stops them from meeting. The footer paints over the `[+]`
-    // and its buttons take the clicks, which is what this guards.
+    // The two slots share the bottom line, with one at each side.
+    // The footer's maximum width must prevent overlap.
+    // An overlapping footer covers the plus button and intercepts its clicks.
     const plusBox = (await plus.boundingBox())!
     const footerBox = (await footer.boundingBox())!
     expect(footerBox.x).toBeGreaterThanOrEqual(plusBox.x + plusBox.width)
 
-    // And the `[+]` still answers a click, which the overlap denied.
+    // Require the plus button to accept a click after the geometry check.
     await plus.click()
     await expect(page.getByTestId('composer-plus-popover')).toBeVisible()
   })
 
   test('goes icon-only and stays clear of the [+] when the composer is narrow on a wide viewport', async ({ page, authenticatedWorkspace }) => {
     void authenticatedWorkspace // fixture trigger
-    // A WIDE viewport with a NARROW composer, which the phone test above cannot
-    // reach: a 320px viewport is already below `sm` on every measure. A split
-    // pane or a floating window puts a ~260px composer on a 1200px display, and
-    // a VIEWPORT media query calls that composer wide.
+    // Test a narrow composer inside a wide viewport. The phone case cannot exercise that combination.
+    // A 320px viewport is below the sm threshold. A split or floating pane can be about 260px wide on a 1200px display.
+    // A viewport media query would classify that narrow composer as wide.
     await page.setViewportSize({ width: 1200, height: 800 })
-    await expect(page.locator('[data-testid="composer-editor"] .ProseMirror')).toBeVisible()
+    await expect(composerEditor(page)).toBeVisible()
     await page.addStyleTag({ content: '[data-testid="agent-editor-panel"] { max-width: 260px; }' })
 
     const plus = page.getByTestId('composer-plus-trigger')
@@ -403,22 +320,18 @@ test.describe('agent input queue', () => {
     const cluster = page.getByTestId('composer-actions')
     await expect(plus).toBeVisible()
     await expect(cluster).toBeVisible()
-    // `hideInNarrowComposer` is a CONTAINER query on `inputArea`, so the labels
-    // follow the COMPOSER's width and go away here, although the viewport is
-    // 1200px wide. They stay reachable as the buttons' accessible names, which
-    // is the whole contract of an icon-only control.
-    //
-    // The LABEL's visibility, not the button's text: `toHaveText` reads
-    // `textContent`, which includes a `display: none` span, so it reports
-    // "Send" for a button that renders nothing but an icon.
+    // hideInNarrowComposer uses an inputArea container query.
+    // It hides the labels according to the composer width even when the viewport remains 1200px wide.
+    // The buttons retain those labels as accessible names.
+    // Check the label visibility directly. toHaveText reads textContent and includes a span that uses display: none.
+    // That assertion would still report Send when the button shows only its icon.
     await expect(page.getByTestId('send-button').locator('span')).toBeHidden()
     await expect(page.getByRole('button', { name: 'Send' })).toBeVisible()
 
-    // Losing the word must not change the button's HEIGHT. A button is
-    // `inline-flex`, so a flex container with no line-box strut takes the
-    // height of its tallest ITEM: one line of text is 18px and the icon that
-    // replaces it is 14px, so an unpinned button shrinks by 4px exactly here
-    // and stops matching the `[+]` it shares the row with.
+    // Removing the label must preserve the button height.
+    // An inline-flex container without a line-box strut uses the height of its tallest item.
+    // Here, text is 18px high and the icon is 14px high.
+    // Without a fixed height, the button would shrink by 4px and stop matching the plus button.
     const heightOf = (id: string) =>
       page.getByTestId(id).evaluate(el => el.getBoundingClientRect().height)
     const plusHeight = await heightOf('composer-plus-trigger')
@@ -426,10 +339,8 @@ test.describe('agent input queue', () => {
     for (const id of ['queue-pause-button', 'send-button'])
       expect(await heightOf(id), `${id} must match the [+] while icon-only`).toBe(plusHeight)
 
-    // The CLUSTER's own box, not the slot's. The slot obeys its `max-width`
-    // whatever its content does, so measuring the slot alone proves nothing --
-    // a cluster that refuses to shrink simply overflows the slot's left edge
-    // and paints across the `[+]` from there.
+    // Measure the action cluster as well as its slot.
+    // The slot can obey its maximum width while the cluster overflows its left edge and covers the plus button.
     const plusBox = (await plus.boundingBox())!
     const footerBox = (await footer.boundingBox())!
     const clusterBox = (await cluster.boundingBox())!
@@ -437,13 +348,12 @@ test.describe('agent input queue', () => {
     expect(footerBox.x, 'the footer slot must stop right of the [+]').toBeGreaterThanOrEqual(plusRight)
     expect(clusterBox.x, 'the action cluster must stop right of the [+]').toBeGreaterThanOrEqual(plusRight)
 
-    // An EMPTY composer stays collapsed. The cap drives the available collapsed
-    // width to zero here, and the expand test subtracts a margin from it, so a
-    // text width of zero used to satisfy the comparison and open the tall
-    // layout with nothing typed.
+    // Require the empty composer to stay collapsed.
+    // The width restriction reduces the available collapsed width to zero.
+    // The expansion check subtracts a margin, so an empty zero-width string previously opened the tall layout.
     await expect(page.getByTestId('composer-box')).not.toHaveAttribute('data-expanded')
 
-    // And the `[+]` still answers a click, which the overlap denied.
+    // Require the plus button to accept a click after the geometry check.
     await plus.click()
     await expect(page.getByTestId('composer-plus-popover')).toBeVisible()
   })

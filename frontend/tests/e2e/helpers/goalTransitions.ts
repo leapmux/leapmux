@@ -6,9 +6,8 @@ import { decompressContentToString } from '../../../src/lib/decompress'
  *
  * A leaf module on purpose: it imports only the generated proto types and the
  * browser's own decoder, so a `.test.ts` beside it runs under vitest in
- * milliseconds. `./subagentRegistry.ts` pulls in the Playwright fixtures and
- * cannot be imported from a unit test at all, which is why this does not live
- * there.
+ * milliseconds with no module mock. `./goalsAndTodos.ts` reads the Worker
+ * messages through the test channel and calls this counter on them.
  */
 
 /** The persisted-message fields the transition counter reads. */

@@ -1,9 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createProcessStub } from '~/test-support/childProcess'
-import { stopProcess, stopProcesses } from './process'
+import { stopProcess, stopProcesses, validateProcessShutdownDelay } from './process'
 
 beforeEach(() => vi.useFakeTimers())
 afterEach(() => vi.useRealTimers())
+
+describe('validateProcessShutdownDelay', () => {
+  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648])('rejects an invalid delay: %s', (delay) => {
+    expect(() => validateProcessShutdownDelay(delay)).toThrow(RangeError)
+  })
+
+  it.each([0.5, 1, 5000, 2_147_483_647])('accepts a positive delay that fits the Node timer: %s', (delay) => {
+    expect(() => validateProcessShutdownDelay(delay)).not.toThrow()
+  })
+})
 
 describe('process shutdown', () => {
   it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648])('rejects an invalid shutdown delay without signaling the process: %s', async (delay) => {
