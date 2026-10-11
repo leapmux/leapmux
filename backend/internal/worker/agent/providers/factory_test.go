@@ -69,6 +69,7 @@ func TestNormalizeModelIDRoutesEveryProvider(t *testing.T) {
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_GROK_BUILD:     {"grok-4.6", "grok-4.6"},
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_KIRO:           {"claude-sonnet-4.5", "claude-sonnet-4.5"},
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_AMP:            {"model/alpha", "model/alpha"},
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLINE:          {"anthropic/claude-sonnet-4.6", "anthropic/claude-sonnet-4.6"},
 	}
 	providers := agentlabels.AllProviders()
 	require.Len(t, cases, len(providers), "each provider needs a normalization case")

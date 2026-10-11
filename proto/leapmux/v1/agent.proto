@@ -24,6 +24,7 @@ enum AgentProvider {
   AGENT_PROVIDER_GROK_BUILD = 16;
   AGENT_PROVIDER_KIRO = 17;
   AGENT_PROVIDER_AMP = 18;
+  AGENT_PROVIDER_CLINE = 19;
 }
 
 // AgentStatus tracks the lifecycle state of an agent.

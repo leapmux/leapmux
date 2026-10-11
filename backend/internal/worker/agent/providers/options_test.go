@@ -40,6 +40,7 @@ func TestProviderManagesEffort(t *testing.T) {
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEWHALE:      true,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_KIMI_CODE:      true,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE:      true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLINE:          true,
 	}
 	for _, p := range agentlabels.AllProviders() {
 		if managed[p] {

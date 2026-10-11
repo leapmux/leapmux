@@ -5,6 +5,7 @@ import { requireLoopbackHttpURL } from './agentEnvironmentInputs'
 import { createAmpEnvironment } from './ampEnvironment'
 import { agentSearchPathEnv } from './binaryOnPath'
 import { createClaudeEnvironment } from './claudeEnvironment'
+import { createClineEnvironment } from './clineEnvironment'
 import { createCodewhaleEnvironment } from './codewhaleEnvironment'
 import { createCodexEnvironment } from './codexEnvironment'
 import { createCopilotEnvironment } from './copilotEnvironment'
@@ -346,6 +347,7 @@ export async function createMockAgentEnvironment(
       ...createCursorEnvironment({ homeDir, origin, modelKey: MODEL_KEY }),
       ...createCopilotEnvironment({ homeDir, origin, modelKey: MODEL_KEY, githubToken: MOCK_COPILOT_GITHUB_TOKEN }),
       ...createZcodeEnvironment({ runDirectory: runDir, homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, providerID: MOCK_PROVIDER_IDS.zcode, modelID: MOCK_MODELS.zai, alternateModelID: MOCK_MODELS.pi, plainModelID: ZCODE_PLAIN_MODEL_WIRE_ID }),
+      ...createClineEnvironment({ homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, providerID: CLINE_PROVIDER_ID, modelID: MOCK_MODELS.cline, mcpEchoServer }),
       ...createAmpEnvironment({ origin, modelKey: MODEL_KEY }),
       ...createKiroEnvironment({ runDirectory: runDir, homeDir, origin, apiKey: KIRO_E2E_API_KEY }),
       ...createGrokEnvironment({ runDirectory: runDir, homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, modelID: MOCK_MODELS.grok, alternateModelID: GROK_ALT_MODEL_ID, reasoningModelID: GROK_REASONING_MODEL_ID }),

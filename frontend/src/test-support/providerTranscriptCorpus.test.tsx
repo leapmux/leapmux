@@ -2,8 +2,11 @@ import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { TranscriptFrame } from '~/test-support/messageFactory'
 import { waitFor } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
+import { MIMO_TOOL, MIMO_TOOL_STATUS } from '~/generated/contracts/mimo-protocol'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
+import { kimiToolStart } from '~/test-support/kimiFixtures'
 import { makeTranscriptMessage } from '~/test-support/messageFactory'
+import { openingFrame, toolFrame } from '~/test-support/mimoFixtures'
 import { createTranscriptScenario } from '~/test-support/transcriptScenario'
 import '~/components/chat/providers/testMocks'
 
@@ -63,7 +66,7 @@ async function bubbleDom<T>(scenario: ReturnType<typeof createTranscriptScenario
 // bytes still say the call never finished.
 // ---------------------------------------------------------------------------
 
-const RETAINED_COMPLETION_PROVIDERS = [AgentProvider.CODEX, AgentProvider.OPENCODE, AgentProvider.PI, AgentProvider.ZCODE] as const
+const RETAINED_COMPLETION_PROVIDERS = [AgentProvider.CODEX, AgentProvider.OPENCODE, AgentProvider.PI, AgentProvider.ZCODE, AgentProvider.KIMI_CODE, AgentProvider.OH_MY_PI, AgentProvider.MIMO_CODE, AgentProvider.CLINE] as const
 
 function retainedCompletionFrames(provider: AgentProvider): TranscriptFrame[] {
   const id = `completion-${provider}`
@@ -74,7 +77,7 @@ function retainedCompletionFrames(provider: AgentProvider): TranscriptFrame[] {
         { item: { type: 'commandExecution', id, command, status: 'inProgress' } },
         { item: { type: 'commandExecution', id, command, status: 'inProgress', aggregatedOutput: output } },
       ]
-    : provider === AgentProvider.PI
+    : provider === AgentProvider.PI || provider === AgentProvider.OH_MY_PI
       ? [
           { type: 'tool_execution_start', toolCallId: id, toolName: 'bash', args: { command } },
           { type: 'tool_execution_end', toolCallId: id, toolName: 'bash', isError: true, result: { content: [{ type: 'text', text: output }] } },
@@ -84,10 +87,31 @@ function retainedCompletionFrames(provider: AgentProvider): TranscriptFrame[] {
             { type: 'tool.updated', payload: { kind: 'scheduled', toolCallId: id, toolName: 'Bash', input: { command } } },
             { type: 'tool.updated', payload: { kind: 'result', toolCallId: id, toolName: 'Bash', result: { success: false, content: output } } },
           ]
-        : [
-            { sessionUpdate: 'tool_call', toolCallId: id, kind: 'execute', title: 'Run command', status: 'pending', rawInput: { command } },
-            { sessionUpdate: 'tool_call_update', toolCallId: id, status: 'in_progress', kind: 'execute', content: [{ type: 'content', content: { type: 'text', text: output } }] },
-          ]
+        : provider === AgentProvider.KIMI_CODE
+          // The turn ended while the call ran, so the worker stored the call's own start
+          // again as its closing row, with the output it printed before it stopped.
+          ? [
+              kimiToolStart(id, 'Bash', { command }),
+              { ...kimiToolStart(id, 'Bash', { command }), output },
+            ]
+          : provider === AgentProvider.MIMO_CODE
+            // The worker ends a cut call with its last running update, which states the
+            // output so far.
+            ? [
+                openingFrame(MIMO_TOOL.Bash, { command }, id),
+                toolFrame(MIMO_TOOL.Bash, { status: MIMO_TOOL_STATUS.Running, input: { command }, metadata: { output } }, id),
+              ]
+            : provider === AgentProvider.CLINE
+              // The turn ended while the call ran, so the worker closed the call with a
+              // result that states the output it printed before it stopped.
+              ? [
+                  { version: 'v1', event: 'tool.started', sessionId: 's1', payload: { toolCallId: id, toolName: 'run_commands', input: { commands: [command] } } },
+                  { version: 'v1', event: 'tool.finished', sessionId: 's1', payload: { toolCallId: id, toolName: 'run_commands', output: [{ query: command, result: output, success: true }] } },
+                ]
+              : [
+                  { sessionUpdate: 'tool_call', toolCallId: id, kind: 'execute', title: 'Run command', status: 'pending', rawInput: { command } },
+                  { sessionUpdate: 'tool_call_update', toolCallId: id, status: 'in_progress', kind: 'execute', content: [{ type: 'content', content: { type: 'text', text: output } }] },
+                ]
   return [
     frame(`${id}-request`, provider, id, undefined, pair[0]),
     frame(`${id}-result`, provider, id, undefined, { ...pair[1], _leapmux: { completion: 'complete' } }, { completion: MessageCompletion.INTERRUPTED }),

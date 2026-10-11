@@ -111,6 +111,14 @@
         "Amp Code",
         "amp-code"
       ]
+    },
+    "AGENT_PROVIDER_CLINE": {
+      "displayName": "Cline",
+      "cliAlias": "cline",
+      "parseAliases": [
+        "Cline CLI",
+        "cline-cli"
+      ]
     }
   }
 }

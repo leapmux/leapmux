@@ -1,0 +1,13 @@
+import { clineTest } from '../cline-fixtures'
+import { exerciseContextUsage } from '../helpers/contextUsage'
+
+/**
+ * The native usage event must reach the agent info card. The test checks the reported count and its display.
+ *
+ * The Worker starts one private Cline hub for this agent. Cline's DeepSeek provider sends requests to the isolated mock.
+ */
+clineTest.describe('Cline basic chat', () => {
+  clineTest('reports model usage in the agent info card', async ({ native }) => {
+    await exerciseContextUsage(native)
+  })
+})

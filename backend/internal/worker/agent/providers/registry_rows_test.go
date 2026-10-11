@@ -112,6 +112,13 @@ func TestKnownOptionIDs(t *testing.T) {
 	assert.False(t, has(ampProvider, agent.OptionIDEffort), "amp's mode chooses the effort")
 	assert.False(t, has(ampProvider, agent.OptionIDPrimaryAgent), "amp has no primary-agent axis")
 
+	// Cline carries its model's reasoning effort on the well-known axis, and
+	// Plan, Act and Auto-approve on the permission-mode axis.
+	clineProvider := leapmuxv1.AgentProvider_AGENT_PROVIDER_CLINE
+	assert.True(t, has(clineProvider, agent.OptionIDEffort))
+	assert.True(t, has(clineProvider, agent.OptionIDPermissionMode))
+	assert.False(t, has(clineProvider, agent.OptionIDPrimaryAgent), "cline carries its modes on the permission-mode axis")
+
 	// An unknown provider yields just {model}.
 	unknown := registry.KnownOptionIDs(leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED)
 	assert.Equal(t, map[string]bool{agent.OptionIDModel: true}, unknown)

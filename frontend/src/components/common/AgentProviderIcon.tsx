@@ -405,7 +405,7 @@ function AmpIcon(props: { size: number, class?: string }): JSX.Element {
   )
 }
 
-export function ClineIcon(props: { size: number, class?: string }): JSX.Element {
+function ClineIcon(props: { size: number, class?: string }): JSX.Element {
   // The Cline robot head, the mark without the wordmark. Centered, and 85% of the
   // square viewBox. Monochrome, so it takes the theme's icon color.
   return (
@@ -661,6 +661,9 @@ export function AgentProviderIcon(props: AgentProviderIconProps): JSX.Element {
       </Match>
       <Match when={props.provider === AgentProvider.AMP}>
         <AmpIcon size={props.size} {...classProps()} />
+      </Match>
+      <Match when={props.provider === AgentProvider.CLINE}>
+        <ClineIcon size={props.size} {...classProps()} />
       </Match>
     </Switch>
   )

@@ -38,7 +38,7 @@ describe('MESSAGE_UI_DEFAULTS', () => {
   // no edit here. A hand-written list already missed one provider.
   it('registers no provider-scoped key', () => {
     const prefixes = providerKeyPrefixes()
-    expect(prefixes).toContain('copilot')
+    expect(prefixes).toContain('cline')
     for (const key of Object.values(MESSAGE_UI_KEY)) {
       for (const prefix of prefixes)
         expect(key.startsWith(`${prefix}-`), `${key} identifies the provider ${prefix}`).toBe(false)

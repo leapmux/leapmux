@@ -11,6 +11,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/amp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/cline"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/codewhale"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/codex"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/copilot"
@@ -52,6 +53,7 @@ func Registrations() []agent.Registration {
 		grok.Registration(),
 		kiro.Registration(),
 		amp.Registration(),
+		cline.Registration(),
 	}
 }
 

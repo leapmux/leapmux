@@ -1,6 +1,7 @@
 // Each plugin registers its provider when this module imports it.
 // Each supported provider requires one import for registry lookup.
 import './claude/plugin'
+import './cline/plugin'
 import './amp/plugin'
 import './codex/plugin'
 import './ohmypi/plugin'

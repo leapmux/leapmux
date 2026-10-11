@@ -636,4 +636,41 @@ export const ROW_KIND_CASES: RowKindCase[] = [
     payload: { type: 'result', subtype: 'success', is_error: false, num_turns: 4, result: 'pong', session_id: 'T-01a0d1c3-e51a-756b-9279-34c1cd441c35' },
     category: 'result_divider',
   },
+  {
+    provider: Provider.CLINE,
+    name: 'assistant text',
+    payload: { version: 'v1', event: 'assistant.finished', sessionId: '1790258346189_zqp76', payload: { text: 'Hello from the mock model.' } },
+    category: 'assistant_text',
+  },
+  {
+    provider: Provider.CLINE,
+    name: 'reasoning',
+    payload: { version: 'v1', event: 'reasoning.finished', sessionId: '1790258346189_zqp76', payload: { reasoning: 'The user says hello. I answer briefly.' } },
+    category: 'assistant_thinking',
+  },
+  {
+    provider: Provider.CLINE,
+    name: 'tool call',
+    payload: { version: 'v1', event: 'tool.started', sessionId: '1790258346189_zqp76', payload: { toolCallId: 'call_bash_1', toolName: 'run_commands', input: { commands: ['echo probe-bash'] } } },
+    category: 'tool_use',
+  },
+  {
+    provider: Provider.CLINE,
+    name: 'tool result',
+    payload: { version: 'v1', event: 'tool.finished', sessionId: '1790258346189_zqp76', payload: { toolCallId: 'call_bash_1', toolName: 'run_commands', output: [{ query: 'echo probe-bash', result: 'probe-bash\n', success: true }] } },
+    category: 'tool_result',
+    spanType: 'run_commands',
+  },
+  {
+    provider: Provider.CLINE,
+    name: 'turn end',
+    payload: { version: 'v1', event: 'run.completed', sessionId: '1790258346189_zqp76', payload: { reason: 'completed', result: { text: 'Hello from the mock model.', iterations: 1 } } },
+    category: 'result_divider',
+  },
+  {
+    provider: Provider.CLINE,
+    name: 'compaction notice',
+    payload: { version: 'v1', event: 'session.notice', sessionId: '1790258346189_zqp76', payload: { message: 'auto-compacted', noticeType: 'status', metadata: { kind: 'auto_compaction', phase: 'completed', tokensBefore: 90000, tokensAfter: 12000 } } },
+    category: 'notification',
+  },
 ]

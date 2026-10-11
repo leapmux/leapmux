@@ -1,7 +1,9 @@
 import type { MockModelToolCall } from './mockModelScript'
 import { createHash } from 'node:crypto'
 import { AMP_TOOL_NAME } from '../../../src/components/chat/providers/amp/toolNames'
+import { CLINE_TOOL_NAME } from '../../../src/components/chat/providers/cline/toolNames'
 import { AMP_SHELL_TOOL, AMP_SUBAGENT_TOOL } from '../../../src/generated/contracts/amp-protocol'
+import { CLINE_TOOL } from '../../../src/generated/contracts/cline-protocol'
 import { CODEWHALE_TOOL } from '../../../src/generated/contracts/codewhale-protocol'
 // Use a relative import.
 // The note in ../agentSettings.ts explains standalone native probes.
@@ -992,6 +994,57 @@ const TOOL_VOCABULARY = {
     codeExecution: (id, source) => ({ id, name: 'mcp__node_repl__js', arguments: { code: source, title: 'Run the native script' } }),
     workflowTools: [ZCODE_TOOL.CreateWorkflow],
   },
+  [AgentProvider.CLINE]: {
+    bash: (id, command) => ({ id, name: CLINE_TOOL.RunCommands, arguments: { commands: [command] } }),
+    // One `editor` tool replaces text, inserts it, or creates a missing file. The
+    // path is absolute, as the schema asks.
+    edit: (id, { path, before, after }) => ({ id, name: CLINE_TOOL_NAME.Editor, arguments: { path, old_text: before, new_text: after } }),
+    write: (id, { path, content }) => ({ id, name: CLINE_TOOL_NAME.Editor, arguments: { path, new_text: content } }),
+    read: (id, path) => ({ id, name: CLINE_TOOL_NAME.ReadFiles, arguments: { files: [{ path }] } }),
+    // Plan mode is a session mode, and no tool enters it.
+    enterPlanMode: null,
+    // The native switch_to_act_mode tool accepts no arguments.
+    // Its approval displays the model answer that precedes the call.
+    // The shared helper's plan argument does not become that answer.
+    // The Worker offers this tool only in Plan mode.
+    exitPlanMode: id => ({ id, name: CLINE_TOOL.SwitchToActMode, arguments: {} }),
+    exitPlanModeFromFile: null,
+    // The native ask_question tool asks one question with 2 to 5 options.
+    // Each option is a label.
+    // The tool has no header or multiSelect field.
+    // The builder refuses a request that the schema cannot represent.
+    askUserQuestion: questionBuilder((id, questions) => {
+      const [question, ...rest] = questions
+      if (!question || rest.length > 0)
+        throw new Error('Cline\'s ask_question asks exactly one question')
+      if (question.multiSelect)
+        throw new Error('Cline\'s ask_question has no multi-select question')
+      if (question.options.length < 2 || question.options.length > 5)
+        throw new Error('Cline\'s ask_question takes 2 to 5 options')
+      return { id, name: CLINE_TOOL.AskQuestion, arguments: { question: question.question, options: question.options.map(({ label }) => label) } }
+    }),
+    // The native spawn_agent tool accepts a system prompt and task.
+    // It accepts no separate label.
+    // LeapMux uses the task's first line as the row title.
+    // Place the description before the marked prompt in the task.
+    spawnSubagent: (id, { description, prompt }) => ({
+      id,
+      name: CLINE_TOOL.SpawnAgent,
+      arguments: { systemPrompt: 'You are a subagent. Do the task, then report the result.', task: `${description}\n\n${prompt}` },
+    }),
+    spawnSubagentBatch: null,
+    // Cline's commands run in the foreground of their call.
+    backgroundBash: null,
+    // Cline has no to-do list and no session goal.
+    updateTodos: null,
+    createGoal: null,
+    completeGoal: null,
+    blockGoal: null,
+    mcpTool: (id, { server, tool, input }) => ({ id, name: `${server}__${tool}`, arguments: input }),
+    codeExecution: null,
+    workflowTools: [CLINE_TOOL_NAME.TeamRunTask],
+  },
+
   [AgentProvider.AMP]: {
     // Without timeout_ms, Amp waits 10 seconds. It then returns `running: true` and a PID,
     // and the turn continues while the command runs on. A command that a scenario holds
