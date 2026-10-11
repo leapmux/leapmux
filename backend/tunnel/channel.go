@@ -889,7 +889,7 @@ func (ch *Channel) sendInnerRaw(ctx context.Context, correlationID uint64, msg *
 	// cancellable context passed to Write, so a per-RPC ctx would let one
 	// caller's cancel tear down the shared E2EE transport. The caller's ctx
 	// still gates ENTRY, inside the gate (see SendGate.Send).
-	if err := ch.sendGate.Send(ctx, ch.ctx, plaintext,
+	if err := ch.sendGate.Send(ctx, ch.ctx, correlationID, plaintext,
 		func(chunk []byte, flags leapmuxv1.ChannelMessageFlags) error {
 			if ch.ws == nil {
 				// Partial Channels in unit tests have no websocket; the send

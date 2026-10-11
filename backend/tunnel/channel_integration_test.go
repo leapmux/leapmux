@@ -21,7 +21,6 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/testutil"
-	"github.com/leapmux/leapmux/locallisten"
 	"github.com/leapmux/leapmux/locallisten/locallistentest"
 	"github.com/leapmux/leapmux/solo"
 	"github.com/leapmux/leapmux/tunnel"
@@ -67,7 +66,11 @@ func startTestSolo(t *testing.T) (hubURL, localListenURL, userID, workerID strin
 	addr := ln.Addr().String()
 	_ = ln.Close()
 
-	t.Setenv(locallisten.EnvLocalListen, uniqueTestListenURL(t))
+	// Both entries in the bind set: the TCP address the tests dial over HTTP,
+	// and a short-path local socket (the deep default path would exceed
+	// macOS's 104-byte sun_path limit). The list is the bind set, so naming
+	// only one of them would drop the other.
+	t.Setenv("LEAPMUX_HUB_LISTEN", addr+","+uniqueTestListenURL(t))
 
 	inst, err := solo.Start(ctx, solo.Config{
 		Listen:     addr,

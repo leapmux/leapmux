@@ -1357,7 +1357,7 @@ func TestConnWriteDeadlineInterruptsSendPermitWait(t *testing.T) {
 	held := make(chan struct{})
 	release := make(chan struct{})
 	go func() {
-		_ = channel.sendGate.Send(context.Background(), channel.ctx, []byte("hold"),
+		_ = channel.sendGate.Send(context.Background(), channel.ctx, 0, []byte("hold"),
 			func([]byte, leapmuxv1.ChannelMessageFlags) error {
 				close(held)
 				<-release
