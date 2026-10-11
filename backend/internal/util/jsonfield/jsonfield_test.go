@@ -1,8 +1,10 @@
 package jsonfield
 
 import (
+	"encoding/json"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -59,5 +61,31 @@ func TestInvalidContainersAndValuesRemainErrors(t *testing.T) {
 	for _, input := range []string{"", "{}", "null", "0", "[broken"} {
 		_, err := Append([]byte(input), []byte(`0`))
 		require.Error(t, err, input)
+	}
+}
+
+func TestEqualComparesTheCompactForm(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name        string
+		left, right string
+		want        bool
+	}{
+		{name: "the same bytes", left: `{"a":1}`, right: `{"a":1}`, want: true},
+		{name: "spacing alone", left: "{ \"a\" : [1, 2] }\n", right: `{"a":[1,2]}`, want: true},
+		{name: "two empty values", left: ``, right: ``, want: true},
+		{name: "an empty value and a value", left: ``, right: `null`, want: false},
+		{name: "a value and an empty value", left: `{}`, right: ``, want: false},
+		{name: "a different value", left: `{"a":1}`, right: `{"a":2}`, want: false},
+		// Compact keeps key order, so a reorder is a different encoding. The caller
+		// compares a value with the copy it wrote, which keeps the order.
+		{name: "a reordered object", left: `{"a":1,"b":2}`, right: `{"b":2,"a":1}`, want: false},
+		{name: "invalid JSON on the left", left: `{`, right: `{`, want: false},
+		{name: "invalid JSON on the right", left: `{}`, right: `{]`, want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, Equal(json.RawMessage(tc.left), json.RawMessage(tc.right)))
+		})
 	}
 }

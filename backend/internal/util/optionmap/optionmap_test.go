@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestMap_Get(t *testing.T) {
@@ -59,6 +60,45 @@ func TestParse(t *testing.T) {
 	assert.Equal(t, Map{}, Parse(""), "an empty string parses to a non-nil empty map")
 	assert.Equal(t, Map{}, Parse("not json"), "invalid JSON falls back to an empty map")
 	assert.Equal(t, Map{}, Parse("null"), "a JSON null parses to a non-nil empty map")
+}
+
+func TestParseWithError(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		raw     string
+		want    Map
+		invalid bool
+	}{
+		{name: "empty", want: Map{}},
+		{name: "null", raw: "null", want: Map{}},
+		{name: "malformed", raw: "not json", want: Map{}, invalid: true},
+		{name: "wrong type", raw: "[]", want: Map{}, invalid: true},
+		{name: "partial object", raw: `{"model":"opus","effort":42}`, want: Map{}, invalid: true},
+		{name: "valid", raw: `{"model":"opus"}`, want: Map{"model": "opus"}},
+		{name: "empty value", raw: `{"model":"opus","empty":""}`, want: Map{"model": "opus"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := ParseWithError(test.raw)
+			if test.invalid {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+			require.NotNil(t, got)
+			assert.Equal(t, test.want, got)
+			got["independent"] = "value"
+			second, secondError := ParseWithError(test.raw)
+			if test.invalid {
+				require.Error(t, secondError)
+				assert.Equal(t, err.Error(), secondError.Error())
+			} else {
+				require.NoError(t, secondError)
+			}
+			require.NotNil(t, second)
+			assert.Equal(t, test.want, second)
+			assert.NotContains(t, second, "independent")
+		})
+	}
 }
 
 // TestRoundTrip_MarshalParse is the CAS-relevant invariant: a parsed map re-marshals to the

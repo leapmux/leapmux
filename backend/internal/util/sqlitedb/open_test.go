@@ -2,12 +2,16 @@ package sqlitedb
 
 import (
 	"database/sql"
+	"math"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"modernc.org/sqlite"
+	sqlitelib "modernc.org/sqlite/lib"
 )
 
 func TestOpen_InMemory(t *testing.T) {
@@ -40,7 +44,63 @@ func TestOpen_File(t *testing.T) {
 
 	var timeout int
 	require.NoError(t, db.QueryRow("PRAGMA busy_timeout").Scan(&timeout))
-	assert.Equal(t, 60000, timeout)
+	assert.Equal(t, math.MaxInt32, timeout,
+		"a database this program owns waits for a lock without a practical limit")
+}
+
+// A write transaction must hold the write lock from its BEGIN. A deferred
+// transaction reads first and must later upgrade its read snapshot to a write.
+// SQLite refuses that upgrade at once whenever another connection holds or took
+// the write lock (SQLITE_BUSY or SQLITE_BUSY_SNAPSHOT), and it never calls the
+// busy handler for it, so no busy timeout can wait the refusal out. The hub
+// answered a workspace delete that raced another writer with
+// `delete workspace: database is locked`.
+func TestOpen_WriteTransactionHoldsTheWriteLockFromBegin(t *testing.T) {
+	db, contender := openWithContender(t)
+	tx, err := db.BeginTx(t.Context(), nil)
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback() }()
+
+	// No statement ran in the transaction yet, so BEGIN alone must hold the lock.
+	_, err = contender.ExecContext(t.Context(), `INSERT INTO probe VALUES (1)`)
+	var sqliteErr *sqlite.Error
+	require.ErrorAs(t, err, &sqliteErr, "a second writer must find the lock taken while a write transaction is open")
+	assert.Equal(t, sqlitelib.SQLITE_BUSY, sqliteErr.Code())
+}
+
+// A read-only transaction stays deferred. It takes no write lock, so a writer on
+// another connection commits while it is open.
+func TestOpen_ReadOnlyTransactionLeavesWritersFree(t *testing.T) {
+	db, contender := openWithContender(t)
+	tx, err := db.BeginTx(t.Context(), &sql.TxOptions{ReadOnly: true})
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback() }()
+	var rows int
+	require.NoError(t, tx.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM probe`).Scan(&rows))
+
+	_, err = contender.ExecContext(t.Context(), `INSERT INTO probe VALUES (1)`)
+	require.NoError(t, err, "a read-only transaction must not hold the write lock")
+}
+
+// openWithContender opens a database through Open, and a second connection to
+// the same file. The second connection refuses a taken lock at once rather than
+// waiting for it, so a test reads the lock state instead of waiting it out.
+func openWithContender(t *testing.T) (*sql.DB, *sql.Conn) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "test.db")
+	db, err := Open(path, Config{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	_, err = db.Exec(`CREATE TABLE probe (n INTEGER)`)
+	require.NoError(t, err)
+
+	other, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(0)")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = other.Close() })
+	contender, err := other.Conn(t.Context())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = contender.Close() })
+	return db, contender
 }
 
 func TestOpen_FileWithOptions(t *testing.T) {
@@ -167,12 +227,12 @@ func TestBuildReadOnlyDSN_SpecialCharsInPath(t *testing.T) {
 
 func TestBuildDSN_Memory(t *testing.T) {
 	dsn := buildDSN(":memory:", Config{})
-	assert.Equal(t, ":memory:?_pragma=foreign_keys(1)&_time_format=sqlite", dsn)
+	assert.Equal(t, ":memory:?_pragma=foreign_keys(1)&_txlock=immediate&_time_format=sqlite", dsn)
 }
 
 func TestBuildDSN_AbsolutePath(t *testing.T) {
 	dsn := buildDSN("/home/user/data.db", Config{})
-	assert.Equal(t, "file:/home/user/data.db?_pragma=busy_timeout(60000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_time_format=sqlite", dsn)
+	assert.Equal(t, "file:/home/user/data.db?_pragma=busy_timeout(2147483647)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_txlock=immediate&_time_format=sqlite", dsn)
 }
 
 // TestBuildDSN_TimeFormatSqliteApplied is a focused regression test
