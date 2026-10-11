@@ -174,6 +174,14 @@ func (f *FlagProvider) ReadBytes() ([]byte, error) {
 	return nil, nil
 }
 
+// listValuer is a flag.Value that reports its values as a slice. A repeatable
+// flag holds more than one value, and a []string field cannot be unmarshalled
+// from the one comma-joined string Value.String() reports -- so the provider
+// stores the slice instead.
+type listValuer interface {
+	Get() []string
+}
+
 // Read returns a map of only explicitly-set flags mapped to their koanf keys.
 //
 // The result is nested, not a flat map of dotted keys. koanf.Load does not
@@ -188,6 +196,10 @@ func (f *FlagProvider) Read() (map[string]interface{}, error) {
 	f.fs.Visit(func(fl *flag.Flag) {
 		key, ok := f.fieldMap[fl.Name]
 		if !ok {
+			return
+		}
+		if lv, isList := fl.Value.(listValuer); isList {
+			out[key] = lv.Get()
 			return
 		}
 		out[key] = fl.Value.String()
@@ -236,7 +248,12 @@ func ExpandHome(path string) string {
 // Load is a helper that performs the standard koanf loading sequence:
 // defaults -> config file -> env vars -> CLI flags.
 // It returns the loaded koanf instance. The caller should unmarshal into their config struct.
-func Load(k *koanf.Koanf, defaults map[string]interface{}, configFilePath, envPrefix string, fp *FlagProvider) error {
+//
+// envListKeys names the keys whose ENVIRONMENT VARIABLE holds a delimited
+// list, which the env provider splits into a []string. It does not affect the
+// config file (whose lists are already lists) or the flags (whose repeatable
+// form appends one value at a time).
+func Load(k *koanf.Koanf, defaults map[string]interface{}, configFilePath, envPrefix string, envListKeys map[string]bool, fp *FlagProvider) error {
 	// 1. Defaults.
 	if err := k.Load(confmapProvider(defaults), nil); err != nil {
 		return err
@@ -251,7 +268,7 @@ func Load(k *koanf.Koanf, defaults map[string]interface{}, configFilePath, envPr
 	}
 
 	// 3. Env vars.
-	if err := k.Load(envProvider(envPrefix), nil); err != nil {
+	if err := k.Load(envProvider(envPrefix, envListKeys), nil); err != nil {
 		return err
 	}
 

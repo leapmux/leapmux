@@ -733,7 +733,9 @@ func LoadWithOptions(args []string, opts LoadOptions) (*Config, bool, error) {
 	k := koanf.New(internalconfig.Delim)
 	fp := internalconfig.NewFlagProvider(fs, fieldMap)
 
-	if err := internalconfig.Load(k, defaults, configPath, "LEAPMUX_HUB_", fp); err != nil {
+	// The hub gains its one list-typed environment variable (listen) with the
+	// repeatable --listen change.
+	if err := internalconfig.Load(k, defaults, configPath, "LEAPMUX_HUB_", nil, fp); err != nil {
 		return nil, false, fmt.Errorf("load config: %w", err)
 	}
 

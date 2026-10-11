@@ -293,7 +293,9 @@ func Load(args []string) (*Config, bool, error) {
 	k := koanf.New(internalconfig.Delim)
 	fp := internalconfig.NewFlagProvider(fs, fieldMap)
 
-	if err := internalconfig.Load(k, defaults, configPath, "LEAPMUX_WORKER_", fp); err != nil {
+	// The worker has no list-typed environment variable: every key it reads
+	// holds one value.
+	if err := internalconfig.Load(k, defaults, configPath, "LEAPMUX_WORKER_", nil, fp); err != nil {
 		return nil, false, fmt.Errorf("load config: %w", err)
 	}
 
