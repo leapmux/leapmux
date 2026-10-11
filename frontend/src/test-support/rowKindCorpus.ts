@@ -550,4 +550,26 @@ export const ROW_KIND_CASES: RowKindCase[] = [
     payload: { type: 'agent_end', isTerminal: true, messages: [] },
     category: 'result_divider',
   },
+  {
+    provider: Provider.GROK_BUILD,
+    name: 'first tool call, named in _meta',
+    payload: {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'call_5_0',
+      title: 'read_file',
+      rawInput: { target_file: '/repo/probe.txt' },
+      _meta: { 'x.ai/tool': { version: 1, name: 'read_file', kind: 'read', namespace: 'grok_build', label: 'Read', read_only: true } },
+    },
+    category: 'tool_use',
+  },
+  {
+    provider: Provider.GROK_BUILD,
+    name: 'end of a turn Grok started',
+    payload: {
+      jsonrpc: '2.0',
+      method: '_x.ai/session_notification',
+      params: { sessionId: 's', update: { sessionUpdate: 'turn_completed', prompt_id: 'p', stop_reason: 'end_turn', elapsed_ms: 264 } },
+    },
+    category: 'result_divider',
+  },
 ]

@@ -347,7 +347,7 @@ function OhMyPiIcon(props: { size: number, class?: string }): JSX.Element {
   )
 }
 
-export function GrokBuildIcon(props: { size: number, class?: string }): JSX.Element {
+function GrokBuildIcon(props: { size: number, class?: string }): JSX.Element {
   // The Grok mark, centered and 85% of the square viewBox like the Cursor and
   // Goose marks. Monochrome, so it takes the theme's icon color.
   return (
@@ -652,6 +652,9 @@ export function AgentProviderIcon(props: AgentProviderIconProps): JSX.Element {
       </Match>
       <Match when={props.provider === AgentProvider.CODEWHALE}>
         <CodewhaleIcon size={props.size} {...classProps()} />
+      </Match>
+      <Match when={props.provider === AgentProvider.GROK_BUILD}>
+        <GrokBuildIcon size={props.size} {...classProps()} />
       </Match>
     </Switch>
   )

@@ -21,6 +21,7 @@ enum AgentProvider {
   AGENT_PROVIDER_MIMO_CODE = 13;
   AGENT_PROVIDER_QWEN_CODE = 14;
   AGENT_PROVIDER_OH_MY_PI = 15;
+  AGENT_PROVIDER_GROK_BUILD = 16;
 }
 
 // AgentStatus tracks the lifecycle state of an agent.

@@ -89,6 +89,13 @@
       "parseAliases": [
         "omp"
       ]
+    },
+    "AGENT_PROVIDER_GROK_BUILD": {
+      "displayName": "Grok Build",
+      "cliAlias": "grok-build",
+      "parseAliases": [
+        "grok"
+      ]
     }
   }
 }

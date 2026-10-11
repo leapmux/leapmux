@@ -989,7 +989,43 @@ const TOOL_VOCABULARY = {
     mcpTool: (id, { server, tool, input }) => ({ id, name: `mcp__${server}__${tool}`, arguments: input }),
     codeExecution: (id, source) => ({ id, name: 'mcp__node_repl__js', arguments: { code: source, title: 'Run the native script' } }),
     workflowTools: [ZCODE_TOOL.CreateWorkflow],
+  },  [AgentProvider.GROK_BUILD]: {
+    // Read off the tool schemas in Grok Build 1.0.41's own model request:
+    // `description` is REQUIRED beside `command`.
+    bash: (id, command) => ({ id, name: 'run_terminal_command', arguments: { command, description: 'Run the scripted command' } }),
+    edit: (id, { path, before, after }) => ({ id, name: 'search_replace', arguments: { file_path: path, old_string: before, new_string: after } }),
+    write: (id, { path, content }) => ({ id, name: 'write', arguments: { file_path: path, content } }),
+    read: (id, path) => ({ id, name: 'read_file', arguments: { target_file: path } }),
+    enterPlanMode: id => ({ id, name: 'enter_plan_mode', arguments: {} }),
+    // The native exit_plan_mode tool accepts no arguments.
+    // Grok reads the Markdown plan file when the model calls it.
+    // The plan argument from the shared helper does not become the approval text.
+    exitPlanMode: id => ({ id, name: 'exit_plan_mode', arguments: {} }),
+    exitPlanModeFromFile: null,
+    // Grok spells the flag `multi_select` in the schema the model sees, and
+    // offers no header chip.
+    askUserQuestion: questionBuilder((id, questions) => ({
+      id,
+      name: 'ask_user_question',
+      arguments: { questions: questions.map(({ question, options, multiSelect }) => ({ question, options, multi_select: multiSelect ?? false })) },
+    })),
+    spawnSubagent: (id, { description, prompt, background }) => ({ id, name: 'spawn_subagent', arguments: { prompt, description, background: background ?? false } }),
+    spawnSubagentBatch: null,
+    backgroundBash: (id, command) => ({ id, name: 'run_terminal_command', arguments: { command, description: 'Run the scripted command in the background', background: true } }),
+    // `merge: false` replaces the list, so the scripted steps are the whole list.
+    updateTodos: (id, steps) => ({
+      id,
+      name: 'todo_write',
+      arguments: { merge: false, todos: steps.map((step, index) => ({ id: String(index + 1), content: step.step, status: acceptedTodoStatus('Grok Build todo_write', BASE_TODO_STATUSES, step.status) })) },
+    }),
+    createGoal: null,
+    completeGoal: null,
+    blockGoal: null,
+    mcpTool: (id, { server, tool, input }) => ({ id, name: 'use_tool', arguments: { tool_name: `${server}__${tool}`, tool_input: input } }),
+    codeExecution: null,
+    workflowTools: ['workflow'],
   },
+
   [AgentProvider.OH_MY_PI]: {
     bash: (id, command) => ({ id, name: 'bash', arguments: { command } }),
     edit: (id, { path, before, after }) => ({ id, name: 'edit', arguments: { path, old_string: before, new_string: after } }),
