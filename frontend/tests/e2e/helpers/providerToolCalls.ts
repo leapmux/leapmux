@@ -1,5 +1,7 @@
 import type { MockModelToolCall } from './mockModelScript'
 import { createHash } from 'node:crypto'
+import { AMP_TOOL_NAME } from '../../../src/components/chat/providers/amp/toolNames'
+import { AMP_SHELL_TOOL, AMP_SUBAGENT_TOOL } from '../../../src/generated/contracts/amp-protocol'
 import { CODEWHALE_TOOL } from '../../../src/generated/contracts/codewhale-protocol'
 // Use a relative import.
 // The note in ../agentSettings.ts explains standalone native probes.
@@ -990,6 +992,42 @@ const TOOL_VOCABULARY = {
     codeExecution: (id, source) => ({ id, name: 'mcp__node_repl__js', arguments: { code: source, title: 'Run the native script' } }),
     workflowTools: [ZCODE_TOOL.CreateWorkflow],
   },
+  [AgentProvider.AMP]: {
+    // Without timeout_ms, Amp waits 10 seconds. It then returns `running: true` and a PID,
+    // and the turn continues while the command runs on. A command that a scenario holds
+    // must stay in its call until the scenario releases it, so the call asks for Amp's
+    // largest wait. A quick command still returns when it exits.
+    bash: (id, command) => ({ id, name: AMP_SHELL_TOOL.ShellCommand, arguments: { command, timeout_ms: AMP_SHELL_WAIT_LIMIT_MS } }),
+    // Amp's agent modes edit through one `*** Begin Patch` text, the format that
+    // Codex reads also. The path is absolute, as Amp's own edits state it.
+    edit: (id, request) => ({ id, name: AMP_TOOL_NAME.ApplyPatch, arguments: { patchText: updateFilePatch(request) } }),
+    write: (id, request) => ({ id, name: AMP_TOOL_NAME.ApplyPatch, arguments: { patchText: addFilePatch(request) } }),
+    read: (id, path) => ({ id, name: AMP_TOOL_NAME.Read, arguments: { path } }),
+    // Amp has no plan mode, and the worker disables its question tool: a question
+    // in stream-JSON mode ends the session.
+    enterPlanMode: null,
+    exitPlanMode: null,
+    exitPlanModeFromFile: null,
+    askUserQuestion: null,
+    // `Task` runs on Amp's server. The mock's Amp surface answers the child's turn
+    // from the scenario its prompt marks.
+    spawnSubagent: (id, { description, prompt }) => ({ id, name: AMP_SUBAGENT_TOOL.Task, arguments: { description, prompt } }),
+    spawnSubagentBatch: null,
+    // Amp moves the command to the background after timeout_ms.
+    // `ampShellCommandStatusToolCall` reads a backgrounded command again by its PID.
+    // A zero wait can return before Amp records the spawned process.
+    // Use one second so the native result identifies the process.
+    backgroundBash: (id, command) => ({ id, name: AMP_SHELL_TOOL.ShellCommand, arguments: { command, timeout_ms: 1_000 } }),
+    // Amp's agent modes have no to-do tool, and Amp has no session goal.
+    updateTodos: null,
+    createGoal: null,
+    completeGoal: null,
+    blockGoal: null,
+    mcpTool: (id, { server, tool, input }) => ({ id, name: `mcp__${server}__${tool}`, arguments: input }),
+    codeExecution: null,
+    workflowTools: null,
+  },
+
   [AgentProvider.KIRO]: {
     bash: (id, command) => ({ id, name: 'execute_bash', arguments: { command, description: 'Run the scripted command' } }),
     edit: (id, { path, before, after }) => ({ id, name: 'str_replace', arguments: { path, oldStr: before, newStr: after } }),

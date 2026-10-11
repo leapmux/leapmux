@@ -71,6 +71,7 @@ const RESOLVED_CONTENT_BUILDER = 'providers/registry.ts'
  */
 const PROVIDER_CLASSIFIERS: Readonly<Record<string, string | null>> = {
   'acp/registerACPProvider.ts': './classification',
+  'amp/plugin.ts': './classification',
   'claude/plugin.ts': './classification',
   'codewhale/plugin.ts': './classification',
   'kimi/plugin.ts': './classification',

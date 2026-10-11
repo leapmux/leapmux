@@ -103,6 +103,15 @@ func TestKnownOptionIDs(t *testing.T) {
 	assert.True(t, has(zcode, agent.OptionIDPermissionMode))
 	assert.False(t, has(zcode, agent.OptionIDPrimaryAgent), "zcode has no primary-agent axis")
 
+	// Amp carries its agent mode on an axis of its own and the permission mode on
+	// LeapMux's axis. The mode chooses the reasoning effort, so Amp has no effort
+	// axis.
+	ampProvider := leapmuxv1.AgentProvider_AGENT_PROVIDER_AMP
+	assert.True(t, has(ampProvider, agent.OptionIDPermissionMode))
+	assert.True(t, has(ampProvider, contracts.AmpOptionAgentMode))
+	assert.False(t, has(ampProvider, agent.OptionIDEffort), "amp's mode chooses the effort")
+	assert.False(t, has(ampProvider, agent.OptionIDPrimaryAgent), "amp has no primary-agent axis")
+
 	// An unknown provider yields just {model}.
 	unknown := registry.KnownOptionIDs(leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED)
 	assert.Equal(t, map[string]bool{agent.OptionIDModel: true}, unknown)

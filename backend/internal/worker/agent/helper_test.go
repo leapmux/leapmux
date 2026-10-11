@@ -40,7 +40,7 @@ func TestWriteHelperSpecRoundTripsThroughReadHelperSpec(t *testing.T) {
 	t.Parallel()
 
 	want := agent.HelperSpec{
-		Provider: "AGENT_PROVIDER_CLAUDE_CODE",
+		Provider: "AGENT_PROVIDER_AMP",
 		Helper:   "permission",
 		Config:   json.RawMessage(`{"endpoint":"127.0.0.1:1"}`),
 	}
@@ -64,8 +64,8 @@ func TestWriteHelperSpecRoundTripsThroughReadHelperSpec(t *testing.T) {
 func TestWriteHelperSpecReplacesAnEarlierSpec(t *testing.T) {
 	t.Parallel()
 
-	path := writeSpec(t, agent.HelperSpec{Provider: "AGENT_PROVIDER_CLAUDE_CODE", Helper: "first"})
-	_, err := agent.WriteHelperSpec(path, agent.HelperSpec{Provider: "AGENT_PROVIDER_CLAUDE_CODE", Helper: "second"})
+	path := writeSpec(t, agent.HelperSpec{Provider: "AGENT_PROVIDER_AMP", Helper: "first"})
+	_, err := agent.WriteHelperSpec(path, agent.HelperSpec{Provider: "AGENT_PROVIDER_AMP", Helper: "second"})
 	require.NoError(t, err)
 	got, err := agent.ReadHelperSpec(path)
 	require.NoError(t, err)
@@ -122,14 +122,14 @@ func TestRunHelperDispatchesToTheProvidersHelper(t *testing.T) {
 	t.Parallel()
 
 	var got agent.HelperInvocation
-	registry := helperRegistry(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, "permission",
+	registry := helperRegistry(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_AMP, "permission",
 		func(_ context.Context, invocation agent.HelperInvocation) int {
 			got = invocation
 			_, _ = invocation.Stdout.Write([]byte("out"))
 			return 7
 		})
 	path := writeSpec(t, agent.HelperSpec{
-		Provider: "AGENT_PROVIDER_CLAUDE_CODE",
+		Provider: "AGENT_PROVIDER_AMP",
 		Helper:   "permission",
 		Config:   json.RawMessage(`{"k":"v"}`),
 	})
@@ -153,12 +153,12 @@ func TestRunHelperDefaultsTheEnvironmentToTheProcess(t *testing.T) {
 	t.Parallel()
 
 	var getenv func(string) string
-	registry := helperRegistry(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, "permission",
+	registry := helperRegistry(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_AMP, "permission",
 		func(_ context.Context, invocation agent.HelperInvocation) int {
 			getenv = invocation.Getenv
 			return 0
 		})
-	path := writeSpec(t, agent.HelperSpec{Provider: "AGENT_PROVIDER_CLAUDE_CODE", Helper: "permission"})
+	path := writeSpec(t, agent.HelperSpec{Provider: "AGENT_PROVIDER_AMP", Helper: "permission"})
 	require.Equal(t, 0, registry.RunHelper(context.Background(), path, agent.HelperInvocation{
 		Stdin: strings.NewReader(""), Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{},
 	}))
@@ -169,7 +169,7 @@ func TestRunHelperDefaultsTheEnvironmentToTheProcess(t *testing.T) {
 func TestRunHelperRefusesASpecItCannotServe(t *testing.T) {
 	t.Parallel()
 
-	registry := helperRegistry(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, "permission",
+	registry := helperRegistry(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_AMP, "permission",
 		func(context.Context, agent.HelperInvocation) int {
 			t.Error("no helper runs for a spec the registry cannot serve")
 			return 0
@@ -182,7 +182,7 @@ func TestRunHelperRefusesASpecItCannotServe(t *testing.T) {
 		"an unknown provider":      {&agent.HelperSpec{Provider: "AGENT_PROVIDER_NOPE", Helper: "permission"}, `unknown provider "AGENT_PROVIDER_NOPE"`},
 		"the unspecified provider": {&agent.HelperSpec{Provider: "AGENT_PROVIDER_UNSPECIFIED", Helper: "permission"}, "unknown provider"},
 		"an unregistered provider": {&agent.HelperSpec{Provider: "AGENT_PROVIDER_PI", Helper: "permission"}, `AGENT_PROVIDER_PI registers no helper "permission"`},
-		"an unknown helper":        {&agent.HelperSpec{Provider: "AGENT_PROVIDER_CLAUDE_CODE", Helper: "question"}, `registers no helper "question"`},
+		"an unknown helper":        {&agent.HelperSpec{Provider: "AGENT_PROVIDER_AMP", Helper: "question"}, `registers no helper "question"`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "absent.json")
@@ -204,7 +204,7 @@ func TestRegistryHelperAnswersNothingForAnUnknownProvider(t *testing.T) {
 
 	registry := helperRegistry(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, "permission",
 		func(context.Context, agent.HelperInvocation) int { return 0 })
-	_, ok := registry.Helper(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, "permission")
+	_, ok := registry.Helper(leapmuxv1.AgentProvider_AGENT_PROVIDER_AMP, "permission")
 	assert.False(t, ok)
 	_, ok = registry.Helper(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, "permission")
 	assert.True(t, ok)
@@ -240,12 +240,12 @@ func TestRunHelperPassesTheContextOn(t *testing.T) {
 
 	type key struct{}
 	var got context.Context
-	registry := helperRegistry(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, "permission",
+	registry := helperRegistry(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_AMP, "permission",
 		func(ctx context.Context, _ agent.HelperInvocation) int {
 			got = ctx
 			return 0
 		})
-	path := writeSpec(t, agent.HelperSpec{Provider: "AGENT_PROVIDER_CLAUDE_CODE", Helper: "permission"})
+	path := writeSpec(t, agent.HelperSpec{Provider: "AGENT_PROVIDER_AMP", Helper: "permission"})
 	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), key{}, "run"))
 	cancel()
 	require.Equal(t, 0, registry.RunHelper(ctx, path, agent.HelperInvocation{

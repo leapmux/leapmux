@@ -12,6 +12,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/amp/amptest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/zcode/zcodetest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -24,10 +25,11 @@ type sessionRuntimeConstructor func(*testing.T, string, string, string) agenttes
 // Each provider's test package owns the native peer protocol.
 var nativeSessionRuntimeFixtures = map[leapmuxv1.AgentProvider]sessionRuntimeConstructor{
 	leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE: zcodetest.NewSessionRuntimeFixture,
+	leapmuxv1.AgentProvider_AGENT_PROVIDER_AMP:   amptest.NewSessionRuntimeFixture,
 }
 
 func TestNativeSessionStorePeer(t *testing.T) {
-	for _, run := range []func() bool{zcodetest.RunSessionStorePeer} {
+	for _, run := range []func() bool{amptest.RunSessionStorePeer, zcodetest.RunSessionStorePeer} {
 		if run() {
 			return
 		}

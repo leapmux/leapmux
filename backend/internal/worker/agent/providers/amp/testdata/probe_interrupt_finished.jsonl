@@ -1,0 +1,4 @@
+{"type":"system","subtype":"init","cwd":"/work","session_id":"T-acd2eb8e-93b8-4de7-926a-c08625532237","tools":[],"mcp_servers":[],"agent_mode":"medium"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Probe the interrupt race.\n\nLEAPMUXE2ESCENARIO:race-after-answer-0"}]},"parent_tool_use_id":null,"session_id":"T-acd2eb8e-93b8-4de7-926a-c08625532237"}
+{"type":"assistant","message":{"type":"message","role":"assistant","content":[{"type":"text","text":"RACEANSWER"}],"stop_reason":"end_turn","usage":{"input_tokens":10,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":5,"service_tier":"standard"}},"parent_tool_use_id":null,"session_id":"T-acd2eb8e-93b8-4de7-926a-c08625532237"}
+{"type":"result","subtype":"error_during_execution","duration_ms":3529,"is_error":true,"num_turns":1,"error":"User cancelled (SIGINT/SIGTERM)","session_id":"T-acd2eb8e-93b8-4de7-926a-c08625532237"}

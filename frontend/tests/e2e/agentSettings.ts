@@ -4,6 +4,7 @@
 // This module is not a `.test.ts`, so `~/components/chat/settingsGroups` fails
 // to resolve here although a sibling spec may use it.
 import { OPTION_ID_EFFORT, OPTION_ID_MODEL } from '../../src/components/chat/settingsGroups'
+import { ACCOUNT_DEFAULT_MODEL } from '../../src/generated/contracts/worker-vocab'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { KIRO_DEFAULT_MOCK_MODEL } from './helpers/kiroSurface'
 import { KIMI_MOCK_MODELS, MOCK_MODELS, MOCK_PROVIDER_IDS, QWEN_MODEL_ID } from './helpers/mockAgentEnvironment'
@@ -42,6 +43,7 @@ export const AGENT_E2E_SETTINGS = {
   [AgentProvider.KILO]: { model: `${MOCK_PROVIDER_IDS.openCode}/${MOCK_MODELS.zai}`, effort: 'high' },
   [AgentProvider.OPENCODE]: { model: `${MOCK_PROVIDER_IDS.openCode}/${MOCK_MODELS.zai}`, effort: 'high' },
   [AgentProvider.ZCODE]: { model: `${MOCK_PROVIDER_IDS.zcode}/${MOCK_MODELS.zai}`, effort: 'high' },
+  [AgentProvider.AMP]: { model: ACCOUNT_DEFAULT_MODEL },
   [AgentProvider.KIRO]: { model: KIRO_DEFAULT_MOCK_MODEL.modelId, effort: 'medium' },
   [AgentProvider.GROK_BUILD]: { model: MOCK_MODELS.grok, effort: 'medium' },
   [AgentProvider.OH_MY_PI]: { model: `${MOCK_PROVIDER_IDS.ohMyPi}/${MOCK_MODELS.ohMyPi}`, effort: 'high' },

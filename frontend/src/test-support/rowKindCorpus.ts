@@ -605,4 +605,35 @@ export const ROW_KIND_CASES: RowKindCase[] = [
     },
     category: 'hidden',
   },
+  {
+    provider: Provider.AMP,
+    name: 'assistant text',
+    payload: { type: 'assistant', message: { type: 'message', role: 'assistant', content: [{ type: 'text', text: 'done' }], stop_reason: 'end_turn', usage: { input_tokens: 0, output_tokens: 7 } }, parent_tool_use_id: null, session_id: 'T-01a0d1c3-e51a-756b-9279-34c1cd441c35' },
+    category: 'assistant_text',
+  },
+  {
+    provider: Provider.AMP,
+    name: 'thinking',
+    payload: { type: 'assistant', message: { type: 'message', role: 'assistant', content: [{ type: 'thinking', thinking: '**Planning shell ls execution**' }], stop_reason: null }, parent_tool_use_id: null, session_id: 'T-01a0d1c3-e51a-756b-9279-34c1cd441c35' },
+    category: 'assistant_thinking',
+  },
+  {
+    provider: Provider.AMP,
+    name: 'tool call',
+    payload: { type: 'assistant', message: { type: 'message', role: 'assistant', content: [{ type: 'tool_use', id: 'TU-034UC14fL0WVIuQhmDl0qN', name: 'shell_command', input: { command: 'ls', workdir: '/work' } }], stop_reason: 'tool_use' }, parent_tool_use_id: null, session_id: 'T-01a0d1c3-e51a-756b-9279-34c1cd441c35' },
+    category: 'tool_use',
+  },
+  {
+    provider: Provider.AMP,
+    name: 'tool result',
+    payload: { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'TU-034UC14fL0WVIuQhmDl0qN', content: '{"output":"README.md\\n","exitCode":0}', is_error: false }] }, parent_tool_use_id: null, session_id: 'T-01a0d1c3-e51a-756b-9279-34c1cd441c35' },
+    category: 'tool_result',
+    spanType: 'shell_command',
+  },
+  {
+    provider: Provider.AMP,
+    name: 'turn end',
+    payload: { type: 'result', subtype: 'success', is_error: false, num_turns: 4, result: 'pong', session_id: 'T-01a0d1c3-e51a-756b-9279-34c1cd441c35' },
+    category: 'result_divider',
+  },
 ]

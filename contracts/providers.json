@@ -103,6 +103,14 @@
       "parseAliases": [
         "kiro-cli"
       ]
+    },
+    "AGENT_PROVIDER_AMP": {
+      "displayName": "Amp",
+      "cliAlias": "amp",
+      "parseAliases": [
+        "Amp Code",
+        "amp-code"
+      ]
     }
   }
 }

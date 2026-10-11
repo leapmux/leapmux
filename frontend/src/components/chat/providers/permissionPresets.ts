@@ -1,5 +1,6 @@
 import type { ProviderPermissionPresets } from '../providerSettings'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { ampPermissionPresets } from './amp/permissionPresets'
 import { claudePermissionPresets } from './claude/permissionPresets'
 import { codewhalePermissionPresets } from './codewhale/permissionPresets'
 import { codexPermissionPresets } from './codex/permissionPresets'
@@ -34,6 +35,7 @@ export const PROVIDER_PERMISSION_PRESETS = {
   [AgentProvider.MIMO_CODE]: mimoPermissionPresets,
   [AgentProvider.GROK_BUILD]: grokPermissionPresets,
   [AgentProvider.KIRO]: kiroPermissionPresets,
+  [AgentProvider.AMP]: ampPermissionPresets,
 } satisfies Record<AgentProvider, ProviderPermissionPresets | undefined>
 
 /** Read canonical preset data without importing a rendering plugin. */

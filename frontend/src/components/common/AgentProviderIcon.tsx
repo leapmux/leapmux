@@ -386,7 +386,7 @@ function KiroIcon(props: { size: number, class?: string }): JSX.Element {
   )
 }
 
-export function AmpIcon(props: { size: number, class?: string }): JSX.Element {
+function AmpIcon(props: { size: number, class?: string }): JSX.Element {
   // The Amp mark in its own flat color. Centered, and 85% of the square viewBox.
   return (
     <svg
@@ -658,6 +658,9 @@ export function AgentProviderIcon(props: AgentProviderIconProps): JSX.Element {
       </Match>
       <Match when={props.provider === AgentProvider.KIRO}>
         <KiroIcon size={props.size} {...classProps()} />
+      </Match>
+      <Match when={props.provider === AgentProvider.AMP}>
+        <AmpIcon size={props.size} {...classProps()} />
       </Match>
     </Switch>
   )

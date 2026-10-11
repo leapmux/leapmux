@@ -87,6 +87,7 @@ func TestProviderFor_ChildMessagesDoNotInventToolCounts(t *testing.T) {
 		{"claude malformed", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, `{`, false},
 		{"claude empty", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, ``, false},
 		{"codex result-shaped", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, `{"type":"result"}`, false},
+		{"amp result", leapmuxv1.AgentProvider_AGENT_PROVIDER_AMP, `{"type":"result","subtype":"success","is_error":false}`, false},
 		{"codex turn completed", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, `{"threadId":"child-1","turn":{"id":"t1","status":"completed"}}`, false},
 		{"pi result-shaped", leapmuxv1.AgentProvider_AGENT_PROVIDER_PI, `{"type":"result"}`, false},
 		{"opencode result-shaped", leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, `{"type":"result"}`, false},
