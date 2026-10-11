@@ -1,0 +1,146 @@
+{
+  "_readme": "This contract holds the MiMo Code wire values that the Go provider and the TypeScript plugin both consume. MiMo runs as `mimo serve`, a local HTTP server with a server-sent event stream. The worker preserves selected events verbatim. The browser dispatches on the same native values.\n\n`events` holds only the events that the worker stores and the browser reads:\n- `message.part.updated` for a tool part.\n- `session.status` for turn completion.\n- `session.error` for turn failure.\n- `permission.asked` for the stored permission request.\n\nThe other event types stay in Go because the browser never receives them:\n- Message deltas.\n- Actor events.\n- Task events.\n- Goal events.\n- Workflow events.\n- Inbox events.\n\nA question and its answer envelope use the vocabulary in `opencode-protocol.json`. MiMo sends the same shapes.\n\nEach table holds one native vocabulary:\n- `statusTypes` holds the `status.type` words of `session.status`.\n- `errorNames` holds the error names that both readers use to select a turn outcome.\n- `partTypes` holds the part `type` words that the browser draws. Text and reasoning become assembled worker messages, so their native types stay in Go.\n- `toolStatuses` holds the `state.status` words of a tool part.\n- `toolNames` holds the tool IDs. MiMo uses `task` to track work items and `actor` to start a subagent. Upstream OpenCode uses the opposite assignment.\n- `actorActions` holds the operation words of the actor tool.\n- `taskActions` holds the operation words of the task tool.\n- `taskStatuses` holds the status words of the task tool.\n- `modes` holds the primary agents that LeapMux declares. LeapMux uses its permission-mode axis for them. This axis supplies the same plan-mode and plan-approval controls as other providers. The server can offer more agents.\n- `defaultMode` selects the primary agent for a new session.\n- `options` and `permissionPolicies` hold LeapMux-owned values. MiMo supplies no permission-mode enumeration. LeapMux offers one axis with three values. Each value sets the native skip-all and auto-approve-delete switches.\n- `permissionReplies` holds the answers that a permission reply carries.\n- `controlFields` holds the field that LeapMux adds to a stored plan-approval payload.\n- `actorStatuses` holds a subagent status.\n- `actorOutcomes` holds the outcome of its last turn. Native `actor wait` and `actor status` report that outcome as `lastOutcome`.\n\nThe browser owns native HTTP part and output path fields in its provider protocol module. The worker preserves the original event. The browser shows the path beside the original preview. LeapMux reads no output file.",
+  "_unread": {
+    "actorStatuses": {
+      "Pending": {
+        "sides": [
+          "go"
+        ],
+        "why": "MiMo publishes only `running` and `idle` in `actor.status`. The worker uses those two values to open and close subagent rows. The browser reads the other values from `actor wait` and `actor status` results."
+      },
+      "Timeout": {
+        "sides": [
+          "go"
+        ],
+        "why": "MiMo publishes only `running` and `idle` in `actor.status`. The worker uses those two values to open and close subagent rows. The browser reads the other values from `actor wait` and `actor status` results."
+      },
+      "Cancelled": {
+        "sides": [
+          "go"
+        ],
+        "why": "MiMo publishes only `running` and `idle` in `actor.status`. The worker uses those two values to open and close subagent rows. The browser reads the other values from `actor wait` and `actor status` results."
+      },
+      "Unknown": {
+        "sides": [
+          "go"
+        ],
+        "why": "MiMo publishes only `running` and `idle` in `actor.status`. The worker uses those two values to open and close subagent rows. The browser reads the other values from `actor wait` and `actor status` results."
+      }
+    }
+  },
+  "events": {
+    "MessagePartUpdated": "message.part.updated",
+    "SessionStatus": "session.status",
+    "SessionError": "session.error",
+    "PermissionAsked": "permission.asked"
+  },
+  "statusTypes": {
+    "Busy": "busy",
+    "Idle": "idle",
+    "Retry": "retry"
+  },
+  "errorNames": {
+    "Aborted": "MessageAbortedError"
+  },
+  "partTypes": {
+    "Tool": "tool",
+    "Compaction": "compaction"
+  },
+  "toolStatuses": {
+    "Pending": "pending",
+    "Running": "running",
+    "Completed": "completed",
+    "Error": "error"
+  },
+  "toolNames": {
+    "Question": "question",
+    "Bash": "bash",
+    "Read": "read",
+    "Glob": "glob",
+    "Grep": "grep",
+    "Edit": "edit",
+    "MultiEdit": "multiedit",
+    "Write": "write",
+    "NotebookEdit": "notebook_edit",
+    "ApplyPatch": "apply_patch",
+    "ViewImage": "view_image",
+    "Actor": "actor",
+    "Task": "task",
+    "WebFetch": "webfetch",
+    "WebSearch": "websearch",
+    "CodeSearch": "codesearch",
+    "SkillSearch": "skill_search",
+    "Skill": "skill",
+    "PlanExit": "plan_exit",
+    "Memory": "memory",
+    "History": "history",
+    "Cron": "cron",
+    "Workflow": "workflow",
+    "Session": "session",
+    "Exec": "exec",
+    "Lsp": "lsp",
+    "McpToolSearch": "mcp_tool_search",
+    "Invalid": "invalid"
+  },
+  "actorActions": {
+    "Spawn": "spawn",
+    "Run": "run",
+    "Status": "status",
+    "Wait": "wait",
+    "Cancel": "cancel",
+    "Send": "send",
+    "Models": "models"
+  },
+  "actorStatuses": {
+    "Pending": "pending",
+    "Running": "running",
+    "Idle": "idle",
+    "Timeout": "timeout",
+    "Cancelled": "cancelled",
+    "Unknown": "unknown"
+  },
+  "actorOutcomes": {
+    "Success": "success",
+    "Failure": "failure",
+    "Cancelled": "cancelled"
+  },
+  "taskActions": {
+    "Create": "create",
+    "Start": "start",
+    "Block": "block",
+    "Unblock": "unblock",
+    "Done": "done",
+    "Abandon": "abandon",
+    "Rename": "rename",
+    "List": "list",
+    "Get": "get"
+  },
+  "taskStatuses": {
+    "Open": "open",
+    "InProgress": "in_progress",
+    "Blocked": "blocked",
+    "Done": "done",
+    "Abandoned": "abandoned"
+  },
+  "modes": {
+    "Build": "build",
+    "Plan": "plan"
+  },
+  "defaultMode": "Build",
+  "options": {
+    "PermissionPolicy": "permission_policy"
+  },
+  "permissionPolicies": {
+    "Ask": "ask",
+    "Skip": "skip",
+    "Bypass": "bypass"
+  },
+  "permissionReplies": {
+    "Once": "once",
+    "Always": "always",
+    "Reject": "reject"
+  },
+  "controlFields": {
+    "Plan": "plan"
+  }
+}

@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "gemini-protocol.schema.json",
+  "title": "Gemini CLI native vocabulary",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "_readme",
+    "modes",
+    "toolNames",
+    "supplement",
+    "messageParts"
+  ],
+  "$defs": {
+    "table": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "pattern": "^[A-Z][A-Za-z0-9]*$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "properties": {
+    "_readme": {
+      "type": "string",
+      "minLength": 1
+    },
+    "modes": {
+      "$ref": "#/$defs/table"
+    },
+    "toolNames": {
+      "$ref": "#/$defs/table"
+    },
+    "supplement": {
+      "$ref": "#/$defs/table"
+    },
+    "messageParts": {
+      "$ref": "#/$defs/table"
+    }
+  }
+}

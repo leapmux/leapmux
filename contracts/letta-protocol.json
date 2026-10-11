@@ -1,0 +1,421 @@
+{
+  "_readme": "Letta Code uses a protocol_v2 App Server through `letta server --listen`. Go and TypeScript read these wire values. The Worker stores native `stream_delta` payloads. A message with several tool calls produces one native payload per call. The browser plugin reads the same `message_type` and `deltaFields`.\n\n`commands` identifies client commands. `messages` identifies server messages. The browser reads `update_subagent_state` to draw nothing for it, because the Worker draws each child as its own rows and tab. `deltaKinds` identifies stream message types. `tools` identifies native tools that both sides use. The Worker opens child rows for `Agent`, and it posts a question request when an `AskUserQuestion` call returns its receipt. The Worker streams `Bash` output, and the plugin draws the tools.\n\n`subagentStates` identifies child lifecycle values. `loopStatuses` identifies busy states. Letta owns these values except `modes` and `reply`. LeapMux owns `modes`, which maps permission choices to `runtime_start.mode`. LeapMux owns the flat browser decision fields in `reply`.\n\n`question` identifies the receipt that an accepted `AskUserQuestion` call returns and the response that answers it. Letta Code owns these words. The Worker reads the receipt and writes the response. The browser reads the saved response to draw the answer. The browser reads the `message` of the receipt to draw the result of the call. `stopReasons` identifies the `stop_reason` words of `turn_finished` that the Worker records as an interrupted turn or a failed turn.\n\n`kind`, `request_id`, and `decision` stay at the top level. They never appear under `response`. Native `client_tool_start` uses serialized `tool_args`. The separate browser control payload uses `tool_input`.\n\nThe Worker preserves each original native final return. Letta can report an output file path in its native final footer. The browser shows that path beside the original preview. LeapMux reads no output file. `toolOutput.StreamIDPrefix` identifies native current-window progress. Only the exact prefix plus `tool_call_id` identifies progress. Genuine final returns also use synthetic IDs. `toolStatuses` identifies native result status. `deltaFields.ID`, `RunID`, and `ToolReturns` retain the native message, run, and composite result identities. An empty client_tool_end carries lifecycle state. Actual returned data remains present when its value is empty, zero, false, or null.",
+  "_unread": {
+    "commands": {
+      "AbortMessage": {
+        "sides": [
+          "go"
+        ],
+        "why": "The Worker stores the complete native frame. The browser draws the frame from the stored bytes. The specified sides do not compare this value."
+      },
+      "AgentList": {
+        "sides": [
+          "go"
+        ],
+        "why": "The Worker stores the complete native frame. The browser draws the frame from the stored bytes. The specified sides do not compare this value."
+      },
+      "AppServerInfo": {
+        "sides": [
+          "go"
+        ],
+        "why": "The Worker stores the complete native frame. The browser draws the frame from the stored bytes. The specified sides do not compare this value."
+      },
+      "ConversationList": {
+        "sides": [
+          "go"
+        ],
+        "why": "The Worker stores the complete native frame. The browser draws the frame from the stored bytes. The specified sides do not compare this value."
+      },
+      "Input": {
+        "sides": [
+          "go"
+        ],
+        "why": "The Worker stores the complete native frame. The browser draws the frame from the stored bytes. The specified sides do not compare this value."
+      },
+      "ListModels": {
+        "sides": [
+          "go"
+        ],
+        "why": "The Worker stores the complete native frame. The browser draws the frame from the stored bytes. The specified sides do not compare this value."
+      },
+      "RuntimeStart": {
+        "sides": [
+          "go"
+        ],
+        "why": "The Worker stores the complete native frame. The browser draws the frame from the stored bytes. The specified sides do not compare this value."
+      },
+      "Sync": {
+        "sides": [
+          "go"
+        ],
+        "why": "The Worker stores the complete native frame. The browser draws the frame from the stored bytes. The specified sides do not compare this value."
+      },
+      "UpdateModel": {
+        "sides": [
+          "go"
+        ],
+        "why": "The Worker stores the complete native frame. The browser draws the frame from the stored bytes. The specified sides do not compare this value."
+      }
+    },
+    "messages": {
+      "AbortMessageResponse": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker stores the complete native frame. The browser draws the frame from the stored bytes. The specified sides do not compare this value."
+      },
+      "AppServerInfoResponse": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker stores the complete native frame. The browser draws the frame from the stored bytes. The specified sides do not compare this value."
+      },
+      "ControlRequest": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker stores the complete native frame. The browser draws the frame from the stored bytes. The specified sides do not compare this value."
+      },
+      "InputAccepted": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker stores the complete native frame. The browser draws the frame from the stored bytes. The specified sides do not compare this value."
+      },
+      "LoopError": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker stores the complete native frame. The browser draws the frame from the stored bytes. The specified sides do not compare this value."
+      },
+      "StreamDelta": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker stores the complete native frame. The browser draws the frame from the stored bytes. The specified sides do not compare this value."
+      },
+      "UpdateLoopStatus": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker stores the complete native frame. The browser draws the frame from the stored bytes. The specified sides do not compare this value."
+      },
+      "UpdateQueue": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker stores the complete native frame. The browser draws the frame from the stored bytes. The specified sides do not compare this value."
+      }
+    },
+    "deltaFields": {
+      "AgentID": {
+        "sides": [
+          "go",
+          "ts"
+        ],
+        "why": "The Worker stores the complete native frame. The browser draws the frame from the stored bytes. The specified sides do not compare this value."
+      },
+      "Content": {
+        "sides": [
+          "go",
+          "ts"
+        ],
+        "why": "The Worker stores the complete native frame. The browser draws the frame from the stored bytes. The specified sides do not compare this value."
+      },
+      "ConversationID": {
+        "sides": [
+          "go",
+          "ts"
+        ],
+        "why": "The Worker stores the complete native frame. The browser draws the frame from the stored bytes. The specified sides do not compare this value."
+      },
+      "Reason": {
+        "sides": [
+          "go",
+          "ts"
+        ],
+        "why": "The Worker stores the complete native frame. The browser draws the frame from the stored bytes. The specified sides do not compare this value."
+      },
+      "Runtime": {
+        "sides": [
+          "go",
+          "ts"
+        ],
+        "why": "The Worker stores the complete native frame. The browser draws the frame from the stored bytes. The specified sides do not compare this value."
+      },
+      "Status": {
+        "sides": [
+          "go"
+        ],
+        "why": "The Worker stores the complete native frame. The browser draws the frame from the stored bytes. The specified sides do not compare this value."
+      },
+      "StopReason": {
+        "sides": [
+          "go",
+          "ts"
+        ],
+        "why": "The Worker stores the complete native frame. The browser draws the frame from the stored bytes. The specified sides do not compare this value."
+      },
+      "SubagentID": {
+        "sides": [
+          "go",
+          "ts"
+        ],
+        "why": "The Worker stores the complete native frame. The browser draws the frame from the stored bytes. The specified sides do not compare this value."
+      },
+      "TurnID": {
+        "sides": [
+          "go",
+          "ts"
+        ],
+        "why": "The Worker stores the complete native frame. The browser draws the frame from the stored bytes. The specified sides do not compare this value."
+      },
+      "ToolArgs": {
+        "sides": [
+          "go"
+        ],
+        "why": "The Worker preserves native tool_args bytes without interpreting file or command arguments. The browser plugin extracts those arguments."
+      }
+    },
+    "subagentStates": {
+      "Completed": {
+        "sides": [
+          "go"
+        ],
+        "why": "The Worker stores the complete native frame. The browser draws the frame from the stored bytes. The specified sides do not compare this value."
+      },
+      "Error": {
+        "sides": [
+          "go"
+        ],
+        "why": "The Worker stores the complete native frame. The browser draws the frame from the stored bytes. The specified sides do not compare this value."
+      },
+      "Pending": {
+        "sides": [
+          "go"
+        ],
+        "why": "The Worker stores the complete native frame. The browser draws the frame from the stored bytes. The specified sides do not compare this value."
+      },
+      "Running": {
+        "sides": [
+          "go"
+        ],
+        "why": "The Worker stores the complete native frame. The browser draws the frame from the stored bytes. The specified sides do not compare this value."
+      }
+    },
+    "reply": {
+      "Behavior": {
+        "sides": [
+          "go"
+        ],
+        "why": "The Worker stores the complete native frame. The browser draws the frame from the stored bytes. The specified sides do not compare this value."
+      },
+      "Decision": {
+        "sides": [
+          "go"
+        ],
+        "why": "The Worker stores the complete native frame. The browser draws the frame from the stored bytes. The specified sides do not compare this value."
+      },
+      "Kind": {
+        "sides": [
+          "go"
+        ],
+        "why": "The Worker stores the complete native frame. The browser draws the frame from the stored bytes. The specified sides do not compare this value."
+      },
+      "Message": {
+        "sides": [
+          "go"
+        ],
+        "why": "The Worker stores the complete native frame. The browser draws the frame from the stored bytes. The specified sides do not compare this value."
+      },
+      "RequestID": {
+        "sides": [
+          "go",
+          "ts"
+        ],
+        "why": "The Worker writes this field through a struct tag that a reflection test pins. The browser reads the request id from the request that the Worker published."
+      }
+    },
+    "question": {
+      "StatusAnswered": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The Worker writes this status. The browser reads only a dismissal and draws every other response from its answers."
+      },
+      "FieldType": {
+        "sides": [
+          "go"
+        ],
+        "why": "The Worker reads and writes this field through a struct tag that a reflection test pins to this table."
+      },
+      "FieldVersion": {
+        "sides": [
+          "go",
+          "ts"
+        ],
+        "why": "The Worker checks this field through a struct tag that a reflection test pins. The browser never reads the version."
+      },
+      "FieldToolCallID": {
+        "sides": [
+          "go",
+          "ts"
+        ],
+        "why": "The Worker matches this field through a struct tag that a reflection test pins. The browser reads the call from the request that the Worker published."
+      },
+      "FieldQuestions": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The browser reads the questions from the request that the Worker published, and never from the receipt or the response."
+      },
+      "FieldStatus": {
+        "sides": [
+          "go"
+        ],
+        "why": "The Worker reads and writes this field through a struct tag that a reflection test pins to this table."
+      },
+      "FieldMessage": {
+        "sides": [
+          "go"
+        ],
+        "why": "The browser draws the message of the receipt as the result of the call. The Worker publishes the questions of the receipt and never reads its message."
+      }
+    }
+  },
+  "commands": {
+    "Input": "input",
+    "AbortMessage": "abort_message",
+    "RuntimeStart": "runtime_start",
+    "Sync": "sync",
+    "AppServerInfo": "app_server_info",
+    "AgentList": "agent_list",
+    "ConversationList": "conversation_list",
+    "ListModels": "list_models",
+    "UpdateModel": "update_model"
+  },
+  "messages": {
+    "ControlRequest": "control_request",
+    "InputAccepted": "input_accepted",
+    "StreamDelta": "stream_delta",
+    "TurnFinished": "turn_finished",
+    "UpdateSubagentState": "update_subagent_state",
+    "UpdateLoopStatus": "update_loop_status",
+    "AbortMessageResponse": "abort_message_response",
+    "UpdateQueue": "update_queue",
+    "LoopError": "loop_error",
+    "AppServerInfoResponse": "app_server_info_response"
+  },
+  "deltaKinds": {
+    "AssistantMessage": "assistant_message",
+    "ToolCallMessage": "tool_call_message",
+    "ToolReturnMessage": "tool_return_message",
+    "UserMessage": "user_message",
+    "ReasoningMessage": "reasoning_message",
+    "UsageStatistics": "usage_statistics",
+    "StopReason": "stop_reason",
+    "ClientToolStart": "client_tool_start",
+    "ClientToolEnd": "client_tool_end",
+    "Status": "status",
+    "Retry": "retry",
+    "LoopError": "loop_error"
+  },
+  "deltaFields": {
+    "Kind": "kind",
+    "MessageType": "message_type",
+    "SubagentID": "subagent_id",
+    "Runtime": "runtime",
+    "AgentID": "agent_id",
+    "ConversationID": "conversation_id",
+    "Content": "content",
+    "ToolCallID": "tool_call_id",
+    "ToolCalls": "tool_calls",
+    "ToolCall": "tool_call",
+    "Name": "name",
+    "Arguments": "arguments",
+    "ToolName": "tool_name",
+    "ToolInput": "tool_input",
+    "ToolReturn": "tool_return",
+    "Status": "status",
+    "Reason": "reason",
+    "StopReason": "stop_reason",
+    "TurnID": "turn_id",
+    "ToolArgs": "tool_args",
+    "ID": "id",
+    "RunID": "run_id",
+    "ToolReturns": "tool_returns"
+  },
+  "tools": {
+    "Bash": "Bash",
+    "Read": "Read",
+    "Edit": "Edit",
+    "Write": "Write",
+    "Agent": "Agent",
+    "AskUserQuestion": "AskUserQuestion",
+    "TaskCreate": "TaskCreate",
+    "TaskGet": "TaskGet",
+    "TaskList": "TaskList",
+    "TaskUpdate": "TaskUpdate",
+    "TaskStop": "TaskStop",
+    "Monitor": "Monitor",
+    "Wake": "Wake",
+    "Workflow": "Workflow",
+    "Skill": "Skill",
+    "UpdatePlan": "UpdatePlan",
+    "SetWorkingDirectory": "SetWorkingDirectory",
+    "EnterWorktree": "EnterWorktree",
+    "ExitWorktree": "ExitWorktree",
+    "SendAgentMessage": "SendAgentMessage"
+  },
+  "subagentStates": {
+    "Pending": "pending",
+    "Running": "running",
+    "Completed": "completed",
+    "Error": "error"
+  },
+  "loopStatuses": {
+    "WaitingOnInput": "WAITING_ON_INPUT",
+    "SendingAPIRequest": "SENDING_API_REQUEST",
+    "WaitingForAPIResponse": "WAITING_FOR_API_RESPONSE",
+    "ProcessingAPIResponse": "PROCESSING_API_RESPONSE"
+  },
+  "modes": {
+    "Standard": "standard",
+    "AcceptEdits": "acceptEdits",
+    "Unrestricted": "unrestricted",
+    "Strict": "strict"
+  },
+  "reply": {
+    "Kind": "kind",
+    "KindApprovalResponse": "approval_response",
+    "RequestID": "request_id",
+    "Decision": "decision",
+    "Behavior": "behavior",
+    "Message": "message"
+  },
+  "question": {
+    "ReceiptType": "ask_user_question",
+    "ResponseType": "ask_user_question_response",
+    "StatusAnswered": "answered",
+    "StatusDismissed": "dismissed",
+    "FieldType": "type",
+    "FieldVersion": "version",
+    "FieldToolCallID": "toolCallId",
+    "FieldQuestions": "questions",
+    "FieldStatus": "status",
+    "FieldAnswers": "answers",
+    "FieldMessage": "message"
+  },
+  "stopReasons": {
+    "Cancelled": "cancelled",
+    "Error": "error",
+    "LLMAPIError": "llm_api_error"
+  },
+  "toolOutput": {
+    "StreamIDPrefix": "synthetic-tool-return-stream-"
+  },
+  "toolStatuses": {
+    "Success": "success",
+    "Error": "error"
+  }
+}

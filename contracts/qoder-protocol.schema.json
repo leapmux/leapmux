@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "qoder-protocol.schema.json",
+  "title": "Qoder CLI stream-json wire vocabulary",
+  "description": "Each table maps PascalCase identifiers to protocol values. Go constants and TypeScript keys derive from those identifiers. Every table requires at least one value. An empty table supplies no dispatch case and prevents the generator from checking coverage.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "_readme",
+    "frameKinds",
+    "controlRequestSubtypes",
+    "systemSubtypes",
+    "modes",
+    "effortLevels",
+    "permissionOutcomes",
+    "capabilities"
+  ],
+  "$defs": {
+    "table": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "pattern": "^[A-Z][A-Za-z0-9]*$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "structs": {
+      "description": "Go structs generated from this domain. Each states its field list once and takes every json tag from a named table, so a rename in the table reaches the struct.",
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "pattern": "^[A-Z][A-Za-z0-9]*$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "table",
+          "fields"
+        ],
+        "properties": {
+          "doc": {
+            "type": "string",
+            "minLength": 1
+          },
+          "table": {
+            "type": "string",
+            "minLength": 1
+          },
+          "fields": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "key",
+                "type"
+              ],
+              "properties": {
+                "key": {
+                  "type": "string",
+                  "pattern": "^[A-Z][A-Za-z0-9]*$"
+                },
+                "type": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "omitempty": {
+                  "type": "boolean"
+                },
+                "table": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "properties": {
+    "_readme": {
+      "type": "string",
+      "minLength": 1
+    },
+    "_unread": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "minProperties": 1,
+        "propertyNames": {
+          "pattern": "^[A-Z][A-Za-z0-9]*$"
+        },
+        "additionalProperties": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "sides",
+            "why"
+          ],
+          "properties": {
+            "sides": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "go",
+                  "ts"
+                ]
+              }
+            },
+            "why": {
+              "type": "string",
+              "minLength": 31
+            }
+          }
+        }
+      }
+    },
+    "frameKinds": {
+      "$ref": "#/$defs/table"
+    },
+    "controlRequestSubtypes": {
+      "$ref": "#/$defs/table"
+    },
+    "systemSubtypes": {
+      "$ref": "#/$defs/table"
+    },
+    "modes": {
+      "$ref": "#/$defs/table"
+    },
+    "defaultMode": {
+      "type": "string",
+      "minLength": 1
+    },
+    "effortLevels": {
+      "$ref": "#/$defs/table"
+    },
+    "permissionOutcomes": {
+      "$ref": "#/$defs/table"
+    },
+    "capabilities": {
+      "$ref": "#/$defs/table"
+    }
+  }
+}

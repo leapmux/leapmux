@@ -1,0 +1,183 @@
+{
+  "_readme": "This contract holds CodeBuddy Code's stream-json vocabulary for tables that both the Go provider and the TypeScript renderer plugin read. The command is `codebuddy -p --input-format stream-json --output-format stream-json`. CodeBuddy deliberately uses a stream with the shape of Claude Code 2.1.220. The shapes that LeapMux parses differ in necessary details. This contract shares no table with claude-protocol.json.\n\n`frameKinds` holds the top-level `type` values on stdout. `controlRequestSubtypes` holds the request subtypes that LeapMux sends and the CLI sends back. Both sides dispatch on them. `modes` holds the four permission modes that get_available_modes advertises. `effortLevels` holds the --effort values that CodeBuddy owns. These values differ from Claude's low/medium/high/ultra set.\n\n`systemSubtypes` holds the system-line subtypes that both sides classify.\n\n`controlAnswer` holds the fields of CodeBuddy's can_use_tool answer. The generated `CodebuddyCanUseToolAnswer` struct takes its JSON tags from that table. The browser sends a neutral behavior envelope. Only the worker translates it into this answer.\n\nThe worker stores the translated answer as the saved row of the request. The browser reads `allowed` and `reason` from that row to draw the decision. The browser reads neither `interrupt` nor `updatedInput` (see `_unread`).\n\nThe browser owns native result pointer fields in its provider protocol module. The worker preserves the original native frame. The browser shows each native path beside the original preview. LeapMux reads no output file.",
+  "_unread": {
+    "frameKinds": {
+      "ActiveGoal": {
+        "sides": [
+          "go",
+          "ts"
+        ],
+        "why": "CodeBuddy Code 2.160.0 never writes this kind. The worker stores the whole frame from its default branch. The browser draws it as an unrecognized row."
+      },
+      "ControlNotification": {
+        "sides": [
+          "go"
+        ],
+        "why": "The worker stores the whole frame from its default branch. The browser classifies it from the stored bytes."
+      },
+      "Error": {
+        "sides": [
+          "go"
+        ],
+        "why": "The worker stores the whole frame from its default branch. The browser classifies it from the stored bytes."
+      },
+      "ToolProgress": {
+        "sides": [
+          "go",
+          "ts"
+        ],
+        "why": "CodeBuddy Code 2.160.0 never writes this kind. The worker stores the whole frame from its default branch. The browser draws it as an unrecognized row."
+      }
+    },
+    "controlRequestSubtypes": {
+      "GetAvailableModels": {
+        "sides": [
+          "go"
+        ],
+        "why": "The worker stores the whole frame. The browser draws it from the stored bytes. No Go call site branches on this subtype yet."
+      },
+      "GetAvailableModes": {
+        "sides": [
+          "go"
+        ],
+        "why": "The worker stores the whole frame. The browser draws it from the stored bytes. No Go call site branches on this subtype yet."
+      },
+      "Initialize": {
+        "sides": [
+          "go"
+        ],
+        "why": "The worker stores the whole frame. The browser draws it from the stored bytes. No Go call site branches on this subtype yet."
+      },
+      "SetModel": {
+        "sides": [
+          "go"
+        ],
+        "why": "The worker stores the whole frame. The browser draws it from the stored bytes. No Go call site branches on this subtype yet."
+      },
+      "Steer": {
+        "sides": [
+          "go"
+        ],
+        "why": "The worker stores the whole frame. The browser draws it from the stored bytes. No Go call site branches on this subtype yet."
+      }
+    },
+    "systemSubtypes": {
+      "Keepalive": {
+        "sides": [
+          "go"
+        ],
+        "why": "The worker stores every system frame whole without a branch on its subtype. The browser classifies this subtype from the stored bytes."
+      },
+      "Status": {
+        "sides": [
+          "go"
+        ],
+        "why": "The worker stores every system frame whole without a branch on its subtype. The browser classifies this subtype from the stored bytes."
+      },
+      "McpStatus": {
+        "sides": [
+          "go"
+        ],
+        "why": "The worker stores every system frame whole without a branch on its subtype. The browser classifies this subtype from the stored bytes."
+      },
+      "Informational": {
+        "sides": [
+          "go"
+        ],
+        "why": "The worker stores every system frame whole without a branch on its subtype. The browser classifies this subtype from the stored bytes."
+      }
+    },
+    "controlAnswer": {
+      "Interrupt": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The saved row states the decision and the user's reason. The interrupt flag changes neither, so the browser never reads it."
+      },
+      "UpdatedInput": {
+        "sides": [
+          "ts"
+        ],
+        "why": "The browser draws a saved decision from allowed and reason. The CLI consumes the updated tool input."
+      }
+    }
+  },
+  "frameKinds": {
+    "System": "system",
+    "Assistant": "assistant",
+    "User": "user",
+    "Result": "result",
+    "ControlNotification": "control_notification",
+    "ToolProgress": "tool_progress",
+    "ActiveGoal": "active_goal",
+    "ConversationReset": "conversation_reset",
+    "Error": "error"
+  },
+  "controlRequestSubtypes": {
+    "Initialize": "initialize",
+    "CanUseTool": "can_use_tool",
+    "SetPermissionMode": "set_permission_mode",
+    "SetModel": "set_model",
+    "GetAvailableModels": "get_available_models",
+    "GetAvailableModes": "get_available_modes",
+    "Interrupt": "interrupt",
+    "Steer": "steer"
+  },
+  "modes": {
+    "Default": "default",
+    "AcceptEdits": "acceptEdits",
+    "Plan": "plan",
+    "BypassPermissions": "bypassPermissions"
+  },
+  "defaultMode": "Default",
+  "effortLevels": {
+    "Minimal": "minimal",
+    "Low": "low",
+    "Medium": "medium",
+    "High": "high",
+    "Xhigh": "xhigh",
+    "Max": "max"
+  },
+  "systemSubtypes": {
+    "Init": "init",
+    "Status": "status",
+    "Keepalive": "keepalive",
+    "McpStatus": "mcp_status",
+    "Informational": "informational",
+    "TaskStarted": "task_started",
+    "TaskNotification": "task_notification"
+  },
+  "controlAnswer": {
+    "Allowed": "allowed",
+    "Reason": "reason",
+    "Interrupt": "interrupt",
+    "UpdatedInput": "updatedInput"
+  },
+  "structs": {
+    "CodebuddyCanUseToolAnswer": {
+      "doc": "CodeBuddy's answer to one can_use_tool request. The CLI reads `allowed` and\nrejects a `behavior` envelope. The worker translates the browser's neutral\ndecision into this answer.\n\nAn allow states `allowed:true`. It carries nonempty `updatedInput` when the\nbrowser supplies an answer through the tool input. A denial states\n`allowed:false` and the reason that the model reads.",
+      "table": "controlAnswer",
+      "fields": [
+        {
+          "key": "Allowed",
+          "type": "bool"
+        },
+        {
+          "key": "Reason",
+          "type": "string",
+          "omitempty": true
+        },
+        {
+          "key": "Interrupt",
+          "type": "bool",
+          "omitempty": true
+        },
+        {
+          "key": "UpdatedInput",
+          "type": "json.RawMessage",
+          "omitempty": true
+        }
+      ]
+    }
+  }
+}

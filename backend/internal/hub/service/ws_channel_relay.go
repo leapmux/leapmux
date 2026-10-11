@@ -245,7 +245,7 @@ func (h *ChannelRelayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 // connection may not use, so it reveals nothing about which channel IDs exist.
 // The reserved Hub control channel is no frontend channel, so it gets none.
 func (h *ChannelRelayHandler) answerUnavailableChannel(writer *relayWriter, channelID string) {
-	if channelID == channelmgr.HubControlChannelID {
+	if channelID == contracts.HubControlChannelID {
 		return
 	}
 	if err := writer.enqueue(channelmgr.CloseNotification(channelID)); err != nil {

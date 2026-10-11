@@ -585,7 +585,7 @@ func TestChannelRelay_AnswersAFrameForAnUnknownChannelWithItsClose(t *testing.T)
 	// The read loop handles frames in order, so the first reply belongs to the
 	// first frame that earns one.
 	require.NoError(t, channelwire.WriteChannelMessage(ctx, conn, &leapmuxv1.ChannelMessage{
-		ChannelId:     channelmgr.HubControlChannelID,
+		ChannelId:     contracts.HubControlChannelID,
 		CorrelationId: 1,
 		Ciphertext:    []byte("not a frontend channel"),
 	}))

@@ -1,0 +1,31 @@
+{
+  "_readme": "Gemini CLI owns these native modes and tool names. LeapMux reads ACP events and exact native JSONL records. The Worker preserves the native events. The browser reads recovered tool records from a separate supplement.",
+  "modes": {
+    "Default": "default",
+    "AutoEdit": "autoEdit",
+    "Yolo": "yolo",
+    "Plan": "plan"
+  },
+  "toolNames": {
+    "RunShellCommand": "run_shell_command",
+    "WriteFile": "write_file",
+    "ReadFile": "read_file",
+    "Replace": "replace",
+    "TodoWrite": "write_todos",
+    "InvokeAgent": "invoke_agent",
+    "EnterPlanMode": "enter_plan_mode",
+    "ExitPlanMode": "exit_plan_mode",
+    "CompleteTask": "complete_task"
+  },
+  "supplement": {
+    "StoredToolRecord": "geminiToolRecord",
+    "PlanContent": "geminiPlanContent",
+    "PlanPath": "geminiPlanPath",
+    "MessagePart": "geminiMessagePart",
+    "MessagePartIndex": "geminiMessagePartIndex"
+  },
+  "messageParts": {
+    "Content": "content",
+    "Thought": "thought"
+  }
+}

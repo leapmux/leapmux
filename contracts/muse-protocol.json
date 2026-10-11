@@ -1,0 +1,131 @@
+{
+  "_readme": "Muse Code owns the Muse Session Protocol (MSP) vocabulary below. The Worker and browser read these shared native values. Commands that only Go uses stay in the Muse package. Tool names that only the browser uses stay in the Muse plugin.",
+  "methods": {
+    "ItemStarted": "item/started",
+    "ItemUpdated": "item/updated",
+    "ItemDelta": "item/delta",
+    "ItemCompleted": "item/completed",
+    "TurnCompleted": "turn/completed",
+    "TurnRetryScheduled": "turn/retryScheduled",
+    "ApprovalRequest": "approval/request",
+    "ApprovalRequested": "approval/requested",
+    "ApprovalUpdated": "approval/updated",
+    "ApprovalResolved": "approval/resolved",
+    "UserInputRequest": "userInput/request",
+    "UserInputRequested": "userInput/requested",
+    "UserInputSettled": "userInput/settled",
+    "ContextUsage": "session/contextUsage",
+    "TokenUsage": "session/tokenUsage",
+    "UsageChanged": "usage/changed",
+    "LogRecord": "log/record",
+    "TodoListChanged": "session/todoListChanged"
+  },
+  "itemKinds": {
+    "UserMessage": "userMessage",
+    "AgentMessage": "agentMessage",
+    "Reasoning": "reasoning",
+    "ToolCall": "toolCall",
+    "UserShell": "userShell",
+    "Subagent": "subagent",
+    "Workflow": "workflow",
+    "ReminderChild": "reminderChild",
+    "Compaction": "compaction",
+    "HookRun": "hookRun"
+  },
+  "itemStatuses": {
+    "InProgress": "inProgress",
+    "Completed": "completed",
+    "Failed": "failed",
+    "Cancelled": "cancelled",
+    "Rejected": "rejected",
+    "TimedOut": "timedOut"
+  },
+  "todoStatuses": {
+    "Pending": "pending",
+    "InProgress": "inProgress",
+    "Completed": "completed",
+    "Cancelled": "cancelled"
+  },
+  "turnOutcomes": {
+    "Completed": "completed",
+    "Failed": "failed",
+    "Cancelled": "cancelled"
+  },
+  "approvalModes": {
+    "AllowAll": "allowAll",
+    "PromptUnmatched": "promptUnmatched",
+    "OnRequest": "onRequest",
+    "DenyUnmatched": "denyUnmatched"
+  },
+  "approvalDecisions": {
+    "Approved": "approved",
+    "ApprovedForSession": "approvedForSession",
+    "ApprovedPolicyAmendment": "approvedPolicyAmendment",
+    "Denied": "denied",
+    "DeniedPolicyAmendment": "deniedPolicyAmendment",
+    "TimedOut": "timedOut",
+    "Abort": "abort"
+  },
+  "choiceScopes": {
+    "Once": "once",
+    "Session": "session",
+    "LocalPersistent": "localPersistent"
+  },
+  "questionSelectionModes": {
+    "Single": "single",
+    "Multiple": "multiple"
+  },
+  "inputOutcomes": {
+    "Answered": "answered",
+    "Cancelled": "cancelled",
+    "Interrupted": "interrupted",
+    "Clarified": "clarified",
+    "TimedOut": "timedOut",
+    "Aborted": "aborted"
+  },
+  "compactionOutcomes": {
+    "Compacted": "compacted",
+    "Noop": "noop",
+    "Failed": "failed",
+    "Cancelled": "cancelled"
+  },
+  "logEvents": {
+    "ToolResultBatchCommitted": "tool_result_batch_committed",
+    "AssistantToolCallsCommitted": "assistant_tool_calls_committed"
+  },
+  "supplementFields": {
+    "NativeRecords": "nativeRecords",
+    "Unavailable": "nativeResultUnavailable"
+  },
+  "streamKinds": {
+    "Session": "session"
+  },
+  "optionIds": {
+    "WorkspaceTrust": "workspaceTrust"
+  },
+  "workspaceTrust": {
+    "Native": "native",
+    "Agent": "agent"
+  },
+  "startupOptionGroups": {
+    "WorkspaceTrust": {
+      "id": "WorkspaceTrust",
+      "valuesTable": "workspaceTrust",
+      "label": "Workspace trust",
+      "defaultValue": "Native",
+      "readOnlyReason": "Choose workspace trust before you create the agent",
+      "options": [
+        {
+          "value": "Native",
+          "label": "Use native trust",
+          "description": "Use the trust decisions that Muse stores for this workspace"
+        },
+        {
+          "value": "Agent",
+          "label": "Trust for this agent",
+          "description": "Load this workspace's project configuration for this agent"
+        }
+      ]
+    }
+  }
+}

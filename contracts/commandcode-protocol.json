@@ -1,0 +1,49 @@
+{
+  "_readme": "Command Code native JSON-RPC events come from `command-code --experimental --rpc`. Every event frame holds its native event under `event`. The backend keeps original provider bytes. Both languages read these event types and tool names. Permission modes are native state values.\n\nThe Worker preserves each native event. The browser shows reported output file paths beside the original inline preview. LeapMux reads no output file. The official mod bridge calls native session compaction through an authenticated local endpoint.",
+  "frameKinds": {
+    "Event": "event"
+  },
+  "events": {
+    "MessageEnd": "message_end",
+    "ThinkingEnd": "thinking_end",
+    "ToolQueued": "tool_queued",
+    "ToolCompleted": "tool_completed",
+    "ToolErrored": "tool_errored",
+    "ToolDenied": "tool_denied",
+    "ToolHookBlocked": "tool_hook_blocked",
+    "ToolUpdate": "tool_update",
+    "RunStart": "run_start",
+    "RunEnd": "run_end",
+    "RunError": "run_error",
+    "ModelRequestEnd": "model_request_end",
+    "CompactionStart": "compaction_start",
+    "CompactionDone": "compaction_done",
+    "CompactionOutcome": "compaction_outcome",
+    "Notice": "notice",
+    "ApiRetry": "api_retry",
+    "SubagentStart": "subagent_start",
+    "SubagentStop": "subagent_stop",
+    "SubagentProgress": "subagent_progress",
+    "PermissionModeChanged": "permission_mode_changed",
+    "ConfigSettingChanged": "config_setting_changed"
+  },
+  "methods": {
+    "TurnCompleted": "turn/completed"
+  },
+  "permissionModes": {
+    "Default": "default",
+    "Plan": "plan",
+    "Bypass": "bypass"
+  },
+  "tools": {
+    "ShellCommand": "shell_command",
+    "ShellOutput": "shell_output",
+    "KillShell": "kill_shell",
+    "MonitorCommand": "monitor_command",
+    "Agent": "agent",
+    "AgentOutput": "agent_output",
+    "TodoWrite": "todo_write",
+    "TaskCreate": "task_create",
+    "TaskUpdate": "task_update"
+  }
+}

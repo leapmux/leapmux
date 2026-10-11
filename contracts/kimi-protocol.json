@@ -1,0 +1,266 @@
+{
+  "_readme": "These Kimi Code values cross the Go and TypeScript boundary. LeapMux runs `kimi web` and drives its kap-server through REST and one WebSocket. Each event payload repeats its frame type. The Worker stores the payload unchanged. The browser dispatches on those same event types. The events table includes every declared server event, including the server-added event.* family. The origins table identifies who starts a turn. The tools and displayKinds tables identify tools and control displays. The decision and answer tables hold native reply values. The goalModes table holds approval labels. The modes table combines the three native permission modes with LeapMux plan mode. Moonshot AI owns these values except the two reply marks. LeapMux chooses dismiss for the dedicated dismiss route. LeapMux chooses permission_mode for the mode after plan approval. The todoStatuses and turnEndReasons tables hold native task and completion values. The browser owns native output headers and per-line footers in its provider protocol module. The opening event supplies the tool name because native result events contain no name. Per-line footers contain no declared length. The browser shows the reported output_path beside the original preview. It checks native session and agent identity. It checks native turn and call identity also. LeapMux reads no output file.",
+  "events": {
+    "AgentCreated": "agent.created",
+    "AgentDisposed": "agent.disposed",
+    "AgentStatusUpdated": "agent.status.updated",
+    "AssistantDelta": "assistant.delta",
+    "ThinkingDelta": "thinking.delta",
+    "ToolCallDelta": "tool.call.delta",
+    "ToolCallStarted": "tool.call.started",
+    "ToolProgress": "tool.progress",
+    "ToolResult": "tool.result",
+    "ToolListUpdated": "tool.list.updated",
+    "TurnStarted": "turn.started",
+    "TurnEnded": "turn.ended",
+    "TurnSteer": "turn.steer",
+    "TurnStepStarted": "turn.step.started",
+    "TurnStepCompleted": "turn.step.completed",
+    "TurnStepInterrupted": "turn.step.interrupted",
+    "TurnStepRetrying": "turn.step.retrying",
+    "PromptSubmitted": "prompt.submitted",
+    "PromptQueued": "prompt.queued",
+    "PromptStarted": "prompt.started",
+    "PromptSteered": "prompt.steered",
+    "PromptCompleted": "prompt.completed",
+    "PromptAborted": "prompt.aborted",
+    "CompactionStarted": "compaction.started",
+    "CompactionCompleted": "compaction.completed",
+    "CompactionBlocked": "compaction.blocked",
+    "CompactionCancelled": "compaction.cancelled",
+    "ContextSpliced": "context.spliced",
+    "ContextUndone": "context.undone",
+    "Error": "error",
+    "Warning": "warning",
+    "GoalUpdated": "goal.updated",
+    "SubagentSpawned": "subagent.spawned",
+    "SubagentStarted": "subagent.started",
+    "SubagentCompleted": "subagent.completed",
+    "SubagentFailed": "subagent.failed",
+    "SubagentCancelled": "subagent.cancelled",
+    "SubagentSuspended": "subagent.suspended",
+    "TaskStarted": "task.started",
+    "TaskTerminated": "task.terminated",
+    "TaskNotified": "task.notified",
+    "BackgroundTaskStarted": "background.task.started",
+    "BackgroundTaskTerminated": "background.task.terminated",
+    "CronFired": "cron.fired",
+    "HookResult": "hook.result",
+    "McpServerStatus": "mcp.server.status",
+    "PlanRevision": "plan.revision",
+    "SkillActivated": "skill.activated",
+    "PluginCommandActivated": "plugin_command.activated",
+    "ShellStarted": "shell.started",
+    "ShellOutput": "shell.output",
+    "ShellCompleted": "shell.completed",
+    "TowerInboxSent": "tower.inbox.sent",
+    "SessionMetaUpdated": "session.meta.updated",
+    "PermissionApprovalRequested": "permission.approval.requested",
+    "PermissionApprovalResolved": "permission.approval.resolved",
+    "ApprovalRequested": "event.approval.requested",
+    "ApprovalResolved": "event.approval.resolved",
+    "QuestionRequested": "event.question.requested",
+    "QuestionAnswered": "event.question.answered",
+    "QuestionDismissed": "event.question.dismissed",
+    "SessionCreated": "event.session.created",
+    "SessionArchived": "event.session.archived",
+    "SessionDeleted": "event.session.deleted",
+    "SessionWorkChanged": "event.session.work_changed",
+    "SessionStatusChanged": "event.session.status_changed",
+    "WorkspaceCreated": "event.workspace.created",
+    "WorkspaceUpdated": "event.workspace.updated",
+    "WorkspaceDeleted": "event.workspace.deleted",
+    "ConfigChanged": "event.config.changed",
+    "ConfigWarning": "event.config.warning",
+    "ModelCatalogChanged": "event.model_catalog.changed",
+    "PluginChanged": "event.plugin.changed",
+    "CapabilityChanged": "event.capability.changed",
+    "UnitChanged": "event.di.unit_changed"
+  },
+  "origins": {
+    "User": "user",
+    "SkillActivation": "skill_activation",
+    "PluginCommand": "plugin_command",
+    "Injection": "injection",
+    "ShellCommand": "shell_command",
+    "CompactionSummary": "compaction_summary",
+    "SystemTrigger": "system_trigger",
+    "Task": "task",
+    "BackgroundTask": "background_task",
+    "CronJob": "cron_job",
+    "CronMissed": "cron_missed",
+    "HookResult": "hook_result",
+    "Retry": "retry"
+  },
+  "tools": {
+    "Agent": "Agent",
+    "AgentSwarm": "AgentSwarm",
+    "AskUserQuestion": "AskUserQuestion",
+    "Bash": "Bash",
+    "CreateGoal": "CreateGoal",
+    "CronCreate": "CronCreate",
+    "CronDelete": "CronDelete",
+    "CronList": "CronList",
+    "Edit": "Edit",
+    "EnterPlanMode": "EnterPlanMode",
+    "ExitPlanMode": "ExitPlanMode",
+    "FetchURL": "FetchURL",
+    "GetGoal": "GetGoal",
+    "Glob": "Glob",
+    "Grep": "Grep",
+    "NotifyUser": "NotifyUser",
+    "Read": "Read",
+    "ReadMediaFile": "ReadMediaFile",
+    "SetGoalBudget": "SetGoalBudget",
+    "Skill": "Skill",
+    "TaskList": "TaskList",
+    "TaskOutput": "TaskOutput",
+    "TaskStop": "TaskStop",
+    "TodoList": "TodoList",
+    "UpdateGoal": "UpdateGoal",
+    "WaitFor": "WaitFor",
+    "WebSearch": "WebSearch",
+    "Write": "Write"
+  },
+  "displayKinds": {
+    "PlanReview": "plan_review",
+    "GoalStart": "goal_start"
+  },
+  "decisions": {
+    "Approved": "approved",
+    "Rejected": "rejected",
+    "Cancelled": "cancelled"
+  },
+  "approvalScopes": {
+    "Session": "session"
+  },
+  "planLabels": {
+    "Revise": "Revise",
+    "RejectAndExit": "Reject and Exit"
+  },
+  "answerKinds": {
+    "Single": "single",
+    "Multi": "multi",
+    "Other": "other",
+    "MultiWithOther": "multi_with_other",
+    "Skipped": "skipped"
+  },
+  "goalModes": {
+    "Manual": "manual",
+    "Yolo": "yolo",
+    "Auto": "auto"
+  },
+  "modes": {
+    "Manual": "manual",
+    "Yolo": "yolo",
+    "Auto": "auto",
+    "Plan": "plan"
+  },
+  "defaultMode": "Manual",
+  "reply": {
+    "Decision": "decision",
+    "Scope": "scope",
+    "Feedback": "feedback",
+    "SelectedLabel": "selected_label",
+    "Answers": "answers",
+    "Method": "method",
+    "Dismiss": "dismiss",
+    "PermissionMode": "permission_mode"
+  },
+  "todoStatuses": {
+    "Pending": "pending",
+    "InProgress": "in_progress",
+    "Done": "done"
+  },
+  "turnEndReasons": {
+    "Completed": "completed",
+    "Cancelled": "cancelled",
+    "Failed": "failed",
+    "Blocked": "blocked"
+  },
+  "structs": {
+    "KimiApprovalReply": {
+      "doc": "KimiApprovalReply is the body that answers one approval, as the worker stores it.\n\nThe worker posts it to `/sessions/{id}/approvals/{approval_id}` without\n`permission_mode`, which is LeapMux's own: it states the mode an approved plan\nor goal start switches to, and the worker applies it before it posts the\ndecision. The browser\nreads the stored reply back to word the saved answer.",
+      "table": "reply",
+      "fields": [
+        {
+          "key": "Decision",
+          "type": "string"
+        },
+        {
+          "key": "Scope",
+          "type": "string",
+          "omitempty": true
+        },
+        {
+          "key": "Feedback",
+          "type": "string",
+          "omitempty": true
+        },
+        {
+          "key": "SelectedLabel",
+          "type": "string",
+          "omitempty": true
+        },
+        {
+          "key": "PermissionMode",
+          "type": "string",
+          "omitempty": true
+        }
+      ]
+    },
+    "KimiQuestionReply": {
+      "doc": "KimiQuestionReply is the body that answers one question, as the worker stores it.\n\n`Dismiss` is LeapMux's own mark: the server takes a dismissal through its own\n`:dismiss` route with no body, so a stored reply that sets it carries no answers.",
+      "table": "reply",
+      "fields": [
+        {
+          "key": "Answers",
+          "type": "json.RawMessage",
+          "omitempty": true
+        },
+        {
+          "key": "Method",
+          "type": "string",
+          "omitempty": true
+        },
+        {
+          "key": "Dismiss",
+          "type": "bool",
+          "omitempty": true
+        }
+      ]
+    },
+    "KimiDecisionFields": {
+      "doc": "KimiDecisionFields are the fields the browser writes beside the neutral\n`behavior` of its answer: the approval scope, and a question's answers in the\nserver's own shape.",
+      "table": "reply",
+      "fields": [
+        {
+          "key": "Scope",
+          "type": "string",
+          "omitempty": true
+        },
+        {
+          "key": "Answers",
+          "type": "json.RawMessage",
+          "omitempty": true
+        }
+      ]
+    }
+  },
+  "_unread": {
+    "reply": {
+      "Method": {
+        "sides": [
+          "ts"
+        ],
+        "why": "the worker stamps the answer method itself when it builds the question body; the browser writes the answers alone and words the saved answer from them"
+      },
+      "PermissionMode": {
+        "sides": [
+          "ts"
+        ],
+        "why": "the worker writes the permission mode an approved plan switches to and applies it before it posts the decision; the browser reads the mode from the plan approval settings that the service stores beside the answer"
+      }
+    }
+  }
+}

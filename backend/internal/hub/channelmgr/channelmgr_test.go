@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 )
@@ -791,11 +792,11 @@ func TestSendToUser_SingleConnection(t *testing.T) {
 		return nil
 	}, nil)
 
-	msg := &leapmuxv1.ChannelMessage{ChannelId: HubControlChannelID, Ciphertext: []byte("ctrl")}
+	msg := &leapmuxv1.ChannelMessage{ChannelId: contracts.HubControlChannelID, Ciphertext: []byte("ctrl")}
 	m.SendToUser("u1", msg)
 
 	assert.Len(t, received, 1)
-	assert.Equal(t, HubControlChannelID, received[0].GetChannelId())
+	assert.Equal(t, contracts.HubControlChannelID, received[0].GetChannelId())
 	assert.Equal(t, []byte("ctrl"), received[0].GetCiphertext())
 }
 
@@ -812,7 +813,7 @@ func TestSendToUser_MultipleConnections(t *testing.T) {
 		return nil
 	}, nil)
 
-	msg := &leapmuxv1.ChannelMessage{ChannelId: HubControlChannelID, Ciphertext: []byte("ctrl")}
+	msg := &leapmuxv1.ChannelMessage{ChannelId: contracts.HubControlChannelID, Ciphertext: []byte("ctrl")}
 	m.SendToUser("u1", msg)
 
 	// Both connections should receive the message.
@@ -833,7 +834,7 @@ func TestSendToUser_OtherUserNotAffected(t *testing.T) {
 		return nil
 	}, nil)
 
-	msg := &leapmuxv1.ChannelMessage{ChannelId: HubControlChannelID, Ciphertext: []byte("ctrl")}
+	msg := &leapmuxv1.ChannelMessage{ChannelId: contracts.HubControlChannelID, Ciphertext: []byte("ctrl")}
 	m.SendToUser("u1", msg)
 
 	assert.Len(t, receivedU1, 1)
@@ -843,7 +844,7 @@ func TestSendToUser_OtherUserNotAffected(t *testing.T) {
 func TestSendToUser_UnknownUser(t *testing.T) {
 	m := New(0)
 	// Should not panic on unknown user.
-	msg := &leapmuxv1.ChannelMessage{ChannelId: HubControlChannelID, Ciphertext: []byte("ctrl")}
+	msg := &leapmuxv1.ChannelMessage{ChannelId: contracts.HubControlChannelID, Ciphertext: []byte("ctrl")}
 	m.SendToUser("nonexistent", msg)
 }
 

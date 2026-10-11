@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "deepseek-harness-protocol.schema.json",
+  "title": "DeepSeek Harness native Web vocabulary",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "_readme",
+    "events",
+    "tools",
+    "modes",
+    "permissionPresets",
+    "options",
+    "controlEvents",
+    "contentTypes",
+    "supplement",
+    "fields",
+    "imagePositionFields",
+    "imageReceiptFields",
+    "imageReferenceFields",
+    "imageValueFields"
+  ],
+  "$defs": {
+    "table": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "pattern": "^[A-Z][A-Za-z0-9]*$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "unread": {
+      "description": "This map states per-key reader exemptions. contractsAreConsumed.test.mjs checks each key on every declared reader side. A key that one side does not consume must state its reason here.",
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "minProperties": 1,
+        "propertyNames": {
+          "pattern": "^[A-Z][A-Za-z0-9]*$"
+        },
+        "additionalProperties": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "sides",
+            "why"
+          ],
+          "properties": {
+            "sides": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "go",
+                  "ts"
+                ]
+              }
+            },
+            "why": {
+              "type": "string",
+              "minLength": 31
+            }
+          }
+        }
+      }
+    }
+  },
+  "properties": {
+    "_readme": {
+      "type": "string",
+      "minLength": 1
+    },
+    "events": {
+      "$ref": "#/$defs/table"
+    },
+    "tools": {
+      "$ref": "#/$defs/table"
+    },
+    "modes": {
+      "$ref": "#/$defs/table"
+    },
+    "permissionPresets": {
+      "$ref": "#/$defs/table"
+    },
+    "options": {
+      "$ref": "#/$defs/table"
+    },
+    "controlEvents": {
+      "$ref": "#/$defs/table"
+    },
+    "contentTypes": {
+      "$ref": "#/$defs/table"
+    },
+    "supplement": {
+      "$ref": "#/$defs/table"
+    },
+    "fields": {
+      "$ref": "#/$defs/table"
+    },
+    "_unread": {
+      "$ref": "#/$defs/unread"
+    },
+    "imagePositionFields": {
+      "$ref": "#/$defs/table"
+    },
+    "imageReceiptFields": {
+      "$ref": "#/$defs/table"
+    },
+    "imageReferenceFields": {
+      "$ref": "#/$defs/table"
+    },
+    "imageValueFields": {
+      "$ref": "#/$defs/table"
+    }
+  }
+}

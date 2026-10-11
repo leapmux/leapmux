@@ -1,0 +1,161 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "muse-protocol.schema.json",
+  "title": "Vocabulary for the Muse Session Protocol",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "_readme",
+    "methods",
+    "itemKinds",
+    "itemStatuses",
+    "todoStatuses",
+    "turnOutcomes",
+    "approvalModes",
+    "approvalDecisions",
+    "choiceScopes",
+    "questionSelectionModes",
+    "inputOutcomes",
+    "compactionOutcomes",
+    "logEvents",
+    "supplementFields",
+    "streamKinds",
+    "optionIds",
+    "workspaceTrust",
+    "startupOptionGroups"
+  ],
+  "properties": {
+    "_readme": {
+      "type": "string",
+      "minLength": 1
+    },
+    "methods": {
+      "$ref": "#/$defs/table"
+    },
+    "itemKinds": {
+      "$ref": "#/$defs/table"
+    },
+    "itemStatuses": {
+      "$ref": "#/$defs/table"
+    },
+    "todoStatuses": {
+      "$ref": "#/$defs/table"
+    },
+    "turnOutcomes": {
+      "$ref": "#/$defs/table"
+    },
+    "approvalModes": {
+      "$ref": "#/$defs/table"
+    },
+    "approvalDecisions": {
+      "$ref": "#/$defs/table"
+    },
+    "choiceScopes": {
+      "$ref": "#/$defs/table"
+    },
+    "questionSelectionModes": {
+      "$ref": "#/$defs/table"
+    },
+    "inputOutcomes": {
+      "$ref": "#/$defs/table"
+    },
+    "compactionOutcomes": {
+      "$ref": "#/$defs/table"
+    },
+    "logEvents": {
+      "$ref": "#/$defs/table"
+    },
+    "supplementFields": {
+      "$ref": "#/$defs/table"
+    },
+    "streamKinds": {
+      "$ref": "#/$defs/table"
+    },
+    "optionIds": {
+      "$ref": "#/$defs/table"
+    },
+    "workspaceTrust": {
+      "$ref": "#/$defs/table"
+    },
+    "startupOptionGroups": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "pattern": "^[A-Z][A-Za-z0-9]*$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "valuesTable",
+          "label",
+          "defaultValue",
+          "readOnlyReason",
+          "options"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "valuesTable": {
+            "type": "string",
+            "minLength": 1
+          },
+          "label": {
+            "type": "string",
+            "minLength": 1
+          },
+          "defaultValue": {
+            "type": "string",
+            "minLength": 1
+          },
+          "readOnlyReason": {
+            "type": "string",
+            "minLength": 1
+          },
+          "options": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "value",
+                "label"
+              ],
+              "properties": {
+                "value": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "label": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "description": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "table": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "pattern": "^[A-Z][A-Za-z0-9]*$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  }
+}

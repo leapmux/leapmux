@@ -1,5 +1,5 @@
 {
-  "_readme": "Claude Code permission modes that both the Go provider and the TypeScript plugin use. Anthropic owns these wire values: the worker sends them in set_permission_mode, and the browser plugin builds its permission presets and its plan-mode toggle from the same strings. defaultMode is the mode a Claude session with no stored one falls back to; the mode a NEW session requests is Auto, and the PermissionDefaults of the Claude registration (Registration in backend/internal/worker/agent/providers/claude/registration.go) is that fact's one home.",
+  "_readme": "Claude Code wire values that both the Go provider and the TypeScript plugin use. Anthropic owns them. modes holds the permission modes. The Worker sends them through set_permission_mode. The browser uses the same strings for permission presets and its plan-mode toggle. defaultMode supplies the fallback when a Claude session stores no mode. A new session requests Auto. PermissionDefaults declares that launch default in Registration, under backend/internal/worker/agent/providers/claude/registration.go. systemSubtypes identifies system lines for an API retry or a compaction boundary. The Worker classifies each line as a notification. The browser draws that notification. The status subtype is not in this table, because the shared isFinalCompactingStatus in frontend/src/components/chat/messageUtils.ts reads that shape for the Claude, Codex and ACP plugins. frameKinds defines the native conversation frames.\n\nThe browser owns native result pointer fields in its provider protocol module. The Worker preserves the original native frame. The browser shows each native path beside the original preview. LeapMux reads no output file.",
   "modes": {
     "Default": "default",
     "Plan": "plan",
@@ -8,5 +8,16 @@
     "DontAsk": "dontAsk",
     "Auto": "auto"
   },
-  "defaultMode": "Default"
+  "systemSubtypes": {
+    "ApiRetry": "api_retry",
+    "CompactBoundary": "compact_boundary",
+    "MicrocompactBoundary": "microcompact_boundary"
+  },
+  "defaultMode": "Default",
+  "frameKinds": {
+    "System": "system",
+    "Assistant": "assistant",
+    "User": "user",
+    "Result": "result"
+  }
 }

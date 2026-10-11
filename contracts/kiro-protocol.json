@@ -1,0 +1,64 @@
+{
+  "_readme": "Kiro CLI runs its v3 engine through `kiro-cli-chat acp --agent-engine v3`. It uses the Agent Client Protocol with native `_kiro/*` methods. Native metadata uses `_meta.kiro` on each update, tool call, or request. Amazon Web Services owns every method, meta key, kind, tool title, mode, option id, scope and action word below. LeapMux owns two tables:\n- The policy-preset option ID. Kiro fixes the preset at session open and never reports it back.\n- The consent-scoped permission option IDs. The browser supplies them, and the Worker converts them into native replies. The Worker performs these operations:\n- Publish extension requests.\n- Convert the answers into native replies.\n- Route subagent updates.\n- Read the to-do list and plan.\n- End turns that Kiro starts without a client prompt. The browser plugin draws the same requests, builds the same replies, reads the same tool titles and reads the same turn-end update into a divider. A word that only one side reads stays in the code of that side. configIds identifies the option for reasoning effort. The Worker sets effort through that ID. The browser uses the same ID for its status-bar chip.\n\nKiro owns its native output transformation metadata. The metadata identifies a saved output file and its UTF-16 character count. The browser shows absFilePath beside the original preview. LeapMux reads no output file.",
+  "_unread": {
+    "userInputActions": {
+      "Answered": {
+        "sides": [
+          "go"
+        ],
+        "why": "the worker forwards the answer of a question unchanged, and writes only the dismissal, when it withdraws a question that nobody answered"
+      }
+    }
+  },
+  "methods": {
+    "UserInput": "_kiro/userInput",
+    "McpElicitation": "_kiro/mcp/elicitation"
+  },
+  "meta": {
+    "Namespace": "kiro",
+    "Kind": "kind",
+    "AgentSubtaskId": "agentSubtaskId",
+    "StopReason": "stopReason",
+    "Consent": "consent",
+    "Scope": "scope"
+  },
+  "metaKinds": {
+    "AgentSubtask": "agent-subtask",
+    "TurnEnd": "turn_end"
+  },
+  "toolTitles": {
+    "TaskList": "Task List",
+    "SwitchToExecution": "Switch to Execution"
+  },
+  "modes": {
+    "Default": "vibe",
+    "Plan": "plan"
+  },
+  "options": {
+    "PolicyPreset": "policyPreset"
+  },
+  "policyPresets": {
+    "AllowAll": "allow-all"
+  },
+  "permissionOptions": {
+    "AlwaysAccept": "always-accept",
+    "AlwaysReject": "always-reject"
+  },
+  "scopedPermissionOptions": {
+    "AlwaysAcceptWorkspace": "always-accept-workspace",
+    "AlwaysAcceptUser": "always-accept-user",
+    "AlwaysRejectWorkspace": "always-reject-workspace",
+    "AlwaysRejectUser": "always-reject-user"
+  },
+  "consentScopes": {
+    "Workspace": "workspace",
+    "User": "user"
+  },
+  "userInputActions": {
+    "Answered": "answered",
+    "Dismissed": "dismissed"
+  },
+  "configIds": {
+    "EffortLevel": "effortLevel"
+  }
+}

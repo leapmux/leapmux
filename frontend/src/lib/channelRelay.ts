@@ -12,6 +12,7 @@
 import type { FatalCloseInfo } from './wsCloseCodes'
 import type { ChannelMessage } from '~/generated/proto/leapmux/v1/channel_pb'
 import { fromBinary } from '@bufbuild/protobuf'
+import { HUB_CONTROL_CHANNEL_ID } from '~/generated/contracts/wire'
 import { ChannelMessageSchema } from '~/generated/proto/leapmux/v1/channel_pb'
 import { ChannelError } from './channelError'
 import { unframeBytes } from './channelFraming'
@@ -20,9 +21,6 @@ import { createLogger } from './logger'
 import { isFinalCloseCode } from './wsCloseCodes'
 
 const log = createLogger('channel')
-
-/** Reserved channel ID for Hub-originated control frames. */
-export const HUB_CONTROL_CHANNEL_ID = '_hub'
 
 /**
  * The narrow slice of the WebSocket surface ChannelRelay actually drives. Both a

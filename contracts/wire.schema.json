@@ -15,6 +15,7 @@
     "maxIncompleteChunked",
     "pingMethod",
     "protocolVersion",
+    "hubControlChannelId",
     "sessionKey",
     "closeReasons",
     "ws",
@@ -64,6 +65,11 @@
       "type": "integer",
       "minimum": 1,
       "description": "The ChannelMessage envelope version every sender stamps (NewChannelMessage, the bypassing Go senders, and the browser's channelSession)."
+    },
+    "hubControlChannelId": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The reserved channel ID of the frames that the Hub itself sends to a frontend over the /ws/channel WebSocket. No worker channel uses it: the Hub routes it to the frontend's hub-control handler, and the relay sends no CLOSE answer for it."
     },
     "sessionKey": {
       "type": "object",

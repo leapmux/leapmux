@@ -9,8 +9,7 @@
 // `generate()` uses the real contracts directory in its integration test.
 // validate-json.test.mjs tests its rule table against the real tree too.
 
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'bun:test'
 
@@ -47,6 +46,7 @@ import {
   emitGoExternalApps,
   emitGoHeaders,
   emitGoListen,
+  emitGoProviderProtocol,
   emitGoRetry,
   emitGoSessionInfo,
   emitGoTrustedProxies,
@@ -59,6 +59,8 @@ import {
   emitTsExternalApps,
   emitTsHeaders,
   emitTsListen,
+  emitTsProviderFrameKinds,
+  emitTsProviderProtocol,
   emitTsProviders,
   emitTsRetry,
   emitTsSessionInfo,
@@ -71,6 +73,7 @@ import {
   HEADERS_GO_NAMES,
   HEADERS_TS_NAMES,
   nameStripClass,
+  PROVIDER_PROTOCOLS,
   RETRY_GO_NAMES,
   RETRY_TS_NAMES,
   SESSION_INFO_TABLES,
@@ -79,13 +82,27 @@ import {
   WIRE_GO_NAMES,
   WIRE_TS_NAMES,
 } from './generate-contracts.mjs'
+import { buildAjv } from './validate-json.mjs'
 
 const ROOT = resolve(import.meta.dirname, '..')
 
-/** One buf build for the whole suite: the descriptor is read-only and ROOT never changes under it. */
+function contractScratchDirectory(prefix) {
+  const directory = join(ROOT, '.tmp')
+  mkdirSync(directory, { recursive: true })
+  return mkdtempSync(join(directory, prefix))
+}
+
+/** Build one buf descriptor for the suite. The descriptor and ROOT stay unchanged. */
 const DESCRIPTOR = bufDescriptor(ROOT)
 
 const readContract = name => JSON.parse(readFileSync(join(ROOT, 'contracts', `${name}.json`), 'utf8'))
+
+function museTodoContract() {
+  const contract = readContract('muse-protocol')
+  contract.methods.TodoListChanged = 'session/todoListChanged'
+  contract.todoStatuses = { Pending: 'pending', InProgress: 'inProgress', Completed: 'completed', Cancelled: 'cancelled' }
+  return contract
+}
 
 const WIRE = readContract('wire')
 const HEADERS = readContract('headers')
@@ -130,7 +147,7 @@ describe('checkWire', () => {
     expect(() => checkWire(WIRE)).not.toThrow()
   })
 
-  it('rejects a tag size that eats the whole ciphertext', () => {
+  it('rejects a tag size that consumes the whole ciphertext', () => {
     expectContractError(
       () => checkWire({ ...WIRE, noiseAeadTagSizeBytes: WIRE.maxCiphertextForChunkBytes }),
       'must stay positive',
@@ -450,6 +467,13 @@ describe('checkProviderProtocol', () => {
     expect(checkProviderProtocol(spec, ok())).toEqual({})
   })
 
+  it('permits equal numeric limits while retaining unique string dispatch words', () => {
+    const limitsSpec = { ...spec, tables: [...spec.tables, { key: 'mediaRules' }] }
+    const limits = { CurrentVersion: 1, MaxWidth: 8192, MaxHeight: 8192 }
+    expect(checkProviderProtocol(limitsSpec, { ...ok(), mediaRules: limits })).toEqual({})
+    expectContractError(() => checkProviderProtocol(limitsSpec, { ...ok(), events: { A: 'repeated', B: 'repeated' }, mediaRules: limits }), 'repeats the literal')
+  })
+
   it('rejects a declared table that is missing or empty', () => {
     const missing = ok()
     delete missing.events
@@ -479,9 +503,8 @@ describe('checkProviderProtocol', () => {
     expect(checkProviderProtocol(spec, { ...ok(), events: { A: 'plan' } })).toEqual({})
   })
 
-  // A DEFAULTS table states one starting value for each axis of the table it points
-  // at. Its keys are axes, so two of them may rest at the same word, and the repeated
-  // literal above is not a fault here.
+  // A DEFAULTS table states one starting value for each axis of its target table.
+  // Two axes can use the same default. Repeated defaults are valid here.
   describe('defaultsFor', () => {
     const withDefaults = {
       name: 'test-protocol',
@@ -528,10 +551,8 @@ describe('checkProviderProtocol', () => {
     )
   })
 
-  // `readers` must be compared as a SET. READER_SIDES holds two sides, so
-  // `['ts', 'ts']` has the length of the whole set: a length test took it for a
-  // two-sided table, demanded no readersWhy, and the per-element test accepted each
-  // 'ts'. The same hole was open for `['go', 'go']`.
+  // Compare readers as a set. Duplicate entries do not add a language side.
+  // Both ['ts', 'ts'] and ['go', 'go'] must fail before the readersWhy check.
   it('rejects a table that lists one reader twice', () => {
     const repeated = { ...spec, tables: [{ key: 'events', readers: ['ts', 'ts'] }, { key: 'modes' }] }
     expectContractError(() => checkProviderProtocol(repeated, ok()), 'lists a reader twice')
@@ -542,9 +563,8 @@ describe('checkProviderProtocol', () => {
     expectContractError(() => checkProviderProtocol(oneSided, ok()), 'must say why in readersWhy')
   })
 
-  // A goSlice table emits `var <Prefix><Table>Keys` beside its constants, so a key
-  // called Keys emits a const and a var of one name and the generated package stops
-  // compiling -- with the error against a file that states no contract.
+  // A goSlice table emits var <Prefix><Table>Keys beside its constants.
+  // A Keys entry collides with that variable. Reject it before the generated package fails to compile.
   it('rejects a key called Keys on a goSlice table', () => {
     const sliced = {
       ...spec,
@@ -573,6 +593,141 @@ describe('checkProviderProtocol', () => {
     const pinned = { ...spec, tables: [{ key: 'events', goTagPin: 'backend/x.go' }, { key: 'modes' }] }
     expectContractError(() => checkProviderProtocol(pinned, ok()), 'must give goTagPin as the path')
   })
+
+  it('accepts each frameKind value', () => {
+    const marked = { ...spec, tables: [{ key: 'events', frameKind: 'name' }, { key: 'modes', frameKind: 'prefix' }] }
+    expect(checkProviderProtocol(marked, ok())).toEqual({})
+  })
+
+  // The collector reads only `name` and `prefix`. A misspelled mark would take the
+  // table out of the lint with no message.
+  it.each(['names', 'Name', '', true])('rejects the frameKind %j', (frameKind) => {
+    const marked = { ...spec, tables: [{ key: 'events', frameKind }, { key: 'modes' }] }
+    expectContractError(() => checkProviderProtocol(marked, ok()), 'which is not one of name, prefix')
+  })
+})
+
+describe('muse native to-do vocabulary', () => {
+  const spec = PROVIDER_PROTOCOLS.find(spec => spec.name === 'muse-protocol')
+
+  it('admits the exact native list method and its separate status table', () => {
+    expect(checkProviderProtocol(spec, museTodoContract())).toEqual({})
+  })
+
+  it('requires the native status table before either language emits it', () => {
+    const contract = museTodoContract()
+    delete contract.todoStatuses
+    expectContractError(() => checkProviderProtocol(spec, contract), 'todoStatuses is missing or empty')
+  })
+
+  it('emits all four native event statuses in both languages', () => {
+    const contract = museTodoContract()
+    const go = emitGoProviderProtocol(spec, contract)
+    const ts = emitTsProviderProtocol(spec, contract)
+    for (const [key, value] of Object.entries(contract.todoStatuses)) {
+      expect(go).toMatch(new RegExp(`MuseTodoStatus${key}\\s+=\\s+"${value}"`))
+      expect(ts).toContain(`${key}: "${value}"`)
+    }
+    expect(go).toMatch(/MuseMethodTodoListChanged\s+=\s+"session\/todoListChanged"/)
+    expect(ts).toContain('export const MUSE_TODO_STATUS = {')
+    expect(ts).not.toContain('InProgress: "in_progress"')
+  })
+
+  it('rejects duplicate native event status values', () => {
+    const contract = museTodoContract()
+    contract.todoStatuses.Cancelled = contract.todoStatuses.Completed
+    expectContractError(() => checkProviderProtocol(spec, contract), 'repeats the literal')
+  })
+
+  it('requires the native status table in the stored contract schema', () => {
+    const schema = readContract('muse-protocol.schema')
+    const validate = buildAjv().compile(schema)
+    const contract = museTodoContract()
+    expect(validate(contract)).toBe(true)
+    delete contract.todoStatuses
+    expect(validate(contract)).toBe(false)
+  })
+})
+
+describe('muse native question selection vocabulary', () => {
+  const spec = PROVIDER_PROTOCOLS.find(spec => spec.name === 'muse-protocol')
+  const selectionModes = { Single: 'single', Multiple: 'multiple' }
+  const valid = () => ({ ...readContract('muse-protocol'), questionSelectionModes: { ...selectionModes } })
+
+  it('stores the exact closed native selection vocabulary', () => {
+    expect(readContract('muse-protocol').questionSelectionModes).toEqual(selectionModes)
+  })
+
+  it('admits the native selection table before generation', () => {
+    expect(checkProviderProtocol(spec, valid())).toEqual({})
+  })
+
+  it('emits both native selection modes for each language', () => {
+    const contract = valid()
+    const go = emitGoProviderProtocol(spec, contract)
+    const ts = emitTsProviderProtocol(spec, contract)
+    for (const [key, value] of Object.entries(selectionModes)) {
+      expect(go).toMatch(new RegExp(`MuseQuestionSelectionMode${key}\\s+=\\s+"${value}"`))
+      expect(ts).toContain(`${key}: "${value}"`)
+    }
+    expect(ts).toContain('export const MUSE_QUESTION_SELECTION_MODE = {')
+  })
+
+  it('requires the selection table before generation', () => {
+    const contract = valid()
+    delete contract.questionSelectionModes
+    expectContractError(() => checkProviderProtocol(spec, contract), 'questionSelectionModes is missing or empty')
+  })
+
+  it('refuses duplicate native selection words', () => {
+    const contract = valid()
+    contract.questionSelectionModes.Multiple = contract.questionSelectionModes.Single
+    expectContractError(() => checkProviderProtocol(spec, contract), 'repeats the literal')
+  })
+
+  it('requires the native selection table in the stored schema', () => {
+    const validate = buildAjv().compile(readContract('muse-protocol.schema'))
+    const contract = valid()
+    expect(validate(contract)).toBe(true)
+    delete contract.questionSelectionModes
+    expect(validate(contract)).toBe(false)
+  })
+})
+
+describe('emitTsProviderFrameKinds', () => {
+  const first = {
+    spec: { name: 'first-protocol', tables: [{ key: 'events', frameKind: 'name' }, { key: 'modes' }, { key: 'families', frameKind: 'prefix' }] },
+    p: { events: { Started: 'turn.started', Ended: 'turn.ended' }, modes: { Plan: 'plan' }, families: { Hook: 'hook.' } },
+  }
+  const second = {
+    spec: { name: 'second-protocol', tables: [{ key: 'methods', frameKind: 'name' }] },
+    p: { methods: { Ended: 'turn.ended', Quoted: 'say "hi"' } },
+  }
+
+  it('emits each literal of each marked table, in the order of the domains, the tables and the keys', () => {
+    const ts = emitTsProviderFrameKinds([first, second])
+    const rows = ts.split('\n').filter(line => line.startsWith('  { literal:'))
+    expect(rows).toEqual([
+      '  { literal: "turn.started", match: "name", source: "first-protocol events" },',
+      '  { literal: "turn.ended", match: "name", source: "first-protocol events" },',
+      '  { literal: "hook.", match: "prefix", source: "first-protocol families" },',
+      '  { literal: "turn.ended", match: "name", source: "second-protocol methods" },',
+      '  { literal: "say \\"hi\\"", match: "name", source: "second-protocol methods" },',
+    ])
+  })
+
+  it('leaves out a table that states no frameKind', () => {
+    expect(emitTsProviderFrameKinds([first])).not.toContain('"plan"')
+  })
+
+  it('emits an empty list when no table is marked', () => {
+    const unmarked = { spec: { name: 'bare-protocol', tables: [{ key: 'modes' }] }, p: { modes: { Plan: 'plan' } } }
+    expect(emitTsProviderFrameKinds([unmarked])).toContain('export const PROVIDER_FRAME_KINDS: readonly ProviderFrameKind[] = [\n]\n')
+  })
+
+  it('gives the same output for the same input', () => {
+    expect(emitTsProviderFrameKinds([first, second])).toBe(emitTsProviderFrameKinds([first, second]))
+  })
 })
 
 describe('_unread exemptions', () => {
@@ -594,8 +749,7 @@ describe('_unread exemptions', () => {
     )
   })
 
-  // An exemption that outlives its key is a claim about nothing, and the next reader
-  // cannot tell it from a key somebody forgot to restore.
+  // An exemption requires an existing key. Reject an exemption after its key disappears.
   it('rejects an exemption for a key the table no longer carries', () => {
     expectContractError(
       () => checkProviderProtocol(spec, ok({ _unread: { events: { Gone: { sides: ['go'], why } } } })),
@@ -820,22 +974,42 @@ describe('generate', () => {
     expect(Object.keys(files).sort()).toEqual([
       'backend/generated/contracts/acp-protocol.go',
       'backend/generated/contracts/agent-input.go',
+      'backend/generated/contracts/amp-protocol.go',
       'backend/generated/contracts/captcha.go',
       'backend/generated/contracts/chat-history.go',
       'backend/generated/contracts/claude-protocol.go',
+      'backend/generated/contracts/cline-protocol.go',
+      'backend/generated/contracts/codebuddy-protocol.go',
+      'backend/generated/contracts/codewhale-protocol.go',
       'backend/generated/contracts/codex-bypass.go',
       'backend/generated/contracts/codex-protocol.go',
+      'backend/generated/contracts/commandcode-protocol.go',
       'backend/generated/contracts/copilot-protocol.go',
       'backend/generated/contracts/cursor-protocol.go',
+      'backend/generated/contracts/deepseek-harness-protocol.go',
       'backend/generated/contracts/desktop.go',
+      'backend/generated/contracts/dirac-protocol.go',
+      'backend/generated/contracts/droid-protocol.go',
       'backend/generated/contracts/external-apps.go',
+      'backend/generated/contracts/fastagent-protocol.go',
+      'backend/generated/contracts/gemini-protocol.go',
       'backend/generated/contracts/goose-protocol.go',
+      'backend/generated/contracts/grok-protocol.go',
       'backend/generated/contracts/headers.go',
+      'backend/generated/contracts/junie-protocol.go',
+      'backend/generated/contracts/kimi-protocol.go',
+      'backend/generated/contracts/kiro-protocol.go',
+      'backend/generated/contracts/letta-protocol.go',
       'backend/generated/contracts/listen.go',
       'backend/generated/contracts/mcp-elicitation.go',
+      'backend/generated/contracts/mimo-protocol.go',
+      'backend/generated/contracts/muse-protocol.go',
+      'backend/generated/contracts/ohmypi-protocol.go',
       'backend/generated/contracts/opencode-protocol.go',
       'backend/generated/contracts/pi-protocol.go',
       'backend/generated/contracts/providers.go',
+      'backend/generated/contracts/qoder-protocol.go',
+      'backend/generated/contracts/qwen-protocol.go',
       'backend/generated/contracts/reasonix-protocol.go',
       'backend/generated/contracts/retry.go',
       'backend/generated/contracts/scopes.go',
@@ -852,22 +1026,43 @@ describe('generate', () => {
       'desktop/rust/src/generated/contracts.rs',
       'frontend/src/generated/contracts/acp-protocol.ts',
       'frontend/src/generated/contracts/agent-input.ts',
+      'frontend/src/generated/contracts/amp-protocol.ts',
       'frontend/src/generated/contracts/captcha.ts',
       'frontend/src/generated/contracts/chat-history.ts',
       'frontend/src/generated/contracts/claude-protocol.ts',
+      'frontend/src/generated/contracts/cline-protocol.ts',
+      'frontend/src/generated/contracts/codebuddy-protocol.ts',
+      'frontend/src/generated/contracts/codewhale-protocol.ts',
       'frontend/src/generated/contracts/codex-bypass.ts',
       'frontend/src/generated/contracts/codex-protocol.ts',
+      'frontend/src/generated/contracts/commandcode-protocol.ts',
       'frontend/src/generated/contracts/copilot-protocol.ts',
       'frontend/src/generated/contracts/cursor-protocol.ts',
+      'frontend/src/generated/contracts/deepseek-harness-protocol.ts',
       'frontend/src/generated/contracts/desktop.ts',
+      'frontend/src/generated/contracts/dirac-protocol.ts',
+      'frontend/src/generated/contracts/droid-protocol.ts',
       'frontend/src/generated/contracts/external-apps.ts',
+      'frontend/src/generated/contracts/fastagent-protocol.ts',
+      'frontend/src/generated/contracts/gemini-protocol.ts',
       'frontend/src/generated/contracts/goose-protocol.ts',
+      'frontend/src/generated/contracts/grok-protocol.ts',
       'frontend/src/generated/contracts/headers.ts',
+      'frontend/src/generated/contracts/junie-protocol.ts',
+      'frontend/src/generated/contracts/kimi-protocol.ts',
+      'frontend/src/generated/contracts/kiro-protocol.ts',
+      'frontend/src/generated/contracts/letta-protocol.ts',
       'frontend/src/generated/contracts/listen.ts',
       'frontend/src/generated/contracts/mcp-elicitation.ts',
+      'frontend/src/generated/contracts/mimo-protocol.ts',
+      'frontend/src/generated/contracts/muse-protocol.ts',
+      'frontend/src/generated/contracts/ohmypi-protocol.ts',
       'frontend/src/generated/contracts/opencode-protocol.ts',
       'frontend/src/generated/contracts/pi-protocol.ts',
+      'frontend/src/generated/contracts/provider-frame-kinds.ts',
       'frontend/src/generated/contracts/providers.ts',
+      'frontend/src/generated/contracts/qoder-protocol.ts',
+      'frontend/src/generated/contracts/qwen-protocol.ts',
       'frontend/src/generated/contracts/reasonix-protocol.ts',
       'frontend/src/generated/contracts/retry.ts',
       'frontend/src/generated/contracts/scopes.ts',
@@ -917,36 +1112,68 @@ describe('generate', () => {
       .toContain('export const CLAUDE_DEFAULT_MODE = CLAUDE_MODE.Default')
   })
 
+  // The lint reads this list, so each marked table of the real contracts must reach it.
+  it('collects the frame kinds of the real contracts', () => {
+    const kinds = generate(join(ROOT, 'contracts'), DESCRIPTOR)['frontend/src/generated/contracts/provider-frame-kinds.ts']
+    expect(kinds).toContain('{ literal: "session.idle", match: "name", source: "copilot-protocol events" },')
+    expect(kinds).toContain('{ literal: "session.canvas.", match: "prefix", source: "copilot-protocol eventPrefixes" },')
+    expect(kinds).toContain('{ literal: "compact_boundary", match: "name", source: "claude-protocol systemSubtypes" },')
+    expect(kinds).toContain('{ literal: "question.asked", match: "name", source: "opencode-protocol events" },')
+    // A tool name is not a frame kind, so the Copilot tool table stays out.
+    expect(kinds).not.toContain('source: "copilot-protocol tools"')
+  })
+
   it('fails loudly when a registered domain is missing its contract file', () => {
     // An incorrect contracts/<name>.json path once skipped its emitter.
     // sync-generated then removed the outputs as orphans. The compiler reported
     // the generated code instead of the missing contract. Report the contract
     // path during generation.
-    const partial = mkdtempSync(join(tmpdir(), 'contracts-partial-'))
-    cpSync(join(ROOT, 'contracts'), partial, { recursive: true })
-    rmSync(join(partial, 'desktop.json'))
-    expectContractError(() => generate(partial, DESCRIPTOR), 'desktop.json')
+    const partial = contractScratchDirectory('contracts-partial-')
+    try {
+      cpSync(join(ROOT, 'contracts'), partial, { recursive: true })
+      rmSync(join(partial, 'desktop.json'))
+      expectContractError(() => generate(partial, DESCRIPTOR), 'desktop.json')
+    }
+    finally {
+      rmSync(partial, { recursive: true, force: true })
+    }
   })
 
   it('fails loudly when a contract file no domain reads is added', () => {
-    // The inverse of the check above, and the one nothing caught: a contract that
-    // validates against a sibling schema but that no DOMAINS entry registers emits
-    // NOTHING. `task lint` passes, `validate-json` passes, and the constants it
-    // declares reach neither language.
-    const extra = mkdtempSync(join(tmpdir(), 'contracts-extra-'))
-    cpSync(join(ROOT, 'contracts'), extra, { recursive: true })
-    writeFileSync(join(extra, 'not-registered.json'), '{"_readme":"x"}')
-    expectContractError(() => generate(extra, DESCRIPTOR), 'not-registered.json')
+    // Schema validation alone accepts an unregistered contract.
+    // A contract without a DOMAINS entry emits nothing. Require registration before validation can report success.
+    const extra = contractScratchDirectory('contracts-extra-')
+    try {
+      cpSync(join(ROOT, 'contracts'), extra, { recursive: true })
+      writeFileSync(join(extra, 'not-registered.json'), '{"_readme":"x"}')
+      expectContractError(() => generate(extra, DESCRIPTOR), 'not-registered.json')
+    }
+    finally {
+      rmSync(extra, { recursive: true, force: true })
+    }
   })
 
   it('reads the real contracts dir with no unregistered file', () => {
     expect(() => generate(join(ROOT, 'contracts'), DESCRIPTOR)).not.toThrow()
   })
+
+  it('rejects a repeated provider protocol registration before reading its tables', () => {
+    const first = PROVIDER_PROTOCOLS[0]
+    const second = PROVIDER_PROTOCOLS[1]
+    const originalName = second.name
+    try {
+      second.name = first.name
+      expectContractError(() => generate(join(ROOT, 'contracts'), DESCRIPTOR), 'repeated provider protocol registration')
+    }
+    finally {
+      second.name = originalName
+    }
+  })
 })
 
 describe('checkProviderStructs', () => {
-  // One domain, reduced to what a struct needs. The rest of a provider contract rides
-  // along in the real files, so a rule that fires for the wrong reason still fails.
+  // This fixture supplies every field that a struct requires.
+  // The real contract tests retain all other fields to detect unrelated failures.
   const spec = {
     name: 'probe-protocol',
     goPrefix: 'Probe',
@@ -964,13 +1191,13 @@ describe('checkProviderStructs', () => {
   })
   const withStructs = structs => contract({ structs })
 
-  it('accepts a struct whose every field names a key of its table', () => {
+  it('accepts a struct whose every field identifies a key of its table', () => {
     expect(() => checkProviderStructs(spec, withStructs({
       Probe: { table: 'supplement', fields: [{ key: 'ToolCallID', type: 'string' }] },
     }))).not.toThrow()
   })
 
-  it('accepts a field that names its OWN table, for a nested record', () => {
+  it('accepts a field that specifies its own table for a nested record', () => {
     expect(() => checkProviderStructs(spec, withStructs({
       Probe: {
         table: 'supplement',
@@ -979,9 +1206,9 @@ describe('checkProviderStructs', () => {
     }))).not.toThrow()
   })
 
-  // The whole point: a field that identifies no key would emit a tag the browser never
-  // reads, which is the drift the generated struct exists to remove.
-  it('rejects a field that names no key of its table', () => {
+  // A field without a table key emits a tag that the browser never reads.
+  // Reject it to keep both readers consistent.
+  it('rejects a field that identifies no key of its table', () => {
     expectContractError(() => checkProviderStructs(spec, withStructs({
       Probe: { table: 'supplement', fields: [{ key: 'Missing', type: 'string' }] },
     })), 'is not a key of the supplement table')
@@ -1014,18 +1241,17 @@ describe('checkProviderStructs', () => {
     })), 'lists ToolCallID twice')
   })
 
-  // A struct that takes a constant's name redeclares it, and the compiler then
-  // reports the GENERATED file, which states no contract and no domain.
+  // A struct with a constant's name redeclares it.
+  // The compiler reports the generated file without identifying its contract.
   it('rejects a struct name that collides with a constant the domain emits', () => {
     expectContractError(() => checkProviderStructs(spec, withStructs({
       ProbeSupplementOutput: { table: 'supplement', fields: [{ key: 'Output', type: 'string' }] },
     })), 'takes the name of a constant or key slice this domain already emits')
   })
 
-  // `emitGoProviderProtocol` emits `var <Prefix><Table>Keys` for a goSlice table, and
-  // that var shares the package with the structs. The collision guard tested the
-  // struct names against the CONSTANTS alone, so this name was open in both
-  // directions.
+  // emitGoProviderProtocol emits var <Prefix><Table>Keys for a goSlice table.
+  // That variable shares its package with the structs.
+  // Check its name also to prevent a generated declaration collision.
   it('rejects a struct name that collides with a goSlice key slice', () => {
     const sliced = {
       ...spec,
@@ -1036,8 +1262,8 @@ describe('checkProviderStructs', () => {
     })), 'takes the name of a constant or key slice this domain already emits')
   })
 
-  // A `#Name` field emits BY VALUE, so Go rejects a cycle as an invalid recursive
-  // type -- against the generated file, at build time, long after generation passed.
+  // A #Name field embeds its value. Go rejects a cycle as an invalid recursive type.
+  // Detect the cycle before generation produces a file that cannot compile.
   it('rejects a struct that refers to itself by value', () => {
     expectContractError(() => checkProviderStructs(spec, withStructs({
       Probe: { table: 'supplement', fields: [{ key: 'ToolCallID', type: '#Probe' }] },
@@ -1065,8 +1291,8 @@ describe('checkProviderStructs', () => {
     }))).not.toThrow()
   })
 
-  // Two structs that refer to ONE third struct is a diamond, not a cycle. A walk that
-  // took every second visit for a cycle would refuse it.
+  // Two structs can refer to the same third struct without a cycle.
+  // A second visit alone does not prove a cycle.
   it('accepts two structs that refer to the same third one', () => {
     expect(() => checkProviderStructs(spec, withStructs({
       Leaf: { table: 'nested', fields: [{ key: 'Path', type: 'string' }] },
@@ -1093,24 +1319,83 @@ describe('emitted structs', () => {
 
   it('carries omitempty only where the contract asks for it', () => {
     const go = files['backend/generated/contracts/pi-protocol.go']
-    expect(go).toContain('ToolCallID    string          `json:"toolCallId"`')
-    expect(go).toContain('OutputFile    json.RawMessage `json:"outputFile,omitempty"`')
+    expect(go).toMatch(/ToolCallID\s+string\s+`json:"toolCallId"`/)
+    expect(go).toMatch(/PartialResult\s+json\.RawMessage\s+`json:"partialResult,omitempty"`/)
+    expect(files['backend/generated/contracts/codex-protocol.go'])
+      .toMatch(/Input\s+\*string\s+`json:"input"`/)
+  })
+
+  it('omits complete-output storage structs after their provider readers are removed', () => {
+    for (const name of ['claude', 'codebuddy', 'copilot']) {
+      const go = files[`backend/generated/contracts/${name}-protocol.go`]
+      const ts = files[`frontend/src/generated/contracts/${name}-protocol.ts`]
+      expect(go).not.toMatch(/type \w*(?:OutputFile|CompleteOutput)\w* struct/u)
+      expect(ts).not.toMatch(/export const \w+_(?:SUPPLEMENT|OUTPUT_FILE)\b/u)
+    }
+  })
+
+  it('generates Junie path metadata without complete text fields', () => {
+    const go = files['backend/generated/contracts/junie-protocol.go']
+    const ts = files['frontend/src/generated/contracts/junie-protocol.ts']
+    expect(go).toMatch(/JunieOutputFilePathFieldPath\s+=\s+"path"/u)
+    expect(ts).toContain('export const JUNIE_OUTPUT_FILE_PATH')
+    expect(go).not.toContain('JunieOutputFileNativeOutput')
+    expect(go).not.toContain('JunieOutputFileOutput')
+    expect(ts).not.toContain('nativeOutput')
+  })
+
+  it('generates the exact DeepSeek image receipt keys for both languages', () => {
+    const go = files['backend/generated/contracts/deepseek-harness-protocol.go']
+    const ts = files['frontend/src/generated/contracts/deepseek-harness-protocol.ts']
+    expect(go).toMatch(/DeepseekHarnessImageReceiptFieldCallID\s+=\s+"callId"/u)
+    expect(go).toMatch(/DeepseekHarnessImageReceiptFieldToolCallID\s+=\s+"toolCallId"/u)
+    expect(ts).toContain('export const DEEPSEEK_HARNESS_IMAGE_RECEIPT_FIELD')
+    expect(ts).toContain('export const DEEPSEEK_HARNESS_IMAGE_POSITION_FIELD')
+    expect(ts).toContain('export const DEEPSEEK_HARNESS_IMAGE_REFERENCE_FIELD')
+    expect(ts).toContain('export const DEEPSEEK_HARNESS_IMAGE_VALUE_FIELD')
+    expect(ts).not.toContain('OutputFile:')
   })
 
   it('imports encoding/json only for a domain whose structs need it', () => {
     expect(files['backend/generated/contracts/pi-protocol.go']).toContain('import "encoding/json"')
-    expect(files['backend/generated/contracts/codex-protocol.go']).not.toContain('import "encoding/json"')
+    expect(files['backend/generated/contracts/codex-protocol.go']).toContain('import "encoding/json"')
+    expect(files['backend/generated/contracts/claude-protocol.go']).not.toContain('import "encoding/json"')
+  })
+
+  const probe = {
+    name: 'probe-protocol',
+    goPrefix: 'Probe',
+    tsPrefix: 'PROBE',
+    title: 'Probe',
+    tables: [{ key: 'fields', goTable: 'Field', tsTable: 'FIELD', tsType: 'ProbeField', doc: 'native fields' }],
+  }
+  const probeContract = (type, omitempty) => ({
+    fields: { Value: 'native_value' },
+    structs: {
+      ProbeValue: { table: 'fields', fields: [{ key: 'Value', type, omitempty }] },
+    },
+  })
+
+  it.each([false, true])('preserves an explicit optional tag choice: %s', (omitempty) => {
+    const go = emitGoProviderProtocol(probe, probeContract('*string', omitempty))
+    expect(go).toContain(`Value *string \`json:"native_value${omitempty ? ',omitempty' : ''}"\``)
+  })
+
+  it.each(['string', '*string', 'json.RawMessage', '[]json.RawMessage'])('imports JSON only for the emitted field type: %s', (type) => {
+    const go = emitGoProviderProtocol(probe, probeContract(type, false))
+    expect(go.includes('import "encoding/json"')).toBe(type.includes('json.RawMessage'))
+    expect(go).toContain(`Value ${type} \`json:"native_value"\``)
   })
 
   it('resolves a struct reference to the generated type', () => {
     expect(files['backend/generated/contracts/zcode-protocol.go'])
-      .toContain('NativeTool ZCodeStoredTool')
+      .toMatch(/NativeTool\s+ZCodeStoredTool/)
   })
 })
 
 describe('checkUserSettings', () => {
-  // One setting's entry, replaced. The rest of the contract rides along, so a
-  // rule that fires for the wrong reason still fails the assertion.
+  // Replace one setting and retain every other contract entry.
+  // Each assertion requires the intended validation failure.
   const withSetting = (name, patch) => ({
     ...USER_SETTINGS,
     settings: { ...USER_SETTINGS.settings, [name]: { ...USER_SETTINGS.settings[name], ...patch } },
@@ -1120,9 +1405,8 @@ describe('checkUserSettings', () => {
     expect(() => checkUserSettings(USER_SETTINGS, DESKTOP_FOR_SETTINGS)).not.toThrow()
   })
 
-  // The default is what the hub answers for an unset key and what the browser
-  // falls back to. One outside the vocabulary would be stored and then
-  // discarded by every parse that reads it.
+  // The hub returns the default for an unset key. The browser uses that default also.
+  // A default outside the vocabulary cannot survive parsing.
   it('rejects an enum default outside its own values', () => {
     expectContractError(
       () => checkUserSettings(withSetting('quakeOrientation', { default: 'diagonal' }), DESKTOP_FOR_SETTINGS),
@@ -1151,9 +1435,9 @@ describe('checkUserSettings', () => {
     )
   })
 
-  // The three Desktop enums state only their DEFAULT here; their tokens live in
-  // desktop.json, because the Rust shell spells them too. This is the check
-  // that keeps the two contracts in step without copying the tokens.
+  // The three desktop enums supply their defaults here.
+  // desktop.json holds their tokens because the Rust shell reads them also.
+  // Compare the contracts without copying their tokens.
   it('rejects a desktop default that desktop.json does not list', () => {
     expectContractError(
       () => checkUserSettings(withSetting('trayOnClose', { default: 'minimize' }), DESKTOP_FOR_SETTINGS),
@@ -1449,7 +1733,7 @@ describe('subtractRanges / nameStripClass', () => {
 })
 
 describe('checkSessionInfo', () => {
-  /** A minimal but complete contract; each test perturbs one table. */
+  /** Each test changes one table in this complete contract. */
   function sessionInfo(overrides = {}) {
     return {
       keys: { TotalCostUsd: 'total_cost_usd', ThinkingTokens: 'thinking_tokens', RunningTool: 'running_tool' },
@@ -2038,7 +2322,41 @@ describe('emitGoExternalApps and emitTsExternalApps', () => {
   })
 
   it('is deterministic', () => {
-    expect(emitGoExternalApps(c)).toBe(emitGoExternalApps(c))
-    expect(emitTsExternalApps(c)).toBe(emitTsExternalApps(c))
+    const first = structuredClone(c)
+    const second = structuredClone(c)
+    const firstBefore = structuredClone(first)
+    const secondBefore = structuredClone(second)
+    const go = emitGoExternalApps(first)
+    const ts = emitTsExternalApps(second)
+    expect(go).toBe(emitGoExternalApps(second))
+    expect(ts).toBe(emitTsExternalApps(first))
+    expect(go).toContain(`var ExternalAppIDsByOS = map[string][]string{
+\t"darwin": {
+\t\t"file-manager",
+\t\t"vscode",
+\t\t"xcode",
+\t},
+\t"linux": {
+\t\t"file-manager",
+\t\t"vscode",
+\t},
+\t"windows": {
+\t\t"file-manager",
+\t\t"vscode",
+\t},
+}`)
+    expect(ts).toContain(`export const SUPPORTED_EXTERNAL_APP_IDS = [
+  "file-manager",
+  "vscode",
+  "xcode",
+] as const`)
+    expect(ts).toContain(`export const EXTERNAL_APP_KIND_BY_ID: Record<ExternalAppId, ExternalAppKind> = {
+  "file-manager": "EXTERNAL_APP_KIND_FILE_MANAGER",
+  "vscode": "EXTERNAL_APP_KIND_EDITOR",
+  "xcode": "EXTERNAL_APP_KIND_EDITOR",
+}`)
+    expect(first).toEqual(firstBefore)
+    expect(second).toEqual(secondBefore)
   })
 })
+

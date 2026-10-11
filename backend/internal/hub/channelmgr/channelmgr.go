@@ -1094,10 +1094,6 @@ func sendCloseNotification(sender SendFunc, channelID string) {
 	}
 }
 
-// HubControlChannelID is the reserved channel ID used for Hub-originated
-// control frames sent to frontends via the existing /ws/channel WebSocket.
-const HubControlChannelID = "_hub"
-
 // SendToUser sends a ChannelMessage to all WebSocket connections of a specific user.
 func (m *Manager) SendToUser(userID string, msg *leapmuxv1.ChannelMessage) {
 	m.mu.RLock()
