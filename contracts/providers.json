@@ -61,6 +61,13 @@
       "displayName": "Codewhale",
       "cliAlias": "codewhale",
       "parseAliases": []
+    },
+    "AGENT_PROVIDER_KIMI_CODE": {
+      "displayName": "Kimi Code",
+      "cliAlias": "kimi-code",
+      "parseAliases": [
+        "kimi"
+      ]
     }
   }
 }

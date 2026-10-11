@@ -5,6 +5,7 @@ import { codewhalePermissionPresets } from './codewhale/permissionPresets'
 import { codexPermissionPresets } from './codex/permissionPresets'
 import { copilotPermissionPresets } from './copilot/permissionPresets'
 import { goosePermissionPresets } from './goose/permissionPresets'
+import { kimiPermissionPresets } from './kimi/permissionPresets'
 import { reasonixPermissionPresets } from './reasonix/permissionPresets'
 import { zcodePermissionPresets } from './zcode/permissionPresets'
 
@@ -22,6 +23,7 @@ export const PROVIDER_PERMISSION_PRESETS = {
   [AgentProvider.REASONIX]: reasonixPermissionPresets,
   [AgentProvider.ZCODE]: zcodePermissionPresets,
   [AgentProvider.CODEWHALE]: codewhalePermissionPresets,
+  [AgentProvider.KIMI_CODE]: kimiPermissionPresets,
 } satisfies Record<AgentProvider, ProviderPermissionPresets | undefined>
 
 /** Read canonical preset data without importing a rendering plugin. */

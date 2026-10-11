@@ -73,6 +73,7 @@ const PROVIDER_CLASSIFIERS: Readonly<Record<string, string | null>> = {
   'acp/registerACPProvider.ts': './classification',
   'claude/plugin.ts': './classification',
   'codewhale/plugin.ts': './classification',
+  'kimi/plugin.ts': './classification',
   'codex/plugin.ts': './classification',
   'copilot/plugin.ts': './classification',
   'pi/plugin.ts': './classification',

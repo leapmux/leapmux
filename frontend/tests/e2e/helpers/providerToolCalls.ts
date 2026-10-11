@@ -4,6 +4,7 @@ import { CODEWHALE_TOOL } from '../../../src/generated/contracts/codewhale-proto
 // Use a relative import.
 // The note in ../agentSettings.ts explains standalone native probes.
 import { COPILOT_TOOL } from '../../../src/generated/contracts/copilot-protocol'
+import { KIMI_TOOL } from '../../../src/generated/contracts/kimi-protocol'
 import { PI_TOOL } from '../../../src/generated/contracts/pi-protocol'
 import { ZCODE_TOOL } from '../../../src/generated/contracts/zcode-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
@@ -985,6 +986,74 @@ const TOOL_VOCABULARY = {
     codeExecution: (id, source) => ({ id, name: 'mcp__node_repl__js', arguments: { code: source, title: 'Run the native script' } }),
     workflowTools: [ZCODE_TOOL.CreateWorkflow],
   },
+  [AgentProvider.KIMI_CODE]: {
+    // Kimi Code supplies each tool's JSON Schema in its model request.
+    // The schemas set additionalProperties=false.
+    // An extra argument causes the native call to fail.
+    bash: (id, command) => ({ id, name: 'Bash', arguments: { command } }),
+    edit: (id, { path, before, after }) => ({ id, name: 'Edit', arguments: { path, old_string: before, new_string: after } }),
+    write: (id, { path, content }) => ({ id, name: 'Write', arguments: { path, content } }),
+    read: (id, path) => ({ id, name: 'Read', arguments: { path } }),
+    enterPlanMode: id => ({ id, name: 'EnterPlanMode', arguments: {} }),
+    // Kimi's `ExitPlanMode` states no plan. It raises the plan file, so the
+    // operation above cannot carry the plan that its caller passes.
+    exitPlanMode: null,
+    // `options` takes 1 to 3 approaches, and Kimi offers them as choices only
+    // for 2 or more.
+    exitPlanModeFromFile: (id, approaches) => ({
+      id,
+      name: 'ExitPlanMode',
+      arguments: { options: approaches.map(({ label, description }) => ({ label, description })) },
+    }),
+    // Use the native multi_select field.
+    // An option accepts only its label and description.
+    // The schema refuses the preview field that Claude accepts.
+    askUserQuestion: questionBuilder((id, questions) => ({
+      id,
+      name: 'AskUserQuestion',
+      arguments: {
+        questions: questions.map(({ question, header, options, multiSelect }) => ({
+          question,
+          header,
+          options: options.map(({ label, description }) => ({ label, description })),
+          multi_select: multiSelect ?? false,
+        })),
+      },
+    })),
+    // `coder` is the default type, stated so a change of default cannot change
+    // the child. `explore` would prefix the prompt with a git context.
+    // Kimi Code 2.1.1 takes `run_in_background`, and a child runs in the foreground when the call omits it. A background
+    // child needs the TaskList, TaskOutput and TaskStop tools active; without them Kimi refuses the call with
+    // BACKGROUND_AGENT_UNAVAILABLE.
+    spawnSubagent: (id, { description, prompt, background }) => ({ id, name: 'Agent', arguments: { description, prompt, subagent_type: 'coder', run_in_background: background ?? false } }),
+    spawnSubagentBatch: null,
+    // The schema requires `description` when `run_in_background` is true.
+    backgroundBash: (id, command) => ({
+      id,
+      name: 'Bash',
+      arguments: { command, description: 'Run the scripted command in the background', run_in_background: true },
+    }),
+    // The status vocabulary is `pending`, `in_progress` and `done`.
+    updateTodos: (id, steps) => ({
+      id,
+      name: 'TodoList',
+      arguments: {
+        todos: steps.map((step) => {
+          const status = acceptedTodoStatus('Kimi Code TodoList', BASE_TODO_STATUSES, step.status)
+          return { title: step.step, status: status === 'completed' ? 'done' : status }
+        }),
+      },
+    }),
+    // Outside Never Ask, the server raises a goal-start approval for this call.
+    createGoal: (id, objective) => ({ id, name: 'CreateGoal', arguments: { objective } }),
+    // `status` takes `active`, `complete` or `blocked`.
+    completeGoal: id => ({ id, name: 'UpdateGoal', arguments: { status: 'complete' } }),
+    blockGoal: null,
+    mcpTool: (id, { server, tool, input }) => ({ id, name: `mcp__${server}__${tool}`, arguments: input }),
+    codeExecution: null,
+    workflowTools: [KIMI_TOOL.AgentSwarm],
+  },
+
   [AgentProvider.CODEWHALE]: {
     bash: (id, command) => ({ id, name: 'bash', arguments: { command } }),
     // The edit tool accepts a replacement list.

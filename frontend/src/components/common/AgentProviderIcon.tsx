@@ -256,7 +256,7 @@ function CodewhaleIcon(props: { size: number, class?: string }): JSX.Element {
   )
 }
 
-export function KimiCodeIcon(props: { size: number, class?: string }): JSX.Element {
+function KimiCodeIcon(props: { size: number, class?: string }): JSX.Element {
   // The Kimi mark. The K takes the theme's icon color like the other
   // monochrome marks, and the dot keeps the blue of the colored variant. The
   // glyph is centered and takes 88% of the square viewBox.
@@ -637,6 +637,9 @@ export function AgentProviderIcon(props: AgentProviderIconProps): JSX.Element {
       </Match>
       <Match when={props.provider === AgentProvider.ZCODE}>
         <ZCodeIcon size={props.size} {...classProps()} />
+      </Match>
+      <Match when={props.provider === AgentProvider.KIMI_CODE}>
+        <KimiCodeIcon size={props.size} {...classProps()} />
       </Match>
       <Match when={props.provider === AgentProvider.CODEWHALE}>
         <CodewhaleIcon size={props.size} {...classProps()} />

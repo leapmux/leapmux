@@ -16,6 +16,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/cursor"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/goose"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/kilo"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/kimi"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/opencode"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/pi"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/reasonix"
@@ -38,6 +39,7 @@ func Registrations() []agent.Registration {
 		reasonix.Registration(),
 		zcode.Registration(),
 		codewhale.Registration(),
+		kimi.Registration(),
 	}
 }
 
