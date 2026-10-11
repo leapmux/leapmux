@@ -18,6 +18,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/grok"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/kilo"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/kimi"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/kiro"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/mimo"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/ohmypi"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/opencode"
@@ -48,6 +49,7 @@ func Registrations() []agent.Registration {
 		qwen.Registration(),
 		ohmypi.Registration(),
 		grok.Registration(),
+		kiro.Registration(),
 	}
 }
 

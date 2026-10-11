@@ -517,12 +517,17 @@ describe('kiroToolUseEvents', () => {
 describe('kiroModelCatalog', () => {
   // The E2E settings open each Kiro agent on this model, so the catalogue must
   // answer it as its default.
+  it('answers the model that the E2E settings open as its default', () => {
+    const catalog = kiroModelCatalog() as { defaultModel: Record<string, unknown> }
+    expect(catalog.defaultModel.modelId).toBe(KIRO_DEFAULT_MOCK_MODEL.modelId)
+    expect(AGENT_E2E_SETTINGS[AgentProvider.KIRO].model).toBe(KIRO_DEFAULT_MOCK_MODEL.modelId)
+  })
 
   // `229-kiro-settings` reads the chip of the pinned effort. The model must offer
   // that effort, and the effort must differ from the model's own default, or a start
   // that dropped it would look the same.
   it('offers the pinned effort, which differs from the default effort of the model', () => {
-    const effort = AGENT_E2E_SETTINGS[AgentProvider.CLAUDE_CODE].effort
+    const effort = AGENT_E2E_SETTINGS[AgentProvider.KIRO].effort
     expect(KIRO_DEFAULT_MOCK_MODEL.effortLevels).toContain(effort)
     expect(effort).not.toBe(KIRO_DEFAULT_MOCK_MODEL.defaultEffort)
   })

@@ -366,7 +366,7 @@ function GrokBuildIcon(props: { size: number, class?: string }): JSX.Element {
   )
 }
 
-export function KiroIcon(props: { size: number, class?: string }): JSX.Element {
+function KiroIcon(props: { size: number, class?: string }): JSX.Element {
   // The Kiro ghost, in the Kiro purple of the colored variant. That variant
   // draws the ghost on a purple app tile, which would make it the heaviest
   // mark in the picker. Centered, and 85% of the square viewBox.
@@ -655,6 +655,9 @@ export function AgentProviderIcon(props: AgentProviderIconProps): JSX.Element {
       </Match>
       <Match when={props.provider === AgentProvider.GROK_BUILD}>
         <GrokBuildIcon size={props.size} {...classProps()} />
+      </Match>
+      <Match when={props.provider === AgentProvider.KIRO}>
+        <KiroIcon size={props.size} {...classProps()} />
       </Match>
     </Switch>
   )

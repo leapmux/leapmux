@@ -1,12 +1,13 @@
 import type { ProviderPermissionPresets } from '../providerSettings'
-import { grokPermissionPresets } from './grok/permissionPresets'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { claudePermissionPresets } from './claude/permissionPresets'
 import { codewhalePermissionPresets } from './codewhale/permissionPresets'
 import { codexPermissionPresets } from './codex/permissionPresets'
 import { copilotPermissionPresets } from './copilot/permissionPresets'
 import { goosePermissionPresets } from './goose/permissionPresets'
+import { grokPermissionPresets } from './grok/permissionPresets'
 import { kimiPermissionPresets } from './kimi/permissionPresets'
+import { kiroPermissionPresets } from './kiro/permissionPresets'
 import { mimoPermissionPresets } from './mimo/permissionPresets'
 import { ohMyPiPermissionPresets } from './ohmypi/permissionPresets'
 import { qwenPermissionPresets } from './qwen/permissionPresets'
@@ -32,6 +33,7 @@ export const PROVIDER_PERMISSION_PRESETS = {
   [AgentProvider.OH_MY_PI]: ohMyPiPermissionPresets,
   [AgentProvider.MIMO_CODE]: mimoPermissionPresets,
   [AgentProvider.GROK_BUILD]: grokPermissionPresets,
+  [AgentProvider.KIRO]: kiroPermissionPresets,
 } satisfies Record<AgentProvider, ProviderPermissionPresets | undefined>
 
 /** Read canonical preset data without importing a rendering plugin. */

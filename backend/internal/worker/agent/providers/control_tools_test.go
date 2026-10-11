@@ -92,6 +92,7 @@ func TestOnlyCursorTransformsACreatePlanAnswer(t *testing.T) {
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_KIRO,
 	} {
 		t.Run(provider.String(), func(t *testing.T) {
 			t.Parallel()

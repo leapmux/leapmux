@@ -572,4 +572,37 @@ export const ROW_KIND_CASES: RowKindCase[] = [
     },
     category: 'result_divider',
   },
+  {
+    provider: Provider.KIRO,
+    name: 'first tool call, identified by its title',
+    payload: {
+      sessionUpdate: 'tool_call',
+      toolCallId: 't_read',
+      title: 'Read File',
+      kind: 'read',
+      status: 'pending',
+      rawInput: { path: '/w/hello.txt', offset: null, limit: null },
+      locations: [{ path: '/w/hello.txt' }],
+      _meta: { kiro: { toolOrigin: 'default' } },
+    },
+    category: 'tool_use',
+  },
+  {
+    provider: Provider.KIRO,
+    name: 'end of a turn Kiro started',
+    payload: {
+      sessionUpdate: 'session_info_update',
+      _meta: { kiro: { turnEnd: { stopReason: 'end_turn' }, kind: 'turn_end', stopReason: 'end_turn', messageId: 'm-turn-end' } },
+    },
+    category: 'result_divider',
+  },
+  {
+    provider: Provider.KIRO,
+    name: 'context usage update',
+    payload: {
+      sessionUpdate: 'session_info_update',
+      _meta: { kiro: { contextUsage: { usagePercentage: 0.8 }, kind: 'context_usage', usagePercentage: 0.8 } },
+    },
+    category: 'hidden',
+  },
 ]

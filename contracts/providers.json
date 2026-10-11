@@ -96,6 +96,13 @@
       "parseAliases": [
         "grok"
       ]
+    },
+    "AGENT_PROVIDER_KIRO": {
+      "displayName": "Kiro",
+      "cliAlias": "kiro",
+      "parseAliases": [
+        "kiro-cli"
+      ]
     }
   }
 }

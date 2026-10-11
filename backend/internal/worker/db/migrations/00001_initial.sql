@@ -42,7 +42,7 @@ CREATE TABLE agents (
     -- CreateAgent binds the column, so the DEFAULT below is unreachable and the
     -- CHECK is the only guard.
     agent_provider   INTEGER NOT NULL DEFAULT 1
-        CHECK (typeof(agent_provider) = 'integer') CHECK (agent_provider BETWEEN 1 AND 16),
+        CHECK (typeof(agent_provider) = 'integer') CHECK (agent_provider BETWEEN 1 AND 17),
     -- Subagent linkage. parent_agent_id is set ONLY for virtual child agents
     -- (subagent transcripts fed by the parent provider's process; they never
     -- own a process). spawn_span_id is the tool_use span in the PARENT
@@ -198,7 +198,7 @@ CREATE TABLE messages (
     -- plain range; TestAgentProviderOrdinalsAreContiguous fails the suite if a
     -- hole appears.
     agent_provider      INTEGER NOT NULL DEFAULT 1
-        CHECK (typeof(agent_provider) = 'integer') CHECK (agent_provider BETWEEN 1 AND 16),
+        CHECK (typeof(agent_provider) = 'integer') CHECK (agent_provider BETWEEN 1 AND 17),
     -- Optional MarkType ordinal for the scroll-rail jump marks. NULL means no
     -- mark; the unspecified 0 is unstorable because wire absence is SQL NULL.
     -- Set at write time so the rail can list marked seqs without decompressing
@@ -389,7 +389,7 @@ CREATE TABLE control_response_answers (
     -- that recorded 0 for a forgotten write would match an agent whose provider
     -- field was also unset.
     agent_provider INTEGER NOT NULL
-        CHECK (typeof(agent_provider) = 'integer') CHECK (agent_provider BETWEEN 1 AND 16),
+        CHECK (typeof(agent_provider) = 'integer') CHECK (agent_provider BETWEEN 1 AND 17),
     input_id TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (agent_id, request_id, claim_token)
 );

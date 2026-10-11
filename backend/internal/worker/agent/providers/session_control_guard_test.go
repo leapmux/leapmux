@@ -73,7 +73,7 @@ func TestACPProvidersPublishControlRequestsThroughTheSessionGuard(t *testing.T) 
 	t.Parallel()
 
 	family := acpFamily()
-	require.Contains(t, family, "goose", "the family must hold the ACP providers, or the guard checks nothing")
+	require.Contains(t, family, "kiro", "the family must hold the ACP providers, or the guard checks nothing")
 	patterns := []string{modulePath + providerTree + "/acp"}
 	for _, key := range family {
 		patterns = append(patterns, modulePath+providerTree+"/"+key)

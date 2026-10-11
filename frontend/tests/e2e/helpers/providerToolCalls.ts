@@ -989,7 +989,68 @@ const TOOL_VOCABULARY = {
     mcpTool: (id, { server, tool, input }) => ({ id, name: `mcp__${server}__${tool}`, arguments: input }),
     codeExecution: (id, source) => ({ id, name: 'mcp__node_repl__js', arguments: { code: source, title: 'Run the native script' } }),
     workflowTools: [ZCODE_TOOL.CreateWorkflow],
-  },  [AgentProvider.GROK_BUILD]: {
+  },
+  [AgentProvider.KIRO]: {
+    bash: (id, command) => ({ id, name: 'execute_bash', arguments: { command, description: 'Run the scripted command' } }),
+    edit: (id, { path, before, after }) => ({ id, name: 'str_replace', arguments: { path, oldStr: before, newStr: after } }),
+    write: (id, { path, content }) => ({ id, name: 'fs_write', arguments: { path, text: content } }),
+    read: (id, path) => ({ id, name: 'read_file', arguments: { path } }),
+    // Kiro enters plan mode through its mode, not through a tool. Its plan mode
+    // leaves through `switch_to_execution`, which raises no approval: see
+    // `kiroSwitchToExecutionToolCall`.
+    enterPlanMode: null,
+    exitPlanMode: null,
+    exitPlanModeFromFile: null,
+    // The native user_input tool asks one question.
+    // Only a spec mode offers that tool.
+    // Each option carries a title.
+    // The tool has no header and no flag for multiple selections.
+    // The builder omits the header and refuses a multiSelect request.
+    askUserQuestion: questionBuilder((id, questions) => {
+      const [question, ...rest] = questions
+      if (!question || rest.length > 0)
+        throw new Error('Kiro\'s user_input asks exactly one question')
+      if (question.multiSelect)
+        throw new Error('Kiro\'s user_input has no multi-select question')
+      return {
+        id,
+        name: 'user_input',
+        arguments: { question: question.question, options: question.options.map(({ label, description }) => ({ title: label, description })), reason: 'general-question' },
+      }
+    }),
+    // `name` states an agent that Kiro bundles, and `explanation` is the reason the
+    // row states.
+    spawnSubagent: (id, { description, prompt }) => ({ id, name: 'invoke_sub_agent', arguments: { name: KIRO_CHILD_AGENT, prompt, explanation: description } }),
+    spawnSubagentBatch: null,
+    // Kiro's Control Process tool starts a background process.
+    // No native probe identified its model-facing name.
+    // This table supplies no builder because no verified call shape exists here.
+    backgroundBash: null,
+    // The create command starts each task in the open state.
+    // Kiro has no state for a task in progress.
+    // A later complete command marks the task completed.
+    // The create builder does not use the shared statuses.
+    updateTodos: (id, steps) => ({
+      id,
+      name: 'todo_list',
+      arguments: { command: 'create', tasks: steps.map(({ step }) => ({ task_description: step })), task_list_description: 'The scripted task list' },
+    }),
+    // A goal is Kiro's `/goal` command, which the user sends; no model tool starts one.
+    createGoal: null,
+    // A step of the goal workflow reports success through `send_message`, which ends
+    // the goal's loop.
+    completeGoal: id => ({ id, name: 'send_message', arguments: { message: 'The goal is verified.', severity: 'success' } }),
+    // An error from send_message fails the goal workflow step.
+    // That error also fails the round and the workflow run.
+    // Kiro reports the failed run and blocks the goal.
+    blockGoal: (id, reason) => ({ id, name: 'send_message', arguments: { message: reason, severity: 'error' } }),
+    // Kiro offers each tool of a server to the model as `mcp_<server>_<tool>`, with
+    // the tool's own arguments.
+    mcpTool: (id, { server, tool, input }) => ({ id, name: `mcp_${server}_${tool}`, arguments: input }),
+    codeExecution: null,
+    workflowTools: null,
+  },
+  [AgentProvider.GROK_BUILD]: {
     // Read off the tool schemas in Grok Build 1.0.41's own model request:
     // `description` is REQUIRED beside `command`.
     bash: (id, command) => ({ id, name: 'run_terminal_command', arguments: { command, description: 'Run the scripted command' } }),
