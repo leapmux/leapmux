@@ -10,7 +10,6 @@ import (
 	"net"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/leapmux/leapmux/channelwire"
 	desktoppb "github.com/leapmux/leapmux/generated/proto/leapmux/desktop/v1"
@@ -19,13 +18,16 @@ import (
 )
 
 type RPCSession struct {
-	app        *App
-	reader     *bufio.Reader
-	writer     io.Writer
-	writeClose io.Closer
-	mu         sync.Mutex
-	closeOnce  sync.Once
-	onShutdown func()
+	app             *App
+	reader          *bufio.Reader
+	writer          io.Writer
+	writeClose      io.Closer
+	mu              sync.Mutex
+	closeOnce       sync.Once
+	handlerDrain    rpcHandlerDrain
+	shutdownCleanup *drain.Counter
+	peerDone        chan struct{}
+	onShutdown      func()
 }
 
 type frameReadResult struct {
@@ -33,48 +35,23 @@ type frameReadResult struct {
 	err   error
 }
 
-// The desktop RPC session is local and interactive: the only client is the
-// Tauri shell on the same machine, cooperating over a single connection. There
-// is deliberately NO admission control, concurrency cap, or byte budget --
-// every request is accepted and dispatched to its own handler goroutine, so a
-// burst of concurrent calls (or one large proxy upload) never drops an
-// in-flight response or forces a reconnect. Teardown stays bounded: handlers
-// are tracked by a drain.Counter and drained (interruptably) in Run's defer. Do not
-// reintroduce an admission/budget gate without reconsidering that contract.
-
-// handlerDrainTimeout is the hard cap on waiting for in-flight handlers, both
-// before the writer is interrupted (so a handler can flush its final response)
-// and after (so teardown unwinds). It bounds teardown against a handler that
-// ignores sessionCtx (a non-cancellable exec or filesystem scan); stragglers are
-// abandoned and reclaimed at process exit. A var so tests can shorten it.
-//
-// It matches the shell's own patience -- desktop/rust/src/main.rs's
-// request_shutdown_async waits 5s for the Shutdown reply -- so a response that
-// would arrive later is one no caller is still listening for.
-var handlerDrainTimeout time.Duration = 5 * time.Second
-
-// interruptGrace is the drain's own budget for the phase AFTER the writer is
-// interrupted, on top of whatever is left of handlerDrainTimeout.
-//
-// It has to be its own budget, because reaching that phase on the clean path
-// means the shared budget is already spent by construction: drain.WaitBounded only
-// returns false once its timer has fired. Without a floor the post-interrupt wait
-// would be a single non-blocking look at the counter, which a handler that the
-// interrupt just unblocked cannot win in the microseconds it needs to unwind --
-// so every clean drain past the flush window would warn and abandon handlers that
-// were about to finish. A small fixed grace is the right shape here: interrupting
-// the writer unblocks a pipe-blocked handler immediately, so anything that has
-// not returned within it is a genuine straggler. A var so tests can shorten it.
-var interruptGrace time.Duration = 250 * time.Millisecond
+// The Tauri shell sends local requests through one interactive RPC connection.
+// RPCSession accepts every request and starts one handler goroutine for it.
+// It applies no admission limit, concurrency limit or frame budget beyond frame validation.
+// A concurrent request burst or large proxy upload must not discard a response or force a reconnect.
+// Run tracks each handler with drain.Counter and limits its wait during teardown.
+// Preserve this request-admission contract when changing the drain.
 
 func NewRPCSession(app *App, reader io.Reader, writer io.Writer, onShutdown func()) *RPCSession {
 	writeClose, _ := writer.(io.Closer)
 	return &RPCSession{
-		app:        app,
-		reader:     bufio.NewReader(reader),
-		writer:     writer,
-		writeClose: writeClose,
-		onShutdown: onShutdown,
+		app:          app,
+		reader:       bufio.NewReader(reader),
+		writer:       writer,
+		writeClose:   writeClose,
+		onShutdown:   onShutdown,
+		handlerDrain: newRPCHandlerDrain(),
+		peerDone:     make(chan struct{}),
 	}
 }
 
@@ -101,7 +78,7 @@ func (s *RPCSession) Run() error {
 				return nil
 			}
 			if result.err != nil {
-				return terminalSessionError(result.err)
+				return completedSessionError(result.err)
 			}
 
 			frame := result.frame
@@ -110,89 +87,74 @@ func (s *RPCSession) Run() error {
 				continue
 			}
 			handlers.Add()
-			go func(req *desktoppb.Request) {
+			var cleanupDone func()
+			if _, shutdown := req.Method.(*desktoppb.Request_Shutdown); shutdown {
+				if s.shutdownCleanup == nil {
+					s.shutdownCleanup = &drain.Counter{}
+				}
+				s.shutdownCleanup.Add()
+				cleanupDone = sync.OnceFunc(s.shutdownCleanup.Done)
+			}
+			go func(req *desktoppb.Request, cleanupDone func()) {
 				defer handlers.Done()
-				s.dispatch(sessionCtx, req)
-			}(req)
+				s.dispatch(sessionCtx, req, cleanupDone)
+			}(req, cleanupDone)
 		}
 	}
 }
 
-// dispatch answers req, which was dequeued for its own handler goroutine.
+// dispatch answers the request that Run gave to this handler.
+// Every request receives one response with the same ID.
+// Without that response, the shell can wait indefinitely because ordinary requests have no deadline.
+// readFrames can cancel the session before Run receives its last valid frame.
+// App.Shutdown can also cancel app.ctx after Run admits a request.
+// Both paths require an explicit error response from the admitted handler.
 //
-// Every Request frame gets exactly one Response carrying its Id -- a request dropped
-// in silence would leave the shell awaiting a reply it never gets, since it has no
-// per-request timeout. A session cancelled between the read and this dispatch is
-// reachable two ways (readFrames cancels BEFORE pushing the read error, so the last
-// good frame is dequeued under an already-cancelled session; and App.Shutdown cancels
-// app.ctx underneath a request that already passed Run's check), so a cancelled
-// session is answered explicitly rather than skipped. The writer is still live here --
-// interruptWriter only runs in the drain's second phase -- so on the shutdown path the
-// error actually reaches the shell, and it matches what beginOperation would have
-// returned for a request arriving a moment later; on the read-error path the peer is
-// gone and the write fails harmlessly into failFrameForRelay's log.
-func (s *RPCSession) dispatch(sessionCtx context.Context, req *desktoppb.Request) {
+// The response writer remains open until the drain's second phase.
+// During shutdown, the error matches the rejection that beginOperation gives to a later request.
+// After a transport read error, the peer can no longer receive the response.
+// failFrameForRelay logs that failed write without changing the shutdown result.
+func (s *RPCSession) dispatch(sessionCtx context.Context, req *desktoppb.Request, cleanupDone func()) {
+	if cleanupDone != nil {
+		defer cleanupDone()
+	}
 	if err := sessionCtx.Err(); err != nil {
+		if cleanupDone != nil {
+			cleanupDone()
+		}
 		s.writeError(req.Id, fmt.Errorf("desktop sidecar is shutting down: %w", err))
 		return
 	}
-	s.handleRequest(sessionCtx, req)
+	s.handleRequest(sessionCtx, req, cleanupDone)
 }
 
 func (s *RPCSession) drainHandlers(handlers *drain.Counter, cause error) {
-	// On a clean shutdown (no cause, or a plain Canceled) let handlers flush their
-	// final responses BEFORE the writer is interrupted; on an error teardown the
-	// peer is already gone, so there is nothing to flush and we interrupt at once.
+	// A clean shutdown lets admitted handlers flush their final responses before writer interruption.
+	// A transport error interrupts the writer immediately because the peer cannot receive a response.
+	// The Shutdown handler cancels app.ctx before it stops the Worker and Hub.
+	// Run therefore starts this drain while that handler still performs cleanup.
+	// The first phase retains the writer until the handlers finish or the shared deadline expires.
 	//
-	// The clean-path wait must cover a legitimately slow handler, because the
-	// Shutdown RPC's own handler is one of them: it calls App.Shutdown, whose first
-	// act is cancelling app.ctx -- which is exactly what ends Run and brings us
-	// here. In solo mode that handler is still inside the hub teardown (operation
-	// drain, then server/registry/watcher shutdown) for well over a second, so a
-	// short grace interrupted the writer out from under it and dropped the
-	// LifecycleResult -- the cleanup_errors report the RPC exists to deliver -- and
-	// left the shell burning its full timeout waiting for a reply that never came.
-	// The wait ends the moment handlers finish, so a fast teardown is not slowed.
+	// Ordinary handlers share one deadline across both phases.
+	// A handler that ignores sessionCtx cannot keep the socket accept loop open indefinitely.
+	// Writer interruption gives each handler a minimum grace to finish.
+	// An admitted Shutdown retains the writer until its native cleanup ends or the peer disconnects.
+	// A separate response grace then limits the wait for a blocked writer.
 	//
-	// Either way the wait is bounded so a handler that ignores sessionCtx (a
-	// non-cancellable exec or filesystem scan) cannot hang teardown, which would
-	// block the socket accept loop or process exit. Stragglers are abandoned; the
-	// session is ending and they are reclaimed at process exit.
+	// This deadline limits only the handler drain.
+	// App.Shutdown can first spend operationDrainTimeout and then wait indefinitely for solo cleanup.
+	// main.go also waits on the same shutdownOnce before process exit.
+	// A finished handler drain therefore does not prove that the sidecar process ended.
 	//
-	// handlerDrainTimeout is the budget for the WHOLE drain, not per phase (plus
-	// interruptGrace, which the post-interrupt phase needs as a floor). The two
-	// phases share a deadline because they are sequential: giving each the full
-	// timeout would let teardown run to 2x it, and the timeout is sized against the
-	// shell's own patience (request_shutdown_async waits handlerDrainTimeout for the
-	// Shutdown reply), so a per-phase budget would routinely drain past the point
-	// where any caller is still listening.
-	//
-	// It bounds the HANDLER DRAIN only -- NOT the sidecar's total shutdown, which is
-	// not bounded by the shell's window at all. App.Shutdown's own drainOperations
-	// can spend operationDrainTimeout before its handler even reaches this point, and
-	// the stopSolo teardown that follows runs unbounded; main.go also calls
-	// App.Shutdown (through the same shutdownOnce) on its way out. So this budget
-	// makes the drain give up promptly; it does not promise the process is gone.
-	//
-	// drain.Counter's no-add-after-sample contract holds here by ordering: only
-	// Run's loop calls handlers.Add(), and that loop has exited before this
-	// deferred drain runs, so the counter only decreases from here on and each
-	// phase's wait may safely re-sample it.
-	deadline := time.Now().Add(handlerDrainTimeout)
-	if cause == nil || errors.Is(cause, context.Canceled) {
-		// No warning on this phase: exceeding the flush window is not itself a
-		// failure, it just means the writer is interrupted and the wait below
-		// reports any straggler.
-		if handlers.Wait(time.Until(deadline), "") {
-			return
-		}
+	// Run is the only caller of handlers.Add, and its request loop ended before this deferred drain.
+	// No new handler can enter after the completion channel is sampled.
+	// Each phase can safely sample the counter again.
+	policy := s.handlerDrain
+	if s.shutdownCleanup != nil {
+		policy.cleanupDone = s.shutdownCleanup.DoneChan()
 	}
-	s.interruptWriter()
-	// Whatever is left of the shared budget, but never less than interruptGrace: the
-	// clean path only gets here once the budget is spent, so without the floor this
-	// phase would never actually wait on the interrupt it just issued.
-	handlers.Wait(max(time.Until(deadline), interruptGrace),
-		"rpc session: handler drain timed out; abandoning in-flight handlers")
+	policy.peerDone = s.peerDone
+	policy.run(handlers, cause, s.interruptWriter)
 }
 
 func (s *RPCSession) interruptWriter() {
@@ -207,11 +169,14 @@ func (s *RPCSession) readFrames(results chan<- frameReadResult, cancelSession co
 		frame, err := ReadFrame(s.reader)
 		if err != nil {
 			cancelSession(err)
+			close(s.peerDone)
+			s.interruptWriter()
 		}
 		select {
 		case results <- frameReadResult{frame: frame, err: err}:
 		case <-s.app.ctx.Done():
-			return
+			// Native cleanup can outlive the handler deadline.
+			// Continue reading so a peer disconnect still releases that cleanup wait.
 		}
 		if err != nil {
 			return
@@ -219,7 +184,7 @@ func (s *RPCSession) readFrames(results chan<- frameReadResult, cancelSession co
 	}
 }
 
-func terminalSessionError(err error) error {
+func completedSessionError(err error) error {
 	if err == nil || errors.Is(err, context.Canceled) || isBenignSessionReadError(err) {
 		return nil
 	}
@@ -404,7 +369,7 @@ func (s *RPCSession) writeSidecarInfo(id uint64) {
 	})
 }
 
-func (s *RPCSession) handleRequest(ctx context.Context, req *desktoppb.Request) {
+func (s *RPCSession) handleRequest(ctx context.Context, req *desktoppb.Request, cleanupDone func()) {
 	id := req.Id
 
 	switch m := req.Method.(type) {
@@ -618,6 +583,9 @@ func (s *RPCSession) handleRequest(ctx context.Context, req *desktoppb.Request) 
 		outcome := lifecycleOutcome{}
 		if err := s.app.Shutdown(); err != nil {
 			outcome.cleanupErrors = append(outcome.cleanupErrors, err)
+		}
+		if cleanupDone != nil {
+			cleanupDone()
 		}
 		s.writeLifecycleResult(id, outcome)
 		if s.onShutdown != nil {

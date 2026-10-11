@@ -12,19 +12,20 @@ import (
 	"github.com/coder/websocket"
 	desktoppb "github.com/leapmux/leapmux/generated/proto/leapmux/desktop/v1"
 	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
-	"github.com/leapmux/leapmux/locallisten"
 	"github.com/leapmux/leapmux/locallisten/locallistentest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// setUniqueSoloLocalListen scopes the hub's local-listen URL per-test so
+// setUniqueSoloLocalListen scopes the hub's local IPC URL per-test so
 // multiple tests running in the same process don't collide on the
 // per-platform default endpoint (the Windows default embeds the current
 // user's SID, which is identical across tests as the same user).
 func setUniqueSoloLocalListen(t *testing.T) {
 	t.Helper()
-	t.Setenv(locallisten.EnvLocalListen, locallistentest.UniqueListenURL(t, "leapmux-desktop-test"))
+	// One local entry is the whole bind set: NoTCP drops the TCP half of any
+	// default anyway, and the entry replaces the platform default socket.
+	t.Setenv("LEAPMUX_HUB_LISTEN", locallistentest.UniqueListenURL(t, "leapmux-desktop-test"))
 }
 
 func TestApp_OpenChannelRelay_Solo(t *testing.T) {

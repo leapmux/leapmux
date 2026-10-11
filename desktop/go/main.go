@@ -8,6 +8,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/util/clockjump"
+	"github.com/leapmux/leapmux/worker"
 )
 
 // Cross-language contract with desktop/rust/src/main.rs:
@@ -27,6 +28,13 @@ const (
 )
 
 func main() {
+	// The solo worker this sidecar runs can start this executable again as a
+	// provider helper, with no argument (see worker.RunAgentHelper). The check
+	// comes before run sets up logging: the helper's stderr reaches the
+	// provider's CLI as a message, and a log line must not.
+	if code, handled := worker.RunAgentHelper(os.Args[1:], os.Stdin, os.Stdout, os.Stderr); handled {
+		os.Exit(code)
+	}
 	os.Exit(run())
 }
 
