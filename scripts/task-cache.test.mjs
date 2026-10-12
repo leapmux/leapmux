@@ -329,7 +329,7 @@ describe('task build cache', () => {
     const before = process.env.HUGO_BASEURL
     try {
       process.env.HUGO_BASEURL = 'https://first.example/'
-      expect(run(dir, 'site')).toEqual(['site'])
+      expect(run(dir, 'site')).toEqual(['install-frontend-deps', 'validate-json', 'site'])
       expect(run(dir, 'site')).toEqual([])
       process.env.HUGO_BASEURL = 'https://second.example/'
       expect(run(dir, 'site')).toEqual(['site'])
@@ -341,6 +341,24 @@ describe('task build cache', () => {
       else
         process.env.HUGO_BASEURL = before
     }
+  })
+
+  it('rebuilds the site and validates a changed provider matrix', () => {
+    const dir = fixture()
+    expect(run(dir, 'site')).toEqual(['install-frontend-deps', 'validate-json', 'site'])
+    expect(run(dir, 'site')).toEqual([])
+    write(dir, 'frontend/tests/e2e/feature-matrix/checklist.json', '{"changed":true}')
+    expect(run(dir, 'site')).toEqual(['validate-json', 'site'])
+    expect(run(dir, 'site')).toEqual([])
+  })
+
+  it('rebuilds the site when the provider roster contract changes', () => {
+    const dir = fixture()
+    expect(run(dir, 'site')).toEqual(['install-frontend-deps', 'validate-json', 'site'])
+    expect(run(dir, 'site')).toEqual([])
+    write(dir, 'contracts/providers.json', '{"changed":true}')
+    expect(run(dir, 'site')).toEqual(['validate-json', 'site'])
+    expect(run(dir, 'site')).toEqual([])
   })
 
   it('detects content changes with an unchanged timestamp and source additions and deletions', () => {
