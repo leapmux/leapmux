@@ -94,10 +94,9 @@ This means flat, top-level keys map cleanly:
 
 | Env var                               | Config key             |
 | ------------------------------------- | ---------------------- |
-| `LEAPMUX_HUB_LISTEN`                  | `listen`               |
+| `LEAPMUX_HUB_LISTEN`                  | `listen` (comma-delimited) |
 | `LEAPMUX_HUB_LOG_LEVEL`              | `log_level`            |
 | `LEAPMUX_HUB_ENCRYPTION_KEY_PATH`   | `encryption_key_path`  |
-| `LEAPMUX_HUB_LOCAL_LISTEN`          | `local_listen`         |
 | `LEAPMUX_WORKER_HUB`                | `hub`                  |
 | `LEAPMUX_WORKER_ENCRYPTION_MODE`   | `encryption_mode`      |
 
@@ -107,7 +106,7 @@ Nested **storage** keys live under dotted paths (`storage.type`, `storage.postgr
 
 ```bash
 # Flat keys work cleanly as env vars:
-export LEAPMUX_HUB_LISTEN=":8080"
+export LEAPMUX_HUB_LISTEN=":8080,unix:/run/leapmux/hub.sock"
 export LEAPMUX_HUB_LOG_LEVEL="debug"
 leapmux hub
 ```
@@ -202,21 +201,39 @@ The verified client IP controls address-keyed rate limits and new session record
 
 The verified protocol turns `secure_cookies` on for that request. A trusted proxy that reports `https` gets `__Host-` prefixed cookies, and base URLs the Hub builds use `https`, without a second setting. The rule is one-way: the verified protocol only ever turns the policy on, and the `secure_cookies` setting turns it on for every request whatever a proxy reports. An untrusted peer's protocol header is ignored, so no caller can give itself a secure cookie.
 
-### Local IPC listen (`local_listen`)
+### Listen addresses (`listen`)
 
-In addition to TCP, the Hub binds a **local IPC** listener for same-machine clients (including the auto-registered Worker in solo/dev). Two URL schemes are supported:
+`listen` is every address the Hub accepts connections on. An entry is either a TCP address (`:4327`, `127.0.0.1:4327`) or a **local IPC** URL for same-machine clients (including the auto-registered Worker in solo/dev):
 
 - `unix:<path>` — a Unix domain socket (Unix/macOS).
 - `npipe:<name>` — a Windows named pipe.
 
-If `local_listen` is empty, a platform default is used:
+The flag is repeatable (`--listen :8080 --listen unix:/run/leapmux/hub.sock`), the environment variable `LEAPMUX_HUB_LISTEN` is comma-delimited, and the config file takes a YAML list. A value that contains a comma belongs in the flag or the config file, where it is taken verbatim; the environment form splits on commas.
+
+The list is the bind set: what you give is what binds. Exactly one entry is added beside it — the platform's local IPC URL when the list names no local entry:
+
+| You give | Bound |
+| --- | --- |
+| (nothing) | `<default TCP>` + `<default local>` |
+| `--listen :8080` | `:8080` + `<default local>` |
+| `--listen unix:/tmp/x.sock` | `unix:/tmp/x.sock` alone, no TCP address |
+| `--listen :8080 --listen :9090` | `:8080` + `:9090` + `<default local>` |
+| `--listen :8080 --listen unix:/tmp/x` | `:8080` + `unix:/tmp/x` |
+
+**At least one local IPC address is always bound.** `leapmux control` on the Hub's host reaches it without a login over that socket (no other caller gets that), so a TCP-only list is impossible and nothing turns the socket off. Naming a local entry moves it: the default socket is then not bound, and `leapmux control` needs `--hub` pointed at the URL you named.
+
+The platform default local IPC URL:
 
 | Platform | Default local IPC URL                         |
 | -------- | --------------------------------------------- |
 | Unix/macOS | `unix:<data_dir>/hub.sock`                  |
 | Windows  | `npipe:leapmux-hub-<SID>` (current user's SID) |
 
-The same two schemes are also valid values for the Worker's `--hub` URL, so a local Worker can connect over the socket instead of TCP. An invalid value fails at startup with `invalid local_listen: ...`.
+The same two schemes are also valid values for the Worker's `--hub` URL, so a local Worker can connect over the socket instead of TCP. An entry that is neither kind fails at startup with its index in the list.
+
+### State file (`state.json`)
+
+A data directory holds a `state.json` beside the database. It is written atomically (temp file, then rename), with `pid` first so a reader can tell which process wrote it, and it names the **resolved** bind set — a `--listen 127.0.0.1:0` request appears as the port the operating system chose. That is how a client discovers an ephemeral port. The Hub deletes its copy on clean shutdown; a crash leaves it behind with a pid that answers nothing, and the next start overwrites it. The Worker's copy is its registration credentials and survives restarts.
 
 ## Hub configuration reference
 
@@ -226,13 +243,12 @@ Env prefix: `LEAPMUX_HUB_`. Defaults shown are the built-in values. Each key's C
 
 | Config key | Default | Meaning |
 | --- | --- | --- |
-| `listen` | `:4327` | TCP listen address (e.g. `:4327` or `127.0.0.1:4327`). |
-| `local_listen` | *(empty)* | Local IPC listen URL (`unix:<path>` or `npipe:<name>`); platform default used if empty. |
+| `listen` | *(empty = platform default)* | The bind set: a YAML list of TCP addresses (`:4327`, `127.0.0.1:4327`) and local IPC URLs (`unix:<path>`, `npipe:<name>`). The platform's local IPC URL is added when the list names none; see [Listen addresses](#listen-addresses). |
 | `data_dir` | `.` | Data directory; relative paths resolve against the config dir. |
 | `dev_frontend` | *(empty)* | Frontend dev-server URL for the local reverse proxy (local development). |
 | `log_level` | `info` | Log level: `debug`, `info`, `warn`, `error` (case-insensitive). |
 
-These five keys (plus the storage block below and `encryption_key_path`) are the **entire** config-file surface: they are what the process needs before the database exists — sockets to bind, where the database and key ring live, how loudly to log. Everything that describes how the running Hub *behaves* is an instance setting in the database instead (next section), because a setting in the database can change under a running Hub while a file can only change under a restarted one.
+These four keys (plus the storage block below and `encryption_key_path`) are the **entire** config-file surface: they are what the process needs before the database exists — sockets to bind, where the database and key ring live, how loudly to log. Everything that describes how the running Hub *behaves* is an instance setting in the database instead (next section), because a setting in the database can change under a running Hub while a file can only change under a restarted one.
 
 ### Instance settings (database)
 

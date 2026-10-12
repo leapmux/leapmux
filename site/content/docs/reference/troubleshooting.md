@@ -405,7 +405,7 @@ For how agents work, see [Coding Agents](/docs/using/coding-agents/).
 The **Agent Provider** selector shows **"No agents available"**, or the provider you want (e.g. Codex, Cursor, Pi) is missing from the list.
 
 **Cause**
-A provider only appears if **its CLI binary is detected on the Worker**. The Worker probes the shell for each provider's binary (`claude`, `codex`, `cursor-agent`, `copilot`, `kilo`, `opencode`, `goose`, `pi`, `reasonix`) and lists only the ones it finds on `PATH`. ZCode is the exception: it ships no command, so the Worker looks for its desktop installation instead — see the next entry.
+A provider only appears if **its CLI binary is detected on the Worker**. The Worker probes the shell for each provider's binary (`claude`, `codex`, `cursor-agent`, `copilot`, `kilo`, `opencode`, `goose`, `pi`, `reasonix`, `codewhale`, `kimi`, `mimo`, `qwen`, `omp`, `grok`, `kiro-cli-chat`, `amp`, `cline`) and lists only the ones it finds on `PATH`. ZCode is the exception: it ships no command, so the Worker looks for its desktop installation instead — see the next entry.
 
 **Fix**
 Install the agent's own CLI on the **Worker** machine (not where the browser runs) and make sure it's on the Worker's `PATH`. Then click the refresh button (**"Refresh available providers"**) in the selector, or reopen the dialog.
@@ -443,17 +443,26 @@ The agent subprocess couldn't be launched or didn't complete its startup handsha
 - If startup is legitimately slow, raise the timeout: `leapmux worker --agent-startup-timeout 10m` (or the equivalent key in config). The flag exists on the Worker only; in solo/dev the embedded worker reads the timeout from the `timeouts` setting: `leapmux control admin settings set timeouts '{"agent_startup_seconds":600}'`. See [Configuration](/docs/admin/configuration/).
 - Reopen the agent once the underlying CLI issue is fixed.
 
+### The Cline agent does not start
+
+**Symptom**
+A Cline agent fails to start, and the error states that Cline's provider settings do not match Cline's format.
+
+**Cause**
+Cline ignores a `providers.json` that does not match its own format, and then uses the built-in endpoint of the provider, which you did not choose. LeapMux does not start the agent in that case.
+
+**Fix**
+On the Worker, run `cline auth` to write the file again. Then open the agent again.
+
 ### A setting change seems to "reset" the agent
 
 **Symptom**
 Changing a setting from a composer chip or the **[+]** menu restarts the agent.
 
 **Cause**
-Most settings changes apply **live**. Some settings control process launch arguments and require a restart. Copilot Assisted Approval is one example. LeapMux adds `--experimental` and `--assisted-approval` when this option is on. This option also enables all Copilot experimental features.
+Most settings changes apply **live**. Some settings control process launch arguments and require a restart.
 
-Some Copilot CLI versions reject Assisted Approval with Agent Client Protocol (ACP) mode. LeapMux retries a new session with the safe default switched off, and locks Assisted Approval to Off for that session. It also remembers that this CLI refuses the flag, so every later session and every restart starts with the flag off. An explicit request still fails and shows the startup error.
-
-An effort change to **Auto** also requires a restart because LeapMux must remove the `--effort` argument. A model change can reset effort to Auto. Reasonix also fixes its model at process launch.
+An effort change to **Auto** also requires a restart because LeapMux must remove the `--effort` argument. A model change keeps the effort when the new model offers it. If the new model does not offer the effort, the change resets the effort to Auto. Reasonix also fixes its model at process launch.
 
 **Fix**
 Wait for the agent to start again. If the start fails, use the startup error guidance above.

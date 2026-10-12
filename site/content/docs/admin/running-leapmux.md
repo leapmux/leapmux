@@ -53,7 +53,7 @@ Solo mode accepts a subset of the Hub's flags plus the Worker flags `-encryption
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `-listen` | `127.0.0.1:4327` | TCP listen address |
+| `-listen` | `127.0.0.1:4327` plus the platform's local IPC URL | Listen address, repeatable: a TCP address or a local IPC URL (`unix:`, `npipe:`) |
 | `-data-dir` | `.` (resolves to `~/.config/leapmux/solo`) | Data directory |
 | `-log-level` | `info` | `debug`, `info`, `warn`, `error` |
 | `-encryption-mode` | `post-quantum` | `classic` or `post-quantum` |
@@ -77,8 +77,7 @@ Enable sign-up with `leapmux control admin settings set signup_enabled true`, or
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `-listen` | `:4327` | TCP listen address (e.g. `:4327` or `127.0.0.1:4327`) |
-| `-local-listen` | platform default | Local IPC URL (`unix:<path>` or `npipe:<name>`); defaults to `unix:<data-dir>/hub.sock` on Unix |
+| `-listen` | platform default | One listen address, repeatable. A TCP address (`:4327`, `127.0.0.1:4327`) or a local IPC URL (`unix:<path>`, `npipe:<name>`). The list is the bind set, and at least one local IPC address is always bound: the platform's local IPC URL (`unix:<data-dir>/hub.sock` on Unix) is added when the list names none. |
 | `-data-dir` | `.` (resolves to `~/.config/leapmux/hub`) | Data directory |
 | `-storage-type` | empty (= `sqlite`) | `sqlite`, `postgres`, `mysql`, `cockroachdb`, `yugabytedb`, or `tidb` |
 | `-log-level` | `info` | Log level |
@@ -138,7 +137,7 @@ Dev mode accepts the same flags as solo. The most important dev flags:
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `-listen` | `:4327` | TCP listen address |
+| `-listen` | `:4327` plus the platform's local IPC URL | Listen address, repeatable: a TCP address or a local IPC URL (`unix:`, `npipe:`) |
 | `-data-dir` | `.` (resolves to `~/.config/leapmux/dev`) | Data directory |
 | `-log-level` | `info` | Log level |
 | `-encryption-mode` | `post-quantum` | `classic` or `post-quantum` |
@@ -179,6 +178,7 @@ The image declares a single `/data` volume. Each mode keeps its files under `/da
 |------|----------|
 | `/data/<mode>/<mode>.yaml` | Config file (e.g. `/data/hub/hub.yaml`) |
 | `/data/<mode>/hub/hub.db` | Hub SQLite database (when using the default SQLite backend) |
+| `/data/<mode>/hub/state.json` | Hub pid and resolved bind set (deleted on clean shutdown) |
 | `/data/<mode>/hub/encryption.key` | Hub encryption key ring |
 | `/data/<mode>/worker/state.json` | Worker registration credentials and E2EE keypair |
 | `/data/<mode>/worker/worker.db` | Worker SQLite database |

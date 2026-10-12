@@ -30,9 +30,9 @@ LeapMux is built for two overlapping audiences:
 
 ## Supported coding agents
 
-LeapMux supports ten coding-agent providers. A provider only appears in the agent picker if its CLI is detected on the machine that will run your agents, so the list you see depends on which CLIs are installed.
+LeapMux supports {{< agent-provider-count >}} coding-agent providers. A provider only appears in the agent picker if its installation is detected on the machine that will run your agents — its CLI binary, or ZCode's desktop application — so the list you see depends on what is installed.
 
-Every provider is first-class: you get a consistent core experience — chat, streamed tool calls, permission prompts, and session resume — with all of them. The plan/todo sidebar appears for agents whose CLI emits task/todo tools. What you can do varies only by what each agent's own CLI offers.
+Every provider is first-class: you get a consistent core experience — chat, streamed tool calls, permission prompts, and session resume — with all of them. The plan/todo sidebar appears for agents whose CLI emits task/todo tools or reports a session goal. What you can do varies only by what each agent's own CLI offers; the [feature matrix](/docs/using/coding-agents/#feature-matrix) states each provider's exact support and limits.
 
 | Agent | Detected binary |
 |-------|-----------------|
@@ -46,6 +46,25 @@ Every provider is first-class: you get a consistent core experience — chat, st
 | Pi | `pi` |
 | Reasonix | `reasonix` |
 | ZCode | its desktop application |
+| Codewhale | `codewhale` |
+| Kimi Code | `kimi` |
+| MiMo Code | `mimo` |
+| Qwen Code | `qwen` |
+| Oh My Pi | `omp` |
+| Grok Build | `grok` |
+| Kiro | `kiro-cli-chat` |
+| Amp | `amp` |
+| Cline | `cline` |
+| CodeBuddy Code | `codebuddy` or `cbc` |
+| Junie | `junie` |
+| Letta Code | `letta` |
+| Dirac | `dirac` |
+| Qoder CLI | `qodercli` |
+| Factory Droid | `droid` |
+| Fast Agent | `fast-agent` |
+| Command Code | `command-code`, `commandcode`, or `cmdc` |
+| DeepSeek Harness | `dsh` |
+| Gemini CLI | `gemini` |
 
 Each provider exposes its own settings: models and permission modes, plus effort/reasoning levels where the CLI supports them. You change them mid-session from the composer's status-bar chips or its **[+]** menu. A new agent starts on the provider's defaults. For how to open an agent, chat, answer permission prompts, switch models, and resume a session, see [Coding Agents](/docs/using/coding-agents/).
 
