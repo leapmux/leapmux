@@ -129,7 +129,7 @@ func TestOpenAgent_ReleasesTheStartupWhenTheNativeSessionIsAlreadyOpen(t *testin
 
 	// No drain at cleanup, for the reason that the first test states.
 	svc, d, _ := setupTestService(t)
-	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE
+	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_DIRAC
 	workingDir := t.TempDir()
 	seedTranscriptSource(t, svc, "open-agent", workingDir, "session-a1", provider, false)
 

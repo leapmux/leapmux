@@ -259,7 +259,7 @@ function tagPinReaders(spec, table, contract) {
  * and the set is deleted once the last reader lands.
  */
 const PENDING_READERS = new Set([
-    'commandcode-protocol', 'deepseek-harness-protocol', 'dirac-protocol',
+    'commandcode-protocol', 'deepseek-harness-protocol',,
   'droid-protocol', 'fastagent-protocol', 'gemini-protocol',,
  ,
   'muse-protocol', 'qoder-protocol',

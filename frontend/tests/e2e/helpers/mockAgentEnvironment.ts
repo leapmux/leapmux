@@ -11,6 +11,7 @@ import { createCodewhaleEnvironment } from './codewhaleEnvironment'
 import { createCodexEnvironment } from './codexEnvironment'
 import { createCopilotEnvironment } from './copilotEnvironment'
 import { createCursorEnvironment } from './cursorEnvironment'
+import { createDiracEnvironment } from './diracEnvironment'
 import { createGooseEnvironment } from './gooseEnvironment'
 import { createGrokEnvironment } from './grokEnvironment'
 import { createJunieEnvironment } from './junieEnvironment'
@@ -354,6 +355,7 @@ export async function createMockAgentEnvironment(
       ...createCursorEnvironment({ homeDir, origin, modelKey: MODEL_KEY }),
       ...createCopilotEnvironment({ homeDir, origin, modelKey: MODEL_KEY, githubToken: MOCK_COPILOT_GITHUB_TOKEN }),
       ...createZcodeEnvironment({ runDirectory: runDir, homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, providerID: MOCK_PROVIDER_IDS.zcode, modelID: MOCK_MODELS.zai, alternateModelID: MOCK_MODELS.pi, plainModelID: ZCODE_PLAIN_MODEL_WIRE_ID }),
+      ...createDiracEnvironment({ homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, modelID: MOCK_MODELS.deepseek }),
       ...createOhMyPiEnvironment({ homeDir, origin, baseURL: openAIBaseURL, profile: OH_MY_PI_PROFILE, providerID: MOCK_PROVIDER_IDS.ohMyPi, modelID: MOCK_MODELS.ohMyPi, alternateModelID: OH_MY_PI_ALT_MODEL_WIRE_ID, mcpEchoServer }),
       ...createLettaEnvironment({ runDirectory: runDir, homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, temporaryEnv }),
       ...createJunieEnvironment({ runDirectory: runDir, homeDir, shimsDirectory: cliShimsDir, origin, modelKey: MODEL_KEY, modelID: MOCK_MODELS.junie, childModel: JUNIE_MOCK_MODEL, proxyProvider: JUNIE_PROXY_PROVIDER, realHomeDir: options.realHomeDir }),

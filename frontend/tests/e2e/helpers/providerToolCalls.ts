@@ -1,6 +1,6 @@
 import type { MockModelToolCall } from './mockModelScript'
-import { isAbsolute } from 'node:path'
 import { createHash } from 'node:crypto'
+import { isAbsolute } from 'node:path'
 import { AMP_TOOL_NAME } from '../../../src/components/chat/providers/amp/toolNames'
 import { CLINE_TOOL_NAME } from '../../../src/components/chat/providers/cline/toolNames'
 import { AMP_SHELL_TOOL, AMP_SUBAGENT_TOOL } from '../../../src/generated/contracts/amp-protocol'
@@ -996,6 +996,72 @@ const TOOL_VOCABULARY = {
     codeExecution: (id, source) => ({ id, name: 'mcp__node_repl__js', arguments: { code: source, title: 'Run the native script' } }),
     workflowTools: [ZCODE_TOOL.CreateWorkflow],
   },
+  [AgentProvider.DIRAC]: {
+    // Dirac's native registry supplies these tool schemas.
+    // Each schema sets additionalProperties=false.
+    // Dirac adds rawInput.tool when it reports a call.
+    // Do not send that field as a model argument.
+    // If the model sends that field, Dirac returns "Unsupported response parameter: tool".
+    //
+    // The execute_command tool runs each command in a process of Dirac's own,
+    // not in an ACP client terminal: the CLI forces
+    // `vscodeTerminalExecutionMode: "backgroundExec"`. Each commands entry
+    // supplies one command.
+    bash: (id, command) => ({ id, name: 'execute_command', arguments: { commands: [command] } }),
+    // The edit_file tool addresses each edit with an ANCHOR§CONTENT coordinate.
+    // A prior anchored native read supplies that coordinate.
+    // Its random ID belongs to the conversation.
+    // The diracEditAnchorCapture helper reads the coordinate from the model request.
+    // The before text identifies the target line.
+    edit: (id, { path, after }) => ({
+      id,
+      name: 'edit_file',
+      arguments: {
+        files: [{
+          path,
+          edits: [{ edit_type: 'replace', anchor: '{{editAnchor}}', end_anchor: '{{editAnchor}}', text: after }],
+        }],
+      },
+    }),
+    // `write_to_file` creates or overwrites a file.
+    write: (id, { path, content }) => ({ id, name: 'write_to_file', arguments: { path, content } }),
+    // `read_file` reads files, and states `include_anchors` so the result
+    // carries the ANCHOR§CONTENT coordinates a later `edit_file` needs.
+    read: (id, path) => ({ id, name: 'read_file', arguments: { paths: [path], include_anchors: true } }),
+    // The session/set_mode call selects plan mode.
+    // The respond plan call ends the model turn.
+    // Its approval answer arrives as the next prompt.
+    enterPlanMode: null,
+    exitPlanMode: null,
+    exitPlanModeFromFile: null,
+    // The respond question operation requests an ACP form.
+    // Its options field supplies 2 to 5 labels.
+    askUserQuestion: questionBuilder((id, questions) => ({
+      id,
+      name: 'respond',
+      arguments: {
+        operation: 'question',
+        text: questions.map(question => question.question).join('\n\n'),
+        options: questions[0]?.options.map(({ label }) => label) ?? [],
+      },
+    })),
+    // The native tool takes one array even when the turn starts one child.
+    spawnSubagent: (id, request) => diracSubagentsToolCall(id, [request]),
+    spawnSubagentBatch: diracSubagentsToolCall,
+    // Dirac has no separate background-shell tool.
+    backgroundBash: null,
+    // No to-do tool: the `respond plan` entries are the only checklist.
+    updateTodos: null,
+    // Goals are interactive-CLI only.
+    createGoal: null,
+    completeGoal: null,
+    blockGoal: null,
+    // No MCP client in the current core.
+    mcpTool: null,
+    codeExecution: (id, source) => ({ id, name: 'execute_command', arguments: { script: source, language: 'node' } }),
+    workflowTools: null,
+  },
+
   [AgentProvider.LETTA]: {
     bash: (id, command) => ({ id, name: 'Bash', arguments: { command, description: 'Run the scripted command' } }),
     edit: (id, request) => ({
@@ -2063,6 +2129,16 @@ export function lettaMcpCatalogToolCall(id: string, options: {
     .map(quotePosixShellArgument)
     .join(' ')
   return bashToolCall(AgentProvider.LETTA, id, command)
+}
+
+function diracSubagentsToolCall(id: string, requests: readonly SubagentRequest[]): MockModelToolCall {
+  if (requests.length === 0)
+    throw new Error('The native Dirac use_subagents call requires at least one subagent.')
+  return {
+    id,
+    name: 'use_subagents',
+    arguments: { subagents: requests.map(({ description, prompt }) => ({ task_title: description, prompt })) },
+  }
 }
 
 export function enterPlanModeToolCall(provider: AgentProvider, id: string): MockModelToolCall {

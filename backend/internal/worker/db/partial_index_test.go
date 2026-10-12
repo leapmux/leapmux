@@ -107,7 +107,7 @@ func TestQueriesRepeatTheirPartialIndexPredicate(t *testing.T) {
 			run: func(t *testing.T) {
 				open, err := q.HasOpenAgentForNativeSession(t.Context(),
 					queries.HasOpenAgentForNativeSessionParams{
-						AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
+						AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_DIRAC,
 						SessionID:     "native-session",
 						TargetAgentID: "target",
 					})
@@ -122,7 +122,7 @@ func TestQueriesRepeatTheirPartialIndexPredicate(t *testing.T) {
 			run: func(t *testing.T) {
 				_, err := q.FindClosedAgentWithTranscriptForNativeSession(t.Context(),
 					queries.FindClosedAgentWithTranscriptForNativeSessionParams{
-						AgentProvider:  leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
+						AgentProvider:  leapmuxv1.AgentProvider_AGENT_PROVIDER_DIRAC,
 						WorkingDir:     "/work/project",
 						AgentSessionID: "native-session",
 					})

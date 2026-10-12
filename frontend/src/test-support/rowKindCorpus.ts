@@ -774,4 +774,25 @@ export const ROW_KIND_CASES: RowKindCase[] = [
     payload: { content: 'What is 1234 + 5678? Reply with just the number.' },
     category: 'user_content',
   },
+  {
+    provider: Provider.DIRAC,
+    name: 'respond complete call',
+    payload: {
+      sessionUpdate: 'tool_call',
+      toolCallId: '1790338601902-2',
+      name: 'respond',
+      title: 'Task Completed',
+      kind: 'other',
+      status: 'pending',
+      rawInput: { tool: 'respond', operation: 'complete', text: 'MOCK-ARITHMETIC-ANSWER 4' },
+      _meta: { 'dev.dirac/seq': 13 },
+    },
+    category: 'tool_use',
+  },
+  {
+    provider: Provider.DIRAC,
+    name: 'usage update',
+    payload: { sessionUpdate: 'usage_update', used: 52, size: 200000 },
+    category: 'hidden',
+  },
 ]

@@ -486,7 +486,7 @@ function LettaIcon(props: { size: number, class?: string }): JSX.Element {
   )
 }
 
-export function DiracIcon(props: { size: number, class?: string }): JSX.Element {
+function DiracIcon(props: { size: number, class?: string }): JSX.Element {
   // Dirac's own mark (assets/icons/icon.svg): the delta, the underline, the
   // agent tick and the agent dot. Monochrome, so it takes the theme's icon
   // colour. The delta is the project's own italic glyph.
@@ -673,6 +673,9 @@ export function AgentProviderIcon(props: AgentProviderIconProps): JSX.Element {
       </Match>
       <Match when={props.provider === AgentProvider.LETTA}>
         <LettaIcon size={props.size} {...classProps()} />
+      </Match>
+      <Match when={props.provider === AgentProvider.DIRAC}>
+        <DiracIcon size={props.size} {...classProps()} />
       </Match>
     </Switch>
   )

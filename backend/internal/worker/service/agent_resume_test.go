@@ -166,7 +166,7 @@ func TestAgentResume_RetriesAnUnconfirmedManualSession(t *testing.T) {
 	recorder.install(svc)
 	require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{
 		ID: "agent-pending", WorkingDir: t.TempDir(), HomeDir: svc.HomeDir,
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_DIRAC,
 		Resumed:       1, PendingResumeSessionID: "session-a1",
 	}))
 

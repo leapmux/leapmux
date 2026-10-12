@@ -140,6 +140,11 @@
       "parseAliases": [
         "letta-code"
       ]
+    },
+    "AGENT_PROVIDER_DIRAC": {
+      "displayName": "Dirac",
+      "cliAlias": "dirac",
+      "parseAliases": []
     }
   }
 }

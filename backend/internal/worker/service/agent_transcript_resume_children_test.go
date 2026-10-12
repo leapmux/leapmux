@@ -52,7 +52,7 @@ func TestResumeCopiesNestedChildTranscriptsAndRegistry(t *testing.T) {
 	t.Parallel()
 	svc, dispatcher := transcriptResumeService(t)
 	workingDir := t.TempDir()
-	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE
+	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_DIRAC
 	seedTranscriptSource(t, svc, "old-root", workingDir, "session-a1", provider, false)
 	seedArchivedChildForResume(t, svc, "old-root", "old-root", "old-child", "first", 1, bgtask.StatusSucceeded)
 	seedArchivedChildForResume(t, svc, "old-root", "old-child", "old-grandchild", "second", 2, bgtask.StatusInterrupted)
@@ -127,7 +127,7 @@ func TestResumeRejectsBrokenArchivedChildLinkWithoutCreatingARoot(t *testing.T) 
 	t.Parallel()
 	svc, _ := transcriptResumeService(t)
 	workingDir := t.TempDir()
-	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE
+	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_DIRAC
 	seedTranscriptSource(t, svc, "old-root", workingDir, "session-a1", provider, false)
 	_, err := svc.Queries.CreateMessage(t.Context(), db.CreateMessageParams{
 		ID: "root-message", AgentID: "old-root", Source: leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
@@ -161,7 +161,7 @@ func TestRepeatedResumeCopiesTheNewestChildTree(t *testing.T) {
 	t.Parallel()
 	svc, dispatcher := transcriptResumeService(t)
 	workingDir := t.TempDir()
-	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE
+	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_DIRAC
 	seedTranscriptSource(t, svc, "old-root", workingDir, "session-a1", provider, false)
 	seedArchivedChildForResume(t, svc, "old-root", "old-root", "old-child", "first", 1, bgtask.StatusSucceeded)
 	for _, id := range []string{"old-child", "old-root"} {
@@ -211,7 +211,7 @@ func TestResumeKeepsChildRegistryRowsPastTheDisplayCap(t *testing.T) {
 	t.Parallel()
 	svc, dispatcher := transcriptResumeService(t)
 	workingDir := t.TempDir()
-	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE
+	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_DIRAC
 	seedTranscriptSource(t, svc, "old-root", workingDir, "session-a1", provider, false)
 	for seq := 1; seq <= bgtask.MaxTasks+1; seq++ {
 		childID := fmt.Sprintf("old-child-%03d", seq)
@@ -246,7 +246,7 @@ func TestResumeFinalizesAnActiveArchivedChild(t *testing.T) {
 			t.Parallel()
 			svc, dispatcher := transcriptResumeService(t)
 			workingDir := t.TempDir()
-			provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE
+			provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_DIRAC
 			seedTranscriptSource(t, svc, "old-root", workingDir, "session-a1", provider, false)
 			seedArchivedChildForResume(t, svc, "old-root", "old-root", "old-child", "first", 1, status)
 			for _, id := range []string{"old-child", "old-root"} {

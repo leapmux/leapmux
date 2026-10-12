@@ -17,6 +17,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/codex"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/copilot"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/cursor"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/dirac"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/goose"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/grok"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/junie"
@@ -60,6 +61,7 @@ func Registrations() []agent.Registration {
 		codebuddy.Registration(),
 		junie.Registration(),
 		letta.Registration(),
+		dirac.Registration(),
 	}
 }
 
