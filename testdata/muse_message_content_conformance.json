@@ -1,0 +1,130 @@
+{
+  "_readme": "The Muse Code stored-frame resolve, replayed by the Go worker's `museProvider.ResolveProviderData`. Muse keeps every native observation in the frame itself: its item payloads carry their own text, tool call and result fields, so the resolve is the IDENTITY -- the stored original bytes reach the browser unchanged and the supplemental envelope (Worker metadata and retained provider fields) never mutates them. These cases pin that contract for muse-shaped frames: any supplement, including one shaped like a muse tool observation, leaves the frame alone. The key names come from contracts/muse-protocol.json.",
+  "cases": [
+    {
+      "name": "an agent-message frame passes through unchanged",
+      "original": {
+        "method": "item/completed",
+        "params": {
+          "sessionId": "session-1",
+          "viewCursor": "cursor-1",
+          "item": {
+            "itemId": "item-1",
+            "revision": 2,
+            "kind": "agentMessage",
+            "status": "completed",
+            "text": "Native answer."
+          }
+        }
+      },
+      "supplemental": {
+        "metadata": {}
+      },
+      "expected": {
+        "method": "item/completed",
+        "params": {
+          "sessionId": "session-1",
+          "viewCursor": "cursor-1",
+          "item": {
+            "itemId": "item-1",
+            "revision": 2,
+            "kind": "agentMessage",
+            "status": "completed",
+            "text": "Native answer."
+          }
+        }
+      }
+    },
+    {
+      "name": "a tool frame keeps its own call and result fields",
+      "original": {
+        "method": "item/completed",
+        "params": {
+          "sessionId": "session-1",
+          "viewCursor": "cursor-2",
+          "item": {
+            "itemId": "item-2",
+            "revision": 4,
+            "kind": "toolCall",
+            "status": "completed",
+            "toolCallId": "call-1",
+            "title": "Read the parser",
+            "output": "parser output"
+          }
+        }
+      },
+      "supplemental": {
+        "provider": {
+          "frozen": [
+            {"itemId": "item-2", "title": "A frozen observation"}
+          ]
+        }
+      },
+      "expected": {
+        "method": "item/completed",
+        "params": {
+          "sessionId": "session-1",
+          "viewCursor": "cursor-2",
+          "item": {
+            "itemId": "item-2",
+            "revision": 4,
+            "kind": "toolCall",
+            "status": "completed",
+            "toolCallId": "call-1",
+            "title": "Read the parser",
+            "output": "parser output"
+          }
+        }
+      }
+    },
+    {
+      "name": "an empty supplement changes nothing",
+      "original": {
+        "method": "turn/completed",
+        "params": {
+          "sessionId": "session-1",
+          "turnId": "turn-1"
+        }
+      },
+      "supplemental": null,
+      "expected": {
+        "method": "turn/completed",
+        "params": {
+          "sessionId": "session-1",
+          "turnId": "turn-1"
+        }
+      }
+    },
+    {
+      "name": "a supplement that names the same item still reaches no field",
+      "original": {
+        "method": "item/completed",
+        "params": {
+          "sessionId": "session-1",
+          "item": {
+            "itemId": "item-3",
+            "kind": "agentMessage",
+            "status": "completed",
+            "text": "Kept."
+          }
+        }
+      },
+      "supplemental": {
+        "itemId": "item-3",
+        "text": "Cannot replace the native text."
+      },
+      "expected": {
+        "method": "item/completed",
+        "params": {
+          "sessionId": "session-1",
+          "item": {
+            "itemId": "item-3",
+            "kind": "agentMessage",
+            "status": "completed",
+            "text": "Kept."
+          }
+        }
+      }
+    }
+  ]
+}

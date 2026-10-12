@@ -251,24 +251,8 @@ function tagPinReaders(spec, table, contract) {
     .filter(key => wordPattern(`contracts.${spec.goPrefix}${table.goTable}${key}`).test(text))
 }
 
-/**
- * INTERMEDIATE STATE of the commit series that lands the thirty providers:
- * tables whose production readers arrive in a later commit. A bare contract
- * name defers every table it declares; '<contract>.<table>' defers one.
- * Each provider commit and each plugin-update commit removes its entries,
- * and the set is deleted once the last reader lands.
- */
-const PENDING_READERS = new Set([
-   ,,
- ,,
- ,
-  'muse-protocol',,
- ,
-])
-
 const cases = PROVIDER_PROTOCOLS.flatMap(spec =>
   spec.tables.map(table => ({ spec, table, name: `${spec.name}.${table.key}` })))
-  .filter(({ spec, name }) => !PENDING_READERS.has(spec.name) && !PENDING_READERS.has(name))
 
 describe('every generated contract table has a reader on each side it declares', () => {
   it('covers every declared table', () => {

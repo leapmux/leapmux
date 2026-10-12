@@ -44,6 +44,7 @@ export const AGENT_E2E_SETTINGS = {
   [AgentProvider.KILO]: { model: `${MOCK_PROVIDER_IDS.openCode}/${MOCK_MODELS.zai}`, effort: 'high' },
   [AgentProvider.OPENCODE]: { model: `${MOCK_PROVIDER_IDS.openCode}/${MOCK_MODELS.zai}`, effort: 'high' },
   [AgentProvider.ZCODE]: { model: `${MOCK_PROVIDER_IDS.zcode}/${MOCK_MODELS.zai}`, effort: 'high' },
+  [AgentProvider.MUSE_CODE]: { model: 'muse-spark-1.2', effort: 'high' },
   [AgentProvider.GEMINI_CLI]: { model: GEMINI_MODEL_ID },
   [AgentProvider.DEEPSEEK_HARNESS]: { model: DEEPSEEK_HARNESS_MODEL_ID, effort: 'high' },
   [AgentProvider.COMMAND_CODE]: { model: COMMAND_CODE_MODEL_ID, effort: 'high' },

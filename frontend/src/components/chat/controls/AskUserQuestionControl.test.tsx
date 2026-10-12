@@ -372,8 +372,8 @@ describe('AskUserQuestionContent selection limits', () => {
     const submit = vi.fn().mockResolvedValue(undefined)
     render(() => (
       <>
-        <AskUserQuestionContent request={request} answerState={state} questions={questions} agentProvider={AgentProvider.CLAUDE_CODE} />
-        <AskUserQuestionActions request={request} answerState={state} questions={questions} agentProvider={AgentProvider.CLAUDE_CODE} onRespond={vi.fn()} hasEditorContent={hasEditorContent} onTriggerSend={vi.fn()} onSubmitAnswers={submit} onReject={vi.fn()} />
+        <AskUserQuestionContent request={request} answerState={state} questions={questions} agentProvider={AgentProvider.MUSE_CODE} />
+        <AskUserQuestionActions request={request} answerState={state} questions={questions} agentProvider={AgentProvider.MUSE_CODE} onRespond={vi.fn()} hasEditorContent={hasEditorContent} onTriggerSend={vi.fn()} onSubmitAnswers={submit} onReject={vi.fn()} />
       </>
     ))
     return { state, submit }

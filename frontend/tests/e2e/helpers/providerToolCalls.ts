@@ -1,9 +1,9 @@
 import type { MockModelToolCall } from './mockModelScript'
-import { GEMINI_TOOL } from '../../../src/generated/contracts/gemini-protocol'
 import { createHash } from 'node:crypto'
 import { isAbsolute } from 'node:path'
 import { AMP_TOOL_NAME } from '../../../src/components/chat/providers/amp/toolNames'
 import { CLINE_TOOL_NAME } from '../../../src/components/chat/providers/cline/toolNames'
+import { MUSE_TOOL, MUSE_TOOL_NAMESPACE } from '../../../src/components/chat/providers/muse/toolNames'
 import { AMP_SHELL_TOOL, AMP_SUBAGENT_TOOL } from '../../../src/generated/contracts/amp-protocol'
 import { CLINE_TOOL } from '../../../src/generated/contracts/cline-protocol'
 import { CODEWHALE_TOOL } from '../../../src/generated/contracts/codewhale-protocol'
@@ -12,6 +12,7 @@ import { COMMAND_CODE_TOOL } from '../../../src/generated/contracts/commandcode-
 // The note in ../agentSettings.ts explains standalone native probes.
 import { COPILOT_TOOL } from '../../../src/generated/contracts/copilot-protocol'
 import { DEEPSEEK_HARNESS_TOOL } from '../../../src/generated/contracts/deepseek-harness-protocol'
+import { GEMINI_TOOL } from '../../../src/generated/contracts/gemini-protocol'
 import { KIMI_TOOL } from '../../../src/generated/contracts/kimi-protocol'
 import { LETTA_TOOL } from '../../../src/generated/contracts/letta-protocol'
 import { MIMO_ACTOR_ACTION, MIMO_TOOL } from '../../../src/generated/contracts/mimo-protocol'
@@ -403,6 +404,7 @@ function markdownChecklist(tool: string, steps: readonly TodoStep[]): string {
  */
 const OPENCODE_FAMILY_TODO_STATUSES = [...BASE_TODO_STATUSES, 'cancelled'] as const satisfies readonly TodoStatus[]
 const CANCELLED_AND_BLOCKED_TODO_STATUSES = [...BASE_TODO_STATUSES, 'cancelled', 'blocked'] as const satisfies readonly TodoStatus[]
+const MUSE_TODO_STATUSES = [...BASE_TODO_STATUSES, 'cancelled'] as const satisfies readonly TodoStatus[]
 
 /**
  * The statuses that Qoder CLI's `WriteTodos` and Gemini CLI's `write_todos` accept. Qoder CLI 1.1.65 states the enum
@@ -999,7 +1001,84 @@ const TOOL_VOCABULARY = {
     mcpTool: (id, { server, tool, input }) => ({ id, name: `mcp__${server}__${tool}`, arguments: input }),
     codeExecution: (id, source) => ({ id, name: 'mcp__node_repl__js', arguments: { code: source, title: 'Run the native script' } }),
     workflowTools: [ZCODE_TOOL.CreateWorkflow],
-  },  [AgentProvider.GEMINI_CLI]: {
+  },
+  [AgentProvider.MUSE_CODE]: {
+    bash: (id, command) => ({ id, name: MUSE_TOOL.Bash, namespace: MUSE_TOOL_NAMESPACE, arguments: { command, description: 'Run the scripted command.' } }),
+    edit: (id, { path, before, after }) => ({ id, name: MUSE_TOOL.EditFile, namespace: MUSE_TOOL_NAMESPACE, arguments: { path, find: before, replace: after } }),
+    write: (id, { path, content }) => ({ id, name: MUSE_TOOL.WriteFile, namespace: MUSE_TOOL_NAMESPACE, arguments: { path, content } }),
+    read: (id, path) => ({ id, name: MUSE_TOOL.ReadFile, namespace: MUSE_TOOL_NAMESPACE, arguments: { path } }),
+    enterPlanMode: null,
+    exitPlanMode: null,
+    exitPlanModeFromFile: null,
+    // The model tool's own snake-case count domain differs from the MSP
+    // selection record the control request carries. Explicit counts replace
+    // the defaults of the omitted form, and every count must name a number of
+    // options the tool can actually select.
+    askUserQuestion: questionBuilder((id, questions) => {
+      if (questions.length < 1 || questions.length > 3)
+        throw new Error('The native Muse question tool takes one to three questions.')
+      return {
+        id,
+        name: MUSE_TOOL.RequestUserInput,
+        namespace: MUSE_TOOL_NAMESPACE,
+        arguments: {
+          questions: questions.map((question, index) => {
+            if (question.options.length < 2 || question.options.length > 3)
+              throw new Error('The native Muse question tool takes two to three options per question.')
+            if (!question.multiSelect) {
+              if (question.minimumSelections !== undefined || question.maximumSelections !== undefined)
+                throw new Error('The native Muse single-selection question states no counts.')
+              return {
+                id: `question-${index + 1}`,
+                header: question.header,
+                question: question.question,
+                options: question.options.map(option => ({ label: option.label, description: option.description, ...(option.preview ? { preview: { format: 'markdown', content: option.preview } } : {}) })),
+              }
+            }
+            const minimum = question.minimumSelections ?? 1
+            const maximum = question.maximumSelections ?? question.options.length
+            for (const [word, count] of [['minimum', minimum], ['maximum', maximum]] as const) {
+              if (!Number.isSafeInteger(count) || count < 1 || count > question.options.length)
+                throw new Error(`The native Muse selection ${word} must be a whole number of the options: ${String(count)}`)
+            }
+            if (maximum < minimum)
+              throw new Error('The native Muse selection maximum cannot fall below its minimum.')
+            return {
+              id: `question-${index + 1}`,
+              header: question.header,
+              question: question.question,
+              // The multiple-selection form carries no option preview.
+              options: question.options.map(option => ({ label: option.label, description: option.description })),
+              selection: { mode: 'multiple', min_selections: minimum, max_selections: maximum },
+            }
+          }),
+        },
+      }
+    }, true),
+    // Muse 1.4.4 offers no model tool that spawns an addressable child session: children run
+    // only inside `workflow` scripts through host.agent(), whose fold carries no child session.
+    spawnSubagent: null,
+    spawnSubagentBatch: null,
+    backgroundBash: (id, command) => ({ id, name: MUSE_TOOL.Bash, namespace: MUSE_TOOL_NAMESPACE, arguments: { command, description: 'Run the scripted background command.', yield_time_ms: 0 } }),
+    updateTodos: (id, steps) => ({ id, name: MUSE_TOOL.WriteTodos, namespace: MUSE_TOOL_NAMESPACE, arguments: { todos: steps.map(step => ({ text: step.step, status: acceptedTodoStatus('Muse Code write_todos', MUSE_TODO_STATUSES, step.status) })) } }),
+    createGoal: (id, objective) => ({ id, name: MUSE_TOOL.CreateGoal, namespace: MUSE_TOOL_NAMESPACE, arguments: { objective } }),
+    completeGoal: id => ({ id, name: MUSE_TOOL.UpdateGoal, namespace: MUSE_TOOL_NAMESPACE, arguments: { status: 'complete' } }),
+    blockGoal: (id, reason) => {
+      requireReason('Muse Code update_goal', reason)
+      return { id, name: MUSE_TOOL.UpdateGoal, namespace: MUSE_TOOL_NAMESPACE, arguments: { status: 'blocked' } }
+    },
+    // Muse ignores the response namespace. Its full registered MCP ID selects the server and tool.
+    mcpTool: (id, { server, tool, input }) => ({ id, name: `mcp__${server}__${tool}`, arguments: input }),
+    // The proved native workflow source executor. The script reaches the tool
+    // byte-exact; only the display name is ours.
+    codeExecution: (id, source) => {
+      if (!id.trim() || !source.trim())
+        throw new Error('The native Muse workflow call requires a call ID and source.')
+      return { id, name: MUSE_TOOL.Workflow, namespace: MUSE_TOOL_NAMESPACE, arguments: { name: 'Native code', script: source } }
+    },
+    workflowTools: [MUSE_TOOL.Workflow],
+  },
+  [AgentProvider.GEMINI_CLI]: {
     bash: (id, command) => ({ id, name: GEMINI_TOOL.RunShellCommand, arguments: { command } }),
     edit: (id, { path, before, after }) => ({ id, name: GEMINI_TOOL.Replace, arguments: { file_path: path, old_string: before, new_string: after, instruction: 'Apply the requested replacement exactly.' } }),
     write: (id, { path, content }) => ({ id, name: GEMINI_TOOL.WriteFile, arguments: { file_path: path, content } }),
@@ -2374,6 +2453,24 @@ export function geminiCompleteTaskToolCall(id: string, response: string): MockMo
 
 export function geminiPlanApprovalToolCall(id: string, filename: string): MockModelToolCall {
   return { id, name: GEMINI_TOOL.ExitPlanMode, arguments: { plan_filename: filename } }
+}
+
+export function deepseekHarnessReadImageToolCall(id: string, path: string): MockModelToolCall {
+  return { id, name: DEEPSEEK_HARNESS_TOOL.ReadImage, arguments: { file_path: path } }
+}
+
+export function deepseekHarnessRunCodeToolCall(id: string, source: string): MockModelToolCall {
+  if (typeof id !== 'string' || !id.trim() || typeof source !== 'string' || !source.trim())
+    throw new Error('The native DeepSeek code call requires a nonempty call ID and source.')
+  return { id, name: DEEPSEEK_HARNESS_TOOL.RunCode, arguments: { description: 'Read the native MCP value.', code: source } }
+}
+
+export function deepseekHarnessEscalatedBashToolCall(id: string, command: string, justification: string): MockModelToolCall {
+  return { id, name: DEEPSEEK_HARNESS_TOOL.Bash, arguments: { command, description: 'Run the scripted command.', sandbox_permissions: 'danger-full-access', justification } }
+}
+
+export function geminiTodoSnapshotToolCall(id: string, todos: readonly { description: string, status: (typeof CANCELLED_AND_BLOCKED_TODO_STATUSES)[number] }[]): MockModelToolCall {
+  return updateTodosToolCall(AgentProvider.GEMINI_CLI, id, todos.map(todo => ({ step: todo.description, status: todo.status })))
 }
 
 export function enterPlanModeToolCall(provider: AgentProvider, id: string): MockModelToolCall {

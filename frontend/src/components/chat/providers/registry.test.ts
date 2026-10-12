@@ -105,7 +105,7 @@ describe('provider registration', () => {
   // Every supported provider requires a plugin import and one registration.
   // Duplicate registration must fail, so import order cannot replace a plugin.
   it('registers every supported provider exactly once', () => {
-    expect(ALL_PROVIDERS).toHaveLength(29)
+    expect(ALL_PROVIDERS).toHaveLength(30)
     expect(new Set(ALL_PROVIDERS).size).toBe(ALL_PROVIDERS.length)
     for (const provider of ALL_PROVIDERS)
       expect(pluginFor(provider), AgentProvider[provider]).toBeDefined()

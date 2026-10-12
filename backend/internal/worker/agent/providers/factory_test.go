@@ -80,6 +80,7 @@ func TestNormalizeModelIDRoutesEveryProvider(t *testing.T) {
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_COMMAND_CODE:     {"leapmux-e2e/command-code-e2e", "leapmux-e2e/command-code-e2e"},
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_DEEPSEEK_HARNESS: {"deepseek-official/deepseek-flash", "deepseek-official/deepseek-flash"},
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI:       {"gemini-2.5-pro", "gemini-2.5-pro"},
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_MUSE_CODE:        {agent.DefaultModelSentinel, agent.DefaultModelSentinel},
 	}
 	providers := agentlabels.AllProviders()
 	require.Len(t, cases, len(providers), "each provider needs a normalization case")

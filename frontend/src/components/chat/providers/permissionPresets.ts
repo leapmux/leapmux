@@ -1,5 +1,4 @@
 import type { ProviderPermissionPresets } from '../providerSettings'
-import { geminiPermissionPresets } from './gemini/permissionPresets'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { ampPermissionPresets } from './amp/permissionPresets'
 import { claudePermissionPresets } from './claude/permissionPresets'
@@ -11,12 +10,14 @@ import { commandCodePermissionPresets } from './commandcode/permissionPresets'
 import { copilotPermissionPresets } from './copilot/permissionPresets'
 import { deepseekHarnessPermissionPresets } from './deepseekharness/permissionPresets'
 import { droidPermissionPresets } from './droid/permissionPresets'
+import { geminiPermissionPresets } from './gemini/permissionPresets'
 import { goosePermissionPresets } from './goose/permissionPresets'
 import { grokPermissionPresets } from './grok/permissionPresets'
 import { kimiPermissionPresets } from './kimi/permissionPresets'
 import { kiroPermissionPresets } from './kiro/permissionPresets'
 import { lettaPermissionPresets } from './letta/permissionPresets'
 import { mimoPermissionPresets } from './mimo/permissionPresets'
+import { musePermissionPresets } from './muse/permissionPresets'
 import { ohMyPiPermissionPresets } from './ohmypi/permissionPresets'
 import { qoderPermissionPresets } from './qoder/permissionPresets'
 import { qwenPermissionPresets } from './qwen/permissionPresets'
@@ -55,6 +56,7 @@ export const PROVIDER_PERMISSION_PRESETS = {
   [AgentProvider.COMMAND_CODE]: commandCodePermissionPresets,
   [AgentProvider.DEEPSEEK_HARNESS]: deepseekHarnessPermissionPresets,
   [AgentProvider.GEMINI_CLI]: geminiPermissionPresets,
+  [AgentProvider.MUSE_CODE]: musePermissionPresets,
 } satisfies Record<AgentProvider, ProviderPermissionPresets | undefined>
 
 /** Read canonical preset data without importing a rendering plugin. */

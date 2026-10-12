@@ -85,6 +85,7 @@ const PROVIDER_CLASSIFIERS: Readonly<Record<string, string | null>> = {
   'commandcode/plugin.ts': './classification',
   'deepseekharness/plugin.ts': './classification',
   'gemini/transcript.ts': './classification',
+  'muse/plugin.ts': './classification',
   'codex/plugin.ts': './classification',
   'copilot/plugin.ts': './classification',
   'pi/plugin.ts': './classification',

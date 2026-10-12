@@ -31,6 +31,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/kiro"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/letta"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/mimo"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/muse"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/ohmypi"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/opencode"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/pi"
@@ -74,6 +75,7 @@ func Registrations() []agent.Registration {
 		commandcode.Registration(),
 		deepseekharness.Registration(),
 		gemini.Registration(),
+		muse.Registration(),
 	}
 }
 

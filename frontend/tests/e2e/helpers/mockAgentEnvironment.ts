@@ -9,13 +9,13 @@ import { createClineEnvironment } from './clineEnvironment'
 import { createCodebuddyEnvironment } from './codebuddyEnvironment'
 import { createCodewhaleEnvironment } from './codewhaleEnvironment'
 import { createCodexEnvironment } from './codexEnvironment'
-import { createGeminiEnvironment } from './geminiEnvironment'
 import { createCommandCodeEnvironment } from './commandCodeEnvironment'
 import { createCopilotEnvironment } from './copilotEnvironment'
 import { createCursorEnvironment } from './cursorEnvironment'
 import { createDeepseekHarnessEnvironment } from './deepseekHarnessEnvironment'
 import { createDiracEnvironment } from './diracEnvironment'
 import { createFastAgentEnvironment } from './fastAgentEnvironment'
+import { createGeminiEnvironment } from './geminiEnvironment'
 import { createGooseEnvironment } from './gooseEnvironment'
 import { createGrokEnvironment } from './grokEnvironment'
 import { createJunieEnvironment } from './junieEnvironment'
@@ -23,6 +23,7 @@ import { createKiroEnvironment } from './kiroEnvironment'
 import { createLettaEnvironment } from './lettaEnvironment'
 import { writeMcpEchoServer } from './mcpEchoServer'
 import { createMimoEnvironment } from './mimoEnvironment'
+import { createMuseEnvironment } from './museEnvironment'
 import { createOhMyPiEnvironment, ohMyPiAgentDirectory } from './ohMyPiEnvironment'
 import { createOpenCodeEnvironment } from './openCodeEnvironment'
 import { createPiEnvironment, piAgentDirectory } from './piEnvironment'
@@ -362,6 +363,10 @@ export async function createMockAgentEnvironment(
       ...createCursorEnvironment({ homeDir, origin, modelKey: MODEL_KEY }),
       ...createCopilotEnvironment({ homeDir, origin, modelKey: MODEL_KEY, githubToken: MOCK_COPILOT_GITHUB_TOKEN }),
       ...createZcodeEnvironment({ runDirectory: runDir, homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, providerID: MOCK_PROVIDER_IDS.zcode, modelID: MOCK_MODELS.zai, alternateModelID: MOCK_MODELS.pi, plainModelID: ZCODE_PLAIN_MODEL_WIRE_ID }),
+      // Muse's shared settings stay MCP-free: a live MCP server in the run-level
+      // settings blocks the host's asynchronous compaction path, so the Muse MCP
+      // spec registers its server for its own agent instead.
+      ...createMuseEnvironment({ runDirectory: runDir, homeDir, shimsDirectory: cliShimsDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, modelID: MOCK_MODELS.muse, alternateModelID: MOCK_MODELS.museAlt, searchPath: searchPathEnv.PATH ?? process.env.PATH ?? '' }),
       ...createGeminiEnvironment({ runDirectory: runDir, modelURL: origin, modelKey: MODEL_KEY, modelID: GEMINI_MODEL_ID, mcpServers }),
       ...createDeepseekHarnessEnvironment({ runDirectory: runDir, modelURL: origin, modelKey: MODEL_KEY, mcpServers }),
       ...createCommandCodeEnvironment({ runDirectory: runDir, modelURL: origin, modelKey: MODEL_KEY, modelID: COMMAND_CODE_MODEL_ID, alternateModelID: COMMAND_CODE_ALT_MODEL_ID, reasoningModelID: COMMAND_CODE_REASONING_MODEL_ID, mcpServers }),

@@ -77,6 +77,7 @@ describe('AgentProviderIcon', () => {
       AgentProvider.CODEWHALE,
       AgentProvider.QWEN_CODE,
       AgentProvider.OH_MY_PI,
+      AgentProvider.MUSE_CODE,
     ]
     const { container } = render(() => (
       <>

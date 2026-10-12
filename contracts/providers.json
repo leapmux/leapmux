@@ -190,6 +190,13 @@
       "parseAliases": [
         "gemini"
       ]
+    },
+    "AGENT_PROVIDER_MUSE_CODE": {
+      "displayName": "Muse Code",
+      "cliAlias": "muse-code",
+      "parseAliases": [
+        "muse"
+      ]
     }
   }
 }

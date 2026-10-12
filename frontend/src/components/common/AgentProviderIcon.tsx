@@ -696,6 +696,9 @@ export function AgentProviderIcon(props: AgentProviderIconProps): JSX.Element {
       <Match when={props.provider === AgentProvider.GEMINI_CLI}>
         <NativeProviderIcon mark={NATIVE_PROVIDER_MARKS.geminiCli} size={props.size} {...classProps()} />
       </Match>
+      <Match when={props.provider === AgentProvider.MUSE_CODE}>
+        <NativeProviderIcon mark={NATIVE_PROVIDER_MARKS.museCode} size={props.size} {...classProps()} />
+      </Match>
     </Switch>
   )
 }
