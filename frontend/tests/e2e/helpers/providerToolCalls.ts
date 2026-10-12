@@ -6,6 +6,7 @@ import { CLINE_TOOL_NAME } from '../../../src/components/chat/providers/cline/to
 import { AMP_SHELL_TOOL, AMP_SUBAGENT_TOOL } from '../../../src/generated/contracts/amp-protocol'
 import { CLINE_TOOL } from '../../../src/generated/contracts/cline-protocol'
 import { CODEWHALE_TOOL } from '../../../src/generated/contracts/codewhale-protocol'
+import { COMMAND_CODE_TOOL } from '../../../src/generated/contracts/commandcode-protocol'
 // Use a relative import.
 // The note in ../agentSettings.ts explains standalone native probes.
 import { COPILOT_TOOL } from '../../../src/generated/contracts/copilot-protocol'
@@ -997,6 +998,27 @@ const TOOL_VOCABULARY = {
     codeExecution: (id, source) => ({ id, name: 'mcp__node_repl__js', arguments: { code: source, title: 'Run the native script' } }),
     workflowTools: [ZCODE_TOOL.CreateWorkflow],
   },
+  [AgentProvider.COMMAND_CODE]: {
+    bash: (id, command) => ({ id, name: COMMAND_CODE_TOOL.ShellCommand, arguments: { command, description: 'Run the scripted command.' } }),
+    edit: (id, { path, before, after }) => ({ id, name: 'edit_file', arguments: { file_path: path, old_string: before, new_string: after } }),
+    write: (id, { path, content }) => ({ id, name: 'write_file', arguments: { file_path: path, content } }),
+    read: (id, path) => ({ id, name: 'read_file', arguments: { file_path: path } }),
+    enterPlanMode: null,
+    exitPlanMode: null,
+    exitPlanModeFromFile: null,
+    askUserQuestion: null,
+    spawnSubagent: (id, { description, prompt, agentType, background }) => ({ id, name: COMMAND_CODE_TOOL.Agent, arguments: { description, prompt, subagent_type: agentType ?? 'general', run_in_background: background ?? false } }),
+    spawnSubagentBatch: null,
+    backgroundBash: (id, command) => ({ id, name: COMMAND_CODE_TOOL.ShellCommand, arguments: { command, description: 'Run the scripted background command.', run_in_background: true } }),
+    updateTodos: null,
+    createGoal: null,
+    completeGoal: null,
+    blockGoal: null,
+    mcpTool: (id, { server, tool, input }) => ({ id, name: `mcp__${server}__${tool}`, arguments: input }),
+    codeExecution: null,
+    workflowTools: null,
+  },
+
   [AgentProvider.FAST_AGENT]: {
     // Fast Agent's -x shell runtime supplies these coding tools.
     // Their model names have no namespace prefix.
@@ -2291,6 +2313,14 @@ function diracSubagentsToolCall(id: string, requests: readonly SubagentRequest[]
     name: 'use_subagents',
     arguments: { subagents: requests.map(({ description, prompt }) => ({ task_title: description, prompt })) },
   }
+}
+
+export function commandCodeTaskCreateToolCall(id: string, subject: string, description: string, activeForm?: string): MockModelToolCall {
+  return taskFamilyCreateCall(COMMAND_CODE_TOOL.TaskCreate, id, { subject, description, activeForm })
+}
+
+export function commandCodeTaskUpdateToolCall(id: string, taskId: string, status: TaskFamilyStatus): MockModelToolCall {
+  return taskFamilyUpdateCall(COMMAND_CODE_TOOL.TaskUpdate, id, taskId, status)
 }
 
 export function enterPlanModeToolCall(provider: AgentProvider, id: string): MockModelToolCall {

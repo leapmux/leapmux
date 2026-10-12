@@ -7,7 +7,7 @@ import { OPTION_ID_EFFORT, OPTION_ID_MODEL } from '../../src/components/chat/set
 import { ACCOUNT_DEFAULT_MODEL } from '../../src/generated/contracts/worker-vocab'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { KIRO_DEFAULT_MOCK_MODEL } from './helpers/kiroSurface'
-import { CODEBUDDY_MODEL_ID, DROID_MOCK_MODEL_IDS, FAST_AGENT_MOCK_MODEL, JUNIE_MOCK_MODEL, KIMI_MOCK_MODELS, LETTA_MODEL_ID, MOCK_MODELS, MOCK_PROVIDER_IDS, QODER_MODEL_ID, QWEN_MODEL_ID } from './helpers/mockAgentEnvironment'
+import { CODEBUDDY_MODEL_ID, COMMAND_CODE_MODEL_ID, DROID_MOCK_MODEL_IDS, FAST_AGENT_MOCK_MODEL, JUNIE_MOCK_MODEL, KIMI_MOCK_MODELS, LETTA_MODEL_ID, MOCK_MODELS, MOCK_PROVIDER_IDS, QODER_MODEL_ID, QWEN_MODEL_ID } from './helpers/mockAgentEnvironment'
 
 /** The model, and the reasoning effort where the provider has one. */
 export interface AgentE2ESettings {
@@ -43,6 +43,7 @@ export const AGENT_E2E_SETTINGS = {
   [AgentProvider.KILO]: { model: `${MOCK_PROVIDER_IDS.openCode}/${MOCK_MODELS.zai}`, effort: 'high' },
   [AgentProvider.OPENCODE]: { model: `${MOCK_PROVIDER_IDS.openCode}/${MOCK_MODELS.zai}`, effort: 'high' },
   [AgentProvider.ZCODE]: { model: `${MOCK_PROVIDER_IDS.zcode}/${MOCK_MODELS.zai}`, effort: 'high' },
+  [AgentProvider.COMMAND_CODE]: { model: COMMAND_CODE_MODEL_ID, effort: 'high' },
   [AgentProvider.FAST_AGENT]: { model: FAST_AGENT_MOCK_MODEL },
   [AgentProvider.DROID]: { model: DROID_MOCK_MODEL_IDS.primary, effort: 'none' },
   [AgentProvider.QODER]: { model: QODER_MODEL_ID },

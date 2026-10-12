@@ -77,6 +77,7 @@ func TestNormalizeModelIDRoutesEveryProvider(t *testing.T) {
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_QODER:          {"model/alpha", "model/alpha"},
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_DROID:          {"custom:Mock-0", "custom:Mock-0"},
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_FAST_AGENT:     {"model/alpha", "model/alpha"},
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_COMMAND_CODE:   {"leapmux-e2e/command-code-e2e", "leapmux-e2e/command-code-e2e"},
 	}
 	providers := agentlabels.AllProviders()
 	require.Len(t, cases, len(providers), "each provider needs a normalization case")

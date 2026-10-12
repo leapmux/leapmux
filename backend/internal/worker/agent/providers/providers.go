@@ -15,6 +15,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/codebuddy"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/codewhale"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/codex"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/commandcode"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/copilot"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/cursor"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/dirac"
@@ -68,6 +69,7 @@ func Registrations() []agent.Registration {
 		qoder.Registration(),
 		droid.Registration(),
 		fastagent.Registration(),
+		commandcode.Registration(),
 	}
 }
 

@@ -24,6 +24,7 @@ import { createUniqueId, For, Match, Show, Switch } from 'solid-js'
 import { PROVIDER_DISPLAY_NAME } from '~/generated/contracts/providers'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { iconStyle } from './iconStyle'
+import { NATIVE_PROVIDER_MARKS } from './nativeProviderMarks'
 
 // The labels are generated from contracts/providers.json -- the same file the
 // Go side's agentlabels.DisplayName reads -- so the CLI envelope, the log
@@ -567,7 +568,7 @@ export interface AgentProviderIconProps {
 }
 
 /** Draw a trusted project SVG asset with the same size and class contract as the existing marks. */
-export function NativeProviderIcon(props: { mark: NativeProviderMark, size: number, class?: string }): JSX.Element {
+function NativeProviderIcon(props: { mark: NativeProviderMark, size: number, class?: string }): JSX.Element {
   const gradientPrefix = createUniqueId()
   const paint = (attributes: Record<string, string>): Record<string, string> => {
     const local = attributes.fill && /^url\(#(.+)\)$/.exec(attributes.fill)
@@ -685,6 +686,9 @@ export function AgentProviderIcon(props: AgentProviderIconProps): JSX.Element {
       </Match>
       <Match when={props.provider === AgentProvider.FAST_AGENT}>
         <FastAgentIcon size={props.size} {...classProps()} />
+      </Match>
+      <Match when={props.provider === AgentProvider.COMMAND_CODE}>
+        <NativeProviderIcon mark={NATIVE_PROVIDER_MARKS.commandCode} size={props.size} {...classProps()} />
       </Match>
     </Switch>
   )

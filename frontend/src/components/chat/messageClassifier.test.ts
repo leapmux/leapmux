@@ -280,6 +280,23 @@ describe('classifyMessage', () => {
       const withPlugin = classifyMessage(input(payload, null, AgentProvider.CLAUDE_CODE, MessageSource.USER))
       expect(withoutPlugin.kind).toBe(withPlugin.kind)
     })
+
+    it('keeps a CodeBuddy attachment row visible after provider hydration', () => {
+      const result = classifyMessage(input(
+        { content: 'Inspect this file.', attachments: [{ filename: 'codebuddy-blob.bin' }] },
+        null,
+        AgentProvider.CODEBUDDY,
+        MessageSource.USER,
+      ))
+      expect(result.kind).toBe('user_content')
+    })
+
+    it('keeps hidden and plan envelopes distinct from user text', () => {
+      const hidden = classifyMessage(input({ content: 'hidden', hidden: true }, null, AgentProvider.CODEBUDDY, MessageSource.USER))
+      const plan = classifyMessage(input({ content: 'run plan', planExecution: true }, null, AgentProvider.CODEBUDDY, MessageSource.USER))
+      expect(hidden.kind).toBe('hidden')
+      expect(plan.kind).toBe('plan_execution')
+    })
   })
 
   // -- hidden ---------------------------------------------------------------

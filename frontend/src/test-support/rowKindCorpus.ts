@@ -877,4 +877,22 @@ export const ROW_KIND_CASES: RowKindCase[] = [
     payload: { sessionUpdate: 'available_commands_update', availableCommands: [{ name: 'status', description: 'Show status' }] },
     category: 'hidden',
   },
+  {
+    provider: Provider.COMMAND_CODE,
+    name: 'native assistant text',
+    payload: { type: 'event', seq: 1, event: { type: 'message_end', content: [{ type: 'text', text: 'Native answer.' }] } },
+    category: 'assistant_text',
+  },
+  {
+    provider: Provider.COMMAND_CODE,
+    name: 'native reasoning',
+    payload: { type: 'event', seq: 2, event: { type: 'thinking_end', text: 'Read the native source.' } },
+    category: 'assistant_thinking',
+  },
+  {
+    provider: Provider.COMMAND_CODE,
+    name: 'native completion',
+    payload: { jsonrpc: '2.0', method: 'turn/completed', params: { stopReason: 'completed' } },
+    category: 'result_divider',
+  },
 ]

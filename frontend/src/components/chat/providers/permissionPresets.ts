@@ -6,6 +6,7 @@ import { clinePermissionPresets } from './cline/permissionPresets'
 import { codebuddyPermissionPresets } from './codebuddy/permissionPresets'
 import { codewhalePermissionPresets } from './codewhale/permissionPresets'
 import { codexPermissionPresets } from './codex/permissionPresets'
+import { commandCodePermissionPresets } from './commandcode/permissionPresets'
 import { copilotPermissionPresets } from './copilot/permissionPresets'
 import { droidPermissionPresets } from './droid/permissionPresets'
 import { goosePermissionPresets } from './goose/permissionPresets'
@@ -49,6 +50,7 @@ export const PROVIDER_PERMISSION_PRESETS = {
   [AgentProvider.QODER]: qoderPermissionPresets,
   [AgentProvider.DROID]: droidPermissionPresets,
   [AgentProvider.FAST_AGENT]: undefined,
+  [AgentProvider.COMMAND_CODE]: commandCodePermissionPresets,
 } satisfies Record<AgentProvider, ProviderPermissionPresets | undefined>
 
 /** Read canonical preset data without importing a rendering plugin. */

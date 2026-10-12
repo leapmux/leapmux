@@ -168,6 +168,14 @@
         "fast-agent-mcp",
         "fast-agent-acp"
       ]
+    },
+    "AGENT_PROVIDER_COMMAND_CODE": {
+      "displayName": "Command Code",
+      "cliAlias": "command-code",
+      "parseAliases": [
+        "commandcode",
+        "cmdc"
+      ]
     }
   }
 }
