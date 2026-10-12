@@ -997,6 +997,62 @@ const TOOL_VOCABULARY = {
     codeExecution: (id, source) => ({ id, name: 'mcp__node_repl__js', arguments: { code: source, title: 'Run the native script' } }),
     workflowTools: [ZCODE_TOOL.CreateWorkflow],
   },
+  [AgentProvider.FAST_AGENT]: {
+    // Fast Agent's -x shell runtime supplies these coding tools.
+    // Their model names have no namespace prefix.
+    // The ACP title can add local/ or environment/ for display.
+    // The execute tool runs shell commands.
+    // A bash call returns "Tool 'bash' is not available".
+    bash: (id, command) => ({ id, name: 'execute', arguments: { command } }),
+    // `edit_file` is an exact-string replace; an empty `old_string` creates.
+    edit: (id, { path, before, after }) => ({ id, name: 'edit_file', arguments: { path, old_string: before, new_string: after } }),
+    // `write_text_file` creates or overwrites a file.
+    write: (id, { path, content }) => ({ id, name: 'write_text_file', arguments: { path, content } }),
+    // `read_text_file` reads a text file.
+    read: (id, path) => ({ id, name: 'read_text_file', arguments: { path } }),
+    // There is no plan-approval request. The ACP `plan` update is a to-do
+    // display only.
+    enterPlanMode: null,
+    exitPlanMode: null,
+    exitPlanModeFromFile: null,
+    // No questions over ACP: the `__human_input` tool asks through the
+    // terminal form of Fast Agent, not through ACP. Under ACP, stdin is not a
+    // terminal. The form ends with its default cancel action, and the result
+    // reads "The Human cancelled the input request".
+    askUserQuestion: null,
+    // The `subagent` tool takes `message`; `task` is not in its native schema.
+    spawnSubagent: (id, { description, prompt }) => {
+      const label = description.trim()
+      if (label.length < 1 || label.length > 32 || !/^[\w -]+$/.test(label)
+        || !/^[A-Z0-9]$/i.test(label[0] ?? '') || !/^[A-Z0-9]$/i.test(label.at(-1) ?? '')) {
+        throw new Error('The native Fast Agent label must contain 1 to 32 ASCII characters. It must start and end with a letter or digit.')
+      }
+      return { id, name: 'subagent', arguments: { message: prompt, label: description } }
+    },
+    spawnSubagentBatch: null,
+    // The execute schema accepts these fields:
+    //
+    // - command.
+    // - args.
+    // - env.
+    // - cwd.
+    //
+    // It accepts no background flag and offers no separate background tool.
+    // The current model protocol supplies no detached-command call to script.
+    backgroundBash: null,
+    // No to-do tool; the `plan` ACP update is a display.
+    updateTodos: null,
+    // No goal concept in the ACP surface.
+    createGoal: null,
+    completeGoal: null,
+    blockGoal: null,
+    // MCP tool names join the server and tool with two underscores. The ACP
+    // title may add a display prefix, but the model sends this native name.
+    mcpTool: (id, { server, tool, input }) => ({ id, name: `${server}__${tool}`, arguments: input }),
+    codeExecution: null,
+    workflowTools: null,
+  },
+
   [AgentProvider.DROID]: {
     bash: (id, command) => droidExecuteToolCall(id, { command, summary: 'Run the scripted command', riskLevel: 'medium' }),
     edit: (id, request) => ({

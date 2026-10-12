@@ -437,7 +437,7 @@ const OPERATIONS = [
 
 describe('TOOL_VOCABULARY', () => {
   it('answers for every provider the proto enum declares', () => {
-    expect(PROVIDERS).toHaveLength(25)
+    expect(PROVIDERS).toHaveLength(26)
     for (const provider of PROVIDERS)
       expect(() => hasToolFor(provider, 'bash'), `provider ${provider}`).not.toThrow()
   })

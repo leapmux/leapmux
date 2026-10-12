@@ -48,6 +48,7 @@ export const PROVIDER_PERMISSION_PRESETS = {
   [AgentProvider.DIRAC]: undefined,
   [AgentProvider.QODER]: qoderPermissionPresets,
   [AgentProvider.DROID]: droidPermissionPresets,
+  [AgentProvider.FAST_AGENT]: undefined,
 } satisfies Record<AgentProvider, ProviderPermissionPresets | undefined>
 
 /** Read canonical preset data without importing a rendering plugin. */

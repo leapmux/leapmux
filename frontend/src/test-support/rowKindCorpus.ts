@@ -857,4 +857,24 @@ export const ROW_KIND_CASES: RowKindCase[] = [
     payload: { type: 'droid_working_state_changed', newState: 'idle' },
     category: 'hidden',
   },
+  {
+    provider: Provider.FAST_AGENT,
+    name: 'read_text_file call',
+    payload: {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'e35b43a0ac184985b1bdc88e2b59f63a',
+      title: 'environment/read_text_file',
+      kind: 'read',
+      status: 'pending',
+      content: [],
+      rawInput: { path: '/path/to/file' },
+    },
+    category: 'tool_use',
+  },
+  {
+    provider: Provider.FAST_AGENT,
+    name: 'available commands update',
+    payload: { sessionUpdate: 'available_commands_update', availableCommands: [{ name: 'status', description: 'Show status' }] },
+    category: 'hidden',
+  },
 ]

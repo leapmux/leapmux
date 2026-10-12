@@ -542,7 +542,7 @@ function DroidIcon(props: { size: number, class?: string }): JSX.Element {
   )
 }
 
-export function FastAgentIcon(props: { size: number, class?: string }): JSX.Element {
+function FastAgentIcon(props: { size: number, class?: string }): JSX.Element {
   // Fast Agent's own mark (docs/docs/assets/brand/fast-agent-icon.svg): the
   // amber bolt on the project's dark tile, verbatim.
   return (
@@ -682,6 +682,9 @@ export function AgentProviderIcon(props: AgentProviderIconProps): JSX.Element {
       </Match>
       <Match when={props.provider === AgentProvider.DROID}>
         <DroidIcon size={props.size} {...classProps()} />
+      </Match>
+      <Match when={props.provider === AgentProvider.FAST_AGENT}>
+        <FastAgentIcon size={props.size} {...classProps()} />
       </Match>
     </Switch>
   )

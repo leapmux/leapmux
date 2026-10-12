@@ -20,7 +20,7 @@ func TestAvailableOptionGroups_DefaultOptionMetadata(t *testing.T) {
 	for _, provider := range agentlabels.AllProviders() {
 		t.Run(provider.String(), func(t *testing.T) {
 			groups := registry.StaticOptionGroups(provider)
-			if provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_PI || provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX {
+			if provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_PI || provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX || provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_FAST_AGENT {
 				assert.Empty(t, groups, "this provider discovers its groups at runtime")
 				return
 			}
@@ -76,6 +76,7 @@ func TestNormalizeModelIDRoutesEveryProvider(t *testing.T) {
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_DIRAC:          {"model/alpha", "model/alpha"},
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_QODER:          {"model/alpha", "model/alpha"},
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_DROID:          {"custom:Mock-0", "custom:Mock-0"},
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_FAST_AGENT:     {"model/alpha", "model/alpha"},
 	}
 	providers := agentlabels.AllProviders()
 	require.Len(t, cases, len(providers), "each provider needs a normalization case")

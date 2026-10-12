@@ -31,6 +31,7 @@ enum AgentProvider {
   AGENT_PROVIDER_DIRAC = 23;
   AGENT_PROVIDER_QODER = 24;
   AGENT_PROVIDER_DROID = 25;
+  AGENT_PROVIDER_FAST_AGENT = 26;
 }
 
 // AgentStatus tracks the lifecycle state of an agent.

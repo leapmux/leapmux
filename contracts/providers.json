@@ -160,6 +160,14 @@
         "factory",
         "factory-droid"
       ]
+    },
+    "AGENT_PROVIDER_FAST_AGENT": {
+      "displayName": "Fast Agent",
+      "cliAlias": "fast-agent",
+      "parseAliases": [
+        "fast-agent-mcp",
+        "fast-agent-acp"
+      ]
     }
   }
 }
