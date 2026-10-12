@@ -40,6 +40,7 @@ export const PROVIDER_PERMISSION_PRESETS = {
   [AgentProvider.AMP]: ampPermissionPresets,
   [AgentProvider.CLINE]: clinePermissionPresets,
   [AgentProvider.CODEBUDDY]: codebuddyPermissionPresets,
+  [AgentProvider.JUNIE]: undefined,
 } satisfies Record<AgentProvider, ProviderPermissionPresets | undefined>
 
 /** Read canonical preset data without importing a rendering plugin. */

@@ -705,4 +705,25 @@ export const ROW_KIND_CASES: RowKindCase[] = [
     payload: { type: 'result', subtype: 'success', result: 'Done', num_turns: 1 },
     category: 'result_divider',
   },
+  {
+    provider: Provider.JUNIE,
+    name: 'bash call',
+    payload: {
+      sessionUpdate: 'tool_call',
+      toolCallId: '74d03a40-c505-4103-9d59-9f925c31ea39',
+      title: 'ls',
+      kind: 'execute',
+      status: 'in_progress',
+      content: [],
+      locations: [],
+      rawInput: { command: 'ls', cwd: '/work' },
+    },
+    category: 'tool_use',
+  },
+  {
+    provider: Provider.JUNIE,
+    name: 'session info update',
+    payload: { sessionUpdate: 'session_info_update', title: 'Greeting task' },
+    category: 'hidden',
+  },
 ]

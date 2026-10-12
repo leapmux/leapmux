@@ -7,7 +7,7 @@ import { OPTION_ID_EFFORT, OPTION_ID_MODEL } from '../../src/components/chat/set
 import { ACCOUNT_DEFAULT_MODEL } from '../../src/generated/contracts/worker-vocab'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { KIRO_DEFAULT_MOCK_MODEL } from './helpers/kiroSurface'
-import { CODEBUDDY_MODEL_ID, KIMI_MOCK_MODELS, MOCK_MODELS, MOCK_PROVIDER_IDS, QWEN_MODEL_ID } from './helpers/mockAgentEnvironment'
+import { CODEBUDDY_MODEL_ID, JUNIE_MOCK_MODEL, KIMI_MOCK_MODELS, MOCK_MODELS, MOCK_PROVIDER_IDS, QWEN_MODEL_ID } from './helpers/mockAgentEnvironment'
 
 /** The model, and the reasoning effort where the provider has one. */
 export interface AgentE2ESettings {
@@ -43,6 +43,7 @@ export const AGENT_E2E_SETTINGS = {
   [AgentProvider.KILO]: { model: `${MOCK_PROVIDER_IDS.openCode}/${MOCK_MODELS.zai}`, effort: 'high' },
   [AgentProvider.OPENCODE]: { model: `${MOCK_PROVIDER_IDS.openCode}/${MOCK_MODELS.zai}`, effort: 'high' },
   [AgentProvider.ZCODE]: { model: `${MOCK_PROVIDER_IDS.zcode}/${MOCK_MODELS.zai}`, effort: 'high' },
+  [AgentProvider.JUNIE]: { model: JUNIE_MOCK_MODEL },
   [AgentProvider.CODEBUDDY]: { model: CODEBUDDY_MODEL_ID },
   [AgentProvider.CLINE]: { model: MOCK_MODELS.cline },
   [AgentProvider.AMP]: { model: ACCOUNT_DEFAULT_MODEL },

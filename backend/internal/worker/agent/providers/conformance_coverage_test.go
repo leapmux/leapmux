@@ -40,6 +40,7 @@ var providerDirs = map[leapmuxv1.AgentProvider]string{
 	leapmuxv1.AgentProvider_AGENT_PROVIDER_AMP:            "amp",
 	leapmuxv1.AgentProvider_AGENT_PROVIDER_CLINE:          "cline",
 	leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEBUDDY:      "codebuddy",
+	leapmuxv1.AgentProvider_AGENT_PROVIDER_JUNIE:          "junie",
 }
 
 // requiredSuites states, for each package directory, the agenttest suites that
@@ -132,6 +133,7 @@ var requiredSuites = map[string][]string{
 	},
 	"qwen":     {"RequireReadsSessionStore", "AssertTokenResumeRule", "AssertControlIdentitiesStaySeparate", "AssertChildCapabilities"},
 	"grok":     {"RequireReadsSessionStore", "AssertTokenResumeRule", "AssertControlIdentitiesStaySeparate", "AssertChildCapabilities"},
+	"junie":    {"RequireReadsSessionStore", "AssertChildCapabilities"},
 	"kiro":     {"RequireReadsSessionStore", "AssertTokenResumeRule", "AssertControlIdentitiesStaySeparate", "AssertChildCapabilities"},
 	"reasonix": {"RequireReadsSessionStore", "AssertControlIdentitiesStaySeparate", "AssertChildCapabilities"},
 	"zcode": {

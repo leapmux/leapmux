@@ -261,7 +261,7 @@ function tagPinReaders(spec, table, contract) {
 const PENDING_READERS = new Set([
     'commandcode-protocol', 'deepseek-harness-protocol', 'dirac-protocol',
   'droid-protocol', 'fastagent-protocol', 'gemini-protocol',,
-  'junie-protocol', 'letta-protocol',
+  'letta-protocol',
   'muse-protocol', 'qoder-protocol',
  ,
 ])

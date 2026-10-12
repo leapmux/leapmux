@@ -1,0 +1,59 @@
+import { expect } from '@playwright/test'
+import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { withCleanup } from '../helpers/cleanup'
+import { junieAnswerToolCall, junieSubagentSubmitToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
+import { expectRowBecomesFinal, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
+import { assistantBubbles, openWorkspace, sendMessage, tabById, userBubbles, waitForAgentIdle } from '../helpers/ui'
+import { openProviderAgent } from '../helpers/workspace'
+import { junieTest } from '../junie-fixtures'
+import { JUNIE_AGENT } from './scenarios'
+
+junieTest.describe('Junie subagents and background tasks', () => {
+  const PROVIDER = AgentProvider.JUNIE
+
+  const CHILD_TASK = 'Use the bundled Junie docs to explain where Junie stores session history.'
+
+  const CHILD_GATE = 'junie-docs-submit'
+
+  junieTest('routes the child task and report into a tab opened from the registry row', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
+    const { agentId } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, JUNIE_AGENT)
+    await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
+    const childPrompt = modelScript.prompt(CHILD_TASK)
+
+    await modelScript.rule({
+      name: 'the docs child submits its answer',
+      when: { system: 'You are the Junie documentation assistant', body: CHILD_TASK },
+      respond: {
+        gate: CHILD_GATE,
+        toolCalls: [junieSubagentSubmitToolCall('junie-child-submit', '### Summary\n- JUNIE_CHILD_DONE: Junie keeps its session history in its home.\n### Changes\n- No files changed.\n### Verification\n- Read the bundled documentation.')],
+      },
+      once: true,
+    })
+    const start = await modelScript.queue(
+      {
+        toolCalls: [spawnSubagentToolCall(PROVIDER, 'spawn-junie', {
+          description: 'Find Junie session history',
+          prompt: childPrompt,
+        })],
+      },
+      { toolCalls: [junieAnswerToolCall('junie-root-answer', 'JUNIE_ROOT_DONE')] },
+    )
+    await sendMessage(page, modelScript.prompt('Delegate the Junie session history question, then report.'))
+    await modelScript.waitForGate(CHILD_GATE)
+    await withCleanup(async () => {
+      const row = await requireRegistryRow(page)
+      await expect(row).toHaveAttribute('data-status', 'running')
+      await expect(row).toContainText('junie-cli-docs')
+      await openChildTabFromRow(page, row)
+      await expect(userBubbles(page).filter({ hasText: CHILD_TASK })).toHaveCount(1)
+    }, () => modelScript.releaseGate(CHILD_GATE))
+
+    await modelScript.waitForSteps(start + 2)
+    await waitForAgentIdle(page)
+    await expect(assistantBubbles(page).filter({ hasText: 'JUNIE_CHILD_DONE' }).first()).toBeVisible()
+
+    await tabById(page, agentId).click()
+    await expect(assistantBubbles(page).filter({ hasText: 'JUNIE_ROOT_DONE' }).first()).toBeVisible()
+    await expectRowBecomesFinal(page, await requireRegistryRow(page))
+  })
+})

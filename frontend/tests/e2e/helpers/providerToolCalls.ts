@@ -994,6 +994,64 @@ const TOOL_VOCABULARY = {
     codeExecution: (id, source) => ({ id, name: 'mcp__node_repl__js', arguments: { code: source, title: 'Run the native script' } }),
     workflowTools: [ZCODE_TOOL.CreateWorkflow],
   },
+  [AgentProvider.JUNIE]: {
+    // Junie's tools are OpenAI function calls. `bash` takes the command; the
+    // tool description states that each call is wrapped in `bash -c`.
+    bash: (id, command) => ({ id, name: 'bash', arguments: { command } }),
+    // `search_replace` is Junie's single-hunk edit: `search` is the block to
+    // find, `replace` its replacement.
+    edit: (id, { path, before, after }) => ({ id, name: 'search_replace', arguments: { file_path: path, search: before, replace: after } }),
+    // `create` writes a new file; the path key is `filename`.
+    write: (id, { path, content }) => ({ id, name: 'create', arguments: { filename: path, content } }),
+    // `open_entire_file` reads a file in full.
+    read: (id, path) => ({ id, name: 'open_entire_file', arguments: { path } }),
+    // Plan mode is a config option (`mode: plan`), not a tool: the `plan`
+    // slash command is a `setConfigOption` action.
+    enterPlanMode: null,
+    exitPlanMode: null,
+    exitPlanModeFromFile: null,
+    // Junie sends ask_user through Agent Client Protocol (ACP) as a permission request.
+    // Each question requires name and question.
+    // Each option requires a short title and a description sentence.
+    // The native choices become the control options.
+    askUserQuestion: questionBuilder((id, questions) => ({
+      id,
+      name: 'ask_user',
+      arguments: {
+        questions: questions.map(question => ({
+          name: question.header,
+          question: question.question,
+          options: question.options.map(({ label, description }) => ({ title: label, description })),
+          allowMultiple: question.multiSelect ?? false,
+        })),
+      },
+    })),
+    // The spawn_subagent tool waits for the child result.
+    // Its required agent field identifies the child kind.
+    // Its name field labels fresh built-in agents.
+    // Custom agents ignore name and use their definition's native title.
+    // Its required task field supplies the work.
+    spawnSubagent: (id, { description, prompt, agentType }) => ({
+      id,
+      name: 'spawn_subagent',
+      arguments: { agent: agentType ?? 'junie-cli-docs', name: description, task: prompt },
+    }),
+    spawnSubagentBatch: null,
+    // The SAME `bash` tool, with the `background` flag the tool description
+    // documents for long-running processes.
+    backgroundBash: (id, command) => ({ id, name: 'bash', arguments: { command, background: true } }),
+    // No to-do tool: the plan entries serve that role.
+    updateTodos: null,
+    // Goals are a CLI flag (`--goal`), not a tool.
+    createGoal: null,
+    completeGoal: null,
+    blockGoal: null,
+    // Junie offers each MCP tool with the `mcp_` prefix.
+    mcpTool: (id, { server, tool, input }) => ({ id, name: `mcp_${server}_${tool}`, arguments: input }),
+    codeExecution: null,
+    workflowTools: null,
+  },
+
   [AgentProvider.CODEBUDDY]: {
     // CodeBuddy uses Claude Code 2.1.220 tool-call shapes.
     // Each call uses an Anthropic tool_use block.

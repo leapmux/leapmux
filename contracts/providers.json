@@ -126,6 +126,13 @@
       "parseAliases": [
         "cbc"
       ]
+    },
+    "AGENT_PROVIDER_JUNIE": {
+      "displayName": "Junie",
+      "cliAlias": "junie",
+      "parseAliases": [
+        "jetbrains-junie"
+      ]
     }
   }
 }

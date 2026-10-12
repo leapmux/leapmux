@@ -451,7 +451,7 @@ function CodeBuddyIcon(props: { size: number, class?: string }): JSX.Element {
   )
 }
 
-export function JunieIcon(props: { size: number, class?: string }): JSX.Element {
+function JunieIcon(props: { size: number, class?: string }): JSX.Element {
   // The Junie mark of the @lobehub/icons collection: the three green squares.
   return (
     <svg
@@ -667,6 +667,9 @@ export function AgentProviderIcon(props: AgentProviderIconProps): JSX.Element {
       </Match>
       <Match when={props.provider === AgentProvider.CODEBUDDY}>
         <CodeBuddyIcon size={props.size} {...classProps()} />
+      </Match>
+      <Match when={props.provider === AgentProvider.JUNIE}>
+        <JunieIcon size={props.size} {...classProps()} />
       </Match>
     </Switch>
   )
