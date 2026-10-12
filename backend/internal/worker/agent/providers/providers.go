@@ -18,6 +18,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/commandcode"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/copilot"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/cursor"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/deepseekharness"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/dirac"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/droid"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/fastagent"
@@ -70,6 +71,7 @@ func Registrations() []agent.Registration {
 		droid.Registration(),
 		fastagent.Registration(),
 		commandcode.Registration(),
+		deepseekharness.Registration(),
 	}
 }
 

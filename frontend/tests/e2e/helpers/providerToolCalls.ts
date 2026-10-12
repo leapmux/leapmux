@@ -10,6 +10,7 @@ import { COMMAND_CODE_TOOL } from '../../../src/generated/contracts/commandcode-
 // Use a relative import.
 // The note in ../agentSettings.ts explains standalone native probes.
 import { COPILOT_TOOL } from '../../../src/generated/contracts/copilot-protocol'
+import { DEEPSEEK_HARNESS_TOOL } from '../../../src/generated/contracts/deepseek-harness-protocol'
 import { KIMI_TOOL } from '../../../src/generated/contracts/kimi-protocol'
 import { LETTA_TOOL } from '../../../src/generated/contracts/letta-protocol'
 import { MIMO_ACTOR_ACTION, MIMO_TOOL } from '../../../src/generated/contracts/mimo-protocol'
@@ -998,6 +999,29 @@ const TOOL_VOCABULARY = {
     codeExecution: (id, source) => ({ id, name: 'mcp__node_repl__js', arguments: { code: source, title: 'Run the native script' } }),
     workflowTools: [ZCODE_TOOL.CreateWorkflow],
   },
+  [AgentProvider.DEEPSEEK_HARNESS]: {
+    bash: (id, command) => ({ id, name: DEEPSEEK_HARNESS_TOOL.Bash, arguments: { command, description: 'Run the scripted command.' } }),
+    edit: (id, { path, before, after }) => ({ id, name: DEEPSEEK_HARNESS_TOOL.Edit, arguments: { file_path: path, old_string: before, new_string: after } }),
+    write: (id, { path, content }) => ({ id, name: DEEPSEEK_HARNESS_TOOL.Write, arguments: { file_path: path, content } }),
+    read: (id, path) => ({ id, name: DEEPSEEK_HARNESS_TOOL.Read, arguments: { file_path: path } }),
+    enterPlanMode: null,
+    exitPlanMode: (id, plan) => ({ id, name: DEEPSEEK_HARNESS_TOOL.ExitPlanMode, arguments: { plan } }),
+    exitPlanModeFromFile: null,
+    askUserQuestion: questionBuilder((id, questions) => ({ id, name: DEEPSEEK_HARNESS_TOOL.AskUserQuestion, arguments: { questions: questions.map(({ freeText: _freeText, ...question }, index) => ({ id: `question-${index + 1}`, ...question })) } })),
+    spawnSubagent: (id, { description, prompt, background }) => ({ id, name: DEEPSEEK_HARNESS_TOOL.Subagent, arguments: { description, prompt, run_in_background: background ?? true } }),
+    spawnSubagentBatch: null,
+    backgroundBash: (id, command) => ({ id, name: DEEPSEEK_HARNESS_TOOL.Bash, arguments: { command, description: 'Run the scripted background command.', run_in_background: true } }),
+    updateTodos: (id, steps) => ({ id, name: DEEPSEEK_HARNESS_TOOL.TodoWrite, arguments: { todos: steps.map(step => ({ content: step.step, status: acceptedTodoStatus('DeepSeek Harness TodoWrite', BASE_TODO_STATUSES, step.status) })) } }),
+    // update_goal requires the goal ID and the revision that get_goal returns, which the operations here cannot carry:
+    // `deepseekHarnessUpdateGoalToolCall` states that call.
+    createGoal: null,
+    completeGoal: null,
+    blockGoal: null,
+    mcpTool: (id, { server, tool, input }) => ({ id, name: `mcp__${server}__${tool}`, arguments: input }),
+    codeExecution: (id, source) => ({ id, name: DEEPSEEK_HARNESS_TOOL.Workflow, arguments: { script: source, meta: { name: 'native-code', description: 'Run the scripted native source.' } } }),
+    workflowTools: [DEEPSEEK_HARNESS_TOOL.Workflow],
+  },
+
   [AgentProvider.COMMAND_CODE]: {
     bash: (id, command) => ({ id, name: COMMAND_CODE_TOOL.ShellCommand, arguments: { command, description: 'Run the scripted command.' } }),
     edit: (id, { path, before, after }) => ({ id, name: 'edit_file', arguments: { file_path: path, old_string: before, new_string: after } }),

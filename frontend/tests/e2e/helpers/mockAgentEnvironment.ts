@@ -12,6 +12,7 @@ import { createCodexEnvironment } from './codexEnvironment'
 import { createCommandCodeEnvironment } from './commandCodeEnvironment'
 import { createCopilotEnvironment } from './copilotEnvironment'
 import { createCursorEnvironment } from './cursorEnvironment'
+import { createDeepseekHarnessEnvironment } from './deepseekHarnessEnvironment'
 import { createDiracEnvironment } from './diracEnvironment'
 import { createFastAgentEnvironment } from './fastAgentEnvironment'
 import { createGooseEnvironment } from './gooseEnvironment'
@@ -360,6 +361,7 @@ export async function createMockAgentEnvironment(
       ...createCursorEnvironment({ homeDir, origin, modelKey: MODEL_KEY }),
       ...createCopilotEnvironment({ homeDir, origin, modelKey: MODEL_KEY, githubToken: MOCK_COPILOT_GITHUB_TOKEN }),
       ...createZcodeEnvironment({ runDirectory: runDir, homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, providerID: MOCK_PROVIDER_IDS.zcode, modelID: MOCK_MODELS.zai, alternateModelID: MOCK_MODELS.pi, plainModelID: ZCODE_PLAIN_MODEL_WIRE_ID }),
+      ...createDeepseekHarnessEnvironment({ runDirectory: runDir, modelURL: origin, modelKey: MODEL_KEY, mcpServers }),
       ...createCommandCodeEnvironment({ runDirectory: runDir, modelURL: origin, modelKey: MODEL_KEY, modelID: COMMAND_CODE_MODEL_ID, alternateModelID: COMMAND_CODE_ALT_MODEL_ID, reasoningModelID: COMMAND_CODE_REASONING_MODEL_ID, mcpServers }),
       ...createFastAgentEnvironment({ homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, modelID: FAST_AGENT_MOCK_MODEL, zaiModelID: MOCK_MODELS.zai }),
       ...createQoderEnvironment({ homeDir, shimsDirectory: cliShimsDir, origin, baseURL: openAIBaseURL, modelKey: MODEL_KEY, modelID: MOCK_MODELS.deepseek, alternateModelID: MOCK_MODELS.qoder }),

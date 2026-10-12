@@ -176,6 +176,13 @@
         "commandcode",
         "cmdc"
       ]
+    },
+    "AGENT_PROVIDER_DEEPSEEK_HARNESS": {
+      "displayName": "DeepSeek Harness",
+      "cliAlias": "deepseek-harness",
+      "parseAliases": [
+        "dsh"
+      ]
     }
   }
 }

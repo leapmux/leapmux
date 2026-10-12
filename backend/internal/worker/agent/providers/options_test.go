@@ -33,15 +33,16 @@ func TestProviderManagesEffort(t *testing.T) {
 	registry := Registry()
 
 	managed := map[leapmuxv1.AgentProvider]bool{
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE:    true,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX:          true,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_PI:             true,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT: true,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEWHALE:      true,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_KIMI_CODE:      true,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE:      true,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLINE:          true,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_COMMAND_CODE:   true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE:      true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX:            true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_PI:               true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT:   true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEWHALE:        true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_KIMI_CODE:        true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE:        true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLINE:            true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_COMMAND_CODE:     true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_DEEPSEEK_HARNESS: true,
 	}
 	for _, p := range agentlabels.AllProviders() {
 		if managed[p] {

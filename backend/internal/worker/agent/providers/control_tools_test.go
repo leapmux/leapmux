@@ -118,7 +118,7 @@ func TestProvidersWithLocalPlanApprovalSettings(t *testing.T) {
 	registry := Registry()
 	for _, provider := range append(agentlabels.AllProviders(), leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED) {
 		if provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX ||
-			provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_QODER { // deepseek returns with its provider
+			provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_QODER || provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_DEEPSEEK_HARNESS {
 			continue
 		}
 		assert.Empty(t, registry.Plugin(provider).PlanApprovalOptions(""), "provider %v has no local plan approval settings", provider)

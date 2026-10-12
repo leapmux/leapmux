@@ -895,4 +895,22 @@ export const ROW_KIND_CASES: RowKindCase[] = [
     payload: { jsonrpc: '2.0', method: 'turn/completed', params: { stopReason: 'completed' } },
     category: 'result_divider',
   },
+  {
+    provider: Provider.DEEPSEEK_HARNESS,
+    name: 'native assistant text',
+    payload: { type: 'assistant/message', seq: 1, time: 1000, blockIndex: 0, data: { message: { content: [{ type: 'text', text: 'Native answer.' }] } } },
+    category: 'assistant_text',
+  },
+  {
+    provider: Provider.DEEPSEEK_HARNESS,
+    name: 'native reasoning',
+    payload: { type: 'assistant/message', seq: 2, time: 1001, blockIndex: 0, data: { message: { content: [{ type: 'reasoning', text: 'Read the native source.' }] } } },
+    category: 'assistant_thinking',
+  },
+  {
+    provider: Provider.DEEPSEEK_HARNESS,
+    name: 'native completion',
+    payload: { type: 'turn/end', seq: 3, time: 1002, data: { reason: { kind: 'completed' } } },
+    category: 'result_divider',
+  },
 ]

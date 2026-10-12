@@ -83,6 +83,7 @@ const PROVIDER_CLASSIFIERS: Readonly<Record<string, string | null>> = {
   'qoder/plugin.ts': './classification',
   'droid/plugin.ts': './classification',
   'commandcode/plugin.ts': './classification',
+  'deepseekharness/plugin.ts': './classification',
   'codex/plugin.ts': './classification',
   'copilot/plugin.ts': './classification',
   'pi/plugin.ts': './classification',

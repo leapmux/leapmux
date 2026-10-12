@@ -3,6 +3,10 @@
 // Both projects use this list, which prevents overlap and preserves collection of all other tests.
 export const NODE_TEST_FILES = [
   'tests/e2e/helpers/qoderSurface.test.ts',
+  'tests/e2e/deepseek-harness/mcpToolResult.test.ts',
+  'tests/e2e/deepseek-harness/childReportRegistration.test.ts',
+  'tests/e2e/deepseek-harness/childReportCompletion.test.ts',
+  'tests/e2e/helpers/deepseekHarnessEnvironment.test.ts',
   'tests/e2e/command-code/mcpCloseControl.test.ts',
   'tests/e2e/helpers/commandCodeEnvironment.test.ts',
   'tests/e2e/letta-code/toolReturnRows.test.ts',
