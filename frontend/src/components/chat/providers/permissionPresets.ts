@@ -7,6 +7,7 @@ import { codebuddyPermissionPresets } from './codebuddy/permissionPresets'
 import { codewhalePermissionPresets } from './codewhale/permissionPresets'
 import { codexPermissionPresets } from './codex/permissionPresets'
 import { copilotPermissionPresets } from './copilot/permissionPresets'
+import { droidPermissionPresets } from './droid/permissionPresets'
 import { goosePermissionPresets } from './goose/permissionPresets'
 import { grokPermissionPresets } from './grok/permissionPresets'
 import { kimiPermissionPresets } from './kimi/permissionPresets'
@@ -46,6 +47,7 @@ export const PROVIDER_PERMISSION_PRESETS = {
   [AgentProvider.LETTA]: lettaPermissionPresets,
   [AgentProvider.DIRAC]: undefined,
   [AgentProvider.QODER]: qoderPermissionPresets,
+  [AgentProvider.DROID]: droidPermissionPresets,
 } satisfies Record<AgentProvider, ProviderPermissionPresets | undefined>
 
 /** Read canonical preset data without importing a rendering plugin. */

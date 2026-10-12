@@ -81,6 +81,7 @@ const PROVIDER_CLASSIFIERS: Readonly<Record<string, string | null>> = {
   'ohmypi/plugin.ts': './classification',
   'letta/plugin.ts': './classification',
   'qoder/plugin.ts': './classification',
+  'droid/plugin.ts': './classification',
   'codex/plugin.ts': './classification',
   'copilot/plugin.ts': './classification',
   'pi/plugin.ts': './classification',

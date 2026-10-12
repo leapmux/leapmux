@@ -75,6 +75,7 @@ func TestNormalizeModelIDRoutesEveryProvider(t *testing.T) {
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_LETTA:          {"openai-compatible/mock-model", "openai-compatible/mock-model"},
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_DIRAC:          {"model/alpha", "model/alpha"},
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_QODER:          {"model/alpha", "model/alpha"},
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_DROID:          {"custom:Mock-0", "custom:Mock-0"},
 	}
 	providers := agentlabels.AllProviders()
 	require.Len(t, cases, len(providers), "each provider needs a normalization case")

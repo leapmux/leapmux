@@ -997,6 +997,65 @@ const TOOL_VOCABULARY = {
     codeExecution: (id, source) => ({ id, name: 'mcp__node_repl__js', arguments: { code: source, title: 'Run the native script' } }),
     workflowTools: [ZCODE_TOOL.CreateWorkflow],
   },
+  [AgentProvider.DROID]: {
+    bash: (id, command) => droidExecuteToolCall(id, { command, summary: 'Run the scripted command', riskLevel: 'medium' }),
+    edit: (id, request) => ({
+      id: droidCallId(id),
+      name: 'Edit',
+      arguments: { file_path: request.path, old_str: request.before, new_str: request.after },
+    }),
+    write: (id, request) => ({
+      id: droidCallId(id),
+      name: 'Create',
+      arguments: { file_path: request.path, content: request.content },
+    }),
+    read: (id, path) => ({ id: droidCallId(id), name: 'Read', arguments: { file_path: path } }),
+    enterPlanMode: null,
+    exitPlanMode: (id, plan) => ({ id: droidCallId(id), name: 'ExitSpecMode', arguments: { plan } }),
+    exitPlanModeFromFile: null,
+    // Droid's AskUser takes one plain-text `questionnaire`, not a questions
+    // array. The format is numbered `[question]` blocks with `[topic]` and
+    // `[option]` lines.
+    askUserQuestion: questionBuilder((id, questions) => ({
+      id: droidCallId(id),
+      name: 'AskUser',
+      arguments: {
+        questionnaire: questions.map((q, i) => [
+          `${i + 1}. [question] ${q.question}${q.multiSelect ? ' (multi)' : ''}`,
+          '[topic] Question',
+          ...q.options.map(o => `[option] ${o.label}`),
+        ].join('\n')).join('\n\n'),
+      },
+    })),
+    // `explorer` is a built-in child type. Droid runs it in the background
+    // when `await` is false; it does not accept a `background` argument.
+    spawnSubagent: (id, { description, prompt, background }) => ({
+      id: droidCallId(id),
+      name: 'Task',
+      arguments: {
+        subagent_type: 'explorer',
+        description,
+        prompt,
+        await: background !== true,
+      },
+    }),
+    spawnSubagentBatch: null,
+    backgroundBash: null,
+    updateTodos: (id, steps) => ({
+      id: droidCallId(id),
+      name: 'TodoWrite',
+      arguments: {
+        todos: steps.map(s => ({ content: s.step, status: acceptedTodoStatus('Factory Droid TodoWrite', BASE_TODO_STATUSES, s.status) })),
+      },
+    }),
+    createGoal: null,
+    completeGoal: null,
+    blockGoal: null,
+    mcpTool: (id, { server, tool, input }) => ({ id: droidCallId(id), name: `${server}___${tool}`, arguments: input }),
+    codeExecution: (id, source) => droidScriptToolCall(id, source),
+    workflowTools: null,
+  },
+
   [AgentProvider.QODER]: {
     // Qoder's stream-json layer emits Anthropic-shaped messages. Its plan exit
     // reads the plan file and accepts no plan argument.

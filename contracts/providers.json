@@ -152,6 +152,14 @@
       "parseAliases": [
         "qodercli"
       ]
+    },
+    "AGENT_PROVIDER_DROID": {
+      "displayName": "Factory Droid",
+      "cliAlias": "droid",
+      "parseAliases": [
+        "factory",
+        "factory-droid"
+      ]
     }
   }
 }

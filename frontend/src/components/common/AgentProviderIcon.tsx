@@ -525,7 +525,7 @@ function QoderIcon(props: { size: number, class?: string }): JSX.Element {
   )
 }
 
-export function DroidIcon(props: { size: number, class?: string }): JSX.Element {
+function DroidIcon(props: { size: number, class?: string }): JSX.Element {
   // Factory Droid's own mark: the eight-pointed asterisk of rounded lobes.
   return (
     <svg
@@ -679,6 +679,9 @@ export function AgentProviderIcon(props: AgentProviderIconProps): JSX.Element {
       </Match>
       <Match when={props.provider === AgentProvider.QODER}>
         <QoderIcon size={props.size} {...classProps()} />
+      </Match>
+      <Match when={props.provider === AgentProvider.DROID}>
+        <DroidIcon size={props.size} {...classProps()} />
       </Match>
     </Switch>
   )

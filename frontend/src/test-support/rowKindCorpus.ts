@@ -827,4 +827,34 @@ export const ROW_KIND_CASES: RowKindCase[] = [
     payload: { type: 'result', subtype: 'success', result: 'Done', num_turns: 1 },
     category: 'result_divider',
   },
+  {
+    provider: Provider.DROID,
+    name: 'assistant text',
+    payload: { type: 'assembled', kind: 'text', text: 'Hello from the mock model.' },
+    category: 'assistant_text',
+  },
+  {
+    provider: Provider.DROID,
+    name: 'tool call',
+    payload: { type: 'tool_call', toolUse: { type: 'tool_use', id: 'call_1', name: 'Execute', input: { command: 'echo hi' } } },
+    category: 'tool_use',
+  },
+  {
+    provider: Provider.DROID,
+    name: 'tool result',
+    payload: { type: 'tool_result', toolUseId: 'call_1', content: 'hi\n', isError: false },
+    category: 'tool_result',
+  },
+  {
+    provider: Provider.DROID,
+    name: 'turn end',
+    payload: { type: 'agent_turn_completed', reason: 'completed', turnId: 't1' },
+    category: 'result_divider',
+  },
+  {
+    provider: Provider.DROID,
+    name: 'working state bookkeeping',
+    payload: { type: 'droid_working_state_changed', newState: 'idle' },
+    category: 'hidden',
+  },
 ]

@@ -66,3 +66,30 @@ func TestSendControlResponseStatesTheReasonOfARefusal(t *testing.T) {
 
 // The reason travels from the provider that refuses. Factory Droid refuses an
 // option that its request did not offer, and the response states that option.
+
+func TestSendControlResponseStatesTheReasonOfAProviderRefusal(t *testing.T) {
+	svc, _, _ := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{
+		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_DROID,
+	}))
+	createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
+		AgentID: "agent-1", RequestID: "droid-perm-1", ClaimToken: "claim",
+		Payload: []byte(`{"type":"permission_request","requestId":"droid-perm-1","rpcId":"rpc-1",` +
+			`"toolUse":{"type":"tool_use","id":"1","name":"Edit","input":{}},"confirmationType":"edit",` +
+			`"options":["proceed_once","cancel"]}`),
+	})
+	row, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
+	require.NoError(t, err)
+	sends := 0
+	svc.sendControlResponseFn = func(string, []byte) error { sends++; return nil }
+
+	response, err := svc.respondToControlRequest(row, &leapmuxv1.SendControlResponseRequest{
+		RequestId: "droid-perm-1", ClaimToken: "claim",
+		Content: []byte(`{"response":{"request_id":"droid-perm-1","response":{"behavior":"allow","selectedOption":"proceed_always"}}}`),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "Factory Droid did not offer proceed_always", response.GetError())
+	assert.Equal(t, leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_READY, response.GetState())
+	assert.Zero(t, sends)
+}
