@@ -3,6 +3,7 @@
 // Both projects use this list, which prevents overlap and preserves collection of all other tests.
 export const NODE_TEST_FILES = [
   'tests/e2e/helpers/qoderSurface.test.ts',
+  'tests/e2e/letta-code/toolReturnRows.test.ts',
   'eslint/chatPipelinePlugin.test.ts',
   'eslint/providerWireTokens.test.ts',
   'playwright.config.test.ts',
@@ -244,6 +245,7 @@ export const NODE_TEST_FILES = [
   'tests/e2e/helpers/kiroSurface.test.ts',
   'tests/e2e/helpers/launcherFixtureProject.test.ts',
   'tests/e2e/helpers/mockAgentEnvironment.test.ts',
+  'tests/e2e/helpers/lettaEnvironment.test.ts',
   'tests/e2e/helpers/mockModelScenario.test.ts',
   'tests/e2e/helpers/mockModelScript.test.ts',
   'tests/e2e/helpers/mockModelServer.test.ts',

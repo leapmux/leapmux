@@ -72,6 +72,7 @@ func TestNormalizeModelIDRoutesEveryProvider(t *testing.T) {
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLINE:          {"anthropic/claude-sonnet-4.6", "anthropic/claude-sonnet-4.6"},
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEBUDDY:      {"model/alpha", "model/alpha"},
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_JUNIE:          {"model/alpha", "model/alpha"},
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_LETTA:          {"openai-compatible/mock-model", "openai-compatible/mock-model"},
 	}
 	providers := agentlabels.AllProviders()
 	require.Len(t, cases, len(providers), "each provider needs a normalization case")

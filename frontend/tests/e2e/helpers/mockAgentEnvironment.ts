@@ -15,8 +15,10 @@ import { createGooseEnvironment } from './gooseEnvironment'
 import { createGrokEnvironment } from './grokEnvironment'
 import { createJunieEnvironment } from './junieEnvironment'
 import { createKiroEnvironment } from './kiroEnvironment'
+import { createLettaEnvironment } from './lettaEnvironment'
 import { writeMcpEchoServer } from './mcpEchoServer'
 import { createMimoEnvironment } from './mimoEnvironment'
+import { createOhMyPiEnvironment, ohMyPiAgentDirectory } from './ohMyPiEnvironment'
 import { createOpenCodeEnvironment } from './openCodeEnvironment'
 import { createPiEnvironment, piAgentDirectory } from './piEnvironment'
 import { createReasonixEnvironment } from './reasonixEnvironment'
@@ -254,6 +256,8 @@ export interface MockAgentEnvironment {
   env: Record<string, string>
   homeDir: string
   piAgentDir: string
+  /** The agent directory of omp's profile, which holds its configuration and sessions. */
+  ohMyPiAgentDir: string
 }
 
 interface MockAgentEnvironmentOptions {
@@ -304,6 +308,7 @@ export async function createMockAgentEnvironment(
   return {
     homeDir,
     piAgentDir: piAgentDirectory(homeDir),
+    ohMyPiAgentDir: ohMyPiAgentDirectory(homeDir, OH_MY_PI_PROFILE),
     env: {
       HOME: homeDir,
       USERPROFILE: homeDir,
@@ -349,6 +354,8 @@ export async function createMockAgentEnvironment(
       ...createCursorEnvironment({ homeDir, origin, modelKey: MODEL_KEY }),
       ...createCopilotEnvironment({ homeDir, origin, modelKey: MODEL_KEY, githubToken: MOCK_COPILOT_GITHUB_TOKEN }),
       ...createZcodeEnvironment({ runDirectory: runDir, homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, providerID: MOCK_PROVIDER_IDS.zcode, modelID: MOCK_MODELS.zai, alternateModelID: MOCK_MODELS.pi, plainModelID: ZCODE_PLAIN_MODEL_WIRE_ID }),
+      ...createOhMyPiEnvironment({ homeDir, origin, baseURL: openAIBaseURL, profile: OH_MY_PI_PROFILE, providerID: MOCK_PROVIDER_IDS.ohMyPi, modelID: MOCK_MODELS.ohMyPi, alternateModelID: OH_MY_PI_ALT_MODEL_WIRE_ID, mcpEchoServer }),
+      ...createLettaEnvironment({ runDirectory: runDir, homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, temporaryEnv }),
       ...createJunieEnvironment({ runDirectory: runDir, homeDir, shimsDirectory: cliShimsDir, origin, modelKey: MODEL_KEY, modelID: MOCK_MODELS.junie, childModel: JUNIE_MOCK_MODEL, proxyProvider: JUNIE_PROXY_PROVIDER, realHomeDir: options.realHomeDir }),
       ...createCodebuddyEnvironment({ homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, modelID: MOCK_MODELS.deepseek, alternateModelID: CODEBUDDY_ALT_MODEL_WIRE_ID, startModel: CODEBUDDY_MODEL_ID }),
       ...createClineEnvironment({ homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, providerID: CLINE_PROVIDER_ID, modelID: MOCK_MODELS.cline, mcpEchoServer }),

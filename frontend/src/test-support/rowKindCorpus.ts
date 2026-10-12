@@ -726,4 +726,52 @@ export const ROW_KIND_CASES: RowKindCase[] = [
     payload: { sessionUpdate: 'session_info_update', title: 'Greeting task' },
     category: 'hidden',
   },
+  {
+    provider: Provider.LETTA,
+    name: 'assistant text',
+    payload: { kind: 'stream_delta', payload: { message_type: 'assistant_message', content: [{ type: 'text', text: 'Hello from the mock model.' }] } },
+    category: 'assistant_text',
+  },
+  {
+    provider: Provider.LETTA,
+    name: 'reasoning',
+    payload: { kind: 'stream_delta', payload: { message_type: 'reasoning_message', content: [{ type: 'text', text: 'The user says hello.' }] } },
+    category: 'assistant_thinking',
+  },
+  {
+    provider: Provider.LETTA,
+    name: 'tool call',
+    payload: { kind: 'stream_delta', payload: { message_type: 'client_tool_start', tool_call_id: 'call_1', tool_name: 'Bash', tool_input: { command: 'echo hi' } } },
+    category: 'tool_use',
+  },
+  {
+    provider: Provider.LETTA,
+    name: 'tool result',
+    payload: { kind: 'stream_delta', payload: { message_type: 'tool_return_message', tool_call_id: 'call_1', tool_name: 'Bash', tool_return: 'hi\n' } },
+    category: 'tool_result',
+  },
+  {
+    provider: Provider.LETTA,
+    name: 'turn end',
+    payload: { kind: 'turn_finished', payload: { turn_id: 't1', stop_reason: 'end_turn' } },
+    category: 'result_divider',
+  },
+  {
+    provider: Provider.LETTA,
+    name: 'turn end of the live frame',
+    payload: { type: 'turn_finished', turn_id: 'batch-direct-1', stop_reason: 'end_turn', run_id: 'local-run-1' },
+    category: 'result_divider',
+  },
+  {
+    provider: Provider.LETTA,
+    name: 'assembled assistant text',
+    payload: { type: 'assembled_message', kind: 'text', text: '6912', completion: 'complete' },
+    category: 'assistant_text',
+  },
+  {
+    provider: Provider.LETTA,
+    name: 'user row LeapMux writes',
+    payload: { content: 'What is 1234 + 5678? Reply with just the number.' },
+    category: 'user_content',
+  },
 ]

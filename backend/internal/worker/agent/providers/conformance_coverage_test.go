@@ -41,6 +41,7 @@ var providerDirs = map[leapmuxv1.AgentProvider]string{
 	leapmuxv1.AgentProvider_AGENT_PROVIDER_CLINE:          "cline",
 	leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEBUDDY:      "codebuddy",
 	leapmuxv1.AgentProvider_AGENT_PROVIDER_JUNIE:          "junie",
+	leapmuxv1.AgentProvider_AGENT_PROVIDER_LETTA:          "letta",
 }
 
 // requiredSuites states, for each package directory, the agenttest suites that
@@ -64,6 +65,12 @@ var requiredSuites = map[string][]string{
 		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
 		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
 		"AssertPreservesTheResponseWithoutARequest", "AssertTokenResumeRule", "AssertChildCapabilities",
+	},
+	"letta": {
+		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
+		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
+		"AssertPreservesTheResponseWithoutARequest", "AssertWithholdsTheResponseForAMalformedRequest",
+		"AssertTokenResumeRule", "AssertChildCapabilities",
 	},
 	"codebuddy": {
 		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",

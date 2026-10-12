@@ -467,7 +467,7 @@ function JunieIcon(props: { size: number, class?: string }): JSX.Element {
   )
 }
 
-export function LettaIcon(props: { size: number, class?: string }): JSX.Element {
+function LettaIcon(props: { size: number, class?: string }): JSX.Element {
   // Letta's own glyph: the rounded frame and its centre square. The wordmark
   // of the source lockup is dropped, so the mark stays readable at 16px.
   return (
@@ -670,6 +670,9 @@ export function AgentProviderIcon(props: AgentProviderIconProps): JSX.Element {
       </Match>
       <Match when={props.provider === AgentProvider.JUNIE}>
         <JunieIcon size={props.size} {...classProps()} />
+      </Match>
+      <Match when={props.provider === AgentProvider.LETTA}>
+        <LettaIcon size={props.size} {...classProps()} />
       </Match>
     </Switch>
   )

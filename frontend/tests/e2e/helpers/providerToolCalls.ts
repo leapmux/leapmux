@@ -1,4 +1,5 @@
 import type { MockModelToolCall } from './mockModelScript'
+import { isAbsolute } from 'node:path'
 import { createHash } from 'node:crypto'
 import { AMP_TOOL_NAME } from '../../../src/components/chat/providers/amp/toolNames'
 import { CLINE_TOOL_NAME } from '../../../src/components/chat/providers/cline/toolNames'
@@ -9,6 +10,7 @@ import { CODEWHALE_TOOL } from '../../../src/generated/contracts/codewhale-proto
 // The note in ../agentSettings.ts explains standalone native probes.
 import { COPILOT_TOOL } from '../../../src/generated/contracts/copilot-protocol'
 import { KIMI_TOOL } from '../../../src/generated/contracts/kimi-protocol'
+import { LETTA_TOOL } from '../../../src/generated/contracts/letta-protocol'
 import { MIMO_ACTOR_ACTION, MIMO_TOOL } from '../../../src/generated/contracts/mimo-protocol'
 import { PI_TOOL } from '../../../src/generated/contracts/pi-protocol'
 import { QWEN_TOOL } from '../../../src/generated/contracts/qwen-protocol'
@@ -994,6 +996,54 @@ const TOOL_VOCABULARY = {
     codeExecution: (id, source) => ({ id, name: 'mcp__node_repl__js', arguments: { code: source, title: 'Run the native script' } }),
     workflowTools: [ZCODE_TOOL.CreateWorkflow],
   },
+  [AgentProvider.LETTA]: {
+    bash: (id, command) => ({ id, name: 'Bash', arguments: { command, description: 'Run the scripted command' } }),
+    edit: (id, request) => ({
+      id,
+      name: 'Edit',
+      arguments: { file_path: request.path, old_string: request.before, new_string: request.after },
+    }),
+    write: (id, request) => ({
+      id,
+      name: 'Write',
+      arguments: { file_path: request.path, content: request.content },
+    }),
+    read: (id, path) => ({ id, name: 'Read', arguments: { file_path: path } }),
+    enterPlanMode: null,
+    exitPlanMode: null,
+    exitPlanModeFromFile: null,
+    // Letta Code 0.34.2 requires a header and, for each option, a label and a description of its own. The schema states
+    // no preview, so the preview stays out.
+    askUserQuestion: questionBuilder((id, questions) => ({
+      id,
+      name: 'AskUserQuestion',
+      arguments: {
+        questions: questions.map(q => ({
+          question: q.question,
+          header: q.header,
+          options: q.options.map(o => ({ label: o.label, description: o.description })),
+          multiSelect: q.multiSelect ?? false,
+        })),
+      },
+    })),
+    // The model calls Letta's Task tool `Agent`. Its schema states no background choice, because each child runs in the
+    // background: "Agents always run in the background" (0.34.2). The builder refuses a foreground request.
+    spawnSubagent: (id, { description, prompt, background }) => {
+      if (background === false)
+        throw new Error('Letta Code always runs a child in the background; its Agent tool takes no foreground choice.')
+      return { id, name: 'Agent', arguments: { description, prompt, subagent_type: 'general-purpose' } }
+    },
+    spawnSubagentBatch: null,
+    backgroundBash: null,
+    updateTodos: null,
+    createGoal: null,
+    completeGoal: null,
+    blockGoal: null,
+    mcpTool: null,
+    codeExecution: null,
+    workflowTools: [LETTA_TOOL.Workflow],
+  },
+
   [AgentProvider.JUNIE]: {
     // Junie's tools are OpenAI function calls. `bash` takes the command; the
     // tool description states that each call is wrapped in `bash -c`.
@@ -1980,6 +2030,39 @@ function ohMyPiTaskToolCall(id: string, requests: readonly SubagentRequest[]): M
       tasks: requests.map((request, index) => ({ name: names[index], agent: 'task', task: request.prompt })),
     },
   }
+}
+
+export function lettaMcpCliToolCall(id: string, agentId: string, toolId: string, input: Record<string, unknown>): MockModelToolCall {
+  if (!id.trim() || !agentId.trim() || agentId !== agentId.trim() || !/^[\w-]+$/.test(agentId))
+    throw new Error('The native Letta MCP call requires a call ID and a valid agent ID.')
+  const prefix = 'mcp__'
+  const remainder = toolId.slice(prefix.length)
+  const separator = remainder.indexOf('__', 1)
+  if (!toolId.startsWith(prefix) || !/^[\w-]+$/.test(remainder) || separator < 1 || separator + 2 >= remainder.length)
+    throw new Error('The native Letta MCP tool ID must identify its server and tool.')
+  const serialized = JSON.stringify(input)
+  const command = ['letta', 'mcp', 'call', toolId, '--agent', agentId, '--args', serialized].map(quotePosixShellArgument).join(' ')
+  return bashToolCall(AgentProvider.LETTA, id, command)
+}
+
+export function lettaMcpCatalogToolCall(id: string, options: {
+  agentId: string
+  server: string
+  executable: string
+  nodeExecutable: string
+  captureScriptPath: string
+  receiptId: string
+}): MockModelToolCall {
+  if (!id || id !== id.trim() || !/^[\w-]+$/.test(id)
+    || !options.receiptId || options.receiptId !== options.receiptId.trim() || !/^[\w-]+$/.test(options.receiptId)
+    || ![options.executable, options.nodeExecutable, options.captureScriptPath].every(isAbsolute)) {
+    throw new Error('The native Letta MCP capture requires valid identities and absolute executable paths.')
+  }
+  const args = lettaMcpCatalogArguments(options.agentId, options.server)
+  const command = [options.nodeExecutable, options.captureScriptPath, options.receiptId, id, options.executable, ...args]
+    .map(quotePosixShellArgument)
+    .join(' ')
+  return bashToolCall(AgentProvider.LETTA, id, command)
 }
 
 export function enterPlanModeToolCall(provider: AgentProvider, id: string): MockModelToolCall {

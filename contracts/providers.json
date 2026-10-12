@@ -133,6 +133,13 @@
       "parseAliases": [
         "jetbrains-junie"
       ]
+    },
+    "AGENT_PROVIDER_LETTA": {
+      "displayName": "Letta Code",
+      "cliAlias": "letta",
+      "parseAliases": [
+        "letta-code"
+      ]
     }
   }
 }
