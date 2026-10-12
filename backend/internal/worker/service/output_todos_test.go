@@ -1634,3 +1634,60 @@ func TestRegistryCache_AFailedTransactionBodyRestoresTheCacheAndWritesNothing(t 
 	require.Len(t, rows, 1, "the transaction rolled back, so the body's write never landed")
 	assert.Equal(t, "t1", rows[0].TaskID)
 }
+
+// geminiTodoSupplement is what the Gemini tool transcript stores beside one
+// completed write_todos row: the identity of the row, and the native session
+// record under the contract's own key in rawOutput.
+func geminiTodoSupplement(t *testing.T, toolCallID string, todos []map[string]string) []byte {
+	t.Helper()
+	return marshalJSON(t, map[string]any{
+		contracts.ACPSupplementIdentitySessionUpdate: "tool_call_update",
+		contracts.ACPSupplementIdentityToolCallID:    toolCallID,
+		contracts.ACPSupplementIdentityStatus:        "completed",
+		contracts.ACPSupplementRawOutput: map[string]any{contracts.GeminiSupplementStoredToolRecord: map[string]any{
+			"id": toolCallID, "name": contracts.GeminiToolTodoWrite, "status": "success",
+			"args":          map[string]any{"todos": todos},
+			"resultDisplay": map[string]any{"todos": todos},
+		}},
+	})
+}
+
+func TestOutputTodos_GeminiStoredRecordFeedsTheStore(t *testing.T) {
+	t.Parallel()
+
+	sink, _, listRows := setupTodoTestForProvider(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI)
+	enrich := func(toolCallID string, todos []map[string]string) {
+		t.Helper()
+		original := closingToolCallRow(t, sink, toolCallID)
+		written, err := sink.EnrichMessage(agent.MessageEnrichment{
+			SpanID: toolCallID, OriginalContent: original, SupplementalContent: geminiTodoSupplement(t, toolCallID, todos),
+		})
+		require.NoError(t, err)
+		require.True(t, written)
+	}
+
+	enrich("write_todos__c1", []map[string]string{
+		{"description": "pending task", "status": "pending"},
+		{"description": "active task", "status": "in_progress"},
+		{"description": "blocked task", "status": "blocked"},
+		{"description": "cancelled task", "status": "cancelled"},
+	})
+	rows := listRows()
+	require.Len(t, rows, 4)
+	assert.Equal(t, []string{"pending task", "active task", "blocked task", "cancelled task"}, []string{rows[0].Content, rows[1].Content, rows[2].Content, rows[3].Content})
+	assert.Equal(t, []leapmuxv1.TodoStatus{
+		leapmuxv1.TodoStatus(todoevents.StatusPending),
+		leapmuxv1.TodoStatus(todoevents.StatusInProgress),
+		leapmuxv1.TodoStatus(todoevents.StatusBlocked),
+		leapmuxv1.TodoStatus(todoevents.StatusDeleted),
+	}, []leapmuxv1.TodoStatus{rows[0].Status, rows[1].Status, rows[2].Status, rows[3].Status})
+
+	enrich("write_todos__c2", []map[string]string{{"description": "replacement task", "status": "completed"}})
+	rows = listRows()
+	require.Len(t, rows, 1, "the second snapshot replaces the first")
+	assert.Equal(t, "replacement task", rows[0].Content)
+	assert.Equal(t, leapmuxv1.TodoStatus(todoevents.StatusCompleted), rows[0].Status)
+
+	enrich("write_todos__c3", []map[string]string{})
+	assert.Empty(t, listRows(), "an empty snapshot clears the list")
+}

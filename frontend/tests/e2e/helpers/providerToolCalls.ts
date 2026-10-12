@@ -1,4 +1,5 @@
 import type { MockModelToolCall } from './mockModelScript'
+import { GEMINI_TOOL } from '../../../src/generated/contracts/gemini-protocol'
 import { createHash } from 'node:crypto'
 import { isAbsolute } from 'node:path'
 import { AMP_TOOL_NAME } from '../../../src/components/chat/providers/amp/toolNames'
@@ -998,7 +999,27 @@ const TOOL_VOCABULARY = {
     mcpTool: (id, { server, tool, input }) => ({ id, name: `mcp__${server}__${tool}`, arguments: input }),
     codeExecution: (id, source) => ({ id, name: 'mcp__node_repl__js', arguments: { code: source, title: 'Run the native script' } }),
     workflowTools: [ZCODE_TOOL.CreateWorkflow],
+  },  [AgentProvider.GEMINI_CLI]: {
+    bash: (id, command) => ({ id, name: GEMINI_TOOL.RunShellCommand, arguments: { command } }),
+    edit: (id, { path, before, after }) => ({ id, name: GEMINI_TOOL.Replace, arguments: { file_path: path, old_string: before, new_string: after, instruction: 'Apply the requested replacement exactly.' } }),
+    write: (id, { path, content }) => ({ id, name: GEMINI_TOOL.WriteFile, arguments: { file_path: path, content } }),
+    read: (id, path) => ({ id, name: GEMINI_TOOL.ReadFile, arguments: { file_path: path } }),
+    enterPlanMode: id => ({ id, name: GEMINI_TOOL.EnterPlanMode, arguments: {} }),
+    exitPlanMode: null,
+    exitPlanModeFromFile: id => geminiPlanApprovalToolCall(id, GEMINI_E2E_PLAN_FILENAME),
+    askUserQuestion: null,
+    spawnSubagent: (id, { prompt }) => ({ id, name: GEMINI_TOOL.InvokeAgent, arguments: { agent_name: 'generalist', prompt } }),
+    spawnSubagentBatch: null,
+    backgroundBash: null,
+    updateTodos: (id, steps) => ({ id, name: GEMINI_TOOL.TodoWrite, arguments: { todos: steps.map(step => ({ description: step.step, status: acceptedTodoStatus('Gemini CLI write_todos', CANCELLED_AND_BLOCKED_TODO_STATUSES, step.status) })) } }),
+    createGoal: null,
+    completeGoal: null,
+    blockGoal: null,
+    mcpTool: (id, { server, tool, input }) => ({ id, name: `mcp_${server}_${tool}`, arguments: input }),
+    codeExecution: null,
+    workflowTools: null,
   },
+
   [AgentProvider.DEEPSEEK_HARNESS]: {
     bash: (id, command) => ({ id, name: DEEPSEEK_HARNESS_TOOL.Bash, arguments: { command, description: 'Run the scripted command.' } }),
     edit: (id, { path, before, after }) => ({ id, name: DEEPSEEK_HARNESS_TOOL.Edit, arguments: { file_path: path, old_string: before, new_string: after } }),
@@ -2345,6 +2366,14 @@ export function commandCodeTaskCreateToolCall(id: string, subject: string, descr
 
 export function commandCodeTaskUpdateToolCall(id: string, taskId: string, status: TaskFamilyStatus): MockModelToolCall {
   return taskFamilyUpdateCall(COMMAND_CODE_TOOL.TaskUpdate, id, taskId, status)
+}
+
+export function geminiCompleteTaskToolCall(id: string, response: string): MockModelToolCall {
+  return { id, name: GEMINI_TOOL.CompleteTask, arguments: { result: { response } } }
+}
+
+export function geminiPlanApprovalToolCall(id: string, filename: string): MockModelToolCall {
+  return { id, name: GEMINI_TOOL.ExitPlanMode, arguments: { plan_filename: filename } }
 }
 
 export function enterPlanModeToolCall(provider: AgentProvider, id: string): MockModelToolCall {

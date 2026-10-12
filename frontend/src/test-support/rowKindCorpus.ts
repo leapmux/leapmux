@@ -913,4 +913,22 @@ export const ROW_KIND_CASES: RowKindCase[] = [
     payload: { type: 'turn/end', seq: 3, time: 1002, data: { reason: { kind: 'completed' } } },
     category: 'result_divider',
   },
+  {
+    provider: Provider.GEMINI_CLI,
+    name: 'native child prompt',
+    payload: { id: 'native-user', type: 'user', content: [{ text: 'Read the native source.' }] },
+    category: 'user_text',
+  },
+  {
+    provider: Provider.GEMINI_CLI,
+    name: 'native child answer',
+    payload: { id: 'native-model', type: 'gemini', content: [{ text: 'Private reasoning', thought: true }, { text: 'The native answer.' }] },
+    category: 'assistant_text',
+  },
+  {
+    provider: Provider.GEMINI_CLI,
+    name: 'native function response without visible text',
+    payload: { id: 'native-response', type: 'user', content: [{ functionResponse: { response: { output: 'Native tool output.' } } }] },
+    category: 'hidden',
+  },
 ]

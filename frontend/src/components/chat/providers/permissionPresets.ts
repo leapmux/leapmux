@@ -1,4 +1,5 @@
 import type { ProviderPermissionPresets } from '../providerSettings'
+import { geminiPermissionPresets } from './gemini/permissionPresets'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { ampPermissionPresets } from './amp/permissionPresets'
 import { claudePermissionPresets } from './claude/permissionPresets'
@@ -53,6 +54,7 @@ export const PROVIDER_PERMISSION_PRESETS = {
   [AgentProvider.FAST_AGENT]: undefined,
   [AgentProvider.COMMAND_CODE]: commandCodePermissionPresets,
   [AgentProvider.DEEPSEEK_HARNESS]: deepseekHarnessPermissionPresets,
+  [AgentProvider.GEMINI_CLI]: geminiPermissionPresets,
 } satisfies Record<AgentProvider, ProviderPermissionPresets | undefined>
 
 /** Read canonical preset data without importing a rendering plugin. */

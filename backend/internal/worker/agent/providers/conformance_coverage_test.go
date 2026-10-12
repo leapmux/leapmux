@@ -48,6 +48,7 @@ var providerDirs = map[leapmuxv1.AgentProvider]string{
 	leapmuxv1.AgentProvider_AGENT_PROVIDER_FAST_AGENT:       "fastagent",
 	leapmuxv1.AgentProvider_AGENT_PROVIDER_COMMAND_CODE:     "commandcode",
 	leapmuxv1.AgentProvider_AGENT_PROVIDER_DEEPSEEK_HARNESS: "deepseekharness",
+	leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI:       "gemini",
 }
 
 // requiredSuites states, for each package directory, the agenttest suites that
@@ -71,6 +72,9 @@ var requiredSuites = map[string][]string{
 		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
 		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
 		"AssertPreservesTheResponseWithoutARequest", "AssertTokenResumeRule", "AssertChildCapabilities",
+	},
+	"gemini": {
+		"RequireReadsSessionStore", "AssertTokenResumeRule", "AssertControlIdentitiesStaySeparate", "AssertChildCapabilities",
 	},
 	"deepseekharness": {
 		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",

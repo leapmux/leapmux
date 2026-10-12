@@ -183,6 +183,13 @@
       "parseAliases": [
         "dsh"
       ]
+    },
+    "AGENT_PROVIDER_GEMINI_CLI": {
+      "displayName": "Gemini CLI",
+      "cliAlias": "gemini-cli",
+      "parseAliases": [
+        "gemini"
+      ]
     }
   }
 }

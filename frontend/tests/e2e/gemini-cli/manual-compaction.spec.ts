@@ -1,0 +1,6 @@
+import { geminiTest } from '../gemini-fixtures'
+import { exerciseNativeCompactCommandLimit } from './scenarios'
+
+geminiTest('preserves the model context when the unsupported native compact command reaches the model', async ({ native }) => {
+  await exerciseNativeCompactCommandLimit(native)
+})

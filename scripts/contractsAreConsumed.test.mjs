@@ -260,7 +260,7 @@ function tagPinReaders(spec, table, contract) {
  */
 const PENDING_READERS = new Set([
    ,,
-  'gemini-protocol',,
+ ,,
  ,
   'muse-protocol',,
  ,

@@ -72,7 +72,7 @@ func TestQueuedInputDoesNotRelaunchARefusedNativeResume(t *testing.T) {
 		return append([]string(nil), launchedResumeIDs...)
 	}
 
-	agentID := openTranscriptResumeAgent(t, dispatcher, t.TempDir(), sessionID, leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO)
+	agentID := openTranscriptResumeAgent(t, dispatcher, t.TempDir(), sessionID, leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI)
 	select {
 	case <-openLaunched:
 	case <-ctx.Done():
@@ -122,7 +122,7 @@ func TestFailedNativeResumeRetainsTheCopiedWorkerTranscript(t *testing.T) {
 	t.Parallel()
 	svc, dispatcher := transcriptResumeService(t)
 	workingDir := t.TempDir()
-	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO
+	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI
 	const sourceID = "closed-gemini-source"
 	const sessionID = "native-gemini-session"
 	const nativeError = "No previous sessions found for this project."
@@ -237,7 +237,7 @@ func (l *resumeLaunches) ids() []string {
 func openRefusedNativeResume(t *testing.T) (*Service, string, []db.Message, *resumeLaunches) {
 	t.Helper()
 	svc, dispatcher := transcriptResumeService(t)
-	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO
+	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI
 	workingDir := t.TempDir()
 	const sourceID = "closed-gemini-source"
 	seedTranscriptSource(t, svc, sourceID, workingDir, refusedResumeSessionID, provider, false)
@@ -382,7 +382,7 @@ func TestAutomaticPathsStillRefuseAnAgentWhoseNativeResumeWasRefused(t *testing.
 		enqueueAndSettle(t, svc, agentID, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, "hello"))
 	assert.Equal(t, errAgentStartupFailed.Error(),
 		enqueueAndSettle(t, svc, agentID, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_COMPACT_CONTEXT, "/compact"))
-	assert.Error(t, svc.handleControlRequestMessage(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO,
+	assert.Error(t, svc.handleControlRequestMessage(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI,
 		`{"jsonrpc":"2.0","id":1,"method":"session/list","params":{}}`, func(data []byte) error { return svc.Agents.SendRawInput(agentID, data, agent.StopContext{}) }),
 		"a control request reached an agent whose startup failed")
 	assert.Equal(t, outcomeSkipped, svc.AgentResumer().resumeOne(t.Context(), agentID))
@@ -426,7 +426,7 @@ func TestARecoveringClearIsAStartupThatACloseCancels(t *testing.T) {
 	require.True(t, tracked, "the recovering clear holds no startup claim")
 	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_STARTING.String(), status.String())
 	assert.Empty(t, startupError)
-	assert.Equal(t, agentStartupLabel("Restarting", leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO), startupMessage)
+	assert.Equal(t, agentStartupLabel("Restarting", leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI), startupMessage)
 
 	svc.CloseTabForReconcile(leapmuxv1.TabType_TAB_TYPE_AGENT, "", agentID)
 	assert.ErrorIs(t, launchCtx.Err(), context.Canceled, "the close did not reach the launch of the recovering clear")

@@ -437,7 +437,7 @@ const OPERATIONS = [
 
 describe('TOOL_VOCABULARY', () => {
   it('answers for every provider the proto enum declares', () => {
-    expect(PROVIDERS).toHaveLength(28)
+    expect(PROVIDERS).toHaveLength(29)
     for (const provider of PROVIDERS)
       expect(() => hasToolFor(provider, 'bash'), `provider ${provider}`).not.toThrow()
   })
@@ -527,6 +527,7 @@ const TODO_STATUSES_BY_PROVIDER: ReadonlyMap<AgentProvider, readonly TodoStatus[
   [AgentProvider.OH_MY_PI, ALL_TODO_STATUSES],
   [AgentProvider.KIRO, ALL_TODO_STATUSES],
   [AgentProvider.QODER, ['pending', 'in_progress', 'completed', 'cancelled', 'blocked']],
+  [AgentProvider.GEMINI_CLI, ['pending', 'in_progress', 'completed', 'cancelled', 'blocked']],
 
 ])
 
