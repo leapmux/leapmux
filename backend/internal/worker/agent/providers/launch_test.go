@@ -36,6 +36,7 @@ func TestEveryRegisteredProviderResolvesALaunch(t *testing.T) {
 			if err != nil {
 				assert.Contains(t, []leapmuxv1.AgentProvider{
 					leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE,
+					leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEWHALE,
 				}, provider, "provider %v has neither a resolver nor a registered binary name", provider)
 				continue
 			}

@@ -171,6 +171,8 @@ const WIRE_TOKEN_SAMPLES: LintSample[] = [
   wireTokenSample('Copilot event family', 'assistant.fusion_step'),
   wireTokenSample('bare Copilot event family', 'session.canvas.'),
   wireTokenSample('OpenCode event', 'question.asked'),
+  wireTokenSample('ZCode event', 'session.created'),
+  wireTokenSample('ZCode method', 'interaction/requestUserInput'),
   wireTokenSample('Claude compaction boundary', 'compact_boundary'),
   wireTokenSample('ACP update', 'agent_message_chunk'),
   wireTokenSample('Codex method', 'turn/plan/updated'),

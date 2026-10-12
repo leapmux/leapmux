@@ -33,7 +33,7 @@ func TestOpenAgentCopiesThePriorWorkerTranscript(t *testing.T) {
 	workingDir := t.TempDir()
 	const sourceID = "source-agent"
 	const sessionID = "session-a1"
-	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE
+	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_DIRAC
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID: sourceID, WorkingDir: workingDir, HomeDir: svc.HomeDir, AgentProvider: provider,
 	}))
@@ -120,7 +120,7 @@ func openTranscriptResumeAgent(t *testing.T, dispatcher *channel.Dispatcher, wor
 
 func TestOpenAgentDoesNotCopyUnmatchedWorkerRows(t *testing.T) {
 	t.Parallel()
-	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE
+	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_DIRAC
 	for _, tc := range []struct {
 		name           string
 		sourceProvider leapmuxv1.AgentProvider
@@ -183,7 +183,7 @@ func TestOpenAgentRejectsAnOpenNativeSession(t *testing.T) {
 		t.Run(label, func(t *testing.T) {
 			t.Parallel()
 			svc, dispatcher := transcriptResumeService(t)
-			provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE
+			provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_DIRAC
 			workingDir := t.TempDir()
 			seedTranscriptSource(t, svc, "open-agent", workingDir, "session-a1", provider, false)
 			requestedDir := workingDir
@@ -220,7 +220,7 @@ func TestConcurrentManualResumesClaimOneNativeSession(t *testing.T) {
 	workingDir := t.TempDir()
 	request := &leapmuxv1.OpenAgentRequest{
 		WorkingDir:     workingDir,
-		AgentProvider:  leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
+		AgentProvider:  leapmuxv1.AgentProvider_AGENT_PROVIDER_DIRAC,
 		AgentSessionId: "session-a1",
 	}
 	first := newTestWriter()
@@ -252,7 +252,7 @@ func TestPendingResumeClaimClearsOnNativeConfirmation(t *testing.T) {
 	t.Parallel()
 	svc, dispatcher := transcriptResumeService(t)
 	workingDir := t.TempDir()
-	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE
+	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_DIRAC
 	id := openTranscriptResumeAgent(t, dispatcher, workingDir, "session-a1", provider)
 	row, err := svc.Queries.GetAgentByID(t.Context(), id)
 	require.NoError(t, err)
@@ -275,7 +275,7 @@ func TestFailedNativeResumeReleasesPendingClaim(t *testing.T) {
 		return nil, errors.New("native resume refused")
 	}
 	workingDir := t.TempDir()
-	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE
+	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_DIRAC
 	firstID := openTranscriptResumeAgent(t, dispatcher, workingDir, "session-a1", provider)
 	drainAllInFlight(svc)
 	first, err := svc.Queries.GetAgentByID(t.Context(), firstID)
@@ -292,7 +292,7 @@ func TestClosingAResumedTabReleasesPendingClaim(t *testing.T) {
 	t.Parallel()
 	svc, dispatcher := transcriptResumeService(t)
 	workingDir := t.TempDir()
-	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE
+	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_DIRAC
 	firstID := openTranscriptResumeAgent(t, dispatcher, workingDir, "session-a1", provider)
 	drainAllInFlight(svc)
 	_, err := svc.Queries.CloseAgent(t.Context(), firstID)
@@ -307,7 +307,7 @@ func TestClosingAResumedTabReleasesPendingClaim(t *testing.T) {
 func TestConfirmedNativeSessionRejectsAnotherOpenClaim(t *testing.T) {
 	t.Parallel()
 	svc, _ := transcriptResumeService(t)
-	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE
+	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_DIRAC
 	seedTranscriptSource(t, svc, "confirmed-owner", t.TempDir(), "session-a1", provider, false)
 	err := svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{
 		ID: "second-owner", WorkingDir: t.TempDir(), HomeDir: svc.HomeDir,
@@ -320,7 +320,7 @@ func TestCopiedWorkerRowsKeepOrderMetadataAndHighWater(t *testing.T) {
 	t.Parallel()
 	svc, dispatcher := transcriptResumeService(t)
 	workingDir := t.TempDir()
-	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE
+	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_DIRAC
 	seedTranscriptSource(t, svc, "source-agent", workingDir, "session-a1", provider, false)
 	createdAt := sqltime.NewSQLiteTime(time.Date(2026, 9, 27, 0, 0, 0, 0, time.UTC))
 	for _, row := range []struct {
@@ -408,7 +408,7 @@ func TestResumeAfterWorkerRetentionStillOpens(t *testing.T) {
 	t.Parallel()
 	svc, dispatcher := transcriptResumeService(t)
 	workingDir := t.TempDir()
-	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE
+	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_DIRAC
 	seedTranscriptSource(t, svc, "source-agent", workingDir, "session-a1", provider, true)
 	_, err := svc.Queries.CreateMessage(t.Context(), db.CreateMessageParams{
 		ID: "source-message", AgentID: "source-agent", AgentSessionID: "session-a1",
@@ -434,7 +434,7 @@ func TestRepeatedResumeCopiesTheNewestClosedTranscript(t *testing.T) {
 	t.Parallel()
 	svc, dispatcher := transcriptResumeService(t)
 	workingDir := t.TempDir()
-	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE
+	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_DIRAC
 	seedTranscriptSource(t, svc, "original", workingDir, "session-a1", provider, false)
 	_, err := svc.Queries.CreateMessage(t.Context(), db.CreateMessageParams{
 		ID: "original-message", AgentID: "original", AgentSessionID: "session-a1",
@@ -485,7 +485,7 @@ func TestResumeCopyFailureRollsBackTheNewAgent(t *testing.T) {
 	t.Parallel()
 	svc, _ := transcriptResumeService(t)
 	workingDir := t.TempDir()
-	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE
+	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_DIRAC
 	seedTranscriptSource(t, svc, "source-agent", workingDir, "session-a1", provider, false)
 	_, err := svc.Queries.CreateMessage(t.Context(), db.CreateMessageParams{
 		ID: "source-message", AgentID: "source-agent", AgentSessionID: "session-a1",
@@ -526,7 +526,7 @@ func TestEmbeddedNotificationJournalSurvivesRootNestedAndRepeatedResume(t *testi
 	t.Parallel()
 	svc, _ := transcriptResumeService(t)
 	workingDir := t.TempDir()
-	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE
+	provider := leapmuxv1.AgentProvider_AGENT_PROVIDER_DIRAC
 	seedTranscriptSource(t, svc, "journal-old-root", workingDir, "native-root", provider, false)
 	seedArchivedChildForResume(t, svc, "journal-old-root", "journal-old-root", "journal-old-child", "first", 1, bgtask.StatusSucceeded)
 	seedArchivedChildForResume(t, svc, "journal-old-root", "journal-old-child", "journal-old-nested", "second", 2, bgtask.StatusSucceeded)

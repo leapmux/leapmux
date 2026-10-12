@@ -81,7 +81,7 @@ describe('waitForNativeToolSteps', () => {
     const page = allowButtonPage(locator)
     const context: NativeScenarioContext = {
       page,
-      provider: AgentProvider.CLAUDE_CODE,
+      provider: AgentProvider.QODER,
       modelScript: {
         id: 'completed-tool-wait',
         testDeadline: () => undefined,
@@ -600,7 +600,7 @@ describe('native file read, edit, and write scenarios', () => {
     })
     const context = {
       page,
-      provider: AgentProvider.CLAUDE_CODE,
+      provider: AgentProvider.CLINE,
       modelScript: guardedBrowserHandle<NativeScenarioContext['modelScript']>({
         prompt: text => text,
         queue: async (...steps: MockModelStep[]) => {
@@ -621,7 +621,7 @@ describe('native file read, edit, and write scenarios', () => {
       calls.chat.mockResolvedValue('unit-read-1 unit-read-2 unit-read-3')
       await exerciseNativeFileRead(context, { directory, linePrefix: 'unit-read', numberedLine: (line, text) => `${line} | ${text}` })
       expect(readFileSync(join(directory, 'notes.txt'), 'utf8')).toBe('unit-read-1\nunit-read-2\nunit-read-3\n')
-      expect(calls.read).toHaveBeenCalledExactlyOnceWith(AgentProvider.CLAUDE_CODE, 'read-notes', join(directory, 'notes.txt'))
+      expect(calls.read).toHaveBeenCalledExactlyOnceWith(AgentProvider.CLINE, 'read-notes', join(directory, 'notes.txt'))
       expect(queued[0]?.[0]).toEqual({ toolCalls: [{ id: 'read-notes', name: 'unit-read' }] })
     })
 
@@ -639,7 +639,7 @@ describe('native file read, edit, and write scenarios', () => {
       const path = join(directory, 'parity.ts')
       const { context, log } = fileTurn(() => writeFileSync(path, `${PARITY_AFTER}\n`))
       await exerciseNativeFileEdit(context, { directory })
-      expect(calls.edit).toHaveBeenCalledExactlyOnceWith(AgentProvider.CLAUDE_CODE, 'parity-edit', { path, before: PARITY_BEFORE, after: PARITY_AFTER })
+      expect(calls.edit).toHaveBeenCalledExactlyOnceWith(AgentProvider.CLINE, 'parity-edit', { path, before: PARITY_BEFORE, after: PARITY_AFTER })
       expect(log.at(-1)).toContain('to.be.visible')
     })
 
@@ -657,7 +657,7 @@ describe('native file read, edit, and write scenarios', () => {
       const { context } = fileTurn(() => writeFileSync(path(), 'unit was here\n'))
       calls.chat.mockResolvedValue('Wrote note.txt')
       await exerciseNativeFileWrite(context, { directory, content: 'unit was here\n' })
-      expect(calls.write).toHaveBeenCalledExactlyOnceWith(AgentProvider.CLAUDE_CODE, 'write-call', { path: path(), content: 'unit was here\n' })
+      expect(calls.write).toHaveBeenCalledExactlyOnceWith(AgentProvider.CLINE, 'write-call', { path: path(), content: 'unit was here\n' })
     })
 
     it('requires exactly the stated other bytes of a provider that changes the content', async () => {
@@ -925,15 +925,15 @@ describe('nativeFileReadResult', () => {
 describe('nativeFileEditSequence', () => {
   it.runIf(existsSync('/bin/sh'))('seeds the exact bytes without expanding shell characters in the filename', () => {
     const fileName = 'literal $(touch command-expanded-marker) \'quote\';.txt'
-    const sequence = nativeFileEditSequence(AgentProvider.CLAUDE_CODE, { workingDir: directory, fileName })
+    const sequence = nativeFileEditSequence(AgentProvider.CODEBUDDY, { workingDir: directory, fileName })
     const command: unknown = calls.shell.mock.calls[0]?.[2]
     if (typeof command !== 'string')
       throw new Error('The native file seed supplied no shell command.')
     execFileSync('/bin/sh', ['-c', command], { cwd: directory })
     expect(readFileSync(sequence.filePath, 'utf8')).toBe('const parityBefore = 1\n')
     expect(existsSync(join(directory, 'command-expanded-marker'))).toBe(false)
-    expect(calls.read).toHaveBeenCalledWith(AgentProvider.CLAUDE_CODE, 'read-file', sequence.filePath)
-    expect(calls.edit).toHaveBeenCalledWith(AgentProvider.CLAUDE_CODE, 'edit-file', {
+    expect(calls.read).toHaveBeenCalledWith(AgentProvider.CODEBUDDY, 'read-file', sequence.filePath)
+    expect(calls.edit).toHaveBeenCalledWith(AgentProvider.CODEBUDDY, 'edit-file', {
       path: sequence.filePath,
       before: 'const parityBefore = 1',
       after: 'const parityAfter = 2',
@@ -941,7 +941,7 @@ describe('nativeFileEditSequence', () => {
   })
 
   it('preserves native shell, read, and edit call order', () => {
-    const sequence = nativeFileEditSequence(AgentProvider.CLAUDE_CODE, { workingDir: directory, fileName: 'qoder-file-probe.txt' })
+    const sequence = nativeFileEditSequence(AgentProvider.QODER, { workingDir: directory, fileName: 'qoder-file-probe.txt' })
     expect(sequence.steps.slice(0, 3).flatMap(step => step.toolCalls?.map(call => call.id) ?? []))
       .toEqual(['seed-file', 'read-file', 'edit-file'])
     expect(calls.shell.mock.invocationCallOrder[0]).toBeLessThan(calls.read.mock.invocationCallOrder[0]!)
@@ -951,8 +951,8 @@ describe('nativeFileEditSequence', () => {
 
 describe('nativeFileWriteSequence', () => {
   it('passes the full native Write bytes to the provider vocabulary without a fixture write', () => {
-    const sequence = nativeFileWriteSequence(AgentProvider.CLAUDE_CODE, { workingDir: directory, fileName: 'qoder-written-probe.txt' })
-    expect(calls.write).toHaveBeenCalledWith(AgentProvider.CLAUDE_CODE, 'write-file', { path: sequence.filePath, content: 'written-42\n' })
+    const sequence = nativeFileWriteSequence(AgentProvider.QODER, { workingDir: directory, fileName: 'qoder-written-probe.txt' })
+    expect(calls.write).toHaveBeenCalledWith(AgentProvider.QODER, 'write-file', { path: sequence.filePath, content: 'written-42\n' })
     expect(existsSync(sequence.filePath)).toBe(false)
     expect(calls.shell).not.toHaveBeenCalled()
     expect(calls.read).not.toHaveBeenCalled()
@@ -963,7 +963,7 @@ describe('nativeFileWriteSequence', () => {
 describe('native file sequence paths', () => {
   it.runIf(existsSync('/bin/sh'))('preserves the original basename inside a literal private directory', () => {
     const workingDir = createNativeToolDirectory(directory)
-    const sequence = nativeFileEditSequence(AgentProvider.CLAUDE_CODE, { workingDir, fileName: 'parity.ts' })
+    const sequence = nativeFileEditSequence(AgentProvider.CODEBUDDY, { workingDir, fileName: 'parity.ts' })
     const command: unknown = calls.shell.mock.calls[0]?.[2]
     if (typeof command !== 'string')
       throw new Error('The native file seed supplied no shell command.')
@@ -972,10 +972,10 @@ describe('native file sequence paths', () => {
     expect(sequence.filePath).toBe(join(workingDir, 'parity.ts'))
     expect(readFileSync(sequence.filePath, 'utf8')).toBe('const parityBefore = 1\n')
     expect(command).toContain(quotePosixShellArgument(sequence.filePath))
-    expect(calls.read).toHaveBeenCalledWith(AgentProvider.CLAUDE_CODE, 'read-file', sequence.filePath)
-    expect(calls.edit).toHaveBeenCalledWith(AgentProvider.CLAUDE_CODE, 'edit-file', { path: sequence.filePath, before: 'const parityBefore = 1', after: 'const parityAfter = 2' })
-    const writeSequence = nativeFileWriteSequence(AgentProvider.CLAUDE_CODE, { workingDir, fileName: 'written.txt' })
-    expect(calls.write).toHaveBeenCalledWith(AgentProvider.CLAUDE_CODE, 'write-file', { path: writeSequence.filePath, content: 'written-42\n' })
+    expect(calls.read).toHaveBeenCalledWith(AgentProvider.CODEBUDDY, 'read-file', sequence.filePath)
+    expect(calls.edit).toHaveBeenCalledWith(AgentProvider.CODEBUDDY, 'edit-file', { path: sequence.filePath, before: 'const parityBefore = 1', after: 'const parityAfter = 2' })
+    const writeSequence = nativeFileWriteSequence(AgentProvider.CODEBUDDY, { workingDir, fileName: 'written.txt' })
+    expect(calls.write).toHaveBeenCalledWith(AgentProvider.CODEBUDDY, 'write-file', { path: writeSequence.filePath, content: 'written-42\n' })
     expect(existsSync(writeSequence.filePath)).toBe(false)
     expect(existsSync(join(directory, 'command-expanded-marker'))).toBe(false)
   })
@@ -983,9 +983,9 @@ describe('native file sequence paths', () => {
   it('rejects relative directories and filename traversal before a tool is built', () => {
     for (const build of [nativeFileEditSequence, nativeFileWriteSequence]) {
       for (const workingDir of ['', '.', 'relative/path'])
-        expect(() => build(AgentProvider.CLAUDE_CODE, { workingDir, fileName: 'file.txt' })).toThrow('absolute private working directory')
+        expect(() => build(AgentProvider.CODEBUDDY, { workingDir, fileName: 'file.txt' })).toThrow('absolute private working directory')
       for (const fileName of ['', '.', '..', '../escape', 'nested/file', 'nested\\file', '\0'])
-        expect(() => build(AgentProvider.CLAUDE_CODE, { workingDir: directory, fileName })).toThrow('one filename component')
+        expect(() => build(AgentProvider.CODEBUDDY, { workingDir: directory, fileName })).toThrow('one filename component')
     }
     for (const call of [calls.shell, calls.read, calls.edit, calls.write])
       expect(call).not.toHaveBeenCalled()
@@ -996,7 +996,7 @@ describe('exerciseShellToolExecution', () => {
   const stop = new Error('The unit scenario stops after it queues the commands.')
 
   /** Run the scenario until it sends its prompt, and return the shell commands of the one step that it queued. */
-  async function queuedCommands(options: Parameters<typeof exerciseShellToolExecution>[1], provider = AgentProvider.CLAUDE_CODE): Promise<{ commands: string[], steps: MockModelStep[][] }> {
+  async function queuedCommands(options: Parameters<typeof exerciseShellToolExecution>[1], provider = AgentProvider.MIMO_CODE): Promise<{ commands: string[], steps: MockModelStep[][] }> {
     const status: MockModelScenarioStatus = { complete: false, nextStep: 0, stepCount: 0, requests: [], unexpectedRequests: [], ruleMatches: {}, pendingGates: [] }
     const steps: MockModelStep[][] = []
     const context: ManagedNativeScenarioContext = {
@@ -1045,6 +1045,14 @@ describe('exerciseShellToolExecution', () => {
     expect(steps).toHaveLength(1)
     expect(steps[0]).toHaveLength(2)
     expect(steps[0]?.[0]?.toolCalls?.map(call => call.id)).toEqual([expect.stringMatching(/^shell-[0-9a-f]{32}-0$/), expect.stringMatching(/^shell-[0-9a-f]{32}-1$/)])
+  })
+
+  it('gives each command a model answer of its own for a provider that runs one call of an answer', async () => {
+    const { commands, steps } = await queuedCommands({}, AgentProvider.JUNIE)
+    expect(commands).toHaveLength(2)
+    expect(steps).toHaveLength(1)
+    expect(steps[0]).toHaveLength(3)
+    expect(steps[0]?.slice(0, 2).map(step => step.toolCalls?.map(call => call.id))).toEqual([[expect.stringMatching(/-0$/)], [expect.stringMatching(/-1$/)]])
   })
 
   it('queues the successful command alone when the failure is left out', async () => {
@@ -1156,6 +1164,10 @@ describe('exerciseShellToolExecution', () => {
     expect((await runScenario({})).requested).toEqual([1, 1])
   })
 
+  it.runIf(existsSync('/bin/sh'))('reads each result from the request after its own answer for a provider that runs one call of an answer', async () => {
+    expect((await runScenario({}, { provider: AgentProvider.JUNIE })).requested).toEqual([1, 2])
+  })
+
   it.runIf(existsSync('/bin/sh'))('runs both commands and proves the rows of both after the answer', async () => {
     const { log, queued } = await runScenario({})
     expect(queued).toHaveLength(2)
@@ -1250,8 +1262,13 @@ describe('expectShellToolRows', () => {
     expect(log.some(entry => entry.includes('hasText=Error (exit 0)'))).toBe(false)
   })
 
+  it('leaves out the output path of Grok Build, which shows the path of every command', async () => {
+    const log = await checks(AgentProvider.GROK_BUILD)
+    expect(log.some(entry => entry.includes('tool-output-file-paths'))).toBe(false)
+  })
+
   it('requires the output-row rail for Factory Droid', async () => {
-    const log = await checks(AgentProvider.CLAUDE_CODE)
+    const log = await checks(AgentProvider.DROID)
     expect(log).toContain('to.be.visible page >> [data-span-columns]:not([data-span-columns="0"]):visible[hasText=SHELL1a42].first')
   })
 
@@ -1324,7 +1341,7 @@ describe('expectShellToolRows', () => {
   it('expands the row and preserves an exact native record without a missing marker', async () => {
     const record = 'Command: printf MARK%s 77 >&2; exit 7\nStdout: (empty)\nStderr: (empty)\nExit Code: 7\nSignal: (none)'
     const { page, log } = expandablePage(true, record)
-    await expectShellToolRows({ page, provider: AgentProvider.CLAUDE_CODE }, [{ ...commands[1], printedPrefix: 'MARK', output: record, exactOutput: record }])
+    await expectShellToolRows({ page, provider: AgentProvider.CODEBUDDY }, [{ ...commands[1], printedPrefix: 'MARK', output: record, exactOutput: record }])
     expect(log.filter(entry => entry.startsWith('click'))).toHaveLength(1)
     expect(record).not.toContain(commands[1].output)
   })
@@ -1332,16 +1349,16 @@ describe('expectShellToolRows', () => {
   it('fails when the displayed native record loses any contents', async () => {
     const record = 'Command: printf SHELLERR1a%s 77 >&2; exit 7\nStdout: (empty)\nStderr: (empty)\nExit Code: 7\nSignal: (none)'
     const { page } = expandablePage(false, record.replace('\nSignal: (none)', ''))
-    await expect(expectShellToolRows({ page, provider: AgentProvider.CLAUDE_CODE }, [{ ...commands[1], output: record, exactOutput: record }]))
+    await expect(expectShellToolRows({ page, provider: AgentProvider.CODEBUDDY }, [{ ...commands[1], output: record, exactOutput: record }]))
       .rejects
       .toThrow('the row preserves the exact native record')
   })
 
   it('checks native notice fragments on one result without refusing another preserved record', async () => {
     const { page } = expandablePage(false, 'actual output')
-    await expectShellToolRows({ page, provider: AgentProvider.CLAUDE_CODE }, [{ ...commands[0], absentRowText: ['Stdout:', 'Stderr:'] }])
+    await expectShellToolRows({ page, provider: AgentProvider.CODEBUDDY }, [{ ...commands[0], absentRowText: ['Stdout:', 'Stderr:'] }])
     const wrong = expandablePage(false, 'Stdout: actual output')
-    await expect(expectShellToolRows({ page: wrong.page, provider: AgentProvider.CLAUDE_CODE }, [{ ...commands[0], absentRowText: ['Stdout:'] }]))
+    await expect(expectShellToolRows({ page: wrong.page, provider: AgentProvider.CODEBUDDY }, [{ ...commands[0], absentRowText: ['Stdout:'] }]))
       .rejects
       .toThrow('the result body omits its native notice')
   })

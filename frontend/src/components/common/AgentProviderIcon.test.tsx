@@ -77,6 +77,7 @@ describe('AgentProviderIcon', () => {
       AgentProvider.CODEWHALE,
       AgentProvider.QWEN_CODE,
       AgentProvider.OH_MY_PI,
+      AgentProvider.CODEBUDDY,
       AgentProvider.MUSE_CODE,
     ]
     const { container } = render(() => (
@@ -97,6 +98,18 @@ describe('AgentProviderIcon', () => {
 
 describe('agentProviderLabel', () => {
   it.each([
+    [AgentProvider.CODEWHALE, 'Codewhale'],
+    [AgentProvider.KIMI_CODE, 'Kimi Code'],
+    [AgentProvider.MIMO_CODE, 'MiMo Code'],
+    [AgentProvider.QWEN_CODE, 'Qwen Code'],
+    [AgentProvider.OH_MY_PI, 'Oh My Pi'],
+    [AgentProvider.GROK_BUILD, 'Grok Build'],
+    [AgentProvider.KIRO, 'Kiro'],
+    [AgentProvider.AMP, 'Amp'],
+    [AgentProvider.CLINE, 'Cline'],
+    [AgentProvider.COMMAND_CODE, 'Command Code'],
+    [AgentProvider.DEEPSEEK_HARNESS, 'DeepSeek Harness'],
+    [AgentProvider.GEMINI_CLI, 'Gemini CLI'],
   ])('labels provider %i as %s', (provider, label) => {
     expect(agentProviderLabel(provider)).toBe(label)
   })

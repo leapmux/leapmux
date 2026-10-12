@@ -201,7 +201,7 @@ describe('exerciseNativeWorkspaceTrustLimit', () => {
   }
 
   it('prepares and opens the project of a provider with a git rule in the root of a git repository of its own', async () => {
-    const deepseek: ProviderAgent = { provider: AgentProvider.CLAUDE_CODE, prefix: 'deepseek-harness-e2e', workingDir: gitRepositoryWorkingDir }
+    const deepseek: ProviderAgent = { provider: AgentProvider.DEEPSEEK_HARNESS, prefix: 'deepseek-harness-e2e', workingDir: gitRepositoryWorkingDir }
     const directory = await preparedProject(detachedContext({ provider: deepseek.provider, providerAgent: deepseek }))
     expect(basename(dirname(directory))).toMatch(/^native-workspace-trust-/)
     // The run directory sits inside the LeapMux checkout, so a plain directory there reports the checkout as its top.

@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { unitWorkingDir } from '~/test-support/unitWorkingDir'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions } from '../agentSettings'
-import { expectNativeCodeExecutionAbsent, nativeCodeExecutionSchema, openNativeCatalogTurn, validateNativeScriptCases } from './nativeCodeExecution'
+import { exerciseNativeCodeExecution, expectNativeCodeExecutionAbsent, nativeCodeExecutionSchema, openNativeCatalogTurn, validateNativeScriptCases } from './nativeCodeExecution'
 
 const opened = vi.hoisted(() => ({ events: [] as string[], open: vi.fn() }))
 const execution = vi.hoisted(() => ({
@@ -211,30 +211,83 @@ function contextOf(providerAgent: ProviderAgent = cursor): ManagedNativeScenario
 const context = contextOf()
 
 describe('exerciseNativeCodeExecution', () => {
-  describe('openNativeCatalogTurn', () => {
-    it('opens the agent with the pinned settings in a fresh directory, shows the workspace, and returns the catalog turn', async () => {
-      const request = await openNativeCatalogTurn(context)
-      expect(request.body).toEqual({ catalog: true })
-      expect(opened.open).toHaveBeenCalledWith(expect.objectContaining({ hubUrl: 'http://hub', adminToken: 'token', workerId: 'worker-1' }), 'workspace-1', '/run/native-code-limit-directory', agentOpenOptions(AgentProvider.CURSOR))
-      expect(opened.events).toEqual(['directory native-code-limit-', 'open /run/native-code-limit-directory', 'workspace workspace-1', 'answer Reply once while the native tool catalog remains available.'])
+  it('keeps model call IDs in computed receipts and selects native result IDs on both browser passes', async () => {
+    const resolveToolRowId = vi.fn(async (query: { callId: string, agentId: string }) => {
+      expect(query.agentId).toBe('agent-1')
+      return `part-${query.callId}`
     })
+    const nativeProof = vi.fn(async (_request: unknown, callId: string, expected: string) => {
+      expect(execution.rawCalls).toContain(callId)
+      expect(execution.rows.get(`part-${callId}`)?.text).toBe(expected)
+    })
+    const prepareResultView = vi.fn(async (rowId: string) => {
+      expect(execution.rows.has(rowId)).toBe(true)
+    })
+    const browserProof = vi.fn(async (rowId: string, expected: string, failed: boolean) => {
+      expect(execution.rows.get(rowId)).toEqual({ text: expected, status: failed ? 'failed' : 'completed' })
+    })
+    const scenario = {
+      ...contextOf({ provider: AgentProvider.MIMO_CODE, prefix: 'mimo-e2e' }),
+      page: { reload: async () => { execution.reloads++ } } as unknown as Page,
+      resolveToolRowId,
+    }
+    await exerciseNativeCodeExecution(scenario, {
+      scripts: () => [
+        { label: 'output', source: 'return String(40 + 2)', expected: '42', failed: false },
+        { label: 'failure', source: 'throw new Error(String(70 + 7))', expected: '77', failed: true },
+      ],
+      nativeProof,
+      prepareResultView,
+      browserProof,
+    })
+    expect(execution.rawCalls).toEqual(['native-code-0', 'native-code-1'])
+    expect(nativeProof.mock.calls.map(call => call[1])).toEqual(['native-code-0', 'native-code-1'])
+    expect(prepareResultView.mock.calls.map(call => call[0])).toEqual(['part-native-code-0', 'part-native-code-0', 'part-native-code-1', 'part-native-code-1'])
+    expect(browserProof.mock.calls.map(call => call[0])).toEqual(['part-native-code-0', 'part-native-code-0', 'part-native-code-1', 'part-native-code-1'])
+    expect(execution.reloads).toBe(2)
+  })
 
-    it('takes the directory prefix and the open settings of the caller', async () => {
-      await openNativeCatalogTurn(context, { directoryPrefix: 'native-workflow-code-', overrides: { optionValues: { permissionMode: 'manual' } } })
-      expect(opened.open).toHaveBeenCalledWith(expect.objectContaining({ hubUrl: 'http://hub', adminToken: 'token', workerId: 'worker-1' }), 'workspace-1', '/run/native-workflow-code-directory', agentOpenOptions(AgentProvider.CURSOR, { optionValues: { permissionMode: 'manual' } }))
-    })
+  it('preserves a failed browser proof and runs no later script', async () => {
+    const failure = new Error('The browser result does not match its native output.')
+    const scenario = {
+      ...contextOf({ provider: AgentProvider.MIMO_CODE, prefix: 'mimo-e2e' }),
+      resolveToolRowId: async ({ callId }: { callId: string }) => `part-${callId}`,
+    }
+    await expect(exerciseNativeCodeExecution(scenario, {
+      scripts: () => [
+        { label: 'output', source: 'return String(40 + 2)', expected: '42', failed: false },
+        { label: 'failure', source: 'throw new Error(String(70 + 7))', expected: '77', failed: true },
+      ],
+      browserProof: async () => { throw failure },
+    })).rejects.toBe(failure)
+    expect(execution.rawCalls).toEqual(['native-code-0'])
+    expect(execution.reloads).toBe(0)
+  })
+})
 
-    it('creates the directory by the working directory rule of the provider', async () => {
-      const workingDir = vi.fn((prefix: string) => unitWorkingDir(`/run/${prefix}repository/repo`))
-      await openNativeCatalogTurn(contextOf({ ...cursor, workingDir }))
-      expect(workingDir).toHaveBeenCalledExactlyOnceWith('native-code-limit-')
-      expect(opened.open).toHaveBeenCalledWith(expect.objectContaining({ hubUrl: 'http://hub', adminToken: 'token', workerId: 'worker-1' }), 'workspace-1', '/run/native-code-limit-repository/repo', agentOpenOptions(AgentProvider.CURSOR))
-    })
+describe('openNativeCatalogTurn', () => {
+  it('opens the agent with the pinned settings in a fresh directory, shows the workspace, and returns the catalog turn', async () => {
+    const request = await openNativeCatalogTurn(context)
+    expect(request.body).toEqual({ catalog: true })
+    expect(opened.open).toHaveBeenCalledWith(expect.objectContaining({ hubUrl: 'http://hub', adminToken: 'token', workerId: 'worker-1' }), 'workspace-1', '/run/native-code-limit-directory', agentOpenOptions(AgentProvider.CURSOR))
+    expect(opened.events).toEqual(['directory native-code-limit-', 'open /run/native-code-limit-directory', 'workspace workspace-1', 'answer Reply once while the native tool catalog remains available.'])
+  })
 
-    it('runs no turn when the agent does not open', async () => {
-      opened.open.mockRejectedValue(new Error('the Worker refused the agent'))
-      await expect(openNativeCatalogTurn(context)).rejects.toThrow('the Worker refused the agent')
-      expect(opened.events).toEqual(['directory native-code-limit-'])
-    })
+  it('takes the directory prefix and the open settings of the caller', async () => {
+    await openNativeCatalogTurn(context, { directoryPrefix: 'native-workflow-code-', overrides: { optionValues: { permissionMode: 'manual' } } })
+    expect(opened.open).toHaveBeenCalledWith(expect.objectContaining({ hubUrl: 'http://hub', adminToken: 'token', workerId: 'worker-1' }), 'workspace-1', '/run/native-workflow-code-directory', agentOpenOptions(AgentProvider.CURSOR, { optionValues: { permissionMode: 'manual' } }))
+  })
+
+  it('creates the directory by the working directory rule of the provider', async () => {
+    const workingDir = vi.fn((prefix: string) => unitWorkingDir(`/run/${prefix}repository/repo`))
+    await openNativeCatalogTurn(contextOf({ ...cursor, workingDir }))
+    expect(workingDir).toHaveBeenCalledExactlyOnceWith('native-code-limit-')
+    expect(opened.open).toHaveBeenCalledWith(expect.objectContaining({ hubUrl: 'http://hub', adminToken: 'token', workerId: 'worker-1' }), 'workspace-1', '/run/native-code-limit-repository/repo', agentOpenOptions(AgentProvider.CURSOR))
+  })
+
+  it('runs no turn when the agent does not open', async () => {
+    opened.open.mockRejectedValue(new Error('the Worker refused the agent'))
+    await expect(openNativeCatalogTurn(context)).rejects.toThrow('the Worker refused the agent')
+    expect(opened.events).toEqual(['directory native-code-limit-'])
   })
 })

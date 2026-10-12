@@ -14,11 +14,13 @@ import { createCopilotEnvironment } from './copilotEnvironment'
 import { createCursorEnvironment } from './cursorEnvironment'
 import { createDeepseekHarnessEnvironment } from './deepseekHarnessEnvironment'
 import { createDiracEnvironment } from './diracEnvironment'
+import { createDroidEnvironment } from './droidEnvironment'
 import { createFastAgentEnvironment } from './fastAgentEnvironment'
 import { createGeminiEnvironment } from './geminiEnvironment'
 import { createGooseEnvironment } from './gooseEnvironment'
 import { createGrokEnvironment } from './grokEnvironment'
 import { createJunieEnvironment } from './junieEnvironment'
+import { createKimiEnvironment } from './kimiEnvironment'
 import { createKiroEnvironment } from './kiroEnvironment'
 import { createLettaEnvironment } from './lettaEnvironment'
 import { writeMcpEchoServer } from './mcpEchoServer'
@@ -28,6 +30,7 @@ import { createOhMyPiEnvironment, ohMyPiAgentDirectory } from './ohMyPiEnvironme
 import { createOpenCodeEnvironment } from './openCodeEnvironment'
 import { createPiEnvironment, piAgentDirectory } from './piEnvironment'
 import { createQoderEnvironment } from './qoderEnvironment'
+import { createQwenEnvironment, QWEN_AUTH_TYPE } from './qwenEnvironment'
 import { createReasonixEnvironment } from './reasonixEnvironment'
 import { quotePosixShellArgument } from './shellArguments'
 import { createZcodeEnvironment } from './zcodeEnvironment'
@@ -192,7 +195,6 @@ export const CODEX_NATIVE_DEFAULT_MODEL = 'gpt-5.6-terra'
 /** The built-in Codewhale model whose route accepts image input. */
 export const CODEWHALE_VISION_MODEL_ID = 'deepseek-v4-flash-vision-exp'
 /** The model id Qwen reports for the model its configuration pins. */
-const QWEN_AUTH_TYPE = 'api_key'
 export const QWEN_MODEL_ID = `${MOCK_MODELS.qwen}(${QWEN_AUTH_TYPE})`
 export const QWEN_ALT_MODEL_WIRE_ID = 'qwen-e2e-alt'
 export const QWEN_ALT_MODEL_ID = `${QWEN_ALT_MODEL_WIRE_ID}(${QWEN_AUTH_TYPE})`
@@ -300,6 +302,7 @@ export async function createMockAgentEnvironment(
   // Each configuration registers a server under the name that the server states, so a tool call reaches it
   // under that name.
   const mcpEchoServer = writeMcpEchoServer(runDir)
+  const mcpServers = [{ name: mcpEchoServer.name, command: mcpEchoServer.command, args: [...mcpEchoServer.args] }]
   const openCodeFamily = {
     baseURL: openAIBaseURL,
     modelKey: MODEL_KEY,
@@ -312,8 +315,6 @@ export async function createMockAgentEnvironment(
     mcpEchoServer,
   }
   const searchPathEnv = agentSearchPathEnv()
-  const mcpServers = [{ name: mcpEchoServer.name, command: mcpEchoServer.command, args: [...mcpEchoServer.args] }]
-
   return {
     homeDir,
     piAgentDir: piAgentDirectory(homeDir),
@@ -360,29 +361,32 @@ export async function createMockAgentEnvironment(
       ...createGooseEnvironment({ homeDir, modelID: MOCK_MODELS.goose }),
       ...createReasonixEnvironment({ homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, modelID: MOCK_MODELS.deepseek, alternateProviderID: REASONIX_ALT_PROVIDER_ID, alternateModelID: MOCK_MODELS.pi, plainProviderID: REASONIX_PLAIN_PROVIDER_ID, plainModelID: MOCK_MODELS.zai }),
       ...createPiEnvironment({ homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, modelID: MOCK_MODELS.pi, flashModelID: MOCK_MODELS.zai, plainModelID: PI_PLAIN_MODEL_ID, mcpEchoServer, realHomeDir: options.realHomeDir, shimsDirectory: cliShimsDir }),
+      ...createOhMyPiEnvironment({ homeDir, origin, baseURL: openAIBaseURL, profile: OH_MY_PI_PROFILE, providerID: MOCK_PROVIDER_IDS.ohMyPi, modelID: MOCK_MODELS.ohMyPi, alternateModelID: OH_MY_PI_ALT_MODEL_WIRE_ID, mcpEchoServer }),
       ...createCursorEnvironment({ homeDir, origin, modelKey: MODEL_KEY }),
       ...createCopilotEnvironment({ homeDir, origin, modelKey: MODEL_KEY, githubToken: MOCK_COPILOT_GITHUB_TOKEN }),
+      ...createGrokEnvironment({ runDirectory: runDir, homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, modelID: MOCK_MODELS.grok, alternateModelID: GROK_ALT_MODEL_ID, reasoningModelID: GROK_REASONING_MODEL_ID }),
+      ...createQwenEnvironment({ homeDir, baseURL: openAIBaseURL, modelID: MOCK_MODELS.qwen, alternateModelID: QWEN_ALT_MODEL_WIRE_ID, plainModelID: QWEN_PLAIN_MODEL_WIRE_ID, mcpEchoServer }),
+      ...createKiroEnvironment({ runDirectory: runDir, homeDir, origin, apiKey: KIRO_E2E_API_KEY }),
       ...createZcodeEnvironment({ runDirectory: runDir, homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, providerID: MOCK_PROVIDER_IDS.zcode, modelID: MOCK_MODELS.zai, alternateModelID: MOCK_MODELS.pi, plainModelID: ZCODE_PLAIN_MODEL_WIRE_ID }),
+      ...createCodewhaleEnvironment({ homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, modelID: MOCK_MODELS.deepseek, visionModelID: CODEWHALE_VISION_MODEL_ID, mcpEchoServer }),
+      ...createKimiEnvironment({ homeDir, baseURL: openAIBaseURL, providerID: MOCK_PROVIDER_IDS.kimi, thinking: { alias: KIMI_MOCK_MODELS.thinking, model: MOCK_MODELS.zai }, plain: { alias: KIMI_MOCK_MODELS.plain, model: MOCK_MODELS.pi }, alternateThinking: { alias: KIMI_MOCK_MODELS.alternateThinking, model: MOCK_MODELS.deepseek }, mcpEchoServer }),
+      ...createMimoEnvironment({ ...openCodeFamily, runDirectory: runDir }),
+      ...createAmpEnvironment({ origin, modelKey: MODEL_KEY }),
+      ...createClineEnvironment({ homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, providerID: CLINE_PROVIDER_ID, modelID: MOCK_MODELS.cline, mcpEchoServer }),
+      ...createDroidEnvironment({ homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, primary: { handle: DROID_MOCK_MODEL_IDS.primary, model: MOCK_MODELS.droid }, alternate: { handle: DROID_MOCK_MODEL_IDS.alternate, model: MOCK_MODELS.droidAlt } }),
+      ...createLettaEnvironment({ runDirectory: runDir, homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, temporaryEnv }),
+      ...createCodebuddyEnvironment({ homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, modelID: MOCK_MODELS.deepseek, alternateModelID: CODEBUDDY_ALT_MODEL_WIRE_ID, startModel: CODEBUDDY_MODEL_ID }),
+      ...createQoderEnvironment({ homeDir, shimsDirectory: cliShimsDir, origin, baseURL: openAIBaseURL, modelKey: MODEL_KEY, modelID: MOCK_MODELS.deepseek, alternateModelID: MOCK_MODELS.qoder }),
+      ...createJunieEnvironment({ runDirectory: runDir, homeDir, shimsDirectory: cliShimsDir, origin, modelKey: MODEL_KEY, modelID: MOCK_MODELS.junie, childModel: JUNIE_MOCK_MODEL, proxyProvider: JUNIE_PROXY_PROVIDER, realHomeDir: options.realHomeDir }),
+      ...createDiracEnvironment({ homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, modelID: MOCK_MODELS.deepseek }),
+      ...createFastAgentEnvironment({ homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, modelID: FAST_AGENT_MOCK_MODEL, zaiModelID: MOCK_MODELS.zai }),
+      ...createCommandCodeEnvironment({ runDirectory: runDir, modelURL: origin, modelKey: MODEL_KEY, modelID: COMMAND_CODE_MODEL_ID, alternateModelID: COMMAND_CODE_ALT_MODEL_ID, reasoningModelID: COMMAND_CODE_REASONING_MODEL_ID, mcpServers }),
+      ...createDeepseekHarnessEnvironment({ runDirectory: runDir, modelURL: origin, modelKey: MODEL_KEY, mcpServers }),
       // Muse's shared settings stay MCP-free: a live MCP server in the run-level
       // settings blocks the host's asynchronous compaction path, so the Muse MCP
       // spec registers its server for its own agent instead.
       ...createMuseEnvironment({ runDirectory: runDir, homeDir, shimsDirectory: cliShimsDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, modelID: MOCK_MODELS.muse, alternateModelID: MOCK_MODELS.museAlt, searchPath: searchPathEnv.PATH ?? process.env.PATH ?? '' }),
       ...createGeminiEnvironment({ runDirectory: runDir, modelURL: origin, modelKey: MODEL_KEY, modelID: GEMINI_MODEL_ID, mcpServers }),
-      ...createDeepseekHarnessEnvironment({ runDirectory: runDir, modelURL: origin, modelKey: MODEL_KEY, mcpServers }),
-      ...createCommandCodeEnvironment({ runDirectory: runDir, modelURL: origin, modelKey: MODEL_KEY, modelID: COMMAND_CODE_MODEL_ID, alternateModelID: COMMAND_CODE_ALT_MODEL_ID, reasoningModelID: COMMAND_CODE_REASONING_MODEL_ID, mcpServers }),
-      ...createFastAgentEnvironment({ homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, modelID: FAST_AGENT_MOCK_MODEL, zaiModelID: MOCK_MODELS.zai }),
-      ...createQoderEnvironment({ homeDir, shimsDirectory: cliShimsDir, origin, baseURL: openAIBaseURL, modelKey: MODEL_KEY, modelID: MOCK_MODELS.deepseek, alternateModelID: MOCK_MODELS.qoder }),
-      ...createDiracEnvironment({ homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, modelID: MOCK_MODELS.deepseek }),
-      ...createOhMyPiEnvironment({ homeDir, origin, baseURL: openAIBaseURL, profile: OH_MY_PI_PROFILE, providerID: MOCK_PROVIDER_IDS.ohMyPi, modelID: MOCK_MODELS.ohMyPi, alternateModelID: OH_MY_PI_ALT_MODEL_WIRE_ID, mcpEchoServer }),
-      ...createLettaEnvironment({ runDirectory: runDir, homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, temporaryEnv }),
-      ...createJunieEnvironment({ runDirectory: runDir, homeDir, shimsDirectory: cliShimsDir, origin, modelKey: MODEL_KEY, modelID: MOCK_MODELS.junie, childModel: JUNIE_MOCK_MODEL, proxyProvider: JUNIE_PROXY_PROVIDER, realHomeDir: options.realHomeDir }),
-      ...createCodebuddyEnvironment({ homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, modelID: MOCK_MODELS.deepseek, alternateModelID: CODEBUDDY_ALT_MODEL_WIRE_ID, startModel: CODEBUDDY_MODEL_ID }),
-      ...createClineEnvironment({ homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, providerID: CLINE_PROVIDER_ID, modelID: MOCK_MODELS.cline, mcpEchoServer }),
-      ...createAmpEnvironment({ origin, modelKey: MODEL_KEY }),
-      ...createKiroEnvironment({ runDirectory: runDir, homeDir, origin, apiKey: KIRO_E2E_API_KEY }),
-      ...createGrokEnvironment({ runDirectory: runDir, homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, modelID: MOCK_MODELS.grok, alternateModelID: GROK_ALT_MODEL_ID, reasoningModelID: GROK_REASONING_MODEL_ID }),
-      ...createMimoEnvironment({ ...openCodeFamily, runDirectory: runDir }),
-      ...createCodewhaleEnvironment({ homeDir, baseURL: openAIBaseURL, modelKey: MODEL_KEY, modelID: MOCK_MODELS.deepseek, visionModelID: CODEWHALE_VISION_MODEL_ID, mcpEchoServer }),
       ...credentialStoreShimEnv(cliShimsDir, searchPathEnv.PATH ?? process.env.PATH),
     },
   }

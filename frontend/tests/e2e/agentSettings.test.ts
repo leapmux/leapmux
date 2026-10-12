@@ -53,31 +53,31 @@ describe('real-agent end-to-end settings', () => {
 
   // A spread of pinned settings and a second `optionValues` dropped the pinned effort. The merge keeps it.
   it('keeps the pinned effort under the option values of the test', () => {
-    expect(agentOpenOptions(AgentProvider.CLAUDE_CODE, { optionValues: { permissionMode: 'yolo' } }).optionValues).toEqual({
-      effort: AGENT_E2E_SETTINGS[AgentProvider.CLAUDE_CODE].effort,
+    expect(agentOpenOptions(AgentProvider.OH_MY_PI, { optionValues: { permissionMode: 'yolo' } }).optionValues).toEqual({
+      effort: AGENT_E2E_SETTINGS[AgentProvider.OH_MY_PI].effort,
       permissionMode: 'yolo',
     })
   })
 
   it('lets an option value of the test replace the pinned value of the same ID', () => {
-    expect(agentOpenOptions(AgentProvider.CODEX, { optionValues: { effort: 'high' } }).optionValues).toEqual({ effort: 'high' })
+    expect(agentOpenOptions(AgentProvider.DROID, { optionValues: { effort: 'high' } }).optionValues).toEqual({ effort: 'high' })
   })
 
   it('takes the model of the test and keeps the pinned effort', () => {
-    expect(agentOpenOptions(AgentProvider.CLAUDE_CODE, { model: 'another-model' })).toEqual({
-      agentProvider: AgentProvider.CLAUDE_CODE,
+    expect(agentOpenOptions(AgentProvider.QWEN_CODE, { model: 'another-model' })).toEqual({
+      agentProvider: AgentProvider.QWEN_CODE,
       model: 'another-model',
-      optionValues: { effort: AGENT_E2E_SETTINGS[AgentProvider.CLAUDE_CODE].effort },
+      optionValues: { effort: AGENT_E2E_SETTINGS[AgentProvider.QWEN_CODE].effort },
     })
   })
 
   // The open request writes the model last, so a model given as an option value lost to the pinned model with no message.
   it('refuses a model given as an option value', () => {
-    expect(() => agentOpenOptions(AgentProvider.CLAUDE_CODE, { optionValues: { model: 'another-model' } })).toThrow('give the model as `model`')
+    expect(() => agentOpenOptions(AgentProvider.FAST_AGENT, { optionValues: { model: 'another-model' } })).toThrow('give the model as `model`')
   })
 
   it.each(['', ' '])('refuses an empty model override: %j', (model) => {
-    expect(() => agentOpenOptions(AgentProvider.CLAUDE_CODE, { model })).toThrow('needs a model ID')
+    expect(() => agentOpenOptions(AgentProvider.FAST_AGENT, { model })).toThrow('needs a model ID')
   })
 
   it('does not change the option values that the test passes', () => {

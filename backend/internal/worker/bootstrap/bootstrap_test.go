@@ -594,7 +594,6 @@ func TestWire_WorkerIdentityTriggersAReconcilerPass(t *testing.T) {
 // C-M5: the worker sweeps the agent directories that ended workers left when it
 // starts, before any agent of their provider starts. A crash then leaves no
 // secret, and no daemon, behind until that provider starts again.
-
 func TestWire_SweepsTheAgentDirectoriesOfEndedWorkers(t *testing.T) {
 	// The default bases take $XDG_RUNTIME_DIR and the system's temporary
 	// directory. Both point into the test, so the sweep finds nothing of the

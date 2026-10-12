@@ -66,7 +66,6 @@ func TestSendControlResponseStatesTheReasonOfARefusal(t *testing.T) {
 
 // The reason travels from the provider that refuses. Factory Droid refuses an
 // option that its request did not offer, and the response states that option.
-
 func TestSendControlResponseStatesTheReasonOfAProviderRefusal(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{

@@ -115,6 +115,13 @@ describe('invokeNativeMcpTool', () => {
     await expect(invokeNativeMcpTool(context(), { server: 'echo_probe', tool: 'echo', callId, input: {} })).rejects.toThrow('needs a call ID')
     expect(run.turns).toEqual([])
   })
+
+  it('refuses a provider whose builder changes the call ID, before a turn', async () => {
+    await expect(invokeNativeMcpTool(context(AgentProvider.DROID), { server: 'echo_probe', tool: 'echo', callId: 'call-1', input: {} }))
+      .rejects
+      .toThrow('has the ID call_call-1, not call-1')
+    expect(run.turns).toEqual([])
+  })
 })
 
 describe('exerciseMcpEcho', () => {
@@ -216,5 +223,21 @@ describe('withNativeMcpFormAgent', () => {
     })
     expect(workingDir).toHaveBeenCalledExactlyOnceWith('form-agent-')
     expect(receipts).toEqual([expect.stringMatching(/form-agent-[^/]+\/repo\/native-mcp-receipt\.json$/)])
+  })
+
+  it('refuses the agent of another provider before it writes the server or the configuration', async () => {
+    mkdirSync(dirname(run.configurationPath), { recursive: true })
+    writeFileSync(run.configurationPath, 'original')
+    const workingDir = vi.fn(() => unitWorkingDir(run.scratch))
+    const use = vi.fn()
+    await expect(withNativeMcpFormAgent(context(AgentProvider.CLAUDE_CODE, { provider: AgentProvider.CLINE, prefix: 'cline-e2e', workingDir }), {
+      directoryPrefix: 'form-agent-',
+      configurationPath: run.configurationPath,
+      configuration: () => ({}),
+    }, use)).rejects.toThrow(`not by the rule of provider ${AgentProvider.CLINE}`)
+    expect(workingDir).not.toHaveBeenCalled()
+    expect(use).not.toHaveBeenCalled()
+    expect(run.events).toEqual([])
+    expect(readFileSync(run.configurationPath, 'utf8')).toBe('original')
   })
 })

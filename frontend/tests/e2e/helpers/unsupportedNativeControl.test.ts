@@ -85,8 +85,8 @@ function context(): ManagedNativeScenarioContext {
   return {
     page: { locator: () => ({ fake: 'editor' }) } as unknown as Page,
     modelScript: {} as ModelScript,
-    provider: AgentProvider.CLAUDE_CODE,
-    providerAgent: { provider: AgentProvider.CLAUDE_CODE, prefix: 'native-e2e' },
+    provider: AgentProvider.KIMI_CODE,
+    providerAgent: { provider: AgentProvider.KIMI_CODE, prefix: 'native-e2e' },
     workspaceId: 'unsupported-control-workspace',
     leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'unused-token', workerId: 'unused-worker' },
   }

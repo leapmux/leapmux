@@ -47,10 +47,10 @@ describe('managedNativeContext', () => {
     leapmuxServer: { hubUrl: 'http://hub', adminToken: 'token', workerId: 'worker' },
     workspaceId: 'workspace',
   }
-  const kiro: ProviderAgent = { provider: AgentProvider.CLAUDE_CODE, prefix: 'kiro-e2e', workingDir: prefix => unitWorkingDir(`/run/${prefix}repo`) }
+  const kiro: ProviderAgent = { provider: AgentProvider.KIRO, prefix: 'kiro-e2e', workingDir: prefix => unitWorkingDir(`/run/${prefix}repo`) }
 
   it('takes the provider from the agent of the provider, and keeps that agent and every fixture', () => {
-    expect(managedNativeContext(fixtures, kiro)).toEqual({ ...fixtures, provider: AgentProvider.CLAUDE_CODE, providerAgent: kiro })
+    expect(managedNativeContext(fixtures, kiro)).toEqual({ ...fixtures, provider: AgentProvider.KIRO, providerAgent: kiro })
     expect(managedNativeContext(fixtures, kiro).providerAgent).toBe(kiro)
   })
 
@@ -59,7 +59,7 @@ describe('managedNativeContext', () => {
     const context = managedNativeContext(fixtures, kiro, { readModelContext, answerToolNames: [] })
     expect(context.readModelContext).toBe(readModelContext)
     expect(context.answerToolNames).toEqual([])
-    expect(context.provider).toBe(AgentProvider.CLAUDE_CODE)
+    expect(context.provider).toBe(AgentProvider.KIRO)
   })
 
   it('adds no protocol field that the provider does not state', () => {

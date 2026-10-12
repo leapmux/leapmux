@@ -43,7 +43,7 @@ vi.mock('./workspace', () => ({
 
 const page = {} as Page
 const suite = { hubUrl: 'http://hub.test', adminToken: 'suite-token', workerId: 'suite-worker', agentEnv: { HOME: '/suite/home' } }
-const providerAgent = { provider: AgentProvider.CLAUDE_CODE, prefix: 'native' }
+const providerAgent = { provider: AgentProvider.DIRAC, prefix: 'native' }
 let runDirectory: string
 
 /** The agent that the Worker reports for the selected tab. */

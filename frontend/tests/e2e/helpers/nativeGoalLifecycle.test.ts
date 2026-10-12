@@ -325,8 +325,8 @@ function startGoal(serverURL: string, script: ModelScript, profile: AgentProfile
   return { helper, agent, script: observed, rules, releaseGate }
 }
 
-const QWEN: AgentProfile = { provider: AgentProvider.CLAUDE_CODE, system: QWEN_ROUND_SYSTEM, titleFirst: false, pause: 'at-once' }
-const GROK: AgentProfile = { provider: AgentProvider.CLAUDE_CODE, system: GROK_ROUND_SYSTEM, titleFirst: true, pause: 'after-the-round' }
+const QWEN: AgentProfile = { provider: AgentProvider.QWEN_CODE, system: QWEN_ROUND_SYSTEM, titleFirst: false, pause: 'at-once' }
+const GROK: AgentProfile = { provider: AgentProvider.GROK_BUILD, system: GROK_ROUND_SYSTEM, titleFirst: true, pause: 'after-the-round' }
 
 describe('exerciseNativeGoalPauseAndResume', () => {
   beforeEach(() => {

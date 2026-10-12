@@ -23,8 +23,9 @@ func TestNormalizeAttachmentsForProvider_DefaultAcceptsEverything(t *testing.T) 
 	registry := Registry()
 	attachments := attachmentSet()
 
-	// An unknown provider inherits the default policy.
+	// Grok Build and an unknown provider inherit the default policy.
 	for _, provider := range []leapmuxv1.AgentProvider{
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_GROK_BUILD,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED,
 	} {
 		t.Run(provider.String(), func(t *testing.T) {
@@ -48,6 +49,7 @@ func TestNormalizeAttachmentsForProvider_RestrictedProviders(t *testing.T) {
 		{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, allowed: 2},
 		{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO, allowed: 3},
 		{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, allowed: 3},
+		{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_QWEN_CODE, allowed: 3},
 	} {
 		t.Run(tc.provider.String(), func(t *testing.T) {
 			normalized, err := registry.NormalizeAttachments(tc.provider, attachments[:tc.allowed])

@@ -61,7 +61,7 @@ describe('newProviderWorkingDir', () => {
 
   it('gives the rule of the provider the default prefix of the agent', () => {
     const rule = vi.fn((prefix: string) => unitWorkingDir(`/run/${prefix}`))
-    newProviderWorkingDir({ provider: AgentProvider.CLAUDE_CODE, prefix: 'kiro-e2e', workingDir: rule })
+    newProviderWorkingDir({ provider: AgentProvider.KIRO, prefix: 'kiro-e2e', workingDir: rule })
     expect(rule).toHaveBeenCalledExactlyOnceWith('kiro-e2e-wd-')
   })
 })
@@ -82,7 +82,7 @@ describe('gitRepositoryWorkingDir', () => {
   })
 
   it('is the rule of a provider that reads configuration from the git repository around its directory', () => {
-    const dir = newProviderWorkingDir({ provider: AgentProvider.CLAUDE_CODE, prefix: 'kiro-e2e', workingDir: gitRepositoryWorkingDir })
+    const dir = newProviderWorkingDir({ provider: AgentProvider.KIRO, prefix: 'kiro-e2e', workingDir: gitRepositoryWorkingDir })
     expect(basename(dirname(dir))).toMatch(/^kiro-e2e-wd-/)
     expect(gitTopLevel(dir)).toBe(realpathSync(dir))
   })

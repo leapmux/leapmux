@@ -202,11 +202,11 @@ func TestRunHelperRefusesASpecItCannotServe(t *testing.T) {
 func TestRegistryHelperAnswersNothingForAnUnknownProvider(t *testing.T) {
 	t.Parallel()
 
-	registry := helperRegistry(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, "permission",
+	registry := helperRegistry(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_AMP, "permission",
 		func(context.Context, agent.HelperInvocation) int { return 0 })
-	_, ok := registry.Helper(leapmuxv1.AgentProvider_AGENT_PROVIDER_AMP, "permission")
+	_, ok := registry.Helper(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, "permission")
 	assert.False(t, ok)
-	_, ok = registry.Helper(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, "permission")
+	_, ok = registry.Helper(leapmuxv1.AgentProvider_AGENT_PROVIDER_AMP, "permission")
 	assert.True(t, ok)
 }
 

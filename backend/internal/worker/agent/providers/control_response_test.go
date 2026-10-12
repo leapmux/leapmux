@@ -79,6 +79,8 @@ func TestControlResponsePreservesNativeAnswerBytes(t *testing.T) {
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_QWEN_CODE, leapmuxv1.AgentProvider_AGENT_PROVIDER_GROK_BUILD,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_KIRO,
 	} {
 		for _, options := range []string{`[]`, `[{"optionId":"once","name":"Allow once","kind":"allow_once"}]`} {
 			cases = append(cases, nativeAnswerCase{provider.String() + options, provider, `{"id":7,"method":"session/request_permission","params":{"options":` + options + `}}`, `{"id":7,"result":{"outcome":{"optionId":"once"}}}`})
@@ -106,6 +108,9 @@ func TestControlResponseRestoresTheNativeRequestID(t *testing.T) {
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_QWEN_CODE,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_GROK_BUILD,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_KIRO,
 	} {
 		for _, wireID := range []string{`42`, `0`, `-5`, `1e3`, `9007199254740993`, `"42"`, `"001"`, `"abc-123"`} {
 			t.Run(provider.String()+"/"+wireID, func(t *testing.T) {

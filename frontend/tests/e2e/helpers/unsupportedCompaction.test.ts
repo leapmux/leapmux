@@ -98,7 +98,7 @@ function simulatedAgent(options: SimulatedAgentOptions = {}): ModelScript {
 }
 
 function context(script: ModelScript) {
-  return { page: {} as Page, modelScript: script, provider: AgentProvider.CLAUDE_CODE }
+  return { page: {} as Page, modelScript: script, provider: AgentProvider.CLINE }
 }
 
 beforeEach(() => {

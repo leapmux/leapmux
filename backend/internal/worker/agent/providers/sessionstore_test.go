@@ -25,9 +25,9 @@ type sessionRuntimeConstructor func(*testing.T, string, string, string) agenttes
 
 // Each provider's test package owns the native peer protocol.
 var nativeSessionRuntimeFixtures = map[leapmuxv1.AgentProvider]sessionRuntimeConstructor{
-	leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE: zcodetest.NewSessionRuntimeFixture,
 	leapmuxv1.AgentProvider_AGENT_PROVIDER_AMP:   amptest.NewSessionRuntimeFixture,
 	leapmuxv1.AgentProvider_AGENT_PROVIDER_CLINE: clinetest.NewSessionRuntimeFixture,
+	leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE: zcodetest.NewSessionRuntimeFixture,
 }
 
 func TestNativeSessionStorePeer(t *testing.T) {

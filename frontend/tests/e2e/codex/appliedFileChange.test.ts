@@ -76,7 +76,7 @@ describe('codexAppliedFileChange', () => {
     { label: 'equal sequence', error: COMPLETED_BEFORE_START, fields: { seq: 41n } },
     { label: 'duplicate message ID', error: COMPLETED_BEFORE_START, fields: { id: started.id } },
     { label: 'user message source', error: INVALID_METADATA, fields: { source: MessageSource.USER } },
-    { label: 'wrong provider', error: INVALID_METADATA, fields: { agentProvider: AgentProvider.CLAUDE_CODE } },
+    { label: 'wrong provider', error: INVALID_METADATA, fields: { agentProvider: AgentProvider.DROID } },
     { label: 'wrong span ID', error: NOT_ONE_START_AND_COMPLETION, fields: { spanId: 'another-span' } },
     { label: 'wrong span type', error: INVALID_METADATA, fields: { spanType: 'commandExecution' } },
     { label: 'error completion', error: NOT_APPLIED, fields: { completion: MessageCompletion.ERROR } },

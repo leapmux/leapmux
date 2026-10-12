@@ -119,6 +119,7 @@ describe('ComposerStatusBar', () => {
     // and the permission preset (`permissions`). The mode chip follows the first axis.
     // A user then sees the Plan mode without opening the menu.
     renderBar(agent({
+      agentProvider: AgentProvider.DEEPSEEK_HARNESS,
       optionGroups: [
         group('permissionMode', 'Mode', ['act', 'plan'], 'plan'),
         group('permissions', 'Permissions', ['read-only', 'workspace-write'], 'workspace-write'),

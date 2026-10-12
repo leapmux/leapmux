@@ -85,7 +85,7 @@ describe('openNativeAgent', () => {
 
   it('refuses the agent of another provider before it creates a directory or opens an agent', async () => {
     const { agent, workingDir } = repositoryAgent()
-    await expect(openNativeAgent(contextOf({ ...agent, provider: AgentProvider.CLAUDE_CODE }))).rejects.toThrow(`A native agent of provider ${AgentProvider.CURSOR} opens by its own rule, not by the rule of provider ${AgentProvider.CLAUDE_CODE}.`)
+    await expect(openNativeAgent(contextOf({ ...agent, provider: AgentProvider.CLINE }))).rejects.toThrow(`A native agent of provider ${AgentProvider.CURSOR} opens by its own rule, not by the rule of provider ${AgentProvider.CLINE}.`)
     expect(workingDir).not.toHaveBeenCalled()
     expect(opened.events).toEqual([])
     expect(opened.open).not.toHaveBeenCalled()
@@ -131,7 +131,7 @@ describe('requireOwnProviderAgent', () => {
   })
 
   it('refuses the agent of another provider', () => {
-    expect(() => requireOwnProviderAgent(contextOf({ provider: AgentProvider.CLAUDE_CODE, prefix: 'qoder-e2e' }))).toThrow(`not by the rule of provider ${AgentProvider.CLAUDE_CODE}`)
+    expect(() => requireOwnProviderAgent(contextOf({ provider: AgentProvider.QODER, prefix: 'qoder-e2e' }))).toThrow(`not by the rule of provider ${AgentProvider.QODER}`)
   })
 
   it('refuses a context that states no agent, as a context built by hand can', () => {
@@ -155,7 +155,7 @@ describe('newNativeWorkingDir', () => {
 
   it('refuses the agent of another provider before it creates a directory', () => {
     const { agent, workingDir } = repositoryAgent()
-    expect(() => newNativeWorkingDir(contextOf({ ...agent, provider: AgentProvider.CLAUDE_CODE }), 'native-')).toThrow(`not by the rule of provider ${AgentProvider.CLAUDE_CODE}`)
+    expect(() => newNativeWorkingDir(contextOf({ ...agent, provider: AgentProvider.KIRO }), 'native-')).toThrow(`not by the rule of provider ${AgentProvider.KIRO}`)
     expect(workingDir).not.toHaveBeenCalled()
     expect(opened.events).toEqual([])
   })

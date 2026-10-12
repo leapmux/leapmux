@@ -3,61 +3,84 @@ import { describe, expect, it } from 'vitest'
 import { collectE2EFiles, e2eRoot } from '~/test-support/e2eFiles'
 import { frontendRoot, posixRelative } from '~/test-support/sourceTree'
 
-// E2E guard: a page-rooted chat locator must be scoped to what the user can
-// SEE. ChatView keeps a hidden premeasure copy of every row whose height is
-// still unknown -- same test ids, same text, `visibility: hidden` -- so a bare
-// `page.locator('[data-testid="message-bubble"]')` transiently matches twice
-// per message and Playwright's strict mode fails the assertion outright. The
-// window is ~20ms on an idle box and much wider under the full suite's
-// concurrency, which is why this read as "flaky only at high worker counts".
-//
-// The helpers in tests/e2e/helpers/ui.ts (assistantBubbles, userBubbles,
-// messageBubbles, messageContents, visibleOnly) are already scoped. This fails
-// the suite if a spec goes back to hand-writing an unscoped one, since the
-// resulting flake is rare enough to survive several green runs.
-//
-// Only the OUTERMOST locator needs the filter: anything scoped under an
-// already-visible bubble cannot be in the premeasure root, so
-// `bubble.locator('[data-testid="message-content"]')` is fine and is not
-// matched by the pattern below.
+// End-to-end (E2E) chat locators must select the visible row.
+// ChatView creates a hidden premeasure copy of each row with an unknown height.
+// Both copies contain the same test IDs and text.
+// An unscoped locator can match both copies and fail Playwright strict mode.
+// The duplicate can remain for about 20ms on an idle host. Load can extend that interval.
+// The scoped helpers in tests/e2e/helpers/ui.ts select the visible copy:
+// - assistantBubbles.
+// - userBubbles.
+// - messageBubbles.
+// - messageContents.
+// - visibleOnly.
+// The thinking indicator has the same hazard for another reason.
+// Each tab of a tile mounts its own ChatView, and a hidden pane keeps its indicator.
+// A second tab therefore gives a page-root indicator locator two matches.
+// This guard rejects an unscoped locator before the intermittent browser failure occurs.
+// Apply the filter to the outermost locator. Descendants of a visible bubble need no second filter.
+// The scan permits bubble.locator('[data-testid="message-content"]') for that reason.
 
 const CHAT_TEST_IDS = [
   'message-bubble',
   'message-content',
+  'thinking-indicator',
 ]
 
-/** `page.locator('[data-testid="<chat id>"...]')` without a `:visible` filter. */
+/** `page.locator('[data-testid="<chat id>"...]')`. `unscopedChatLocators` keeps a match that has no `:visible` filter. */
 const UNSCOPED = new RegExp(
   `page\\s*\\.\\s*locator\\(\\s*(['\`])\\[data-testid="(?:${CHAT_TEST_IDS.join('|')})"\\][^'\`]*\\1`,
   'g',
 )
 
 /**
- * `page.locator('text=...')`, the legacy text ENGINE, rooted at the page.
+ * Find a legacy text locator that starts at the page root.
  *
- * A test id is not the only way in. A text locator matches the cloned row's
- * content exactly as it matches the real row's, and `050-plan-mode.spec.ts`
- * failed on `page.locator('text=Context cleared')` resolving to two elements
- * while the pattern above let it through. Playwright does not retry a
- * strict-mode violation, so it failed in five seconds rather than waiting for
- * the row to settle.
+ * A text locator can match the hidden premeasure copy and the visible row.
+ * The original Plan mode case failed because text=Context cleared matched both copies.
+ * Its current path is tests/e2e/claude-code/plan-approval-banner.spec.ts.
+ * The test-ID pattern did not catch that text locator.
+ * Playwright rejects a strict-mode violation without a retry, even when the duplicate disappears shortly afterward.
  *
- * The text ENGINE is flagged and `getByText` is not. The suite roots over a
- * hundred `getByText` calls at the page, nearly all of them on auth pages, the
- * sidebar and dialogs, which ChatView never clones; flagging them would teach a
- * mechanical `:visible` rather than catch a defect. The engine form is rare,
- * Playwright discourages it in favour of `getByText`, and the one site that used
- * it was chat content. A page-rooted `getByText` on chat content is therefore
- * NOT caught here -- scope it with `visibleOnly` by hand.
+ * This guard checks the legacy text engine. It does not check getByText.
+ * Most page-root getByText calls select authentication pages, sidebars, or dialogs.
+ * ChatView creates no premeasure copy of those surfaces.
+ * Rejecting all those calls would require filters without finding a chat defect.
+ * Playwright discourages the legacy text engine, and its previous unscoped use selected chat content.
+ * A page-root getByText call that selects chat content still needs visibleOnly.
  */
 const UNSCOPED_TEXT_ENGINE = /page\s*\.\s*locator\(\s*(['`])text=[^'`]*\1\)(?!\s*\.\s*filter\(\s*\{\s*visible\s*:\s*true)/g
 
+/** A startup overlay belongs to the same visible ChatView as its composer. */
+const UNSCOPED_STARTUP_OVERLAY = /page\s*\.\s*getByTestId\(\s*(['"`])agent-startup-overlay\1\s*\)(?!\s*\.\s*filter\(\s*\{\s*visible\s*:\s*true)/g
+
+/** Return each page-root chat locator of `source` that has no `:visible` filter, with its offset in `source`. */
+function unscopedChatLocators(source: string): RegExpMatchArray[] {
+  return [...source.matchAll(UNSCOPED)].filter(match => !match[0].includes(':visible'))
+}
+
 describe('e2e chat locators', () => {
+  it('detects an unscoped thinking indicator while allowing visible scoping', () => {
+    expect(unscopedChatLocators('page.locator(\'[data-testid="thinking-indicator"]\')')).toHaveLength(1)
+    expect(unscopedChatLocators('context.page.locator(`[data-testid="thinking-indicator"]`)')).toHaveLength(1)
+    expect(unscopedChatLocators('page.locator(\'[data-testid="thinking-indicator"]:visible\')')).toEqual([])
+  })
+
+  it('detects an unscoped startup overlay while allowing visible scoping', () => {
+    expect('context.page.getByTestId(\'agent-startup-overlay\')'.match(UNSCOPED_STARTUP_OVERLAY)).toHaveLength(1)
+    expect('context.page.getByTestId(\'agent-startup-overlay\').filter({ visible: true })'.match(UNSCOPED_STARTUP_OVERLAY)).toBeNull()
+    const scoped = 'visibleOnly(context.page.getByTestId(\'agent-startup-overlay\'))'
+    const match = [...scoped.matchAll(UNSCOPED_STARTUP_OVERLAY)][0]
+    expect(match).toBeDefined()
+    if (!match)
+      throw new Error('The startup scope sample contains no test-ID locator.')
+    expect(/visibleOnly\(\s*(?:[A-Za-z_$][\w$]*\.)?$/.test(scoped.slice(0, match.index))).toBe(true)
+  })
+
   it('never roots an unscoped chat locator at the page', () => {
     const offenders: string[] = []
     for (const file of collectE2EFiles()) {
-      // ui.ts is where the scoped helpers are DEFINED, so it holds the only
-      // legitimate occurrences of the raw selectors.
+      // helpers/ui.ts defines the scoped helpers and contains their raw selectors.
       if (posixRelative(e2eRoot, file) === 'helpers/ui.ts')
         continue
       const source = readFileSync(file, 'utf-8')
@@ -65,18 +88,22 @@ describe('e2e chat locators', () => {
         const line = source.slice(0, match.index).split('\n').length
         offenders.push(`${posixRelative(frontendRoot, file)}:${line}  ${match[0]}`)
       }
-      for (const match of source.matchAll(UNSCOPED)) {
-        if (match[0].includes(':visible'))
+      for (const match of unscopedChatLocators(source))
+        report(match)
+      for (const match of source.matchAll(UNSCOPED_TEXT_ENGINE))
+        report(match)
+      for (const match of source.matchAll(UNSCOPED_STARTUP_OVERLAY)) {
+        const before = source.slice(0, match.index)
+        if (/visibleOnly\(\s*(?:[A-Za-z_$][\w$]*\.)?$/.test(before))
           continue
         report(match)
       }
-      for (const match of source.matchAll(UNSCOPED_TEXT_ENGINE))
-        report(match)
     }
     const hint = [
-      'Page-rooted chat locators match ChatView\'s hidden premeasure copy as well as the real row,',
-      'which fails Playwright strict mode at random. Use the scoped helpers in tests/e2e/helpers/ui.ts',
-      '(assistantBubbles / userBubbles / messageBubbles / messageContents / visibleOnly):',
+      'A page-root chat locator can match a hidden copy beside the visible one:',
+      'the premeasure copy of a row, or the thinking indicator of a hidden pane.',
+      'That duplicate causes an intermittent Playwright strict-mode failure.',
+      'Use the scoped chat helpers in tests/e2e/helpers/ui.ts, or add :visible to the outermost locator:',
     ].join(' ')
     expect(offenders, `${hint}\n  ${offenders.join('\n  ')}`).toEqual([])
   })

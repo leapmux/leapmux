@@ -245,7 +245,7 @@ describe('completeLiveChildTranscript', () => {
   })
 })
 
-const PROVIDER = AgentProvider.CLAUDE_CODE
+const PROVIDER = AgentProvider.OH_MY_PI
 const PARENT_TAB = 'unit-parent-tab'
 const CHILD_AGENT = 'unit-child-agent'
 const CHILD_TASK = 'Complete the unit child assignment.'

@@ -196,6 +196,11 @@ describe('providerAgentMember', () => {
     expect(providerAgentMember('export const SAMPLE_AGENT: ProviderAgent = { provider: AgentProvider.CODEX, prefix: \'sample\' }', 'SAMPLE_AGENT')).toBe('CODEX')
   })
 
+  it('reads the actual multiline Muse declaration', () => {
+    const source = readFileSync(join(import.meta.dirname, 'muse-code/scenarios.ts'), 'utf8')
+    expect(providerAgentMember(source, 'MUSE_AGENT')).toBe('MUSE_CODE')
+  })
+
   it('reads comments and whitespace around the initializer and provider', () => {
     const source = 'export const SAMPLE_AGENT: ProviderAgent = /* initializer */ {\n  /* owner */ provider: /* enum */ AgentProvider.CODEX,\n  prefix: \'sample\',\n}'
     expect(providerAgentMember(source, 'SAMPLE_AGENT')).toBe('CODEX')

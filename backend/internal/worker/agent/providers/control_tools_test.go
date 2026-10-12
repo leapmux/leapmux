@@ -63,6 +63,7 @@ func TestOnlyThePlanModeProvidersReadAPlanModeTool(t *testing.T) {
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX:       true,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE:       true,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_KIMI_CODE:   true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE:   true,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEBUDDY:   true,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_QODER:       true,
 	}
@@ -94,6 +95,8 @@ func TestOnlyCursorTransformsACreatePlanAnswer(t *testing.T) {
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_QWEN_CODE,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_GROK_BUILD,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_KIRO,
 	} {
 		t.Run(provider.String(), func(t *testing.T) {

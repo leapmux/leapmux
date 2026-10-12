@@ -16,7 +16,7 @@ func TestOptionGroupsViewDoesNotInventUnknownChildSettings(t *testing.T) {
 	m := agent.NewManager(testRegistry, nil)
 	child := &db.Agent{
 		ID: "unknown-child", ParentAgentID: sql.NullString{String: "parent", Valid: true},
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_COMMAND_CODE,
 		Options:       "{}", OptionGroups: "[]",
 	}
 	groups := optionGroupsView(m, child, nil)
@@ -31,7 +31,7 @@ func TestOptionGroupsViewKeepsOnlyTheReportedChildSelections(t *testing.T) {
 	m := agent.NewManager(testRegistry, nil)
 	child := &db.Agent{
 		ID: "reported-child", ParentAgentID: sql.NullString{String: "parent", Valid: true},
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_COMMAND_CODE,
 		Options:       marshalOptions(map[string]string{agent.OptionIDModel: "custom-native-model"}),
 		OptionGroups:  "[]",
 	}
@@ -63,7 +63,7 @@ func TestOptionGroupsViewUsesTheNativeChildCatalogAndExplicitOverrides(t *testin
 	}
 	child := &db.Agent{
 		ID: "catalog-child", ParentAgentID: sql.NullString{String: "parent", Valid: true},
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_COMMAND_CODE,
 		Options:       "{}", OptionGroups: mustMarshalOptionGroups(t, nativeGroups),
 	}
 	groups := optionGroupsView(manager, child, map[string]string{agent.OptionIDEffort: "high"})

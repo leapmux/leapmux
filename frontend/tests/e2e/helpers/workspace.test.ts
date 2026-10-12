@@ -14,7 +14,7 @@ vi.mock('./runDirectory', () => ({ createTestDirectory: vi.fn(() => '/private-di
 vi.mock('./ui', () => ({ loginViaToken: vi.fn(), openWorkspace: vi.fn() }))
 
 const server = { hubUrl: 'http://hub.test', adminToken: 'session', workerId: 'worker' }
-const fastAgent = { provider: AgentProvider.GOOSE, prefix: 'fastagent-e2e' }
+const fastAgent = { provider: AgentProvider.FAST_AGENT, prefix: 'fastagent-e2e' }
 const pi = { provider: AgentProvider.PI, prefix: 'pi-e2e' }
 
 beforeEach(() => {
@@ -94,10 +94,10 @@ describe('workspace fixture lifetime', () => {
   it('opens the agent in the working directory that the caller creates, and makes no private one', async () => {
     const workingDir = vi.fn(() => unitWorkingDir('/repository/checkout'))
     const use = vi.fn(async () => {})
-    await withAgentWorkspace(server, { provider: AgentProvider.CLAUDE_CODE, prefix: 'kiro', workingDir }, use)
+    await withAgentWorkspace(server, { provider: AgentProvider.KIRO, prefix: 'kiro', workingDir }, use)
     expect(workingDir).toHaveBeenCalledExactlyOnceWith('kiro-wd-')
     expect(createTestDirectory).not.toHaveBeenCalled()
-    expect(openAgentViaAPI).toHaveBeenCalledWith(server, 'workspace', '/repository/checkout', expect.objectContaining({ agentProvider: AgentProvider.CLAUDE_CODE }))
+    expect(openAgentViaAPI).toHaveBeenCalledWith(server, 'workspace', '/repository/checkout', expect.objectContaining({ agentProvider: AgentProvider.KIRO }))
     expect(use).toHaveBeenCalledExactlyOnceWith({ workspaceId: 'workspace', workingDir: '/repository/checkout' })
   })
 
@@ -107,7 +107,7 @@ describe('workspace fixture lifetime', () => {
     const error = new Error('no checkout')
     const use = vi.fn()
     await expect(withAgentWorkspace(server, {
-      provider: AgentProvider.CLAUDE_CODE,
+      provider: AgentProvider.KIRO,
       prefix: 'kiro',
       workingDir: () => {
         expect(createWorkspaceViaAPI).toHaveBeenCalledOnce()
@@ -160,14 +160,14 @@ describe('the merge rule of an agent open request', () => {
 
   it('opens one more agent with the model of the test as the selected model', async () => {
     await openProviderAgent(server, 'workspace', fastAgent, { model: 'another-model' })
-    expect(openRequest()).toEqual({ agentProvider: AgentProvider.GOOSE, model: 'another-model', optionValues: {} })
+    expect(openRequest()).toEqual({ agentProvider: AgentProvider.FAST_AGENT, model: 'another-model', optionValues: {} })
   })
 
   it('opens one more agent with the pinned model when the test selects another option', async () => {
     await openProviderAgent(server, 'workspace', fastAgent, { optionValues: { mode: 'plan' } })
     expect(openRequest()).toEqual({
-      agentProvider: AgentProvider.GOOSE,
-      model: AGENT_E2E_SETTINGS[AgentProvider.GOOSE].model,
+      agentProvider: AgentProvider.FAST_AGENT,
+      model: AGENT_E2E_SETTINGS[AgentProvider.FAST_AGENT].model,
       optionValues: { mode: 'plan' },
     })
   })
@@ -190,14 +190,14 @@ describe('openProviderAgent', () => {
 
   it('makes the directory through the maker of the provider, with the default prefix of the provider', async () => {
     const workingDir = vi.fn(() => unitWorkingDir('/repository/checkout'))
-    expect((await openProviderAgent(server, 'workspace', { provider: AgentProvider.CLAUDE_CODE, prefix: 'kiro-e2e', workingDir })).workingDir).toBe('/repository/checkout')
+    expect((await openProviderAgent(server, 'workspace', { provider: AgentProvider.KIRO, prefix: 'kiro-e2e', workingDir })).workingDir).toBe('/repository/checkout')
     expect(workingDir).toHaveBeenCalledExactlyOnceWith('kiro-e2e-wd-')
     expect(createTestDirectory).not.toHaveBeenCalled()
   })
 
   it('gives the stated directory prefix to the maker of the provider', async () => {
     const workingDir = vi.fn(() => unitWorkingDir('/repository/checkout'))
-    await openProviderAgent(server, 'workspace', { provider: AgentProvider.CLAUDE_CODE, prefix: 'kiro-e2e', workingDir }, { directoryPrefix: 'native-code-' })
+    await openProviderAgent(server, 'workspace', { provider: AgentProvider.KIRO, prefix: 'kiro-e2e', workingDir }, { directoryPrefix: 'native-code-' })
     expect(workingDir).toHaveBeenCalledExactlyOnceWith('native-code-')
   })
 

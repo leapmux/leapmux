@@ -639,20 +639,20 @@ export function AgentProviderIcon(props: AgentProviderIconProps): JSX.Element {
       <Match when={props.provider === AgentProvider.ZCODE}>
         <ZCodeIcon size={props.size} {...classProps()} />
       </Match>
-      <Match when={props.provider === AgentProvider.OH_MY_PI}>
-        <OhMyPiIcon size={props.size} {...classProps()} />
-      </Match>
-      <Match when={props.provider === AgentProvider.QWEN_CODE}>
-        <QwenCodeIcon size={props.size} {...classProps()} />
-      </Match>
-      <Match when={props.provider === AgentProvider.MIMO_CODE}>
-        <MiMoCodeIcon size={props.size} {...classProps()} />
+      <Match when={props.provider === AgentProvider.CODEWHALE}>
+        <CodewhaleIcon size={props.size} {...classProps()} />
       </Match>
       <Match when={props.provider === AgentProvider.KIMI_CODE}>
         <KimiCodeIcon size={props.size} {...classProps()} />
       </Match>
-      <Match when={props.provider === AgentProvider.CODEWHALE}>
-        <CodewhaleIcon size={props.size} {...classProps()} />
+      <Match when={props.provider === AgentProvider.MIMO_CODE}>
+        <MiMoCodeIcon size={props.size} {...classProps()} />
+      </Match>
+      <Match when={props.provider === AgentProvider.QWEN_CODE}>
+        <QwenCodeIcon size={props.size} {...classProps()} />
+      </Match>
+      <Match when={props.provider === AgentProvider.OH_MY_PI}>
+        <OhMyPiIcon size={props.size} {...classProps()} />
       </Match>
       <Match when={props.provider === AgentProvider.GROK_BUILD}>
         <GrokBuildIcon size={props.size} {...classProps()} />

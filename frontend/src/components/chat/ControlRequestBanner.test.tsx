@@ -3,13 +3,309 @@ import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { compactControl } from '~/components/common/CompactControl.css'
+import { ALL_PROVIDERS } from '~/generated/contracts/providers'
 import { AgentProvider, ControlResponseState } from '~/generated/proto/leapmux/v1/agent_pb'
 import * as clipboard from '~/lib/clipboard'
 import { ControlRequestActions, ControlRequestContent } from '~/test-support/controlRequestBanner'
+import { useTestStorage } from '~/test-support/persistentStorage'
 import * as banner from './ControlRequestBanner'
+import { useControlResponseHandling } from './controlResponseHandling'
+import { ControlResponseDeliveryError } from './controls/controlResponseError'
 import { controlSurface } from './controls/controlSurface'
 import { createControlAnswerState } from './controls/types'
+import { museAskUserQuestion, museControl, museQuestions } from './providers/muse/control'
 import './providers'
+
+useTestStorage()
+
+function museQuestionRequest(modes: string[] = ['single']): ControlRequest {
+  return {
+    agentId: 'muse-agent',
+    requestId: 'native-question-request',
+    payload: {
+      method: 'userInput/requested',
+      params: {
+        sessionId: 'native-session',
+        userInputId: 'native-input',
+        questions: modes.map((mode, index) => ({
+          id: `native-question-${index}`,
+          header: '',
+          question: 'Choose the native answer',
+          options: [{ label: 'One' }, { label: 'Two' }],
+          selection: { mode },
+        })),
+      },
+    },
+  }
+}
+
+function limitedMuseQuestionRequest(): ControlRequest {
+  const request = museQuestionRequest(['multiple'])
+  request.payload = {
+    method: 'userInput/requested',
+    params: {
+      sessionId: 'native-session',
+      userInputId: 'native-input',
+      questions: [{ id: 'native-question-0', header: '', question: 'Choose the native answer', options: [{ label: 'One' }, { label: 'Two' }, { label: 'Three' }], selection: { mode: 'multiple', minSelections: 2, maxSelections: 2 } }],
+    },
+  }
+  return request
+}
+
+describe('the Muse question selection limits', () => {
+  it.each([
+    { label: 'partial selection', selections: ['One'], allowed: false },
+    { label: 'complete selection', selections: ['One', 'Two'], allowed: true },
+    { label: 'excessive restored selection', selections: ['One', 'Two', 'Three'], allowed: false },
+  ])('checks the $label through the registered provider and shared actions', async ({ selections, allowed }) => {
+    const request = limitedMuseQuestionRequest()
+    const original = structuredClone(request)
+    const state = createControlAnswerState({ selections: { 0: selections } })
+    const respond = vi.fn().mockResolvedValue(undefined)
+    render(() => (
+      <>
+        <ControlRequestContent request={request} answerState={state} agentProvider={AgentProvider.MUSE_CODE} />
+        <ControlRequestActions request={request} answerState={state} agentProvider={AgentProvider.MUSE_CODE} onRespond={respond} hasEditorContent={false} onTriggerSend={vi.fn()} />
+      </>
+    ))
+    expect(screen.getByText('Select 2 options if you use options.')).toBeInTheDocument()
+    const submit = screen.getByTestId('control-submit-btn')
+    if (allowed) {
+      expect(submit).not.toBeDisabled()
+      fireEvent.click(submit)
+      await vi.waitFor(() => expect(respond).toHaveBeenCalledOnce())
+      expect(JSON.parse(new TextDecoder().decode(respond.mock.calls[0]?.[0]))).toEqual({ jsonrpc: '2.0', id: request.requestId, result: { answers: [{ questionId: 'native-question-0', selectedLabels: selections }] } })
+    }
+    else {
+      expect(submit).toBeDisabled()
+      fireEvent.click(submit)
+      expect(respond).not.toHaveBeenCalled()
+    }
+    expect(state.selections()[0]).toEqual(selections)
+    expect(request).toEqual(original)
+  })
+
+  it('keeps valid selections and the pending request after a native refusal', async () => {
+    const request = limitedMuseQuestionRequest()
+    const original = structuredClone(request)
+    const state = createControlAnswerState({ selections: { 0: ['One', 'Two'] } })
+    const resetEditor = vi.fn()
+    const respond = vi.fn().mockRejectedValue(new ControlResponseDeliveryError(ControlResponseState.READY, 'The native question refuses these selections'))
+    render(() => {
+      const handling = useControlResponseHandling({ agentId: request.agentId, agent: { agentProvider: AgentProvider.MUSE_CODE }, controlRequests: [request], onControlResponse: respond, onSendMessage: vi.fn() }, state, () => undefined, resetEditor)
+      return (
+        <>
+          <ControlRequestContent request={handling.activeControlRequest()} answerState={state} agentProvider={AgentProvider.MUSE_CODE} />
+          <ControlRequestActions request={handling.activeControlRequest()} answerState={state} agentProvider={AgentProvider.MUSE_CODE} onRespond={handling.respondTo(request)} hasEditorContent={false} onTriggerSend={vi.fn()} />
+        </>
+      )
+    })
+    await vi.waitFor(() => expect(state.ready()).toBe(true))
+    expect(screen.getByText('Select 2 options if you use options.')).toBeInTheDocument()
+    expect(screen.getByRole('checkbox', { name: 'Three' })).toBeDisabled()
+    fireEvent.click(screen.getByTestId('control-submit-btn'))
+    await vi.waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('The native question refuses these selections'))
+    expect(state.selections()[0]).toEqual(['One', 'Two'])
+    expect(state.responsePending()).toBe(false)
+    expect(resetEditor).not.toHaveBeenCalled()
+    expect(screen.getByTestId('control-banner')).toBeInTheDocument()
+    expect(request).toEqual(original)
+  })
+})
+
+describe('the Muse question actions', () => {
+  it.each([
+    { label: 'empty text', modes: ['single'], text: '', canSubmit: false },
+    { label: 'whitespace-only text', modes: ['multiple'], text: ' \t\n', canSubmit: false },
+    { label: 'typed text', modes: ['single'], text: '  Native text 界\n', canSubmit: true },
+    { label: 'multiple empty pages', modes: ['single', 'multiple'], text: '', canSubmit: false },
+  ])('checks $label through the actual provider capability', async ({ modes, text, canSubmit }) => {
+    const request = museQuestionRequest(modes)
+    const original = structuredClone(request)
+    const state = createControlAnswerState({ customTexts: { 0: text } })
+    const respond = vi.fn().mockResolvedValue(undefined)
+    const triggerSend = vi.fn()
+    render(() => <ControlRequestActions request={request} answerState={state} agentProvider={AgentProvider.MUSE_CODE} onRespond={respond} hasEditorContent={false} onTriggerSend={triggerSend} />)
+    const submit = screen.getByTestId('control-submit-btn')
+    if (!canSubmit) {
+      expect(submit).toBeDisabled()
+      fireEvent.click(submit)
+      expect(respond).not.toHaveBeenCalled()
+      expect(triggerSend).not.toHaveBeenCalled()
+      expect(state.customTexts()).toEqual({ 0: text })
+      expect(state.selections()).toEqual({})
+      expect(request).toEqual(original)
+      return
+    }
+    expect(submit).not.toBeDisabled()
+    fireEvent.click(submit)
+    await vi.waitFor(() => expect(respond).toHaveBeenCalledOnce())
+    expect(JSON.parse(new TextDecoder().decode(respond.mock.calls[0]?.[0]))).toEqual({
+      jsonrpc: '2.0',
+      id: request.requestId,
+      result: { answers: modes.map((_, index) => ({ questionId: `native-question-${index}`, freeText: index === 0 ? text : '' })) },
+    })
+    expect(request).toEqual(original)
+  })
+
+  it.each([
+    { mode: 'single', selections: ['One'], answer: { selectedLabel: 'One' } },
+    { mode: 'multiple', selections: ['One', 'Two'], answer: { selectedLabels: ['One', 'Two'] } },
+  ])('preserves the native $mode selection form', async ({ mode, selections, answer }) => {
+    const request = museQuestionRequest([mode])
+    const state = createControlAnswerState({ selections: { 0: selections } })
+    const respond = vi.fn().mockResolvedValue(undefined)
+    render(() => <ControlRequestActions request={request} answerState={state} agentProvider={AgentProvider.MUSE_CODE} onRespond={respond} hasEditorContent={false} onTriggerSend={vi.fn()} />)
+    fireEvent.click(screen.getByTestId('control-submit-btn'))
+    await vi.waitFor(() => expect(respond).toHaveBeenCalledOnce())
+    expect(JSON.parse(new TextDecoder().decode(respond.mock.calls[0]?.[0]))).toEqual({ jsonrpc: '2.0', id: request.requestId, result: { answers: [{ questionId: 'native-question-0', ...answer }] } })
+  })
+
+  it('keeps explicit cancellation separate from empty text', async () => {
+    const request = museQuestionRequest()
+    const state = createControlAnswerState()
+    const respond = vi.fn().mockResolvedValue(undefined)
+    render(() => <ControlRequestActions request={request} answerState={state} agentProvider={AgentProvider.MUSE_CODE} onRespond={respond} hasEditorContent={false} onTriggerSend={vi.fn()} />)
+    fireEvent.click(screen.getByTestId('control-stop-btn'))
+    await vi.waitFor(() => expect(respond).toHaveBeenCalledOnce())
+    expect(JSON.parse(new TextDecoder().decode(respond.mock.calls[0]?.[0]))).toEqual({ jsonrpc: '2.0', id: request.requestId, result: { cancelled: true, reason: 'User stopped' } })
+  })
+
+  it('preserves the empty answer and pending request after delivery refusal', async () => {
+    const request = museQuestionRequest()
+    const original = structuredClone(request)
+    const state = createControlAnswerState()
+    const resetEditor = vi.fn()
+    const respond = vi.fn().mockRejectedValue(new ControlResponseDeliveryError(ControlResponseState.READY, 'The native question rejects this answer'))
+    let sendAnswer: (() => Promise<void>) | undefined
+    render(() => {
+      const handling = useControlResponseHandling({ agentId: request.agentId, agent: { agentProvider: AgentProvider.MUSE_CODE }, controlRequests: [request], onControlResponse: respond, onSendMessage: vi.fn() }, state, () => undefined, resetEditor)
+      sendAnswer = () => museAskUserQuestion.sendAnswer(request, handling.respondTo(request), museQuestions(request.payload), state)
+      return (
+        <>
+          <ControlRequestContent request={handling.activeControlRequest()} answerState={state} agentProvider={AgentProvider.MUSE_CODE} />
+          <ControlRequestActions request={handling.activeControlRequest()} answerState={state} agentProvider={AgentProvider.MUSE_CODE} onRespond={handling.respondTo(request)} hasEditorContent={false} onTriggerSend={vi.fn()} />
+        </>
+      )
+    })
+    await vi.waitFor(() => expect(state.ready()).toBe(true))
+    expect(screen.getByTestId('control-submit-btn')).toBeDisabled()
+    fireEvent.click(screen.getByTestId('control-submit-btn'))
+    expect(respond).not.toHaveBeenCalled()
+    expect(sendAnswer).toBeTypeOf('function')
+    await expect(sendAnswer!()).rejects.toThrow('The native question rejects this answer')
+    expect(screen.getByRole('alert')).toHaveTextContent('The native question rejects this answer')
+    expect(respond).toHaveBeenCalledOnce()
+    expect(JSON.parse(new TextDecoder().decode(respond.mock.calls[0]?.[1]))).toEqual({ jsonrpc: '2.0', id: request.requestId, result: { answers: [{ questionId: 'native-question-0', freeText: '' }] } })
+    expect(state.responsePending()).toBe(false)
+    expect(state.customTexts()[0] ?? '').toBe('')
+    expect(state.selections()).toEqual({})
+    expect(resetEditor).not.toHaveBeenCalled()
+    expect(screen.getByTestId('control-banner')).toBeInTheDocument()
+    expect(screen.getByTestId('control-submit-btn')).toBeDisabled()
+    expect(request).toEqual(original)
+  })
+
+  it('preserves typed text after delivery refusal and disables a cleared answer', async () => {
+    const request = museQuestionRequest()
+    const state = createControlAnswerState()
+    const resetEditor = vi.fn()
+    const respond = vi.fn().mockRejectedValue(new ControlResponseDeliveryError(ControlResponseState.READY, 'The native question rejects this answer'))
+    render(() => {
+      const handling = useControlResponseHandling({ agentId: request.agentId, agent: { agentProvider: AgentProvider.MUSE_CODE }, controlRequests: [request], onControlResponse: respond, onSendMessage: vi.fn() }, state, () => undefined, resetEditor)
+      return (
+        <>
+          <ControlRequestContent request={handling.activeControlRequest()} answerState={state} agentProvider={AgentProvider.MUSE_CODE} />
+          <ControlRequestActions request={handling.activeControlRequest()} answerState={state} agentProvider={AgentProvider.MUSE_CODE} onRespond={handling.respondTo(request)} hasEditorContent={false} onTriggerSend={vi.fn()} />
+        </>
+      )
+    })
+    await vi.waitFor(() => expect(state.ready()).toBe(true))
+    state.setCustomTexts({ 0: '  Native typed answer 界\n' })
+    expect(screen.getByTestId('control-submit-btn')).not.toBeDisabled()
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      fireEvent.click(screen.getByTestId('control-submit-btn'))
+      await vi.waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('The native question rejects this answer'))
+      expect(respond).toHaveBeenCalledOnce()
+      expect(state.responsePending()).toBe(false)
+      expect(state.customTexts()[0]).toBe('  Native typed answer 界\n')
+      expect(resetEditor).not.toHaveBeenCalled()
+      expect(screen.getByTestId('control-banner')).toBeInTheDocument()
+      // Complete the actual loading debounce before checking the retry control.
+      await vi.runOnlyPendingTimersAsync()
+      expect(screen.getByTestId('control-submit-btn')).not.toBeDisabled()
+      state.setCustomTexts({ 0: '' })
+      expect(screen.getByTestId('control-submit-btn')).toBeDisabled()
+      fireEvent.click(screen.getByTestId('control-submit-btn'))
+      expect(respond).toHaveBeenCalledOnce()
+    }
+    finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe('a pending Muse request with unreadable native choices or questions', () => {
+  it.each([
+    { label: 'numeric choices', kind: 'approval', value: 0, errorText: 'choices are invalid' },
+    { label: 'unknown decision', kind: 'approval', value: [{ choiceId: 'native', label: 'Native choice', decision: 'futureDecision', scope: 'once' }], errorText: 'no denial choice' },
+    { label: 'unknown scope', kind: 'approval', value: [{ choiceId: 'native', label: 'Native choice', decision: 'denied', scope: 'futureScope' }], errorText: 'no denial choice' },
+    { label: 'numeric questions', kind: 'question', value: 0, errorText: 'LeapMux cannot read this answer' },
+  ])('keeps the pending request usable for $label', async ({ kind, value, errorText }) => {
+    const params = kind === 'approval'
+      ? { sessionId: 'session', approvalId: 'approval', currentRequirementId: { approvalId: 'approval', sourceIndex: 0 }, availableChoices: value }
+      : { sessionId: 'session', userInputId: 'question', questions: value }
+    const method = kind === 'approval' ? 'approval/requested' : 'userInput/requested'
+    const original = `{"method":${JSON.stringify(method)},"params":${JSON.stringify(params)},"futureNumber":9007199254740993}`
+    const request: ControlRequest = { agentId: 'muse-agent', requestId: 'native-pending', payload: JSON.parse(original), originalPayload: new TextEncoder().encode(original) }
+    const state = createControlAnswerState()
+    const interrupt = vi.fn()
+    const resetEditor = vi.fn()
+    const respond = vi.fn(async () => {
+      if (kind === 'approval')
+        museControl.buildControlResponse?.(request.payload, '', request.requestId)
+      throw new ControlResponseDeliveryError(ControlResponseState.READY, 'LeapMux cannot read this answer')
+    })
+    const copy = vi.spyOn(clipboard, 'copyTextToClipboard').mockResolvedValue(true)
+    try {
+      render(() => {
+        const handling = useControlResponseHandling({
+          agentId: request.agentId,
+          agent: { agentProvider: AgentProvider.MUSE_CODE },
+          controlRequests: [request],
+          onControlResponse: respond,
+          onSendMessage: vi.fn(),
+        }, state, () => undefined, resetEditor)
+        return (
+          <>
+            <ControlRequestContent request={handling.activeControlRequest()} answerState={state} agentProvider={AgentProvider.MUSE_CODE} onInterrupt={interrupt} />
+            <ControlRequestActions request={handling.activeControlRequest()} answerState={state} agentProvider={AgentProvider.MUSE_CODE} onRespond={handling.respondTo(request)} hasEditorContent={false} onTriggerSend={vi.fn()} />
+          </>
+        )
+      })
+      await vi.waitFor(() => expect(screen.getByTestId('control-deny-btn')).not.toBeDisabled())
+      state.setCustomTexts({ 0: 'Keep the pending native answer' })
+      fireEvent.click(screen.getByTestId('control-deny-btn'))
+      await vi.waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(errorText))
+      expect(respond).toHaveBeenCalledOnce()
+      expect(state.responsePending()).toBe(false)
+      expect(state.customTexts()).toEqual({ 0: 'Keep the pending native answer' })
+      expect(resetEditor).not.toHaveBeenCalled()
+      expect(screen.getByTestId('control-banner')).toBeInTheDocument()
+      fireEvent.click(screen.getByTestId('control-copy-json'))
+      await vi.waitFor(() => expect(copy).toHaveBeenCalledOnce())
+      expect(copy.mock.calls[0]?.[0]).toContain('9007199254740993')
+      expect(copy.mock.calls[0]?.[0]).toContain(method)
+      expect(request.originalPayload).toEqual(new TextEncoder().encode(original))
+      fireEvent.click(screen.getByTestId('control-interrupt'))
+      expect(interrupt).toHaveBeenCalledOnce()
+    }
+    finally {
+      copy.mockRestore()
+    }
+  })
+})
 
 it.each([
   { state: ControlResponseState.DELIVERED, action: 'Save response', notice: 'The response action is complete. Save its transcript entry without repeating the action.' },
@@ -163,6 +459,47 @@ describe('ControlRequestBanner takes the surface from its caller', () => {
     ))
     expect(screen.getByTestId('control-deny-btn')).toBeInTheDocument()
     expect(screen.getByTestId('control-allow-btn')).toBeInTheDocument()
+  })
+
+  // A provider that states a dialog responder answers the dialog in its own words,
+  // not with the shared pair. The surface gives the dialog, and the plugin the words.
+  it('draws the dialog actions for a dialog of a provider that states a responder', async () => {
+    const onRespond = vi.fn().mockResolvedValue(undefined)
+    render(() => (
+      <banner.ControlRequestActions
+        request={{ requestId: 'dialog-1', agentId: 'a1', payload: { type: 'extension_ui_request', id: 'dialog-1', method: 'input', title: 'Pick a branch' } }}
+        controlSurface={{ kind: 'dialog', dialog: { title: 'Pick a branch', prefill: 'main', variant: 'input' } }}
+        answerState={createControlAnswerState()}
+        agentProvider={AgentProvider.PI}
+        onRespond={onRespond}
+        hasEditorContent={false}
+        onTriggerSend={() => {}}
+      />
+    ))
+    expect(screen.getByTestId('dialog-input')).toHaveValue('main')
+    expect(screen.getByTestId('control-deny-btn')).toHaveTextContent('Cancel')
+    fireEvent.click(screen.getByTestId('control-allow-btn'))
+    await vi.waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
+    expect(JSON.parse(new TextDecoder().decode(onRespond.mock.calls[0]?.[0])))
+      .toEqual({ type: 'extension_ui_response', id: 'dialog-1', value: 'main' })
+  })
+
+  // The plan surface states the extra answers, and the banner hands them to the plan
+  // actions whatever the provider.
+  it('offers the choices of a plan surface in the overflow menu', () => {
+    render(() => (
+      <banner.ControlRequestActions
+        request={planRequest()}
+        controlSurface={{ kind: 'plan', choices: [{ id: 'Revise', label: 'Request revisions', approves: false }] }}
+        answerState={createControlAnswerState()}
+        agentProvider={AgentProvider.CLAUDE_CODE}
+        onRespond={vi.fn().mockResolvedValue(undefined)}
+        hasEditorContent={false}
+        onTriggerSend={() => {}}
+      />
+    ))
+    fireEvent.click(screen.getByTestId('control-more-actions'))
+    expect(screen.getByTestId('plan-choice-0')).toHaveTextContent('Request revisions')
   })
 })
 
@@ -322,7 +659,9 @@ describe('a request whose payload LeapMux cannot read', () => {
   // here, because composing one needs the option list or decision vocabulary the payload
   // was carrying -- so LeapMux can build no valid answer at all. The stop releases the
   // agent without an answer, and the worker cancels from its own copy of the bytes.
-  it.each([AgentProvider.CLAUDE_CODE, AgentProvider.CODEX, AgentProvider.OPENCODE, AgentProvider.GITHUB_COPILOT, AgentProvider.PI, AgentProvider.ZCODE])(
+  // Every provider, because the rule is the banner's own and a new provider must not
+  // reach a decision for bytes that nobody can read.
+  it.each(ALL_PROVIDERS)(
     'offers no decision for provider %s',
     (provider) => {
       render(() => (

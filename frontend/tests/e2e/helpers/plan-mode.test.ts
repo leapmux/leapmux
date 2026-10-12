@@ -49,8 +49,8 @@ beforeEach(() => {
 describe('enterPlanMode', () => {
   it('scripts the enter call, the plan write, and the answer in the tool vocabulary of the context provider', async () => {
     const { script, queued, fallbacks } = recordingScript()
-    await enterPlanMode({ page: {} as Page, modelScript: script, provider: AgentProvider.CLAUDE_CODE }, { testId: 'unit' })
-    expect(queued.map(step => step.toolCalls?.map(call => call.name) ?? step.text)).toEqual([['EnterPlanMode'], ['Write'], 'I am in plan mode and the plan is written.'])
+    await enterPlanMode({ page: {} as Page, modelScript: script, provider: AgentProvider.GROK_BUILD }, { testId: 'unit' })
+    expect(queued.map(step => step.toolCalls?.map(call => call.name) ?? step.text)).toEqual([['enter_plan_mode'], ['write'], 'I am in plan mode and the plan is written.'])
     expect(queued[1]?.toolCalls?.[0]?.arguments).toEqual({ file_path: join('/private/home', '.claude', 'plans', 'dummy-plan-unit.md'), content: `${planText('unit')}\nMARKER` })
     expect(fallbacks).toEqual([{ text: 'Working through the plan.' }])
     expect(browser.events).toEqual([`send:${ENTER_PLAN_PROMPT}\nMARKER`, 'steps', 'idle'])

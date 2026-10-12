@@ -698,12 +698,12 @@ describe('exerciseAgentStartup', () => {
   it('opens the startup agent of a provider with a git rule in the root of a git repository of its own', async () => {
     const run = scratchRun(directories, 'native-startup-rule-')
     resume.directory.mockImplementation(prefix => mkdtempSync(join(run, prefix)))
-    const qoder: ProviderAgent = { provider: AgentProvider.CLAUDE_CODE, prefix: 'qoder-e2e', workingDir: gitRepositoryWorkingDir }
+    const qoder: ProviderAgent = { provider: AgentProvider.QODER, prefix: 'qoder-e2e', workingDir: gitRepositoryWorkingDir }
     await expect(exerciseAgentStartup(startupContext(qoder), { launch, failed: true })).rejects.toBe(opened)
     expect(resume.open).toHaveBeenCalledOnce()
     const [server, workspaceId, workingDir, request] = resume.open.mock.calls[0] ?? []
     expect([server?.hubUrl, server?.adminToken, server?.workerId, workspaceId]).toEqual(['http://unused.invalid', 'controlled-token', 'private-startup-worker', 'startup-unit-workspace'])
-    expect(request).toEqual({ ...agentOpenOptions(AgentProvider.CLAUDE_CODE), title: 'Controlled native startup' })
+    expect(request).toEqual({ ...agentOpenOptions(AgentProvider.QODER), title: 'Controlled native startup' })
     if (workingDir === undefined)
       throw new Error('The startup agent opened in no stated directory.')
     expect(basename(dirname(workingDir))).toMatch(/^native-startup-workspace-/)

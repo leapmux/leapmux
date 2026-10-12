@@ -39,9 +39,9 @@ export const PROVIDER_PERMISSION_PRESETS = {
   [AgentProvider.ZCODE]: zcodePermissionPresets,
   [AgentProvider.CODEWHALE]: codewhalePermissionPresets,
   [AgentProvider.KIMI_CODE]: kimiPermissionPresets,
+  [AgentProvider.MIMO_CODE]: mimoPermissionPresets,
   [AgentProvider.QWEN_CODE]: qwenPermissionPresets,
   [AgentProvider.OH_MY_PI]: ohMyPiPermissionPresets,
-  [AgentProvider.MIMO_CODE]: mimoPermissionPresets,
   [AgentProvider.GROK_BUILD]: grokPermissionPresets,
   [AgentProvider.KIRO]: kiroPermissionPresets,
   [AgentProvider.AMP]: ampPermissionPresets,
@@ -52,11 +52,11 @@ export const PROVIDER_PERMISSION_PRESETS = {
   [AgentProvider.DIRAC]: undefined,
   [AgentProvider.QODER]: qoderPermissionPresets,
   [AgentProvider.DROID]: droidPermissionPresets,
-  [AgentProvider.FAST_AGENT]: undefined,
   [AgentProvider.COMMAND_CODE]: commandCodePermissionPresets,
   [AgentProvider.DEEPSEEK_HARNESS]: deepseekHarnessPermissionPresets,
   [AgentProvider.GEMINI_CLI]: geminiPermissionPresets,
   [AgentProvider.MUSE_CODE]: musePermissionPresets,
+  [AgentProvider.FAST_AGENT]: undefined,
 } satisfies Record<AgentProvider, ProviderPermissionPresets | undefined>
 
 /** Read canonical preset data without importing a rendering plugin. */

@@ -22,8 +22,11 @@ describe('the composer reply of each ACP plugin', () => {
   const ACP_PROVIDERS = [
     AgentProvider.CURSOR,
     AgentProvider.GOOSE,
+    AgentProvider.GROK_BUILD,
     AgentProvider.KILO,
+    AgentProvider.KIRO,
     AgentProvider.OPENCODE,
+    AgentProvider.QWEN_CODE,
     AgentProvider.REASONIX,
   ] as const
 

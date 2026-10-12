@@ -73,7 +73,7 @@ describe('sameAgentOwnership', () => {
   const agent = create(AgentInfoSchema, {
     id: 'agent',
     workerId: 'worker',
-    agentProvider: AgentProvider.CLAUDE_CODE,
+    agentProvider: AgentProvider.GEMINI_CLI,
     agentSessionId: 'native-session',
     workingDir: '/work',
     parentAgentId: 'parent',

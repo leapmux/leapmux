@@ -1,5 +1,7 @@
 import type { Page } from '@playwright/test'
 import type { SettingFeature } from './unsupportedConfiguration'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider, AgentStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { expectMissingSetting, SETTING_GROUP_NAMES, settingGroupMatches, settingNameKey } from './unsupportedConfiguration'
@@ -85,6 +87,15 @@ describe('SETTING_GROUP_NAMES', () => {
         owners.set(key, `${feature} ${name}`)
       }
     }
+  })
+
+  it('uses a feature ID of the feature matrix for each key', () => {
+    // Node refuses the URL object that `new URL(path, import.meta.url)` builds in the jsdom project ("The URL must be
+    // of scheme file"), so the test reads a file path.
+    const matrix = JSON.parse(readFileSync(join(import.meta.dirname, '../feature-matrix/features.json'), 'utf8')) as { features: { id: string }[] }
+    const ids = new Set(matrix.features.map(feature => feature.id))
+    for (const feature of features)
+      expect(ids.has(feature), feature).toBe(true)
   })
 })
 

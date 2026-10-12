@@ -214,10 +214,10 @@ function snapshot(agentId: string, messages: AgentChatMessage[]): NativeMessageS
 }
 
 function agent(fields: Partial<Pick<AgentInfo, 'id' | 'status' | 'agentProvider' | 'agentSessionId' | 'startupError'>>): AgentInfo {
-  return create(AgentInfoSchema, { id: 'reopened', status: AgentStatus.ACTIVE, agentProvider: AgentProvider.CLAUDE_CODE, agentSessionId: 'stored-session', ...fields })
+  return create(AgentInfoSchema, { id: 'reopened', status: AgentStatus.ACTIVE, agentProvider: AgentProvider.GEMINI_CLI, agentSessionId: 'stored-session', ...fields })
 }
 
-const stored = { agentProvider: AgentProvider.CLAUDE_CODE, agentSessionId: 'stored-session' }
+const stored = { agentProvider: AgentProvider.GEMINI_CLI, agentSessionId: 'stored-session' }
 
 /** Return each queued value once, then repeat the last value. */
 function sequence<T>(values: readonly T[]): () => T {
@@ -696,12 +696,12 @@ describe('createFromSessionRow', () => {
 describe('reopenFromSessionPicker', () => {
   it('opens the dialog for the stored session and creates the agent from its row', async () => {
     dialogState.rows = [NEW_SESSION, TYPE_A_HANDLE, sessionOption('other'), sessionOption('stored')]
-    await reopenFromSessionPicker(pickerPage, { provider: AgentProvider.CLAUDE_CODE, workingDir: unitWorkingDir('/project'), sessionId: 'stored' })
+    await reopenFromSessionPicker(pickerPage, { provider: AgentProvider.GEMINI_CLI, workingDir: unitWorkingDir('/project'), sessionId: 'stored' })
     expect(dialogState.events).toEqual([
       'dialog',
       'worker',
       'click:agent-provider-selector-trigger',
-      `click:agent-provider-option-${AgentProvider.CLAUDE_CODE}`,
+      `click:agent-provider-option-${AgentProvider.GEMINI_CLI}`,
       'working-dir:/project',
       'enabled:session-select-menu-trigger',
       'menu:session-select-menu',
@@ -713,7 +713,7 @@ describe('reopenFromSessionPicker', () => {
   it('requires the sole session when the list states it', async () => {
     dialogState.rows = [NEW_SESSION, TYPE_A_HANDLE, sessionOption('other'), sessionOption('stored')]
     // The row count fails: the two pinned rows and two sessions, where the sole-session list holds one session.
-    await expect(reopenFromSessionPicker(pickerPage, { provider: AgentProvider.CLAUDE_CODE, workingDir: unitWorkingDir('/project'), sessionId: 'stored', list: 'sole-session' })).rejects.toThrow('expected 4 to be 3')
+    await expect(reopenFromSessionPicker(pickerPage, { provider: AgentProvider.GEMINI_CLI, workingDir: unitWorkingDir('/project'), sessionId: 'stored', list: 'sole-session' })).rejects.toThrow('expected 4 to be 3')
     expect(dialogState.events).not.toContain('click:Create')
   })
 })

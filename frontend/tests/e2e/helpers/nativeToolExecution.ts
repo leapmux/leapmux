@@ -1,5 +1,4 @@
 import type { Locator, Page } from '@playwright/test'
-import type { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { MockModelRequestRecord, MockModelStep, MockModelToolCall } from './mockModelScript'
 import type { ModelScript } from './modelScriptFixture'
 import type { ManagedNativeScenarioContext, NativeScenarioContext, NativeToolOutcome, NativeToolResultReader } from './nativeScenario'
@@ -8,6 +7,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { isAbsolute, join } from 'node:path'
 import { expect } from '@playwright/test'
 import { toolOutcomeLabel } from '../../../src/components/chat/results/toolOutcomeLabel'
+import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { currentNativeAgent, nativeTextStep, nativeToolOutcome } from './nativeScenario'
 import { createNativeToolDirectory } from './nativeToolDirectory'
 import { nativeToolResult } from './nativeToolResult'
@@ -237,13 +237,21 @@ type ShellRowPart = 'outputFilePath'
  * table does not list draws every part.
  */
 const SHELL_ROW_EXCEPTIONS: Readonly<Partial<Record<AgentProvider, Readonly<Partial<Record<ShellRowPart, string>>>>>> = {
+  [AgentProvider.GROK_BUILD]: {
+    outputFilePath: 'Grok Build keeps the output of every shell command in a log file, and states its path as '
+      + '`rawOutput.output_file` also for a small output that it did not truncate. The row shows that path for every '
+      + 'command, as the Grok Build cell of output-file-paths states.',
+  },
 }
 
 /**
  * The providers that run one tool call of a model answer, each with the evidence. The shell scenario gives each of
  * their commands a model answer of its own, still in one turn; every other provider gets both commands in one answer.
  */
-const ONE_SHELL_CALL_PER_ANSWER: ReadonlyMap<AgentProvider, string> = new Map([])
+const ONE_SHELL_CALL_PER_ANSWER: ReadonlyMap<AgentProvider, string> = new Map([
+  [AgentProvider.JUNIE, 'Junie 26.9.22 runs the first tool call of a model answer only: its next request replays that '
+  + 'call alone in the assistant message and holds no result for the second call.'],
+])
 
 /** One shell command of a scenario, as its rows must show it. */
 export interface ShellRowCommand {

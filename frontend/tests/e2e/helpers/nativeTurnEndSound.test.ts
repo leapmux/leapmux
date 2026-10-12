@@ -102,18 +102,18 @@ describe('nativeSoundReadTool', () => {
 
   afterEach(() => rmSync(directory, { recursive: true, force: true }))
 
-  const context = { provider: AgentProvider.CLAUDE_CODE } as ManagedNativeScenarioContext
+  const context = { provider: AgentProvider.AMP } as ManagedNativeScenarioContext
 
   it('writes the file in the working directory of the active agent and returns the provider read call of that file', async () => {
     const call = await nativeSoundReadTool(context)
     const path = join(directory, 'native-notification-file.txt')
     expect(readFileSync(path, 'utf8')).toBe('Native notification file contents.\n')
-    expect(call).toEqual(readToolCall(AgentProvider.CLAUDE_CODE, 'notification-read', path))
+    expect(call).toEqual(readToolCall(AgentProvider.AMP, 'notification-read', path))
   })
 
   it('gives the read call the stated call ID', async () => {
     const call = await nativeSoundReadTool(context, 'second-sound-read')
-    expect(call).toEqual(readToolCall(AgentProvider.CLAUDE_CODE, 'second-sound-read', join(directory, 'native-notification-file.txt')))
+    expect(call).toEqual(readToolCall(AgentProvider.AMP, 'second-sound-read', join(directory, 'native-notification-file.txt')))
   })
 })
 

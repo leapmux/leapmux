@@ -58,6 +58,23 @@ function richToolCases(blocks: Record<string, unknown>[]): RichToolCase[] {
       request: { kind: 'other', title: provider === AgentProvider.REASONIX ? 'mcp__probe__echo' : 'probe_echo', rawInput: { query: 'native args' }, ...(provider === AgentProvider.GOOSE ? { _meta: { goose: { toolCall: { toolName: 'probe__echo', extensionName: 'probe' } } } } : {}) },
       result: { content: blocks.map(content => ({ type: 'content', content })) },
     })),
+    // Grok states an MCP tool in its identity, and Qwen in `_meta.toolName`.
+    {
+      provider: AgentProvider.GROK_BUILD,
+      request: { title: 'probe__echo', rawInput: { query: 'native args' }, _meta: { 'x.ai/tool': { version: 1, name: 'probe__echo', namespace: 'mcp' } } },
+      result: { content: blocks.map(content => ({ type: 'content', content })) },
+    },
+    // Kiro states an MCP tool as `@server/tool` in its title.
+    {
+      provider: AgentProvider.KIRO,
+      request: { kind: 'other', title: '@probe/echo', rawInput: { query: 'native args' }, _meta: { kiro: { serverName: 'probe', toolOrigin: 'client' } } },
+      result: { content: blocks.map(content => ({ type: 'content', content })) },
+    },
+    {
+      provider: AgentProvider.QWEN_CODE,
+      request: { kind: 'other', title: 'probe echo', rawInput: { query: 'native args' }, _meta: { toolName: 'mcp__probe__echo' } },
+      result: { content: blocks.map(content => ({ type: 'content', content })), _meta: { toolName: 'mcp__probe__echo' } },
+    },
   ]
   return [
     ...acpCases.map(entry => ({ ...entry, request: { sessionUpdate: 'tool_call', toolCallId: 'call', status: 'pending', ...entry.request }, result: { sessionUpdate: 'tool_call_update', toolCallId: 'call', status: 'completed', ...entry.result } })),

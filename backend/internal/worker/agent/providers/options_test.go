@@ -33,6 +33,8 @@ func TestProviderManagesEffort(t *testing.T) {
 	registry := Registry()
 
 	managed := map[leapmuxv1.AgentProvider]bool{
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_DEEPSEEK_HARNESS: true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_COMMAND_CODE:     true,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE:      true,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX:            true,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_PI:               true,
@@ -41,8 +43,6 @@ func TestProviderManagesEffort(t *testing.T) {
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_KIMI_CODE:        true,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE:        true,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLINE:            true,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_COMMAND_CODE:     true,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_DEEPSEEK_HARNESS: true,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_MUSE_CODE:        true,
 	}
 	for _, p := range agentlabels.AllProviders() {
@@ -75,19 +75,28 @@ func TestValidateLaunchOptionsAsksTheProviderItsOwnPermissionQuestion(t *testing
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, true, true, true},
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, true, true, true},
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, true, true, true},
+		{leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEWHALE, true, true, true},
+		{leapmuxv1.AgentProvider_AGENT_PROVIDER_KIMI_CODE, true, true, true},
 		// Manages effort, states no permission enum of its own.
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_PI, false, true, false},
 		// Manages effort, and discovers its modes -- MiMo's primary agents -- from the
 		// server, as an ACP provider does.
+		{leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE, false, true, false},
 		// An ACP provider discovers its modes from the daemon.
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, false, false, false},
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE, false, false, false},
+		{leapmuxv1.AgentProvider_AGENT_PROVIDER_QWEN_CODE, false, false, false},
+		{leapmuxv1.AgentProvider_AGENT_PROVIDER_GROK_BUILD, false, false, false},
+		{leapmuxv1.AgentProvider_AGENT_PROVIDER_KIRO, false, false, false},
 		// States its three approval modes itself, and discovers its thinking
 		// levels from the running model.
+		{leapmuxv1.AgentProvider_AGENT_PROVIDER_OH_MY_PI, true, false, true},
 		// States its two permission modes itself, and has no effort axis: its mode
 		// chooses the reasoning effort.
+		{leapmuxv1.AgentProvider_AGENT_PROVIDER_AMP, true, false, true},
 		// States its three modes itself, and each model of the user's provider
 		// states its own reasoning efforts.
+		{leapmuxv1.AgentProvider_AGENT_PROVIDER_CLINE, true, true, true},
 	} {
 		t.Run(tc.provider.String(), func(t *testing.T) {
 			assert.Equal(t, tc.fixedModes, registry.HasFixedPermissionModes(tc.provider),

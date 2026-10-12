@@ -210,7 +210,7 @@ describe('raiseWaitingControl', () => {
 })
 
 describe('waitingControlSteps', () => {
-  const control = raiseWaitingControl(AgentProvider.CLAUDE_CODE, 'question', '', 'abc123')
+  const control = raiseWaitingControl(AgentProvider.CODEWHALE, 'question', '', 'abc123')
 
   it('raises the control in one step', () => {
     expect(waitingControlSteps(control)).toEqual([{ toolCalls: [control.toolCall] }])
@@ -281,8 +281,8 @@ describe('exerciseControlInterrupt', () => {
 
   it('waits for the raising call, and ends the turn after it', async () => {
     const { script, queued } = fakeScript(1)
-    await exerciseControlInterrupt(context(script, AgentProvider.CLAUDE_CODE), { control: 'question' })
-    const control = raiseWaitingControl(AgentProvider.CLAUDE_CODE, 'question', '', 'abc123')
+    await exerciseControlInterrupt(context(script, AgentProvider.CODEWHALE), { control: 'question' })
+    const control = raiseWaitingControl(AgentProvider.CODEWHALE, 'question', '', 'abc123')
     expect(queued).toEqual(waitingControlSteps(control))
     expect(flow.events).toContain('steps:2')
     expect(flow.turnEnded).toHaveBeenCalledExactlyOnceWith(script, 2)

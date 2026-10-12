@@ -229,7 +229,7 @@ describe('protoToAgentTabFields git status', () => {
 // composer and the Interrupt control read the worker's decision.
 describe('protoToAgentTabFields child capabilities', () => {
   it('carries accepts_messages and accepts_interrupt onto the tab', () => {
-    const child = create(AgentInfoSchema, { id: 'c1', parentAgentId: 'root-1', agentProvider: AgentProvider.CLAUDE_CODE, acceptsMessages: false, acceptsInterrupt: true })
+    const child = create(AgentInfoSchema, { id: 'c1', parentAgentId: 'root-1', agentProvider: AgentProvider.QWEN_CODE, acceptsMessages: false, acceptsInterrupt: true })
     const fields = protoToAgentTabFields(createRepoGitStore(), 'wkr-1', child)
     expect(fields.acceptsMessages).toBe(false)
     expect(fields.acceptsInterrupt).toBe(true)

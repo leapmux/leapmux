@@ -106,6 +106,16 @@ describe('HELD_CHILD_NAME', () => {
     expect(spawnSubagentToolCall(AgentProvider.CODEX, 'spawn-held-child', request).arguments).toMatchObject({ task_name: HELD_CHILD_NAME })
   })
 
+  it('is the task name of the Oh My Pi task call, which omp takes as the subagent ID', () => {
+    expect(spawnSubagentToolCall(AgentProvider.OH_MY_PI, 'spawn-held-child', request).arguments).toMatchObject({ tasks: [{ name: HELD_CHILD_NAME }] })
+  })
+
+  it('is the session name of the Codewhale agent start call, whose arguments hold no description', () => {
+    const args = spawnSubagentToolCall(AgentProvider.CODEWHALE, 'spawn-held-child', request).arguments
+    expect(args).toMatchObject({ action: 'start', name: HELD_CHILD_NAME })
+    expect(JSON.stringify(args)).not.toContain(HELD_CHILD_TITLE)
+  })
+
   it('keeps the name, the description, and the task distinct, so a row title assertion identifies the field that the row shows', () => {
     expect(HELD_CHILD_TITLE).not.toContain(HELD_CHILD_NAME)
     expect(HELD_CHILD_TASK).not.toContain(HELD_CHILD_NAME)
@@ -357,7 +367,7 @@ function context(): HeldChildContext {
       return false
     },
   })
-  return { page, modelScript, provider: AgentProvider.CLAUDE_CODE, leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'unused', workerId: 'unused' } }
+  return { page, modelScript, provider: AgentProvider.KIRO, leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'unused', workerId: 'unused' } }
 }
 
 describe('openHeldChildTab', () => {

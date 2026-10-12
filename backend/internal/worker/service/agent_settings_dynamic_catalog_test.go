@@ -25,6 +25,10 @@ var dynamicCatalogProviders = []struct {
 	provider leapmuxv1.AgentProvider
 }{
 	{"copilot", leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT},
+	{"cline", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLINE},
+	{"codewhale", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEWHALE},
+	{"kimi", leapmuxv1.AgentProvider_AGENT_PROVIDER_KIMI_CODE},
+	{"mimo", leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE},
 }
 
 // dynamicCatalogModels is a catalog of the shape that these providers report: every model

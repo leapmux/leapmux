@@ -26,22 +26,6 @@ func writeHelperSpec(t *testing.T, spec agent.HelperSpec) string {
 // The dispatch reaches the provider that the spec states. Amp's permission
 // helper refuses a configuration it cannot read, which proves the run reached
 // it without a bridge to talk to.
-func TestRunAgentHelperRefusesAHelperNoProviderRegisters(t *testing.T) {
-	t.Parallel()
-	path := writeHelperSpec(t, agent.HelperSpec{
-		Provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE.String(),
-		Helper:   "permission",
-	})
-	var stderr bytes.Buffer
-	code := RunAgentHelper(context.Background(), path, agent.HelperInvocation{
-		Stdin:  strings.NewReader(""),
-		Stdout: &bytes.Buffer{},
-		Stderr: &stderr,
-	})
-	assert.Equal(t, agent.HelperExitUnusable, code)
-	assert.Contains(t, stderr.String(), `AGENT_PROVIDER_CLAUDE_CODE registers no helper "permission"`)
-}
-
 func TestRunAgentHelperReachesTheProvidersHelper(t *testing.T) {
 	t.Parallel()
 	path := writeHelperSpec(t, agent.HelperSpec{
@@ -58,4 +42,20 @@ func TestRunAgentHelperReachesTheProvidersHelper(t *testing.T) {
 	})
 	assert.Equal(t, agent.HelperExitUnusable, code)
 	assert.Contains(t, stderr.String(), "could not read the configuration of its permission helper")
+}
+
+func TestRunAgentHelperRefusesAHelperNoProviderRegisters(t *testing.T) {
+	t.Parallel()
+	path := writeHelperSpec(t, agent.HelperSpec{
+		Provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE.String(),
+		Helper:   "permission",
+	})
+	var stderr bytes.Buffer
+	code := RunAgentHelper(context.Background(), path, agent.HelperInvocation{
+		Stdin:  strings.NewReader(""),
+		Stdout: &bytes.Buffer{},
+		Stderr: &stderr,
+	})
+	assert.Equal(t, agent.HelperExitUnusable, code)
+	assert.Contains(t, stderr.String(), `AGENT_PROVIDER_CLAUDE_CODE registers no helper "permission"`)
 }

@@ -84,7 +84,7 @@ describe('runningNativeChildRules', () => {
   it('matches the final child reply against the actual tool result', () => {
     const child: NativeChildScript = {
       matcher: { user: 'The actual child task.' },
-      tool: readToolCall(AgentProvider.CLAUDE_CODE, 'native-read', '/project/native.txt'),
+      tool: readToolCall(AgentProvider.DEEPSEEK_HARNESS, 'native-read', '/project/native.txt'),
       finalMatcher: { user: 'NATIVE_CHILD_FILE77' },
     }
     const childRules = runningNativeChildRules({ gate: 'after-native-read', child })
@@ -221,7 +221,7 @@ describe('heldChildFinalRequest', () => {
 
 /** A script context that marks each prompt, as a model script does. */
 const SCRIPT: NativeChildScriptContext = {
-  provider: AgentProvider.CLAUDE_CODE,
+  provider: AgentProvider.LETTA,
   prompt: text => `${text}\nSCENARIO_MARK`,
   textStep: text => ({ text: `answer: ${text}` }),
 }
@@ -229,7 +229,7 @@ const SCRIPT: NativeChildScriptContext = {
 describe('nativeChildScriptContext', () => {
   function context(textStep?: NativeScenarioContext['textStep']): NativeScenarioContext {
     return {
-      provider: AgentProvider.CLAUDE_CODE,
+      provider: AgentProvider.DIRAC,
       // The script context reads only `prompt`. Any other model access fails the test.
       modelScript: Object.assign({} as ModelScript, { prompt: (text: string) => `${text}\nMARKED` }),
       ...(textStep ? { textStep } : {}),
@@ -241,7 +241,7 @@ describe('nativeChildScriptContext', () => {
 
   it('marks a prompt through the model script and keeps the provider', () => {
     const script = nativeChildScriptContext(context())
-    expect(script.provider).toBe(AgentProvider.CLAUDE_CODE)
+    expect(script.provider).toBe(AgentProvider.DIRAC)
     expect(script.prompt('The task.')).toBe('The task.\nMARKED')
   })
 
@@ -272,14 +272,14 @@ describe('heldChildIdentity', () => {
   it('builds the spawn call of the provider with the marked prompt and a valid gate', () => {
     const child = heldChildIdentity(SCRIPT)
     expect(child.prompt).toBe(`${child.task}\nSCENARIO_MARK`)
-    expect(child.spawn).toEqual(spawnSubagentToolCall(AgentProvider.CLAUDE_CODE, child.spawn.id, { description: child.description, prompt: child.prompt }))
+    expect(child.spawn).toEqual(spawnSubagentToolCall(AgentProvider.LETTA, child.spawn.id, { description: child.description, prompt: child.prompt }))
     expect(() => nativeChildRuleId(child.gate, 'a rule')).not.toThrow()
   })
 
   it('uses the task and the spawn fields that the provider supplies', () => {
-    const child = heldChildIdentity({ ...SCRIPT, provider: AgentProvider.CLAUDE_CODE }, { task: 'The provider task.', spawn: { background: true } })
+    const child = heldChildIdentity({ ...SCRIPT, provider: AgentProvider.DROID }, { task: 'The provider task.', spawn: { background: true } })
     expect(child.task).toBe('The provider task.')
-    expect(child.spawn).toEqual(spawnSubagentToolCall(AgentProvider.CLAUDE_CODE, child.spawn.id, { description: child.description, prompt: child.prompt, background: true }))
+    expect(child.spawn).toEqual(spawnSubagentToolCall(AgentProvider.DROID, child.spawn.id, { description: child.description, prompt: child.prompt, background: true }))
   })
 
   it.each(['', '   '])('refuses an empty task: %j', (task) => {

@@ -145,6 +145,7 @@ func TestChildInputAdmissionKeepsSupportedMessagesAndControlFeedback(t *testing.
 		provider leapmuxv1.AgentProvider
 		kind     leapmuxv1.AgentInputKind
 	}{
+		{"supported_child_message", leapmuxv1.AgentProvider_AGENT_PROVIDER_KIMI_CODE, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE},
 		{"readonly_child_control_feedback", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -719,7 +720,7 @@ func TestQueuedClearDropsTheClearedSession(t *testing.T) {
 	const agentID = "agent-1"
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID: agentID, WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_AMP,
 	}))
 	require.NoError(t, svc.Queries.UpdateAgentSessionID(ctx, db.UpdateAgentSessionIDParams{
 		AgentSessionID: "cleared-thread",
@@ -731,7 +732,7 @@ func TestQueuedClearDropsTheClearedSession(t *testing.T) {
 		AgentID:            agentID,
 		Source:             leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
 		Content:            []byte(`{"content":"keep this in the cleared thread"}`),
-		AgentProvider:      leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		AgentProvider:      leapmuxv1.AgentProvider_AGENT_PROVIDER_AMP,
 		CreatedAt:          sqltime.NewSQLiteTime(time.Now()),
 	})
 	require.NoError(t, err)
@@ -1847,11 +1848,11 @@ func newRequeueFixture(t *testing.T) (*Service, agent.ProviderServices) {
 	svc, _, _ := setupTestService(t)
 	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEWHALE,
 	}))
 	_, err := svc.InputQueue.SetPaused(ctx, "agent-1", true)
 	require.NoError(t, err)
-	return svc, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	return svc, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEWHALE)
 }
 
 // requeuedNotices counts the rows that state why a message appears again.

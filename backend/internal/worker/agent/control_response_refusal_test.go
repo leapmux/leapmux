@@ -51,8 +51,8 @@ func TestControlResponseRefusalIsNilOnceTheResponseIsForwarded(t *testing.T) {
 
 func TestRefusalUnofferedOptionStatesTheProviderName(t *testing.T) {
 	t.Parallel()
-	assert.Equal(t, "Claude Code did not offer proceed_always",
-		RefusalUnofferedOption(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, "proceed_always"))
-	assert.Equal(t, "Codex did not offer Revise",
-		RefusalUnofferedOption(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, "Revise"))
+	assert.Equal(t, "Factory Droid did not offer proceed_always",
+		RefusalUnofferedOption(leapmuxv1.AgentProvider_AGENT_PROVIDER_DROID, "proceed_always"))
+	assert.Equal(t, "Kimi Code did not offer Revise",
+		RefusalUnofferedOption(leapmuxv1.AgentProvider_AGENT_PROVIDER_KIMI_CODE, "Revise"))
 }

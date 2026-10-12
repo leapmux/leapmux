@@ -144,8 +144,8 @@ describe('expectRowsInWorkflowGroup', () => {
 describe('expectOpaqueNativeWorkflowResult', () => {
   function context(): ManagedNativeScenarioContext {
     return {
-      provider: AgentProvider.CLAUDE_CODE,
-      providerAgent: { provider: AgentProvider.CLAUDE_CODE, prefix: 'native-e2e' },
+      provider: AgentProvider.CODEWHALE,
+      providerAgent: { provider: AgentProvider.CODEWHALE, prefix: 'native-e2e' },
       workspaceId: 'workflow-boundary',
       leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'unused', workerId: 'unused' },
       get page(): Page {
