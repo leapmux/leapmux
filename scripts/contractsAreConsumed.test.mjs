@@ -262,7 +262,7 @@ const PENDING_READERS = new Set([
     'commandcode-protocol', 'deepseek-harness-protocol',,
   'droid-protocol', 'fastagent-protocol', 'gemini-protocol',,
  ,
-  'muse-protocol', 'qoder-protocol',
+  'muse-protocol',,
  ,
 ])
 

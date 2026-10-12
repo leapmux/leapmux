@@ -29,6 +29,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/ohmypi"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/opencode"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/pi"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/qoder"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/qwen"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/reasonix"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/zcode"
@@ -62,6 +63,7 @@ func Registrations() []agent.Registration {
 		junie.Registration(),
 		letta.Registration(),
 		dirac.Registration(),
+		qoder.Registration(),
 	}
 }
 

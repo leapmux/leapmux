@@ -795,4 +795,36 @@ export const ROW_KIND_CASES: RowKindCase[] = [
     payload: { sessionUpdate: 'usage_update', used: 52, size: 200000 },
     category: 'hidden',
   },
+  {
+    provider: Provider.QODER,
+    name: 'assistant text',
+    payload: { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'Done.' }] } },
+    category: 'assistant_text',
+  },
+  {
+    provider: Provider.QODER,
+    name: 'assistant thinking',
+    payload: { type: 'assistant', message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'Consider...', signature: 'sig' }] } },
+    category: 'assistant_thinking',
+  },
+  {
+    provider: Provider.QODER,
+    name: 'tool use',
+    payload: { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_qd1', name: 'Read', input: { file_path: '/repo/a.ts' } }] } },
+    category: 'tool_use',
+    spanType: 'Read',
+  },
+  {
+    provider: Provider.QODER,
+    name: 'tool result',
+    payload: { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', content: 'file contents', tool_use_id: 'toolu_qd1' }] } },
+    category: 'tool_result',
+    spanType: 'Read',
+  },
+  {
+    provider: Provider.QODER,
+    name: 'turn end',
+    payload: { type: 'result', subtype: 'success', result: 'Done', num_turns: 1 },
+    category: 'result_divider',
+  },
 ]

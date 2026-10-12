@@ -399,6 +399,7 @@ function markdownChecklist(tool: string, steps: readonly TodoStep[]): string {
  * field as "Current status of the task: pending, in_progress, completed, cancelled".
  */
 const OPENCODE_FAMILY_TODO_STATUSES = [...BASE_TODO_STATUSES, 'cancelled'] as const satisfies readonly TodoStatus[]
+const CANCELLED_AND_BLOCKED_TODO_STATUSES = [...BASE_TODO_STATUSES, 'cancelled', 'blocked'] as const satisfies readonly TodoStatus[]
 
 /**
  * The statuses that Qoder CLI's `WriteTodos` and Gemini CLI's `write_todos` accept. Qoder CLI 1.1.65 states the enum
@@ -996,6 +997,42 @@ const TOOL_VOCABULARY = {
     codeExecution: (id, source) => ({ id, name: 'mcp__node_repl__js', arguments: { code: source, title: 'Run the native script' } }),
     workflowTools: [ZCODE_TOOL.CreateWorkflow],
   },
+  [AgentProvider.QODER]: {
+    // Qoder's stream-json layer emits Anthropic-shaped messages. Its plan exit
+    // reads the plan file and accepts no plan argument.
+    bash: (id, command) => ({ id, name: 'Bash', arguments: { command, description: 'Run the scripted command' } }),
+    edit: (id, { path, before, after }) => ({ id, name: 'Edit', arguments: { file_path: path, old_string: before, new_string: after } }),
+    write: (id, { path, content }) => ({ id, name: 'Write', arguments: { file_path: path, content } }),
+    read: (id, path) => ({ id, name: 'Read', arguments: { file_path: path } }),
+    enterPlanMode: id => ({ id, name: 'EnterPlanMode', arguments: {} }),
+    exitPlanMode: null,
+    exitPlanModeFromFile: id => ({ id, name: 'ExitPlanMode', arguments: {} }),
+    askUserQuestion: questionBuilder((id, questions) => ({ id, name: 'AskUserQuestion', arguments: { questions: questions.map(withMultiSelect) } })),
+    spawnSubagent: (id, { description, prompt }) => ({ id, name: 'Agent', arguments: { description, prompt, subagent_type: 'general-purpose' } }),
+    spawnSubagentBatch: null,
+    backgroundBash: (id, command) => ({
+      id,
+      name: 'Bash',
+      arguments: { command, description: 'Run the scripted command in the background', run_in_background: true },
+    }),
+    // `WriteTodos` replaces the whole list. Its items take `description` and
+    // `status` only -- the schema refuses every other key. Qoder CLI 1.1.65's
+    // status enum also holds `cancelled` and `blocked`.
+    updateTodos: (id, steps) => ({
+      id,
+      name: 'WriteTodos',
+      arguments: { todos: steps.map(({ step, status }) => ({ description: step, status: acceptedTodoStatus('Qoder CLI WriteTodos', CANCELLED_AND_BLOCKED_TODO_STATUSES, status) })) },
+    }),
+    createGoal: (id, objective) => ({ id, name: 'CreateGoal', arguments: { objective } }),
+    // `UpdateGoal` takes one status word: `complete` or `blocked`. Its schema
+    // states no reason field, so the builder drops the one its caller holds.
+    completeGoal: id => ({ id, name: 'UpdateGoal', arguments: { status: 'complete' } }),
+    blockGoal: id => ({ id, name: 'UpdateGoal', arguments: { status: 'blocked' } }),
+    mcpTool: (id, { server, tool, input }) => ({ id, name: `mcp__${server}__${tool}`, arguments: input }),
+    codeExecution: null,
+    workflowTools: ['Workflow'],
+  },
+
   [AgentProvider.DIRAC]: {
     // Dirac's native registry supplies these tool schemas.
     // Each schema sets additionalProperties=false.

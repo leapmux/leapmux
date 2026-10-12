@@ -64,6 +64,7 @@ func TestOnlyThePlanModeProvidersReadAPlanModeTool(t *testing.T) {
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE:       true,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_KIMI_CODE:   true,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEBUDDY:   true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_QODER:       true,
 	}
 	registry := Registry()
 	tools := []string{claude.ToolNameEnterPlanMode, claude.ToolNameExitPlanMode, codex.ToolNamePlanModePrompt}
@@ -117,7 +118,7 @@ func TestProvidersWithLocalPlanApprovalSettings(t *testing.T) {
 	registry := Registry()
 	for _, provider := range append(agentlabels.AllProviders(), leapmuxv1.AgentProvider_AGENT_PROVIDER_UNSPECIFIED) {
 		if provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX ||
-			false { // qoder/deepseek carve-outs return with their providers
+			provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_QODER { // deepseek returns with its provider
 			continue
 		}
 		assert.Empty(t, registry.Plugin(provider).PlanApprovalOptions(""), "provider %v has no local plan approval settings", provider)

@@ -80,6 +80,7 @@ const PROVIDER_CLASSIFIERS: Readonly<Record<string, string | null>> = {
   'mimo/plugin.ts': './classification',
   'ohmypi/plugin.ts': './classification',
   'letta/plugin.ts': './classification',
+  'qoder/plugin.ts': './classification',
   'codex/plugin.ts': './classification',
   'copilot/plugin.ts': './classification',
   'pi/plugin.ts': './classification',

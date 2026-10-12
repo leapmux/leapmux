@@ -29,6 +29,7 @@ enum AgentProvider {
   AGENT_PROVIDER_JUNIE = 21;
   AGENT_PROVIDER_LETTA = 22;
   AGENT_PROVIDER_DIRAC = 23;
+  AGENT_PROVIDER_QODER = 24;
 }
 
 // AgentStatus tracks the lifecycle state of an agent.

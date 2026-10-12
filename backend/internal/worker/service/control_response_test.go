@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -19,6 +20,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude/claudetest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/codex"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/qoder"
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
@@ -1913,6 +1915,13 @@ func TestProcessControlResponse(t *testing.T) {
 				name: "zcode", provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE,
 				toolName: contracts.ZCodeToolNameExitPlanMode, want: contracts.ZCodeModeBuild,
 			},
+			{
+				name: "mimo", provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE,
+				toolName: contracts.MiMoToolPlanExit, want: contracts.MiMoModeBuild,
+				payload: `{"type":"question.asked","properties":{"id":"que_1","sessionID":"ses_1",` +
+					`"questions":[{"key":"plan_exit","params":{"plan":"plan.md"}}]},` +
+					`"request":{"tool_name":"plan_exit","tool_use_id":"call-1"}}`,
+			},
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
@@ -1980,6 +1989,20 @@ func TestProcessControlResponseKeepsInvalidAnswersRetryable(t *testing.T) {
 			invalid:  `{"response":{"request_id":"req-1","response":{"behavior":"invalid"}}}`,
 			valid:    `{"response":{"request_id":"req-1","response":{"behavior":"deny"}}}`,
 		},
+		{
+			name:     "mimo question",
+			provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE,
+			request:  `{"type":"question.asked","properties":{"id":"que_1","sessionID":"ses_1","questions":[{"question":"Pick","options":[{"label":"A"}]}]},"request":{"tool_name":"question","tool_use_id":"call-1"}}`,
+			invalid:  `{"response":{"request_id":"req-1","response":{"behavior":"allow"}}}`,
+			valid:    `{"jsonrpc":"2.0","id":"req-1","result":{"answers":[["A"]]}}`,
+		},
+		{
+			name:     "mimo permission",
+			provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE,
+			request:  `{"type":"permission.asked","properties":{"id":"per_1","sessionID":"ses_1","permission":"bash"},"request":{"tool_name":"bash","tool_use_id":"call-1"}}`,
+			invalid:  `{"jsonrpc":"2.0","id":"req-1","result":{"outcome":{"outcome":"selected","optionId":"forever"}}}`,
+			valid:    `{"jsonrpc":"2.0","id":"req-1","result":{"outcome":{"outcome":"selected","optionId":"always"}}}`,
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -2031,6 +2054,99 @@ func confirmPlanCollaborationForTest(t *testing.T, svc *Service) {
 			Settlements:     agent.OptionSettlements{contracts.CodexOptionCollaborationMode: {State: agent.OptionSettlementConfirmed, Value: &value}},
 			SurfacedOptions: OptionMap{contracts.CodexOptionCollaborationMode: value},
 		}
+	}
+}
+
+type qoderPlanTestAgent struct{ agent.Agent }
+
+func (*qoderPlanTestAgent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
+	return qoder.Registration().OptionGroups
+}
+
+func (*qoderPlanTestAgent) SettingsSnapshot() agent.SettingsApplyResult {
+	return agent.ConfirmedSettings(map[string]string{agent.OptionIDPermissionMode: contracts.QoderModePlan})
+}
+
+func TestSendControlResponse_QoderPlanExitAppliesSelectedMode(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name           string
+		confirmNative  bool
+		wantStoredMode string
+		wantError      bool
+	}{
+		{name: "native confirmation", confirmNative: true, wantStoredMode: contracts.QoderModeAuto},
+		{name: "native refusal", confirmNative: false, wantStoredMode: contracts.QoderModePlan, wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			svc, dispatcher, writer := setupTestService(t)
+			require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+				ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+				AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_QODER,
+				Options:       `{"permissionMode":"plan"}`,
+			}))
+			createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
+				AgentID: "agent-1", RequestID: "qoder-exit",
+				Payload: []byte(`{"type":"control_request","request_id":"qoder-exit","request":{"tool_name":"ExitPlanMode","tool_use_id":"exit-plan"}}`),
+			})
+			stored, err := svc.Queries.GetAgentByID(ctx, "agent-1")
+			require.NoError(t, err)
+			decision := []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"qoder-exit","response":{"behavior":"allow"}}}`)
+			plan := buildControlResponsePlanForTest(t, svc, "agent-1", stored, decision)
+			require.Equal(t, agent.PlanModeControlExit, plan.resolution.PlanModeControl)
+			start := func(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
+				base, err := claudetest.StartSilent(ctx, opts, sink)
+				if err != nil {
+					return nil, err
+				}
+				return &qoderPlanTestAgent{Agent: base}, nil
+			}
+			_, err = svc.Agents.StartAgentWith(ctx, agent.Options{
+				AgentID: "agent-1", Options: map[string]string{agent.OptionIDPermissionMode: contracts.QoderModePlan}, WorkingDir: t.TempDir(),
+			}, svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_QODER), start)
+			require.NoError(t, err)
+			defer svc.Agents.StopAgent("agent-1")
+			svc.sendControlResponseFn = func(string, []byte) error { return nil }
+			nativeWrites := 0
+			svc.updateAgentSettingsFn = func(agentID string, options OptionMap) agent.SettingsApplyResult {
+				nativeWrites++
+				assert.Equal(t, "agent-1", agentID)
+				assert.Equal(t, OptionMap{agent.OptionIDPermissionMode: contracts.QoderModeAuto}, options)
+				if !tc.confirmNative {
+					return agent.SettingsApplyResult{AppliedLive: false, Settlements: agent.OptionSettlements{
+						agent.OptionIDPermissionMode: {State: agent.OptionSettlementUnresolved},
+					}}
+				}
+				mode := contracts.QoderModeAuto
+				return agent.SettingsApplyResult{
+					AppliedLive: true,
+					Settlements: agent.OptionSettlements{
+						agent.OptionIDPermissionMode: {State: agent.OptionSettlementConfirmed, Value: &mode},
+					},
+					SurfacedOptions: OptionMap{agent.OptionIDPermissionMode: mode},
+				}
+			}
+
+			dispatch(dispatcher, "SendControlResponse", &leapmuxv1.SendControlResponseRequest{
+				AgentId: "agent-1", PlanApproval: &leapmuxv1.PlanApprovalSettings{PermissionMode: contracts.QoderModeAuto},
+				Content: decision,
+			}, writer)
+			require.Len(t, writer.responses, 1)
+			var response leapmuxv1.SendControlResponseResponse
+			require.NoError(t, proto.Unmarshal(writer.responses[0].GetPayload(), &response))
+			assert.Equal(t, 1, nativeWrites, "an approved exit must apply the mode to Qoder")
+			require.Empty(t, writer.errors)
+			if tc.wantError {
+				require.NotEmpty(t, response.GetError())
+			} else {
+				require.Empty(t, response.GetError())
+			}
+			row, err := svc.Queries.GetAgentByID(ctx, "agent-1")
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantStoredMode, loadOptions(testRegistry, row.Options, row.AgentProvider)[agent.OptionIDPermissionMode])
+		})
 	}
 }
 

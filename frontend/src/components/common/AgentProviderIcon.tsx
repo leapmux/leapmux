@@ -508,7 +508,7 @@ function DiracIcon(props: { size: number, class?: string }): JSX.Element {
   )
 }
 
-export function QoderIcon(props: { size: number, class?: string }): JSX.Element {
+function QoderIcon(props: { size: number, class?: string }): JSX.Element {
   // The Qoder mark of the @lobehub/icons collection: the green ribboned cube.
   return (
     <svg
@@ -676,6 +676,9 @@ export function AgentProviderIcon(props: AgentProviderIconProps): JSX.Element {
       </Match>
       <Match when={props.provider === AgentProvider.DIRAC}>
         <DiracIcon size={props.size} {...classProps()} />
+      </Match>
+      <Match when={props.provider === AgentProvider.QODER}>
+        <QoderIcon size={props.size} {...classProps()} />
       </Match>
     </Switch>
   )

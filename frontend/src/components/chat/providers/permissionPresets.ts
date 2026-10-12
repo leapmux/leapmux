@@ -14,6 +14,7 @@ import { kiroPermissionPresets } from './kiro/permissionPresets'
 import { lettaPermissionPresets } from './letta/permissionPresets'
 import { mimoPermissionPresets } from './mimo/permissionPresets'
 import { ohMyPiPermissionPresets } from './ohmypi/permissionPresets'
+import { qoderPermissionPresets } from './qoder/permissionPresets'
 import { qwenPermissionPresets } from './qwen/permissionPresets'
 import { reasonixPermissionPresets } from './reasonix/permissionPresets'
 import { zcodePermissionPresets } from './zcode/permissionPresets'
@@ -44,6 +45,7 @@ export const PROVIDER_PERMISSION_PRESETS = {
   [AgentProvider.JUNIE]: undefined,
   [AgentProvider.LETTA]: lettaPermissionPresets,
   [AgentProvider.DIRAC]: undefined,
+  [AgentProvider.QODER]: qoderPermissionPresets,
 } satisfies Record<AgentProvider, ProviderPermissionPresets | undefined>
 
 /** Read canonical preset data without importing a rendering plugin. */

@@ -145,6 +145,13 @@
       "displayName": "Dirac",
       "cliAlias": "dirac",
       "parseAliases": []
+    },
+    "AGENT_PROVIDER_QODER": {
+      "displayName": "Qoder CLI",
+      "cliAlias": "qoder",
+      "parseAliases": [
+        "qodercli"
+      ]
     }
   }
 }
