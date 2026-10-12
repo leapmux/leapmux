@@ -2,6 +2,7 @@
 // Each supported provider requires one import for registry lookup.
 import './claude/plugin'
 import './cline/plugin'
+import './codebuddy/plugin'
 import './amp/plugin'
 import './codex/plugin'
 import './ohmypi/plugin'

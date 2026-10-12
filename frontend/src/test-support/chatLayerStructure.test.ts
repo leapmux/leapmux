@@ -74,6 +74,7 @@ const PROVIDER_CLASSIFIERS: Readonly<Record<string, string | null>> = {
   'amp/plugin.ts': './classification',
   'claude/plugin.ts': './classification',
   'cline/plugin.ts': './classification',
+  'codebuddy/plugin.ts': './classification',
   'codewhale/plugin.ts': './classification',
   'kimi/plugin.ts': './classification',
   'mimo/plugin.ts': './classification',

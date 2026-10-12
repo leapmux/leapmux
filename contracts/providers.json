@@ -119,6 +119,13 @@
         "Cline CLI",
         "cline-cli"
       ]
+    },
+    "AGENT_PROVIDER_CODEBUDDY": {
+      "displayName": "CodeBuddy Code",
+      "cliAlias": "codebuddy",
+      "parseAliases": [
+        "cbc"
+      ]
     }
   }
 }

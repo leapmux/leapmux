@@ -425,7 +425,7 @@ function ClineIcon(props: { size: number, class?: string }): JSX.Element {
   )
 }
 
-export function CodeBuddyIcon(props: { size: number, class?: string }): JSX.Element {
+function CodeBuddyIcon(props: { size: number, class?: string }): JSX.Element {
   // The CodeBuddy mark of the @lobehub/icons collection: the teal-to-violet
   // tile, the white swoosh and the two white ticks.
   const gradId = createUniqueId()
@@ -664,6 +664,9 @@ export function AgentProviderIcon(props: AgentProviderIconProps): JSX.Element {
       </Match>
       <Match when={props.provider === AgentProvider.CLINE}>
         <ClineIcon size={props.size} {...classProps()} />
+      </Match>
+      <Match when={props.provider === AgentProvider.CODEBUDDY}>
+        <CodeBuddyIcon size={props.size} {...classProps()} />
       </Match>
     </Switch>
   )

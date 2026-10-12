@@ -994,6 +994,50 @@ const TOOL_VOCABULARY = {
     codeExecution: (id, source) => ({ id, name: 'mcp__node_repl__js', arguments: { code: source, title: 'Run the native script' } }),
     workflowTools: [ZCODE_TOOL.CreateWorkflow],
   },
+  [AgentProvider.CODEBUDDY]: {
+    // CodeBuddy uses Claude Code 2.1.220 tool-call shapes.
+    // Each call uses an Anthropic tool_use block.
+    // Its permission reply differs: CodeBuddy uses allowed where Claude uses behavior.
+    bash: (id, command) => ({ id, name: 'Bash', arguments: { command, description: 'Run the scripted command' } }),
+    edit: (id, { path, before, after }) => ({ id, name: 'Edit', arguments: { file_path: path, old_string: before, new_string: after } }),
+    write: (id, { path, content }) => ({ id, name: 'Write', arguments: { file_path: path, content } }),
+    read: (id, path) => ({ id, name: 'Read', arguments: { file_path: path } }),
+    enterPlanMode: id => ({ id, name: 'EnterPlanMode', arguments: {} }),
+    exitPlanMode: (id, plan) => ({ id, name: 'ExitPlanMode', arguments: { plan } }),
+    exitPlanModeFromFile: null,
+    askUserQuestion: questionBuilder((id, questions) => ({ id, name: 'AskUserQuestion', arguments: { questions: questions.map(withMultiSelect) } })),
+    // CodeBuddy Code 2.160.0's Agent takes `run_in_background` unless CODEBUDDY_CODE_DISABLE_BACKGROUND_TASKS is set,
+    // which the E2E environment does not set. A child runs in the foreground when the call omits the flag.
+    spawnSubagent: (id, { description, prompt, background }) => ({ id, name: 'Agent', arguments: { description, prompt, subagent_type: 'general-purpose', run_in_background: background ?? false } }),
+    spawnSubagentBatch: null,
+    backgroundBash: (id, command) => ({
+      id,
+      name: 'Bash',
+      arguments: { command, description: 'Run the scripted command in the background', run_in_background: true },
+    }),
+    // `TodoWrite` replaces the whole list on every call. Its items take
+    // `content`, a required `activeForm` and `status`; the CLI reads the
+    // `newTodos` half as the list to save. `codebuddyTaskUpdateToolCall` states
+    // the `deleted` status of the Task family.
+    updateTodos: (id, steps) => ({
+      id,
+      name: 'TodoWrite',
+      arguments: {
+        oldTodos: [],
+        newTodos: steps.map(({ step, status }) => ({ content: step, activeForm: step, status: acceptedTodoStatus('CodeBuddy Code TodoWrite', BASE_TODO_STATUSES, status) })),
+      },
+    }),
+    // `CreateGoal` takes the goal as `condition`, not `objective`.
+    createGoal: (id, objective) => ({ id, name: 'CreateGoal', arguments: { condition: objective } }),
+    // `UpdateGoal` REPLACES the condition; there is no complete or block verb.
+    // `/goal clear` is the user's route and has no tool form.
+    completeGoal: null,
+    blockGoal: null,
+    mcpTool: (id, { server, tool, input }) => ({ id, name: `mcp__${server}__${tool}`, arguments: input }),
+    codeExecution: (id, source) => ({ id, name: 'DeferExecuteTool', arguments: { toolName: 'REPL', params: { code: source } } }),
+    workflowTools: ['Workflow'],
+  },
+
   [AgentProvider.CLINE]: {
     bash: (id, command) => ({ id, name: CLINE_TOOL.RunCommands, arguments: { commands: [command] } }),
     // One `editor` tool replaces text, inserts it, or creates a missing file. The

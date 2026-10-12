@@ -673,4 +673,36 @@ export const ROW_KIND_CASES: RowKindCase[] = [
     payload: { version: 'v1', event: 'session.notice', sessionId: '1790258346189_zqp76', payload: { message: 'auto-compacted', noticeType: 'status', metadata: { kind: 'auto_compaction', phase: 'completed', tokensBefore: 90000, tokensAfter: 12000 } } },
     category: 'notification',
   },
+  {
+    provider: Provider.CODEBUDDY,
+    name: 'assistant text',
+    payload: { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'Done.' }] } },
+    category: 'assistant_text',
+  },
+  {
+    provider: Provider.CODEBUDDY,
+    name: 'assistant thinking',
+    payload: { type: 'assistant', message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'Consider...', signature: 'sig' }] } },
+    category: 'assistant_thinking',
+  },
+  {
+    provider: Provider.CODEBUDDY,
+    name: 'tool use',
+    payload: { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_cb1', name: 'Read', input: { file_path: '/repo/a.ts' } }] } },
+    category: 'tool_use',
+    spanType: 'Read',
+  },
+  {
+    provider: Provider.CODEBUDDY,
+    name: 'tool result',
+    payload: { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', content: 'file contents', tool_use_id: 'toolu_cb1' }] } },
+    category: 'tool_result',
+    spanType: 'Read',
+  },
+  {
+    provider: Provider.CODEBUDDY,
+    name: 'turn end',
+    payload: { type: 'result', subtype: 'success', result: 'Done', num_turns: 1 },
+    category: 'result_divider',
+  },
 ]

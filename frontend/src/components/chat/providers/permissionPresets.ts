@@ -3,6 +3,7 @@ import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { ampPermissionPresets } from './amp/permissionPresets'
 import { claudePermissionPresets } from './claude/permissionPresets'
 import { clinePermissionPresets } from './cline/permissionPresets'
+import { codebuddyPermissionPresets } from './codebuddy/permissionPresets'
 import { codewhalePermissionPresets } from './codewhale/permissionPresets'
 import { codexPermissionPresets } from './codex/permissionPresets'
 import { copilotPermissionPresets } from './copilot/permissionPresets'
@@ -38,6 +39,7 @@ export const PROVIDER_PERMISSION_PRESETS = {
   [AgentProvider.KIRO]: kiroPermissionPresets,
   [AgentProvider.AMP]: ampPermissionPresets,
   [AgentProvider.CLINE]: clinePermissionPresets,
+  [AgentProvider.CODEBUDDY]: codebuddyPermissionPresets,
 } satisfies Record<AgentProvider, ProviderPermissionPresets | undefined>
 
 /** Read canonical preset data without importing a rendering plugin. */

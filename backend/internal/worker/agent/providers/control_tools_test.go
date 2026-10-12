@@ -63,6 +63,7 @@ func TestOnlyThePlanModeProvidersReadAPlanModeTool(t *testing.T) {
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX:       true,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE:       true,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_KIMI_CODE:   true,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEBUDDY:   true,
 	}
 	registry := Registry()
 	tools := []string{claude.ToolNameEnterPlanMode, claude.ToolNameExitPlanMode, codex.ToolNamePlanModePrompt}
