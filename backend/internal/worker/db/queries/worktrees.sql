@@ -68,7 +68,7 @@ DELETE FROM worktree_tabs WHERE worktree_id = ?;
 SELECT COUNT(*) FROM worktree_tab_liveness WHERE worktree_id = ? AND is_live = 1;
 
 -- Select tracked worktrees with dead links and no live links.
--- The reconciler waits for its grace period before it deletes dead links only.
+-- The reconciler deletes only links that remain dead when cleanup runs.
 -- A worktree with zero links requires no link cleanup. Its tracking row remains.
 -- name: ListOrphanCandidateWorktrees :many
 SELECT w.* FROM worktrees w
@@ -79,9 +79,11 @@ WHERE w.deleted_at IS NULL
   );
 
 -- name: ListLiveTabWorkingDirs :many
-SELECT tab_type, tab_id, user_id, working_dir
-FROM tab_locations
-WHERE is_quake = 0 AND working_dir <> '';
+SELECT l.tab_type, l.tab_id, l.user_id, l.working_dir, p.payload
+FROM tab_locations l
+LEFT JOIN worker_tab_payloads p
+  ON p.tab_type = l.tab_type AND p.tab_id = l.tab_id AND p.user_id = l.user_id
+WHERE l.is_quake = 0;
 
 -- name: DeleteDeadWorktreeTabs :exec
 -- sqlc requires this qualifier because the correlated view exposes worktree_id too.

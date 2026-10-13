@@ -42,13 +42,13 @@ var gitFileStatusProbe = struct {
 // enough that a hung helper bites cleanly.
 const pushBranchTimeout = 60 * time.Second
 
-// branchMutationTimeout bounds local-only branch-mutation subprocesses
+// branchMutationTimeout limits local-only branch-mutation subprocesses
 // (`git checkout`, `git checkout -b`, `git branch -D`) so a stuck hook
 // or held lockfile can't leak past the frontend's RPC deadline. These
 // don't hit the network, so 30s is plenty.
 const branchMutationTimeout = 30 * time.Second
 
-// gitReadTimeout bounds read-only git probes (rev-parse, for-each-ref,
+// gitReadTimeout limits read-only git probes (rev-parse, for-each-ref,
 // worktree list, diff stats, push status) used by dialog-open handlers.
 // Belt-and-braces with the inbound RPC ctx (now plumbed through the
 // dispatcher): a client disconnect cancels the subprocess via ctx, and
@@ -611,7 +611,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 		// branch's content, some at the old, index in a partial state).
 		// PushBranch and DeleteBranch mitigate the same hazard the same
 		// way; CheckoutBranch is the parallel case. branchMutationTimeout
-		// still bounds the operation.
+		// still limits the operation.
 		runBranchMutation(bgCtx(), sender, &leapmuxv1.CheckoutBranchResponse{}, func(ctx context.Context) error {
 			// Under the repo's index lock: a checkout and a concurrent
 			// `worktree add` from a starting agent in the same repository would
@@ -844,13 +844,17 @@ func (svc *Service) inspectLastTabClose(ctx context.Context, tabType leapmuxv1.T
 
 	if tabCtx.isWorktree {
 		// If we reached here, the worktree fast path didn't apply
-		// (GetWorktreeForTab miss or count <= 1). The last-tab case is
+		// (no other live tab uses this worktree). The last-tab case is
 		// the only reason we still need worktree details in the
 		// response.
 		resp.Target = leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_WORKTREE
 		resp.ShouldPrompt = true
 		resp.WorktreePath = tabCtx.worktreeRoot
 		resp.WorktreeId = tabCtx.worktreeID
+		if tabCtx.worktreeID == "" {
+			resp.WorktreeRemovalBlockedReason = "LeapMux does not track this worktree. Open an agent or terminal at its root before deletion."
+			return resp, nil
+		}
 		// This is the ONE response that offers a worktree removal, so it also
 		// carries whether git would refuse one. Both clients decide from it
 		// while the tab is still open -- the frontend disables its "Delete
@@ -913,7 +917,7 @@ func (svc *Service) inspectLastTabClose(ctx context.Context, tabType leapmuxv1.T
 // snapshot so the response is correct regardless of the path's worktree
 // disposition. The non-worktree response uses Branches for the dialog's
 // switch-target picker; the worktree response strips Branches because
-// the worktree dialog renders no picker. Both paths are bounded by
+// the worktree dialog renders no picker. Both paths are limited by
 // max(probe, snapshot, branches) instead of summing them.
 func (svc *Service) inspectBranchDeletion(ctx context.Context, dirPath, branchNameHint string) (*leapmuxv1.InspectBranchDeletionResponse, error) {
 	var (
@@ -958,7 +962,7 @@ func (svc *Service) inspectBranchDeletion(ctx context.Context, dirPath, branchNa
 		// Canonicalize dirPath up front so the hint snapshot runs from
 		// the same path string the post-wait gate compares against
 		// (snapshotStatsPath also returns a canonical path for the
-		// non-worktree case). Without this both arms diverge on a
+		// non-worktree case). Without this both branches diverge on a
 		// symlinked ancestor — `/tmp` -> `/private/tmp` on macOS — and
 		// the gate fires every dialog open even when the hint was
 		// correct, doubling open latency.
@@ -989,7 +993,7 @@ func (svc *Service) inspectBranchDeletion(ctx context.Context, dirPath, branchNa
 		g.Go(func() error {
 			info, infoErr = queryGitPathInfo(gctx, dirPath)
 			if infoErr != nil {
-				// See the hint-arm goroutine above: returning the raw
+				// See the hint branch goroutine above: returning the raw
 				// error keeps ctx.Canceled and friends distinguishable
 				// from errNotGitRepo at g.Wait().
 				return infoErr
@@ -1640,7 +1644,7 @@ func switchToResolvesTo(parent context.Context, workingDir, switchTo, target str
 // surfaces them as InvalidArgument.
 //
 // `parent` is expected to be a generous outer ctx (e.g. 2*branchMutationTimeout)
-// rather than a single branchMutationTimeout-bounded ctx: each phase
+// rather than a single branchMutationTimeout-limited ctx: each phase
 // applies its own branchMutationTimeout, and sharing a single 30s budget
 // across checkout + delete would let a slow first phase starve the
 // second.
@@ -2028,7 +2032,7 @@ func (svc *Service) hasOtherNonWorktreeTabOnBranch(ctx context.Context, tabType 
 	// function rather than passed through. `getTabWorkingDir` tells AGENT/TERMINAL
 	// callers they may pass "" -- their ids are globally unique -- and this scan
 	// takes that same string. Bound blank, `user_id = ?` would match no file-tab
-	// row (the table's CHECK forbids a blank owner), so the FILE arm would
+	// row (the table's CHECK forbids a blank owner), so the FILE branch would
 	// silently report "no siblings": closing the last agent on a branch would
 	// announce itself as the last tab with the user's file tab still open on it,
 	// and offer to delete the branch.
@@ -2127,9 +2131,9 @@ func (svc *Service) collectTabDirs(ctx context.Context, query string, args []any
 // admit every parent directory of a tab's dir, up to and including the
 // filesystem root.
 func (svc *Service) userOwnsLiveTabInDir(ctx context.Context, owner userid.UserID, workingDir string) (bool, error) {
-	// `user_id = ''` is the agent/terminal arm: those ids are globally unique
+	// `user_id = ''` is the agent/terminal branch: those ids are globally unique
 	// and carry no owner in `tab_locations` (see the view's doc), and the git
-	// handlers are already gated to the worker's owner, so matching them here is
+	// handlers already require the worker's owner, so matching them here is
 	// the same reach a tab id gave.
 	var n int
 	err := svc.DB.QueryRowContext(ctx, `
@@ -2153,7 +2157,7 @@ func (svc *Service) userOwnsLiveTabInDir(ctx context.Context, owner userid.UserI
 // errgroup short-circuits when a sibling found a hit), every joined
 // waiter receives context.Canceled even though their own ctx is alive.
 // `lookup` detects that mismatch and re-runs the probe with its own
-// ctx — so a waiter never inherits a leader's cancellation. Bounded
+// ctx — so a waiter never inherits a leader's cancellation. Limited
 // retry count prevents a pathological storm of cancelling siblings
 // from spinning forever.
 type branchInfoProbe struct {
@@ -2496,7 +2500,7 @@ func pushStatusForPath(ctx context.Context, dir, branchName string) (pushStatus,
 		return s, nil
 	}
 
-	// Same swallow-on-error hazard as the no-upstream arm above: a silent
+	// Same swallow-on-error hazard as the no-upstream branch above: a silent
 	// failure here would leave Unpushed=0 + UpstreamExists=true, which the
 	// frontend renders as "no unpushed commits" over a real git failure.
 	out, revErr := gitutil.Output(ctx, dir, "rev-list", "--count", upstreamRef+"..HEAD")
@@ -2595,7 +2599,7 @@ func isUntrackedDirPath(path string) bool {
 // deleted file, a collapsed untracked directory, and a race with an agent
 // removing the file mid-refresh. See the field comments in common.proto for
 // why unset rather than zero.
-// The sweep is BOUNDED as a whole, because os.Stat ignores the handler's
+// The sweep is LIMITED as a whole, because os.Stat ignores the handler's
 // context: the RPC's context.WithTimeout cannot interrupt an in-flight stat, so
 // a stalled mount (NFS, SMB, a macOS TCC-protected path) would hang the handler
 // with no reply and leak one goroutine per refresh. See statSweepTimeout.
@@ -2603,7 +2607,7 @@ func annotateFileStats(topLevel string, files []*leapmuxv1.GitFileStatusEntry) {
 	annotateFileStatsWithTimeout(topLevel, files, statSweepTimeout, os.Stat)
 }
 
-// statSweepTimeout bounds the whole stat sweep, not one entry.
+// statSweepTimeout limits the whole stat sweep, not one entry.
 //
 // These stats are decorative: `size` and `mod_time` carry explicit presence
 // precisely so "unknown" is representable, and the frontend already sorts an

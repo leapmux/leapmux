@@ -236,6 +236,13 @@ func (r *startupCore) closing(id string) bool {
 	return r.closeInProgress[id] > 0
 }
 
+// hasUnfinishedClaim reports whether a startup goroutine can still consume a close disposition.
+func (r *startupCore) hasUnfinishedClaim(id string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.inflight[id] != nil
+}
+
 // begin records an entry in STARTING state, adds one to the in-flight counter,
 // and returns the entry as the startup goroutine's HANDLE. The cancel function
 // should be the one tied to that goroutine's context. Must be paired with a

@@ -57,11 +57,6 @@ type OrphanReconciler struct {
 	resumeAgents      func([]string)
 	// onConverged reports a CONVERGED pass to the caller. Nil disables the report.
 	onConverged func()
-	// prevOrphanWorktrees maps a worktree id to when it FIRST looked orphaned. A
-	// worktree must stay orphaned for orphanWorktreeGrace before
-	// reconcileWorktrees cleans its links, so a transient zero-live window during
-	// startup or worktree reuse is never mistaken for a strand.
-	prevOrphanWorktrees map[string]time.Time
 	// prevOrphanTabs maps a reconcilable tab to when it FIRST looked absent from
 	// the hub's owned-tab list. A tab must stay absent for tabGrace before any
 	// case tears it down. See orphanTabGrace for the size of that window.
@@ -87,7 +82,7 @@ type OrphanReconcilerOptions struct {
 	// window, because it is what stops a nudge-driven pass from preempting the
 	// close RPC that is still in flight.
 	TabGrace time.Duration
-	// CleanupWorktreeLinks removes dead links after the grace period.
+	// CleanupWorktreeLinks removes dead links with a current liveness check.
 	// Connect it to (*Service).CleanupOrphanWorktreeLinks. It never deletes Git artifacts.
 	CleanupWorktreeLinks func(ctx context.Context, wt db.Worktree) error
 	// CloseTab performs the FULL per-type teardown for a tab the hub no longer
@@ -179,15 +174,10 @@ func NewOrphanReconciler(queries *db.Queries, listFn func(ctx context.Context) (
 		applyArchiveState:    opts.ApplyArchiveState,
 		resumeAgents:         opts.ResumeAgents,
 		onConverged:          opts.OnConverged,
-		prevOrphanWorktrees:  make(map[string]time.Time),
 		prevOrphanTabs:       make(map[ownedTabKey]time.Time),
 		tabGrace:             opts.TabGrace,
 	}
 }
-
-// orphanWorktreeGrace gives startup and worktree reuse time to establish live links.
-// Cleanup preserves Git artifacts.
-const orphanWorktreeGrace = 2 * time.Minute
 
 // orphanTabGrace is how long a locally open tab must stay absent from the hub's
 // owned-tab list before a case tears it down.
@@ -223,7 +213,7 @@ const reconcileRetryBase = time.Second
 // Run blocks until ctx is cancelled or Stop is called. Run a single
 // pass on start, then run on each interval tick or Trigger().
 //
-// A pass whose hub leg failed is retried on a short backoff rather than left
+// A pass whose hub branch failed is retried on a short backoff rather than left
 // until the next tick. Trigger() is fired on reconnect, which is exactly when
 // the hub RPC is most likely to be answered by a channel that has not settled
 // yet -- and dropping that one shot meant the reconnect converged nothing and
@@ -321,7 +311,7 @@ func newOwnedTabKey(tabType leapmuxv1.TabType, tabID, userID string) ownedTabKey
 	return ownedTabKey{tabType: tabType, tabID: tabID, userID: worktreeTabUserID(tabType, userID)}
 }
 
-// reconcileOnce runs one pass and reports whether EVERY leg it attempted
+// reconcileOnce runs one pass and reports whether EVERY branch it attempted
 // actually completed. False means the pass learned less than it set out to --
 // the hub RPC failed, its response declared no owner scope, or a local SQLite
 // read failed -- so the caller retries on a backoff instead of leaving the
@@ -377,8 +367,8 @@ func (r *OrphanReconciler) reconcileOnce(ctx context.Context) bool {
 	//
 	// A row this Worker cannot classify DROPS OUT of the archive pass and keeps
 	// the rest of the pass. It must not fail the pass: the archive step runs
-	// before all three local legs, so one such row would stop every tab reap,
-	// every worktree reap, and -- because OnConverged never fires -- the boot
+	// before all three local branches, so one such row would stop every tab reap,
+	// every worktree-link cleanup, and -- because OnConverged never fires -- the boot
 	// agent-resume sweep, on every pass for the life of the process. This
 	// matches closeTabForConvergence, which warns and continues for a tab type
 	// it does not know. The reap loops below key on (tab_type, tab_id), so a
@@ -551,7 +541,7 @@ func (r *OrphanReconciler) applyArchiveBucket(ctx context.Context, state leapmux
 	return true
 }
 
-// reconcileWorktrees cleans dead links after the grace period.
+// reconcileWorktrees cleans dead links without delaying database cleanup.
 // Cleanup checks liveness when it deletes each link. A cleanup error prevents convergence.
 func (r *OrphanReconciler) reconcileWorktrees(ctx context.Context) bool {
 	if r.cleanupWorktreeLinks == nil {
@@ -562,30 +552,14 @@ func (r *OrphanReconciler) reconcileWorktrees(ctx context.Context) bool {
 		r.logger.Warn("orphan reconciler: list orphan-candidate worktrees", "err", err)
 		return false
 	}
-	now := r.now()
-	nextOrphans := make(map[string]time.Time, len(candidates))
 	converged := true
 	for _, wt := range candidates {
-		firstSeen, seenBefore := r.prevOrphanWorktrees[wt.ID]
-		if !seenBefore {
-			// First sighting: start its clock and let a later pass decide.
-			nextOrphans[wt.ID] = now
-			continue
-		}
-		if now.Sub(firstSeen) < orphanWorktreeGrace {
-			// Still inside the grace window -- carry the ORIGINAL timestamp so a
-			// burst of nudge-driven passes cannot keep resetting it.
-			nextOrphans[wt.ID] = firstSeen
-			continue
-		}
-		// Delete only links that remain dead at the time of cleanup.
+		// SQL checks each link again before deletion. Git artifacts always remain.
 		if err := r.cleanupWorktreeLinks(ctx, wt); err != nil {
 			r.logger.Warn("orphan reconciler: clean worktree links", "worktree_id", wt.ID, "error", err)
-			nextOrphans[wt.ID] = firstSeen
 			converged = false
 		}
 	}
-	r.prevOrphanWorktrees = nextOrphans
 	return converged
 }
 

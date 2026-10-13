@@ -867,34 +867,8 @@ func (svc *Service) ensureTrackedWorktreeWith(ctx context.Context, worktreePath,
 	if err != nil {
 		return "", err
 	}
-	// Adopt any already-open FILE tabs under this newly-tracked worktree
-	// so they ref-count it. Without this, a file opened before the
-	// worktree row existed stays unlinked and a sibling close could
-	// `git worktree remove` while that editor is still mounted. Use
-	// bgCtx() (not the request ctx) so a dialog dismissed / RPC cancelled
-	// mid-adoption can't abort the loop partway and leave some FILE tabs
-	// unlinked — the same detached-write rationale as registerTabForWorktree.
-	svc.TabPayloads.BackfillWorktreeLinks(bgCtx(), canonicalPath)
-	rows, err := svc.Queries.ListLiveTabWorkingDirs(ctx)
-	if err != nil {
-		return "", err
-	}
-	for _, row := range rows {
-		tabType := leapmuxv1.TabType(row.TabType)
-		if tabType != leapmuxv1.TabType_TAB_TYPE_AGENT && tabType != leapmuxv1.TabType_TAB_TYPE_TERMINAL {
-			continue
-		}
-		info, err := queryGitPathInfo(ctx, row.WorkingDir)
-		if err != nil {
-			if !errors.Is(err, errNotGitRepo) {
-				slog.Warn("cannot resolve a live tab during worktree tracking", "tab_id", row.TabID, "error", err)
-			}
-			continue
-		}
-		if pathutil.Canonicalize(info.TopLevel) == canonicalPath {
-			svc.registerTabForWorktree(stored.ID, tabType, row.TabID)
-		}
-	}
+	// Tracking succeeded. A failed backfill must not lose the stored ID or abort startup.
+	svc.backfillWorktreeLinks(bgCtx(), stored)
 	return stored.ID, nil
 }
 
@@ -937,6 +911,9 @@ func (svc *Service) gitStillListsWorktree(ctx context.Context, wt db.Worktree) b
 // A missing directory counts as removed only when Git no longer lists it.
 func (svc *Service) removeWorktreeFromDisk(wt db.Worktree) error {
 	ctx := bgCtx()
+	// Serialize Worker Git mutations from branch selection through branch and record cleanup.
+	// Keep the worktree lifecycle lock outside this repository lock.
+	defer svc.lockGitIndex(wt.RepoRoot)()
 
 	// Resolve the branch to delete BEFORE the worktree-remove call: the
 	// DB row's branch_name was stamped at attach time, but an external
@@ -970,17 +947,10 @@ func (svc *Service) removeWorktreeFromDisk(wt db.Worktree) error {
 			"error", infoErr)
 	}
 
+	if svc.afterWorktreeBranchProbeFn != nil {
+		svc.afterWorktreeBranchProbeFn()
+	}
 	args := worktreeRemoveArgs(wt.WorktreePath)
-	// Both git commands below run under the repo's index lock, so a concurrent
-	// startup doing `worktree add` in the same repository waits instead of
-	// failing on index.lock. Taken HERE rather than around each command: the
-	// remove and the branch delete are one logical mutation, and releasing
-	// between them would let another command interleave into exactly the window
-	// where the branch is free but not yet deleted.
-	//
-	// Safe with respect to worktreeRemovalLocks, which the callers already hold:
-	// the documented order is removal (outer) -> index (inner).
-	defer svc.lockGitIndex(wt.RepoRoot)()
 
 	// `git worktree remove` must complete before the branch cleanup: git
 	// refuses to delete a branch still checked out in a worktree. Once the
@@ -1107,15 +1077,12 @@ func (svc *Service) rollbackGitModeAfterClose(result gitModeResult, disposition 
 		mu := svc.worktreeRemovalLock(created.WorktreeID)
 		mu.Lock()
 		defer mu.Unlock()
-		info, err := queryGitPathInfo(bgCtx(), result.WorkingDir)
-		if err != nil || !isGitTopLevel(result.WorkingDir, info) || !info.IsWorktree || !pathutil.SamePath(info.TopLevel, created.WorktreePath) {
+		defer svc.worktreeLifecycle.remove(created.WorktreePath)()
+		verdict := svc.checkWorktreeRemovalEligibility(bgCtx(), result.WorkingDir, created.WorktreePath, ownedTabKey{})
+		if verdict.refusal != "" || verdict.err != nil || verdict.otherLiveTabs {
 			return
 		}
-		other, err := svc.hasOtherLiveWorktreeTab(bgCtx(), created.WorktreePath, ownedTabKey{})
-		if err != nil || other {
-			return
-		}
-		if reason, err := svc.worktreeRemovalBlockedReason(bgCtx(), created.WorktreePath, info); err != nil || reason != "" {
+		if reason, err := svc.worktreeRemovalBlockedReason(bgCtx(), created.WorktreePath, verdict.info); err != nil || reason != "" {
 			return
 		}
 		svc.rollbackCreatedWorktree(*created)

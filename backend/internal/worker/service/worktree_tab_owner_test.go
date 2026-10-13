@@ -30,7 +30,7 @@ func TestWorktreeTabs_FileLinksAreOwnerScoped(t *testing.T) {
 	t.Parallel()
 
 	svc, _, _ := setupTestService(t)
-	svc.TabPayloads = NewTabPayloadStore(svc.Queries, nil)
+	svc.TabPayloads = NewTabPayloadStore(svc.Queries, nil, &svc.worktreeLifecycle)
 	ctx := context.Background()
 
 	repoDir := initRepo(t)

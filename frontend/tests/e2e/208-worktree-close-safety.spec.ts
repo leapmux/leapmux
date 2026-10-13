@@ -1,11 +1,14 @@
 import type { Page } from '@playwright/test'
 import { execFileSync } from 'node:child_process'
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
+import { RegisterTabPayloadRequestSchema, RegisterTabPayloadResponseSchema } from '../../src/generated/proto/leapmux/v1/worker_private_pb'
 import { TabType } from '../../src/generated/proto/leapmux/v1/workspace_pb'
+import { fileTabPayload } from '../../src/lib/tabPayload'
 import { test } from './fixtures'
-import { openAgentViaAPI } from './helpers/api'
+import { createWorkspaceViaAPI, getTestChannel, openAgentViaAPI } from './helpers/api'
+import { getUserEventsSubscription, seedTabIntoWorkspace } from './helpers/crdt'
 import { deleteWorkspaceViaUI, loginViaToken, openWorkspace, tabById } from './helpers/ui'
 import { inspectLastTabCloseViaAPI, waitForAgentStartupViaAPI, waitForWorkerAgentsClosed } from './helpers/workerTabs'
 import { createWorkspaceWithAgentsViaAPI } from './helpers/workspace'
@@ -39,6 +42,49 @@ async function clickClose(page: Page, agentId: string) {
 }
 
 test.describe('worktree close safety', () => {
+  test('disables deletion for an untracked file-tab worktree', async ({ page, leapmuxServer }) => {
+    const paths = checkout(leapmuxServer.dataDir, 'safety-untracked-file')
+    const { hubUrl, adminToken: cookie, workerId } = leapmuxServer
+    const userEvents = await getUserEventsSubscription(hubUrl, cookie)
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, cookie, 'Untracked file worktree')
+    const channel = await getTestChannel(hubUrl, cookie)
+    const tabId = `file-untracked-${workspaceId}`
+    await channel.callWorker(workerId, 'RegisterTabPayload', RegisterTabPayloadRequestSchema, RegisterTabPayloadResponseSchema, {
+      tabId,
+      payload: fileTabPayload(join(paths.nested, 'committed.txt'), paths.worktree),
+    })
+    await seedTabIntoWorkspace({ hubUrl, cookie, workspaceId, workerId, tabId, tabType: TabType.FILE, userEvents })
+    await loginViaToken(page, cookie)
+    await openWorkspace(page, workspaceId)
+    await clickClose(page, tabId)
+    const dialog = closeDialog(page)
+    await expect(dialog).toBeVisible()
+    await expect(dialog.getByRole('button', { name: 'Delete worktree' })).toBeDisabled()
+    await expect(dialog.getByText('LeapMux does not track this worktree.', { exact: false })).toBeVisible()
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
+    expectPreserved(paths)
+  })
+
+  test('allows root deletion when an unrelated tab directory is missing', async ({ page, leapmuxServer }) => {
+    const unrelated = createGitRepo(leapmuxServer.dataDir, 'safety-unrelated-missing')
+    const other = await createWorkspaceWithAgentsViaAPI(leapmuxServer, 'Missing unrelated directory', { workingDir: unrelated })
+    await waitForAgentStartupViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, other.workspaceId)
+    rmSync(unrelated, { recursive: true })
+    const paths = checkout(leapmuxServer.dataDir, 'safety-valid-root')
+    const { workspaceId, agentIds } = await createWorkspaceWithAgentsViaAPI(leapmuxServer, 'Valid root directory', { workingDir: paths.worktree })
+    await waitForAgentStartupViaAPI(leapmuxServer.hubUrl, leapmuxServer.adminToken, leapmuxServer.workerId, workspaceId)
+    await loginViaToken(page, leapmuxServer.adminToken)
+    await openWorkspace(page, workspaceId)
+    await clickClose(page, agentIds[0]!)
+    const dialog = closeDialog(page)
+    await expect(dialog).toBeVisible()
+    await dialog.getByRole('button', { name: 'Delete worktree' }).click()
+    await dialog.getByRole('button', { name: 'Confirm?' }).click()
+    await waitForWorkerAgentsClosed({ leapmuxServer }, agentIds)
+    await waitForPathDeleted(paths.worktree)
+    await expect.poll(() => branchExists(paths.repo, paths.branch)).toBe(false)
+  })
+
   for (const dirty of [false, true]) {
     test(`closes a ${dirty ? 'dirty' : 'clean'} nested agent without Git confirmation`, async ({ page, leapmuxServer }) => {
       const paths = checkout(leapmuxServer.dataDir, dirty ? 'safety-dirty' : 'safety-clean')

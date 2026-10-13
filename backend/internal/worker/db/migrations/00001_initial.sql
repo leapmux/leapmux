@@ -115,7 +115,7 @@ CREATE UNIQUE INDEX idx_agents_open_native_owner
 CREATE INDEX idx_agents_closed_native_session
     ON agents(agent_provider, working_dir, agent_session_id, closed_at DESC)
     WHERE closed_at IS NOT NULL AND agent_session_id <> '' AND parent_agent_id IS NULL;
--- Serves the agents leg of tab_locations, which the quake reference count
+-- Serves the agents branch of tab_locations, which the quake reference count
 -- reads on every agent close and every reconcile pass. The pair index above
 -- cannot serve that lookup because working_dir is not its first column in the index. It scanned the
 -- whole table. The partial index covers open rows because the view's agents branch
@@ -451,7 +451,7 @@ CREATE TABLE terminals (
     closed_at     DATETIME
 );
 CREATE INDEX idx_terminals_closed_at ON terminals(closed_at) WHERE closed_at IS NOT NULL;
--- Serves the terminals leg of tab_locations, which the quake reference count
+-- Serves the terminals branch of tab_locations, which the quake reference count
 -- reads on every terminal close and every reconcile pass. The quake index below
 -- covers only is_quake = 1 rows, so the TAB half of the count had no index and
 -- scanned the table -- walking every closed row's 100KB screen blob to reach
@@ -467,26 +467,11 @@ CREATE INDEX idx_terminals_open_working_dir ON terminals(working_dir) WHERE clos
 CREATE UNIQUE INDEX idx_terminals_quake_working_dir ON terminals(working_dir)
   WHERE is_quake = 1 AND closed_at IS NULL;
 
--- Junction: which tabs use which LeapMux-created worktree.
---
--- user_id scopes the client-minted-tab liveness join (see
--- worktree_tab_liveness): a FILE or IMAGE tab id is only unique within a user
--- (worker_tab_payloads is keyed by (user_id, tab_id)), so the liveness view
--- needs the user to avoid matching a different user's tab. It is left '' for
--- AGENT/TERMINAL links, whose ids are globally unique, so their liveness branches
--- never need it.
---
--- user_id is part of the PRIMARY KEY for the same reason. Without it, two
--- users' FILE links to the same worktree with the same tab_id collide: the
--- second insert is swallowed by AddWorktreeTab's ON CONFLICT DO NOTHING, and
--- then either user's tab-close deletes the single surviving row -- silently
--- unlinking the other user's still-open file tab and letting the worktree GC
--- reclaim a directory that is still mounted in an editor. FILE and IMAGE tab
--- ids are minted client-side as <kind>-<epoch-ms>-<per-module-load counter>,
--- so a cross-user collision needs no adversary, just two clients starting in
--- the same millisecond. The three read/delete queries keyed by tab
--- (RemoveWorktreeTab, DeleteWorktreeTabsByTabID, GetWorktreeForTab) bind
--- user_id to match.
+-- Links associate tabs with tracked worktrees.
+-- FILE and IMAGE tab IDs are unique only within an owner. The key must include user_id.
+-- Otherwise, a second owner's link can collide with the first owner's link and remain absent.
+-- Process tabs use an empty owner because the Worker supplies their globally unique IDs.
+-- Every tab-keyed lookup and deletion matches the complete stored identity.
 CREATE TABLE worktree_tabs (
     worktree_id  TEXT NOT NULL REFERENCES worktrees(id) ON DELETE CASCADE,
     tab_type     INTEGER NOT NULL,
@@ -497,27 +482,10 @@ CREATE TABLE worktree_tabs (
 -- Covers the by-tab lookups, which all bind (tab_type, tab_id, user_id).
 CREATE INDEX idx_worktree_tabs_tab ON worktree_tabs(tab_type, tab_id, user_id);
 
--- Each worktree_tabs link annotated with whether its backing tab is still
--- live: an agent/terminal with closed_at IS NULL, or a still-present
--- worker_tab_payloads row (a payload-backed tab is hard-deleted on close). A
--- link to a closed/deleted tab -- a startup-race strand -- has is_live = 0.
---
--- This view is the single definition of "is this link live?" so the two
--- consumers (CountLiveWorktreeRefs and ListOrphanCandidateWorktrees) cannot
--- drift apart: adding a new tab type means editing the predicate here once,
--- not in two queries that must agree or the GC reaps a live worktree.
---
--- The agent/terminal branches match on the globally-unique row id; the payload branch
--- matches on (user_id, tab_id) because worker_tab_payloads is keyed that way.
--- That key is about ID UNIQUENESS, not tenancy: agent and terminal ids are
--- minted server-side and are globally unique, while a FILE or IMAGE tab id is
--- minted by the client as `<kind>-<millis>-<counter>` and is therefore unique
--- only within the client that made it. Matching tab_id alone would let one row
--- stand in for another that happens to share an id, marking a strand live and
--- preserving a dead link that cleanup must remove. worktree_tabs.user_id carries the
--- link's user ('' for AGENT/TERMINAL links, whose ids never need it; '' never
--- matches a real worker_tab_payloads row, which always has a non-empty
--- user_id).
+-- Derive link liveness from the shared live-tab view.
+-- Match the tab kind and owner as well as its ID. Payload IDs can equal process IDs.
+-- Closed process rows and absent payload rows produce dead links.
+-- Cleanup removes only dead links and preserves every Git directory and branch.
 CREATE VIEW worktree_tab_liveness AS
 SELECT
     t.worktree_id AS worktree_id,
@@ -525,9 +493,8 @@ SELECT
     t.tab_id AS tab_id,
     t.user_id AS user_id,
     CASE WHEN
-        EXISTS (SELECT 1 FROM agents a WHERE a.id = t.tab_id AND a.closed_at IS NULL)
-        OR EXISTS (SELECT 1 FROM terminals te WHERE te.id = t.tab_id AND te.closed_at IS NULL)
-        OR EXISTS (SELECT 1 FROM worker_tab_payloads p WHERE p.tab_id = t.tab_id AND p.user_id = t.user_id)
+        EXISTS (SELECT 1 FROM tab_locations l
+                WHERE l.tab_type = t.tab_type AND l.tab_id = t.tab_id AND l.user_id = t.user_id)
     THEN 1 ELSE 0 END AS is_live
 FROM worktree_tabs t;
 
@@ -712,7 +679,7 @@ CREATE INDEX idx_agent_background_tasks_child ON agent_background_tasks(child_ag
 --
 -- workspace_archived and is_quake ride along so the QUAKE REFERENCE COUNT can
 -- read this one relation too, rather than restating the per-type rule a fourth
--- and fifth time. is_quake is 0 on the legs whose table has no such column,
+-- and fifth time. is_quake is 0 on the branches whose table has no such column,
 -- which is honest rather than a placeholder: only a terminal can BE a quake
 -- terminal, and a reader that excludes them wants every other row.
 CREATE VIEW tab_locations AS

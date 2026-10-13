@@ -954,7 +954,7 @@ describe('useTabOperations', () => {
    * The bug this pair guards. `source: 'transport'` covers far more than "the
    * worker is offline": our own hub WebSocket dropping, a WS-open timeout, an
    * E2EE rekey timeout, the session key passing its hard ceiling, and any
-   * non-ChannelError thrown on the send path. The CRDT leg rides a different
+   * non-ChannelError thrown on the send path. The CRDT branch rides a different
    * transport, so it stays healthy and the tombstone would commit -- silently
    * retiring a tab whose worktree may hold uncommitted work, against a machine
    * that is up and answering. Refusing the close (the user can retry) is the

@@ -320,7 +320,10 @@ func lastTabPromptMessage(r *leapmuxv1.InspectLastTabCloseResponse) string {
 		b.WriteString(strings.Join(details, ", "))
 		b.WriteString(")")
 	}
-	b.WriteString(`; pass --worktree=keep|push|discard`)
+	b.WriteString(`; pass --worktree=keep|push`)
+	if r.GetTarget() == leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_WORKTREE {
+		b.WriteString(`|discard`)
+	}
 	return b.String()
 }
 

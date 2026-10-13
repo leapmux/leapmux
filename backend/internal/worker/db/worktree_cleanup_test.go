@@ -34,6 +34,9 @@ func TestDeleteDeadWorktreeTabs(t *testing.T) {
 		{WorktreeID: "target", TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabID: "shared", UserID: "owner-a"},
 		{WorktreeID: "target", TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabID: "shared", UserID: "owner-b"},
 		{WorktreeID: "other", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "dead-agent"},
+		{WorktreeID: "target", TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabID: "live-agent", UserID: "owner-a"},
+		{WorktreeID: "target", TabType: leapmuxv1.TabType_TAB_TYPE_IMAGE, TabID: "live-terminal", UserID: "owner-a"},
+		{WorktreeID: "target", TabType: leapmuxv1.TabType_TAB_TYPE_IMAGE, TabID: "shared", UserID: "owner-b"},
 	}
 	for _, link := range links {
 		require.NoError(t, q.AddWorktreeTab(ctx, link))

@@ -1291,7 +1291,7 @@ func TestInspectLastTabClose_WorktreeFileTabHoldsWorktree(t *testing.T) {
 	t.Parallel()
 
 	svc, _, _ := setupTestService(t)
-	svc.TabPayloads = NewTabPayloadStore(svc.Queries, nil)
+	svc.TabPayloads = NewTabPayloadStore(svc.Queries, nil, &svc.worktreeLifecycle)
 
 	repoDir := initRepo(t)
 	wtDir := filepath.Join(t.TempDir(), "file-tab-wt")
@@ -1475,7 +1475,7 @@ func TestInspectLastTabClose_NonWorktreeSnapshotFailureDegradesWithHint(t *testi
 // directly, because the only error source scan propagates is the collectTabDirs
 // DB query (a concrete *db.Queries, not injectable here). The deleted-sibling
 // scenario resolves to (false, nil) from hasOther and reaches the snapshot via
-// the `!hasOther` arm — the same path a clean repo with no siblings takes. The
+// the `!hasOther` branch — the same path a clean repo with no siblings takes. The
 // guard is therefore on the OUTCOME (close proceeds, snapshot prompts on the
 // dirty closing repo) rather than on the specific error branch.
 func TestInspectLastTabClose_SiblingCountFailureDoesNotBlockClose(t *testing.T) {
@@ -1618,7 +1618,7 @@ func TestCloseTabCommon_FileLastTabRemoveWorktree(t *testing.T) {
 	t.Parallel()
 
 	svc, _, _ := setupTestService(t)
-	svc.TabPayloads = NewTabPayloadStore(svc.Queries, nil)
+	svc.TabPayloads = NewTabPayloadStore(svc.Queries, nil, &svc.worktreeLifecycle)
 
 	repoDir := initRepo(t)
 	wtDir := filepath.Join(t.TempDir(), "file-only-wt")
@@ -1676,7 +1676,7 @@ func TestTabPayloadStore_RegisterOutsideWorktreeSkipsLink(t *testing.T) {
 	t.Parallel()
 
 	svc, _, _ := setupTestService(t)
-	svc.TabPayloads = NewTabPayloadStore(svc.Queries, nil)
+	svc.TabPayloads = NewTabPayloadStore(svc.Queries, nil, &svc.worktreeLifecycle)
 
 	loosePath := filepath.Join(t.TempDir(), "loose.txt")
 	require.NoError(t, os.WriteFile(loosePath, []byte("loose\n"), 0o644))
@@ -1776,7 +1776,9 @@ func TestTabPayloadStore_BackfillLinksWorktreeContainingTheFile(t *testing.T) {
 
 	wtID, err := svc.ensureTrackedWorktree(ctx, wtDir)
 	require.NoError(t, err)
-	svc.TabPayloads.BackfillWorktreeLinks(ctx, wtDir)
+	tracked, err := svc.Queries.GetWorktreeByID(ctx, wtID)
+	require.NoError(t, err)
+	svc.backfillWorktreeLinks(ctx, tracked)
 
 	wt, err := svc.Queries.GetWorktreeForTab(ctx, db.GetWorktreeForTabParams{
 		TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabID: "file-backfill", UserID: "user-1",
@@ -1844,7 +1846,7 @@ func TestInspectLastTabClose_BranchMultiTabFastPath(t *testing.T) {
 	createAgentForPath(t, svc, "agent-branch-mt-2", repoDir)
 
 	// A real owner, unlike the worktree-fast-path tests above: this one reaches
-	// the branch-sibling scan, whose FILE leg is owner-scoped and refuses to run
+	// the branch-sibling scan, whose FILE branch is owner-scoped and refuses to run
 	// blind rather than silently reporting "no siblings" (see
 	// hasOtherNonWorktreeTabOnBranch). Production always has one here.
 	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, "agent-branch-mt-1", "user-1")
@@ -2866,7 +2868,7 @@ func TestInspectBranchDeletion_UnlockedWorktreeCarriesNoBlockedReason(t *testing
 
 // A NON-worktree delete removes no worktree, so it must carry no verdict -- the
 // field would otherwise describe a removal that response never offers, and the
-// dialog gates its in-place delete on the same field.
+// dialog controls its in-place deletion on the same field.
 func TestInspectBranchDeletion_NonWorktreeCarriesNoBlockedReason(t *testing.T) {
 	t.Parallel()
 
@@ -3418,7 +3420,7 @@ func TestCreateBranch_Duplicate(t *testing.T) {
 
 // TestCheckoutBranch_RemoteTrackingMismatchRefuses pins the
 // upstream-tracking check added to checkoutBranchInDir's prefix-strip
-// arm. When a repo has multiple remotes (origin + upstream) and the
+// branch. When a repo has multiple remotes (origin + upstream) and the
 // user picks `upstream/<name>` but a same-named local already tracks
 // origin's variant, silently substituting target=<localName> would
 // route the user onto the origin-tracking branch — destructive UX
@@ -5430,9 +5432,9 @@ func TestGetGitFileStatusEntries_OnlyUntrackedSkipsNumstat(t *testing.T) {
 // PER-CALL fork budget. It used to be a SetLimit on each per-type scan's own
 // errgroup inside hasOtherNonWorktreeTabOnBranch, and those scans run
 // concurrently -- so the constant that documents itself as "6 forks" actually
-// permitted 6 per LEG: 12 with agents+terminals, 18 once the file-tab leg
+// permitted 6 per branch: 12 with agents+terminals, 18 once the file-tab branch
 // landed. Holding the budget on the probe, which is allocated once per call and
-// shared by every leg, makes the number the constant names the number the
+// shared by every branch, makes the number the constant names the number the
 // worker forks.
 func TestBranchInfoProbe_BoundsConcurrentForks(t *testing.T) {
 	t.Parallel()
@@ -5637,7 +5639,7 @@ func TestBranchInfoProbe_WaiterSurvivesLeaderCancellation(t *testing.T) {
 // TestBranchInfoProbe_AllCallersCancelledPropagates pins the negative
 // case: when every caller's ctx is dead, lookup must NOT loop
 // forever via the retry path — it returns the ctx error promptly.
-// The for-loop's retry guard is gated on `ctx.Err() == nil`, so a
+// The for-loop's retry guard requires `ctx.Err() == nil`, so a
 // dead caller-ctx falls through to `return nil, err` on the first
 // pass.
 func TestBranchInfoProbe_AllCallersCancelledPropagates(t *testing.T) {
@@ -5946,7 +5948,7 @@ func TestInspectBranchChange_CtxCanceledDoesNotMasqueradeAsNotARepo(t *testing.T
 
 // TestInspectBranchDeletion_CtxCanceledDoesNotMasqueradeAsNotARepo
 // mirrors the change-branch case for the deletion-inspect goroutines.
-// Both the hint-arm and no-hint-arm goroutines used to wrap any
+// Both the hint branch and no-hint branch goroutines used to wrap any
 // queryGitPathInfo error as errNotGitRepo; with the fix the raw error
 // flows back to g.Wait() and the wait-handler reports it as-is when
 // it's not errNotGitRepo.

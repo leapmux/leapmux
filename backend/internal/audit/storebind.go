@@ -115,6 +115,7 @@ var unguardedOwnerFilterQueries = map[string]string{
 // repo-wide, and an exemption table that size is a rubber stamp rather than a
 // reviewed list.
 var unscopedOwnerKeyedQueries = map[string]string{
+	"ListLiveTabWorkingDirs": "Worktree safety checks require every owner's live tabs. The payload join matches tab type, tab ID, and owner.",
 
 	// ---- deliberately cross-owner sweeps ----
 	//

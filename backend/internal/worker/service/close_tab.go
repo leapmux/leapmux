@@ -5,8 +5,6 @@ import (
 	"errors"
 	"log/slog"
 
-	"github.com/leapmux/leapmux/util/pathutil"
-
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -209,8 +207,7 @@ func (svc *Service) closeTabCommon(
 
 	// When REMOVE is requested, look up the worktree BEFORE the
 	// tab-worktree association is dropped, so we still see the link.
-	// The actual removal requires CountWorktreeTabs == 0 after
-	// unregister, which protects sibling tabs sharing the worktree.
+	// The final live-directory check protects every sibling tab before removal.
 	var wtForRemoval *db.Worktree
 	worktreeLookupFailed := false
 	if action == leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE {
@@ -223,8 +220,15 @@ func (svc *Service) closeTabCommon(
 		case err == nil:
 			wtForRemoval = &wt
 		case errors.Is(err, sql.ErrNoRows):
-			// Tab has no worktree association — REMOVE degrades to KEEP.
-			// Leaves worktree_removal UNSPECIFIED.
+			if rootEligible {
+				tracked, pathErr := svc.Queries.GetWorktreeByPath(bgCtx(), removalInfo.TopLevel)
+				if pathErr == nil {
+					wtForRemoval = &tracked
+				} else if !errors.Is(pathErr, sql.ErrNoRows) {
+					setWorktreeRemovalFailed(result, &db.Worktree{WorktreePath: removalInfo.TopLevel}, pathErr)
+					worktreeLookupFailed = true
+				}
+			}
 		default:
 			// A real DB error means we can't tell whether this close
 			// should remove the worktree. Surface it as a partial failure
@@ -273,7 +277,7 @@ func (svc *Service) closeTabCommon(
 			return result
 		}
 		svc.unregisterTab(tabType, tabID, userID)
-		if action == leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE && (!retiredLiveRow || (removalInfo != nil && removalInfo.IsWorktree && !rootEligible)) {
+		if action == leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE && (!retiredLiveRow || (removalInfo != nil && removalInfo.IsWorktree)) {
 			wt := &db.Worktree{}
 			if removalInfo != nil {
 				wt.WorktreePath = removalInfo.TopLevel
@@ -300,6 +304,7 @@ func (svc *Service) removeWorktreeIfLastReference(result *leapmuxv1.CloseTabResu
 	mu := svc.worktreeRemovalLock(wt.ID)
 	mu.Lock()
 	defer mu.Unlock()
+	defer svc.worktreeLifecycle.remove(wt.WorktreePath)()
 
 	// wt was resolved by GetWorktreeForTab BEFORE we held the lock, so a
 	// concurrent REMOVE close (a sibling tab) may have removed
@@ -343,35 +348,24 @@ func (svc *Service) removeWorktreeIfLastReference(result *leapmuxv1.CloseTabResu
 		setWorktreeRemovalFailed(result, wt, err)
 		return
 	}
-	remaining, countErr := svc.Queries.CountWorktreeTabs(bgCtx(), wt.ID)
-	if countErr != nil {
-		// We dropped this tab's link but can't confirm whether others remain,
-		// so we can't safely remove. Surface it instead of returning a clean
-		// result: if this was the last reference, the worktree is now orphaned
-		// and the user must clean it up by hand.
-		slog.Warn("failed to count worktree tabs after close", "worktree_id", wt.ID, "error", countErr)
-		setWorktreeRemovalFailed(result, wt, countErr)
-		return
-	}
-	if remaining != 0 {
-		result.WorktreeRemoval = leapmuxv1.WorktreeRemovalOutcome_WORKTREE_REMOVAL_OUTCOME_STILL_REFERENCED
+	if err := svc.Queries.DeleteDeadWorktreeTabs(bgCtx(), wt.ID); err != nil {
+		setWorktreeRemovalFailed(result, wt, err)
 		return
 	}
 	if !retiredLiveRow {
 		setWorktreeRemovalRefused(result, wt, "Worktree kept: deletion was not authorized", "The tab was already closed")
 		return
 	}
-	info, err := queryGitPathInfo(bgCtx(), workingDir)
-	if err != nil || !isGitTopLevel(workingDir, info) || !info.IsWorktree || !pathutil.SamePath(pathutil.Canonicalize(info.TopLevel), wt.WorktreePath) {
-		setWorktreeRemovalRefused(result, wt, "Worktree kept: deletion was not authorized", "The tab directory no longer identifies this linked worktree")
+	verdict := svc.checkWorktreeRemovalEligibility(bgCtx(), workingDir, wt.WorktreePath, newOwnedTabKey(tabType, tabID, userID))
+	if verdict.refusal != "" {
+		setWorktreeRemovalRefused(result, wt, "Worktree kept: deletion was not authorized", verdict.refusal)
 		return
 	}
-	other, err := svc.hasOtherLiveWorktreeTab(bgCtx(), wt.WorktreePath, newOwnedTabKey(tabType, tabID, userID))
-	if err != nil {
-		setWorktreeRemovalFailed(result, wt, err)
+	if verdict.err != nil {
+		setWorktreeRemovalFailed(result, wt, verdict.err)
 		return
 	}
-	if other {
+	if verdict.otherLiveTabs {
 		result.WorktreeRemoval = leapmuxv1.WorktreeRemovalOutcome_WORKTREE_REMOVAL_OUTCOME_STILL_REFERENCED
 		return
 	}
@@ -387,7 +381,7 @@ func (svc *Service) removeWorktreeIfLastReference(result *leapmuxv1.CloseTabResu
 	// A probe that cannot answer falls through to the removal. That matches the
 	// fail-open rule worktreeRemovalBlockedReason states: a block the worker
 	// cannot confirm would refuse a removal the user can have.
-	if reason, err := svc.worktreeRemovalBlockedReason(bgCtx(), wt.WorktreePath, nil); err != nil {
+	if reason, err := svc.worktreeRemovalBlockedReason(bgCtx(), wt.WorktreePath, verdict.info); err != nil {
 		slog.Warn("worktree removal policy could not be read; attempting the removal",
 			"worktree_id", wt.ID, "worktree_path", wt.WorktreePath, "error", err)
 	} else if reason != "" {
@@ -395,6 +389,9 @@ func (svc *Service) removeWorktreeIfLastReference(result *leapmuxv1.CloseTabResu
 			"worktree_id", wt.ID, "worktree_path", wt.WorktreePath, "reason", reason)
 		setWorktreeRemovalRefused(result, wt, "Worktree kept: git refuses to remove it", reason)
 		return
+	}
+	if svc.beforeWorktreeRemovalFn != nil {
+		svc.beforeWorktreeRemovalFn()
 	}
 	if err := svc.removeWorktreeFromDisk(*wt); err != nil {
 		setWorktreeRemovalFailed(result, wt, err)
@@ -520,7 +517,7 @@ func (svc *Service) closeAgentTabCommon(userID, agentID string, action leapmuxv1
 	// without waiting for that lock. The start path stops a late process.
 	releaseCloseAdmission := svc.AgentStartup.holdCloseAdmission(agentID)
 	defer releaseCloseAdmission()
-	effectiveAction := svc.startupCloseAction(action, newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_AGENT, agentID, userID), dbAgent.WorkingDir)
+	effectiveAction := svc.startupCloseAction(action, newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_AGENT, agentID, userID), dbAgent.WorkingDir, &svc.AgentStartup.startupCore)
 	svc.AgentStartup.cancelAndClear(agentID, closeWorktreeDispositionFor(effectiveAction, linkPolicy))
 	if svc.beforeAgentCloseTeardownFn != nil {
 		svc.beforeAgentCloseTeardownFn(agentID)
@@ -650,7 +647,7 @@ func (svc *Service) closeTerminalTabCommon(userID, terminalID string, action lea
 			if termErr == nil && !dbTerm.IsQuake {
 				svc.closeQuakeTerminalIfUnused(userID, dbTerm.WorkingDir, leapmuxv1.TabType_TAB_TYPE_TERMINAL, terminalID, linkPolicy)
 			}
-			effectiveAction := svc.startupCloseAction(action, newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_TERMINAL, terminalID, userID), dbTerm.WorkingDir)
+			effectiveAction := svc.startupCloseAction(action, newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_TERMINAL, terminalID, userID), dbTerm.WorkingDir, &svc.TerminalStartup.startupCore)
 			svc.TerminalStartup.cancelAndClear(terminalID, closeWorktreeDispositionFor(effectiveAction, linkPolicy))
 			svc.Terminals.RemoveTerminal(terminalID)
 			svc.clearTerminalBellCoalesce(terminalID)

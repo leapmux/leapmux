@@ -29,14 +29,18 @@ import (
 // payload oneof and the directory the worktree link follows; everything else
 // here is shared, and a second store would have to restate all of it.
 type TabPayloadStore struct {
-	q      *db.Queries
-	events *PrivateEventsBus
+	q         *db.Queries
+	events    *PrivateEventsBus
+	lifecycle *WorktreeLifecycle
 }
 
 // NewTabPayloadStore returns a store bound to the worker's DB queries and the
 // bus where snapshot/live events get published.
-func NewTabPayloadStore(q *db.Queries, events *PrivateEventsBus) *TabPayloadStore {
-	return &TabPayloadStore{q: q, events: events}
+func NewTabPayloadStore(q *db.Queries, events *PrivateEventsBus, lifecycle *WorktreeLifecycle) *TabPayloadStore {
+	if lifecycle == nil {
+		panic("NewTabPayloadStore requires a shared worktree lifecycle")
+	}
+	return &TabPayloadStore{q: q, events: events, lifecycle: lifecycle}
 }
 
 // Register persists a (user_id, tab_id, tab_type, payload, working_dir) row and
@@ -60,6 +64,11 @@ func (s *TabPayloadStore) Register(ctx context.Context, p RegisterTabPayloadPara
 		return fmt.Errorf("register tab payload: %w: %w", ErrInvalidTabPayload, err)
 	}
 	stored.WorkingDir = workingDir
+	release, err := s.lifecycle.admit(workingDir, tabPayloadLinkDir(stored))
+	if err != nil {
+		return fmt.Errorf("register tab payload: %w", err)
+	}
+	defer release()
 	blob, err := proto.Marshal(stored)
 	if err != nil {
 		return fmt.Errorf("marshal tab payload: %w", err)
@@ -252,40 +261,6 @@ func (s *TabPayloadStore) linkTabToWorktree(ctx context.Context, userID, linkDir
 	}); err != nil {
 		slog.Warn("link tab to worktree: insert failed",
 			"tab_id", tabID, "worktree_id", wt.ID, "error", err)
-	}
-}
-
-// BackfillWorktreeLinks associates open payload tabs with a newly tracked worktree.
-// An agent or terminal at the worktree top level establishes the tracking record.
-// File tabs protect their physical directory. Image tabs use their recorded working directory, when present.
-// Canonical paths filter candidates before Git identifies each candidate's top level.
-// This keeps a nested repository or submodule separate from the enclosing worktree.
-// The method logs errors. The deletion check also scans live payloads, so an absent link cannot hide a live file.
-func (s *TabPayloadStore) BackfillWorktreeLinks(ctx context.Context, worktreePath string) {
-	rows, err := s.q.ListAllWorkerTabPayloads(ctx)
-	if err != nil {
-		slog.Warn("backfill worktree links: list tab payloads", "worktree_path", worktreePath, "error", err)
-		return
-	}
-	canonicalWorktree := pathutil.Canonicalize(worktreePath)
-	for _, row := range rows {
-		payload, err := decodeTabPayload(row.Payload)
-		if err != nil {
-			slog.Warn("backfill worktree links: decode payload", "tab_id", row.TabID, "error", err)
-			continue
-		}
-		// The tab's LINK dir on both the filter and the probe, matching what
-		// Register links on -- for a FILE tab that is the file's own directory,
-		// because this is a ref-count on a deletable directory and follows where
-		// the file physically is, not the working_dir the tab inherited from
-		// whatever opened it (see tabPayloadLinkDir). Canonicalize both sides:
-		// the row stores the raw client path, which may differ from the
-		// symlink-resolved worktree path.
-		linkDir := tabPayloadLinkDir(payload)
-		if linkDir == "" || !pathutil.HasPathPrefix(pathutil.Canonicalize(linkDir), canonicalWorktree) {
-			continue
-		}
-		s.linkTabToWorktree(ctx, row.UserID, linkDir, leapmuxv1.TabType(row.TabType), row.TabID)
 	}
 }
 

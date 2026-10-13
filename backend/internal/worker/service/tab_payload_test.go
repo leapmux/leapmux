@@ -48,7 +48,7 @@ func newTabPayloadTestStore(t *testing.T) (*service.TabPayloadStore, *service.Pr
 	q := db.New(sqlDB)
 	bus := service.NewPrivateEventsBus()
 	t.Cleanup(bus.Stop)
-	return service.NewTabPayloadStore(q, bus), bus, q
+	return service.NewTabPayloadStore(q, bus, &service.WorktreeLifecycle{}), bus, q
 }
 
 func TestTabPayload_RegisterAndGet(t *testing.T) {

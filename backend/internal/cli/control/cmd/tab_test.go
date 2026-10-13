@@ -515,6 +515,8 @@ func TestLastTabPromptMessage_BranchUnpushedSingular(t *testing.T) {
 	assert.Contains(t, msg, "feat-x")
 	assert.Contains(t, msg, "1 unpushed commit")
 	assert.NotContains(t, msg, "1 unpushed commits")
+	assert.Contains(t, msg, "--worktree=keep|push")
+	assert.NotContains(t, msg, "discard")
 }
 
 // TestLastTabPromptMessage_CleanWorktree pins the clean-worktree
@@ -590,7 +592,7 @@ func (d *closeDispatcher) DispatchWith(_ context.Context, _ channel.Caller, req 
 	case "InspectLastTabClose":
 		reply = d.inspect
 	case "ListAgents":
-		// The busy gate's agent leg. Empty (an idle agent) unless a test arms it.
+		// The busy gate's agent branch. Empty (an idle agent) unless a test arms it.
 		reply = &leapmuxv1.ListAgentsResponse{Agents: d.agents}
 	case "InspectTerminalProcesses":
 		reply = &leapmuxv1.InspectTerminalProcessesResponse{Terminals: d.terminals}
