@@ -6,7 +6,6 @@ import type { ManagedNativeScenarioContext } from './nativeScenario'
 import type { ProjectMcpServer } from './nativeWorkspaceTrustLimit'
 import type { ProviderWorkingDir } from './providerWorkingDir'
 import type { ProviderAgent } from './workspace'
-import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import process from 'node:process'
@@ -16,6 +15,7 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions } from '../agentSettings'
 import { exerciseMissingWorkspaceTrustRoute, exerciseNativeWorkspaceTrustLimit, ignoredMcpServerProjectConfiguration, instructionFileConfiguration, mcpServerProjectConfiguration, outsideFileWriteOperation, PROJECT_MCP_SERVER_NAME, projectConfigurationWorker } from './nativeWorkspaceTrustLimit'
 import { gitRepositoryWorkingDir } from './providerWorkingDir'
+import { gitTopLevel } from './worktree'
 
 const SCRATCH_ROOT = resolve(process.cwd(), '../.tmp')
 
@@ -205,7 +205,7 @@ describe('exerciseNativeWorkspaceTrustLimit', () => {
     const directory = await preparedProject(detachedContext({ provider: deepseek.provider, providerAgent: deepseek }))
     expect(basename(dirname(directory))).toMatch(/^native-workspace-trust-/)
     // The run directory sits inside the LeapMux checkout, so a plain directory there reports the checkout as its top.
-    expect(execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: directory, encoding: 'utf8' }).trim()).toBe(realpathSync(directory))
+    expect(gitTopLevel(directory)).toBe(realpathSync(directory))
   })
 
   it('prepares and opens the project of a provider with no rule in a fresh directory of the run', async () => {
@@ -425,7 +425,7 @@ describe('outsideFileWriteOperation', () => {
     const file = /> '([^']+)'/.exec(command)?.[1]
     if (!file)
       throw new Error('The command writes no quoted file.')
-    expect(file.endsWith('/native-control.txt')).toBe(true)
+    expect(basename(file)).toBe('native-control.txt')
     await operation.beforeDecision()
     writeFileSync(file, 'NATIVECONTROL42\n')
     // The file exists, so the check before the decision fails.

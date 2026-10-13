@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -787,11 +788,18 @@ func trackedConns(b *permissionBridge) int {
 
 // awaitEOF fails the test unless the peer closes conn. The deadline is a
 // deadlock guard: a bridge that closes the connection answers at once.
+//
+// The bridge refuses to read past the secret line, so its close can leave this
+// side's bytes unread. Linux sends a reset for such a close and macOS an end of
+// file; both observations state that the bridge ended the connection.
 func awaitEOF(t *testing.T, conn net.Conn) {
 	t.Helper()
 	require.NoError(t, conn.SetReadDeadline(time.Now().Add(30*time.Second)))
 	_, err := io.Copy(io.Discard, conn)
-	require.NoError(t, err, "the bridge closes the connection, and the read ends with EOF")
+	if connectionReset(err) {
+		err = nil
+	}
+	require.NoError(t, err, "the bridge closes the connection, and the read ends with EOF or a reset")
 }
 
 // longSecretTimeout outlasts every deadline of a test. A test that expects the
@@ -811,7 +819,11 @@ func TestPermissionBridgeReadsLittleBeforeTheSecret(t *testing.T) {
 		written <- err
 	}()
 	awaitEOF(t, conn)
-	assert.Error(t, <-written, "the bridge closed the connection before it read the whole line")
+	if runtime.GOOS != "windows" {
+		// Windows accepts the whole write into the socket buffer, so no write
+		// error surfaces there even though the bridge closed at once.
+		assert.Error(t, <-written, "the bridge closed the connection before it read the whole line")
+	}
 	assert.Zero(t, h.sink.PublishedControlCount())
 }
 

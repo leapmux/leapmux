@@ -70,8 +70,9 @@ createServer((request, response) => response.end('private child')).listen(0, '12
 `
 
 afterEach(() => {
+  // A Windows job directory stays locked briefly after its owner exits, so the cleanup retries.
   for (const directory of directories)
-    rmSync(directory, { recursive: true, force: true })
+    rmSync(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
   directories.clear()
 })
 

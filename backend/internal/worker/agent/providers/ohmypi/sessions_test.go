@@ -358,6 +358,13 @@ func TestEncodeSessionDirName(t *testing.T) {
 	})
 }
 
+func absoluteAgentDirSessions(cwd string) string {
+	if runtime.GOOS == "windows" {
+		return filepath.Join(cwd, "/srv/omp", "sessions")
+	}
+	return filepath.Join("/srv/omp", "sessions")
+}
+
 func TestSessionsRoot(t *testing.T) {
 	t.Parallel()
 	const cwd = "/work/project"
@@ -378,7 +385,11 @@ func TestSessionsRoot(t *testing.T) {
 			{name: "a profile name with edge spaces", vars: map[string]string{envProfile: " work "}, want: filepath.Join(home, ".omp", "profiles", "work", "agent", "sessions")},
 			{name: "a blank profile name is the default profile", vars: map[string]string{envProfile: "   "}, want: filepath.Join(home, ".omp", "agent", "sessions")},
 			{name: "a profile ignores the agent directory", vars: map[string]string{envProfile: "work", envAgentDir: "/elsewhere"}, want: filepath.Join(home, ".omp", "profiles", "work", "agent", "sessions")},
-			{name: "an absolute agent directory", vars: map[string]string{envAgentDir: "/srv/omp"}, want: filepath.Join("/srv/omp", "sessions")},
+			// omp is a Node application and reads this override through
+			// path.isAbsolute, which answers false for a drive-less POSIX path
+			// on Windows: there omp resolves it against the working directory
+			// too, and resolveAgainst mirrors that answer.
+			{name: "an absolute agent directory", vars: map[string]string{envAgentDir: "/srv/omp"}, want: absoluteAgentDirSessions(cwd)},
 			{name: "a relative agent directory", vars: map[string]string{envAgentDir: "state"}, want: filepath.Join(cwd, "state", "sessions")},
 			{name: "a profile name omp rejects", vars: map[string]string{envProfile: "Work"}, want: ""},
 			{name: "a Windows device name", vars: map[string]string{envProfile: "nul.x"}, want: ""},

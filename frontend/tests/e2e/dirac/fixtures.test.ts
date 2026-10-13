@@ -11,6 +11,7 @@ import { agentOpenOptions } from '../agentSettings'
 import { openAgentViaAPI } from '../helpers/api'
 import { requireBinary } from '../helpers/binaryOnPath'
 import { createMockAgentEnvironment, MODEL_KEY } from '../helpers/mockAgentEnvironment'
+import { privateFileMode } from '../helpers/privateConfigFile'
 import { withPrivateNativeWorkspace } from '../helpers/privateNativeWorkspace'
 import { prepareAnthropicDirac, prepareMcpDirac } from './fixtures'
 import { readDiracMcpSessionObservation } from './mcpConfiguration'
@@ -99,7 +100,7 @@ describe('prepareAnthropicDirac', () => {
     const prepared = prepareAnthropicDirac(directory, 'http://127.0.0.1:7', 'claude-opus-5')
     const state = join(directory, 'dirac-home', 'data', 'globalState.json')
     expect(JSON.parse(readFileSync(state, 'utf8'))).toEqual({ telemetrySetting: 'disabled', autoApproveAllToggled: true, yoloModeToggled: true })
-    expect(statSync(state).mode & 0o777).toBe(0o600)
+    expect(statSync(state).mode & 0o777).toBe(privateFileMode)
     expect(prepared.agentEnv).toBeUndefined()
     expect(prepared.env).toEqual({
       DIRAC_DIR: join(directory, 'dirac-home'),

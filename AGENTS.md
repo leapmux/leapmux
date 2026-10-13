@@ -435,9 +435,15 @@ Run E2E tests locally before claiming that an E2E change works.
 - **Never `test.skip()` around model behaviour**; script the turn.
   `requireRegistryRow` fails rather than skips and takes no `test` parameter.
 - **No per-call `{ timeout: … }` overrides** on `expect`, `locator.waitFor` or
-  the rest. The one exception sets the bar: `claude-code/shell-tool-execution.spec.ts`
-  waits on the Claude CLI's fixed 30-second `setInterval` through a named
-  constant documenting that period. Discuss before adding another.
+  the rest, and no per-test timeout argument either: `playwright.config.ts`
+  already budgets every spec (a 120s test timeout, a 30s `expect` timeout and a
+  15s action timeout for the mock project), so a spec that needs the standard
+  budget passes no timeout at all. The one exception sets the bar:
+  `claude-code/shell-tool-execution.spec.ts` waits on the Claude CLI's fixed
+  30-second `setInterval` through a named constant documenting that period.
+  Discuss before adding another. The vitest suites are a different runner:
+  `vitest.config.ts` sets one 30s test timeout for every test, so a vitest
+  test passes no timeout argument either.
 - **Scope a chat locator to `:visible`, and a sidebar locator to `:visible` plus
   `.first()`.** `ChatView` keeps a hidden premeasure copy of each unmeasured row
   (same test ids and text), so a page-rooted chat locator can match TWO elements

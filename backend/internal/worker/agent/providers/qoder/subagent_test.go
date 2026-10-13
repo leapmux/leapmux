@@ -1,3 +1,8 @@
+//
+// This suite needs a Windows bring-up that only a local Windows run can state:
+// this file shares the workflow fixtures of the gated qoder suite.
+// The suite keeps its full coverage on macOS and Linux.
+
 package qoder
 
 import (

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os/exec"
 	"strings"
@@ -734,6 +735,13 @@ func (p *Process) StartCmd() error {
 	}
 	if startErr == nil {
 		return nil
+	}
+	// Windows answers an absent executable from process start as an exec.Error
+	// around exec.ErrNotFound, while POSIX answers fs.ErrNotExist. Callers
+	// decide absence by errors.Is(err, fs.ErrNotExist), so the Windows shape
+	// joins it here and the answer stays one taxonomy on every platform.
+	if errors.Is(startErr, exec.ErrNotFound) {
+		startErr = errors.Join(fs.ErrNotExist, startErr)
 	}
 	startErr = fmt.Errorf("start %s: %w", p.providerName, errors.Join(startErr, p.pipes.Close()))
 	// No output reader starts after this failure. Finish the lifecycle here so cleanup can wait safely.

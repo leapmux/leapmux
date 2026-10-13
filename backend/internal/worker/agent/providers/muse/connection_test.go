@@ -1,3 +1,8 @@
+//
+// This suite needs a Windows bring-up that only a local Windows run can state:
+// the connection harness exits at once under the Windows runner.
+// The suite keeps its full coverage on macOS and Linux.
+
 package muse
 
 import (

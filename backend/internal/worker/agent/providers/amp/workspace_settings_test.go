@@ -1,3 +1,8 @@
+//
+// This suite needs a Windows bring-up that only a local Windows run can state:
+// the refusal reports the settings path in a spelling that the Windows runner expands between the harness and the check.
+// The suite keeps its full coverage on macOS and Linux.
+
 package amp
 
 import (
@@ -49,7 +54,7 @@ func TestAskRefusesAWorkspaceThatBypassesTheBanner(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			dir := t.TempDir()
+			dir := canonicalTemp(t)
 			path := filepath.Join(dir, ".amp", "settings.json")
 			writeFile(t, path, tc.content)
 			h := newHarness(t, withWorkingDir(dir))
@@ -76,7 +81,7 @@ func TestAskRefusesAWorkspacePlugin(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			dir := t.TempDir()
+			dir := canonicalTemp(t)
 			for _, file := range tc.files {
 				writeFile(t, filepath.Join(dir, ".amp", "plugins", file), "export default () => {}\n")
 			}
@@ -91,7 +96,7 @@ func TestAskRefusesAWorkspacePlugin(t *testing.T) {
 // files are no reason to refuse.
 func TestAskIgnoresFilesThatAmpDoesNotLoadAsPlugins(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
+	dir := canonicalTemp(t)
 	for _, file := range []string{"README.md", "evil.test.ts", "helper/notes.txt"} {
 		writeFile(t, filepath.Join(dir, ".amp", "plugins", file), "text\n")
 	}
@@ -105,7 +110,7 @@ func TestAskIgnoresFilesThatAmpDoesNotLoadAsPlugins(t *testing.T) {
 // it drops a rule whose action it does not know.
 func TestAskAcceptsAWorkspaceThatBypassesNothing(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
+	dir := canonicalTemp(t)
 	writeFile(t, filepath.Join(dir, ".amp", "settings.json"), `{
 		"amp.dangerouslyAllowAll": "true",
 		"amp.permissions": [
@@ -124,7 +129,7 @@ func TestAskAcceptsAWorkspaceThatBypassesNothing(t *testing.T) {
 // Allow All accepts every call, so the agent refuses nothing there.
 func TestAllowAllRefusesNothing(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
+	dir := canonicalTemp(t)
 	writeFile(t, filepath.Join(dir, ".amp", "settings.json"), `{"amp.dangerouslyAllowAll": true}`)
 	writeFile(t, filepath.Join(dir, ".amp", "plugins", "evil.ts"), "export default () => {}\n")
 	h := newHarness(t, withWorkingDir(dir), withOptions(map[string]string{agent.OptionIDPermissionMode: contracts.AmpPermissionModeAllowAll}))
@@ -135,7 +140,7 @@ func TestAllowAllRefusesNothing(t *testing.T) {
 // nothing, so Ask refuses it too. Amp itself fails on such a file.
 func TestAskRefusesAnUnreadableWorkspaceFile(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
+	dir := canonicalTemp(t)
 	path := filepath.Join(dir, ".amp", "settings.json")
 	writeFile(t, path, `{"amp.dangerouslyAllowAll": `)
 	h := newHarness(t, withWorkingDir(dir))
@@ -151,7 +156,7 @@ func TestAskFindsTheWorkspaceFileAsAmpDoes(t *testing.T) {
 
 	t.Run("a parent directory inside the repository", func(t *testing.T) {
 		t.Parallel()
-		repo := testutil.NewGitRepo(t)
+		repo := canonicalDir(t, testutil.NewGitRepo(t))
 		sub := filepath.Join(repo, "pkg", "sub")
 		require.NoError(t, os.MkdirAll(sub, 0o755))
 		path := filepath.Join(repo, "pkg", ".amp", "settings.jsonc")
@@ -161,7 +166,7 @@ func TestAskFindsTheWorkspaceFileAsAmpDoes(t *testing.T) {
 	})
 	t.Run("the git top level", func(t *testing.T) {
 		t.Parallel()
-		repo := testutil.NewGitRepo(t)
+		repo := canonicalDir(t, testutil.NewGitRepo(t))
 		sub := filepath.Join(repo, "pkg")
 		require.NoError(t, os.MkdirAll(sub, 0o755))
 		writeFile(t, filepath.Join(repo, ".amp", "settings.json"), `{"amp.dangerouslyAllowAll": true}`)
@@ -170,7 +175,7 @@ func TestAskFindsTheWorkspaceFileAsAmpDoes(t *testing.T) {
 	})
 	t.Run("the nearest file wins", func(t *testing.T) {
 		t.Parallel()
-		repo := testutil.NewGitRepo(t)
+		repo := canonicalDir(t, testutil.NewGitRepo(t))
 		sub := filepath.Join(repo, "pkg")
 		writeFile(t, filepath.Join(sub, ".amp", "settings.json"), `{"amp.notifications.enabled": false}`)
 		writeFile(t, filepath.Join(repo, ".amp", "settings.json"), `{"amp.dangerouslyAllowAll": true}`)
@@ -179,7 +184,7 @@ func TestAskFindsTheWorkspaceFileAsAmpDoes(t *testing.T) {
 	})
 	t.Run("json before jsonc", func(t *testing.T) {
 		t.Parallel()
-		dir := t.TempDir()
+		dir := canonicalTemp(t)
 		writeFile(t, filepath.Join(dir, ".amp", "settings.json"), `{}`)
 		writeFile(t, filepath.Join(dir, ".amp", "settings.jsonc"), `{"amp.dangerouslyAllowAll": true}`)
 		h := newHarness(t, withWorkingDir(dir))
@@ -226,35 +231,38 @@ func nestedDir(t *testing.T, root string, depth int) string {
 // directory.
 func TestAskFindsTheSettingsThatAmpReadsPastItsWalkLimit(t *testing.T) {
 	t.Parallel()
-	if runtime.GOOS == "windows" {
-		t.Skip("a working directory 100 levels deep passes MAX_PATH, which git for Windows refuses without core.longpaths")
-	}
 	allowAll := `{"amp.dangerouslyAllowAll": true}`
+	if runtime.GOOS == "windows" {
+		// A working directory 100 levels deep passes MAX_PATH, and git for
+		// Windows refuses to run in one without core.longpaths, so the walk
+		// cannot stage its limit there.
+		t.Skip("the walk limit needs a deeper working directory than Windows allows")
+	}
 
 	t.Run("the walk reaches the top level at its last directory", func(t *testing.T) {
 		t.Parallel()
-		repo := testutil.NewGitRepo(t)
+		repo := canonicalDir(t, testutil.NewGitRepo(t))
 		writeFile(t, filepath.Join(repo, ".amp", "settings.jsonc"), allowAll)
 		h := newHarness(t, withWorkingDir(nestedDir(t, repo, workspaceSearchLimit-1)))
 		assert.ErrorContains(t, refusedTurn(t, h), filepath.Join(repo, ".amp", "settings.jsonc"))
 	})
 	t.Run("the walk stops short of the top level", func(t *testing.T) {
 		t.Parallel()
-		repo := testutil.NewGitRepo(t)
+		repo := canonicalDir(t, testutil.NewGitRepo(t))
 		writeFile(t, filepath.Join(repo, ".amp", "settings.json"), allowAll)
 		h := newHarness(t, withWorkingDir(nestedDir(t, repo, workspaceSearchLimit)))
 		assert.ErrorContains(t, refusedTurn(t, h), filepath.Join(repo, ".amp", "settings.json"))
 	})
 	t.Run("past the walk Amp reads no settings.jsonc", func(t *testing.T) {
 		t.Parallel()
-		repo := testutil.NewGitRepo(t)
+		repo := canonicalDir(t, testutil.NewGitRepo(t))
 		writeFile(t, filepath.Join(repo, ".amp", "settings.jsonc"), allowAll)
 		h := newHarness(t, withWorkingDir(nestedDir(t, repo, workspaceSearchLimit)))
 		require.NoError(t, h.agent.SendInput("go", nil))
 	})
 	t.Run("past the walk Amp loads the plugins of the top level", func(t *testing.T) {
 		t.Parallel()
-		repo := testutil.NewGitRepo(t)
+		repo := canonicalDir(t, testutil.NewGitRepo(t))
 		writeFile(t, filepath.Join(repo, ".amp", "plugins", "evil.ts"), "export default () => {}\n")
 		h := newHarness(t, withWorkingDir(nestedDir(t, repo, workspaceSearchLimit)))
 		assert.ErrorContains(t, refusedTurn(t, h), filepath.Join(repo, ".amp", "plugins", "evil.ts"))
@@ -265,7 +273,7 @@ func TestAskFindsTheSettingsThatAmpReadsPastItsWalkLimit(t *testing.T) {
 // process runs refuses the next turn.
 func TestAskChecksTheWorkspaceBeforeEachTurn(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
+	dir := canonicalTemp(t)
 	h := newHarness(t, withWorkingDir(dir))
 	fp := h.send("first")
 	h.feed(fp, initLine("T-8"))
@@ -282,7 +290,7 @@ func TestAskChecksTheWorkspaceBeforeEachTurn(t *testing.T) {
 // workspace's plugins, so the resume checks the workspace too.
 func TestAskChecksTheWorkspaceBeforeAResume(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
+	dir := canonicalTemp(t)
 	h := newHarness(t, withWorkingDir(dir))
 	fp := h.send("go")
 	h.feed(fp, initLine("T-7"))
@@ -300,4 +308,24 @@ func TestAskChecksTheWorkspaceBeforeAResume(t *testing.T) {
 		return false
 	}, 30*time.Second, 2*time.Millisecond, "the refused resume states the plugin")
 	assert.Equal(t, []string{""}, h.startedThreads(), "the resume starts no process")
+}
+
+func withWorkingDir(dir string) harnessOption {
+	return func(o *agent.Options) { o.WorkingDir = dir }
+}
+
+// canonicalDir answers the directory by its real path. Windows hands tests the
+// 8.3 short form of the user directory, and the workspace walk reports
+// settings paths by the long form, so an assertion built from the short form
+// can never match the refusal message.
+func canonicalDir(t *testing.T, dir string) string {
+	t.Helper()
+	real, err := filepath.EvalSymlinks(dir)
+	require.NoError(t, err)
+	return real
+}
+
+func canonicalTemp(t *testing.T) string {
+	t.Helper()
+	return canonicalDir(t, t.TempDir())
 }

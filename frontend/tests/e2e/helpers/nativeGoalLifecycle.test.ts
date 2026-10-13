@@ -3,7 +3,7 @@ import type { MockModelRule, MockModelToolCall } from './mockModelScript'
 import type { ModelScript } from './modelScriptFixture'
 import type { NativeGoalPauseTiming } from './nativeGoalLifecycle'
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { isAbsolute, join, resolve } from 'node:path'
 import { create } from '@bufbuild/protobuf'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentInfoSchema, AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
@@ -209,7 +209,7 @@ class SimulatedGoalAgent {
 
   /** Run the write tool of the answer: create the file whose path the call states. */
   private runWriteTool(call: MockModelToolCall): void {
-    const path = Object.values(call.arguments ?? {}).find((value): value is string => typeof value === 'string' && value.startsWith('/'))
+    const path = Object.values(call.arguments ?? {}).find((value): value is string => typeof value === 'string' && isAbsolute(value))
     if (path === undefined)
       throw new Error(`The write call ${call.name} states no absolute path.`)
     writeFileSync(path, 'The simulated agent ran the write tool.\n')

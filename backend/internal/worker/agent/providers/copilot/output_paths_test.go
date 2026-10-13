@@ -9,6 +9,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -46,5 +47,5 @@ func TestCopilotNativeOutputPathPreservesPreviewWithoutSavedText(t *testing.T) {
 	assert.True(t, result.Closing)
 	assert.NotContains(t, string(result.Content), "native middle77")
 	assert.NotContains(t, string(result.SupplementalContent), "native middle77", "external output text must not enter Worker storage")
-	assert.Contains(t, string(result.Content), path)
+	assert.Contains(t, string(result.Content), agenttest.JSONEscaped(t, path))
 }

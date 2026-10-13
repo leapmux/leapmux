@@ -196,7 +196,7 @@ describe('raiseWaitingControl', () => {
     expect(raiseWaitingControl(AgentProvider.GOOSE, 'permission', '/work/agent', 'abc123')).toEqual({
       toolCall: bashToolCall(AgentProvider.GOOSE, WAITING_CONTROL_CALL_ID, 'printf WAITINGCONTROL > waiting-control-abc123.txt'),
       bannerText: 'waiting-control-abc123.txt',
-      guardedFile: '/work/agent/waiting-control-abc123.txt',
+      guardedFile: join('/work/agent', 'waiting-control-abc123.txt'),
     })
   })
 

@@ -12,6 +12,11 @@ import { installTestBridge, TEST_USER_ID } from './src/test-support/crdtBridge'
 import { installNetworkGuard } from './src/test-support/networkGuard'
 import '@testing-library/jest-dom/vitest'
 
+// jsdom answers window.scrollTo with a "Not implemented" stub that logs an
+// error on every call. The scroll code under test needs the call recorded,
+// not the platform behavior, so a no-op states that contract quietly.
+window.scrollTo = () => {}
+
 // Refuse every request to the jsdom document host (`http://localhost:3000`).
 // Any process on this machine can listen there, and a 401 from it signs the
 // test's user out. `installNetworkGuard` states the full rule.

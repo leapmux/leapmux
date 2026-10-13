@@ -1,6 +1,6 @@
 import type { McpProbeServer } from '../helpers/mcpProbeServer'
 import { existsSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join as posixJoin } from 'node:path/posix'
 import { isObject } from '../../../src/lib/jsonPick'
 import { assertMcpServerName } from '../helpers/mcpProbeServer'
 
@@ -9,7 +9,9 @@ export function ampSettingsPath(agentEnv: Readonly<Record<string, string>> | und
   const configHome = agentEnv?.XDG_CONFIG_HOME
   if (!configHome)
     throw new Error('The isolated Amp config home is unavailable.')
-  return join(configHome, 'amp', 'settings.json')
+  // A config-home path joins POSIX-style on every platform: the value mirrors what Amp
+  // resolves inside its configuration, and Windows path.join would answer backslashes.
+  return posixJoin(configHome, 'amp', 'settings.json')
 }
 
 /**

@@ -82,20 +82,27 @@ function mode(args: string[]): string | undefined {
 }
 
 describe('windowsCommandEnvironment', () => {
+  /** The system boot variables Windows adds to a replacement environment, under this process's spelling. */
+  const bootVariables = process.platform === 'win32'
+    ? Object.fromEntries(['systemroot', 'systemdrive', 'comspec', 'pathext']
+        .map(name => Object.entries(process.env).find(([key]) => key.toLowerCase() === name))
+        .filter((entry): entry is [string, string] => entry !== undefined))
+    : {}
+
   it('keeps empty values and the first case-insensitive key without mutating the source', () => {
     const source = { Path: 'second', PATH: 'first', EMPTY: '', OMIT: undefined }
-    expect(windowsCommandEnvironment(source)).toEqual({ EMPTY: '', PATH: 'first' })
+    expect(windowsCommandEnvironment(source)).toEqual({ EMPTY: '', PATH: 'first', ...bootVariables })
     expect(source).toEqual({ Path: 'second', PATH: 'first', EMPTY: '', OMIT: undefined })
   })
 
   it('omits a first undefined key without selecting a later duplicate', () => {
-    expect(windowsCommandEnvironment({ PATH: undefined, Path: 'later' })).toEqual({})
+    expect(windowsCommandEnvironment({ PATH: undefined, Path: 'later' })).toEqual(bootVariables)
   })
 
   it('keeps an environment key that matches an object prototype property', () => {
     const source = Object.create(null)
     Object.defineProperty(source, '__proto__', { value: 'literal', enumerable: true })
-    expect(Object.entries(windowsCommandEnvironment(source))).toEqual([['__proto__', 'literal']])
+    expect(Object.entries(windowsCommandEnvironment(source))).toEqual([['__proto__', 'literal'], ...Object.entries(bootVariables)])
   })
 
   it.each([{ '': 'value' }, { 'A\0B': 'value' }, { A: 'a\0b' }])('rejects a malformed environment entry: %j', (source) => {

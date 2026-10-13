@@ -66,10 +66,6 @@ try {
         $Payload = Read-PrivateJson $PayloadPath
         if ($Payload.version -ne 1) { throw 'The private command payload version is invalid.' }
         $CommandEnvironment = New-Object 'System.Collections.Generic.Dictionary[string,string]' ([System.StringComparer]::OrdinalIgnoreCase)
-        foreach ($Pair in [System.Environment]::GetEnvironmentVariables().GetEnumerator()) {
-            $CommandEnvironment[[string]$Pair.Key] = [string]$Pair.Value
-        }
-        $CommandEnvironment.Remove('PSMODULEPATH') | Out-Null
         foreach ($Pair in $Payload.environment.PSObject.Properties) {
             $CommandEnvironment[$Pair.Name] = [string]$Pair.Value
         }
@@ -78,7 +74,8 @@ try {
         $env:TMP = $PrivateDirectory
     }
     $Source = [System.IO.Path]::Combine($PSScriptRoot, 'windows-command-job.cs')
-    Add-Type -Path $Source -ReferencedAssemblies 'System.dll', 'System.Core.dll', 'System.Runtime.Serialization.dll'
+    # DataContractJsonSerializer.WriteObject takes an XmlWriter, so System.Xml must be referenced or Add-Type fails to compile.
+    Add-Type -Path $Source -ReferencedAssemblies 'System.dll', 'System.Core.dll', 'System.Runtime.Serialization.dll', 'System.Xml.dll'
     if ($Mode -eq 'Stop') {
         if ([LeapMuxCommandJob]::RequestStop([string]$Payload.stopEventName)) { exit 0 }
         exit 2

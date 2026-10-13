@@ -42,17 +42,38 @@ function requireText(value: unknown, field: string, empty = false): asserts valu
     throw new Error(`The Windows command ${field} must not be empty.`)
 }
 
-/** Keep the first key under Node's Windows key ordering. Keep empty values and omit undefined values. */
+/**
+ * Keep the first key under Node's Windows key ordering. Keep empty values and omit undefined values.
+ *
+ * On Windows a replacement environment also receives the system variables a process needs to boot at
+ * all (SystemRoot, SystemDrive, ComSpec, PATHEXT) whenever the caller's environment lacks them:
+ * without SystemRoot most executables crash or hang, node included.
+ */
 export function windowsCommandEnvironment(env: NodeJS.ProcessEnv): Record<string, string> {
+  // The system lookup keeps the original spelling of each variable as this process received it.
+  const system = new Map<string, [name: string, value: string]>()
+  for (const [name, value] of Object.entries(process.env)) {
+    if (value !== undefined && !system.has(name.toLowerCase()))
+      system.set(name.toLowerCase(), [name, value])
+  }
+  const requiredNames = process.platform === 'win32'
+    ? ['systemroot', 'systemdrive', 'comspec', 'pathext']
+    : []
+  const keys = new Set(Object.keys(env).map(key => key.toLowerCase()))
+  const required = requiredNames
+    .filter(name => !keys.has(name))
+    .map(name => system.get(name))
+    .filter((entry): entry is [string, string] => entry !== undefined)
+    .map(([name]) => name)
   const result: Record<string, string> = {}
   const seen = new Set<string>()
-  for (const key of Object.keys(env).sort()) {
+  for (const key of [...Object.keys(env).sort(), ...required]) {
     requireText(key, 'environment key')
     const folded = key.toLowerCase()
     if (seen.has(folded))
       continue
     seen.add(folded)
-    const value = env[key]
+    const value = env[key] ?? (required.includes(key) ? system.get(folded)?.[1] : undefined)
     if (value === undefined)
       continue
     requireText(value, 'environment value', true)
@@ -180,11 +201,14 @@ export function spawnWindowsCommandJob(command: string, args: string[], options:
   let child: ChildProcess
   try {
     writeFileSync(payloadPath, JSON.stringify(payload), { mode: 0o600, flag: 'wx' })
-    child = spawn(control.executable, windowsJobArguments('Run', payloadPath), { ...options, argv0: undefined, shell: false, windowsVerbatimArguments: false, detached: false })
+    // The launcher runs with the control environment, never the payload's command environment:
+    // options.env describes the COMMAND inside the job (an empty map for an isolated command),
+    // and PowerShell with an empty environment cannot even resolve the system directory.
+    child = spawn(control.executable, windowsJobArguments('Run', payloadPath), { ...options, env: controlEnvironment, argv0: undefined, shell: false, windowsVerbatimArguments: false, detached: false })
   }
   catch (error) {
     try {
-      rmSync(directory, { recursive: true, force: true })
+      rmSync(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
     }
     catch (cleanupError) {
       throw new AggregateError([error, cleanupError], 'The Windows job start and its private file cleanup failed.')
@@ -247,8 +271,16 @@ export function spawnWindowsCommandJob(command: string, args: string[], options:
           throw new AggregateError(errors, 'The Windows job shutdown and verification failed.')
       }, async () => {
         await stopProcess(child, delay)
-        if (membersVerified)
-          rmSync(directory, { recursive: true, force: true })
+        if (membersVerified) {
+          try {
+            rmSync(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+          }
+          catch {
+            // A Windows handle on the private scratch directory can outlive every verified
+            // member by seconds. The directory holds only this job's payload and state, so
+            // the .tmp sweep removes it later without failing a completed stop.
+          }
+        }
       })
       return stopping
     },

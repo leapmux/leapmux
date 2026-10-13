@@ -49,7 +49,6 @@ frontend/src/spinners/
 /desktop/go/bin/
 /desktop/rust/gen/
 /desktop/rust/icons/
-/desktop/rust/scripts/linuxdeploy-wrapper
 /desktop/rust/target/
 
 # Site (Hugo/Hextra)

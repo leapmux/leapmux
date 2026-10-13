@@ -47,7 +47,7 @@ func TestQoderNativeOutputPathPreservesPreviewWithoutSavedText(t *testing.T) {
 		assert.True(t, message.Closing)
 		assert.NotContains(t, string(message.Content), "native middle77")
 		assert.NotContains(t, string(message.SupplementalContent), "native middle77", "external output text must not enter Worker storage")
-		assert.Contains(t, string(message.Content), path)
+		assert.Contains(t, string(message.Content), agenttest.JSONEscaped(t, path))
 	}
 	require.True(t, resultFound, "the original native result must reach the transcript")
 }

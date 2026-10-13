@@ -230,7 +230,13 @@ func TestGrokSessionStoreCapsTheList(t *testing.T) {
 	now := time.Now()
 	for i := range 5 {
 		id := "s" + string(rune('a'+i))
-		writeGrokSession(t, group, id, grokSummaryFixture(id, dir, id, now.Add(time.Duration(i)*time.Minute)))
+		lastActive := now.Add(time.Duration(i) * time.Minute)
+		path := writeGrokSession(t, group, id, grokSummaryFixture(id, dir, id, lastActive))
+		// Grok rewrites each summary at its activity time, so the file's
+		// modification time tracks it. Without this, one write tick makes the
+		// mtimes tie on filesystems with coarse stamps, and the entry scan
+		// then caps before it ever reads the stated activity.
+		agenttest.TouchFixture(t, path, lastActive)
 	}
 	got, err := grokStoredSessions(context.Background(), agent.StoredSessionQuery{
 		WorkingDir: dir, HomeDir: home, Getenv: agenttest.FixtureEnv(nil), Limit: 2,

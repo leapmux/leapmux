@@ -213,6 +213,12 @@ func findCodewhaleStore(root, threadID string) (codewhaleStore, error) {
 	if root == "" || threadID == "" || strings.ContainsAny(threadID, `/\`) {
 		return codewhaleStore{}, errThreadNotStored
 	}
+	// Windows "lists" a plain file as its own single entry instead of
+	// answering an error, so the directory check states the contract the
+	// POSIX error path already enforced.
+	if info, err := os.Stat(root); err == nil && !info.IsDir() {
+		return codewhaleStore{}, fmt.Errorf("read the Codewhale stores: %s is not a directory", root)
+	}
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {

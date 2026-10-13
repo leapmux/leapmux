@@ -50,7 +50,7 @@ function runCapture(capture: LettaMcpCliCapture, args: string[], executable = pr
 
 describe('writeLettaMcpCliCapture', () => {
   it('preserves actual argv and isolated environment while separating UTF8 output and warnings', async () => {
-    const native = join(directory, 'native argv "한글".cjs')
+    const native = join(directory, `native argv '한글'.cjs`)
     writeFileSync(native, `
 const fs = require('node:fs')
 const output = Buffer.from(JSON.stringify({ args: process.argv.slice(2), environment: process.env.LETTA_CAPTURE_ENV, value: '한글' }) + '\\n')
@@ -101,10 +101,15 @@ setImmediate(() => {
     expect(() => parseLettaMcpCatalog(receipt)).toThrow('successful CLI receipt')
   })
 
-  it('forwards shutdown to the native child and preserves its actual signal after physical exit', async () => {
+  // Windows terminates a process on kill without delivering SIGTERM, so no handler there can forward the signal.
+  it.runIf(process.platform !== 'win32')('forwards shutdown to the native child and preserves its actual signal after physical exit', async () => {
     const ready = join(directory, 'native-ready')
     const native = join(directory, 'native-held.cjs')
-    writeFileSync(native, `const fs=require('node:fs');const subscription=fs.watch(${JSON.stringify(directory)},()=>{});fs.writeFileSync(${JSON.stringify(ready)},String(process.pid))`)
+    // Publish `ready` through a draft and a rename. The wait resolves when the
+    // file appears, and Linux reports a directory entry at creation -- before
+    // writeFileSync fills it -- so a direct write can hand the reader an empty
+    // file and the pid parse below fails.
+    writeFileSync(native, `const fs=require('node:fs');const timer=setInterval(()=>{},60000);const draft=${JSON.stringify(`${ready}.writing`)};fs.writeFileSync(draft,String(process.pid));fs.renameSync(draft,${JSON.stringify(ready)})`)
     const capture = writeLettaMcpCliCapture(directory)
     const operation = runCapture(capture, [native])
     await waitForFileSignal(ready)

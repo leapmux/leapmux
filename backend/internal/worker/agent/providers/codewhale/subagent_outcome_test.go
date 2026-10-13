@@ -1,3 +1,8 @@
+//
+// This suite needs a Windows bring-up that only a local Windows run can state:
+// this file shares the symlink fixtures of subagent_test.go, which Windows builds without a privilege.
+// The suite keeps its full coverage on macOS and Linux.
+
 package codewhale
 
 import (

@@ -9,6 +9,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/leapmux/leapmux/internal/util/testutil"
 )
 
 // SaveState stamps the pid as the FIRST field and names this process. The pid
@@ -39,7 +41,7 @@ func TestSaveState_ModeIs0600(t *testing.T) {
 
 	info, err := os.Stat(cfg.StatePath())
 	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	assert.Equal(t, os.FileMode(testutil.PrivateFilePerm()), info.Mode().Perm())
 }
 
 // A successful SaveState leaves no temporary file behind, and a failed one

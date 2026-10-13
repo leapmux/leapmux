@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -46,7 +47,7 @@ func TestGrokNativeOutputPathPreservesPreviewWithoutSavedText(t *testing.T) {
 		assert.JSONEq(t, string(expected), string(message.Content))
 		assert.NotContains(t, string(message.Content), "native middle77")
 		assert.NotContains(t, string(message.SupplementalContent), "native middle77", "external output text must not enter Worker storage")
-		assert.Contains(t, string(message.Content), path)
+		assert.Contains(t, string(message.Content), agenttest.JSONEscaped(t, path))
 	}
 	require.True(t, resultFound, "the actual native result must reach its original tool span")
 }

@@ -187,7 +187,13 @@ jobs:
         run: task check-build-cache
 
   windows:
-    runs-on: windows-latest
+    # windows-2022, NOT windows-latest: since 2026-10-13 ~17:00Z the latest
+    # image's fleet degrades mid-run -- every spawned process starts failing
+    # with STATUS_DLL_INIT_FAILED (0xC0000142) late in the suite, and the
+    # runner then loses communication with no logs uploaded (six consecutive
+    # attempts; the same suite content passed green on the image earlier that
+    # day). Unpin back to windows-latest only after that image stabilizes.
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v7
 

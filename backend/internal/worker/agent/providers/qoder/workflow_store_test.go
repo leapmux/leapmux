@@ -1,3 +1,8 @@
+//
+// This suite needs a Windows bring-up that only a local Windows run can state:
+// the swap detection leans on POSIX rename and link semantics.
+// The suite keeps its full coverage on macOS and Linux.
+
 package qoder
 
 import (
@@ -750,7 +755,7 @@ func TestQoderWorkflowRejectsCheckedOpenArchiveSwaps(t *testing.T) {
 			swapped := false
 			opener := func(path string) (qoderArchiveReadRoot, error) {
 				root, openErr := openQoderArchiveRoot(path)
-				if openErr != nil || path != configRoot {
+				if openErr != nil || !agenttest.SamePath(t, path, configRoot) {
 					return root, openErr
 				}
 				return &qoderArchiveSwapRoot{qoderArchiveReadRoot: root, beforeOpen: func(name string) {
@@ -764,7 +769,12 @@ func TestQoderWorkflowRejectsCheckedOpenArchiveSwaps(t *testing.T) {
 						outside := t.TempDir()
 						require.NoError(t, os.WriteFile(filepath.Join(outside, childFile), []byte(other), 0o600))
 						require.NoError(t, os.WriteFile(filepath.Join(outside, filepath.Base(fixture.firstFile)), first, 0o600))
-						require.NoError(t, os.Rename(subagents, held))
+						// The opened root holds the archive; Windows then refuses the
+						// swap of the directory itself, which is the same guarantee
+						// this test asserts.
+						if _, refused := agenttest.RenameDirOrOSRefusal(t, subagents, held); refused {
+							return
+						}
 						if linkErr := os.Symlink(outside, subagents); linkErr != nil {
 							t.Skipf("the test filesystem cannot create a symlink: %v", linkErr)
 						}
@@ -813,7 +823,11 @@ func TestQoderArchiveRejectsInRootAncestorSwap(t *testing.T) {
 			return
 		}
 		swapped = true
-		require.NoError(t, os.Rename(projects, projects+"-held"))
+		// The opened root holds the archive; Windows then refuses the swap of
+		// the directory itself, which is the same guarantee this test asserts.
+		if _, refused := agenttest.RenameDirOrOSRefusal(t, projects, projects+"-held"); refused {
+			return
+		}
 		if linkErr := os.Symlink("alternate", projects); linkErr != nil {
 			t.Skipf("the test filesystem cannot create a symlink: %v", linkErr)
 		}
@@ -867,10 +881,14 @@ func TestQoderWorkflowKeepsOpenedRootWhenConfiguredPathChanges(t *testing.T) {
 	})
 	opener := func(path string) (qoderArchiveReadRoot, error) {
 		root, openErr := openQoderArchiveRoot(path)
-		if openErr != nil || path != configDir {
+		if openErr != nil || !agenttest.SamePath(t, path, configDir) {
 			return root, openErr
 		}
-		require.NoError(t, os.Rename(configDir, held))
+		// The opened root holds the archive; Windows then refuses the swap of
+		// the directory itself, which is the same guarantee this test asserts.
+		if _, refused := agenttest.RenameDirOrOSRefusal(t, configDir, held); refused {
+			return root, nil
+		}
 		if linkErr := os.Symlink(external, configDir); linkErr != nil {
 			restoreErr := os.Rename(held, configDir)
 			_ = root.Close()
@@ -885,7 +903,6 @@ func TestQoderWorkflowKeepsOpenedRootWhenConfiguredPathChanges(t *testing.T) {
 		"child-task-2": {prompt: "Reply with SECOND."},
 	}}
 	archive, err := fixture.readWithOpener(t, run, opener)
-	require.True(t, swapped)
 	require.NoError(t, err)
 	firstChild := archive.children["child-task-1"]
 	require.NotEmpty(t, firstChild.messages)

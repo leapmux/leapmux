@@ -165,9 +165,7 @@ func TestListStoredSessionsReadsTheStore(t *testing.T) {
 	dir := filepath.Join(home, ".factory", "sessions", droidSanitizeCwd(work))
 	require.NoError(t, os.MkdirAll(dir, 0o755))
 	transcript := filepath.Join(dir, "e2b678f5-0bef-4f1f-8a10-39c542ea031d.jsonl")
-	require.NoError(t, os.WriteFile(transcript, []byte(
-		`{"type":"session_start","id":"e2b678f5-0bef-4f1f-8a10-39c542ea031d","title":"Test session","cwd":"`+work+`"}`+"\n",
-	), 0o644))
+	require.NoError(t, os.WriteFile(transcript, seededSessionStart(t, "e2b678f5-0bef-4f1f-8a10-39c542ea031d", work, "Test session"), 0o644))
 
 	got, err := droidProvider{}.ListStoredSessions(t.Context(), agent.StoredSessionQuery{
 		WorkingDir: work,
@@ -186,9 +184,7 @@ func TestReadsSessionStoreThroughTheSuite(t *testing.T) {
 		dir := filepath.Join(home, ".factory", "sessions", droidSanitizeCwd(workingDir))
 		require.NoError(t, os.MkdirAll(dir, 0o755))
 		const handle = "11111111-2222-3333-4444-555555555555"
-		require.NoError(t, os.WriteFile(filepath.Join(dir, handle+".jsonl"), []byte(
-			`{"type":"session_start","id":"`+handle+`","title":"Seeded","cwd":"`+workingDir+`"}`+"\n",
-		), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, handle+".jsonl"), seededSessionStart(t, handle, workingDir, "Seeded"), 0o644))
 		return handle
 	})
 }
@@ -260,4 +256,14 @@ func TestRejectsMissingAndReplacedSessions(t *testing.T) {
 	a.sessionID = "current"
 	a.Mu.Unlock()
 	agenttest.AssertRejectsMissingAndReplacedSessions(t, a)
+}
+
+// seededSessionStart marshals one session_start line, because a Windows
+// working directory holds backslashes that a hand-built JSON string cannot
+// quote and the reader then rejects every seeded session.
+func seededSessionStart(t *testing.T, handle, workingDir, title string) []byte {
+	t.Helper()
+	line, err := json.Marshal(droidSessionStart{Type: droidSessionStartType, ID: handle, Title: title, Cwd: workingDir})
+	require.NoError(t, err)
+	return append(line, '\n')
 }

@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { join, resolve } from 'node:path'
 import process from 'node:process'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { exeExtensionOnPath } from './binaryOnPath'
 import { createLettaEnvironment } from './lettaEnvironment'
 
 const setup = vi.hoisted(() => ({ execute: vi.fn<(file: string, args?: readonly string[], options?: ExecFileSyncOptions) => Buffer>() }))
@@ -65,7 +66,7 @@ describe('createLettaEnvironment', () => {
   it('runs both setup commands against the isolated store, with no proxy and the updater off', () => {
     const binaries = join(runDirectory, 'binaries')
     mkdirSync(binaries)
-    const letta = join(binaries, process.platform === 'win32' ? 'letta.exe' : 'letta')
+    const letta = join(binaries, process.platform === 'win32' ? `letta${exeExtensionOnPath()}` : 'letta')
     writeFileSync(letta, 'controlled setup boundary', { mode: 0o755 })
     process.env.PATH = binaries
     const env = createLettaEnvironment(options())

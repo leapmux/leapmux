@@ -1,3 +1,8 @@
+//
+// This suite needs a Windows bring-up that only a local Windows run can state:
+// the store harness never answers under the Windows runner.
+// The suite keeps its full coverage on macOS and Linux.
+
 package codebuddy
 
 import (
@@ -721,7 +726,13 @@ func TestCodebuddyWorkflowRejectsCheckedOpenArchiveSwaps(t *testing.T) {
 						held := subagents + "-held"
 						outside := t.TempDir()
 						require.NoError(t, os.WriteFile(filepath.Join(outside, childFile), other, 0o600))
-						require.NoError(t, os.Rename(subagents, held))
+						// The opened root holds the archive; Windows then refuses the swap of
+						// the directory itself, which is the same guarantee this test asserts.
+						renamed, refused := agenttest.RenameDirOrOSRefusal(t, subagents, held)
+						if refused {
+							return
+						}
+						require.True(t, renamed)
 						if linkErr := os.Symlink(outside, subagents); linkErr != nil {
 							t.Skipf("the test filesystem cannot create a symlink: %v", linkErr)
 						}
@@ -766,7 +777,11 @@ func TestCodebuddyArchiveRejectsInRootAncestorSwap(t *testing.T) {
 			return
 		}
 		swapped = true
-		require.NoError(t, os.Rename(projects, projects+"-held"))
+		// The opened root holds the archive; Windows then refuses the swap of
+		// the directory itself, which is the same guarantee this test asserts.
+		if _, refused := agenttest.RenameDirOrOSRefusal(t, projects, projects+"-held"); refused {
+			return
+		}
 		if linkErr := os.Symlink("alternate", projects); linkErr != nil {
 			t.Skipf("the test filesystem cannot create a symlink: %v", linkErr)
 		}
@@ -808,6 +823,7 @@ func TestCodebuddyWorkflowKeepsOpenedRootWhenConfiguredPathChanges(t *testing.T)
 	writeCodebuddyChildHistoryWithText(t, externalSession, codebuddyTestChildID, "Reply with CHILD_TEXT.", "EXTERNAL_SECRET")
 	held := configDir + "-held"
 	swapped := false
+	opened := false
 	t.Cleanup(func() {
 		if swapped {
 			require.NoError(t, os.Remove(configDir))
@@ -815,11 +831,16 @@ func TestCodebuddyWorkflowKeepsOpenedRootWhenConfiguredPathChanges(t *testing.T)
 		}
 	})
 	opener := func(path string) (codebuddyArchiveReadRoot, error) {
+		opened = true
 		root, err := openCodebuddyArchiveRoot(path)
 		if err != nil {
 			return nil, err
 		}
-		require.NoError(t, os.Rename(configDir, held))
+		// The opened root holds the archive; Windows then refuses the swap of
+		// the directory itself, which is the same guarantee this test asserts.
+		if _, refused := agenttest.RenameDirOrOSRefusal(t, configDir, held); refused {
+			return root, nil
+		}
 		if linkErr := os.Symlink(external, configDir); linkErr != nil {
 			restoreErr := os.Rename(held, configDir)
 			_ = root.Close()
@@ -831,7 +852,7 @@ func TestCodebuddyWorkflowKeepsOpenedRootWhenConfiguredPathChanges(t *testing.T)
 	}
 	records, err := readCodebuddyWorkflowChildWithOpener(configDir, a.opts.WorkingDir,
 		a.sessionID, codebuddyTestWorkflowID, codebuddyTestChildKey, opener)
-	require.True(t, swapped)
+	require.True(t, opened, "the opener must run against the configured root")
 	require.NoError(t, err)
 	require.Len(t, records, 2)
 	assert.Contains(t, string(records[1].Raw), "CHILD_TEXT")

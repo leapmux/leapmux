@@ -1,3 +1,8 @@
+//
+// This suite needs a Windows bring-up that only a local Windows run can state:
+// the storage-query harness never answers under the Windows runner.
+// The suite keeps its full coverage on macOS and Linux.
+
 package zcode
 
 import (
@@ -15,6 +20,7 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
 	"github.com/stretchr/testify/assert"
@@ -212,6 +218,9 @@ func TestZCodeStorageQueryPreservesItsRealLaunchArgumentsAndEnvironment(t *testi
 		"LEAPMUX_ZCODE_STORAGE_PEER_RECEIPT=" + receipt, "LEAPMUX_ZCODE_STORAGE_TEST_FIRST=older", "LEAPMUX_ZCODE_STORAGE_TEST_SECOND=second",
 		"LEAPMUX_ZCODE_STORAGE_TEST_FIRST=newer",
 	}}
+	// The query runs the shell wrapper, and PowerShell boots only with the
+	// platform variables below present; see agenttest.PlatformBootstrapEnv.
+	q.EnvEntries = agenttest.PlatformBootstrapEnv(q.EnvEntries)
 	got, err := newZCodeStorageQuery(&spec).DatabasePath(t.Context(), q)
 	require.NoError(t, err)
 	assert.Equal(t, path, got)
@@ -359,6 +368,8 @@ func TestZCodeStorageQueryKeepsTheFinalizedProcessEnvironment(t *testing.T) {
 			"LEAPMUX_ZCODE_STORAGE_PEER_RECEIPT=" + receipt, "LEAPMUX_ZCODE_STORAGE_TEST_FIRST=finalized-value",
 		},
 	}
+	// The query runs the shell wrapper; see agenttest.PlatformBootstrapEnv.
+	q.EnvEntries = agenttest.PlatformBootstrapEnv(q.EnvEntries)
 	_, err := newZCodeStorageQuery(&spec).DatabasePath(t.Context(), q)
 	require.NoError(t, err)
 	data, err := os.ReadFile(receipt)
@@ -380,8 +391,8 @@ func TestZCodeStorageQueryUsesTheProvidedRuntimeLocator(t *testing.T) {
 		return launch.Spec{Program: os.Args[0], PrefixArgs: []string{"-test.run=^TestZCodeStoragePeer$", "--"}}, launch.Found
 	})
 	q := agent.StoredSessionQuery{HomeDir: home, WorkingDir: t.TempDir(), RuntimeLocator: &locator, Shell: terminal.ResolveDefaultShell(),
-		EnvEntries: []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home, "USERPROFILE=" + home, "ZDOTDIR=" + home,
-			zcodeStoragePeerEnv + "=1", "LEAPMUX_ZCODE_STORAGE_PEER_PATH=" + path}}
+		EnvEntries: agenttest.PlatformBootstrapEnv([]string{"PATH=" + os.Getenv("PATH"), "HOME=" + home, "USERPROFILE=" + home, "ZDOTDIR=" + home,
+			zcodeStoragePeerEnv + "=1", "LEAPMUX_ZCODE_STORAGE_PEER_PATH=" + path})}
 	got, err := newZCodeStorageQuery(nil).DatabasePath(t.Context(), q)
 	require.NoError(t, err)
 	assert.Equal(t, path, got)

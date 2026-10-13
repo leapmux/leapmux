@@ -1,6 +1,7 @@
 package junie
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/leapmux/leapmux/internal/util/optionmap"
@@ -24,7 +25,7 @@ func TestJunieBaseArgsUsesTheProjectMCPLocation(t *testing.T) {
 	for index, arg := range args {
 		if arg == "--mcp-location" {
 			require.Less(t, index+1, len(args))
-			assert.Equal(t, "/workspace/project/.junie/mcp", args[index+1])
+			assert.Equal(t, filepath.Join("/workspace/project", ".junie", "mcp"), args[index+1])
 		}
 	}
 	assert.Contains(t, args, "custom:mock-model")

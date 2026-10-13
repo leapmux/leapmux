@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -142,10 +143,26 @@ func askBridge(ctx context.Context, config helperConfig, request helperRequest) 
 		if ctx.Err() != nil {
 			return helperDecision{}, errors.New("the helper received a termination signal")
 		}
-		if errors.Is(err, io.EOF) {
-			return helperDecision{}, errors.New("the agent closed the connection")
+		if errors.Is(err, io.EOF) || connectionReset(err) {
+			// A refused connection holds this side's request unread, so Linux reports
+			// the bridge's close as a reset and macOS as an end of file. Both state
+			// the same fact: the agent ended the connection with no answer.
+			return helperDecision{}, fmt.Errorf("the agent closed the connection: %w", err)
 		}
 		return helperDecision{}, err
 	}
 	return decision, nil
+}
+
+// connectionReset states whether err says the peer closed the connection with
+// data unread. Linux answers ECONNRESET; Windows answers WSAECONNRESET or
+// WSAECONNABORTED, which the syscall package numbers apart from ECONNRESET.
+func connectionReset(err error) bool {
+	if errors.Is(err, syscall.ECONNRESET) {
+		return true
+	}
+	const wsaEconnReset = 10054
+	const wsaEconnAborted = 10053
+	var errno syscall.Errno
+	return errors.As(err, &errno) && (errno == wsaEconnReset || errno == wsaEconnAborted)
 }

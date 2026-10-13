@@ -14,7 +14,8 @@ beforeEach(() => {
   mkdirSync(scratch, { recursive: true })
   directory = mkdtempSync(join(scratch, 'muse-native-host-test-'))
 })
-afterEach(() => rmSync(directory, { recursive: true, force: true }))
+// A Windows handle on the private directory outlives the host by a moment, so the cleanup retries.
+afterEach(() => rmSync(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }))
 
 async function controlledHost(writeFailure?: Error) {
   const child = Object.assign(new EventEmitter(), {

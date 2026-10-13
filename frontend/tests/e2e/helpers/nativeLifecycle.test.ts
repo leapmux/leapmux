@@ -9,7 +9,7 @@ import type { NativeStartupWrapper } from './nativeStartupWrapper'
 import type { NativeWorker } from './nativeWorker'
 import type { ProviderAgent } from './workspace'
 import { Buffer } from 'node:buffer'
-import { execFileSync, spawn } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import process from 'node:process'
@@ -22,6 +22,7 @@ import { textChunks } from './mockModelScript'
 import { exerciseAgentStartup, exerciseInterruptedPartialAnswer, exerciseInterruptTurn, exerciseSessionResume, heldToolScript, interruptedToolTotals } from './nativeLifecycle'
 import { stopProcess } from './process'
 import { gitRepositoryWorkingDir } from './providerWorkingDir'
+import { gitTopLevel } from './worktree'
 
 const resume = vi.hoisted(() => ({
   events: [] as string[],
@@ -207,10 +208,6 @@ function scratchRun(directories: string[], prefix: string): string {
 }
 
 /** The root of the git work tree around `directory`, as git reports it. */
-function gitTopLevel(directory: string): string {
-  return execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: directory, encoding: 'utf8' }).trim()
-}
-
 function scenario(providerAgent: ProviderAgent = CODEX) {
   const prior = create(AgentInfoSchema, {
     id: 'original-worker-agent',
@@ -729,7 +726,7 @@ describe('heldToolScript', () => {
       startedFile: join(deepWorkingDir, `interrupt-started-${marker}`),
       releaseFile: join(deepWorkingDir, `interrupt-release-${marker}`),
     })
-    const words = script.split(/\s+/).filter(word => word.includes('/'))
+    const words = script.split(/\s+/).filter(word => word.includes('/') || word.includes('\\'))
     expect(words.length).toBeGreaterThan(0)
     for (const word of words)
       expect(Buffer.byteLength(word), word).toBeLessThanOrEqual(255)

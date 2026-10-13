@@ -12,6 +12,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/webauthn"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/locallisten/locallistentest"
 )
 
@@ -35,7 +36,7 @@ func TestWriteStateFile_PIDIsFirstAndNamesThisProcess(t *testing.T) {
 
 	info, err := os.Stat(path)
 	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	assert.Equal(t, os.FileMode(testutil.PrivateFilePerm()), info.Mode().Perm())
 }
 
 // The state file appears only after every listener is bound, and it names the

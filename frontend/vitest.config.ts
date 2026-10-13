@@ -41,6 +41,26 @@ export default defineConfig({
     // Threads avoid the cost of one process per file. Keep isolation for per-file mocks.
     pool: 'threads',
     globals: true,
+    // One budget for every test, so no test states its own: subprocess and
+    // server-driving tests need far more than the runner's 5s default, above
+    // all on the two-core Windows CI runner.
+    testTimeout: 30_000,
+    // Show a test's captured stdout and stderr only when it fails. Passing
+    // tests' console noise flooded the CI logs and buried the failures.
+    silent: 'passed-only',
+    // Solid's dev mode warns whenever a computation or a cleanup is created
+    // outside a root. Many tests construct stores outside a root on purpose
+    // (vitest.setup.ts owns the roots it needs), and the two warnings then
+    // repeat for nearly every dom test -- thousands of lines per CI log that
+    // no assertion reads. Drop exactly these two lines and keep every other
+    // console line visible.
+    onConsoleLog(log) {
+      const solidDevNoise = [
+        'computations created outside a `createRoot` or `render` will never be disposed',
+        'cleanups created outside a `createRoot` or `render` will never be run',
+      ]
+      return solidDevNoise.some(message => log.includes(message)) ? false : undefined
+    },
     // Playwright owns .spec.ts. Keep co-located .test.ts files in Vitest.
     exclude: ['tests/e2e/**/*.spec.ts', 'node_modules/**'],
     projects: [
@@ -53,6 +73,9 @@ export default defineConfig({
           globals: true,
           pool: 'threads',
           include: NODE_TEST_FILES,
+          // This project does not extend the root, so the root's one 30s
+          // budget does not reach it. State it here for the same reason.
+          testTimeout: 30_000,
         },
       },
       {

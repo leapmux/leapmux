@@ -245,16 +245,6 @@ func TestCodewhaleExecutableFile(t *testing.T) {
 	assert.Equal(t, "codewhale.exe", codewhaleExecutableFile("windows"))
 }
 
-// clearCodewhaleLaunchCache drops every memoized answer of the production
-// resolver. The cache is package state keyed by shell, so a test that changes
-// what resolution SEES clears it on both sides.
-func clearCodewhaleLaunchCache() {
-	codewhaleProductionResolver.answers.Range(func(key, _ any) bool {
-		codewhaleProductionResolver.answers.Delete(key)
-		return true
-	})
-}
-
 // countProbes makes a stub's shell count the probes it answers.
 func countProbes(stub *resolveStub, probes *atomic.Int32) codewhaleResolveDeps {
 	deps := stub.deps()

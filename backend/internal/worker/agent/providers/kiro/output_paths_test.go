@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -43,5 +44,5 @@ func TestKiroNativeOutputPathPreservesPreviewWithoutSavedText(t *testing.T) {
 	assert.True(t, result.Closing)
 	assert.NotContains(t, string(result.Content), "NATIVE_MIDDLE77")
 	assert.NotContains(t, string(result.SupplementalContent), "NATIVE_MIDDLE77", "external output text must not enter Worker storage")
-	assert.Contains(t, string(result.Content), path)
+	assert.Contains(t, string(result.Content), agenttest.JSONEscaped(t, path))
 }

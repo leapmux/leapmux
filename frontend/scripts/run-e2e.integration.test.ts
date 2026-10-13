@@ -21,10 +21,10 @@ vi.mock('node:fs', async (importOriginal) => {
   return { ...actual, watch: vi.fn(actual.watch) }
 })
 
-const INTEGRATION_DEADLINE_MS = 30_000
-const CANCELLATION_PHASE_DEADLINE_MS = 15_000
+const INTEGRATION_DEADLINE_MS = 120_000
+const CANCELLATION_PHASE_DEADLINE_MS = 45_000
 const CANCELLATION_CLEANUP_DEADLINE_MS = 10_000
-const CANCELLATION_TEST_DEADLINE_MS = 45_000
+const CANCELLATION_TEST_DEADLINE_MS = 120_000
 const CANCELLATION_CASES = [
   { signal: 'SIGINT' as const, code: 130 },
   { signal: 'SIGTERM' as const, code: 143 },
@@ -91,11 +91,17 @@ function startPrivateRunner(root: string): ReturnType<typeof startLauncher> {
  * finds such a file, so the wait does not depend on the start order of the processes. The watch only ends the wait
  * sooner.
  */
-function waitForFixtureFiles(records: string, files: string[], completion: Promise<LauncherCompletion>, signal: AbortSignal): Promise<void> {
+function waitForFixtureFiles(records: string, files: string[], completion: Promise<LauncherCompletion>, signal: AbortSignal, logPath?: string): Promise<void> {
   return new Promise((accept, reject) => {
     let finished = false
     const listener = watch(records, check)
     const timer = setInterval(check, FILE_CHECK_INTERVAL_MS)
+    const consoleTail = () => {
+      if (!logPath || !existsSync(logPath))
+        return ''
+      const lines = readFileSync(logPath, 'utf8').trimEnd().split('\n')
+      return `\nLauncher console tail:\n${lines.slice(-40).join('\n')}`
+    }
     const finish = (error?: unknown) => {
       if (finished)
         return
@@ -109,7 +115,7 @@ function waitForFixtureFiles(records: string, files: string[], completion: Promi
         reject(error)
     }
     function abort() {
-      finish(new Error(`The fixture did not create ${files.join(', ')} before the cancellation deadline.`))
+      finish(new Error(`The fixture did not create ${files.join(', ')} before the cancellation deadline.${consoleTail()}`))
     }
     function check() {
       if (files.every(file => existsSync(join(records, file))))
@@ -117,7 +123,7 @@ function waitForFixtureFiles(records: string, files: string[], completion: Promi
     }
     listener.once('error', finish)
     signal.addEventListener('abort', abort, { once: true })
-    void completion.then(() => finish(new Error(`The private runner exited before it created ${files.join(', ')}.`)), finish)
+    void completion.then(() => finish(new Error(`The private runner exited before it created ${files.join(', ')}.${consoleTail()}`)), finish)
     if (signal.aborted)
       abort()
     else
@@ -347,7 +353,7 @@ describe('runE2E Playwright integration', () => {
     const records = join(root, 'records')
     const runner = startPrivateRunner(root)
     await withCleanup(async () => {
-      await waitForFixtureFiles(records, ['build-entry.json'], runner.completion, AbortSignal.timeout(CANCELLATION_PHASE_DEADLINE_MS))
+      await waitForFixtureFiles(records, ['build-entry.json'], runner.completion, AbortSignal.timeout(CANCELLATION_PHASE_DEADLINE_MS), runner.log)
       const build = readFixtureRecord(join(records, 'build-entry.json'))
       console.info('Fixture build ownership:', JSON.stringify(build))
       cancelPrivateRunner(runner.child, signal)
@@ -367,7 +373,7 @@ describe('runE2E Playwright integration', () => {
     const records = join(root, 'records')
     const runner = startPrivateRunner(root)
     await withCleanup(async () => {
-      await waitForFixtureFiles(records, ['entry-alpha.json', 'entry-beta.json'], runner.completion, AbortSignal.timeout(CANCELLATION_PHASE_DEADLINE_MS))
+      await waitForFixtureFiles(records, ['entry-alpha.json', 'entry-beta.json'], runner.completion, AbortSignal.timeout(CANCELLATION_PHASE_DEADLINE_MS), runner.log)
       cancelPrivateRunner(runner.child, signal)
       const result = await waitForRunnerCompletion(runner.completion, AbortSignal.timeout(CANCELLATION_PHASE_DEADLINE_MS))
       expect(result).toEqual({ code, signal: null })

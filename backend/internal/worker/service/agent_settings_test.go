@@ -1240,33 +1240,41 @@ func mustMarshalOptionGroups(t *testing.T, groups []*leapmuxv1.AvailableOptionGr
 	return s
 }
 
-// lastSettingsChangedChanges decodes the most recent broadcast and returns the
-// `changes` map of its settings_changed notification (handling the case where the
-// notification is wrapped in a messages array).
+// lastSettingsChangedChanges decodes the newest settings_changed broadcast and
+// returns the `changes` map of its notification (handling the case where the
+// notification is wrapped in a messages array). A later broadcast can follow that
+// notification -- a relaunch status, say -- so the search walks the streams from
+// the newest back.
 func lastSettingsChangedChanges(t *testing.T, w *testResponseWriter) map[string]any {
 	t.Helper()
-	var resp leapmuxv1.WatchEventsResponse
-	require.NoError(t, proto.Unmarshal(w.streams[len(w.streams)-1].GetPayload(), &resp))
-	msg := resp.GetAgentEvent().GetAgentMessage()
-	require.NotNil(t, msg)
+	var found map[string]any
+	for index := len(w.streams) - 1; index >= 0 && found == nil; index-- {
+		var resp leapmuxv1.WatchEventsResponse
+		require.NoError(t, proto.Unmarshal(w.streams[index].GetPayload(), &resp))
+		msg := resp.GetAgentEvent().GetAgentMessage()
+		if msg == nil {
+			continue
+		}
+		raw, err := msgcodec.Decompress(msg.Content, msg.ContentCompression)
+		require.NoError(t, err)
+		var payload map[string]any
+		require.NoError(t, json.Unmarshal(raw, &payload))
 
-	raw, err := msgcodec.Decompress(msg.Content, msg.ContentCompression)
-	require.NoError(t, err)
-	var payload map[string]any
-	require.NoError(t, json.Unmarshal(raw, &payload))
-
-	if payload["type"] != "settings_changed" {
-		messages, ok := payload["messages"].([]any)
-		require.True(t, ok)
-		for _, entry := range messages {
-			if candidate, ok := entry.(map[string]any); ok && candidate["type"] == "settings_changed" {
-				payload = candidate
-				break
+		if payload["type"] != "settings_changed" {
+			messages, _ := payload["messages"].([]any)
+			for _, entry := range messages {
+				if candidate, ok := entry.(map[string]any); ok && candidate["type"] == "settings_changed" {
+					payload = candidate
+					break
+				}
 			}
 		}
+		if payload["type"] == "settings_changed" {
+			found = payload
+		}
 	}
-	require.Equal(t, "settings_changed", payload["type"])
-	changes, ok := payload["changes"].(map[string]any)
+	require.NotNil(t, found, "no broadcast carries a settings_changed notification")
+	changes, ok := found["changes"].(map[string]any)
 	require.True(t, ok)
 	return changes
 }

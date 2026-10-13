@@ -21,6 +21,16 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 )
 
+// clearCodewhaleLaunchCache drops every memoized answer of the production
+// resolver. The cache is package state keyed by shell, so a test that changes
+// what resolution SEES clears it on both sides.
+func clearCodewhaleLaunchCache() {
+	codewhaleProductionResolver.answers.Range(func(key, _ any) bool {
+		codewhaleProductionResolver.answers.Delete(key)
+		return true
+	})
+}
+
 // The fake runtime PROCESS: the test binary, re-executed in place of
 // `codewhale app-server --http`. It answers the routes a start reads, keeps its
 // threads in the store the worker points it at, and streams the events of each

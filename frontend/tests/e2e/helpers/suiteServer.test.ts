@@ -64,8 +64,20 @@ describe('startSuiteServer', { timeout: START_SUITE_SERVER_TEST_TIMEOUT_MS }, ()
     const root = scratchRoot()
     const { binary, recorded } = writeRecordingFakeBinary(root)
 
-    await startSuiteServer({ binaryPath: binary, tmpDir: root, runRoot: root }).catch(() => {})
-    const record = JSON.parse(readFileSync(recorded, 'utf8')) as FakeRunRecord
+    // The fake hub exits 1, so the rejection is the expected outcome. Keep it:
+    // a missing record then reports why the binary never ran, instead of an
+    // anonymous ENOENT.
+    let startFailure: unknown
+    await startSuiteServer({ binaryPath: binary, tmpDir: root, runRoot: root })
+      .catch((error: unknown) => { startFailure = error })
+    let raw: string
+    try {
+      raw = readFileSync(recorded, 'utf8')
+    }
+    catch (error) {
+      throw new AggregateError([error, startFailure], 'the recording fake hub left no record')
+    }
+    const record = JSON.parse(raw) as FakeRunRecord
 
     const sockets = record.argv.filter(entry => entry.startsWith('unix:'))
     expect(sockets, `the argv must specify one local IPC socket: ${JSON.stringify(record.argv)}`).toHaveLength(1)
@@ -118,8 +130,10 @@ if [ "$1" = "dev" ]; then
     const unixEntry = args.find(a => a.startsWith("unix:")) ?? null;
     const stateDir = path.join(dataDir, "hub");
     fs.mkdirSync(stateDir, { recursive: true });
-    fs.writeFileSync(path.join(stateDir, "state.json"), JSON.stringify({ pid: 1, listen: ["127.0.0.1:44321", unixEntry] }));
+    // The state file is the ready signal the suite waits for, so the record
+    // lands first: a reader that wakes on the state file must find the record.
     fs.writeFileSync(recorded, JSON.stringify({ argv: args, listenEnv: process.env.LEAPMUX_HUB_LISTEN ?? null, localListenEnv: process.env.LEAPMUX_HUB_LOCAL_LISTEN ?? null }));
+    fs.writeFileSync(path.join(stateDir, "state.json"), JSON.stringify({ pid: 1, listen: ["127.0.0.1:44321", unixEntry] }));
   ' ${JSON.stringify(recorded)} "$@"
   exit 1
 fi

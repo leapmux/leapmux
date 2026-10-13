@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { allowNativeOperation, createNativePermissionFileWrite, declinedToolCallId, exerciseAllowThenFeedbackRejection, exerciseNativePermissionDecision, exerciseNativePermissionReason, exerciseNativePermissionWrite, exerciseNativeToolWrite, exerciseRememberedAllow, expectDeclinedToolRow, expectDeclinedToolRowAcrossReload, expectSavedRefusalFeedback, toolResultCallId } from './nativePermission'
 import { createOutputGate } from './outputGate'
+import { PLATFORM_MOD } from './ui'
 
 const native = vi.hoisted(() => ({ directory: '', currentAgent: vi.fn() }))
 vi.mock('./server', async (importOriginal) => {
@@ -420,7 +421,7 @@ describe('exerciseAllowThenFeedbackRejection', () => {
       'answer:allow',
       'steps:6',
       'feedback',
-      'press:Meta+Enter',
+      `press:${PLATFORM_MOD}+Enter`,
       'steps:7',
       'idle',
       'request:6',

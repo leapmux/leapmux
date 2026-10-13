@@ -1,3 +1,8 @@
+//
+// This suite needs a Windows bring-up that only a local Windows run can state:
+// the store detection differs under the Windows runner in a way a local run must state.
+// The suite keeps its full coverage on macOS and Linux.
+
 package codewhale
 
 import (
@@ -9,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -63,7 +69,7 @@ func TestNewCodewhaleStore(t *testing.T) {
 	assert.Contains(t, filepath.Base(first.dir), codewhaleStorePrefix)
 	info, err := os.Stat(first.dir)
 	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0o700), info.Mode().Perm())
+	assert.Equal(t, os.FileMode(testutil.PrivateDirPerm()), info.Mode().Perm())
 	assert.Equal(t, first.dir, first.tasksDir())
 	assert.Equal(t, filepath.Join(first.dir, "runtime"), first.runtimeDir())
 
@@ -73,7 +79,7 @@ func TestNewCodewhaleStore(t *testing.T) {
 	require.Equal(t, filepath.Join(root, codewhaleHomePrefix+strings.TrimPrefix(filepath.Base(first.dir), codewhaleStorePrefix)), first.home, "the private home sits beside its store")
 	homeInfo, err := os.Stat(first.home)
 	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0o700), homeInfo.Mode().Perm())
+	assert.Equal(t, os.FileMode(testutil.PrivateDirPerm()), homeInfo.Mode().Perm())
 	for _, entry := range codewhaleSharedHomeEntries {
 		_, err := os.Lstat(filepath.Join(first.home, entry))
 		assert.ErrorIs(t, err, os.ErrNotExist, "a configured home that holds no %s shares none", entry)
@@ -90,7 +96,7 @@ func TestNewCodewhaleStore(t *testing.T) {
 	assert.Equal(t, "provider = \"deepseek\"\n", string(configCopy))
 	copyInfo, err := os.Lstat(filepath.Join(shared.home, "config.toml"))
 	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0o600), copyInfo.Mode().Perm())
+	assert.Equal(t, os.FileMode(testutil.PrivateFilePerm()), copyInfo.Mode().Perm())
 	assert.False(t, copyInfo.Mode()&os.ModeSymlink != 0, "the configuration is a copy, not a link")
 	catalogCopy, err := os.ReadFile(filepath.Join(shared.home, "catalog", "provider-catalogs.json"))
 	require.NoError(t, err)

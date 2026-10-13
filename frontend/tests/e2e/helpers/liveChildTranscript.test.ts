@@ -5,7 +5,7 @@ import type { MockModelScenarioStatus, MockModelStep, MockModelToolCall } from '
 import type { ModelScript } from './modelScriptFixture'
 import type { HeldNativeChild } from './runningChildProof'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { create } from '@bufbuild/protobuf'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentChatMessageSchema, AgentProvider, ContentCompression } from '../../../src/generated/proto/leapmux/v1/agent_pb'
@@ -406,7 +406,8 @@ async function runNativeAgent(serverURL: string, parentPrompt: string, log: stri
     log.push('read-delivered')
     if (receipt.read)
       throw new Error('The simulated child received a second Read.')
-    const path = findString(readCall.arguments, text => text.startsWith('/'))
+    // A Windows Read path holds a drive letter, so either absolute spelling counts.
+    const path = findString(readCall.arguments, text => isAbsolute(text))
     if (path === undefined)
       throw new Error('The Read call holds no absolute path.')
     const content = readFileSync(path, 'utf8')

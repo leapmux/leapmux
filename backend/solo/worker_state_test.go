@@ -13,6 +13,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/internal/util/testutil"
+
 	"github.com/leapmux/leapmux/hub"
 	"github.com/leapmux/leapmux/internal/hub/store"
 )
@@ -234,7 +236,7 @@ func TestPersistState_PIDIsFirstAndModeIs0600(t *testing.T) {
 	assert.Equal(t, os.Getpid(), readState(t, path).PID, "the writer names this process")
 	info, err := os.Stat(path)
 	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm(),
+	assert.Equal(t, os.FileMode(testutil.PrivateFilePerm()), info.Mode().Perm(),
 		"the credentials file must not be readable by anyone but its owner")
 }
 

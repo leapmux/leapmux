@@ -86,7 +86,7 @@ func TestDiracNativeOutputPathPreservesPreviewWithoutSavedText(t *testing.T) {
 		assert.JSONEq(t, string(original), string(message.Content))
 		assert.NotContains(t, string(message.Content), "native middle77")
 		assert.NotContains(t, string(message.SupplementalContent), "native middle77", "external output text must not enter Worker storage")
-		assert.Contains(t, string(message.Content), path)
+		assert.Contains(t, string(message.Content), agenttest.JSONEscaped(t, path))
 	}
 	require.True(t, found, "the native generated call must retain its own closing result")
 }

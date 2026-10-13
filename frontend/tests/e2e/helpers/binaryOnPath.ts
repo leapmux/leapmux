@@ -39,8 +39,21 @@ export function findBinaryOnPath(binary: string, searchPath: string | undefined,
  * the run's search path holds none. The run's search path is
  * {@link agentSearchPath} of the PATH of env. See {@link findBinaryOnPath}.
  */
+/**
+ * The spelling of the .exe extension as PATHEXT states it, or '.exe' when PATHEXT
+ * holds none. Windows resolves a bare name through PATHEXT, and the lookup reports
+ * the spelling it probed with, so a controlled `letta.exe` on the path is found as
+ * the `letta.EXE` that a UPPERCASE PATHEXT names.
+ */
+export function exeExtensionOnPath(pathExt: string | undefined = process.env.PATHEXT): string {
+  return pathExt?.split(';').find(extension => extension.toLowerCase() === '.exe') ?? '.exe'
+}
+
 export function findBinary(binary: string, env: NodeJS.ProcessEnv = process.env): string | null {
-  const pathExt = process.platform === 'win32' ? env.PATHEXT : undefined
+  // A private environment that states PATH still resolves executables the way this
+  // process does: PATHEXT is a system variable on Windows, and without it no name
+  // resolves to its .exe file.
+  const pathExt = process.platform === 'win32' ? env.PATHEXT ?? process.env.PATHEXT : undefined
   return findBinaryOnPath(binary, agentSearchPath(env.PATH), pathExt)
 }
 

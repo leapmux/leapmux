@@ -12,6 +12,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/leapmux/leapmux/internal/util/testutil"
 )
 
 func TestNativeCompactionBridgeChecksAuthenticationAndConcurrentCalls(t *testing.T) {
@@ -87,7 +89,7 @@ func TestRuntimeDirectoryContainsAPrivateNativeModAndCredential(t *testing.T) {
 	assert.Len(t, secret, 64)
 	info, err := os.Stat(filepath.Join(directory, "bridge.mjs"))
 	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	assert.Equal(t, os.FileMode(testutil.PrivateFilePerm()), info.Mode().Perm())
 	data, err := os.ReadFile(filepath.Join(directory, "bridge.mjs"))
 	require.NoError(t, err)
 	assert.Equal(t, bridgeSource, data)

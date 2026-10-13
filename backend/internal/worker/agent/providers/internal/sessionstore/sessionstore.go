@@ -180,6 +180,12 @@ func NamedFileInside(fileName string) EntrySelector {
 // whose stat fails is dropped rather than sorted to the epoch, so a file
 // deleted mid-walk cannot displace a real answer.
 func NewestEntries(dir string, limit int, sel EntrySelector) ([]Entry, error) {
+	// Windows "lists" a plain file as its own single entry instead of
+	// answering an error, so the directory check states the contract the
+	// POSIX error path already enforced.
+	if info, err := os.Stat(dir); err == nil && !info.IsDir() {
+		return nil, fmt.Errorf("read session store directory: %s is not a directory", dir)
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {

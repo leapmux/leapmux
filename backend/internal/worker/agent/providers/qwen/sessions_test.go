@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -70,6 +71,10 @@ func TestQwenSanitizeCwdMatchesQwen(t *testing.T) {
 		"/w/😀":     "-w---",
 		"Plain123": "Plain123",
 	} {
+		if runtime.GOOS == "windows" {
+			// The sanitizer folds to lower case on Windows, as Qwen itself does.
+			want = strings.ToLower(want)
+		}
 		assert.Equal(t, want, qwenSanitizeCwd(input), input)
 	}
 }

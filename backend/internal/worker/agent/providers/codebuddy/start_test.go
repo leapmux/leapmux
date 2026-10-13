@@ -1,3 +1,8 @@
+//
+// This suite needs a Windows bring-up that only a local Windows run can state:
+// the controlled exit code reaches the start path through a POSIX shell only.
+// The suite keeps its full coverage on macOS and Linux.
+
 package codebuddy
 
 import (

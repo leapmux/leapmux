@@ -56,8 +56,13 @@ else
     ln -sf /usr/bin/strip "$EXTRACTED/usr/bin/strip"
 
     echo "patch-linuxdeploy: installing compiled wrapper binary ..."
+    # Compile into the cache directory, never next to the source: the
+    # desktop/rust/scripts/**/* globs are build-desktop-linux sources, and a
+    # task whose commands write into its own sources re-runs on every later
+    # invocation (Task hashes sources before it runs commands), which fails
+    # check-build-cache on a cold tauri cache.
     SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-    WRAPPER="$SCRIPT_DIR/linuxdeploy-wrapper"
+    WRAPPER="${CACHE_DIR}/linuxdeploy-wrapper"
     if [[ ! -x "$WRAPPER" ]]; then
         echo "patch-linuxdeploy: compiling wrapper ..."
         gcc -static -O2 -o "$WRAPPER" "$SCRIPT_DIR/linuxdeploy-wrapper.c"

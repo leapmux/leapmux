@@ -1,5 +1,5 @@
 import type * as TypeScript from 'typescript'
-import { dirname, resolve } from 'node:path'
+import { posix } from 'node:path'
 import {
   createSourceFile,
   isExportDeclaration,
@@ -53,6 +53,11 @@ export interface PassedOnExpect {
   module?: string
 }
 
+/** The POSIX form of a path: separator slashes, no Windows drive backslashes. */
+function posixPath(path: string): string {
+  return path.replaceAll('\\', '/')
+}
+
 /** The name that an import or export specifier reads from its module. */
 function importedName(element: TypeScript.ImportSpecifier | TypeScript.ExportSpecifier): string {
   return (element.propertyName ?? element.name).text
@@ -84,16 +89,19 @@ const CANDIDATE = /\bexport\s*\{[^}]*\bexpect\b|\bimport\s*\{[^}]*\bexpect\b[^}]
 
 /** Find each re-export of the plain `expect`, and each import of `expect` through a module that only passes it on. */
 export function passedOnExpects(inputs: readonly ExpectSourceFile[]): PassedOnExpect[] {
-  const sources = new Map(inputs.map(input => [input.path, input.source]))
+  // Module resolution runs on POSIX shapes: a Windows native path would resolve its
+  // backslash separators against the forward slashes that a module specifier spells.
+  // The normalized form keys the lookup maps, while each finding keeps its input path.
+  const sources = new Map(inputs.map(input => [posixPath(input.path), input.source]))
   const parsed = new Map<string, TypeScript.SourceFile>()
-  const parse = (path: string): TypeScript.SourceFile | undefined => {
-    const source = sources.get(path)
+  const parse = (normalized: string): TypeScript.SourceFile | undefined => {
+    const source = sources.get(normalized)
     if (source === undefined)
       return undefined
-    let file = parsed.get(path)
+    let file = parsed.get(normalized)
     if (!file) {
-      file = createSourceFile(path, source, ScriptTarget.Latest, /* setParentNodes */ true)
-      parsed.set(path, file)
+      file = createSourceFile(normalized, source, ScriptTarget.Latest, /* setParentNodes */ true)
+      parsed.set(normalized, file)
     }
     return file
   }
@@ -102,7 +110,8 @@ export function passedOnExpects(inputs: readonly ExpectSourceFile[]): PassedOnEx
     if (!CANDIDATE.test(input.source))
       continue
     const path = input.path
-    const file = parse(path)!
+    const normalized = posixPath(path)
+    const file = parse(normalized)!
     const plainImported = importsPlaywrightExpect(file)
     for (const statement of file.statements) {
       if (isExportDeclaration(statement) && statement.exportClause && isNamedExports(statement.exportClause)) {
@@ -117,8 +126,8 @@ export function passedOnExpects(inputs: readonly ExpectSourceFile[]): PassedOnEx
       const named = statement.importClause?.namedBindings
       if (!named || !isNamedImports(named) || !named.elements.some(element => importedName(element) === 'expect'))
         continue
-      const base = resolve(dirname(path), statement.moduleSpecifier.text)
-      const target = parse(`${base}.ts`) ?? parse(resolve(base, 'index.ts'))
+      const base = posix.resolve(posix.dirname(normalized), statement.moduleSpecifier.text)
+      const target = parse(`${base}.ts`) ?? parse(posix.resolve(base, 'index.ts'))
       // A module outside the inputs cannot be judged, so it is not a finding.
       if (target && !declaresExpect(target))
         findings.push({ path, line: lineOf(file, statement), kind: 'import', module: statement.moduleSpecifier.text })

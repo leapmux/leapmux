@@ -186,7 +186,7 @@ describe('withNativeMcpFormAgent', () => {
     })
     const [name, receiptLog] = seen
     expect(name).toBe(MCP_FORM_SERVER_NAME)
-    expect(receiptLog).toMatch(/form-agent-[^/]+\/native-mcp-receipt\.json$/)
+    expect(receiptLog).toMatch(/form-agent-[^/\\]+(?:\\|\/)native-mcp-receipt\.json$/)
     expect(JSON.parse(run.configurationAtOpen ?? 'null')).toEqual({
       servers: { [MCP_FORM_SERVER_NAME]: { command: process.execPath, args: [join(dirname(receiptLog!), 'native-form-server.mjs')] } },
     })
@@ -222,7 +222,7 @@ describe('withNativeMcpFormAgent', () => {
       receipts.push(receiptLog)
     })
     expect(workingDir).toHaveBeenCalledExactlyOnceWith('form-agent-')
-    expect(receipts).toEqual([expect.stringMatching(/form-agent-[^/]+\/repo\/native-mcp-receipt\.json$/)])
+    expect(receipts).toEqual([expect.stringMatching(/form-agent-[^/\\]+(?:\\|\/)repo(?:\\|\/)native-mcp-receipt\.json$/)])
   })
 
   it('refuses the agent of another provider before it writes the server or the configuration', async () => {

@@ -1,12 +1,26 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
+import process from 'node:process'
 import { expect } from '@playwright/test'
 import { createWorkspaceViaAPI, openAgentViaAPI } from './api'
 
-/** Run one git command in `cwd` with no shell, so a path or a name reaches git as one argument. */
+/**
+ * Run one git command in `cwd` with no shell, so a path or a name reaches git as one argument.
+ */
 function git(cwd: string, args: string[]): string {
   return execFileSync('git', args, { cwd, encoding: 'utf8' })
+}
+
+/**
+ * The repository root of `cwd` as `git rev-parse --show-toplevel` reports it, in native separators.
+ *
+ * git prints forward slashes on Windows even though node paths there use backslashes, so a
+ * comparison of git's answer with a node path goes through this helper on every platform.
+ */
+export function gitTopLevel(cwd: string): string {
+  const output = git(cwd, ['rev-parse', '--show-toplevel']).trim()
+  return process.platform === 'win32' ? output.replaceAll('/', '\\') : output
 }
 
 /**

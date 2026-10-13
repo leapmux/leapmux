@@ -88,7 +88,9 @@ const (
 // droidSanitizeCwd reproduces Factory's cwd key: the absolute path with every
 // slash replaced by a hyphen.
 func droidSanitizeCwd(cwd string) string {
-	return strings.ReplaceAll(cwd, "/", "-")
+	// A Windows working directory holds backslash separators and a drive colon;
+	// both would leave an illegal directory name, so each takes the hyphen too.
+	return strings.NewReplacer("/", "-", "\\", "-", ":", "").Replace(cwd)
 }
 
 // droidInitRequestID is the id the worker gives initialize_session or

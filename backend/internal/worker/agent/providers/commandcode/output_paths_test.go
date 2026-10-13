@@ -8,6 +8,7 @@ import (
 	"testing"
 	"unicode/utf16"
 
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -31,5 +32,5 @@ func TestCommandCodeNativeOutputPathPreservesPreviewWithoutSavedText(t *testing.
 	assert.NotContains(t, string(messages[1].SupplementalContent), hidden, "external output text must not enter Worker storage")
 	var original map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal(messages[1].Content, &original))
-	assert.Contains(t, string(messages[1].Content), path)
+	assert.Contains(t, string(messages[1].Content), agenttest.JSONEscaped(t, path))
 }

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -23,7 +24,7 @@ func TestJunieOutputPathReadsOnlyNativeMetadata(t *testing.T) {
 	require.NoError(t, json.Unmarshal(extra, &fields))
 	path := fields["outputFilePath"]
 	require.NotEmpty(t, path)
-	assert.Contains(t, string(path), fixture.path)
+	assert.Contains(t, string(path), agenttest.JSONEscaped(t, fixture.path))
 	assert.NotContains(t, fields, "outputFile")
 	assert.NotContains(t, string(path), `"output":`)
 	assert.NotContains(t, string(path), `"nativeOutput":`)

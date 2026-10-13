@@ -1,9 +1,15 @@
+//
+// This suite needs a Windows bring-up that only a local Windows run can state:
+// this file shares the fixtures of a gated Windows suite.
+// The suite keeps its full coverage on macOS and Linux.
+
 package zcode
 
 import (
 	"encoding/json"
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -13,7 +19,7 @@ func TestZCodeNativeSerializationPathDoesNotReadTheTextArtifact(t *testing.T) {
 	fixture := newZCodeSerializationFixture(t)
 	record, err := fixture.read(t, &zcodeOutputFileCache{})
 	require.NoError(t, err)
-	assert.Contains(t, string(record.native.Data), fixture.path)
+	assert.Contains(t, string(record.native.Data), agenttest.JSONEscaped(t, fixture.path))
 	var native struct {
 		State struct {
 			Output string `json:"output"`

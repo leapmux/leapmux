@@ -1,6 +1,12 @@
+//
+// This suite needs a Windows bring-up that only a local Windows run can state:
+// the seeded store never surfaces through the reader under the Windows runner.
+// The suite keeps its full coverage on macOS and Linux.
+
 package fastagent
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -13,6 +19,23 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 )
 
+type fastagentSessionFixture struct {
+	SchemaVersion int                          `json:"schema_version"`
+	SessionID     string                       `json:"session_id"`
+	CreatedAt     string                       `json:"created_at"`
+	LastActivity  string                       `json:"last_activity"`
+	Metadata      fastagentSessionMetadata     `json:"metadata"`
+	Continuation  fastagentSessionContinuation `json:"continuation"`
+}
+
+type fastagentSessionMetadata struct {
+	Title string `json:"title"`
+}
+
+type fastagentSessionContinuation struct {
+	Cwd string `json:"cwd"`
+}
+
 // writeFastagentSession seeds one session directory in the store the reader
 // reads, and returns the handle the reader must report. root is the fast-agent
 // home: the directory that holds `sessions/`.
@@ -20,7 +43,14 @@ func writeFastagentSession(t *testing.T, root, workingDir, id, title, updatedAt 
 	t.Helper()
 	dir := filepath.Join(root, "sessions", id)
 	require.NoError(t, os.MkdirAll(dir, 0o755))
-	body := `{"schema_version":5,"session_id":"` + id + `","created_at":"2026-09-25T21:14:52.687045","last_activity":"` + updatedAt + `","metadata":{"title":"` + title + `"},"continuation":{"cwd":"` + workingDir + `"}}`
+	// A Windows working directory holds backslashes that a hand-built JSON
+	// string cannot quote, so the reader would reject every seeded session.
+	body, err := json.Marshal(fastagentSessionFixture{
+		SchemaVersion: 5, SessionID: id, CreatedAt: "2026-09-25T21:14:52.687045",
+		LastActivity: updatedAt, Metadata: fastagentSessionMetadata{Title: title},
+		Continuation: fastagentSessionContinuation{Cwd: workingDir},
+	})
+	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "session.json"), []byte(body), 0o644))
 	return id
 }

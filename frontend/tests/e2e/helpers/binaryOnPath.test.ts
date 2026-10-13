@@ -2,7 +2,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, sy
 import { delimiter, dirname, join, resolve } from 'node:path'
 import process from 'node:process'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { agentSearchPath, agentSearchPathEnv, findBinary, findBinaryOnPath, lookupBinary, missingBinaryReason, requireBinary, unusableBinaryReason, versionOutput } from './binaryOnPath'
+import { agentSearchPath, agentSearchPathEnv, exeExtensionOnPath, findBinary, findBinaryOnPath, lookupBinary, missingBinaryReason, requireBinary, unusableBinaryReason, versionOutput } from './binaryOnPath'
 
 let directory: string
 
@@ -89,6 +89,18 @@ describe('findBinary', () => {
     const agent = file('agent', 0o755)
     expect(findBinary('agent', { PATH: directory })).toBe(agent)
     expect(findBinary('agent', {})).toBeNull()
+  })
+})
+
+describe('exeExtensionOnPath', () => {
+  it('takes the .exe spelling that PATHEXT states, whatever its case', () => {
+    expect(exeExtensionOnPath('.COM;.EXE;.BAT')).toBe('.EXE')
+    expect(exeExtensionOnPath('.com;.exe')).toBe('.exe')
+  })
+
+  it('answers the plain .exe extension when PATHEXT states none', () => {
+    expect(exeExtensionOnPath('.COM;.BAT')).toBe('.exe')
+    expect(exeExtensionOnPath('')).toBe('.exe')
   })
 })
 

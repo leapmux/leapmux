@@ -16,7 +16,7 @@ describe('go export data', () => {
       const archive = execFileSync('go', ['list', '-export', '-f', '{{.Export}}', 'time'], {
         cwd: backend,
         encoding: 'utf8',
-        timeout: 30_000,
+        timeout: 75_000,
       }).trim()
       expect(archive).not.toBe('')
       const probe = join(directory, 'probe.go')
@@ -43,10 +43,14 @@ func main() {
   fmt.Print("time.Duration imported")
 }
 `)
+      // `go run` compiles the probe and its x/tools dependency first. A cold
+      // build cache on a loaded Windows CI runner exceeds half a minute, so the
+      // deadline holds generous headroom over the observed compile, not the
+      // interactive case. The test budget below still bounds the whole case.
       const result = spawnSync('go', ['run', probe, archive], {
         cwd: backend,
         encoding: 'utf8',
-        timeout: 30_000,
+        timeout: 120_000,
       })
       expect(result.error).toBeUndefined()
       expect(result.status, result.stderr).toBe(0)
@@ -55,5 +59,5 @@ func main() {
     finally {
       rmSync(directory, { recursive: true, force: true })
     }
-  }, 90_000)
+  }, 180_000)
 })

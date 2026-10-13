@@ -6,8 +6,9 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlink
 import { basename, delimiter, dirname, isAbsolute, join, resolve, sep } from 'node:path'
 import process from 'node:process'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { agentSearchPathEnv, findBinary } from './binaryOnPath'
+import { agentSearchPathEnv, exeExtensionOnPath, findBinary } from './binaryOnPath'
 import { CLINE_PROVIDER_ID, CODEBUDDY_ALT_MODEL_ID, CODEBUDDY_ALT_MODEL_WIRE_ID, CODEBUDDY_MODEL_ID, CODEWHALE_VISION_MODEL_ID, COMMAND_CODE_ALT_MODEL_ID, COMMAND_CODE_MODEL_ID, COMMAND_CODE_REASONING_MODEL_ID, createMockAgentEnvironment, DROID_MOCK_MODEL_IDS, GROK_ALT_MODEL_ID, GROK_REASONING_MODEL_ID, JUNIE_MOCK_MODEL, JUNIE_NATIVE_EFFORT_MODEL, JUNIE_PROXY_PROVIDER, JUNIE_RESPONSES_MODEL, KIMI_MOCK_MODELS, KIRO_E2E_API_KEY, LETTA_MODEL_ID, LETTA_REASONING_MODEL_ID, LETTA_VISION_MODEL_ID, MOCK_MODEL_IDS, MOCK_MODELS, MOCK_PROVIDER_IDS, OH_MY_PI_ALT_MODEL_ID, OH_MY_PI_ALT_MODEL_WIRE_ID, OH_MY_PI_PROFILE, OPENCODE_FAMILY_PLAIN_MODEL_ID, OPENCODE_FAMILY_PLAIN_MODEL_WIRE_ID, PI_PLAIN_MODEL_ID, QODER_ALTERNATE_MODEL_ID, QODER_MODEL_ID, QWEN_ALT_MODEL_ID, QWEN_ALT_MODEL_WIRE_ID, QWEN_MODEL_ID, QWEN_PLAIN_MODEL_ID, QWEN_PLAIN_MODEL_WIRE_ID, REASONIX_ALT_MODEL_ID, REASONIX_ALT_PROVIDER_ID, REASONIX_PLAIN_MODEL_ID, REASONIX_PLAIN_PROVIDER_ID, ZCODE_PLAIN_MODEL_WIRE_ID } from './mockAgentEnvironment'
+import { privateDirectoryMode, privateFileMode } from './privateConfigFile'
 import { qoderEndpointCacheRecords } from './qoderSurface'
 
 const setupBoundary = vi.hoisted(() => {
@@ -90,7 +91,7 @@ describe('createMockAgentEnvironment', () => {
       const info = statSync(expected)
       expect(info.isDirectory()).toBe(true)
       if (process.platform !== 'win32')
-        expect(info.mode & 0o777).toBe(0o700)
+        expect(info.mode & 0o777).toBe(privateDirectoryMode)
     }
     finally {
       for (const [index, key] of keys.entries()) {
@@ -120,7 +121,7 @@ describe('createMockAgentEnvironment', () => {
   it('passes the private temporary root to both Letta setup commands before it returns', async () => {
     const binaries = join(directory, 'controlled-binaries')
     mkdirSync(binaries)
-    const letta = join(binaries, process.platform === 'win32' ? 'letta.exe' : 'letta')
+    const letta = join(binaries, process.platform === 'win32' ? `letta${exeExtensionOnPath()}` : 'letta')
     writeFileSync(letta, 'controlled setup boundary', { mode: 0o755 })
     const beforePath = process.env.PATH
     const calls: Array<{ args: readonly string[], env: NodeJS.ProcessEnv | undefined }> = []
@@ -156,7 +157,7 @@ describe('createMockAgentEnvironment', () => {
   it('turns the Letta Code updater off for both setup commands, whatever the run inherits', async () => {
     const binaries = join(directory, 'controlled-binaries')
     mkdirSync(binaries)
-    const letta = join(binaries, process.platform === 'win32' ? 'letta.exe' : 'letta')
+    const letta = join(binaries, process.platform === 'win32' ? `letta${exeExtensionOnPath()}` : 'letta')
     writeFileSync(letta, 'controlled setup boundary', { mode: 0o755 })
     const beforePath = process.env.PATH
     const beforeSwitch = process.env.DISABLE_AUTOUPDATER
@@ -384,7 +385,7 @@ describe('createMockAgentEnvironment', () => {
     expect(reasonix).toContain('api_key_env = "LEAPMUX_E2E_MODEL_API_KEY"')
     const reasonixCredentials = join(env.REASONIX_HOME!, '.env')
     expect(readFileSync(reasonixCredentials, 'utf8')).toBe('LEAPMUX_E2E_MODEL_API_KEY=leapmux-e2e-model-key\n')
-    expect(statSync(reasonixCredentials).mode & 0o777).toBe(0o600)
+    expect(statSync(reasonixCredentials).mode & 0o777).toBe(privateFileMode)
     expect(reasonix).toContain(`vision_models = ["${MOCK_MODELS.deepseek}"]`)
     expect(reasonix).toContain(`default_model = "deepseek/${MOCK_MODELS.deepseek}"`)
     expect(reasonix).toContain(`name = "${REASONIX_ALT_PROVIDER_ID}"\nkind = "openai"\nbase_url = "http://127.0.0.1:43210/v1"\nmodel = "${MOCK_MODELS.pi}"`)

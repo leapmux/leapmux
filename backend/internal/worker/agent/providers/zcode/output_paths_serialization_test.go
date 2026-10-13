@@ -1,3 +1,8 @@
+//
+// This suite needs a Windows bring-up that only a local Windows run can state:
+// this file shares the serialization fixtures of the gated zcode suite.
+// The suite keeps its full coverage on macOS and Linux.
+
 package zcode
 
 import (
@@ -6,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -92,7 +98,7 @@ func TestZCodeSerializationOutputPathDoesNotFillTheImageCache(t *testing.T) {
 	assert.Empty(t, record.outputFiles)
 	assert.Empty(t, cache.lookup(f.uri), "text metadata must not populate the image cache")
 	require.NoError(t, os.Remove(f.path))
-	assert.Contains(t, string(record.native.Data), f.path, "the native record retains its path after file removal")
+	assert.Contains(t, string(record.native.Data), agenttest.JSONEscaped(t, f.path), "the native record retains its path after file removal")
 }
 
 func TestZCodeSerializationOutputPathDoesNotReadLiteralDataURIText(t *testing.T) {
@@ -199,7 +205,7 @@ func TestZCodeSerializationOutputPathPreservesTheCapturedNativeFilename(t *testi
 	f.metadata["artifactPath"] = f.path
 	record, err := f.read(t, &zcodeOutputFileCache{})
 	require.NoError(t, err)
-	assert.Contains(t, string(record.native.Data), f.path)
+	assert.Contains(t, string(record.native.Data), agenttest.JSONEscaped(t, f.path))
 	assert.Empty(t, record.outputFiles, "the native path must not start a text-file read")
 	assert.True(t, record.ready)
 }

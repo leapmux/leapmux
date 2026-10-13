@@ -1,5 +1,5 @@
 import type * as TypeScript from 'typescript'
-import { dirname, resolve } from 'node:path'
+import { posix } from 'node:path'
 import {
   createSourceFile,
   forEachChild,
@@ -79,7 +79,9 @@ interface ParsedFile {
 function resolveImport(fromPath: string, specifier: string, known: ReadonlySet<string>): string | undefined {
   if (!specifier.startsWith('.'))
     return undefined
-  const base = resolve(dirname(fromPath), specifier)
+  // Resolution runs on POSIX shapes: a Windows native path would resolve its backslash
+  // separators against the forward slashes that a module specifier spells.
+  const base = posix.resolve(posix.dirname(fromPath.replaceAll('\\', '/')), specifier)
   return [base, `${base}.ts`, `${base}/index.ts`].find(candidate => known.has(candidate))
 }
 
@@ -150,8 +152,9 @@ function caughtByPromise(call: TypeScript.CallExpression): boolean {
 
 /** Find each `expect.poll` of `inputs` whose poll function can throw on a failed Worker or Hub request. */
 export function throwingPollReads(inputs: readonly PollSourceFile[]): ThrowingPoll[] {
-  const known = new Set(inputs.map(input => input.path))
-  const files = new Map(inputs.map(input => [input.path, parse(input, known)]))
+  const known = new Set(inputs.map(input => input.path.replaceAll('\\', '/')))
+  // Keyed by the same POSIX form resolveImport answers with, so a Windows native path still resolves.
+  const files = new Map(inputs.map(input => [input.path.replaceAll('\\', '/'), parse(input, known)]))
   // The chain from a named function to a transport call, or null when the function reaches none.
   const memo = new Map<string, string[] | null>()
   // The functions on the stack of the current search. A call back into one of them reads as no chain, and the search

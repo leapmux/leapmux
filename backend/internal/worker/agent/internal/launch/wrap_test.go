@@ -508,6 +508,22 @@ func TestBuildShellWrappedCommand_EscapesQuoteInProgramPath(t *testing.T) {
 	assert.Contains(t, nu, `^"/opt/say\"hi\"/node"`)
 }
 
+// The PowerShell wrapper must answer the native program's own exit code, and
+// a command that no PATH entry supplies must exit 127 as POSIX shells do, so
+// the absent-CLI mappings of the providers keep working under pwsh.
+func TestBuildPwshCommand_PropagatesExitCodes(t *testing.T) {
+	pwsh := buildPwshCommand(WrapSpec{Launch: Spec{Program: "/opt/node"}}, "__DELIM__", "")
+	assert.Contains(t, pwsh, "exit $LASTEXITCODE")
+	assert.Contains(t, pwsh, "catch [System.Management.Automation.CommandNotFoundException] { exit 127 }")
+
+	gated := buildPwshCommand(WrapSpec{
+		Launch:   Spec{Program: "/opt/node"},
+		EnvGated: &EnvGatedArgs{EnvVars: []string{"ELECTRON_RUN_AS_NODE"}, Args: []string{"--node"}},
+	}, "__DELIM__", "__META__ ")
+	assert.Contains(t, gated, "exit $LASTEXITCODE")
+	assert.Contains(t, gated, "catch [System.Management.Automation.CommandNotFoundException] { exit 127 }")
+}
+
 func TestPosixQuote(t *testing.T) {
 	assert.Equal(t, "'hello'", posixQuote("hello"))
 	assert.Equal(t, "'it'\\''s'", posixQuote("it's"))

@@ -272,7 +272,9 @@ describe('lettaMcpCatalogArguments', () => {
 })
 
 describe('lettaMcpCatalogToolCall', () => {
-  it('passes exact quoted capture and native argv through the actual Bash command', () => {
+  // The command runs through /bin/sh, which no Windows host offers; the quoting it asserts
+  // is POSIX shell quoting.
+  it.runIf(process.platform !== 'win32')('passes exact quoted capture and native argv through the actual Bash command', () => {
     const scratch = resolve(process.cwd(), '../.tmp')
     mkdirSync(scratch, { recursive: true })
     const directory = mkdtempSync(join(scratch, 'letta-catalog-argv-'))
@@ -317,7 +319,8 @@ describe('lettaMcpCliToolCall', () => {
     { label: 'false', input: { value: false } },
     { label: 'Unicode', input: { value: '한글 "quoted" \\ path' } },
     { label: 'shell substitution', input: { value: '$(touch BAD_SHELL_EXPANSION) `touch BAD_BACKTICK_EXPANSION` \' " 한글\\' } },
-  ])('passes the $label payload as unchanged native arguments', ({ input }) => {
+    // The command runs through sh, which no Windows host offers; the quoting it asserts is POSIX shell quoting.
+  ].filter(() => process.platform !== 'win32'))('passes the $label payload as unchanged native arguments', ({ input }) => {
     const scratch = resolve(process.cwd(), '../.tmp')
     mkdirSync(scratch, { recursive: true })
     const directory = mkdtempSync(join(scratch, 'letta-mcp-argv-'))

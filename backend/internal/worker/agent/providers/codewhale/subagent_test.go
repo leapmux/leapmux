@@ -1,3 +1,8 @@
+//
+// This suite needs a Windows bring-up that only a local Windows run can state:
+// the fixtures need symlinks, which Windows builds without a privilege.
+// The suite keeps its full coverage on macOS and Linux.
+
 package codewhale
 
 import (
@@ -814,4 +819,12 @@ func TestStopEndsTheRequestOfTheJobsPoller(t *testing.T) {
 	task, ok := sink.BackgroundTask("call_start")
 	require.True(t, ok)
 	assert.Equal(t, bgtask.StatusStopped, task.Status)
+}
+
+// handlerFor returns the reply that one route states now, so a test can wrap
+// it.
+func (rt *fakeRuntime) handlerFor(method, path string) http.HandlerFunc {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	return rt.handlers[method+" "+path]
 }

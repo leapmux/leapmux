@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { gitRepositoryWorkingDir } from './providerWorkingDir'
-import { addWorktree, branchExists, commitFile, createGitRepo, createGitRepoWithRemote, ensureGitRepositoryRoot, initGitRepo, managedWorktreePath } from './worktree'
+import { addWorktree, branchExists, commitFile, createGitRepo, createGitRepoWithRemote, ensureGitRepositoryRoot, gitTopLevel, initGitRepo, managedWorktreePath } from './worktree'
 
 // The run directory of these tests is the scratch directory of the current test.
 const runDirectory = vi.hoisted(() => ({ root: '' }))
@@ -45,7 +45,7 @@ describe('git repository helpers', () => {
     writeFileSync(join(dir, 'AGENTS.md'), 'project instructions\n')
     ensureGitRepositoryRoot(dir)
     // The run directory sits inside the LeapMux checkout, so before the call git reported the checkout as its top.
-    expect(gitOutput(dir, ['rev-parse', '--show-toplevel'])).toBe(realpathSync(dir))
+    expect(gitTopLevel(dir)).toBe(realpathSync(dir))
     expect(gitOutput(dir, ['log', '--pretty=%s'])).toBe('init')
     expect(gitOutput(dir, ['config', '--local', 'core.fsmonitor'])).toBe('false')
     expect(gitOutput(dir, ['status', '--porcelain'])).toBe('?? AGENTS.md')
@@ -55,7 +55,7 @@ describe('git repository helpers', () => {
     const dir = gitRepositoryWorkingDir('agent-wd-')
     writeFileSync(join(dir, 'AGENTS.md'), 'project instructions\n')
     ensureGitRepositoryRoot(dir)
-    expect(gitOutput(dir, ['rev-parse', '--show-toplevel'])).toBe(realpathSync(dir))
+    expect(gitTopLevel(dir)).toBe(realpathSync(dir))
     expect(gitOutput(dir, ['log', '--pretty=%s'])).toBe('init')
     expect(gitOutput(dir, ['status', '--porcelain'])).toBe('?? AGENTS.md')
   })
@@ -64,7 +64,7 @@ describe('git repository helpers', () => {
     const repo = createGitRepo(root, 'repo')
     const linked = addWorktree(repo, root, 'linked', 'feature/linked')
     ensureGitRepositoryRoot(linked)
-    expect(gitOutput(linked, ['rev-parse', '--show-toplevel'])).toBe(linked)
+    expect(gitTopLevel(linked)).toBe(linked)
     expect(gitOutput(linked, ['rev-parse', '--abbrev-ref', 'HEAD'])).toBe('feature/linked')
     expect(gitOutput(linked, ['log', '--pretty=%s'])).toBe('init')
   })
@@ -73,7 +73,7 @@ describe('git repository helpers', () => {
     const repo = createGitRepo(root, 'outer')
     const nested = join(repo, 'nested')
     ensureGitRepositoryRoot(nested)
-    expect(gitOutput(nested, ['rev-parse', '--show-toplevel'])).toBe(realpathSync(nested))
+    expect(gitTopLevel(nested)).toBe(realpathSync(nested))
     expect(gitOutput(nested, ['log', '--pretty=%s'])).toBe('init')
   })
 

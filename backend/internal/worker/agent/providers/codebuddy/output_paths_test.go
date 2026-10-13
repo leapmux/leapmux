@@ -36,5 +36,5 @@ func TestCodebuddyNativeOutputPathPreservesPreviewWithoutSavedText(t *testing.T)
 	assert.JSONEq(t, string(raw), string(rows[1].Content))
 	assert.NotContains(t, string(rows[1].Content), "actual omitted middle77")
 	assert.NotContains(t, string(rows[1].SupplementalContent), "actual omitted middle77", "native output paths must not cause full file text to enter Worker storage")
-	assert.Contains(t, string(rows[1].Content), path)
+	assert.Contains(t, string(rows[1].Content), agenttest.JSONEscaped(t, path))
 }

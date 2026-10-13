@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { createMuseEnvironment } from './museEnvironment'
 import { writeNodeLauncher } from './nodeLauncher'
+import { privateFileMode } from './privateConfigFile'
 
 let directory: string
 let home: string
@@ -62,7 +63,7 @@ describe('createMuseEnvironment', () => {
     expect(settings.run.reminder_roster.agents).toEqual([])
     expect(settings.telemetry.enabled).toBe(false)
     expect(readFileSync(path, 'utf8')).not.toContain('mock-key')
-    expect(statSync(path).mode & 0o777).toBe(0o600)
+    expect(statSync(path).mode & 0o777).toBe(privateFileMode)
   })
 
   it.each(['https://example.com/v1', 'http://user:pass@127.0.0.1/v1', 'http://127.0.0.1/v1?key=x', 'http://127.0.0.1/not-v1'])('refuses an invalid endpoint before any write %s', (baseURL) => {

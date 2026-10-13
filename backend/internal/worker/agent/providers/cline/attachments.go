@@ -3,6 +3,7 @@ package cline
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -141,7 +142,9 @@ func (a *Agent) writeTextAttachments(texts []agent.ClassifiedAttachment) ([]stri
 // made unique within one message: a second `notes.md` becomes `notes-2.md`, or
 // the next free number when another file of the message has that name too.
 func attachmentFileName(filename string, taken map[string]bool) string {
-	base := filepath.Base(filepath.Clean("/" + strings.ReplaceAll(filename, `\`, "/")))
+	// Slash semantics on every platform: a Windows backslash separator and a
+	// drive-relative name must not survive into the file name.
+	base := path.Base(path.Clean("/" + strings.ReplaceAll(filename, `\`, "/")))
 	if base == "" || base == "." || base == "/" || base == ".." {
 		base = "attachment.txt"
 	}

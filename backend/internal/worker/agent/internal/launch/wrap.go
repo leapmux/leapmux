@@ -268,9 +268,19 @@ func buildPwshCommand(spec WrapSpec, delimiter, metaPrefix string) string {
 	program := pwshQuote(spec.Launch.Program)
 
 	// Simple path: no env gate. See buildPosixCommand.
+	//
+	// The try/catch pair answers two PowerShell behaviours that POSIX shells
+	// give for free. Without `exit $LASTEXITCODE`, pwsh -Command answers its
+	// own success status and swallows the native program's exit code, and a
+	// caller that maps exit codes (an absent CLI is the store's empty state)
+	// then reads every failure as 0 or 1. Without the catch, a command that
+	// no PATH entry supplies is a CommandNotFoundException that also exits 1,
+	// where POSIX answers 127. `$ErrorActionPreference = 'Stop'` turns the
+	// exception into a terminating one the catch can classify; a native
+	// program's own non-zero exit stays non-terminating and reaches the exit.
 	gate := spec.EnvGated
 	if gate == nil {
-		return fmt.Sprintf("%sWrite-Output '%s'; & %s %s",
+		return fmt.Sprintf("$ErrorActionPreference = 'Stop'; %stry { Write-Output '%s'; & %s %s; exit $LASTEXITCODE } catch [System.Management.Automation.CommandNotFoundException] { exit 127 }",
 			clearEnvPrefix, delimiter, program, baseArgsStr)
 	}
 
@@ -282,14 +292,16 @@ func buildPwshCommand(spec WrapSpec, delimiter, metaPrefix string) string {
 	gatedArgsStr := strings.Join(quotedGated, " ")
 
 	return fmt.Sprintf(
-		"%s"+
+		"$ErrorActionPreference = 'Stop'; %s"+
+			"try { "+
 			"if (%s) { "+
 			"Write-Output '%s%s=false'; "+
-			"Write-Output '%s'; & %s %s "+
+			"Write-Output '%s'; & %s %s; exit $LASTEXITCODE "+
 			"} else { "+
 			"Write-Output '%s%s=true'; "+
-			"Write-Output '%s'; & %s %s %s "+
-			"}",
+			"Write-Output '%s'; & %s %s %s; exit $LASTEXITCODE "+
+			"} "+
+			"} catch [System.Management.Automation.CommandNotFoundException] { exit 127 }",
 		clearEnvPrefix, pwshEnvCondition(gate.EnvVars),
 		metaPrefix, gate.MetaKey, delimiter, program, baseArgsStr,
 		metaPrefix, gate.MetaKey, delimiter, program, baseArgsStr, gatedArgsStr,

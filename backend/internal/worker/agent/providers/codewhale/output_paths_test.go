@@ -3,6 +3,7 @@ package codewhale
 import (
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -12,5 +13,5 @@ func TestCodewhaleNativeOutputPathPreservesPreviewWithoutSavedText(t *testing.T)
 	original, supplement := f.close(t)
 	assert.NotContains(t, string(original), hidden)
 	assert.NotContains(t, string(supplement), hidden, "external output text must not enter Worker storage")
-	assert.Contains(t, string(original), f.path)
+	assert.Contains(t, string(original), agenttest.JSONEscaped(t, f.path))
 }

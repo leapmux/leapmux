@@ -84,14 +84,6 @@ func (rt *fakeRuntime) handle(method, path string, handler http.HandlerFunc) {
 	rt.handlers[method+" "+path] = handler
 }
 
-// handlerFor returns the reply that one route states now, so a test can wrap
-// it.
-func (rt *fakeRuntime) handlerFor(method, path string) http.HandlerFunc {
-	rt.mu.Lock()
-	defer rt.mu.Unlock()
-	return rt.handlers[method+" "+path]
-}
-
 // respondJSON states a fixed JSON reply for one route.
 func (rt *fakeRuntime) respondJSON(method, path string, status int, body any) {
 	encoded, err := json.Marshal(body)

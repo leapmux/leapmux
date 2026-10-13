@@ -2,8 +2,10 @@ package agenttest
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/leapmux/leapmux/internal/util/testutil"
@@ -46,4 +48,29 @@ func TestFixtureJSONString(t *testing.T) {
 	}
 	assert.Error(t, json.Unmarshal([]byte(`{"cwd":"`+windows+`"}`), &broken),
 		"the unescaped form is what this helper replaces")
+}
+
+func TestSamePath(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	assert.True(t, SamePath(t, dir, dir), "a path names itself")
+	assert.True(t, SamePath(t, dir, dir+string(filepath.Separator)),
+		"a trailing separator names the same directory")
+	assert.False(t, SamePath(t, dir, filepath.Join(dir, "other")),
+		"a different directory is not the same")
+
+	// The spelling a fixture hands the test and the spelling a resolved path
+	// answers differ; both must name the directory.
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Logf("skipping the symlink spelling: os.Symlink: %v", err)
+		return
+	}
+	assert.True(t, SamePath(t, link, dir), "a symlink to the directory names it")
+
+	if runtime.GOOS == "windows" {
+		assert.True(t, SamePath(t, strings.ToUpper(dir), dir),
+			"Windows ignores the case of a path")
+	}
 }

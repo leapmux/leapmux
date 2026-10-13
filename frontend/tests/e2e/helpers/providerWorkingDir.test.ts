@@ -13,16 +13,13 @@ import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'v
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { unitWorkingDir } from '~/test-support/unitWorkingDir'
 import { deliberateWorkingDir, gitRepositoryWorkingDir, newProviderWorkingDir } from './providerWorkingDir'
+import { gitTopLevel } from './worktree'
 
 // The run directory of these tests is the scratch directory of the current test.
 const runDirectory = vi.hoisted(() => ({ root: '' }))
 vi.mock('./runDirectory', () => ({ createTestDirectory: (prefix: string) => mkdtempSync(join(runDirectory.root, prefix)) }))
 
 /** Return the root of the git work tree around `dir`, as git reports it. */
-function gitTopLevel(dir: string): string {
-  return execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: dir, encoding: 'utf8' }).trim()
-}
-
 const pi: ProviderAgent = { provider: AgentProvider.PI, prefix: 'pi-e2e' }
 
 let root: string

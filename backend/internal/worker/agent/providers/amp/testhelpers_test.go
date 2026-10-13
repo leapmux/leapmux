@@ -52,10 +52,6 @@ func withOptions(options optionmap.Map) harnessOption {
 	return func(o *agent.Options) { o.Options = options }
 }
 
-func withWorkingDir(dir string) harnessOption {
-	return func(o *agent.Options) { o.WorkingDir = dir }
-}
-
 func newHarness(t *testing.T, opts ...harnessOption) *harness {
 	t.Helper()
 	options := agent.Options{

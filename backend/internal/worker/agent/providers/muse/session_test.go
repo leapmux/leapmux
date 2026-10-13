@@ -1,3 +1,8 @@
+//
+// This suite needs a Windows bring-up that only a local Windows run can state:
+// the session harness starts the CLI, and the Windows runner cannot start it.
+// The suite keeps its full coverage on macOS and Linux.
+
 package muse
 
 import (

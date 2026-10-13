@@ -143,7 +143,9 @@ export function allowNativeOperation(
  */
 export async function exerciseAllowThenFeedbackRejection(context: NativeScenarioContext, options: { workingDir: string }): Promise<void> {
   // The commands hold the paths unquoted, as the model writes them, so a path must not need shell quoting.
-  if (!isAbsolute(options.workingDir) || !/^[\w./-]+$/.test(options.workingDir))
+  // A Windows path may hold a drive colon and backslash separators beside the plain characters.
+  const unquotedAbsolute = process.platform === 'win32' ? /^[A-Z]:[\\/][\w.\\/-]*$/i : /^\/[\w./-]+$/
+  if (!isAbsolute(options.workingDir) || !unquotedAbsolute.test(options.workingDir))
     throw new Error('The allow-then-refuse scenario requires an absolute working directory that needs no shell quoting.')
   const approved = join(options.workingDir, 'approved.txt')
   const rejected = join(options.workingDir, 'rejected.txt')

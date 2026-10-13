@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -47,14 +48,17 @@ const transcriptLineLimit = 16 << 20
 // transcript: the reader must not follow a path that a model echoed anywhere
 // else.
 func backgroundTranscriptPath(stated string) (string, bool) {
-	path := filepath.Clean(stated)
-	if !filepath.IsAbs(path) || filepath.Ext(path) != ".jsonl" {
+	cleaned := filepath.Clean(stated)
+	// A model can state its transcript in either absolute spelling -- a POSIX
+	// path or a native Windows one -- and only one of the two is IsAbs per
+	// platform, so both spellings count.
+	if (!filepath.IsAbs(cleaned) && !path.IsAbs(filepath.ToSlash(cleaned))) || filepath.Ext(cleaned) != ".jsonl" {
 		return "", false
 	}
-	if filepath.Base(filepath.Dir(filepath.Dir(path))) != "subagents" {
+	if filepath.Base(filepath.Dir(filepath.Dir(cleaned))) != "subagents" {
 		return "", false
 	}
-	return path, true
+	return cleaned, true
 }
 
 // transcriptTail reads one background child's transcript as it grows.

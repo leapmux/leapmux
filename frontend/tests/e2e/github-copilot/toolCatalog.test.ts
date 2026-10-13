@@ -105,7 +105,7 @@ process.stdin.on('data', chunk => {
   const length = Number(/Content-Length: (\\d+)/.exec(buffered.subarray(0, end).toString('ascii'))[1]);
   if (buffered.length < end + 4 + length) return;
   const request = JSON.parse(buffered.subarray(end + 4, end + 4 + length).toString('utf8'));
-  fs.writeFileSync(${JSON.stringify(receipt)}, JSON.stringify({ request, pid: process.pid, workingDir: process.cwd(), privateValue: process.env.COPILOT_CATALOG_PRIVATE_VALUE }));
+  const draft = ${JSON.stringify(receipt)} + '.writing'; fs.writeFileSync(draft, JSON.stringify({ request, pid: process.pid, workingDir: process.cwd(), privateValue: process.env.COPILOT_CATALOG_PRIVATE_VALUE })); fs.renameSync(draft, ${JSON.stringify(receipt)});
   ${responseSource}
 });
 `)
@@ -196,11 +196,18 @@ setImmediate(() => { process.stdout.write(reply.subarray(7, split)); setImmediat
   })
 
   it('rejects natural stdout EOF with an incomplete frame before a reply', async () => {
-    await expect(queryFixture('process.stdout.end(\'Content-Length: 100\\r\\n\\r\\n{\'); process.stdin.pause();').query).rejects.toThrow('incomplete')
+    // The fixture ends its stdout and exits: Windows delivers the pipe EOF only
+    // at process exit, so the same bytes arrive as an exit-with-incomplete-frame
+    // there, and POSIX delivers the mid-life EOF the case is named for.
+    const source = process.platform === 'win32'
+      ? 'process.stdout.end(\'Content-Length: 100\\r\\n\\r\\n{\'); process.exit(0)'
+      : 'process.stdout.end(\'Content-Length: 100\\r\\n\\r\\n{\'); process.stdin.pause();'
+    await expect(queryFixture(source).query).rejects.toThrow('incomplete')
   })
 
   it('rejects empty native stdout EOF before a reply without waiting for its deadline', async () => {
-    const fixture = nativeFixture('process.stdout.end();')
+    // Exit as well: Windows delivers the pipe EOF only at process exit.
+    const fixture = nativeFixture('process.stdout.end(); process.exit(0);')
     let deadline: (() => void) | undefined
     let resolveEnded!: () => void
     const ended = new Promise<void>((resolve) => {

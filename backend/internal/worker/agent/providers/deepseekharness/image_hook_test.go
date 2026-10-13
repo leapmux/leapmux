@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -30,7 +31,10 @@ func TestImageHookUsesPrivateFilesAndLiteralNativeConfiguration(t *testing.T) {
 		info, err := os.Stat(path)
 		require.NoError(t, err)
 		assert.True(t, info.IsDir())
-		assert.Zero(t, info.Mode().Perm()&0o077)
+		if runtime.GOOS != "windows" {
+			// Windows keeps no group or other bits, so only POSIX can state them.
+			assert.Zero(t, info.Mode().Perm()&0o077)
+		}
 	}
 	program, err := os.ReadFile(filepath.Join(directory, "image_hook.mjs"))
 	require.NoError(t, err)

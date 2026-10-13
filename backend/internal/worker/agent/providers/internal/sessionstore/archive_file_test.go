@@ -5,6 +5,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -164,6 +165,11 @@ func TestReadRegularFileJoinsStatAndCloseErrors(t *testing.T) {
 	require.ErrorAs(t, err, &joined)
 	require.Len(t, joined.Unwrap(), 2)
 	for _, cause := range joined.Unwrap() {
+		if runtime.GOOS == "windows" && !errors.Is(cause, os.ErrClosed) {
+			// A closed descriptor can answer an invalid-handle error instead.
+			require.ErrorContains(t, cause, "handle is invalid")
+			continue
+		}
 		require.ErrorIs(t, cause, os.ErrClosed)
 	}
 }

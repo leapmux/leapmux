@@ -5,6 +5,7 @@ import process from 'node:process'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { unitWorkingDir } from '~/test-support/unitWorkingDir'
 import { FAST_AGENT_MOCK_MODEL } from '../helpers/mockAgentEnvironment'
+import { privateFileMode } from '../helpers/privateConfigFile'
 import { withPrivateNativeWorkspace } from '../helpers/privateNativeWorkspace'
 import { openProviderAgent } from '../helpers/workspace'
 import { prepareFastAgentModes } from './fixtures'
@@ -52,7 +53,7 @@ describe('prepareFastAgentModes', () => {
     expect(reader).toContain('NATIVE_FAST_AGENT_READER')
     expect(writer).not.toContain('default: true')
     expect(writer).toContain('NATIVE_FAST_AGENT_WRITER')
-    expect(statSync(join(home, 'agent-cards', 'reader.md')).mode & 0o777).toBe(0o600)
+    expect(statSync(join(home, 'agent-cards', 'reader.md')).mode & 0o777).toBe(privateFileMode)
   })
 
   it('refuses a suite home with no mock configuration', () => {

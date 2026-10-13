@@ -23,7 +23,7 @@ describe('readNativeToolOutputFile', () => {
   it('reads exact stable bytes from descriptor zero without following the file link', () => {
     const f = fixture()
     expect(readNativeToolOutputFile('/private/native/result.txt', f.bytes.length, f.io)).toBe('Complete\nnative77\n')
-    expect(f.io.open).toHaveBeenCalledWith('/private/native/result.txt', constants.O_RDONLY | constants.O_NOFOLLOW)
+    expect(f.io.open).toHaveBeenCalledWith(process.platform === 'win32' ? '\\private\\native\\result.txt' : '/private/native/result.txt', constants.O_RDONLY | constants.O_NOFOLLOW)
     expect(f.io.read).toHaveBeenCalledWith(0)
     expect(f.io.close).toHaveBeenCalledWith(0)
   })

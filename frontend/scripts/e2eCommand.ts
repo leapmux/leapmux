@@ -20,7 +20,11 @@ export async function runCommand(cmd: string, args: string[], options: SpawnOpti
   const log = runtime.logPath ? openSync(runtime.logPath, 'wx') : undefined
   let command: CommandProcess
   try {
-    command = spawnCommandProcess(cmd, args, { ...options, stdio: log === undefined ? 'inherit' : ['inherit', 'pipe', 'pipe'], env: options.env ?? process.env }, ownership)
+    // A launched command never reads the launcher's stdin -- the driver holds it
+  // for signal delivery -- so give it no stdin at all. A shared pipe also lets
+  // a grandchild steal the signal bytes on Windows, where the job host
+  // duplicates the handle into the whole tree.
+    command = spawnCommandProcess(cmd, args, { ...options, stdio: log === undefined ? ['ignore', 'inherit', 'inherit'] : ['ignore', 'pipe', 'pipe'], env: options.env ?? process.env }, ownership)
   }
   catch (error) {
     if (log !== undefined) {

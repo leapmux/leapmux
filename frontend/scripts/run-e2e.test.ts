@@ -19,6 +19,34 @@ vi.mock('node:child_process', async (importOriginal) => {
   return { ...actual, spawn, default: { ...actual, spawn } }
 })
 vi.mock('./resolve-task-bin', () => ({ resolveTaskBin: () => 'task' }))
+// The Windows job launcher wraps every owned command in a PowerShell host, so this
+// orchestration test would record that host instead of Task's own command line. The
+// wrapper has its own native integration suite; here the logical spawn is the subject.
+vi.mock('./windowsCommandJob', async () => {
+  const { spawn } = await import('node:child_process')
+  return {
+    // The stop mirrors the POSIX group stop: the mocked process.kill decides whether
+    // signaling the owned command fails, and an ESRCH answer means it is gone already.
+    spawnWindowsCommandJob: (command: string, args: string[], options: SpawnOptions) => {
+      const child = spawn(command, args, options)
+      return {
+        child,
+        stop: () => {
+          try {
+            if (child.pid !== undefined)
+              process.kill(-child.pid, 'SIGTERM')
+            return Promise.resolve()
+          }
+          catch (error) {
+            if ((error as { code?: string }).code === 'ESRCH')
+              return Promise.resolve()
+            return Promise.reject(error)
+          }
+        },
+      }
+    },
+  }
+})
 vi.mock('../tests/e2e/helpers/runBinary', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../tests/e2e/helpers/runBinary')>()
   return { ...actual, copyRunBinary: vi.fn(actual.copyRunBinary) }
@@ -98,8 +126,15 @@ it('states the run root of a serial run, which is its own private directory', as
 })
 
 describe('runRootParent', () => {
+  // The darwin and linux branches read /tmp by its real path. A Windows host
+  // holds no /tmp, and the branch then fails on that exact path -- which pins
+  // that the branch consults /tmp, not the host's own temporary directory.
   it.each(['darwin', 'linux'] as const)('takes the real path of /tmp on %s, which is short and under no home', (platform) => {
-    expect(runRootParent({}, platform)).toBe(realpathSync('/tmp'))
+    if (existsSync('/tmp')) {
+      expect(runRootParent({}, platform)).toBe(realpathSync('/tmp'))
+      return
+    }
+    expect(() => runRootParent({}, platform)).toThrow(/tmp/)
   })
 
   it('takes the real path of the temporary directory on Windows', () => {
@@ -111,7 +146,11 @@ describe('runRootParent', () => {
   })
 
   it('ignores an empty LEAPMUX_E2E_RUN_PARENT', () => {
-    expect(runRootParent({ LEAPMUX_E2E_RUN_PARENT: '' }, 'linux')).toBe(realpathSync('/tmp'))
+    if (existsSync('/tmp')) {
+      expect(runRootParent({ LEAPMUX_E2E_RUN_PARENT: '' }, 'linux')).toBe(realpathSync('/tmp'))
+      return
+    }
+    expect(() => runRootParent({ LEAPMUX_E2E_RUN_PARENT: '' }, 'linux')).toThrow(/tmp/)
   })
 })
 
@@ -371,7 +410,7 @@ describe('end-to-end launcher', () => {
     expect(await completion).toBe(fixture.state.setupFailure)
     expect(process.kill).toHaveBeenCalledWith(123, 'SIGTERM')
     expect(existsSync(fixture.state.directory)).toBe(false)
-  }, 30_000)
+  })
 
   it('preserves the setup failure and signal stop failure exactly once', async () => {
     const stopFailure = new Error('The controlled signal stop failed.')
@@ -436,7 +475,7 @@ describe('end-to-end launcher', () => {
     expect(failureLeaves(result)).toContain(stopFailure)
     expect(existsSync(fixture.state.trackedRecord)).toBe(false)
     expect(existsSync(fixture.state.directory)).toBe(true)
-  }, 30_000)
+  })
 
   it('cleans recorded inherited pipes after a successful serial signal stop', async () => {
     const fixture = heldSerialCommand({ inheritedPipe: true })
@@ -452,7 +491,7 @@ describe('end-to-end launcher', () => {
     expect(process.kill).toHaveBeenCalledWith(123, 'SIGTERM')
     expect(existsSync(fixture.state.trackedRecord)).toBe(false)
     expect(existsSync(fixture.state.directory)).toBe(false)
-  }, 30_000)
+  })
 
   it('removes signal handlers even when child termination fails', async () => {
     const listeners = { interrupt: process.listenerCount('SIGINT'), terminate: process.listenerCount('SIGTERM') }

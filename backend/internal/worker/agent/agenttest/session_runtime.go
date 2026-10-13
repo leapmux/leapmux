@@ -49,12 +49,8 @@ func CreateSessionRuntimeFixture(t *testing.T, home, workingDir, helperPattern, 
 		"HOME=" + home, "USERPROFILE=" + home, "ZDOTDIR=" + home, "PATH=" + os.Getenv("PATH"),
 		SessionRuntimeMarkerEnv + "=" + marker, sessionRuntimeReceiptEnv + "=" + receipt,
 	}
-	// These platform variables locate OS components. They carry no provider login.
-	for _, key := range []string{"SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT"} {
-		if value := os.Getenv(key); value != "" {
-			entries = append(entries, key+"="+value)
-		}
-	}
+	// These platform variables locate OS components; see PlatformBootstrapEnv.
+	entries = PlatformBootstrapEnv(entries)
 	locator := launch.Custom(func(context.Context, string, bool) (launch.Spec, launch.Resolution) {
 		return launch.Spec{Program: executable, PrefixArgs: []string{"-test.run=" + helperPattern, "--"}}, launch.Found
 	})
@@ -64,11 +60,17 @@ func CreateSessionRuntimeFixture(t *testing.T, home, workingDir, helperPattern, 
 		require.NoError(t, err, "the registered native reader must invoke its controlled peer")
 		var observed sessionRuntimeInvocation
 		require.NoError(t, json.Unmarshal(data, &observed))
-		assert.Equal(t, home, observed.Home)
-		assert.Equal(t, home, observed.UserProfile)
+		// Windows hands each side a different spelling of one temp directory:
+		// one holds the 8.3 short form and the other the long form. EvalSymlinks
+		// answers the long form there and the real path elsewhere, so both sides
+		// canonicalize before the comparison.
+		canonicalHome, err := filepath.EvalSymlinks(home)
+		require.NoError(t, err)
+		assert.Equal(t, canonicalHome, mustCanonicalHome(t, observed.Home))
+		assert.Equal(t, canonicalHome, mustCanonicalHome(t, observed.UserProfile))
 		canonicalDirectory, err := filepath.EvalSymlinks(workingDir)
 		require.NoError(t, err)
-		assert.Equal(t, canonicalDirectory, observed.WorkingDir)
+		assert.Equal(t, canonicalDirectory, mustCanonicalHome(t, observed.WorkingDir))
 		assert.Equal(t, marker, observed.Marker)
 		require.GreaterOrEqual(t, len(observed.Args), 3)
 		assert.Equal(t, []string{executable, "-test.run=" + helperPattern, "--"}, observed.Args[:3])
@@ -152,4 +154,18 @@ func readSessionRuntimeReceipt(path string) (data []byte, resultErr error) {
 		return nil, errors.New("the session runtime receipt changed during its complete read")
 	}
 	return data, nil
+}
+
+// mustCanonicalHome answers the canonical spelling of a recorded path, or the
+// path itself when it no longer exists: a receipt can outlive its directory.
+func mustCanonicalHome(t *testing.T, path string) string {
+	t.Helper()
+	canonical, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return path
+		}
+		t.Fatalf("canonicalize %s: %v", path, err)
+	}
+	return canonical
 }

@@ -311,6 +311,12 @@ func TestZCodeToolStoreKeepsItsHandleWhenAStatFails(t *testing.T) {
 // owning runtime the same delete, which is what makes the cached handle unable to
 // outlive its file there. See the Windows note on sessionstore.Moved.
 func TestZCodeToolStoreReopensAStoreReplacedAtTheSamePath(t *testing.T) {
+	// Windows cannot stage this: SQLite opens every file with
+	// FILE_SHARE_READ|FILE_SHARE_WRITE and never FILE_SHARE_DELETE, so the
+	// open handle below refuses the os.Remove that the replacement needs -- and
+	// it refuses the owning runtime the same delete, which is what makes the
+	// cached handle unable to outlive its file there. See the Windows note on
+	// sessionstore.Moved.
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows refuses to delete a file that an open SQLite handle holds")
 	}
@@ -380,7 +386,7 @@ func TestZCodeToolStoreKeepsNativeSerializationMetadataWithoutReadingText(t *tes
 	assert.Empty(t, records["call"].outputFiles, "native serialization metadata must not read external text")
 	assert.Equal(t, "session", records["call"].native.SessionID)
 	assert.Equal(t, "message", records["call"].native.MessageID)
-	assert.Contains(t, string(records["call"].native.Data), path)
+	assert.Contains(t, string(records["call"].native.Data), agenttest.JSONEscaped(t, path))
 	assert.Contains(t, string(records["call"].native.Data), "dwfrun-native")
 	assert.NotContains(t, string(records["call"].native.Data), "computed77")
 

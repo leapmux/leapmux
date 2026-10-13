@@ -30,6 +30,10 @@
     "verbatimModuleSyntax": true,
     "skipLibCheck": true
   },
+  // The typecheck program needs an old-space heap beyond Node's ~2GB default
+  // on the smallest CI runner (the macOS M1), so package.json runs tsc through
+  // node --max-old-space-size=4096. Keep that flag in place while this include
+  // list covers the whole frontend, its scripts and the e2e helpers.
   // resolve.tsconfigPaths enables aliases only for importers in this include list.
   // Include configuration and setup files so their aliases resolve before any test loads.
   // Co-located helper tests belong to Vitest. tsconfig.e2e.json owns the adjacent Playwright specs.
