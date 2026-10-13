@@ -5,6 +5,8 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/leapmux/leapmux/util/pathutil"
+
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -22,16 +24,8 @@ const (
 	// worktree is deliberately excluded from orphan GC, so the directory
 	// survives until they remove it themselves.
 	dropWorktreeLink worktreeLinkPolicy = iota
-	// keepWorktreeLinkForReconciler leaves the row as a strand so the orphan
-	// reconciler can reclaim the worktree. Correct ONLY when the thing that
-	// referenced the worktree is going away entirely -- a deleted workspace --
-	// because there is no longer any user intent for the directory to serve.
-	//
-	// Its counterpart above is not a weaker version of this: the two encode
-	// OPPOSITE intents. Dropping the link means "keep the directory, hide it from
-	// GC"; keeping it means "no one wants this, reclaim it once nothing live
-	// refers to it". A reconciler reap of a closed tab is the first, not the
-	// second -- see CloseTabForReconcile.
+	// keepWorktreeLinkForReconciler leaves a dead link for database cleanup.
+	// Workspace deletion uses this policy. It grants no permission to delete Git artifacts.
 	keepWorktreeLinkForReconciler
 )
 
@@ -60,12 +54,8 @@ const (
 	// shown the dirty/unpushed counts first. The close could not honour it
 	// itself because the link did not exist yet.
 	removeWorktreeOnClose
-	// strandWorktreeOnClose writes the link even though the tab is already
-	// closed, so the row becomes the strand ListOrphanCandidateWorktrees
-	// selects. Reserved for a convergence close of a DELETED workspace: no
-	// user intent for the directory survives, so the orphan reconciler
-	// reclaims it under its own unsaved-work probe rather than this
-	// goroutine force-removing it unasked.
+	// strandWorktreeOnClose writes a dead link after workspace deletion interrupts startup.
+	// The reconciler later removes the link and preserves the worktree and branch.
 	strandWorktreeOnClose
 )
 
@@ -201,6 +191,18 @@ func (svc *Service) closeTabCommon(
 	stopProcess func(),
 	closeDB func() (retiredLiveRow bool, err error),
 ) *leapmuxv1.CloseTabResult {
+	// Capture the actual directory before payload revocation removes it.
+	var workingDir string
+	var rootEligible bool
+	var removalInfo *gitPathInfo
+	if action == leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE {
+		var err error
+		workingDir, err = svc.getTabWorkingDir(bgCtx(), tabType, tabID, userID)
+		if err == nil {
+			removalInfo, err = queryGitPathInfo(bgCtx(), workingDir)
+			rootEligible = err == nil && isGitTopLevel(workingDir, removalInfo) && removalInfo.IsWorktree
+		}
+	}
 	stopProcess()
 
 	result := &leapmuxv1.CloseTabResult{}
@@ -262,13 +264,7 @@ func (svc *Service) closeTabCommon(
 	// single-query unregisterTab.
 	if wtForRemoval == nil {
 		if worktreeLookupFailed {
-			// We couldn't confirm the worktree, so we don't know if this
-			// was its last reference. Dropping the link now would orphan
-			// the dir invisibly: a zero-link worktree is never an orphan-GC
-			// candidate (the >=1-link guard protects mid-creation rows), so
-			// nothing would ever reclaim it. Leave the link instead — the
-			// tab is closed, so it becomes a strand the orphan reconciler
-			// reconciles and reaps once it confirms no live ref remains.
+			// Preserve the link on lookup failure. The reconciler can clean the dead link later.
 			return result
 		}
 		if linkPolicy == keepWorktreeLinkForReconciler {
@@ -277,39 +273,37 @@ func (svc *Service) closeTabCommon(
 			return result
 		}
 		svc.unregisterTab(tabType, tabID, userID)
+		if action == leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE && (!retiredLiveRow || (removalInfo != nil && removalInfo.IsWorktree && !rootEligible)) {
+			wt := &db.Worktree{}
+			if removalInfo != nil {
+				wt.WorktreePath = removalInfo.TopLevel
+			}
+			setWorktreeRemovalRefused(result, wt, "Worktree kept: deletion was not authorized", "The close did not authorize linked worktree deletion")
+		}
 		return result
 	}
 
-	svc.removeWorktreeIfLastReference(result, wtForRemoval, tabType, tabID, userID, retiredLiveRow)
+	if !rootEligible {
+		svc.unregisterTab(tabType, tabID, userID)
+		setWorktreeRemovalRefused(result, wtForRemoval, "Worktree kept: deletion was not authorized", "Only a tab at the linked worktree top level can authorize deletion")
+		return result
+	}
+	svc.removeWorktreeIfLastReference(result, wtForRemoval, tabType, tabID, userID, retiredLiveRow, workingDir)
 	return result
 }
 
-// removeWorktreeIfLastReference drops this tab's worktree link and, once no
-// referencing tab remains, removes the worktree from disk -- the REMOVE-close
-// tail of closeTabCommon, factored out so the locked critical section reads as
-// one unit. It stamps the WorktreeRemoval outcome (and any partial failure)
-// onto result; result is never left UNSPECIFIED on this path.
-//
-// Serialize the re-check -> drop-link -> count -> remove sequence per worktree:
-// DeleteBranchDialog fires every tab's REMOVE close concurrently, so without
-// this lock two closes could both observe remaining == 0 and both shell out
-// `git worktree remove`. Holding the lock across the git work is intentional --
-// siblings of the SAME worktree must wait, while other worktrees use a
-// different lock and never contend. The hold is deliberately NOT bounded by a
-// timeout: a `git worktree remove` on a huge or busy tree can legitimately
-// take a while, and we cannot assume an upper bound for a git operation; a
-// premature timeout would abort a removal that is making progress. Only
-// same-worktree closes wait, so the unbounded hold can never stall an
-// unrelated tab. The same per-worktree lock guards ReapOrphanWorktree, so a
-// close and the orphan GC for one worktree can never interleave.
-func (svc *Service) removeWorktreeIfLastReference(result *leapmuxv1.CloseTabResult, wt *db.Worktree, tabType leapmuxv1.TabType, tabID, userID string, retiredLiveRow bool) {
+// removeWorktreeIfLastReference drops the closed tab's link and checks deletion eligibility again.
+// The removal lock serializes concurrent closes and database-link cleanup for this worktree.
+// Keep the lock through Git removal. Large worktrees can require a long removal operation.
+// A failed lookup or reference check preserves the directory and reports the failure.
+func (svc *Service) removeWorktreeIfLastReference(result *leapmuxv1.CloseTabResult, wt *db.Worktree, tabType leapmuxv1.TabType, tabID, userID string, retiredLiveRow bool, workingDir string) {
 	mu := svc.worktreeRemovalLock(wt.ID)
 	mu.Lock()
 	defer mu.Unlock()
 
 	// wt was resolved by GetWorktreeForTab BEFORE we held the lock, so a
-	// concurrent REMOVE close (a sibling tab) or the orphan GC may have torn
-	// this worktree down in the meantime. Re-read the row under the lock and
+	// concurrent REMOVE close (a sibling tab) may have removed
+	// this worktree in the meantime. Re-read the row under the lock and
 	// bail if it is gone. This also defends a subtler hazard: the lock is
 	// keyed by worktree id, and the unique partial index on worktree_path
 	// (WHERE deleted_at IS NULL) means a directory cannot be re-adopted under
@@ -332,8 +326,8 @@ func (svc *Service) removeWorktreeIfLastReference(result *leapmuxv1.CloseTabResu
 		setWorktreeRemovalFailed(result, wt, err)
 		return
 	case latest.DeletedAt.Valid:
-		// Already removed by a concurrent close or the orphan GC. Drop our
-		// now-dead link so it isn't left as a strand, and report the terminal
+		// A concurrent close already removed this record. Drop our
+		// now-dead link so it isn't left as a strand, and report the final
 		// state -- the worktree the user asked to delete is gone.
 		svc.unregisterTab(tabType, tabID, userID)
 		result.WorktreeRemoval = leapmuxv1.WorktreeRemovalOutcome_WORKTREE_REMOVAL_OUTCOME_REMOVED
@@ -363,24 +357,23 @@ func (svc *Service) removeWorktreeIfLastReference(result *leapmuxv1.CloseTabResu
 		result.WorktreeRemoval = leapmuxv1.WorktreeRemovalOutcome_WORKTREE_REMOVAL_OUTCOME_STILL_REFERENCED
 		return
 	}
-	// A REMOVE that did not retire a LIVE row is not a user-confirmed delete.
-	// The row was already closed, so whoever sent this is a stale client -- a
-	// peer session that has not converged past a workspace tombstone, or a
-	// DeleteBranchDialog whose snapshot predates a CleanupWorkspace -- and the
-	// dialog it saw described a tab the worker already considers gone. Nobody
-	// was shown this directory's dirty/unpushed state, so apply the same probe
-	// ReapOrphanWorktree uses for its unattended reap.
-	//
-	// The live-row case is deliberately NOT probed: there the user saw the
-	// last-tab dialog with the dirty and unpushed counts and chose Delete
-	// anyway, and second-guessing that would make the button lie.
 	if !retiredLiveRow {
-		if hasWork, reason := svc.worktreeHoldsUnsavedWork(bgCtx(), *wt); hasWork {
-			slog.Info("skipping worktree removal for an already-closed tab, worktree may hold unsaved work",
-				"worktree_id", wt.ID, "worktree_path", wt.WorktreePath, "reason", reason)
-			setWorktreeRemovalRefused(result, wt, "Worktree kept: it may hold unsaved work", reason)
-			return
-		}
+		setWorktreeRemovalRefused(result, wt, "Worktree kept: deletion was not authorized", "The tab was already closed")
+		return
+	}
+	info, err := queryGitPathInfo(bgCtx(), workingDir)
+	if err != nil || !isGitTopLevel(workingDir, info) || !info.IsWorktree || !pathutil.SamePath(pathutil.Canonicalize(info.TopLevel), wt.WorktreePath) {
+		setWorktreeRemovalRefused(result, wt, "Worktree kept: deletion was not authorized", "The tab directory no longer identifies this linked worktree")
+		return
+	}
+	other, err := svc.hasOtherLiveWorktreeTab(bgCtx(), wt.WorktreePath, newOwnedTabKey(tabType, tabID, userID))
+	if err != nil {
+		setWorktreeRemovalFailed(result, wt, err)
+		return
+	}
+	if other {
+		result.WorktreeRemoval = leapmuxv1.WorktreeRemovalOutcome_WORKTREE_REMOVAL_OUTCOME_STILL_REFERENCED
+		return
 	}
 	// Enforce the removal policy HERE, at the site that runs the removal, and
 	// not only at the clients that offered the choice. The clients read the
@@ -410,18 +403,8 @@ func (svc *Service) removeWorktreeIfLastReference(result *leapmuxv1.CloseTabResu
 	result.WorktreeRemoval = leapmuxv1.WorktreeRemovalOutcome_WORKTREE_REMOVAL_OUTCOME_REMOVED
 }
 
-// setWorktreeRemovalRefused marks a removal the worker declined on purpose --
-// as opposed to one it attempted and failed. Reported as FAILED so the UI
-// surfaces it rather than implying the directory is gone.
-//
-// message names WHY this call refused (unsaved work nobody confirmed, or a
-// removal git itself would reject); reason carries the specifics and renders
-// after the message in the close-failure toast.
-//
-// The directory survives, but nothing revisits it: this close already dropped
-// the last worktree_tabs link (that is what `remaining == 0` above means), and
-// ListOrphanCandidateWorktrees requires at least one link, so the orphan
-// reconciler never sees the worktree again. The user cleans it up by hand.
+// setWorktreeRemovalRefused reports a deliberate refusal through the existing failure format.
+// The tab closes, but the directory and branch remain.
 func setWorktreeRemovalRefused(result *leapmuxv1.CloseTabResult, wt *db.Worktree, message, reason string) {
 	result.FailureMessage = message
 	result.FailureDetail = reason
@@ -537,7 +520,8 @@ func (svc *Service) closeAgentTabCommon(userID, agentID string, action leapmuxv1
 	// without waiting for that lock. The start path stops a late process.
 	releaseCloseAdmission := svc.AgentStartup.holdCloseAdmission(agentID)
 	defer releaseCloseAdmission()
-	svc.AgentStartup.cancelAndClear(agentID, closeWorktreeDispositionFor(action, linkPolicy))
+	effectiveAction := svc.startupCloseAction(action, newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_AGENT, agentID, userID), dbAgent.WorkingDir)
+	svc.AgentStartup.cancelAndClear(agentID, closeWorktreeDispositionFor(effectiveAction, linkPolicy))
 	if svc.beforeAgentCloseTeardownFn != nil {
 		svc.beforeAgentCloseTeardownFn(agentID)
 	}
@@ -597,7 +581,7 @@ func (svc *Service) closeAgentTabCommon(userID, agentID string, action leapmuxv1
 			}
 		}
 		svc.Output.CleanupChildAgents(descendants)
-		var anyRetired bool
+		var rootRetired bool
 		// Continue past a transient error on one id so a single failed
 		// CloseAgent does not orphan the remaining descendants. The orphan
 		// reconciler lists only roots, so an unclosed child row is never
@@ -617,9 +601,11 @@ func (svc *Service) closeAgentTabCommon(userID, agentID string, action leapmuxv1
 				}
 				continue
 			}
-			anyRetired = anyRetired || retired
+			if id == agentID {
+				rootRetired = retired
+			}
 		}
-		return anyRetired, firstErr
+		return rootRetired, firstErr
 	}
 	return svc.closeTabCommon(
 		leapmuxv1.TabType_TAB_TYPE_AGENT,
@@ -664,7 +650,8 @@ func (svc *Service) closeTerminalTabCommon(userID, terminalID string, action lea
 			if termErr == nil && !dbTerm.IsQuake {
 				svc.closeQuakeTerminalIfUnused(userID, dbTerm.WorkingDir, leapmuxv1.TabType_TAB_TYPE_TERMINAL, terminalID, linkPolicy)
 			}
-			svc.TerminalStartup.cancelAndClear(terminalID, closeWorktreeDispositionFor(action, linkPolicy))
+			effectiveAction := svc.startupCloseAction(action, newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_TERMINAL, terminalID, userID), dbTerm.WorkingDir)
+			svc.TerminalStartup.cancelAndClear(terminalID, closeWorktreeDispositionFor(effectiveAction, linkPolicy))
 			svc.Terminals.RemoveTerminal(terminalID)
 			svc.clearTerminalBellCoalesce(terminalID)
 			svc.terminalCleanups.closeTab(terminalID)
@@ -725,10 +712,7 @@ func (svc *Service) CloseTabForReconcile(tabType leapmuxv1.TabType, userID, tabI
 	svc.closeTabForConvergence(tabType, userID, tabID, dropWorktreeLink)
 }
 
-// closeTabForDeletedWorkspace is handleCleanupWorkspace's entry point, and the one
-// case that KEEPS the link as a strand: the workspace the directory belonged to is
-// gone, so no user intent for it survives and the strand is what leaves it a GC
-// candidate for the worktree pass to reclaim under its unsaved-work probe.
+// closeTabForDeletedWorkspace preserves Git artifacts and leaves links for database cleanup.
 func (svc *Service) closeTabForDeletedWorkspace(tabType leapmuxv1.TabType, userID, tabID string) {
 	svc.closeTabForConvergence(tabType, userID, tabID, keepWorktreeLinkForReconciler)
 }

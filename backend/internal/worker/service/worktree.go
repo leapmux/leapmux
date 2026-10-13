@@ -514,7 +514,10 @@ func (svc *Service) executeCreateWorktree(ctx context.Context, plan gitModePlan)
 		RepoRoot:     plan.RepoRoot,
 		BranchName:   plan.BranchName,
 	}
-	result := gitModeResult{Rollback: gitModeRollback{CreatedWorktree: rollback}}
+	result := gitModeResult{
+		WorkingDir: plan.WorktreePath,
+		Rollback:   gitModeRollback{CreatedWorktree: rollback},
+	}
 
 	// Logged BEFORE the lock, with the lock key, so a repeat of the
 	// `index.lock: File exists` failure below is readable from the log alone:
@@ -581,7 +584,6 @@ func (svc *Service) executeCreateWorktree(ctx context.Context, plan gitModePlan)
 		return result, fmt.Errorf("failed to track worktree: %w", err)
 	}
 	rollback.WorktreeID = wtID
-	result.WorkingDir = plan.WorktreePath
 	result.WorktreeID = wtID
 	return result, nil
 }
@@ -736,17 +738,10 @@ func (svc *Service) executeUseCurrent(ctx context.Context, plan gitModePlan) (gi
 	return result, nil
 }
 
-// attachWorktreeIfPresent registers the tab→worktree association when
-// `dir` is inside a linked worktree. ensureTrackedWorktree failures
-// bubble out as errors instead of silent Warn logs so the caller can
-// reject OpenAgent rather than ship a tab with no worktree linkage —
-// without the association a later REMOVE-on-close degrades to KEEP.
-//
-// `dir` not being a git repo at all is fine (no association to make).
-// That case is identified by errNotGitRepo, which queryGitPathInfo
-// returns when git says the path isn't in a work tree; ctx cancellation
-// and other unexpected errors are surfaced so the caller can reject the
-// OpenAgent instead of silently shipping an unlinked tab.
+// attachWorktreeIfPresent reads Git metadata for the tab's actual directory.
+// Only a tab at the linked worktree top level creates a tracking record.
+// A nested tab can link to an existing record. Detection never owns an existing artifact.
+// A non-repository directory needs no association. Other reported errors reach the caller.
 func (svc *Service) attachWorktreeIfPresent(ctx context.Context, result *gitModeResult, dir string) error {
 	info, err := queryGitPathInfo(ctx, dir)
 	if err != nil {
@@ -759,6 +754,17 @@ func (svc *Service) attachWorktreeIfPresent(ctx context.Context, result *gitMode
 	// key even when the dir is the main repo itself.
 	result.RepoRoot = info.RepoRoot
 	if !info.IsWorktree {
+		return nil
+	}
+	if !isGitTopLevel(dir, info) {
+		wt, err := svc.Queries.GetWorktreeByPath(ctx, pathutil.Canonicalize(info.TopLevel))
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		result.WorktreeID = wt.ID
 		return nil
 	}
 	wtID, err := svc.ensureTrackedWorktree(ctx, info.TopLevel)
@@ -790,32 +796,11 @@ func (svc *Service) registerTabForWorktree(worktreeID string, tabType leapmuxv1.
 	}
 }
 
-// registerTabForWorktreeAfterClose links a freshly-started tab to its
-// worktree, unless a close already landed during startup and decided the
-// worktree's fate itself. OpenAgent / OpenTerminal return (and the frontend
-// renders the tab) before the startup goroutine reaches the link step, so a
-// close can arrive while the association does not exist yet.
-//
-// What the link means depends on which close arrived, so the decision is the
-// close's (carried as a closeWorktreeDisposition), not this function's:
-//
-//   - keep / remove: skip the link. Writing it would strand a worktree_tabs
-//     row pointing at an already-closed tab, whose ref-count never reaches
-//     zero. Under KEEP the zero-link worktree is exactly what an online KEEP
-//     close leaves; under REMOVE the caller rolls the worktree back instead.
-//   - strand: write it deliberately. The workspace itself was deleted, so the
-//     row is what makes the worktree an orphan-GC candidate.
-//
-// closedDuringStartup is supplied by linkWorktreeAfterPhase0, which ORs the
-// caller's post-phase-0 re-read of the tab row against the registry's "a close
-// recorded a disposition against this startup" flag. Neither source is
-// sufficient alone: the re-read misses a close that has cancelled but not yet
-// committed closed_at, and the registry misses a close that never went through
-// cancelAndClear. A transient re-read error still leaves both false, so we fall
-// through and link; the orphan reconciler's worktree GC reclaims that strand (a
-// worktree whose links are all dead across two consecutive passes is removed).
-// Shared by runAgentStartup / runTerminalStartup so the skip-vs-link decision
-// can't drift between the two paths.
+// registerTabForWorktreeAfterClose links a tab after its Git startup phase.
+// A close can finish before startup writes this link.
+// KEEP and REMOVE skip a link for a closed tab. Workspace deletion leaves a dead link for database cleanup.
+// The caller combines the stored closed state with the startup close disposition.
+// A read failure can leave a dead link, which the reconciler removes without deleting Git artifacts.
 func (svc *Service) registerTabForWorktreeAfterClose(worktreeID string, tabType leapmuxv1.TabType, tabID string, closedDuringStartup bool, disposition closeWorktreeDisposition) {
 	if !closedDuringStartup {
 		svc.registerTabForWorktree(worktreeID, tabType, tabID)
@@ -890,6 +875,26 @@ func (svc *Service) ensureTrackedWorktreeWith(ctx context.Context, worktreePath,
 	// mid-adoption can't abort the loop partway and leave some FILE tabs
 	// unlinked — the same detached-write rationale as registerTabForWorktree.
 	svc.TabPayloads.BackfillWorktreeLinks(bgCtx(), canonicalPath)
+	rows, err := svc.Queries.ListLiveTabWorkingDirs(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, row := range rows {
+		tabType := leapmuxv1.TabType(row.TabType)
+		if tabType != leapmuxv1.TabType_TAB_TYPE_AGENT && tabType != leapmuxv1.TabType_TAB_TYPE_TERMINAL {
+			continue
+		}
+		info, err := queryGitPathInfo(ctx, row.WorkingDir)
+		if err != nil {
+			if !errors.Is(err, errNotGitRepo) {
+				slog.Warn("cannot resolve a live tab during worktree tracking", "tab_id", row.TabID, "error", err)
+			}
+			continue
+		}
+		if pathutil.Canonicalize(info.TopLevel) == canonicalPath {
+			svc.registerTabForWorktree(stored.ID, tabType, row.TabID)
+		}
+	}
 	return stored.ID, nil
 }
 
@@ -925,25 +930,11 @@ func (svc *Service) gitStillListsWorktree(ctx context.Context, wt db.Worktree) b
 	return worktreeEntryFor(entries, wt.WorktreePath) != nil
 }
 
-// removeWorktreeFromDisk force-removes a worktree from disk, deletes its
-// branch if no other worktree still uses it, and soft-deletes the DB row.
-// It returns a non-nil error when `git worktree remove` failed AND the
-// worktree is still there — callers surface that so the user can clean up
-// manually. Branch deletion failures are logged but never bubbled (a retained
-// branch is recoverable manually; mass-deleting unrelated branches is not).
-//
-// The DB row is soft-deleted ONLY on the paths that return nil, so the row
-// outlives a removal that did not happen. That matters because the row is the
-// only handle anything keeps on the directory: ListOrphanCandidateWorktrees
-// filters `deleted_at IS NULL`, so a tombstone for a worktree git still holds
-// strands the directory forever, and a later `git worktree unlock` never brings
-// it back. Keeping the row means the next reconciler pass re-probes it, which
-// also self-heals a removal that failed for a transient reason.
-//
-// The cost of keeping it is that the row still claims worktree_path under the
-// unique partial index, so a re-attach at that path adopts this row instead of
-// minting a fresh one. That is correct: the directory is still there, and it is
-// still this worktree.
+// removeWorktreeFromDisk removes a worktree after its caller authorizes removal.
+// It resolves the current branch because an external checkout can change the recorded branch.
+// The repository index lock protects removal and branch deletion as one operation.
+// Git locks still prevent removal. A failed removal keeps the tracking record.
+// A missing directory counts as removed only when Git no longer lists it.
 func (svc *Service) removeWorktreeFromDisk(wt db.Worktree) error {
 	ctx := bgCtx()
 
@@ -1067,134 +1058,13 @@ func (svc *Service) removeWorktreeFromDisk(wt db.Worktree) error {
 	return fmt.Errorf(`git worktree remove "%s": %w`, wt.WorktreePath, removeErr)
 }
 
-// ReapOrphanWorktree removes a worktree the orphan reconciler determined
-// has no live tab references — every worktree_tabs link is a startup-race
-// strand pointing at a closed/deleted tab. It holds the per-worktree
-// removal lock and re-checks live refs under it, so it can never race a
-// concurrent REMOVE close or a tab that linked the worktree between the
-// reconciler's scan and this call. On success it also drops the dangling
-// strand links: worktrees soft-delete, so the worktree_tabs ON DELETE
-// CASCADE never fires for them, and the rows would otherwise over-count a
-// future worktree adopted at the same path.
-//
-// It refuses to reap a worktree holding uncommitted or unpushed work --- see
-// [Service.worktreeHoldsUnsavedWork]. That guard is what makes an offline
-// close safe: no user ever confirms this removal, so the probe stands in for
-// the last-tab dialog they never saw.
-func (svc *Service) ReapOrphanWorktree(ctx context.Context, wt db.Worktree) {
+// CleanupOrphanWorktreeLinks removes only links whose tabs are no longer live.
+// Neither a missing tab nor a zero link count authorizes Git deletion.
+func (svc *Service) CleanupOrphanWorktreeLinks(ctx context.Context, wt db.Worktree) error {
 	mu := svc.worktreeRemovalLock(wt.ID)
 	mu.Lock()
 	defer mu.Unlock()
-
-	// Re-check under the lock: a close or a late startup link could have
-	// changed the live-ref count since the reconciler scanned.
-	live, err := svc.Queries.CountLiveWorktreeRefs(ctx, wt.ID)
-	if err != nil {
-		slog.Warn("orphan worktree GC: count live refs", "worktree_id", wt.ID, "error", err)
-		return
-	}
-	if live != 0 {
-		// A tab linked it after the scan — no longer an orphan.
-		return
-	}
-	// Never force-remove work the user has not saved anywhere. The reap runs
-	// `git worktree remove --force`, which discards uncommitted changes and
-	// deletes the branch, and it runs WITHOUT the user ever seeing the
-	// last-tab dialog: an offline close pins KEEP, the choice never reaches
-	// this worker, the tab's rows close, and every worktree_tabs link becomes
-	// a strand. So the only thing standing between "your laptop's channel
-	// dropped" and "your uncommitted work is gone" is this probe.
-	//
-	// Deliberately conservative in both failure directions: a probe error
-	// counts as "might hold work" and skips the reap. The worktree keeps its
-	// strand links, so it stays a GC candidate and is re-examined on the next
-	// pass -- committing and pushing the work is enough to let it through.
-	if hasWork, reason := svc.worktreeHoldsUnsavedWork(ctx, wt); hasWork {
-		slog.Info("orphan worktree GC: skipping reap, worktree may hold unsaved work",
-			"worktree_id", wt.ID, "worktree_path", wt.WorktreePath, "reason", reason)
-		return
-	}
-	if err := svc.removeWorktreeFromDisk(wt); err != nil {
-		// `git worktree remove --force` failed (the worktree is locked, or its
-		// .git admin dir is corrupt) and the directory is still on disk. Leave
-		// it, and leave the row: removeWorktreeFromDisk soft-deletes only on
-		// the paths that removed something, and the strand links below are
-		// dropped only on the success path, so this worktree stays a GC
-		// candidate and the next pass re-probes it. A `git worktree unlock`,
-		// or a repair of the admin dir, is then enough to let the reap through.
-		//
-		// The retry costs one pass per interval for a worktree that may never
-		// become removable. That is the price of not stranding one that will:
-		// a tombstone here is permanent, because ListOrphanCandidateWorktrees
-		// filters `deleted_at IS NULL` and nothing ever revisits the row.
-		slog.Warn("orphan worktree GC: `git worktree remove` failed; leaving the directory on disk and keeping the GC candidate",
-			"worktree_id", wt.ID, "worktree_path", wt.WorktreePath, "error", err)
-		return
-	}
-	if err := svc.Queries.DeleteWorktreeTabsByWorktreeID(bgCtx(), wt.ID); err != nil {
-		slog.Warn("orphan worktree GC: drop strand links", "worktree_id", wt.ID, "error", err)
-	}
-	slog.Info("orphan worktree GC: reclaimed unreferenced worktree",
-		"worktree_id", wt.ID, "worktree_path", wt.WorktreePath)
-}
-
-// worktreeHoldsUnsavedWork reports whether wt's directory holds work that
-// only exists there: uncommitted changes, or commits no remote has. The
-// second return value names the reason for the operator log.
-//
-// Fails CLOSED -- every error answers "yes, might hold work". A worktree
-// whose directory is already gone answers "no": there is nothing left to
-// lose, and refusing would strand the DB row forever.
-//
-// The two probes mirror what the last-tab close dialog shows the user
-// (inspectLastTabClose's dirty + unpushed counts), so an offline reap
-// applies the same standard the user would have been asked about.
-func (svc *Service) worktreeHoldsUnsavedWork(ctx context.Context, wt db.Worktree) (bool, string) {
-	if _, err := os.Stat(wt.WorktreePath); os.IsNotExist(err) {
-		return false, ""
-	}
-	dirty, err := isDirty(ctx, wt.WorktreePath)
-	if err != nil {
-		return true, fmt.Sprintf("dirty-tree probe failed: %v", err)
-	}
-	if dirty {
-		return true, "uncommitted changes"
-	}
-	// Probe the LIVE branch, not wt.BranchName. removeWorktreeFromDisk -- the
-	// thing this guard protects -- deliberately re-resolves HEAD for the same
-	// reason (an external `git checkout` from a terminal, IDE, or sibling agent,
-	// or the post-attach checkout in executeCheckoutBranch, moves HEAD without
-	// updating the row), and it is the LIVE branch it will `git branch -D`. A
-	// guard measuring the stale row could clear a branch it never examined.
-	branchName := wt.BranchName
-	if info, infoErr := queryGitPathInfo(ctx, wt.WorktreePath); infoErr == nil {
-		branchName = info.BranchName
-	}
-	status, err := pushStatusForPath(ctx, wt.WorktreePath, branchName)
-	if err != nil {
-		return true, fmt.Sprintf("push-status probe failed: %v", err)
-	}
-	// With no origin at all, "unpushed" is not a meaningful state for this repo
-	// and only dirtiness can save the tree.
-	if !status.OriginExists {
-		return false, ""
-	}
-	// The one question that matters, and the only one that is correct for every
-	// shape: are there commits no remote has? pushStatusForPath answers it for a
-	// tracking branch, for a branch with no upstream, for a detached HEAD, and
-	// for a branch whose upstream was pruned.
-	//
-	// The predicate used to be `!status.UpstreamExists`, an upstream-CONFIG
-	// proxy, which was wrong in both directions: `git worktree add -b` gives a
-	// new branch no upstream by construction, so every worktree LeapMux itself
-	// created was reported as holding work forever and the GC reclaimed nothing
-	// it made; while the pruned-upstream case set RemoteMissing and left
-	// Unpushed at 0, which read as "nothing to lose" and force-removed
-	// local-only commits.
-	if status.Unpushed > 0 {
-		return true, fmt.Sprintf("%d unpushed commit(s)", status.Unpushed)
-	}
-	return false, ""
+	return svc.Queries.DeleteDeadWorktreeTabs(ctx, wt.ID)
 }
 
 func currentCheckoutTarget(ctx context.Context, workingDir string) (*rollbackBranch, error) {
@@ -1220,31 +1090,37 @@ func currentCheckoutTarget(ctx context.Context, workingDir string) (*rollbackBra
 	}, nil
 }
 
-// rollbackGitModeAfterClose is the close-during-startup counterpart of
-// rollbackGitMode. A close is NOT a failed startup: the git-mode mutation
-// succeeded, the user saw the tab, and the close carries an explicit decision
-// about the worktree. Undoing it unconditionally -- which is what this path
-// used to do -- made the outcome of closing a tab depend on whether the close
-// happened to race startup, and `git worktree remove --force` there discarded
-// uncommitted work the user had just been shown a dialog about and asked to
-// KEEP, silently (the rollback only logs when it fails).
-//
-// So only a REMOVE close rolls anything back, and it does so because the close
-// itself could not: the worktree_tabs link it looks up did not exist yet. The
-// other two dispositions leave the directory alone -- keep because the user
-// said so, strand because the orphan reconciler owns it and applies the
-// unsaved-work probe this path has never had.
+// rollbackGitModeAfterClose applies a confirmed close to a worktree that this request created.
+// Detection of an existing worktree supplies no rollback ownership.
+// KEEP and workspace deletion preserve the artifact, even when they interrupt startup.
+// Recheck the directory and live references because the close can precede worktree registration.
 func (svc *Service) rollbackGitModeAfterClose(result gitModeResult, disposition closeWorktreeDisposition) {
 	// A switch with no default so `exhaustive` fails the build if a fourth
 	// disposition is added without deciding what it means here -- the two
 	// no-op cases are spelled out rather than defaulted for that reason.
 	switch disposition {
 	case removeWorktreeOnClose:
-		svc.rollbackGitMode(result)
+		created := result.Rollback.CreatedWorktree
+		if created == nil {
+			return
+		}
+		mu := svc.worktreeRemovalLock(created.WorktreeID)
+		mu.Lock()
+		defer mu.Unlock()
+		info, err := queryGitPathInfo(bgCtx(), result.WorkingDir)
+		if err != nil || !isGitTopLevel(result.WorkingDir, info) || !info.IsWorktree || !pathutil.SamePath(info.TopLevel, created.WorktreePath) {
+			return
+		}
+		other, err := svc.hasOtherLiveWorktreeTab(bgCtx(), created.WorktreePath, ownedTabKey{})
+		if err != nil || other {
+			return
+		}
+		if reason, err := svc.worktreeRemovalBlockedReason(bgCtx(), created.WorktreePath, info); err != nil || reason != "" {
+			return
+		}
+		svc.rollbackCreatedWorktree(*created)
 	case keepWorktreeOnClose, strandWorktreeOnClose:
-		// keep: the user asked to keep the worktree. strand: the workspace is
-		// gone and the orphan reconciler owns the worktree, applying the
-		// unsaved-work probe this path has never had.
+		// Both dispositions preserve Git artifacts. The reconciler cleans dead links only.
 	}
 }
 

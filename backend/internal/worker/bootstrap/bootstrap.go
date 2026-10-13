@@ -402,14 +402,11 @@ func startBackgroundLoops(p Params, svc *service.Service) *service.AgentResumer 
 			return p.Client.ListOwnedTabsForWorker(rctx)
 		},
 		service.OrphanReconcilerOptions{
-			// Reclaim worktrees whose tab links are all startup-race
-			// strands (no live tab references them). Backstops the startup
-			// link guards so a close that raced startup can't leak the
-			// worktree dir.
-			ReapWorktree:      svc.ReapOrphanWorktree,
-			CloseTab:          svc.CloseTabForReconcile,
-			ApplyArchiveState: svc.ApplyTabArchiveState,
-			ResumeAgents:      func(agentIDs []string) { resumer.Schedule(p.Ctx, agentIDs) },
+			// Clean dead tab links. Preserve every Git directory and branch.
+			CleanupWorktreeLinks: svc.CleanupOrphanWorktreeLinks,
+			CloseTab:             svc.CloseTabForReconcile,
+			ApplyArchiveState:    svc.ApplyTabArchiveState,
+			ResumeAgents:         func(agentIDs []string) { resumer.Schedule(p.Ctx, agentIDs) },
 			// The resume sweep's start signal, and the reason it is this and not
 			// "the worker finished wiring". A converged pass is the first moment
 			// two things are BOTH true: the Hub delivered this worker's owner (no

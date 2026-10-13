@@ -514,13 +514,16 @@ CREATE INDEX idx_worktree_tabs_tab ON worktree_tabs(tab_type, tab_id, user_id);
 -- minted by the client as `<kind>-<millis>-<counter>` and is therefore unique
 -- only within the client that made it. Matching tab_id alone would let one row
 -- stand in for another that happens to share an id, marking a strand live and
--- saving a worktree that should be reaped. worktree_tabs.user_id carries the
+-- preserving a dead link that cleanup must remove. worktree_tabs.user_id carries the
 -- link's user ('' for AGENT/TERMINAL links, whose ids never need it; '' never
 -- matches a real worker_tab_payloads row, which always has a non-empty
 -- user_id).
 CREATE VIEW worktree_tab_liveness AS
 SELECT
     t.worktree_id AS worktree_id,
+    t.tab_type AS tab_type,
+    t.tab_id AS tab_id,
+    t.user_id AS user_id,
     CASE WHEN
         EXISTS (SELECT 1 FROM agents a WHERE a.id = t.tab_id AND a.closed_at IS NULL)
         OR EXISTS (SELECT 1 FROM terminals te WHERE te.id = t.tab_id AND te.closed_at IS NULL)

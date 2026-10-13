@@ -255,22 +255,12 @@ func (s *TabPayloadStore) linkTabToWorktree(ctx context.Context, userID, linkDir
 	}
 }
 
-// BackfillWorktreeLinks links any already-open payload-backed tabs that live
-// under worktreePath to a freshly-created worktree row. Such tabs only acquire
-// their worktree_tabs link at registration time, and only when the worktree row
-// already exists (see linkTabToWorktree). A worktree adopted AFTER a file under
-// it was opened — e.g. created with `git worktree add` outside LeapMux, opened
-// as a FILE tab first, then an agent/terminal opens inside it and creates the
-// row — would otherwise leave that tab unlinked. It then wouldn't count toward
-// the worktree's ref-count, so a sibling AGENT/TERMINAL close could
-// `git worktree remove` the dir while the editor is still mounted.
-//
-// Lexically pre-filter to tabs whose link dir sits under worktreePath so we
-// don't probe every tab on the worker, then reuse linkTabToWorktree, which
-// re-probes git and links only dirs that genuinely resolve to a tracked worktree
-// (so a path in a nested submodule/worktree isn't mis-linked). Best-effort:
-// errors are logged, never surfaced — an un-backfilled link degrades to today's
-// behavior (the tab just doesn't ref-count).
+// BackfillWorktreeLinks associates open payload tabs with a newly tracked worktree.
+// An agent or terminal at the worktree top level establishes the tracking record.
+// File tabs protect their physical directory. Image tabs use their recorded working directory, when present.
+// Canonical paths filter candidates before Git identifies each candidate's top level.
+// This keeps a nested repository or submodule separate from the enclosing worktree.
+// The method logs errors. The deletion check also scans live payloads, so an absent link cannot hide a live file.
 func (s *TabPayloadStore) BackfillWorktreeLinks(ctx context.Context, worktreePath string) {
 	rows, err := s.q.ListAllWorkerTabPayloads(ctx)
 	if err != nil {

@@ -63,28 +63,36 @@ DELETE FROM worktree_tabs WHERE tab_type = ? AND tab_id = ? AND user_id = ?;
 -- name: DeleteWorktreeTabsByWorktreeID :exec
 DELETE FROM worktree_tabs WHERE worktree_id = ?;
 
--- Counts a worktree's tab links whose backing tab is still live (see the
--- worktree_tab_liveness view for the definition of "live"). A link to a
--- closed/deleted tab -- a startup-race strand -- has is_live = 0, so a
--- worktree whose links are all dead reports 0 and the orphan-worktree GC
--- can reclaim it.
+-- Count links whose backing tabs remain live. Zero does not authorize Git deletion.
 -- name: CountLiveWorktreeRefs :one
 SELECT COUNT(*) FROM worktree_tab_liveness WHERE worktree_id = ? AND is_live = 1;
 
--- ListOrphanCandidateWorktrees returns every tracked worktree that has at
--- least one tab link but no LIVE one -- i.e. all its links are
--- startup-race strands pointing at closed/deleted tabs (liveness defined by
--- the worktree_tab_liveness view). The has-at-least-one-link guard is
--- deliberate: a worktree with zero links is either mid-creation (the
--- agent/terminal row exists but its link has not been written yet) or
--- freshly adopted, and must never be reclaimed. Callers additionally
--- require a candidate to persist across two consecutive reconciler passes
--- before removing it, so a transient zero-live window during startup or
--- worktree reuse is never mistaken for an orphan.
+-- Select tracked worktrees with dead links and no live links.
+-- The reconciler waits for its grace period before it deletes dead links only.
+-- A worktree with zero links requires no link cleanup. Its tracking row remains.
 -- name: ListOrphanCandidateWorktrees :many
 SELECT w.* FROM worktrees w
 WHERE w.deleted_at IS NULL
   AND EXISTS (SELECT 1 FROM worktree_tab_liveness l WHERE l.worktree_id = w.id)
   AND NOT EXISTS (
     SELECT 1 FROM worktree_tab_liveness l WHERE l.worktree_id = w.id AND l.is_live = 1
+  );
+
+-- name: ListLiveTabWorkingDirs :many
+SELECT tab_type, tab_id, user_id, working_dir
+FROM tab_locations
+WHERE is_quake = 0 AND working_dir <> '';
+
+-- name: DeleteDeadWorktreeTabs :exec
+-- sqlc requires this qualifier because the correlated view exposes worktree_id too.
+DELETE FROM worktree_tabs
+WHERE worktree_tabs.worktree_id = ?
+  AND EXISTS (
+    SELECT 1
+    FROM worktree_tab_liveness l
+    WHERE l.worktree_id = worktree_tabs.worktree_id
+      AND l.tab_type = worktree_tabs.tab_type
+      AND l.tab_id = worktree_tabs.tab_id
+      AND l.user_id = worktree_tabs.user_id
+      AND l.is_live = 0
   );

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -537,6 +538,7 @@ func TestLastTabPromptMessage_CleanWorktree(t *testing.T) {
 // locked worktree is no reason to stop them.
 func TestDiscardRefusalMessage_BlocksOnlyDiscard(t *testing.T) {
 	resp := &leapmuxv1.InspectLastTabCloseResponse{
+		ShouldPrompt:                 true,
 		Target:                       leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_WORKTREE,
 		WorktreeRemovalBlockedReason: "This worktree is locked (held for review). Unlock it with `git worktree unlock` first.",
 	}
@@ -557,12 +559,11 @@ func TestDiscardRefusalMessage_BlocksOnlyDiscard(t *testing.T) {
 // "proceed" -- otherwise every discard would be refused.
 func TestDiscardRefusalMessage_EmptyReasonAllowsDiscard(t *testing.T) {
 	assert.Empty(t, discardRefusalMessage(closeWorktreeDiscard, &leapmuxv1.InspectLastTabCloseResponse{
-		Target: leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_WORKTREE,
+		ShouldPrompt: true,
+		Target:       leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_WORKTREE,
 	}))
-	// The unreachable-worker fallback reaches this with a nil response, and a
-	// generated getter on a nil message answers the zero value -- so the close
-	// proceeds rather than panicking.
-	assert.Empty(t, discardRefusalMessage(closeWorktreeDiscard, nil))
+	// An absent Worker response cannot authorize a discard.
+	assert.NotEmpty(t, discardRefusalMessage(closeWorktreeDiscard, nil))
 }
 
 // closeDispatcher answers the worker-local inner RPCs `tab close` issues, and
@@ -1043,5 +1044,29 @@ func TestTabOpenEnvelope_TabTypeIsCanonicalWhateverTheFlagSpelling(t *testing.T)
 		out := tabOpenEnvelope("tab-1", resolve.TabTypeWireName(tt), "ws-1", "w-1", "tile-1", "p1")
 		assert.Equal(t, "file", out["tab_type"],
 			"the envelope must not echo the %q the user typed", spelling)
+	}
+}
+
+func TestRunTabClose_NestedDiscardRefusesBeforeTombstone(t *testing.T) {
+	for _, discard := range []bool{false, true} {
+		t.Run(fmt.Sprint(discard), func(t *testing.T) {
+			disp := &closeDispatcher{inspect: &leapmuxv1.InspectLastTabCloseResponse{}}
+			hub := &recordingHub{
+				listWorkers:  []string{"worker-A"},
+				materialized: newStateBuilder().workspace("ws-1", "root-1").leafNode("root-1", "", "m").tab("agent-2", "root-1", leapmuxv1.TabType_TAB_TYPE_AGENT).st,
+			}
+			startSpawnIPC(t, hub, disp)
+			args := []string{"--tab-id", "agent-2", "--tab-type", "agent", "--workspace-id", "ws-1", "--worker-id", "worker-A"}
+			if discard {
+				args = append(args, "--worktree", "discard")
+			}
+			_ = withCapturedStdout(t, func() { _ = RunTabClose(fakeCmdCtx{}, args) })
+			if discard {
+				assert.NotContains(t, hub.called(), "SubmitOps")
+				assert.Equal(t, []string{"InspectLastTabClose"}, disp.called())
+			} else {
+				assert.Contains(t, hub.called(), "SubmitOps")
+			}
+		})
 	}
 }

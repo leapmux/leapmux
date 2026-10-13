@@ -67,6 +67,8 @@ var unguardedOwnerFilterQueries = map[string]string{
 	"GetWorktreeForTab":         "worktree_tabs.user_id is '' by design for AGENT/TERMINAL links; see the block comment above",
 	"RemoveWorktreeTab":         "worktree_tabs.user_id is '' by design for AGENT/TERMINAL links; see the block comment above",
 	"DeleteWorktreeTabsByTabID": "worktree_tabs.user_id is '' by design for AGENT/TERMINAL links; see the block comment above",
+	// Cleanup binds no caller ID. The owner comparison matches each stored link to its own liveness row.
+	"DeleteDeadWorktreeTabs": "This maintenance query binds a worktree ID. Its user_id comparison joins stored keys and accepts no caller ID.",
 	// The owner column here is JOIN plumbing, not a caller filter. The sweep
 	// takes no caller id at all (see its entry in unscopedOwnerKeyedQueries);
 	// the only user_id comparison is user_state.user_id = user_op_batches.user_id,

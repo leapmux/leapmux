@@ -18,18 +18,9 @@ func ignoreArchiveState(context.Context, leapmuxv1.WorkspaceArchiveState, []*lea
 
 func ignoreAgentResume([]string) {}
 
-// These exercise the worktree-GC two-pass logic directly via the
-// unexported reconcileOnce (so each call is exactly one pass and the
-// prevOrphanWorktrees state carries between them) with a fake ReapWorktree
-// that records ids and mirrors ReapOrphanWorktree's DB effect without
-// touching disk/git. ReapOrphanWorktree itself (the real removal) is
-// covered by TestReapOrphanWorktree_* in close_tab_test.go.
-
-// The guard is an elapsed-time grace, not a pass counter, so these drive a fake
-// clock. A pass counter was defeated by ReconcileNudge: the hub can fire passes
-// milliseconds apart, so "seen in two consecutive passes" stopped implying "the
-// startup window has elapsed".
-func TestReconcileWorktrees_ReapsStrandOnlyAfterTheGraceWindow(t *testing.T) {
+// These tests advance the injected clock to verify the cleanup grace period.
+// The cleanup hook records worktree IDs and deletes dead links without Git operations.
+func TestReconcileWorktrees_CleansDeadLinksOnlyAfterTheGraceWindow(t *testing.T) {
 	t.Parallel()
 
 	svc, _, _ := setupTestService(t)
@@ -37,16 +28,15 @@ func TestReconcileWorktrees_ReapsStrandOnlyAfterTheGraceWindow(t *testing.T) {
 	ctx := context.Background()
 
 	clock := time.Now()
-	var reaped []string
-	reap := func(rctx context.Context, wt db.Worktree) {
-		reaped = append(reaped, wt.ID)
-		_ = q.DeleteWorktree(rctx, wt.ID)
-		_ = q.DeleteWorktreeTabsByWorktreeID(rctx, wt.ID)
+	var cleaned []string
+	cleanup := func(rctx context.Context, wt db.Worktree) error {
+		cleaned = append(cleaned, wt.ID)
+		return q.DeleteDeadWorktreeTabs(rctx, wt.ID)
 	}
 	rec := NewOrphanReconciler(q, nil, OrphanReconcilerOptions{
-		Now:          func() time.Time { return clock },
-		ReapWorktree: reap,
-		CloseTab:     svc.CloseTabForReconcile,
+		Now:                  func() time.Time { return clock },
+		CleanupWorktreeLinks: cleanup,
+		CloseTab:             svc.CloseTabForReconcile,
 	})
 
 	// Strand: the worktree's only link points at a CLOSED agent (no live
@@ -64,27 +54,27 @@ func TestReconcileWorktrees_ReapsStrandOnlyAfterTheGraceWindow(t *testing.T) {
 	require.NoError(t, q.AddWorktreeTab(ctx, db.AddWorktreeTabParams{WorktreeID: "wt-live", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "a-open"}))
 
 	// Zero-link: freshly created, its tab hasn't linked yet (mid-creation)
-	// — must never be reaped.
+	// — must never be cleaned.
 	_, cwErr = q.CreateWorktree(ctx, db.CreateWorktreeParams{ID: "wt-fresh", WorktreePath: "/r/fresh", RepoRoot: "/r", BranchName: "b"})
 	require.NoError(t, cwErr)
 
 	rec.reconcileOnce(ctx)
-	assert.Empty(t, reaped, "first sighting starts the clock but must not reap")
+	assert.Empty(t, cleaned, "first sighting starts the clock but must not clean links")
 
-	// A burst of nudge-driven passes inside the window must NOT reap: this is
+	// A burst of nudge-driven passes inside the window must not clean links: this is
 	// exactly what a pass counter got wrong.
 	clock = clock.Add(time.Second)
 	rec.reconcileOnce(ctx)
 	rec.reconcileOnce(ctx)
-	assert.Empty(t, reaped, "passes fired inside the grace window must not reap, however many there are")
+	assert.Empty(t, cleaned, "passes fired inside the grace window must not clean links, however many there are")
 
 	clock = clock.Add(orphanWorktreeGrace + time.Second)
 	rec.reconcileOnce(ctx)
-	assert.Equal(t, []string{"wt-strand"}, reaped, "only the strand that stayed orphaned past the grace window is reaped")
+	assert.Equal(t, []string{"wt-strand"}, cleaned, "only the strand that stayed orphaned past the grace window is cleaned")
 
 	strand, err := q.GetWorktreeByID(ctx, "wt-strand")
 	require.NoError(t, err)
-	assert.True(t, strand.DeletedAt.Valid, "strand row soft-deleted")
+	assert.False(t, strand.DeletedAt.Valid, "tracking row survives link cleanup")
 	for _, id := range []string{"wt-live", "wt-fresh"} {
 		row, err := q.GetWorktreeByID(ctx, id)
 		require.NoError(t, err)
@@ -100,12 +90,12 @@ func TestReconcileWorktrees_SparesWorktreeReLinkedDuringTheGraceWindow(t *testin
 	ctx := context.Background()
 
 	clock := time.Now()
-	var reaped []string
-	reap := func(_ context.Context, wt db.Worktree) { reaped = append(reaped, wt.ID) }
+	var cleaned []string
+	cleanup := func(_ context.Context, wt db.Worktree) error { cleaned = append(cleaned, wt.ID); return nil }
 	rec := NewOrphanReconciler(q, nil, OrphanReconcilerOptions{
-		Now:          func() time.Time { return clock },
-		ReapWorktree: reap,
-		CloseTab:     svc.CloseTabForReconcile,
+		Now:                  func() time.Time { return clock },
+		CleanupWorktreeLinks: cleanup,
+		CloseTab:             svc.CloseTabForReconcile,
 	})
 
 	_, cwErr := q.CreateWorktree(ctx, db.CreateWorktreeParams{ID: "wt-reuse", WorktreePath: "/r/reuse", RepoRoot: "/r", BranchName: "b"})
@@ -115,7 +105,7 @@ func TestReconcileWorktrees_SparesWorktreeReLinkedDuringTheGraceWindow(t *testin
 	require.NoError(t, q.AddWorktreeTab(ctx, db.AddWorktreeTabParams{WorktreeID: "wt-reuse", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "a1-closed"}))
 
 	rec.reconcileOnce(ctx)
-	assert.Empty(t, reaped, "first sighting only starts the clock")
+	assert.Empty(t, cleaned, "first sighting only starts the clock")
 
 	// Reuse race: between passes a NEW agent opens in the worktree and
 	// links it before the predecessor's strand is cleaned, so the worktree
@@ -125,8 +115,8 @@ func TestReconcileWorktrees_SparesWorktreeReLinkedDuringTheGraceWindow(t *testin
 
 	clock = clock.Add(orphanWorktreeGrace + time.Second)
 	rec.reconcileOnce(ctx)
-	assert.Empty(t, reaped,
-		"a worktree re-linked by a live tab during the window must not be reaped even once the window elapses")
+	assert.Empty(t, cleaned,
+		"a worktree re-linked by a live tab during the window must not be cleaned even once the window elapses")
 	row, err := q.GetWorktreeByID(ctx, "wt-reuse")
 	require.NoError(t, err)
 	assert.False(t, row.DeletedAt.Valid, "reused worktree must remain")
@@ -298,7 +288,7 @@ func TestReconcileFileTabs_RoutesThroughSharedTeardownHonouringKeep(t *testing.T
 		"an offline close pins KEEP, so the worktree must not become a reap candidate -- the online close keeps it indefinitely")
 }
 
-func TestWorktreeLiveness_FileLeg_IsUserScoped(t *testing.T) {
+func TestWorktreeLiveness_FileLinksAreUserScoped(t *testing.T) {
 	t.Parallel()
 
 	// A file tab id is unique only within a user (worker_tab_payloads is keyed by
@@ -529,4 +519,56 @@ func TestReconcileTabs_RemoveCloseKeepsItsWorktreeLinkAcrossARacingPass(t *testi
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), remaining,
 		"a racing pass must not drop the worktree link the in-flight REMOVE needs")
+}
+
+func TestWorkspaceCleanupPreservesExistingCheckoutAfterGrace(t *testing.T) {
+	t.Parallel()
+	svc, d, w := setupTestService(t)
+	repo, wt, nested := existingCheckoutForSafetyTest(t)
+	wtID, err := svc.ensureTrackedWorktree(context.Background(), wt)
+	require.NoError(t, err)
+	createAgentForPath(t, svc, "cleanup-nested", nested)
+	svc.registerTabForWorktree(wtID, leapmuxv1.TabType_TAB_TYPE_AGENT, "cleanup-nested")
+	dispatch(d, "CleanupWorkspace", &leapmuxv1.CleanupWorkspaceRequest{Tabs: []*leapmuxv1.TabRef{{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "cleanup-nested"}}}, w)
+	require.Empty(t, w.errors)
+	clock := time.Now()
+	rec := NewOrphanReconciler(svc.Queries, nil, OrphanReconcilerOptions{
+		Now: func() time.Time { return clock }, CleanupWorktreeLinks: svc.CleanupOrphanWorktreeLinks, CloseTab: svc.CloseTabForReconcile,
+	})
+	require.True(t, rec.reconcileOnce(context.Background()))
+	clock = clock.Add(orphanWorktreeGrace + time.Second)
+	require.True(t, rec.reconcileOnce(context.Background()))
+	assertExistingCheckoutPreserved(t, repo, wt)
+	links, err := svc.Queries.CountWorktreeTabs(context.Background(), wtID)
+	require.NoError(t, err)
+	assert.Zero(t, links)
+	row, err := svc.Queries.GetWorktreeByID(context.Background(), wtID)
+	require.NoError(t, err)
+	assert.False(t, row.DeletedAt.Valid)
+}
+
+func TestCleanupWorktreeLinksFailurePreventsConvergence(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := setupTestService(t)
+	ctx := context.Background()
+	_, err := svc.Queries.CreateWorktree(ctx, db.CreateWorktreeParams{ID: "cleanup-failure", WorktreePath: "/cleanup-failure", RepoRoot: "/repo", BranchName: "branch"})
+	require.NoError(t, err)
+	svc.registerTabForWorktree("cleanup-failure", leapmuxv1.TabType_TAB_TYPE_AGENT, "dead")
+	clock := time.Now()
+	rec := NewOrphanReconciler(svc.Queries, nil, OrphanReconcilerOptions{
+		Now: func() time.Time { return clock }, CloseTab: svc.CloseTabForReconcile,
+		CleanupWorktreeLinks: svc.CleanupOrphanWorktreeLinks,
+	})
+	require.True(t, rec.reconcileOnce(ctx))
+	clock = clock.Add(orphanWorktreeGrace + time.Second)
+	svc.Queries = db.New(&faultingDBTX{real: svc.DB, failSubstr: "DELETE FROM worktree_tabs"})
+	assert.False(t, rec.reconcileOnce(ctx))
+	count, err := rec.queries.CountWorktreeTabs(ctx, "cleanup-failure")
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), count)
+	svc.Queries = rec.queries
+	assert.True(t, rec.reconcileOnce(ctx))
+	count, err = svc.Queries.CountWorktreeTabs(ctx, "cleanup-failure")
+	require.NoError(t, err)
+	assert.Zero(t, count)
 }

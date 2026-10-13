@@ -216,3 +216,26 @@ func TestCreateWorktree_ConflictReturnsTheWinningRow(t *testing.T) {
 	})
 	assert.Error(t, err, "an id collision is a real bug and must not be swallowed")
 }
+
+func TestWorktreeRemovalCountsAnotherOwnersIdenticalPayloadTab(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := setupTestService(t)
+	repo, wt, nested := existingCheckoutForSafetyTest(t)
+	wtID, err := svc.ensureTrackedWorktree(context.Background(), wt)
+	require.NoError(t, err)
+	for _, owner := range []string{"owner-a", "owner-b"} {
+		require.NoError(t, svc.TabPayloads.Register(context.Background(), RegisterTabPayloadParams{
+			UserID: owner, TabID: "shared", Payload: fileTabPayload(filepath.Join(nested, "committed.txt"), wt),
+		}))
+	}
+	// The directory scan must protect the other owner even without recorded links.
+	require.NoError(t, svc.Queries.DeleteWorktreeTabsByWorktreeID(context.Background(), wtID))
+	require.NoError(t, svc.Queries.AddWorktreeTab(context.Background(), db.AddWorktreeTabParams{
+		WorktreeID: wtID, TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabID: "shared", UserID: "owner-a",
+	}))
+	result := svc.closePayloadTabCommon("owner-a", "shared", leapmuxv1.TabType_TAB_TYPE_FILE, leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE, dropWorktreeLink)
+	assert.Equal(t, leapmuxv1.WorktreeRemovalOutcome_WORKTREE_REMOVAL_OUTCOME_STILL_REFERENCED, result.WorktreeRemoval)
+	_, err = svc.TabPayloads.Get(context.Background(), "owner-b", "shared")
+	require.NoError(t, err)
+	assertExistingCheckoutPreserved(t, repo, wt)
+}

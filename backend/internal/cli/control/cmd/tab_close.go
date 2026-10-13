@@ -118,6 +118,11 @@ func RunTabClose(rawCtx any, args []string) error {
 			}
 		}
 
+		// Refuse an ineligible discard before the tombstone, even when no dialog applies.
+		if msg := discardRefusalMessage(wt, inspected); msg != "" {
+			return control.EmitError("invalid_request", msg)
+		}
+
 		// Busy-tab gate, BEFORE the tombstone for the same reason the discard
 		// refusal is: after the tab is destroyed a refusal has nowhere to go.
 		//
@@ -142,19 +147,6 @@ func RunTabClose(rawCtx any, args []string) error {
 		if inspected.GetShouldPrompt() {
 			if wt == closeWorktreeUnspecified {
 				return control.EmitError("invalid_request", lastTabPromptMessage(inspected))
-			}
-			// Refuse a discard git will not honour, BEFORE the tombstone. The
-			// removal runs after the tab is gone -- the worker stops the
-			// subprocess and deletes the whole directory, which takes seconds --
-			// so a refusal that arrives afterwards reaches a command that
-			// already reported success and a tab that is already destroyed.
-			// The frontend's last-tab dialog disables its own Delete button from
-			// this same field, so both surfaces refuse the same removals for the
-			// same stated reason. An empty reason is not a promise the removal
-			// succeeds; whatever the preflight cannot state still comes back in
-			// worker_close_error below.
-			if msg := discardRefusalMessage(wt, inspected); msg != "" {
-				return control.EmitError("invalid_request", msg)
 			}
 			if wt == closeWorktreePush {
 				if !inspected.GetGitState().GetCanPush() {
@@ -343,6 +335,9 @@ func lastTabPromptMessage(r *leapmuxv1.InspectLastTabCloseResponse) string {
 func discardRefusalMessage(wt tabCloseWorktree, r *leapmuxv1.InspectLastTabCloseResponse) string {
 	if wt != closeWorktreeDiscard {
 		return ""
+	}
+	if !r.GetShouldPrompt() || r.GetTarget() != leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_WORKTREE {
+		return "cannot discard: this tab is not eligible to delete a linked worktree"
 	}
 	reason := r.GetWorktreeRemovalBlockedReason()
 	if reason == "" {
