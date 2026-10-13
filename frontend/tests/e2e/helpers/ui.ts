@@ -1070,13 +1070,14 @@ export async function waitForActiveTabContext(page: Page) {
 }
 
 /**
- * Open a terminal through the tab-bar button, wait until its xterm shows, and return the ID of the new terminal.
+ * Open a terminal through the tab-bar button and return its ID after startup finishes.
  *
  * - Wait for the active tab directory first. The handler reads the directory synchronously. If absent, it opens a
  *   directory dialog without retrying, so an early click creates no terminal.
  * - The new terminal is the terminal tab that was not there before the click. The tab list is optimistic state, so
  *   the wait then requires the xterm of THAT terminal: a bare `.xterm` matches each mounted terminal, and a hidden
  *   terminal tab stays mounted.
+ * - Wait for the startup overlay to disappear before a caller can type input.
  */
 export async function openTerminalViaUI(page: Page): Promise<string> {
   await waitForActiveTabContext(page)
@@ -1089,6 +1090,9 @@ export async function openTerminalViaUI(page: Page): Promise<string> {
     return opened
   }, { message: 'the button opens a terminal tab' }).not.toBe('')
   await expect(terminalXterm(page, opened), 'the new terminal shows its xterm').toBeVisible()
+  // Xterm mounts before startup ends. The overlay blocks input until the terminal can receive it.
+  const startup = page.locator(`[data-terminal-id="${cssAttributeValue(opened)}"] [data-testid="terminal-startup-overlay"]`)
+  await expect(startup, 'the new terminal finishes startup').toHaveCount(0)
   return opened
 }
 
