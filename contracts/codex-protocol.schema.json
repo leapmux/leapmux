@@ -18,7 +18,8 @@
     "rawTools",
     "rawFields",
     "rawNamespaces",
-    "executables"
+    "executables",
+    "execOutput"
   ],
   "$defs": {
     "table": {
@@ -170,6 +171,9 @@
       "$ref": "#/$defs/table"
     },
     "executables": {
+      "$ref": "#/$defs/table"
+    },
+    "execOutput": {
       "$ref": "#/$defs/table"
     }
   }

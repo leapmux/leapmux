@@ -99,7 +99,7 @@ type Agent struct {
 	// codexSpawnPrompts holds Multi-Agent V2 spawn arguments until the matching
 	// subAgentActivity supplies the child thread ID.
 	codexSpawnPrompts map[string]string
-	// Raw exec identity survives duplicate notifications until its turn ends.
+	// Raw execution state uses outputMu. Identities survive duplicates until turn cleanup or eviction.
 	rawExecutionCalls map[codexRawExecutionKey]*codexRawExecutionCall
 	rawExecutionOrder uint64
 	// interruptCalls coalesces concurrent interrupts for one Codex turn. A
@@ -373,12 +373,14 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 	return nil
 }
 
-// Stop retains unfinished model output before it stops the process.
+// Stop stops the process, then retains unfinished model output.
 func (a *Agent) Stop() {
 	a.Process.Stop()
 	a.outputMu.Lock()
 	a.flushAllCodexGeneration(agent.MessageCompletionInterrupted)
 	a.persistIncompleteCodexTools("", true, agent.MessageCompletionInterrupted)
+	clear(a.rawExecutionCalls)
+	a.rawExecutionOrder = 0
 	a.outputMu.Unlock()
 	a.sink.ReportProgress(agent.ResetProgress())
 }
@@ -390,6 +392,8 @@ func (a *Agent) Wait() error {
 	a.outputMu.Lock()
 	a.flushAllCodexGeneration(completion)
 	a.persistIncompleteCodexTools("", true, completion)
+	clear(a.rawExecutionCalls)
+	a.rawExecutionOrder = 0
 	a.outputMu.Unlock()
 	a.sink.ReportProgress(agent.ResetProgress())
 	return err
@@ -834,8 +838,7 @@ func (a *Agent) sendTurnSteer(threadID, turnID string, input []map[string]interf
 // codexSandboxPolicyObject converts a simple sandbox policy string
 // (e.g. "danger-full-access") to the tagged object format expected by
 // turn/start's sandboxPolicy field (e.g. {"type": "dangerFullAccess"}).
-// networkAccess is included as a boolean for workspaceWrite/readOnly or
-// as a string ("restricted"/"enabled") for dangerFullAccess.
+// networkAccess is a boolean for every recognized sandbox policy.
 // Returns nil if the policy is empty or unrecognized.
 func codexSandboxPolicyObject(policy, networkAccess string) map[string]interface{} {
 	var obj map[string]interface{}
