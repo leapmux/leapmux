@@ -1,14 +1,7 @@
 -- name: UpsertTerminal :exec
--- shell is intentionally NOT updated on conflict: it is the binary the
--- terminal was spawned with and never changes for the lifetime of the
--- row. Only the initial OpenTerminal INSERT writes it; subsequent
--- exit/restart upserts pass whatever value (commonly empty) and the
--- existing column survives unchanged.
---
--- is_quake follows the same rule for the same reason: whether a terminal is the
--- quake shell of its working directory is fixed when the row is created. The
--- exit/restart and title-update upserts pass 0, and leaving the column out of
--- DO UPDATE is what stops them demoting a quake terminal to a tab.
+-- Initial records retain the existing shell and quake kind on conflict.
+-- A terminal keeps both properties for its entire lifetime.
+-- Later title and exit writes use dedicated UPDATE statements that preserve closed_at.
 INSERT INTO terminals (id, working_dir, home_dir, shell_start_dir, shell, title, cols, rows, screen, exit_code, is_quake, closed_at)
 VALUES (
   sqlc.arg(id),
@@ -22,10 +15,7 @@ VALUES (
   sqlc.arg(screen),
   sqlc.arg(exit_code),
   sqlc.arg(is_quake),
-  -- The title-update path re-binds a DB-roundtripped closed_at; binding a
-  -- SQLiteNullTime re-canonicalizes it so the rewrite cannot split the column
-  -- into two layouts under the raw-string cleanup sweep. The DO UPDATE below
-  -- reuses the excluded value.
+  -- Initial records can carry a persisted closed state.
   sqlc.narg(closed_at)
 )
 ON CONFLICT (id) DO UPDATE SET
@@ -41,6 +31,21 @@ ON CONFLICT (id) DO UPDATE SET
 
 -- name: GetTerminal :one
 SELECT * FROM terminals WHERE id = ?;
+
+-- Late persistence cannot insert a tab or change its closed state.
+-- Use named parameters throughout. Mixing sqlc.arg with bare placeholders produces incorrect SQLite parameter numbers.
+-- name: SaveTerminalExit :exec
+UPDATE terminals SET
+  title = CASE WHEN title = sqlc.arg(previous_title) THEN sqlc.arg(title) ELSE title END,
+  cols = sqlc.arg(cols), rows = sqlc.arg(rows), screen = sqlc.arg(screen), exit_code = sqlc.arg(exit_code)
+WHERE id = sqlc.arg(id);
+
+-- Read before the runtime snapshot so a concurrent rename cannot be overwritten by that snapshot.
+-- name: GetTerminalExitState :one
+SELECT is_quake, title FROM terminals WHERE id = ?;
+
+-- name: UpdateTerminalTitle :exec
+UPDATE terminals SET title = ? WHERE id = ?;
 
 -- GetTerminalExitCode reads the one column the archive teardown broadcasts.
 -- GetTerminal would answer the same question, and it reads the 100KB screen
@@ -207,7 +212,7 @@ SELECT is_quake, working_dir FROM terminals WHERE id = ?;
 --
 -- is_quake = 0 excludes the quake terminal itself: a shell must never be the
 -- reference that keeps it alive, or it would live for ever. The view reports 0
--- for every non-terminal leg, so this filter costs those legs nothing.
+-- for every non-terminal branch, so this filter costs those branches nothing.
 --
 -- tab_type comes back because the identity is the PAIR. A payload-backed tab id
 -- is minted client-side and unique only within one account, so the id alone

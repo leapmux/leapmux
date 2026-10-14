@@ -29,14 +29,18 @@ import (
 // payload oneof and the directory the worktree link follows; everything else
 // here is shared, and a second store would have to restate all of it.
 type TabPayloadStore struct {
-	q      *db.Queries
-	events *PrivateEventsBus
+	q         *db.Queries
+	events    *PrivateEventsBus
+	lifecycle *WorktreeLifecycle
 }
 
 // NewTabPayloadStore returns a store bound to the worker's DB queries and the
 // bus where snapshot/live events get published.
-func NewTabPayloadStore(q *db.Queries, events *PrivateEventsBus) *TabPayloadStore {
-	return &TabPayloadStore{q: q, events: events}
+func NewTabPayloadStore(q *db.Queries, events *PrivateEventsBus, lifecycle *WorktreeLifecycle) *TabPayloadStore {
+	if lifecycle == nil {
+		panic("NewTabPayloadStore requires a shared worktree lifecycle")
+	}
+	return &TabPayloadStore{q: q, events: events, lifecycle: lifecycle}
 }
 
 // Register persists a (user_id, tab_id, tab_type, payload, working_dir) row and
@@ -60,6 +64,11 @@ func (s *TabPayloadStore) Register(ctx context.Context, p RegisterTabPayloadPara
 		return fmt.Errorf("register tab payload: %w: %w", ErrInvalidTabPayload, err)
 	}
 	stored.WorkingDir = workingDir
+	release, err := s.lifecycle.admit(workingDir, tabPayloadLinkDir(stored))
+	if err != nil {
+		return fmt.Errorf("register tab payload: %w", err)
+	}
+	defer release()
 	blob, err := proto.Marshal(stored)
 	if err != nil {
 		return fmt.Errorf("marshal tab payload: %w", err)
@@ -252,50 +261,6 @@ func (s *TabPayloadStore) linkTabToWorktree(ctx context.Context, userID, linkDir
 	}); err != nil {
 		slog.Warn("link tab to worktree: insert failed",
 			"tab_id", tabID, "worktree_id", wt.ID, "error", err)
-	}
-}
-
-// BackfillWorktreeLinks links any already-open payload-backed tabs that live
-// under worktreePath to a freshly-created worktree row. Such tabs only acquire
-// their worktree_tabs link at registration time, and only when the worktree row
-// already exists (see linkTabToWorktree). A worktree adopted AFTER a file under
-// it was opened — e.g. created with `git worktree add` outside LeapMux, opened
-// as a FILE tab first, then an agent/terminal opens inside it and creates the
-// row — would otherwise leave that tab unlinked. It then wouldn't count toward
-// the worktree's ref-count, so a sibling AGENT/TERMINAL close could
-// `git worktree remove` the dir while the editor is still mounted.
-//
-// Lexically pre-filter to tabs whose link dir sits under worktreePath so we
-// don't probe every tab on the worker, then reuse linkTabToWorktree, which
-// re-probes git and links only dirs that genuinely resolve to a tracked worktree
-// (so a path in a nested submodule/worktree isn't mis-linked). Best-effort:
-// errors are logged, never surfaced — an un-backfilled link degrades to today's
-// behavior (the tab just doesn't ref-count).
-func (s *TabPayloadStore) BackfillWorktreeLinks(ctx context.Context, worktreePath string) {
-	rows, err := s.q.ListAllWorkerTabPayloads(ctx)
-	if err != nil {
-		slog.Warn("backfill worktree links: list tab payloads", "worktree_path", worktreePath, "error", err)
-		return
-	}
-	canonicalWorktree := pathutil.Canonicalize(worktreePath)
-	for _, row := range rows {
-		payload, err := decodeTabPayload(row.Payload)
-		if err != nil {
-			slog.Warn("backfill worktree links: decode payload", "tab_id", row.TabID, "error", err)
-			continue
-		}
-		// The tab's LINK dir on both the filter and the probe, matching what
-		// Register links on -- for a FILE tab that is the file's own directory,
-		// because this is a ref-count on a deletable directory and follows where
-		// the file physically is, not the working_dir the tab inherited from
-		// whatever opened it (see tabPayloadLinkDir). Canonicalize both sides:
-		// the row stores the raw client path, which may differ from the
-		// symlink-resolved worktree path.
-		linkDir := tabPayloadLinkDir(payload)
-		if linkDir == "" || !pathutil.HasPathPrefix(pathutil.Canonicalize(linkDir), canonicalWorktree) {
-			continue
-		}
-		s.linkTabToWorktree(ctx, row.UserID, linkDir, leapmuxv1.TabType(row.TabType), row.TabID)
 	}
 }
 

@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"fmt"
 	"runtime"
 	"strings"
@@ -19,6 +20,70 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
+
+type closeBeforeTerminalWrite struct {
+	db.DBTX
+	queries  *db.Queries
+	tabID    string
+	renameTo string
+	once     sync.Once
+	err      error
+}
+
+func (d *closeBeforeTerminalWrite) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	if strings.Contains(query, "INSERT INTO terminals") || strings.Contains(query, "UPDATE terminals SET") {
+		d.once.Do(func() {
+			if d.renameTo != "" {
+				d.err = d.queries.UpdateTerminalTitle(ctx, db.UpdateTerminalTitleParams{ID: d.tabID, Title: d.renameTo})
+				if d.err != nil {
+					return
+				}
+			}
+			_, d.err = d.queries.CloseTerminal(ctx, d.tabID)
+		})
+		if d.err != nil {
+			return nil, d.err
+		}
+	}
+	return d.DBTX.ExecContext(ctx, query, args...)
+}
+
+func TestLateTerminalWritesPreserveConcurrentClose(t *testing.T) {
+	t.Parallel()
+	for _, writer := range []string{"exit", "title"} {
+		t.Run(writer, func(t *testing.T) {
+			svc, d, w := setupTestService(t)
+			ctx := context.Background()
+			startTestTerminal(t, svc, ctx, "late-writer")
+			testutil.FreezeTerminalOutput(t, svc.Terminals, "late-writer")
+			queries := svc.Queries
+			renameTo := ""
+			if writer == "exit" {
+				renameTo = "Concurrent title"
+			}
+			svc.Queries = db.New(&closeBeforeTerminalWrite{DBTX: svc.DB, queries: queries, tabID: "late-writer", renameTo: renameTo})
+			if writer == "exit" {
+				require.True(t, svc.persistTerminalOnExit("late-writer", 7))
+			} else {
+				dispatch(d, "UpdateTerminalTitle", &leapmuxv1.UpdateTerminalTitleRequest{TerminalId: "late-writer", Title: "Updated title"}, w)
+				require.Empty(t, w.errors)
+			}
+			row, err := queries.GetTerminal(ctx, "late-writer")
+			require.NoError(t, err)
+			assert.True(t, row.ClosedAt.Valid, "a late writer must retain the concurrent close")
+			if writer == "exit" {
+				assert.Equal(t, int64(7), row.ExitCode)
+				assert.Equal(t, "Concurrent title", row.Title)
+			} else {
+				assert.Equal(t, "Updated title", row.Title)
+			}
+			live, err := queries.ListLiveTabWorkingDirs(ctx)
+			require.NoError(t, err)
+			assert.Empty(t, live)
+			svc.Queries = queries
+		})
+	}
+}
 
 // dispatchRestart marshals + dispatches a RestartTerminalRequest with the
 // standard payload used across these tests (workspace ws-1, 80x25). The
@@ -321,7 +386,7 @@ func TestFormatTerminalExitedNotice(t *testing.T) {
 			assert.Contains(t, got, tc.want, "rendered notice must contain the expected exit-code text")
 			assert.True(t, bytes.HasSuffix([]byte(got), terminalExitedNoticeSuffix),
 				"every notice must end with the idempotency suffix")
-			// The notice is bounded above and below by CRLFs so xterm
+			// The notice is limited above and below by CRLFs so xterm
 			// renders it on its own line(s).
 			assert.True(t, strings.HasPrefix(got, "\r\n\r\n"))
 			assert.True(t, strings.HasSuffix(got, "\r\n"))

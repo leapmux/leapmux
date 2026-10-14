@@ -109,11 +109,8 @@ export function worktreeRemovalToast(
     // a removal.
     return 'Worktree kept: LeapMux does not track it'
   }
-  // Tracked, but no close removed it, failed, or reported it still
-  // referenced: every close degraded to KEEP because its worktree link was
-  // already gone (e.g. a startup-race strand the worker's worktree GC will
-  // reclaim). Nothing was removed — say so without implying another tab is
-  // holding it.
+  // No close reported removal or a live reference. The directory remains.
+  // Database cleanup cannot complete a requested Git removal.
   return 'Worktree not removed'
 }
 

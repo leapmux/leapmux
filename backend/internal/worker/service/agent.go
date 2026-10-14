@@ -180,6 +180,14 @@ func registerAgentHandlers(d registrar, svc *Service) {
 				return
 			}
 
+			releaseWorktree, admissionErr := svc.worktreeLifecycle.admit(plan.PlannedWorkingDir)
+			if admissionErr != nil {
+				svc.AgentStartup.abandon(startupHandle)
+				sendFailedPrecondition(sender, admissionErr.Error())
+				return
+			}
+			defer releaseWorktree()
+
 			// Persist the agent row and any prior Worker transcript under a fresh
 			// background context: the DB write must survive a mid-RPC disconnect so a
 			// retry from the same client doesn't observe a half-created agent
@@ -530,7 +538,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			// Projected from agentRow, which the dispatcher already loaded.
 			// Re-reading through LoadGoal would run a second full-row query per
 			// cold chat load for columns that are right here, which is what the
-			// registry leg above avoids by reading agentRow.ParentAgentID.
+			// registry branch above avoids by reading agentRow.ParentAgentID.
 			var goalSnapshot GoalSnapshot
 			var goalActions []leapmuxv1.AgentGoalAction
 			goalLoaded := false
@@ -716,7 +724,7 @@ func registerAgentHandlers(d registrar, svc *Service) {
 				marks = append(marks, &leapmuxv1.MessageMark{Seq: rows[i].Seq, Type: workerdb.StorageEnumValue(rows[i].MarkType)})
 			}
 
-			// Two endpoint seeks for the whole-history bounds. min/max are left UNSET on error
+			// Two endpoint seeks for the whole-history limits. min/max are left UNSET on error
 			// (both together), matching latest_seq's explicit-presence convention (the client
 			// keeps its current value rather than trusting a bogus 0).
 			var minSeq, maxSeq *int64
@@ -1662,7 +1670,7 @@ func (svc *Service) replayAgentCatchUp(
 			// start_tail_seq = the tail when replay began (CatchUpStart's value),
 			// so the client reaps only the (latest_seq, start_tail_seq] phantom band
 			// and exempts live arrivals that raced in during catch-up (seq above it).
-			// No replay_has_more: a bounded replay's gap is closed by the client's
+			// No replay_has_more: a limited replay's gap is closed by the client's
 			// CONTINUOUS tail-reconcile (the loaded window lagging the recorded live
 			// tail), not a per-frame flag.
 			CatchUpComplete: &leapmuxv1.CatchUpComplete{

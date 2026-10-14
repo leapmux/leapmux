@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { useTabOperations } from '~/components/shell/useTabOperations'
 import { MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { WorktreeAction, WorktreeRemovalOutcome } from '~/generated/proto/leapmux/v1/common_pb'
+import { LastTabCloseTarget } from '~/generated/proto/leapmux/v1/git_pb'
 import { TerminalProcessSchema } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { ChannelError } from '~/lib/channelError'
@@ -797,15 +798,16 @@ describe('useTabOperations', () => {
     })
   })
 
-  it('no-prompt path: tab is removed from the store synchronously with KEEP action', async () => {
+  it('closes a nested tab with keep when Git confirmation is absent', async () => {
     await createRoot(async (dispose) => {
       try {
         const { view, ops, handleAgentClose } = setup()
         const tab = view.getById(TabType.AGENT, 'agent-a')!
-        mockInspectLastTabClose.mockResolvedValueOnce({ shouldPrompt: false })
+        mockInspectLastTabClose.mockResolvedValueOnce({ shouldPrompt: false, target: LastTabCloseTarget.NONE })
 
         await ops.handleTabClose(tab)
 
+        expect(ops.lastTabConfirmDialog.value()).toBeNull()
         expect(handleAgentClose).toHaveBeenCalledWith('agent-a', WorktreeAction.KEEP)
       }
       finally {
@@ -868,11 +870,12 @@ describe('useTabOperations', () => {
       try {
         const { view, ops, handleAgentClose } = setup()
         const tab = view.getById(TabType.AGENT, 'agent-a')!
-        mockInspectLastTabClose.mockResolvedValueOnce({ shouldPrompt: true, worktreeId: 'wt-1' })
+        mockInspectLastTabClose.mockResolvedValueOnce({ shouldPrompt: true, target: LastTabCloseTarget.WORKTREE, worktreeId: 'wt-1' })
         handleAgentClose.mockResolvedValue({ worktreeRemoval: WorktreeRemovalOutcome.REMOVED })
 
         const closePromise = ops.handleTabClose(tab)
         await flush()
+        expect(handleAgentClose).not.toHaveBeenCalled()
         ops.lastTabConfirmDialog.value()!.resolve('schedule-delete')
         await closePromise
 
@@ -951,7 +954,7 @@ describe('useTabOperations', () => {
    * The bug this pair guards. `source: 'transport'` covers far more than "the
    * worker is offline": our own hub WebSocket dropping, a WS-open timeout, an
    * E2EE rekey timeout, the session key passing its hard ceiling, and any
-   * non-ChannelError thrown on the send path. The CRDT leg rides a different
+   * non-ChannelError thrown on the send path. The CRDT branch rides a different
    * transport, so it stays healthy and the tombstone would commit -- silently
    * retiring a tab whose worktree may hold uncommitted work, against a machine
    * that is up and answering. Refusing the close (the user can retry) is the

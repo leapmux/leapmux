@@ -311,7 +311,7 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
    * removes the key in its `finally{}` right before calling this for
    * its commit phase, so adding here would leave the key set forever
    * for the normal close flow. The sidebar X button concurrent-click
-   * window is bounded by handleAgentClose / handleTerminalClose /
+   * window is limited by handleAgentClose / handleTerminalClose /
    * revokeTabPayload's own per-tab dedup on the worker side
    * (idempotent close).
    */
@@ -527,7 +527,7 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     //
     // Unreachable-worker fallback: when the worker referenced by the tab no
     // longer exists, isn't reachable, or is merely OFFLINE, the inspection RPC
-    // fails -- with a NotFound-class connect error from the hub leg, or a
+    // fails -- with a NotFound-class connect error from the hub branch, or a
     // transport ChannelError once the hub tears down the channels an offline
     // worker was carrying. Without the carve-out below the user gets a "Failed
     // to prepare tab close" toast and the tab stays put — there's no way to
@@ -535,7 +535,7 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     // owns it is asleep.
     // The CLI's `tab close` does the same fallback (`isWorkerUnreachable` in
     // cmd/preflight.go); keep the CONNECT-CODE halves of these two predicates in
-    // sync (the channel leg is browser-only). Note the CLI's half additionally
+    // sync (the channel branch is browser-only). Note the CLI's half additionally
     // depends on controlipc.relayError preserving the upstream connect code --
     // this side always talks to the hub directly, so it sees the real code
     // either way, which is why the CLI's copy could silently stop matching
@@ -603,16 +603,8 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
       // invariant here is what keeps that true if an await is ever added after
       // the prompt.
       //
-      // Note KEEP is NOT what the worktree gets, and that asymmetry is why
-      // the reap needs its own guard rather than trusting this pin. An ONLINE
-      // KEEP close calls unregisterTab, dropping the worktree to zero links,
-      // which ListOrphanCandidateWorktrees deliberately excludes -- so the
-      // directory survives indefinitely. Here the choice never reaches the
-      // worker, the tab's rows close on their own, and every worktree_tabs
-      // link becomes a strand, which is exactly the shape the reconciler
-      // reaps. Service.worktreeHoldsUnsavedWork is what stops that reap from
-      // discarding uncommitted or unpushed work the user was never asked
-      // about.
+      // Offline reconciliation also preserves Git artifacts. It closes the tab and removes its link.
+      // Dead-link cleanup never deletes the worktree directory or branch.
       warnWorktreeUnreachable(worktreeAction)
       worktreeAction = WorktreeAction.KEEP
     }

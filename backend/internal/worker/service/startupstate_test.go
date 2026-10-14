@@ -21,6 +21,25 @@ func TestNewStartupCoreRejectsNilClock(t *testing.T) {
 	assert.Panics(t, func() { newStartupCore(nil) })
 }
 
+func TestStartupCoreTracksUnfinishedClaimsAfterStatusCompletion(t *testing.T) {
+	t.Parallel()
+	for _, failed := range []bool{false, true} {
+		core := newTestStartupCore(t)
+		assert.False(t, core.hasUnfinishedClaim("tab"))
+		entry := core.begin("tab", func() {})
+		require.NotNil(t, entry)
+		if failed {
+			core.fail(entry, "failed")
+		} else {
+			core.succeed("tab", entry)
+		}
+		assert.True(t, core.hasUnfinishedClaim("tab"), "a completed status can still have an unfinished goroutine")
+		core.finishEntry(entry)
+		assert.False(t, core.hasUnfinishedClaim("tab"))
+		core.cancelAndClear("tab", keepWorktreeOnClose)
+	}
+}
+
 func TestStartupCoreCloseAdmissionCountsOverlappingCloses(t *testing.T) {
 	t.Parallel()
 	core := newTestStartupCore(t)

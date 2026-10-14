@@ -44,7 +44,7 @@ func newOrphanReconcilerHarness(t *testing.T, opts service.OrphanReconcilerOptio
 	q := db.New(sqlDB)
 	bus := service.NewPrivateEventsBus()
 	t.Cleanup(bus.Stop)
-	files := service.NewTabPayloadStore(q, bus)
+	files := service.NewTabPayloadStore(q, bus, &service.WorktreeLifecycle{})
 
 	// Guarded: Run drives listFn on its own goroutine, so a test that changes
 	// the hub's answer while the reconciler is running (to model a channel
@@ -895,7 +895,7 @@ func TestReconcileAgentsSkipsChildAgents(t *testing.T) {
 // boot-time agent resume starts on.
 //
 // Two properties matter and both are easy to lose. The hook must stay SILENT
-// while the hub leg fails -- a hook that fired anyway would start the resume
+// while the hub branch fails -- a hook that fired anyway would start the resume
 // sweep against a hub the worker never reached, which is the state in which a
 // resumed agent cannot be given a control socket at all. And it must also fire
 // from the RETRY case: the startup pass of a worker whose channel is not
@@ -925,7 +925,7 @@ func TestOrphanReconciler_OnConvergedReportsOnlyAConvergedPass(t *testing.T) {
 
 	go rec.Run(ctx)
 
-	// While the hub leg fails, the reconciler must keep retrying and the hook
+	// While the hub branch fails, the reconciler must keep retrying and the hook
 	// must never fire. Wait for the retry backoff to produce several passes, so
 	// this is not merely a read taken before the first one ran.
 	require.Never(t, func() bool {

@@ -1512,7 +1512,7 @@ describe('waitForAgentStarted', () => {
 
 describe('openTerminalViaUI', () => {
   /** A page whose terminal tabs are `t-1` before the click and `idsAfterClick` after it. */
-  function terminalPage(log: string[], idsAfterClick: string[], xtermShows = true): Page {
+  function terminalPage(log: string[], idsAfterClick: string[], xtermShows = true, startupFinished = true): Page {
     let clicked = false
     return opaqueHandle<Page>({
       locator: (selector: string) => {
@@ -1529,6 +1529,8 @@ describe('openTerminalViaUI', () => {
             clicked = true
           } })
         }
+        if (selector.endsWith('[data-testid="terminal-startup-overlay"]'))
+          return assertingLocator('startup', log, () => startupFinished)
         log.push(`xterm of ${selector}`)
         return assertingLocator('xterm', log, () => xtermShows)
       },
@@ -1538,7 +1540,7 @@ describe('openTerminalViaUI', () => {
   it('clicks once the directory is known, and waits for the xterm of the terminal that the click added', async () => {
     const log: string[] = []
     await expect(openTerminalViaUI(terminalPage(log, ['t-1', 't-2']))).resolves.toBe('t-2')
-    expect(log).toEqual(['directory known', 'click', 'xterm of [data-terminal-id="t-2"] .xterm', 'xterm:to.be.visible'])
+    expect(log).toEqual(['directory known', 'click', 'xterm of [data-terminal-id="t-2"] .xterm', 'xterm:to.be.visible', 'startup:to.have.count=0'])
   })
 
   it('finds the new terminal by ID, wherever the tab bar places it', async () => {
@@ -1547,6 +1549,10 @@ describe('openTerminalViaUI', () => {
 
   it('fails when the new terminal shows no xterm', async () => {
     await expect(openTerminalViaUI(terminalPage([], ['t-1', 't-2'], false))).rejects.toThrow('the new terminal shows its xterm')
+  })
+
+  it('does not return a terminal while its startup overlay still blocks input', async () => {
+    await expect(openTerminalViaUI(terminalPage([], ['t-1', 't-2'], true, false))).rejects.toThrow('the new terminal finishes startup')
   })
 })
 

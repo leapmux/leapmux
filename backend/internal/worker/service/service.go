@@ -90,6 +90,10 @@ type Service struct {
 	startTerminalFn        func(context.Context, terminal.Options, terminal.OutputHandler, terminal.ExitHandler) error
 	// beforeAgentCloseTeardownFn holds a close after admission closes in tests.
 	beforeAgentCloseTeardownFn func(string)
+	// beforeWorktreeRemovalFn controls the final removal boundary in tests.
+	beforeWorktreeRemovalFn func()
+	// afterWorktreeBranchProbeFn controls the branch-selection boundary in tests.
+	afterWorktreeBranchProbeFn func()
 	createAgentRecordFn        func(context.Context, db.CreateAgentParams) error
 	getAgentByIDFn             func(context.Context, string) (db.Agent, error)
 	sendControlResponseFn      func(string, []byte) error
@@ -109,7 +113,7 @@ type Service struct {
 	// Do not add a plain, unsynchronised mutable field to this block. ----
 
 	// registeredBy is the user who registered this worker -- the fact
-	// requireWorkerOwner gates every machine-scoped RPC family (file, git, sysinfo,
+	// requireWorkerOwner restricts every machine-scoped RPC family (file, git, sysinfo,
 	// tunnel) on. The Hub delivers it on every Connect (leapmuxv1.WorkerIdentity);
 	// see UpdateRegisteredBy.
 	//
@@ -207,16 +211,11 @@ type Service struct {
 	agentCleanups    cleanupRegistry
 	terminalCleanups cleanupRegistry
 
-	// worktreeRemovalLocks serializes the read-modify-remove sequence
-	// (drop tab link -> count remaining -> `git worktree remove`) per
-	// worktree id. DeleteBranchDialog fires every tab's REMOVE close
-	// concurrently (each on its own dispatcher goroutine), so without
-	// this two closes could both observe CountWorktreeTabs == 0 and both
-	// shell out `git worktree remove` + `git branch -D` on the same repo.
-	// Keyed by worktree id -> *sync.Mutex; different worktrees never
-	// contend. Entries are never deleted (bounded by the worker's
-	// distinct-worktree count over its lifetime).
+	// worktreeRemovalLocks serializes close and link cleanup for each tracked worktree ID.
+	// WorktreeLifecycle separately protects physical directories during tab admission and removal.
+	// Each map retains one lock per distinct key for the life of the Worker.
 	worktreeRemovalLocks sync.Map
+	worktreeLifecycle    WorktreeLifecycle
 	// archiveTabLocks serializes one tab's whole archive lifecycle -- the flag
 	// write AND the process teardown or resume that follows it -- keyed by tab.
 	//
@@ -232,7 +231,7 @@ type Service struct {
 	// subprocess. A global lock made every archive on the worker -- and the
 	// orphan reconciler's whole loop, which runs this teardown inline -- queue
 	// behind one agent that ignores its stop signal. Different tabs never
-	// contend. Entries are never deleted, bounded by the worker's distinct-tab
+	// contend. Entries are never deleted, limited by the worker's distinct-tab
 	// count over its lifetime, exactly like worktreeRemovalLocks above.
 	archiveTabLocks sync.Map
 
@@ -253,10 +252,10 @@ type Service struct {
 	// worktrees share one object store and one `.git/worktrees/` admin tree, so a
 	// checkout inside a worktree and a `worktree add` in the main repo contend on
 	// the same locks. Keying by working dir would let exactly the observed failure
-	// through. Entries are never deleted, bounded by the worker's distinct-repo
+	// through. Entries are never deleted, limited by the worker's distinct-repo
 	// count over its lifetime.
 	//
-	// LOCK ORDER: worktreeRemovalLocks (outer) -> gitIndexLocks (inner).
+	// LOCK ORDER: worktreeRemovalLocks -> worktreeLifecycle -> gitIndexLocks.
 	// closeTabCommon holds the per-worktree removal lock across a sequence that
 	// ends in `git worktree remove`, so the inner acquisition happens there.
 	// Nothing may take a removal lock while holding an index lock.
@@ -608,7 +607,7 @@ func New(cfg Config) *Service {
 	if seed, ok := userid.New(cfg.SeedRegisteredBy); ok {
 		svc.SetRegisteredBy(seed)
 	}
-	svc.TabPayloads = NewTabPayloadStore(svc.Queries, svc.PrivateEvents)
+	svc.TabPayloads = NewTabPayloadStore(svc.Queries, svc.PrivateEvents, &svc.worktreeLifecycle)
 	queueAdapter := &agentInputQueueAdapter{svc: svc}
 	svc.InputQueue = inputqueue.NewManager(inputqueue.NewStore(cfg.DB), queueAdapter, queueAdapter)
 	svc.Output.SetSupportsSteeringFunc(queueAdapter.SupportsSteering)
@@ -1097,14 +1096,13 @@ func formatTerminalExitedNotice(exitCode int) []byte {
 }
 
 // persistTerminalOnExit injects the exit notice into the live terminal's
-// screen buffer (so any subscriber sees it via the next broadcast) and
-// writes the resulting row to the DB so it survives a worker restart.
+// screen buffer and saves the exit snapshot for the next Worker start.
 // Single snapshot pass — the snapshot taken up front feeds both the
 // idempotency check (skip AppendOutput when the notice is already there)
 // and the DB-bound screen, avoiding the redundant RLock + HasSuffix that
 // a separate appendTerminalExitedNotice + persist sequence would do.
 // Falls back to metadata-only when no screen exists (e.g. terminal was
-// killed before rendering) so title/dims are still saved. Returns false
+// killed before rendering) so the title and dimensions are still saved. Returns false
 // when neither snapshot nor meta is available — the row stays untouched.
 //
 // Always writes exitCode into the exit_code column EXCEPT when called
@@ -1114,6 +1112,13 @@ func formatTerminalExitedNotice(exitCode int) []byte {
 // "worker disconnected" sentinel. The non-shutdown caller path (the
 // exit handler itself) never passes exitCodeUnknown.
 func (svc *Service) persistTerminalOnExit(tid string, exitCode int) bool {
+	stored, err := svc.Queries.GetTerminalExitState(bgCtx(), tid)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			slog.Warn("failed to read terminal state before persisting exit", "terminal_id", tid, "error", err)
+		}
+		return false
+	}
 	var (
 		src    terminal.TerminalMeta
 		screen []byte
@@ -1133,28 +1138,6 @@ func (svc *Service) persistTerminalOnExit(tid string, exitCode int) bool {
 		// landed a real exit code, leave the row alone.
 		return true
 	}
-	// Re-bind the row's own closed_at, the way the title-update path does.
-	// UpsertTerminal's DO UPDATE assigns `closed_at = excluded.closed_at`, so
-	// leaving the field at its zero value writes NULL and RESURRECTS a tab the
-	// user just closed: the shutdown sweep snapshots a terminal, a CloseTerminal
-	// handler still on the dispatcher goroutine runs RemoveTerminal +
-	// Queries.CloseTerminal, and this upsert then lands after it. The terminal
-	// comes back as live on the next worker start and its screen blob falls out
-	// of reach of DeleteClosedTerminalsBefore. A read error leaves the field
-	// zero, which is the pre-close state and the same answer as before.
-	//
-	// is_quake comes back on the same read, because the notice below depends on
-	// it and a second query for one column would run on every terminal exit.
-	var (
-		closedAt sqltime.SQLiteNullTime
-		isQuake  bool
-	)
-	if row, err := svc.Queries.GetTerminalQuakeAndClosed(bgCtx(), tid); err == nil {
-		closedAt, isQuake = row.ClosedAt, row.IsQuake
-	} else if !errors.Is(err, sql.ErrNoRows) {
-		slog.Warn("failed to read terminal closed_at before persisting exit",
-			"terminal_id", tid, "error", err)
-	}
 	// A QUAKE terminal gets NO exit notice, and the reason is that the notice
 	// offers an action the quake terminal refuses. "Press Enter to restart"
 	// reaches an open quake panel as ordinary terminal data -- AppendOutput is
@@ -1162,7 +1145,7 @@ func (svc *Service) persistTerminalOnExit(tid string, exitCode int) bool {
 	// both the browser and RestartTerminal then decline the Enter it invites,
 	// because a quake terminal's exit IS its end. Suppressing the text is what
 	// lets the panel retract on a clean screen rather than on a dead offer.
-	if !hasNotice && !isQuake {
+	if !hasNotice && !stored.IsQuake {
 		notice := formatTerminalExitedNotice(exitCode)
 		_ = svc.Terminals.AppendOutput(tid, notice)
 		// SnapshotTerminal returns a freshly-allocated slice (tailBytesLocked),
@@ -1176,22 +1159,12 @@ func (svc *Service) persistTerminalOnExit(tid string, exitCode int) bool {
 	if screen == nil {
 		screen = []byte{}
 	}
-	// Shell column is INSERT-only (see UpsertTerminal SQL): UPDATE
-	// preserves whatever was written at OpenTerminal time, so passing
-	// the zero value here is a no-op on the existing row.
-	params := db.UpsertTerminalParams{
-		ID:            tid,
-		WorkingDir:    src.WorkingDir,
-		HomeDir:       svc.HomeDir,
-		ShellStartDir: src.ShellStartDir,
-		Title:         src.Title,
-		Cols:          int64(src.Cols),
-		Rows:          int64(src.Rows),
-		Screen:        screen,
-		ExitCode:      int64(exitCode),
-		ClosedAt:      closedAt,
+	// Save only the exit snapshot. A concurrent close and a renamed title remain authoritative.
+	params := db.SaveTerminalExitParams{
+		ID: tid, Cols: int64(src.Cols), Rows: int64(src.Rows), Screen: screen, ExitCode: int64(exitCode),
+		Title: src.Title, PreviousTitle: stored.Title,
 	}
-	if err := svc.Queries.UpsertTerminal(bgCtx(), params); err != nil {
+	if err := svc.Queries.SaveTerminalExit(bgCtx(), params); err != nil {
 		slog.Error("failed to save terminal on exit", "terminal_id", tid, "error", err)
 		return false
 	}
@@ -1283,7 +1256,7 @@ func (o ownerOnlyRegistrar) RegisterStream(method string, scope leapmuxv1.Scope,
 // blank-input branch to disagree with UpdateRegisteredBy about. Those two took
 // the same shape and answered a blank id differently -- this one cleared the
 // owner, that one keeps it -- which is a trap for a reader picking between
-// them. New() is the single caller and already gates on a non-empty
+// them. New() is the single caller and already requires a non-empty
 // cfg.SeedRegisteredBy, so the branch this removes was unreachable anyway.
 func (svc *Service) SetRegisteredBy(userID userid.UserID) {
 	if userID.IsZero() {
@@ -1344,8 +1317,7 @@ func (svc *Service) RegisteredBy() userid.UserID {
 	return userid.UserID{}
 }
 
-// requireWorkerOwner gates a handler on the caller being the worker's own
-// registered owner, rejecting everyone else.
+// requireWorkerOwner accepts only the registered owner of this Worker.
 //
 // It is the ONLY authorization axis the Worker has, and that is by construction
 // rather than by simplification: a Worker is registered by exactly one user
@@ -1425,7 +1397,7 @@ func requireWorkerOwnerStream(svc *Service, userID userid.UserID, sender channel
 //     nothing, ungated by design.
 //
 // RegisterAll also binds svc.Cleanup as the drain every RegisterTracked
-// dispatch gates on, so a dispatcher cannot carry this service's tracked
+// dispatch requires, so a dispatcher cannot carry this service's tracked
 // handlers without the WaitGroup Shutdown waits on. Both objects are
 // already arguments here, which is what makes the binding derivable from
 // the call rather than a second one an entry point has to remember: a
@@ -1635,7 +1607,7 @@ func sendInvalidArgument(sender channel.ResponseWriter, msg string) {
 //
 // The sender helpers above emit an InnerRpcResponse, which the frontend routes
 // through pendingRequests. A streaming call's correlation id lives in
-// streamListeners instead. That frame is not lost -- deliverResponse has an arm
+// streamListeners instead. That frame is not lost -- deliverResponse has a branch
 // that hands a unary ERROR on a stream id to the listener's onError -- but it
 // carries no End flag, so a receiver cannot terminate on it generically, and the
 // sibling non-error case IS dropped. Streaming handlers therefore report failure

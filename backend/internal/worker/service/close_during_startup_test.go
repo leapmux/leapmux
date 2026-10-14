@@ -885,6 +885,7 @@ func TestFailStartup_KeepCloseLeavesWorktreeAlone(t *testing.T) {
 			// runs while the startup is still in flight, before closed_at.
 			h := svc.AgentStartup.begin(dbAgent.ID, func() {})
 			svc.AgentStartup.cancelAndClear(dbAgent.ID, tc.disposition)
+			require.NoError(t, closeErr(svc.Queries.CloseAgent(ctx, dbAgent.ID)))
 
 			svc.failAgentStartup(&dbAgent, gm, context.Canceled, nil, h)
 
@@ -995,4 +996,64 @@ func createAgentRowForTest(t *testing.T, svc *Service, workingDir string) db.Age
 	row, err := svc.getAgentByID(context.Background(), agentID)
 	require.NoError(t, err)
 	return row
+}
+
+func TestNestedRemoveDuringStartupCannotAuthorizeRollback(t *testing.T) {
+	t.Parallel()
+	for _, terminal := range []bool{false, true} {
+		t.Run(map[bool]string{false: "agent", true: "terminal"}[terminal], func(t *testing.T) {
+			svc, _, _ := setupTestService(t)
+			checkout := existingCheckoutForSafetyTest(t)
+			nested := checkout.nested
+			var disposition closeWorktreeDisposition
+			if terminal {
+				createTerminalForPath(t, svc, "nested", nested)
+				h := svc.TerminalStartup.begin("nested", func() {})
+				svc.closeTerminalTabCommon("user-1", "nested", leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE, dropWorktreeLink)
+				disposition, _ = svc.TerminalStartup.dispositionOf(h)
+				svc.TerminalStartup.finishEntry(h)
+			} else {
+				createAgentForPath(t, svc, "nested", nested)
+				h := svc.AgentStartup.begin("nested", func() {})
+				svc.closeAgentTabCommon("user-1", "nested", leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE, dropWorktreeLink)
+				disposition, _ = svc.AgentStartup.dispositionOf(h)
+				svc.AgentStartup.finishEntry(h)
+			}
+			assert.Equal(t, keepWorktreeOnClose, disposition)
+			checkout.assertPreserved(t)
+		})
+	}
+}
+
+func TestWorkspaceDeletionDuringStartupPreservesCreatedWorktree(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := setupTestService(t)
+	repo := initRepo(t)
+	gm := createWorktreeForTest(t, svc, repo, "startup-workspace")
+	row := createAgentRowForTest(t, svc, gm.WorkingDir)
+	h := svc.AgentStartup.begin(row.ID, func() {})
+	svc.closeTabForDeletedWorkspace(leapmuxv1.TabType_TAB_TYPE_AGENT, "user-1", row.ID)
+	svc.failAgentStartup(&row, gm, context.Canceled, nil, h)
+	svc.AgentStartup.finishEntry(h)
+	assert.DirExists(t, gm.WorkingDir)
+	assert.True(t, localBranchExists(t, repo, "startup-workspace"))
+}
+
+func TestConfirmedCloseRollsBackNewWorktreeAfterTrackingFailure(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := setupTestService(t)
+	ctx := context.Background()
+	repo := initRepo(t)
+	plan, err := svc.validateGitMode(ctx, repo, &leapmuxv1.OpenAgentRequest{CreateWorktree: true, WorktreeBranch: "tracking-failure"})
+	require.NoError(t, err)
+	queries := svc.Queries
+	svc.Queries = db.New(&faultingDBTX{real: svc.DB, failSubstr: "FROM worktrees WHERE worktree_path"})
+	result, err := svc.executeGitMode(ctx, plan)
+	require.ErrorContains(t, err, "failed to track worktree")
+	svc.Queries = queries
+	require.NotNil(t, result.Rollback.CreatedWorktree)
+	require.DirExists(t, plan.WorktreePath)
+	svc.rollbackGitModeAfterStartup(result, removeWorktreeOnClose, true)
+	assert.NoDirExists(t, plan.WorktreePath)
+	assert.False(t, localBranchExists(t, repo, "tracking-failure"))
 }

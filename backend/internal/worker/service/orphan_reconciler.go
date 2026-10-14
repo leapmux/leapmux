@@ -40,10 +40,8 @@ type OrphanReconciler struct {
 	done     chan struct{}
 	logger   *slog.Logger
 
-	// reapWorktree removes a worktree confirmed orphaned (all its tab
-	// links are strands). Nil disables worktree GC (tests that don't
-	// exercise it leave it unset).
-	reapWorktree func(ctx context.Context, wt db.Worktree)
+	// cleanupWorktreeLinks removes dead database links only. Nil disables this cleanup pass.
+	cleanupWorktreeLinks func(ctx context.Context, wt db.Worktree) error
 
 	// closeTab performs the full per-type teardown for a tab the hub no longer
 	// knows about, so an offline convergence matches an online close. Required at
@@ -59,11 +57,6 @@ type OrphanReconciler struct {
 	resumeAgents      func([]string)
 	// onConverged reports a CONVERGED pass to the caller. Nil disables the report.
 	onConverged func()
-	// prevOrphanWorktrees maps a worktree id to when it FIRST looked orphaned. A
-	// worktree must stay orphaned for orphanWorktreeGrace before
-	// reconcileWorktrees removes it, so a transient zero-live window during
-	// startup or worktree reuse is never mistaken for a strand.
-	prevOrphanWorktrees map[string]time.Time
 	// prevOrphanTabs maps a reconcilable tab to when it FIRST looked absent from
 	// the hub's owned-tab list. A tab must stay absent for tabGrace before any
 	// case tears it down. See orphanTabGrace for the size of that window.
@@ -89,16 +82,15 @@ type OrphanReconcilerOptions struct {
 	// window, because it is what stops a nudge-driven pass from preempting the
 	// close RPC that is still in flight.
 	TabGrace time.Duration
-	// ReapWorktree, when set, enables the orphan-worktree GC pass: it is
-	// invoked for each worktree confirmed orphaned across two consecutive
-	// reconcile passes. Wire it to (*Service).ReapOrphanWorktree.
-	ReapWorktree func(ctx context.Context, wt db.Worktree)
+	// CleanupWorktreeLinks removes dead links with a current liveness check.
+	// Connect it to (*Service).CleanupOrphanWorktreeLinks. It never deletes Git artifacts.
+	CleanupWorktreeLinks func(ctx context.Context, wt db.Worktree) error
 	// CloseTab performs the FULL per-type teardown for a tab the hub no longer
 	// knows about. Wire it to (*Service).CloseTabForReconcile so an offline
 	// convergence tears a tab down exactly as an online close does, and so the
 	// worktree-link policy is chosen once on that side rather than per call here.
 	//
-	// Injected rather than called directly for the same reason ReapWorktree is:
+	// Injected rather than called directly for the same reason CleanupWorktreeLinks is:
 	// the reconciler is deliberately independent of the agent/terminal packages,
 	// which is what lets its tests drive it with narrow fakes.
 	//
@@ -169,32 +161,23 @@ func NewOrphanReconciler(queries *db.Queries, listFn func(ctx context.Context) (
 		panic("service: NewOrphanReconciler requires archive-state apply and resume hooks when it reads Hub tab state")
 	}
 	return &OrphanReconciler{
-		queries:             queries,
-		listFn:              listFn,
-		now:                 opts.Now,
-		interval:            opts.Interval,
-		trigger:             make(chan struct{}, 1),
-		stop:                make(chan struct{}),
-		done:                make(chan struct{}),
-		logger:              opts.Logger,
-		reapWorktree:        opts.ReapWorktree,
-		closeTab:            opts.CloseTab,
-		applyArchiveState:   opts.ApplyArchiveState,
-		resumeAgents:        opts.ResumeAgents,
-		onConverged:         opts.OnConverged,
-		prevOrphanWorktrees: make(map[string]time.Time),
-		prevOrphanTabs:      make(map[ownedTabKey]time.Time),
-		tabGrace:            opts.TabGrace,
+		queries:              queries,
+		listFn:               listFn,
+		now:                  opts.Now,
+		interval:             opts.Interval,
+		trigger:              make(chan struct{}, 1),
+		stop:                 make(chan struct{}),
+		done:                 make(chan struct{}),
+		logger:               opts.Logger,
+		cleanupWorktreeLinks: opts.CleanupWorktreeLinks,
+		closeTab:             opts.CloseTab,
+		applyArchiveState:    opts.ApplyArchiveState,
+		resumeAgents:         opts.ResumeAgents,
+		onConverged:          opts.OnConverged,
+		prevOrphanTabs:       make(map[ownedTabKey]time.Time),
+		tabGrace:             opts.TabGrace,
 	}
 }
-
-// orphanWorktreeGrace is how long a worktree must look orphaned before the GC
-// will reclaim it. It limits the startup window between "the agent/terminal row
-// exists" and "its worktree_tabs link is written", which is one `git worktree add`
-// plus a couple of local SQLite writes -- so this is generous by two orders of
-// magnitude, deliberately: over-waiting costs a directory a later pass reclaims,
-// while under-waiting destroys a live tab's worktree.
-const orphanWorktreeGrace = 2 * time.Minute
 
 // orphanTabGrace is how long a locally open tab must stay absent from the hub's
 // owned-tab list before a case tears it down.
@@ -230,7 +213,7 @@ const reconcileRetryBase = time.Second
 // Run blocks until ctx is cancelled or Stop is called. Run a single
 // pass on start, then run on each interval tick or Trigger().
 //
-// A pass whose hub leg failed is retried on a short backoff rather than left
+// A pass whose hub branch failed is retried on a short backoff rather than left
 // until the next tick. Trigger() is fired on reconnect, which is exactly when
 // the hub RPC is most likely to be answered by a channel that has not settled
 // yet -- and dropping that one shot meant the reconnect converged nothing and
@@ -328,7 +311,7 @@ func newOwnedTabKey(tabType leapmuxv1.TabType, tabID, userID string) ownedTabKey
 	return ownedTabKey{tabType: tabType, tabID: tabID, userID: worktreeTabUserID(tabType, userID)}
 }
 
-// reconcileOnce runs one pass and reports whether EVERY leg it attempted
+// reconcileOnce runs one pass and reports whether EVERY branch it attempted
 // actually completed. False means the pass learned less than it set out to --
 // the hub RPC failed, its response declared no owner scope, or a local SQLite
 // read failed -- so the caller retries on a backoff instead of leaving the
@@ -384,8 +367,8 @@ func (r *OrphanReconciler) reconcileOnce(ctx context.Context) bool {
 	//
 	// A row this Worker cannot classify DROPS OUT of the archive pass and keeps
 	// the rest of the pass. It must not fail the pass: the archive step runs
-	// before all three local legs, so one such row would stop every tab reap,
-	// every worktree reap, and -- because OnConverged never fires -- the boot
+	// before all three local branches, so one such row would stop every tab reap,
+	// every worktree-link cleanup, and -- because OnConverged never fires -- the boot
 	// agent-resume sweep, on every pass for the life of the process. This
 	// matches closeTabForConvergence, which warns and continues for a tab type
 	// it does not know. The reap loops below key on (tab_type, tab_id), so a
@@ -558,36 +541,10 @@ func (r *OrphanReconciler) applyArchiveBucket(ctx context.Context, state leapmux
 	return true
 }
 
-// reconcileWorktrees reclaims worktrees whose tab links are all
-// startup-race strands — no live agent/terminal/file tab references them.
-//
-// A worktree must have looked orphaned for at least orphanWorktreeGrace before it
-// is removed. The transient zero-live windows -- agent/terminal startup, where the
-// row exists before its worktree_tabs link is written, and worktree reuse -- are
-// far shorter than that, so only a genuine strand survives it.
-//
-// The guard used to count PASSES ("seen in two consecutive passes"), justified by
-// those windows being far shorter than the reconcile INTERVAL. ReconcileNudge
-// broke that premise: the hub can now fire passes arbitrarily close together, and
-// Trigger's size-1 buffer only coalesces nudges that arrive DURING a pass, so two
-// passes can run milliseconds apart. Two back-to-back tombstone batches were
-// therefore enough to reap the worktree of an agent still inside its startup
-// window -- and reapWorktree's under-lock re-check sees the same zero, because the
-// link still is not written. Elapsed time is independent of who triggers a pass,
-// so a new trigger cannot silently defeat it again.
-//
-// This is the backstop the startup link guards in runAgentStartup /
-// runTerminalStartup rely on: without it, a close that raced startup — or
-// a link written when getAgentByID/GetTerminalForReady returned a
-// transient error and the guard fell through to link — would strand a
-// worktree_tabs row whose tab is gone and leak the worktree dir forever
-// (reconcileAgents/reconcileTerminals close the tab row but never drop
-// worktree_tabs links).
-// Returns false when the candidate list could not be read, so the caller can
-// retry: leaving it until the next hourly tick is how a worktree survives a
-// transient DB error for an hour after its last tab is gone.
+// reconcileWorktrees cleans dead links without delaying database cleanup.
+// Cleanup checks liveness when it deletes each link. A cleanup error prevents convergence.
 func (r *OrphanReconciler) reconcileWorktrees(ctx context.Context) bool {
-	if r.reapWorktree == nil {
+	if r.cleanupWorktreeLinks == nil {
 		return true
 	}
 	candidates, err := r.queries.ListOrphanCandidateWorktrees(ctx)
@@ -595,28 +552,15 @@ func (r *OrphanReconciler) reconcileWorktrees(ctx context.Context) bool {
 		r.logger.Warn("orphan reconciler: list orphan-candidate worktrees", "err", err)
 		return false
 	}
-	now := r.now()
-	nextOrphans := make(map[string]time.Time, len(candidates))
+	converged := true
 	for _, wt := range candidates {
-		firstSeen, seenBefore := r.prevOrphanWorktrees[wt.ID]
-		if !seenBefore {
-			// First sighting: start its clock and let a later pass decide.
-			nextOrphans[wt.ID] = now
-			continue
+		// SQL checks each link again before deletion. Git artifacts always remain.
+		if err := r.cleanupWorktreeLinks(ctx, wt); err != nil {
+			r.logger.Warn("orphan reconciler: clean worktree links", "worktree_id", wt.ID, "error", err)
+			converged = false
 		}
-		if now.Sub(firstSeen) < orphanWorktreeGrace {
-			// Still inside the grace window -- carry the ORIGINAL timestamp so a
-			// burst of nudge-driven passes cannot keep resetting it.
-			nextOrphans[wt.ID] = firstSeen
-			continue
-		}
-		// Orphaned for longer than any startup or reuse window lasts.
-		// reapWorktree re-checks live refs under the per-worktree lock, and
-		// refuses outright if the tree holds uncommitted or unpushed work.
-		r.reapWorktree(ctx, wt)
 	}
-	r.prevOrphanWorktrees = nextOrphans
-	return true
+	return converged
 }
 
 // reconcileTabPayloads reaps local tab-payload rows the hub no longer lists.
@@ -688,8 +632,7 @@ func (r *OrphanReconciler) reconcileTabPayloads(ctx context.Context, hubByKey ma
 			//
 			// The opposite policy, keepWorktreeLinkForReconciler, belongs to
 			// closeTabForDeletedWorkspace alone: there the workspace is gone, so
-			// no user intent for the directory survives, and the strand is what
-			// leaves it a GC candidate for reapWorktree.
+			// the remaining link becomes a candidate for database cleanup.
 			//
 			// Pinned by
 			// TestReconcileFileTabs_RoutesThroughSharedTeardownHonouringKeep.

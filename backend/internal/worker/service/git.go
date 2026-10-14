@@ -18,7 +18,6 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/channel"
-	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/gitutil"
 	"github.com/leapmux/leapmux/util/pathutil"
 	"github.com/leapmux/leapmux/util/validate"
@@ -43,13 +42,13 @@ var gitFileStatusProbe = struct {
 // enough that a hung helper bites cleanly.
 const pushBranchTimeout = 60 * time.Second
 
-// branchMutationTimeout bounds local-only branch-mutation subprocesses
+// branchMutationTimeout limits local-only branch-mutation subprocesses
 // (`git checkout`, `git checkout -b`, `git branch -D`) so a stuck hook
 // or held lockfile can't leak past the frontend's RPC deadline. These
 // don't hit the network, so 30s is plenty.
 const branchMutationTimeout = 30 * time.Second
 
-// gitReadTimeout bounds read-only git probes (rev-parse, for-each-ref,
+// gitReadTimeout limits read-only git probes (rev-parse, for-each-ref,
 // worktree list, diff stats, push status) used by dialog-open handlers.
 // Belt-and-braces with the inbound RPC ctx (now plumbed through the
 // dispatcher): a client disconnect cancels the subprocess via ctx, and
@@ -612,7 +611,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 		// branch's content, some at the old, index in a partial state).
 		// PushBranch and DeleteBranch mitigate the same hazard the same
 		// way; CheckoutBranch is the parallel case. branchMutationTimeout
-		// still bounds the operation.
+		// still limits the operation.
 		runBranchMutation(bgCtx(), sender, &leapmuxv1.CheckoutBranchResponse{}, func(ctx context.Context) error {
 			// Under the repo's index lock: a checkout and a concurrent
 			// `worktree add` from a starting agent in the same repository would
@@ -714,191 +713,36 @@ func (t *tabGitContext) commitDir() string {
 	return t.repoRoot
 }
 
-// resolveWorktreeBranchName re-derives the branch a worktree is currently
-// on (an external `git checkout` can drift it off the worktrees.branch_name
-// DB row) via a single rev-parse, falling back to the DB-row name on probe
-// failure. The fallback is safe here because inspectLastTabClose only
-// CARRIES the branch label in its response (as the close's branch_name
-// field, surfaced by the CLI output and the frontend dialog when it opens);
-// nothing destructive keys off it. The mutation helpers
-// (removeWorktreeFromDisk) still refuse the fallback because their
-// `git branch -D <stale>` would touch a real branch. `phase` labels the
-// slog.Warn so the fast- and slow-path probes are distinguishable in logs.
-//
-// It also returns the rev-parse result itself, nil on probe failure, so the
-// caller can hand it to the next reader of the same path instead of forking
-// the identical probe again. The removal preflight is that reader.
-func resolveWorktreeBranchName(ctx context.Context, wt db.Worktree, phase string) (string, *gitPathInfo) {
-	branchName := wt.BranchName
-	info, infoErr := queryGitPathInfo(ctx, wt.WorktreePath)
-	if infoErr == nil {
-		return branchOrShortSHA(info), info
-	}
-	if !errors.Is(infoErr, errNotGitRepo) {
-		slog.Warn("inspectLastTabClose "+phase+": HEAD probe failed, falling back to DB-row branch name",
-			"worktree_id", wt.ID, "worktree_path", wt.WorktreePath, "stale_db_branch", wt.BranchName, "error", infoErr)
-	}
-	return branchName, nil
-}
-
-// userID scopes the worktree_tabs lookup below to the tab's owner: FILE links
-// are keyed by (tab_type, tab_id, user_id), so an owner-blind read could resolve
-// a different user's identically-named file tab and answer with the wrong
-// worktree. worktreeTabUserID normalizes AGENT/TERMINAL back to the "" those
-// links were written with.
 func (svc *Service) inspectLastTabClose(ctx context.Context, tabType leapmuxv1.TabType, tabID, userID string) (*leapmuxv1.InspectLastTabCloseResponse, error) {
 	trace := func(phase string) { traceTabClosePhase("inspect", tabID, phase) }
 
-	// Fast path: the only reason to run the expensive git subprocesses
-	// (diffStatsForPath, pushStatusForPath) is to populate the dialog.
-	// If the tab count already tells us no dialog will be shown, we can
-	// answer from the worktree DB row and skip the diff/push forks.
-	//
-	// - Worktree tab with siblings (CountWorktreeTabs > 1) → no prompt.
-	//   Answers from the DB row plus a single rev-parse for the branch
-	//   label (resolveWorktreeBranchName); diff/push are skipped.
-	// - Non-worktree tab with other tabs on the same branch (otherTabs
-	//   > 0) → no prompt. We still need the branch name to do the
-	//   sibling count, so loadTabGitContext still runs; but diff/push
-	//   are skipped.
-	//
-	// When shouldPrompt is false, the frontend ignores diff_* / push_*
-	// fields, so leaving them zero is safe.
-	var tabCtx *tabGitContext
-	if wt, err := svc.Queries.GetWorktreeForTab(ctx, db.GetWorktreeForTabParams{
-		TabType: tabType,
-		TabID:   tabID,
-		UserID:  worktreeTabUserID(tabType, userID),
-	}); err == nil {
-		count, countErr := svc.Queries.CountWorktreeTabs(ctx, wt.ID)
-		trace("worktree_count_done")
-		if countErr != nil {
-			// A transient DB error here drops the multi-tab fast path and
-			// falls through to the slow path, which re-derives the close
-			// decision from git (when the worktree dir is reachable) or
-			// short-circuits at the os.Stat check below (when it isn't).
-			// Log so the degradation is observable — every other tolerant
-			// branch in this function logs its fallback.
-			slog.Warn("inspectLastTabClose: CountWorktreeTabs failed; falling through to slow path",
-				"worktree_id", wt.ID, "error", countErr)
+	tabCtx, err := svc.loadTabGitContext(ctx, tabType, tabID, userID)
+	if err != nil {
+		resp := &leapmuxv1.InspectLastTabCloseResponse{Target: leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_NONE}
+		if !errors.Is(err, errNoTabWorkingDir) {
+			resp.ErrorHint = "working directory is not readable as a git repository; closed without checking for uncommitted changes"
 		}
-		if countErr == nil && count > 1 {
-			// Sibling tabs still hold the worktree, so the close will
-			// not prompt. Re-probe HEAD before sending the response:
-			// the worktrees.branch_name row reflects whatever branch
-			// the worktree was created on, but an external `git
-			// checkout` (terminal, IDE, sibling agent) can change it,
-			// and the CLI / frontend surface the returned branch_name
-			// in their close output even on a non-prompting close.
-			//
-			// Fall back to wt.BranchName on ANY queryGitPathInfo
-			// failure (not just errNotGitRepo): inspectLastTabClose's
-			// output is read-only — the response only carries the
-			// branch name as a label; nothing destructive keys off
-			// it. A transient probe failure (slow disk, permission
-			// flicker, ctx-near-deadline) used to hard-block the
-			// close path with InternalError, leaving the user with
-			// "Worker is unreachable" toasts when a stale label
-			// would have been a far better UX. The mutation helpers
-			// (removeWorktreeFromDisk) STILL refuse the fallback
-			// because their `git branch -D <stale>` would touch a
-			// real branch; the display surface here doesn't.
-			branchName, _ := resolveWorktreeBranchName(ctx, wt, "fast-path")
-			trace("fast_path_taken")
-			return &leapmuxv1.InspectLastTabCloseResponse{
-				Target:       leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_WORKTREE,
-				ShouldPrompt: false,
-				RepoRoot:     wt.RepoRoot,
-				WorktreePath: wt.WorktreePath,
-				WorktreeId:   wt.ID,
-				BranchName:   branchName,
-			}, nil
-		}
-		// Slow path: this is the last tab on the worktree. If the
-		// worktree directory is unreachable — gone (another process, a
-		// manual `git worktree remove`, OS cleanup) OR inaccessible
-		// (EACCES/ENOTDIR on a path component) — there is nothing to
-		// snapshot, so allow the close without a prompt. Any stat error
-		// (not just os.IsNotExist) means `git -C <dir>` cannot run, and
-		// narrowing the check to IsNotExist let EACCES/ENOTDIR fall
-		// through to two deterministically-failing git forks downstream.
-		// This is DELIBERATELY BROADER than removeWorktreeFromDisk's
-		// "already gone" gate (worktree.go: os.IsNotExist → success):
-		// that mutation has already completed its git work by the time
-		// it checks, so IsNotExist is the only "nothing left to do"
-		// signal it needs; this inspect path still has two git forks
-		// ahead of it, so any stat error git cannot survive must short-
-		// circuit. The user is warned via error_hint that the git-state
-		// check was skipped, so real repo trouble is still surfaced
-		// (not just logged server-side).
-		if _, statErr := os.Stat(wt.WorktreePath); statErr != nil {
-			slog.Warn("inspectLastTabClose slow-path: worktree directory unreachable; closing without prompt",
-				"worktree_id", wt.ID, "worktree_path", wt.WorktreePath, "stale_db_branch", wt.BranchName, "error", statErr)
-			trace("worktree_dir_missing")
-			return &leapmuxv1.InspectLastTabCloseResponse{
-				Target:     leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_NONE,
-				RepoRoot:   wt.RepoRoot,
-				BranchName: wt.BranchName,
-				ErrorHint:  "worktree directory is gone or inaccessible; closed without checking for uncommitted changes",
-			}, nil
-		}
-		// The worktree DB row carries RepoRoot / WorktreePath which a
-		// `git checkout` can't change. BranchName, however, can drift
-		// (see comment above), so re-derive it from a single rev-parse
-		// before populating tabCtx. The remaining work skipped vs.
-		// loadTabGitContext is GetWorktreeByPath (DB) and an additional
-		// queryGitPathInfo call's worktree-disposition derivation.
-		// Probe-failure fallback rationale lives on resolveWorktreeBranchName.
-		branchName, pathInfo := resolveWorktreeBranchName(ctx, wt, "slow-path")
-		tabCtx = &tabGitContext{
-			workingDir:   wt.WorktreePath,
-			repoRoot:     wt.RepoRoot,
-			branchName:   branchName,
-			worktreeRoot: wt.WorktreePath,
-			worktreeID:   wt.ID,
-			isWorktree:   true,
-			pathInfo:     pathInfo,
-		}
-		trace("git_ctx_synth")
+		return resp, nil
 	}
-
-	if tabCtx == nil {
-		loaded, err := svc.loadTabGitContext(ctx, tabType, tabID, userID)
-		trace("git_ctx_done")
-		if err != nil {
-			if errors.Is(err, errNoTabWorkingDir) {
-				// This tab never had a working directory -- an IMAGE tab opened
-				// with no originating tab to inherit one from. No git state was
-				// ever in scope for it, so nothing was skipped, and the hint
-				// below would warn about uncommitted changes in a repository
-				// this tab never touched.
-				trace("git_ctx_no_working_dir")
-				return &leapmuxv1.InspectLastTabCloseResponse{
-					Target: leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_NONE,
-				}, nil
+	if !isGitTopLevel(tabCtx.workingDir, tabCtx.pathInfo) {
+		return &leapmuxv1.InspectLastTabCloseResponse{
+			Target:   leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_NONE,
+			RepoRoot: tabCtx.repoRoot, BranchName: tabCtx.branchName, WorkingDir: tabCtx.workingDir,
+		}, nil
+	}
+	if tabCtx.isWorktree {
+		other, err := svc.hasOtherLiveWorktreeTab(ctx, tabCtx.worktreeRoot, newOwnedTabKey(tabType, tabID, userID))
+		if other || err != nil {
+			resp := &leapmuxv1.InspectLastTabCloseResponse{
+				Target:   leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_WORKTREE,
+				RepoRoot: tabCtx.repoRoot, BranchName: tabCtx.branchName,
+				WorkingDir: tabCtx.workingDir, WorktreePath: tabCtx.worktreeRoot, WorktreeId: tabCtx.worktreeID,
 			}
-			// Non-worktree tab whose working dir is not (or no longer)
-			// readable as a git repository. Per "close always wins" we
-			// proceed without a prompt — but this is a degraded close:
-			// the safety dialog (whose sole determinant is the snapshot
-			// we'd run below) is skipped, so the user would silently lose
-			// the uncommitted/unpushed-work warning. Surface an error_hint
-			// so the frontend warns them, matching the os.Stat and
-			// snapshot-failure degraded branches above/below. (loadTabGitContext
-			// collapses both errNotGitRepo and transient probe failures to
-			// this single error; we can't distinguish here, so the hint
-			// covers both. pushBranch — the other loadTabGitContext caller —
-			// is not close-blocking and still returns this error as-is.)
-			workingDir, _ := svc.getTabWorkingDir(ctx, tabType, tabID, userID)
-			slog.Warn("inspectLastTabClose: loadTabGitContext failed; closing without prompt",
-				"tab_type", tabType, "tab_id", tabID, "working_dir", workingDir, "error", err)
-			trace("git_ctx_failed")
-			return &leapmuxv1.InspectLastTabCloseResponse{
-				Target:    leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_NONE,
-				ErrorHint: "working directory is not readable as a git repository; closed without checking for uncommitted changes",
-			}, nil
+			if err != nil {
+				resp.ErrorHint = "could not check live worktree references"
+			}
+			return resp, nil
 		}
-		tabCtx = loaded
 	}
 
 	resp := &leapmuxv1.InspectLastTabCloseResponse{
@@ -939,13 +783,7 @@ func (svc *Service) inspectLastTabClose(ctx context.Context, tabType leapmuxv1.T
 		}
 	}
 
-	// Fail-fast on a cancelled/deadlined ctx before forking the snapshot's
-	// two git subprocesses: resolveWorktreeBranchName / loadTabGitContext
-	// above log-and-swallow probe errors (including ctx errors) to preserve
-	// "close always wins", so a cancelled ctx would otherwise reach here and
-	// pay for diff+push forks that are guaranteed to fail on the same ctx.
-	// Degrade to a no-prompt response with a hint instead. ctx.Err()==nil
-	// is the normal path and skips this block entirely.
+	// Cancellation can arrive after context loading. Skip the snapshot and report the missing check.
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		slog.Warn("inspectLastTabClose: ctx cancelled before snapshot; closing without prompt",
 			"tab_type", tabType, "tab_id", tabID, "error", ctxErr)
@@ -1006,13 +844,17 @@ func (svc *Service) inspectLastTabClose(ctx context.Context, tabType leapmuxv1.T
 
 	if tabCtx.isWorktree {
 		// If we reached here, the worktree fast path didn't apply
-		// (GetWorktreeForTab miss or count <= 1). The last-tab case is
+		// (no other live tab uses this worktree). The last-tab case is
 		// the only reason we still need worktree details in the
 		// response.
 		resp.Target = leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_WORKTREE
 		resp.ShouldPrompt = true
 		resp.WorktreePath = tabCtx.worktreeRoot
 		resp.WorktreeId = tabCtx.worktreeID
+		if tabCtx.worktreeID == "" {
+			resp.WorktreeRemovalBlockedReason = "LeapMux does not track this worktree. Open an agent or terminal at its root before deletion."
+			return resp, nil
+		}
 		// This is the ONE response that offers a worktree removal, so it also
 		// carries whether git would refuse one. Both clients decide from it
 		// while the tab is still open -- the frontend disables its "Delete
@@ -1075,7 +917,7 @@ func (svc *Service) inspectLastTabClose(ctx context.Context, tabType leapmuxv1.T
 // snapshot so the response is correct regardless of the path's worktree
 // disposition. The non-worktree response uses Branches for the dialog's
 // switch-target picker; the worktree response strips Branches because
-// the worktree dialog renders no picker. Both paths are bounded by
+// the worktree dialog renders no picker. Both paths are limited by
 // max(probe, snapshot, branches) instead of summing them.
 func (svc *Service) inspectBranchDeletion(ctx context.Context, dirPath, branchNameHint string) (*leapmuxv1.InspectBranchDeletionResponse, error) {
 	var (
@@ -1120,7 +962,7 @@ func (svc *Service) inspectBranchDeletion(ctx context.Context, dirPath, branchNa
 		// Canonicalize dirPath up front so the hint snapshot runs from
 		// the same path string the post-wait gate compares against
 		// (snapshotStatsPath also returns a canonical path for the
-		// non-worktree case). Without this both arms diverge on a
+		// non-worktree case). Without this both branches diverge on a
 		// symlinked ancestor — `/tmp` -> `/private/tmp` on macOS — and
 		// the gate fires every dialog open even when the hint was
 		// correct, doubling open latency.
@@ -1151,7 +993,7 @@ func (svc *Service) inspectBranchDeletion(ctx context.Context, dirPath, branchNa
 		g.Go(func() error {
 			info, infoErr = queryGitPathInfo(gctx, dirPath)
 			if infoErr != nil {
-				// See the hint-arm goroutine above: returning the raw
+				// See the hint branch goroutine above: returning the raw
 				// error keeps ctx.Canceled and friends distinguishable
 				// from errNotGitRepo at g.Wait().
 				return infoErr
@@ -1802,7 +1644,7 @@ func switchToResolvesTo(parent context.Context, workingDir, switchTo, target str
 // surfaces them as InvalidArgument.
 //
 // `parent` is expected to be a generous outer ctx (e.g. 2*branchMutationTimeout)
-// rather than a single branchMutationTimeout-bounded ctx: each phase
+// rather than a single branchMutationTimeout-limited ctx: each phase
 // applies its own branchMutationTimeout, and sharing a single 30s budget
 // across checkout + delete would let a slow first phase starve the
 // second.
@@ -2057,13 +1899,7 @@ func (svc *Service) loadGitContextForDir(ctx context.Context, workingDir string)
 		wt, err := svc.Queries.GetWorktreeByPath(ctx, worktreeRoot)
 		if err == nil {
 			tabCtx.worktreeID = wt.ID
-		} else if errors.Is(err, sql.ErrNoRows) {
-			wtID, err := svc.ensureTrackedWorktree(ctx, worktreeRoot)
-			if err != nil {
-				return nil, err
-			}
-			tabCtx.worktreeID = wtID
-		} else {
+		} else if !errors.Is(err, sql.ErrNoRows) {
 			return nil, err
 		}
 	}
@@ -2196,7 +2032,7 @@ func (svc *Service) hasOtherNonWorktreeTabOnBranch(ctx context.Context, tabType 
 	// function rather than passed through. `getTabWorkingDir` tells AGENT/TERMINAL
 	// callers they may pass "" -- their ids are globally unique -- and this scan
 	// takes that same string. Bound blank, `user_id = ?` would match no file-tab
-	// row (the table's CHECK forbids a blank owner), so the FILE arm would
+	// row (the table's CHECK forbids a blank owner), so the FILE branch would
 	// silently report "no siblings": closing the last agent on a branch would
 	// announce itself as the last tab with the user's file tab still open on it,
 	// and offer to delete the branch.
@@ -2295,9 +2131,9 @@ func (svc *Service) collectTabDirs(ctx context.Context, query string, args []any
 // admit every parent directory of a tab's dir, up to and including the
 // filesystem root.
 func (svc *Service) userOwnsLiveTabInDir(ctx context.Context, owner userid.UserID, workingDir string) (bool, error) {
-	// `user_id = ''` is the agent/terminal arm: those ids are globally unique
+	// `user_id = ''` is the agent/terminal branch: those ids are globally unique
 	// and carry no owner in `tab_locations` (see the view's doc), and the git
-	// handlers are already gated to the worker's owner, so matching them here is
+	// handlers already require the worker's owner, so matching them here is
 	// the same reach a tab id gave.
 	var n int
 	err := svc.DB.QueryRowContext(ctx, `
@@ -2321,7 +2157,7 @@ func (svc *Service) userOwnsLiveTabInDir(ctx context.Context, owner userid.UserI
 // errgroup short-circuits when a sibling found a hit), every joined
 // waiter receives context.Canceled even though their own ctx is alive.
 // `lookup` detects that mismatch and re-runs the probe with its own
-// ctx — so a waiter never inherits a leader's cancellation. Bounded
+// ctx — so a waiter never inherits a leader's cancellation. Limited
 // retry count prevents a pathological storm of cancelling siblings
 // from spinning forever.
 type branchInfoProbe struct {
@@ -2664,7 +2500,7 @@ func pushStatusForPath(ctx context.Context, dir, branchName string) (pushStatus,
 		return s, nil
 	}
 
-	// Same swallow-on-error hazard as the no-upstream arm above: a silent
+	// Same swallow-on-error hazard as the no-upstream branch above: a silent
 	// failure here would leave Unpushed=0 + UpstreamExists=true, which the
 	// frontend renders as "no unpushed commits" over a real git failure.
 	out, revErr := gitutil.Output(ctx, dir, "rev-list", "--count", upstreamRef+"..HEAD")
@@ -2763,7 +2599,7 @@ func isUntrackedDirPath(path string) bool {
 // deleted file, a collapsed untracked directory, and a race with an agent
 // removing the file mid-refresh. See the field comments in common.proto for
 // why unset rather than zero.
-// The sweep is BOUNDED as a whole, because os.Stat ignores the handler's
+// The sweep is LIMITED as a whole, because os.Stat ignores the handler's
 // context: the RPC's context.WithTimeout cannot interrupt an in-flight stat, so
 // a stalled mount (NFS, SMB, a macOS TCC-protected path) would hang the handler
 // with no reply and leak one goroutine per refresh. See statSweepTimeout.
@@ -2771,7 +2607,7 @@ func annotateFileStats(topLevel string, files []*leapmuxv1.GitFileStatusEntry) {
 	annotateFileStatsWithTimeout(topLevel, files, statSweepTimeout, os.Stat)
 }
 
-// statSweepTimeout bounds the whole stat sweep, not one entry.
+// statSweepTimeout limits the whole stat sweep, not one entry.
 //
 // These stats are decorative: `size` and `mod_time` carry explicit presence
 // precisely so "unknown" is representable, and the frontend already sorts an

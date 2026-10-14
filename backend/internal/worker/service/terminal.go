@@ -224,6 +224,14 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 				return
 			}
 
+			releaseWorktree, admissionErr := svc.worktreeLifecycle.admit(plan.PlannedWorkingDir)
+			if admissionErr != nil {
+				svc.TerminalStartup.abandon(startupHandle)
+				sendFailedPrecondition(sender, admissionErr.Error())
+				return
+			}
+			defer releaseWorktree()
+
 			// Persist the initial terminal record using the planned working
 			// dir, so tab sync and post-refresh reads see the eventual path
 			// even before git-mode execution creates the worktree.
@@ -535,24 +543,9 @@ func registerTerminalHandlers(d registrar, svc *Service) {
 			}
 
 			svc.Terminals.UpdateTitle(terminalID, title)
-			screen := dbTerm.Screen
-			if screen == nil {
-				screen = []byte{}
-			}
-
-			// Persist to DB so it survives restarts.
-			if err := svc.Queries.UpsertTerminal(bgCtx(), db.UpsertTerminalParams{
-				ID:            dbTerm.ID,
-				WorkingDir:    dbTerm.WorkingDir,
-				HomeDir:       dbTerm.HomeDir,
-				ShellStartDir: dbTerm.ShellStartDir,
-				Shell:         dbTerm.Shell,
-				Title:         title,
-				Cols:          dbTerm.Cols,
-				Rows:          dbTerm.Rows,
-				Screen:        screen,
-				ExitCode:      dbTerm.ExitCode,
-				ClosedAt:      dbTerm.ClosedAt,
+			// Update only the title. A concurrent close owns closed_at.
+			if err := svc.Queries.UpdateTerminalTitle(bgCtx(), db.UpdateTerminalTitleParams{
+				ID: dbTerm.ID, Title: title,
 			}); err != nil {
 				slog.Error("failed to update terminal title", "terminal_id", terminalID, "error", err)
 				sendInternalError(sender, "failed to update terminal title")

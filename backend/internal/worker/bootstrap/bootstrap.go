@@ -44,7 +44,7 @@ import (
 // Every field is supplied by both entry points except SeedRegisteredBy,
 // which only the in-process launchers can read from their own DB.
 type Params struct {
-	// Ctx bounds every background loop Wire starts.
+	// Ctx limits every background loop Wire starts.
 	Ctx    context.Context
 	Client *hub.Client
 	DB     *sql.DB
@@ -116,7 +116,7 @@ type Wiring struct {
 // An entry point that tore the stream down straight afterwards raced the
 // drain goroutine and lost under load, and the loss is invisible:
 // sendq.Writer.Close discards the queue and logs nothing, so the browser's
-// terminal simply stops. FlushSends bounds the teardown behind the drain.
+// terminal simply stops. FlushSends limits the teardown behind the drain.
 func (w *Wiring) Shutdown() {
 	w.Service.Shutdown()
 	if w.client == nil {
@@ -293,7 +293,7 @@ func newControlIPCFactory(p Params, svc *service.Service, dispatcher *channel.Di
 		// whose access token has expired AND whose refcount fell to zero
 		// through an abnormal Release path. The healthy lifecycle
 		// (Acquire -> GetBearer -> Release) already keeps the cache
-		// bounded; this catches orphans.
+		// limited; this catches orphans.
 		go delegation.RunJanitor(p.Ctx, time.Hour)
 		cwClient = crossworker.New(p.Ctx, p.Client.Endpoint(), pins, delegation)
 	}
@@ -402,14 +402,11 @@ func startBackgroundLoops(p Params, svc *service.Service) *service.AgentResumer 
 			return p.Client.ListOwnedTabsForWorker(rctx)
 		},
 		service.OrphanReconcilerOptions{
-			// Reclaim worktrees whose tab links are all startup-race
-			// strands (no live tab references them). Backstops the startup
-			// link guards so a close that raced startup can't leak the
-			// worktree dir.
-			ReapWorktree:      svc.ReapOrphanWorktree,
-			CloseTab:          svc.CloseTabForReconcile,
-			ApplyArchiveState: svc.ApplyTabArchiveState,
-			ResumeAgents:      func(agentIDs []string) { resumer.Schedule(p.Ctx, agentIDs) },
+			// Clean dead tab links. Preserve every Git directory and branch.
+			CleanupWorktreeLinks: svc.CleanupOrphanWorktreeLinks,
+			CloseTab:             svc.CloseTabForReconcile,
+			ApplyArchiveState:    svc.ApplyTabArchiveState,
+			ResumeAgents:         func(agentIDs []string) { resumer.Schedule(p.Ctx, agentIDs) },
 			// The resume sweep's start signal, and the reason it is this and not
 			// "the worker finished wiring". A converged pass is the first moment
 			// two things are BOTH true: the Hub delivered this worker's owner (no
@@ -443,7 +440,7 @@ func startBackgroundLoops(p Params, svc *service.Service) *service.AgentResumer 
 	// Nudge the reconciler the moment the Hub names this worker's owner.
 	//
 	// Without it the sweep's own precondition can outlive its retry. A converged
-	// pass is reachable before the owner arrives (the hub leg needs only the auth
+	// pass is reachable before the owner arrives (the hub branch needs only the auth
 	// token, which Connect sets before it dials the stream that carries
 	// WorkerIdentity), and a converged pass DISARMS the retry backoff. So the
 	// sweep refuses for a zero owner, the reconciler stops retrying, and the next
