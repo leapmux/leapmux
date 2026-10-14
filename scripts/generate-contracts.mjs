@@ -2421,6 +2421,7 @@ export const PROVIDER_PROTOCOLS = [
       { key: 'rawTools', goTable: 'RawTool', tsTable: 'RAW_TOOL', tsType: 'CodexRawTool', doc: 'native raw tool names' },
       { key: 'rawNamespaces', goTable: 'RawNamespace', tsTable: 'RAW_NAMESPACE', tsType: 'CodexRawNamespace', doc: 'native raw tool namespaces' },
       { key: 'rawFields', goTable: 'RawField', tsTable: 'RAW_FIELD', tsType: 'CodexRawField', doc: 'native raw response item fields' },
+      { key: 'execOutput', goTable: 'ExecOutput', tsTable: 'EXEC_OUTPUT', tsType: 'CodexExecOutputValue', doc: 'native execution output values that storage filtering and browser extraction share' },
       { key: 'methods', frameKind: 'name', goTable: 'Method', tsTable: 'METHOD', tsType: 'CodexMethod', doc: 'JSON-RPC method names both sides dispatch on' },
       { key: 'options', goTable: 'Option', tsTable: 'OPTION', tsType: 'CodexOption', owner: 'LeapMux chose these', doc: 'option-group ids for the Codex axes both sides address' },
       { key: 'optionDefaults', goTable: 'OptionDefault', tsTable: 'OPTION_DEFAULT', tsType: 'CodexOptionDefault', defaultsFor: 'options', doc: 'the value each of those axes takes when the agent row stores none' },

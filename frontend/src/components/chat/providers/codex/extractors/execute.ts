@@ -5,7 +5,7 @@ import type { ToolSpanContext } from '~/components/chat/rowExtractionTypes'
 import type { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ImageResultSource } from '~/lib/imageBlocks'
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import { CODEX_ITEM, CODEX_ITEM_FIELD, CODEX_RAW_FIELD, CODEX_RAW_ITEM, CODEX_RAW_NAMESPACE, CODEX_RAW_TOOL } from '~/generated/contracts/codex-protocol'
+import { CODEX_EXEC_OUTPUT, CODEX_ITEM, CODEX_ITEM_FIELD, CODEX_RAW_FIELD, CODEX_RAW_ITEM, CODEX_RAW_NAMESPACE, CODEX_RAW_TOOL } from '~/generated/contracts/codex-protocol'
 import { parseImageBlock } from '~/lib/imageBlocks'
 import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
 import { createToolCall } from '../../../model/createToolCall'
@@ -74,7 +74,7 @@ interface CodexRawExecOutput {
 /** Read the native header before script text. A status line that the script prints cannot change the outcome. */
 function codexRawExecOutput(item: Record<string, unknown>): CodexRawExecOutput | null {
   const output = item[CODEX_RAW_FIELD.Output]
-  const blocks: unknown[] | null = typeof output === 'string' ? [{ type: CODEX_EXEC_CONTENT.Text, text: output }] : Array.isArray(output) ? output : null
+  const blocks: unknown[] | null = typeof output === 'string' ? [{ type: CODEX_EXEC_OUTPUT.TextContent, text: output }] : Array.isArray(output) ? output : null
   if (!blocks)
     return null
   const text: string[] = []
@@ -82,7 +82,7 @@ function codexRawExecOutput(item: Record<string, unknown>): CodexRawExecOutput |
   for (const block of blocks) {
     if (!isObject(block))
       continue
-    if (block.type === CODEX_EXEC_CONTENT.Text && typeof block.text === 'string') {
+    if (block.type === CODEX_EXEC_OUTPUT.TextContent && typeof block.text === 'string') {
       text.push(block.text)
     }
     else if (block.type === CODEX_EXEC_CONTENT.Image) {
@@ -93,11 +93,11 @@ function codexRawExecOutput(item: Record<string, unknown>): CodexRawExecOutput |
     }
   }
   const first = blocks[0]
-  const header = isObject(first) && first.type === CODEX_EXEC_CONTENT.Text && typeof first.text === 'string' ? first.text : ''
+  const header = isObject(first) && first.type === CODEX_EXEC_OUTPUT.TextContent && typeof first.text === 'string' ? first.text : ''
   const firstLine = header.split('\n', 1)[0]
   const timing = /^Wall time (\d+(?:\.\d+)?) seconds(?: \(code-mode [\d.]+ seconds; overhead -?[\d.]+ seconds\))?\nOutput:\n/.exec(header.slice(header.indexOf('\n') + 1))
   const seconds = timing?.[1] === undefined ? undefined : Number(timing[1])
-  const recognized = (firstLine === CODEX_EXEC_HEADER.Failed || firstLine === CODEX_EXEC_HEADER.Completed) && timing !== null
+  const recognized = (firstLine === CODEX_EXEC_HEADER.Failed || firstLine === CODEX_EXEC_OUTPUT.CompletedHeader) && timing !== null
   let body = text
   if (recognized && timing) {
     const remainder = header.slice(header.indexOf('\n') + 1 + timing[0].length)

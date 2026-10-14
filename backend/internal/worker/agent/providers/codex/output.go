@@ -212,6 +212,7 @@ func (a *Agent) handleTurnStarted(params json.RawMessage) {
 }
 
 func (a *Agent) handleMainTurnStarted(turnID string) {
+	a.clearCodexRawExecutionsBeforeTurn(a.currentThreadID(), turnID)
 	a.Mu.Lock()
 	if a.turnStartAck != nil {
 		close(a.turnStartAck)
@@ -227,6 +228,7 @@ func (a *Agent) handleMainTurnStarted(turnID string) {
 }
 
 func (a *Agent) handleChildTurnStarted(threadID, turnID string, route codexChildRoute) {
+	a.clearCodexRawExecutionsBeforeTurn(threadID, turnID)
 	a.activateCollabChild(threadID)
 	a.setChildTurnID(threadID, turnID)
 	a.flushCodexChildGeneration(threadID, agent.MessageCompletionInterrupted)
@@ -246,11 +248,18 @@ type codexItemEvent struct {
 	itemType string
 	itemID   string
 	threadID string
+	turnID   string
 }
 
 func newCodexItemEvent(raw []byte, params json.RawMessage) (codexItemEvent, bool) {
 	item, itemType, itemID, threadID := extractCodexItem(params)
 	if item == nil {
+		return codexItemEvent{}, false
+	}
+	var envelope struct {
+		TurnID string `json:"turnId"`
+	}
+	if json.Unmarshal(params, &envelope) != nil {
 		return codexItemEvent{}, false
 	}
 	return codexItemEvent{
@@ -260,6 +269,7 @@ func newCodexItemEvent(raw []byte, params json.RawMessage) (codexItemEvent, bool
 		itemType: itemType,
 		itemID:   itemID,
 		threadID: threadID,
+		turnID:   envelope.TurnID,
 	}, true
 }
 
@@ -303,6 +313,7 @@ func (a *Agent) handleCodexItemStartedForSink(
 	mainThread bool,
 	event codexItemEvent,
 ) {
+	a.observeCodexRawExecutionTool(event)
 	if codexItemIsTool(event.itemType) {
 		ownerThreadID := event.threadID
 		if mainThread {
@@ -394,6 +405,7 @@ func (a *Agent) handleCodexItemCompletedForSink(
 	mainThread bool,
 	event codexItemEvent,
 ) {
+	a.observeCodexRawExecutionTool(event)
 	a.Mu.Lock()
 	delete(a.incompleteTools, event.itemID)
 	delete(a.collabChildItems, event.itemID)
@@ -486,7 +498,7 @@ func (a *Agent) handleTurnCompleted(params json.RawMessage) {
 	completion := codexTurnCompletion(params)
 	a.flushCodexGeneration(completion)
 	incompleteToolUses := a.persistIncompleteCodexTools("", false, completion)
-	incompleteToolUses += a.finishCodexRawExecutions(notif.ThreadID, completion)
+	a.finishCodexRawExecutions(notif.ThreadID)
 
 	// Enrich the params with num_tool_uses so the frontend can distinguish
 	// simple text-only exchanges from complex multi-tool turns.
@@ -602,7 +614,7 @@ func (a *Agent) handleChildTurnCompleted(threadID string, params json.RawMessage
 	completion := codexTurnCompletion(params)
 	a.flushCodexChildGeneration(threadID, completion)
 	a.persistIncompleteCodexTools(threadID, false, completion)
-	a.finishCodexRawExecutions(threadID, completion)
+	a.finishCodexRawExecutions(threadID)
 	if reportID, label, report, ok := a.takeCodexChildReportCandidate(threadID); ok {
 		providerkit.PersistSubagentReport(route.parentSink, agent.SubagentReportWrite{
 			ReportID: reportID,
