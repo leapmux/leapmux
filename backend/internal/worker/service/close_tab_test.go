@@ -1498,31 +1498,66 @@ func TestCloseTabCommon_RemoveOnLiveTabStillHonoursTheUsersDelete(t *testing.T) 
 	assert.NoDirExists(t, wt.WorktreePath, "the user asked for the directory to go")
 }
 
-// existingCheckoutForSafetyTest creates an unlocked checkout with committed contents.
-func existingCheckoutForSafetyTest(t *testing.T) (repo, wt, nested string) {
+func TestExistingCheckoutPreservationUsesCheckoutBytes(t *testing.T) {
+	for _, tc := range []struct {
+		name, autocrlf, eol, contents string
+	}{
+		{"lf", "false", "lf", "preserve me\n"},
+		{"crlf", "true", "crlf", "preserve me\r\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Environment configuration reaches the fixture's first checkout on every platform.
+			t.Setenv("GIT_CONFIG_COUNT", "2")
+			t.Setenv("GIT_CONFIG_KEY_0", "core.autocrlf")
+			t.Setenv("GIT_CONFIG_VALUE_0", tc.autocrlf)
+			t.Setenv("GIT_CONFIG_KEY_1", "core.eol")
+			t.Setenv("GIT_CONFIG_VALUE_1", tc.eol)
+			checkout := existingCheckoutForSafetyTest(t)
+			contents, err := os.ReadFile(filepath.Join(checkout.nested, "committed.txt"))
+			require.NoError(t, err)
+			require.Equal(t, tc.contents, string(contents), "the fixture must exercise the selected checkout format")
+			checkout.assertPreserved(t)
+		})
+	}
+}
+
+type checkoutSafetyFixture struct {
+	repo, worktree, nested string
+	contents               []byte
+}
+
+// existingCheckoutForSafetyTest captures the bytes that Git actually checks out.
+// Host Git settings can change line endings between the commit and the checkout.
+func existingCheckoutForSafetyTest(t *testing.T) checkoutSafetyFixture {
 	t.Helper()
-	repo = initRepo(t)
+	repo := initRepo(t)
 	require.NoError(t, os.MkdirAll(filepath.Join(repo, "frontend", "src"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(repo, "frontend", "src", "committed.txt"), []byte("preserve me\n"), 0o644))
 	run(t, repo, "git", "add", ".")
 	run(t, repo, "git", "commit", "-m", "Add committed contents")
-	wt = filepath.Join(t.TempDir(), "checkout")
+	wt := filepath.Join(t.TempDir(), "checkout")
 	run(t, repo, "git", "worktree", "add", "-b", "safety-branch", wt)
-	return repo, wt, filepath.Join(wt, "frontend", "src")
+	nested := filepath.Join(wt, "frontend", "src")
+	contents, err := os.ReadFile(filepath.Join(nested, "committed.txt"))
+	require.NoError(t, err)
+	return checkoutSafetyFixture{repo: repo, worktree: wt, nested: nested, contents: contents}
 }
 
-func assertExistingCheckoutPreserved(t *testing.T, repo, wt string) {
+func (checkout checkoutSafetyFixture) assertPreserved(t *testing.T) {
 	t.Helper()
-	assert.DirExists(t, wt)
-	listing, err := gitutil.Output(context.Background(), repo, "worktree", "list", "--porcelain")
+	assert.DirExists(t, checkout.worktree)
+	entries, err := listGitWorktrees(context.Background(), checkout.repo)
 	require.NoError(t, err)
-	assert.Contains(t, listing, "worktree "+pathutil.Canonicalize(wt)+"\n")
-	assert.NotContains(t, listing, "locked")
-	_, err = gitutil.Output(context.Background(), repo, "rev-parse", "--verify", "refs/heads/safety-branch")
+	// Git prints forward slashes on Windows. Compare parsed paths through the shared path helper.
+	entry := worktreeEntryFor(entries, checkout.worktree)
+	require.NotNil(t, entry, "Git must retain the worktree registration")
+	assert.False(t, entry.GetLocked(), "preservation must not depend on a Git worktree lock")
+	assert.Equal(t, "safety-branch", entry.GetBranch())
+	_, err = gitutil.Output(context.Background(), checkout.repo, "rev-parse", "--verify", "refs/heads/safety-branch")
 	assert.NoError(t, err)
-	contents, err := os.ReadFile(filepath.Join(wt, "frontend", "src", "committed.txt"))
-	assert.NoError(t, err)
-	assert.Equal(t, "preserve me\n", string(contents))
+	contents, err := os.ReadFile(filepath.Join(checkout.nested, "committed.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, checkout.contents, contents, "the checkout must retain its original bytes")
 }
 
 func TestNestedForcedRemovePreservesExistingCheckout(t *testing.T) {
@@ -1533,7 +1568,8 @@ func TestNestedForcedRemovePreservesExistingCheckout(t *testing.T) {
 	} {
 		t.Run(tabType.String(), func(t *testing.T) {
 			svc, _, _ := setupTestService(t)
-			repo, wt, nested := existingCheckoutForSafetyTest(t)
+			checkout := existingCheckoutForSafetyTest(t)
+			wt, nested := checkout.worktree, checkout.nested
 			wtID, err := svc.ensureTrackedWorktree(context.Background(), wt)
 			require.NoError(t, err)
 			const tabID = "nested"
@@ -1559,7 +1595,7 @@ func TestNestedForcedRemovePreservesExistingCheckout(t *testing.T) {
 				t.Fatal("unexpected tab type")
 			}
 			assert.Equal(t, leapmuxv1.WorktreeRemovalOutcome_WORKTREE_REMOVAL_OUTCOME_FAILED, result.WorktreeRemoval)
-			assertExistingCheckoutPreserved(t, repo, wt)
+			checkout.assertPreserved(t)
 		})
 	}
 }
@@ -1567,7 +1603,8 @@ func TestNestedForcedRemovePreservesExistingCheckout(t *testing.T) {
 func TestUnconfirmedStaleRemovePreservesCleanExistingCheckout(t *testing.T) {
 	t.Parallel()
 	svc, _, _ := setupTestService(t)
-	repo, wt, _ := existingCheckoutForSafetyTest(t)
+	checkout := existingCheckoutForSafetyTest(t)
+	wt := checkout.worktree
 	wtID, err := svc.ensureTrackedWorktree(context.Background(), wt)
 	require.NoError(t, err)
 	createAgentForPath(t, svc, "closed", wt)
@@ -1575,15 +1612,15 @@ func TestUnconfirmedStaleRemovePreservesCleanExistingCheckout(t *testing.T) {
 	require.NoError(t, closeErr(svc.Queries.CloseAgent(context.Background(), "closed")))
 	result, _ := svc.closeAgentTabCommon("user-1", "closed", leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE, dropWorktreeLink)
 	assert.Equal(t, leapmuxv1.WorktreeRemovalOutcome_WORKTREE_REMOVAL_OUTCOME_FAILED, result.WorktreeRemoval)
-	assertExistingCheckoutPreserved(t, repo, wt)
+	checkout.assertPreserved(t)
 }
 
 func TestCloseTabWithoutWorkingDirDoesNotInspectWorkerCheckout(t *testing.T) {
 	svc, _, _ := setupTestService(t)
-	repo, wt, _ := existingCheckoutForSafetyTest(t)
-	t.Chdir(wt)
+	checkout := existingCheckoutForSafetyTest(t)
+	t.Chdir(checkout.worktree)
 	createAgentForPath(t, svc, "without-directory", "")
 	result, _ := svc.closeAgentTabCommon("user-1", "without-directory", leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE, dropWorktreeLink)
 	assert.Empty(t, result.WorktreePath, "a missing tab directory must not select the Worker process directory")
-	assertExistingCheckoutPreserved(t, repo, wt)
+	checkout.assertPreserved(t)
 }

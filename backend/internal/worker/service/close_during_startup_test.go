@@ -1003,7 +1003,8 @@ func TestNestedRemoveDuringStartupCannotAuthorizeRollback(t *testing.T) {
 	for _, terminal := range []bool{false, true} {
 		t.Run(map[bool]string{false: "agent", true: "terminal"}[terminal], func(t *testing.T) {
 			svc, _, _ := setupTestService(t)
-			repo, wt, nested := existingCheckoutForSafetyTest(t)
+			checkout := existingCheckoutForSafetyTest(t)
+			nested := checkout.nested
 			var disposition closeWorktreeDisposition
 			if terminal {
 				createTerminalForPath(t, svc, "nested", nested)
@@ -1019,7 +1020,7 @@ func TestNestedRemoveDuringStartupCannotAuthorizeRollback(t *testing.T) {
 				svc.AgentStartup.finishEntry(h)
 			}
 			assert.Equal(t, keepWorktreeOnClose, disposition)
-			assertExistingCheckoutPreserved(t, repo, wt)
+			checkout.assertPreserved(t)
 		})
 	}
 }

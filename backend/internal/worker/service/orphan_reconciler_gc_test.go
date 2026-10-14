@@ -539,7 +539,8 @@ func TestReconcileTabs_RemoveCloseKeepsItsWorktreeLinkAcrossARacingPass(t *testi
 func TestWorkspaceCleanupPreservesExistingCheckoutAfterGrace(t *testing.T) {
 	t.Parallel()
 	svc, d, w := setupTestService(t)
-	repo, wt, nested := existingCheckoutForSafetyTest(t)
+	checkout := existingCheckoutForSafetyTest(t)
+	wt, nested := checkout.worktree, checkout.nested
 	wtID, err := svc.ensureTrackedWorktree(context.Background(), wt)
 	require.NoError(t, err)
 	createAgentForPath(t, svc, "cleanup-nested", nested)
@@ -553,7 +554,7 @@ func TestWorkspaceCleanupPreservesExistingCheckoutAfterGrace(t *testing.T) {
 	require.True(t, rec.reconcileOnce(context.Background()))
 	clock = clock.Add(3 * time.Minute)
 	require.True(t, rec.reconcileOnce(context.Background()))
-	assertExistingCheckoutPreserved(t, repo, wt)
+	checkout.assertPreserved(t)
 	links, err := svc.Queries.CountWorktreeTabs(context.Background(), wtID)
 	require.NoError(t, err)
 	assert.Zero(t, links)

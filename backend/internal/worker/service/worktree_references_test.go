@@ -14,7 +14,8 @@ import (
 
 func TestWorktreeDirectoryMatchesFiltersAndDeduplicates(t *testing.T) {
 	t.Parallel()
-	_, wt, _ := existingCheckoutForSafetyTest(t)
+	checkout := existingCheckoutForSafetyTest(t)
+	wt := checkout.worktree
 	top := pathutil.Canonicalize(wt)
 	alias := filepath.Join(t.TempDir(), "alias")
 	require.NoError(t, os.Symlink(wt, alias))
@@ -39,7 +40,8 @@ func TestWorktreeDirectoryMatchesFiltersAndDeduplicates(t *testing.T) {
 
 func TestWorktreeDirectoryMatchesRetainsUnresolvedTargetReferences(t *testing.T) {
 	t.Parallel()
-	_, wt, _ := existingCheckoutForSafetyTest(t)
+	checkout := existingCheckoutForSafetyTest(t)
+	wt := checkout.worktree
 	alias := filepath.Join(t.TempDir(), "alias")
 	require.NoError(t, os.Symlink(wt, alias))
 	broken := filepath.Join(t.TempDir(), "broken")

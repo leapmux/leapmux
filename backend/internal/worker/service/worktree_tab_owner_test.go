@@ -220,7 +220,8 @@ func TestCreateWorktree_ConflictReturnsTheWinningRow(t *testing.T) {
 func TestWorktreeRemovalCountsAnotherOwnersIdenticalPayloadTab(t *testing.T) {
 	t.Parallel()
 	svc, _, _ := setupTestService(t)
-	repo, wt, nested := existingCheckoutForSafetyTest(t)
+	checkout := existingCheckoutForSafetyTest(t)
+	wt, nested := checkout.worktree, checkout.nested
 	wtID, err := svc.ensureTrackedWorktree(context.Background(), wt)
 	require.NoError(t, err)
 	for _, owner := range []string{"owner-a", "owner-b"} {
@@ -237,5 +238,5 @@ func TestWorktreeRemovalCountsAnotherOwnersIdenticalPayloadTab(t *testing.T) {
 	assert.Equal(t, leapmuxv1.WorktreeRemovalOutcome_WORKTREE_REMOVAL_OUTCOME_STILL_REFERENCED, result.WorktreeRemoval)
 	_, err = svc.TabPayloads.Get(context.Background(), "owner-b", "shared")
 	require.NoError(t, err)
-	assertExistingCheckoutPreserved(t, repo, wt)
+	checkout.assertPreserved(t)
 }

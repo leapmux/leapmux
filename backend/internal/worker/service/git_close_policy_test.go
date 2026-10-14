@@ -158,7 +158,8 @@ func TestWorktreeCloseResolvesMissingRootLink(t *testing.T) {
 func TestUntrackedPayloadWorktreeRefusesDeletion(t *testing.T) {
 	t.Parallel()
 	svc, _, _ := setupTestService(t)
-	_, wt, nested := existingCheckoutForSafetyTest(t)
+	checkout := existingCheckoutForSafetyTest(t)
+	wt, nested := checkout.worktree, checkout.nested
 	ctx := context.Background()
 	require.NoError(t, svc.TabPayloads.Register(ctx, RegisterTabPayloadParams{
 		UserID: "user-1", TabID: "file", Payload: fileTabPayload(filepath.Join(nested, "committed.txt"), wt),
@@ -199,7 +200,8 @@ func TestNestedReferencesBeforeRootTracking(t *testing.T) {
 	for _, terminal := range []bool{false, true} {
 		t.Run(map[bool]string{false: "agent", true: "terminal"}[terminal], func(t *testing.T) {
 			svc, _, _ := setupTestService(t)
-			repo, wt, nested := existingCheckoutForSafetyTest(t)
+			checkout := existingCheckoutForSafetyTest(t)
+			wt, nested := checkout.worktree, checkout.nested
 			if terminal {
 				createTerminalForPath(t, svc, "nested", nested)
 			} else {
@@ -218,7 +220,7 @@ func TestNestedReferencesBeforeRootTracking(t *testing.T) {
 			svc.registerTabForWorktree(result.WorktreeID, leapmuxv1.TabType_TAB_TYPE_AGENT, "root")
 			closed, _ := svc.closeAgentTabCommon("user-1", "root", leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE, dropWorktreeLink)
 			assert.Equal(t, leapmuxv1.WorktreeRemovalOutcome_WORKTREE_REMOVAL_OUTCOME_STILL_REFERENCED, closed.WorktreeRemoval)
-			assertExistingCheckoutPreserved(t, repo, wt)
+			checkout.assertPreserved(t)
 		})
 	}
 }
@@ -226,7 +228,8 @@ func TestNestedReferencesBeforeRootTracking(t *testing.T) {
 func TestNestedRepositoryUsesItsOwnTopLevel(t *testing.T) {
 	t.Parallel()
 	svc, _, _ := setupTestService(t)
-	_, wt, nested := existingCheckoutForSafetyTest(t)
+	checkout := existingCheckoutForSafetyTest(t)
+	wt, nested := checkout.worktree, checkout.nested
 	independent := initRepo(t)
 	inner := filepath.Join(nested, "library")
 	require.NoError(t, os.Rename(independent, inner))
@@ -250,7 +253,8 @@ func TestNestedRepositoryUsesItsOwnTopLevel(t *testing.T) {
 func TestNestedUnreadableReferencePreservesCheckout(t *testing.T) {
 	t.Parallel()
 	svc, _, _ := setupTestService(t)
-	repo, wt, nested := existingCheckoutForSafetyTest(t)
+	checkout := existingCheckoutForSafetyTest(t)
+	wt, nested := checkout.worktree, checkout.nested
 	createAgentForPath(t, svc, "nested-missing", filepath.Join(nested, "missing"))
 	createAgentForPath(t, svc, "root", wt)
 	wtID, err := svc.ensureTrackedWorktree(context.Background(), wt)
@@ -262,7 +266,7 @@ func TestNestedUnreadableReferencePreservesCheckout(t *testing.T) {
 	assert.NotEmpty(t, inspection.ErrorHint)
 	closed, _ := svc.closeAgentTabCommon("user-1", "root", leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE, dropWorktreeLink)
 	assert.Equal(t, leapmuxv1.WorktreeRemovalOutcome_WORKTREE_REMOVAL_OUTCOME_FAILED, closed.WorktreeRemoval)
-	assertExistingCheckoutPreserved(t, repo, wt)
+	checkout.assertPreserved(t)
 }
 
 func TestNestedRepositoryPayloadAndTerminalPreserveCheckout(t *testing.T) {
@@ -270,7 +274,8 @@ func TestNestedRepositoryPayloadAndTerminalPreserveCheckout(t *testing.T) {
 	for _, file := range []bool{false, true} {
 		t.Run(map[bool]string{false: "terminal", true: "file"}[file], func(t *testing.T) {
 			svc, _, _ := setupTestService(t)
-			repo, wt, nested := existingCheckoutForSafetyTest(t)
+			checkout := existingCheckoutForSafetyTest(t)
+			repo, wt, nested := checkout.repo, checkout.worktree, checkout.nested
 			inner := filepath.Join(nested, "library")
 			require.NoError(t, os.Rename(initRepo(t), inner))
 			if file {
@@ -287,7 +292,7 @@ func TestNestedRepositoryPayloadAndTerminalPreserveCheckout(t *testing.T) {
 			result, _ := svc.closeAgentTabCommon("user-1", "outer", leapmuxv1.WorktreeAction_WORKTREE_ACTION_REMOVE, dropWorktreeLink)
 			assert.Equal(t, leapmuxv1.WorktreeRemovalOutcome_WORKTREE_REMOVAL_OUTCOME_STILL_REFERENCED, result.WorktreeRemoval)
 			assert.DirExists(t, filepath.Join(inner, ".git"))
-			assertExistingCheckoutPreserved(t, repo, wt)
+			checkout.assertPreserved(t)
 		})
 	}
 }

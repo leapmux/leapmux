@@ -6582,7 +6582,8 @@ func TestSubdirectoryDetectionAndInspectionAreReadOnly(t *testing.T) {
 	for _, operation := range []string{"startup", "inspection", "push-context"} {
 		t.Run(operation, func(t *testing.T) {
 			svc, _, _ := setupTestService(t)
-			repo, wt, nested := existingCheckoutForSafetyTest(t)
+			checkout := existingCheckoutForSafetyTest(t)
+			repo, wt, nested := checkout.repo, checkout.worktree, checkout.nested
 			createAgentForPath(t, svc, "nested", nested)
 			for range 2 {
 				switch operation {
@@ -6615,7 +6616,8 @@ func TestNestedTrackedTabHasNoGitConfirmation(t *testing.T) {
 	for _, dirty := range []bool{false, true} {
 		t.Run(fmt.Sprint(dirty), func(t *testing.T) {
 			svc, _, _ := setupTestService(t)
-			_, wt, nested := existingCheckoutForSafetyTest(t)
+			checkout := existingCheckoutForSafetyTest(t)
+			wt, nested := checkout.worktree, checkout.nested
 			wtID, err := svc.ensureTrackedWorktree(context.Background(), wt)
 			require.NoError(t, err)
 			createAgentForPath(t, svc, "nested", nested)
@@ -6635,7 +6637,8 @@ func TestNestedTrackedTabHasNoGitConfirmation(t *testing.T) {
 func TestSubdirectorySymlinkUsesCanonicalGitTopLevel(t *testing.T) {
 	t.Parallel()
 	svc, _, _ := setupTestService(t)
-	_, wt, nested := existingCheckoutForSafetyTest(t)
+	checkout := existingCheckoutForSafetyTest(t)
+	wt, nested := checkout.worktree, checkout.nested
 	for _, tc := range []struct {
 		id, dir string
 		prompt  bool
