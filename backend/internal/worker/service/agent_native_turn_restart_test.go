@@ -77,7 +77,7 @@ func (a *nativeRestartProbeAgent) Wait() error {
 
 func (a *nativeRestartProbeAgent) NativeTurnRestartRequired() bool { return a.restartRequired }
 
-func prepareNativeTurnRestart(t *testing.T) (*Service, *nativeRestartProbeAgent, string) {
+func prepareNativeRestartAgent(t *testing.T) (*Service, *nativeRestartProbeAgent, string) {
 	t.Helper()
 	ctx := testutil.DeadlineContext(t)
 	svc, _, _ := setupTestService(t)
@@ -101,6 +101,13 @@ func prepareNativeTurnRestart(t *testing.T) (*Service, *nativeRestartProbeAgent,
 		func(context.Context, agent.Options, agent.ProviderServices) (agent.Agent, error) { return old, nil })
 	require.NoError(t, err)
 	t.Cleanup(func() { svc.Agents.StopAndWaitAgent(id) })
+	return svc, old, id
+}
+
+func prepareNativeTurnRestart(t *testing.T) (*Service, *nativeRestartProbeAgent, string) {
+	t.Helper()
+	ctx := testutil.DeadlineContext(t)
+	svc, old, id := prepareNativeRestartAgent(t)
 	started, err := svc.InputQueue.TurnStarted(ctx, id, false)
 	require.NoError(t, err)
 	require.True(t, started.ActiveTurn)
@@ -594,7 +601,7 @@ func TestNativeTurnRestartCloseBeforeRegistrationStopsReplacement(t *testing.T) 
 func TestClearContextStopsProcessRegisteredAfterClose(t *testing.T) {
 	t.Parallel()
 	ctx := testutil.DeadlineContext(t)
-	svc, _, id := prepareNativeTurnRestart(t)
+	svc, _, id := prepareNativeRestartAgent(t)
 	late := newNativeRestartProbeAgent(id)
 	svc.startAgentFn = func(startCtx context.Context, opts agent.Options, sink agent.ProviderServices) (map[string]string, error) {
 		svc.closeAgentTabCommon("", id, leapmuxv1.WorktreeAction_WORKTREE_ACTION_UNSPECIFIED, dropWorktreeLink)
@@ -613,10 +620,15 @@ func TestClearContextStopsProcessRegisteredAfterClose(t *testing.T) {
 	assert.True(t, row.ClosedAt.Valid)
 }
 
-func TestClearContextFinishSkipsClosedTab(t *testing.T) {
-	t.Parallel()
+func prepareClearContextFinish(t *testing.T) (*Service, *nativeRestartProbeAgent, string, func()) {
+	t.Helper()
 	ctx := testutil.DeadlineContext(t)
-	svc, _, id := prepareNativeTurnRestart(t)
+	svc, _, id := prepareNativeRestartAgent(t)
+	// A queued input can commit a transcript after clear releases the old turn.
+	// Keep the finish assertions independent of that asynchronous dispatch.
+	queue, err := svc.InputQueue.Snapshot(ctx, id)
+	require.NoError(t, err)
+	require.Empty(t, queue.Items, "the finish assertion needs no concurrent input dispatch")
 	newAgent := newNativeRestartProbeAgent(id)
 	svc.startAgentFn = func(startCtx context.Context, opts agent.Options, sink agent.ProviderServices) (map[string]string, error) {
 		return svc.Agents.StartAgentWith(startCtx, opts, sink,
@@ -627,7 +639,35 @@ func TestClearContextFinishSkipsClosedTab(t *testing.T) {
 	finish, err := svc.prepareClearContext(id)
 	require.NoError(t, err)
 	require.NotNil(t, finish)
+	return svc, newAgent, id, finish
+}
+
+func TestClearContextFinishPublishesForOpenTab(t *testing.T) {
+	t.Parallel()
+	ctx := testutil.DeadlineContext(t)
+	svc, newAgent, id, finish := prepareClearContextFinish(t)
+	before, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{AgentID: id, Limit: 10})
+	require.NoError(t, err)
+	require.Empty(t, before, "prepare must leave the notification for finish")
+	finish()
+	after, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{AgentID: id, Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, after, 1)
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, after[0].Source)
+	assert.Equal(t, []string{"context_cleared"}, decodeMessageTypes(t, &leapmuxv1.AgentChatMessage{
+		Content: after[0].Content, ContentCompression: after[0].ContentCompression,
+	}))
+	assert.False(t, newAgent.IsStopped())
+}
+
+func TestClearContextFinishSkipsClosedTab(t *testing.T) {
+	t.Parallel()
+	ctx := testutil.DeadlineContext(t)
+	svc, newAgent, id, finish := prepareClearContextFinish(t)
 	svc.closeAgentTabCommon("", id, leapmuxv1.WorktreeAction_WORKTREE_ACTION_UNSPECIFIED, dropWorktreeLink)
+	row, err := svc.Queries.GetAgentByID(ctx, id)
+	require.NoError(t, err)
+	require.True(t, row.ClosedAt.Valid)
 	var before, after int
 	require.NoError(t, svc.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM messages WHERE agent_id = ?", id).Scan(&before))
 	finish()
@@ -639,7 +679,7 @@ func TestClearContextFinishSkipsClosedTab(t *testing.T) {
 func TestPlanExecutionRestartStopsProcessRegisteredAfterClose(t *testing.T) {
 	t.Parallel()
 	ctx := testutil.DeadlineContext(t)
-	svc, _, id := prepareNativeTurnRestart(t)
+	svc, _, id := prepareNativeRestartAgent(t)
 	row, err := svc.Queries.GetAgentByID(ctx, id)
 	require.NoError(t, err)
 	late := newNativeRestartProbeAgent(id)
