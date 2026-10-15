@@ -161,8 +161,8 @@ export interface AgentLifecycleProps {
   /** Open an image a chat row rendered in its own tab. */
   onOpenImage?: (image: { seq: bigint, index: number, filePath?: string, title: string }) => void
   /**
-   * Record the reader's approval of one denied automatic review, so the agent may
-   * retry the action once. Absent while the agent cannot accept an approval.
+   * Record the reader's authorization for an action that automatic review denied.
+   * The callback is absent while the agent cannot accept approval.
    */
   onApproveAutoReviewDenial?: ((messageId: string, reviewId: string) => Promise<void>) | undefined
   /** The agent's to-do list for the todos chip + popover. */

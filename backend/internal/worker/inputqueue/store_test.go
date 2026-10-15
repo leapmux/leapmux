@@ -18,6 +18,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
+	"github.com/leapmux/leapmux/internal/worker/db/dbtest"
 	gendb "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
@@ -1513,10 +1514,10 @@ func TestStoreSnapshotRefusesToPreemptWhatTheDrainWouldRefuse(t *testing.T) {
 func TestStoreSnapshotRefusesToPreemptAnApprovalThatIsNotRecorded(t *testing.T) {
 	t.Parallel()
 
-	for _, state := range []leapmuxv1.ControlResponseState{
-		leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_PENDING,
-		leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_DELIVERED,
-		leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_COMPLETED,
+	for _, state := range []leapmuxv1.ControlDeliveryState{
+		leapmuxv1.ControlDeliveryState_CONTROL_DELIVERY_STATE_PENDING,
+		leapmuxv1.ControlDeliveryState_CONTROL_DELIVERY_STATE_DELIVERED,
+		leapmuxv1.ControlDeliveryState_CONTROL_DELIVERY_STATE_COMPLETED,
 	} {
 		t.Run(state.String(), func(t *testing.T) {
 			t.Parallel()
@@ -1530,15 +1531,15 @@ func TestStoreSnapshotRefusesToPreemptAnApprovalThatIsNotRecorded(t *testing.T) 
 			require.NoError(t, err)
 			_, _, err = store.TurnStarted(t.Context(), "agent-1", false)
 			require.NoError(t, err)
-			_, err = database.ExecContext(t.Context(), `INSERT INTO control_response_answers
-                (agent_id, request_id, claim_token, state, input_id, plan_approval_settings, agent_provider)
-                VALUES ('agent-1','approval','claim',?,'plan',?,?)`,
-				int64(state), []byte(`{}`), int64(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX))
+			err = dbtest.StoreControlResponse(t.Context(), database, gendb.ControlResponseAnswer{
+				AgentID: "agent-1", RequestID: "approval", ClaimToken: "claim", State: state,
+				InputID: "plan", PlanApprovalSettings: []byte(`{}`), AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+			})
 			require.NoError(t, err)
 
 			snapshot, err := store.Snapshot(t.Context(), "agent-1")
 			require.NoError(t, err)
-			recorded := state == leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_COMPLETED
+			recorded := state == leapmuxv1.ControlDeliveryState_CONTROL_DELIVERY_STATE_COMPLETED
 			assert.Equal(t, recorded, snapshot.Items[0].CanPreempt,
 				"only a recorded approval has a turn worth cancelling")
 

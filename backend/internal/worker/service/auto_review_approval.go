@@ -19,14 +19,10 @@ import (
 	"google.golang.org/grpc/codes"
 )
 
-// errAutoReviewApprovalInFlight reports a second approval of one review while the
-// first one still runs.
-var errAutoReviewApprovalInFlight = errors.New("an approval of this automatic review is already in progress")
-
 // registerAutoReviewApprovalHandler registers ApproveAutoReviewDenial.
 func registerAutoReviewApprovalHandler(d registrar, svc *Service) {
-	// ApproveAutoReviewDenial records the user's approval of one action that the
-	// agent's automatic reviewer denied, so the agent may retry that action once.
+	// ApproveAutoReviewDenial records authorization for an action that the automatic reviewer denied.
+	// Recording approval does not execute the action.
 	//
 	// The handler refuses subagent approvals. A review belongs to the subagent's thread,
 	// so the approval must never reach its root instead.
@@ -53,14 +49,6 @@ func registerAutoReviewApprovalHandler(d registrar, svc *Service) {
 // The durable claim prevents duplicate delivery after a storage failure or restart.
 // A retry of a delivered approval completes its transcript writes without another provider call.
 func (svc *Service) approveAutoReviewDenial(dbAgent db.Agent, messageID, reviewID string) error {
-	// The guard comes before the read of the record. A second approval that passed
-	// the read while the first one still ran would otherwise reach the provider too.
-	flight := dbAgent.ID + "\x00" + reviewID
-	if _, busy := svc.autoReviewApprovals.LoadOrStore(flight, struct{}{}); busy {
-		return errAutoReviewApprovalInFlight
-	}
-	defer svc.autoReviewApprovals.Delete(flight)
-
 	row, err := svc.Queries.GetMessageByAgentAndID(bgCtx(), db.GetMessageByAgentAndIDParams{ID: messageID, AgentID: dbAgent.ID})
 	if errors.Is(err, sql.ErrNoRows) {
 		return agent.ErrAutoReviewNotFound
@@ -91,51 +79,44 @@ func (svc *Service) approveAutoReviewDenial(dbAgent db.Agent, messageID, reviewI
 		return fmt.Errorf("read the approval claim: %w", err)
 	}
 	if slices.Contains(approvals, reviewID) {
-		return nil
+		return errors.New("the approval metadata has no delivery record")
 	}
-	claimed, err := svc.Queries.ClaimAutoReviewApproval(bgCtx(), db.ClaimAutoReviewApprovalParams{
-		AgentID: dbAgent.ID, AgentSessionID: row.AgentSessionID, ReviewID: reviewID,
-		MessageID: row.ID, State: leapmuxv1.AutoReviewApprovalState_AUTO_REVIEW_APPROVAL_STATE_UNCONFIRMED,
+	deliveryID, err := reserveControlDelivery(svc.DB, controlDeliveryIdentity{
+		agentID: dbAgent.ID, kind: leapmuxv1.ControlDeliveryKind_CONTROL_DELIVERY_KIND_AUTO_REVIEW_APPROVAL,
+		operationID: reviewID, instanceID: row.AgentSessionID,
+	}, func(queries *db.Queries, deliveryID string) (int64, error) {
+		return queries.StoreAutoReviewApproval(bgCtx(), db.StoreAutoReviewApprovalParams{
+			DeliveryID: deliveryID, AgentID: dbAgent.ID, MessageID: row.ID,
+		})
 	})
 	if err != nil {
 		return fmt.Errorf("reserve the approval: %w", err)
 	}
-	if claimed == 0 {
+	if deliveryID != "" {
+		if err := svc.deliverControlOperation(deliveryID, func() error {
+			return svc.Agents.ApproveAutoReviewDenial(dbAgent.ID, entries, reviewID)
+		}); err != nil {
+			return err
+		}
+	}
+	claim, err = svc.Queries.GetAutoReviewApproval(bgCtx(), db.GetAutoReviewApprovalParams{
+		AgentID: dbAgent.ID, AgentSessionID: row.AgentSessionID, ReviewID: reviewID,
+	})
+	if errors.Is(err, sql.ErrNoRows) {
 		return errAutoReviewRowChanged
 	}
-	if deliveryErr := svc.Agents.ApproveAutoReviewDenial(dbAgent.ID, entries, reviewID); deliveryErr != nil {
-		if errors.Is(deliveryErr, agent.ErrDeliveryUncertain) {
-			return deliveryErr
-		}
-		// Only a definite refusal permits another delivery attempt.
-		releaseErr := svc.Queries.ReleaseAutoReviewApproval(bgCtx(), db.ReleaseAutoReviewApprovalParams{
-			AgentID: dbAgent.ID, AgentSessionID: row.AgentSessionID, ReviewID: reviewID,
-			State: leapmuxv1.AutoReviewApprovalState_AUTO_REVIEW_APPROVAL_STATE_UNCONFIRMED,
-		})
-		return errors.Join(deliveryErr, releaseErr)
+	if err != nil {
+		return err
 	}
-	if err := svc.setAutoReviewApprovalState(dbAgent.ID, row.AgentSessionID, reviewID,
-		leapmuxv1.AutoReviewApprovalState_AUTO_REVIEW_APPROVAL_STATE_UNCONFIRMED,
-		leapmuxv1.AutoReviewApprovalState_AUTO_REVIEW_APPROVAL_STATE_DELIVERED); err != nil {
-		return fmt.Errorf("%w: record the approval delivery: %w", agent.ErrDeliveryUncertain, err)
-	}
-	return svc.finishAutoReviewApproval(dbAgent, row, db.AutoReviewApproval{
-		AgentID: dbAgent.ID, AgentSessionID: row.AgentSessionID, ReviewID: reviewID,
-		MessageID: row.ID, State: leapmuxv1.AutoReviewApprovalState_AUTO_REVIEW_APPROVAL_STATE_DELIVERED,
-	})
+	return svc.finishAutoReviewApproval(dbAgent, row, claim)
 }
 
-// finishAutoReviewApproval projects a confirmed delivery into the transcript.
+// finishAutoReviewApproval records confirmed delivery on the transcript.
 func (svc *Service) finishAutoReviewApproval(dbAgent db.Agent, row db.Message, claim db.AutoReviewApproval) error {
 	if claim.MessageID != row.ID {
 		return agent.ErrAutoReviewNotFound
 	}
-	switch claim.State {
-	case leapmuxv1.AutoReviewApprovalState_AUTO_REVIEW_APPROVAL_STATE_UNCONFIRMED:
-		return agent.ErrDeliveryUncertain
-	case leapmuxv1.AutoReviewApprovalState_AUTO_REVIEW_APPROVAL_STATE_COMPLETED:
-		return nil
-	case leapmuxv1.AutoReviewApprovalState_AUTO_REVIEW_APPROVAL_STATE_DELIVERED:
+	return resumeControlDelivery(claim.State, func() error {
 		if err := svc.Output.recordAutoReviewApproval(dbAgent.ID, row.ID, claim.ReviewID); err != nil {
 			return fmt.Errorf("record the approval on its transcript row: %w", err)
 		}
@@ -143,25 +124,9 @@ func (svc *Service) finishAutoReviewApproval(dbAgent db.Agent, row db.Message, c
 		if err := svc.Output.persistAutoReviewApproval(dbAgent.ID, dbAgent.AgentProvider, row.AgentSessionID, claim.ReviewID, key); err != nil {
 			return fmt.Errorf("write the approval notice: %w", err)
 		}
-		return svc.setAutoReviewApprovalState(dbAgent.ID, row.AgentSessionID, claim.ReviewID,
-			leapmuxv1.AutoReviewApprovalState_AUTO_REVIEW_APPROVAL_STATE_DELIVERED,
-			leapmuxv1.AutoReviewApprovalState_AUTO_REVIEW_APPROVAL_STATE_COMPLETED)
-	default:
-		return fmt.Errorf("unknown approval delivery state: %v", claim.State)
-	}
-}
-
-func (svc *Service) setAutoReviewApprovalState(agentID, sessionID, reviewID string, previous, next leapmuxv1.AutoReviewApprovalState) error {
-	updated, err := svc.Queries.SetAutoReviewApprovalState(bgCtx(), db.SetAutoReviewApprovalStateParams{
-		AgentID: agentID, AgentSessionID: sessionID, ReviewID: reviewID, RequiredState: previous, State: next,
-	})
-	if err != nil {
+		_, err := completeControlDelivery(svc.Queries, claim.DeliveryID)
 		return err
-	}
-	if updated != 1 {
-		return errAutoReviewRowChanged
-	}
-	return nil
+	})
 }
 
 // storedAutoReviewApprovals returns the review ids whose approval the row records.
@@ -294,7 +259,6 @@ func sendAutoReviewApprovalError(sender channel.ResponseWriter, err error) {
 		sendNotFoundError(sender, "the transcript row holds no such automatic review")
 	case errors.Is(err, agent.ErrAutoReviewNotDenied),
 		errors.Is(err, agent.ErrAutoReviewThreadRetired),
-		errors.Is(err, errAutoReviewApprovalInFlight),
 		errors.Is(err, agent.ErrDeliveryUncertain):
 		sendFailedPrecondition(sender, err.Error())
 	case errors.Is(err, agent.ErrAgentNotFound):

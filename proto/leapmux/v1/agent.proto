@@ -1228,10 +1228,9 @@ message UpdateAgentGoalRequest {
 // broadcast is the single source of the new state.
 message UpdateAgentGoalResponse {}
 
-// ApproveAutoReviewDenialRequest records the user's approval of one action that the
-// agent's automatic reviewer denied. The agent may then retry that action once. The
-// approval does not run the action. The worker reads the denial from its own stored
-// row and does not trust content from the browser.
+// ApproveAutoReviewDenialRequest records authorization for an action that the automatic reviewer denied.
+// Recording approval does not execute the action.
+// The worker reads the denial from its stored transcript and does not trust browser content.
 message ApproveAutoReviewDenialRequest {
   string agent_id = 1;
   // The transcript row that holds the denied review.

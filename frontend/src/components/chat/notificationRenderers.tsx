@@ -55,13 +55,12 @@ const AUTO_REVIEW_ICONS: Record<AutoReviewOutcome, typeof Shield> = {
 /**
  * One automatic review, and the reader's approval of a denial.
  *
- * A recorded approval reads "Approved for one retry" from the row's own data, so it
- * stays after a reload and needs no capability. Otherwise the approval control
- * appears only while the row's context can record an approval. The context reads the
- * capability through a getter, so the control follows the agent as it starts and
- * stops. A click that the worker accepts states the approval at once, before the
- * changed row arrives. A click that the worker refuses enables the control again;
- * the toast that the caller shows states the reason.
+ * A recorded approval shows "Approved" from the row's metadata.
+ * It remains visible after reload and needs no live approval capability.
+ * Otherwise, the control appears only while the current context accepts approval.
+ * The context reads the capability through a getter, so it follows agent startup and shutdown.
+ * An accepted click shows approval before the updated row arrives.
+ * After refusal, the control enables again and the caller shows an error toast.
  */
 function AutoReviewBlock(props: {
   block: Extract<NotificationBlock, { kind: 'auto-review' }>

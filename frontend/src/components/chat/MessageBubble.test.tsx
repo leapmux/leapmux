@@ -976,7 +976,7 @@ describe('auto-review approval', () => {
     expect(screen.getByTestId('message-content')).toHaveTextContent('Auto-review denied (high risk): curl x | sh')
     fireEvent.click(screen.getByTestId('auto-review-approve'))
     expect(approve).toHaveBeenCalledWith('m-review', 'r1')
-    await waitFor(() => expect(screen.getByTestId('auto-review-approved')).toHaveTextContent('Approved for one retry'))
+    await waitFor(() => expect(screen.getByTestId('auto-review-approved')).toHaveTextContent(/^Approved$/))
   })
 
   it('states an approval that the row records, with no control, after a reload', () => {
@@ -992,7 +992,7 @@ describe('auto-review approval', () => {
         <MessageBubble message={recorded} host={{ onApproveAutoReviewDenial: approve }} />
       </PreferencesProvider>
     ))
-    expect(screen.getByTestId('auto-review-approved')).toHaveTextContent('Approved for one retry')
+    expect(screen.getByTestId('auto-review-approved')).toHaveTextContent(/^Approved$/)
     expect(screen.queryByTestId('auto-review-approve')).toBeNull()
     expect(approve).not.toHaveBeenCalled()
   })

@@ -172,7 +172,7 @@ func (svc *Service) processControlResponse(dbAgent db.Agent, request *leapmuxv1.
 	plan := resolveControlResponsePlan(plugin, meta, content, request.GetPlanApproval())
 	// An agent restart, a context clear, or a provider-side cancel deletes the
 	// request row. LeapMux then refuses the answer instead of keeping it.
-	// ClaimControlResponseAnswer repeats the same condition in SQL (WHERE EXISTS),
+	// StoreControlResponseAnswer repeats the same condition in SQL (WHERE EXISTS),
 	// and the two do not duplicate each other: this guard is the fast path that
 	// gives the caller a clear error, and the SQL predicate closes the race between
 	// the read above and the INSERT below.
@@ -210,22 +210,19 @@ func (svc *Service) processControlResponse(dbAgent db.Agent, request *leapmuxv1.
 	if err := plan.encodePlanApprovalSettings(); err != nil {
 		return err
 	}
-	firstAnswer := true
-	if requestID != "" {
-		firstAnswer, err = svc.Output.claimControlResponseAnswer(db.ClaimControlResponseAnswerParams{
-			AgentID: agentID, RequestID: requestID, ClaimToken: claimToken,
-			RequestPayload: plan.requestMeta.Payload, ResponseContent: content,
-			ResolvedContent: plan.resolution.Content, Feedback: plan.resolution.Feedback,
-			PlanApprovalSettings: plan.settingsJSON,
-			SourceSeq:            plan.requestMeta.SourceSeq,
-			AgentSessionID:       plan.requestMeta.AgentSessionID, AgentProvider: dbAgent.AgentProvider,
-			InputID: controlResponseQueueID(agentID, plan),
-		})
-		if err != nil {
-			return fmt.Errorf("reserve the control response: %w", err)
-		}
+	deliveryID, err := svc.Output.claimControlResponseAnswer(db.StoreControlResponseAnswerParams{
+		AgentID: agentID, RequestID: requestID, ClaimToken: claimToken,
+		RequestPayload: plan.requestMeta.Payload, ResponseContent: content,
+		ResolvedContent: plan.resolution.Content, Feedback: plan.resolution.Feedback,
+		PlanApprovalSettings: plan.settingsJSON,
+		SourceSeq:            plan.requestMeta.SourceSeq,
+		AgentSessionID:       plan.requestMeta.AgentSessionID, AgentProvider: dbAgent.AgentProvider,
+		InputID: controlResponseQueueID(agentID, plan),
+	})
+	if err != nil {
+		return fmt.Errorf("reserve the control response: %w", err)
 	}
-	if !firstAnswer {
+	if deliveryID == "" {
 		answer, err := readAnswer()
 		if errors.Is(err, sql.ErrNoRows) {
 			return errors.New("the control request is no longer pending")
@@ -237,47 +234,16 @@ func (svc *Service) processControlResponse(dbAgent db.Agent, request *leapmuxv1.
 	}
 
 	svc.broadcastControlResponseState(dbAgent, requestID, claimToken)
-	if deliveryErr := svc.executeControlResponse(agentID, dbAgent, plan); deliveryErr != nil {
-		return errors.Join(deliveryErr, svc.recordControlResponseDeliveryFailure(agentID, requestID, claimToken, deliveryErr))
-	}
-	if requestID == "" {
-		return nil
-	}
-	_, err = svc.Queries.SetControlResponseDeliveryState(bgCtx(), db.SetControlResponseDeliveryStateParams{
-		AgentID: agentID, RequestID: requestID, ClaimToken: claimToken,
-		State: storedStateDelivered, RequiredState: storedStatePending,
-	})
-	if err != nil {
-		return fmt.Errorf("%w: could not record the delivery receipt: %w", agent.ErrDeliveryUncertain, err)
+	if err := svc.deliverControlOperation(deliveryID, func() error {
+		return svc.executeControlResponse(agentID, dbAgent, plan)
+	}); err != nil {
+		return err
 	}
 	answer, err := readAnswer()
 	if err != nil {
 		return err
 	}
-	return svc.finalizeControlResponse(answer)
-}
-
-// recordControlResponseDeliveryFailure marks the reservation that a refused
-// delivery left behind. An UNCERTAIN delivery keeps the reservation, so no
-// retry can send the answer a second time. Every other failure releases it back
-// to PENDING, where a retry sends the answer again.
-//
-// A response that carries no request id reserved nothing, so there is nothing to
-// record.
-func (svc *Service) recordControlResponseDeliveryFailure(agentID, requestID, claimToken string, deliveryErr error) error {
-	if requestID == "" {
-		return nil
-	}
-	if errors.Is(deliveryErr, agent.ErrDeliveryUncertain) {
-		_, err := svc.Queries.SetControlResponseDeliveryState(bgCtx(), db.SetControlResponseDeliveryStateParams{
-			AgentID: agentID, RequestID: requestID, ClaimToken: claimToken,
-			State: storedStateUncertain, RequiredState: storedStatePending,
-		})
-		return err
-	}
-	return svc.Queries.ReleaseUnsentControlResponseAnswer(bgCtx(), db.ReleaseUnsentControlResponseAnswerParams{
-		AgentID: agentID, RequestID: requestID, ClaimToken: claimToken, State: storedStatePending,
-	})
+	return svc.resumeControlResponseFinalization(answer)
 }
 
 // approvedClearContext identifies an approval that requests a fresh context.

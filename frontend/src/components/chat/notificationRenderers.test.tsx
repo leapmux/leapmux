@@ -872,7 +872,7 @@ describe('renderNotificationBlocks auto-review', () => {
     fireEvent.click(button)
     expect(approveDenied).toHaveBeenCalledTimes(1)
     settle().resolve()
-    await waitFor(() => expect(container.querySelector('[data-testid="auto-review-approved"]')?.textContent).toBe('Approved for one retry'))
+    await waitFor(() => expect(container.querySelector('[data-testid="auto-review-approved"]')?.textContent).toBe('Approved'))
     expect(container.querySelector('[data-testid="auto-review-approve"]')).toBeNull()
   })
 
@@ -917,12 +917,12 @@ describe('renderNotificationBlocks auto-review', () => {
     settle().resolve()
     await waitFor(() => expect(container.querySelector('[data-testid="auto-review-approved"]')).not.toBeNull())
     setOffered(false)
-    expect(container.querySelector('[data-testid="auto-review-approved"]')?.textContent).toBe('Approved for one retry')
+    expect(container.querySelector('[data-testid="auto-review-approved"]')?.textContent).toBe('Approved')
   })
 
   it('states a recorded approval without the capability', () => {
     const { container } = renderBlock({ ...deniedBlock, approved: true })
-    expect(container.querySelector('[data-testid="auto-review-approved"]')?.textContent).toBe('Approved for one retry')
+    expect(container.querySelector('[data-testid="auto-review-approved"]')?.textContent).toBe('Approved')
     expect(container.querySelector('[data-testid="auto-review-approve"]')).toBeNull()
   })
 
@@ -947,7 +947,7 @@ describe('renderNotificationBlocks auto-review', () => {
 
   it('renders the two worker notices of the auto-review flow', () => {
     expect(renderText([{ type: NOTIFICATION_TYPE.AutoReviewApproved, review_id: 'r1' }], AgentProvider.CODEX))
-      .toBe('You approved one retry of an action that auto-review denied.')
+      .toBe('You approved an action that auto-review denied.')
     expect(renderText([{ type: NOTIFICATION_TYPE.PendingRequestsApproved, count: 1 }], AgentProvider.CODEX))
       .toBe('Bypass permissions approved 1 pending request.')
   })

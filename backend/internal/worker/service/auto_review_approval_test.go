@@ -215,6 +215,19 @@ func TestApproveAutoReviewDenial_CompletedClaimPreventsAnotherDelivery(t *testin
 	assert.Equal(t, []string{"review-1"}, approver.approvedReviews(), "the completed claim prevents the second call")
 }
 
+func TestApproveAutoReviewDenial_RefusesMetadataWithoutDelivery(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := setupTestService(t)
+	approver := &autoReviewApproverAgent{}
+	messageID := startAutoReviewAgent(t, svc, approver)
+	require.NoError(t, svc.Output.recordAutoReviewApproval("agent-1", messageID, "review-1"))
+	dbAgent, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
+	require.NoError(t, err)
+	err = svc.approveAutoReviewDenial(dbAgent, messageID, "review-1")
+	require.ErrorContains(t, err, "approval metadata has no delivery record")
+	assert.Empty(t, approver.approvedReviews())
+}
+
 // TestApproveAutoReviewDenial_KeepsTheRecordThroughAMerge covers a later review that
 // Codex reports right after the approval: the worker merges it into the same row, and
 // the merge keeps the row's record.
@@ -223,10 +236,20 @@ func TestApproveAutoReviewDenial_KeepsTheRecordThroughAMerge(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	approver := &autoReviewApproverAgent{}
 	messageID, sink := startAutoReviewAgentWithSink(t, svc, approver)
+	// Pause confirmed delivery after the row update and before the approval notice.
+	deliveryID, err := reserveControlDelivery(svc.DB, controlDeliveryIdentity{
+		agentID: "agent-1", kind: leapmuxv1.ControlDeliveryKind_CONTROL_DELIVERY_KIND_AUTO_REVIEW_APPROVAL,
+		operationID: "review-1", instanceID: "thread-1",
+	}, func(queries *db.Queries, deliveryID string) (int64, error) {
+		return queries.StoreAutoReviewApproval(t.Context(), db.StoreAutoReviewApprovalParams{DeliveryID: deliveryID, AgentID: "agent-1", MessageID: messageID})
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, deliveryID)
+	require.NoError(t, setControlDeliveryState(svc.Queries, deliveryID, storedStatePending, storedStateDelivered))
 	require.NoError(t, svc.Output.recordAutoReviewApproval("agent-1", messageID, "review-1"))
 
 	second := strings.Replace(autoReviewTestRow, `"reviewId":"review-1"`, `"reviewId":"review-2"`, 1)
-	_, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(second)})
+	_, err = sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(second)})
 	require.NoError(t, err)
 
 	row, err := svc.Queries.GetMessageByAgentAndID(t.Context(), db.GetMessageByAgentAndIDParams{ID: messageID, AgentID: "agent-1"})
@@ -397,11 +420,18 @@ func TestApproveAutoReviewDenial_RefusesAConcurrentApproval(t *testing.T) {
 	messageID := startAutoReviewAgent(t, svc, approver)
 	dbAgent, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
 	require.NoError(t, err)
-	svc.autoReviewApprovals.Store(dbAgent.ID+"\x00review-1", struct{}{})
+	deliveryID, err := reserveControlDelivery(svc.DB, controlDeliveryIdentity{
+		agentID: dbAgent.ID, kind: leapmuxv1.ControlDeliveryKind_CONTROL_DELIVERY_KIND_AUTO_REVIEW_APPROVAL,
+		operationID: "review-1", instanceID: "thread-1",
+	}, func(queries *db.Queries, deliveryID string) (int64, error) {
+		return queries.StoreAutoReviewApproval(t.Context(), db.StoreAutoReviewApprovalParams{DeliveryID: deliveryID, AgentID: dbAgent.ID, MessageID: messageID})
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, deliveryID)
 
 	err = svc.approveAutoReviewDenial(dbAgent, messageID, "review-1")
 
-	require.ErrorIs(t, err, errAutoReviewApprovalInFlight)
+	require.ErrorIs(t, err, agent.ErrDeliveryUncertain)
 	assert.Empty(t, approver.approvedReviews())
 }
 
@@ -421,9 +451,7 @@ func TestRecordAutoReviewApproval_WritesNothingForARecordedReview(t *testing.T) 
 	assert.Equal(t, []string{"review-1"}, recordedApprovals(t, svc, messageID))
 }
 
-// TestApproveAutoReviewDenial_RefusesADamagedRecord covers a record that the worker
-// cannot read: the approval fails before it reaches the provider, because the record
-// cannot state whether an earlier approval already did.
+// Validate transcript metadata before delivery so malformed data cannot prevent finalization afterward.
 func TestApproveAutoReviewDenial_RefusesADamagedRecord(t *testing.T) {
 	t.Parallel()
 	svc, _, _ := setupTestService(t)
@@ -480,7 +508,7 @@ func TestApproveAutoReviewDenial_ResumesAfterARecordFails(t *testing.T) {
 		},
 		{
 			name:        "the completion receipt",
-			trigger:     `CREATE TRIGGER fail_completion BEFORE UPDATE OF state ON auto_review_approvals WHEN NEW.state=3 BEGIN SELECT RAISE(ABORT, 'completion storage failed'); END`,
+			trigger:     `CREATE TRIGGER fail_completion BEFORE UPDATE OF state ON control_deliveries WHEN NEW.state=4 BEGIN SELECT RAISE(ABORT, 'completion storage failed'); END`,
 			dropTrigger: `DROP TRIGGER fail_completion`,
 			wantRecord:  []string{"review-1"},
 			wantNotices: 1,
@@ -519,8 +547,8 @@ func TestApproveAutoReviewDenial_DoesNotRepeatUncertainDelivery(t *testing.T) {
 	dbAgent, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
 	require.NoError(t, err)
 	require.ErrorIs(t, svc.approveAutoReviewDenial(dbAgent, messageID, "review-1"), agent.ErrDeliveryUncertain)
-	// Remove all process-local coordination to model a new service instance.
-	svc.autoReviewApprovals = sync.Map{}
+	// A new service reads the same durable claim.
+	svc = &Service{DB: svc.DB, Queries: svc.Queries, Agents: svc.Agents, Output: svc.Output}
 	require.ErrorIs(t, svc.approveAutoReviewDenial(dbAgent, messageID, "review-1"), agent.ErrDeliveryUncertain)
 	assert.Equal(t, []string{"review-1"}, approver.approvedReviews())
 	assert.Empty(t, recordedApprovals(t, svc, messageID))
@@ -531,7 +559,7 @@ func TestApproveAutoReviewDenial_RequiresADurableClaim(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	approver := &autoReviewApproverAgent{}
 	messageID := startAutoReviewAgent(t, svc, approver)
-	_, err := svc.DB.ExecContext(t.Context(), `CREATE TRIGGER refuse_claim BEFORE INSERT ON auto_review_approvals BEGIN SELECT RAISE(ABORT, 'claim failed'); END`)
+	_, err := svc.DB.ExecContext(t.Context(), `CREATE TRIGGER refuse_claim BEFORE INSERT ON auto_review_approval_payloads BEGIN SELECT RAISE(ABORT, 'claim failed'); END`)
 	require.NoError(t, err)
 	dbAgent, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
 	require.NoError(t, err)
@@ -544,7 +572,7 @@ func TestApproveAutoReviewDenial_RetainsAClaimWithoutADeliveryReceipt(t *testing
 	svc, _, _ := setupTestService(t)
 	approver := &autoReviewApproverAgent{}
 	messageID := startAutoReviewAgent(t, svc, approver)
-	_, err := svc.DB.ExecContext(t.Context(), `CREATE TRIGGER refuse_receipt BEFORE UPDATE OF state ON auto_review_approvals WHEN NEW.state=2 BEGIN SELECT RAISE(ABORT, 'receipt failed'); END`)
+	_, err := svc.DB.ExecContext(t.Context(), `CREATE TRIGGER refuse_receipt BEFORE UPDATE OF state ON control_deliveries WHEN NEW.state=3 BEGIN SELECT RAISE(ABORT, 'receipt failed'); END`)
 	require.NoError(t, err)
 	dbAgent, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
 	require.NoError(t, err)
@@ -589,7 +617,7 @@ func TestApproveAutoReviewDenial_DurableClaimRejectsAnotherService(t *testing.T)
 	case <-ctx.Done():
 		t.Fatal("the provider did not receive the approval")
 	}
-	require.ErrorIs(t, svc.approveAutoReviewDenial(dbAgent, messageID, "review-1"), errAutoReviewApprovalInFlight)
+	require.ErrorIs(t, svc.approveAutoReviewDenial(dbAgent, messageID, "review-1"), agent.ErrDeliveryUncertain)
 	other := &Service{Queries: svc.Queries, Agents: svc.Agents, Output: svc.Output}
 	err = other.approveAutoReviewDenial(dbAgent, messageID, "review-1")
 	releaseOnce()

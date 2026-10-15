@@ -26,6 +26,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude/claudetest"
+	"github.com/leapmux/leapmux/internal/worker/db/dbtest"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/inputqueue"
 )
@@ -1704,10 +1705,10 @@ func TestControlInputWaitsForAnApprovalThatIsStillPending(t *testing.T) {
 	t.Parallel()
 	svc, _, _ := setupTestService(t)
 	startEchoAgent(t, svc, "agent-1")
-	_, err := svc.DB.ExecContext(t.Context(), `INSERT INTO control_response_answers
-		(agent_id, request_id, claim_token, state, agent_session_id, input_id, feedback, agent_provider)
-		VALUES ('agent-1', 'request', 'claim', ?, 'session-1', 'feedback-input', 'feedback', ?)`,
-		int64(storedStatePending), int64(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX))
+	err := dbtest.StoreControlResponse(t.Context(), svc.DB, db.ControlResponseAnswer{
+		AgentID: "agent-1", RequestID: "request", ClaimToken: "claim", State: storedStatePending,
+		AgentSessionID: "session-1", InputID: "feedback-input", Feedback: "feedback", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	})
 	require.NoError(t, err)
 	item := inputqueue.DispatchItem{StoredItem: inputqueue.StoredItem{
 		ID: "feedback-input", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK, Text: "feedback",

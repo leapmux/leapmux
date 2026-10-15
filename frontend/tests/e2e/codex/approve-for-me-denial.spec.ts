@@ -12,7 +12,7 @@ import { CODEX_MANUAL_APPROVAL_PREFIX, codexAutoReviewRule, codexManualApproval 
 
 const REVIEW_RULE = 'codex-auto-review-denies'
 const RATIONALE = 'The scripted fixture treats this write as untrusted.'
-const APPROVED_NOTICE = 'You approved one retry of an action that auto-review denied.'
+const APPROVED_NOTICE = 'You approved an action that auto-review denied.'
 
 codexTest('records the reader\'s approval of an action that Codex auto-review denied', async ({ native }) => {
   const { page, modelScript } = native
@@ -48,8 +48,11 @@ codexTest('records the reader\'s approval of an action that Codex auto-review de
   await expect(review).toContainText('Auto-review denied (high risk)')
   await expect(review).toContainText(RATIONALE)
 
-  await review.getByTestId('auto-review-approve').click()
-  await expect(review.getByTestId('auto-review-approved')).toHaveText('Approved for one retry')
+  const approve = review.getByTestId('auto-review-approve')
+  await approve.hover()
+  await expect(visibleOnly(page.getByRole('tooltip'))).toHaveText('Record your approval of this action. This does not run the action.')
+  await approve.click()
+  await expect(review.getByTestId('auto-review-approved')).toHaveText('Approved')
   await expect(visibleOnly(page.getByText(APPROVED_NOTICE))).toHaveCount(1)
 
   // Codex starts no turn for the approval. It states the approval to the model in the next request of the thread.
@@ -70,7 +73,7 @@ codexTest('records the reader\'s approval of an action that Codex auto-review de
   await page.reload()
   await waitForSettingsHydrated(page, 'permissionMode')
   const reloadedReview = messageContents(page).getByTestId('auto-review').filter({ hasText: file })
-  await expect(reloadedReview.getByTestId('auto-review-approved')).toHaveText('Approved for one retry')
+  await expect(reloadedReview.getByTestId('auto-review-approved')).toHaveText('Approved')
   await expect(reloadedReview.getByTestId('auto-review-approve')).toHaveCount(0)
   await expect(visibleOnly(page.getByText(APPROVED_NOTICE))).toHaveCount(1)
   expect((await modelScript.status()).ruleMatches[REVIEW_RULE]).toBe(1)

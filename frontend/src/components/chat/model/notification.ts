@@ -94,10 +94,10 @@ export type AutoReviewRisk = 'low' | 'medium' | 'high' | 'critical'
  * reader.
  *
  * `action` is a one-line summary of what the agent asked to do. `approvable` states
- * that the reader can approve one retry of a denied action. The provider decides it,
+ * that the reader can approve the denied action. The provider decides it,
  * because only the provider knows whether its agent accepts that approval.
  *
- * `approved` states that the reader already approved one retry. LeapMux records that
+ * `approved` states that the reader already approved the action. LeapMux records that
  * approval on the row that holds the review, so only {@link withApprovedReviews} sets
  * it, from the row's own metadata. A provider never sets it.
  */

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/worker/db/dbtest"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/inputqueue"
 	"github.com/stretchr/testify/assert"
@@ -93,11 +94,10 @@ func TestControlFeedbackCannotReachAReplacementSession(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	startEchoAgent(t, svc, "agent-1")
 	require.NoError(t, svc.Queries.UpdateAgentSessionID(t.Context(), db.UpdateAgentSessionIDParams{ID: "agent-1", AgentSessionID: "new-session"}))
-	_, err := svc.DB.ExecContext(t.Context(), `INSERT INTO control_response_answers
-		(agent_id, request_id, claim_token, state, agent_session_id, input_id, feedback, agent_provider)
-		VALUES ('agent-1', 'request', 'claim', ?, 'old-session', 'feedback-input', 'feedback', ?)`,
-		int64(leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_COMPLETED),
-		int64(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX))
+	err := dbtest.StoreControlResponse(t.Context(), svc.DB, db.ControlResponseAnswer{
+		AgentID: "agent-1", RequestID: "request", ClaimToken: "claim", State: storedStateCompleted,
+		AgentSessionID: "old-session", InputID: "feedback-input", Feedback: "feedback", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	})
 	require.NoError(t, err)
 	item := inputqueue.DispatchItem{StoredItem: inputqueue.StoredItem{
 		ID: "feedback-input", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK, Text: "feedback",

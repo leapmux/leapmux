@@ -16,14 +16,7 @@ import (
 var errControlResponseAlreadyFinalized = errors.New("the control response is already finalized")
 
 func (svc *Service) resumeControlResponseFinalization(answer db.ControlResponseAnswer) error {
-	switch answer.State {
-	case storedStateCompleted:
-		return nil
-	case storedStateDelivered:
-		return svc.finalizeControlResponse(answer)
-	default:
-		return fmt.Errorf("%w: this control response has no confirmed delivery", agent.ErrDeliveryUncertain)
-	}
+	return resumeControlDelivery(answer.State, func() error { return svc.finalizeControlResponse(answer) })
 }
 
 func controlResponsePlanFromAnswer(registry *agent.Registry, answer db.ControlResponseAnswer) (controlResponsePlan, error) {
@@ -85,14 +78,11 @@ func (svc *Service) finalizeControlResponse(answer db.ControlResponseAnswer) err
 	var removed db.ControlRequest
 	apply := func(tx *sql.Tx) error {
 		queries := svc.Queries.WithTx(tx)
-		completed, err := queries.CompleteControlResponseAnswer(ctx, db.CompleteControlResponseAnswerParams{
-			State: storedStateCompleted, RequiredState: storedStateDelivered,
-			AgentID: agentID, RequestID: answer.RequestID, ClaimToken: answer.ClaimToken,
-		})
+		completed, err := completeControlDelivery(queries, answer.DeliveryID)
 		if err != nil {
 			return err
 		}
-		if completed == 0 {
+		if !completed {
 			return errControlResponseAlreadyFinalized
 		}
 		if write != nil {

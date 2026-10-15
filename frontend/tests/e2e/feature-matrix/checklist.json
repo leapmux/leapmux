@@ -4902,7 +4902,7 @@
       },
       "codex": {
         "support": "supported",
-        "userNote": "Smart permissions selects Codex's auto-review, which Codex calls Approve for me. A reviewer agent decides each approval request, and you can approve one retry of a denied action from its row.",
+        "userNote": "Smart permissions selects Codex's auto-review, which Codex calls Approve for me. A reviewer agent decides each approval request. You can record your approval of a denied action from its row.",
         "detailNote": "Smart selects approvalPolicy on-request with approvalsReviewer auto_review on the :workspace permission profile. The Codex TUI and the ChatGPT app give Approve for me the same three values. A change reaches the running thread through thread/settings/update, and turn/settings/update moves the reviewer of an active turn. LeapMux hides the shortcut when configRequirements/read or config/read refuses auto-review.\n\nThe spec scripts the reviewer's own model request and proves that an escalated write outside the workspace runs with no prompt, before and after a reload. approve-for-me-denial.spec.ts proves the Approve action of a denied review: Codex states the approval to the model in the next request through thread/approveGuardianDeniedAction. Tested version: codex-cli 0.162.1.",
         "spec": "frontend/tests/e2e/codex/smart-permissions-shortcut.spec.ts",
         "audit": "covered",

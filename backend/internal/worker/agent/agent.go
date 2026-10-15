@@ -752,8 +752,8 @@ type ContextCompactor interface {
 	CompactContext() error
 }
 
-// AutoReviewDenialApprover records the user's approval of one action that the
-// provider's automatic reviewer denied, so the agent may retry that action once.
+// AutoReviewDenialApprover records authorization for an action that the automatic reviewer denied.
+// Recording approval does not execute the action.
 // Providers without an automatic reviewer do not implement this interface.
 //
 // entries are the raw entries of the transcript row that holds the denied review,

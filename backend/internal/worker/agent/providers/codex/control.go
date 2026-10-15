@@ -224,9 +224,9 @@ type codexAutoReviewCompleted struct {
 	Action json.RawMessage `json:"action"`
 }
 
-// ApproveAutoReviewDenial records the user's approval of one denied review, so the
-// agent may retry the action once. Codex records the approval in the thread and
-// starts no turn, so the next request to the model carries it.
+// ApproveAutoReviewDenial records authorization for an action that automatic review denied.
+// Codex adds the approval to the thread's context without starting a turn.
+// The next model request carries the approval. Codex does not enforce a one-use execution limit.
 func (a *Agent) ApproveAutoReviewDenial(entries []json.RawMessage, reviewID string) error {
 	review, err := findCodexAutoReview(entries, reviewID)
 	if err != nil {

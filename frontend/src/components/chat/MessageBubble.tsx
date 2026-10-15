@@ -152,9 +152,8 @@ export interface MessageBubbleHost {
    */
   onOpenImage?: ((image: { seq: bigint, index: number, filePath?: string, title: string }) => void) | undefined
   /**
-   * Record the reader's approval of one denied automatic review in this row, so the
-   * agent may retry the action once. Absent when the agent cannot accept it, which
-   * hides the control.
+   * Record the reader's authorization for an action that automatic review denied in this row.
+   * The control stays hidden while the agent cannot accept approval.
    */
   onApproveAutoReviewDenial?: ((messageId: string, reviewId: string) => Promise<void>) | undefined
   /** Lifted per-message diff view override, managed by ChatView. */

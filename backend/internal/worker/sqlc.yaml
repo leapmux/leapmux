@@ -92,14 +92,34 @@ sql:
             go_type:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
               type: "BackgroundTaskStatus"
+          - column: "control_deliveries.state"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "ControlDeliveryState"
+          - column: "control_deliveries.kind"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "ControlDeliveryKind"
+          - column: "control_response_payloads.kind"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "ControlDeliveryKind"
+          - column: "auto_review_approval_payloads.kind"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "ControlDeliveryKind"
           - column: "control_response_answers.state"
             go_type:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-              type: "ControlResponseState"
+              type: "ControlDeliveryState"
           - column: "auto_review_approvals.state"
             go_type:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-              type: "AutoReviewApprovalState"
+              type: "ControlDeliveryState"
+          - column: "control_response_payloads.agent_provider"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "AgentProvider"
           - column: "control_response_answers.agent_provider"
             go_type:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"

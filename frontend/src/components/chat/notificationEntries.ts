@@ -30,7 +30,7 @@ export type NotificationBlock
     /**
      * One automatic review. `title` states the outcome and the action, and
      * `approvable` lets the renderer offer the reader's approval of a denial.
-     * `approved` states that the reader already approved one retry.
+     * `approved` states that the reader already approved the action.
      */
     | { kind: 'auto-review', reviewId: string, outcome: AutoReviewOutcome, title: string, rationale?: string, approvable: boolean, approved: boolean }
 
@@ -48,9 +48,9 @@ export const COMPACTING_LABEL = 'Compacting context...'
 // The reader's approval of a denied auto-review. The button states the action, and the
 // row states the result after the worker records it.
 export const AUTO_REVIEW_APPROVE_LABEL = 'Approve'
-export const AUTO_REVIEW_APPROVED_LABEL = 'Approved for one retry'
-export const AUTO_REVIEW_APPROVE_TOOLTIP = 'Record your approval so the agent can retry this action once. It does not run the action.'
-const AUTO_REVIEW_APPROVED_NOTICE = 'You approved one retry of an action that auto-review denied.'
+export const AUTO_REVIEW_APPROVED_LABEL = 'Approved'
+export const AUTO_REVIEW_APPROVE_TOOLTIP = 'Record your approval of this action. This does not run the action.'
+const AUTO_REVIEW_APPROVED_NOTICE = 'You approved an action that auto-review denied.'
 const AUTO_REVIEW_TITLES: Record<AutoReviewOutcome, string> = {
   'approved': 'Auto-review approved',
   'denied': 'Auto-review denied',

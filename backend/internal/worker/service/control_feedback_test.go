@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/worker/db/dbtest"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/inputqueue"
 	"github.com/stretchr/testify/assert"
@@ -32,7 +33,7 @@ func TestControlFeedbackInputPreservesTextAndIdentifiesTheRejection(t *testing.T
 func TestControlFeedbackInputRetainsDatabaseErrors(t *testing.T) {
 	t.Parallel()
 	svc, _, _ := setupTestService(t)
-	_, err := svc.DB.ExecContext(t.Context(), "DROP TABLE control_response_answers")
+	_, err := svc.DB.ExecContext(t.Context(), "DROP TABLE control_response_payloads")
 	require.NoError(t, err)
 	resolved, err := svc.resolveControlInput(inputqueue.DispatchItem{StoredItem: inputqueue.StoredItem{
 		AgentID: "agent-1", ID: "feedback", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK, Text: "keep this text",
@@ -48,21 +49,22 @@ func TestApprovalLinkedInputKeepsItsProviderSession(t *testing.T) {
 	} {
 		for _, tc := range []struct {
 			name, session string
-			state         leapmuxv1.ControlResponseState
+			state         leapmuxv1.ControlDeliveryState
 			provider      leapmuxv1.AgentProvider
 			wantError     bool
 		}{
-			{"matching", "original", leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_COMPLETED, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, false},
-			{"replacement", "replacement", leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_COMPLETED, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, true},
-			{"different provider", "original", leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_COMPLETED, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, true},
-			{"unrecorded approval", "original", leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_DELIVERED, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, true},
+			{"matching", "original", leapmuxv1.ControlDeliveryState_CONTROL_DELIVERY_STATE_COMPLETED, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, false},
+			{"replacement", "replacement", leapmuxv1.ControlDeliveryState_CONTROL_DELIVERY_STATE_COMPLETED, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, true},
+			{"different provider", "original", leapmuxv1.ControlDeliveryState_CONTROL_DELIVERY_STATE_COMPLETED, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, true},
+			{"unrecorded approval", "original", leapmuxv1.ControlDeliveryState_CONTROL_DELIVERY_STATE_DELIVERED, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, true},
 		} {
 			t.Run(kind.String()+"/"+tc.name, func(t *testing.T) {
 				svc, _, _ := setupTestService(t)
 				createClaimTestAgent(t, svc, "agent-1")
-				_, err := svc.DB.ExecContext(t.Context(), `INSERT INTO control_response_answers
-                    (agent_id, request_id, state, input_id, agent_session_id, agent_provider)
-                    VALUES ('agent-1','approval',?,'input','original',?)`, int64(tc.state), leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+				err := dbtest.StoreControlResponse(t.Context(), svc.DB, db.ControlResponseAnswer{
+					AgentID: "agent-1", RequestID: "approval", State: tc.state, InputID: "input",
+					AgentSessionID: "original", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+				})
 				require.NoError(t, err)
 				original := "  Keep the approved text.\n"
 				resolved, err := svc.resolveControlInput(inputqueue.DispatchItem{StoredItem: inputqueue.StoredItem{

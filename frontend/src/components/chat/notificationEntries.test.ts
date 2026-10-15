@@ -161,7 +161,7 @@ describe('pendingRequestsApprovedLabel', () => {
 describe('leapmuxNotificationEntry auto-review notices', () => {
   it('states the approval of a denied review', () => {
     expect(leapmuxNotificationEntry({ type: NOTIFICATION_TYPE.AutoReviewApproved, [NOTIFICATION_FIELD.ReviewID]: 'r1' }, AgentProvider.CODEX))
-      .toEqual([{ kind: 'text', text: 'You approved one retry of an action that auto-review denied.' }])
+      .toEqual([{ kind: 'text', text: 'You approved an action that auto-review denied.' }])
   })
 
   it('states how many pending requests Bypass approved', () => {

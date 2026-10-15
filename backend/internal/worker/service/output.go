@@ -584,12 +584,14 @@ func (h *OutputHandler) ForgetChildSinks(rootID string) {
 
 // claimControlResponseAnswer reserves one request instance before delivery.
 // A database failure must prevent delivery because the worker cannot establish ownership.
-func (h *OutputHandler) claimControlResponseAnswer(params db.ClaimControlResponseAnswerParams) (bool, error) {
-	rows, err := h.queries.ClaimControlResponseAnswer(bgCtx(), params)
-	if err != nil {
-		return false, err
-	}
-	return rows > 0, nil
+func (h *OutputHandler) claimControlResponseAnswer(params db.StoreControlResponseAnswerParams) (string, error) {
+	return reserveControlDelivery(h.db, controlDeliveryIdentity{
+		agentID: params.AgentID, kind: leapmuxv1.ControlDeliveryKind_CONTROL_DELIVERY_KIND_CONTROL_RESPONSE,
+		operationID: params.RequestID, instanceID: params.ClaimToken,
+	}, func(queries *db.Queries, deliveryID string) (int64, error) {
+		params.DeliveryID = deliveryID
+		return queries.StoreControlResponseAnswer(bgCtx(), params)
+	})
 }
 
 // TrackedAgentIDs returns the set of agent ids that currently hold any in-memory
