@@ -5,7 +5,8 @@ import type { ManagedNativeScenarioContext, NativeScenarioContext } from './nati
 import type { QuestionRequest } from './providerToolCalls'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { ASKED_QUESTIONS_ANSWER, ASKED_QUESTIONS_CALL_ID, askQuestions, chooseQuestionOption, chooseQuestionOptionWithNote, chooseQuestionPages, exerciseQuestionAnswer, exerciseQuestionCancellation, pickQuestionOption, restoreQuestionSelection, restoreQuestionTextDraft } from './nativeQuestion'
+import { ASKED_QUESTIONS_ANSWER, ASKED_QUESTIONS_CALL_ID, askQuestions, chooseQuestionOption, chooseQuestionOptionWithNote, chooseQuestionPages, exerciseQuestionAnswer, exerciseQuestionCancellation, pickQuestionOption } from './nativeQuestion'
+import { restoreQuestionSelection, restoreQuestionTextDraft } from './nativeQuestionRestoration'
 import { askUserQuestionToolCall } from './providerToolCalls'
 
 /** The browser steps that the helper takes, in order. */

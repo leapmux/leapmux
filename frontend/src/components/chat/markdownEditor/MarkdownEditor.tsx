@@ -16,7 +16,7 @@ import { dismissSoftKeyboard, isSoftKeyboardVisible } from '~/lib/softKeyboard'
 import { syntaxThemeGeneration } from '~/lib/syntaxThemeStore'
 import { errorText } from '~/styles/shared.css'
 import { CodeLanguagePopover } from './CodeLanguagePopover'
-import { isBlankEditorDocument, serializeEditorDocument } from './documentMarkdown'
+import { serializeEditorDocument } from './documentMarkdown'
 import { clearDraft, createDraftSwapper, restoreCursor, saveDraftFromEditor } from './draftManagement'
 import { applyCodeBlockLanguage, applyLinkHref, removeLinkRange } from './editorCommands'
 import { createEditorLayout } from './editorLayout'
@@ -362,15 +362,6 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
    * that only drifts.
    */
   const emitDocument = (markdown: string) => {
-    if (editorInstance) {
-      try {
-        editorInstance.action((ctx: Ctx) => {
-          if (isBlankEditorDocument(ctx.get(editorViewCtx).state.doc))
-            markdown = ''
-        })
-      }
-      catch { /* The editor can be unavailable during teardown. Keep the reported snapshot. */ }
-    }
     onMarkdownChangeRef?.(markdown)
     onContentChangeRef?.(markdown.trim().length > 0)
   }

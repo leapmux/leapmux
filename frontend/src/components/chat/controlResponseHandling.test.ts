@@ -12,6 +12,7 @@ import { flushStorageWrites, localStorageLoad, localStorageStore, PREFIX_CONTROL
 import { useTestStorage } from '~/test-support/persistentStorage'
 import { useControlResponseHandling } from './controlResponseHandling'
 import { createControlAnswerState } from './controls/types'
+import { getCursorQuestions, sendCursorQuestionResponse } from './providers/cursor/askUserQuestion'
 
 // The asynchronous storage tier has no in-memory mirror, so these round-trips
 // need a database to round-trip through.
@@ -43,6 +44,39 @@ function setup(overrides?: Partial<ControlResponseHandlingProps>) {
 }
 
 describe('questions with selected answers only', () => {
+  it('restores a selected answer without hidden custom text', async () => {
+    const request: ControlRequest = {
+      agentId: 'test-agent',
+      requestId: 'cursor-restored',
+      claimToken: 'cursor-token',
+      payload: { method: 'cursor/ask_question', params: { questions: [{ id: 'q', prompt: 'Choose', options: [{ id: 'first', label: 'First' }] }] } },
+    }
+    localStorageStore(`${PREFIX_CONTROL_STATE}test-agent:cursor-restored:cursor-token`, {
+      selections: { 0: ['first'] },
+      customTexts: { 0: 'An old draft' },
+      currentPage: 0,
+    })
+    await flushStorageWrites()
+    const state = createControlAnswerState()
+    const { handling, dispose } = createRoot(dispose => ({
+      dispose,
+      handling: useControlResponseHandling({ agentId: 'test-agent', agent: { agentProvider: AgentProvider.CURSOR }, controlRequests: [request], onSendMessage: vi.fn() }, state, () => undefined, vi.fn()),
+    }))
+    try {
+      await vi.waitFor(() => expect(state.selections()).toEqual({ 0: ['first'] }))
+      expect(handling.editorPurpose()).toBe('none')
+      expect(state.customTexts()[0] ?? '').toBe('')
+      const send = vi.fn().mockResolvedValue(undefined)
+      await sendCursorQuestionResponse(send, request.requestId, getCursorQuestions(request.payload), state)
+      expect(JSON.parse(new TextDecoder().decode(send.mock.calls[0]![0]))).toMatchObject({
+        result: { outcome: { answers: [{ questionId: 'q', selectedOptionIds: ['first'] }] } },
+      })
+    }
+    finally {
+      dispose()
+    }
+  })
+
   it('offers no custom editor and refuses an indirect text submission', async () => {
     const request: ControlRequest = {
       agentId: 'test-agent',
@@ -254,6 +288,76 @@ describe('restoring saved answers', () => {
   function answerKey(request: ControlRequest): AsyncLocalKey {
     return `${PREFIX_CONTROL_STATE}test-agent:${request.requestId}:${request.claimToken}`
   }
+
+  it('preserves a valid later page and its permitted custom answer', async () => {
+    const request = askRequest('later-page', 'later-token')
+    request.payload = { request: { tool_name: 'AskUserQuestion', input: { questions: [
+      { question: 'First question', options: [{ label: 'Build' }] },
+      { question: 'Second question', options: [{ label: 'Test' }] },
+    ] } } }
+    localStorageStore(answerKey(request), { selections: { 0: ['Build'] }, customTexts: { 1: 'A custom answer.' }, currentPage: 1 })
+    await flushStorageWrites()
+    const state = createControlAnswerState()
+    const dispose = createRoot((dispose) => {
+      useControlResponseHandling({ agentId: 'test-agent', agent: { agentProvider: AgentProvider.CLAUDE_CODE }, controlRequests: [request], onSendMessage: vi.fn() }, state, () => undefined, vi.fn())
+      return dispose
+    })
+    try {
+      await vi.waitFor(() => expect(state.customTexts()).toEqual({ 1: 'A custom answer.' }))
+      expect(state.currentPage()).toBe(1)
+      expect(state.selections()).toEqual({ 0: ['Build'] })
+    }
+    finally {
+      dispose()
+    }
+  })
+
+  it('rejects malformed stored fields while preserving valid falsy values', async () => {
+    const request = askRequest('malformed-fields', 'fields-token')
+    localStorageStore(answerKey(request), {
+      selections: { 0: 1 },
+      customTexts: { 0: false },
+      currentPage: {},
+      switches: { valid: false, invalid: 'false' },
+      choices: { valid: '', invalid: 0 },
+    })
+    await flushStorageWrites()
+    const state = createControlAnswerState()
+    const dispose = createRoot((dispose) => {
+      useControlResponseHandling({ agentId: 'test-agent', controlRequests: [request], onSendMessage: vi.fn() }, state, () => undefined, vi.fn())
+      return dispose
+    })
+    try {
+      await vi.waitFor(() => expect(state.switches()).toEqual({ valid: false }))
+      expect(state.choices()).toEqual({ valid: '' })
+      expect(state.selections()).toEqual({})
+      expect(state.customTexts()).toEqual({})
+      expect(state.currentPage()).toBe(0)
+    }
+    finally {
+      dispose()
+    }
+  })
+
+  it.each([-1, 1, 1.5, 1_000_000, '0', null, false])('restores the first question for invalid saved page %s', async (currentPage) => {
+    const request = askRequest('invalid-page', 'page-token')
+    localStorageStore(answerKey(request), { selections: { 0: ['Test'] }, currentPage, customTexts: {} })
+    await flushStorageWrites()
+    const state = createControlAnswerState()
+    const { handling, dispose } = createRoot(dispose => ({
+      dispose,
+      handling: useControlResponseHandling({ agentId: 'test-agent', agent: { agentProvider: AgentProvider.CLAUDE_CODE }, controlRequests: [request], onSendMessage: vi.fn(), onControlResponse: vi.fn().mockResolvedValue(true) }, state, () => undefined, vi.fn()),
+    }))
+    try {
+      await vi.waitFor(() => expect(state.selections()).toEqual({ 0: ['Test'] }))
+      expect(state.currentPage()).toBe(0)
+      expect(handling.editorPurpose()).toBe('answer')
+      expect(await handling.handleControlSend('')).toBe(true)
+    }
+    finally {
+      dispose()
+    }
+  })
 
   it('fills the state in from the saved answers of the active request', async () => {
     const request = askRequest('ask-1', 'tok-1')

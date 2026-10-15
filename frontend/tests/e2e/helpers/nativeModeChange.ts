@@ -9,7 +9,7 @@ import { escapeRegExp } from '../../../src/lib/regexp'
 import { withCleanup } from './cleanup'
 import { isStoredMessageSeq, nativeMessageBody, readAllAgentMessages, sameAgentOwnership } from './nativeMessages'
 import { currentNativeAgent } from './nativeScenario'
-import { copySettingsNotification } from './nativeSettings'
+import { copySettingsNotification } from './notificationCopy'
 import { thinkingIndicatorShownDuring } from './thinkingIndicatorWatch'
 import { chatScrollContainer, chooseSettingsOption, expectSettingsChip, scrollChatRowIntoView, visibleOnly, waitForSettingsIdle } from './ui'
 

@@ -131,14 +131,23 @@ export interface ClineOperation {
  * record, or the JSON text of either. A value that is none of them yields none.
  */
 export function clineOperations(output: unknown): ClineOperation[] {
-  const value = typeof output === 'string' ? parseJSON(output) : output
-  const records = Array.isArray(value) ? value : isObject(value) && 'query' in value ? [value] : []
-  return records.filter(isObject).map(record => ({
+  return clineOperationRecords(output).map(record => ({
     query: pickString(record, 'query'),
-    result: pickString(record, 'result'),
+    result: typeof record.result === 'string'
+      ? record.result
+      : Array.isArray(record.result)
+        ? record.result.filter((part): part is string => typeof part === 'string').join('\n')
+        : '',
     error: pickString(record, 'error'),
     success: record.success !== false,
   }))
+}
+
+/** Keep native operation records available to readers of structured result parts. */
+export function clineOperationRecords(output: unknown): Record<string, unknown>[] {
+  const value = typeof output === 'string' ? parseJSON(output) : output
+  const records = Array.isArray(value) ? value : isObject(value) && 'query' in value ? [value] : []
+  return records.filter(isObject)
 }
 
 /** The text of a result that is a string, or the JSON of one that is not. */

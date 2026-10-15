@@ -1,6 +1,7 @@
 import { expect } from '@playwright/test'
-import { chooseQuestionOption, chooseQuestionPages, exerciseQuestionAnswer, exerciseQuestionPreviews, restoreQuestionTextDraft } from '../helpers/nativeQuestion'
+import { chooseQuestionOption, chooseQuestionPages, exerciseQuestionAnswer, exerciseQuestionPreviews } from '../helpers/nativeQuestion'
 import { exerciseQuestionIsolation } from '../helpers/nativeQuestionIsolation'
+import { restoreQuestionTextDraft } from '../helpers/nativeQuestionRestoration'
 import { assistantBubbles, chatScrollContainer, controlButton, focusComposer, waitForControlBanner } from '../helpers/ui'
 import { piTest } from '../pi-fixtures'
 

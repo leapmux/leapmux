@@ -2,6 +2,7 @@ package qoder
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -36,6 +37,41 @@ func TestNativeAbortedAssistantRetainsCompletion(t *testing.T) {
 				} else {
 					assert.Empty(t, rows[0].Completion)
 				}
+			})
+		}
+	}
+}
+
+func TestChildAssistantRetainsNativeCompletion(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{"text", "thinking", "tool_use"} {
+		for _, aborted := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s/%t", kind, aborted), func(t *testing.T) {
+				t.Parallel()
+				a, sink, _ := newGoalAgent(t)
+				a.HandleOutput([]byte(qoderChildStarted))
+				child, found := sink.BackgroundTask("spawn-1")
+				require.True(t, found)
+				rootCount := len(sink.Messages())
+				raw, err := json.Marshal(map[string]any{
+					"type": "assistant", "parent_tool_use_id": "spawn-1", "session_id": "child-session", "aborted": aborted,
+					"message": map[string]any{"content": []any{map[string]any{
+						"type": kind, kind: "partial child output", "id": "child-call", "name": "Bash", "input": map[string]any{"command": "pwd"},
+					}}},
+				})
+				require.NoError(t, err)
+				a.HandleOutput(raw)
+				rows := sink.Child(child.ChildAgentID).Messages()
+				require.NotEmpty(t, rows)
+				row := rows[len(rows)-1]
+				assert.Equal(t, raw, row.Content)
+				assert.Equal(t, "child-session", row.AgentSessionID)
+				if aborted {
+					assert.Equal(t, agent.MessageCompletionInterrupted, row.Completion)
+				} else {
+					assert.Empty(t, row.Completion)
+				}
+				assert.Len(t, sink.Messages(), rootCount)
 			})
 		}
 	}

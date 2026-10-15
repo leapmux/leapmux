@@ -6,20 +6,18 @@ export function isBlankEditorDocument(document: Node): boolean {
   const schema = document.type.schema
   if (document.type !== schema.topNodeType)
     throw new Error('Editor content requires the schema document root.')
-  let blank = true
-  document.descendants((node) => {
-    if (!blank)
+  const isBlank = (node: Node): boolean => {
+    if (node.isText)
+      return !node.text?.trim()
+    if (node.type !== schema.topNodeType && node.type !== schema.nodes.paragraph && node.type !== schema.nodes.hardbreak)
       return false
-    if (node.isText) {
-      blank = !node.text?.trim()
-      return false
+    for (let index = 0; index < node.childCount; index++) {
+      if (!isBlank(node.child(index)))
+        return false
     }
-    if (node.type === schema.nodes.paragraph || node.type === schema.nodes.hardbreak)
-      return true
-    blank = false
-    return false
-  })
-  return blank
+    return true
+  }
+  return isBlank(document)
 }
 
 /** Empty paragraphs can serialize as HTML breaks. They still contain no message. */

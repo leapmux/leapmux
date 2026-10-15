@@ -1,7 +1,8 @@
 import type { QuestionRequest } from '../helpers/providerToolCalls'
 import { expect } from '@playwright/test'
-import { chooseQuestionOption, chooseQuestionOptionWithNote, exerciseQuestionAnswer, exerciseQuestionPreviews, pickQuestionOption, restoreQuestionSelection, restoreQuestionTextDraft } from '../helpers/nativeQuestion'
+import { chooseQuestionOption, chooseQuestionOptionWithNote, exerciseQuestionAnswer, exerciseQuestionPreviews, pickQuestionOption } from '../helpers/nativeQuestion'
 import { exerciseQuestionIsolation } from '../helpers/nativeQuestionIsolation'
+import { restoreQuestionSelection, restoreQuestionTextDraft } from '../helpers/nativeQuestionRestoration'
 import { controlButton, focusComposer, questionPagination, savedControlAnswer } from '../helpers/ui'
 import { museTest } from '../muse-fixtures'
 

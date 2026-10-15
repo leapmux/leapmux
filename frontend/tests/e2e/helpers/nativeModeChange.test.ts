@@ -26,7 +26,7 @@ const state = vi.hoisted(() => ({
   requireVisibleCopy: false,
 }))
 
-vi.mock('./nativeSettings', () => ({
+vi.mock('./notificationCopy', () => ({
   copySettingsNotification: async (bubble: { count: () => Promise<number> }, change: unknown) => {
     if (state.requireVisibleCopy)
       expect(await bubble.count(), 'the captured notification remains addressable after its summary changes').toBe(1)

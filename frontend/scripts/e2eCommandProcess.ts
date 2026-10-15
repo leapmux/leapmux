@@ -72,12 +72,20 @@ function stopOwnedProcessGroup(child: ChildProcess, delay: number): Promise<void
     }
     const terminate = (forced: boolean) => {
       signaling = true
-      void Promise.resolve().then(() => signalOwnedProcess(-groupId, forced ? 'SIGKILL' : 'SIGTERM')).then((sent) => {
-        signaling = false
-        check(sent)
-      }, (error) => {
-        signaling = false
-        handleSignalError(error)
+      void Promise.resolve().then(() => {
+        if (finished)
+          return
+        // Handle the signal result before another microtask can deliver the child's exit event.
+        // Otherwise, a pre-exit EPERM can look like a permission failure from surviving descendants.
+        try {
+          const sent = signalOwnedProcess(-groupId, forced ? 'SIGKILL' : 'SIGTERM')
+          signaling = false
+          check(sent)
+        }
+        catch (error) {
+          signaling = false
+          handleSignalError(error)
+        }
       })
     }
     function handleSignalError(error: unknown, afterSuccessfulTermination = false) {

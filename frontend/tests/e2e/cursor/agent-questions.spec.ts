@@ -1,10 +1,15 @@
 import type { QuestionRequest } from '../helpers/providerToolCalls'
 import { expect } from '@playwright/test'
+import { accountStorageKey, PREFIX_CONTROL_STATE } from '../../../src/lib/browserStorage'
+import { isObject } from '../../../src/lib/jsonPick'
 import { cursorTest } from '../cursor-fixtures'
-import { chooseQuestionPages, restoreQuestionSelection } from '../helpers/nativeQuestion'
+import { getUserId } from '../helpers/api'
+import { chooseQuestionPages } from '../helpers/nativeQuestion'
 import { exerciseQuestionIsolation } from '../helpers/nativeQuestionIsolation'
+import { restoreQuestionSelection } from '../helpers/nativeQuestionRestoration'
 import { askUserQuestionToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, composerEditor, controlButton, sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
+import { readEntry, storageKeys, writeEntry } from '../helpers/storage'
+import { assistantBubbles, composerEditor, controlAgentId, controlButton, sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
 
 // Cursor's service answers the question itself in the same Run exchange, so the turn is one scripted step and the
 // answer is the service's own words for the chosen option.
@@ -58,4 +63,36 @@ for (const singleQuestion of [false, true]) {
 
 cursorTest('keeps a native question on its owner tab and workspace after reload', async ({ native }) => {
   await exerciseQuestionIsolation(native, { customAnswerDraft: false })
+})
+
+cursorTest('repairs invalid saved navigation and hidden text before answering a selected-only question', async ({ native }) => {
+  const { page, modelScript, leapmuxServer: server } = native
+  await modelScript.queue({ toolCalls: [askUserQuestionToolCall(native.provider, 'cursor-restored-state', [{
+    header: 'Color',
+    question: 'Confirm the native color.',
+    options: [{ label: 'Green', description: 'Use green.' }],
+  }])] })
+  await sendMessage(page, modelScript.prompt('Ask for the native color confirmation.'))
+  await modelScript.waitForSteps()
+  const banner = await waitForControlBanner(page)
+  await banner.getByTestId('question-option-Green').click()
+  await restoreQuestionSelection(native, banner, 'Green')
+  const agentId = await controlAgentId(await waitForControlBanner(page))
+  const userId = server.adminUserId ?? await getUserId(server.hubUrl, server.adminToken)
+  const prefix = accountStorageKey(userId, `${PREFIX_CONTROL_STATE}${agentId}:`)
+  const keys = (await storageKeys(page)).filter(key => key.startsWith(prefix))
+  expect(keys).toHaveLength(1)
+  const key = keys[0]!
+  const stored = await readEntry(page, key)
+  if (!stored || !isObject(stored.v))
+    throw new Error('The selected native answer must reach durable storage.')
+  await writeEntry(page, key, { ...stored.v, currentPage: 999, customTexts: { 0: 'A hidden old draft.' } }, stored.e)
+  await page.reload()
+  const restored = await waitForControlBanner(page)
+  await expect(restored).toContainText('Confirm the native color.')
+  await expect(restored.getByTestId('question-option-Green').locator('input')).toBeChecked()
+  await expect(composerEditor(page)).toHaveCount(0)
+  await controlButton(page, 'submit').click()
+  await waitForAgentIdle(page)
+  await expect(assistantBubbles(page).filter({ hasText: 'Cursor question selected: option-1-1' }).first()).toBeVisible()
 })

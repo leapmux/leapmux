@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -27,7 +29,100 @@ type codexCommandProcess struct {
 	ProcessID string `json:"processId"`
 }
 
-type codexCommandRPC func(string, any) (json.RawMessage, error)
+type codexCommandClient interface {
+	ListCommandProcesses(threadID string, cursor *string, limit int) (json.RawMessage, error)
+	TerminateCommandProcess(threadID, processID string) (json.RawMessage, error)
+}
+
+type codexNativeCommandClient struct {
+	agent    *Agent
+	deadline time.Time
+}
+
+func (client codexNativeCommandClient) request(method string, params any) (json.RawMessage, error) {
+	timeout := time.Until(client.deadline)
+	if timeout <= 0 {
+		return nil, fmt.Errorf("%s: %w", method, context.DeadlineExceeded)
+	}
+	body, err := json.Marshal(params)
+	if err != nil {
+		return nil, fmt.Errorf("marshal %s: %w", method, err)
+	}
+	response, err := client.agent.SendRequest(method, body, timeout)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", method, err)
+	}
+	return response, nil
+}
+
+func (client codexNativeCommandClient) ListCommandProcesses(threadID string, cursor *string, limit int) (json.RawMessage, error) {
+	return client.request(codexListCommandProcessesMethod, struct {
+		ThreadID string  `json:"threadId"`
+		Cursor   *string `json:"cursor,omitempty"`
+		Limit    int     `json:"limit"`
+	}{ThreadID: threadID, Cursor: cursor, Limit: limit})
+}
+
+func (client codexNativeCommandClient) TerminateCommandProcess(threadID, processID string) (json.RawMessage, error) {
+	return client.request(codexTerminateCommandProcessMethod, struct {
+		ThreadID  string `json:"threadId"`
+		ProcessID string `json:"processId"`
+	}{ThreadID: threadID, ProcessID: processID})
+}
+
+func (a *Agent) interruptCodexTurn(threadID, turnID string) (bool, error) {
+	if threadID == "" || turnID == "" {
+		return false, nil
+	}
+	key := codexInterruptKey{threadID: threadID, turnID: turnID}
+	a.Mu.Lock()
+	if a.interruptCalls == nil {
+		a.interruptCalls = make(map[codexInterruptKey]*codexInterruptCall)
+	}
+	if existing := a.interruptCalls[key]; existing != nil {
+		done := existing.done
+		a.Mu.Unlock()
+		<-done
+		return existing.accepted, existing.err
+	}
+	call := &codexInterruptCall{done: make(chan struct{}), commands: a.commandIDsForTurnLocked(threadID, turnID)}
+	a.interruptCalls[key] = call
+	a.Mu.Unlock()
+
+	params, err := json.Marshal(map[string]string{"threadId": threadID, "turnId": turnID})
+	if err == nil {
+		_, err = a.SendRequest("turn/interrupt", params, a.APITimeout())
+	}
+	accepted := err == nil
+	if err != nil {
+		err = fmt.Errorf("turn/interrupt: %w", err)
+	} else {
+		a.Mu.Lock()
+		commands := maps.Clone(call.commands)
+		a.Mu.Unlock()
+		err = a.stopCodexCommands(threadID, commands)
+	}
+
+	a.Mu.Lock()
+	call.accepted = accepted
+	call.err = err
+	close(call.done)
+	if err != nil {
+		delete(a.interruptCalls, key)
+	}
+	a.Mu.Unlock()
+	return accepted, err
+}
+
+func (a *Agent) clearInterruptCallsForThread(threadID string) {
+	a.Mu.Lock()
+	for key := range a.interruptCalls {
+		if key.threadID == threadID {
+			delete(a.interruptCalls, key)
+		}
+	}
+	a.Mu.Unlock()
+}
 
 // commandIDsForTurnLocked captures only commands that the requested turn owns.
 // Older commands and other threads must remain untouched. The caller holds Mu.
@@ -70,23 +165,8 @@ func (a *Agent) stopCodexCommands(threadID string, commands map[string]struct{})
 	if len(commands) == 0 {
 		return nil
 	}
-	deadline := time.Now().Add(a.APITimeout())
-	request := func(method string, params any) (json.RawMessage, error) {
-		timeout := time.Until(deadline)
-		if timeout <= 0 {
-			return nil, fmt.Errorf("%s: %w", method, context.DeadlineExceeded)
-		}
-		body, err := json.Marshal(params)
-		if err != nil {
-			return nil, fmt.Errorf("marshal %s: %w", method, err)
-		}
-		response, err := a.SendRequest(method, body, timeout)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", method, err)
-		}
-		return response, nil
-	}
-	processes, err := readCodexCommandProcesses(threadID, request)
+	client := codexNativeCommandClient{agent: a, deadline: time.Now().Add(a.APITimeout())}
+	processes, err := readCodexCommandProcesses(threadID, client)
 	if err != nil {
 		return err
 	}
@@ -97,30 +177,47 @@ func (a *Agent) stopCodexCommands(threadID string, commands map[string]struct{})
 		}
 	}
 	sort.Slice(targets, func(i, j int) bool { return targets[i].ProcessID < targets[j].ProcessID })
+	return stopCodexCommandProcesses(threadID, targets, client)
+}
+
+// stopCodexCommandProcesses verifies all concurrent refusals against one final native snapshot.
+func stopCodexCommandProcesses(threadID string, targets []codexCommandProcess, client codexCommandClient) error {
 	var group errgroup.Group
 	group.SetLimit(codexCommandStopConcurrency)
 	failures := make([]error, len(targets))
+	verify := make([]bool, len(targets))
 	for index, process := range targets {
 		group.Go(func() error {
-			failures[index] = terminateCodexCommandProcess(threadID, process, request)
+			terminated, err := terminateCodexCommandProcess(threadID, process, client)
+			failures[index] = err
+			verify[index] = err == nil && !terminated
 			return nil
 		})
 	}
-	_ = group.Wait() // Each worker stores its error at its own index.
+	_ = group.Wait() // Each worker writes only its own entries.
+	if slices.Contains(verify, true) {
+		remaining, err := readCodexCommandProcesses(threadID, client)
+		if err != nil {
+			return errors.Join(append(failures, err)...)
+		}
+		for index, process := range targets {
+			if !verify[index] {
+				continue
+			}
+			if _, active := remaining[process.ProcessID]; active {
+				failures[index] = fmt.Errorf("native command process %q remains active", process.ProcessID)
+			}
+		}
+	}
 	return errors.Join(failures...)
 }
 
-func readCodexCommandProcesses(threadID string, request codexCommandRPC) (map[string]codexCommandProcess, error) {
+func readCodexCommandProcesses(threadID string, client codexCommandClient) (map[string]codexCommandProcess, error) {
 	processes := make(map[string]codexCommandProcess)
 	seenCursors := make(map[string]struct{})
 	var cursor *string
 	for page := 0; page < codexCommandPageLimit; page++ {
-		params := struct {
-			ThreadID string  `json:"threadId"`
-			Cursor   *string `json:"cursor,omitempty"`
-			Limit    int     `json:"limit"`
-		}{ThreadID: threadID, Cursor: cursor, Limit: codexCommandPageSize}
-		raw, err := request(codexListCommandProcessesMethod, params)
+		raw, err := client.ListCommandProcesses(threadID, cursor, codexCommandPageSize)
 		if err != nil {
 			return nil, err
 		}
@@ -159,33 +256,19 @@ func readCodexCommandProcesses(threadID string, request codexCommandRPC) (map[st
 	return nil, errors.New("the native command list exceeds the page limit")
 }
 
-func terminateCodexCommandProcess(threadID string, process codexCommandProcess, request codexCommandRPC) error {
-	raw, err := request(codexTerminateCommandProcessMethod, struct {
-		ThreadID  string `json:"threadId"`
-		ProcessID string `json:"processId"`
-	}{ThreadID: threadID, ProcessID: process.ProcessID})
+func terminateCodexCommandProcess(threadID string, process codexCommandProcess, client codexCommandClient) (bool, error) {
+	raw, err := client.TerminateCommandProcess(threadID, process.ProcessID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	var response struct {
 		Terminated *bool `json:"terminated"`
 	}
 	if err := json.Unmarshal(raw, &response); err != nil {
-		return fmt.Errorf("read native command termination: %w", err)
+		return false, fmt.Errorf("read native command termination: %w", err)
 	}
 	if response.Terminated == nil {
-		return errors.New("the native command termination omits its result")
+		return false, errors.New("the native command termination omits its result")
 	}
-	if *response.Terminated {
-		return nil
-	}
-	// A command can exit between the list and termination. Confirm absence without retrying termination.
-	remaining, err := readCodexCommandProcesses(threadID, request)
-	if err != nil {
-		return err
-	}
-	if _, active := remaining[process.ProcessID]; active {
-		return fmt.Errorf("native command process %q remains active", process.ProcessID)
-	}
-	return nil
+	return *response.Terminated, nil
 }

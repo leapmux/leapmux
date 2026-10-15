@@ -12,6 +12,7 @@ type generationSegment struct {
 	kind  agent.AssembledMessageKind
 	text  strings.Builder
 	order uint64
+	trace *generationDigest
 }
 
 // GenerationBuffer keeps provider deltas until their item reaches a boundary.
@@ -39,7 +40,7 @@ func (b *GenerationBuffer) Append(scopeID string, kind agent.AssembledMessageKin
 	}
 	segment.kind = kind
 	AppendText(&segment.text, text, join)
-	snapshot := segment.text.String()
+	snapshot := captureGenerationSnapshot(segment)
 	b.mu.Unlock()
 	traceGenerationSnapshot(scopeID, kind, snapshot)
 }

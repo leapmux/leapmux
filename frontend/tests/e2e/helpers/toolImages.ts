@@ -396,9 +396,9 @@ export async function expectMcpToolImage(page: Page, fileName: string, callID: s
 /**
  * Assert a tool call of `fileName` ran and drew no picture.
  *
- * Codewhale and Cline build tool results as text only (matrix note 3). A
- * provider that restores a picture from another store may also draw none on
- * this path. The name alone proves the tool ran.
+ * Some native tool paths return text without image parts.
+ * A provider that restores pictures from another store can also draw none on this path.
+ * Check the completed result before checking that its image list is empty.
  */
 export async function expectToolRowWithoutImage(page: Page, fileName: string): Promise<void> {
   await expect.poll(() => isNamedToolResultFinished(page, fileName)).toBe(true)

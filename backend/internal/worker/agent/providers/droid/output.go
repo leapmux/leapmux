@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
@@ -138,6 +137,8 @@ func (a *Agent) handleNotification(env *droidEnvelope) string {
 		slog.Debug("droid: notification from an unknown session", "agent_id", a.AgentID(), "session_id", params.SessionID)
 		return ""
 	}
+	a.flushPendingOutput(target)
+	defer a.releaseEndedOutput(target)
 
 	switch head.Type {
 	case contracts.DroidNotificationWorkingStateChanged:
@@ -186,16 +187,12 @@ func (a *Agent) handleNotification(env *droidEnvelope) string {
 
 // persistNotification stores a notification row verbatim.
 func (a *Agent) persistNotification(payload []byte, target droidOutputTarget) {
-	if _, err := target.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: payload}); err != nil {
-		slog.Debug("droid: persist notification failed", "agent_id", a.AgentID(), "error", err)
-	}
+	a.enqueueOutput(target, agent.MessageContent{Original: payload}, agent.SpanInfo{}, droidOutputNotification)
 }
 
 // persistRow stores one transcript row verbatim.
 func (a *Agent) persistRow(payload []byte, span agent.SpanInfo, target droidOutputTarget) {
-	if err := target.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: payload}, span); err != nil {
-		slog.Debug("droid: persist message failed", "agent_id", a.AgentID(), "error", err)
-	}
+	a.enqueueOutput(target, agent.MessageContent{Original: payload}, span, droidOutputMessage)
 }
 
 // onChildSessionAvailable registers a native child under its parent session.
@@ -270,6 +267,7 @@ func (a *Agent) onCreateMessage(payload []byte, target droidOutputTarget) {
 	if err := json.Unmarshal(n.Message, &msg); err != nil {
 		return
 	}
+	target.state.ended = false
 	spanID := "droid-msg-" + msg.ID
 	if target.state.messageSpans == nil {
 		target.state.messageSpans = make(map[string]string)
@@ -296,6 +294,7 @@ func (a *Agent) onModelTextDelta(payload []byte, kind agent.AssembledMessageKind
 	if n.MessageID == "" || n.TextDelta == "" {
 		return
 	}
+	target.state.ended = false
 	target.state.generation.Append(modelTextScope(target.state, n.MessageID, n.BlockIndex, kind), kind, n.TextDelta, providerkit.JoinVerbatim)
 }
 
@@ -326,7 +325,8 @@ func (a *Agent) onModelTextComplete(payload []byte, kind agent.AssembledMessageK
 	}
 	scope := modelTextScope(target.state, n.MessageID, n.BlockIndex, kind)
 	_, err := target.state.generation.PersistScope(scope, agent.MessageCompletionComplete, func(raw []byte) error {
-		return target.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw}, agent.SpanInfo{SpanID: scope})
+		a.persistRow(raw, agent.SpanInfo{SpanID: scope}, target)
+		return nil
 	})
 	if err != nil {
 		slog.Error("droid: persist completed text failed", "agent_id", a.AgentID(), "error", err)
@@ -350,6 +350,7 @@ func (a *Agent) onToolCall(payload []byte, target droidOutputTarget) {
 	if err := json.Unmarshal(payload, &n); err != nil {
 		return
 	}
+	target.state.ended = false
 	spanID := "droid-tool-" + n.ToolUse.ID
 	if target.state.tools == nil {
 		target.state.tools = make(map[string]*droidTool)
@@ -413,19 +414,8 @@ func (a *Agent) onAgentTurnCompleted(payload []byte, target droidOutputTarget) {
 	if err := json.Unmarshal(payload, &n); err != nil {
 		return
 	}
-	completion := agent.MessageCompletionComplete
-	status := bgtask.StatusSucceeded
-	switch n.Reason {
-	case contracts.DroidTurnEndReasonError:
-		completion = agent.MessageCompletionError
-		status = bgtask.StatusFailed
-	case contracts.DroidTurnEndReasonCancelled:
-		completion = agent.MessageCompletionInterrupted
-		status = bgtask.StatusInterrupted
-	}
-	if !a.persistRemainingGeneration(target, completion) {
-		return
-	}
+	completion, status := droidTurnCompletion(n.Reason)
+	a.persistRemainingGeneration(target, completion)
 	a.persistTurnEnd(payload, target)
 	if target.childSessionID != "" {
 		a.closeChildSession(target.childSessionID, status)
@@ -435,17 +425,37 @@ func (a *Agent) onAgentTurnCompleted(payload []byte, target droidOutputTarget) {
 	}
 }
 
+// droidTurnCompletion follows the native child-result classification, including early process exits.
+func droidTurnCompletion(reason string) (agent.MessageCompletion, bgtask.Status) {
+	switch reason {
+	case "", contracts.DroidTurnEndReasonCompleted, contracts.DroidTurnEndReasonSpecHandoff:
+		return agent.MessageCompletionComplete, bgtask.StatusSucceeded
+	case contracts.DroidTurnEndReasonCancelled, contracts.DroidTurnEndReasonProcessExit:
+		return agent.MessageCompletionInterrupted, bgtask.StatusInterrupted
+	case contracts.DroidTurnEndReasonError, contracts.DroidTurnEndReasonPermissionRejected,
+		contracts.DroidTurnEndReasonStructuredOutputMissing, contracts.DroidTurnEndReasonStructuredOutputInvalid,
+		contracts.DroidTurnEndReasonStructuredOutputSchemaInvalid, contracts.DroidTurnEndReasonModelUsageExhausted,
+		contracts.DroidTurnEndReasonModelAuthenticationFailed, contracts.DroidTurnEndReasonModelRequestRejected,
+		contracts.DroidTurnEndReasonModelProviderUnreachable, contracts.DroidTurnEndReasonModelProviderUnavailable,
+		contracts.DroidTurnEndReasonModelRateLimited, contracts.DroidTurnEndReasonPromptRejected,
+		contracts.DroidTurnEndReasonCompletionPersistenceFailed, contracts.DroidTurnEndReasonNoApproverAvailable:
+		return agent.MessageCompletionError, bgtask.StatusFailed
+	default:
+		// An unknown native outcome cannot establish success.
+		return agent.MessageCompletionError, bgtask.StatusFailed
+	}
+}
+
 // persistRemainingGeneration saves blocks when Droid omits their completion events.
-// A failed write retains the buffer and its child state for the next boundary.
-func (a *Agent) persistRemainingGeneration(target droidOutputTarget, completion agent.MessageCompletion) bool {
+// The queue retains each failed write with its original completion and publication owner.
+func (a *Agent) persistRemainingGeneration(target droidOutputTarget, completion agent.MessageCompletion) {
 	err := target.state.generation.PersistAll(completion, func(raw []byte) error {
-		return target.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw}, agent.SpanInfo{})
+		a.persistRow(raw, agent.SpanInfo{}, target)
+		return nil
 	})
 	if err != nil {
 		slog.Error("droid: persist unfinished text failed", "agent_id", a.AgentID(), "error", err)
-		return false
 	}
-	return true
 }
 
 // persistTurnEnd records one native outcome without deciding child lifecycle.
@@ -454,17 +464,13 @@ func (a *Agent) persistTurnEnd(payload []byte, target droidOutputTarget) {
 	target.state.turnToolUse = 0
 
 	content := agent.WithToolUseCount(agent.MessageContent{Original: payload}, uses)
-	if err := target.sink.PersistTurnEnd(content, agent.SpanInfo{}); err != nil {
-		slog.Debug("droid: persist turn end failed", "agent_id", a.AgentID(), "error", err)
-	}
+	a.enqueueOutput(target, content, agent.SpanInfo{}, droidOutputTurnEnd)
 }
 
 // onError surfaces a CLI error as a notification row and ends the turn when one
 // runs.
 func (a *Agent) onError(payload []byte, target droidOutputTarget) {
-	if !a.persistRemainingGeneration(target, agent.MessageCompletionError) {
-		return
-	}
+	a.persistRemainingGeneration(target, agent.MessageCompletionError)
 	a.persistNotification(payload, target)
 	if target.childSessionID != "" {
 		a.closeChildSession(target.childSessionID, bgtask.StatusFailed)

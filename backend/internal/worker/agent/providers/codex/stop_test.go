@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,7 +17,46 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type codexCommandTestClient struct {
+	list      func(string, *string, int) (json.RawMessage, error)
+	terminate func(string, string) (json.RawMessage, error)
+}
+
+func (client codexCommandTestClient) ListCommandProcesses(threadID string, cursor *string, limit int) (json.RawMessage, error) {
+	if client.list == nil {
+		return nil, fmt.Errorf("unexpected list request")
+	}
+	return client.list(threadID, cursor, limit)
+}
+
+func (client codexCommandTestClient) TerminateCommandProcess(threadID, processID string) (json.RawMessage, error) {
+	if client.terminate == nil {
+		return nil, fmt.Errorf("unexpected termination request")
+	}
+	return client.terminate(threadID, processID)
+}
+
 type codexStopWriter func([]byte) (int, error)
+
+func TestCodexCommandStopCombinesRefusalAndRemainingProcess(t *testing.T) {
+	t.Parallel()
+	listCalls := 0
+	err := stopCodexCommandProcesses("thread", []codexCommandProcess{{ItemID: "a", ProcessID: "1"}, {ItemID: "b", ProcessID: "2"}}, codexCommandTestClient{
+		list: func(threadID string, cursor *string, limit int) (json.RawMessage, error) {
+			listCalls++
+			return json.RawMessage(`{"data":[{"itemId":"b","processId":"2"}]}`), nil
+		},
+		terminate: func(threadID, processID string) (json.RawMessage, error) {
+			if processID == "1" {
+				return nil, fmt.Errorf("termination refused for 1")
+			}
+			return json.RawMessage(`{"terminated":false}`), nil
+		},
+	})
+	require.ErrorContains(t, err, "termination refused for 1")
+	require.ErrorContains(t, err, `native command process "2" remains active`)
+	assert.Equal(t, 1, listCalls)
+}
 
 func (write codexStopWriter) Write(raw []byte) (int, error) { return write(raw) }
 
@@ -24,6 +64,56 @@ type capturedCodexStopRequest struct {
 	ID     int64           `json:"id"`
 	Method string          `json:"method"`
 	Params json.RawMessage `json:"params"`
+}
+
+func TestCodexInterruptChecksExitedCommandsInOneFinalScan(t *testing.T) {
+	t.Parallel()
+	for _, remaining := range []bool{false, true} {
+		t.Run(fmt.Sprintf("remaining=%t", remaining), func(t *testing.T) {
+			t.Parallel()
+			var listCalls, terminateCalls atomic.Int32
+			a, _, _ := newCommandStopAgent(t, func(request capturedCodexStopRequest) agenttest.RPCReply {
+				switch request.Method {
+				case codexListCommandProcessesMethod:
+					listCalls.Add(1)
+					var params struct {
+						Cursor string `json:"cursor"`
+					}
+					require.NoError(t, json.Unmarshal(request.Params, &params))
+					if terminateCalls.Load() == 0 {
+						if params.Cursor == "" {
+							return agenttest.RPCReply{Result: json.RawMessage(`{"data":[{"itemId":"a","processId":"41"},{"itemId":"b","processId":"42"}],"nextCursor":"tail"}`)}
+						}
+						return agenttest.RPCReply{Result: json.RawMessage(`{"data":[{"itemId":"c","processId":"43"}]}`)}
+					}
+					assert.Equal(t, int32(3), terminateCalls.Load(), "the final scan follows every termination response")
+					if params.Cursor == "" {
+						return agenttest.RPCReply{Result: json.RawMessage(`{"data":[{"itemId":"unrelated","processId":"99"}],"nextCursor":"tail"}`)}
+					}
+					if remaining {
+						return agenttest.RPCReply{Result: json.RawMessage(`{"data":[{"itemId":"a","processId":"41"}]}`)}
+					}
+					return agenttest.RPCReply{Result: json.RawMessage(`{"data":[]}`)}
+				case codexTerminateCommandProcessMethod:
+					terminateCalls.Add(1)
+					return agenttest.RPCReply{Result: json.RawMessage(`{"terminated":false}`)}
+				default:
+					return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+				}
+			})
+			for _, item := range []string{"a", "b", "c"} {
+				rememberCommandForStop(t, a, "root-thread", "current-turn", item, contracts.CodexItemTypeCommandExecution)
+			}
+			err := a.Interrupt(agent.StopContext{})
+			if remaining {
+				require.ErrorContains(t, err, `native command process "41" remains active`)
+			} else {
+				require.NoError(t, err)
+			}
+			assert.Equal(t, int32(3), terminateCalls.Load())
+			assert.Equal(t, int32(4), listCalls.Load(), "read two initial pages and two final pages")
+		})
+	}
 }
 
 func newCommandStopAgent(t *testing.T, reply func(capturedCodexStopRequest) agenttest.RPCReply) (*Agent, *agenttest.ControlSink, func() []capturedCodexStopRequest) {
@@ -130,10 +220,10 @@ func TestCodexCommandListValidation(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := readCodexCommandProcesses("thread", func(method string, params any) (json.RawMessage, error) {
-				assert.Equal(t, codexListCommandProcessesMethod, method)
+			_, err := readCodexCommandProcesses("thread", codexCommandTestClient{list: func(threadID string, cursor *string, limit int) (json.RawMessage, error) {
+				assert.Equal(t, "thread", threadID)
 				return json.RawMessage(tc.response), nil
-			})
+			}})
 			if tc.failure == "" {
 				require.NoError(t, err)
 			} else {
@@ -158,12 +248,15 @@ func TestCodexCommandTerminationValidation(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			var methods []string
-			err := terminateCodexCommandProcess("thread", codexCommandProcess{ItemID: "a", ProcessID: "1"}, func(method string, params any) (json.RawMessage, error) {
-				methods = append(methods, method)
-				if method == codexListCommandProcessesMethod {
+			err := stopCodexCommandProcesses("thread", []codexCommandProcess{{ItemID: "a", ProcessID: "1"}}, codexCommandTestClient{
+				list: func(threadID string, cursor *string, limit int) (json.RawMessage, error) {
+					methods = append(methods, codexListCommandProcessesMethod)
 					return json.RawMessage(tc.list), nil
-				}
-				return json.RawMessage(tc.response), nil
+				},
+				terminate: func(threadID, processID string) (json.RawMessage, error) {
+					methods = append(methods, codexTerminateCommandProcessMethod)
+					return json.RawMessage(tc.response), nil
+				},
 			})
 			if tc.failure == "" {
 				require.NoError(t, err)
@@ -258,10 +351,10 @@ func TestCodexCommandStopLeavesCommandsAloneAfterRefusedInterrupt(t *testing.T) 
 func TestCodexCommandListCapsAnEndlessCursorStream(t *testing.T) {
 	t.Parallel()
 	calls := 0
-	_, err := readCodexCommandProcesses("thread", func(method string, params any) (json.RawMessage, error) {
+	_, err := readCodexCommandProcesses("thread", codexCommandTestClient{list: func(threadID string, cursor *string, limit int) (json.RawMessage, error) {
 		calls++
 		return json.RawMessage(fmt.Sprintf(`{"data":[{"itemId":"a","processId":"1"}],"nextCursor":"page-%d"}`, calls)), nil
-	})
+	}})
 	require.ErrorContains(t, err, "exceeds the page limit")
 	assert.Equal(t, codexCommandPageLimit, calls)
 }
@@ -314,9 +407,9 @@ func TestCodexCommandStopIncludesACommandAnnouncedBeforeTheInterruptReply(t *tes
 
 func TestCodexCommandListRetainsSignedProcessIDs(t *testing.T) {
 	t.Parallel()
-	processes, err := readCodexCommandProcesses("thread", func(method string, params any) (json.RawMessage, error) {
+	processes, err := readCodexCommandProcesses("thread", codexCommandTestClient{list: func(threadID string, cursor *string, limit int) (json.RawMessage, error) {
 		return json.RawMessage(`{"data":[{"itemId":"zero","processId":"0"},{"itemId":"lowest","processId":"-2147483648"},{"itemId":"highest","processId":"2147483647"},{"itemId":"zero","processId":"0"}]}`), nil
-	})
+	}})
 	require.NoError(t, err)
 	assert.Equal(t, map[string]codexCommandProcess{
 		"0":           {ItemID: "zero", ProcessID: "0"},

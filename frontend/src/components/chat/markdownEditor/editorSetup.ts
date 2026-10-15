@@ -6,7 +6,7 @@ import type { CodeLangHandlers } from '~/lib/editor/codeLangPlugin'
 import type { Draft } from '~/lib/editor/draftPersistence'
 import type { PluginRefs } from '~/lib/editor/keyboardPlugins'
 import type { LinkClickHandlers } from '~/lib/editor/linkPlugin'
-import { defaultValueCtx, Editor, editorViewOptionsCtx, rootCtx } from '@milkdown/core'
+import { defaultValueCtx, Editor, editorViewCtx, editorViewOptionsCtx, rootCtx } from '@milkdown/core'
 import { clipboard } from '@milkdown/plugin-clipboard'
 import { highlight, highlightPluginConfig } from '@milkdown/plugin-highlight'
 import { history } from '@milkdown/plugin-history'
@@ -45,8 +45,8 @@ import {
 import { createLazyShikiParser } from '~/lib/editor/lazyShikiParser'
 import { createLinkClickPlugin, createLinkShortcutPlugin } from '~/lib/editor/linkPlugin'
 import { createLazyOnigurumaHighlighter } from '~/lib/shikiLazyHighlighter'
+import { serializeEditorDocument } from './documentMarkdown'
 import { readDraftFromEditor } from './draftManagement'
-import { stripNeedlessEscapes } from './needlessEscapes'
 
 // One Oniguruma-backed highlighter shared across all editor mounts. Created
 // lazily (cheap closure here; the WASM engine + grammars load only when the
@@ -298,10 +298,10 @@ export function buildEditor(opts: EditorSetupOptions): Promise<Editor> {
         }
         saveDraft(draftKey, draft.content, draft.cursor)
       }, 500)
-      ctx.get(listenerCtx).markdownUpdated((_ctx, raw) => {
+      ctx.get(listenerCtx).markdownUpdated((context, raw) => {
         if (typeof raw !== 'string')
           return
-        opts.onDocument(stripNeedlessEscapes(raw))
+        opts.onDocument(serializeEditorDocument(context.get(editorViewCtx).state.doc, () => raw))
         if (opts.getDocumentDraftKey()) {
           opts.draftSaveDebounce.current?.()
         }

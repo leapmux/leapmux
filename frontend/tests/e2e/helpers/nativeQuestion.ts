@@ -3,14 +3,11 @@ import type { MockModelRequestRecord, MockModelStep } from './mockModelScript'
 import type { ManagedNativeScenarioContext, NativeScenarioContext } from './nativeScenario'
 import type { QuestionRequest } from './providerToolCalls'
 import { expect } from '@playwright/test'
-import { accountStorageKey, PREFIX_CONTROL_STATE } from '../../../src/lib/browserStorage'
-import { isObject } from '../../../src/lib/jsonPick'
-import { getUserId } from './api'
 import { expectTurnEndedAfter } from './modelScriptFixture'
+import { restoreQuestionSelection, restoreQuestionTextDraft } from './nativeQuestionRestoration'
 import { nativeTextStep, nativeToolOutcome } from './nativeScenario'
 import { askUserQuestionToolCall } from './providerToolCalls'
-import { waitForStoredEntry } from './storage'
-import { assistantBubbles, composerEditor, controlAgentId, controlBanner, controlButton, expectNoControlBanner, questionPagination, readAttached, sendMessage, waitForAgentIdle, waitForControlBanner, waitForEditorDraft } from './ui'
+import { assistantBubbles, composerEditor, controlButton, expectNoControlBanner, questionPagination, readAttached, sendMessage, waitForAgentIdle, waitForControlBanner } from './ui'
 
 /**
  * A question that serves as a real native control in a proof that another control stays absent.
@@ -142,56 +139,6 @@ export function chooseQuestionOptionWithNote(context: ManagedNativeScenarioConte
     await expect(restored.getByTestId(`question-option-${label}`).locator('input')).toBeChecked()
     await controlButton(context.page, 'submit').click()
   }
-}
-
-/** Require the selected native value in durable storage and on the restored question before submitting it. */
-export async function restoreQuestionSelection(context: ManagedNativeScenarioContext, banner: Locator, label: string, pageIndex?: number): Promise<void> {
-  validateQuestionPageIndex(pageIndex)
-  const selected = banner.getByTestId(`question-option-${label}`).locator('input')
-  await expect(selected).toBeChecked()
-  const value = await selected.inputValue()
-  if (!value)
-    throw new Error('The selected question option has no native value.')
-  const agentId = await controlAgentId(banner)
-  const server = context.leapmuxServer
-  const userId = server.adminUserId ?? await getUserId(server.hubUrl, server.adminToken)
-  await waitForStoredEntry(
-    context.page,
-    accountStorageKey(userId, `${PREFIX_CONTROL_STATE}${agentId}:`),
-    stored => isObject(stored) && isObject(stored.selections)
-      && (pageIndex === undefined
-        ? Object.values(stored.selections).some(values => Array.isArray(values) && values.includes(value))
-        : stored.currentPage === pageIndex && Array.isArray(stored.selections[pageIndex]) && stored.selections[pageIndex].includes(value)),
-    'the selected answer reaches durable storage before reload',
-  )
-  await context.page.reload()
-  const restored = await waitForControlBanner(context.page)
-  expect(await controlAgentId(restored), 'the restored question belongs to the original agent').toBe(agentId)
-  await expect(restored.getByTestId(`question-option-${label}`).locator('input')).toBeChecked()
-}
-
-/** Restore a typed question answer only after its draft reaches durable account storage. */
-export async function restoreQuestionTextDraft(context: ManagedNativeScenarioContext, text: string, pageIndex?: number): Promise<void> {
-  validateQuestionPageIndex(pageIndex)
-  if (!text.trim())
-    throw new Error('A question draft proof requires nonempty text.')
-  const agentId = await controlAgentId(controlBanner(context.page))
-  const server = context.leapmuxServer
-  const userId = server.adminUserId ?? await getUserId(server.hubUrl, server.adminToken)
-  await expect(composerEditor(context.page)).toHaveText(text)
-  await waitForEditorDraft(context.page, userId, text)
-  if (pageIndex !== undefined) {
-    await waitForStoredEntry(
-      context.page,
-      accountStorageKey(userId, `${PREFIX_CONTROL_STATE}${agentId}:`),
-      stored => isObject(stored) && stored.currentPage === pageIndex,
-      'the question page reaches durable storage before reload',
-    )
-  }
-  await context.page.reload()
-  const restored = await waitForControlBanner(context.page)
-  expect(await controlAgentId(restored), 'the restored draft belongs to the original agent').toBe(agentId)
-  await expect(composerEditor(context.page)).toHaveText(text)
 }
 
 /** The ID of the native question call that {@link askQuestions} scripts. The request after it holds the answer. */
@@ -329,12 +276,6 @@ export async function exerciseQuestionPages(
   else
     expect(result.result).not.toContain('Small')
   return result
-}
-
-/** Refuse an invalid question page before reading browser state. */
-function validateQuestionPageIndex(pageIndex: number | undefined): void {
-  if (pageIndex !== undefined && (!Number.isSafeInteger(pageIndex) || pageIndex < 0))
-    throw new Error('A question page index requires a nonnegative safe integer.')
 }
 
 export const NATIVE_QUESTION_CODE_PREVIEW = 'const color = "green"'

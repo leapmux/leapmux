@@ -1,8 +1,9 @@
 import type { QuestionRequest } from '../helpers/providerToolCalls'
 import { expect } from '@playwright/test'
 import { codewhaleTest } from '../codewhale-fixtures'
-import { chooseQuestionOption, exerciseQuestionAnswer, exerciseQuestionPages, exerciseTypedQuestionAnswer, pickQuestionOption, restoreQuestionSelection } from '../helpers/nativeQuestion'
+import { chooseQuestionOption, exerciseQuestionAnswer, exerciseQuestionPages, exerciseTypedQuestionAnswer, pickQuestionOption } from '../helpers/nativeQuestion'
 import { exerciseQuestionIsolation } from '../helpers/nativeQuestionIsolation'
+import { restoreQuestionSelection } from '../helpers/nativeQuestionRestoration'
 import { assistantBubbles, controlButton, questionPagination } from '../helpers/ui'
 
 const DRINK_Q: QuestionRequest = {

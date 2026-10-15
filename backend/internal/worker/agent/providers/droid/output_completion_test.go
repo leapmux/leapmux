@@ -2,7 +2,6 @@ package droid
 
 import (
 	"encoding/json"
-	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -23,6 +22,21 @@ func TestTurnEndPreservesUnfinishedGeneration(t *testing.T) {
 		{"failed", `{"type":"agent_turn_completed","reason":"error"}`, agent.MessageCompletionError},
 		{"completed", `{"type":"agent_turn_completed","reason":"completed"}`, agent.MessageCompletionComplete},
 		{"error", `{"type":"error","message":"model connection failed"}`, agent.MessageCompletionError},
+		{"permission refused", `{"type":"agent_turn_completed","reason":"permission_rejected"}`, agent.MessageCompletionError},
+		{"process exit", `{"type":"agent_turn_completed","reason":"process_exit"}`, agent.MessageCompletionInterrupted},
+		{"handoff", `{"type":"agent_turn_completed","reason":"spec_handoff"}`, agent.MessageCompletionComplete},
+		{"missing output", `{"type":"agent_turn_completed","reason":"structured_output_missing"}`, agent.MessageCompletionError},
+		{"invalid output", `{"type":"agent_turn_completed","reason":"structured_output_invalid"}`, agent.MessageCompletionError},
+		{"invalid schema", `{"type":"agent_turn_completed","reason":"structured_output_schema_invalid"}`, agent.MessageCompletionError},
+		{"usage exhausted", `{"type":"agent_turn_completed","reason":"model_usage_exhausted"}`, agent.MessageCompletionError},
+		{"authentication", `{"type":"agent_turn_completed","reason":"model_authentication_failed"}`, agent.MessageCompletionError},
+		{"request rejected", `{"type":"agent_turn_completed","reason":"model_request_rejected"}`, agent.MessageCompletionError},
+		{"unreachable", `{"type":"agent_turn_completed","reason":"model_provider_unreachable"}`, agent.MessageCompletionError},
+		{"unavailable", `{"type":"agent_turn_completed","reason":"model_provider_unavailable"}`, agent.MessageCompletionError},
+		{"rate limited", `{"type":"agent_turn_completed","reason":"model_rate_limited"}`, agent.MessageCompletionError},
+		{"prompt rejected", `{"type":"agent_turn_completed","reason":"prompt_rejected"}`, agent.MessageCompletionError},
+		{"persistence failed", `{"type":"agent_turn_completed","reason":"completion_persistence_failed"}`, agent.MessageCompletionError},
+		{"no approver", `{"type":"agent_turn_completed","reason":"no_approver_available"}`, agent.MessageCompletionError},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -45,34 +59,6 @@ func TestTurnEndPreservesUnfinishedGeneration(t *testing.T) {
 			before := len(rows)
 			a.HandleOutput(droidAuditNotification(t, "main-session", []byte(`{"type":"assistant_text_complete","messageId":"partial","blockIndex":0}`)))
 			assert.Len(t, sink.Messages(), before, "late completion cannot duplicate the saved text")
-		})
-	}
-}
-
-func TestCompletedTextRetainsBufferAfterPersistenceFailure(t *testing.T) {
-	t.Parallel()
-	for _, end := range []string{
-		`{"type":"assistant_text_complete","messageId":"partial","blockIndex":0}`,
-		`{"type":"agent_turn_completed","reason":"cancelled"}`,
-	} {
-		t.Run(end, func(t *testing.T) {
-			t.Parallel()
-			a, sink, _ := newSteerAgent(t)
-			a.HandleOutput(droidAuditNotification(t, "main-session", []byte(`{"type":"assistant_text_delta","messageId":"partial","textDelta":"retained"}`)))
-			sink.PersistErr = errors.New("write refused")
-			a.HandleOutput(droidAuditNotification(t, "main-session", []byte(end)))
-			state := a.outputStates["main-session"]
-			_, text, present := state.generation.ScopeSnapshot("droid-msg-partial")
-			assert.True(t, present)
-			assert.Equal(t, "retained", text)
-			sink.PersistErr = nil
-			a.HandleOutput(droidAuditNotification(t, "main-session", []byte(end)))
-			_, _, present = state.generation.ScopeSnapshot("droid-msg-partial")
-			assert.False(t, present)
-			rows := sink.Messages()
-			_, text, _, ok := agenttest.DecodeAssembledMessage(rows[1].Content)
-			require.True(t, ok)
-			assert.Equal(t, "retained", text)
 		})
 	}
 }

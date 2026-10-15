@@ -55,7 +55,7 @@ func TestChildSessionMessagesAndTurnEndStayInChildTranscript(t *testing.T) {
 		`{"type":"notification","params":{"sessionId":"child-1","notification":{"type":"assistant_text_complete","messageId":"msg-1","blockIndex":0}}}`,
 		`{"type":"notification","params":{"sessionId":"child-1","notification":{"type":"tool_call","toolUse":{"id":"read-1","name":"Read","input":{"file_path":"/note.txt"}}}}}`,
 		`{"type":"notification","params":{"sessionId":"child-1","notification":{"type":"tool_result","toolUseId":"read-1","content":"CHILD_READ_MARKER","isError":false}}}`,
-		`{"type":"notification","params":{"sessionId":"child-1","notification":{"type":"agent_turn_completed","turnId":"turn-1","reason":"end_turn"}}}`,
+		`{"type":"notification","params":{"sessionId":"child-1","notification":{"type":"agent_turn_completed","turnId":"turn-1","reason":"completed"}}}`,
 	} {
 		a.HandleOutput([]byte(frame))
 	}
@@ -78,7 +78,7 @@ func TestUnknownNativeSessionCannotWriteIntoTheRoot(t *testing.T) {
 	for _, frame := range []string{
 		`{"type":"notification","params":{"sessionId":"unknown-session","notification":{"type":"create_message","message":{"id":"msg-1","role":"assistant"}}}}`,
 		`{"type":"notification","params":{"sessionId":"unknown-session","notification":{"type":"droid_working_state_changed","newState":"thinking"}}}`,
-		`{"type":"notification","params":{"sessionId":"unknown-session","notification":{"type":"agent_turn_completed","turnId":"turn-1","reason":"end_turn"}}}`,
+		`{"type":"notification","params":{"sessionId":"unknown-session","notification":{"type":"agent_turn_completed","turnId":"turn-1","reason":"completed"}}}`,
 	} {
 		a.HandleOutput([]byte(frame))
 	}

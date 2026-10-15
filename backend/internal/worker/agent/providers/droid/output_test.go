@@ -46,7 +46,7 @@ func TestTurnEndReportsZeroToolUses(t *testing.T) {
 	a, sink, _ := newSteerAgent(t)
 	a.HandleOutput([]byte(`{"type":"notification","params":{"sessionId":"main-session","notification":{"type":"assistant_text_delta","messageId":"text-1","blockIndex":0,"textDelta":"A text-only answer."}}}`))
 	a.HandleOutput([]byte(`{"type":"notification","params":{"sessionId":"main-session","notification":{"type":"assistant_text_complete","messageId":"text-1","blockIndex":0}}}`))
-	a.HandleOutput([]byte(`{"type":"notification","params":{"sessionId":"main-session","notification":{"type":"agent_turn_completed","turnId":"text-turn","reason":"end_turn"}}}`))
+	a.HandleOutput([]byte(`{"type":"notification","params":{"sessionId":"main-session","notification":{"type":"agent_turn_completed","turnId":"text-turn","reason":"completed"}}}`))
 
 	assert.Equal(t, []int{0}, agenttest.TurnToolUseCounts(t, sink.Messages()))
 }
@@ -58,7 +58,7 @@ func TestTurnEndCountsEachNativeToolResultOnce(t *testing.T) {
 	a.HandleOutput([]byte(`{"type":"notification","params":{"sessionId":"main-session","notification":{"type":"tool_call","toolUse":{"id":"read-1","name":"Read","input":{"file_path":"note.txt"}}}}}`))
 	a.HandleOutput(result)
 	a.HandleOutput(result)
-	a.HandleOutput([]byte(`{"type":"notification","params":{"sessionId":"main-session","notification":{"type":"agent_turn_completed","turnId":"tool-turn","reason":"end_turn"}}}`))
+	a.HandleOutput([]byte(`{"type":"notification","params":{"sessionId":"main-session","notification":{"type":"agent_turn_completed","turnId":"tool-turn","reason":"completed"}}}`))
 
 	assert.Equal(t, []int{1}, agenttest.TurnToolUseCounts(t, sink.Messages()), "a duplicate native result must not increase the count")
 }
@@ -83,11 +83,11 @@ func TestTurnEndToolCountResetsAndExcludesChildCalls(t *testing.T) {
 	for _, frame := range []string{
 		`{"type":"notification","params":{"sessionId":"child-1","notification":{"type":"tool_call","toolUse":{"id":"reused-read","name":"Read","input":{"file_path":"child.txt"}}}}}`,
 		`{"type":"notification","params":{"sessionId":"child-1","notification":{"type":"tool_result","toolUseId":"reused-read","content":"child result","isError":false}}}`,
-		`{"type":"notification","params":{"sessionId":"child-1","notification":{"type":"agent_turn_completed","turnId":"child-turn","reason":"end_turn"}}}`,
+		`{"type":"notification","params":{"sessionId":"child-1","notification":{"type":"agent_turn_completed","turnId":"child-turn","reason":"completed"}}}`,
 		`{"type":"notification","params":{"sessionId":"main-session","notification":{"type":"tool_call","toolUse":{"id":"reused-read","name":"Read","input":{"file_path":"root.txt"}}}}}`,
 		`{"type":"notification","params":{"sessionId":"main-session","notification":{"type":"tool_result","toolUseId":"reused-read","content":"root result","isError":false}}}`,
-		`{"type":"notification","params":{"sessionId":"main-session","notification":{"type":"agent_turn_completed","turnId":"first-root-turn","reason":"end_turn"}}}`,
-		`{"type":"notification","params":{"sessionId":"main-session","notification":{"type":"agent_turn_completed","turnId":"second-root-turn","reason":"end_turn"}}}`,
+		`{"type":"notification","params":{"sessionId":"main-session","notification":{"type":"agent_turn_completed","turnId":"first-root-turn","reason":"completed"}}}`,
+		`{"type":"notification","params":{"sessionId":"main-session","notification":{"type":"agent_turn_completed","turnId":"second-root-turn","reason":"completed"}}}`,
 	} {
 		a.HandleOutput([]byte(frame))
 	}

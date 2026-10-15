@@ -150,22 +150,31 @@ function currentUserTurn(rows: unknown): Array<[number, Record<string, unknown>]
 
 /** Read actual text from the current user input. History, tool results, and content metadata cannot prove a file. */
 function currentUserTextParts(request: MockModelRequestRecord): string[] {
-  const { protocol, body } = request
+  return attachmentRequestReader(request).textParts(request)
+}
+
+function cursorCurrentUserTextParts({ body }: MockModelRequestRecord): string[] {
   if (!isObject(body))
     return []
-  if (request.path === CURSOR_RUN_PATH) {
-    const text = typeof body.prompt === 'string' ? [body.prompt] : []
-    for (const attachment of Array.isArray(body.attachments) ? body.attachments : []) {
-      if (isObject(attachment) && attachment.kind === 'file' && typeof attachment.data === 'string')
-        text.push(attachment.data)
-    }
-    return text
+  const text = typeof body.prompt === 'string' ? [body.prompt] : []
+  for (const attachment of Array.isArray(body.attachments) ? body.attachments : []) {
+    if (isObject(attachment) && attachment.kind === 'file' && typeof attachment.data === 'string')
+      text.push(attachment.data)
   }
-  if (protocol === 'aws-event-stream') {
-    const input = kiroCurrentUserInput(body)
-    const results = pickObject(input, 'userInputMessageContext')?.toolResults
-    return Array.isArray(results) && results.length > 0 ? [] : nativeTextBlocks(input?.content)
-  }
+  return text
+}
+
+function kiroCurrentUserTextParts({ body }: MockModelRequestRecord): string[] {
+  if (!isObject(body))
+    return []
+  const input = kiroCurrentUserInput(body)
+  const results = pickObject(input, 'userInputMessageContext')?.toolResults
+  return Array.isArray(results) && results.length > 0 ? [] : nativeTextBlocks(input?.content)
+}
+
+function modelCurrentUserTextParts({ protocol, body }: MockModelRequestRecord): string[] {
+  if (!isObject(body) || protocol === 'aws-event-stream')
+    return []
   const rows = requestRows(protocol, body)
   if (protocol === 'openai-responses' && typeof rows === 'string')
     return [rows]
@@ -311,19 +320,8 @@ function googleInlineParts(body: unknown): TypedFilePart[] {
 }
 
 /** Select the typed file parts of the current user turn, by the request's own protocol. */
-function typedFileParts(protocol: MockModelProtocol, body: unknown): TypedFilePart[] {
-  switch (protocol) {
-    case 'anthropic-messages':
-      return anthropicFileParts(body)
-    case 'openai-chat-completions':
-      return chatCompletionFileParts(body)
-    case 'aws-event-stream':
-      return kiroDocumentParts(body)
-    case 'google-generative-language':
-      return googleInlineParts(body)
-    case 'openai-responses':
-      throw new Error('no provider that sends a typed file part uses the openai-responses protocol, so the file proof has no reader for it')
-  }
+function typedFileParts(request: MockModelRequestRecord): TypedFilePart[] {
+  return attachmentRequestReader(request).fileParts(request.body)
 }
 
 function sha256(bytes: Buffer): string {
@@ -372,7 +370,7 @@ function filePartDefect(part: TypedFilePart, source: Buffer, expected: FileTypeE
 /** Require the exact source file in a typed file part of the current user turn, and state each part that came close. */
 function expectTypedFilePart(request: MockModelRequestRecord, source: Buffer, expected: FileTypeExpectation): void {
   const defects: string[] = []
-  for (const part of typedFileParts(request.protocol, request.body)) {
+  for (const part of typedFileParts(request)) {
     const defect = filePartDefect(part, source, expected)
     if (defect === undefined)
       return
@@ -522,18 +520,50 @@ function kiroImageParts(body: unknown): TypedFilePart[] {
 
 /** Select the typed image parts of the current user turn, by the request's own protocol and route. */
 function typedImageParts(request: MockModelRequestRecord): TypedFilePart[] {
-  switch (request.protocol) {
-    case 'anthropic-messages':
-      return request.path === AMP_ACTOR_PATH_PREFIX ? ampImageParts(request.body) : anthropicImageParts(request.body)
-    case 'openai-chat-completions':
-      return chatCompletionImageParts(request.body)
-    case 'openai-responses':
-      return request.path === CURSOR_RUN_PATH ? cursorImageParts(request.body) : responsesImageParts(request.body)
-    case 'aws-event-stream':
-      return kiroImageParts(request.body)
-    case 'google-generative-language':
-      return googleInlineParts(request.body)
-  }
+  return attachmentRequestReader(request).imageParts(request.body)
+}
+
+interface AttachmentRequestReader {
+  textParts: (request: MockModelRequestRecord) => string[]
+  fileParts: (body: unknown) => TypedFilePart[]
+  imageParts: (body: unknown) => TypedFilePart[]
+}
+
+/** Each protocol declares all three attachment readers together. */
+const PROTOCOL_ATTACHMENT_READERS = {
+  'anthropic-messages': { textParts: modelCurrentUserTextParts, fileParts: anthropicFileParts, imageParts: anthropicImageParts },
+  'openai-chat-completions': { textParts: modelCurrentUserTextParts, fileParts: chatCompletionFileParts, imageParts: chatCompletionImageParts },
+  'openai-responses': {
+    textParts: modelCurrentUserTextParts,
+    fileParts: () => { throw new Error('no provider that sends a typed file part uses the openai-responses protocol, so the file proof has no reader for it') },
+    imageParts: responsesImageParts,
+  },
+  'aws-event-stream': { textParts: kiroCurrentUserTextParts, fileParts: kiroDocumentParts, imageParts: kiroImageParts },
+  'google-generative-language': { textParts: modelCurrentUserTextParts, fileParts: googleInlineParts, imageParts: googleInlineParts },
+} satisfies Record<MockModelProtocol, AttachmentRequestReader>
+
+/** Native service routes retain the generic readers for the parts that they do not replace. */
+const ROUTE_ATTACHMENT_READERS: readonly {
+  matches: (request: MockModelRequestRecord) => boolean
+  resolve: (request: MockModelRequestRecord, protocol: AttachmentRequestReader) => AttachmentRequestReader
+}[] = [
+  {
+    matches: request => request.path === CURSOR_RUN_PATH,
+    resolve: (request, protocol) => ({
+      ...protocol,
+      textParts: cursorCurrentUserTextParts,
+      imageParts: request.protocol === 'openai-responses' ? cursorImageParts : protocol.imageParts,
+    }),
+  },
+  {
+    matches: request => request.protocol === 'anthropic-messages' && request.path === AMP_ACTOR_PATH_PREFIX,
+    resolve: (_request, protocol) => ({ ...protocol, imageParts: ampImageParts }),
+  },
+]
+
+function attachmentRequestReader(request: MockModelRequestRecord): AttachmentRequestReader {
+  const protocol = PROTOCOL_ATTACHMENT_READERS[request.protocol]
+  return ROUTE_ATTACHMENT_READERS.find(route => route.matches(request))?.resolve(request, protocol) ?? protocol
 }
 
 /** Decode an image data URI and return the RGBA pixel at the center of each quadrant, in reading order. */

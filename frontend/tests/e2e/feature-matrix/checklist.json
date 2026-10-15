@@ -1518,11 +1518,11 @@
         "verified": true
       },
       "cline": {
-        "support": "leapmux-limit",
-        "userNote": "When the model accepts images, Cline's file tool returns the bytes of an image file. LeapMux does not draw that image yet, so the tool row shows text only.",
-        "detailNote": "It draws no image from a tool result.\n\nThe worker persists the whole `tool.finished` event as Cline sent it (`closeToolRow` stores the raw envelope), so image data is stored; only the reader draws no image. Classified as a LeapMux limit: `read_files` of Cline 3.0.68 returns `[{query, result: ['Successfully read image', {type: 'image', data, mediaType}], success}]` when the model supports images, and the hub forwards the output in `tool.finished`. The LeapMux reader always returns an empty image list. Medium confidence: the E2E spec never produced the image shape (source checked 2026-10-05).\n\nNative read-result image parts are not extracted. See https://github.com/leapmux/leapmux/issues/497.",
+        "support": "supported",
+        "userNote": "LeapMux shows images from Cline file reads and opens them in the image viewer.",
+        "detailNote": "Cline 3.0.71 returns native image parts in read_files results. The Cline extractor preserves their bytes and accompanying text. The complete browser spec passed both the default profile and an isolated openai-native/gpt-5.4 profile on 2026-10-15. It checks decoded images before and after reload and checks the image viewer. This implements the extraction tracked in https://github.com/leapmux/leapmux/issues/497.",
         "spec": "frontend/tests/e2e/cline/images-in-tool-results.spec.ts",
-        "audit": "unsupported",
+        "audit": "covered",
         "testStatus": "passed",
         "verified": true
       },

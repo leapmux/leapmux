@@ -150,7 +150,14 @@ func (a *Agent) closeChildSession(sessionID string, status bgtask.Status) {
 		return
 	}
 	providerkit.LogRegistryRefusal("droid", "finish child", a.sink.CloseBackgroundTask(sessionID, status))
-	delete(a.outputStates, sessionID)
+	if state := a.outputStates[sessionID]; state != nil {
+		state.ended = true
+		state.messageSpans = nil
+		state.tools = nil
+		if len(state.pending) == 0 {
+			delete(a.outputStates, sessionID)
+		}
+	}
 	a.disarmChildTurn(sessionID)
 }
 

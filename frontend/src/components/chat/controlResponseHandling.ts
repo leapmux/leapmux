@@ -3,6 +3,7 @@ import type { FileAttachment } from './attachments'
 import type { ControlSurface } from './controls/controlSurface'
 import type { ControlAnswerSeed, ControlAnswerState, ControlResponseHandler, ControlResponseOptions, ControlResponseSender, EditorContentRef } from './controls/types'
 import type { MessageContextResolver } from './messageContextResolver'
+import type { ControlQuestion } from './model/question'
 import type { ProviderSettingChangeHandler } from './providerSettings'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { AsyncLocalKey } from '~/lib/browserStorage'
@@ -12,6 +13,7 @@ import { showWarnToast } from '~/components/common/Toast'
 import { AgentActivityState } from '~/generated/proto/leapmux/v1/agent_pb'
 import { localStorageDrop, localStorageLoad, localStorageStore, PREFIX_CONTROL_STATE } from '~/lib/browserStorage'
 import { clearDraft } from '~/lib/editor/draftPersistence'
+import { isObject } from '~/lib/jsonPick'
 import { activityInterruptsWork } from '~/stores/agentActivity.store'
 import { controlRequestProvider, requestInstanceId } from '~/stores/control.store'
 import { trySubmitAskUserQuestion } from './controls/AskUserQuestionControl'
@@ -76,11 +78,25 @@ export interface ControlResponseHandlingResult {
   togglePlanMode: () => void
 }
 
+/** Read persisted answer fields without trusting their stored types or page limits. */
+function normalizedSavedAnswer(value: unknown, questions: readonly ControlQuestion[] | undefined): ControlAnswerSeed {
+  const saved = isObject(value) ? value : {}
+  const entries = (field: string) => isObject(saved[field]) ? Object.entries(saved[field]) : []
+  const page = saved.currentPage
+  return {
+    selections: Object.fromEntries(entries('selections').flatMap(([key, selection]) =>
+      Array.isArray(selection) && selection.every(item => typeof item === 'string') ? [[key, selection]] : [])),
+    customTexts: Object.fromEntries(entries('customTexts').filter((entry): entry is [string, string] =>
+      typeof entry[1] === 'string' && questions?.[Number(entry[0])]?.allowCustomText !== false)),
+    currentPage: typeof page === 'number' && Number.isInteger(page) && page >= 0 && page < (questions?.length ?? 0) ? page : 0,
+    switches: Object.fromEntries(entries('switches').filter((entry): entry is [string, boolean] => typeof entry[1] === 'boolean')),
+    choices: Object.fromEntries(entries('choices').filter((entry): entry is [string, string] => typeof entry[1] === 'string')),
+  }
+}
+
 /**
- * Whether `value` is the empty answer a request opens with.
- *
- * The one write the restore path must not make is this exact value, so telling
- * it apart is what lets everything else through.
+ * Return whether the answer matches the empty initial state.
+ * Restoration must not overwrite an answer that the user changed during the storage read.
  */
 function isBlankAnswer(value: ControlAnswerSeed): boolean {
   return (value.currentPage ?? 0) === 0
@@ -325,7 +341,7 @@ export function useControlResponseHandling(
         restoringFor = null
         return
       }
-      void localStorageLoad<ControlAnswerSeed>(answerKey(request)).then((saved) => {
+      void localStorageLoad<unknown>(answerKey(request)).then((stored) => {
         // A newer request started restoring while this read was in flight.
         // Applying now would seed the incoming prompt with the outgoing one's
         // answers -- the same confusion the owner variable below exists to
@@ -337,7 +353,8 @@ export function useControlResponseHandling(
         // The user can answer while the read is in flight. Their in-memory
         // value is newer, so the saved copy loses. Otherwise, install every
         // saved field before the actions become available.
-        if (saved && isBlankAnswer(currentAnswer())) {
+        if (stored && isBlankAnswer(currentAnswer())) {
+          const saved = normalizedSavedAnswer(stored, questionFor(request)?.questions)
           answerState.setSelections(saved.selections ?? {})
           answerState.setCustomTexts(saved.customTexts ?? {})
           answerState.setCurrentPage(saved.currentPage ?? 0)

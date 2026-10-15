@@ -33,7 +33,7 @@ test.describe('worker restart thinking indicator', () => {
           const thinkingIndicator = page.locator('[data-testid="thinking-indicator"]:visible')
           await expect(thinkingIndicator).toBeVisible()
 
-          // Stop the worker while agent is working
+          // Stop the worker while the agent works.
           await stopWorker(separateHubWorker)
           await waitForWorkerOffline(separateHubWorker)
 
@@ -193,7 +193,7 @@ test.describe('full Hub and Worker restart', () => {
         await sendMessage(page, modelScript.prompt('Write a very long essay about the history of computing. Make it extremely detailed.'))
         await modelScript.waitForSteps(step + 1)
 
-        // Wait for the thinking indicator or streaming to appear (agent is processing)
+        // Wait for the thinking indicator or streaming output to appear while the agent processes the turn.
         const thinkingIndicator = page.locator('[data-testid="thinking-indicator"]:visible')
         const streamingText = assistantBubbles(page)
         await expectAnyVisible(thinkingIndicator, streamingText)

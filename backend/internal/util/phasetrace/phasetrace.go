@@ -27,6 +27,9 @@ func New(envVar, marker, message string) *Tracer {
 	}
 }
 
+// Enabled reports the fixed choice captured when the tracer was constructed.
+func (t *Tracer) Enabled() bool { return t.enabled }
+
 // Log writes an Info record when the tracer is enabled.
 func (t *Tracer) Log(kvs ...any) {
 	if !t.enabled {

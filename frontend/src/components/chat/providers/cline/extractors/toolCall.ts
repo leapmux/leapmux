@@ -21,7 +21,7 @@ import { clineAgentRequest, clineAgentResult } from './agent'
 import { clineCommandRequest, clineCommandResults } from './execute'
 import { clineEditRequest, clineEditResult } from './fileEdit'
 import { clineQuestionRequest, clineQuestionResult } from './question'
-import { clineReadRequest, clineReadResult } from './read'
+import { clineReadImages, clineReadRequest, clineReadResult } from './read'
 import { clineSearchRequest, clineSearchResult } from './search'
 import { clineOperations, clineToolFinish, clineToolStart, outputText } from './toolCommon'
 
@@ -320,9 +320,8 @@ export const CLINE_TOOL_READERS: ToolCallSpecReaderTable<ClineToolFacts> = {
     if (early)
       return early
     const result = clineReadResult(facts.output)
-    // Native image parts need extraction here: https://github.com/leapmux/leapmux/issues/497.
     if (result)
-      return { kind: 'read', ...head, request, result, images: [] }
+      return { kind: 'read', ...head, request, result, images: clineReadImages(facts.output, request.path) }
     const unread = unreadResult(facts)
     return { kind: 'read', ...head, request, ...(unread !== undefined ? { result: unread } : {}) }
   },

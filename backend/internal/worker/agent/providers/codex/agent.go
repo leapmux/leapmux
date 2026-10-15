@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"maps"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -413,60 +412,6 @@ func (a *Agent) Wait() error {
 	a.outputMu.Unlock()
 	a.sink.ReportProgress(agent.ResetProgress())
 	return err
-}
-
-func (a *Agent) interruptCodexTurn(threadID, turnID string) (bool, error) {
-	if threadID == "" || turnID == "" {
-		return false, nil
-	}
-	key := codexInterruptKey{threadID: threadID, turnID: turnID}
-	a.Mu.Lock()
-	if a.interruptCalls == nil {
-		a.interruptCalls = make(map[codexInterruptKey]*codexInterruptCall)
-	}
-	if existing := a.interruptCalls[key]; existing != nil {
-		done := existing.done
-		a.Mu.Unlock()
-		<-done
-		return existing.accepted, existing.err
-	}
-	call := &codexInterruptCall{done: make(chan struct{}), commands: a.commandIDsForTurnLocked(threadID, turnID)}
-	a.interruptCalls[key] = call
-	a.Mu.Unlock()
-
-	params, err := json.Marshal(map[string]string{"threadId": threadID, "turnId": turnID})
-	if err == nil {
-		_, err = a.SendRequest("turn/interrupt", params, a.APITimeout())
-	}
-	accepted := err == nil
-	if err != nil {
-		err = fmt.Errorf("turn/interrupt: %w", err)
-	} else {
-		a.Mu.Lock()
-		commands := maps.Clone(call.commands)
-		a.Mu.Unlock()
-		err = a.stopCodexCommands(threadID, commands)
-	}
-
-	a.Mu.Lock()
-	call.accepted = accepted
-	call.err = err
-	close(call.done)
-	if err != nil {
-		delete(a.interruptCalls, key)
-	}
-	a.Mu.Unlock()
-	return accepted, err
-}
-
-func (a *Agent) clearInterruptCallsForThread(threadID string) {
-	a.Mu.Lock()
-	for key := range a.interruptCalls {
-		if key.threadID == threadID {
-			delete(a.interruptCalls, key)
-		}
-	}
-	a.Mu.Unlock()
 }
 
 // ClearContext sends a new thread/start on the running Codex process,

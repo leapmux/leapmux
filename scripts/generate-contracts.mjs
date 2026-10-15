@@ -2904,7 +2904,7 @@ export const PROVIDER_PROTOCOLS = [
     ].join('\n// '),
     tables: [
       { key: 'notifications', frameKind: 'name', goTable: 'Notification', tsTable: 'NOTIFICATION', tsType: 'DroidNotification', doc: 'session notification `type` values that are Droid\'s alone' },
-      { key: 'toolNotifications', goTable: 'ToolNotification', tsTable: 'TOOL_NOTIFICATION', tsType: 'DroidToolNotification', doc: 'Droid\'s `tool_call` and `tool_result` notification types, unmarked: those two literals are also LeapMux\'s own MessageCategory kinds, which shared chat code spells by name' },
+      { key: 'toolNotifications', goTable: 'ToolNotification', tsTable: 'TOOL_NOTIFICATION', tsType: 'DroidToolNotification', doc: 'Droid tool notification types. This table omits frameKind because shared MessageCategory code also uses `tool_result`.' },
       { key: 'notificationFields', goTable: 'NotificationField', tsTable: 'NOTIFICATION_FIELD', tsType: 'DroidNotificationField', readers: ['ts'], readersWhy: 'the worker persists a notification whole; the browser picks the field to draw', doc: 'fields of a notification envelope that both sides read' },
       { key: 'tools', goTable: 'Tool', tsTable: 'TOOL', tsType: 'DroidTool', doc: 'tool names that both sides dispatch on' },
       { key: 'workingStates', goTable: 'WorkingState', tsTable: 'WORKING_STATE', tsType: 'DroidWorkingState', readers: ['go'], readersWhy: 'the worker moves the turn flag on these states; the browser draws the row the worker stores', doc: '`newState` values of `droid_working_state_changed`' },

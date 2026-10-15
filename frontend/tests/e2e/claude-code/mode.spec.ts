@@ -6,7 +6,8 @@ import { systemText } from '../helpers/mockModelScript'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { chooseNativeModeWithNotice } from '../helpers/nativeModeChange'
 import { currentNativeAgent, nativeOptionGroup } from '../helpers/nativeScenario'
-import { copySettingsNotification, exerciseNativeOption, exerciseRestoredNativeOption, expectSettingsOptionsOffered, sentRpcMethods } from '../helpers/nativeSettings'
+import { exerciseNativeOption, exerciseRestoredNativeOption, expectSettingsOptionsOffered } from '../helpers/nativeSettings'
+import { copySettingsNotification, sentRpcMethods } from '../helpers/notificationCopy'
 import { thinkingIndicatorShownDuring } from '../helpers/thinkingIndicatorWatch'
 import { installRpcListeners } from '../helpers/timingFixture'
 import { chooseSettingsOption, composerEditor, expectSettingsChip, messageBubbles, permissionModeOffered, settingsBar, visibleOnly, waitForAgentIdle, waitForNativeSettingsHydrated, waitForSettingsHydrated, waitForSettingsIdle, workspaceRow } from '../helpers/ui'
@@ -179,7 +180,7 @@ claudeTest('returns from Plan to Default with one notice and native proof after 
 })
 
 const notificationTest = claudeTest.extend({
-  authenticatedClaudeWorkspace: authenticatedAgentWorkspace({
+  providerWorkspace: authenticatedAgentWorkspace({
     ...CLAUDE_AGENT,
     openOptions: { optionValues: { permissionMode: 'default' } },
   }),
@@ -191,7 +192,8 @@ async function copyModeNotification(page: Page, label: string, mode: string): Pr
 }
 
 notificationTest.describe('notification consolidation', () => {
-  notificationTest('copies native settings consolidation and received Raw JSON after reload', async ({ authenticatedClaudeWorkspace, page, modelScript }) => {
+  notificationTest('copies native settings consolidation and received Raw JSON after reload', async ({ native, authenticatedClaudeWorkspace, page, modelScript }) => {
+    expect(native.workspaceId).toBe(authenticatedClaudeWorkspace.workspaceId)
     await expect(workspaceRow(page, authenticatedClaudeWorkspace.workspaceId)).toHaveAttribute('data-active', 'true')
     await waitForSettingsHydrated(page)
     await expectSettingsChip(page, 'Default')

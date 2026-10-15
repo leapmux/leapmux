@@ -1,19 +1,14 @@
 /**
  * Codewhale end-to-end fixtures.
  *
- * Codewhale speaks its own runtime API (REST and server-sent events), not the
- * Agent Client Protocol, so these fixtures use the shared agent workspace
- * lifetime directly, as the ZCode fixtures do. The worker runs the native
- * binary behind the `codewhale` npm wrapper when the wrapper downloaded it, and
- * the wrapper otherwise, so the wrapper on PATH is what the skip check asks for.
+ * Codewhale uses its native REST API and server-sent events. It does not use the Agent Client Protocol.
+ * These fixtures use the shared agent workspace lifetime directly, as the ZCode fixtures do.
+ * The worker runs the native binary when the `codewhale` npm wrapper downloaded it.
+ * Otherwise, the worker runs the wrapper. The skip check therefore requires the wrapper on PATH.
  */
-import type { AgentWorkspace } from './helpers/workspace'
-import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
 import { CODEWHALE_AGENT, nativeContext } from './codewhale/scenarios'
-import { test as base } from './fixtures'
 import { lookupBinary, versionOutput } from './helpers/binaryOnPath'
-import { authenticatedAgentWorkspace } from './helpers/workspace'
-import { cliSkipFixture } from './provider-fixture-factory'
+import { createProviderTest } from './provider-fixture-factory'
 
 /** What `codewhale --version` states: whether the CLI runs, and its version. */
 interface CodewhaleInstall {
@@ -54,21 +49,17 @@ export const CODEWHALE_E2E_SKIP_REASON: string | null = CODEWHALE.path === null
  * The routes exist from 0.10.0. An older runtime reports a job's end to the model
  * alone, so the worker cannot close the job's row until something else states it.
  *
- * The flag stays here, beside the skip reason, because both read the one
- * `codewhale --version` run of this file. `codewhale/scenarios.ts` cannot hold
- * it: this file imports that module, so an import of the version back forms a
- * cycle. A module of its own in `codewhale/` needs the run too. It must either
- * run `codewhale --version` a second time, or take the run out of this file,
- * and with it the skip reason that each provider fixture file computes itself.
+ * The flag and skip reason share one `codewhale --version` result in this file.
+ * Moving the flag into `codewhale/scenarios.ts` creates an import cycle because this file imports that module.
+ * A separate module in `codewhale/` needs the version result too.
+ * It must repeat the command or own the command and skip reason together.
+ * Each provider fixture file currently computes its own skip reason.
  */
 export const CODEWHALE_SERVES_JOB_ROUTES: boolean = INSTALL.version !== null && (INSTALL.version[0] > 0 || INSTALL.version[1] >= 10)
 
-export const codewhaleTest = base.extend<CliSkipFixture & NativeFixture & {
-  authenticatedCodewhaleWorkspace: AgentWorkspace
-}>({
-  cliSkip: cliSkipFixture(CODEWHALE_E2E_SKIP_REASON),
-  authenticatedCodewhaleWorkspace: authenticatedAgentWorkspace(CODEWHALE_AGENT),
-  native: async ({ page, modelScript, leapmuxServer, authenticatedCodewhaleWorkspace }, use) => {
-    await use(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedCodewhaleWorkspace.workspaceId }))
-  },
+export const codewhaleTest = createProviderTest({
+  agent: CODEWHALE_AGENT,
+  nativeContext,
+  skipReason: CODEWHALE_E2E_SKIP_REASON,
+  workspaceName: 'authenticatedCodewhaleWorkspace',
 })

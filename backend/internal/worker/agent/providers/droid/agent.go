@@ -140,6 +140,8 @@ type droidOutputState struct {
 	tools        map[string]*droidTool
 	turnToolUse  int
 	generation   providerkit.GenerationBuffer
+	pending      []droidPendingOutput
+	ended        bool
 }
 
 // droidPendingControl is one published control request awaiting an answer.
@@ -344,6 +346,7 @@ func (a *Agent) Stop() {
 	a.Process.Stop()
 	a.stopChildConnections()
 	a.stopChildTails()
+	a.finishOutput(agent.MessageCompletionInterrupted)
 	a.cleanupRuntimeSettings()
 }
 
@@ -353,6 +356,7 @@ func (a *Agent) Wait() error {
 	err := a.Process.Wait()
 	a.stopChildConnections()
 	a.stopChildTails()
+	a.finishOutput(a.ProcessExitCompletion())
 	a.cleanupRuntimeSettings()
 	return err
 }

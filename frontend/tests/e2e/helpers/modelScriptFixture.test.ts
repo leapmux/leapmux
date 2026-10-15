@@ -138,7 +138,7 @@ describe('expectTurnEndedAfter', () => {
 })
 
 describe('startModelScript', () => {
-  // A cleanup that releases a gate runs after the native client may have cancelled the held request.
+  // A cleanup can release a gate after the native client cancels the held request.
   // The cancelled request leaves the gate with nothing to release, and that cleanup must not fail.
   it('reports no release, and does not fail, for a gated response that the client cancelled', async () => {
     const server = await createMockModelServer({ models: ['native-cleanup-unit'] })
