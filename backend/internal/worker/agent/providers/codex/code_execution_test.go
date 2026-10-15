@@ -377,6 +377,79 @@ func TestCodexEmptyShellPollWalksDeepValuesOnce(t *testing.T) {
 	require.False(t, codexSuppressRawExecutionOutput(codexCompletedExecOutput(t, nest(codexOutputPollReceipt))))
 }
 
+func TestCodexEmptyShellPollPreservesAmbiguousContainers(t *testing.T) {
+	t.Parallel()
+	for name, body := range map[string]string{
+		"numeric error":            `{"error":5,"result":` + codexRunningPollReceipt + `}`,
+		"zero result":              `{"count":0,"result":` + codexRunningPollReceipt + `}`,
+		"negative result":          `{"count":-1,"result":` + codexRunningPollReceipt + `}`,
+		"large result":             `{"count":9223372036854775807,"result":` + codexRunningPollReceipt + `}`,
+		"settled numeric error":    `{"status":"fulfilled","value":` + codexRunningPollReceipt + `,"error":5}`,
+		"duplicate container key":  `{"result":"build failed","result":` + codexRunningPollReceipt + `}`,
+		"duplicate receipt key":    strings.TrimSuffix(codexRunningPollReceipt, `}`) + `,"output":"failed","output":""}`,
+		"duplicate settled status": `{"status":"rejected","status":"fulfilled","value":` + codexRunningPollReceipt + `}`,
+		"escaped duplicate key":    `{"result":"build failed","\u0072esult":` + codexRunningPollReceipt + `}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			require.False(t, codexSuppressRawExecutionOutput(codexCompletedExecOutput(t, body)))
+		})
+	}
+}
+
+func TestCodexEmptyShellPollAcceptsReceiptKeysOnContainers(t *testing.T) {
+	t.Parallel()
+	for _, key := range []string{"chunk_id", "wall_time_seconds", "session_id", "original_token_count", "output", "exit_code"} {
+		t.Run(key, func(t *testing.T) {
+			body := `{"` + key + `":` + codexRunningPollReceipt + `}`
+			require.True(t, codexSuppressRawExecutionOutput(codexCompletedExecOutput(t, body)))
+			body = `{"i":0,"` + key + `":[` + codexExitedPollReceipt + `]}`
+			require.True(t, codexSuppressRawExecutionOutput(codexCompletedExecOutput(t, body)))
+		})
+	}
+}
+
+func TestCodexEmptyShellPollRejectsInvalidArrayWithoutAllocatingEveryItem(t *testing.T) {
+	measure := func(count int) float64 {
+		body := `[` + strings.Repeat(`{},`, count-1) + `{}]`
+		raw := codexCompletedExecOutput(t, body)
+		return testing.AllocsPerRun(10, func() {
+			if codexSuppressRawExecutionOutput(raw) {
+				panic("an empty object is not a poll receipt")
+			}
+		})
+	}
+	small := measure(10)
+	large := measure(10000)
+	require.Less(t, large, small*2, "reject the first empty object without allocating the remaining objects")
+}
+
+func TestCodexEmptyShellPollValidatesTokenStructure(t *testing.T) {
+	t.Parallel()
+	for _, body := range []string{
+		`[`, `{`, `{"result":`, `{"result" ` + codexRunningPollReceipt + `}`,
+		`[` + codexRunningPollReceipt, `{"result":` + codexRunningPollReceipt,
+		`[` + codexRunningPollReceipt + `,]`, `{"result":` + codexRunningPollReceipt + `,}`,
+		`{"status":` + codexRunningPollReceipt + `}`, `{"status":"fulfilled","value":0,"poll":` + codexRunningPollReceipt + `}`,
+		`{"output":` + codexRunningPollReceipt + `,"count":1}`,
+		`{"output":` + codexRunningPollReceipt + `,"session_id":1}`,
+		`{"chunk_id":"a","wall_time_seconds":1e999,"exit_code":0,"original_token_count":0,"output":""}`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			require.False(t, codexSuppressRawExecutionOutput(codexCompletedExecOutput(t, body)))
+		})
+	}
+	for _, body := range []string{
+		`{"value":` + codexRunningPollReceipt + `,"status":"fulfilled","index":0}`,
+		`{"output":"","original_token_count":0,"exit_code":0,"wall_time_seconds":0,"chunk_id":"a"}`,
+	} {
+		require.True(t, codexSuppressRawExecutionOutput(codexCompletedExecOutput(t, body)))
+	}
+	for _, depth := range []int{9999, 10000} {
+		body := strings.Repeat(`[`, depth) + codexRunningPollReceipt + strings.Repeat(`]`, depth)
+		require.Equal(t, depth == 9999, codexSuppressRawExecutionOutput(codexCompletedExecOutput(t, body)))
+	}
+}
+
 // Feed real provider envelopes through the same serialized path as process output.
 func rawExecPair(t testing.TB, id, thread, turn string) ([]byte, []byte) {
 	t.Helper()

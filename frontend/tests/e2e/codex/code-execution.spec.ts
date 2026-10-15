@@ -208,6 +208,52 @@ codexTest('omits a settled poll of an exited session and a running session', asy
   }
 })
 
+codexTest('preserves numeric results and duplicate keys beside empty polls after reload', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+  await openNativeAgent(context, { directoryPrefix: 'native-code-poll-content-' })
+  const agent = await currentNativeAgent(context)
+  const numericCall = 'native-poll-numeric-content'
+  const duplicateCall = 'native-poll-duplicate-content'
+  const containerCall = 'native-poll-output-container'
+  const pollSource = 'const receipt = await tools.write_stdin({session_id:load("contentPollSession"),chars:"",yield_time_ms:1000,max_output_tokens:500});'
+  const start = await modelScript.queue(
+    { toolCalls: [codexExecToolCall('native-content-poll-start', 'const r = await tools.exec_command({cmd:"read -r line",tty:true,yield_time_ms:250,max_output_tokens:500}); store("contentPollSession",r.session_id); text(r);')] },
+    { toolCalls: [codexExecToolCall(numericCall, `${pollSource} text({failureCount: 3, result: receipt});`)] },
+    { toolCalls: [codexExecToolCall(duplicateCall, `${pollSource} text('{"result":"POLL_FAILURE_DETAIL","result":' + JSON.stringify(receipt) + '}');`)] },
+    { toolCalls: [codexExecToolCall(containerCall, `${pollSource} text({output: receipt});`)] },
+    { toolCalls: [codexExecToolCall('native-content-poll-finish', 'text(await tools.write_stdin({session_id:load("contentPollSession"),chars:"\\n",yield_time_ms:1000,max_output_tokens:500}));')] },
+    { text: 'The poll content checks completed.' },
+  )
+  try {
+    await sendMessage(page, modelScript.prompt('Print numeric results and duplicate JSON keys beside empty shell polls.'))
+    await modelScript.waitForSteps(start + 6)
+    await waitForAgentIdle(page)
+    for (const [offset, callId] of [[2, numericCall], [3, duplicateCall], [4, containerCall]] as const) {
+      const blocks: { text: string }[] = JSON.parse(nativeToolResult(await modelScript.requestAt(start + offset), callId))
+      expect(blocks).toHaveLength(2)
+      const printed = JSON.parse(blocks[1]!.text)
+      expect(printed.result ?? printed.output).toMatchObject({ session_id: expect.any(Number), original_token_count: 0, output: '' })
+    }
+    for (const reload of [false, true]) {
+      if (reload) {
+        await page.reload()
+        await openWorkspace(page, context.workspaceId)
+      }
+      const snapshot = await readNativeMessageSnapshot(context, agent.id)
+      for (const [callId, content] of [[numericCall, '"failureCount":3'], [duplicateCall, '"result":"POLL_FAILURE_DETAIL","result":']] as const) {
+        expect(snapshot.messages.filter(message => message.spanId === callId)).toHaveLength(2)
+        await expect(toolCallRow(page, callId)).toHaveCount(1)
+        await expect(toolCallRow(page, callId)).toContainText(content)
+      }
+      expect(snapshot.messages.filter(message => message.spanId === containerCall)).toHaveLength(0)
+      await expect(toolCallRow(page, containerCall)).toHaveCount(0)
+    }
+  }
+  finally {
+    await closeNativeAgentAndWait(context, agent.id)
+  }
+})
+
 codexTest('omits a yielded execution with no output or nested rows', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
   await openNativeAgent(context, { directoryPrefix: 'native-code-empty-yield-' })

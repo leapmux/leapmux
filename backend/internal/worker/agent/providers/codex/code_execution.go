@@ -123,9 +123,11 @@ func (a *Agent) handleCodexRawExecution(raw, params json.RawMessage) {
 	a.persistCodexRawExecution(key, call)
 }
 
-var codexCompletedExecHeader = regexp.MustCompile(`^` + regexp.QuoteMeta(contracts.CodexExecOutputCompletedHeader) + `\nWall time \d+(?:\.\d+)? seconds(?: \(code-mode [\d.]+ seconds; overhead -?[\d.]+ seconds\))?\nOutput:\n$`)
+const codexExecTimingOutputPattern = `\nWall time \d+(?:\.\d+)? seconds(?: \(code-mode [\d.]+ seconds; overhead -?[\d.]+ seconds\))?\nOutput:\n$`
 
-var codexEmptyYieldHeader = regexp.MustCompile(`^Script running with cell ID \S+\nWall time \d+(?:\.\d+)? seconds(?: \(code-mode [\d.]+ seconds; overhead -?[\d.]+ seconds\))?\nOutput:\n$`)
+var codexCompletedExecHeader = regexp.MustCompile(`^` + regexp.QuoteMeta(contracts.CodexExecOutputCompletedHeader) + codexExecTimingOutputPattern)
+
+var codexEmptyYieldHeader = regexp.MustCompile(`^Script running with cell ID \S+` + codexExecTimingOutputPattern)
 
 // Suppress empty yielded status and successful output made entirely of empty shell-poll receipts.
 // After a completed header, each printed block must hold an empty poll (see codexEmptyPollValue).
@@ -160,125 +162,146 @@ func codexSuppressRawExecutionOutput(raw json.RawMessage) bool {
 		if block.Type != contracts.CodexExecOutputTextContent {
 			return false
 		}
-		value, ok := codexDecodePrintedJSON(block.Text)
-		if !ok || !codexEmptyPollValue(value) {
+		if !codexEmptyPollJSON(block.Text) {
 			return false
 		}
 	}
 	return true
 }
 
-// codexPollReceiptFields lists the fields of the result that write_stdin gives a script.
-// Codex omits each field that has no value, so one receipt holds a subset of them.
-var codexPollReceiptFields = map[string]bool{
-	"chunk_id": true, "wall_time_seconds": true, "session_id": true, "original_token_count": true, "output": true, "exit_code": true,
-}
+// Match encoding/json's nesting limit. Token traversal otherwise has no nesting limit.
+const codexPollJSONDepthLimit = 10000
 
-// Decode one printed block as exactly one JSON value. UseNumber keeps an integer separate from a fraction.
-// Trailing text after the value keeps the pair.
-func codexDecodePrintedJSON(text string) (any, bool) {
+// Read exactly one printed JSON value. Stop when content makes suppression unsafe.
+// Tokens preserve duplicate keys and avoid allocating a complete tree for rejected output.
+func codexEmptyPollJSON(text string) bool {
 	decoder := json.NewDecoder(strings.NewReader(text))
 	decoder.UseNumber()
-	var value any
-	if decoder.Decode(&value) != nil {
-		return nil, false
+	token, err := decoder.Token()
+	if err != nil || !codexEmptyPollValue(decoder, token, 0) {
+		return false
 	}
-	if _, err := decoder.Token(); err != io.EOF {
-		return nil, false
-	}
-	return value, true
+	_, err = decoder.Token()
+	return err == io.EOF
 }
 
-// codexEmptyPollValue reports whether a printed value holds at least one empty successful receipt and nothing else
-// that can carry content. A script chooses how it prints each receipt:
-//   - bare, as text(r) prints it
-//   - in an array, as text(JSON.stringify(results)) prints it
-//   - in a fulfilled Promise.allSettled record, beside integer labels, as text({i, ...settled}) prints it
-//   - under any key of a container, as text({i, result: settled}) prints it
-//
-// A string, a boolean, null, a fraction, and a rejected record keep the pair. A receipt keeps its own fields
-// only, because an unknown field can carry an error: text({i, ...r}) keeps the pair.
-func codexEmptyPollValue(value any) bool {
-	switch value := value.(type) {
-	case []any:
-		if len(value) == 0 {
+// codexEmptyPollValue accepts a receipt or a nonempty collection of empty successful receipts.
+// A script can print receipts in arrays or under container keys, including receipt field keys.
+// These values keep the execution pair:
+//   - A string outside a recognized receipt or status field.
+//   - A boolean or null.
+//   - A number outside a recognized receipt field or an i/index label.
+//   - A rejected record.
+//   - A duplicate object key.
+func codexEmptyPollValue(decoder *json.Decoder, token json.Token, depth int) bool {
+	if depth >= codexPollJSONDepthLimit {
+		return false
+	}
+	switch token {
+	case json.Delim('['):
+		if !decoder.More() {
 			return false
 		}
-		for _, item := range value {
-			if !codexEmptyPollValue(item) {
+		for decoder.More() {
+			item, err := decoder.Token()
+			if err != nil || !codexEmptyPollValue(decoder, item, depth+1) {
 				return false
 			}
 		}
-		return true
-	case map[string]any:
-		for key := range value {
-			if codexPollReceiptFields[key] {
-				return codexEmptyPollReceipt(value)
-			}
-		}
-		return codexEmptyPollContainer(value)
+		closing, err := decoder.Token()
+		return err == nil && closing == json.Delim(']')
+	case json.Delim('{'):
+		return codexEmptyPollObject(decoder, depth)
 	default:
 		return false
 	}
 }
 
-// A container holds no receipt field. Each field holds an empty poll or an integer label, and a status field marks
-// a fulfilled Promise.allSettled record. The status case does not examine the value field: the loop examines each
-// field once, so a value that nests settled records deeply costs linear time.
-func codexEmptyPollContainer(fields map[string]any) bool {
-	_, settled := fields["status"]
-	found := false
-	for key, field := range fields {
-		switch {
-		case key == "status":
-			// A rejected record holds a reason instead of a value, and the reason carries the error.
-			if status, _ := field.(string); status != "fulfilled" {
-				return false
-			}
-			if _, ok := fields["value"]; !ok {
-				return false
-			}
-		case codexEmptyPollValue(field):
-			found = true
-		case settled && key == "value":
+// Classify each object as a receipt or a container while reading each field once.
+// Nested receipts can use any key except status, which identifies a settled record.
+// A scalar receipt field cannot become a container label when receipt validation fails.
+func codexEmptyPollObject(decoder *json.Decoder, depth int) bool {
+	fields := make(map[string]bool)
+	receipt, container := true, true
+	foundPoll, valuePoll := false, false
+	for decoder.More() {
+		token, err := decoder.Token()
+		key, ok := token.(string)
+		if err != nil || !ok || fields[key] {
 			return false
-		case codexIsJSONInteger(field):
-			// A label, such as the index of a result.
-		default:
+		}
+		fields[key] = true
+		value, err := decoder.Token()
+		if err != nil {
+			return false
+		}
+		if _, nested := value.(json.Delim); nested {
+			if !codexEmptyPollValue(decoder, value, depth+1) {
+				return false
+			}
+			receipt = false
+			container = container && key != "status"
+			foundPoll = true
+			if key == "value" {
+				valuePoll = true
+			}
+		} else {
+			receipt = receipt && codexEmptyPollReceiptField(key, value)
+			container = container && codexEmptyPollLabelField(key, value)
+		}
+		if !receipt && !container {
 			return false
 		}
 	}
-	return found
-}
-
-// codexEmptyPollReceipt reports whether a receipt states a successful poll that read no output.
-// A running session states its session ID. An exited session states exit code 0 and no session ID. Codex sends the
-// exit as the commandExecution completion when the process exits, so that typed row already shows it.
-func codexEmptyPollReceipt(fields map[string]any) bool {
-	for key := range fields {
-		if !codexPollReceiptFields[key] {
-			return false
-		}
-	}
-	chunkID, _ := fields["chunk_id"].(string)
-	wallTime, wallTimeOK := codexJSONFloat(fields["wall_time_seconds"])
-	tokens, tokensOK := codexJSONInteger(fields["original_token_count"])
-	output, outputOK := fields["output"].(string)
-	if chunkID == "" || !wallTimeOK || wallTime < 0 || !tokensOK || tokens != 0 || !outputOK || output != "" {
+	closing, err := decoder.Token()
+	if err != nil || closing != json.Delim('}') {
 		return false
 	}
-	exitField, exited := fields["exit_code"]
-	if exited {
-		if exitCode, ok := codexJSONInteger(exitField); !ok || exitCode != 0 {
+	if receipt {
+		return fields["chunk_id"] && fields["wall_time_seconds"] && fields["original_token_count"] && fields["output"] &&
+			(fields["session_id"] || fields["exit_code"])
+	}
+	return container && foundPoll && (!fields["status"] || valuePoll)
+}
+
+// Only recognized labels can accompany a nested receipt. Other scalars can carry results or errors.
+func codexEmptyPollLabelField(key string, value json.Token) bool {
+	switch key {
+	case "status":
+		return value == "fulfilled"
+	case "i", "index":
+		_, ok := codexJSONInteger(value)
+		return ok
+	default:
+		return false
+	}
+}
+
+// A running receipt supplies a positive session ID. An exited receipt supplies exit code zero.
+// Codex sends the exit through commandExecution also, so the typed row already shows it.
+func codexEmptyPollReceiptField(key string, value json.Token) bool {
+	switch key {
+	case "chunk_id":
+		chunkID, ok := value.(string)
+		return ok && chunkID != ""
+	case "output":
+		return value == ""
+	case "wall_time_seconds":
+		number, ok := value.(json.Number)
+		if !ok {
 			return false
 		}
+		wallTime, err := number.Float64()
+		return err == nil && wallTime >= 0
+	case "session_id":
+		sessionID, ok := codexJSONInteger(value)
+		return ok && sessionID > 0
+	case "original_token_count", "exit_code":
+		number, ok := codexJSONInteger(value)
+		return ok && number == 0
+	default:
+		return false
 	}
-	sessionField, running := fields["session_id"]
-	if !running {
-		return exited
-	}
-	sessionID, ok := codexJSONInteger(sessionField)
-	return ok && sessionID > 0
 }
 
 func codexJSONInteger(value any) (int64, bool) {
@@ -288,20 +311,6 @@ func codexJSONInteger(value any) (int64, bool) {
 	}
 	integer, err := number.Int64()
 	return integer, err == nil
-}
-
-func codexIsJSONInteger(value any) bool {
-	_, ok := codexJSONInteger(value)
-	return ok
-}
-
-func codexJSONFloat(value any) (float64, bool) {
-	number, ok := value.(json.Number)
-	if !ok {
-		return 0, false
-	}
-	float, err := number.Float64()
-	return float, err == nil
 }
 
 // A completed identity remains until turn cleanup or eviction, without retained payloads.
