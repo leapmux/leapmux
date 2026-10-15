@@ -78,7 +78,7 @@ func TestCodexStartOrResumeThread(t *testing.T) {
 					return agenttest.RPCReply{Result: json.RawMessage(`{"thread":{"id":"thread-1"},"model":"` + test.responseModel + `"}`)}
 				})
 				a.model = test.storedModel
-				params := codexThreadParams(test.storedModel, "/work", codexPermissionSettings{mode: DefaultPermissionMode, profile: ProfileWorkspace}, contracts.CodexOptionDefaultServiceTier)
+				params := codexThreadParams(test.storedModel, "/work", codexPermissionSettings{mode: DefaultPermissionMode, profile: contracts.CodexPermissionProfileWorkspace}, contracts.CodexOptionDefaultServiceTier)
 
 				thread, err := a.startOrResumeThread(params, test.resumeID, timeout)
 				require.NoError(t, err)
@@ -183,8 +183,8 @@ func TestCodexClearContextStartsFreshThread(t *testing.T) {
 	a.turnPlanText = "old plan"
 	a.turnAssistantText = "old answer"
 	a.model = "gpt-5.6-sol"
-	a.permissionMode = ModeNever
-	a.permissionProfile = ProfileDangerFullAccess
+	a.permissionMode = contracts.CodexPermissionModeNever
+	a.permissionProfile = contracts.CodexPermissionProfileDangerFullAccess
 	a.serviceTier = ServiceTierFast
 
 	sessionID, clearErr := a.ClearContext()
@@ -196,8 +196,8 @@ func TestCodexClearContextStartsFreshThread(t *testing.T) {
 	assert.False(t, a.turnSawPlan)
 	assert.Empty(t, a.turnPlanText)
 	assert.Empty(t, a.turnAssistantText)
-	assert.Equal(t, ModeNever, a.permissionMode)
-	assert.Equal(t, ProfileDangerFullAccess, a.permissionProfile)
+	assert.Equal(t, contracts.CodexPermissionModeNever, a.permissionMode)
+	assert.Equal(t, contracts.CodexPermissionProfileDangerFullAccess, a.permissionProfile)
 	assert.True(t, a.permissionsAcknowledged, "the new thread's response acknowledges its settings")
 	assert.Equal(t, "thread-new", sink.LastSessionID())
 
@@ -207,9 +207,9 @@ func TestCodexClearContextStartsFreshThread(t *testing.T) {
 	assert.NotContains(t, sent[0].Params, "threadId", "a clear must not resume the old thread")
 	assert.Equal(t, "clear", sent[0].Params["sessionStartSource"])
 	assert.Equal(t, "gpt-5.6-sol", sent[0].Params["model"])
-	assert.Equal(t, ModeNever, sent[0].Params["approvalPolicy"])
+	assert.Equal(t, contracts.CodexPermissionModeNever, sent[0].Params["approvalPolicy"])
 	assert.Equal(t, codexReviewerUser, sent[0].Params["approvalsReviewer"])
-	assert.Equal(t, ProfileDangerFullAccess, sent[0].Params["permissions"])
+	assert.Equal(t, contracts.CodexPermissionProfileDangerFullAccess, sent[0].Params["permissions"])
 	assert.NotContains(t, sent[0].Params, "sandbox")
 	assert.Equal(t, ServiceTierFast, sent[0].Params["serviceTier"])
 	assert.Equal(t, map[string]interface{}{"model_reasoning_summary": "detailed"}, sent[0].Params["config"])
@@ -312,7 +312,7 @@ func TestCodexThreadResultAppliesConfirmedSettings(t *testing.T) {
 		model:             "gpt-5.6-luna",
 		effort:            agent.EffortAuto,
 		serviceTier:       contracts.CodexOptionDefaultServiceTier,
-		permissionMode:    ModeNever,
+		permissionMode:    contracts.CodexPermissionModeNever,
 		permissionProfile: ProfileReadOnly,
 	}
 	a.applyThreadResult(result)
@@ -321,7 +321,7 @@ func TestCodexThreadResultAppliesConfirmedSettings(t *testing.T) {
 	assert.Equal(t, "medium", a.effort)
 	assert.Equal(t, ServiceTierFast, a.serviceTier)
 	assert.Equal(t, ModeAskForApproval, a.permissionMode)
-	assert.Equal(t, ProfileWorkspace, a.permissionProfile)
+	assert.Equal(t, contracts.CodexPermissionProfileWorkspace, a.permissionProfile)
 }
 
 // TestCodexThreadResultReadsThePermissionMode pins how the approval policy and the
@@ -335,10 +335,10 @@ func TestCodexThreadResultReadsThePermissionMode(t *testing.T) {
 		reviewer json.RawMessage
 		want     string
 	}{
-		{name: "approve for me", policy: json.RawMessage(`"on-request"`), reviewer: json.RawMessage(`"auto_review"`), want: ModeApproveForMe},
+		{name: "approve for me", policy: json.RawMessage(`"on-request"`), reviewer: json.RawMessage(`"auto_review"`), want: contracts.CodexPermissionModeApproveForMe},
 		{name: "ask for approval", policy: json.RawMessage(`"on-request"`), reviewer: json.RawMessage(`"user"`), want: ModeAskForApproval},
 		{name: "an absent reviewer reads as the user", policy: json.RawMessage(`"on-request"`), want: ModeAskForApproval},
-		{name: "a reviewer on never reviews nothing", policy: json.RawMessage(`"never"`), reviewer: json.RawMessage(`"auto_review"`), want: ModeNever},
+		{name: "a reviewer on never reviews nothing", policy: json.RawMessage(`"never"`), reviewer: json.RawMessage(`"auto_review"`), want: contracts.CodexPermissionModeNever},
 		{name: "a reviewer on untrusted reviews nothing", policy: json.RawMessage(`"untrusted"`), reviewer: json.RawMessage(`"auto_review"`), want: ModeUnlessTrusted},
 	} {
 		t.Run(test.name, func(t *testing.T) {

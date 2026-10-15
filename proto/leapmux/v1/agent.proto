@@ -1240,6 +1240,5 @@ message ApproveAutoReviewDenialRequest {
   string review_id = 3;
 }
 
-// Deliberately empty. The worker writes a transcript notice that records the
-// approval, and that notice is the one record of it.
+// The worker returns success after it records the approval on the review row and writes its notice.
 message ApproveAutoReviewDenialResponse {}

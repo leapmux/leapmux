@@ -24,10 +24,11 @@ import (
 // receives, on top of the probe agent's lifecycle.
 type autoReviewApproverAgent struct {
 	*nativeRestartProbeAgent
-	mu      sync.Mutex
-	reviews []string
-	entries [][]json.RawMessage
-	err     error
+	mu           sync.Mutex
+	reviews      []string
+	entries      [][]json.RawMessage
+	err          error
+	beforeReturn func()
 }
 
 func (a *autoReviewApproverAgent) ApproveAutoReviewDenial(entries []json.RawMessage, reviewID string) error {
@@ -35,6 +36,9 @@ func (a *autoReviewApproverAgent) ApproveAutoReviewDenial(entries []json.RawMess
 	defer a.mu.Unlock()
 	a.reviews = append(a.reviews, reviewID)
 	a.entries = append(a.entries, entries)
+	if a.beforeReturn != nil {
+		a.beforeReturn()
+	}
 	return a.err
 }
 
@@ -187,9 +191,8 @@ func TestApproveAutoReviewDenial_RecordsTheApprovalOnce(t *testing.T) {
 	assert.Len(t, approvalNotices(t, svc, "agent-1"), 1)
 }
 
-// TestApproveAutoReviewDenial_TheRowRecordIsTheAuthority covers the notice and the row
-// record apart: the record alone refuses a second call to the provider.
-func TestApproveAutoReviewDenial_TheRowRecordIsTheAuthority(t *testing.T) {
+// A completed claim prevents another delivery even when the user removes the notice.
+func TestApproveAutoReviewDenial_CompletedClaimPreventsAnotherDelivery(t *testing.T) {
 	t.Parallel()
 	svc, _, _ := setupTestService(t)
 	approver := &autoReviewApproverAgent{}
@@ -209,7 +212,7 @@ func TestApproveAutoReviewDenial_TheRowRecordIsTheAuthority(t *testing.T) {
 	require.Empty(t, approvalNotices(t, svc, "agent-1"))
 
 	require.NoError(t, svc.approveAutoReviewDenial(dbAgent, messageID, "review-1"))
-	assert.Equal(t, []string{"review-1"}, approver.approvedReviews(), "the row record refuses the second call")
+	assert.Equal(t, []string{"review-1"}, approver.approvedReviews(), "the completed claim prevents the second call")
 }
 
 // TestApproveAutoReviewDenial_KeepsTheRecordThroughAMerge covers a later review that
@@ -451,28 +454,36 @@ func TestApproveAutoReviewDenial_RefusesADamagedRecord(t *testing.T) {
 	assert.Empty(t, approver.approvedReviews())
 }
 
-// TestApproveAutoReviewDenial_SucceedsWhenARecordFails covers the two writes after
-// the provider took the approval. The provider holds it, so the request succeeds, and
-// only the record that failed is missing.
-func TestApproveAutoReviewDenial_SucceedsWhenARecordFails(t *testing.T) {
+// A retry completes storage without sending the approval to the provider again.
+func TestApproveAutoReviewDenial_ResumesAfterARecordFails(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		name        string
 		trigger     string
+		dropTrigger string
 		wantRecord  []string
 		wantNotices int
 	}{
 		{
 			name:        "the row record",
 			trigger:     `CREATE TRIGGER fail_record BEFORE UPDATE OF supplemental_content ON messages WHEN NEW.agent_id='agent-1' BEGIN SELECT RAISE(ABORT, 'record storage failed'); END`,
+			dropTrigger: `DROP TRIGGER fail_record`,
 			wantRecord:  nil,
-			wantNotices: 1,
+			wantNotices: 0,
 		},
 		{
 			name:        "the notice",
 			trigger:     `CREATE TRIGGER fail_notice BEFORE INSERT ON messages WHEN NEW.agent_id='agent-1' BEGIN SELECT RAISE(ABORT, 'notice storage failed'); END`,
+			dropTrigger: `DROP TRIGGER fail_notice`,
 			wantRecord:  []string{"review-1"},
 			wantNotices: 0,
+		},
+		{
+			name:        "the completion receipt",
+			trigger:     `CREATE TRIGGER fail_completion BEFORE UPDATE OF state ON auto_review_approvals WHEN NEW.state=3 BEGIN SELECT RAISE(ABORT, 'completion storage failed'); END`,
+			dropTrigger: `DROP TRIGGER fail_completion`,
+			wantRecord:  []string{"review-1"},
+			wantNotices: 1,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -485,11 +496,109 @@ func TestApproveAutoReviewDenial_SucceedsWhenARecordFails(t *testing.T) {
 			dbAgent, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
 			require.NoError(t, err)
 
-			require.NoError(t, svc.approveAutoReviewDenial(dbAgent, messageID, "review-1"))
+			require.Error(t, svc.approveAutoReviewDenial(dbAgent, messageID, "review-1"))
 
 			assert.Equal(t, []string{"review-1"}, approver.approvedReviews())
 			assert.Equal(t, test.wantRecord, recordedApprovals(t, svc, messageID))
 			assert.Len(t, approvalNotices(t, svc, "agent-1"), test.wantNotices)
+			_, err = svc.DB.ExecContext(t.Context(), test.dropTrigger)
+			require.NoError(t, err)
+			require.NoError(t, svc.approveAutoReviewDenial(dbAgent, messageID, "review-1"))
+			assert.Equal(t, []string{"review-1"}, approver.approvedReviews())
+			assert.Equal(t, []string{"review-1"}, recordedApprovals(t, svc, messageID))
+			assert.Len(t, approvalNotices(t, svc, "agent-1"), 1)
 		})
 	}
+}
+
+func TestApproveAutoReviewDenial_DoesNotRepeatUncertainDelivery(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := setupTestService(t)
+	approver := &autoReviewApproverAgent{err: agent.ErrDeliveryUncertain}
+	messageID := startAutoReviewAgent(t, svc, approver)
+	dbAgent, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
+	require.NoError(t, err)
+	require.ErrorIs(t, svc.approveAutoReviewDenial(dbAgent, messageID, "review-1"), agent.ErrDeliveryUncertain)
+	// Remove all process-local coordination to model a new service instance.
+	svc.autoReviewApprovals = sync.Map{}
+	require.ErrorIs(t, svc.approveAutoReviewDenial(dbAgent, messageID, "review-1"), agent.ErrDeliveryUncertain)
+	assert.Equal(t, []string{"review-1"}, approver.approvedReviews())
+	assert.Empty(t, recordedApprovals(t, svc, messageID))
+}
+
+func TestApproveAutoReviewDenial_RequiresADurableClaim(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := setupTestService(t)
+	approver := &autoReviewApproverAgent{}
+	messageID := startAutoReviewAgent(t, svc, approver)
+	_, err := svc.DB.ExecContext(t.Context(), `CREATE TRIGGER refuse_claim BEFORE INSERT ON auto_review_approvals BEGIN SELECT RAISE(ABORT, 'claim failed'); END`)
+	require.NoError(t, err)
+	dbAgent, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
+	require.NoError(t, err)
+	require.ErrorContains(t, svc.approveAutoReviewDenial(dbAgent, messageID, "review-1"), "claim failed")
+	assert.Empty(t, approver.approvedReviews())
+}
+
+func TestApproveAutoReviewDenial_RetainsAClaimWithoutADeliveryReceipt(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := setupTestService(t)
+	approver := &autoReviewApproverAgent{}
+	messageID := startAutoReviewAgent(t, svc, approver)
+	_, err := svc.DB.ExecContext(t.Context(), `CREATE TRIGGER refuse_receipt BEFORE UPDATE OF state ON auto_review_approvals WHEN NEW.state=2 BEGIN SELECT RAISE(ABORT, 'receipt failed'); END`)
+	require.NoError(t, err)
+	dbAgent, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
+	require.NoError(t, err)
+	require.ErrorIs(t, svc.approveAutoReviewDenial(dbAgent, messageID, "review-1"), agent.ErrDeliveryUncertain)
+	_, err = svc.DB.ExecContext(t.Context(), `DROP TRIGGER refuse_receipt`)
+	require.NoError(t, err)
+	require.ErrorIs(t, svc.approveAutoReviewDenial(dbAgent, messageID, "review-1"), agent.ErrDeliveryUncertain)
+	assert.Equal(t, []string{"review-1"}, approver.approvedReviews())
+	assert.Empty(t, recordedApprovals(t, svc, messageID))
+}
+
+func TestApproveAutoReviewDenial_ReleasesADefiniteRefusal(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := setupTestService(t)
+	approver := &autoReviewApproverAgent{err: agent.ErrAutoReviewNotDenied}
+	messageID := startAutoReviewAgent(t, svc, approver)
+	dbAgent, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
+	require.NoError(t, err)
+	require.ErrorIs(t, svc.approveAutoReviewDenial(dbAgent, messageID, "review-1"), agent.ErrAutoReviewNotDenied)
+	_, err = svc.Queries.GetAutoReviewApproval(t.Context(), db.GetAutoReviewApprovalParams{AgentID: "agent-1", AgentSessionID: "thread-1", ReviewID: "review-1"})
+	assert.ErrorIs(t, err, sql.ErrNoRows)
+	approver.err = nil
+	require.NoError(t, svc.approveAutoReviewDenial(dbAgent, messageID, "review-1"))
+	assert.Equal(t, []string{"review-1", "review-1"}, approver.approvedReviews())
+}
+
+func TestApproveAutoReviewDenial_DurableClaimRejectsAnotherService(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := setupTestService(t)
+	entered, release := make(chan struct{}), make(chan struct{})
+	releaseOnce := sync.OnceFunc(func() { close(release) })
+	defer releaseOnce()
+	approver := &autoReviewApproverAgent{beforeReturn: func() { close(entered); <-release }}
+	messageID := startAutoReviewAgent(t, svc, approver)
+	dbAgent, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
+	require.NoError(t, err)
+	done := make(chan error, 1)
+	go func() { done <- svc.approveAutoReviewDenial(dbAgent, messageID, "review-1") }()
+	ctx := testutil.DeadlineContext(t)
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("the provider did not receive the approval")
+	}
+	require.ErrorIs(t, svc.approveAutoReviewDenial(dbAgent, messageID, "review-1"), errAutoReviewApprovalInFlight)
+	other := &Service{Queries: svc.Queries, Agents: svc.Agents, Output: svc.Output}
+	err = other.approveAutoReviewDenial(dbAgent, messageID, "review-1")
+	releaseOnce()
+	require.ErrorIs(t, err, agent.ErrDeliveryUncertain)
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-ctx.Done():
+		t.Fatal("the approval did not finish")
+	}
+	assert.Equal(t, []string{"review-1"}, approver.approvedReviews())
 }

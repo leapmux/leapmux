@@ -73,6 +73,10 @@ func (s *ControlSink) CancelControlRequest(requestID string) {
 	s.canceledControls = append(s.canceledControls, requestID)
 }
 
+func (s *ControlSink) CancelControlRequestInstance(requestID, instanceID string) {
+	s.CancelControlRequest(requestID)
+}
+
 func (s *ControlSink) CanceledControls() []string {
 	s.crMu.Lock()
 	defer s.crMu.Unlock()

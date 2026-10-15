@@ -67,8 +67,8 @@ type Agent struct {
 	// bypassActiveLocked). Guarded by Mu.
 	permissionsAcknowledged bool
 	// permissionProfiles is the profile catalog that permissionProfile/list reported,
-	// or nil when the query failed and the static seed applies. Guarded by Mu.
-	permissionProfiles []*leapmuxv1.AvailableOption
+	// with explicit availability. An unavailable query uses the static seed. Guarded by Mu.
+	permissionProfiles codexPermissionProfileCatalog
 	// refusedModes holds the permission modes that the managed requirements or the
 	// config refuse. Empty when every mode is allowed. Guarded by Mu.
 	refusedModes map[string]struct{}

@@ -25,16 +25,19 @@ type JSONRPCProcess struct {
 	FrameMessage func([]byte) []byte
 
 	// outstandingMu guards outstandingControls and withdrawGeneration.
+	// It also protects each record's mutable state.
 	outstandingMu sync.Mutex
 	// outstandingControls holds unanswered control requests by LeapMux request ID.
 	// Publication adds an entry. An answer or withdrawal removes it.
 	// A failed write restores the entry only when no bytes reached the provider.
 	// These rules keep native requests and browser controls consistent.
-	outstandingControls map[string]outstandingControlRequest
+	outstandingControls map[string]*outstandingControlRequest
 	// withdrawGeneration distinguishes withdrawal from an answer during publication.
 	// Both paths remove a request. Only withdrawal increments this counter.
 	// A presence check alone can cancel a control that the reader already answered.
 	withdrawGeneration uint64
+	approvalMu         sync.Mutex
+	approvalQueue      chan *controlApprovalBatch
 }
 
 // frameJSONRPCMessage supplies the same framing for waiting and detached writes.

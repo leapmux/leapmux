@@ -140,8 +140,7 @@ type Service struct {
 
 	// autoReviewApprovals holds the automatic-review approvals that are in flight,
 	// keyed by agent id and review id, so two concurrent clicks cannot both reach the
-	// provider. The approval record on the review row refuses a repeat after the
-	// first one completes.
+	// provider. The durable delivery claim prevents a repeat across restarts.
 	autoReviewApprovals sync.Map
 
 	// TabPayloads persists (user_id, tab_id) -> TabPayload for every

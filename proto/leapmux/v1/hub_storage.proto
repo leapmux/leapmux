@@ -1,6 +1,15 @@
 syntax = "proto3";
 package leapmux.v1;
 
+// AutoReviewApprovalState records delivery of a user's approval of a denied review.
+// The worker retains an unconfirmed claim across restarts to prevent duplicate delivery.
+enum AutoReviewApprovalState {
+  AUTO_REVIEW_APPROVAL_STATE_UNSPECIFIED = 0;
+  AUTO_REVIEW_APPROVAL_STATE_UNCONFIRMED = 1;
+  AUTO_REVIEW_APPROVAL_STATE_DELIVERED = 2;
+  AUTO_REVIEW_APPROVAL_STATE_COMPLETED = 3;
+}
+
 // Storage vocabularies for the hub's and the worker's own tables.
 //
 // Every enum here numbers ONE enum column in internal/hub/store or

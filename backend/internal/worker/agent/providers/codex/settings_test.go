@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/quartz"
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -32,8 +33,12 @@ func newCodexAgentForRPC(t *testing.T, respond func(method string) agenttest.RPC
 
 // newCodexAgentForRPCRequests is newCodexAgentForRPC for a fake whose reply depends on
 // the parameters of the request.
-func newCodexAgentForRPCRequests(t *testing.T, respond func(request codexRecordedRequest) agenttest.RPCReply) (*Agent, *agenttest.Sink, func() []codexRecordedRequest) {
+func newCodexAgentForRPCRequests(t *testing.T, respond func(request codexRecordedRequest) agenttest.RPCReply, clocks ...quartz.Clock) (*Agent, *agenttest.Sink, func() []codexRecordedRequest) {
 	t.Helper()
+	var clock quartz.Clock
+	if len(clocks) > 0 {
+		clock = clocks[0]
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	readPipe, writePipe, err := os.Pipe()
@@ -43,6 +48,7 @@ func newCodexAgentForRPCRequests(t *testing.T, respond func(request codexRecorde
 	agent := &Agent{
 		JSONRPCProcess: providerkit.JSONRPCProcess{Process: providerkit.NewProcessFrom(providerkit.ProcessConfig{
 			AgentID:     "test-codex",
+			Clock:       clock,
 			Stdin:       writePipe,
 			Ctx:         ctx,
 			Cancel:      cancel,
@@ -108,7 +114,7 @@ func TestCodexUpdateSettingsPublishesRequestedValues(t *testing.T) {
 	updated := a.UpdateSettings(map[string]string{
 		agent.OptionIDModel:                    "gpt-5.2",
 		agent.OptionIDEffort:                   "low",
-		agent.OptionIDPermissionMode:           ModeNever,
+		agent.OptionIDPermissionMode:           contracts.CodexPermissionModeNever,
 		contracts.CodexOptionPermissionProfile: ProfileReadOnly,
 		contracts.CodexOptionServiceTier:       "fast",
 	})
@@ -118,7 +124,7 @@ func TestCodexUpdateSettingsPublishesRequestedValues(t *testing.T) {
 	assert.Empty(t, requests(), "active settings must not read thread-agnostic global config")
 	assert.Equal(t, "gpt-5.2", a.model)
 	assert.Equal(t, "low", a.effort)
-	assert.Equal(t, ModeNever, a.permissionMode)
+	assert.Equal(t, contracts.CodexPermissionModeNever, a.permissionMode)
 	assert.Equal(t, ProfileReadOnly, a.permissionProfile)
 	assert.Equal(t, "fast", a.serviceTier)
 
@@ -126,7 +132,7 @@ func TestCodexUpdateSettingsPublishesRequestedValues(t *testing.T) {
 	refresh := sink.LastSettingsRefresh()
 	assert.Equal(t, "gpt-5.2", refresh.Model)
 	assert.Equal(t, "low", refresh.Effort)
-	assert.Equal(t, ModeNever, refresh.PermissionMode)
+	assert.Equal(t, contracts.CodexPermissionModeNever, refresh.PermissionMode)
 }
 
 func TestCodexUpdateSettingsPreservesRequestedThreadSettings(t *testing.T) {
@@ -138,15 +144,15 @@ func TestCodexUpdateSettingsPreservesRequestedThreadSettings(t *testing.T) {
 
 	updated := a.UpdateSettings(map[string]string{
 		agent.OptionIDEffort:                   "low",
-		agent.OptionIDPermissionMode:           ModeNever,
-		contracts.CodexOptionPermissionProfile: ProfileDangerFullAccess,
+		agent.OptionIDPermissionMode:           contracts.CodexPermissionModeNever,
+		contracts.CodexOptionPermissionProfile: contracts.CodexPermissionProfileDangerFullAccess,
 		contracts.CodexOptionServiceTier:       ServiceTierFast,
 	})
 
 	require.True(t, updated.AppliedLive)
 	assert.Equal(t, "low", a.effort)
-	assert.Equal(t, ModeNever, a.permissionMode)
-	assert.Equal(t, ProfileDangerFullAccess, a.permissionProfile)
+	assert.Equal(t, contracts.CodexPermissionModeNever, a.permissionMode)
+	assert.Equal(t, contracts.CodexPermissionProfileDangerFullAccess, a.permissionProfile)
 	assert.Equal(t, ServiceTierFast, a.serviceTier)
 	assert.Empty(t, requests())
 }
@@ -382,7 +388,7 @@ func TestCodexThreadParams(t *testing.T) {
 	assert.Equal(t, "/work", fast["cwd"])
 	assert.Equal(t, ModeAskForApproval, fast["approvalPolicy"])
 	assert.Equal(t, codexReviewerUser, fast["approvalsReviewer"])
-	assert.Equal(t, ProfileWorkspace, fast["permissions"])
+	assert.Equal(t, contracts.CodexPermissionProfileWorkspace, fast["permissions"])
 	assert.NotContains(t, fast, "sandbox", "Codex refuses the legacy sandbox field beside a profile")
 	assert.Equal(t, ServiceTierFast, fast["serviceTier"], "a non-default tier is sent")
 
@@ -403,15 +409,15 @@ func TestCodexThreadParams(t *testing.T) {
 	assert.NotContains(t, unsetModel, "model", "an unset model lets Codex resolve the model")
 
 	// Approve for Me is the on-request policy with the auto-review reviewer.
-	smart := codexThreadParams("gpt-5.4", "/work", codexPermissionSettings{mode: ModeApproveForMe, profile: ProfileWorkspace}, "")
+	smart := codexThreadParams("gpt-5.4", "/work", codexPermissionSettings{mode: contracts.CodexPermissionModeApproveForMe, profile: contracts.CodexPermissionProfileWorkspace}, "")
 	assert.Equal(t, ModeAskForApproval, smart["approvalPolicy"])
 	assert.Equal(t, codexReviewerAutoReview, smart["approvalsReviewer"])
 
 	// Full access is the never policy on the danger-full-access profile, reviewed by the user.
-	bypass := codexThreadParams("gpt-5.4", "/work", codexPermissionSettings{mode: ModeNever, profile: ProfileDangerFullAccess}, "")
-	assert.Equal(t, ModeNever, bypass["approvalPolicy"])
+	bypass := codexThreadParams("gpt-5.4", "/work", codexPermissionSettings{mode: contracts.CodexPermissionModeNever, profile: contracts.CodexPermissionProfileDangerFullAccess}, "")
+	assert.Equal(t, contracts.CodexPermissionModeNever, bypass["approvalPolicy"])
 	assert.Equal(t, codexReviewerUser, bypass["approvalsReviewer"])
-	assert.Equal(t, ProfileDangerFullAccess, bypass["permissions"])
+	assert.Equal(t, contracts.CodexPermissionProfileDangerFullAccess, bypass["permissions"])
 
 	// An unset permission setting states no field, so Codex keeps its own.
 	unset := codexThreadParams("gpt-5.4", "/work", codexPermissionSettings{}, "")
@@ -943,8 +949,8 @@ func TestCodexUpdateSettingsSendsPermissionsToTheThread(t *testing.T) {
 	})
 
 	result := a.UpdateSettings(map[string]string{
-		agent.OptionIDPermissionMode:           ModeApproveForMe,
-		contracts.CodexOptionPermissionProfile: ProfileWorkspace,
+		agent.OptionIDPermissionMode:           contracts.CodexPermissionModeApproveForMe,
+		contracts.CodexOptionPermissionProfile: contracts.CodexPermissionProfileWorkspace,
 	})
 
 	sent := requests()
@@ -958,7 +964,7 @@ func TestCodexUpdateSettingsSendsPermissionsToTheThread(t *testing.T) {
 		"effort":            "high",
 		"approvalPolicy":    ModeAskForApproval,
 		"approvalsReviewer": codexReviewerAutoReview,
-		"permissions":       ProfileWorkspace,
+		"permissions":       contracts.CodexPermissionProfileWorkspace,
 		"collaborationMode": map[string]interface{}{
 			"mode": CollaborationDefault,
 			"settings": map[string]interface{}{
@@ -969,10 +975,10 @@ func TestCodexUpdateSettingsSendsPermissionsToTheThread(t *testing.T) {
 		},
 		"serviceTier": nil,
 	}, sent[0].Params)
-	assert.Equal(t, ModeApproveForMe, a.permissionMode)
+	assert.Equal(t, contracts.CodexPermissionModeApproveForMe, a.permissionMode)
 	assert.True(t, a.permissionsAcknowledged)
 	assert.Equal(t, agent.OptionSettlementConfirmed, result.Settlements[agent.OptionIDPermissionMode].State)
-	assert.Equal(t, ModeApproveForMe, *result.Settlements[agent.OptionIDPermissionMode].Value)
+	assert.Equal(t, contracts.CodexPermissionModeApproveForMe, *result.Settlements[agent.OptionIDPermissionMode].Value)
 }
 
 func TestCodexUpdateSettingsSendsNothingWithoutAPermissionChange(t *testing.T) {
@@ -982,7 +988,7 @@ func TestCodexUpdateSettingsSendsNothingWithoutAPermissionChange(t *testing.T) {
 		return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
 	})
 	a.permissionMode = ModeAskForApproval
-	a.permissionProfile = ProfileWorkspace
+	a.permissionProfile = contracts.CodexPermissionProfileWorkspace
 
 	a.UpdateSettings(map[string]string{
 		agent.OptionIDPermissionMode:     ModeAskForApproval,
@@ -1004,7 +1010,7 @@ func TestCodexUpdateSettingsChangesTheActiveTurnReviewer(t *testing.T) {
 	})
 	a.turnID = "turn-1"
 
-	a.UpdateSettings(map[string]string{agent.OptionIDPermissionMode: ModeApproveForMe})
+	a.UpdateSettings(map[string]string{agent.OptionIDPermissionMode: contracts.CodexPermissionModeApproveForMe})
 
 	sent := requests()
 	require.Len(t, sent, 2)
@@ -1028,15 +1034,80 @@ func TestCodexUpdateSettingsRestoresARefusedPermission(t *testing.T) {
 		return agenttest.RPCReply{Error: json.RawMessage(`{"code":-32600,"message":"invalid thread settings override: approvals reviewer is not allowed"}`)}
 	})
 	a.permissionMode = ModeAskForApproval
-	a.permissionProfile = ProfileWorkspace
+	a.permissionProfile = contracts.CodexPermissionProfileWorkspace
 	a.turnID = "turn-1"
 
-	result := a.UpdateSettings(map[string]string{agent.OptionIDPermissionMode: ModeApproveForMe})
+	result := a.UpdateSettings(map[string]string{agent.OptionIDPermissionMode: contracts.CodexPermissionModeApproveForMe})
 
 	assert.Equal(t, ModeAskForApproval, a.permissionMode, "the refused mode returns to the prior one")
 	assert.True(t, a.permissionsAcknowledged, "Codex still holds the prior values")
 	assert.Equal(t, ModeAskForApproval, *result.Settlements[agent.OptionIDPermissionMode].Value)
 	assert.Empty(t, methodRequests(requests(), codexMethodTurnSettingsUpdate), "a refused change reaches no turn")
+}
+
+func TestCodexUpdateSettingsReportsAnUnconfirmedActiveReviewer(t *testing.T) {
+	t.Parallel()
+	for _, reply := range []agenttest.RPCReply{
+		{Error: json.RawMessage(`{"code":-32603,"message":"reviewer update failed"}`)},
+		{Result: json.RawMessage(`{"status":"unknown"}`)},
+		{Result: json.RawMessage(`{}`)},
+	} {
+		a, _, _ := newCodexThreadAgentForRPC(t, func(method string) agenttest.RPCReply {
+			if method == codexMethodTurnSettingsUpdate {
+				return reply
+			}
+			return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+		})
+		a.turnID = "turn-1"
+		result := a.UpdateSettings(map[string]string{agent.OptionIDPermissionMode: contracts.CodexPermissionModeApproveForMe})
+		for _, id := range codexPermissionOptionIDs {
+			assert.Equal(t, agent.OptionSettlementUnresolved, result.Settlements[id].State)
+		}
+		assert.Equal(t, contracts.CodexPermissionModeApproveForMe, a.permissionMode, "the thread accepted the setting for later turns")
+	}
+}
+
+func TestCodexActiveReviewerSettlementFollowsTheRequestedTurn(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, response, nextTurn, nextThread string
+		refused                              bool
+		unresolved                           bool
+	}{
+		{name: "applied", response: `{"status":"applied"}`, nextTurn: "turn-1"},
+		{name: "target left", response: `{"status":"targetUnavailable"}`, nextTurn: "turn-1"},
+		{name: "malformed", response: `[]`, nextTurn: "turn-1", unresolved: true},
+		{name: "refused active turn", refused: true, nextTurn: "turn-1", unresolved: true},
+		{name: "ended turn", refused: true},
+		{name: "replacement turn", refused: true, nextTurn: "turn-2"},
+		{name: "replacement thread", refused: true, nextTurn: "turn-1", nextThread: "thread-2"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			var a *Agent
+			a, _, _ = newCodexThreadAgentForRPC(t, func(method string) agenttest.RPCReply {
+				if method != codexMethodTurnSettingsUpdate {
+					return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+				}
+				a.Mu.Lock()
+				a.turnID = test.nextTurn
+				if test.nextThread != "" {
+					a.threadID = test.nextThread
+				}
+				a.Mu.Unlock()
+				if test.refused {
+					return agenttest.RPCReply{Error: json.RawMessage(`{"code":-32603,"message":"turn update refused"}`)}
+				}
+				return agenttest.RPCReply{Result: json.RawMessage(test.response)}
+			})
+			a.turnID = "turn-1"
+			result := a.UpdateSettings(map[string]string{agent.OptionIDPermissionMode: contracts.CodexPermissionModeApproveForMe})
+			for _, id := range codexPermissionOptionIDs {
+				assert.Equal(t, test.unresolved, result.Settlements[id].State == agent.OptionSettlementUnresolved)
+			}
+			assert.Equal(t, contracts.CodexPermissionModeApproveForMe, a.permissionMode)
+		})
+	}
 }
 
 func TestCodexUpdateSettingsKeepsTheChangeForAnOlderCodex(t *testing.T) {
@@ -1050,9 +1121,9 @@ func TestCodexUpdateSettingsKeepsTheChangeForAnOlderCodex(t *testing.T) {
 	})
 	a.turnID = "turn-1"
 
-	result := a.UpdateSettings(map[string]string{agent.OptionIDPermissionMode: ModeApproveForMe})
+	result := a.UpdateSettings(map[string]string{agent.OptionIDPermissionMode: contracts.CodexPermissionModeApproveForMe})
 
-	assert.Equal(t, ModeApproveForMe, a.permissionMode, "the next turn/start carries the change")
+	assert.Equal(t, contracts.CodexPermissionModeApproveForMe, a.permissionMode, "the next turn/start carries the change")
 	assert.False(t, a.permissionsAcknowledged, "nothing acknowledged the change yet")
 	assert.Equal(t, agent.OptionSettlementConfirmed, result.Settlements[agent.OptionIDPermissionMode].State)
 	assert.Empty(t, methodRequests(requests(), codexMethodTurnSettingsUpdate))
@@ -1076,17 +1147,17 @@ func TestCodexUpdateSettingsKeepsAnUnofferedPermission(t *testing.T) {
 		return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
 	})
 	a.permissionMode = ModeAskForApproval
-	a.permissionProfile = ProfileWorkspace
-	a.refusedModes = map[string]struct{}{ModeApproveForMe: {}}
-	a.permissionProfiles = []*leapmuxv1.AvailableOption{{Id: ProfileWorkspace}, {Id: ProfileReadOnly}}
+	a.permissionProfile = contracts.CodexPermissionProfileWorkspace
+	a.refusedModes = map[string]struct{}{contracts.CodexPermissionModeApproveForMe: {}}
+	a.permissionProfiles = codexPermissionProfileCatalog{available: true, options: []*leapmuxv1.AvailableOption{{Id: contracts.CodexPermissionProfileWorkspace}, {Id: ProfileReadOnly}}}
 
 	a.UpdateSettings(map[string]string{
-		agent.OptionIDPermissionMode:           ModeApproveForMe,
-		contracts.CodexOptionPermissionProfile: ProfileDangerFullAccess,
+		agent.OptionIDPermissionMode:           contracts.CodexPermissionModeApproveForMe,
+		contracts.CodexOptionPermissionProfile: contracts.CodexPermissionProfileDangerFullAccess,
 	})
 
 	assert.Equal(t, ModeAskForApproval, a.permissionMode, "the requirements refuse this mode")
-	assert.Equal(t, ProfileWorkspace, a.permissionProfile, "the catalog does not offer this profile")
+	assert.Equal(t, contracts.CodexPermissionProfileWorkspace, a.permissionProfile, "the catalog does not offer this profile")
 	assert.Empty(t, requests(), "nothing changed, so nothing goes to Codex")
 }
 
@@ -1100,14 +1171,14 @@ func TestCodexUpdateSettingsToBypassApprovesPendingRequests(t *testing.T) {
 		return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
 	})
 	a.permissionMode = ModeAskForApproval
-	a.permissionProfile = ProfileWorkspace
+	a.permissionProfile = contracts.CodexPermissionProfileWorkspace
 	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"jsonrpc":"2.0","id":41,"method":"item/fileChange/requestApproval","params":{"threadId":"thread-1","availableDecisions":["accept","cancel"]}}`)))
 	require.Equal(t, 1, sink.PublishedControlCount())
 
 	a.UpdateSettings(contracts.CodexBypassOptions())
 
+	require.Eventually(t, func() bool { return len(sink.Notifications()) == 1 }, time.Second, time.Millisecond)
 	assert.Equal(t, []string{"jsonrpc:41"}, sink.CanceledControls())
-	require.Len(t, sink.Notifications(), 1)
 	assert.Equal(t, 1, sink.Notifications()[0][contracts.NotificationFieldCount])
 }
 
@@ -1148,28 +1219,28 @@ func TestCodexOptionGroupsFollowTheLiveCatalog(t *testing.T) {
 	}
 
 	// The static seed applies before discovery.
-	assert.Equal(t, []string{ModeAskForApproval, ModeApproveForMe, ModeUnlessTrusted, ModeNever}, optionIDs(groupByID(agent.OptionIDPermissionMode)))
-	assert.Equal(t, []string{ProfileWorkspace, ProfileReadOnly, ProfileDangerFullAccess}, optionIDs(groupByID(contracts.CodexOptionPermissionProfile)))
+	assert.Equal(t, []string{ModeAskForApproval, contracts.CodexPermissionModeApproveForMe, ModeUnlessTrusted, contracts.CodexPermissionModeNever}, optionIDs(groupByID(agent.OptionIDPermissionMode)))
+	assert.Equal(t, []string{contracts.CodexPermissionProfileWorkspace, ProfileReadOnly, contracts.CodexPermissionProfileDangerFullAccess}, optionIDs(groupByID(contracts.CodexOptionPermissionProfile)))
 
 	// The requirements remove a mode, and discovery replaces the profiles.
 	a.Mu.Lock()
-	a.refusedModes = map[string]struct{}{ModeApproveForMe: {}, ModeNever: {}}
-	a.permissionProfiles = []*leapmuxv1.AvailableOption{codexPermissionProfileOption(ProfileWorkspace, ""), codexPermissionProfileOption("team", "The team profile.")}
+	a.refusedModes = map[string]struct{}{contracts.CodexPermissionModeApproveForMe: {}, contracts.CodexPermissionModeNever: {}}
+	a.permissionProfiles = codexPermissionProfileCatalog{available: true, options: []*leapmuxv1.AvailableOption{codexPermissionProfileOption(contracts.CodexPermissionProfileWorkspace, ""), codexPermissionProfileOption("team", "The team profile.")}}
 	a.permissionMode = ModeAskForApproval
-	a.permissionProfile = ProfileWorkspace
+	a.permissionProfile = contracts.CodexPermissionProfileWorkspace
 	a.Mu.Unlock()
 	assert.Equal(t, []string{ModeAskForApproval, ModeUnlessTrusted}, optionIDs(groupByID(agent.OptionIDPermissionMode)))
-	assert.Equal(t, []string{ProfileWorkspace, "team"}, optionIDs(groupByID(contracts.CodexOptionPermissionProfile)))
+	assert.Equal(t, []string{contracts.CodexPermissionProfileWorkspace, "team"}, optionIDs(groupByID(contracts.CodexOptionPermissionProfile)))
 
 	// A current value that the live catalog omits stays listed.
 	a.Mu.Lock()
-	a.permissionMode = ModeNever
-	a.permissionProfile = ProfileDangerFullAccess
+	a.permissionMode = contracts.CodexPermissionModeNever
+	a.permissionProfile = contracts.CodexPermissionProfileDangerFullAccess
 	a.Mu.Unlock()
-	assert.Equal(t, []string{ModeAskForApproval, ModeUnlessTrusted, ModeNever}, optionIDs(groupByID(agent.OptionIDPermissionMode)))
+	assert.Equal(t, []string{ModeAskForApproval, ModeUnlessTrusted, contracts.CodexPermissionModeNever}, optionIDs(groupByID(agent.OptionIDPermissionMode)))
 	profiles := groupByID(contracts.CodexOptionPermissionProfile)
-	assert.Equal(t, []string{ProfileWorkspace, "team", ProfileDangerFullAccess}, optionIDs(profiles))
-	assert.Equal(t, ProfileDangerFullAccess, profiles.GetCurrentValue())
+	assert.Equal(t, []string{contracts.CodexPermissionProfileWorkspace, "team", contracts.CodexPermissionProfileDangerFullAccess}, optionIDs(profiles))
+	assert.Equal(t, contracts.CodexPermissionProfileDangerFullAccess, profiles.GetCurrentValue())
 	assert.Len(t, codexBuiltinProfiles, 3, "listing the current value never changes the shared seed")
 }
 
@@ -1224,10 +1295,10 @@ func TestCodexUpdateSettingsConfirmsASmartPlanApproval(t *testing.T) {
 	a.threadID = "thread-1"
 	a.permissionsAcknowledged = true
 	a.permissionMode = ModeAskForApproval
-	a.permissionProfile = ProfileWorkspace
+	a.permissionProfile = contracts.CodexPermissionProfileWorkspace
 	a.collaborationMode = CollaborationPlan
 
-	wanted := codexProvider{}.PlanApprovalOptions(ModeApproveForMe)
+	wanted := codexProvider{}.PlanApprovalOptions(contracts.CodexPermissionModeApproveForMe)
 	result := a.UpdateSettings(wanted)
 
 	require.True(t, result.AppliedLive)

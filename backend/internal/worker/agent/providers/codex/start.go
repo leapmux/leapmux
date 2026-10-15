@@ -113,6 +113,9 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		cleanup()
 		return nil, a.FormatStartupError("initialized notification", err)
 	}
+	// Model discovery needs no thread. Its result can arrive during permission discovery or the thread handshake.
+	modelCatalog := make(chan []*agent.ModelInfo, 1)
+	go func() { modelCatalog <- a.queryAvailableModels(timeout) }()
 
 	// 3. Learn which permission profiles and modes Codex allows, and settle the stored
 	// values against them before thread/start sends them.
@@ -153,6 +156,8 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		// real transition would never reach the transcript.
 		a.resumingThread.Store(false)
 		cleanup()
+		// Stop ends the pending model request before this join.
+		<-modelCatalog
 		return nil, a.FormatStartupError(threadMethod, err)
 	}
 	// Under the lock: the read loop has been running since before the handshake
@@ -168,9 +173,12 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	sink.UpdateSessionID(thread.ID)
 	sink.BroadcastStatusActive(thread.ID)
 
-	// 5. Query available models (best-effort; don't fail startup if this fails).
-	a.availableModels = a.queryAvailableModels(timeout)
+	// 5. Adopt the complete model catalog after the thread supplies its current model.
+	models := <-modelCatalog
+	a.Mu.Lock()
+	a.availableModels = models
 	a.reconcileModelCatalog()
+	a.Mu.Unlock()
 
 	// 6. Publish the active thread settings. The lifecycle response owns the
 	// settings that thread/start accepts. Turn-only settings keep their requested

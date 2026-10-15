@@ -25,21 +25,21 @@ func TestPlanApprovalOptions_PerProvider(t *testing.T) {
 		{mode: "", expected: map[string]string{}},
 		{mode: ModeAskForApproval, expected: map[string]string{agent.OptionIDPermissionMode: ModeAskForApproval}},
 		{mode: ModeUnlessTrusted, expected: map[string]string{agent.OptionIDPermissionMode: ModeUnlessTrusted}},
-		{mode: ModeApproveForMe, expected: map[string]string{
-			agent.OptionIDPermissionMode:           ModeApproveForMe,
-			contracts.CodexOptionPermissionProfile: ProfileWorkspace,
+		{mode: contracts.CodexPermissionModeApproveForMe, expected: map[string]string{
+			agent.OptionIDPermissionMode:           contracts.CodexPermissionModeApproveForMe,
+			contracts.CodexOptionPermissionProfile: contracts.CodexPermissionProfileWorkspace,
 		}},
-		{mode: ModeNever, expected: map[string]string{
-			agent.OptionIDPermissionMode:           ModeNever,
-			contracts.CodexOptionPermissionProfile: ProfileDangerFullAccess,
+		{mode: contracts.CodexPermissionModeNever, expected: map[string]string{
+			agent.OptionIDPermissionMode:           contracts.CodexPermissionModeNever,
+			contracts.CodexOptionPermissionProfile: contracts.CodexPermissionProfileDangerFullAccess,
 		}},
 	} {
 		test.expected[contracts.CodexOptionCollaborationMode] = CollaborationDefault
 		assert.Equal(t, test.expected, provider.PlanApprovalOptions(test.mode), "permission mode %q", test.mode)
 	}
-	changed := provider.PlanApprovalOptions(ModeNever)
+	changed := provider.PlanApprovalOptions(contracts.CodexPermissionModeNever)
 	changed[agent.OptionIDPermissionMode] = "changed"
-	assert.Equal(t, ModeNever, provider.PlanApprovalOptions(ModeNever)[agent.OptionIDPermissionMode],
+	assert.Equal(t, contracts.CodexPermissionModeNever, provider.PlanApprovalOptions(contracts.CodexPermissionModeNever)[agent.OptionIDPermissionMode],
 		"each call returns a new map")
 }
 
@@ -55,8 +55,8 @@ func TestCodexPermissionPresetsUseOfferedValues(t *testing.T) {
 				"the %s preset sets %s=%q, which the static group does not offer", kind, id, value)
 		}
 	}
-	assert.Equal(t, ModeApproveForMe, contracts.CodexSmartOptions()[agent.OptionIDPermissionMode])
-	assert.Equal(t, ModeNever, contracts.CodexBypassOptions()[agent.OptionIDPermissionMode])
+	assert.Equal(t, contracts.CodexPermissionModeApproveForMe, contracts.CodexPermissionPresets()["smart"][agent.OptionIDPermissionMode])
+	assert.Equal(t, contracts.CodexPermissionModeNever, contracts.CodexBypassOptions()[agent.OptionIDPermissionMode])
 }
 
 func findStaticGroup(t *testing.T, id string) *leapmuxv1.AvailableOptionGroup {

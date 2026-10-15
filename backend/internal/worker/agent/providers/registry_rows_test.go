@@ -304,8 +304,8 @@ func TestPermissionModeOrDefault(t *testing.T) {
 		{"claude default", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, contracts.ClaudeModeDefault, contracts.ClaudeModeDefault},
 		{"codex empty", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, "", codex.DefaultPermissionMode},
 		{"codex legacy db default", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, contracts.ClaudeModeDefault, codex.DefaultPermissionMode},
-		{"codex explicit", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, codex.ModeNever, codex.ModeNever},
-		{"codex approve for me", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, codex.ModeApproveForMe, codex.ModeApproveForMe},
+		{"codex explicit", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, contracts.CodexPermissionModeNever, contracts.CodexPermissionModeNever},
+		{"codex approve for me", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, contracts.CodexPermissionModeApproveForMe, contracts.CodexPermissionModeApproveForMe},
 		{"cursor legacy db default", leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, contracts.ClaudeModeDefault, cursor.ModeAgent},
 		{"copilot legacy db default", leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, contracts.ClaudeModeDefault, contracts.CopilotPermissionModeManual},
 		// Goose's fallback is Smart Approve, never Auto: Auto is the value Goose's own

@@ -238,17 +238,21 @@ type ControlRequest struct {
 	// request, and that session is empty until the first UpdateSessionID.
 	AgentSessionID string
 	RequestID      string
-	Payload        []byte
-	SourceSeq      int64
+	// InstanceID optionally identifies this publication across asynchronous cancellation.
+	// Providers that supply it must use a fresh secure ID for each new request instance.
+	InstanceID string
+	Payload    []byte
+	SourceSeq  int64
 }
 
 // ControlServices persists and broadcasts control requests.
 type ControlServices interface {
 	// PublishControlRequest stores the request before it broadcasts the request.
 	// Storage failure leaves the pending state unchanged and returns an error.
-	// Repeated announcements of an identical pending request keep its claim token.
+	// Repeated announcements of the same request instance keep its claim token.
 	PublishControlRequest(request ControlRequest) error
 	CancelControlRequest(requestID string)
+	CancelControlRequestInstance(requestID, instanceID string)
 }
 
 // SessionServices publishes provider session state and settings.

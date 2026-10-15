@@ -35,6 +35,7 @@ func integerEnumColumns() []integerEnumColumn {
 		{"agent_input_queue_items.kind", "UPDATE agent_input_queue_items SET kind = ?", "SELECT typeof(kind), kind FROM agent_input_queue_items", 1, 6},
 		{"agent_input_queue_items.state", "UPDATE agent_input_queue_items SET state = ?", "SELECT typeof(state), state FROM agent_input_queue_items", 1, 4},
 		{"control_response_answers.state", "UPDATE control_response_answers SET state = ?", "SELECT typeof(state), state FROM control_response_answers", 2, 5},
+		{"auto_review_approvals.state", "UPDATE auto_review_approvals SET state = ?", "SELECT typeof(state), state FROM auto_review_approvals", 1, 3},
 		{"control_response_answers.agent_provider", "UPDATE control_response_answers SET agent_provider = ?", "SELECT typeof(agent_provider), agent_provider FROM control_response_answers", 1, int64(len(leapmuxv1.AgentProvider_name) - 1)},
 		{"agent_todos.status", "UPDATE agent_todos SET status = ?", "SELECT typeof(status), status FROM agent_todos", 1, 5},
 		{"agent_background_tasks.kind", "UPDATE agent_background_tasks SET kind = ?", "SELECT typeof(kind), kind FROM agent_background_tasks", 1, 3},
@@ -53,6 +54,7 @@ func integerEnumStore(t *testing.T) *sql.DB {
 		"INSERT INTO messages (id, agent_id, seq, source, content, content_compression) VALUES ('enum-message', 'enum-owner', 1, 1, X'7b7d', 1)",
 		"INSERT INTO agent_input_queue_items (id, agent_id, order_index, kind, state) VALUES ('enum-input', 'enum-owner', 1, 1, 1)",
 		"INSERT INTO control_response_answers (agent_id, request_id, claim_token, agent_provider) VALUES ('enum-owner', 'enum-request', 'enum-claim', 1)",
+		"INSERT INTO auto_review_approvals (agent_id, agent_session_id, review_id, message_id, state) VALUES ('enum-owner', 'session', 'review', 'enum-message', 1)",
 		"INSERT INTO agent_todos (agent_id, row_key, seq, content, status) VALUES ('enum-owner', 'enum-todo', 1, 'todo', 1)",
 		"INSERT INTO agent_background_tasks (owner_agent_id, row_key, seq, kind, status) VALUES ('enum-owner', 'enum-task', 1, 1, 1)",
 	} {
@@ -267,6 +269,12 @@ func TestEnumColumnChecksMatchTheirProtoRanges(t *testing.T) {
 			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.ControlResponseState_name),
 			narrower: "READY and CANCELED describe a request with NO answer row, which controlResponseState " +
 				"derives from control_requests; a row carrying one would contradict its own existence",
+		},
+		{
+			column:       "auto_review_approvals.state",
+			check:        "CHECK (state BETWEEN 1 AND 3)",
+			lastAccepted: int32(leapmuxv1.AutoReviewApprovalState_AUTO_REVIEW_APPROVAL_STATE_COMPLETED),
+			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.AutoReviewApprovalState_name),
 		},
 		{
 			column:       "messages.content_compression",

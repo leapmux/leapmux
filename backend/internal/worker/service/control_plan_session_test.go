@@ -89,13 +89,13 @@ func TestSmartPlanApprovalSelectsTheSmartPreset(t *testing.T) {
 	row := createPlanSessionTestAgent(t, svc, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, "CodexPlanModePrompt")
 	require.NoError(t, svc.processControlResponse(row, &leapmuxv1.SendControlResponseRequest{
 		ClaimToken: "claim", Content: []byte(`{"response":{"request_id":"plan","response":{"behavior":"allow"}}}`),
-		PlanApproval: &leapmuxv1.PlanApprovalSettings{PermissionMode: codex.ModeApproveForMe},
+		PlanApproval: &leapmuxv1.PlanApprovalSettings{PermissionMode: contracts.CodexPermissionModeApproveForMe},
 	}))
 	current, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
 	require.NoError(t, err)
 	options := parseOptions(current.Options)
-	require.Equal(t, codex.ModeApproveForMe, options[agent.OptionIDPermissionMode])
-	require.Equal(t, codex.ProfileWorkspace, options[contracts.CodexOptionPermissionProfile])
+	require.Equal(t, contracts.CodexPermissionModeApproveForMe, options[agent.OptionIDPermissionMode])
+	require.Equal(t, contracts.CodexPermissionProfileWorkspace, options[contracts.CodexOptionPermissionProfile])
 	require.Equal(t, codex.CollaborationDefault, options[contracts.CodexOptionCollaborationMode])
 }
 

@@ -6,6 +6,7 @@
   "additionalProperties": false,
   "required": [
     "_readme",
+    "settings",
     "presets"
   ],
   "$defs": {
@@ -13,21 +14,26 @@
       "type": "array",
       "minItems": 2,
       "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "id",
-          "value"
-        ],
-        "properties": {
-          "id": {
-            "type": "string",
-            "minLength": 1
-          },
-          "value": {
-            "type": "string",
-            "minLength": 1
-          }
+        "type": "string",
+        "pattern": "^[A-Z][A-Za-z0-9]*$"
+      },
+      "uniqueItems": true
+    },
+    "setting": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "value"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "value": {
+          "type": "string",
+          "minLength": 1
         }
       }
     }
@@ -50,6 +56,16 @@
         },
         "bypass": {
           "$ref": "#/$defs/preset"
+        }
+      }
+    },
+    "settings": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": false,
+      "patternProperties": {
+        "^[A-Z][A-Za-z0-9]*$": {
+          "$ref": "#/$defs/setting"
         }
       }
     }

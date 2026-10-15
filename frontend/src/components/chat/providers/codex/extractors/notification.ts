@@ -1,4 +1,4 @@
-import type { AutoReviewAuthorization, AutoReviewOutcome, AutoReviewRisk, CompactionDetails, CompactionPhase, NotificationEntry } from '../../../model/notification'
+import type { AutoReviewOutcome, AutoReviewRisk, CompactionDetails, CompactionPhase, NotificationEntry } from '../../../model/notification'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { CODEX_AUTO_REVIEW_ACTION, CODEX_AUTO_REVIEW_STATUS, CODEX_ITEM, CODEX_METHOD } from '~/generated/contracts/codex-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
@@ -201,7 +201,6 @@ const AUTO_REVIEW_OUTCOMES: ReadonlyMap<string, AutoReviewOutcome> = new Map([
 ])
 
 const AUTO_REVIEW_RISKS: readonly AutoReviewRisk[] = ['low', 'medium', 'high', 'critical']
-const AUTO_REVIEW_AUTHORIZATIONS: readonly AutoReviewAuthorization[] = ['unknown', 'low', 'medium', 'high']
 
 /** The member of values that equals value, or undefined for a word the model does not know. */
 function oneOf<T extends string>(values: readonly T[], value: string): T | undefined {
@@ -226,14 +225,12 @@ function codexAutoReviewEntry(params: Record<string, unknown> | null | undefined
   const review = pickObject(params, 'review')
   const outcome = AUTO_REVIEW_OUTCOMES.get(pickString(review, 'status')) ?? 'unknown'
   const risk = oneOf(AUTO_REVIEW_RISKS, pickString(review, 'riskLevel'))
-  const authorization = oneOf(AUTO_REVIEW_AUTHORIZATIONS, pickString(review, 'userAuthorization'))
   const rationale = pickString(review, 'rationale').trim()
   return {
     kind: 'auto-review',
     reviewId,
     outcome,
     ...(risk !== undefined ? { risk } : {}),
-    ...(authorization !== undefined ? { authorization } : {}),
     ...(rationale ? { rationale } : {}),
     action: codexAutoReviewAction(pickObject(params, 'action')),
     approvable: outcome === 'denied',

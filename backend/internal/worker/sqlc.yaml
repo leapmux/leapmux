@@ -96,6 +96,10 @@ sql:
             go_type:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
               type: "ControlResponseState"
+          - column: "auto_review_approvals.state"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "AutoReviewApprovalState"
           - column: "control_response_answers.agent_provider"
             go_type:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"

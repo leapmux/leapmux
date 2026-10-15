@@ -2144,55 +2144,74 @@ const CODEX_PERMISSION_MODE_ID = 'permissionMode'
 
 export function checkCodexPermissionPresets(c) {
   const file = 'codex-permission-presets.json'
+  const settings = c.settings
+  mustBe(settings && typeof settings === 'object' && !Array.isArray(settings) && Object.keys(settings).length > 0, file, 'settings must hold at least one definition')
+  const values = new Set()
+  for (const [key, setting] of Object.entries(settings)) {
+    mustBe(/^[A-Z][A-Za-z0-9]*$/.test(key), file, `invalid settings key ${JSON.stringify(key)}`)
+    mustBe(setting && typeof setting.id === 'string' && setting.id.length > 0 && typeof setting.value === 'string' && setting.value.length > 0, file, `the ${key} setting must hold nonempty id and value strings`)
+    const pair = JSON.stringify([setting.id, setting.value])
+    mustBe(!values.has(pair), file, `settings define ${pair} twice`)
+    values.add(pair)
+  }
   const kinds = Object.keys(c.presets ?? {})
   const exact = kinds.length === CODEX_PERMISSION_PRESET_KINDS.length && CODEX_PERMISSION_PRESET_KINDS.every(kind => kinds.includes(kind))
   mustBe(exact, file, `presets must hold exactly ${CODEX_PERMISSION_PRESET_KINDS.join(' and ')}`)
   const modes = new Map()
   for (const kind of CODEX_PERMISSION_PRESET_KINDS) {
-    const ids = c.presets[kind].map(setting => setting.id)
+    mustBe(Array.isArray(c.presets[kind]), file, `the ${kind} preset must list settings keys`)
+    for (const key of c.presets[kind]) {
+      mustBe(typeof key === 'string' && Object.hasOwn(settings, key), file, `the ${kind} preset selects an unknown setting ${JSON.stringify(key)}`)
+    }
+    const selected = codexPresetSettings(c, kind)
+    const ids = selected.map(setting => setting.id)
     mustBe(new Set(ids).size === ids.length, file, `the ${kind} preset sets one option id twice`)
     mustBe(ids.includes(CODEX_PERMISSION_MODE_ID), file, `the ${kind} preset must set ${CODEX_PERMISSION_MODE_ID}`)
     mustBe(ids.some(id => id !== CODEX_PERMISSION_MODE_ID), file, `the ${kind} preset must set at least one option other than ${CODEX_PERMISSION_MODE_ID}`)
-    const mode = c.presets[kind].find(setting => setting.id === CODEX_PERMISSION_MODE_ID).value
+    const mode = selected.find(setting => setting.id === CODEX_PERMISSION_MODE_ID).value
     mustBe(!modes.has(mode), file, `the ${kind} and ${modes.get(mode)} presets set the same ${CODEX_PERMISSION_MODE_ID} ${JSON.stringify(mode)}, so a plan approval cannot identify either one`)
     modes.set(mode, kind)
   }
 }
 
-/** The Go identifier part of a preset kind: `smart` becomes `Smart`. */
-function codexPresetGoName(kind) {
-  return kind[0].toUpperCase() + kind.slice(1)
+// codexPresetSettings expands each preset key into its shared setting definition.
+function codexPresetSettings(c, kind) {
+  return c.presets[kind].map(key => ({ key, ...c.settings[key] }))
 }
 
 export function emitGoCodexPermissionPresets(c) {
   const presetMap = (kind, indent) => [
     `${indent}${jsonString(kind)}: {`,
-    ...c.presets[kind].map(setting => `${indent}\t${jsonString(setting.id)}: ${jsonString(setting.value)},`),
+    ...codexPresetSettings(c, kind).map(setting => `${indent}\t${jsonString(setting.id)}: Codex${setting.key},`),
     `${indent}},`,
   ].join('\n')
-  const accessors = CODEX_PERMISSION_PRESET_KINDS.map(kind => `// Codex${codexPresetGoName(kind)}Options returns a new copy of the ${kind} preset.
-func Codex${codexPresetGoName(kind)}Options() map[string]string {
-\treturn CodexPermissionPresets()[${jsonString(kind)}]
-}
-`).join('\n')
   return `${GO_HEADER('codex-permission-presets.json')}package contracts
 
-// CodexPermissionPresets returns a new copy of every Codex permission preset, keyed by
-// its kind. Each preset is the complete settings change that selects it.
+// These constants hold the Codex setting values that the worker and presets share.
+const (
+${Object.entries(c.settings).map(([key, setting]) => `\tCodex${key} = ${jsonString(setting.value)}`).join('\n')}
+)
+
+// CodexPermissionPresets returns a new copy of each preset, keyed by its kind.
+// Each preset is the complete settings change that selects it.
 func CodexPermissionPresets() map[string]map[string]string {
 \treturn map[string]map[string]string{
 ${CODEX_PERMISSION_PRESET_KINDS.map(kind => presetMap(kind, '\t\t')).join('\n')}
 \t}
 }
 
-${accessors}`
+// CodexBypassOptions returns the settings that enable standing approval.
+func CodexBypassOptions() map[string]string {
+\treturn CodexPermissionPresets()["bypass"]
+}
+`
 }
 
 export function emitTsCodexPermissionPresets(c) {
   const preset = kind => [
     `  ${kind}: {`,
     '    sets: {',
-    ...c.presets[kind].map(setting => `      ${jsonString(setting.id)}: ${jsonString(setting.value)},`),
+    ...codexPresetSettings(c, kind).map(setting => `      ${jsonString(setting.id)}: ${jsonString(setting.value)},`),
     '    },',
     '  },',
   ].join('\n')

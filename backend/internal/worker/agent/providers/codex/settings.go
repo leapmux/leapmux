@@ -3,6 +3,7 @@ package codex
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"slices"
 	"time"
@@ -62,13 +63,20 @@ type codexAxis struct {
 	// Effort is authoritative only while its requested value is automatic.
 	lifecyclePolicy  codexLifecyclePolicy
 	lifecycleDefault string
+	projectGroup     func(*leapmuxv1.AvailableOptionGroup, string, codexPermissionCatalog) *leapmuxv1.AvailableOptionGroup
 }
 
 var codexAxes = []codexAxis{
 	{id: agent.OptionIDModel, get: func(a *Agent) string { return a.model }, set: func(a *Agent, v string) { a.model = v }, lifecyclePolicy: codexLifecycleAuthoritative},
 	{id: agent.OptionIDEffort, get: func(a *Agent) string { return a.effort }, set: func(a *Agent, v string) { a.effort = v }, refreshFallback: codexEffortRefreshFallback, lifecyclePolicy: codexLifecycleWhenAutomatic, lifecycleDefault: agent.EffortAuto},
-	{id: agent.OptionIDPermissionMode, get: func(a *Agent) string { return a.permissionMode }, set: func(a *Agent, v string) { a.permissionMode = v }, lifecyclePolicy: codexLifecycleAuthoritative},
-	{id: contracts.CodexOptionPermissionProfile, get: func(a *Agent) string { return a.permissionProfile }, set: func(a *Agent, v string) { a.permissionProfile = v }, defaultValue: contracts.CodexOptionDefaultPermissionProfile, lifecyclePolicy: codexLifecycleAuthoritative},
+	{id: agent.OptionIDPermissionMode, get: func(a *Agent) string { return a.permissionMode }, set: func(a *Agent, v string) { a.permissionMode = v }, lifecyclePolicy: codexLifecycleAuthoritative,
+		projectGroup: func(group *leapmuxv1.AvailableOptionGroup, current string, catalog codexPermissionCatalog) *leapmuxv1.AvailableOptionGroup {
+			return codexPermissionModeGroup(group, catalog.refusedModes, current)
+		}},
+	{id: contracts.CodexOptionPermissionProfile, get: func(a *Agent) string { return a.permissionProfile }, set: func(a *Agent, v string) { a.permissionProfile = v }, defaultValue: contracts.CodexOptionDefaultPermissionProfile, lifecyclePolicy: codexLifecycleAuthoritative,
+		projectGroup: func(group *leapmuxv1.AvailableOptionGroup, current string, catalog codexPermissionCatalog) *leapmuxv1.AvailableOptionGroup {
+			return codexPermissionProfileGroup(group, catalog.profiles, current)
+		}},
 	{id: contracts.CodexOptionCollaborationMode, get: func(a *Agent) string { return a.collaborationMode }, set: func(a *Agent, v string) { a.collaborationMode = v }, defaultValue: contracts.CodexOptionDefaultCollaborationMode},
 	{id: contracts.CodexOptionServiceTier, get: func(a *Agent) string { return a.serviceTier }, set: func(a *Agent, v string) { a.serviceTier = v }, defaultValue: contracts.CodexOptionDefaultServiceTier, lifecyclePolicy: codexLifecycleAuthoritative, lifecycleDefault: contracts.CodexOptionDefaultServiceTier},
 }
@@ -140,7 +148,7 @@ func (a *Agent) setPermissionSettingsLocked(s codexPermissionSettings) {
 // the auto-review reviewer. Every other mode is its own policy with the user as the
 // reviewer, which also returns a thread from auto-review to the user.
 func codexApprovalWire(mode string) (policy, reviewer string) {
-	if mode == ModeApproveForMe {
+	if mode == contracts.CodexPermissionModeApproveForMe {
 		return ModeAskForApproval, codexReviewerAutoReview
 	}
 	return mode, codexReviewerUser
@@ -151,7 +159,7 @@ func codexApprovalWire(mode string) (policy, reviewer string) {
 // so that pair reads as the policy alone.
 func codexPermissionModeFromWire(policy, reviewer string) string {
 	if policy == ModeAskForApproval && reviewer == codexReviewerAutoReview {
-		return ModeApproveForMe
+		return contracts.CodexPermissionModeApproveForMe
 	}
 	return policy
 }
@@ -211,10 +219,7 @@ func (a *Agent) offersPermissionModeLocked(mode string) bool {
 // offersPermissionProfileLocked reports whether the discovered catalog offers a
 // permission profile. An empty catalog offers the static seed. Caller holds a.Mu.
 func (a *Agent) offersPermissionProfileLocked(profile string) bool {
-	options := a.permissionProfiles
-	if len(options) == 0 {
-		options = codexBuiltinProfiles
-	}
+	options := a.permissionProfiles.selectableOptions()
 	return slices.ContainsFunc(options, func(o *leapmuxv1.AvailableOption) bool { return o.GetId() == profile })
 }
 
@@ -225,8 +230,7 @@ func (a *Agent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
 	a.Mu.Lock()
 	vals := a.codexAxisValuesLocked()
 	models := a.availableModels
-	profiles := a.permissionProfiles
-	refused := a.refusedModes
+	catalog := codexPermissionCatalog{profiles: a.permissionProfiles, refusedModes: a.refusedModes}
 	a.Mu.Unlock()
 
 	groups := providerkit.ModelAndEffortGroups(models, vals[agent.OptionIDModel], vals[agent.OptionIDEffort], agent.EffortGroupLabel, nil)
@@ -238,11 +242,8 @@ func (a *Agent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
 	// here -- they are rendered by providerkit.ModelAndEffortGroups above.
 	for _, sg := range codexStaticOptionGroups {
 		current := vals[sg.GetId()]
-		switch sg.GetId() {
-		case agent.OptionIDPermissionMode:
-			sg = codexPermissionModeGroup(sg, refused, current)
-		case contracts.CodexOptionPermissionProfile:
-			sg = codexPermissionProfileGroup(sg, profiles, current)
+		if axis := codexAxisByID(sg.GetId()); axis != nil && axis.projectGroup != nil {
+			sg = axis.projectGroup(sg, current, catalog)
 		}
 		groups = append(groups, providerkit.LiveGroup(sg, current))
 	}
@@ -262,14 +263,10 @@ func codexPermissionModeGroup(static *leapmuxv1.AvailableOptionGroup, refused ma
 	})
 }
 
-// codexPermissionProfileGroup offers the discovered profiles, or the static seed when
-// discovery found none. A current profile that the list omits stays listed under its
-// id, so the picker never loses the session's real state.
-func codexPermissionProfileGroup(static *leapmuxv1.AvailableOptionGroup, discovered []*leapmuxv1.AvailableOption, current string) *leapmuxv1.AvailableOptionGroup {
-	options := discovered
-	if len(options) == 0 {
-		options = static.GetOptions()
-	}
+// codexPermissionProfileGroup adds the current value to the selectable list for display.
+// A known empty catalog shows only the current value.
+func codexPermissionProfileGroup(static *leapmuxv1.AvailableOptionGroup, discovered codexPermissionProfileCatalog, current string) *leapmuxv1.AvailableOptionGroup {
+	options := discovered.selectableOptions()
 	if current != "" && !slices.ContainsFunc(options, func(o *leapmuxv1.AvailableOption) bool { return o.GetId() == current }) {
 		options = append(slices.Clone(options), &leapmuxv1.AvailableOption{Id: current, Name: current})
 	}
@@ -392,7 +389,7 @@ func (a *Agent) applyPermissionSettingsLive(threadID, turnID string, prior codex
 		_, priorReviewer := codexApprovalWire(prior.mode)
 		_, reviewer := codexApprovalWire(requested.mode)
 		if turnID != "" && reviewer != priorReviewer {
-			a.updateActiveTurnReviewer(threadID, turnID, reviewer)
+			return a.updateActiveTurnReviewer(threadID, turnID, reviewer)
 		}
 		return false
 	case codexSettingsUpdateUnsupported:
@@ -449,10 +446,9 @@ func classifyCodexSettingsUpdate(err error) codexSettingsUpdateOutcome {
 	}
 }
 
-// updateActiveTurnReviewer sends a reviewer change to the active turn. Without it,
-// the turn keeps the reviewer that it started with until it ends. A failure is only
-// logged: the thread already holds the new reviewer, so the next turn uses it.
-func (a *Agent) updateActiveTurnReviewer(threadID, turnID, reviewer string) {
+// updateActiveTurnReviewer reports unresolved delivery only while the requested turn remains active.
+// The thread already holds the new reviewer for later turns.
+func (a *Agent) updateActiveTurnReviewer(threadID, turnID, reviewer string) (unresolved bool) {
 	paramsJSON, err := json.Marshal(map[string]interface{}{
 		"threadId":          threadID,
 		"turnId":            turnID,
@@ -460,11 +456,26 @@ func (a *Agent) updateActiveTurnReviewer(threadID, turnID, reviewer string) {
 	})
 	if err != nil {
 		slog.Error("codex marshal turn/settings/update params", "agent_id", a.AgentID(), "error", err)
-		return
+	} else {
+		var response json.RawMessage
+		response, err = a.SendRequest(codexMethodTurnSettingsUpdate, paramsJSON, codexSettingsUpdateTimeout)
+		if err == nil {
+			var result struct {
+				Status string `json:"status"`
+			}
+			err = json.Unmarshal(response, &result)
+			if err == nil {
+				if result.Status == "applied" || result.Status == "targetUnavailable" {
+					return false
+				}
+				err = fmt.Errorf("unexpected active settings status %q", result.Status)
+			}
+		}
 	}
-	if _, err := a.SendRequest(codexMethodTurnSettingsUpdate, paramsJSON, codexSettingsUpdateTimeout); err != nil {
-		slog.Warn("codex turn/settings/update failed", "agent_id", a.AgentID(), "turn_id", turnID, "error", err)
-	}
+	slog.Warn("codex did not confirm the active reviewer", "agent_id", a.AgentID(), "turn_id", turnID, "error", err)
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	return a.threadID == threadID && a.turnID == turnID
 }
 
 // The settings methods that LeapMux sends. Only the worker sends them, so they are

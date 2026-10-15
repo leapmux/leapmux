@@ -75,7 +75,7 @@ type Process struct {
 	// stdinMu protects the write queue below.
 	// Queue callers release it before Write, so a full pipe cannot block state operations or Stop.
 	// A large inline image can fill that pipe.
-	// No caller holds stdinMu with p.Mu. Check stopped separately.
+	// Queue admission can hold Mu. Never acquire Mu while stdinMu is held.
 	stdinMu sync.Mutex
 	// stdinQueue sends every outbound frame to one writer goroutine, which serializes writes.
 	// Base.Interrupt and codex.Agent.Interrupt send an answer before a cancel.
@@ -253,6 +253,25 @@ func (p *Process) WriteStdin(data []byte) error {
 		return err
 	case <-closed:
 		return errStdinClosed
+	}
+}
+
+// enqueueStdinResult reports delivery without waiting or discarding queue refusals.
+func (p *Process) enqueueStdinResult(data []byte) (<-chan error, error) {
+	p.stdinMu.Lock()
+	defer p.stdinMu.Unlock()
+	queue, closed := p.stdinWriterLocked()
+	select {
+	case <-closed:
+		return nil, errStdinClosed
+	default:
+	}
+	done := make(chan error, 1)
+	select {
+	case queue <- stdinFrame{data: data, done: done}:
+		return done, nil
+	default:
+		return nil, errors.New("the agent stdin queue is full")
 	}
 }
 

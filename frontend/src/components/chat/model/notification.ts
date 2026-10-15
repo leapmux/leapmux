@@ -89,9 +89,6 @@ export type AutoReviewOutcome = 'approved' | 'denied' | 'timed-out' | 'aborted' 
 /** The risk that an automatic reviewer assigned to an action. */
 export type AutoReviewRisk = 'low' | 'medium' | 'high' | 'critical'
 
-/** How directly the conversation authorizes the reviewed action, in the reviewer's view. */
-export type AutoReviewAuthorization = 'unknown' | 'low' | 'medium' | 'high'
-
 /**
  * An automatic reviewer decided a permission request that would otherwise ask the
  * reader.
@@ -109,7 +106,6 @@ export interface AutoReviewEntry {
   reviewId: string
   outcome: AutoReviewOutcome
   risk?: AutoReviewRisk
-  authorization?: AutoReviewAuthorization
   rationale?: string
   action: string
   approvable: boolean

@@ -679,6 +679,7 @@ func (s *Sink) ProgressUpdates() []agent.ProgressUpdate {
 
 func (s *Sink) PublishControlRequest(agent.ControlRequest) error { return nil }
 func (s *Sink) CancelControlRequest(string)                      {}
+func (s *Sink) CancelControlRequestInstance(string, string)      {}
 func (s *Sink) UpdateSessionID(sessionID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1628,6 +1629,7 @@ func (nop) ReserveSpanColor(string, string) int32             { return 0 }
 func (nop) ReportProgress(agent.ProgressUpdate)               {}
 func (nop) PublishControlRequest(agent.ControlRequest) error  { return nil }
 func (nop) CancelControlRequest(string)                       {}
+func (nop) CancelControlRequestInstance(string, string)       {}
 func (nop) UpdateSessionID(string)                            {}
 func (nop) UpdatePermissionMode(string)                       {}
 func (nop) NotifyPermissionModeChanged(string, string)        {}

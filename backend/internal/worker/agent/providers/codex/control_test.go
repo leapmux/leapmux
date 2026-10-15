@@ -29,7 +29,7 @@ func newCodexControlAgent(t *testing.T) (*Agent, *agenttest.ControlSink, *agentt
 		sink:              agent.NewProviderServices(sink),
 		threadID:          "main-thread",
 		permissionMode:    DefaultPermissionMode,
-		permissionProfile: ProfileWorkspace,
+		permissionProfile: contracts.CodexPermissionProfileWorkspace,
 	}
 	return a, sink, stdin
 }
@@ -37,8 +37,8 @@ func newCodexControlAgent(t *testing.T) (*Agent, *agenttest.ControlSink, *agentt
 // setBypass puts the agent on the bypass preset, acknowledged or not.
 func setBypass(a *Agent, acknowledged bool) {
 	a.Mu.Lock()
-	a.permissionMode = ModeNever
-	a.permissionProfile = ProfileDangerFullAccess
+	a.permissionMode = contracts.CodexPermissionModeNever
+	a.permissionProfile = contracts.CodexPermissionProfileDangerFullAccess
 	a.permissionsAcknowledged = acknowledged
 	a.Mu.Unlock()
 }
@@ -184,6 +184,10 @@ func TestCodexFileURI(t *testing.T) {
 	assert.Equal(t, "file:///my%20dir/sub", codexFileURI("/my dir/sub"), "a space is escaped")
 	assert.Equal(t, "file:///C:/repo", codexFileURI("C:/repo"), "a drive path gains the leading slash")
 	assert.Equal(t, "file:///already", codexFileURI("file:///already"), "a file URI passes through")
+	assert.Equal(t, "file://server/share/my%20dir", codexFileURIForOS(`\\server\share\my dir`, "windows"))
+	assert.Equal(t, "file:///C:/repo", codexFileURIForOS(`C:\repo`, "windows"))
+	assert.Equal(t, "file:////server/share/repo", codexFileURIForOS("//server/share/repo", "linux"))
+	assert.Equal(t, "file:///a%5Cb", codexFileURIForOS(`/a\b`, "linux"))
 }
 
 func TestCodexStandingApprovalAnswersAPermissionRequestUnpublished(t *testing.T) {
@@ -197,7 +201,7 @@ func TestCodexStandingApprovalAnswersAPermissionRequestUnpublished(t *testing.T)
 	assert.JSONEq(t, `{"decision":"accept"}`, string(stdinResponse(t, stdin, "7")))
 	assert.Zero(t, sink.PublishedControlCount(), "native full access asks nothing, so no card shows")
 	assert.Empty(t, sink.Notifications(), "an answer without a card needs no notice")
-	assert.False(t, a.OutstandingControlForTest("jsonrpc:7"))
+	require.Eventually(t, func() bool { return !a.OutstandingControlForTest("jsonrpc:7") }, 30*time.Second, time.Millisecond)
 }
 
 // TestCodexStandingApprovalWaitsForAcknowledgement covers the window between a switch
@@ -260,6 +264,7 @@ func TestCodexBypassApprovesPendingRequests(t *testing.T) {
 
 	assert.JSONEq(t, `{"decision":"accept"}`, string(stdinResponse(t, stdin, "7")))
 	assert.JSONEq(t, `{"permissions":{"network":{"enabled":true}},"scope":"turn"}`, string(stdinResponse(t, stdin, "8")))
+	require.Eventually(t, func() bool { return len(sink.Notifications()) == 1 }, 30*time.Second, time.Millisecond)
 	assert.ElementsMatch(t, []string{"jsonrpc:7", "jsonrpc:8"}, sink.CanceledControls())
 	assert.True(t, a.OutstandingControlForTest("jsonrpc:9"), "a question still waits for the user")
 	require.Len(t, sink.Notifications(), 1)
@@ -413,6 +418,7 @@ func TestCodexStandingApprovalRereadsAfterRegistration(t *testing.T) {
 	a.registerApprovalRequest([]byte(codexCommandApprovalLine), nil, answer)
 
 	assert.JSONEq(t, `{"decision":"accept"}`, string(stdinResponse(t, stdin, "7")))
+	require.Eventually(t, func() bool { return len(sink.CanceledControls()) > 0 }, 30*time.Second, time.Millisecond)
 	assert.Equal(t, []string{"jsonrpc:7"}, sink.CanceledControls(), "the card that the publish created leaves again")
 	assert.False(t, a.OutstandingControlForTest("jsonrpc:7"))
 }
@@ -443,6 +449,7 @@ func TestCodexStandingApprovalDuringPublication(t *testing.T) {
 		}
 	}
 	assert.Equal(t, 1, answers, "Codex receives one answer")
+	require.Eventually(t, func() bool { return len(sink.CanceledControls()) > 0 }, 30*time.Second, time.Millisecond)
 	assert.Contains(t, sink.CanceledControls(), "jsonrpc:7", "the stored card is retired")
 	assert.False(t, a.OutstandingControlForTest("jsonrpc:7"))
 }

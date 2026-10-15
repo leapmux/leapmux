@@ -4,9 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
-	"slices"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
@@ -30,9 +30,23 @@ var ErrControlRequestNotPending = errors.New("the control request is no longer p
 // session holds its bypass preset. A nil approveAnswer means that no standing approval
 // can answer the request, as for a question that only the reader can answer.
 type outstandingControlRequest struct {
-	wireID        json.RawMessage
-	cancelAnswer  any
-	approveAnswer any
+	instanceID       string
+	wireID           json.RawMessage
+	cancelAnswer     any
+	approveAnswer    any
+	pending          bool // A standing approval owns the response until delivery finishes.
+	retired          bool // A withdrawal or standing approval retired this instance.
+	published        bool // The sink accepted this publication.
+	publicationErr   error
+	payload          []byte
+	sessionID        string
+	publishOnFailure bool
+}
+
+// PublishedControlRequest identifies one publication without exposing its mutable state.
+type PublishedControlRequest struct {
+	RequestID string
+	record    *outstandingControlRequest
 }
 
 // PublishControlRequest registers one control request and publishes it to the reader,
@@ -44,14 +58,13 @@ func (b *JSONRPCProcess) PublishControlRequest(sink agent.ControlServices, conte
 
 // PublishControlRequestWithApproval registers one control request with the answer that a
 // standing approval sends for it, and publishes it to the reader, as
-// PublishControlRequestInSession does. It returns the LeapMux request ID that it
-// registered, or "" when it registered nothing.
+// PublishControlRequestInSession does. It returns the publication handle, or an empty handle on failure.
 //
 // The caller reads its standing approval again AFTER this call returns, and approves the
 // request through ApproveOutstandingControlRequest when the approval now applies. A
 // settings change that ran between the caller's first check and this registration then
 // still reaches the request.
-func (b *JSONRPCProcess) PublishControlRequestWithApproval(sink agent.ControlServices, content []byte, cancelAnswer, approveAnswer any) string {
+func (b *JSONRPCProcess) PublishControlRequestWithApproval(sink agent.ControlServices, content []byte, cancelAnswer, approveAnswer any) PublishedControlRequest {
 	return b.publishControlRequest(sink, "", content, cancelAnswer, approveAnswer)
 }
 
@@ -62,8 +75,7 @@ func (b *JSONRPCProcess) PublishControlRequestWithApproval(sink agent.ControlSer
 // provider raised with a JSON-RPC id, which LeapMux answers with a JSON-RPC response.
 // Every such request reaches the reader through it, so the provider-side record and
 // the browser-side card are created together and WithdrawControlRequest can retire
-// both. A storage failure registers nothing, publishes nothing, and answers the
-// provider with a JSON-RPC error.
+// both. A storage failure sends a JSON-RPC error unless a concurrent approval owns the response.
 //
 // agentSessionID is the provider session that the request belongs to. The sink stores
 // it with the request, and the worker accepts an answer only while the agent is in
@@ -82,61 +94,67 @@ func (b *JSONRPCProcess) PublishControlRequestInSession(sink agent.ControlServic
 }
 
 // publishControlRequest is the one registrar behind the exported publishers. It returns
-// the LeapMux request ID that it registered, or "" when it registered nothing.
-func (b *JSONRPCProcess) publishControlRequest(sink agent.ControlServices, agentSessionID string, content []byte, cancelAnswer, approveAnswer any) string {
+// the exact publication handle, or an empty handle when it registered nothing.
+func (b *JSONRPCProcess) publishControlRequest(sink agent.ControlServices, agentSessionID string, content []byte, cancelAnswer, approveAnswer any) PublishedControlRequest {
 	wireID, _, found := agent.ExtractJSONRPCID(content)
 	identity, valid := agent.NewControlRequestIdentity(wireID)
 	if !found || !valid {
 		slog.Warn("cannot publish control request without a valid JSON-RPC ID", "agent_id", b.agentID)
-		return ""
+		return PublishedControlRequest{}
 	}
+	record := b.registerControl(identity, &outstandingControlRequest{payload: content, sessionID: agentSessionID, cancelAnswer: cancelAnswer, approveAnswer: approveAnswer})
+	if record == nil {
+		slog.Warn("duplicate live control request ID", "agent_id", b.agentID, "request_id", identity.Key)
+		return PublishedControlRequest{}
+	}
+	if !b.publishRegisteredControl(sink, identity.Key, record) {
+		return PublishedControlRequest{}
+	}
+	return PublishedControlRequest{RequestID: identity.Key, record: record}
+}
+
+// registerControl gives each publication its own identity, even when a wire ID is reused.
+func (b *JSONRPCProcess) registerControl(identity agent.ControlRequestIdentity, record *outstandingControlRequest) *outstandingControlRequest {
 	b.outstandingMu.Lock()
+	defer b.outstandingMu.Unlock()
 	if b.outstandingControls == nil {
-		b.outstandingControls = make(map[string]outstandingControlRequest)
+		b.outstandingControls = make(map[string]*outstandingControlRequest)
 	}
-	b.outstandingControls[identity.Key] = outstandingControlRequest{wireID: identity.Native, cancelAnswer: cancelAnswer, approveAnswer: approveAnswer}
-	// Sampled in the SAME critical section that registers the record, so the check
-	// below compares against the state this registration saw.
-	generation := b.withdrawGeneration
-	b.outstandingMu.Unlock()
-	if err := sink.PublishControlRequest(agent.ControlRequest{AgentSessionID: agentSessionID, RequestID: identity.Key, Payload: content}); err != nil {
-		slog.Error("publish control request", "agent_id", b.agentID, "request_id", identity.Key, "error", err)
-		b.outstandingMu.Lock()
-		delete(b.outstandingControls, identity.Key)
-		b.outstandingMu.Unlock()
-		// Queued, not waited for: PublishControlRequest runs on the goroutine that
-		// drains the provider's stdout.
-		b.SendErrorResponseDetached(identity.Native, -32603, ControlPublicationFailure,
-			"control publication failure")
-		return ""
+	if b.outstandingControls[identity.Key] != nil {
+		return nil
 	}
-	// A withdrawal that ran between the registration above and this publish took the
-	// record and cancelled a card that did not exist yet. CancelControlRequest finds
-	// no row and returns in silence, and the publish then creates the card it meant
-	// to retire -- a live card with no record behind it, which no later withdrawal
-	// can reach and which the reader can never dismiss. The provider already has its
-	// cancel answer, so retiring the card here is all that is left.
-	//
-	// The registration and the publish cannot share one critical section: the publish
-	// is a store write and a broadcast, and holding outstandingMu across it would
-	// stall every other publisher behind it.
-	//
-	// BOTH terms are needed, and each one alone is wrong. The record being gone does
-	// not mean a withdrawal took it: PublishControlRequest completes the browser
-	// broadcast before it returns, so the reader can answer inside this window, and
-	// the answer's own SendRawInput removes the record too -- on which a bare presence
-	// test cancelled the card the reader had just allowed, and the browser showed it
-	// vanishing as CANCELLED. The generation moving does not mean THIS record was
-	// withdrawn either, because a withdrawal of any other request raises it. Only both
-	// together describe the case this exists for.
+	record.instanceID = id.Generate()
+	record.wireID = append(json.RawMessage(nil), identity.Native...)
+	record.payload = append([]byte(nil), record.payload...)
+	b.outstandingControls[identity.Key] = record
+	return record
+}
+
+// publishRegisteredControl keeps publication and delivery ownership on the same record.
+func (b *JSONRPCProcess) publishRegisteredControl(sink agent.ControlServices, requestID string, record *outstandingControlRequest) bool {
+	err := sink.PublishControlRequest(agent.ControlRequest{AgentSessionID: record.sessionID, RequestID: requestID, InstanceID: record.instanceID, Payload: record.payload})
 	b.outstandingMu.Lock()
-	_, stillRegistered := b.outstandingControls[identity.Key]
-	withdrawn := b.withdrawGeneration != generation
-	b.outstandingMu.Unlock()
-	if !stillRegistered && withdrawn {
-		sink.CancelControlRequest(identity.Key)
+	// Only an unpublished request needs its original bytes for recovery.
+	record.payload = nil
+	record.publicationErr = err
+	record.published = err == nil
+	ownsFailure := err != nil && b.outstandingControls[requestID] == record && !record.pending
+	if ownsFailure {
+		delete(b.outstandingControls, requestID)
 	}
-	return identity.Key
+	retired := record.retired
+	b.outstandingMu.Unlock()
+	if err != nil {
+		slog.Error("publish control request", "agent_id", b.agentID, "request_id", requestID, "error", err)
+		if ownsFailure {
+			b.SendErrorResponseDetached(record.wireID, -32603, ControlPublicationFailure, "control publication failure")
+		}
+		return false
+	}
+	if retired {
+		sink.CancelControlRequestInstance(requestID, record.instanceID)
+	}
+	return true
 }
 
 // WithdrawControlRequest retires one control request on both sides, in order.
@@ -150,10 +168,19 @@ func (b *JSONRPCProcess) publishControlRequest(sink agent.ControlServices, agent
 // request the provider still blocks on.
 func (b *JSONRPCProcess) WithdrawControlRequest(sink agent.ControlServices, requestID string) {
 	b.outstandingMu.Lock()
+	record := b.outstandingControls[requestID]
+	if record != nil {
+		record.retired = true
+	}
 	delete(b.outstandingControls, requestID)
 	b.withdrawGeneration++
 	b.outstandingMu.Unlock()
-	sink.CancelControlRequest(requestID)
+	if record != nil {
+		sink.CancelControlRequestInstance(requestID, record.instanceID)
+	} else {
+		// An explicit native withdrawal also removes a stored request that this registry does not hold.
+		sink.CancelControlRequest(requestID)
+	}
 }
 
 // WithdrawOutstandingControlRequest retires one control request that the provider
@@ -167,14 +194,16 @@ func (b *JSONRPCProcess) WithdrawControlRequest(sink agent.ControlServices, requ
 // never cancels a card the reader just decided.
 func (b *JSONRPCProcess) WithdrawOutstandingControlRequest(sink agent.ControlServices, requestID string) bool {
 	b.outstandingMu.Lock()
-	if _, open := b.outstandingControls[requestID]; !open {
+	record, open := b.outstandingControls[requestID]
+	if !open {
 		b.outstandingMu.Unlock()
 		return false
 	}
+	record.retired = true
 	delete(b.outstandingControls, requestID)
 	b.withdrawGeneration++
 	b.outstandingMu.Unlock()
-	sink.CancelControlRequest(requestID)
+	sink.CancelControlRequestInstance(requestID, record.instanceID)
 	return true
 }
 
@@ -187,12 +216,15 @@ func (b *JSONRPCProcess) WithdrawOutstandingControlRequest(sink agent.ControlSer
 func (b *JSONRPCProcess) WithdrawAllControlRequests(sink agent.ControlServices) {
 	b.outstandingMu.Lock()
 	outstanding := b.outstandingControls
+	for _, record := range outstanding {
+		record.retired = true
+	}
 	b.outstandingControls = nil
 	b.withdrawGeneration++
 	b.outstandingMu.Unlock()
 	for requestID, record := range outstanding {
 		b.answerWithdrawnControl(requestID, record)
-		sink.CancelControlRequest(requestID)
+		sink.CancelControlRequestInstance(requestID, record.instanceID)
 	}
 }
 
@@ -205,12 +237,13 @@ func (b *JSONRPCProcess) WithdrawAllControlRequests(sink agent.ControlServices) 
 // costs the reader their only control if that next step then fails.
 func (b *JSONRPCProcess) AnswerOutstandingControlRequests(sink agent.ControlServices) {
 	b.outstandingMu.Lock()
-	answerable := make(map[string]outstandingControlRequest)
+	answerable := make(map[string]*outstandingControlRequest)
 	for requestID, record := range b.outstandingControls {
-		if record.cancelAnswer == nil {
+		if record.cancelAnswer == nil || record.pending {
 			continue
 		}
 		answerable[requestID] = record
+		record.retired = true
 		delete(b.outstandingControls, requestID)
 	}
 	if len(answerable) > 0 {
@@ -219,80 +252,19 @@ func (b *JSONRPCProcess) AnswerOutstandingControlRequests(sink agent.ControlServ
 	b.outstandingMu.Unlock()
 	for requestID, record := range answerable {
 		b.answerWithdrawnControl(requestID, record)
-		sink.CancelControlRequest(requestID)
+		sink.CancelControlRequestInstance(requestID, record.instanceID)
 	}
 }
 
 // answerWithdrawnControl sends the provider the record's own cancel answer.
 // A record that carries none releases nothing, so it sends nothing.
-func (b *JSONRPCProcess) answerWithdrawnControl(requestID string, record outstandingControlRequest) {
-	if record.cancelAnswer == nil {
+func (b *JSONRPCProcess) answerWithdrawnControl(requestID string, record *outstandingControlRequest) {
+	if record.cancelAnswer == nil || record.pending {
 		return
 	}
 	if err := b.SendResponse(record.wireID, record.cancelAnswer); err != nil {
 		slog.Warn("cancel outstanding control request", "agent_id", b.agentID, "request_id", requestID, "error", err)
 	}
-}
-
-// ApproveOutstandingControlRequests answers every open control request that carries an
-// approval answer with that answer, retires its browser card, and returns how many it
-// answered. It LEAVES every other request registered: a question still waits for the
-// reader.
-//
-// Each answer is QUEUED, not waited for. The caller can hold a lock that the stdout
-// reader needs, and a waiting stdin write there can deadlock both processes (see
-// RefuseUnsupportedRequest). The single writer keeps the answers in order.
-//
-// It counts as a withdrawal for publication, so a publish that ran concurrently and
-// lost its record retires the card that it would otherwise leave behind.
-func (b *JSONRPCProcess) ApproveOutstandingControlRequests(sink agent.ControlServices) int {
-	b.outstandingMu.Lock()
-	approvable := make(map[string]outstandingControlRequest)
-	for requestID, record := range b.outstandingControls {
-		if record.approveAnswer == nil {
-			continue
-		}
-		approvable[requestID] = record
-		delete(b.outstandingControls, requestID)
-	}
-	if len(approvable) > 0 {
-		b.withdrawGeneration++
-	}
-	b.outstandingMu.Unlock()
-	// Sorted, so the answers reach the provider in one order that a test can state.
-	requestIDs := make([]string, 0, len(approvable))
-	for requestID := range approvable {
-		requestIDs = append(requestIDs, requestID)
-	}
-	slices.Sort(requestIDs)
-	for _, requestID := range requestIDs {
-		b.approveWithdrawnControl(sink, requestID, approvable[requestID])
-	}
-	return len(requestIDs)
-}
-
-// ApproveOutstandingControlRequest answers one open control request with its approval
-// answer and retires its browser card, as ApproveOutstandingControlRequests does for all
-// of them. It reports false, and changes nothing, when the request is no longer open or
-// carries no approval answer.
-func (b *JSONRPCProcess) ApproveOutstandingControlRequest(sink agent.ControlServices, requestID string) bool {
-	b.outstandingMu.Lock()
-	record, open := b.outstandingControls[requestID]
-	if !open || record.approveAnswer == nil {
-		b.outstandingMu.Unlock()
-		return false
-	}
-	delete(b.outstandingControls, requestID)
-	b.withdrawGeneration++
-	b.outstandingMu.Unlock()
-	b.approveWithdrawnControl(sink, requestID, record)
-	return true
-}
-
-// approveWithdrawnControl queues the record's approval answer, then retires its card.
-func (b *JSONRPCProcess) approveWithdrawnControl(sink agent.ControlServices, requestID string, record outstandingControlRequest) {
-	b.SendResponseDetached(record.wireID, record.approveAnswer, "standing approval of "+requestID)
-	sink.CancelControlRequest(requestID)
 }
 
 // SendRawInputToOutstandingRequest is SendRawInput for a provider whose EVERY JSON-RPC
@@ -353,7 +325,7 @@ func (b *JSONRPCProcess) takeOutstandingControl(raw []byte) (restore func(), ope
 	}
 	b.outstandingMu.Lock()
 	record, open := b.outstandingControls[identity.Key]
-	if !open {
+	if !open || record.pending {
 		b.outstandingMu.Unlock()
 		return nothing, false
 	}
@@ -363,11 +335,11 @@ func (b *JSONRPCProcess) takeOutstandingControl(raw []byte) (restore func(), ope
 	return func() {
 		b.outstandingMu.Lock()
 		defer b.outstandingMu.Unlock()
-		if b.withdrawGeneration != generation {
+		if b.withdrawGeneration != generation || b.outstandingControls[identity.Key] != nil {
 			return
 		}
 		if b.outstandingControls == nil {
-			b.outstandingControls = make(map[string]outstandingControlRequest)
+			b.outstandingControls = make(map[string]*outstandingControlRequest)
 		}
 		b.outstandingControls[identity.Key] = record
 	}, true

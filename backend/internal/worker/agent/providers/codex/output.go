@@ -962,8 +962,9 @@ func (a *Agent) handleServerRequestResolved(params json.RawMessage) {
 	if !valid {
 		return
 	}
-	// Codex withdrew the request itself, so it waits for no answer.
-	a.WithdrawControlRequest(a.sink, identity.Key)
+	// Codex also emits this event after a client answer removes the registry record.
+	// The service owns finalization of that answer. Cancel only a request that still waits here.
+	a.WithdrawOutstandingControlRequest(a.sink, identity.Key)
 }
 
 // handleErrorNotification processes error notifications.

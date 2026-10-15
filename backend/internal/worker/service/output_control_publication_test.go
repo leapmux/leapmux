@@ -479,6 +479,24 @@ func TestControlPublicationKeepsClaimOnRepeatedAnnouncement(t *testing.T) {
 	assert.NotEqual(t, first.ClaimToken, changed.ClaimToken, "a revised request starts a new instance")
 }
 
+func TestControlPublicationCancellationKeepsAReplacementInstance(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := setupTestService(t)
+	createClaimTestAgent(t, svc, "agent-1")
+	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	request := agent.ControlRequest{RequestID: "jsonrpc:7", InstanceID: "first-instance", Payload: []byte(`{"id":7,"method":"approve"}`)}
+	require.NoError(t, sink.PublishControlRequest(request))
+	request.InstanceID = "second-instance"
+	require.NoError(t, sink.PublishControlRequest(request))
+	sink.CancelControlRequestInstance(request.RequestID, "first-instance")
+	row, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: request.RequestID})
+	require.NoError(t, err, "a late cancellation cannot remove the replacement")
+	assert.Equal(t, "second-instance", row.ClaimToken)
+	sink.CancelControlRequestInstance(request.RequestID, "second-instance")
+	_, err = svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: request.RequestID})
+	assert.ErrorIs(t, err, sql.ErrNoRows)
+}
+
 func TestControlPublicationStartsANewClaimForAnotherProviderSession(t *testing.T) {
 	t.Parallel()
 	svc, _, _ := setupTestService(t)

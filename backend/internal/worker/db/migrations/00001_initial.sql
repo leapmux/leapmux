@@ -397,6 +397,18 @@ CREATE TABLE control_response_answers (
 CREATE INDEX idx_control_response_input ON control_response_answers(agent_id, input_id)
 WHERE input_id <> '';
 
+-- A claim precedes delivery. An unconfirmed claim prevents a second delivery after a crash.
+-- Transcript rows can disappear independently, so only the owning agent has a foreign key.
+CREATE TABLE auto_review_approvals (
+    agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    agent_session_id TEXT NOT NULL,
+    review_id TEXT NOT NULL CHECK (review_id <> ''),
+    message_id TEXT NOT NULL CHECK (message_id <> ''),
+    -- AutoReviewApprovalState ordinals; enum_column_numbering_test.go checks this range.
+    state INTEGER NOT NULL CHECK (typeof(state) = 'integer') CHECK (state BETWEEN 1 AND 3),
+    PRIMARY KEY (agent_id, agent_session_id, review_id)
+);
+
 -- Scheduled synthetic auto-continue messages
 CREATE TABLE auto_continue_schedules (
     agent_id        TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
@@ -705,6 +717,11 @@ DROP VIEW IF EXISTS worktree_tab_liveness;
 DROP TABLE IF EXISTS worktree_tabs;
 DROP TABLE IF EXISTS worktrees;
 DROP TABLE IF EXISTS auto_continue_schedules;
+DROP TABLE IF EXISTS auto_review_approvals;
+DROP TABLE IF EXISTS agent_input_queue_attachments;
+DROP TABLE IF EXISTS agent_input_queue_items;
+DROP TABLE IF EXISTS agent_input_queue_state;
+DROP TABLE IF EXISTS agent_turn_ends;
 DROP TABLE IF EXISTS control_response_answers;
 DROP TABLE IF EXISTS control_requests;
 DROP TRIGGER IF EXISTS trg_messages_seq_hwm_update;

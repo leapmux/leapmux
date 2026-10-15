@@ -241,20 +241,19 @@ describe('codexNotificationEntry auto-review', () => {
     }])
   })
 
-  it('keeps the risk, the authorization and the trimmed rationale', () => {
+  it('keeps the risk and the trimmed rationale', () => {
     expect(codexNotificationEntry(completed({ status: 'denied', riskLevel: 'high', userAuthorization: 'low', rationale: '  The host is not trusted.  ' }))).toEqual([{
       kind: 'auto-review',
       reviewId: 'r1',
       outcome: 'denied',
       risk: 'high',
-      authorization: 'low',
       rationale: 'The host is not trusted.',
       action: 'rm -rf build/',
       approvable: true,
     }])
   })
 
-  it('drops a risk, an authorization and a rationale that the model does not know', () => {
+  it('omits unknown risk and empty rationale values', () => {
     const [entry] = codexNotificationEntry(completed({ status: 'approved', riskLevel: 'extreme', userAuthorization: 'total', rationale: '   ' }))
     expect(entry).not.toHaveProperty('risk')
     expect(entry).not.toHaveProperty('authorization')

@@ -2,7 +2,9 @@ package codex
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -14,31 +16,85 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
-// queryAvailableModels sends a model/list request and converts the response.
+// codexCatalogMaxPages limits discovery from a server that never ends pagination.
+const codexCatalogMaxPages = 20
+
+type codexCatalogPage[T any] struct {
+	Data       []T     `json:"data"`
+	NextCursor *string `json:"nextCursor"`
+}
+
+// queryCodexCatalogPages returns only complete catalogs within one deadline.
+func queryCodexCatalogPages[T any](a *Agent, method string, params map[string]any, timeout time.Duration) ([]T, error) {
+	var deadline time.Time
+	if timeout > 0 {
+		deadline = a.Clock().Now().Add(timeout)
+	}
+	var entries []T
+	cursor := ""
+	seen := make(map[string]struct{})
+	for range codexCatalogMaxPages {
+		remaining := timeout
+		if !deadline.IsZero() {
+			remaining = deadline.Sub(a.Clock().Now())
+			if remaining <= 0 {
+				return nil, fmt.Errorf("%s exceeded the catalog deadline", method)
+			}
+		}
+		pageParams := maps.Clone(params)
+		if pageParams == nil {
+			pageParams = make(map[string]any)
+		}
+		if cursor != "" {
+			pageParams["cursor"] = cursor
+		}
+		encoded, err := json.Marshal(pageParams)
+		if err != nil {
+			return nil, fmt.Errorf("marshal %s parameters: %w", method, err)
+		}
+		raw, err := a.SendRequest(method, encoded, remaining)
+		if err != nil {
+			return nil, err
+		}
+		var page codexCatalogPage[T]
+		if err := json.Unmarshal(raw, &page); err != nil {
+			return nil, fmt.Errorf("decode %s catalog: %w", method, err)
+		}
+		if page.Data == nil {
+			return nil, fmt.Errorf("%s catalog has no data array", method)
+		}
+		entries = append(entries, page.Data...)
+		if page.NextCursor == nil || *page.NextCursor == "" {
+			return entries, nil
+		}
+		cursor = *page.NextCursor
+		if _, repeated := seen[cursor]; repeated {
+			return nil, fmt.Errorf("%s repeated its pagination cursor", method)
+		}
+		seen[cursor] = struct{}{}
+	}
+	return nil, fmt.Errorf("%s exceeded the %d-page catalog limit", method, codexCatalogMaxPages)
+}
+
+type codexModelCatalogEntry struct {
+	ID                        string `json:"id"`
+	Model                     string `json:"model"`
+	DisplayName               string `json:"displayName"`
+	IsDefault                 bool   `json:"isDefault"`
+	Hidden                    bool   `json:"hidden"`
+	Description               string `json:"description"`
+	DefaultReasoningEffort    string `json:"defaultReasoningEffort"`
+	SupportedReasoningEfforts []struct {
+		ReasoningEffort string `json:"reasoningEffort"`
+		Description     string `json:"description"`
+	} `json:"supportedReasoningEfforts"`
+}
+
+// queryAvailableModels reads the complete model catalog and converts its entries.
 func (a *Agent) queryAvailableModels(timeout time.Duration) []*agent.ModelInfo {
-	resp, err := a.SendRequest("model/list", json.RawMessage(`{}`), timeout)
+	rawModels, err := queryCodexCatalogPages[codexModelCatalogEntry](a, "model/list", nil, timeout)
 	if err != nil {
 		slog.Warn("codex model/list failed", "agent_id", a.AgentID(), "error", err)
-		return nil
-	}
-
-	var result struct {
-		Data []struct {
-			ID                        string `json:"id"`
-			Model                     string `json:"model"`
-			DisplayName               string `json:"displayName"`
-			IsDefault                 bool   `json:"isDefault"`
-			Hidden                    bool   `json:"hidden"`
-			Description               string `json:"description"`
-			DefaultReasoningEffort    string `json:"defaultReasoningEffort"`
-			SupportedReasoningEfforts []struct {
-				ReasoningEffort string `json:"reasoningEffort"`
-				Description     string `json:"description"`
-			} `json:"supportedReasoningEfforts"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(resp, &result); err != nil {
-		slog.Warn("codex model/list unmarshal failed", "agent_id", a.AgentID(), "error", err)
 		return nil
 	}
 
@@ -49,7 +105,7 @@ func (a *Agent) queryAvailableModels(timeout time.Duration) []*agent.ModelInfo {
 	}
 
 	var models []*agent.ModelInfo
-	for _, m := range result.Data {
+	for _, m := range rawModels {
 		if m.Hidden {
 			continue
 		}
@@ -106,19 +162,22 @@ func (a *Agent) queryAvailableModels(timeout time.Duration) []*agent.ModelInfo {
 	return models
 }
 
-// codexPermissionProfileMaxPages limits how many pages of permissionProfile/list
-// discovery reads. Codex returns every profile in one page unless a client asks for
-// fewer, so the limit only stops a server that keeps returning a cursor.
-const codexPermissionProfileMaxPages = 20
+// codexPermissionProfileCatalog distinguishes an unavailable catalog from a known empty catalog.
+type codexPermissionProfileCatalog struct {
+	available bool
+	options   []*leapmuxv1.AvailableOption
+}
 
-// codexPermissionCatalog is what the startup queries learned about the two
-// permission axes.
+// selectableOptions supplies one fallback rule for validation and display.
+func (catalog codexPermissionProfileCatalog) selectableOptions() []*leapmuxv1.AvailableOption {
+	if !catalog.available {
+		return codexBuiltinProfiles
+	}
+	return catalog.options
+}
+
 type codexPermissionCatalog struct {
-	// profiles holds the allowed permission profiles, or nil when discovery failed
-	// or found none, so the static seed applies.
-	profiles []*leapmuxv1.AvailableOption
-	// refusedModes holds the permission modes that the requirements or the config
-	// refuse. Empty when every mode is allowed.
+	profiles     codexPermissionProfileCatalog
 	refusedModes map[string]struct{}
 }
 
@@ -138,13 +197,12 @@ func (a *Agent) discoverPermissions(cwd string, timeout time.Duration) codexPerm
 	return a.permissionSettingsLocked()
 }
 
-// queryPermissionCatalog runs the three best-effort startup queries concurrently, so
-// they share one deadline: permissionProfile/list, configRequirements/read, and
-// config/read. A failed query costs only its own information.
+// queryPermissionCatalog runs the independent startup queries concurrently.
+// Each query uses one timeout budget. A failed query loses only its own information.
 func (a *Agent) queryPermissionCatalog(cwd string, timeout time.Duration) codexPermissionCatalog {
 	var (
 		wg           sync.WaitGroup
-		profiles     []*leapmuxv1.AvailableOption
+		profiles     codexPermissionProfileCatalog
 		requirements codexApprovalRequirements
 		guardianOff  bool
 	)
@@ -165,68 +223,36 @@ func (a *Agent) queryPermissionCatalog(cwd string, timeout time.Duration) codexP
 	return codexPermissionCatalog{profiles: profiles, refusedModes: codexRefusedModes(requirements, guardianOff)}
 }
 
-// queryPermissionProfiles reads every page of permissionProfile/list and returns the
-// profiles that the requirements allow, in Codex's order. It returns nil when the
-// query fails or allows no profile, so the static seed applies.
-func (a *Agent) queryPermissionProfiles(cwd string, timeout time.Duration) []*leapmuxv1.AvailableOption {
-	var options []*leapmuxv1.AvailableOption
+type codexPermissionProfileEntry struct {
+	ID          string  `json:"id"`
+	Description *string `json:"description"`
+	Allowed     bool    `json:"allowed"`
+}
+
+// queryPermissionProfiles returns a known catalog only after every page succeeds.
+func (a *Agent) queryPermissionProfiles(cwd string, timeout time.Duration) codexPermissionProfileCatalog {
+	entries, err := queryCodexCatalogPages[codexPermissionProfileEntry](a, "permissionProfile/list", map[string]any{"cwd": cwd}, timeout)
+	if err != nil {
+		slog.Warn("codex permissionProfile/list failed", "agent_id", a.AgentID(), "error", err)
+		return codexPermissionProfileCatalog{}
+	}
+	options := make([]*leapmuxv1.AvailableOption, 0, len(entries))
 	seen := make(map[string]struct{})
-	cursor := ""
-	for page := 0; ; page++ {
-		if page == codexPermissionProfileMaxPages {
-			slog.Warn("codex permissionProfile/list returned more pages than LeapMux reads",
-				"agent_id", a.AgentID(), "pages", codexPermissionProfileMaxPages)
-			break
+	for _, entry := range entries {
+		if !entry.Allowed || entry.ID == "" {
+			continue
 		}
-		params := map[string]interface{}{"cwd": cwd}
-		if cursor != "" {
-			params["cursor"] = cursor
+		if _, duplicate := seen[entry.ID]; duplicate {
+			continue
 		}
-		paramsJSON, err := json.Marshal(params)
-		if err != nil {
-			slog.Warn("codex marshal permissionProfile/list params", "agent_id", a.AgentID(), "error", err)
-			return nil
+		seen[entry.ID] = struct{}{}
+		description := ""
+		if entry.Description != nil {
+			description = *entry.Description
 		}
-		resp, err := a.SendRequest("permissionProfile/list", paramsJSON, timeout)
-		if err != nil {
-			slog.Warn("codex permissionProfile/list failed", "agent_id", a.AgentID(), "error", err)
-			return nil
-		}
-		var result struct {
-			Data []struct {
-				ID          string  `json:"id"`
-				Description *string `json:"description"`
-				Allowed     bool    `json:"allowed"`
-			} `json:"data"`
-			NextCursor *string `json:"nextCursor"`
-		}
-		if err := json.Unmarshal(resp, &result); err != nil {
-			slog.Warn("codex permissionProfile/list unmarshal failed", "agent_id", a.AgentID(), "error", err)
-			return nil
-		}
-		for _, profile := range result.Data {
-			if !profile.Allowed || profile.ID == "" {
-				continue
-			}
-			if _, duplicate := seen[profile.ID]; duplicate {
-				continue
-			}
-			seen[profile.ID] = struct{}{}
-			description := ""
-			if profile.Description != nil {
-				description = *profile.Description
-			}
-			options = append(options, codexPermissionProfileOption(profile.ID, description))
-		}
-		if result.NextCursor == nil || *result.NextCursor == "" {
-			break
-		}
-		cursor = *result.NextCursor
+		options = append(options, codexPermissionProfileOption(entry.ID, description))
 	}
-	if len(options) == 0 {
-		return nil
-	}
-	return options
+	return codexPermissionProfileCatalog{available: true, options: options}
 }
 
 // codexPermissionProfileOption returns the picker option for a discovered profile. A
@@ -405,10 +431,11 @@ func settledPermissionMode(requested string, refused map[string]struct{}) string
 
 // settledPermissionProfile returns the profile that a launch uses: the requested
 // profile when the discovered catalog offers it, else the default profile, else the
-// first offered profile. A nil catalog means that discovery failed, so the requested
-// profile stays and Codex decides.
-func settledPermissionProfile(requested string, profiles []*leapmuxv1.AvailableOption) string {
-	if len(profiles) == 0 {
+// first offered profile. An unavailable or empty catalog supplies no replacement.
+// The requested profile then stays for Codex to validate.
+func settledPermissionProfile(requested string, catalog codexPermissionProfileCatalog) string {
+	profiles := catalog.options
+	if !catalog.available || len(profiles) == 0 {
 		return requested
 	}
 	offered := func(id string) bool {

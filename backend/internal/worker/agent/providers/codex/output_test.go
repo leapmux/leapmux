@@ -21,6 +21,58 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type codexResolvedControlSink struct {
+	*agenttest.ControlSink
+	publishedInstance          string
+	canceledInstance           string
+	unconditionalCancellations int
+}
+
+func (s *codexResolvedControlSink) PublishControlRequest(request agentapi.ControlRequest) error {
+	s.publishedInstance = request.InstanceID
+	return s.ControlSink.PublishControlRequest(request)
+}
+
+func (s *codexResolvedControlSink) CancelControlRequest(requestID string) {
+	s.unconditionalCancellations++
+	s.ControlSink.CancelControlRequest(requestID)
+}
+
+func (s *codexResolvedControlSink) CancelControlRequestInstance(requestID, instanceID string) {
+	s.canceledInstance = instanceID
+	s.ControlSink.CancelControlRequestInstance(requestID, instanceID)
+}
+
+func TestCodexResolvedNotificationKeepsReaderFinalizationOwnership(t *testing.T) {
+	t.Parallel()
+	for _, state := range []string{"open", "answered", "unknown"} {
+		t.Run(state, func(t *testing.T) {
+			t.Parallel()
+			a, controls, _ := newCodexControlAgent(t)
+			sink := &codexResolvedControlSink{ControlSink: controls}
+			a.sink = agentapi.NewProviderServices(sink)
+			if state != "unknown" {
+				handleCodexOutput(a, providerkit.ParseLine([]byte(codexCommandApprovalLine)))
+			}
+			if state == "answered" {
+				require.NoError(t, a.SendRawInput([]byte(`{"jsonrpc":"2.0","id":7,"result":{"decision":"accept"}}`), agentapi.StopContext{}))
+				assert.False(t, a.OutstandingControlForTest("jsonrpc:7"))
+			}
+			a.handleServerRequestResolved(json.RawMessage(`{"threadId":"main-thread","requestId":7}`))
+			assert.Zero(t, sink.unconditionalCancellations)
+			assert.False(t, a.OutstandingControlForTest("jsonrpc:7"))
+			if state == "open" {
+				require.NotEmpty(t, sink.publishedInstance)
+				assert.Equal(t, sink.publishedInstance, sink.canceledInstance)
+				assert.Equal(t, []string{"jsonrpc:7"}, sink.CanceledControls())
+			} else {
+				assert.Empty(t, sink.canceledInstance)
+				assert.Empty(t, sink.CanceledControls(), "the service owns finalization after a reader answer")
+			}
+		})
+	}
+}
+
 func TestCodexControlPublicationFailureReturnsProtocolError(t *testing.T) {
 	t.Parallel()
 	output := &agenttest.Stdin{}
@@ -3089,7 +3141,7 @@ func TestCodexThreadSettingsReadsCapturedCollaborationObject(t *testing.T) {
 	sink := &agenttest.Sink{}
 	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	a.model, a.effort, a.collaborationMode = "old", "low", "default"
-	a.permissionMode, a.permissionProfile = ModeApproveForMe, ProfileWorkspace
+	a.permissionMode, a.permissionProfile = contracts.CodexPermissionModeApproveForMe, contracts.CodexPermissionProfileWorkspace
 	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"thread/settings/updated","params":{"threadId":"main-thread","threadSettings":{"disabledPluginIds":[],"cwd":"/Users/trustin/Workspaces/leapmux/.tmp/codex159-raw-exec-probe/workspace","approvalPolicy":"never","approvalsReviewer":"user","sandboxPolicy":{"type":"dangerFullAccess"},"activePermissionProfile":{"id":":danger-full-access","extends":null},"model":"gpt-5.6-luna","modelProvider":"private-probe","serviceTier":null,"effort":"medium","summary":null,"collaborationMode":{"mode":"plan","settings":{"model":"gpt-5.6-luna","reasoning_effort":"medium","developer_instructions":null}},"multiAgentMode":"explicitRequestOnly","personality":null}},"emittedAtMs":1790872800652}`)))
 	require.Equal(t, 1, sink.SettingsRefreshCount())
 	refresh := sink.LastSettingsRefresh()
@@ -3100,8 +3152,8 @@ func TestCodexThreadSettingsReadsCapturedCollaborationObject(t *testing.T) {
 	// The echo of a turn/start that carried an older snapshot can race a settings
 	// change, so the frame never moves the permission axes. LeapMux sends them on
 	// every request.
-	assert.Equal(t, ModeApproveForMe, a.permissionMode)
-	assert.Equal(t, ProfileWorkspace, a.permissionProfile)
+	assert.Equal(t, contracts.CodexPermissionModeApproveForMe, a.permissionMode)
+	assert.Equal(t, contracts.CodexPermissionProfileWorkspace, a.permissionProfile)
 }
 
 func TestCodexThreadSettingsIgnoresForeignThread(t *testing.T) {
