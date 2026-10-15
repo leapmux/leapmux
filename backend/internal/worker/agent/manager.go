@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -774,6 +775,23 @@ func (m *Manager) UpdateGoal(agentID string, action GoalAction, objective string
 	}
 	outcome, err := writer.PerformGoalAction(action, objective)
 	return outcome.QueuedInput, err
+}
+
+// ApproveAutoReviewDenial asks the agent's running provider to record the user's
+// approval of one denied automatic review, as AutoReviewDenialApprover states. A
+// provider without that capability answers ErrAutoReviewApprovalUnsupported.
+func (m *Manager) ApproveAutoReviewDenial(agentID string, entries []json.RawMessage, reviewID string) error {
+	// providerAfterLifecycle for the reason UpdateGoal states: a bare read during a
+	// restart hands back the process that the restart is destroying.
+	p, err := m.providerAfterLifecycle(agentID)
+	if err != nil {
+		return err
+	}
+	approver, ok := p.(AutoReviewDenialApprover)
+	if !ok {
+		return ErrAutoReviewApprovalUnsupported
+	}
+	return approver.ApproveAutoReviewDenial(entries, reviewID)
 }
 
 // StopAgent stops the agent with the given agent ID.

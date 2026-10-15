@@ -1,13 +1,14 @@
 import type { ControlRequest } from '~/stores/control.store'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
-import { CODEX_BYPASS_SETTINGS } from '~/generated/contracts/codex-bypass'
+import { CODEX_PERMISSION_PRESETS } from '~/generated/contracts/codex-permission-presets'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { prettifyJson } from '~/lib/jsonFormat'
 import { ControlRequestContent } from '~/test-support/controlRequestBanner'
 import { allowChoicePillGroup, permissionPillGroup } from '~/test-support/controlRequests'
 import { CONTROL_ALLOW_CHOICE_ID, createControlAnswerState } from '../../controls/types'
 import { CodexControlActions } from './CodexControlActions'
+import { codexPermissionPresets } from './permissionPresets'
 import './plugin'
 
 function makeRequest(params: Record<string, unknown> = {}): ControlRequest {
@@ -40,7 +41,7 @@ function renderActions(
       onRespond={onRespond}
       hasEditorContent={hasEditorContent}
       onTriggerSend={vi.fn()}
-      presets={{ bypass: CODEX_BYPASS_SETTINGS, apply: onSettingChange }}
+      presets={{ ...codexPermissionPresets, apply: onSettingChange }}
     />
   ))
   return { onRespond, onSettingChange }
@@ -65,6 +66,7 @@ describe('codex control request actions', () => {
     expect(allowChoicePillGroup('Allow as').getByRole('radio', { name: 'Command rule' })).not.toBeChecked()
     // No preset is on, so the group opens on the pill that changes nothing.
     expect(permissionPillGroup().getByRole('radio', { name: 'Unchanged' })).toBeChecked()
+    expect(permissionPillGroup().getByRole('radio', { name: 'Smart' })).not.toBeChecked()
     expect(permissionPillGroup().getByRole('radio', { name: 'Bypass' })).not.toBeChecked()
   })
 
@@ -416,7 +418,7 @@ describe('codex control request actions', () => {
     expect(onSettingChange).not.toHaveBeenCalled()
     finishResponse()
     await vi.waitFor(() => expect(onSettingChange).toHaveBeenCalledOnce())
-    expect(onSettingChange).toHaveBeenCalledWith(CODEX_BYPASS_SETTINGS)
+    expect(onSettingChange).toHaveBeenCalledWith(CODEX_PERMISSION_PRESETS.bypass)
   })
 
   it('shows only Send feedback when the editor has content', () => {
@@ -466,6 +468,20 @@ describe('codex control request actions', () => {
     expect(options).toMatchObject({ planApproval: { permissionMode: 'never', clearContext: false } })
     expect(JSON.parse(new TextDecoder().decode(bytes))).not.toHaveProperty('codexPlanModePrompt')
     // One RPC carries the response and its plan settings, so a separate setting change cannot race the restart.
+    expect(onSettingChange).not.toHaveBeenCalled()
+  })
+
+  // A plan approval opens on Smart. It carries the permission mode alone, and the
+  // worker expands Approve for Me into the complete Smart preset.
+  it('opens a plan approval on Smart and sends the auto-review mode', async () => {
+    const { onRespond, onSettingChange } = renderActions(makePlanRequest())
+
+    expect(permissionPillGroup().getByRole('radio', { name: 'Smart' })).toBeChecked()
+    await fireEvent.click(screen.getByTestId('control-allow-btn'))
+
+    const [, options] = onRespond.mock.calls[0] ?? []
+    expect(options).toMatchObject({ planApproval: { permissionMode: CODEX_PERMISSION_PRESETS.smart.sets.permissionMode, clearContext: false } })
+    expect(CODEX_PERMISSION_PRESETS.smart.sets.permissionMode).toBe('auto-review')
     expect(onSettingChange).not.toHaveBeenCalled()
   })
 })

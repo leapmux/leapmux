@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "codex-permission-presets.schema.json",
+  "title": "Codex permission presets contract",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "_readme",
+    "presets"
+  ],
+  "$defs": {
+    "preset": {
+      "type": "array",
+      "minItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "value"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "value": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  },
+  "properties": {
+    "_readme": {
+      "type": "string",
+      "minLength": 1
+    },
+    "presets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "smart",
+        "bypass"
+      ],
+      "properties": {
+        "smart": {
+          "$ref": "#/$defs/preset"
+        },
+        "bypass": {
+          "$ref": "#/$defs/preset"
+        }
+      }
+    }
+  }
+}

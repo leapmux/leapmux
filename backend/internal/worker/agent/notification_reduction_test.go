@@ -187,3 +187,58 @@ func TestNotificationReductionClassifiesOnlyPrivateSchemaErrors(t *testing.T) {
 		assert.ErrorIs(t, err, ErrInvalidNotificationStorage)
 	}
 }
+
+func TestMessageSupplementMetadataMemberKeepsEveryOtherField(t *testing.T) {
+	t.Parallel()
+	stored := []byte(`{"provider":{"x":1},"metadata":{"duration_ms":7,"notification_entries":[],"notification_reduction":{"cancelled_settings":{"model":"a"}}}}`)
+	parsed, err := ParseStoredMessageSupplement(stored)
+	require.NoError(t, err)
+	assert.Nil(t, parsed.MetadataMember("auto_review_approvals"), "an absent member reads as nil")
+
+	next, err := parsed.WithMetadataMember("auto_review_approvals", []byte(`["review-1"]`))
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"provider":{"x":1},"metadata":{"duration_ms":7,"notification_entries":[],"notification_reduction":{"cancelled_settings":{"model":"a"}},"auto_review_approvals":["review-1"]}}`, string(next))
+
+	reparsed, err := ParseStoredMessageSupplement(next)
+	require.NoError(t, err)
+	assert.JSONEq(t, `["review-1"]`, string(reparsed.MetadataMember("auto_review_approvals")))
+	assert.Len(t, reparsed.NotificationJournal(), 0)
+	projected, err := ProjectMessageSupplement(next, 0)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"provider":{"x":1},"metadata":{"duration_ms":7,"auto_review_approvals":["review-1"]}}`, string(projected),
+		"the projection for the browser keeps the public member and drops the private ones")
+
+	removed, err := reparsed.WithMetadataMember("auto_review_approvals", nil)
+	require.NoError(t, err)
+	assert.JSONEq(t, string(stored), string(removed), "a nil value removes the member")
+}
+
+func TestMessageSupplementMetadataMemberOfAnEmptySupplement(t *testing.T) {
+	t.Parallel()
+	for _, stored := range [][]byte{nil, {}} {
+		parsed, err := ParseStoredMessageSupplement(stored)
+		require.NoError(t, err)
+		next, err := parsed.WithMetadataMember("auto_review_approvals", []byte(`["review-1"]`))
+		require.NoError(t, err)
+		assert.JSONEq(t, `{"metadata":{"auto_review_approvals":["review-1"]}}`, string(next))
+		cleared, err := parsed.WithMetadataMember("auto_review_approvals", nil)
+		require.NoError(t, err)
+		assert.Nil(t, cleared, "an envelope with no field encodes as no supplement")
+	}
+}
+
+func TestMessageSupplementMetadataMemberRefusesPrivateAndInvalidValues(t *testing.T) {
+	t.Parallel()
+	parsed, err := ParseStoredMessageSupplement(nil)
+	require.NoError(t, err)
+	for _, key := range []string{NotificationJournalField, NotificationReductionField} {
+		_, err := parsed.WithMetadataMember(key, []byte(`[]`))
+		assert.ErrorContains(t, err, "private", key)
+	}
+	_, err = parsed.WithMetadataMember("auto_review_approvals", []byte(`[`))
+	assert.ErrorContains(t, err, "valid JSON")
+	var absent *ParsedMessageSupplement
+	assert.Nil(t, absent.MetadataMember("auto_review_approvals"))
+	_, err = absent.WithMetadataMember("auto_review_approvals", []byte(`[]`))
+	assert.Error(t, err)
+}

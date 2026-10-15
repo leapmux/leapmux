@@ -106,6 +106,21 @@ export interface SubagentNavigation {
   open?: (item: BackgroundTaskItem) => void
 }
 
+/**
+ * The reader's decisions about the automatic reviews that one row drew.
+ *
+ * Assembled where the message and the agent are both in scope, so a renderer only
+ * states WHICH review. Absent when the host cannot record a decision: an agent that
+ * is not running, a subagent's transcript, an isolated preview.
+ */
+export interface ReviewActions {
+  /**
+   * Record the reader's approval of one denied review, so the agent may retry the
+   * action once. Resolves when the worker recorded the approval.
+   */
+  approveDenied: (reviewId: string) => Promise<void>
+}
+
 /** The live output of a call that has not returned, read by the row drawing its tail. */
 export interface ToolProgressSource {
   liveTail: () => ToolProgressEntry | undefined
@@ -148,6 +163,30 @@ export interface PlanRenderContext extends ToolLayoutContext {
 /** The capability union that the exhaustive row renderer dispatches. */
 export interface RowRenderContext extends ToolResultRenderContext {
   expandUiKey?: MessageUiKey
+  reviews?: ReviewActions | undefined
+}
+
+/**
+ * Assemble {@link ReviewActions} from the host's approval handler and the row's
+ * message id. THE one assembly, for the reason {@link subagentsFrom} gives.
+ *
+ * Both members are read at call time, so the one object stays valid while the host
+ * gains or loses its handler. The host decides when to offer the object at all; a
+ * call after the handler left fails instead of doing nothing, so the button that
+ * made it shows the failure.
+ */
+export function reviewActionsFrom(host: {
+  messageId: () => string
+  approveAutoReviewDenial: () => ((messageId: string, reviewId: string) => Promise<void>) | undefined
+}): ReviewActions {
+  return {
+    approveDenied: async (reviewId) => {
+      const approve = host.approveAutoReviewDenial()
+      if (approve === undefined)
+        throw new Error('This agent cannot record the approval now.')
+      await approve(host.messageId(), reviewId)
+    },
+  }
 }
 
 /**

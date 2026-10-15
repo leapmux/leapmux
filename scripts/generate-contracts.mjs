@@ -2131,42 +2131,75 @@ export function bufDescriptor(root) {
 }
 
 // ---------------------------------------------------------------------------
-// codex bypass settings
+// codex permission presets
 // ---------------------------------------------------------------------------
 
-export function checkCodexBypass(c) {
-  const ids = c.settings.map(setting => setting.id)
-  mustBe(new Set(ids).size === ids.length, 'codex-bypass.json', 'two settings share one option id')
-  mustBe(ids.includes('permissionMode'), 'codex-bypass.json', 'permissionMode is required')
-  mustBe(ids.some(id => id !== 'permissionMode'), 'codex-bypass.json', 'at least one additional option is required')
+// The preset kinds, in the order that the browser draws them: narrower access first.
+// The browser's PERMISSION_PRESET_SPECS states the same two kinds.
+const CODEX_PERMISSION_PRESET_KINDS = ['smart', 'bypass']
+
+// The option id that identifies a preset. A plan approval carries only this axis, so
+// the worker finds the complete preset through it.
+const CODEX_PERMISSION_MODE_ID = 'permissionMode'
+
+export function checkCodexPermissionPresets(c) {
+  const file = 'codex-permission-presets.json'
+  const kinds = Object.keys(c.presets ?? {})
+  const exact = kinds.length === CODEX_PERMISSION_PRESET_KINDS.length && CODEX_PERMISSION_PRESET_KINDS.every(kind => kinds.includes(kind))
+  mustBe(exact, file, `presets must hold exactly ${CODEX_PERMISSION_PRESET_KINDS.join(' and ')}`)
+  const modes = new Map()
+  for (const kind of CODEX_PERMISSION_PRESET_KINDS) {
+    const ids = c.presets[kind].map(setting => setting.id)
+    mustBe(new Set(ids).size === ids.length, file, `the ${kind} preset sets one option id twice`)
+    mustBe(ids.includes(CODEX_PERMISSION_MODE_ID), file, `the ${kind} preset must set ${CODEX_PERMISSION_MODE_ID}`)
+    mustBe(ids.some(id => id !== CODEX_PERMISSION_MODE_ID), file, `the ${kind} preset must set at least one option other than ${CODEX_PERMISSION_MODE_ID}`)
+    const mode = c.presets[kind].find(setting => setting.id === CODEX_PERMISSION_MODE_ID).value
+    mustBe(!modes.has(mode), file, `the ${kind} and ${modes.get(mode)} presets set the same ${CODEX_PERMISSION_MODE_ID} ${JSON.stringify(mode)}, so a plan approval cannot identify either one`)
+    modes.set(mode, kind)
+  }
 }
 
-export function emitGoCodexBypass(c) {
-  const indent = '\t'
-  const rows = c.settings
-    .map(setting => `\t${jsonString(setting.id)}: ${jsonString(setting.value)},`)
-    .join('\n')
-  return `${GO_HEADER('codex-bypass.json')}package contracts
-
-// CodexBypassOptions returns the complete preset that disables permission prompts.
-func CodexBypassOptions() map[string]string {
-${indent}return map[string]string{
-${rows}
-${indent}}
-}
-`
+/** The Go identifier part of a preset kind: `smart` becomes `Smart`. */
+function codexPresetGoName(kind) {
+  return kind[0].toUpperCase() + kind.slice(1)
 }
 
-export function emitTsCodexBypass(c) {
-  const rows = c.settings
-    .map(setting => `    ${jsonString(setting.id)}: ${jsonString(setting.value)},`)
-    .join('\n')
-  return `${TS_HEADER('codex-bypass.json')}
-// The complete Codex settings change that disables permission prompts.
-export const CODEX_BYPASS_SETTINGS = {
-  sets: {
-${rows}
-  },
+export function emitGoCodexPermissionPresets(c) {
+  const presetMap = (kind, indent) => [
+    `${indent}${jsonString(kind)}: {`,
+    ...c.presets[kind].map(setting => `${indent}\t${jsonString(setting.id)}: ${jsonString(setting.value)},`),
+    `${indent}},`,
+  ].join('\n')
+  const accessors = CODEX_PERMISSION_PRESET_KINDS.map(kind => `// Codex${codexPresetGoName(kind)}Options returns a new copy of the ${kind} preset.
+func Codex${codexPresetGoName(kind)}Options() map[string]string {
+\treturn CodexPermissionPresets()[${jsonString(kind)}]
+}
+`).join('\n')
+  return `${GO_HEADER('codex-permission-presets.json')}package contracts
+
+// CodexPermissionPresets returns a new copy of every Codex permission preset, keyed by
+// its kind. Each preset is the complete settings change that selects it.
+func CodexPermissionPresets() map[string]map[string]string {
+\treturn map[string]map[string]string{
+${CODEX_PERMISSION_PRESET_KINDS.map(kind => presetMap(kind, '\t\t')).join('\n')}
+\t}
+}
+
+${accessors}`
+}
+
+export function emitTsCodexPermissionPresets(c) {
+  const preset = kind => [
+    `  ${kind}: {`,
+    '    sets: {',
+    ...c.presets[kind].map(setting => `      ${jsonString(setting.id)}: ${jsonString(setting.value)},`),
+    '    },',
+    '  },',
+  ].join('\n')
+  return `${TS_HEADER('codex-permission-presets.json')}
+// The complete Codex settings change that selects each permission preset.
+export const CODEX_PERMISSION_PRESETS = {
+${CODEX_PERMISSION_PRESET_KINDS.map(preset).join('\n')}
 } as const
 `
 }
@@ -2425,6 +2458,10 @@ export const PROVIDER_PROTOCOLS = [
       { key: 'methods', frameKind: 'name', goTable: 'Method', tsTable: 'METHOD', tsType: 'CodexMethod', doc: 'JSON-RPC method names both sides dispatch on' },
       { key: 'options', goTable: 'Option', tsTable: 'OPTION', tsType: 'CodexOption', owner: 'LeapMux chose these', doc: 'option-group ids for the Codex axes both sides address' },
       { key: 'optionDefaults', goTable: 'OptionDefault', tsTable: 'OPTION_DEFAULT', tsType: 'CodexOptionDefault', defaultsFor: 'options', doc: 'the value each of those axes takes when the agent row stores none' },
+      // Not a `frameKind` table: these words are payload values, not dispatch keys, and
+      // the neutral auto-review model in layers 2 and 3 spells its own outcome words.
+      { key: 'autoReviewStatus', goTable: 'AutoReviewStatus', tsTable: 'AUTO_REVIEW_STATUS', tsType: 'CodexAutoReviewStatus', doc: '`review.status` values of an auto-review notification' },
+      { key: 'autoReviewActions', goTable: 'AutoReviewAction', tsTable: 'AUTO_REVIEW_ACTION', tsType: 'CodexAutoReviewAction', doc: '`action.type` values of an auto-review notification' },
       // `goSlice`, because the ORDER crosses the boundary: the worker starts the first
       // name that the shell finds, and the E2E suite must ask about the same names in
       // the same order, or it runs the specs against a CLI that the worker never starts.
@@ -4084,12 +4121,12 @@ const DOMAINS = [
     },
   },
   {
-    name: 'codex-bypass',
+    name: 'codex-permission-presets',
     emit(out, read) {
-      const c = read('codex-bypass')
-      checkCodexBypass(c)
-      out['backend/generated/contracts/codex-bypass.go'] = emitGoCodexBypass(c)
-      out['frontend/src/generated/contracts/codex-bypass.ts'] = emitTsCodexBypass(c)
+      const c = read('codex-permission-presets')
+      checkCodexPermissionPresets(c)
+      out['backend/generated/contracts/codex-permission-presets.go'] = emitGoCodexPermissionPresets(c)
+      out['frontend/src/generated/contracts/codex-permission-presets.ts'] = emitTsCodexPermissionPresets(c)
     },
   },
   {

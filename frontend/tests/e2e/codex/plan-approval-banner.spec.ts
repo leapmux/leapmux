@@ -2,7 +2,7 @@ import type { Page } from '@playwright/test'
 import { expect } from '@playwright/test'
 import { isResizeObserverLoopError } from '~/lib/ignorableErrorEvents'
 import { codexTest } from '../codex-fixtures'
-import { answerControl, chooseSettingsOption, controlButton, enterControlFeedback, expectSettingsChip, sendMessage, visibleOnly, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
+import { answerControl, chooseSettingsOption, controlButton, enterControlFeedback, expectSettingsChip, expectSettingsOptionChosen, sendMessage, visibleOnly, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
 
 const PLAN_BODY = 'This is a dummy plan for testing the coding agent plan mode UI. Never execute this plan.'
 
@@ -62,6 +62,12 @@ codexTest.describe('Codex Plan Mode Prompt', () => {
     await expect(controlButton(page, 'allow')).toHaveText('Approve')
     await expect(control('plan-clear-context-checkbox')).toBeVisible()
     await expect(control('control-permissions-pill-group')).toBeVisible()
+    // Codex offers both presets, and a plan approval opens on Smart, which upstream Codex calls Approve for me.
+    const pills = visibleOnly(page.getByRole('radiogroup', { name: 'Permissions' }))
+    await expect(pills.getByRole('radio')).toHaveCount(3)
+    await expect(pills.getByRole('radio', { name: 'Unchanged' })).toHaveAttribute('aria-checked', 'false')
+    await expect(pills.getByRole('radio', { name: 'Smart' })).toHaveAttribute('aria-checked', 'true')
+    await expect(pills.getByRole('radio', { name: 'Bypass' })).toHaveAttribute('aria-checked', 'false')
 
     await enterControlFeedback(page, REVISE_PLAN_PROMPT)
     await expect(controlButton(page, 'deny')).toHaveText('Send feedback')
@@ -91,6 +97,9 @@ codexTest.describe('Codex Plan Mode Prompt', () => {
     // which says nothing about whether this approval cleared.
     await expect(revisedBanner.getByText('Plan Ready for Review')).not.toBeVisible()
     await expectSettingsChip(page, 'Default')
+    // The approval applied the complete Smart preset, not only its approval policy.
+    await expectSettingsOptionChosen(page, 'permissionMode-auto-review')
+    await expectSettingsOptionChosen(page, 'permission_profile-:workspace')
     await expect(visibleOnly(page.getByText('Context cleared'))).toBeVisible()
     await expect(visibleOnly(page.getByText('Execute plan'))).toBeVisible()
     // Every uncaught page error, not one known message. A narrow regex passes

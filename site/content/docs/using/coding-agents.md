@@ -265,9 +265,11 @@ A picker shows radio items for up to 7 options and switches to a searchable list
 
 Providers can add two adjacent permission shortcuts. **Smart permissions** selects the provider's safety-assisted mode. **Bypass permissions** disables permission prompts. Smart permissions is always directly above Bypass permissions. A shortcut appears only when the session offers every setting and value that the preset needs.
 
-Each safety-assisted mode approves the calls it judges safe and asks about the others.
+Each safety-assisted mode approves the calls that it judges safe. The provider's mode decides what happens to the other calls: it asks you, or it denies the call.
 
-**Bypass** is a deliberate choice that stays set: it stops the agent from asking for approval. Use it only when you trust the working directory and the task.
+For Codex, **Smart permissions** selects Codex's auto-review, which Codex itself calls **Approve for me**. A reviewer agent decides each approval request in place of you, and the transcript shows each decision with the reviewer's reason. A row for a denied action has an **Approve** button. The button records your approval, so the agent can retry that exact action once. The button does not run the action. The row keeps the approval, also after a reload. Codex accepts this approval only in the main agent, so a subagent's denied row shows no button.
+
+**Bypass** is a deliberate choice that stays set: it stops the agent from asking for approval. Use it only when you trust the working directory and the task. For Codex, Bypass also approves the requests of work that started before the switch. A turn that is running keeps the approval policy that it started with, so Codex still sends those requests. The transcript states how many waiting requests Bypass approved.
 
 ### Reasoning effort and the "Auto" default
 

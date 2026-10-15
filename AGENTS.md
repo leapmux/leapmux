@@ -218,7 +218,7 @@ Add a file only when the provider owns that role.
 | `agent.go` | The concrete agent type, state, and core runtime methods. |
 | `start.go` | `Start` and startup setup. Include `var _ agent.StartFunc = Start`. |
 | `registration.go` | `Registration`, the locator, and static provider metadata. |
-| `catalog.go` | Model catalog data and conversion when they need a separate file. |
+| `catalog.go` | Model and option catalog data, discovery and conversion when they need a separate file. |
 | `settings.go` | Live option methods, settings snapshots, and any shared axis table. |
 | `control.go` | Control requests and replies. |
 | `output.go` | Conversation output handlers and live output state. |

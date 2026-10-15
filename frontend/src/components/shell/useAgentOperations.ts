@@ -373,6 +373,24 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     }
   }
 
+  /**
+   * Record the reader's approval of one action that the agent's automatic reviewer
+   * denied, so the agent may retry it once.
+   *
+   * A refusal reports through a toast and still reaches the caller, so the control that
+   * asked can re-enable itself. A repeated approval of one review succeeds, because the
+   * worker records each review's approval once.
+   */
+  const handleApproveAutoReviewDenial = async (agentId: string, messageId: string, reviewId: string): Promise<void> => {
+    try {
+      await workerRpc.approveAutoReviewDenial(getAgentWorkerId(agentId), { agentId, messageId, reviewId })
+    }
+    catch (err) {
+      showWarnToast('Failed to approve the action', err)
+      throw err
+    }
+  }
+
   const settingVersions = new Map<string, Map<string, number>>()
   const pendingSettingRequests = new Map<string, number>()
 
@@ -425,13 +443,15 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
   }
 
   /**
-   * Single entry point for any settings panel change. The settings model is now
-   * uniform: every change is a map of option-group id -> value (one axis for a plain
-   * option pick, several for an action button like Codex "Bypass permissions"). We
-   * optimistically write every axis into the tab's one generic `optionValues` map
-   * (model/effort/permissionMode and every provider extra alike, keyed by group id) and
-   * send one updateAgentSettings RPC carrying `{ options: sets }`. The worker owns
-   * live application, restart fallback, and settlement for the complete change.
+   * The single entry point for each settings change.
+   *
+   * Every change is a map of option-group id -> value. A plain option pick sets one
+   * axis, and an action button such as Codex "Bypass permissions" sets several. The
+   * handler writes every axis optimistically into the tab's one generic `optionValues`
+   * map, keyed by group id, for the well-known axes and the provider extras alike.
+   * Then it sends one updateAgentSettings RPC that carries `{ options: sets }`. The
+   * worker owns the live application, the restart fallback, and the settlement of the
+   * complete change.
    */
   const handleAgentSettingChange = async (agentId: string, change: ProviderSettingChange) => {
     const { sets } = change
@@ -639,6 +659,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     handleInterrupt,
     updateGoal,
     handleGoalAction,
+    handleApproveAutoReviewDenial,
     handleAgentSettingChange,
     handleAgentClose,
     retireAgentTabLocally,

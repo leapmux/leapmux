@@ -417,7 +417,7 @@ describe('deriveOptionGroupTabFields', () => {
       group('model', 'sonnet'),
       group('effort', 'high'),
       group('permissionMode', 'plan'),
-      group('sandbox_policy', 'workspace-write'), // a non-well-known provider extra
+      group('permission_profile', ':workspace'), // a non-well-known provider extra
     ]
     const fields = deriveOptionGroupTabFields(groups)
     // The well-known axes AND the provider extra all land in the one generic map,
@@ -426,7 +426,7 @@ describe('deriveOptionGroupTabFields', () => {
       model: 'sonnet',
       effort: 'high',
       permissionMode: 'plan',
-      sandbox_policy: 'workspace-write',
+      permission_profile: ':workspace',
     })
     expect(fields.optionGroups).toBe(groups)
   })

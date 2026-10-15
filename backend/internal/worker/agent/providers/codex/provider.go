@@ -130,26 +130,32 @@ func (codexProvider) PlanModeControl(toolName string) agent.PlanModeControlKind 
 }
 
 // PlanModePermissionMode answers for Codex's one plan-mode kind, the prompt. An approval
-// that selects no mode returns to Codex's own default approval policy; `acceptEdits` and
-// `plan` are Claude words that Codex's `--ask-for-approval` rejects.
+// that selects no mode returns to Codex's own default permission mode; `acceptEdits` and
+// `plan` are Claude words that Codex does not accept.
 func (codexProvider) PlanModePermissionMode(kind agent.PlanModeControlKind) string {
 	if kind == agent.PlanModeControlPrompt {
-		return DefaultApprovalPolicy
+		return DefaultPermissionMode
 	}
 	return ""
 }
 
-// PlanApprovalOptions exits plan mode and applies the requested permission choice.
-// Only the bypass preset's permission mode enables its network and sandbox settings.
+// PlanApprovalOptions exits plan mode and applies the requested permission choice. A
+// plan approval carries only the permission mode, so a mode that a permission preset
+// owns selects that complete preset: Approve for Me also selects the workspace
+// profile, and Never Ask also selects full access. Any other mode changes only the
+// permission mode. contracts/codex-permission-presets.json gives each preset its own
+// mode, so the lookup is unambiguous.
 func (codexProvider) PlanApprovalOptions(permissionMode string) map[string]string {
 	options := map[string]string{contracts.CodexOptionCollaborationMode: CollaborationDefault}
 	if permissionMode == "" {
 		return options
 	}
 	options[agent.OptionIDPermissionMode] = permissionMode
-	bypass := contracts.CodexBypassOptions()
-	if permissionMode == bypass[agent.OptionIDPermissionMode] {
-		for key, value := range bypass {
+	for _, preset := range contracts.CodexPermissionPresets() {
+		if preset[agent.OptionIDPermissionMode] != permissionMode {
+			continue
+		}
+		for key, value := range preset {
 			options[key] = value
 		}
 	}

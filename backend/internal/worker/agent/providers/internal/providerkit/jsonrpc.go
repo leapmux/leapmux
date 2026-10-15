@@ -59,7 +59,7 @@ func (b *JSONRPCProcess) writeJSONRPCMessage(data []byte) error {
 // ErrDeliveryUncertain leaves it removed because the provider can already hold the answer.
 // Restoring it in that case can send a second answer to a retired request.
 func (b *JSONRPCProcess) SendRawInput(data []byte, stop agent.StopContext) error {
-	restore := b.takeOutstandingControl(data)
+	restore, _ := b.takeOutstandingControl(data)
 	err := b.writeRawFrame(data)
 	if err != nil && !errors.Is(err, agent.ErrDeliveryUncertain) {
 		restore()
@@ -231,8 +231,10 @@ func (b *JSONRPCProcess) SendErrorResponse(id json.RawMessage, code int, message
 	})
 }
 
-// jsonrpcErrMethodNotFound identifies a JSON-RPC method with no receiver handler.
-const jsonrpcErrMethodNotFound = -32601
+// JSONRPCErrMethodNotFound identifies a JSON-RPC method with no receiver handler.
+// A provider also reads it in a reply, to tell a method that an older agent lacks
+// from a refusal of the request.
+const JSONRPCErrMethodNotFound = -32601
 
 // RefuseUnsupportedRequest replies with -32601 for an unsupported inbound request.
 // A notification has no ID and requires no reply.
@@ -250,7 +252,7 @@ func (b *JSONRPCProcess) RefuseUnsupportedRequest(line *ParsedLine) {
 	if line.Method == "" || !line.HasID() {
 		return
 	}
-	b.SendErrorResponseDetached(line.ID, jsonrpcErrMethodNotFound,
+	b.SendErrorResponseDetached(line.ID, JSONRPCErrMethodNotFound,
 		"Method not supported: "+line.Method, "refuse "+line.Method)
 }
 

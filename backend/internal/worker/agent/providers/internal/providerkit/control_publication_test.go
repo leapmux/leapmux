@@ -2,6 +2,7 @@ package providerkit
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -227,3 +228,105 @@ type failingStdin struct{ err error }
 func (s failingStdin) Write([]byte) (int, error) { return 0, s.err }
 
 func (failingStdin) Close() error { return nil }
+
+// approvalProcess returns a process whose stdin a test reads, with one request that
+// carries an approval answer and one that carries none.
+func approvalProcess(t *testing.T) (*JSONRPCProcess, *agenttest.ControlSink, *agenttest.Stdin) {
+	t.Helper()
+	output := &agenttest.Stdin{}
+	sink := &agenttest.ControlSink{}
+	base := &JSONRPCProcess{Process: Process{agentID: "agent", stdin: agenttest.NopStdin(output)}}
+	require.Equal(t, "jsonrpc:1", base.PublishControlRequestWithApproval(sink, []byte(`{"jsonrpc":"2.0","id":1,"method":"approve-me"}`), nil, map[string]any{"decision": "accept"}))
+	require.Equal(t, "jsonrpc:2", base.PublishControlRequestWithApproval(sink, []byte(`{"jsonrpc":"2.0","id":2,"method":"ask-me"}`), map[string]any{"action": "cancel"}, nil))
+	return base, sink, output
+}
+
+func TestPublishControlRequestWithApprovalRegistersAndPublishes(t *testing.T) {
+	t.Parallel()
+	base, sink, _ := approvalProcess(t)
+	assert.Len(t, sink.PublishedControls(), 2)
+	assert.True(t, base.OutstandingControlForTest("jsonrpc:1"))
+	assert.True(t, base.OutstandingControlForTest("jsonrpc:2"))
+
+	failing := &agenttest.ControlSink{PublicationError: errors.New("storage unavailable")}
+	assert.Empty(t, base.PublishControlRequestWithApproval(failing, []byte(`{"jsonrpc":"2.0","id":3,"method":"approve-me"}`), nil, map[string]any{}),
+		"a failed publication registers nothing")
+	assert.Empty(t, base.PublishControlRequestWithApproval(sink, []byte(`{"jsonrpc":"2.0","method":"no-id"}`), nil, map[string]any{}))
+}
+
+func TestApproveOutstandingControlRequestsAnswersOnlyTheApprovable(t *testing.T) {
+	t.Parallel()
+	base, sink, output := approvalProcess(t)
+
+	assert.Equal(t, 1, base.ApproveOutstandingControlRequests(sink))
+
+	require.Eventually(t, func() bool { return output.String() != "" }, 2*time.Second, 5*time.Millisecond)
+	assert.JSONEq(t, `{"jsonrpc":"2.0","id":1,"result":{"decision":"accept"}}`, output.String())
+	assert.Equal(t, []string{"jsonrpc:1"}, sink.CanceledControls())
+	assert.False(t, base.OutstandingControlForTest("jsonrpc:1"))
+	assert.True(t, base.OutstandingControlForTest("jsonrpc:2"), "a request without an approval answer still waits")
+	assert.Zero(t, base.ApproveOutstandingControlRequests(sink), "a second sweep finds nothing")
+}
+
+func TestApproveOutstandingControlRequestAnswersOneRequest(t *testing.T) {
+	t.Parallel()
+	base, sink, output := approvalProcess(t)
+
+	assert.False(t, base.ApproveOutstandingControlRequest(sink, "jsonrpc:2"), "it carries no approval answer")
+	assert.False(t, base.ApproveOutstandingControlRequest(sink, "jsonrpc:9"), "it is not open")
+	assert.True(t, base.ApproveOutstandingControlRequest(sink, "jsonrpc:1"))
+	assert.False(t, base.ApproveOutstandingControlRequest(sink, "jsonrpc:1"), "it is answered once")
+
+	require.Eventually(t, func() bool { return output.String() != "" }, 2*time.Second, 5*time.Millisecond)
+	assert.JSONEq(t, `{"jsonrpc":"2.0","id":1,"result":{"decision":"accept"}}`, output.String())
+	assert.Equal(t, []string{"jsonrpc:1"}, sink.CanceledControls())
+}
+
+// An approval counts as a withdrawal for a publication that ran concurrently: the
+// publication then retires the card that it stored after the approval took its record.
+func TestApproveOutstandingControlRequestCountsAsAWithdrawal(t *testing.T) {
+	t.Parallel()
+	output := &agenttest.Stdin{}
+	sink := &approvingControlSink{ControlSink: &agenttest.ControlSink{}}
+	base := &JSONRPCProcess{Process: Process{agentID: "agent", stdin: agenttest.NopStdin(output)}}
+	sink.onPublish = func() { base.ApproveOutstandingControlRequests(sink) }
+
+	base.PublishControlRequestWithApproval(sink, []byte(`{"jsonrpc":"2.0","id":1,"method":"approve-me"}`), nil, map[string]any{"decision": "accept"})
+
+	assert.Equal(t, []string{"jsonrpc:1", "jsonrpc:1"}, sink.CanceledControls(),
+		"the approval cancels before the card exists, so the publication retires the stored card")
+	assert.False(t, base.OutstandingControlForTest("jsonrpc:1"))
+}
+
+type approvingControlSink struct {
+	*agenttest.ControlSink
+	onPublish func()
+}
+
+func (s *approvingControlSink) PublishControlRequest(request agent.ControlRequest) error {
+	if s.onPublish != nil {
+		s.onPublish()
+	}
+	return s.ControlSink.PublishControlRequest(request)
+}
+
+func TestSendRawInputToOutstandingRequestRefusesAClosedRequest(t *testing.T) {
+	t.Parallel()
+	base, _, output := approvalProcess(t)
+
+	require.NoError(t, base.SendRawInputToOutstandingRequest([]byte(`{"jsonrpc":"2.0","id":2,"result":{"action":"accept"}}`), agent.StopContext{}))
+	assert.False(t, base.OutstandingControlForTest("jsonrpc:2"))
+
+	err := base.SendRawInputToOutstandingRequest([]byte(`{"jsonrpc":"2.0","id":2,"result":{"action":"accept"}}`), agent.StopContext{})
+	require.ErrorIs(t, err, ErrControlRequestNotPending)
+	err = base.SendRawInputToOutstandingRequest([]byte(`{"jsonrpc":"2.0","id":2,"error":{"code":1,"message":"x"}}`), agent.StopContext{})
+	require.ErrorIs(t, err, ErrControlRequestNotPending, "an error response is an answer too")
+	assert.Equal(t, 1, strings.Count(output.String(), `"id":2`))
+
+	// A request, a notification and a frame that is not JSON pass to SendRawInput.
+	require.NoError(t, base.SendRawInputToOutstandingRequest([]byte(`{"jsonrpc":"2.0","id":5,"method":"turn/interrupt"}`), agent.StopContext{}))
+	require.NoError(t, base.SendRawInputToOutstandingRequest([]byte(`{"jsonrpc":"2.0","method":"initialized"}`), agent.StopContext{}))
+	require.NoError(t, base.SendRawInputToOutstandingRequest([]byte(`{"jsonrpc":"2.0","id":null,"result":{}}`), agent.StopContext{}))
+	assert.Contains(t, output.String(), `"method":"turn/interrupt"`)
+	assert.Contains(t, output.String(), `"method":"initialized"`)
+}

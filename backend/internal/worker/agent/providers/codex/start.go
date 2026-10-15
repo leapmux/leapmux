@@ -57,12 +57,19 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	}
 	stdout, stderrPipe := pipes.Stdout(), pipes.Stderr()
 
+	// Every setting that the reader reads is set here, before the reader starts. The
+	// reader reads the permission settings to decide a standing approval, so a write
+	// after `go ReadOutputLoop` would race it.
 	a := &Agent{
-		JSONRPCProcess: providerkit.JSONRPCProcess{Process: providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "codex", ShutdownGrace: registration.ShutdownGrace, PreambleDelimiter: preambleDelimiter, PreambleMetaPrefix: metaPrefix}, pipes, ctx, cancel)},
-		model:          opts.Model(),
-		effort:         opts.Effort(),
-		workingDir:     opts.WorkingDir,
-		sink:           sink,
+		JSONRPCProcess:    providerkit.JSONRPCProcess{Process: providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "codex", ShutdownGrace: registration.ShutdownGrace, PreambleDelimiter: preambleDelimiter, PreambleMetaPrefix: metaPrefix}, pipes, ctx, cancel)},
+		model:             opts.Model(),
+		effort:            opts.Effort(),
+		workingDir:        opts.WorkingDir,
+		sink:              sink,
+		permissionMode:    cmp.Or(opts.PermissionMode(), DefaultPermissionMode),
+		permissionProfile: cmp.Or(opts.Options[contracts.CodexOptionPermissionProfile], contracts.CodexOptionDefaultPermissionProfile),
+		collaborationMode: cmp.Or(opts.Options[contracts.CodexOptionCollaborationMode], contracts.CodexOptionDefaultCollaborationMode),
+		serviceTier:       cmp.Or(opts.Options[contracts.CodexOptionServiceTier], contracts.CodexOptionDefaultServiceTier),
 	}
 	a.sink = agent.NewModelProgressResetSink(a.sink)
 
@@ -107,16 +114,12 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		return nil, a.FormatStartupError("initialized notification", err)
 	}
 
-	// 3. Use the permission mode directly as the Codex approval policy.
-	// The DB stores provider-native values (e.g. "never", "on-request", "untrusted" for Codex).
-	a.approvalPolicy = cmp.Or(opts.PermissionMode(), DefaultApprovalPolicy)
-	a.sandboxPolicy = cmp.Or(opts.Options[contracts.CodexOptionSandboxPolicy], contracts.CodexOptionDefaultSandboxPolicy)
-	a.networkAccess = cmp.Or(opts.Options[contracts.CodexOptionNetworkAccess], contracts.CodexOptionDefaultNetworkAccess)
-	a.collaborationMode = cmp.Or(opts.Options[contracts.CodexOptionCollaborationMode], contracts.CodexOptionDefaultCollaborationMode)
-	a.serviceTier = cmp.Or(opts.Options[contracts.CodexOptionServiceTier], contracts.CodexOptionDefaultServiceTier)
+	// 3. Learn which permission profiles and modes Codex allows, and settle the stored
+	// values against them before thread/start sends them.
+	permissions := a.discoverPermissions(opts.WorkingDir, timeout)
 
 	// 4. Send "thread/start" or "thread/resume" request.
-	threadParams := codexThreadParams(opts.Model(), opts.WorkingDir, a.approvalPolicy, a.sandboxPolicy, a.serviceTier)
+	threadParams := codexThreadParams(opts.Model(), opts.WorkingDir, permissions, a.serviceTier)
 
 	// The method is the label that FormatStartupError prefixes the failure with.
 	// startOrResumeThread makes the same choice from the same field, so the two
@@ -156,6 +159,9 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	// and reads threadID through isMainThreadID on every routed notification.
 	a.Mu.Lock()
 	a.applyThreadResult(thread)
+	// The response states the settings that the thread holds, so Codex acknowledged
+	// them.
+	a.permissionsAcknowledged = true
 	a.threadID = thread.ID
 	a.Mu.Unlock()
 	a.resumingThread.Store(false)

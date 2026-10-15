@@ -1062,6 +1062,8 @@ func registerAgentHandlers(d registrar, svc *Service) {
 			sendProtoResponse(sender, &leapmuxv1.UpdateAgentGoalResponse{})
 		})
 
+	registerAutoReviewApprovalHandler(d, svc)
+
 	// WatchWorkerPrivateEvents streams this worker's private tab events
 	// (TabRenamed, TabPayloadRegistered, TabPayloadRevoked, QuakePanelCommand)
 	// over the existing E2EE channel. The bootstrap-replay sends one
@@ -2640,7 +2642,7 @@ func optionGroupChangeEntry(oldID, newID string, valueLabel func(string) string,
 //
 // An axis is valid when it is one of the provider's KNOWN ids (the static allowlist: model, the
 // secondary permission-mode/primary-agent axis, effort where the provider has one, and the
-// provider's declared options -- Codex's sandbox/network/..., Pi's pi_provider, the ACP server
+// provider's declared options -- Codex's permission_profile/..., Pi's pi_provider, the ACP server
 // config options) OR is present in `catalog` (a server-driven config option the running agent has
 // actually surfaced, accepted even before it is added to the static allowlist). The two together
 // make the catalog the authoritative key set; the frontend only ever sends catalog-exposed groups,
@@ -2816,7 +2818,7 @@ func (svc *Service) applySettingsLive(dbAgent db.Agent, newOptions OptionMap) (O
 	// Persist EVERY axis the provider confirmed, not just model/effort: the optimistic
 	// write stored the REQUESTED values, so a clamp the provider applied to any axis (a
 	// re-spelled model, an effort downgrade, an ACP reasoning_effort the server lowered, a
-	// Codex sandbox/service_tier it adjusted) would otherwise be lost from the DB row --
+	// Codex permission setting it refused) would otherwise be lost from the DB row --
 	// and the AgentInfo broadcast built from it -- even though the running agent applied it.
 	// Diff against newOptions (what the optimistic write left on the row), NOT oldOptions, so
 	// the delta also DELETES an axis the reconcile dropped that this very edit added -- a base
@@ -4061,9 +4063,9 @@ type applyOptionsSpec struct {
 // applyOptionChanges diffs `wanted` (id->new value) against the agent's stored options,
 // persists the changed axes, optionally pushes them to a running agent, broadcasts the
 // refreshed catalog, and emits a settings_changed notification. It returns dbAgent with
-// its Options updated (unchanged on a no-op or a DB error). Shared by the permission-mode,
-// collaboration-mode, and Codex-bypass setters so their persist/broadcast/notify sequence
-// can't drift.
+// its Options updated (unchanged on a no-op or a DB error). Its one caller is
+// setAgentPermissionModeWithAgent. A new option setter reuses it, so the persist,
+// broadcast and notify sequence cannot drift between setters.
 func (svc *Service) applyOptionChanges(dbAgent db.Agent, wanted OptionMap, spec applyOptionsSpec) db.Agent {
 	agentID := dbAgent.ID
 	opts := loadOptions(svc.Agents.Registry(), dbAgent.Options, dbAgent.AgentProvider)
@@ -4083,9 +4085,8 @@ func (svc *Service) applyOptionChanges(dbAgent db.Agent, wanted OptionMap, spec 
 	}
 
 	// For a live change, push to the running agent and read back the values it confirmed (a
-	// provider may clamp/normalize an axis -- e.g. Codex re-reads model/effort/approval/sandbox
-	// via config/read; collaboration_mode and network_access are per-turn params, not config
-	// keys, so config/read never echoes them and they keep the pushed value), overlaying them so
+	// provider may clamp/normalize an axis -- e.g. Codex refuses a permission setting that its
+	// requirements forbid and confirms the prior value), overlaying them so
 	// the row we persist, the catalog we broadcast, AND the chat notification all reflect the
 	// CONFIRMED values rather than the optimistic request. The push + readback stay under the
 	// lifecycle lock so a concurrent UpdateAgentSettings for the same agent can't interleave and

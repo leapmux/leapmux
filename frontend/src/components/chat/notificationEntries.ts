@@ -1,4 +1,4 @@
-import type { CompactionDetails, NotificationEntry, SettingChange } from './model/notification'
+import type { AutoReviewEntry, AutoReviewOutcome, CompactionDetails, NotificationEntry, SettingChange } from './model/notification'
 import type { GoalTransitionToken } from '~/generated/contracts/worker-vocab'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
@@ -27,6 +27,12 @@ export type NotificationBlock
   = | { kind: 'text', text: string }
     | { kind: 'subagent-report', label?: string, text: string, status?: string }
     | { kind: 'divider', text: string, loading?: boolean }
+    /**
+     * One automatic review. `title` states the outcome and the action, and
+     * `approvable` lets the renderer offer the reader's approval of a denial.
+     * `approved` states that the reader already approved one retry.
+     */
+    | { kind: 'auto-review', reviewId: string, outcome: AutoReviewOutcome, title: string, rationale?: string, approvable: boolean, approved: boolean }
 
 // Shared notification labels keep each message's wording in one place.
 const CONTEXT_CLEARED_LABEL = 'Context cleared'
@@ -39,6 +45,19 @@ const INTERRUPT_IGNORED_LABEL = 'Interrupt ignored — press Interrupt again to 
 const INPUT_REQUEUED_LABEL = 'Message queued again — the agent dropped it before the model read it'
 const UNKNOWN_ERROR_LABEL = 'Unknown error'
 export const COMPACTING_LABEL = 'Compacting context...'
+// The reader's approval of a denied auto-review. The button states the action, and the
+// row states the result after the worker records it.
+export const AUTO_REVIEW_APPROVE_LABEL = 'Approve'
+export const AUTO_REVIEW_APPROVED_LABEL = 'Approved for one retry'
+export const AUTO_REVIEW_APPROVE_TOOLTIP = 'Record your approval so the agent can retry this action once. It does not run the action.'
+const AUTO_REVIEW_APPROVED_NOTICE = 'You approved one retry of an action that auto-review denied.'
+const AUTO_REVIEW_TITLES: Record<AutoReviewOutcome, string> = {
+  'approved': 'Auto-review approved',
+  'denied': 'Auto-review denied',
+  'timed-out': 'Auto-review timed out',
+  'aborted': 'Auto-review stopped',
+  'unknown': 'Auto-review finished',
+}
 // Claude Code reports no microcompaction metadata.
 // Keep its label separate from the full compaction label.
 const MICROCOMPACT_LABEL = 'Context microcompacted'
@@ -132,6 +151,12 @@ export function leapmuxNotificationEntry(
       const objective = pickString(m, NOTIFICATION_FIELD.Objective)
       return [{ kind: 'text', text: objective ? `Goal cleared: ${objective}` : 'Goal cleared' }]
     }
+    case NOTIFICATION_TYPE.AutoReviewApproved:
+      return [{ kind: 'text', text: AUTO_REVIEW_APPROVED_NOTICE }]
+    case NOTIFICATION_TYPE.PendingRequestsApproved: {
+      const count = m[NOTIFICATION_FIELD.Count]
+      return [{ kind: 'text', text: pendingRequestsApprovedLabel(typeof count === 'number' ? count : 0) }]
+    }
     // The provider reader handles this message type.
     default:
       return null
@@ -139,6 +164,28 @@ export function leapmuxNotificationEntry(
 }
 
 // Worker notification labels.
+
+/**
+ * State why the pending permission cards left: the switch to Bypass approved them.
+ * A count the worker did not state reads as a plural without a number.
+ */
+export function pendingRequestsApprovedLabel(count: number): string {
+  if (!Number.isInteger(count) || count < 1)
+    return 'Bypass permissions approved the pending requests.'
+  return `Bypass permissions approved ${count} pending ${count === 1 ? 'request' : 'requests'}.`
+}
+
+/**
+ * The headline of one automatic review: its outcome, the risk of a denial that the
+ * reviewer judged high, and the action.
+ */
+export function autoReviewTitle(entry: AutoReviewEntry): string {
+  let label = AUTO_REVIEW_TITLES[entry.outcome]
+  if (entry.outcome === 'denied' && (entry.risk === 'high' || entry.risk === 'critical'))
+    label = `${label} (${entry.risk} risk)`
+  const action = entry.action.trim()
+  return action ? `${label}: ${action}` : label
+}
 
 function displayLabel(provider: AgentProvider | undefined, key: string): string {
   // Use the provider's cached group label before the canonical English label.
@@ -366,6 +413,16 @@ function blocksForEntry(entry: Exclude<NotificationEntry, { kind: 'group' }>): N
       return [{ kind: 'text', text: CONTEXT_CLEARED_LABEL }]
     case 'status':
       return entry.text ? [{ kind: 'text', text: entry.text }] : []
+    case 'auto-review':
+      return [{
+        kind: 'auto-review',
+        reviewId: entry.reviewId,
+        outcome: entry.outcome,
+        title: autoReviewTitle(entry),
+        ...(entry.rationale ? { rationale: entry.rationale } : {}),
+        approvable: entry.approvable,
+        approved: entry.approved === true,
+      }]
   }
 }
 

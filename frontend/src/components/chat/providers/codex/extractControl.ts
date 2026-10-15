@@ -1,4 +1,5 @@
 import type { ControlExtractionInput, ExtractedControlRequest } from '../registry'
+import { CODEX_METHOD } from '~/generated/contracts/codex-protocol'
 import { pickString } from '~/lib/jsonPick'
 import { getToolName } from '~/utils/controlResponse'
 import { codexRequestedPermissions, getCodexParams } from './controlResponse'
@@ -18,11 +19,11 @@ export function isCodexPlanModePrompt(payload: Record<string, unknown>): boolean
  * permissions rather than one operation, and the set itself is the content.
  */
 const CODEX_APPROVAL_TITLES: Record<string, string> = {
-  'item/commandExecution/requestApproval': 'Command Execution',
-  'item/fileChange/requestApproval': 'File Change',
+  [CODEX_METHOD.CommandExecutionRequestApproval]: 'Command Execution',
+  [CODEX_METHOD.FileChangeRequestApproval]: 'File Change',
 }
 
-const CODEX_PERMISSIONS_APPROVAL = 'item/permissions/requestApproval'
+const CODEX_PERMISSIONS_APPROVAL = CODEX_METHOD.PermissionsRequestApproval
 
 /** `Provider.extractControl` for Codex. */
 export function codexExtractControl(input: ControlExtractionInput): ExtractedControlRequest | null {

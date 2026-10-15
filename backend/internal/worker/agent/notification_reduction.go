@@ -78,6 +78,57 @@ func (supplement *ParsedMessageSupplement) NotificationJournal() []NotificationE
 	return slices.Clone(supplement.entries)
 }
 
+// MetadataMember returns one Worker metadata member of the stored supplement, or nil
+// when the supplement states none.
+func (supplement *ParsedMessageSupplement) MetadataMember(key string) json.RawMessage {
+	if supplement == nil {
+		return nil
+	}
+	return slices.Clone(supplement.metadata[key])
+}
+
+// WithMetadataMember returns the stored supplement with one public Worker metadata
+// member replaced, or removed for a nil value. It keeps the provider data, the private
+// journal and reduction, and every other member. The two private members have writers
+// of their own, which validate their schemas, so this method refuses them.
+func (supplement *ParsedMessageSupplement) WithMetadataMember(key string, value json.RawMessage) ([]byte, error) {
+	if supplement == nil {
+		return nil, errors.New("the stored supplement has no parsed result")
+	}
+	if key == NotificationJournalField || key == NotificationReductionField {
+		return nil, fmt.Errorf("the Worker metadata member %q is private", key)
+	}
+	if value != nil && !json.Valid(value) {
+		return nil, fmt.Errorf("the Worker metadata member %q must be valid JSON", key)
+	}
+	return supplement.withMetadataMember(key, value)
+}
+
+// withMetadataMember replaces one metadata member without a check of its key. Every
+// other field of the envelope stays as it is.
+func (supplement *ParsedMessageSupplement) withMetadataMember(key string, value json.RawMessage) ([]byte, error) {
+	fields := maps.Clone(supplement.fields)
+	metadata := maps.Clone(supplement.metadata)
+	if value == nil {
+		delete(metadata, key)
+	} else {
+		metadata[key] = slices.Clone(value)
+	}
+	if len(metadata) == 0 {
+		delete(fields, contracts.MessageSupplementFieldMetadata)
+	} else {
+		encoded, err := json.Marshal(metadata)
+		if err != nil {
+			return nil, err
+		}
+		fields[contracts.MessageSupplementFieldMetadata] = encoded
+	}
+	if len(fields) == 0 {
+		return nil, nil
+	}
+	return json.Marshal(fields)
+}
+
 // MessageContent clones each source without parsing the envelope again.
 func (supplement *ParsedMessageSupplement) MessageContent(original []byte) MessageContent {
 	content := MessageContent{Original: slices.Clone(original)}
@@ -329,25 +380,10 @@ func WithNotificationReduction(supplement []byte, state NotificationReductionSta
 	if err != nil {
 		return nil, err
 	}
-	fields := maps.Clone(parsed.fields)
-	metadata := maps.Clone(parsed.metadata)
 	if len(state.ProviderSlots) == 0 && len(state.CancelledSettings) == 0 {
-		delete(metadata, NotificationReductionField)
-	} else {
-		metadata[NotificationReductionField] = encoded
+		return parsed.withMetadataMember(NotificationReductionField, nil)
 	}
-	if len(metadata) == 0 {
-		delete(fields, contracts.MessageSupplementFieldMetadata)
-	} else {
-		fields[contracts.MessageSupplementFieldMetadata], err = json.Marshal(metadata)
-		if err != nil {
-			return nil, err
-		}
-	}
-	if len(fields) == 0 {
-		return nil, nil
-	}
-	return json.Marshal(fields)
+	return parsed.withMetadataMember(NotificationReductionField, encoded)
 }
 
 // ProjectMessageSupplement removes only the two Worker storage fields.

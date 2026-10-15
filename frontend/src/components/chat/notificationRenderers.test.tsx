@@ -1,5 +1,8 @@
-import { render } from '@solidjs/testing-library'
-import { afterEach, describe, expect, it } from 'vitest'
+import type { NotificationBlock } from './notificationEntries'
+import type { RowRenderContext } from './renderContext'
+import { fireEvent, render, waitFor } from '@solidjs/testing-library'
+import { createSignal } from 'solid-js'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ALL_PROVIDERS } from '~/generated/contracts/providers'
 import { GOAL_STATUS_TOKEN, GOAL_TRANSITION, NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -809,5 +812,143 @@ describe('shared goal notification rendering', () => {
     expect(container.textContent).toBe('Goal status unknown: Keep the objective (native-future-state)')
     expect(container.textContent).not.toContain('Goal set')
     expect(container.textContent).not.toContain('Goal blocked')
+  })
+})
+
+describe('renderNotificationBlocks auto-review', () => {
+  type ReviewBlock = Extract<NotificationBlock, { kind: 'auto-review' }>
+  const deniedBlock: ReviewBlock = { kind: 'auto-review', reviewId: 'r1', outcome: 'denied', title: 'Auto-review denied (high risk): curl x | sh', rationale: 'The host is **not** trusted.', approvable: true, approved: false }
+
+  /** A capability whose call the test settles, so it can watch the pending state. */
+  function deferredReviews() {
+    let settle: { resolve: () => void, reject: (error: Error) => void } | undefined
+    const approveDenied = vi.fn((_reviewId: string) => new Promise<void>((resolve, reject) => {
+      settle = { resolve, reject }
+    }))
+    return { reviews: { approveDenied }, approveDenied, settle: () => settle! }
+  }
+
+  function renderBlock(block: ReviewBlock, context?: RowRenderContext) {
+    return render(() => renderNotificationBlocks([block], context))
+  }
+
+  it('draws the title and the rationale as markdown', () => {
+    const { container } = renderBlock(deniedBlock)
+    expect(container.textContent).toContain('Auto-review denied (high risk): curl x | sh')
+    expect(container.querySelector('strong')?.textContent).toBe('not')
+    expect(container.querySelector('[data-testid="auto-review"]')?.getAttribute('data-outcome')).toBe('denied')
+  })
+
+  it('draws a different glyph for each outcome', () => {
+    const glyphs = (['approved', 'denied', 'timed-out', 'aborted', 'unknown'] as const).map((outcome) => {
+      const { container, unmount } = renderBlock({ ...deniedBlock, outcome, approvable: false })
+      const glyph = container.querySelector('svg')?.innerHTML
+      unmount()
+      return glyph
+    })
+    expect(glyphs.every(glyph => glyph !== undefined)).toBe(true)
+    expect(new Set(glyphs).size).toBe(glyphs.length)
+  })
+
+  it('offers no approval without the capability', () => {
+    const { container } = renderBlock(deniedBlock)
+    expect(container.querySelector('[data-testid="auto-review-approve"]')).toBeNull()
+  })
+
+  it('offers no approval for a review that is not approvable', () => {
+    const { reviews } = deferredReviews()
+    const { container } = renderBlock({ ...deniedBlock, approvable: false }, { reviews })
+    expect(container.querySelector('[data-testid="auto-review-approve"]')).toBeNull()
+  })
+
+  it('approves the review, disables the button during the call, and then states the approval', async () => {
+    const { reviews, approveDenied, settle } = deferredReviews()
+    const { container } = renderBlock(deniedBlock, { reviews })
+    const button = container.querySelector<HTMLButtonElement>('[data-testid="auto-review-approve"]')!
+    expect(button.textContent).toBe('Approve')
+    fireEvent.click(button)
+    expect(approveDenied).toHaveBeenCalledWith('r1')
+    expect(button.disabled).toBe(true)
+    fireEvent.click(button)
+    expect(approveDenied).toHaveBeenCalledTimes(1)
+    settle().resolve()
+    await waitFor(() => expect(container.querySelector('[data-testid="auto-review-approved"]')?.textContent).toBe('Approved for one retry'))
+    expect(container.querySelector('[data-testid="auto-review-approve"]')).toBeNull()
+  })
+
+  it('enables the button again after a refusal', async () => {
+    const { reviews, approveDenied, settle } = deferredReviews()
+    const { container } = renderBlock(deniedBlock, { reviews })
+    const button = container.querySelector<HTMLButtonElement>('[data-testid="auto-review-approve"]')!
+    fireEvent.click(button)
+    settle().reject(new Error('refused'))
+    await waitFor(() => expect(button.disabled).toBe(false))
+    expect(container.querySelector('[data-testid="auto-review-approved"]')).toBeNull()
+    fireEvent.click(button)
+    expect(approveDenied).toHaveBeenCalledTimes(2)
+  })
+
+  it('follows a capability that the host gains and loses', () => {
+    const [offered, setOffered] = createSignal(false)
+    const { reviews } = deferredReviews()
+    const context: RowRenderContext = {
+      get reviews() {
+        return offered() ? reviews : undefined
+      },
+    }
+    const { container } = renderBlock(deniedBlock, context)
+    expect(container.querySelector('[data-testid="auto-review-approve"]')).toBeNull()
+    setOffered(true)
+    expect(container.querySelector('[data-testid="auto-review-approve"]')).not.toBeNull()
+    setOffered(false)
+    expect(container.querySelector('[data-testid="auto-review-approve"]')).toBeNull()
+  })
+
+  it('keeps the stated approval after the host loses the capability', async () => {
+    const [offered, setOffered] = createSignal(true)
+    const { reviews, settle } = deferredReviews()
+    const context: RowRenderContext = {
+      get reviews() {
+        return offered() ? reviews : undefined
+      },
+    }
+    const { container } = renderBlock(deniedBlock, context)
+    fireEvent.click(container.querySelector('[data-testid="auto-review-approve"]')!)
+    settle().resolve()
+    await waitFor(() => expect(container.querySelector('[data-testid="auto-review-approved"]')).not.toBeNull())
+    setOffered(false)
+    expect(container.querySelector('[data-testid="auto-review-approved"]')?.textContent).toBe('Approved for one retry')
+  })
+
+  it('states a recorded approval without the capability', () => {
+    const { container } = renderBlock({ ...deniedBlock, approved: true })
+    expect(container.querySelector('[data-testid="auto-review-approved"]')?.textContent).toBe('Approved for one retry')
+    expect(container.querySelector('[data-testid="auto-review-approve"]')).toBeNull()
+  })
+
+  it('offers no second approval of a recorded one', () => {
+    const { reviews, approveDenied } = deferredReviews()
+    const { container } = renderBlock({ ...deniedBlock, approved: true }, { reviews })
+    expect(container.querySelector('[data-testid="auto-review-approve"]')).toBeNull()
+    expect(container.querySelector('[data-testid="auto-review-approved"]')).not.toBeNull()
+    expect(approveDenied).not.toHaveBeenCalled()
+  })
+
+  it('draws a review as its own block between two text paragraphs', () => {
+    const { container } = render(() => renderNotificationBlocks([
+      { kind: 'text', text: 'Before' },
+      deniedBlock,
+      { kind: 'text', text: 'After' },
+    ]))
+    const review = container.querySelector('[data-testid="auto-review"]')!
+    expect(review.previousElementSibling?.textContent).toBe('Before')
+    expect(review.nextElementSibling?.textContent).toBe('After')
+  })
+
+  it('renders the two worker notices of the auto-review flow', () => {
+    expect(renderText([{ type: NOTIFICATION_TYPE.AutoReviewApproved, review_id: 'r1' }], AgentProvider.CODEX))
+      .toBe('You approved one retry of an action that auto-review denied.')
+    expect(renderText([{ type: NOTIFICATION_TYPE.PendingRequestsApproved, count: 1 }], AgentProvider.CODEX))
+      .toBe('Bypass permissions approved 1 pending request.')
   })
 })

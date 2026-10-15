@@ -16,7 +16,7 @@ import { describe, expect, it } from 'bun:test'
 import {
   bufDescriptor,
   checkChatHistory,
-  checkCodexBypass,
+  checkCodexPermissionPresets,
   checkDesktop,
   checkExternalApps,
   checkHeaders,
@@ -41,7 +41,7 @@ import {
   DESKTOP_RS_MACOS_ONLY_EVENTS,
   DESKTOP_TS_BEHAVIOR_NAMES,
   emitGoChatHistory,
-  emitGoCodexBypass,
+  emitGoCodexPermissionPresets,
   emitGoDesktop,
   emitGoExternalApps,
   emitGoHeaders,
@@ -55,6 +55,7 @@ import {
   emitGoWorkerVocab,
   emitRsDesktop,
   emitTsChatHistory,
+  emitTsCodexPermissionPresets,
   emitTsDesktop,
   emitTsExternalApps,
   emitTsHeaders,
@@ -785,37 +786,68 @@ describe('_unread exemptions', () => {
   })
 })
 
-describe('checkCodexBypass', () => {
+describe('checkCodexPermissionPresets', () => {
   const valid = () => ({
-    settings: [
-      { id: 'permissionMode', value: 'never' },
-      { id: 'network_access', value: 'enabled' },
-    ],
+    presets: {
+      smart: [
+        { id: 'permissionMode', value: 'auto-review' },
+        { id: 'permission_profile', value: ':workspace' },
+      ],
+      bypass: [
+        { id: 'permissionMode', value: 'never' },
+        { id: 'permission_profile', value: ':danger-full-access' },
+      ],
+    },
   })
 
-  it('accepts one permission mode and at least one additional option', () => {
-    expect(checkCodexBypass(valid())).toBeUndefined()
+  it('accepts two presets that each set a distinct permission mode and another option', () => {
+    expect(checkCodexPermissionPresets(valid())).toBeUndefined()
   })
 
-  it('includes the permission mode in the worker approval options', () => {
-    expect(emitGoCodexBypass(valid())).toContain('"permissionMode": "never"')
+  it('requires exactly the smart and bypass presets', () => {
+    const missing = valid()
+    delete missing.presets.smart
+    expectContractError(() => checkCodexPermissionPresets(missing), 'presets must hold exactly smart and bypass')
+    const extra = valid()
+    extra.presets.other = [{ id: 'permissionMode', value: 'untrusted' }, { id: 'permission_profile', value: ':read-only' }]
+    expectContractError(() => checkCodexPermissionPresets(extra), 'presets must hold exactly smart and bypass')
   })
 
-  it('rejects duplicate option ids', () => {
+  it('rejects a preset that sets one option id twice', () => {
     const contract = valid()
-    contract.settings.push({ id: 'network_access', value: 'restricted' })
-    expectContractError(() => checkCodexBypass(contract), 'two settings share one option id')
+    contract.presets.bypass.push({ id: 'permission_profile', value: ':workspace' })
+    expectContractError(() => checkCodexPermissionPresets(contract), 'the bypass preset sets one option id twice')
   })
 
-  it('requires the permission mode and an additional option', () => {
-    expectContractError(
-      () => checkCodexBypass({ settings: [{ id: 'other', value: 'x' }] }),
-      'permissionMode is required',
-    )
-    expectContractError(
-      () => checkCodexBypass({ settings: [{ id: 'permissionMode', value: 'never' }] }),
-      'at least one additional option is required',
-    )
+  it('requires the permission mode and one other option in each preset', () => {
+    const noMode = valid()
+    noMode.presets.smart = [{ id: 'permission_profile', value: ':workspace' }, { id: 'other', value: 'x' }]
+    expectContractError(() => checkCodexPermissionPresets(noMode), 'the smart preset must set permissionMode')
+    const modeOnly = valid()
+    modeOnly.presets.bypass = [{ id: 'permissionMode', value: 'never' }]
+    expectContractError(() => checkCodexPermissionPresets(modeOnly), 'the bypass preset must set at least one option other than permissionMode')
+  })
+
+  it('rejects two presets with the same permission mode, which a plan approval cannot tell apart', () => {
+    const contract = valid()
+    contract.presets.smart[0].value = 'never'
+    expectContractError(() => checkCodexPermissionPresets(contract), 'set the same permissionMode "never"')
+  })
+
+  it('emits a Go accessor for every preset that returns the complete settings', () => {
+    const go = emitGoCodexPermissionPresets(valid())
+    expect(go).toContain('func CodexPermissionPresets() map[string]map[string]string {')
+    expect(go).toContain('func CodexSmartOptions() map[string]string {')
+    expect(go).toContain('func CodexBypassOptions() map[string]string {')
+    expect(go).toContain('"permissionMode": "auto-review",')
+    expect(go).toContain('"permission_profile": ":danger-full-access",')
+  })
+
+  it('emits the TypeScript presets as settings changes', () => {
+    const ts = emitTsCodexPermissionPresets(valid())
+    expect(ts).toContain('export const CODEX_PERMISSION_PRESETS = {')
+    expect(ts).toContain('  smart: {\n    sets: {\n      "permissionMode": "auto-review",\n      "permission_profile": ":workspace",\n    },\n  },')
+    expect(ts).toContain('  bypass: {\n    sets: {\n      "permissionMode": "never",\n      "permission_profile": ":danger-full-access",\n    },\n  },')
   })
 })
 
@@ -981,7 +1013,7 @@ describe('generate', () => {
       'backend/generated/contracts/cline-protocol.go',
       'backend/generated/contracts/codebuddy-protocol.go',
       'backend/generated/contracts/codewhale-protocol.go',
-      'backend/generated/contracts/codex-bypass.go',
+      'backend/generated/contracts/codex-permission-presets.go',
       'backend/generated/contracts/codex-protocol.go',
       'backend/generated/contracts/commandcode-protocol.go',
       'backend/generated/contracts/copilot-protocol.go',
@@ -1033,7 +1065,7 @@ describe('generate', () => {
       'frontend/src/generated/contracts/cline-protocol.ts',
       'frontend/src/generated/contracts/codebuddy-protocol.ts',
       'frontend/src/generated/contracts/codewhale-protocol.ts',
-      'frontend/src/generated/contracts/codex-bypass.ts',
+      'frontend/src/generated/contracts/codex-permission-presets.ts',
       'frontend/src/generated/contracts/codex-protocol.ts',
       'frontend/src/generated/contracts/commandcode-protocol.ts',
       'frontend/src/generated/contracts/copilot-protocol.ts',

@@ -125,22 +125,35 @@ func handleCodexOutput(a *Agent, line *providerkit.ParsedLine) {
 	case contracts.CodexMethodHookCompleted:
 		a.handleHookCompleted(line.Raw, line.Params)
 
-	case codexMethodThreadSettingsUpdated:
+	case contracts.CodexMethodThreadSettingsUpdated:
 		a.handleThreadSettingsUpdated(line.Params)
 
 	// Server requests (approval requests) — the server sends these as JSON-RPC
 	// requests with an "id" field, but we detect them here by method name when
-	// they arrive as notifications in the output stream.
+	// they arrive as notifications in the output stream. publishApprovalRequest
+	// answers a permission request itself while the bypass preset applies.
 	case contracts.MCPElicitationMethodCodex:
-		a.PublishControlRequest(a.sink, line.Raw, providerkit.MCPElicitationCancelAnswer())
+		a.publishApprovalRequest(line, providerkit.MCPElicitationCancelAnswer())
 
-	case "item/commandExecution/requestApproval",
-		"item/fileChange/requestApproval",
-		"item/permissions/requestApproval",
-		"item/tool/requestUserInput":
+	case contracts.CodexMethodCommandExecutionRequestApproval,
+		contracts.CodexMethodFileChangeRequestApproval,
+		contracts.CodexMethodPermissionsRequestApproval,
+		contracts.CodexMethodToolRequestUserInput:
 		// Codex retires its own approval requests through serverRequest/resolved, and it
 		// defines no outcome for one the client withdraws, so LeapMux sends no answer.
-		a.PublishControlRequest(a.sink, line.Raw, nil)
+		a.publishApprovalRequest(line, nil)
+
+	case contracts.CodexMethodAutoApprovalReviewStarted:
+		// The completed review carries the outcome, and a command review also starts
+		// an in-progress commandExecution item, which already shows the command. A
+		// started frame on its own would stay in the transcript as a review that never
+		// ends.
+
+	case contracts.CodexMethodAutoApprovalReviewCompleted, contracts.CodexMethodStrictReviewRequired:
+		a.persistCodexAutoReviewFrame(line.Raw, line.Params)
+
+	case contracts.CodexMethodGuardianWarning:
+		a.handleGuardianWarning(line.Raw, line.Params)
 
 	case "serverRequest/resolved":
 		a.handleServerRequestResolved(line.Params)
@@ -779,7 +792,37 @@ func (a *Agent) handleHookCompleted(content []byte, params json.RawMessage) {
 	if json.Unmarshal(params, &notification) == nil && notification.Run.Status == "completed" {
 		return
 	}
-	a.persistCodexThreadFailure(notification.ThreadID, codexPendingHookCompleted, content, params)
+	a.persistCodexThreadNotification(notification.ThreadID, codexPendingHookCompleted, content, params)
+}
+
+// codexAutoReviewDenialLimitPrefix opens the one guardianWarning that the transcript
+// keeps. Codex emits a guardianWarning for EVERY finished review, which repeats what
+// the completed review states, and once more when it interrupts a turn after too many
+// denials (ext/guardian-reviewer/src/reporting.rs, record_denial). Only that second
+// warning explains why the turn stopped. The warning has no kind field, so its text
+// identifies it, as the Codex TUI and the ChatGPT app also identify it.
+const codexAutoReviewDenialLimitPrefix = "Automatic approval review rejected too many approval requests for this turn"
+
+// handleGuardianWarning keeps the denial-limit warning and drops the copy that each
+// finished review emits.
+func (a *Agent) handleGuardianWarning(content []byte, params json.RawMessage) {
+	var warning struct {
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(params, &warning) != nil || !strings.HasPrefix(warning.Message, codexAutoReviewDenialLimitPrefix) {
+		return
+	}
+	a.persistCodexAutoReviewFrame(content, params)
+}
+
+// persistCodexAutoReviewFrame keeps one auto-review frame in the transcript of the
+// thread that it belongs to.
+func (a *Agent) persistCodexAutoReviewFrame(content []byte, params json.RawMessage) {
+	var frame struct {
+		ThreadID string `json:"threadId"`
+	}
+	_ = json.Unmarshal(params, &frame)
+	a.persistCodexThreadNotification(frame.ThreadID, codexPendingAutoReview, content, params)
 }
 
 // handleMcpOauthLoginCompleted keeps only failures and unknown future outcomes.
@@ -791,7 +834,7 @@ func (a *Agent) handleMcpOauthLoginCompleted(content []byte, params json.RawMess
 	if json.Unmarshal(params, &notification) == nil && notification.Success != nil && *notification.Success {
 		return
 	}
-	a.persistCodexThreadFailure(notification.ThreadID, codexPendingMcpOauthCompleted, content, params)
+	a.persistCodexThreadNotification(notification.ThreadID, codexPendingMcpOauthCompleted, content, params)
 }
 
 // handleMcpStartupStatusUpdated keeps only failures and unknown future states.
@@ -804,12 +847,16 @@ func (a *Agent) handleMcpStartupStatusUpdated(content []byte, params json.RawMes
 		ThreadID string `json:"threadId"`
 	}
 	_ = json.Unmarshal(params, &notification)
-	a.persistCodexThreadFailure(notification.ThreadID, codexPendingMcpStartupUpdated, content, params)
+	a.persistCodexThreadNotification(notification.ThreadID, codexPendingMcpStartupUpdated, content, params)
 }
 
-func (a *Agent) persistCodexThreadFailure(threadID string, kind codexPendingChildEventKind, content, params json.RawMessage) {
+// persistCodexThreadNotification persists one notification frame verbatim in the
+// transcript of the thread that sent it: the main transcript, or the child
+// transcript of a subagent. A child whose route is not ready yet holds the frame
+// until the route exists.
+func (a *Agent) persistCodexThreadNotification(threadID string, kind codexPendingChildEventKind, content, params json.RawMessage) {
 	if a.isMainThreadID(threadID) {
-		a.persistCodexFailureForSink(a.sink, a.AgentID(), kind, content)
+		a.persistCodexNotificationForSink(a.sink, a.AgentID(), kind, content)
 		return
 	}
 	route, routed := a.ensureCodexChildRoute(threadID)
@@ -820,12 +867,12 @@ func (a *Agent) persistCodexThreadFailure(threadID string, kind codexPendingChil
 		return
 	}
 	a.replayPendingCodexChildEvents(threadID, route)
-	a.persistCodexFailureForSink(route.childSink, route.agentID, kind, content)
+	a.persistCodexNotificationForSink(route.childSink, route.agentID, kind, content)
 }
 
-func (a *Agent) persistCodexFailureForSink(sink agent.ProviderServices, agentID string, kind codexPendingChildEventKind, content json.RawMessage) {
+func (a *Agent) persistCodexNotificationForSink(sink agent.ProviderServices, agentID string, kind codexPendingChildEventKind, content json.RawMessage) {
 	if _, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: content}); err != nil {
-		slog.Error("codex persist failure notification", "agent_id", agentID, "kind", kind, "error", err)
+		slog.Error("codex persist thread notification", "agent_id", agentID, "kind", kind, "error", err)
 	}
 }
 

@@ -52,7 +52,8 @@
         "ControlRequestClaimToken",
         "PlanApprovalSettings",
         "ToolOutcome",
-        "TodoSnapshot"
+        "TodoSnapshot",
+        "AutoReviewApprovals"
       ],
       "properties": {
         "DurationMs": {
@@ -80,6 +81,10 @@
           "pattern": "^[a-z][a-z0-9_]*$"
         },
         "TodoSnapshot": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "AutoReviewApprovals": {
           "type": "string",
           "pattern": "^[a-z][a-z0-9_]*$"
         }

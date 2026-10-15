@@ -78,9 +78,69 @@ export type NotificationEntry
     | { kind: 'context-cleared' }
     /** A transient progress notice: Goose's `status_message`, Reasonix's phase changes. */
     | { kind: 'status', text: string }
+    | AutoReviewEntry
 
 /** Which end of a context rewrite one compaction row states. */
 export type CompactionPhase = 'start' | 'end'
+
+/** How an automatic review of one permission request ended. */
+export type AutoReviewOutcome = 'approved' | 'denied' | 'timed-out' | 'aborted' | 'unknown'
+
+/** The risk that an automatic reviewer assigned to an action. */
+export type AutoReviewRisk = 'low' | 'medium' | 'high' | 'critical'
+
+/** How directly the conversation authorizes the reviewed action, in the reviewer's view. */
+export type AutoReviewAuthorization = 'unknown' | 'low' | 'medium' | 'high'
+
+/**
+ * An automatic reviewer decided a permission request that would otherwise ask the
+ * reader.
+ *
+ * `action` is a one-line summary of what the agent asked to do. `approvable` states
+ * that the reader can approve one retry of a denied action. The provider decides it,
+ * because only the provider knows whether its agent accepts that approval.
+ *
+ * `approved` states that the reader already approved one retry. LeapMux records that
+ * approval on the row that holds the review, so only {@link withApprovedReviews} sets
+ * it, from the row's own metadata. A provider never sets it.
+ */
+export interface AutoReviewEntry {
+  kind: 'auto-review'
+  reviewId: string
+  outcome: AutoReviewOutcome
+  risk?: AutoReviewRisk
+  authorization?: AutoReviewAuthorization
+  rationale?: string
+  action: string
+  approvable: boolean
+  approved?: boolean
+}
+
+/**
+ * Mark each review whose retry the reader approved.
+ *
+ * The approvals come from the metadata of the row that holds the reviews, so the row
+ * states them after a reload, whatever part of the transcript is loaded. The entries
+ * come back unchanged when no approval matches one of them.
+ */
+export function withApprovedReviews(entries: NotificationEntry[], approvedReviewIds: ReadonlySet<string>): NotificationEntry[] {
+  if (approvedReviewIds.size === 0)
+    return entries
+  return entries.map(entry => entry.kind === 'auto-review' && approvedReviewIds.has(entry.reviewId)
+    ? { ...entry, approved: true }
+    : entry)
+}
+
+/**
+ * Read the review ids of the `auto_review_approvals` metadata member: an array of
+ * strings. Any other shape records no approval, because a wrong record must not hide
+ * the control that a reader still needs.
+ */
+export function approvedReviewIdsOf(value: unknown): ReadonlySet<string> {
+  if (!Array.isArray(value))
+    return new Set()
+  return new Set(value.filter((id): id is string => typeof id === 'string' && id !== ''))
+}
 
 /** Every entry one notification row draws, in order. */
 export interface NotificationThread {

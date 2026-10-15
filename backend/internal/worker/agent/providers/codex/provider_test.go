@@ -2,6 +2,7 @@ package codex
 
 import (
 	"encoding/json"
+	"slices"
 	"testing"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -15,20 +16,58 @@ import (
 func TestPlanApprovalOptions_PerProvider(t *testing.T) {
 	t.Parallel()
 	provider := Registration().Plugin
-	for _, mode := range []string{"", "on-request", "untrusted", "never"} {
-		expected := map[string]string{contracts.CodexOptionCollaborationMode: CollaborationDefault}
-		if mode != "" {
-			expected[agent.OptionIDPermissionMode] = mode
-		}
-		if mode == "never" {
-			expected[contracts.CodexOptionNetworkAccess] = NetworkEnabled
-			expected[contracts.CodexOptionSandboxPolicy] = SandboxDangerFullAccess
-		}
-		assert.Equal(t, expected, provider.PlanApprovalOptions(mode), "permission mode %q", mode)
+	// A mode that a permission preset owns selects that complete preset; every other
+	// mode changes the permission mode alone.
+	for _, test := range []struct {
+		mode     string
+		expected map[string]string
+	}{
+		{mode: "", expected: map[string]string{}},
+		{mode: ModeAskForApproval, expected: map[string]string{agent.OptionIDPermissionMode: ModeAskForApproval}},
+		{mode: ModeUnlessTrusted, expected: map[string]string{agent.OptionIDPermissionMode: ModeUnlessTrusted}},
+		{mode: ModeApproveForMe, expected: map[string]string{
+			agent.OptionIDPermissionMode:           ModeApproveForMe,
+			contracts.CodexOptionPermissionProfile: ProfileWorkspace,
+		}},
+		{mode: ModeNever, expected: map[string]string{
+			agent.OptionIDPermissionMode:           ModeNever,
+			contracts.CodexOptionPermissionProfile: ProfileDangerFullAccess,
+		}},
+	} {
+		test.expected[contracts.CodexOptionCollaborationMode] = CollaborationDefault
+		assert.Equal(t, test.expected, provider.PlanApprovalOptions(test.mode), "permission mode %q", test.mode)
 	}
-	changed := provider.PlanApprovalOptions("never")
+	changed := provider.PlanApprovalOptions(ModeNever)
 	changed[agent.OptionIDPermissionMode] = "changed"
-	assert.Equal(t, "never", provider.PlanApprovalOptions("never")[agent.OptionIDPermissionMode])
+	assert.Equal(t, ModeNever, provider.PlanApprovalOptions(ModeNever)[agent.OptionIDPermissionMode],
+		"each call returns a new map")
+}
+
+// TestCodexPermissionPresetsUseOfferedValues holds each value of each permission
+// preset to the static option groups, so a preset can never select a value that the
+// picker does not offer.
+func TestCodexPermissionPresetsUseOfferedValues(t *testing.T) {
+	t.Parallel()
+	for kind, preset := range contracts.CodexPermissionPresets() {
+		for id, value := range preset {
+			group := findStaticGroup(t, id)
+			assert.Truef(t, slices.ContainsFunc(group.GetOptions(), func(o *leapmuxv1.AvailableOption) bool { return o.GetId() == value }),
+				"the %s preset sets %s=%q, which the static group does not offer", kind, id, value)
+		}
+	}
+	assert.Equal(t, ModeApproveForMe, contracts.CodexSmartOptions()[agent.OptionIDPermissionMode])
+	assert.Equal(t, ModeNever, contracts.CodexBypassOptions()[agent.OptionIDPermissionMode])
+}
+
+func findStaticGroup(t *testing.T, id string) *leapmuxv1.AvailableOptionGroup {
+	t.Helper()
+	for _, group := range codexStaticOptionGroups {
+		if group.GetId() == id {
+			return group
+		}
+	}
+	t.Fatalf("no static Codex option group %q", id)
+	return nil
 }
 
 // TestSyntheticInterruptNotice pins the provider-delegated decision the raw-message

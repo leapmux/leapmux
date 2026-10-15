@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -746,6 +747,32 @@ type Agent interface {
 type ContextCompactor interface {
 	CompactContext() error
 }
+
+// AutoReviewDenialApprover records the user's approval of one action that the
+// provider's automatic reviewer denied, so the agent may retry that action once.
+// Providers without an automatic reviewer do not implement this interface.
+//
+// entries are the raw entries of the transcript row that holds the denied review,
+// in order. The service reads that row from its own store and unwraps a
+// consolidated notification thread, so the provider receives no browser content.
+// reviewID selects the review among the entries. The provider owns the wire shape
+// of the entries, so it alone finds the review in them.
+type AutoReviewDenialApprover interface {
+	ApproveAutoReviewDenial(entries []json.RawMessage, reviewID string) error
+}
+
+var (
+	// ErrAutoReviewApprovalUnsupported reports a provider that has no automatic
+	// reviewer whose denial the user can approve.
+	ErrAutoReviewApprovalUnsupported = errors.New("agent provider does not support approving an automatic review denial")
+	// ErrAutoReviewNotFound reports a review ID that the row does not hold.
+	ErrAutoReviewNotFound = errors.New("the transcript row holds no such automatic review")
+	// ErrAutoReviewNotDenied reports a review that the reviewer did not deny.
+	ErrAutoReviewNotDenied = errors.New("the automatic reviewer did not deny this action")
+	// ErrAutoReviewThreadRetired reports a review from a provider thread that the
+	// agent no longer runs, for example one that a context clear replaced.
+	ErrAutoReviewThreadRetired = errors.New("the automatic review belongs to a thread that the agent no longer runs")
+)
 
 // NativeTurnRestarter reports a launch-only change made by a native tool.
 // The Worker replaces the process with the same session before it sends queued input.

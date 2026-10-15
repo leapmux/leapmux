@@ -1,6 +1,6 @@
-import type { CompactionDetails, CompactionPhase, NotificationEntry } from '../../../model/notification'
+import type { AutoReviewAuthorization, AutoReviewOutcome, AutoReviewRisk, CompactionDetails, CompactionPhase, NotificationEntry } from '../../../model/notification'
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import { CODEX_ITEM, CODEX_METHOD } from '~/generated/contracts/codex-protocol'
+import { CODEX_AUTO_REVIEW_ACTION, CODEX_AUTO_REVIEW_STATUS, CODEX_ITEM, CODEX_METHOD } from '~/generated/contracts/codex-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { getInnerMessage } from '~/lib/messageParser'
 import { compactionMetaFromBoundary } from '../../../model/notification'
@@ -123,6 +123,8 @@ export function codexCompactionBoundary(parsed: ParsedMessageContent): Compactio
   return compactionMetaFromBoundary(inner)
 }
 
+const STRICT_REVIEW_NOTICE = 'This request needs extra safety checks, which can take more time.'
+
 /**
  * Read one Codex notification frame into the shared notification model.
  *
@@ -173,5 +175,103 @@ export function codexNotificationEntry(msg: Record<string, unknown>): Notificati
     return text ? [{ kind: 'status', text: `Warning: ${text}` }] : []
   }
 
+  if (msg.method === CODEX_METHOD.AutoApprovalReviewCompleted) {
+    const review = codexAutoReviewEntry(pickObject(msg, 'params'))
+    return review ? [review] : []
+  }
+  // The worker keeps only the warning that states why auto-review stopped a turn,
+  // so its own words carry the reason.
+  if (msg.method === CODEX_METHOD.GuardianWarning) {
+    const text = pickString(pickObject(msg, 'params'), 'message').trim()
+    return text ? [{ kind: 'status', text }] : []
+  }
+  if (msg.method === CODEX_METHOD.StrictReviewRequired)
+    return [{ kind: 'status', text: STRICT_REVIEW_NOTICE }]
+
   return []
+}
+
+// A map, not an object literal: the status is a wire word, and a word that spells an
+// `Object.prototype` member would read an inherited function from an object.
+const AUTO_REVIEW_OUTCOMES: ReadonlyMap<string, AutoReviewOutcome> = new Map([
+  [CODEX_AUTO_REVIEW_STATUS.Approved, 'approved'],
+  [CODEX_AUTO_REVIEW_STATUS.Denied, 'denied'],
+  [CODEX_AUTO_REVIEW_STATUS.TimedOut, 'timed-out'],
+  [CODEX_AUTO_REVIEW_STATUS.Aborted, 'aborted'],
+])
+
+const AUTO_REVIEW_RISKS: readonly AutoReviewRisk[] = ['low', 'medium', 'high', 'critical']
+const AUTO_REVIEW_AUTHORIZATIONS: readonly AutoReviewAuthorization[] = ['unknown', 'low', 'medium', 'high']
+
+/** The member of values that equals value, or undefined for a word the model does not know. */
+function oneOf<T extends string>(values: readonly T[], value: string): T | undefined {
+  return values.find(candidate => candidate === value)
+}
+
+/**
+ * Read a completed Codex auto-review into the neutral review entry. A frame with no
+ * review id draws nothing, because the reader could not approve it and no row can
+ * name it.
+ *
+ * Only a denial in the main thread is approvable: Codex refuses the approval for a
+ * Multi-Agent V2 subagent, whose reviews the worker routes to the child transcript.
+ * A review in the main thread is the only one that reaches the main transcript, so
+ * every denial that this reader sees there is approvable. The child tab offers no
+ * approval capability, which hides the control for its reviews.
+ */
+function codexAutoReviewEntry(params: Record<string, unknown> | null | undefined): NotificationEntry | null {
+  const reviewId = pickString(params, 'reviewId')
+  if (!reviewId)
+    return null
+  const review = pickObject(params, 'review')
+  const outcome = AUTO_REVIEW_OUTCOMES.get(pickString(review, 'status')) ?? 'unknown'
+  const risk = oneOf(AUTO_REVIEW_RISKS, pickString(review, 'riskLevel'))
+  const authorization = oneOf(AUTO_REVIEW_AUTHORIZATIONS, pickString(review, 'userAuthorization'))
+  const rationale = pickString(review, 'rationale').trim()
+  return {
+    kind: 'auto-review',
+    reviewId,
+    outcome,
+    ...(risk !== undefined ? { risk } : {}),
+    ...(authorization !== undefined ? { authorization } : {}),
+    ...(rationale ? { rationale } : {}),
+    action: codexAutoReviewAction(pickObject(params, 'action')),
+    approvable: outcome === 'denied',
+  }
+}
+
+/** A one-line summary of the action that a Codex auto-review judged. */
+export function codexAutoReviewAction(action: Record<string, unknown> | null | undefined): string {
+  switch (pickString(action, 'type')) {
+    case CODEX_AUTO_REVIEW_ACTION.Command:
+      return pickString(action, 'command')
+    case CODEX_AUTO_REVIEW_ACTION.Execve: {
+      const argv = Array.isArray(action?.argv) ? action.argv.filter((part): part is string => typeof part === 'string') : []
+      return argv.length > 0 ? argv.map(quoteShellWord).join(' ') : pickString(action, 'program')
+    }
+    case CODEX_AUTO_REVIEW_ACTION.WriteStdin:
+      return `Write to process ${pickString(action, 'processId')}`
+    case CODEX_AUTO_REVIEW_ACTION.ApplyPatch: {
+      const files = Array.isArray(action?.files) ? action.files.filter((file): file is string => typeof file === 'string') : []
+      return files.length > 0 ? `Edit ${files.join(', ')}` : 'Edit files'
+    }
+    case CODEX_AUTO_REVIEW_ACTION.NetworkAccess: {
+      const host = pickString(action, 'host')
+      const port = typeof action?.port === 'number' ? action.port : undefined
+      return `Connect to ${port !== undefined ? `${host}:${port}` : host}`
+    }
+    case CODEX_AUTO_REVIEW_ACTION.McpToolCall: {
+      const tool = pickString(action, 'toolTitle') || pickString(action, 'toolName')
+      return [pickString(action, 'server'), tool].filter(Boolean).join(' · ')
+    }
+    case CODEX_AUTO_REVIEW_ACTION.RequestPermissions:
+      return pickString(action, 'reason').trim() || 'Request permissions'
+    default:
+      return 'An action'
+  }
+}
+
+/** Quote one shell word only when it needs quoting, so a plain argv reads plainly. */
+function quoteShellWord(word: string): string {
+  return /^[\w./:=@%+,-]+$/.test(word) ? word : `'${word.replaceAll('\'', `'\\''`)}'`
 }

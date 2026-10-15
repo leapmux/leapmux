@@ -138,6 +138,12 @@ type Service struct {
 	// non-nil after New.
 	PrivateEvents *PrivateEventsBus
 
+	// autoReviewApprovals holds the automatic-review approvals that are in flight,
+	// keyed by agent id and review id, so two concurrent clicks cannot both reach the
+	// provider. The approval record on the review row refuses a repeat after the
+	// first one completes.
+	autoReviewApprovals sync.Map
+
 	// TabPayloads persists (user_id, tab_id) -> TabPayload for every
 	// payload-backed tab kind (FILE, IMAGE). Always non-nil after New.
 	// The hub never sees these rows; clients fetch payloads over E2EE.

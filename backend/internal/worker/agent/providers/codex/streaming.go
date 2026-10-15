@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
@@ -269,12 +268,6 @@ func (a *Agent) markReasoningSummaryBreak(itemID, threadID string, summaryIndex 
 	a.Mu.Unlock()
 }
 
-// codexMethodThreadSettingsUpdated is the method of the frame the app server
-// sends when a thread's own settings move. Go reads it and the browser never
-// does -- the change reaches the browser through the shared settings pipeline --
-// so the token stays here rather than in a contract.
-const codexMethodThreadSettingsUpdated = contracts.CodexMethodThreadSettingsUpdated
-
 // handleThreadSettingsUpdated folds the settings the thread settled on back into
 // the agent.
 //
@@ -286,6 +279,11 @@ const codexMethodThreadSettingsUpdated = contracts.CodexMethodThreadSettingsUpda
 // `PersistSettingsRefresh` is the same pipeline every other axis uses, and it is
 // a no-op when nothing moved -- so a change LeapMux itself made, whose value the
 // agent already holds, announces nothing.
+//
+// The frame never moves the permission axes, although it states them. A turn/start
+// that carries an older snapshot can race a permission change, and its echo would
+// then undo the user's choice. LeapMux sends the permission settings on every
+// thread and turn request, so its own state is the authority for them.
 func (a *Agent) handleThreadSettingsUpdated(params json.RawMessage) {
 	var notif struct {
 		ThreadID       string `json:"threadId"`

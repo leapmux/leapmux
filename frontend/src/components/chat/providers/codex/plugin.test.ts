@@ -2,6 +2,7 @@ import type { ControlAnswerSeed } from '../../controls/types'
 import type { ControlQuestion } from '../../model/question'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { describe, expect, it, vi } from 'vitest'
+import { CODEX_PERMISSION_PRESETS } from '~/generated/contracts/codex-permission-presets'
 import { CODEX_OPTION, CODEX_OPTION_DEFAULT } from '~/generated/contracts/codex-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { renderDivider } from '~/test-support/messageRenderProbes'
@@ -17,8 +18,11 @@ import './plugin'
 describe('codex provider capabilities', () => {
   const plugin = providerFor(AgentProvider.CODEX)!
 
-  it('seeds the default collaboration mode as a provider option on a new agent', () => {
-    expect(plugin?.configuration?.defaultProviderOptions).toEqual({ [CODEX_OPTION.CollaborationMode]: CODEX_OPTION_DEFAULT.CollaborationMode })
+  it('seeds the default collaboration mode and permission profile as provider options on a new agent', () => {
+    expect(plugin?.configuration?.defaultProviderOptions).toEqual({
+      [CODEX_OPTION.CollaborationMode]: CODEX_OPTION_DEFAULT.CollaborationMode,
+      [CODEX_OPTION.PermissionProfile]: CODEX_OPTION_DEFAULT.PermissionProfile,
+    })
   })
 
   it('preserves an option selection alongside the free-text note', () => {
@@ -500,13 +504,24 @@ describe('codex settings config', () => {
     expect(plugin?.configuration?.planMode!.currentMode({})).toBe(CODEX_OPTION_DEFAULT.CollaborationMode)
   })
 
-  it('declares one complete bypass permission preset', () => {
+  it('declares the smart and bypass permission presets from the contract', () => {
     expect(plugin?.controls?.permissionPresets).toEqual({
-      bypass: { sets: {
-        network_access: 'enabled',
-        sandbox_policy: 'danger-full-access',
-        permissionMode: 'never',
-      } },
+      smart: CODEX_PERMISSION_PRESETS.smart,
+      bypass: CODEX_PERMISSION_PRESETS.bypass,
+    })
+  })
+
+  it('maps smart to approve for me in the workspace profile', () => {
+    expect(plugin?.controls?.permissionPresets?.smart?.sets).toEqual({
+      permissionMode: 'auto-review',
+      [CODEX_OPTION.PermissionProfile]: ':workspace',
+    })
+  })
+
+  it('maps bypass to never ask with full access', () => {
+    expect(plugin?.controls?.permissionPresets?.bypass?.sets).toEqual({
+      permissionMode: 'never',
+      [CODEX_OPTION.PermissionProfile]: ':danger-full-access',
     })
   })
 })

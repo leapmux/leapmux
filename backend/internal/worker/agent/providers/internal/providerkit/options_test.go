@@ -86,6 +86,34 @@ func TestFilterGroupOptions_PreservesTemplateFields(t *testing.T) {
 	assert.Nil(t, FilterGroupOptions(nil, func(*leapmuxv1.AvailableOption) bool { return true }))
 }
 
+func TestReplaceGroupOptions_PreservesTemplateFields(t *testing.T) {
+	t.Parallel()
+
+	tmpl := &leapmuxv1.AvailableOptionGroup{
+		Id:           "profile",
+		Label:        "Permissions",
+		DefaultValue: ":workspace",
+		Mutable:      true,
+		Order:        agent.OptionOrderProviderThird,
+		Options:      []*leapmuxv1.AvailableOption{{Id: ":workspace"}, {Id: ":read-only"}},
+	}
+	discovered := []*leapmuxv1.AvailableOption{{Id: ":workspace"}, {Id: "team"}}
+
+	replaced := ReplaceGroupOptions(tmpl, discovered)
+
+	require.NotNil(t, replaced)
+	assert.Equal(t, discovered, replaced.GetOptions())
+	assert.Equal(t, "profile", replaced.GetId())
+	assert.Equal(t, "Permissions", replaced.GetLabel())
+	assert.Equal(t, ":workspace", replaced.GetDefaultValue())
+	assert.True(t, replaced.GetMutable())
+	assert.Equal(t, agent.OptionOrderProviderThird, replaced.GetOrder())
+	assert.Len(t, tmpl.GetOptions(), 2, "replacing must not mutate the shared template")
+	assert.Equal(t, ":read-only", tmpl.GetOptions()[1].GetId())
+	assert.Nil(t, ReplaceGroupOptions(nil, discovered))
+	assert.Empty(t, ReplaceGroupOptions(tmpl, nil).GetOptions(), "an empty list stays empty; the caller chooses the fallback")
+}
+
 // TestCloneOptionGroupTemplate_CopiesEveryField sets EVERY field of the option-group
 // message. A new field of AvailableOptionGroup that the hand-written copy misses then
 // fails here, and does not disappear from each projected group without notice. The

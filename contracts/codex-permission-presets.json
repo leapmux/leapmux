@@ -1,0 +1,25 @@
+{
+  "_readme": "The two Codex permission presets, smart and bypass. Each preset is the complete settings change that selects it. The browser applies a preset from the composer menu and from a control request. The worker reads the same values for three jobs. First, a plan approval sends only a permission mode, and the worker expands that mode into the complete preset. Second, the worker answers the permission requests that Codex still sends while the session holds the bypass preset. Third, a test holds each value to the static Codex option groups. The smart preset selects the Codex auto-review reviewer on the workspace profile. Upstream Codex calls this mode Approve for me. The bypass preset selects the never approval policy on the danger-full-access profile. Upstream Codex calls this mode Full access. Each preset must hold a permission mode, and the two modes must differ, because a plan approval identifies the preset by its mode alone. task generate-contracts emits both language definitions from this file.",
+  "presets": {
+    "smart": [
+      {
+        "id": "permissionMode",
+        "value": "auto-review"
+      },
+      {
+        "id": "permission_profile",
+        "value": ":workspace"
+      }
+    ],
+    "bypass": [
+      {
+        "id": "permissionMode",
+        "value": "never"
+      },
+      {
+        "id": "permission_profile",
+        "value": ":danger-full-access"
+      }
+    ]
+  }
+}

@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen } from '@solidjs/testing-library'
 import { batch, createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { WORKER_OFFLINE_BRANCH_REASON } from '~/components/workspace/branchActions'
-import { CODEX_BYPASS_SETTINGS } from '~/generated/contracts/codex-bypass'
+import { CODEX_PERMISSION_PRESETS } from '~/generated/contracts/codex-permission-presets'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { popoverCard } from '~/styles/popover.css'
 import { stubBranchMenuActions } from '~/test-support/branchMenu'
@@ -245,9 +245,8 @@ describe('ComposerPlusMenu structure freeze', () => {
 
   it('disables a held permission action when its capability disappears', async () => {
     const [groups, setGroups] = createSignal<AvailableOptionGroup[]>([
-      group('network_access', 'Network', 10, ['restricted', 'enabled']),
-      group('sandbox_policy', 'Sandbox', 20, ['workspace-write', 'danger-full-access']),
-      group('permissionMode', 'Approval', 30, ['on-request', 'never']),
+      group('permission_profile', 'Permissions', 10, [':workspace', ':danger-full-access']),
+      group('permissionMode', 'Approval', 30, ['on-request', 'auto-review', 'never']),
     ])
     renderLive({ groups, provider: AgentProvider.CODEX })
 
@@ -255,7 +254,7 @@ describe('ComposerPlusMenu structure freeze', () => {
     const bypass = screen.getByTestId('composer-bypass-permissions')
     expect(bypass).toBeEnabled()
 
-    setGroups([group('permissionMode', 'Approval', 30, ['on-request', 'never'])])
+    setGroups([group('permissionMode', 'Approval', 30, ['on-request', 'auto-review', 'never'])])
     await Promise.resolve()
 
     expect(bypass, 'the held row stays visible but cannot apply a stale preset').toBeDisabled()
@@ -310,25 +309,37 @@ describe('ComposerPlusMenu', () => {
     const { onSettingChange } = renderMenu({
       provider: AgentProvider.CODEX,
       groups: [
-        group('network_access', 'Network', 10, ['disabled', 'enabled']),
-        group('sandbox_policy', 'Sandbox', 20, ['read-only', 'danger-full-access']),
-        group('permissionMode', 'Approval', 30, ['on-request', 'never']),
+        group('permission_profile', 'Permissions', 10, [':read-only', ':workspace', ':danger-full-access']),
+        group('permissionMode', 'Approval', 30, ['on-request', 'auto-review', 'never']),
       ],
     })
 
     await fireEvent.click(screen.getByTestId('composer-bypass-permissions'))
+    await fireEvent.click(screen.getByTestId('composer-smart-permissions'))
 
-    expect(onSettingChange).toHaveBeenCalledTimes(1)
-    const change = onSettingChange.mock.calls[0]![0] as { sets: Record<string, string> }
-    expect(change).toEqual(CODEX_BYPASS_SETTINGS)
+    expect(onSettingChange).toHaveBeenCalledTimes(2)
+    expect(onSettingChange.mock.calls[0]![0]).toEqual(CODEX_PERMISSION_PRESETS.bypass)
+    expect(onSettingChange.mock.calls[1]![0]).toEqual(CODEX_PERMISSION_PRESETS.smart)
+  })
+
+  it('offers the Codex Smart preset directly above Bypass', () => {
+    const { container } = renderMenu({
+      provider: AgentProvider.CODEX,
+      groups: [
+        group('permission_profile', 'Permissions', 10, [':workspace', ':danger-full-access']),
+        group('permissionMode', 'Approval', 30, ['on-request', 'auto-review', 'never']),
+      ],
+    })
+
+    const actions = [...container.querySelectorAll('[data-testid="composer-smart-permissions"], [data-testid="composer-bypass-permissions"]')]
+    expect(actions.map(action => action.textContent)).toEqual(['Smart permissions', 'Bypass permissions'])
   })
 
   it('disables a provider action whose axes are already applied', () => {
     const { onSettingChange } = renderMenu({
       provider: AgentProvider.CODEX,
       groups: [
-        group('network_access', 'Network', 10, ['enabled']),
-        group('sandbox_policy', 'Sandbox', 20, ['danger-full-access']),
+        group('permission_profile', 'Permissions', 10, [':danger-full-access']),
         group('permissionMode', 'Approval', 30, ['never']),
       ],
     })
@@ -351,25 +362,36 @@ describe('ComposerPlusMenu', () => {
   it('hides a permission action when one target group or value is unavailable', () => {
     renderMenu({
       provider: AgentProvider.CODEX,
-      groups: [
-        group('sandbox_policy', 'Sandbox', 20, ['workspace-write', 'danger-full-access']),
-        group('permissionMode', 'Approval', 30, ['on-request', 'never']),
-      ],
+      groups: [group('permissionMode', 'Approval', 30, ['on-request', 'auto-review', 'never'])],
     })
 
     expect(screen.queryByTestId('composer-bypass-permissions')).toBeNull()
+    expect(screen.queryByTestId('composer-smart-permissions')).toBeNull()
 
     cleanup()
     renderMenu({
       provider: AgentProvider.CODEX,
       groups: [
-        group('network_access', 'Network', 10, ['restricted']),
-        group('sandbox_policy', 'Sandbox', 20, ['workspace-write', 'danger-full-access']),
-        group('permissionMode', 'Approval', 30, ['on-request', 'never']),
+        group('permission_profile', 'Permissions', 10, [':workspace', ':read-only']),
+        group('permissionMode', 'Approval', 30, ['on-request', 'auto-review', 'never']),
       ],
     })
 
     expect(screen.queryByTestId('composer-bypass-permissions')).toBeNull()
+    expect(screen.getByTestId('composer-smart-permissions')).toBeInTheDocument()
+
+    // The requirements can refuse auto-review, and the live catalog then omits it.
+    cleanup()
+    renderMenu({
+      provider: AgentProvider.CODEX,
+      groups: [
+        group('permission_profile', 'Permissions', 10, [':workspace', ':danger-full-access']),
+        group('permissionMode', 'Approval', 30, ['on-request', 'never']),
+      ],
+    })
+
+    expect(screen.queryByTestId('composer-smart-permissions')).toBeNull()
+    expect(screen.getByTestId('composer-bypass-permissions')).toBeInTheDocument()
   })
 
   it('hides a permission action when a target group is read-only', () => {
@@ -399,18 +421,17 @@ describe('ComposerPlusMenu', () => {
     renderMenu({
       provider: AgentProvider.CODEX,
       groups: [
-        group('network_access', 'Network', 10, ['restricted', 'enabled']),
-        group('sandbox_policy', 'Sandbox', 20, ['workspace-write', 'danger-full-access']),
-        group('permissionMode', 'Approval', 30, ['on-request', 'never']),
+        group('permission_profile', 'Permissions', 10, [':workspace', ':danger-full-access']),
+        group('permissionMode', 'Approval', 30, ['on-request', 'auto-review', 'never']),
       ],
       values: {
-        network_access: 'enabled',
-        sandbox_policy: 'danger-full-access',
+        permission_profile: ':danger-full-access',
         permissionMode: 'on-request',
       },
     })
 
     expect(screen.getByTestId('composer-bypass-permissions')).toBeEnabled()
+    expect(screen.getByTestId('composer-smart-permissions'), 'Smart sets the workspace profile too').toBeEnabled()
   })
 
   it('disables permission actions when no settings dispatcher exists', () => {

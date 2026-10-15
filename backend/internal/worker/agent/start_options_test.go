@@ -20,12 +20,12 @@ func TestOptions_Accessors(t *testing.T) {
 		OptionIDModel:          "opus[1m]",
 		OptionIDEffort:         "xhigh",
 		OptionIDPermissionMode: "plan",
-		"sandbox_policy":       "workspace-write",
+		"permission_profile":   ":workspace",
 	}}
 	assert.Equal(t, "opus[1m]", o.Model())
 	assert.Equal(t, "xhigh", o.Effort())
 	assert.Equal(t, "plan", o.PermissionMode())
-	assert.Equal(t, "workspace-write", o.Get("sandbox_policy"), "Get reads any axis by id, not just the well-known ones")
+	assert.Equal(t, ":workspace", o.Get("permission_profile"), "Get reads any axis by id, not just the well-known ones")
 	assert.Empty(t, o.Get("nonexistent"), "an absent id reads back empty")
 
 	var empty Options

@@ -3,17 +3,17 @@
   "supportStates": [
     {
       "id": "supported",
-      "symbol": "\u2705",
+      "symbol": "✅",
       "label": "Supported"
     },
     {
       "id": "agent-limit",
-      "symbol": "\ud83d\udeab",
+      "symbol": "🚫",
       "label": "The agent does not offer it"
     },
     {
       "id": "leapmux-limit",
-      "symbol": "\ud83d\udea7",
+      "symbol": "🚧",
       "label": "LeapMux does not support it yet"
     }
   ],
@@ -4901,11 +4901,11 @@
         "verified": true
       },
       "codex": {
-        "support": "leapmux-limit",
-        "userNote": "Codex has an Auto-review mode that sends approval requests to a reviewer agent. LeapMux does not use it yet, so LeapMux shows no Smart shortcut for Codex. See the [Codex documentation](https://learn.chatgpt.com/docs/sandboxing/auto-review).",
-        "detailNote": "LeapMux exposes no Smart permission shortcut for that catalog.\n\nClassified as a LeapMux limit: the Codex 0.160.0 thread/start and turn/start parameters accept approvalsReviewer, and its auto_review value routes approval requests to a reviewer agent that approves or denies them. The Codex documentation (checked 2026-10-05) describes auto-review. LeapMux does not send approvalsReviewer. Auto-review is a native approval mode of Codex 0.160.0. The documentation says that the mode depends on account and organization policy.\n\nSources fetched on 2026-10-05:\n- <https://learn.chatgpt.com/docs/sandboxing/auto-review>: Describes auto-review: approvals_reviewer = \"auto_review\" replaces manual approval at the sandbox boundary with a reviewer agent. Availability depends on account and organization policy.",
+        "support": "supported",
+        "userNote": "Smart permissions selects Codex's auto-review, which Codex calls Approve for me. A reviewer agent decides each approval request, and you can approve one retry of a denied action from its row.",
+        "detailNote": "Smart selects approvalPolicy on-request with approvalsReviewer auto_review on the :workspace permission profile. The Codex TUI and the ChatGPT app give Approve for me the same three values. A change reaches the running thread through thread/settings/update, and turn/settings/update moves the reviewer of an active turn. LeapMux hides the shortcut when configRequirements/read or config/read refuses auto-review.\n\nThe spec scripts the reviewer's own model request and proves that an escalated write outside the workspace runs with no prompt, before and after a reload. approve-for-me-denial.spec.ts proves the Approve action of a denied review: Codex states the approval to the model in the next request through thread/approveGuardianDeniedAction. Tested version: codex-cli 0.162.1.",
         "spec": "frontend/tests/e2e/codex/smart-permissions-shortcut.spec.ts",
-        "audit": "unsupported",
+        "audit": "covered",
         "testStatus": "passed",
         "verified": true
       },
@@ -5174,8 +5174,8 @@
       },
       "codex": {
         "support": "supported",
-        "userNote": "",
-        "detailNote": "",
+        "userNote": "Bypass also approves the requests that work started before the switch still sends.",
+        "detailNote": "Bypass selects approvalPolicy never on the :danger-full-access permission profile, which Codex calls Full access. A running turn and the subagents that it spawned keep the approval policy that they started with, so Codex still sends their approval requests after the switch. LeapMux answers each such request while the session holds Bypass and Codex acknowledged it, and it answers the cards that wait at the switch. It never answers a question or a form that asks for data. The spec proves a pending request and a later request of one turn. Tested version: codex-cli 0.162.1.",
         "spec": "frontend/tests/e2e/codex/bypass-permissions-shortcut.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",

@@ -32,6 +32,7 @@ const mockUpdateAgentSettings = vi.fn()
 const mockListAvailableProviders = vi.fn().mockResolvedValue({ providers: [] })
 const mockShowWarnToast = vi.fn()
 const mockUpdateAgentGoal = vi.fn()
+const mockApproveAutoReviewDenial = vi.fn()
 
 vi.mock('~/api/workerRpc', async importOriginal => ({
   ...await importOriginal<typeof import('~/api/workerRpc')>(),
@@ -42,6 +43,7 @@ vi.mock('~/api/workerRpc', async importOriginal => ({
   sendControlResponse: vi.fn(),
   updateAgentSettings: (...args: unknown[]) => mockUpdateAgentSettings(...args),
   updateAgentGoal: (...args: unknown[]) => mockUpdateAgentGoal(...args),
+  approveAutoReviewDenial: (...args: unknown[]) => mockApproveAutoReviewDenial(...args),
   listAvailableProviders: (...args: unknown[]) => mockListAvailableProviders(...args),
 }))
 
@@ -623,23 +625,23 @@ describe('useAgentOperations', () => {
             workerId: 'w-1',
             optionGroups: [
               {
-                id: 'sandbox_policy',
-                label: 'Sandbox Policy',
-                currentValue: 'workspace-write',
-                defaultValue: 'workspace-write',
+                id: 'permission_profile',
+                label: 'Permissions',
+                currentValue: ':workspace',
+                defaultValue: ':workspace',
                 options: [
-                  { id: 'workspace-write', name: 'Workspace Write' },
-                  { id: 'danger-full-access', name: 'Full Access' },
+                  { id: ':workspace', name: 'Workspace' },
+                  { id: ':danger-full-access', name: 'Full Access' },
                 ],
               },
               {
-                id: 'network_access',
-                label: 'Network Access',
-                currentValue: 'restricted',
-                defaultValue: 'restricted',
+                id: 'service_tier',
+                label: 'Fast Mode',
+                currentValue: 'default',
+                defaultValue: 'default',
                 options: [
-                  { id: 'restricted', name: 'Restricted' },
-                  { id: 'enabled', name: 'Enabled' },
+                  { id: 'fast', name: 'On' },
+                  { id: 'default', name: 'Off' },
                 ],
               },
             ],
@@ -654,23 +656,23 @@ describe('useAgentOperations', () => {
           mockUpdateAgentSettings.mockResolvedValueOnce({})
 
           // Launch both changes concurrently.
-          const p1 = ops.handleAgentSettingChange('a-concurrent', { sets: { sandbox_policy: 'danger-full-access' } })
-          const p2 = ops.handleAgentSettingChange('a-concurrent', { sets: { network_access: 'enabled' } })
+          const p1 = ops.handleAgentSettingChange('a-concurrent', { sets: { permission_profile: ':danger-full-access' } })
+          const p2 = ops.handleAgentSettingChange('a-concurrent', { sets: { service_tier: 'fast' } })
 
           // Both optimistic updates should be applied.
           const mid = view.getAgentTab('a-concurrent')
-          expect(mid?.optionValues?.sandbox_policy).toBe('danger-full-access')
-          expect(mid?.optionValues?.network_access).toBe('enabled')
+          expect(mid?.optionValues?.permission_profile).toBe(':danger-full-access')
+          expect(mid?.optionValues?.service_tier).toBe('fast')
 
-          // Fail the first RPC — its rollback should only revert sandbox_policy,
-          // leaving network_access intact.
-          rejectFirst(new Error('sandbox fail'))
+          // Fail the first RPC. Its rollback reverts permission_profile only and
+          // keeps service_tier.
+          rejectFirst(new Error('profile fail'))
           await p1
           await p2
 
           const final = view.getAgentTab('a-concurrent')
-          expect(final?.optionValues?.sandbox_policy).toBe('workspace-write')
-          expect(final?.optionValues?.network_access).toBe('enabled')
+          expect(final?.optionValues?.permission_profile).toBe(':workspace')
+          expect(final?.optionValues?.service_tier).toBe('fast')
         }
         finally {
           dispose()
@@ -1243,6 +1245,44 @@ describe('useAgentOperations', () => {
         await expect(ops.handleGoalAction('a1', 'clear')).resolves.toBe(true)
         expect(mockShowWarnToast).not.toHaveBeenCalledWith('Failed to update the session goal', expect.anything())
         dispose()
+      })
+    })
+  })
+
+  describe('handleApproveAutoReviewDenial', () => {
+    it('sends the agent, the row and the review to the agent\'s worker', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { ops, add } = setup()
+          add({ id: 'a1', workerId: 'w-7', agentProvider: AgentProvider.CODEX })
+          mockShowWarnToast.mockClear()
+          mockApproveAutoReviewDenial.mockReset()
+          mockApproveAutoReviewDenial.mockResolvedValueOnce({})
+          await expect(ops.handleApproveAutoReviewDenial('a1', 'm1', 'r1')).resolves.toBeUndefined()
+          expect(mockApproveAutoReviewDenial).toHaveBeenCalledWith('w-7', { agentId: 'a1', messageId: 'm1', reviewId: 'r1' })
+          expect(mockShowWarnToast).not.toHaveBeenCalled()
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    it('reports a refusal and passes it to the caller, so the button can enable itself again', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { ops, add } = setup()
+          add({ id: 'a1', workerId: 'w-7', agentProvider: AgentProvider.CODEX })
+          mockShowWarnToast.mockClear()
+          const refusal = new Error('Codex accepts this approval only in the main thread')
+          mockApproveAutoReviewDenial.mockReset()
+          mockApproveAutoReviewDenial.mockRejectedValueOnce(refusal)
+          await expect(ops.handleApproveAutoReviewDenial('a1', 'm1', 'r1')).rejects.toBe(refusal)
+          expect(mockShowWarnToast).toHaveBeenCalledWith('Failed to approve the action', refusal)
+        }
+        finally {
+          dispose()
+        }
       })
     })
   })

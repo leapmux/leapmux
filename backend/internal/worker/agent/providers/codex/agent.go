@@ -54,9 +54,25 @@ type Agent struct {
 	// response arrives. Non-nil only while CompactContext waits for acceptance.
 	compactionStartAck chan struct{}
 
-	approvalPolicy    string // Codex approval policy (stored as-is from DB)
-	sandboxPolicy     string // Codex sandbox policy (e.g. "workspace-write")
-	networkAccess     string // Codex network access ("restricted" or "enabled")
+	// permissionMode is the LeapMux permission mode, such as "on-request" or
+	// "auto-review". codexApprovalWire maps it to the native approval policy and
+	// approvals reviewer.
+	permissionMode string
+	// permissionProfile is the Codex permission profile id, such as ":workspace".
+	permissionProfile string
+	// permissionsAcknowledged reports that Codex accepted the current permission
+	// settings: a thread/start or thread/resume response, a thread/settings/update
+	// reply, or the turn/started of a turn/start that carried them. A change clears it
+	// until Codex accepts the new values. The standing approval waits for it (see
+	// bypassActiveLocked). Guarded by Mu.
+	permissionsAcknowledged bool
+	// permissionProfiles is the profile catalog that permissionProfile/list reported,
+	// or nil when the query failed and the static seed applies. Guarded by Mu.
+	permissionProfiles []*leapmuxv1.AvailableOption
+	// refusedModes holds the permission modes that the managed requirements or the
+	// config refuse. Empty when every mode is allowed. Guarded by Mu.
+	refusedModes map[string]struct{}
+
 	collaborationMode string // Codex collaboration mode ("default" or "plan")
 	serviceTier       string // Codex service tier ("default" or "fast")
 	turnSawPlan       bool   // whether the current turn produced a plan item
@@ -182,11 +198,12 @@ type codexThreadResponse struct {
 	Thread struct {
 		ID string `json:"id"`
 	} `json:"thread"`
-	Model          string          `json:"model"`
-	Effort         json.RawMessage `json:"reasoningEffort"`
-	ServiceTier    json.RawMessage `json:"serviceTier"`
-	ApprovalPolicy json.RawMessage `json:"approvalPolicy"`
-	Sandbox        json.RawMessage `json:"sandbox"`
+	Model                   string          `json:"model"`
+	Effort                  json.RawMessage `json:"reasoningEffort"`
+	ServiceTier             json.RawMessage `json:"serviceTier"`
+	ApprovalPolicy          json.RawMessage `json:"approvalPolicy"`
+	ApprovalsReviewer       json.RawMessage `json:"approvalsReviewer"`
+	ActivePermissionProfile json.RawMessage `json:"activePermissionProfile"`
 }
 
 // resumeThread sends `thread/resume` and returns the thread ID and effective
@@ -251,7 +268,6 @@ func newCodexThreadResult(response codexThreadResponse) (codexThreadResult, erro
 	}{
 		{response.Effort, agent.OptionIDEffort, "reasoningEffort"},
 		{response.ServiceTier, contracts.CodexOptionServiceTier, "serviceTier"},
-		{response.ApprovalPolicy, agent.OptionIDPermissionMode, "approvalPolicy"},
 	} {
 		if len(target.raw) == 0 {
 			continue
@@ -262,68 +278,65 @@ func newCodexThreadResult(response codexThreadResponse) (codexThreadResult, erro
 		}
 		var value string
 		if err := json.Unmarshal(target.raw, &value); err != nil {
-			// Codex can return granular approval policy as an object. LeapMux stores
-			// the simple policy string, so preserve the prior value for that form.
-			if target.label == "approvalPolicy" {
-				continue
-			}
 			return codexThreadResult{}, fmt.Errorf("codex thread response field %s was not a string: %w", target.label, err)
 		}
 		result.settings[target.id] = &value
 	}
-	sandboxSettings, err := decodeCodexThreadSandbox(response.Sandbox)
+	if mode, present := codexThreadPermissionMode(response.ApprovalPolicy, response.ApprovalsReviewer); present {
+		result.settings[agent.OptionIDPermissionMode] = mode
+	}
+	profile, present, err := codexThreadPermissionProfile(response.ActivePermissionProfile)
 	if err != nil {
 		return codexThreadResult{}, err
 	}
-	for id, value := range sandboxSettings {
-		result.settings[id] = value
+	if present {
+		result.settings[contracts.CodexOptionPermissionProfile] = profile
 	}
 	return result, nil
 }
 
-// decodeCodexThreadSandbox accepts the legacy string and the current tagged
-// object. The current object also reports the effective network access.
-func decodeCodexThreadSandbox(raw json.RawMessage) (map[string]*string, error) {
-	settings := make(map[string]*string)
+// codexThreadPermissionMode reads the permission mode that a thread response states
+// through its approval policy and its approvals reviewer. present is false when the
+// response says nothing usable: no policy, or a granular policy object, which has no
+// LeapMux mode, so the prior value stays. A null policy reads as a nil mode.
+func codexThreadPermissionMode(policyRaw, reviewerRaw json.RawMessage) (mode *string, present bool) {
+	if len(policyRaw) == 0 {
+		return nil, false
+	}
+	if string(policyRaw) == "null" {
+		return nil, true
+	}
+	var policy string
+	if json.Unmarshal(policyRaw, &policy) != nil {
+		return nil, false
+	}
+	// An absent or unreadable reviewer reads as the user, which leaves the policy alone.
+	var reviewer string
+	_ = json.Unmarshal(reviewerRaw, &reviewer)
+	value := codexPermissionModeFromWire(policy, reviewer)
+	return &value, true
+}
+
+// codexThreadPermissionProfile reads the id of the active permission profile that a
+// thread response states. A null profile reads as a nil value, which keeps the
+// requested profile: Codex reports null for a thread on the legacy sandbox settings.
+func codexThreadPermissionProfile(raw json.RawMessage) (profile *string, present bool, err error) {
 	if len(raw) == 0 {
-		return settings, nil
+		return nil, false, nil
 	}
 	if string(raw) == "null" {
-		settings[contracts.CodexOptionSandboxPolicy] = nil
-		return settings, nil
+		return nil, true, nil
 	}
-
-	var policy string
-	if json.Unmarshal(raw, &policy) == nil {
-		settings[contracts.CodexOptionSandboxPolicy] = &policy
-		return settings, nil
+	var active struct {
+		ID string `json:"id"`
 	}
-
-	var sandbox struct {
-		Type string `json:"type"`
+	if err := json.Unmarshal(raw, &active); err != nil {
+		return nil, false, fmt.Errorf("codex thread response field activePermissionProfile was invalid: %w", err)
 	}
-	if err := json.Unmarshal(raw, &sandbox); err != nil {
-		return nil, fmt.Errorf("codex thread response field sandbox was invalid: %w", err)
+	if active.ID == "" {
+		return nil, false, nil
 	}
-
-	switch sandbox.Type {
-	case "dangerFullAccess":
-		policy = SandboxDangerFullAccess
-		network := NetworkEnabled
-		settings[contracts.CodexOptionNetworkAccess] = &network
-	case "workspaceWrite":
-		policy = SandboxWorkspaceWrite
-	case "readOnly":
-		policy = SandboxReadOnly
-	case "externalSandbox":
-		// LeapMux has no external-sandbox option. Preserve the requested values.
-		return settings, nil
-	default:
-		// Preserve both stored values for a future Codex sandbox variant.
-		return settings, nil
-	}
-	settings[contracts.CodexOptionSandboxPolicy] = &policy
-	return settings, nil
+	return &active.ID, true, nil
 }
 
 // Interrupt aborts the active Codex turn by sending a `turn/interrupt`
@@ -451,14 +464,13 @@ func (a *Agent) clearInterruptCallsForThread(threadID string) {
 func (a *Agent) ClearContext() (string, error) {
 	a.Mu.Lock()
 	oldThreadID := a.threadID
-	approvalPolicy := a.approvalPolicy
-	sandboxPolicy := a.sandboxPolicy
+	permissions := a.permissionSettingsLocked()
 	serviceTier := a.serviceTier
 	model := a.model
 	workingDir := a.workingDir
 	a.Mu.Unlock()
 
-	threadParams := codexThreadParams(model, workingDir, approvalPolicy, sandboxPolicy, serviceTier)
+	threadParams := codexThreadParams(model, workingDir, permissions, serviceTier)
 	// Codex uses this source to distinguish a deliberate context clear from an
 	// unrelated new conversation. Both sources start with empty model history.
 	threadParams["sessionStartSource"] = "clear"
@@ -485,6 +497,9 @@ func (a *Agent) ClearContext() (string, error) {
 		a.retiredCodexThreads[childThreadID] = struct{}{}
 	}
 	a.applyThreadResult(thread)
+	// The response states the settings that the new thread holds, so Codex
+	// acknowledged them.
+	a.permissionsAcknowledged = true
 	a.threadID = thread.ID
 	a.turnID = ""
 	a.turnSawPlan = false
@@ -569,13 +584,7 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 	}
 	threadID := a.threadID
 	turnID := a.turnID
-	model := a.model
-	effort := a.effort
-	approvalPolicy := a.approvalPolicy
-	sandboxPolicy := a.sandboxPolicy
-	networkAccess := a.networkAccess
-	collaborationMode := a.collaborationMode
-	serviceTier := a.serviceTier
+	settings := a.turnSettingsLocked()
 	a.Mu.Unlock()
 
 	if threadID == "" {
@@ -592,15 +601,7 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 		return fmt.Errorf("%w: %s", agent.ErrAgentBusy, turnID)
 	}
 
-	return a.sendTurnStart(threadID, input, turnSettings{
-		model:             model,
-		effort:            effort,
-		approvalPolicy:    approvalPolicy,
-		sandboxPolicy:     sandboxPolicy,
-		networkAccess:     networkAccess,
-		collaborationMode: collaborationMode,
-		serviceTier:       serviceTier,
-	})
+	return a.sendTurnStart(threadID, input, settings)
 }
 
 func (a *Agent) CompactContext() error {
@@ -718,15 +719,46 @@ func buildCodexInputBlocks(content string, classified []agent.ClassifiedAttachme
 	return input
 }
 
-// turnSettings groups the per-turn settings snapshotted from agent state.
+// turnSettings is the snapshot of agent state that every later turn uses. turn/start
+// carries it for its own turn, and thread/settings/update carries it for the turns
+// that follow.
 type turnSettings struct {
 	model             string
 	effort            string
-	approvalPolicy    string
-	sandboxPolicy     string
-	networkAccess     string
+	permissions       codexPermissionSettings
 	collaborationMode string
 	serviceTier       string
+}
+
+// turnSettingsLocked snapshots the agent's turn settings. Caller holds a.Mu.
+func (a *Agent) turnSettingsLocked() turnSettings {
+	return turnSettings{
+		model:             a.model,
+		effort:            a.effort,
+		permissions:       a.permissionSettingsLocked(),
+		collaborationMode: a.collaborationMode,
+		serviceTier:       a.serviceTier,
+	}
+}
+
+// addCodexTurnSettingsParams writes every turn setting into the params of turn/start
+// or thread/settings/update. Both requests carry the complete snapshot: Codex states
+// the thread's complete settings in its thread/settings/updated echo, so an update that
+// omitted an axis would make the echo restate the thread's earlier value of that axis.
+func addCodexTurnSettingsParams(params map[string]interface{}, s turnSettings) {
+	if !agent.UsesAccountDefaultModel(s.model) {
+		params["model"] = s.model
+	}
+	if e, ok := codexEffortValue(s.effort); ok {
+		params["effort"] = e
+	}
+	addCodexPermissionParams(params, s.permissions)
+	if cm := codexCollaborationModeObject(s.collaborationMode, s.model, s.effort); cm != nil {
+		params["collaborationMode"] = cm
+	}
+	// Codex keeps the thread's previous tier when the override is absent.
+	// An explicit null clears Fast when the user selects Default.
+	params["serviceTier"] = codexServiceTierValue(s.serviceTier)
 }
 
 // sendTurnStart sends a turn/start request with all current settings.
@@ -739,24 +771,7 @@ func (a *Agent) sendTurnStart(
 		"threadId": threadID,
 		"input":    input,
 	}
-	if !agent.UsesAccountDefaultModel(s.model) {
-		params["model"] = s.model
-	}
-	if e, ok := codexEffortValue(s.effort); ok {
-		params["effort"] = e
-	}
-	if s.approvalPolicy != "" {
-		params["approvalPolicy"] = s.approvalPolicy
-	}
-	if sp := codexSandboxPolicyObject(s.sandboxPolicy, s.networkAccess); sp != nil {
-		params["sandboxPolicy"] = sp
-	}
-	if cm := codexCollaborationModeObject(s.collaborationMode, s.model, s.effort); cm != nil {
-		params["collaborationMode"] = cm
-	}
-	// Codex keeps the thread's previous tier when the override is absent.
-	// An explicit null clears Fast when the user selects Default.
-	params["serviceTier"] = codexServiceTierValue(s.serviceTier)
+	addCodexTurnSettingsParams(params, s)
 	paramsJSON, err := json.Marshal(params)
 	if err != nil {
 		return fmt.Errorf("marshal turn/start params: %w", err)
@@ -791,7 +806,14 @@ func (a *Agent) sendTurnStart(
 	defer timer.Stop()
 	select {
 	case <-ack:
-		// `turn/started` also set turnID for explicit steering.
+		// `turn/started` also set turnID for explicit steering. Codex started the turn
+		// with the permission settings that this request carried, so it accepted them.
+		// This is the acknowledgement for an older Codex that lacks
+		// thread/settings/update.
+		a.acknowledgePermissions(s.permissions)
+		// A subagent from an earlier turn can still wait on a request that the
+		// acknowledged bypass settings now answer.
+		a.approveOutstandingForBypass()
 		return nil
 	case err := <-requestErr:
 		clearAck()
@@ -833,27 +855,6 @@ func (a *Agent) sendTurnSteer(threadID, turnID string, input []map[string]interf
 		return providerkit.ClassifyJSONRPCDeliveryError("turn/steer", err)
 	}
 	return nil
-}
-
-// codexSandboxPolicyObject converts a simple sandbox policy string
-// (e.g. "danger-full-access") to the tagged object format expected by
-// turn/start's sandboxPolicy field (e.g. {"type": "dangerFullAccess"}).
-// networkAccess is a boolean for every recognized sandbox policy.
-// Returns nil if the policy is empty or unrecognized.
-func codexSandboxPolicyObject(policy, networkAccess string) map[string]interface{} {
-	var obj map[string]interface{}
-	switch policy {
-	case SandboxDangerFullAccess:
-		obj = map[string]interface{}{"type": "dangerFullAccess"}
-	case SandboxWorkspaceWrite:
-		obj = map[string]interface{}{"type": "workspaceWrite"}
-	case SandboxReadOnly:
-		obj = map[string]interface{}{"type": "readOnly"}
-	default:
-		return nil
-	}
-	obj["networkAccess"] = networkAccess == NetworkEnabled
-	return obj
 }
 
 // codexCollaborationModeObject converts a simple collaboration mode string to
@@ -911,17 +912,16 @@ func codexEffortValue(effort string) (string, bool) {
 // It omits an account-default model so Codex can resolve it. It includes a concrete
 // model so a resumed thread keeps its effective or user-selected model. It never
 // sets threadId: startOrResumeThread adds that for the resume case.
-func codexThreadParams(model, cwd, approvalPolicy, sandboxPolicy, serviceTier string) map[string]interface{} {
+func codexThreadParams(model, cwd string, permissions codexPermissionSettings, serviceTier string) map[string]interface{} {
 	params := map[string]interface{}{
 		"cwd":                   cwd,
-		"approvalPolicy":        approvalPolicy,
-		"sandbox":               sandboxPolicy,
 		"experimentalRawEvents": true,
 		// Request detailed summaries so app-server emits reasoning summary items.
 		"config": map[string]interface{}{
 			"model_reasoning_summary": "detailed",
 		},
 	}
+	addCodexPermissionParams(params, permissions)
 	if !agent.UsesAccountDefaultModel(model) {
 		params["model"] = model
 	}

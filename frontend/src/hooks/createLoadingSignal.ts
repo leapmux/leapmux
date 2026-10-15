@@ -16,14 +16,13 @@ export function createLoadingSignal(timeoutMs = DEFAULT_TIMEOUT_MS) {
   // B's confirmed current values. `start`/`stop` take the owning agent id; callers
   // that only want the global spinner may omit it.
   //
-  // A COUNT, not a set: a single user action can fan out into several concurrent
-  // changes for the SAME agent (Codex's "Bypass permissions" button fires three
-  // updateAgentSettings RPCs at once), and the user can fire rapid back-to-back
-  // changes. With set membership, the FIRST resolving change cleared the shared
-  // marker while the others were still in flight, letting a status push overwrite
-  // the still-optimistic values mid-batch -- the exact churn the per-agent scoping
-  // exists to prevent. Refcounting keeps the agent pending until the LAST change
-  // settles.
+  // A COUNT, not a set: the user can start several changes for the SAME agent before
+  // the first one settles, such as a model pick right after a permission preset, and
+  // each change sends its own updateAgentSettings RPC. With set membership, the
+  // FIRST change to resolve cleared the shared marker while the others were still in
+  // flight. A status push could then overwrite the still-optimistic values in the
+  // middle of the batch, which is the exact churn that the per-agent scope exists to
+  // prevent. The count keeps the agent pending until the LAST change settles.
   const [pendingCounts, setPendingCounts] = createSignal<ReadonlyMap<string, number>>(new Map())
   // Global spinner debounce/timeout. These drive `loading` (the aggregate spinner)
   // ONLY -- they must never touch per-agent pending tracking, or one agent's stop()

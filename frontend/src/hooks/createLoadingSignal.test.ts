@@ -111,12 +111,11 @@ describe('createLoadingSignal', () => {
   })
 
   it('keeps an agent pending until ALL its concurrent changes settle (refcount, not membership)', () => {
-    // Regression: a multi-write action (Codex "Bypass permissions" fires three
-    // updateAgentSettings RPCs for one agent at once) -- and rapid back-to-back
-    // changes -- must keep the agent pending until the LAST RPC settles. With set
-    // membership, the first resolving RPC cleared the shared marker while the others
-    // were still in flight, letting a status push overwrite the still-optimistic
-    // values mid-batch.
+    // Regression: changes that overlap for one agent, such as a model pick right
+    // after a permission preset, must keep the agent pending until the LAST RPC
+    // settles. With set membership, the first RPC to resolve cleared the shared
+    // marker while the others were still in flight. A status push could then
+    // overwrite the still-optimistic values in the middle of the batch.
     createRoot((dispose) => {
       const signal = createLoadingSignal()
       // Three concurrent changes for the same agent.

@@ -30,8 +30,11 @@ const codexPlugin: ProviderPlugin = {
     compactionBoundaryFromMessage: codexCompactionBoundary,
   },
   configuration: {
-    // Seed a new Codex agent with its default collaboration mode.
-    defaultProviderOptions: { [CODEX_OPTION.CollaborationMode]: CODEX_OPTION_DEFAULT.CollaborationMode },
+    // Seed a new Codex agent with its default collaboration mode and permission profile.
+    defaultProviderOptions: {
+      [CODEX_OPTION.CollaborationMode]: CODEX_OPTION_DEFAULT.CollaborationMode,
+      [CODEX_OPTION.PermissionProfile]: CODEX_OPTION_DEFAULT.PermissionProfile,
+    },
     // Multi-Agent V2 rejects direct app-server input for spawned child threads.
     // The child tab is a read-only transcript.
     supportsSubagentSend: false,
