@@ -360,21 +360,25 @@ CREATE TABLE control_requests (
     PRIMARY KEY (agent_id, request_id)
 );
 
--- Control responses retain their immutable request and answer until finalization.
--- A claim identifies one request instance across retries and process restarts.
--- A definite delivery failure releases the claim. An uncertain delivery keeps it.
--- The delivered state permits transcript recovery without another provider call.
-CREATE TABLE control_response_answers (
-    agent_id    TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
-    request_id  TEXT NOT NULL,
-    claim_token TEXT NOT NULL DEFAULT '',
-    -- A ControlResponseState ordinal, and only the four this table STORES:
-    -- PENDING (2), UNCERTAIN (3), DELIVERED (4), COMPLETED (5). READY (1) and
-    -- CANCELED (6) describe a request with no answer row at all, which
-    -- controlResponseState derives from the control_requests table instead --
-    -- so a row carrying one would describe a state its own existence
-    -- contradicts, and the CHECK refuses it.
-    state INTEGER NOT NULL DEFAULT 2 CHECK (typeof(state) = 'integer') CHECK (state BETWEEN 2 AND 5),
+-- One ledger owns delivery state for every durable control operation.
+-- ControlDeliveryKind and ControlDeliveryState supply the ordinals below.
+-- enum_column_numbering_test.go checks both ranges and the payload kind constants.
+CREATE TABLE control_deliveries (
+    id TEXT PRIMARY KEY NOT NULL CHECK (id <> ''),
+    agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    kind INTEGER NOT NULL CHECK (typeof(kind) = 'integer') CHECK (kind BETWEEN 1 AND 2),
+    operation_id TEXT NOT NULL CHECK (operation_id <> ''),
+    instance_id TEXT NOT NULL,
+    state INTEGER NOT NULL CHECK (typeof(state) = 'integer') CHECK (state BETWEEN 1 AND 4),
+    UNIQUE (agent_id, kind, operation_id, instance_id),
+    UNIQUE (id, kind)
+);
+
+-- Retained request and answer data supports recovery after the native request disappears.
+CREATE TABLE control_response_payloads (
+    delivery_id TEXT PRIMARY KEY NOT NULL,
+    -- Only CONTROL_RESPONSE payloads belong here. The composite foreign key enforces that relation.
+    kind INTEGER NOT NULL DEFAULT 1 CHECK (kind = 1),
     request_payload BLOB NOT NULL DEFAULT X'',
     response_content BLOB NOT NULL DEFAULT X'',
     resolved_content BLOB NOT NULL DEFAULT X'',
@@ -383,19 +387,35 @@ CREATE TABLE control_response_answers (
     source_seq INTEGER NOT NULL DEFAULT 0 CHECK (source_seq >= 0),
     feedback TEXT NOT NULL DEFAULT '',
     agent_session_id TEXT NOT NULL DEFAULT '',
-    -- An AgentProvider ordinal, under the same CHECK as messages.agent_provider.
-    -- It carries NO default: ClaimControlResponseAnswer binds the provider, and
-    -- the replay compares this value against the live agent's own -- so a row
-    -- that recorded 0 for a forgotten write would match an agent whose provider
-    -- field was also unset.
     agent_provider INTEGER NOT NULL
         CHECK (typeof(agent_provider) = 'integer') CHECK (agent_provider BETWEEN 1 AND 30),
     input_id TEXT NOT NULL DEFAULT '',
-    PRIMARY KEY (agent_id, request_id, claim_token)
+    FOREIGN KEY (delivery_id, kind) REFERENCES control_deliveries(id, kind) ON DELETE CASCADE
+);
+CREATE INDEX idx_control_response_input ON control_response_payloads(input_id)
+WHERE input_id <> '';
+
+-- A review can outlive its transcript row. Only the delivery owns this payload.
+CREATE TABLE auto_review_approval_payloads (
+    delivery_id TEXT PRIMARY KEY NOT NULL,
+    -- Only AUTO_REVIEW_APPROVAL payloads belong here.
+    kind INTEGER NOT NULL DEFAULT 2 CHECK (kind = 2),
+    message_id TEXT NOT NULL CHECK (message_id <> ''),
+    FOREIGN KEY (delivery_id, kind) REFERENCES control_deliveries(id, kind) ON DELETE CASCADE
 );
 
-CREATE INDEX idx_control_response_input ON control_response_answers(agent_id, input_id)
-WHERE input_id <> '';
+-- Read models join operation data to its single delivery state.
+CREATE VIEW control_response_answers AS
+SELECT d.id AS delivery_id, d.agent_id, d.operation_id AS request_id,
+    d.instance_id AS claim_token, d.state, p.request_payload, p.response_content,
+    p.resolved_content, p.plan_approval_settings, p.execution_session_id,
+    p.source_seq, p.feedback, p.agent_session_id, p.agent_provider, p.input_id
+FROM control_deliveries d JOIN control_response_payloads p ON p.delivery_id = d.id;
+
+CREATE VIEW auto_review_approvals AS
+SELECT d.id AS delivery_id, d.agent_id, d.instance_id AS agent_session_id,
+    d.operation_id AS review_id, p.message_id, d.state
+FROM control_deliveries d JOIN auto_review_approval_payloads p ON p.delivery_id = d.id;
 
 -- Scheduled synthetic auto-continue messages
 CREATE TABLE auto_continue_schedules (
@@ -705,7 +725,15 @@ DROP VIEW IF EXISTS worktree_tab_liveness;
 DROP TABLE IF EXISTS worktree_tabs;
 DROP TABLE IF EXISTS worktrees;
 DROP TABLE IF EXISTS auto_continue_schedules;
-DROP TABLE IF EXISTS control_response_answers;
+DROP VIEW IF EXISTS auto_review_approvals;
+DROP TABLE IF EXISTS auto_review_approval_payloads;
+DROP TABLE IF EXISTS agent_input_queue_attachments;
+DROP TABLE IF EXISTS agent_input_queue_items;
+DROP TABLE IF EXISTS agent_input_queue_state;
+DROP TABLE IF EXISTS agent_turn_ends;
+DROP VIEW IF EXISTS control_response_answers;
+DROP TABLE IF EXISTS control_response_payloads;
+DROP TABLE IF EXISTS control_deliveries;
 DROP TABLE IF EXISTS control_requests;
 DROP TRIGGER IF EXISTS trg_messages_seq_hwm_update;
 DROP TRIGGER IF EXISTS trg_messages_seq_hwm_insert;

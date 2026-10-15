@@ -45,6 +45,7 @@ import { ConfirmDialog } from '~/components/common/ConfirmDialog'
 import { FileViewer } from '~/components/fileviewer/FileViewer'
 import { pageScrollFocusedTerminal, TerminalView } from '~/components/terminal/TerminalView'
 import { bindBranchActions, focusedBranchAction } from '~/components/workspace/branchActions'
+import { AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { GitFileStatusCode } from '~/generated/proto/leapmux/v1/common_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { createImperativeRef } from '~/lib/imperativeRef'
@@ -964,6 +965,15 @@ export function createTileRenderer(opts: TileRendererOpts) {
                   }
                 : {}),
               get todos() { return todosFor(agentId) },
+              // A getter, so the control follows the agent. Only a running root agent
+              // takes the approval: a stopped agent has no process to record it, and
+              // Codex refuses it for a Multi-Agent V2 subagent.
+              get onApproveAutoReviewDenial() {
+                const current = agent()
+                if (current === undefined || isSubagentTab(current) || current.agentStatus !== AgentStatus.ACTIVE)
+                  return undefined
+                return (messageId: string, reviewId: string) => agentOps.handleApproveAutoReviewDenial(agentId, messageId, reviewId)
+              },
             }
 
             const railProps = createMemo<ChatRailProps>(() => ({

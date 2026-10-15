@@ -7,14 +7,36 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 )
 
-// DefaultApprovalPolicy applies to a new Codex agent. LeapMux owns this default.
-// The browser reads the other option defaults from contracts/codex-protocol.json.
-const DefaultApprovalPolicy = "on-request"
+// These Go-only permission modes use the native Codex approval policy values.
+// The browser and worker share the other modes through the generated contracts.
+// Approve for Me maps to the on-request policy with the auto-review reviewer.
+// codexApprovalWire defines that mapping.
+const (
+	ModeAskForApproval = "on-request"
+	ModeUnlessTrusted  = "untrusted"
+)
 
-// codexStaticOptionGroups holds Codex's option groups that do not depend on the
-// model catalog: fast mode, workflow, approval policy, sandbox policy and network
-// access. The factory registration and Agent.OptionGroups both read this one
-// value, so the static fallback and a running agent offer the same template.
+// DefaultPermissionMode applies to a new Codex agent. LeapMux owns this default.
+// The browser reads the other option defaults from contracts/codex-protocol.json.
+const DefaultPermissionMode = ModeAskForApproval
+
+// ProfileReadOnly is the built-in profile that no browser preset selects.
+// permissionProfile/list reports built-in profiles and user-defined config.toml profiles.
+const ProfileReadOnly = ":read-only"
+
+// codexBuiltinProfiles holds the display name and the description of each built-in
+// profile. The static option group offers these three, and a live catalog gives
+// them the same names, so a profile reads the same before and after discovery.
+var codexBuiltinProfiles = []*leapmuxv1.AvailableOption{
+	{Id: contracts.CodexPermissionProfileWorkspace, Name: "Workspace", Description: "Read and edit files in the workspace, and run commands. Network access and edits outside the workspace need approval."},
+	{Id: ProfileReadOnly, Name: "Read Only", Description: "Read files in the workspace. Edits and network access need approval."},
+	{Id: contracts.CodexPermissionProfileDangerFullAccess, Name: "Full Access", Description: "Edit any file and use the network, with no sandbox."},
+}
+
+// codexStaticOptionGroups holds the option groups that do not depend on the model catalog.
+// Registration and Agent.OptionGroups read this value and offer the same template.
+// A live agent offers only the approval policies that its requirements allow.
+// It replaces the permission profiles with the list that Codex reports.
 var codexStaticOptionGroups = []*leapmuxv1.AvailableOptionGroup{
 	{
 		Id:           contracts.CodexOptionServiceTier,
@@ -41,37 +63,23 @@ var codexStaticOptionGroups = []*leapmuxv1.AvailableOptionGroup{
 	{
 		Id:           agent.OptionIDPermissionMode,
 		Label:        "Approval Policy",
-		DefaultValue: DefaultApprovalPolicy,
+		DefaultValue: DefaultPermissionMode,
 		Mutable:      true,
 		Order:        agent.OptionOrderPermissionMode,
 		Options: []*leapmuxv1.AvailableOption{
-			{Id: "never", Name: "Full Auto"},
-			{Id: DefaultApprovalPolicy, Name: "Suggest & Approve"},
-			{Id: "untrusted", Name: "Auto-edit"},
+			{Id: ModeAskForApproval, Name: "Ask for Approval", Description: "Codex asks you before an action that its permissions do not allow."},
+			{Id: contracts.CodexPermissionModeApproveForMe, Name: "Approve for Me", Description: "A reviewer agent approves or denies each request that would ask you. Each review uses model tokens."},
+			{Id: ModeUnlessTrusted, Name: "Ask Unless Trusted", Description: "Codex asks you before each command that no trusted rule allows."},
+			{Id: contracts.CodexPermissionModeNever, Name: "Never Ask", Description: "Codex never asks. An action that its permissions do not allow fails."},
 		},
 	},
 	{
-		Id:           contracts.CodexOptionSandboxPolicy,
-		Label:        "Sandbox Policy",
-		DefaultValue: contracts.CodexOptionDefaultSandboxPolicy,
-		Mutable:      true,
-		Order:        agent.OptionOrderProviderFourth,
-		Options: []*leapmuxv1.AvailableOption{
-			{Id: SandboxDangerFullAccess, Name: "Full Access", Description: "No filesystem restrictions"},
-			{Id: SandboxWorkspaceWrite, Name: "Workspace Write", Description: "Write only within the working directory"},
-			{Id: SandboxReadOnly, Name: "Read Only", Description: "No write access to the filesystem"},
-		},
-	},
-	{
-		Id:           contracts.CodexOptionNetworkAccess,
-		Label:        "Network Access",
-		DefaultValue: contracts.CodexOptionDefaultNetworkAccess,
+		Id:           contracts.CodexOptionPermissionProfile,
+		Label:        "Permissions",
+		DefaultValue: contracts.CodexOptionDefaultPermissionProfile,
 		Mutable:      true,
 		Order:        agent.OptionOrderProviderThird,
-		Options: []*leapmuxv1.AvailableOption{
-			{Id: NetworkRestricted, Name: "Restricted", Description: "No network access from the sandbox"},
-			{Id: NetworkEnabled, Name: "Enabled", Description: "Allow network access from the sandbox"},
-		},
+		Options:      codexBuiltinProfiles,
 	},
 }
 
@@ -90,16 +98,15 @@ func Registration() agent.Registration {
 		Locator:       codexLocator,
 		DefaultModels: codexDefaultModels,
 		OptionGroups:  codexStaticOptionGroups,
-		// model + the provider options above (static groups) + effort. The sandbox/network/
-		// collaboration/service-tier axes are already static OptionGroups, so only effort
-		// (built from the model catalog) needs declaring here.
+		// The static option groups declare the provider axes except effort.
+		// The model catalog supplies effort, so declare that axis here.
 		AdditionalOptionIDs: []string{agent.OptionIDEffort},
-		// Seed the sandbox/network/collaboration/service-tier defaults into a fresh agent's
-		// launch options; resolveProviderDefaults applies these for every provider uniformly.
+		// Set the provider defaults in a new agent's launch options.
+		// resolveProviderDefaults applies them for every provider.
 		ProviderOptionDefaults: codexOptionDefaults(),
-		// Codex has no new-session safe default: Suggest & Approve already asks.
+		// Codex has no new-session safe default: Ask for Approval already asks.
 		PermissionDefaults: agent.PermissionDefaults{
-			Fallback: DefaultApprovalPolicy,
+			Fallback: DefaultPermissionMode,
 		},
 		FixedPermissionModes: true,
 		EnvModelKey:          "LEAPMUX_CODEX_DEFAULT_MODEL",

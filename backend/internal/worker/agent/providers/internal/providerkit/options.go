@@ -73,6 +73,21 @@ func FilterGroupOptions(static *leapmuxv1.AvailableOptionGroup, keep func(*leapm
 	return g
 }
 
+// ReplaceGroupOptions returns a shallow copy of static that offers options instead of the
+// template's list. Every other field comes from the template. It returns nil for a nil
+// input. It serves an axis whose values the provider DISCOVERS at runtime and that the
+// template can only seed: Codex lists the permission profiles that config.toml defines.
+// Like FilterGroupOptions, it never changes the shared static template, and it composes
+// with LiveGroup.
+func ReplaceGroupOptions(static *leapmuxv1.AvailableOptionGroup, options []*leapmuxv1.AvailableOption) *leapmuxv1.AvailableOptionGroup {
+	if static == nil {
+		return nil
+	}
+	g := cloneOptionGroupTemplate(static)
+	g.Options = options
+	return g
+}
+
 // modelThenEffort returns the model group, then the effort group, and omits a group that is
 // nil. The mutable builder (ModelAndEffortGroups) and the read-only builder
 // (ReadOnlyModelAndEffortGroups) both call it, so they share one order and one omission rule

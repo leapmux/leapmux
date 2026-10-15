@@ -21,6 +21,58 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type codexResolvedControlSink struct {
+	*agenttest.ControlSink
+	publishedInstance          string
+	canceledInstance           string
+	unconditionalCancellations int
+}
+
+func (s *codexResolvedControlSink) PublishControlRequest(request agentapi.ControlRequest) error {
+	s.publishedInstance = request.InstanceID
+	return s.ControlSink.PublishControlRequest(request)
+}
+
+func (s *codexResolvedControlSink) CancelControlRequest(requestID string) {
+	s.unconditionalCancellations++
+	s.ControlSink.CancelControlRequest(requestID)
+}
+
+func (s *codexResolvedControlSink) CancelControlRequestInstance(requestID, instanceID string) {
+	s.canceledInstance = instanceID
+	s.ControlSink.CancelControlRequestInstance(requestID, instanceID)
+}
+
+func TestCodexResolvedNotificationKeepsReaderFinalizationOwnership(t *testing.T) {
+	t.Parallel()
+	for _, state := range []string{"open", "answered", "unknown"} {
+		t.Run(state, func(t *testing.T) {
+			t.Parallel()
+			a, controls, _ := newCodexControlAgent(t)
+			sink := &codexResolvedControlSink{ControlSink: controls}
+			a.sink = agentapi.NewProviderServices(sink)
+			if state != "unknown" {
+				handleCodexOutput(a, providerkit.ParseLine([]byte(codexCommandApprovalLine)))
+			}
+			if state == "answered" {
+				require.NoError(t, a.SendRawInput([]byte(`{"jsonrpc":"2.0","id":7,"result":{"decision":"accept"}}`), agentapi.StopContext{}))
+				assert.False(t, a.OutstandingControlForTest("jsonrpc:7"))
+			}
+			a.handleServerRequestResolved(json.RawMessage(`{"threadId":"main-thread","requestId":7}`))
+			assert.Zero(t, sink.unconditionalCancellations)
+			assert.False(t, a.OutstandingControlForTest("jsonrpc:7"))
+			if state == "open" {
+				require.NotEmpty(t, sink.publishedInstance)
+				assert.Equal(t, sink.publishedInstance, sink.canceledInstance)
+				assert.Equal(t, []string{"jsonrpc:7"}, sink.CanceledControls())
+			} else {
+				assert.Empty(t, sink.canceledInstance)
+				assert.Empty(t, sink.CanceledControls(), "the service owns finalization after a reader answer")
+			}
+		})
+	}
+}
+
 func TestCodexControlPublicationFailureReturnsProtocolError(t *testing.T) {
 	t.Parallel()
 	output := &agenttest.Stdin{}
@@ -3089,13 +3141,19 @@ func TestCodexThreadSettingsReadsCapturedCollaborationObject(t *testing.T) {
 	sink := &agenttest.Sink{}
 	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	a.model, a.effort, a.collaborationMode = "old", "low", "default"
-	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"thread/settings/updated","params":{"threadId":"main-thread","threadSettings":{"disabledPluginIds":[],"cwd":"/Users/trustin/Workspaces/leapmux/.tmp/codex159-raw-exec-probe/workspace","approvalPolicy":"never","approvalsReviewer":"user","sandboxPolicy":{"type":"dangerFullAccess"},"activePermissionProfile":null,"model":"gpt-5.6-luna","modelProvider":"private-probe","serviceTier":null,"effort":"medium","summary":null,"collaborationMode":{"mode":"plan","settings":{"model":"gpt-5.6-luna","reasoning_effort":"medium","developer_instructions":null}},"multiAgentMode":"explicitRequestOnly","personality":null}},"emittedAtMs":1790872800652}`)))
+	a.permissionMode, a.permissionProfile = contracts.CodexPermissionModeApproveForMe, contracts.CodexPermissionProfileWorkspace
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"thread/settings/updated","params":{"threadId":"main-thread","threadSettings":{"disabledPluginIds":[],"cwd":"/Users/trustin/Workspaces/leapmux/.tmp/codex159-raw-exec-probe/workspace","approvalPolicy":"never","approvalsReviewer":"user","sandboxPolicy":{"type":"dangerFullAccess"},"activePermissionProfile":{"id":":danger-full-access","extends":null},"model":"gpt-5.6-luna","modelProvider":"private-probe","serviceTier":null,"effort":"medium","summary":null,"collaborationMode":{"mode":"plan","settings":{"model":"gpt-5.6-luna","reasoning_effort":"medium","developer_instructions":null}},"multiAgentMode":"explicitRequestOnly","personality":null}},"emittedAtMs":1790872800652}`)))
 	require.Equal(t, 1, sink.SettingsRefreshCount())
 	refresh := sink.LastSettingsRefresh()
 	assert.Equal(t, "gpt-5.6-luna", refresh.Model)
 	assert.Equal(t, "medium", refresh.Effort)
 	assert.Equal(t, "plan", refresh.Options[contracts.CodexOptionCollaborationMode])
 	assert.Empty(t, sink.Messages())
+	// The echo of a turn/start that carried an older snapshot can race a settings
+	// change, so the frame never moves the permission axes. LeapMux sends them on
+	// every request.
+	assert.Equal(t, contracts.CodexPermissionModeApproveForMe, a.permissionMode)
+	assert.Equal(t, contracts.CodexPermissionProfileWorkspace, a.permissionProfile)
 }
 
 func TestCodexThreadSettingsIgnoresForeignThread(t *testing.T) {
@@ -3167,4 +3225,68 @@ func TestHandleCodexOutput_FileChangeRowsStoreNoWorkerCompletion(t *testing.T) {
 		_, stored := agentapi.MessageMetadata(agentapi.MessageContent{Original: row.Content, Completion: row.Completion})
 		assert.Equal(t, leapmuxv1.MessageCompletion_MESSAGE_COMPLETION_UNSPECIFIED, stored)
 	}
+}
+
+const (
+	codexReviewStartedLine   = `{"method":"item/autoApprovalReview/started","params":{"threadId":"main-thread","turnId":"turn-1","reviewId":"review-1","targetItemId":"item-1","startedAtMs":1000,"review":{"status":"inProgress","riskLevel":null,"userAuthorization":null,"rationale":null},"action":{"type":"command","source":"shell","command":"make clean","cwd":"/work"}}}`
+	codexReviewCompletedLine = `{"method":"item/autoApprovalReview/completed","params":{"threadId":"main-thread","turnId":"turn-1","reviewId":"review-1","targetItemId":"item-1","startedAtMs":1000,"completedAtMs":2000,"decisionSource":"agent","review":{"status":"denied","riskLevel":"high","userAuthorization":"low","rationale":"Untrusted host."},"action":{"type":"command","source":"shell","command":"make clean","cwd":"/work"}}}`
+	codexPerReviewWarning    = `{"method":"guardianWarning","params":{"threadId":"main-thread","message":"Automatic approval review denied (risk: high, authorization: low): Untrusted host."}}`
+	codexDenialLimitWarning  = `{"method":"guardianWarning","params":{"threadId":"main-thread","message":"Automatic approval review rejected too many approval requests for this turn (3 consecutive, 3 in the last 50 reviews); interrupting the turn."}}`
+	codexStrictReviewNotice  = `{"method":"autoApprovalReview/strictReviewRequired","params":{"threadId":"main-thread","turnId":"turn-1","startedAtMs":1000}}`
+)
+
+// TestHandleCodexOutput_AutoReviewFramesKeptInTheTranscript pins which auto-review
+// frames the transcript keeps: the completed review, the denial-limit warning and the
+// strict-review notice. The started frame and the warning that repeats each finished
+// review add nothing that the completed review does not state.
+func TestHandleCodexOutput_AutoReviewFramesKeptInTheTranscript(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		line string
+		kept bool
+	}{
+		{name: "the started review", line: codexReviewStartedLine, kept: false},
+		{name: "the completed review", line: codexReviewCompletedLine, kept: true},
+		{name: "the warning that repeats one review", line: codexPerReviewWarning, kept: false},
+		{name: "the denial-limit warning", line: codexDenialLimitWarning, kept: true},
+		{name: "the strict-review notice", line: codexStrictReviewNotice, kept: true},
+		{name: "a warning with no message", line: `{"method":"guardianWarning","params":{"threadId":"main-thread"}}`, kept: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+
+			handleCodexOutput(agent, providerkit.ParseLine([]byte(tc.line)))
+
+			require.Zero(t, sink.MessageCount())
+			if !tc.kept {
+				assert.Zero(t, sink.NotificationCount())
+				return
+			}
+			require.Equal(t, 1, sink.NotificationCount())
+			assert.JSONEq(t, tc.line, string(sink.LastNotification().Content))
+		})
+	}
+}
+
+func TestHandleCodexOutput_SubagentAutoReviewRoutesToTheChildTranscript(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+	review := strings.ReplaceAll(codexReviewCompletedLine, `"threadId":"main-thread"`, `"threadId":"child-1"`)
+
+	// The route is not ready yet, so the review waits for it.
+	handleCodexOutput(agent, providerkit.ParseLine([]byte(review)))
+	assert.Zero(t, sink.NotificationCount())
+
+	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"spawn-1","kind":"started","agentThreadId":"child-1","agentPath":"/root/reviewer"}}}`)))
+
+	assert.Zero(t, sink.NotificationCount(), "the parent transcript must not receive the child's review")
+	child := sink.Child("child-of-spawn-1")
+	require.Equal(t, 1, child.NotificationCount())
+	assert.JSONEq(t, review, string(child.LastNotification().Content))
 }

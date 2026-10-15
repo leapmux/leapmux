@@ -38,7 +38,7 @@ func mergeOptions(current, incoming OptionMap) OptionMap { return current.Merge(
 
 // resolveProviderDefaults returns a clone of options with missing well-known and provider-
 // specific values filled: the model and effort defaults, plus the provider's seed defaults
-// (e.g. Codex's sandbox / network / collaboration / service-tier). options is left untouched.
+// (e.g. Codex's permission profile, collaboration mode and service tier). options is left untouched.
 // It lives here, not on optionmap.Map, because filling defaults needs the worker/agent
 // provider registry, which the leaf option-map package deliberately does not depend on.
 func resolveProviderDefaults(registry *agent.Registry, options OptionMap, provider leapmuxv1.AgentProvider) OptionMap {

@@ -356,6 +356,41 @@ export const subagentReportHeader = style({
   fontWeight: 500,
 })
 
+// One automatic review: a header that states the outcome and the action, the
+// reviewer's rationale, and the reader's approval of a denial.
+export const autoReview = style({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 'var(--space-2)',
+  alignSelf: 'stretch',
+  minWidth: 0,
+})
+
+export const autoReviewHeader = style({
+  display: 'flex',
+  alignItems: 'center',
+  gap: 'var(--space-2)',
+  color: 'var(--muted-foreground)',
+  fontSize: 'var(--text-7)',
+  fontWeight: 500,
+  // A long command must wrap rather than widen the row.
+  overflowWrap: 'anywhere',
+  minWidth: 0,
+})
+
+// A denial is the outcome the reader must act on, so it reads in the danger color.
+export const autoReviewHeaderDenied = style({
+  color: 'var(--danger)',
+})
+
+export const autoReviewActions = style({
+  display: 'flex',
+  alignItems: 'center',
+  gap: 'var(--space-2)',
+  color: 'var(--muted-foreground)',
+  fontSize: 'var(--text-7)',
+})
+
 // Preserve spaces and line breaks in native answers while allowing long text to wrap.
 export const controlResponseLabel = style({
   whiteSpace: 'pre-wrap',

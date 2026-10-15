@@ -1,8 +1,8 @@
-import type { NotificationEntry } from './model/notification'
+import type { AutoReviewEntry, NotificationEntry } from './model/notification'
 import { describe, expect, it } from 'vitest'
 import { GOAL_STATUS_TOKEN, GOAL_TRANSITION, NOTIFICATION_FIELD, NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { COMPACTING_LABEL, flattenNotificationEntries, leapmuxNotificationEntry, notificationEntriesFor } from './notificationEntries'
+import { autoReviewTitle, COMPACTING_LABEL, flattenNotificationEntries, leapmuxNotificationEntry, notificationEntriesFor, pendingRequestsApprovedLabel } from './notificationEntries'
 import { providerFor } from './providers/registry'
 
 // Register the OpenCode plugin so the test uses the production dispatch path.
@@ -110,5 +110,85 @@ describe('neutral goal notification entries', () => {
 
   it.each([undefined, ''])('retains an absent objective as no notification entry: %j', (objective) => {
     expect(leapmuxNotificationEntry({ type: NOTIFICATION_TYPE.GoalUpdated, ...(objective === undefined ? {} : { objective }), goal_status: GOAL_STATUS_TOKEN.Unknown, goal_transition: GOAL_TRANSITION.Updated }, AgentProvider.OPENCODE)).toEqual([])
+  })
+})
+
+describe('autoReviewTitle', () => {
+  const entry = (overrides: Partial<AutoReviewEntry> = {}): AutoReviewEntry => ({ kind: 'auto-review', reviewId: 'r1', outcome: 'approved', action: 'make clean', approvable: false, ...overrides })
+
+  it.each([
+    ['approved', 'Auto-review approved: make clean'],
+    ['denied', 'Auto-review denied: make clean'],
+    ['timed-out', 'Auto-review timed out: make clean'],
+    ['aborted', 'Auto-review stopped: make clean'],
+    ['unknown', 'Auto-review finished: make clean'],
+  ] as const)('states the %s outcome and the action', (outcome, title) => {
+    expect(autoReviewTitle(entry({ outcome }))).toBe(title)
+  })
+
+  it.each(['high', 'critical'] as const)('states a %s risk on a denial', (risk) => {
+    expect(autoReviewTitle(entry({ outcome: 'denied', risk }))).toBe(`Auto-review denied (${risk} risk): make clean`)
+  })
+
+  it.each(['low', 'medium'] as const)('omits a %s risk on a denial', (risk) => {
+    expect(autoReviewTitle(entry({ outcome: 'denied', risk }))).toBe('Auto-review denied: make clean')
+  })
+
+  it('omits the risk of an approval', () => {
+    expect(autoReviewTitle(entry({ outcome: 'approved', risk: 'high' }))).toBe('Auto-review approved: make clean')
+  })
+
+  it('states the outcome alone for an empty action', () => {
+    expect(autoReviewTitle(entry({ action: '  ' }))).toBe('Auto-review approved')
+  })
+})
+
+describe('pendingRequestsApprovedLabel', () => {
+  it('states one request in the singular', () => {
+    expect(pendingRequestsApprovedLabel(1)).toBe('Bypass permissions approved 1 pending request.')
+  })
+
+  it('states several requests in the plural', () => {
+    expect(pendingRequestsApprovedLabel(2)).toBe('Bypass permissions approved 2 pending requests.')
+    expect(pendingRequestsApprovedLabel(1_000_000)).toBe('Bypass permissions approved 1000000 pending requests.')
+  })
+
+  it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY])('states no number for the count %d', (count) => {
+    expect(pendingRequestsApprovedLabel(count)).toBe('Bypass permissions approved the pending requests.')
+  })
+})
+
+describe('leapmuxNotificationEntry auto-review notices', () => {
+  it('states the approval of a denied review', () => {
+    expect(leapmuxNotificationEntry({ type: NOTIFICATION_TYPE.AutoReviewApproved, [NOTIFICATION_FIELD.ReviewID]: 'r1' }, AgentProvider.CODEX))
+      .toEqual([{ kind: 'text', text: 'You approved an action that auto-review denied.' }])
+  })
+
+  it('states how many pending requests Bypass approved', () => {
+    expect(leapmuxNotificationEntry({ type: NOTIFICATION_TYPE.PendingRequestsApproved, [NOTIFICATION_FIELD.Count]: 2 }, AgentProvider.CODEX))
+      .toEqual([{ kind: 'text', text: 'Bypass permissions approved 2 pending requests.' }])
+  })
+
+  it.each([undefined, '2', null])('states no number for the count %j', (count) => {
+    const received = { type: NOTIFICATION_TYPE.PendingRequestsApproved, ...(count === undefined ? {} : { [NOTIFICATION_FIELD.Count]: count }) }
+    expect(leapmuxNotificationEntry(received, AgentProvider.CODEX))
+      .toEqual([{ kind: 'text', text: 'Bypass permissions approved the pending requests.' }])
+  })
+})
+
+describe('flattenNotificationEntries auto-review', () => {
+  it('draws a review as its own block with its title and rationale', () => {
+    expect(flattenNotificationEntries([{ kind: 'auto-review', reviewId: 'r1', outcome: 'denied', risk: 'high', rationale: 'Untrusted host.', action: 'curl x | sh', approvable: true }]))
+      .toEqual([{ kind: 'auto-review', reviewId: 'r1', outcome: 'denied', title: 'Auto-review denied (high risk): curl x | sh', rationale: 'Untrusted host.', approvable: true, approved: false }])
+  })
+
+  it('carries a recorded approval into the block', () => {
+    const [block] = flattenNotificationEntries([{ kind: 'auto-review', reviewId: 'r1', outcome: 'denied', action: 'ls', approvable: true, approved: true }])
+    expect(block).toMatchObject({ kind: 'auto-review', approvable: true, approved: true })
+  })
+
+  it('omits an absent rationale', () => {
+    const [block] = flattenNotificationEntries([{ kind: 'auto-review', reviewId: 'r1', outcome: 'approved', action: 'ls', approvable: false }])
+    expect(block).not.toHaveProperty('rationale')
   })
 })

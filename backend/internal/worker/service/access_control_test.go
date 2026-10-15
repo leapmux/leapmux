@@ -118,6 +118,9 @@ var agentHandlerCases = []agentHandlerCase{
 			Objective: "",
 		}
 	}},
+	{"ApproveAutoReviewDenial", func(id string) proto.Message {
+		return &leapmuxv1.ApproveAutoReviewDenialRequest{AgentId: id, MessageId: "message-1", ReviewId: "review-1"}
+	}},
 	{"ListAgentMessages", func(id string) proto.Message {
 		return &leapmuxv1.ListAgentMessagesRequest{AgentId: id}
 	}},

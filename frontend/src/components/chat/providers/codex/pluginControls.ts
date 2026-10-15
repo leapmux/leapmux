@@ -1,4 +1,5 @@
 import type { ProviderControlCapability } from '../capabilities'
+import { CODEX_METHOD } from '~/generated/contracts/codex-protocol'
 import { pickObject, pickString } from '~/lib/jsonPick'
 
 import { buildAllowResponse, buildDenyResponse, getToolInput } from '~/utils/controlResponse'
@@ -22,7 +23,7 @@ export const codexControls: ProviderControlCapability = {
   preservesSelectionNotes: true,
   controlResponseDisplay: withElicitationResponse(codexElicitation, codexControlResponseSummary),
   askUserQuestion: {
-    isRequest: payload => payload.method === 'item/tool/requestUserInput',
+    isRequest: payload => payload.method === CODEX_METHOD.ToolRequestUserInput,
     // Read every question element through the shared validator. A valid outer
     // array does not make a null or string element a question.
     extractQuestions: payload => questionsFromWire(pickObject(payload, 'params')?.questions),
@@ -36,7 +37,7 @@ export const codexControls: ProviderControlCapability = {
     const method = pickString(payload, 'method', '')
     if (isCodexPlanModePrompt(payload))
       return content ? buildDenyResponse(requestId, content) : buildAllowResponse(requestId, getToolInput(payload))
-    if (method === 'item/permissions/requestApproval') {
+    if (method === CODEX_METHOD.PermissionsRequestApproval) {
       return buildJsonRpcResult(requestId, {
         permissions: content ? {} : codexRequestedPermissions(payload),
         scope: 'turn',

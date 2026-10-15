@@ -7,6 +7,8 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude/claudetest"
+	"github.com/leapmux/leapmux/internal/worker/db/dbtest"
+	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/inputqueue"
 	"github.com/stretchr/testify/require"
 )
@@ -19,11 +21,11 @@ func TestPlanExecutionRetryKeepsItsPreparedSession(t *testing.T) {
 	}, svc.Output.NewSink("agent-1", row.AgentProvider), claudetest.StartEcho)
 	require.NoError(t, err)
 	t.Cleanup(func() { svc.Agents.StopAgent("agent-1") })
-	_, err = svc.DB.ExecContext(t.Context(), `INSERT INTO control_response_answers
-        (agent_id,request_id,claim_token,state,input_id,agent_session_id,agent_provider,plan_approval_settings)
-        VALUES ('agent-1','approval','claim',?,'execute','original',?,?)`,
-		int64(leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_COMPLETED),
-		row.AgentProvider, []byte(`{"permissionMode":"acceptEdits","clearContext":true}`))
+	err = dbtest.StoreControlResponse(t.Context(), svc.DB, db.ControlResponseAnswer{
+		AgentID: "agent-1", RequestID: "approval", ClaimToken: "claim", State: storedStateCompleted,
+		InputID: "execute", AgentSessionID: "original", AgentProvider: row.AgentProvider,
+		PlanApprovalSettings: []byte(`{"permissionMode":"acceptEdits","clearContext":true}`),
+	})
 	require.NoError(t, err)
 	starts := 0
 	svc.startAgentFn = func(ctx context.Context, options agent.Options, sink agent.ProviderServices) (map[string]string, error) {
@@ -73,11 +75,11 @@ func TestPlanExecutionResumesThePreparedSessionAfterTheProcessExits(t *testing.T
 	// without a user message in it, so the cold start has a session to resume.
 	_, err := svc.DB.ExecContext(t.Context(), `UPDATE agents SET resumed = 1 WHERE id = 'agent-1'`)
 	require.NoError(t, err)
-	_, err = svc.DB.ExecContext(t.Context(), `INSERT INTO control_response_answers
-        (agent_id,request_id,claim_token,state,input_id,agent_session_id,agent_provider,plan_approval_settings)
-        VALUES ('agent-1','approval','claim',?,'execute','original',?,?)`,
-		int64(leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_COMPLETED),
-		row.AgentProvider, []byte(`{"permissionMode":"acceptEdits","clearContext":true}`))
+	err = dbtest.StoreControlResponse(t.Context(), svc.DB, db.ControlResponseAnswer{
+		AgentID: "agent-1", RequestID: "approval", ClaimToken: "claim", State: storedStateCompleted,
+		InputID: "execute", AgentSessionID: "original", AgentProvider: row.AgentProvider,
+		PlanApprovalSettings: []byte(`{"permissionMode":"acceptEdits","clearContext":true}`),
+	})
 	require.NoError(t, err)
 	var resumeIDs []string
 	svc.startAgentFn = func(ctx context.Context, options agent.Options, sink agent.ProviderServices) (map[string]string, error) {

@@ -78,7 +78,7 @@ func TestCodexStartOrResumeThread(t *testing.T) {
 					return agenttest.RPCReply{Result: json.RawMessage(`{"thread":{"id":"thread-1"},"model":"` + test.responseModel + `"}`)}
 				})
 				a.model = test.storedModel
-				params := codexThreadParams(test.storedModel, "/work", DefaultApprovalPolicy, contracts.CodexOptionDefaultSandboxPolicy, contracts.CodexOptionDefaultServiceTier)
+				params := codexThreadParams(test.storedModel, "/work", codexPermissionSettings{mode: DefaultPermissionMode, profile: contracts.CodexPermissionProfileWorkspace}, contracts.CodexOptionDefaultServiceTier)
 
 				thread, err := a.startOrResumeThread(params, test.resumeID, timeout)
 				require.NoError(t, err)
@@ -173,7 +173,8 @@ func TestCodexClearContextStartsFreshThread(t *testing.T) {
 			"model":"gpt-5.6-sol",
 			"reasoningEffort":"medium",
 			"approvalPolicy":"never",
-			"sandbox":{"type":"dangerFullAccess"}
+			"approvalsReviewer":"user",
+			"activePermissionProfile":{"id":":danger-full-access","extends":null}
 		}`)}
 	})
 	a.threadID = "thread-old"
@@ -182,8 +183,8 @@ func TestCodexClearContextStartsFreshThread(t *testing.T) {
 	a.turnPlanText = "old plan"
 	a.turnAssistantText = "old answer"
 	a.model = "gpt-5.6-sol"
-	a.approvalPolicy = "never"
-	a.sandboxPolicy = SandboxDangerFullAccess
+	a.permissionMode = contracts.CodexPermissionModeNever
+	a.permissionProfile = contracts.CodexPermissionProfileDangerFullAccess
 	a.serviceTier = ServiceTierFast
 
 	sessionID, clearErr := a.ClearContext()
@@ -195,8 +196,9 @@ func TestCodexClearContextStartsFreshThread(t *testing.T) {
 	assert.False(t, a.turnSawPlan)
 	assert.Empty(t, a.turnPlanText)
 	assert.Empty(t, a.turnAssistantText)
-	assert.Equal(t, SandboxDangerFullAccess, a.sandboxPolicy)
-	assert.Equal(t, NetworkEnabled, a.networkAccess)
+	assert.Equal(t, contracts.CodexPermissionModeNever, a.permissionMode)
+	assert.Equal(t, contracts.CodexPermissionProfileDangerFullAccess, a.permissionProfile)
+	assert.True(t, a.permissionsAcknowledged, "the new thread's response acknowledges its settings")
 	assert.Equal(t, "thread-new", sink.LastSessionID())
 
 	sent := requests()
@@ -205,8 +207,10 @@ func TestCodexClearContextStartsFreshThread(t *testing.T) {
 	assert.NotContains(t, sent[0].Params, "threadId", "a clear must not resume the old thread")
 	assert.Equal(t, "clear", sent[0].Params["sessionStartSource"])
 	assert.Equal(t, "gpt-5.6-sol", sent[0].Params["model"])
-	assert.Equal(t, "never", sent[0].Params["approvalPolicy"])
-	assert.Equal(t, SandboxDangerFullAccess, sent[0].Params["sandbox"])
+	assert.Equal(t, contracts.CodexPermissionModeNever, sent[0].Params["approvalPolicy"])
+	assert.Equal(t, codexReviewerUser, sent[0].Params["approvalsReviewer"])
+	assert.Equal(t, contracts.CodexPermissionProfileDangerFullAccess, sent[0].Params["permissions"])
+	assert.NotContains(t, sent[0].Params, "sandbox")
 	assert.Equal(t, ServiceTierFast, sent[0].Params["serviceTier"])
 	assert.Equal(t, map[string]interface{}{"model_reasoning_summary": "detailed"}, sent[0].Params["config"])
 }
@@ -220,7 +224,8 @@ func TestCodexClearContextDoesNotRouteLateChildOutputToTheNewRoot(t *testing.T) 
 			"model":"gpt-5.4",
 			"reasoningEffort":"high",
 			"approvalPolicy":"on-request",
-			"sandbox":{"type":"workspaceWrite"}
+			"approvalsReviewer":"user",
+			"activePermissionProfile":{"id":":workspace","extends":null}
 		}`)}
 	})
 	a.threadID = "thread-old"
@@ -242,7 +247,8 @@ func TestCodexClearContextRejectsAChildRouteThatFinishesLate(t *testing.T) {
 			"model":"gpt-5.4",
 			"reasoningEffort":"high",
 			"approvalPolicy":"on-request",
-			"sandbox":{"type":"workspaceWrite"}
+			"approvalsReviewer":"user",
+			"activePermissionProfile":{"id":":workspace","extends":null}
 		}`)}
 	})
 	a.threadID = "thread-old"
@@ -275,13 +281,14 @@ func TestCodexClearContextRejectsAChildRouteThatFinishesLate(t *testing.T) {
 	assert.False(t, oldRouteReturned, "a completed old-thread write cannot repopulate the new context")
 }
 
-func testCodexThreadResponse(id, model string, effort, serviceTier, approvalPolicy, sandbox json.RawMessage) codexThreadResponse {
+func testCodexThreadResponse(id, model string, effort, serviceTier, approvalPolicy, approvalsReviewer, activePermissionProfile json.RawMessage) codexThreadResponse {
 	response := codexThreadResponse{
-		Model:          model,
-		Effort:         effort,
-		ServiceTier:    serviceTier,
-		ApprovalPolicy: approvalPolicy,
-		Sandbox:        sandbox,
+		Model:                   model,
+		Effort:                  effort,
+		ServiceTier:             serviceTier,
+		ApprovalPolicy:          approvalPolicy,
+		ApprovalsReviewer:       approvalsReviewer,
+		ActivePermissionProfile: activePermissionProfile,
 	}
 	response.Thread.ID = id
 	return response
@@ -296,62 +303,83 @@ func TestCodexThreadResultAppliesConfirmedSettings(t *testing.T) {
 		json.RawMessage(`"medium"`),
 		json.RawMessage(`"fast"`),
 		json.RawMessage(`"on-request"`),
-		json.RawMessage(`"workspace-write"`),
+		json.RawMessage(`"user"`),
+		json.RawMessage(`{"id":":workspace","extends":null}`),
 	))
 	require.NoError(t, err)
 
 	a := &Agent{
-		model:          "gpt-5.6-luna",
-		effort:         agent.EffortAuto,
-		serviceTier:    contracts.CodexOptionDefaultServiceTier,
-		approvalPolicy: "never",
-		sandboxPolicy:  SandboxReadOnly,
+		model:             "gpt-5.6-luna",
+		effort:            agent.EffortAuto,
+		serviceTier:       contracts.CodexOptionDefaultServiceTier,
+		permissionMode:    contracts.CodexPermissionModeNever,
+		permissionProfile: ProfileReadOnly,
 	}
 	a.applyThreadResult(result)
 
 	assert.Equal(t, "gpt-5.6-sol", a.model)
 	assert.Equal(t, "medium", a.effort)
 	assert.Equal(t, ServiceTierFast, a.serviceTier)
-	assert.Equal(t, DefaultApprovalPolicy, a.approvalPolicy)
-	assert.Equal(t, SandboxWorkspaceWrite, a.sandboxPolicy)
+	assert.Equal(t, ModeAskForApproval, a.permissionMode)
+	assert.Equal(t, contracts.CodexPermissionProfileWorkspace, a.permissionProfile)
 }
 
-func TestCodexThreadResultAppliesCurrentSandboxObject(t *testing.T) {
+// TestCodexThreadResultReadsThePermissionMode pins how the approval policy and the
+// approvals reviewer that Codex reports fold into one LeapMux permission mode.
+func TestCodexThreadResultReadsThePermissionMode(t *testing.T) {
 	t.Parallel()
 
-	result, err := newCodexThreadResult(testCodexThreadResponse(
-		"thread-1",
-		"gpt-5.6-sol",
-		nil,
-		nil,
-		nil,
-		json.RawMessage(`{"type":"workspaceWrite","networkAccess":true}`),
-	))
-	require.NoError(t, err)
-
-	a := &Agent{
-		sandboxPolicy: SandboxReadOnly,
-		networkAccess: NetworkRestricted,
+	for _, test := range []struct {
+		name     string
+		policy   json.RawMessage
+		reviewer json.RawMessage
+		want     string
+	}{
+		{name: "approve for me", policy: json.RawMessage(`"on-request"`), reviewer: json.RawMessage(`"auto_review"`), want: contracts.CodexPermissionModeApproveForMe},
+		{name: "ask for approval", policy: json.RawMessage(`"on-request"`), reviewer: json.RawMessage(`"user"`), want: ModeAskForApproval},
+		{name: "an absent reviewer reads as the user", policy: json.RawMessage(`"on-request"`), want: ModeAskForApproval},
+		{name: "a reviewer on never reviews nothing", policy: json.RawMessage(`"never"`), reviewer: json.RawMessage(`"auto_review"`), want: contracts.CodexPermissionModeNever},
+		{name: "a reviewer on untrusted reviews nothing", policy: json.RawMessage(`"untrusted"`), reviewer: json.RawMessage(`"auto_review"`), want: ModeUnlessTrusted},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			result, err := newCodexThreadResult(testCodexThreadResponse("thread-1", "gpt-5.6-sol", nil, nil, test.policy, test.reviewer, nil))
+			require.NoError(t, err)
+			a := &Agent{permissionMode: "prior"}
+			a.applyThreadResult(result)
+			assert.Equal(t, test.want, a.permissionMode)
+		})
 	}
-	a.applyThreadResult(result)
+}
 
-	assert.Equal(t, SandboxWorkspaceWrite, a.sandboxPolicy)
-	assert.Equal(t, NetworkRestricted, a.networkAccess)
+// TestCodexThreadResultKeepsTheRequestedProfile covers the two profile answers that
+// carry no id: Codex reports null for a thread on the legacy sandbox settings, and
+// an absent field says nothing. Both keep the requested profile.
+func TestCodexThreadResultKeepsTheRequestedProfile(t *testing.T) {
+	t.Parallel()
 
-	fullAccess, err := newCodexThreadResult(testCodexThreadResponse(
-		"thread-2",
-		"gpt-5.6-sol",
-		nil,
-		nil,
-		nil,
-		json.RawMessage(`{"type":"dangerFullAccess"}`),
-	))
+	for _, raw := range []json.RawMessage{nil, json.RawMessage(`null`), json.RawMessage(`{"id":""}`)} {
+		result, err := newCodexThreadResult(testCodexThreadResponse("thread-1", "gpt-5.6-sol", nil, nil, nil, nil, raw))
+		require.NoError(t, err)
+		a := &Agent{permissionProfile: ProfileReadOnly}
+		a.applyThreadResult(result)
+		assert.Equalf(t, ProfileReadOnly, a.permissionProfile, "activePermissionProfile %s", raw)
+	}
+
+	custom, err := newCodexThreadResult(testCodexThreadResponse("thread-1", "gpt-5.6-sol", nil, nil, nil, nil,
+		json.RawMessage(`{"id":"my-profile","extends":":workspace"}`)))
 	require.NoError(t, err)
-	a.sandboxPolicy = SandboxReadOnly
-	a.networkAccess = NetworkRestricted
-	a.applyThreadResult(fullAccess)
-	assert.Equal(t, SandboxDangerFullAccess, a.sandboxPolicy)
-	assert.Equal(t, NetworkEnabled, a.networkAccess)
+	a := &Agent{permissionProfile: ProfileReadOnly}
+	a.applyThreadResult(custom)
+	assert.Equal(t, "my-profile", a.permissionProfile, "a config.toml profile is adopted by its id")
+}
+
+func TestCodexThreadResultRejectsAnInvalidProfile(t *testing.T) {
+	t.Parallel()
+
+	_, err := newCodexThreadResult(testCodexThreadResponse("thread-1", "gpt-5.6-sol", nil, nil, nil, nil, json.RawMessage(`42`)))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "activePermissionProfile")
 }
 
 func TestCodexThreadResultPreservesTurnOnlySettings(t *testing.T) {
@@ -363,20 +391,16 @@ func TestCodexThreadResultPreservesTurnOnlySettings(t *testing.T) {
 		json.RawMessage(`"high"`),
 		nil,
 		nil,
-		json.RawMessage(`{"type":"workspaceWrite","networkAccess":false}`),
+		nil,
+		nil,
 	))
 	require.NoError(t, err)
 
-	a := &Agent{
-		effort:        "low",
-		networkAccess: NetworkEnabled,
-	}
+	a := &Agent{effort: "low"}
 	a.applyThreadResult(result)
 
 	assert.Equal(t, "low", a.effort,
 		"thread/start does not accept effort, so its response must not replace an explicit turn setting")
-	assert.Equal(t, NetworkEnabled, a.networkAccess,
-		"thread/start accepts only the sandbox mode, so its response must not replace turn network access")
 }
 
 func TestCodexThreadResultNullSettingsUseProviderDefaults(t *testing.T) {
@@ -387,8 +411,9 @@ func TestCodexThreadResultNullSettingsUseProviderDefaults(t *testing.T) {
 		"gpt-5.6-sol",
 		json.RawMessage(`null`),
 		json.RawMessage(`null`),
+		json.RawMessage(`null`),
 		nil,
-		nil,
+		json.RawMessage(`null`),
 	))
 	require.NoError(t, err)
 
@@ -400,8 +425,8 @@ func TestCodexThreadResultNullSettingsUseProviderDefaults(t *testing.T) {
 
 	assert.Equal(t, agent.EffortHigh, a.effort)
 	assert.Equal(t, contracts.CodexOptionDefaultServiceTier, a.serviceTier)
-	assert.Equal(t, "", a.approvalPolicy)
-	assert.Equal(t, "", a.sandboxPolicy)
+	assert.Equal(t, "", a.permissionMode, "a null policy keeps the unset mode, which has no lifecycle default")
+	assert.Equal(t, "", a.permissionProfile)
 }
 
 func TestCodexThreadResultPreservesGranularApprovalPolicy(t *testing.T) {
@@ -413,12 +438,13 @@ func TestCodexThreadResultPreservesGranularApprovalPolicy(t *testing.T) {
 		nil,
 		nil,
 		json.RawMessage(`{"granular":{"sandboxApproval":true}}`),
+		json.RawMessage(`"user"`),
 		nil,
 	))
 	require.NoError(t, err)
 
-	a := &Agent{approvalPolicy: DefaultApprovalPolicy}
+	a := &Agent{permissionMode: DefaultPermissionMode}
 	a.applyThreadResult(result)
 
-	assert.Equal(t, DefaultApprovalPolicy, a.approvalPolicy)
+	assert.Equal(t, DefaultPermissionMode, a.permissionMode)
 }

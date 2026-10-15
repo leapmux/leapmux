@@ -1,6 +1,6 @@
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import { describe, expect, it, vi } from 'vitest'
-import { imageActionsFrom, subagentsFrom } from './renderContext'
+import { imageActionsFrom, reviewActionsFrom, subagentsFrom } from './renderContext'
 
 // The two assemblies are the ONLY way the narrow capabilities are built, so their
 // edge answers are the ones every isolated mount inherits: a host that supplies
@@ -62,5 +62,38 @@ describe('imageActionsFrom', () => {
   it('builds from a premeasure hint alone', () => {
     const actions = imageActionsFrom({ premeasurePass: () => true })
     expect(actions?.premeasurePass()).toBe(true)
+  })
+})
+
+describe('reviewActionsFrom', () => {
+  it('approves through the handler with the row\'s message id', async () => {
+    const approve = vi.fn(async (_messageId: string, _reviewId: string) => {})
+    const actions = reviewActionsFrom({ messageId: () => 'm1', approveAutoReviewDenial: () => approve })
+    await actions.approveDenied('r1')
+    expect(approve).toHaveBeenCalledWith('m1', 'r1')
+  })
+
+  it('reads the message id and the handler at call time', async () => {
+    let messageId = 'm1'
+    let handler: ((messageId: string, reviewId: string) => Promise<void>) | undefined
+    const actions = reviewActionsFrom({ messageId: () => messageId, approveAutoReviewDenial: () => handler })
+    const approve = vi.fn(async () => {})
+    handler = approve
+    messageId = 'm2'
+    await actions.approveDenied('r1')
+    expect(approve).toHaveBeenCalledWith('m2', 'r1')
+  })
+
+  it('fails a call after the host lost its handler, so the button shows the failure', async () => {
+    const actions = reviewActionsFrom({ messageId: () => 'm1', approveAutoReviewDenial: () => undefined })
+    await expect(actions.approveDenied('r1')).rejects.toThrow('This agent cannot record the approval now.')
+  })
+
+  it('passes a refusal of the handler through', async () => {
+    const refuse = async () => {
+      throw new Error('refused')
+    }
+    const actions = reviewActionsFrom({ messageId: () => 'm1', approveAutoReviewDenial: () => refuse })
+    await expect(actions.approveDenied('r1')).rejects.toThrow('refused')
   })
 })

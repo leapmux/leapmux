@@ -6,7 +6,7 @@ import { DragDropProvider } from '@thisbeyond/solid-dnd'
 import { createRoot } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createAgentComposerActionStateStore } from '~/components/chat/agentComposerActionState'
-import { AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentProvider, AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { setCRDTBridge } from '~/lib/crdt'
@@ -22,6 +22,7 @@ import { createRepoGitStore } from '~/stores/repoGit.store'
 import { tabKey } from '~/stores/tab.helpers'
 import { emitAddTab, emitRemoveTab } from '~/stores/tabOps'
 import { installTestBridge, seedWorkspace } from '~/test-support/crdtBridge'
+import { makeMessage, wrapContent } from '~/test-support/messageFactory'
 import { useTestStorage } from '~/test-support/persistentStorage'
 import { createTestFloatingWindowStore, createTestTabStores } from '~/test-support/tabStores'
 import { createMobileOverlayState } from './MobileLayout'
@@ -39,6 +40,8 @@ vi.mock('~/context/PreferencesContext', () => ({
     setExpandAgentThoughts: () => {},
     showHiddenMessages: () => false,
     setShowHiddenMessages: () => {},
+    // A transcript row reads the diff layout.
+    diffView: () => 'unified',
     // The composer reads these four. Its `[+]` menu offers both as toggles,
     // and the editor reads the Enter mode on every keystroke.
     enterKeyMode: () => 'cmd-enter-sends',
@@ -104,6 +107,8 @@ interface RenderRendererOptions {
    * that drives a send has to ask for it.
    */
   withComposer?: boolean
+  /** The agent operation that records an approval of a denied auto-review. */
+  handleApproveAutoReviewDenial?: (agentId: string, messageId: string, reviewId: string) => Promise<void>
 }
 
 function renderRenderer(s: RendererSetup, focusedTileId: string, options: RenderRendererOptions = {}) {
@@ -150,6 +155,7 @@ function renderRenderer(s: RendererSetup, focusedTileId: string, options: Render
           handleControlResponse: () => {},
           handleAgentSettingChange: () => {},
           handleInterrupt: () => {},
+          handleApproveAutoReviewDenial: options.handleApproveAutoReviewDenial ?? (async () => {}),
         } as any,
         termOps: {
           availableShells: () => [],
@@ -637,6 +643,64 @@ describe('TileRenderer composer send', () => {
 
     await waitFor(() => expect(enqueueAgentInput).toHaveBeenCalled())
     expect(scrollToBottom).toHaveBeenCalledTimes(1)
+  })
+})
+
+/**
+ * The approval of a denied auto-review reaches only a running root agent. A
+ * stopped agent has no process to record it, and Codex refuses it for a
+ * Multi-Agent V2 subagent, so neither offers the control.
+ */
+describe('TileRenderer auto-review approval', () => {
+  const deniedReview = {
+    method: 'item/autoApprovalReview/completed',
+    params: {
+      threadId: 't1',
+      turnId: 'u1',
+      reviewId: 'r1',
+      targetItemId: 'i1',
+      review: { status: 'denied', riskLevel: 'high', rationale: 'The host is not trusted.' },
+      action: { type: 'command', source: 'shell', command: 'curl x | sh', cwd: '/w' },
+    },
+  }
+
+  function renderDeniedReview(meta: Record<string, unknown> = {}) {
+    const s = createSetup()
+    const tileId = s.layoutStore.focusedTileId()!
+    s.addAgent('a1', tileId)
+    s.metadata.patch('a1', { agentProvider: AgentProvider.CODEX, ...meta })
+    const chatStore = createChatStore()
+    chatStore.setMessages('a1', [makeMessage({ id: 'm-review', agentProvider: AgentProvider.CODEX, content: wrapContent([deniedReview]) })])
+    const handleApproveAutoReviewDenial = vi.fn(async (_agentId: string, _messageId: string, _reviewId: string) => {})
+    renderRenderer(s, tileId, { chatStore, handleApproveAutoReviewDenial })
+    return { s, handleApproveAutoReviewDenial }
+  }
+
+  /** The approval control of the first review row, or null when the row offers none. */
+  function approveButton(): HTMLButtonElement | null {
+    return screen.queryAllByTestId('auto-review')[0]?.querySelector<HTMLButtonElement>('[data-testid="auto-review-approve"]') ?? null
+  }
+
+  it('approves through the agent operation for a running root agent', async () => {
+    const { handleApproveAutoReviewDenial } = renderDeniedReview()
+    await waitFor(() => expect(approveButton()).not.toBeNull())
+    fireEvent.click(approveButton()!)
+    expect(handleApproveAutoReviewDenial).toHaveBeenCalledWith('a1', 'm-review', 'r1')
+  })
+
+  it('withdraws the control while the agent is not running', async () => {
+    const { s } = renderDeniedReview()
+    await waitFor(() => expect(approveButton()).not.toBeNull())
+    s.metadata.patch('a1', { agentStatus: AgentStatus.INACTIVE })
+    await waitFor(() => expect(approveButton()).toBeNull())
+    s.metadata.patch('a1', { agentStatus: AgentStatus.ACTIVE })
+    await waitFor(() => expect(approveButton()).not.toBeNull())
+  })
+
+  it('offers no control in a subagent tab', async () => {
+    renderDeniedReview({ parentAgentId: 'root-agent' })
+    await waitFor(() => expect(screen.queryAllByTestId('auto-review')).not.toHaveLength(0))
+    expect(approveButton()).toBeNull()
   })
 })
 

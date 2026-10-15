@@ -66,6 +66,11 @@ const CODEX_NOTIF_METHODS = new Set<string>([
   // builder was reachable only in theory.
   CODEX_METHOD.Error,
   CODEX_METHOD.Warning,
+  // Auto-review: the worker keeps the completed review, the denial-limit warning and
+  // the strict-review notice, and the notification reader draws each one.
+  CODEX_METHOD.AutoApprovalReviewCompleted,
+  CODEX_METHOD.GuardianWarning,
+  CODEX_METHOD.StrictReviewRequired,
 ])
 
 /**
@@ -75,6 +80,9 @@ const CODEX_NOTIF_METHODS = new Set<string>([
  * - Skill metadata invalidation.
  * - Remote-control connection status.
  * - Hook starts.
+ * - Auto-review starts, whose completion states the outcome.
+ * - Approval requests and questions, which reach the reader as control requests and
+ *   never as transcript rows.
  *
  * Native execution requests and outputs bypass raw-item mirror suppression before this lookup.
  * The Worker supplies working state. This method set controls transcript visibility only.
@@ -89,6 +97,11 @@ const CODEX_HIDDEN_TRANSCRIPT_METHODS = new Set<string>([
   CODEX_METHOD.SkillsChanged,
   CODEX_METHOD.RemoteControlStatusChanged,
   CODEX_METHOD.HookStarted,
+  CODEX_METHOD.AutoApprovalReviewStarted,
+  CODEX_METHOD.CommandExecutionRequestApproval,
+  CODEX_METHOD.FileChangeRequestApproval,
+  CODEX_METHOD.PermissionsRequestApproval,
+  CODEX_METHOD.ToolRequestUserInput,
   CODEX_METHOD.McpToolCallProgress,
   CODEX_METHOD.RawResponseItemCompleted,
   CODEX_RATE_LIMITS_METHOD,
@@ -287,6 +300,11 @@ export function classifyCodexMessage(input: ClassificationInput): MessageCategor
     return notification([parent], 'hidden')
 
   if (method === CODEX_METHOD.HookCompleted)
+    return notification([parent], 'hidden')
+
+  // The auto-review frames that the worker keeps. A frame with nothing to state, such
+  // as a review without an id, hides rather than drawing the raw frame.
+  if (method === CODEX_METHOD.AutoApprovalReviewCompleted || method === CODEX_METHOD.GuardianWarning || method === CODEX_METHOD.StrictReviewRequired)
     return notification([parent], 'hidden')
 
   // The LeapMux envelope every provider answers the same way. The shared predicate is

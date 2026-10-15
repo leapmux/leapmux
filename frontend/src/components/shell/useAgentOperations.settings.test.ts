@@ -517,28 +517,27 @@ describe('useAgentOperations settings reconciliation', () => {
       const ops = useAgentOperations(stubProps(stores))
       // An action button (e.g. Codex "Bypass permissions") carries several axes.
       await ops.handleAgentSettingChange('a1', {
-        sets: { network_access: 'enabled', sandbox_policy: 'danger-full-access', permissionMode: 'never' },
+        sets: { permission_profile: ':danger-full-access', permissionMode: 'never' },
       })
       dispose()
     })
 
     // All axes are written optimistically in one update.
     const tab = stores.view.getAgentTab('a1')
-    expect(tab?.optionValues?.network_access).toBe('enabled')
-    expect(tab?.optionValues?.sandbox_policy).toBe('danger-full-access')
+    expect(tab?.optionValues?.permission_profile).toBe(':danger-full-access')
     expect(tab?.optionValues?.permissionMode).toBe('never')
     // One RPC carries all axes, so the worker applies them
     // atomically and can't leave the agent half-bypassed.
     expect(updateAgentSettings).toHaveBeenCalledTimes(1)
     expect(updateAgentSettings).toHaveBeenCalledWith('w1', {
       agentId: 'a1',
-      settings: { options: { network_access: 'enabled', sandbox_policy: 'danger-full-access', permissionMode: 'never' } },
+      settings: { options: { permission_profile: ':danger-full-access', permissionMode: 'never' } },
     })
   })
 
   it('rolls back every axis of a failed multi-axis change (restoring priors, deleting keys that had none)', async () => {
     const stores = seedAgent({
-      // permissionMode has a prior optimistic value; network_access has none.
+      // permissionMode has a prior optimistic value. permission_profile has none.
       optionValues: { model: 'opus[1m]', permissionMode: 'default' },
       optionGroups: opusCatalog(),
     })
@@ -547,16 +546,16 @@ describe('useAgentOperations settings reconciliation', () => {
 
     await createRoot(async (dispose) => {
       const ops = useAgentOperations(stubProps(stores))
-      await ops.handleAgentSettingChange('a1', { sets: { network_access: 'enabled', permissionMode: 'never' } })
+      await ops.handleAgentSettingChange('a1', { sets: { permission_profile: ':danger-full-access', permissionMode: 'never' } })
       dispose()
     })
 
     const tab = stores.view.getAgentTab('a1')
     // permissionMode had a prior 'default' -> restored exactly.
     expect(tab?.optionValues?.permissionMode).toBe('default')
-    // network_access had no prior -> the key is DELETED (not blanked to ''), so the group
+    // permission_profile had no prior -> the key is DELETED (not blanked to ''), so the group
     // falls back to the catalog's confirmed currentValue rather than a spurious empty override.
-    expect(tab?.optionValues && 'network_access' in tab.optionValues).toBe(false)
+    expect(tab?.optionValues && 'permission_profile' in tab.optionValues).toBe(false)
     // One failure toast for the whole change, naming both axes.
     expect(showWarnToast).toHaveBeenCalledTimes(1)
   })
@@ -578,20 +577,20 @@ describe('useAgentOperations settings reconciliation', () => {
 
     await createRoot(async (dispose) => {
       const ops = useAgentOperations(stubProps(stores))
-      // A: network_access='enabled' + permissionMode='never', RPC hangs (not awaited).
-      const aDone = ops.handleAgentSettingChange('a1', { sets: { network_access: 'enabled', permissionMode: 'never' } })
-      expect(stores.view.getAgentTab('a1')?.optionValues?.network_access).toBe('enabled')
+      // A: permission_profile=':danger-full-access' + permissionMode='never', RPC hangs (not awaited).
+      const aDone = ops.handleAgentSettingChange('a1', { sets: { permission_profile: ':danger-full-access', permissionMode: 'never' } })
+      expect(stores.view.getAgentTab('a1')?.optionValues?.permission_profile).toBe(':danger-full-access')
       expect(stores.view.getAgentTab('a1')?.optionValues?.permissionMode).toBe('never')
       // B: overwrites ONLY permissionMode and resolves -> B is the newest selection for that axis.
       await ops.handleAgentSettingChange('a1', { sets: { permissionMode: 'plan' } })
       expect(stores.view.getAgentTab('a1')?.optionValues?.permissionMode).toBe('plan')
       // A now fails. Its rollback must SKIP permissionMode (B's 'plan' is newer, no longer A's
-      // 'never') yet still roll back network_access (still A's 'enabled', no prior -> deleted).
+      // 'never') yet still roll back permission_profile (still A's value, no prior -> deleted).
       rejectA(new Error('rpc failed'))
       await aDone
       const tab = stores.view.getAgentTab('a1')
       expect(tab?.optionValues?.permissionMode).toBe('plan') // B preserved, not clobbered
-      expect(tab?.optionValues && 'network_access' in tab.optionValues).toBe(false) // A rolled back
+      expect(tab?.optionValues && 'permission_profile' in tab.optionValues).toBe(false) // A rolled back
       dispose()
     })
   })

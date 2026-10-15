@@ -7,6 +7,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/db/dbtest"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -88,28 +89,32 @@ func TestControlResponseRejectsMismatchedRecordingRequests(t *testing.T) {
 }
 
 func TestControlRequestReplayRetainsResponseState(t *testing.T) {
-	for _, state := range []leapmuxv1.ControlResponseState{
-		leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_PENDING,
-		leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_UNCERTAIN,
-		leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_DELIVERED,
-		leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_COMPLETED,
+	for _, state := range []struct {
+		stored leapmuxv1.ControlDeliveryState
+		wire   leapmuxv1.ControlResponseState
+	}{
+		{storedStatePending, leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_PENDING},
+		{storedStateUncertain, leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_UNCERTAIN},
+		{storedStateDelivered, leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_DELIVERED},
+		{storedStateCompleted, leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_COMPLETED},
 	} {
-		t.Run(state.String(), func(t *testing.T) {
+		t.Run(state.wire.String(), func(t *testing.T) {
 			svc, _, _ := setupTestService(t)
 			createClaimTestAgent(t, svc, "agent-1")
 			payload := []byte(` {"id":9007199254740993,"method":"item/commandExecution/requestApproval"} `)
 			createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
 				AgentID: "agent-1", RequestID: "request", ClaimToken: "claim", Payload: payload,
 			})
-			_, err := svc.DB.ExecContext(t.Context(), `INSERT INTO control_response_answers (agent_id,request_id,claim_token,state,agent_provider) VALUES (?,?,?,?,?)`,
-				"agent-1", "request", "claim", int64(state), int64(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX))
+			err := dbtest.StoreControlResponse(t.Context(), svc.DB, db.ControlResponseAnswer{
+				AgentID: "agent-1", RequestID: "request", ClaimToken: "claim", State: state.stored, AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+			})
 			require.NoError(t, err)
 			replayed, err := buildAgentControlRequest(svc.Queries, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 				agent.ControlRequest{RequestID: "request", Payload: payload}, "claim")
 			require.NoError(t, err)
 			require.Equal(t, payload, replayed.Payload)
-			// The column holds the enum, so the state written is the state read.
-			require.Equal(t, state, replayed.ResponseState)
+			// Stored delivery states map to public response states.
+			require.Equal(t, state.wire, replayed.ResponseState)
 			newRequest, err := buildAgentControlRequest(svc.Queries, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 				agent.ControlRequest{RequestID: "request", Payload: payload}, "replacement-claim")
 			require.NoError(t, err)
@@ -214,9 +219,10 @@ func TestControlCancellationRetainsConfirmedDelivery(t *testing.T) {
 	registerAgentWatch(svc, "delivered-cancel", "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, watcher)
 	require.NoError(t, sink.PublishControlRequest(agent.ControlRequest{RequestID: "request", Payload: []byte(`{"id":1}`)}))
 	request := watcher.snapshot()[0]
-	_, err := svc.DB.ExecContext(t.Context(), `INSERT INTO control_response_answers (agent_id,request_id,claim_token,state,agent_provider) VALUES (?,?,?,?,?)`,
-		"agent-1", "request", request.ClaimToken, int64(leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_DELIVERED),
-		int64(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX))
+	err := dbtest.StoreControlResponse(t.Context(), svc.DB, db.ControlResponseAnswer{
+		AgentID: "agent-1", RequestID: "request", ClaimToken: request.ClaimToken,
+		State: storedStateDelivered, AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	})
 	require.NoError(t, err)
 	sink.CancelControlRequest("request")
 	cancellations := watcher.cancellationSnapshot()

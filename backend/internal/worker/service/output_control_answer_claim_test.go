@@ -19,12 +19,12 @@ func TestControlResponseReservationRequiresTheCurrentRequestInstance(t *testing.
 	createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
 		AgentID: "agent-1", RequestID: "request", ClaimToken: "new-claim", Payload: []byte(`{"id":"request"}`),
 	})
-	claimed, err := svc.Output.claimControlResponseAnswer(db.ClaimControlResponseAnswerParams{
+	deliveryID, err := svc.Output.claimControlResponseAnswer(db.StoreControlResponseAnswerParams{
 		AgentID: "agent-1", RequestID: "request", ClaimToken: "old-claim",
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	})
 	require.NoError(t, err)
-	require.False(t, claimed, "an earlier metadata read must not reserve a replaced request")
+	require.Empty(t, deliveryID, "an earlier metadata read must not reserve a replaced request")
 }
 
 // createClaimTestAgent creates a minimal agent row so the durable answer claim (a control_response_answers
@@ -129,14 +129,14 @@ func TestClaimControlResponseAnswerRejectsDatabaseFailure(t *testing.T) {
 	createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
 		AgentID: "agent-1", RequestID: "req-1", ClaimToken: "tokA", Payload: []byte(`{}`),
 	})
-	_, err := svc.DB.ExecContext(t.Context(), `CREATE TRIGGER fail_control_reservation BEFORE INSERT ON control_response_answers BEGIN SELECT RAISE(ABORT, 'reservation unavailable'); END`)
+	_, err := svc.DB.ExecContext(t.Context(), `CREATE TRIGGER fail_control_reservation BEFORE INSERT ON control_response_payloads BEGIN SELECT RAISE(ABORT, 'reservation unavailable'); END`)
 	require.NoError(t, err)
-	claimed, err := svc.Output.claimControlResponseAnswer(db.ClaimControlResponseAnswerParams{
+	deliveryID, err := svc.Output.claimControlResponseAnswer(db.StoreControlResponseAnswerParams{
 		AgentID: "agent-1", RequestID: "req-1", ClaimToken: "tokA",
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	})
 	require.ErrorContains(t, err, "reservation unavailable")
-	require.False(t, claimed, "a failed reservation must not permit delivery")
+	require.Empty(t, deliveryID, "a failed reservation must not permit delivery")
 }
 
 // TestClaimControlResponseAnswer_ReusedRequestIDDistinctTokenClaimsFresh is the id-reuse closure guard.
@@ -180,10 +180,10 @@ func TestClaimControlResponseAnswer_ReusedRequestIDDistinctTokenClaimsFresh(t *t
 
 func claimControlResponseForTest(t *testing.T, output *OutputHandler, agentID, requestID, claimToken string) bool {
 	t.Helper()
-	claimed, err := output.claimControlResponseAnswer(db.ClaimControlResponseAnswerParams{
+	deliveryID, err := output.claimControlResponseAnswer(db.StoreControlResponseAnswerParams{
 		AgentID: agentID, RequestID: requestID, ClaimToken: claimToken,
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	})
 	require.NoError(t, err)
-	return claimed
+	return deliveryID != ""
 }

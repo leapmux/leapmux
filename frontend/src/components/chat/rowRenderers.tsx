@@ -55,7 +55,7 @@ export function renderRowContent(
         />
       )
     case 'notification':
-      return renderNotificationBlocks(flattenNotificationEntries(row.thread.entries))
+      return renderNotificationBlocks(flattenNotificationEntries(row.thread.entries), context)
     case 'divider':
       return <ResultDivider model={row.divider} />
     case 'assistant-text':

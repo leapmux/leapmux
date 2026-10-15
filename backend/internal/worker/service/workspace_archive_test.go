@@ -672,6 +672,7 @@ func TestWorkspaceArchive_RefusesEveryWriteRPCOnAnArchivedTab(t *testing.T) {
 		{"SendAgentRawMessage", &leapmuxv1.SendAgentRawMessageRequest{AgentId: agentID, Content: "{}"}},
 		{"SendControlResponse", &leapmuxv1.SendControlResponseRequest{AgentId: agentID, RequestId: "req-1", Content: []byte("{}")}},
 		{"UpdateAgentGoal", &leapmuxv1.UpdateAgentGoalRequest{AgentId: agentID, Action: leapmuxv1.AgentGoalAction_AGENT_GOAL_ACTION_SET, Objective: "after"}},
+		{"ApproveAutoReviewDenial", &leapmuxv1.ApproveAutoReviewDenialRequest{AgentId: agentID, MessageId: "message-1", ReviewId: "review-1"}},
 		{"UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{AgentId: agentID}},
 		{"UpdateTerminalTitle", &leapmuxv1.UpdateTerminalTitleRequest{TerminalId: terminalID, Title: "after"}},
 		{"CloseTerminal", &leapmuxv1.CloseTerminalRequest{TerminalId: terminalID}},

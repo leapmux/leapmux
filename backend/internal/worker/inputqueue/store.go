@@ -755,7 +755,7 @@ func readDispatchGate(ctx context.Context, tx db.DBTX, agentID string) (dispatch
 	}
 	gate.ApprovalSources = len(sources)
 	for _, source := range sources {
-		if source.State != leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_COMPLETED {
+		if source.State != leapmuxv1.ControlDeliveryState_CONTROL_DELIVERY_STATE_COMPLETED {
 			gate.ApprovalsComplete = false
 		}
 	}

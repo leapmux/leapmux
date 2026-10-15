@@ -1,15 +1,29 @@
 syntax = "proto3";
 package leapmux.v1;
 
+// ControlDeliveryKind identifies the operation that owns a durable delivery.
+enum ControlDeliveryKind {
+  CONTROL_DELIVERY_KIND_UNSPECIFIED = 0;
+  CONTROL_DELIVERY_KIND_CONTROL_RESPONSE = 1;
+  CONTROL_DELIVERY_KIND_AUTO_REVIEW_APPROVAL = 2;
+}
+
+// ControlDeliveryState records delivery separately from operation-specific recording.
+// Pending and uncertain deliveries both prevent another send after a restart.
+enum ControlDeliveryState {
+  CONTROL_DELIVERY_STATE_UNSPECIFIED = 0;
+  CONTROL_DELIVERY_STATE_PENDING = 1;
+  CONTROL_DELIVERY_STATE_UNCERTAIN = 2;
+  CONTROL_DELIVERY_STATE_DELIVERED = 3;
+  CONTROL_DELIVERY_STATE_COMPLETED = 4;
+}
+
 // Storage vocabularies for the hub's and the worker's own tables.
 //
-// Every enum here numbers ONE enum column in internal/hub/store or
-// internal/worker/db. None of them appears in a request, a response or an
-// event: no RPC carries them, and the browser never sees one. They live in
-// proto for the same reason every other enum column in this project does -- so
-// the column, the Go constant and the SQL CHECK share one numbering that a
-// renumber moves together, instead of a token spelled once in Go and again in
-// three dialects of SQL.
+// Each enum defines one storage vocabulary in internal/hub/store or internal/worker/db.
+// These values do not appear in public protocol messages.
+// Go constants and SQL constraints use the same proto numbering.
+// A payload table can restrict a kind to the value that identifies its payload type.
 //
 // The rule that puts them here is in AGENTS.md, under "Enum columns store proto
 // enum ordinals". The short form: a closed set of values in a database column
@@ -17,11 +31,9 @@ package leapmux.v1;
 // also crosses a language boundary. Crossing one is what adds a CONTRACT entry
 // on top, which none of these needs.
 //
-// UNSPECIFIED is 0 in each, as proto3 requires. No column below accepts it
-// except agent_input_queue_state.pause_owner, where 0 is the real state "nobody
-// owns this pause" and the enum says so at its own declaration. Everywhere else
-// a zero is an unset Go field rather than a state, every CHECK starts at 1, and
-// the write fails instead of recording it.
+// UNSPECIFIED is 0 in each enum, as proto3 requires.
+// Only agent_input_queue_state.pause_owner accepts zero, where it means that nobody owns the pause.
+// The other columns reject zero so an unset Go field cannot become a stored state.
 
 // RevocationEventKind is what one row of the durable revocation stream
 // announces. Numbers revocation_events.kind.

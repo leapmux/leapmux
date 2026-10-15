@@ -434,9 +434,8 @@ func TestSendControlResponse_CodexPlanModePromptBypassAppliesAllSettings(t *test
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 		Options: marshalOptions(map[string]string{
-			agent.OptionIDPermissionMode:           codex.DefaultApprovalPolicy,
-			contracts.CodexOptionSandboxPolicy:     codex.SandboxWorkspaceWrite,
-			contracts.CodexOptionNetworkAccess:     codex.NetworkRestricted,
+			agent.OptionIDPermissionMode:           codex.DefaultPermissionMode,
+			contracts.CodexOptionPermissionProfile: contracts.CodexPermissionProfileWorkspace,
 			contracts.CodexOptionCollaborationMode: codex.CollaborationPlan,
 		}),
 	}))
@@ -453,16 +452,15 @@ func TestSendControlResponse_CodexPlanModePromptBypassAppliesAllSettings(t *test
 		Content: []byte(`{
 			"response":{"request_id":"plan-1","response":{"behavior":"allow"}}
 		}`),
-		PlanApproval: &leapmuxv1.PlanApprovalSettings{PermissionMode: "never"},
+		PlanApproval: &leapmuxv1.PlanApprovalSettings{PermissionMode: contracts.CodexPermissionModeNever},
 	}, w)
 	require.Empty(t, w.errors)
 
 	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
 	require.NoError(t, err)
 	options := loadOptions(testRegistry, dbAgent.Options, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
-	assert.Equal(t, "never", options[agent.OptionIDPermissionMode])
-	assert.Equal(t, codex.NetworkEnabled, options[contracts.CodexOptionNetworkAccess])
-	assert.Equal(t, codex.SandboxDangerFullAccess, options[contracts.CodexOptionSandboxPolicy])
+	assert.Equal(t, contracts.CodexPermissionModeNever, options[agent.OptionIDPermissionMode])
+	assert.Equal(t, contracts.CodexPermissionProfileDangerFullAccess, options[contracts.CodexOptionPermissionProfile])
 	assert.Equal(t, codex.CollaborationDefault, options[contracts.CodexOptionCollaborationMode])
 }
 

@@ -16,7 +16,7 @@ import { describe, expect, it } from 'bun:test'
 import {
   bufDescriptor,
   checkChatHistory,
-  checkCodexBypass,
+  checkCodexPermissionPresets,
   checkDesktop,
   checkExternalApps,
   checkHeaders,
@@ -41,7 +41,7 @@ import {
   DESKTOP_RS_MACOS_ONLY_EVENTS,
   DESKTOP_TS_BEHAVIOR_NAMES,
   emitGoChatHistory,
-  emitGoCodexBypass,
+  emitGoCodexPermissionPresets,
   emitGoDesktop,
   emitGoExternalApps,
   emitGoHeaders,
@@ -55,6 +55,7 @@ import {
   emitGoWorkerVocab,
   emitRsDesktop,
   emitTsChatHistory,
+  emitTsCodexPermissionPresets,
   emitTsDesktop,
   emitTsExternalApps,
   emitTsHeaders,
@@ -785,37 +786,135 @@ describe('_unread exemptions', () => {
   })
 })
 
-describe('checkCodexBypass', () => {
+describe('checkCodexPermissionPresets', () => {
   const valid = () => ({
-    settings: [
-      { id: 'permissionMode', value: 'never' },
-      { id: 'network_access', value: 'enabled' },
-    ],
+    settings: {
+      PermissionModeApproveForMe: { id: 'permissionMode', value: 'auto-review' },
+      PermissionModeNever: { id: 'permissionMode', value: 'never' },
+      PermissionProfileWorkspace: { id: 'permission_profile', value: ':workspace' },
+      PermissionProfileDangerFullAccess: { id: 'permission_profile', value: ':danger-full-access' },
+    },
+    presets: {
+      smart: ['PermissionModeApproveForMe', 'PermissionProfileWorkspace'],
+      bypass: ['PermissionModeNever', 'PermissionProfileDangerFullAccess'],
+    },
   })
 
-  it('accepts one permission mode and at least one additional option', () => {
-    expect(checkCodexBypass(valid())).toBeUndefined()
+  it('accepts two presets that each set a distinct permission mode and another option', () => {
+    expect(checkCodexPermissionPresets(valid())).toBeUndefined()
   })
 
-  it('includes the permission mode in the worker approval options', () => {
-    expect(emitGoCodexBypass(valid())).toContain('"permissionMode": "never"')
+  it('requires exactly the smart and bypass presets', () => {
+    const missing = valid()
+    delete missing.presets.smart
+    expectContractError(() => checkCodexPermissionPresets(missing), 'presets must hold exactly smart and bypass')
+    const extra = valid()
+    extra.presets.other = ['PermissionModeNever', 'PermissionProfileWorkspace']
+    expectContractError(() => checkCodexPermissionPresets(extra), 'presets must hold exactly smart and bypass')
   })
 
-  it('rejects duplicate option ids', () => {
+  it('rejects a preset that sets one option id twice', () => {
     const contract = valid()
-    contract.settings.push({ id: 'network_access', value: 'restricted' })
-    expectContractError(() => checkCodexBypass(contract), 'two settings share one option id')
+    contract.presets.bypass.push('PermissionProfileWorkspace')
+    expectContractError(() => checkCodexPermissionPresets(contract), 'the bypass preset sets one option id twice')
   })
 
-  it('requires the permission mode and an additional option', () => {
-    expectContractError(
-      () => checkCodexBypass({ settings: [{ id: 'other', value: 'x' }] }),
-      'permissionMode is required',
-    )
-    expectContractError(
-      () => checkCodexBypass({ settings: [{ id: 'permissionMode', value: 'never' }] }),
-      'at least one additional option is required',
-    )
+  it('requires the permission mode and one other option in each preset', () => {
+    const noMode = valid()
+    noMode.settings.Other = { id: 'other', value: 'x' }
+    noMode.presets.smart = ['PermissionProfileWorkspace', 'Other']
+    expectContractError(() => checkCodexPermissionPresets(noMode), 'the smart preset must set permissionMode')
+    const modeOnly = valid()
+    modeOnly.presets.bypass = ['PermissionModeNever']
+    expectContractError(() => checkCodexPermissionPresets(modeOnly), 'the bypass preset must set at least one option other than permissionMode')
+  })
+
+  it('rejects two presets with the same permission mode, which a plan approval cannot tell apart', () => {
+    const contract = valid()
+    contract.presets.smart[0] = 'PermissionModeNever'
+    expectContractError(() => checkCodexPermissionPresets(contract), 'set the same permissionMode "never"')
+  })
+
+  it('emits the complete presets and the standing approval accessor', () => {
+    const go = emitGoCodexPermissionPresets(valid())
+    expect(go).toContain('func CodexPermissionPresets() map[string]map[string]string {')
+    expect(go).not.toContain('func CodexSmartOptions()')
+    expect(go).toContain('func CodexBypassOptions() map[string]string {')
+    expect(go).toContain('"permissionMode": CodexPermissionModeApproveForMe,')
+    expect(go).toContain('"permission_profile": CodexPermissionProfileDangerFullAccess,')
+  })
+
+  it('emits shared setting constants independently of the preset choices', () => {
+    const contract = valid()
+    contract.presets.smart[1] = 'PermissionProfileDangerFullAccess'
+    contract.presets.bypass[1] = 'PermissionProfileWorkspace'
+    const go = emitGoCodexPermissionPresets(contract)
+    expect(go).toContain('CodexPermissionModeApproveForMe = "auto-review"')
+    expect(go).toContain('CodexPermissionModeNever = "never"')
+    expect(go).toContain('CodexPermissionProfileWorkspace = ":workspace"')
+    expect(go).toContain('CodexPermissionProfileDangerFullAccess = ":danger-full-access"')
+    expect(go).toContain('"smart": {\n\t\t\t"permissionMode": CodexPermissionModeApproveForMe,\n\t\t\t"permission_profile": CodexPermissionProfileDangerFullAccess,')
+    const ts = emitTsCodexPermissionPresets(contract)
+    expect(ts).toContain('  smart: {\n    sets: {\n      "permissionMode": "auto-review",\n      "permission_profile": ":danger-full-access",')
+  })
+
+  it('rejects unknown settings and inherited properties', () => {
+    for (const key of ['Missing', '__proto__', 'toString', null]) {
+      const contract = valid()
+      contract.presets.smart[1] = key
+      expectContractError(() => checkCodexPermissionPresets(contract), 'selects an unknown setting')
+    }
+  })
+
+  it('rejects repeated definitions of the same setting', () => {
+    const contract = valid()
+    contract.settings.Duplicate = { ...contract.settings.PermissionModeNever }
+    expectContractError(() => checkCodexPermissionPresets(contract), 'settings define ["permissionMode","never"] twice')
+  })
+
+  it('rejects absent or empty settings definitions', () => {
+    for (const settings of [undefined, null, {}, []]) {
+      expectContractError(() => checkCodexPermissionPresets({ ...valid(), settings }), 'settings must hold at least one definition')
+    }
+  })
+
+  it('rejects invalid settings keys and values', () => {
+    const invalidKey = valid()
+    invalidKey.settings['not-a-constant'] = { id: 'other', value: 'x' }
+    expectContractError(() => checkCodexPermissionPresets(invalidKey), 'invalid settings key')
+    for (const setting of [null, {}, { id: '', value: 'x' }, { id: 'other', value: '' }, { id: 1, value: 'x' }]) {
+      const contract = valid()
+      contract.settings.Other = setting
+      expectContractError(() => checkCodexPermissionPresets(contract), 'must hold nonempty id and value strings')
+    }
+  })
+
+  it('rejects a preset that does not list settings keys', () => {
+    const contract = valid()
+    contract.presets.smart = null
+    expectContractError(() => checkCodexPermissionPresets(contract), 'the smart preset must list settings keys')
+  })
+
+  it('validates the contract schema and rejects invalid definition shapes', () => {
+    const validate = buildAjv().compile(readContract('codex-permission-presets.schema'))
+    expect(validate(readContract('codex-permission-presets'))).toBe(true)
+    for (const change of [
+      c => delete c.settings,
+      c => c.settings.Invalid = { id: 'other', value: 'x', extra: true },
+      c => c.presets.smart = ['PermissionModeApproveForMe', 'PermissionModeApproveForMe'],
+      c => c.presets.smart[0] = { id: 'permissionMode', value: 'auto-review' },
+    ]) {
+      const contract = { _readme: 'test', ...valid() }
+      change(contract)
+      expect(validate(contract)).toBe(false)
+    }
+  })
+
+  it('emits the TypeScript presets as settings changes', () => {
+    const ts = emitTsCodexPermissionPresets(valid())
+    expect(ts).toContain('export const CODEX_PERMISSION_PRESETS = {')
+    expect(ts).toContain('  smart: {\n    sets: {\n      "permissionMode": "auto-review",\n      "permission_profile": ":workspace",\n    },\n  },')
+    expect(ts).toContain('  bypass: {\n    sets: {\n      "permissionMode": "never",\n      "permission_profile": ":danger-full-access",\n    },\n  },')
   })
 })
 
@@ -981,7 +1080,7 @@ describe('generate', () => {
       'backend/generated/contracts/cline-protocol.go',
       'backend/generated/contracts/codebuddy-protocol.go',
       'backend/generated/contracts/codewhale-protocol.go',
-      'backend/generated/contracts/codex-bypass.go',
+      'backend/generated/contracts/codex-permission-presets.go',
       'backend/generated/contracts/codex-protocol.go',
       'backend/generated/contracts/commandcode-protocol.go',
       'backend/generated/contracts/copilot-protocol.go',
@@ -1033,7 +1132,7 @@ describe('generate', () => {
       'frontend/src/generated/contracts/cline-protocol.ts',
       'frontend/src/generated/contracts/codebuddy-protocol.ts',
       'frontend/src/generated/contracts/codewhale-protocol.ts',
-      'frontend/src/generated/contracts/codex-bypass.ts',
+      'frontend/src/generated/contracts/codex-permission-presets.ts',
       'frontend/src/generated/contracts/codex-protocol.ts',
       'frontend/src/generated/contracts/commandcode-protocol.ts',
       'frontend/src/generated/contracts/copilot-protocol.ts',

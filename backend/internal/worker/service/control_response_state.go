@@ -11,32 +11,12 @@ import (
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
-// The four ControlResponseState ordinals control_response_answers.state stores.
-// READY and CANCELED are absent on purpose: both describe a request with NO
-// answer row, which controlResponseState below derives from control_requests
-// instead, and the column's CHECK refuses them.
-const (
-	storedStatePending   = leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_PENDING
-	storedStateUncertain = leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_UNCERTAIN
-	storedStateDelivered = leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_DELIVERED
-	storedStateCompleted = leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_COMPLETED
-)
-
 func controlResponseState(queries *db.Queries, agentID, requestID, claimToken string) (leapmuxv1.ControlResponseState, error) {
 	answer, err := queries.GetControlResponseAnswer(bgCtx(), db.GetControlResponseAnswerParams{
 		AgentID: agentID, RequestID: requestID, ClaimToken: claimToken,
 	})
 	if err == nil {
-		// The column holds the enum, so the row's state IS the answer. The
-		// switch still lists the storable values rather than casting blind: a
-		// row carrying READY, CANCELED or 0 describes a state its own existence
-		// contradicts, and this is the read that must refuse it.
-		switch answer.State {
-		case storedStatePending, storedStateUncertain, storedStateDelivered, storedStateCompleted:
-			return answer.State, nil
-		default:
-			return leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_UNSPECIFIED, fmt.Errorf("unknown control response state %d", answer.State)
-		}
+		return controlDeliveryResponseState(answer.State)
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_UNSPECIFIED, err
@@ -122,4 +102,19 @@ func (svc *Service) broadcastControlResponseState(currentAgent db.Agent, request
 		AgentId: currentAgent.ID,
 		Event:   &leapmuxv1.AgentEvent_ControlResponseChanged{ControlResponseChanged: event},
 	})
+}
+
+func controlDeliveryResponseState(state leapmuxv1.ControlDeliveryState) (leapmuxv1.ControlResponseState, error) {
+	switch state {
+	case storedStatePending:
+		return leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_PENDING, nil
+	case storedStateUncertain:
+		return leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_UNCERTAIN, nil
+	case storedStateDelivered:
+		return leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_DELIVERED, nil
+	case storedStateCompleted:
+		return leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_COMPLETED, nil
+	default:
+		return leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_UNSPECIFIED, fmt.Errorf("unknown control delivery state %d", state)
+	}
 }

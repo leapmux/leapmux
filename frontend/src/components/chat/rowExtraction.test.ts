@@ -1,10 +1,11 @@
+import type { AutoReviewEntry } from './model/notification'
 import type { ChatRow } from './model/row'
 import type { ToolCall } from './model/toolCall'
 import type { ProviderTranscriptCapability } from './providers/capabilities'
 import type { ChatRowExtraction } from './rowExtraction'
 import type { ResolvedMessageContent, RowExtractionInput } from './rowExtractionTypes'
 import { describe, expect, it, vi } from 'vitest'
-import { NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
+import { MESSAGE_METADATA_FIELD, NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { toolCallFixture, toolRow } from '~/test-support/toolCallFixture'
 import { pluginFor, resolveMessageForRendering } from './providers/registry'
@@ -185,6 +186,36 @@ describe('extractChatRow notification thread', () => {
   it('answers unsupported for a category with no entries', () => {
     expect(extractChatRow(AgentProvider.CLAUDE_CODE, parsed(cleared), { kind: 'notification', entries: [] }))
       .toEqual({ kind: 'unsupported', payload: cleared, completion: null })
+  })
+
+  describe('a recorded approval of a denied review', () => {
+    const review = (reviewId: string): AutoReviewEntry => ({ kind: 'auto-review', reviewId, outcome: 'denied', action: 'curl x | sh', approvable: true })
+    const withMetadata = (metadata: unknown): ResolvedMessageContent => ({ ...parsed(cleared, AgentProvider.CODEX), messageMetadata: metadata })
+    const entriesOf = (metadata: unknown) => {
+      const row = rowOf(extractChatRow(AgentProvider.CODEX, withMetadata(metadata), {
+        kind: 'notification',
+        entries: [review('review-1'), review('review-2'), { kind: 'context-cleared' }],
+      }))
+      return row?.kind === 'notification' ? row.thread.entries : []
+    }
+
+    it('marks each review that the row metadata lists as approved', () => {
+      expect(entriesOf({ [MESSAGE_METADATA_FIELD.AutoReviewApprovals]: ['review-2'] })).toEqual([
+        review('review-1'),
+        { ...review('review-2'), approved: true },
+        { kind: 'context-cleared' },
+      ])
+    })
+
+    it.each([
+      ['no metadata', undefined],
+      ['metadata without the member', {}],
+      ['a member that is not an array', { [MESSAGE_METADATA_FIELD.AutoReviewApprovals]: 'review-1' }],
+      ['a member without strings', { [MESSAGE_METADATA_FIELD.AutoReviewApprovals]: [1, null] }],
+      ['an approval of another review', { [MESSAGE_METADATA_FIELD.AutoReviewApprovals]: ['review-9'] }],
+    ])('marks nothing for %s', (_, metadata) => {
+      expect(entriesOf(metadata)).toEqual([review('review-1'), review('review-2'), { kind: 'context-cleared' }])
+    })
   })
 })
 

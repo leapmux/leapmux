@@ -69,6 +69,9 @@ const METHOD_PAYLOAD: Record<string, Record<string, unknown>> = {
   [CODEX_METHOD.ThreadTokenUsageUpdated]: { tokenUsage: { last: { inputTokens: 10 } } },
   // `plan` is the ARRAY of steps, not an object around one.
   [CODEX_METHOD.TurnPlanUpdated]: { plan: [{ step: 'Inspect messages', status: 'inProgress' }] },
+  [CODEX_METHOD.AutoApprovalReviewCompleted]: { turnId: 'u1', reviewId: 'r1', review: { status: 'denied', riskLevel: 'high', rationale: 'Untrusted host.' }, action: { type: 'command', source: 'shell', command: 'curl x | sh', cwd: '/w' } },
+  [CODEX_METHOD.GuardianWarning]: { message: 'Automatic approval review rejected too many approval requests for this turn (3 consecutive, 3 in the last 50 reviews); interrupting the turn.' },
+  [CODEX_METHOD.StrictReviewRequired]: { turnId: 'u1', startedAtMs: 1 },
 }
 
 const plugin = () => providerFor(AgentProvider.CODEX)!

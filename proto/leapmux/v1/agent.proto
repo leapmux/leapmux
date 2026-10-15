@@ -1122,7 +1122,7 @@ message SendControlResponseResponse {
 }
 
 // AgentSettings holds option values to apply, keyed by option-group id
-// (e.g. "model", "effort", "permissionMode", "sandbox_policy"). Sparse: only
+// (e.g. "model", "effort", "permissionMode", "permission_profile"). Sparse: only
 // the included ids change; omitted ids are left untouched.
 message AgentSettings {
   map<string, string> options = 1;
@@ -1227,3 +1227,17 @@ message UpdateAgentGoalRequest {
 // most providers cannot fill would be a field that lies. The AgentGoalChanged
 // broadcast is the single source of the new state.
 message UpdateAgentGoalResponse {}
+
+// ApproveAutoReviewDenialRequest records authorization for an action that the automatic reviewer denied.
+// Recording approval does not execute the action.
+// The worker reads the denial from its stored transcript and does not trust browser content.
+message ApproveAutoReviewDenialRequest {
+  string agent_id = 1;
+  // The transcript row that holds the denied review.
+  string message_id = 2;
+  // The review in that row. A consolidated row can hold several reviews.
+  string review_id = 3;
+}
+
+// The worker returns success after it records the approval on the review row and writes its notice.
+message ApproveAutoReviewDenialResponse {}

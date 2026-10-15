@@ -42,7 +42,7 @@ type Registration struct {
 	// reports its own. nil for a provider whose catalog is always discovered.
 	DefaultModels []*ModelInfo
 	// OptionGroups are the static option-group templates (the secondary
-	// permission-mode or primary-agent axis, Codex's sandbox and network axes).
+	// permission-mode or primary-agent axis, Codex's permission-profile axis).
 	OptionGroups []*leapmuxv1.AvailableOptionGroup
 	// ModelSubGroups builds the model-dependent sub_groups carried on each model
 	// option (nil selects EffortSubGroups; Claude supplies its own to also emit the
@@ -57,7 +57,7 @@ type Registration struct {
 	// AdditionalOptionIDs lists the option-group ids this provider can carry BEYOND the
 	// universal "model" axis and the static OptionGroups templates (the secondary
 	// permission-mode/primary-agent axis): the well-known "effort" axis where the
-	// provider has one, Codex's sandbox/network/collaboration/service-tier options,
+	// provider has one, Codex's permission-profile/collaboration/service-tier options,
 	// Pi's pi_provider, and the server-driven ACP config options each family exposes
 	// (Goose's thinking_effort/provider, Reasonix's tool_approval).
 	// Together with "model" and OptionGroups they form KnownOptionIDs -- the static
@@ -72,7 +72,7 @@ type Registration struct {
 	// confirmedOptions preserves them from the base instead of reconciling them away.
 	PersistedOnlyOptionIDs []string
 	// ProviderOptionDefaults seeds provider-specific option values (id->default) into a fresh
-	// agent's launch options beyond model/effort -- e.g. Codex's sandbox / network /
+	// agent's launch options beyond model/effort -- e.g. Codex's permission-profile /
 	// collaboration / service-tier defaults. resolveProviderDefaults stamps these
 	// uniformly for every provider, so a new provider declares its seeds here rather
 	// than the service layer growing a per-provider branch.

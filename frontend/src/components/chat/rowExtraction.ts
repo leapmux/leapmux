@@ -11,6 +11,7 @@ import { protoJsonTodoToItem } from '~/stores/chatTodoStore'
 import { messageCompletionFromProto, parseAssembledMessage } from './assembledMessage'
 import { leapmuxUserRow } from './leapmuxRows'
 import { dividerMetaFromMessage } from './model/divider'
+import { approvedReviewIdsOf, withApprovedReviews } from './model/notification'
 import { normalizeOutputFilePaths } from './model/outputFilePaths'
 import { resolveControlResponseSummary } from './persistedControlResponse'
 import { pluginFor } from './providers/registry'
@@ -52,6 +53,11 @@ export type ChatRowExtraction = {
   /** Extraction threw. Keep the error and payload, and log the failure once. */
   | { kind: 'failed', payload: unknown, error: unknown }
 )
+
+/** The LeapMux metadata of a stored row, or undefined when the row carries none. */
+function rowMetadata(parsed: ResolvedMessageContent): Record<string, unknown> | undefined {
+  return isObject(parsed.messageMetadata) ? parsed.messageMetadata : undefined
+}
 
 /**
  * The row a reader draws from, or null when layer 1 produced none.
@@ -130,9 +136,11 @@ export function extractChatRow(
         : unsupported()
     }
     // Classification supplies parsed notification entries. Every reader uses those same model values.
+    // LeapMux records a reader's approval of a denied review on the row itself, in its metadata.
     if (category.kind === 'notification') {
+      const approvals = approvedReviewIdsOf(rowMetadata(parsed)?.[MESSAGE_METADATA_FIELD.AutoReviewApprovals])
       return category.entries.length > 0
-        ? row({ kind: 'notification', thread: { entries: category.entries } })
+        ? row({ kind: 'notification', thread: { entries: withApprovedReviews(category.entries, approvals) } })
         : unsupported()
     }
     // LeapMux stores user messages as {content, attachments?} without a provider envelope.
@@ -147,8 +155,7 @@ export function extractChatRow(
     const extract = plugin?.transcript.extractRow
     if (!extract)
       return unsupported()
-    const metadata = isObject(parsed.messageMetadata) ? parsed.messageMetadata : undefined
-    const snapshotValue = metadata?.[MESSAGE_METADATA_FIELD.TodoSnapshot]
+    const snapshotValue = rowMetadata(parsed)?.[MESSAGE_METADATA_FIELD.TodoSnapshot]
     const todoSnapshot = snapshotValue === undefined ? null : protoJsonTodoToItem(snapshotValue)
     const input: RowExtractionInput = {
       resolved: parsed,

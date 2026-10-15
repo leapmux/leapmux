@@ -34,8 +34,9 @@ func integerEnumColumns() []integerEnumColumn {
 		{"messages.agent_provider", "UPDATE messages SET agent_provider = ?", "SELECT typeof(agent_provider), agent_provider FROM messages", 1, int64(len(leapmuxv1.AgentProvider_name) - 1)},
 		{"agent_input_queue_items.kind", "UPDATE agent_input_queue_items SET kind = ?", "SELECT typeof(kind), kind FROM agent_input_queue_items", 1, 6},
 		{"agent_input_queue_items.state", "UPDATE agent_input_queue_items SET state = ?", "SELECT typeof(state), state FROM agent_input_queue_items", 1, 4},
-		{"control_response_answers.state", "UPDATE control_response_answers SET state = ?", "SELECT typeof(state), state FROM control_response_answers", 2, 5},
-		{"control_response_answers.agent_provider", "UPDATE control_response_answers SET agent_provider = ?", "SELECT typeof(agent_provider), agent_provider FROM control_response_answers", 1, int64(len(leapmuxv1.AgentProvider_name) - 1)},
+		{"control_deliveries.state", "UPDATE control_deliveries SET state = ?", "SELECT typeof(state), state FROM control_deliveries", 1, 4},
+		{"control_deliveries.kind", "UPDATE control_deliveries SET kind = ? WHERE id = 'enum-unattached'", "SELECT typeof(kind), kind FROM control_deliveries WHERE id = 'enum-unattached'", 1, 2},
+		{"control_response_payloads.agent_provider", "UPDATE control_response_payloads SET agent_provider = ?", "SELECT typeof(agent_provider), agent_provider FROM control_response_payloads", 1, int64(len(leapmuxv1.AgentProvider_name) - 1)},
 		{"agent_todos.status", "UPDATE agent_todos SET status = ?", "SELECT typeof(status), status FROM agent_todos", 1, 5},
 		{"agent_background_tasks.kind", "UPDATE agent_background_tasks SET kind = ?", "SELECT typeof(kind), kind FROM agent_background_tasks", 1, 3},
 		{"agent_background_tasks.status", "UPDATE agent_background_tasks SET status = ?", "SELECT typeof(status), status FROM agent_background_tasks", 1, 8},
@@ -52,7 +53,11 @@ func integerEnumStore(t *testing.T) *sql.DB {
 		"INSERT INTO agents (id) VALUES ('enum-owner')",
 		"INSERT INTO messages (id, agent_id, seq, source, content, content_compression) VALUES ('enum-message', 'enum-owner', 1, 1, X'7b7d', 1)",
 		"INSERT INTO agent_input_queue_items (id, agent_id, order_index, kind, state) VALUES ('enum-input', 'enum-owner', 1, 1, 1)",
-		"INSERT INTO control_response_answers (agent_id, request_id, claim_token, agent_provider) VALUES ('enum-owner', 'enum-request', 'enum-claim', 1)",
+		"INSERT INTO control_deliveries (id, agent_id, kind, operation_id, instance_id, state) VALUES ('enum-response', 'enum-owner', 1, 'enum-request', 'enum-claim', 1)",
+		"INSERT INTO control_response_payloads (delivery_id, agent_provider) VALUES ('enum-response', 1)",
+		"INSERT INTO control_deliveries (id, agent_id, kind, operation_id, instance_id, state) VALUES ('enum-unattached', 'enum-owner', 1, 'unattached', '', 1)",
+		"INSERT INTO control_deliveries (id, agent_id, kind, operation_id, instance_id, state) VALUES ('enum-review', 'enum-owner', 2, 'review', 'session', 1)",
+		"INSERT INTO auto_review_approval_payloads (delivery_id, message_id) VALUES ('enum-review', 'enum-message')",
 		"INSERT INTO agent_todos (agent_id, row_key, seq, content, status) VALUES ('enum-owner', 'enum-todo', 1, 'todo', 1)",
 		"INSERT INTO agent_background_tasks (owner_agent_id, row_key, seq, kind, status) VALUES ('enum-owner', 'enum-task', 1, 1, 1)",
 	} {
@@ -230,6 +235,7 @@ func TestEnumColumnChecksMatchTheirProtoRanges(t *testing.T) {
 		},
 		{
 			column:       "agent_input_queue_items.state",
+			columns:      2,
 			check:        "CHECK (state BETWEEN 1 AND 4)",
 			lastAccepted: int32(leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DELIVERY_UNCERTAIN),
 			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.AgentInputState_name),
@@ -261,12 +267,14 @@ func TestEnumColumnChecksMatchTheirProtoRanges(t *testing.T) {
 				"the CHECK is what makes that unrepresentable rather than merely unwritten",
 		},
 		{
-			column:       "control_response_answers.state",
-			check:        "CHECK (state BETWEEN 2 AND 5)",
-			lastAccepted: int32(leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_COMPLETED),
-			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.ControlResponseState_name),
-			narrower: "READY and CANCELED describe a request with NO answer row, which controlResponseState " +
-				"derives from control_requests; a row carrying one would contradict its own existence",
+			column: "control_deliveries.state", check: "CHECK (state BETWEEN 1 AND 4)", columns: 2,
+			lastAccepted: int32(leapmuxv1.ControlDeliveryState_CONTROL_DELIVERY_STATE_COMPLETED),
+			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.ControlDeliveryState_name),
+		},
+		{
+			column: "control_deliveries.kind", check: "CHECK (kind BETWEEN 1 AND 2)",
+			lastAccepted: int32(leapmuxv1.ControlDeliveryKind_CONTROL_DELIVERY_KIND_AUTO_REVIEW_APPROVAL),
+			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.ControlDeliveryKind_name),
 		},
 		{
 			column:       "messages.content_compression",
@@ -282,9 +290,9 @@ func TestEnumColumnChecksMatchTheirProtoRanges(t *testing.T) {
 		},
 		{
 			// One CHECK, three columns: agents, messages and
-			// control_response_answers each store the provider that produced
+			// control_response_payloads each store the provider that produced
 			// the row.
-			column:       "agent_provider (agents, messages, control_response_answers)",
+			column:       "agent_provider (agents, messages, control_response_payloads)",
 			check:        "CHECK (agent_provider BETWEEN 1 AND 30)",
 			columns:      3,
 			lastAccepted: int32(leapmuxv1.AgentProvider_AGENT_PROVIDER_MUSE_CODE),

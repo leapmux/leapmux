@@ -683,7 +683,7 @@ func TestUpdateAgentSettings_InheritedUnsupportedEffortResets(t *testing.T) {
 
 // TestUpdateAgentSettings_EmptyOptionValueIsNoOp guards against destructive empty-value writes:
 // an edit carrying a known axis with an empty value (e.g. a stray CLI `agent set --option
-// sandbox_policy=`) must be a NO-OP, not a delete -- the wire merge treats an empty value as a
+// permission_profile=`) must be a NO-OP, not a delete -- the wire merge treats an empty value as a
 // key deletion, so without the sanitize-time skip the persisted option would be silently wiped.
 func TestUpdateAgentSettings_EmptyOptionValueIsNoOp(t *testing.T) {
 	t.Parallel()
@@ -697,22 +697,22 @@ func TestUpdateAgentSettings_EmptyOptionValueIsNoOp(t *testing.T) {
 		HomeDir:       t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 		Options: marshalOptions(map[string]string{
-			agent.OptionIDModel:                "gpt-5.5",
-			contracts.CodexOptionSandboxPolicy: codex.SandboxReadOnly,
+			agent.OptionIDModel:                    "gpt-5.5",
+			contracts.CodexOptionPermissionProfile: codex.ProfileReadOnly,
 		}),
 	}))
 	registerAgentWatch(svc, w.channelID, "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
 	dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
 		AgentId:  "agent-1",
-		Settings: &leapmuxv1.AgentSettings{Options: map[string]string{contracts.CodexOptionSandboxPolicy: ""}},
+		Settings: &leapmuxv1.AgentSettings{Options: map[string]string{contracts.CodexOptionPermissionProfile: ""}},
 	}, w)
 
 	require.Empty(t, w.errors)
 	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
 	require.NoError(t, err)
-	assert.Equal(t, codex.SandboxReadOnly,
-		parseOptions(dbAgent.Options)[contracts.CodexOptionSandboxPolicy],
+	assert.Equal(t, codex.ProfileReadOnly,
+		parseOptions(dbAgent.Options)[contracts.CodexOptionPermissionProfile],
 		"an empty option value on the edit path is a no-op, not a destructive delete")
 }
 
@@ -1016,7 +1016,7 @@ func TestUpdateAgentSettings_DropsForeignNonSecondaryAxes(t *testing.T) {
 }
 
 // TestUpdateAgentSettings_KeepsKnownProviderExtra verifies the strip does NOT drop a
-// provider-private axis the provider genuinely exposes: a Codex sandbox-policy change
+// provider-private axis the provider genuinely exposes: a Codex permission-profile change
 // (a declared extra in KnownOptionIDs, not a static well-known axis) is persisted.
 func TestUpdateAgentSettings_KeepsKnownProviderExtra(t *testing.T) {
 	t.Parallel()
@@ -1036,16 +1036,16 @@ func TestUpdateAgentSettings_KeepsKnownProviderExtra(t *testing.T) {
 	dispatch(d, "UpdateAgentSettings", &leapmuxv1.UpdateAgentSettingsRequest{
 		AgentId: "agent-1",
 		Settings: &leapmuxv1.AgentSettings{
-			Options: map[string]string{contracts.CodexOptionSandboxPolicy: codex.SandboxReadOnly},
+			Options: map[string]string{contracts.CodexOptionPermissionProfile: codex.ProfileReadOnly},
 		},
 	}, w)
 
 	require.Empty(t, w.errors)
 	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
 	require.NoError(t, err)
-	assert.Equal(t, codex.SandboxReadOnly,
-		parseOptions(dbAgent.Options)[contracts.CodexOptionSandboxPolicy],
-		"a known Codex provider extra (sandbox_policy) must be persisted, not stripped")
+	assert.Equal(t, codex.ProfileReadOnly,
+		parseOptions(dbAgent.Options)[contracts.CodexOptionPermissionProfile],
+		"a known Codex provider extra (permission_profile) must be persisted, not stripped")
 }
 
 // TestUpdateAgentSettings_KeepsKnownWellKnownAxis is the positive counterpart to the
@@ -1485,25 +1485,25 @@ func TestPersistConfirmedAgentSettings_PersistsAvailableOptionGroups(t *testing.
 // TestSettleConfirmedOptions_DropsReconciledAwayProviderDefault guards S1: settleConfirmedOptions
 // runs reconcileOrphanedOptions AFTER confirmedOptions, so a provider-default axis the running
 // session does NOT surface is dropped rather than resurrected by resolveProviderDefaults. Codex
-// declares a sandbox_policy default; given a confirmed snapshot that surfaces only the model (a
-// hypothetical session that dropped the sandbox axis), confirmedOptions re-stamps the default while
+// declares a permission_profile default; given a confirmed snapshot that surfaces only the model (a
+// hypothetical session that dropped the profile axis), confirmedOptions re-stamps the default while
 // settleConfirmedOptions drops it. The always-live model axis survives either way.
 func TestSettleConfirmedOptions_DropsReconciledAwayProviderDefault(t *testing.T) {
 	t.Parallel()
 
 	codex := leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX
-	requested := OptionMap{agent.OptionIDModel: "gpt-5"} // no sandbox axis requested
+	requested := OptionMap{agent.OptionIDModel: "gpt-5"} // no profile axis requested
 	confirmed := OptionMap{agent.OptionIDModel: "gpt-5"} // the session surfaces only the model
 
-	// confirmedOptions alone re-fills the sandbox provider default for the unsurfaced axis...
+	// confirmedOptions alone re-fills the profile provider default for the unsurfaced axis...
 	reStamped := confirmedOptions(testRegistry, codex, requested, confirmed)
-	assert.Equal(t, contracts.CodexOptionDefaultSandboxPolicy, reStamped[contracts.CodexOptionSandboxPolicy],
-		"confirmedOptions re-stamps the provider default for the unsurfaced sandbox axis")
+	assert.Equal(t, contracts.CodexOptionDefaultPermissionProfile, reStamped[contracts.CodexOptionPermissionProfile],
+		"confirmedOptions re-stamps the provider default for the unsurfaced profile axis")
 
 	// ...while settleConfirmedOptions reconciles it away because the session doesn't surface it.
 	settled := settleConfirmedOptions(testRegistry, codex, requested, surfacedOptions(confirmed))
-	_, hasSandbox := settled[contracts.CodexOptionSandboxPolicy]
-	assert.False(t, hasSandbox, "an unsurfaced provider-default axis is dropped, not resurrected")
+	_, hasProfile := settled[contracts.CodexOptionPermissionProfile]
+	assert.False(t, hasProfile, "an unsurfaced provider-default axis is dropped, not resurrected")
 	assert.Equal(t, "gpt-5", settled[agent.OptionIDModel], "the always-live model axis is kept")
 }
 

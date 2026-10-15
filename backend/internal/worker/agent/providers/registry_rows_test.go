@@ -19,7 +19,7 @@ import (
 // UpdateAgentSettings validates an incoming options map against. Each provider
 // must expose exactly its real axes: the universal model, its secondary
 // permission-mode/primary-agent axis, the well-known effort axis ONLY where it
-// has one, and every provider-private extra (Codex's sandbox/network/...,
+// has one, and every provider-private extra (Codex's permission_profile/...,
 // Pi's pi_provider, the ACP server config options). A drift here either strips a
 // legitimate setting (under-listing) or re-admits a phantom (over-listing).
 func TestKnownOptionIDs(t *testing.T) {
@@ -46,8 +46,11 @@ func TestKnownOptionIDs(t *testing.T) {
 
 	codex := leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX
 	for _, id := range []string{agent.OptionIDModel, agent.OptionIDEffort, agent.OptionIDPermissionMode,
-		contracts.CodexOptionSandboxPolicy, contracts.CodexOptionNetworkAccess, contracts.CodexOptionCollaborationMode, contracts.CodexOptionServiceTier} {
+		contracts.CodexOptionPermissionProfile, contracts.CodexOptionCollaborationMode, contracts.CodexOptionServiceTier} {
 		assert.Truef(t, has(codex, id), "codex must allow %q", id)
+	}
+	for _, id := range []string{"sandbox_policy", "network_access"} {
+		assert.Falsef(t, has(codex, id), "codex replaced the legacy %q axis with the permission profile", id)
 	}
 	assert.False(t, has(codex, agent.OptionIDPrimaryAgent), "codex has no primary-agent axis")
 
@@ -221,7 +224,7 @@ func TestPermissionDefaults(t *testing.T) {
 		},
 		// A provider whose starting policy already asks before acting declares no safe
 		// default, and only a fallback.
-		{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, wantFallback: codex.DefaultApprovalPolicy},
+		{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, wantFallback: codex.DefaultPermissionMode},
 		{provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE, wantFallback: contracts.ZCodeDefaultMode},
 		// Oh My Pi falls back to Write, which asks before a command runs. omp's own
 		// default is Yolo, the mode the bypass preset selects.
@@ -299,9 +302,10 @@ func TestPermissionModeOrDefault(t *testing.T) {
 	}{
 		{"claude empty", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, "", contracts.ClaudeModeDefault},
 		{"claude default", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, contracts.ClaudeModeDefault, contracts.ClaudeModeDefault},
-		{"codex empty", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, "", codex.DefaultApprovalPolicy},
-		{"codex legacy db default", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, contracts.ClaudeModeDefault, codex.DefaultApprovalPolicy},
-		{"codex explicit", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, "never", "never"},
+		{"codex empty", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, "", codex.DefaultPermissionMode},
+		{"codex legacy db default", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, contracts.ClaudeModeDefault, codex.DefaultPermissionMode},
+		{"codex explicit", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, contracts.CodexPermissionModeNever, contracts.CodexPermissionModeNever},
+		{"codex approve for me", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, contracts.CodexPermissionModeApproveForMe, contracts.CodexPermissionModeApproveForMe},
 		{"cursor legacy db default", leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR, contracts.ClaudeModeDefault, cursor.ModeAgent},
 		{"copilot legacy db default", leapmuxv1.AgentProvider_AGENT_PROVIDER_GITHUB_COPILOT, contracts.ClaudeModeDefault, contracts.CopilotPermissionModeManual},
 		// Goose's fallback is Smart Approve, never Auto: Auto is the value Goose's own

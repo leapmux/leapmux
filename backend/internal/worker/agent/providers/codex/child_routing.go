@@ -333,8 +333,8 @@ func (a *Agent) replayPendingCodexChildEvents(threadID string, route codexChildR
 			}
 		case codexPendingTurnCompleted:
 			a.handleChildTurnCompleted(threadID, event.params, route)
-		case codexPendingHookCompleted, codexPendingMcpOauthCompleted, codexPendingMcpStartupUpdated:
-			a.persistCodexFailureForSink(route.childSink, route.agentID, event.kind, event.raw)
+		case codexPendingHookCompleted, codexPendingMcpOauthCompleted, codexPendingMcpStartupUpdated, codexPendingAutoReview:
+			a.persistCodexNotificationForSink(route.childSink, route.agentID, event.kind, event.raw)
 		case codexPendingRawExecution:
 			a.handleCodexRawExecution(event.raw, event.params)
 		}

@@ -160,6 +160,11 @@ export interface AgentLifecycleProps {
   onOpenSubagent?: (item: BackgroundTaskItem) => void
   /** Open an image a chat row rendered in its own tab. */
   onOpenImage?: (image: { seq: bigint, index: number, filePath?: string, title: string }) => void
+  /**
+   * Record the reader's authorization for an action that automatic review denied.
+   * The callback is absent while the agent cannot accept approval.
+   */
+  onApproveAutoReviewDenial?: ((messageId: string, reviewId: string) => Promise<void>) | undefined
   /** The agent's to-do list for the todos chip + popover. */
   todos?: TodoItem[]
   /** The root session goal for the Goals & To-dos popover. */
@@ -282,6 +287,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     ...(props.messageContext !== undefined ? { messages: props.messageContext } : {}),
     ...(props.agentLifecycle?.onOpenSubagent !== undefined ? { onOpenSubagent: props.agentLifecycle.onOpenSubagent } : {}),
     ...(props.agentLifecycle?.onOpenImage !== undefined ? { onOpenImage: props.agentLifecycle.onOpenImage } : {}),
+    ...(props.agentLifecycle?.onApproveAutoReviewDenial !== undefined ? { onApproveAutoReviewDenial: props.agentLifecycle.onApproveAutoReviewDenial } : {}),
   }))
 
   // The scroll container (also handed to scroll.attachListRef below). Read

@@ -19,8 +19,8 @@ func createPlanSessionTestAgent(t *testing.T, svc *Service, provider leapmuxv1.A
 	require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{
 		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(), AgentProvider: provider,
 		Options: marshalOptions(map[string]string{
-			agent.OptionIDPermissionMode: "on-request", contracts.CodexOptionSandboxPolicy: codex.SandboxWorkspaceWrite,
-			contracts.CodexOptionNetworkAccess: codex.NetworkRestricted, contracts.CodexOptionCollaborationMode: codex.CollaborationPlan,
+			agent.OptionIDPermissionMode: codex.ModeAskForApproval, contracts.CodexOptionPermissionProfile: codex.ProfileReadOnly,
+			contracts.CodexOptionCollaborationMode: codex.CollaborationPlan,
 		}),
 	}))
 	require.NoError(t, svc.Queries.UpdateAgentSessionID(t.Context(), db.UpdateAgentSessionIDParams{ID: "agent-1", AgentSessionID: "original"}))
@@ -71,13 +71,32 @@ func TestRestrictivePlanModeDoesNotEnableBypassOptions(t *testing.T) {
 	row := createPlanSessionTestAgent(t, svc, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, "CodexPlanModePrompt")
 	require.NoError(t, svc.processControlResponse(row, &leapmuxv1.SendControlResponseRequest{
 		ClaimToken: "claim", Content: []byte(`{"response":{"request_id":"plan","response":{"behavior":"allow"}}}`),
-		PlanApproval: &leapmuxv1.PlanApprovalSettings{PermissionMode: "on-request"},
+		PlanApproval: &leapmuxv1.PlanApprovalSettings{PermissionMode: codex.ModeAskForApproval},
 	}))
 	current, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
 	require.NoError(t, err)
 	options := parseOptions(current.Options)
-	require.Equal(t, codex.SandboxWorkspaceWrite, options[contracts.CodexOptionSandboxPolicy])
-	require.Equal(t, codex.NetworkRestricted, options[contracts.CodexOptionNetworkAccess])
+	require.Equal(t, codex.ModeAskForApproval, options[agent.OptionIDPermissionMode])
+	require.Equal(t, codex.ProfileReadOnly, options[contracts.CodexOptionPermissionProfile],
+		"a mode that no preset owns keeps the permission profile")
+}
+
+// TestSmartPlanApprovalSelectsTheSmartPreset covers the plan approval that opens on
+// Smart: it carries only the permission mode, and the worker expands that mode into
+// the complete preset, so the profile moves to the workspace with it.
+func TestSmartPlanApprovalSelectsTheSmartPreset(t *testing.T) {
+	svc, _, _ := setupTestService(t)
+	row := createPlanSessionTestAgent(t, svc, leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, "CodexPlanModePrompt")
+	require.NoError(t, svc.processControlResponse(row, &leapmuxv1.SendControlResponseRequest{
+		ClaimToken: "claim", Content: []byte(`{"response":{"request_id":"plan","response":{"behavior":"allow"}}}`),
+		PlanApproval: &leapmuxv1.PlanApprovalSettings{PermissionMode: contracts.CodexPermissionModeApproveForMe},
+	}))
+	current, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
+	require.NoError(t, err)
+	options := parseOptions(current.Options)
+	require.Equal(t, contracts.CodexPermissionModeApproveForMe, options[agent.OptionIDPermissionMode])
+	require.Equal(t, contracts.CodexPermissionProfileWorkspace, options[contracts.CodexOptionPermissionProfile])
+	require.Equal(t, codex.CollaborationDefault, options[contracts.CodexOptionCollaborationMode])
 }
 
 func TestPlanApprovalRequiresConfirmedLiveSettings(t *testing.T) {
@@ -118,16 +137,18 @@ func TestNativePlanRecordingDoesNotChangeAReplacementSession(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	old := createPlanSessionTestAgent(t, svc, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, "ExitPlanMode")
 	response := []byte(`{"response":{"request_id":"plan","response":{"behavior":"allow"}}}`)
-	claimed, err := svc.Output.claimControlResponseAnswer(db.ClaimControlResponseAnswerParams{
+	deliveryID, err := svc.Output.claimControlResponseAnswer(db.StoreControlResponseAnswerParams{
 		AgentID: "agent-1", RequestID: "plan", ClaimToken: "claim", AgentSessionID: "original",
 		AgentProvider: old.AgentProvider, RequestPayload: []byte(`{"request":{"tool_name":"ExitPlanMode"}}`),
 		ResponseContent: response, ResolvedContent: response,
 		PlanApprovalSettings: []byte(`{"permissionMode":"bypassPermissions","clearContext":false}`),
 	})
 	require.NoError(t, err)
-	require.True(t, claimed)
-	_, err = svc.Queries.SetControlResponseDeliveryState(t.Context(), db.SetControlResponseDeliveryStateParams{
-		AgentID: "agent-1", RequestID: "plan", ClaimToken: "claim", State: storedStateDelivered, RequiredState: storedStatePending,
+	require.NotEmpty(t, deliveryID)
+	recorded, lookupErr := svc.Queries.GetControlResponseAnswer(t.Context(), db.GetControlResponseAnswerParams{AgentID: "agent-1", RequestID: "plan", ClaimToken: "claim"})
+	require.NoError(t, lookupErr)
+	_, err = svc.Queries.SetControlDeliveryState(t.Context(), db.SetControlDeliveryStateParams{
+		ID: recorded.DeliveryID, State: storedStateDelivered, RequiredState: storedStatePending,
 	})
 	require.NoError(t, err)
 	answer, err := svc.Queries.GetControlResponseAnswer(t.Context(), db.GetControlResponseAnswerParams{AgentID: "agent-1", RequestID: "plan", ClaimToken: "claim"})

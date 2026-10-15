@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -237,17 +238,21 @@ type ControlRequest struct {
 	// request, and that session is empty until the first UpdateSessionID.
 	AgentSessionID string
 	RequestID      string
-	Payload        []byte
-	SourceSeq      int64
+	// InstanceID optionally identifies this publication across asynchronous cancellation.
+	// Providers that supply it must use a fresh secure ID for each new request instance.
+	InstanceID string
+	Payload    []byte
+	SourceSeq  int64
 }
 
 // ControlServices persists and broadcasts control requests.
 type ControlServices interface {
 	// PublishControlRequest stores the request before it broadcasts the request.
 	// Storage failure leaves the pending state unchanged and returns an error.
-	// Repeated announcements of an identical pending request keep its claim token.
+	// Repeated announcements of the same request instance keep its claim token.
 	PublishControlRequest(request ControlRequest) error
 	CancelControlRequest(requestID string)
+	CancelControlRequestInstance(requestID, instanceID string)
 }
 
 // SessionServices publishes provider session state and settings.
@@ -746,6 +751,32 @@ type Agent interface {
 type ContextCompactor interface {
 	CompactContext() error
 }
+
+// AutoReviewDenialApprover records authorization for an action that the automatic reviewer denied.
+// Recording approval does not execute the action.
+// Providers without an automatic reviewer do not implement this interface.
+//
+// entries are the raw entries of the transcript row that holds the denied review,
+// in order. The service reads that row from its own store and unwraps a
+// consolidated notification thread, so the provider receives no browser content.
+// reviewID selects the review among the entries. The provider owns the wire shape
+// of the entries, so it alone finds the review in them.
+type AutoReviewDenialApprover interface {
+	ApproveAutoReviewDenial(entries []json.RawMessage, reviewID string) error
+}
+
+var (
+	// ErrAutoReviewApprovalUnsupported reports a provider that has no automatic
+	// reviewer whose denial the user can approve.
+	ErrAutoReviewApprovalUnsupported = errors.New("agent provider does not support approving an automatic review denial")
+	// ErrAutoReviewNotFound reports a review ID that the row does not hold.
+	ErrAutoReviewNotFound = errors.New("the transcript row holds no such automatic review")
+	// ErrAutoReviewNotDenied reports a review that the reviewer did not deny.
+	ErrAutoReviewNotDenied = errors.New("the automatic reviewer did not deny this action")
+	// ErrAutoReviewThreadRetired reports a review from a provider thread that the
+	// agent no longer runs, for example one that a context clear replaced.
+	ErrAutoReviewThreadRetired = errors.New("the automatic review belongs to a thread that the agent no longer runs")
+)
 
 // NativeTurnRestarter reports a launch-only change made by a native tool.
 // The Worker replaces the process with the same session before it sends queued input.

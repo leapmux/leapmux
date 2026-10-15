@@ -2,40 +2,99 @@ package codex
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
-// queryAvailableModels sends a model/list request and converts the response.
+// codexCatalogMaxPages limits discovery from a server that never ends pagination.
+const codexCatalogMaxPages = 20
+
+type codexCatalogPage[T any] struct {
+	Data       []T     `json:"data"`
+	NextCursor *string `json:"nextCursor"`
+}
+
+// queryCodexCatalogPages returns only complete catalogs within one deadline.
+func queryCodexCatalogPages[T any](a *Agent, method string, params map[string]any, timeout time.Duration) ([]T, error) {
+	var deadline time.Time
+	if timeout > 0 {
+		deadline = a.Clock().Now().Add(timeout)
+	}
+	var entries []T
+	cursor := ""
+	seen := make(map[string]struct{})
+	for range codexCatalogMaxPages {
+		remaining := timeout
+		if !deadline.IsZero() {
+			remaining = deadline.Sub(a.Clock().Now())
+			if remaining <= 0 {
+				return nil, fmt.Errorf("%s exceeded the catalog deadline", method)
+			}
+		}
+		pageParams := maps.Clone(params)
+		if pageParams == nil {
+			pageParams = make(map[string]any)
+		}
+		if cursor != "" {
+			pageParams["cursor"] = cursor
+		}
+		encoded, err := json.Marshal(pageParams)
+		if err != nil {
+			return nil, fmt.Errorf("marshal %s parameters: %w", method, err)
+		}
+		raw, err := a.SendRequest(method, encoded, remaining)
+		if err != nil {
+			return nil, err
+		}
+		var page codexCatalogPage[T]
+		if err := json.Unmarshal(raw, &page); err != nil {
+			return nil, fmt.Errorf("decode %s catalog: %w", method, err)
+		}
+		if page.Data == nil {
+			return nil, fmt.Errorf("%s catalog has no data array", method)
+		}
+		entries = append(entries, page.Data...)
+		if page.NextCursor == nil || *page.NextCursor == "" {
+			return entries, nil
+		}
+		cursor = *page.NextCursor
+		if _, repeated := seen[cursor]; repeated {
+			return nil, fmt.Errorf("%s repeated its pagination cursor", method)
+		}
+		seen[cursor] = struct{}{}
+	}
+	return nil, fmt.Errorf("%s exceeded the %d-page catalog limit", method, codexCatalogMaxPages)
+}
+
+type codexModelCatalogEntry struct {
+	ID                        string `json:"id"`
+	Model                     string `json:"model"`
+	DisplayName               string `json:"displayName"`
+	IsDefault                 bool   `json:"isDefault"`
+	Hidden                    bool   `json:"hidden"`
+	Description               string `json:"description"`
+	DefaultReasoningEffort    string `json:"defaultReasoningEffort"`
+	SupportedReasoningEfforts []struct {
+		ReasoningEffort string `json:"reasoningEffort"`
+		Description     string `json:"description"`
+	} `json:"supportedReasoningEfforts"`
+}
+
+// queryAvailableModels reads the complete model catalog and converts its entries.
 func (a *Agent) queryAvailableModels(timeout time.Duration) []*agent.ModelInfo {
-	resp, err := a.SendRequest("model/list", json.RawMessage(`{}`), timeout)
+	rawModels, err := queryCodexCatalogPages[codexModelCatalogEntry](a, "model/list", nil, timeout)
 	if err != nil {
 		slog.Warn("codex model/list failed", "agent_id", a.AgentID(), "error", err)
-		return nil
-	}
-
-	var result struct {
-		Data []struct {
-			ID                        string `json:"id"`
-			Model                     string `json:"model"`
-			DisplayName               string `json:"displayName"`
-			IsDefault                 bool   `json:"isDefault"`
-			Hidden                    bool   `json:"hidden"`
-			Description               string `json:"description"`
-			DefaultReasoningEffort    string `json:"defaultReasoningEffort"`
-			SupportedReasoningEfforts []struct {
-				ReasoningEffort string `json:"reasoningEffort"`
-				Description     string `json:"description"`
-			} `json:"supportedReasoningEfforts"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(resp, &result); err != nil {
-		slog.Warn("codex model/list unmarshal failed", "agent_id", a.AgentID(), "error", err)
 		return nil
 	}
 
@@ -46,7 +105,7 @@ func (a *Agent) queryAvailableModels(timeout time.Duration) []*agent.ModelInfo {
 	}
 
 	var models []*agent.ModelInfo
-	for _, m := range result.Data {
+	for _, m := range rawModels {
 		if m.Hidden {
 			continue
 		}
@@ -101,6 +160,294 @@ func (a *Agent) queryAvailableModels(timeout time.Duration) []*agent.ModelInfo {
 		})
 	}
 	return models
+}
+
+// codexPermissionProfileCatalog distinguishes an unavailable catalog from a known empty catalog.
+type codexPermissionProfileCatalog struct {
+	available bool
+	options   []*leapmuxv1.AvailableOption
+}
+
+// selectableOptions supplies one fallback rule for validation and display.
+func (catalog codexPermissionProfileCatalog) selectableOptions() []*leapmuxv1.AvailableOption {
+	if !catalog.available {
+		return codexBuiltinProfiles
+	}
+	return catalog.options
+}
+
+type codexPermissionCatalog struct {
+	profiles     codexPermissionProfileCatalog
+	refusedModes map[string]struct{}
+}
+
+// discoverPermissions learns which permission profiles and modes Codex allows, keeps
+// them for the live option groups, and settles the agent's permission settings
+// against them. Call it before thread/start: a stored profile that config.toml no
+// longer defines, or a mode that the requirements refuse, would make thread/start
+// fail.
+func (a *Agent) discoverPermissions(cwd string, timeout time.Duration) codexPermissionSettings {
+	catalog := a.queryPermissionCatalog(cwd, timeout)
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	a.permissionProfiles = catalog.profiles
+	a.refusedModes = catalog.refusedModes
+	a.permissionMode = settledPermissionMode(a.permissionMode, catalog.refusedModes)
+	a.permissionProfile = settledPermissionProfile(a.permissionProfile, catalog.profiles)
+	return a.permissionSettingsLocked()
+}
+
+// queryPermissionCatalog runs the independent startup queries concurrently.
+// Each query uses one timeout budget. A failed query loses only its own information.
+func (a *Agent) queryPermissionCatalog(cwd string, timeout time.Duration) codexPermissionCatalog {
+	var (
+		wg           sync.WaitGroup
+		profiles     codexPermissionProfileCatalog
+		requirements codexApprovalRequirements
+		guardianOff  bool
+	)
+	wg.Add(3)
+	go func() {
+		defer wg.Done()
+		profiles = a.queryPermissionProfiles(cwd, timeout)
+	}()
+	go func() {
+		defer wg.Done()
+		requirements = a.queryApprovalRequirements(timeout)
+	}()
+	go func() {
+		defer wg.Done()
+		guardianOff = a.queryGuardianApprovalDisabled(cwd, timeout)
+	}()
+	wg.Wait()
+	return codexPermissionCatalog{profiles: profiles, refusedModes: codexRefusedModes(requirements, guardianOff)}
+}
+
+type codexPermissionProfileEntry struct {
+	ID          string  `json:"id"`
+	Description *string `json:"description"`
+	Allowed     bool    `json:"allowed"`
+}
+
+// queryPermissionProfiles returns a known catalog only after every page succeeds.
+func (a *Agent) queryPermissionProfiles(cwd string, timeout time.Duration) codexPermissionProfileCatalog {
+	entries, err := queryCodexCatalogPages[codexPermissionProfileEntry](a, "permissionProfile/list", map[string]any{"cwd": cwd}, timeout)
+	if err != nil {
+		slog.Warn("codex permissionProfile/list failed", "agent_id", a.AgentID(), "error", err)
+		return codexPermissionProfileCatalog{}
+	}
+	options := make([]*leapmuxv1.AvailableOption, 0, len(entries))
+	seen := make(map[string]struct{})
+	for _, entry := range entries {
+		if !entry.Allowed || entry.ID == "" {
+			continue
+		}
+		if _, duplicate := seen[entry.ID]; duplicate {
+			continue
+		}
+		seen[entry.ID] = struct{}{}
+		description := ""
+		if entry.Description != nil {
+			description = *entry.Description
+		}
+		options = append(options, codexPermissionProfileOption(entry.ID, description))
+	}
+	return codexPermissionProfileCatalog{available: true, options: options}
+}
+
+// codexPermissionProfileOption returns the picker option for a discovered profile. A
+// built-in profile keeps the name and the description of the static seed, so it
+// reads the same before and after discovery. A profile from config.toml is named by
+// its id and described by Codex.
+func codexPermissionProfileOption(id, description string) *leapmuxv1.AvailableOption {
+	if i := slices.IndexFunc(codexBuiltinProfiles, func(o *leapmuxv1.AvailableOption) bool { return o.GetId() == id }); i >= 0 {
+		return codexBuiltinProfiles[i]
+	}
+	if strings.TrimSpace(description) == "" {
+		description = "A permission profile from config.toml."
+	}
+	return &leapmuxv1.AvailableOption{Id: id, Name: id, Description: description}
+}
+
+// codexApprovalRequirements holds the managed requirements that restrict the
+// permission modes. A nil list allows every value.
+type codexApprovalRequirements struct {
+	allowedPolicies  map[string]struct{}
+	allowedReviewers map[string]struct{}
+	// autoReviewOff is true when a requirement pins the auto-review feature off.
+	autoReviewOff bool
+}
+
+// queryApprovalRequirements reads configRequirements/read. A failure allows every
+// value, because Codex still refuses a forbidden one on the request itself.
+func (a *Agent) queryApprovalRequirements(timeout time.Duration) codexApprovalRequirements {
+	resp, err := a.SendRequest("configRequirements/read", json.RawMessage(`{}`), timeout)
+	if err != nil {
+		slog.Warn("codex configRequirements/read failed", "agent_id", a.AgentID(), "error", err)
+		return codexApprovalRequirements{}
+	}
+	requirements, err := parseCodexApprovalRequirements(resp)
+	if err != nil {
+		slog.Warn("codex configRequirements/read unmarshal failed", "agent_id", a.AgentID(), "error", err)
+		return codexApprovalRequirements{}
+	}
+	return requirements
+}
+
+// parseCodexApprovalRequirements reads the requirement lists that restrict the
+// permission modes. A granular approval policy is an object, which no LeapMux mode
+// selects, so the policy list ignores it.
+func parseCodexApprovalRequirements(raw json.RawMessage) (codexApprovalRequirements, error) {
+	var response struct {
+		Requirements *struct {
+			AllowedApprovalPolicies   []json.RawMessage `json:"allowedApprovalPolicies"`
+			AllowedApprovalsReviewers []string          `json:"allowedApprovalsReviewers"`
+			FeatureRequirements       map[string]bool   `json:"featureRequirements"`
+		} `json:"requirements"`
+	}
+	if err := json.Unmarshal(raw, &response); err != nil {
+		return codexApprovalRequirements{}, err
+	}
+	var requirements codexApprovalRequirements
+	if response.Requirements == nil {
+		return requirements, nil
+	}
+	if policies := response.Requirements.AllowedApprovalPolicies; policies != nil {
+		requirements.allowedPolicies = make(map[string]struct{}, len(policies))
+		for _, raw := range policies {
+			var policy string
+			if json.Unmarshal(raw, &policy) == nil {
+				requirements.allowedPolicies[policy] = struct{}{}
+			}
+		}
+	}
+	if reviewers := response.Requirements.AllowedApprovalsReviewers; reviewers != nil {
+		requirements.allowedReviewers = make(map[string]struct{}, len(reviewers))
+		for _, reviewer := range reviewers {
+			requirements.allowedReviewers[reviewer] = struct{}{}
+		}
+	}
+	if enabled, present := response.Requirements.FeatureRequirements[codexAutoReviewFeatureRequirement]; present && !enabled {
+		requirements.autoReviewOff = true
+	}
+	return requirements, nil
+}
+
+// The two keys that turn the auto-review reviewer off. A managed requirement pins
+// the feature through its own key, and config.toml turns it off through the
+// feature's config key.
+const (
+	codexAutoReviewFeatureRequirement = "auto_review"
+	codexGuardianApprovalFeature      = "guardian_approval"
+)
+
+// queryGuardianApprovalDisabled reports whether the effective config, as seen from
+// cwd, turns the auto-review feature off. config/read reports a feature only when
+// the user set it, so an absent key reads as on, which is the Codex default.
+func (a *Agent) queryGuardianApprovalDisabled(cwd string, timeout time.Duration) bool {
+	paramsJSON, err := json.Marshal(map[string]interface{}{"cwd": cwd})
+	if err != nil {
+		slog.Warn("codex marshal config/read params", "agent_id", a.AgentID(), "error", err)
+		return false
+	}
+	resp, err := a.SendRequest("config/read", paramsJSON, timeout)
+	if err != nil {
+		slog.Warn("codex config/read failed", "agent_id", a.AgentID(), "error", err)
+		return false
+	}
+	return codexGuardianApprovalDisabled(resp)
+}
+
+// codexGuardianApprovalDisabled reads `config.features.guardian_approval` from a
+// config/read response. Only an explicit false turns the feature off.
+func codexGuardianApprovalDisabled(raw json.RawMessage) bool {
+	var response struct {
+		Config struct {
+			Features map[string]json.RawMessage `json:"features"`
+		} `json:"config"`
+	}
+	if json.Unmarshal(raw, &response) != nil {
+		return false
+	}
+	var enabled bool
+	value, present := response.Config.Features[codexGuardianApprovalFeature]
+	return present && json.Unmarshal(value, &enabled) == nil && !enabled
+}
+
+// codexRefusedModes returns the permission modes that the requirements or the
+// config refuse. A mode is refused when the requirements refuse its approval policy
+// or its reviewer, and Approve for Me is also refused when the auto-review feature
+// is off.
+func codexRefusedModes(requirements codexApprovalRequirements, guardianOff bool) map[string]struct{} {
+	refused := make(map[string]struct{})
+	for _, option := range codexPermissionModeOptions() {
+		mode := option.GetId()
+		policy, reviewer := codexApprovalWire(mode)
+		_, policyAllowed := requirements.allowedPolicies[policy]
+		_, reviewerAllowed := requirements.allowedReviewers[reviewer]
+		switch {
+		case requirements.allowedPolicies != nil && !policyAllowed,
+			requirements.allowedReviewers != nil && !reviewerAllowed,
+			reviewer == codexReviewerAutoReview && (requirements.autoReviewOff || guardianOff):
+			refused[mode] = struct{}{}
+		}
+	}
+	return refused
+}
+
+// codexPermissionModeOptions returns the permission modes of the static group, in
+// its order.
+func codexPermissionModeOptions() []*leapmuxv1.AvailableOption {
+	for _, group := range codexStaticOptionGroups {
+		if group.GetId() == agent.OptionIDPermissionMode {
+			return group.GetOptions()
+		}
+	}
+	return nil
+}
+
+// settledPermissionMode returns the mode that a launch uses: the requested mode when
+// the requirements allow it, else the default mode, else the first allowed mode. It
+// returns the requested mode when the requirements allow none, so Codex states the
+// refusal itself.
+func settledPermissionMode(requested string, refused map[string]struct{}) string {
+	allowed := func(mode string) bool {
+		_, isRefused := refused[mode]
+		return !isRefused
+	}
+	if allowed(requested) {
+		return requested
+	}
+	if allowed(DefaultPermissionMode) {
+		return DefaultPermissionMode
+	}
+	for _, option := range codexPermissionModeOptions() {
+		if allowed(option.GetId()) {
+			return option.GetId()
+		}
+	}
+	return requested
+}
+
+// settledPermissionProfile returns the profile that a launch uses: the requested
+// profile when the discovered catalog offers it, else the default profile, else the
+// first offered profile. An unavailable or empty catalog supplies no replacement.
+// The requested profile then stays for Codex to validate.
+func settledPermissionProfile(requested string, catalog codexPermissionProfileCatalog) string {
+	profiles := catalog.options
+	if !catalog.available || len(profiles) == 0 {
+		return requested
+	}
+	offered := func(id string) bool {
+		return slices.ContainsFunc(profiles, func(o *leapmuxv1.AvailableOption) bool { return o.GetId() == id })
+	}
+	if offered(requested) {
+		return requested
+	}
+	if offered(contracts.CodexOptionDefaultPermissionProfile) {
+		return contracts.CodexOptionDefaultPermissionProfile
+	}
+	return profiles[0].GetId()
 }
 
 // reconcileModelCatalog repairs the two gaps between what model/list reports and

@@ -1,0 +1,207 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "codex_guardian_event_conversion.schema.json",
+  "title": "Codex auto-review event conversion",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "_readme",
+    "codexVersion",
+    "cases"
+  ],
+  "properties": {
+    "_readme": {
+      "type": "string",
+      "minLength": 1
+    },
+    "codexVersion": {
+      "type": "string",
+      "minLength": 1
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "notification",
+          "event"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "notification": {
+            "description": "The params of an item/autoApprovalReview/completed notification, in the v2 spelling that Codex sends.",
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "threadId",
+              "turnId",
+              "reviewId",
+              "review",
+              "action"
+            ],
+            "properties": {
+              "threadId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "turnId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "reviewId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "targetItemId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "startedAtMs": {
+                "type": "integer"
+              },
+              "completedAtMs": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "decisionSource": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "review": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "status"
+                ],
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "riskLevel": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "userAuthorization": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "rationale": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                }
+              },
+              "action": {
+                "type": "object",
+                "required": [
+                  "type"
+                ],
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            }
+          },
+          "event": {
+            "description": "The core GuardianAssessmentEvent that thread/approveGuardianDeniedAction accepts, in the snake_case spelling.",
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "turn_id",
+              "status",
+              "action"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "target_item_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "turn_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "started_at_ms": {
+                "type": "integer"
+              },
+              "completed_at_ms": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "status": {
+                "type": "string",
+                "minLength": 1
+              },
+              "risk_level": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "user_authorization": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "rationale": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "decision_source": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "action": {
+                "type": "object",
+                "required": [
+                  "type"
+                ],
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

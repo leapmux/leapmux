@@ -9,6 +9,7 @@
 import type { MessageInitShape, MessageShape } from '@bufbuild/protobuf'
 import type { GenMessage } from '@bufbuild/protobuf/codegenv2'
 import type {
+  ApproveAutoReviewDenialResponse,
   BeginQueuedAgentInputEditResponse,
   CancelQueuedAgentInputEditResponse,
   CloseAgentResponse,
@@ -90,6 +91,8 @@ import { apiLoadingTimeoutMs, transport } from '~/api/transport'
 import { WS_CHANNEL_ROUTE, WS_SUBPROTOCOL_CHANNEL_RELAY } from '~/generated/contracts/wire'
 import { WORKER_RPC_METHOD } from '~/generated/contracts/worker-vocab'
 import {
+  ApproveAutoReviewDenialRequestSchema,
+  ApproveAutoReviewDenialResponseSchema,
   BeginQueuedAgentInputEditRequestSchema,
   BeginQueuedAgentInputEditResponseSchema,
   CancelQueuedAgentInputEditRequestSchema,
@@ -514,6 +517,15 @@ export function interruptAgent(workerId: string, req: MessageInitShape<typeof In
  */
 export function updateAgentGoal(workerId: string, req: MessageInitShape<typeof UpdateAgentGoalRequestSchema>): Promise<UpdateAgentGoalResponse> {
   return callWorker(workerId, 'UpdateAgentGoal', UpdateAgentGoalRequestSchema, UpdateAgentGoalResponseSchema, req)
+}
+
+/**
+ * Record the reader's approval of one action that the agent's automatic reviewer
+ * denied, so the agent may retry it once. The worker reads the denial from its own
+ * stored row, so the request states only which row and which review.
+ */
+export function approveAutoReviewDenial(workerId: string, req: MessageInitShape<typeof ApproveAutoReviewDenialRequestSchema>): Promise<ApproveAutoReviewDenialResponse> {
+  return callWorker(workerId, 'ApproveAutoReviewDenial', ApproveAutoReviewDenialRequestSchema, ApproveAutoReviewDenialResponseSchema, req)
 }
 
 export function sendControlResponse(workerId: string, req: MessageInitShape<typeof SendControlResponseRequestSchema>): Promise<SendControlResponseResponse> {

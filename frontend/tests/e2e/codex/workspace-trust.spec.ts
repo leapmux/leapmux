@@ -2,6 +2,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { expect } from '@playwright/test'
 import { codexExtractControl } from '../../../src/components/chat/providers/codex/extractControl'
+import { CODEX_OPTION } from '../../../src/generated/contracts/codex-protocol'
 import { codexTest } from '../codex-fixtures'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { nativeModelInstructionText } from '../helpers/nativeScenario'
@@ -17,10 +18,12 @@ codexTest('classifies an actual native permission and confirms the absent worksp
   })
 })
 
-for (const sandboxPolicy of ['read-only', 'danger-full-access']) {
-  codexTest(`processes actual project configuration without a trust request under ${sandboxPolicy}`, async ({ native }) => {
+// Codex trusts a project by itself when the effective permission profile can write the working directory, and only
+// then reads the project's own configuration. The read-only profile cannot, and the full-access profile can.
+for (const permissionProfile of [':read-only', ':danger-full-access']) {
+  codexTest(`processes actual project configuration without a trust request under ${permissionProfile}`, async ({ native }) => {
     await exerciseNativeWorkspaceTrustLimit(native, {
-      optionValues: { sandbox_policy: sandboxPolicy, permissionMode: 'never' },
+      optionValues: { [CODEX_OPTION.PermissionProfile]: permissionProfile, permissionMode: 'never' },
       projectConfiguration: {
         prepare: ({ directory, marker }) => {
           // A separate repository keeps earlier parent-project trust decisions outside this project root.
@@ -33,7 +36,7 @@ for (const sandboxPolicy of ['read-only', 'danger-full-access']) {
           const request = await sendNativeAnswer(privateContext, 'Reply once from this project.', 'The native project configuration turn completed.')
           expect(request.protocol).toBe('openai-responses')
           const instructions = nativeModelInstructionText(request)
-          if (sandboxPolicy === 'read-only')
+          if (permissionProfile === ':read-only')
             expect(instructions).not.toContain(marker)
           else
             expect(instructions).toContain(marker)

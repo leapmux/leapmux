@@ -584,12 +584,14 @@ func (h *OutputHandler) ForgetChildSinks(rootID string) {
 
 // claimControlResponseAnswer reserves one request instance before delivery.
 // A database failure must prevent delivery because the worker cannot establish ownership.
-func (h *OutputHandler) claimControlResponseAnswer(params db.ClaimControlResponseAnswerParams) (bool, error) {
-	rows, err := h.queries.ClaimControlResponseAnswer(bgCtx(), params)
-	if err != nil {
-		return false, err
-	}
-	return rows > 0, nil
+func (h *OutputHandler) claimControlResponseAnswer(params db.StoreControlResponseAnswerParams) (string, error) {
+	return reserveControlDelivery(h.db, controlDeliveryIdentity{
+		agentID: params.AgentID, kind: leapmuxv1.ControlDeliveryKind_CONTROL_DELIVERY_KIND_CONTROL_RESPONSE,
+		operationID: params.RequestID, instanceID: params.ClaimToken,
+	}, func(queries *db.Queries, deliveryID string) (int64, error) {
+		params.DeliveryID = deliveryID
+		return queries.StoreControlResponseAnswer(bgCtx(), params)
+	})
 }
 
 // TrackedAgentIDs returns the set of agent ids that currently hold any in-memory
@@ -1226,8 +1228,11 @@ func (s *agentOutputSink) PublishControlRequest(request agent.ControlRequest) er
 	if !s.ownsControlPublisher() {
 		return nil
 	}
-	claimToken := id.Generate()
-	if err == nil && known && previous.scope == scope && previous.claimToken == current.ClaimToken &&
+	claimToken := request.InstanceID
+	if claimToken == "" {
+		claimToken = id.Generate()
+	}
+	if request.InstanceID == "" && err == nil && known && previous.scope == scope && previous.claimToken == current.ClaimToken &&
 		bytes.Equal(current.Payload, payload) && current.AgentSessionID == request.AgentSessionID {
 		claimToken = current.ClaimToken
 	}
@@ -1274,13 +1279,31 @@ func (s *agentOutputSink) PublishControlRequest(request agent.ControlRequest) er
 }
 
 func (s *agentOutputSink) CancelControlRequest(requestID string) {
+	s.cancelControlRequest(requestID, "")
+}
+
+// CancelControlRequestInstance cannot cancel a replacement with the same request ID.
+func (s *agentOutputSink) CancelControlRequestInstance(requestID, instanceID string) {
+	if instanceID == "" {
+		return
+	}
+	s.cancelControlRequest(requestID, instanceID)
+}
+
+func (s *agentOutputSink) cancelControlRequest(requestID, instanceID string) {
 	_, _, release := s.h.lockControlMutation(s.agentID, s.rootAgentID)
 	publication := controlPublication{}
 	defer func() { s.h.finishControlPublication(s.agentID, s.rootAgentID, publication, release) }()
 	if !s.ownsControlPublisher() {
 		return
 	}
-	request, err := s.h.queries.CancelControlRequest(bgCtx(), db.CancelControlRequestParams{AgentID: s.agentID, RequestID: requestID})
+	var request db.ControlRequest
+	var err error
+	if instanceID == "" {
+		request, err = s.h.queries.CancelControlRequest(bgCtx(), db.CancelControlRequestParams{AgentID: s.agentID, RequestID: requestID})
+	} else {
+		request, err = s.h.queries.DeleteControlRequestInstance(bgCtx(), db.DeleteControlRequestInstanceParams{AgentID: s.agentID, RequestID: requestID, ClaimToken: instanceID})
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return
 	}

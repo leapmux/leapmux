@@ -25,16 +25,19 @@ type JSONRPCProcess struct {
 	FrameMessage func([]byte) []byte
 
 	// outstandingMu guards outstandingControls and withdrawGeneration.
+	// It also protects each record's mutable state.
 	outstandingMu sync.Mutex
 	// outstandingControls holds unanswered control requests by LeapMux request ID.
 	// Publication adds an entry. An answer or withdrawal removes it.
 	// A failed write restores the entry only when no bytes reached the provider.
 	// These rules keep native requests and browser controls consistent.
-	outstandingControls map[string]outstandingControlRequest
+	outstandingControls map[string]*outstandingControlRequest
 	// withdrawGeneration distinguishes withdrawal from an answer during publication.
 	// Both paths remove a request. Only withdrawal increments this counter.
 	// A presence check alone can cancel a control that the reader already answered.
 	withdrawGeneration uint64
+	approvalMu         sync.Mutex
+	approvalQueue      chan *controlApprovalBatch
 }
 
 // frameJSONRPCMessage supplies the same framing for waiting and detached writes.
@@ -59,7 +62,7 @@ func (b *JSONRPCProcess) writeJSONRPCMessage(data []byte) error {
 // ErrDeliveryUncertain leaves it removed because the provider can already hold the answer.
 // Restoring it in that case can send a second answer to a retired request.
 func (b *JSONRPCProcess) SendRawInput(data []byte, stop agent.StopContext) error {
-	restore := b.takeOutstandingControl(data)
+	restore, _ := b.takeOutstandingControl(data)
 	err := b.writeRawFrame(data)
 	if err != nil && !errors.Is(err, agent.ErrDeliveryUncertain) {
 		restore()
@@ -231,8 +234,10 @@ func (b *JSONRPCProcess) SendErrorResponse(id json.RawMessage, code int, message
 	})
 }
 
-// jsonrpcErrMethodNotFound identifies a JSON-RPC method with no receiver handler.
-const jsonrpcErrMethodNotFound = -32601
+// JSONRPCErrMethodNotFound identifies a JSON-RPC method with no receiver handler.
+// A provider also reads it in a reply, to tell a method that an older agent lacks
+// from a refusal of the request.
+const JSONRPCErrMethodNotFound = -32601
 
 // RefuseUnsupportedRequest replies with -32601 for an unsupported inbound request.
 // A notification has no ID and requires no reply.
@@ -250,7 +255,7 @@ func (b *JSONRPCProcess) RefuseUnsupportedRequest(line *ParsedLine) {
 	if line.Method == "" || !line.HasID() {
 		return
 	}
-	b.SendErrorResponseDetached(line.ID, jsonrpcErrMethodNotFound,
+	b.SendErrorResponseDetached(line.ID, JSONRPCErrMethodNotFound,
 		"Method not supported: "+line.Method, "refuse "+line.Method)
 }
 

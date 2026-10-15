@@ -1,0 +1,31 @@
+{
+  "_readme": "Codex permission settings and the two presets, smart and bypass. The settings table defines each shared option value once. Go reads its generated constants directly. Each preset lists settings keys and defines a complete settings change. The browser applies these changes from the composer menu and control requests. A plan approval carries only a permission mode, so the worker expands that mode into the complete preset. The worker also uses bypass to answer standing approval requests. The smart preset selects the auto-review reviewer with the workspace profile. Upstream Codex calls this mode Approve for me. The bypass preset selects the never approval policy with the danger-full-access profile. Upstream Codex calls this mode Full access. Each preset must select a distinct permission mode and at least one other option. Settings definitions remain independent of preset choices. task generate-contracts emits both language definitions from this file.",
+  "settings": {
+    "PermissionModeApproveForMe": {
+      "id": "permissionMode",
+      "value": "auto-review"
+    },
+    "PermissionModeNever": {
+      "id": "permissionMode",
+      "value": "never"
+    },
+    "PermissionProfileWorkspace": {
+      "id": "permission_profile",
+      "value": ":workspace"
+    },
+    "PermissionProfileDangerFullAccess": {
+      "id": "permission_profile",
+      "value": ":danger-full-access"
+    }
+  },
+  "presets": {
+    "smart": [
+      "PermissionModeApproveForMe",
+      "PermissionProfileWorkspace"
+    ],
+    "bypass": [
+      "PermissionModeNever",
+      "PermissionProfileDangerFullAccess"
+    ]
+  }
+}

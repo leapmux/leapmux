@@ -72,7 +72,7 @@ describe('permissionPillOptions', () => {
   })
 
   it('omits a preset the controller does not carry', () => {
-    // ZCode and Codex ship no smart preset; their group is Unchanged + Bypass.
+    // ZCode ships no smart preset. Its group is Unchanged + Bypass.
     expect(permissionPillOptions(controller({ smart: undefined }))).toEqual([
       { key: 'unspecified', label: 'Unchanged', icon: Minus },
       { key: 'bypass', label: 'Bypass' },
@@ -101,9 +101,8 @@ describe('buildPermissionPill', () => {
 
   it('clamps an opening choice the group draws no pill for', () => {
     // A plan approval opens on smart whether or not the provider ships one.
-    // Codex and ZCode draw Unchanged + Bypass, and Bypass must never arrive as
-    // an opening choice, so the group falls back to the pill that applies
-    // nothing.
+    // ZCode draws Unchanged + Bypass. Bypass must never arrive as an opening
+    // choice, so the group falls back to the pill that applies nothing.
     const pill = buildPermissionPill(controller({ smart: undefined }), openingChoice('smart'))!
 
     expect(pill.options.map(o => o.key)).toEqual(['unspecified', 'bypass'])

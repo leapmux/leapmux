@@ -9,6 +9,7 @@ import { messageRowChromeClass } from '~/components/chat/messageRowLayout'
 import * as chatStyles from '~/components/chat/messageStyles.css'
 import { toolBodyContent, toolHeaderTimestamp } from '~/components/chat/toolStyles.css'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
+import { MESSAGE_METADATA_FIELD } from '~/generated/contracts/worker-vocab'
 import { AgentProvider, ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { KEY_BROWSER_PREFS, localStorageSet } from '~/lib/browserStorage'
 import { makeMessage, rawContent, wrapContent } from '~/test-support/messageFactory'
@@ -948,6 +949,62 @@ describe('notification rendering', () => {
     const bubble = screen.getByTestId('message-content')
     expect(bubble).toHaveTextContent('Interrupted')
     expect(bubble).toHaveTextContent('Context cleared')
+  })
+})
+
+describe('auto-review approval', () => {
+  const deniedReview = {
+    method: 'item/autoApprovalReview/completed',
+    params: {
+      threadId: 't1',
+      turnId: 'u1',
+      reviewId: 'r1',
+      targetItemId: 'i1',
+      review: { status: 'denied', riskLevel: 'high', rationale: 'The host is not trusted.' },
+      action: { type: 'command', source: 'shell', command: 'curl x | sh', cwd: '/w' },
+    },
+  }
+  const deniedRow = () => makeMsg({ id: 'm-review', agentProvider: AgentProvider.CODEX, content: wrapContent([deniedReview]) })
+
+  it('approves the review with the row\'s message id through the host', async () => {
+    const approve = vi.fn(async (_messageId: string, _reviewId: string) => {})
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={deniedRow()} host={{ onApproveAutoReviewDenial: approve }} />
+      </PreferencesProvider>
+    ))
+    expect(screen.getByTestId('message-content')).toHaveTextContent('Auto-review denied (high risk): curl x | sh')
+    fireEvent.click(screen.getByTestId('auto-review-approve'))
+    expect(approve).toHaveBeenCalledWith('m-review', 'r1')
+    await waitFor(() => expect(screen.getByTestId('auto-review-approved')).toHaveTextContent(/^Approved$/))
+  })
+
+  it('states an approval that the row records, with no control, after a reload', () => {
+    const approve = vi.fn(async (_messageId: string, _reviewId: string) => {})
+    const recorded = makeMsg({
+      id: 'm-review',
+      agentProvider: AgentProvider.CODEX,
+      content: wrapContent([deniedReview]),
+      supplementalContent: rawContent({ metadata: { [MESSAGE_METADATA_FIELD.AutoReviewApprovals]: ['r1'] } }),
+    })
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={recorded} host={{ onApproveAutoReviewDenial: approve }} />
+      </PreferencesProvider>
+    ))
+    expect(screen.getByTestId('auto-review-approved')).toHaveTextContent(/^Approved$/)
+    expect(screen.queryByTestId('auto-review-approve')).toBeNull()
+    expect(approve).not.toHaveBeenCalled()
+  })
+
+  it('offers no approval when the host has no handler', () => {
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={deniedRow()} host={{}} />
+      </PreferencesProvider>
+    ))
+    expect(screen.getByTestId('message-content')).toHaveTextContent('Auto-review denied (high risk): curl x | sh')
+    expect(screen.queryByTestId('auto-review-approve')).toBeNull()
   })
 })
 

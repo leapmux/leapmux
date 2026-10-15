@@ -36,7 +36,7 @@ import { createMessageRenderSources } from './messageContextResolver'
 import { bubbleRunsToRightEdge, isMirroredMessageRow, messageBubbleClass, messageRowClass } from './messageRowLayout'
 import * as chatStyles from './messageStyles.css'
 import { expandedUiKeyFor, MESSAGE_UI_KEY, messageUiDefault } from './messageUiKeys'
-import { imageActionsFrom, subagentsFrom } from './renderContext'
+import { imageActionsFrom, reviewActionsFrom, subagentsFrom } from './renderContext'
 import { quotableTextForRow } from './results/rowText'
 import { toolCallMeta } from './results/tools/meta'
 import { extractedRow } from './rowExtraction'
@@ -151,6 +151,11 @@ export interface MessageBubbleHost {
    * message; a renderer says only which image of its own row it means.
    */
   onOpenImage?: ((image: { seq: bigint, index: number, filePath?: string, title: string }) => void) | undefined
+  /**
+   * Record the reader's authorization for an action that automatic review denied in this row.
+   * The control stays hidden while the agent cannot accept approval.
+   */
+  onApproveAutoReviewDenial?: ((messageId: string, reviewId: string) => Promise<void>) | undefined
   /** Lifted per-message diff view override, managed by ChatView. */
   localDiffView?: ('unified' | 'split') | undefined
   /** Set the per-message diff view override. */
@@ -366,6 +371,10 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     ...(untrack(openImageHost) !== undefined ? { openImage } : {}),
   })
   const toolProgress: ToolProgressSource = { liveTail: () => sources.progress() }
+  const reviews = reviewActionsFrom({
+    messageId: () => props.message.id,
+    approveAutoReviewDenial: () => props.host?.onApproveAutoReviewDenial,
+  })
 
   // Build render context for message renderers. A plain object literal with
   // getter accessors for reactive fields gives stable identity (allocated once
@@ -379,6 +388,9 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     get onReply() { return wrappedOnReply() },
     ...(subagents !== undefined ? { subagents } : {}),
     ...(images !== undefined ? { images } : {}),
+    // A getter, so the control follows the host: the agent gains and loses the
+    // capability as it starts and stops.
+    get reviews() { return props.host?.onApproveAutoReviewDenial !== undefined ? reviews : undefined },
     toolProgress,
     get onCopyJson() { return copyJson },
     get jsonCopied() { return props.premeasureMode ? () => false : jsonCopied },

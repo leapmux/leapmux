@@ -11,12 +11,14 @@ export type ProviderSettingChangeHandler = (change: ProviderSettingChange) => vo
 /**
  * One provider-native permission preset: the complete settings change that selects it.
  *
- * A preset sets whatever axes ITS provider needs, and nothing more — Claude switches
- * one permission mode, Codex switches network, sandbox and approval together, and
- * Copilot switches an axis that is not the permission mode at all. So no key is
- * guaranteed, and a consumer that needs a specific one must check for it (see
- * `./controls/permissionPresets`, which reads a preset's permission mode only when
- * it carries one).
+ * A preset sets the axes that ITS provider needs, and nothing more:
+ * - Claude switches one permission mode.
+ * - Codex switches the approval policy and the permission profile together.
+ * - Copilot switches an axis that is not the permission mode at all.
+ *
+ * So no key is guaranteed, and a consumer that needs a specific one must check for
+ * it. See `./controls/permissionPresets`, which reads a preset's permission mode only
+ * when the preset carries one.
  */
 export type ProviderPermissionPreset = ProviderSettingChange
 

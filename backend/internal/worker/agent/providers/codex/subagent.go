@@ -48,6 +48,9 @@ const (
 	codexPendingMcpOauthCompleted
 	codexPendingMcpStartupUpdated
 	codexPendingRawExecution
+	// codexPendingAutoReview holds an auto-review frame that the transcript keeps:
+	// a completed review, the denial-limit warning, or the strict-review notice.
+	codexPendingAutoReview
 )
 
 type codexPendingChildEvent struct {

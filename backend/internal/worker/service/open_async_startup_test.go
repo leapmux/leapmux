@@ -537,7 +537,7 @@ func TestPersistConfirmedAgentSettingsAppliesConfirmedModelDespiteOtherAxisChang
 		confirmedEffort string
 	}{
 		{name: "claude", provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, permissionMode: contracts.ClaudeModeDefault, resolvedModel: "claude-opus", initialEffort: "high", changedEffort: "low", confirmedEffort: "high"},
-		{name: "codex", provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, permissionMode: codex.DefaultApprovalPolicy, resolvedModel: "gpt-5.6-sol", initialEffort: agent.EffortAuto, changedEffort: "high", confirmedEffort: "low"},
+		{name: "codex", provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, permissionMode: codex.DefaultPermissionMode, resolvedModel: "gpt-5.6-sol", initialEffort: agent.EffortAuto, changedEffort: "high", confirmedEffort: "low"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -745,11 +745,11 @@ func TestOpenAgent_CodexUsesProviderDefaultPermissionMode(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("startAgentFn not invoked within 5s")
 	}
-	assert.Equal(t, codex.DefaultApprovalPolicy, startedOpts.PermissionMode())
+	assert.Equal(t, codex.DefaultPermissionMode, startedOpts.PermissionMode())
 
 	require.Eventually(t, func() bool {
 		row, err := svc.Queries.GetAgentByID(ctx, agentID)
-		return err == nil && loadOptions(testRegistry, row.Options, row.AgentProvider)[agent.OptionIDPermissionMode] == codex.DefaultApprovalPolicy
+		return err == nil && loadOptions(testRegistry, row.Options, row.AgentProvider)[agent.OptionIDPermissionMode] == codex.DefaultPermissionMode
 	}, 5*time.Second, 20*time.Millisecond, "expected Codex permission mode to be stored as provider default")
 }
 
