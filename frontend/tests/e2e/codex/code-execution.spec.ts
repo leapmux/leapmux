@@ -1,12 +1,19 @@
+import type { AgentChatMessage } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { expect } from '@playwright/test'
+import { CODEX_ITEM } from '../../../src/generated/contracts/codex-protocol'
+import { isObject } from '../../../src/lib/jsonPick'
 import { codexTest } from '../codex-fixtures'
 import { openNativeAgent } from '../helpers/nativeAgentOpen'
 import { exerciseNativeCodeExecution } from '../helpers/nativeCodeExecution'
-import { readNativeMessageSnapshot } from '../helpers/nativeMessages'
+import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { expandNativeResultView } from '../helpers/nativeResultView'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { codexExecToolCall } from '../helpers/providerToolCalls'
+import { retryUntilPass } from '../helpers/retryUntilPass'
+import { quotePosixShellArgument } from '../helpers/shellArguments'
 import { assistantBubbles, openWorkspace, sendMessage, toolCallRow, waitForAgentIdle } from '../helpers/ui'
 import { closeNativeAgentAndWait } from '../helpers/workerTabs'
 import { nativeContext } from './scenarios'
@@ -132,6 +139,64 @@ codexTest('omits an empty shell poll without nested rows', async ({ authenticate
   const blocks: { text: string }[] = JSON.parse(result)
   expect(JSON.parse(blocks[1]!.text)).toMatchObject({ output: '', original_token_count: 0 })
   const agent = await currentNativeAgent(context)
+  for (const reload of [false, true]) {
+    if (reload) {
+      await page.reload()
+      await openWorkspace(page, context.workspaceId)
+    }
+    const snapshot = await readNativeMessageSnapshot(context, agent.id)
+    expect(snapshot.messages.filter(message => message.spanId === callId)).toHaveLength(0)
+    await expect(toolCallRow(page, callId)).toHaveCount(0)
+  }
+})
+
+/** Whether a stored message is the completion of the Codex command item whose command holds `marker`. */
+function isCompletedCommand(message: AgentChatMessage, marker: string): boolean {
+  const body = nativeMessageBody(message)
+  return isObject(body) && isObject(body.item) && body.item.type === CODEX_ITEM.CommandExecution
+    && body.item.status === 'completed' && body.item.exitCode === 0
+    && typeof body.item.command === 'string' && body.item.command.includes(marker)
+}
+
+codexTest('omits a settled poll of an exited session and a running session', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+  const { workingDir } = await openNativeAgent(context, { directoryPrefix: 'native-code-settled-poll-' })
+  const agent = await currentNativeAgent(context)
+  const callId = 'native-settled-poll'
+  const gate = 'native-settled-poll'
+  const flagName = 'native-settled-poll-exit.flag'
+  const flag = join(workingDir, flagName)
+  const exitCommand = `while [ ! -e ${quotePosixShellArgument(flag)} ]; do sleep 0.05; done`
+  const start = await modelScript.queue(
+    { toolCalls: [codexExecToolCall('native-settled-poll-start', `const exited = await tools.exec_command({cmd:${JSON.stringify(exitCommand)},yield_time_ms:250,max_output_tokens:500}); const running = await tools.exec_command({cmd:"read -r line",tty:true,yield_time_ms:250,max_output_tokens:500}); store("exitedSession",exited.session_id); store("runningSession",running.session_id); text({exited,running});`)] },
+    // The gate holds the poll until the Worker stores the completion of the exited session. No typed row then
+    // arrives during the poll, so only its printed receipts can suppress its pair.
+    { gate, toolCalls: [codexExecToolCall(callId, 'const r=await Promise.allSettled([tools.write_stdin({session_id:load("exitedSession"),chars:"",yield_time_ms:1000,max_output_tokens:1000}),tools.write_stdin({session_id:load("runningSession"),chars:"",yield_time_ms:1000,max_output_tokens:1000})]);for(let i=0;i<r.length;i++)text({i,...r[i]});')] },
+    { toolCalls: [codexExecToolCall('native-settled-poll-finish', 'text(await tools.write_stdin({session_id:load("runningSession"),chars:"\\n",yield_time_ms:1000,max_output_tokens:500}));')] },
+    { text: 'The settled shell poll completed.' },
+  )
+  try {
+    await sendMessage(page, modelScript.prompt('Start two shell sessions, poll both, then finish the reader.'))
+    await modelScript.waitForGate(gate)
+    writeFileSync(flag, '')
+    await retryUntilPass(async () => {
+      const snapshot = await readNativeMessageSnapshot(context, agent.id)
+      expect(snapshot.messages.some(message => isCompletedCommand(message, flagName)), 'the Worker holds the completion of the exited session').toBe(true)
+    })
+    await modelScript.releaseGate(gate)
+    await modelScript.waitForSteps(start + 4)
+    await waitForAgentIdle(page)
+  }
+  finally {
+    await modelScript.releaseGateIfHeld(gate)
+  }
+  const blocks: { text: string }[] = JSON.parse(nativeToolResult(await modelScript.requestAt(start + 2), callId))
+  expect(blocks).toHaveLength(3)
+  expect(blocks[0]!.text).toContain('Script completed')
+  const exited = JSON.parse(blocks[1]!.text)
+  expect(exited).toMatchObject({ i: 0, status: 'fulfilled', value: { exit_code: 0, original_token_count: 0, output: '' } })
+  expect(exited.value).not.toHaveProperty('session_id')
+  expect(JSON.parse(blocks[2]!.text)).toMatchObject({ i: 1, status: 'fulfilled', value: { session_id: expect.any(Number), original_token_count: 0, output: '' } })
   for (const reload of [false, true]) {
     if (reload) {
       await page.reload()

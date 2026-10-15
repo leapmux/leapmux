@@ -302,6 +302,81 @@ func TestCodexRawExecSuppressesEmptyShellPoll(t *testing.T) {
 	require.Empty(t, sink.OpenSpans())
 }
 
+// A script polls one session that exited and one that still runs, and prints each Promise.allSettled record.
+func TestCodexRawExecSuppressesSettledShellPolls(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+	a.threadID = "01a13afd-8be5-7362-b9a6-842b40e5fdaf"
+	a.turnID = "01a13cc8-c875-7b10-a087-e97b2e58a1bb"
+	request := `{"method":"rawResponseItem/completed","params":{"threadId":"01a13afd-8be5-7362-b9a6-842b40e5fdaf","turnId":"01a13cc8-c875-7b10-a087-e97b2e58a1bb","item":{"type":"custom_tool_call","id":"ctc_060b11e00cd3790d016ad038e31f40819198792a512e1814db","status":"completed","call_id":"call_6bd2e783fc574d7bbffaf4dc7d7d2ce6","name":"exec","input":"const r=await Promise.allSettled([tools.write_stdin({session_id:5687,chars:\"\",yield_time_ms:1000,max_output_tokens:1000}),tools.write_stdin({session_id:59563,chars:\"\",yield_time_ms:1000,max_output_tokens:1000})]);for(let i=0;i<r.length;i++)text({i,...r[i]});\n","internal_chat_message_metadata_passthrough":{"turn_id":"01a13cc8-c875-7b10-a087-e97b2e58a1bb","create_time":1792030947.1308835}}},"emittedAtMs":1792030947454}`
+	output := `{"method":"rawResponseItem/completed","params":{"threadId":"01a13afd-8be5-7362-b9a6-842b40e5fdaf","turnId":"01a13cc8-c875-7b10-a087-e97b2e58a1bb","item":{"type":"custom_tool_call_output","id":"ctco_01a13d5e-4c10-70d0-8f8d-209ac38361b0","call_id":"call_6bd2e783fc574d7bbffaf4dc7d7d2ce6","output":[{"type":"input_text","text":"Script completed\nWall time 5.0 seconds\nOutput:\n"},{"type":"input_text","text":"{\"i\":0,\"status\":\"fulfilled\",\"value\":{\"chunk_id\":\"bea1b2\",\"wall_time_seconds\":0.00001425,\"exit_code\":0,\"original_token_count\":0,\"output\":\"\"}}"},{"type":"input_text","text":"{\"i\":1,\"status\":\"fulfilled\",\"value\":{\"chunk_id\":\"47f8a2\",\"wall_time_seconds\":5.002878459,\"session_id\":59563,\"original_token_count\":0,\"output\":\"\"}}"}],"internal_chat_message_metadata_passthrough":{"turn_id":"01a13cc8-c875-7b10-a087-e97b2e58a1bb","create_time":1792030952.464418}}},"emittedAtMs":1792030952467}`
+	key := codexRawExecutionKey{threadID: a.threadID, turnID: a.turnID, callID: "call_6bd2e783fc574d7bbffaf4dc7d7d2ce6"}
+	handleCodexOutput(a, providerkit.ParseLine([]byte(request)))
+	require.Contains(t, a.rawExecutionCalls, key, "the request reaches the pending pair")
+	handleCodexOutput(a, providerkit.ParseLine([]byte(output)))
+	// The output completes the pending pair. An output that the agent dropped would leave it pending.
+	require.True(t, a.rawExecutionCalls[key].completed)
+	require.Empty(t, sink.Messages())
+	require.Empty(t, sink.OpenSpans())
+	require.Empty(t, sink.ReservedColorSpans())
+	require.Zero(t, a.TurnToolUses)
+}
+
+const (
+	codexRunningPollReceipt = `{"chunk_id":"a","wall_time_seconds":5.002878459,"session_id":59563,"original_token_count":0,"output":""}`
+	codexExitedPollReceipt  = `{"chunk_id":"b","wall_time_seconds":0.00001425,"exit_code":0,"original_token_count":0,"output":""}`
+	codexOutputPollReceipt  = `{"chunk_id":"c","wall_time_seconds":0,"session_id":1,"original_token_count":1,"output":"hello"}`
+)
+
+// codexCompletedExecOutput builds a native output whose script printed one text block for each body.
+func codexCompletedExecOutput(t *testing.T, bodies ...string) json.RawMessage {
+	t.Helper()
+	blocks := []map[string]string{{"type": "input_text", "text": "Script completed\nWall time 5.0 seconds\nOutput:\n"}}
+	for _, body := range bodies {
+		blocks = append(blocks, map[string]string{"type": "input_text", "text": body})
+	}
+	raw, err := json.Marshal(blocks)
+	require.NoError(t, err)
+	return raw
+}
+
+// A script decides how it prints each receipt. Each container below holds only empty successful receipts.
+func TestCodexEmptyShellPollAcceptsScriptContainers(t *testing.T) {
+	t.Parallel()
+	settled := func(receipt string) string { return `{"status":"fulfilled","value":` + receipt + `}` }
+	labelled := func(label, receipt string) string { return `{` + label + `,` + receipt[1:] }
+	for name, bodies := range map[string][]string{
+		"exited receipt":                       {codexExitedPollReceipt},
+		"exited and running receipts":          {codexExitedPollReceipt, codexRunningPollReceipt},
+		"running receipt with a zero exit":     {`{"chunk_id":"a","wall_time_seconds":0,"session_id":1,"original_token_count":0,"output":"","exit_code":0}`},
+		"exponent wall time":                   {`{"chunk_id":"a","wall_time_seconds":9.58e-7,"exit_code":0,"original_token_count":0,"output":""}`},
+		"settled record":                       {settled(codexRunningPollReceipt)},
+		"settled records with an index":        {labelled(`"i":0`, settled(codexExitedPollReceipt)), labelled(`"i":1`, settled(codexRunningPollReceipt))},
+		"settled record with a negative label": {labelled(`"index":-1`, settled(codexExitedPollReceipt))},
+		"settled record under a key":           {`{"i":0,"result":` + settled(codexExitedPollReceipt) + `}`},
+		"receipts under keys":                  {`{"build":` + codexRunningPollReceipt + `,"test":` + codexExitedPollReceipt + `}`},
+		"array of receipts":                    {`[` + codexExitedPollReceipt + `,` + codexRunningPollReceipt + `]`},
+		"array of settled records":             {`[` + settled(codexExitedPollReceipt) + `,` + settled(codexRunningPollReceipt) + `]`},
+		"padded value":                         {" \n" + codexRunningPollReceipt + "\n"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			require.True(t, codexSuppressRawExecutionOutput(codexCompletedExecOutput(t, bodies...)))
+		})
+	}
+}
+
+// A walk that examined a settled value twice would take time exponential in this depth.
+func TestCodexEmptyShellPollWalksDeepValuesOnce(t *testing.T) {
+	t.Parallel()
+	nest := func(receipt string) string {
+		const depth = 2000
+		return strings.Repeat(`{"status":"fulfilled","value":`, depth) + receipt + strings.Repeat(`}`, depth)
+	}
+	require.True(t, codexSuppressRawExecutionOutput(codexCompletedExecOutput(t, nest(codexRunningPollReceipt))))
+	require.False(t, codexSuppressRawExecutionOutput(codexCompletedExecOutput(t, nest(codexOutputPollReceipt))))
+}
+
 // Feed real provider envelopes through the same serialized path as process output.
 func rawExecPair(t testing.TB, id, thread, turn string) ([]byte, []byte) {
 	t.Helper()
@@ -502,13 +577,54 @@ func TestCodexEmptyShellPollPreservesOtherOutput(t *testing.T) {
 		`{"chunk_id":"a","wall_time_seconds":0,"session_id":0,"original_token_count":0,"output":""}`,
 		`{"chunk_id":"a","wall_time_seconds":0,"session_id":1,"original_token_count":2,"output":""}`,
 		`{"output":""}`, `null`, `[]`, `42`, ``, `not JSON`,
+		// An exited session keeps its row unless it exited successfully with no output.
+		`{"chunk_id":"a","wall_time_seconds":0,"exit_code":1,"original_token_count":0,"output":""}`,
+		`{"chunk_id":"a","wall_time_seconds":0,"exit_code":0,"original_token_count":1,"output":"done"}`,
+		`{"chunk_id":"","wall_time_seconds":0,"exit_code":0,"original_token_count":0,"output":""}`,
+		`{"chunk_id":"a","wall_time_seconds":0,"session_id":null,"exit_code":0,"original_token_count":0,"output":""}`,
+		`{"chunk_id":"a","wall_time_seconds":0,"exit_code":"0","original_token_count":0,"output":""}`,
+		`{"chunk_id":"a","wall_time_seconds":0,"exit_code":0.5,"original_token_count":0,"output":""}`,
+		`{"chunk_id":"a","wall_time_seconds":0,"session_id":1.5,"original_token_count":0,"output":""}`,
+		`{"chunk_id":"a","wall_time_seconds":0,"session_id":1,"original_token_count":0.5,"output":""}`,
+		`{"chunk_id":"a","wall_time_seconds":"0","session_id":1,"original_token_count":0,"output":""}`,
+		`{"chunk_id":"a","session_id":1,"original_token_count":0,"output":""}`,
+		`{"chunk_id":"a","wall_time_seconds":0,"session_id":1,"output":""}`,
+		`{"chunk_id":1,"wall_time_seconds":0,"session_id":1,"original_token_count":0,"output":""}`,
+		`{"chunk_id":"a","wall_time_seconds":0,"session_id":1,"original_token_count":0,"output":null}`,
+		`{"chunk_id":"a","wall_time_seconds":0,"session_id":-1,"original_token_count":0,"output":""}`,
+		`{"chunk_id":"a","wall_time_seconds":0,"session_id":9223372036854775808,"original_token_count":0,"output":""}`,
+		`{"chunk_id":"a","wall_time_seconds":0,"exit_code":-1,"original_token_count":0,"output":""}`,
+		// A receipt keeps its row when it holds a field that a receipt does not have, even an integer label.
+		`{"i":0,` + codexRunningPollReceipt[1:],
+		strings.TrimSuffix(codexRunningPollReceipt, `}`) + `,"signal":9}`,
+		strings.TrimSuffix(codexRunningPollReceipt, `}`) + `,"poll":` + codexExitedPollReceipt + `}`,
+		// A container keeps its row when it can carry anything besides empty successful receipts.
+		`{"status":"rejected","reason":"write_stdin failed: Unknown process id 1"}`,
+		`{"status":"fulfilled"}`,
+		`{"status":"fulfilled","value":0}`,
+		`{"status":"pending","value":` + codexRunningPollReceipt + `}`,
+		`{"status":0,"value":` + codexRunningPollReceipt + `}`,
+		`{"status":"fulfilled","value":` + codexOutputPollReceipt + `}`,
+		`{"status":"fulfilled","value":` + codexRunningPollReceipt + `,"reason":"failed"}`,
+		`{"name":"macos","status":"fulfilled","value":` + codexRunningPollReceipt + `}`,
+		`{"i":null,"status":"fulfilled","value":` + codexRunningPollReceipt + `}`,
+		`{"i":true,"status":"fulfilled","value":` + codexRunningPollReceipt + `}`,
+		`{"i":1.5,"status":"fulfilled","value":` + codexRunningPollReceipt + `}`,
+		`{"i":9223372036854775808,"status":"fulfilled","value":` + codexRunningPollReceipt + `}`,
+		`{"i":0}`, `{}`, `[{}]`, `[[]]`, `"text"`, `true`,
+		`{"i":0,"result":"done"}`,
+		`{"i":0,"result":{"status":"fulfilled","value":` + codexOutputPollReceipt + `}}`,
+		`[` + codexRunningPollReceipt + `,` + codexOutputPollReceipt + `]`,
+		codexRunningPollReceipt + ` trailing`,
+		codexRunningPollReceipt + codexRunningPollReceipt,
 	} {
 		t.Run(body, func(t *testing.T) {
-			raw, err := json.Marshal([]map[string]string{{"type": "input_text", "text": "Script completed\nWall time 0.0 seconds\nOutput:\n"}, {"type": "input_text", "text": body}})
-			require.NoError(t, err)
-			require.False(t, codexSuppressRawExecutionOutput(raw))
+			require.False(t, codexSuppressRawExecutionOutput(codexCompletedExecOutput(t, body)))
 		})
 	}
+	t.Run("empty receipt beside output", func(t *testing.T) {
+		require.False(t, codexSuppressRawExecutionOutput(codexCompletedExecOutput(t, codexExitedPollReceipt, codexOutputPollReceipt)))
+	})
 }
 
 func TestCodexRawExecCleanupOnProcessEnd(t *testing.T) {
