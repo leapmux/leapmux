@@ -3,9 +3,11 @@ package codex
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"regexp"
 	"sort"
+	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -121,12 +123,14 @@ func (a *Agent) handleCodexRawExecution(raw, params json.RawMessage) {
 	a.persistCodexRawExecution(key, call)
 }
 
-var codexCompletedExecHeader = regexp.MustCompile(`^` + regexp.QuoteMeta(contracts.CodexExecOutputCompletedHeader) + `\nWall time \d+(?:\.\d+)? seconds(?: \(code-mode [\d.]+ seconds; overhead -?[\d.]+ seconds\))?\nOutput:\n$`)
+const codexExecTimingOutputPattern = `\nWall time \d+(?:\.\d+)? seconds(?: \(code-mode [\d.]+ seconds; overhead -?[\d.]+ seconds\))?\nOutput:\n$`
 
-var codexEmptyYieldHeader = regexp.MustCompile(`^Script running with cell ID \S+\nWall time \d+(?:\.\d+)? seconds(?: \(code-mode [\d.]+ seconds; overhead -?[\d.]+ seconds\))?\nOutput:\n$`)
+var codexCompletedExecHeader = regexp.MustCompile(`^` + regexp.QuoteMeta(contracts.CodexExecOutputCompletedHeader) + codexExecTimingOutputPattern)
+
+var codexEmptyYieldHeader = regexp.MustCompile(`^Script running with cell ID \S+` + codexExecTimingOutputPattern)
 
 // Suppress empty yielded status and successful output made entirely of empty shell-poll receipts.
-// Unknown receipt fields can carry errors or other content, so they prevent suppression.
+// After a completed header, each printed block must hold an empty poll (see codexEmptyPollValue).
 func codexSuppressRawExecutionOutput(raw json.RawMessage) bool {
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 {
@@ -158,30 +162,155 @@ func codexSuppressRawExecutionOutput(raw json.RawMessage) bool {
 		if block.Type != contracts.CodexExecOutputTextContent {
 			return false
 		}
-		var fields map[string]json.RawMessage
-		if json.Unmarshal([]byte(block.Text), &fields) != nil {
-			return false
-		}
-		for field := range fields {
-			switch field {
-			case "chunk_id", "wall_time_seconds", "session_id", "original_token_count", "output", "exit_code":
-			default:
-				return false
-			}
-		}
-		var receipt struct {
-			ChunkID   string   `json:"chunk_id"`
-			WallTime  *float64 `json:"wall_time_seconds"`
-			SessionID *int64   `json:"session_id"`
-			Tokens    *int64   `json:"original_token_count"`
-			Output    *string  `json:"output"`
-			ExitCode  *int64   `json:"exit_code"`
-		}
-		if json.Unmarshal([]byte(block.Text), &receipt) != nil || receipt.ChunkID == "" || receipt.WallTime == nil || *receipt.WallTime < 0 || receipt.SessionID == nil || *receipt.SessionID <= 0 || receipt.Tokens == nil || *receipt.Tokens != 0 || receipt.Output == nil || *receipt.Output != "" || (receipt.ExitCode != nil && *receipt.ExitCode != 0) {
+		if !codexEmptyPollJSON(block.Text) {
 			return false
 		}
 	}
 	return true
+}
+
+// Match encoding/json's nesting limit. Token traversal otherwise has no nesting limit.
+const codexPollJSONDepthLimit = 10000
+
+// Read exactly one printed JSON value. Stop when content makes suppression unsafe.
+// Tokens preserve duplicate keys and avoid allocating a complete tree for rejected output.
+func codexEmptyPollJSON(text string) bool {
+	decoder := json.NewDecoder(strings.NewReader(text))
+	decoder.UseNumber()
+	token, err := decoder.Token()
+	if err != nil || !codexEmptyPollValue(decoder, token, 0) {
+		return false
+	}
+	_, err = decoder.Token()
+	return err == io.EOF
+}
+
+// codexEmptyPollValue accepts a receipt or a nonempty collection of empty successful receipts.
+// A script can print receipts in arrays or under container keys, including receipt field keys.
+// These values keep the execution pair:
+//   - A string outside a recognized receipt or status field.
+//   - A boolean or null.
+//   - A number outside a recognized receipt field or an i/index label.
+//   - A rejected record.
+//   - A duplicate object key.
+func codexEmptyPollValue(decoder *json.Decoder, token json.Token, depth int) bool {
+	if depth >= codexPollJSONDepthLimit {
+		return false
+	}
+	switch token {
+	case json.Delim('['):
+		if !decoder.More() {
+			return false
+		}
+		for decoder.More() {
+			item, err := decoder.Token()
+			if err != nil || !codexEmptyPollValue(decoder, item, depth+1) {
+				return false
+			}
+		}
+		closing, err := decoder.Token()
+		return err == nil && closing == json.Delim(']')
+	case json.Delim('{'):
+		return codexEmptyPollObject(decoder, depth)
+	default:
+		return false
+	}
+}
+
+// Classify each object as a receipt or a container while reading each field once.
+// Nested receipts can use any key except status, which identifies a settled record.
+// A scalar receipt field cannot become a container label when receipt validation fails.
+func codexEmptyPollObject(decoder *json.Decoder, depth int) bool {
+	fields := make(map[string]bool)
+	receipt, container := true, true
+	foundPoll, valuePoll := false, false
+	for decoder.More() {
+		token, err := decoder.Token()
+		key, ok := token.(string)
+		if err != nil || !ok || fields[key] {
+			return false
+		}
+		fields[key] = true
+		value, err := decoder.Token()
+		if err != nil {
+			return false
+		}
+		if _, nested := value.(json.Delim); nested {
+			if !codexEmptyPollValue(decoder, value, depth+1) {
+				return false
+			}
+			receipt = false
+			container = container && key != "status"
+			foundPoll = true
+			if key == "value" {
+				valuePoll = true
+			}
+		} else {
+			receipt = receipt && codexEmptyPollReceiptField(key, value)
+			container = container && codexEmptyPollLabelField(key, value)
+		}
+		if !receipt && !container {
+			return false
+		}
+	}
+	closing, err := decoder.Token()
+	if err != nil || closing != json.Delim('}') {
+		return false
+	}
+	if receipt {
+		return fields["chunk_id"] && fields["wall_time_seconds"] && fields["original_token_count"] && fields["output"] &&
+			(fields["session_id"] || fields["exit_code"])
+	}
+	return container && foundPoll && (!fields["status"] || valuePoll)
+}
+
+// Only recognized labels can accompany a nested receipt. Other scalars can carry results or errors.
+func codexEmptyPollLabelField(key string, value json.Token) bool {
+	switch key {
+	case "status":
+		return value == "fulfilled"
+	case "i", "index":
+		_, ok := codexJSONInteger(value)
+		return ok
+	default:
+		return false
+	}
+}
+
+// A running receipt supplies a positive session ID. An exited receipt supplies exit code zero.
+// Codex sends the exit through commandExecution also, so the typed row already shows it.
+func codexEmptyPollReceiptField(key string, value json.Token) bool {
+	switch key {
+	case "chunk_id":
+		chunkID, ok := value.(string)
+		return ok && chunkID != ""
+	case "output":
+		return value == ""
+	case "wall_time_seconds":
+		number, ok := value.(json.Number)
+		if !ok {
+			return false
+		}
+		wallTime, err := number.Float64()
+		return err == nil && wallTime >= 0
+	case "session_id":
+		sessionID, ok := codexJSONInteger(value)
+		return ok && sessionID > 0
+	case "original_token_count", "exit_code":
+		number, ok := codexJSONInteger(value)
+		return ok && number == 0
+	default:
+		return false
+	}
+}
+
+func codexJSONInteger(value any) (int64, bool) {
+	number, ok := value.(json.Number)
+	if !ok {
+		return 0, false
+	}
+	integer, err := number.Int64()
+	return integer, err == nil
 }
 
 // A completed identity remains until turn cleanup or eviction, without retained payloads.
