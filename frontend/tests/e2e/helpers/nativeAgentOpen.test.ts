@@ -5,7 +5,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { unitWorkingDir } from '~/test-support/unitWorkingDir'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions } from '../agentSettings'
-import { newNativeWorkingDir, openNativeAgent, requireOwnProviderAgent } from './nativeAgentOpen'
+import { exerciseProviderAgentButtons, newNativeWorkingDir, openNativeAgent, requireOwnProviderAgent } from './nativeAgentOpen'
+
+const buttons = vi.hoisted(() => ({
+  stage: 0,
+  ids: ['original', 'from-menu', 'from-button'],
+  providers: [] as number[],
+  counts: [] as number[],
+  button: undefined as unknown,
+  visible: true,
+}))
 
 const opened = vi.hoisted(() => ({ events: [] as string[], open: vi.fn(), selected: 'agent-1' }))
 vi.mock('./api', () => ({ openAgentViaAPI: opened.open }))
@@ -18,17 +27,42 @@ vi.mock('./runDirectory', async importOriginal => ({
 }))
 vi.mock('./ui', async importOriginal => ({
   ...await importOriginal<typeof import('./ui')>(),
+  agentTabs: () => ({ count: async () => 1 + buttons.stage }),
+  expectAgentTabCount: async (_page: Page, count: number) => {
+    buttons.counts.push(count)
+    expect(count).toBe(1 + buttons.stage)
+  },
   openWorkspace: async (_page: unknown, workspaceId: string) => { opened.events.push(`workspace ${workspaceId}`) },
 }))
 vi.mock('./nativeScenario', async importOriginal => ({
   ...await importOriginal<typeof import('./nativeScenario')>(),
+  currentNativeAgent: async () => ({ id: buttons.ids[buttons.stage], agentProvider: buttons.providers[buttons.stage] }),
   selectedAgentTabId: async () => {
     opened.events.push('selected tab')
     return opened.selected
   },
 }))
 
+vi.mock('@playwright/test', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@playwright/test')>()
+  const check = Object.assign((value: unknown, message?: string) => {
+    if (buttons.button !== undefined && value === buttons.button) {
+      return { toBeVisible: async () => {
+        expect(buttons.visible, 'the provider creation button is visible').toBe(true)
+      } }
+    }
+    return actual.expect(value, message)
+  }, { poll: actual.expect.poll })
+  return { ...actual, expect: check }
+})
+
 beforeEach(() => {
+  buttons.stage = 0
+  buttons.ids = ['original', 'from-menu', 'from-button']
+  buttons.providers = [AgentProvider.CURSOR, AgentProvider.CURSOR, AgentProvider.CURSOR]
+  buttons.counts = []
+  buttons.button = undefined
+  buttons.visible = true
   opened.events = []
   opened.selected = 'agent-1'
   opened.open.mockReset()
@@ -118,11 +152,10 @@ describe('openNativeAgent', () => {
     expect(opened.open).not.toHaveBeenCalled()
   })
 
-  // The poll of the selected tab gives up after the default expect timeout, so the test allows more than that.
   it('fails when an earlier agent stays the selected tab', async () => {
     opened.selected = 'agent-0'
     await expect(openNativeAgent(context)).rejects.toThrow('the new native agent is the selected tab')
-  }, 30_000)
+  })
 })
 
 describe('requireOwnProviderAgent', () => {
@@ -158,5 +191,53 @@ describe('newNativeWorkingDir', () => {
     expect(() => newNativeWorkingDir(contextOf({ ...agent, provider: AgentProvider.KIRO }), 'native-')).toThrow(`not by the rule of provider ${AgentProvider.KIRO}`)
     expect(workingDir).not.toHaveBeenCalled()
     expect(opened.events).toEqual([])
+  })
+})
+
+describe('exerciseProviderAgentButtons', () => {
+  function buttonContext(): ManagedNativeScenarioContext {
+    const button = {
+      filter: () => button,
+      first: () => button,
+      click: async () => { buttons.stage = 2 },
+    }
+    buttons.button = button
+    const page = {
+      getByTestId: (id: string) => id === 'tab-more-menu' ? { click: async () => {} } : button,
+      locator: () => ({ click: async () => { buttons.stage = 1 } }),
+    } as unknown as Page
+    return { ...context, page }
+  }
+
+  it('requires separate selected agents from the menu and button', async () => {
+    await exerciseProviderAgentButtons(buttonContext())
+    expect(buttons.counts).toEqual([2, 3])
+    expect(buttons.stage).toBe(2)
+  })
+
+  it('rejects the original selected agent after menu creation', async () => {
+    buttons.ids[1] = 'original'
+    await expect(exerciseProviderAgentButtons(buttonContext())).rejects.toThrow('the menu selects a new Worker agent')
+    expect(buttons.stage).toBe(1)
+  })
+
+  it.each(['original', 'from-menu'])('rejects an existing selected agent after button creation: %s', async (id) => {
+    buttons.ids[2] = id
+    await expect(exerciseProviderAgentButtons(buttonContext())).rejects.toThrow('the button selects another new Worker agent')
+    expect(buttons.counts).toEqual([2, 3])
+  })
+
+  it.each([1, 2])('rejects a selected agent from another provider at creation step %s', async (stage) => {
+    buttons.providers[stage] = AgentProvider.CLINE
+    await expect(exerciseProviderAgentButtons(buttonContext())).rejects.toThrow('the selected Worker agent uses the requested provider')
+    expect(buttons.stage).toBe(stage)
+  })
+
+  it('refuses the wrong provider rule before either creation control runs', async () => {
+    const native = buttonContext()
+    native.providerAgent = { provider: AgentProvider.CLINE, prefix: 'wrong-provider' }
+    await expect(exerciseProviderAgentButtons(native)).rejects.toThrow('not by the rule of provider')
+    expect(buttons.stage).toBe(0)
+    expect(buttons.counts).toEqual([])
   })
 })

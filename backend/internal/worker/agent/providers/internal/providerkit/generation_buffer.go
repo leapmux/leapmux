@@ -39,7 +39,9 @@ func (b *GenerationBuffer) Append(scopeID string, kind agent.AssembledMessageKin
 	}
 	segment.kind = kind
 	AppendText(&segment.text, text, join)
+	snapshot := segment.text.String()
 	b.mu.Unlock()
+	traceGenerationSnapshot(scopeID, kind, snapshot)
 }
 
 // ScopeSnapshot reads one retained segment without changing its lifetime.

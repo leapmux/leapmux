@@ -1,15 +1,41 @@
 import type { Locator, Page } from '@playwright/test'
 import type { MockModelRequestRecord, MockModelStep } from './mockModelScript'
 import type { ModelScript } from './modelScriptFixture'
-import type { NativeScenarioContext } from './nativeScenario'
+import type { ManagedNativeScenarioContext, NativeScenarioContext } from './nativeScenario'
 import type { QuestionRequest } from './providerToolCalls'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { ASKED_QUESTIONS_ANSWER, ASKED_QUESTIONS_CALL_ID, askQuestions, chooseQuestionOption, exerciseQuestionAnswer, pickQuestionOption } from './nativeQuestion'
+import { ASKED_QUESTIONS_ANSWER, ASKED_QUESTIONS_CALL_ID, askQuestions, chooseQuestionOption, chooseQuestionOptionWithNote, chooseQuestionPages, exerciseQuestionAnswer, exerciseQuestionCancellation, pickQuestionOption, restoreQuestionSelection, restoreQuestionTextDraft } from './nativeQuestion'
 import { askUserQuestionToolCall } from './providerToolCalls'
 
 /** The browser steps that the helper takes, in order. */
-const browser = vi.hoisted(() => ({ events: [] as string[] }))
+const browser = vi.hoisted(() => ({
+  events: [] as string[],
+  restoredBanner: undefined as Locator | undefined,
+  stored: { selections: { 0: ['native-green'] } } as unknown,
+  restoredChecked: true,
+  draft: 'Typed answer',
+  mobileOwner: false,
+  ownerId: 'question-agent',
+}))
+
+vi.mock('./nativeScenario', async importOriginal => ({
+  ...await importOriginal<typeof import('./nativeScenario')>(),
+  currentNativeAgent: async () => {
+    if (browser.mobileOwner)
+      throw new Error('The narrow layout hides the selected agent tab.')
+    return { id: 'question-agent' }
+  },
+}))
+
+vi.mock('./storage', () => ({
+  waitForStoredEntry: async (_page: Page, prefix: string, accept: (value: unknown) => boolean) => {
+    expect(prefix).toContain('question-agent:')
+    expect(prefix).toContain('question-user')
+    browser.events.push('stored')
+    expect(accept(browser.stored), 'the stored selection matches the native value').toBe(true)
+  },
+}))
 
 /** A fake locator that records the assertions and the clicks on it. */
 interface FakeLocator {
@@ -21,6 +47,8 @@ function fakeLocator(name: string): FakeLocator {
 }
 
 vi.mock('./ui', () => ({
+  controlAgentId: async () => browser.ownerId,
+  controlBanner: () => browser.restoredBanner ?? fakeLocator('banner'),
   sendMessage: async (_page: Page, text: string) => {
     browser.events.push(`send:${text}`)
   },
@@ -29,7 +57,7 @@ vi.mock('./ui', () => ({
   },
   waitForControlBanner: async () => {
     browser.events.push('banner')
-    return fakeLocator('banner')
+    return browser.restoredBanner ?? fakeLocator('banner')
   },
   expectNoControlBanner: async () => {
     browser.events.push('no-banner')
@@ -40,13 +68,25 @@ vi.mock('./ui', () => ({
       browser.events.push(`click:${action}`)
     },
   }),
+  composerEditor: () => ({
+    fake: 'composer',
+    fill: async (text: string) => {
+      browser.draft = text
+      browser.events.push('fill-note')
+    },
+  }),
+  waitForEditorDraft: async (_page: Page, userId: string, text: string) => {
+    expect(userId).toBe('question-user')
+    expect(text).toBe(browser.draft)
+    browser.events.push('stored-draft')
+  },
 }))
 
 vi.mock('@playwright/test', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@playwright/test')>()
   return {
     ...actual,
-    expect: (value: unknown) => {
+    expect: (value: unknown, message?: string) => {
       if (typeof value === 'object' && value !== null && 'fake' in value && typeof value.fake === 'string') {
         const name = value.fake
         return {
@@ -56,9 +96,17 @@ vi.mock('@playwright/test', async (importOriginal) => {
           toBeVisible: async () => {
             browser.events.push(`${name} visible`)
           },
+          toBeChecked: async () => {
+            browser.events.push(`${name} checked`)
+            expect(browser.restoredChecked, 'the restored option stays selected').toBe(true)
+          },
+          toHaveText: async (text: string) => {
+            expect(browser.draft, 'the composer retains the question draft').toBe(text)
+            browser.events.push(`${name} text`)
+          },
         }
       }
-      return expect(value)
+      return expect(value, message)
     },
   }
 })
@@ -96,7 +144,7 @@ function fakeScript(offset: number, records: Record<number, MockModelRequestReco
       browser.events.push('fallback')
       fallbacks.push(step)
     }),
-    status: vi.fn(async () => ({ requests: Object.values(records) })),
+    status: vi.fn(async () => ({ requests: Object.values(records), nextStep: offset + queued.length, unexpectedRequests: [] })),
     waitForSteps: vi.fn(async (count?: number) => {
       browser.events.push(`steps:${count ?? 'all'}`)
     }),
@@ -120,6 +168,84 @@ function context(script: ReturnType<typeof fakeScript>['script'], extra: Partial
 
 beforeEach(() => {
   browser.events.length = 0
+  browser.restoredBanner = undefined
+  browser.stored = { selections: { 0: ['native-green'] } }
+  browser.restoredChecked = true
+  browser.mobileOwner = false
+  browser.ownerId = 'question-agent'
+  browser.draft = 'Typed answer'
+})
+
+describe('exerciseQuestionCancellation', () => {
+  it('queues only the native question and requires an ended turn without a later model request', async () => {
+    const { script, queued } = fakeScript(3, {})
+    await exerciseQuestionCancellation(context(script), {
+      questions: [COLOR],
+      reply: async () => {
+        browser.events.push('cancel')
+      },
+    })
+    expect(queued).toHaveLength(1)
+    expect(script.fallbacks).toEqual([])
+    expect(browser.events).toEqual([
+      'send:MARKED:Ask the scripted question, then report the answer.',
+      'steps:4',
+      'banner',
+      `banner holds:${COLOR.question}`,
+      'cancel',
+      'no-banner',
+      'idle',
+    ])
+  })
+
+  it('rejects a cancellation that starts another model request', async () => {
+    const { script } = fakeScript(3, {})
+    script.status.mockResolvedValue({ requests: [], nextStep: 5, unexpectedRequests: [] })
+    await expect(exerciseQuestionCancellation(context(script), { questions: [COLOR], reply: async () => {} })).rejects.toThrow('the agent requested 4 ordered steps and no more')
+  })
+})
+
+describe('restoreQuestionTextDraft', () => {
+  function draftContext() {
+    return {
+      page: { reload: async () => { browser.events.push('reload') } },
+      leapmuxServer: { adminUserId: 'question-user' },
+    } as unknown as ManagedNativeScenarioContext
+  }
+
+  it('waits for durable storage before reload and checks the restored text', async () => {
+    await restoreQuestionTextDraft(draftContext(), 'Typed answer')
+    expect(browser.events).toEqual(['composer text', 'stored-draft', 'reload', 'banner', 'composer text'])
+  })
+
+  it('requires the active page to reach storage before restoring a typed answer', async () => {
+    browser.stored = { currentPage: 0 }
+    await restoreQuestionTextDraft(draftContext(), 'Typed answer', 0)
+    expect(browser.events.indexOf('stored')).toBeLessThan(browser.events.indexOf('reload'))
+    browser.events.length = 0
+    await expect(restoreQuestionTextDraft(draftContext(), 'Typed answer', 1)).rejects.toThrow('the stored selection matches the native value')
+    expect(browser.events).not.toContain('reload')
+  })
+
+  it.each([-1, 0.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1])('rejects an invalid page before reading its draft: %s', async (index) => {
+    await expect(restoreQuestionTextDraft(draftContext(), 'Typed answer', index)).rejects.toThrow('nonnegative safe integer')
+    expect(browser.events).toEqual([])
+  })
+
+  it.each(['', ' \t\n'])('rejects an empty draft before changing the page: %j', async (text) => {
+    await expect(restoreQuestionTextDraft(draftContext(), text)).rejects.toThrow('nonempty text')
+    expect(browser.events).toEqual([])
+  })
+
+  it('rejects a draft that changes after reload', async () => {
+    const native = draftContext()
+    native.page.reload = async () => {
+      browser.draft = 'Another question draft'
+      return null
+    }
+    await expect(restoreQuestionTextDraft(native, 'Typed answer')).rejects.toThrow('the composer retains the question draft')
+    expect(browser.events).toContain('stored-draft')
+  })
 })
 
 describe('exerciseQuestionAnswer', () => {
@@ -198,6 +324,7 @@ function questionBanner() {
     click: vi.fn(async () => {
       browser.events.push(`click:${testId}`)
     }),
+    locator: () => ({ fake: 'selected-input', inputValue: async () => 'native-green' }),
   }))
   return { banner: { getByTestId, page: () => ({}) } as unknown as Locator, getByTestId }
 }
@@ -268,5 +395,123 @@ describe('chooseQuestionOption', () => {
 
   it('refuses an empty label', () => {
     expect(() => chooseQuestionOption('')).toThrow('needs a label')
+  })
+})
+
+describe('chooseQuestionOptionWithNote', () => {
+  it('restores the selection and then its note before submitting either value', async () => {
+    const { banner } = questionBanner()
+    browser.restoredBanner = banner
+    const native = {
+      page: { reload: async () => { browser.events.push('reload') } },
+      leapmuxServer: { adminUserId: 'question-user' },
+    } as unknown as ManagedNativeScenarioContext
+    await chooseQuestionOptionWithNote(native, 'Green', 'Keep this note')(banner)
+    expect(browser.events.filter(event => event === 'reload')).toHaveLength(2)
+    expect(browser.events.indexOf('stored')).toBeLessThan(browser.events.indexOf('fill-note'))
+    expect(browser.events.indexOf('stored-draft')).toBeGreaterThan(browser.events.indexOf('fill-note'))
+    expect(browser.events.at(-1)).toBe('click:submit')
+    expect(browser.draft).toBe('Keep this note')
+  })
+
+  it.each([{ label: '', note: 'Note' }, { label: 'Green', note: '' }, { label: 'Green', note: ' \t' }])('rejects an incomplete note case: %j', ({ label, note }) => {
+    expect(() => chooseQuestionOptionWithNote({} as ManagedNativeScenarioContext, label, note)).toThrow('label and nonempty note')
+    expect(browser.events).toEqual([])
+  })
+})
+
+describe('restoreQuestionSelection', () => {
+  function selection(value = 'native-green') {
+    const input = { fake: 'selected-input', inputValue: async () => value }
+    const banner = { getByTestId: () => ({ locator: () => input }) } as unknown as Locator
+    browser.restoredBanner = banner
+    const native = {
+      page: { reload: async () => { browser.events.push('reload') } },
+      leapmuxServer: { adminUserId: 'question-user' },
+    } as unknown as ManagedNativeScenarioContext
+    return { banner, native }
+  }
+
+  it('restores the question owner when the narrow layout hides its tab', async () => {
+    const { banner, native } = selection()
+    browser.mobileOwner = true
+    await expect(restoreQuestionSelection(native, banner, 'Green')).resolves.toBeUndefined()
+  })
+
+  it('waits for the stored native value before reloading and checks the restored selection', async () => {
+    const { banner, native } = selection()
+    await restoreQuestionSelection(native, banner, 'Green')
+    expect(browser.events).toEqual(['selected-input checked', 'stored', 'reload', 'banner', 'selected-input checked'])
+  })
+
+  it('accepts page zero and rejects a matching answer stored on a different page', async () => {
+    const { banner, native } = selection()
+    browser.stored = { selections: { 0: ['native-green'] }, currentPage: 0 }
+    await restoreQuestionSelection(native, banner, 'Green', 0)
+    browser.events.length = 0
+    browser.stored = { selections: { 0: ['native-green'] }, currentPage: 1 }
+    await expect(restoreQuestionSelection(native, banner, 'Green', 1)).rejects.toThrow('the stored selection matches the native value')
+    expect(browser.events).not.toContain('reload')
+  })
+
+  it.each([-1, 0.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1])('rejects an invalid page before reading its selection: %s', async (index) => {
+    const { banner, native } = selection()
+    await expect(restoreQuestionSelection(native, banner, 'Green', index)).rejects.toThrow('nonnegative safe integer')
+    expect(browser.events).toEqual([])
+  })
+
+  it.each([null, {}, { selections: { 0: ['Green'] } }, { selections: { 0: [] } }])('rejects a missing or incorrect stored selection: %j', async (stored) => {
+    const { banner, native } = selection()
+    browser.stored = stored
+    await expect(restoreQuestionSelection(native, banner, 'Green')).rejects.toThrow('the stored selection matches the native value')
+    expect(browser.events).not.toContain('reload')
+  })
+
+  it('rejects an empty native option value before reading storage', async () => {
+    const { banner, native } = selection('')
+    await expect(restoreQuestionSelection(native, banner, 'Green')).rejects.toThrow('no native value')
+    expect(browser.events).not.toContain('stored')
+  })
+
+  it('rejects a selection that disappears after reload', async () => {
+    const { banner, native } = selection()
+    native.page.reload = async () => {
+      browser.events.push('reload')
+      browser.restoredChecked = false
+      return null
+    }
+    await expect(restoreQuestionSelection(native, banner, 'Green')).rejects.toThrow('the restored option stays selected')
+    expect(browser.events).toContain('reload')
+  })
+
+  it('rejects a different question owner after reload', async () => {
+    const { banner, native } = selection()
+    native.page.reload = async () => {
+      browser.ownerId = 'another-agent'
+      return null
+    }
+    await expect(restoreQuestionSelection(native, banner, 'Green')).rejects.toThrow('the restored question belongs to the original agent')
+  })
+})
+
+describe('chooseQuestionPages', () => {
+  const native = {} as ManagedNativeScenarioContext
+
+  it('requires one answer for each nonempty question list', () => {
+    expect(() => chooseQuestionPages(native, [], [])).toThrow('one answer for each question')
+    expect(() => chooseQuestionPages(native, [COLOR], [])).toThrow('one answer for each question')
+  })
+
+  it.each([{ labels: [] }, { labels: ['Blue', 'Blue'] }, { labels: ['Unknown'] }])('rejects absent, repeated, or unoffered selections: %j', ({ labels }) => {
+    expect(() => chooseQuestionPages(native, [COLOR], [{ labels }])).toThrow('distinct offered options')
+  })
+
+  it('permits multiple choices only when the native question supports them', () => {
+    expect(() => chooseQuestionPages(native, [COLOR], [{ labels: ['Blue', 'Green'] }])).toThrow('one selected option')
+    expect(chooseQuestionPages(native, [{ ...COLOR, multiSelect: true }], [{ labels: ['Blue', 'Green'] }])).toBeTypeOf('function')
+  })
+
+  it.each(['', ' \t\n'])('rejects an empty typed answer: %j', (text) => {
+    expect(() => chooseQuestionPages(native, [COLOR], [{ text }])).toThrow('must contain text')
   })
 })

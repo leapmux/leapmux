@@ -18,6 +18,10 @@ lettaTest('stops an actual native tool and accepts the next queued turn', async 
   await exerciseInterruptTurn(native, { kind: 'tool' })
 })
 
+lettaTest('discards the cancelled model response after its first streamed chunk', async ({ native }) => {
+  await exerciseInterruptTurn(native, { kind: 'model', holdModelTurn: 'after-first-chunk', heldModelTurnEnd: 'after-answer' })
+})
+
 // Letta Code's question lets its turn go on and end, so a question holds no turn. A permission request does.
 lettaTest('withdraws a waiting permission and accepts the next queued turn', async ({ askingLettaWorkspace, page, modelScript, leapmuxServer }) => {
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingLettaWorkspace.workspaceId })

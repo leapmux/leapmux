@@ -1,10 +1,10 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
-import { test } from '../fixtures'
-import { createTestDirectory } from './runDirectory'
-import { writeToolImage } from './toolImages'
-import { readAttached, readAttachedWithArgument } from './ui'
+import { test } from './fixtures'
+import { createTestDirectory } from './helpers/runDirectory'
+import { writeToolImage } from './helpers/toolImages'
+import { readAttached, readAttachedWithArgument } from './helpers/ui'
 
 test.describe('readAttached', () => {
   for (const argument of [0, false, '']) {

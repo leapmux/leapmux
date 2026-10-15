@@ -108,8 +108,8 @@ func (b *Base) AdmitAgentTurn() bool {
 // because an agent turn now waits behind the prompt. See BeginAgentTurn.
 func (b *Base) endPromptOutput(assistantText, thoughtText string) {
 	main := b.main()
-	main.persistCompletedText(agent.AssembledMessageKindReasoning, thoughtText)
-	main.persistCompletedText(agent.AssembledMessageKindText, assistantText)
+	main.persistFinishedText(agent.AssembledMessageKindReasoning, thoughtText, agent.MessageCompletionComplete)
+	main.persistFinishedText(agent.AssembledMessageKindText, assistantText, agent.MessageCompletionComplete)
 }
 
 // persistUnownedText stores the text that takeUnownedOutputLocked took when a
@@ -126,10 +126,10 @@ func (b *Base) endPromptOutput(assistantText, thoughtText string) {
 func (b *Base) persistUnownedText(assistantText, thoughtText string) {
 	main := b.main()
 	if thoughtText != "" {
-		main.persistCompletedText(agent.AssembledMessageKindReasoning, thoughtText)
+		main.persistFinishedText(agent.AssembledMessageKindReasoning, thoughtText, agent.MessageCompletionComplete)
 	}
 	if assistantText != "" {
-		main.persistCompletedText(agent.AssembledMessageKindText, assistantText)
+		main.persistFinishedText(agent.AssembledMessageKindText, assistantText, agent.MessageCompletionComplete)
 	}
 }
 
@@ -225,12 +225,9 @@ func (b *Base) EndAgentTurnWithoutRow() {
 // open, which failed unless the reader stopped the work.
 func (b *Base) storeWorkOutput(turn acpTurnSnapshot) {
 	main := b.main()
-	main.persistCompletedText(agent.AssembledMessageKindReasoning, turn.thoughtText)
-	main.persistCompletedText(agent.AssembledMessageKindText, turn.assistantText)
-	incomplete := agent.MessageCompletionError
-	if b.acpInterruptRequested() {
-		incomplete = agent.MessageCompletionInterrupted
-	}
+	textCompletion, incomplete := b.turnOutputCompletions()
+	main.persistFinishedText(agent.AssembledMessageKindReasoning, turn.thoughtText, textCompletion)
+	main.persistFinishedText(agent.AssembledMessageKindText, turn.assistantText, textCompletion)
 	main.persistIncompleteTools(turn.incompleteTools, incomplete)
 	b.clearCompletedTerminals()
 	b.sink.ReportProgress(agent.ResetProgress())

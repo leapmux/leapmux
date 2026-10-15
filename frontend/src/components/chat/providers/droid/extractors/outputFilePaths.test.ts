@@ -78,3 +78,27 @@ describe('native path ownership and preview preservation', () => {
     expect(JSON.stringify(frame)).toBe(before)
   })
 })
+
+describe('current native truncation notices', () => {
+  it('keeps the native middle-cut pointer and original output', () => {
+    const content = `head\n\n[... 686415 bytes cut from the middle of 718960; whole output: ${path}]\n\ntail\n\n[Process exited with code 0]`
+    const captured = { ...frame, content }
+    expect(providerToolCall(AgentProvider.DROID, captured, options)?.outputFilePaths).toEqual([path])
+    expect(captured.content).toBe(content)
+  })
+
+  it.each([
+    '0 bytes cut from the middle of 10',
+    '10 bytes cut from the middle of 10',
+    '11 bytes cut from the middle of 10',
+    '-1 bytes cut from the middle of 10',
+  ])('rejects invalid native truncation counts: %s', (counts) => {
+    const captured = { ...frame, content: `[... ${counts}; whole output: ${path}]` }
+    expect(outputFilePathFixture(AgentProvider.DROID, frame, options)(captured)).toEqual([])
+  })
+
+  it('rejects multiple native pointers across both notice forms', () => {
+    const captured = { ...frame, content: `${frame.content}\n[... 1 bytes cut from the middle of 2; whole output: ${path}]` }
+    expect(outputFilePathFixture(AgentProvider.DROID, frame, options)(captured)).toEqual([])
+  })
+})

@@ -57,6 +57,8 @@ export interface NativeScenarioContext {
   readConversationTurns?: (request: MockModelRequestRecord) => NativeModelTurn[]
   /** Resolve browser row identity from actual Worker frames. Model receipts keep their original call IDs. */
   resolveToolRowId?: NativeToolRowIdResolver
+  /** Confirm native persistence before a scenario closes or restarts the process to test stored context. */
+  waitForNativeCheckpoint?: (sessionId: string) => Promise<void>
 }
 
 /** A scenario that can inspect the Worker and manage the current native session. */
@@ -89,6 +91,7 @@ export type NativeContextFixtures = Pick<ManagedNativeScenarioContext, 'page' | 
  * - `readModelContext`.
  * - `readConversationTurns`.
  * - `resolveToolRowId`.
+ * - `waitForNativeCheckpoint`.
  *
  * A provider states only the fields that its protocol needs.
  */
@@ -336,7 +339,8 @@ const USER_TEXT_BLOCK_TYPES: ReadonlySet<unknown> = new Set([undefined, 'text', 
 /** The text block types of an assistant turn. Reasoning is not answer text. */
 const ASSISTANT_TEXT_BLOCK_TYPES: ReadonlySet<unknown> = new Set([undefined, 'text', 'output_text'])
 
-function nativeTextBlocks(value: unknown, types: ReadonlySet<unknown> = USER_TEXT_BLOCK_TYPES): string[] {
+/** Read text blocks without treating media payloads or tool metadata as message text. */
+export function nativeTextBlocks(value: unknown, types: ReadonlySet<unknown> = USER_TEXT_BLOCK_TYPES): string[] {
   if (typeof value === 'string')
     return [value]
   if (!Array.isArray(value))

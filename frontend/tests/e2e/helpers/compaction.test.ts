@@ -63,6 +63,14 @@ describe('compactionNoticeRow', () => {
         steps.push(options.hasText)
         return link
       },
+      getByText: (text: string | RegExp) => {
+        steps.push(text)
+        return link
+      },
+      or: () => {
+        steps.push('or')
+        return link
+      },
       first: () => {
         steps.push('first')
         return link
@@ -81,6 +89,8 @@ describe('compactionNoticeRow', () => {
     const { page, steps } = chainPage()
     compactionNoticeRow(page)
     expect(steps.slice(0, 2)).toEqual([`${CHAT_SCROLL_CONTAINER}:visible`, '[data-testid="notification-divider"]:visible'])
+    expect(steps).toContain('[data-testid="message-bubble"][data-role="leapmux"]:visible')
+    expect(steps).toContain('or')
     expect(steps.at(-1)).toBe('first')
   })
 
@@ -94,6 +104,8 @@ describe('compactionNoticeRow', () => {
     expect(pattern.test(compactedLabel({ trigger: 'manual', pre: 12040, post: 3000 }))).toBe(true)
     expect(pattern.test(`${COMPACTION_NOTICE_TEXT}ly`)).toBe(false)
     expect(pattern.test(`Not ${COMPACTION_NOTICE_TEXT}`)).toBe(false)
+    expect(pattern.test('Compacting the context')).toBe(false)
+    expect(pattern.test('Mode changed, Context compacted from 1000 to 200 tokens')).toBe(true)
   })
 })
 
@@ -104,6 +116,8 @@ describe('expectCompactionNoticeAfterReload', () => {
     const link: Locator = Object.assign({} as Locator, {
       locator: () => link,
       filter: () => link,
+      getByText: () => link,
+      or: () => link,
       first: () => notice,
     })
     return Object.assign({} as Page, {

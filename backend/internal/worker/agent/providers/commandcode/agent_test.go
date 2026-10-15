@@ -14,6 +14,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestInputBlocksKeepsTheRequiredEmptyTextField(t *testing.T) {
+	t.Parallel()
+	blocks, err := inputBlocks("", []agent.ClassifiedAttachment{{Kind: agent.AttachmentKindImage, Filename: "proof.png", MIMEType: "image/png", Data: []byte{0, 1, 2, 255}}})
+	require.NoError(t, err)
+	raw, err := json.Marshal(blocks)
+	require.NoError(t, err)
+	assert.JSONEq(t, `[{"type":"text","text":""},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAEC/w=="}}]`, string(raw))
+}
+
 func testAgent(t *testing.T) (*Agent, *agenttest.Sink) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(t.Context())

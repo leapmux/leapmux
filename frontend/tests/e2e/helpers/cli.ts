@@ -14,6 +14,7 @@ import { join } from 'node:path'
 import process from 'node:process'
 import { promisify } from 'node:util'
 import { callHub, elevateSessionViaAPI, getCurrentUser, TEST_ADMIN_PASSWORD } from './api'
+import { fetchHub } from './hubTransport'
 import { createTestDirectory } from './runDirectory'
 import { getGlobalState } from './server'
 
@@ -152,7 +153,7 @@ async function mintStep<T>(step: string, operation: () => Promise<T>): Promise<T
  * The caller elevates the approving session before issuance and supplies that cookie here.
  */
 async function elevateMintedCredential(hubUrl: string, bearer: string, cookie: string): Promise<void> {
-  const started = await fetch(`${hubUrl}/oauth/step-up`, {
+  const started = await fetchHub(`${hubUrl}/oauth/step-up`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded',
@@ -168,7 +169,7 @@ async function elevateMintedCredential(hubUrl: string, bearer: string, cookie: s
     throw new Error('mintCLITokenForAdmin: elevate-authorization returned no user_code')
   }
 
-  const approved = await fetch(`${hubUrl}/oauth/device`, {
+  const approved = await fetchHub(`${hubUrl}/oauth/device`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Cookie': cookie },
     body: new URLSearchParams({ user_code: grant.user_code, decision: 'allow' }).toString(),

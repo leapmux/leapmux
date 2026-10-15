@@ -21,6 +21,19 @@ const state = vi.hoisted(() => ({
   renderedQuery: undefined as string | RegExp | undefined,
   thinkingChecks: 0,
   modelStatusReads: 0,
+  copies: [] as unknown[],
+  copyFailure: undefined as Error | undefined,
+  requireVisibleCopy: false,
+}))
+
+vi.mock('./nativeSettings', () => ({
+  copySettingsNotification: async (bubble: { count: () => Promise<number> }, change: unknown) => {
+    if (state.requireVisibleCopy)
+      expect(await bubble.count(), 'the captured notification remains addressable after its summary changes').toBe(1)
+    state.copies.push(change)
+    if (state.copyFailure)
+      throw state.copyFailure
+  },
 }))
 
 vi.mock('./nativeScenario', () => ({ currentNativeAgent: async () => state.agent }))
@@ -56,6 +69,13 @@ vi.mock('./thinkingIndicatorWatch', () => ({
 }))
 
 vi.mock('./ui', () => ({
+  scrollChatRowIntoView: async (_page: unknown, sequence: bigint) => {
+    expect(sequence).toBe(1n)
+  },
+  chatScrollContainer: () => ({ evaluate: async () => ({ top: 0, atEnd: true }), locator: (selector: string) => {
+    expect(selector).toBe('[data-seq="1"]')
+    return { locator: () => ({ count: async () => 1 }) }
+  } }),
   chooseSettingsOption: async (_page: unknown, option: string) => {
     state.events.push(`choose ${option}`)
     if (state.chooseError)
@@ -68,7 +88,7 @@ vi.mock('./ui', () => ({
   visibleOnly: (locator: Locator) => locator,
 }))
 
-const notice = { count: async () => {
+const notice = { locator: () => notice, count: async () => {
   const query = state.renderedQuery
   const matches = typeof query === 'string' ? state.renderedText === query : query?.test(state.renderedText)
   return matches ? state.noticeCount : 0
@@ -140,6 +160,9 @@ beforeEach(() => {
   state.renderedQuery = undefined
   state.thinkingChecks = 0
   state.modelStatusReads = 0
+  state.copies = []
+  state.copyFailure = undefined
+  state.requireVisibleCopy = false
 })
 
 describe('captureStoredNativeModeNotice', () => {
@@ -163,6 +186,24 @@ describe('captureStoredNativeModeNotice', () => {
     expect(state.thinkingChecks).toBe(0)
     expect(state.modelStatusReads).toBe(0)
     expect(state.reads).toEqual(['agent', 'agent'])
+    expect(state.copies).toEqual([
+      { groupId: 'collaboration_mode', oldValue: 'default', value: 'plan' },
+      { groupId: 'collaboration_mode', oldValue: 'default', value: 'plan' },
+    ])
+  })
+
+  it('copies the same stored row when its visible notification summary changes', async () => {
+    state.requireVisibleCopy = true
+    const notice = await selectedNotice()
+    state.renderedText = 'Workflow (Default → A later mode)'
+    await notice.assertStored()
+    expect(state.copies).toHaveLength(2)
+  })
+
+  it('keeps a Copy failure instead of accepting storage proof alone', async () => {
+    const failure = new Error('The copied notification belongs to another option.')
+    state.copyFailure = failure
+    await expect(captureStoredNativeModeNotice(context, ownerBefore(), storedChange, locator)).rejects.toBe(failure)
   })
 
   it.each([

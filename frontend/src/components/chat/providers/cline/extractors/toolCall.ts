@@ -216,7 +216,7 @@ export const CLINE_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<ClineToolFacts> 
     const summary = pickString(args, 'subject')
     return { ...(to ? { to } : {}), text: pickString(args, 'body') || pickString(args, 'message') || pickString(args, 'text'), ...(summary ? { summary } : {}) }
   },
-  // A team tool names its teammate `agentId`.
+  // A team tool identifies its teammate with `agentId`.
   agents: (args): ToolRequestByKind['agents'] => {
     const query = pickString(args, 'agentId') || pickString(args, 'name')
     return query ? { query } : {}
@@ -320,6 +320,7 @@ export const CLINE_TOOL_READERS: ToolCallSpecReaderTable<ClineToolFacts> = {
     if (early)
       return early
     const result = clineReadResult(facts.output)
+    // Native image parts need extraction here: https://github.com/leapmux/leapmux/issues/497.
     if (result)
       return { kind: 'read', ...head, request, result, images: [] }
     const unread = unreadResult(facts)

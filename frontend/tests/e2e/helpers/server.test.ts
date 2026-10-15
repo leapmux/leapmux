@@ -6,13 +6,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { createProcessStub } from '~/test-support/childProcess'
 import { collectE2EFiles } from '~/test-support/e2eFiles'
 import { frontendRoot, posixRelative } from '~/test-support/sourceTree'
-import { E2E_BROWSER_HOST, hubSpawnEnv, hubUrlFromStateJson, mockAgentEnv, resolvedHubTCPFromStateJson, waitForHubStart, waitForServer } from './server'
-
-describe('E2E_BROWSER_HOST', () => {
-  it('matches the browser session-cookie domain', () => {
-    expect(E2E_BROWSER_HOST).toBe('localhost')
-  })
-})
+import { hubSpawnEnv, hubUrlFromStateJson, mockAgentEnv, resolvedHubTCPFromStateJson, waitForHubStart, waitForServer } from './server'
 
 describe('hubUrlFromStateJson', () => {
   it('takes the assigned port from the one TCP entry', () => {
@@ -268,13 +262,13 @@ describe('waitForHubStart', () => {
     rmSync(directory, { recursive: true, force: true })
   })
 
-  it('reads the bound address from the state file and waits for the browser URL to answer', async () => {
+  it('reads the bind address and probes its IPv4 transport while returning the browser URL', async () => {
     writeFileSync(statePath, JSON.stringify({ listen: ['unix:/run/hub.sock', '127.0.0.1:43210'] }))
     const request = vi.fn(async () => new Response('ready'))
     vi.stubGlobal('fetch', request)
     const { proc } = createProcessStub()
     await expect(waitForHubStart(statePath, proc)).resolves.toEqual({ hubUrl: 'http://localhost:43210', listen: '127.0.0.1:43210' })
-    expect(request).toHaveBeenLastCalledWith('http://localhost:43210', expect.anything())
+    expect(request).toHaveBeenLastCalledWith('http://127.0.0.1:43210/', expect.anything())
     await expect(waitForHubStart(statePath, proc, '127.0.0.1')).resolves.toEqual({ hubUrl: 'http://127.0.0.1:43210', listen: '127.0.0.1:43210' })
     expect(request).toHaveBeenLastCalledWith('http://127.0.0.1:43210', expect.anything())
     expect(proc.listenerCount('exit')).toBe(0)

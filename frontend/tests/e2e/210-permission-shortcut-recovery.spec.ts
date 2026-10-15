@@ -1,6 +1,6 @@
 import { expect } from '@playwright/test'
-import { test } from '../fixtures'
-import { openPermissionShortcut } from './ui'
+import { test } from './fixtures'
+import { openPermissionShortcut } from './helpers/ui'
 
 // `applyPermissionPreset` first reads the native settings of the selected agent
 // through its hub, which a static page does not have. Its menu half is

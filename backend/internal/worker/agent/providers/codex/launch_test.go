@@ -12,6 +12,7 @@ func TestCodexBaseArgsAlwaysEnableRequiredFeatures(t *testing.T) {
 	assert.Equal(t, []string{
 		"--enable", "multi_agent_v2",
 		"--enable", "memories",
+		"--enable", "code_mode_interrupt",
 		"app-server",
 	}, codexBaseArgs())
 }

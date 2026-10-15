@@ -52,6 +52,12 @@ describe('createOhMyPiEnvironment', () => {
     expect(models.providers['unit-provider'].models.map((model: { id: string }) => model.id)).toEqual(['unit-model', 'unit-alt'])
   })
 
+  it('pins the structured batch task contract that the child scenarios exercise', () => {
+    createOhMyPiEnvironment(options())
+    const config = JSON.parse(readFileSync(join(ohMyPiAgentDirectory(homeDir, 'unit-profile'), 'config.yml'), 'utf8'))
+    expect(config.task).toMatchObject({ batch: true, structured: true })
+  })
+
   it('pins both roles to the provider model, disables every bundled provider but its own, and turns off its updates', () => {
     createOhMyPiEnvironment(options())
     const config = JSON.parse(readFileSync(join(ohMyPiAgentDirectory(homeDir, 'unit-profile'), 'config.yml'), 'utf8'))

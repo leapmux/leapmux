@@ -583,7 +583,8 @@ func TestEditorContinuesQuestion(t *testing.T) {
 		{"a row of another question", "(1 selected) Which frame…\n\n☑ Go", false},
 		{"a longer row", question + " and more\n\n☑ Go", false},
 		{"no blank line after the row", question + "\n☑ Go", false},
-		{"no line after the row", question, false},
+		{"the native RPC editor title", question, true},
+		{"an unrelated native RPC editor title", "Another question", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

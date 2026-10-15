@@ -5,3 +5,5 @@ import { relatedNativeProof } from './scenarios'
 clineTest('proves the missing swarm-mode setting against the live catalog and a native tool', async ({ native }) => {
   await expectMissingSetting(native, { feature: 'swarm-mode', relatedProof: () => relatedNativeProof(native) })
 })
+
+// Track this LeapMux limitation: https://github.com/leapmux/leapmux/issues/523.

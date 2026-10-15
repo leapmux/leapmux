@@ -12,6 +12,7 @@ import { HELD_NATIVE_CHILD_DESCRIPTION, openRunningNativeChild } from '../helper
 import { uniqueMarker } from '../helpers/shellArguments'
 import { exerciseCapabilityProbe } from '../helpers/unsupportedConfiguration'
 import { diracChildResultRule } from './childResult'
+import { waitForDiracCheckpoint } from './resumeCheckpoint'
 
 /** How a Dirac agent opens. */
 export const DIRAC_AGENT: ProviderAgent = { provider: AgentProvider.DIRAC, prefix: 'dirac-e2e' }
@@ -21,7 +22,10 @@ export const DIRAC_AGENT: ProviderAgent = { provider: AgentProvider.DIRAC, prefi
  * A Dirac turn ends only when the model calls `respond` with `operation: "complete"`, so each answer is that call.
  */
 export async function nativeContext(fixtures: NativeContextFixtures): Promise<ManagedNativeScenarioContext> {
-  return managedNativeContext(fixtures, DIRAC_AGENT, { textStep: (text: string) => ({ toolCalls: [diracRespondToolCall(`dirac-complete-${randomUUID()}`, 'complete', text)] }) })
+  return managedNativeContext(fixtures, DIRAC_AGENT, {
+    textStep: (text: string) => ({ toolCalls: [diracRespondToolCall(`dirac-complete-${randomUUID()}`, 'complete', text)] }),
+    waitForNativeCheckpoint: sessionId => waitForDiracCheckpoint(fixtures.leapmuxServer.agentEnv?.DIRAC_DIR ?? '', sessionId),
+  })
 }
 
 /** Select the actual isolated executable and hold only its native runtime invocation. */

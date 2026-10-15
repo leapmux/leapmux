@@ -9,3 +9,5 @@ kiroTest('proves a real native quota response without a quota window in the info
     expect(request.response).toMatchObject({ status: 429, serviceError: { code: error.code, message: error.message } })
   } }) })
 })
+
+// Track this LeapMux limitation: https://github.com/leapmux/leapmux/issues/513.

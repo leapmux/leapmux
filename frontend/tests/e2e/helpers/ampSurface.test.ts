@@ -579,6 +579,22 @@ describe('the Amp actor', () => {
     expect(client.messages()[2]).toMatchObject({ content: [{ type: 'tool_result', run: { status: 'done', result: 'pong' } }] })
   })
 
+  it.each([
+    { source: 'text(40 + 2)', result: { status: 'done', result: '42' } },
+    { source: 'throw new Error("PROBE" + (70 + 7))', result: { status: 'error', error: { message: 'Error: PROBE77' } } },
+  ])('returns a remote code result without leasing it to the local executor: $source', async ({ source, result }) => {
+    mock = await startMock([
+      { toolCalls: [{ id: 'remote-code', name: 'code_exec', arguments: { code: source } }] },
+      { text: 'The remote code ended.' },
+    ])
+    const { client, executor } = await openThread(mock)
+    client.request('client_append_user_msg', userMessage('LEAPMUXE2ESCENARIO:remote-code run the script'))
+    await expect.poll(() => client.messages().at(-1)).toMatchObject({ role: 'assistant', content: [{ type: 'text', text: 'The remote code ended.' }] })
+    expect(executor.notifications('tool_lease')).toEqual([])
+    expect(client.messages()[2]).toMatchObject({ content: [{ type: 'tool_result', run: result }] })
+    expect(mock.inferences[1]?.userText).toBe(JSON.stringify(result))
+  })
+
   it('holds a steering line for the next interruption point of the turn', async () => {
     mock = await startMock([
       { toolCalls: [{ id: 'call-1', name: 'shell_command', arguments: { command: 'sleep 5' } }] },

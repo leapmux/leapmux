@@ -109,19 +109,17 @@ export async function expectContextUsage(page: Page, usage: MockModelUsage): Pro
 export const SCRIPTED_CONTEXT_USAGE: Readonly<MockModelUsage> = { inputTokens: 12_000, outputTokens: 40, contextWindow: 128_000 }
 
 /**
- * Run one turn whose answer reports `SCRIPTED_CONTEXT_USAGE`, and require the agent info card to state it. With
- * `reload`, require it again after a reload, which reads the usage that the Worker stored. Return the usage.
+ * Run one turn with distinct token counts. Require those counts in the live card and after reload.
+ * The default uses SCRIPTED_CONTEXT_USAGE. A caller can supply another block to test a later update.
  */
-export async function exerciseContextUsage(context: NativeScenarioContext, options: { reload?: boolean } = {}): Promise<MockModelUsage> {
-  const usage = { ...SCRIPTED_CONTEXT_USAGE }
+export async function exerciseContextUsage(context: NativeScenarioContext, options: { usage?: MockModelUsage } = {}): Promise<MockModelUsage> {
+  const usage = { ...(options.usage ?? SCRIPTED_CONTEXT_USAGE) }
   const step = await context.modelScript.queue({ ...nativeTextStep(context, 'Usage recorded.'), usage })
   await sendMessage(context.page, context.modelScript.prompt('Reply once.'))
   await context.modelScript.waitForSteps(step + 1)
   await waitForAgentIdle(context.page)
   await expectContextUsage(context.page, usage)
-  if (options.reload) {
-    await context.page.reload()
-    await expectContextUsage(context.page, usage)
-  }
+  await context.page.reload()
+  await expectContextUsage(context.page, usage)
   return usage
 }

@@ -25,7 +25,7 @@ import { DROID_AGENT, nativeContext } from './factory-droid/scenarios'
 import { test as base } from './fixtures'
 import { missingBinaryReason } from './helpers/binaryOnPath'
 import { authenticatedAgentWorkspace } from './helpers/workspace'
-import { cliSkipFixture } from './provider-fixture-factory'
+import { cliSkipFixture, providerModelScriptFixture } from './provider-fixture-factory'
 
 export const DROID_E2E_SKIP_REASON: string | null = missingBinaryReason('droid', 'Factory Droid E2E requires the droid CLI on PATH (https://docs.factory.ai/)')
 
@@ -54,10 +54,7 @@ export const droidTest = base.extend<CliSkipFixture & NativeFixture & {
   askingDroidWorkspace: authenticatedAgentWorkspace({ ...DROID_AGENT, prefix: 'droid-e2e-ask' }),
   // Droid runs its session-title turn at a time that no test controls, so every test of the provider answers it.
   // A spec that needs another answer registers its own rule under another name: a newer rule matches first.
-  modelScript: async ({ modelScript }, use) => {
-    await modelScript.rule(DROID_TITLE_RULE)
-    await use(modelScript)
-  },
+  modelScript: providerModelScriptFixture([DROID_TITLE_RULE]),
   native: async ({ page, modelScript, leapmuxServer, authenticatedDroidWorkspace }, use) => {
     await use(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedDroidWorkspace.workspaceId }))
   },

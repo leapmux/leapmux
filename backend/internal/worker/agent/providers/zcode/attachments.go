@@ -23,10 +23,9 @@ import (
 // Two boundaries are real and both are enforced here rather than left to fail
 // silently:
 //
-//   - The normalizer recognizes `image`, `video`, `file` and `audio`. A PDF has no
-//     kind of its own: as a `file` a small one is decoded as TEXT (the model
-//     receives binary garbage) and a large one is dropped with no message. So a PDF
-//     is refused up front, in zcodeProvider.ValidateAttachment.
+//   - The installed normalizer accepts a PDF kind and checks the model's PDF capability.
+//     This adapter does not implement that path, so ValidateAttachment refuses PDFs.
+//     See https://github.com/leapmux/leapmux/issues/499.
 //   - An image sent to a text-only model is accepted by the app-server and never
 //     reaches the model. Only the RUNNING agent knows which model is current, so
 //     that refusal is here.

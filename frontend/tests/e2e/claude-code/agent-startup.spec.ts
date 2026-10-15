@@ -4,6 +4,7 @@ import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { claudeTest } from '../claude-fixtures'
 import { openAgentViaAPI } from '../helpers/api'
+import { exerciseProviderAgentButtons } from '../helpers/nativeAgentOpen'
 import { exerciseAgentStartup } from '../helpers/nativeLifecycle'
 import { AGENT_TAB_SELECTOR } from '../helpers/tabSelectors'
 import { extractWorkerMarks, installRpcListeners, renderTimeline, withTimingWorker } from '../helpers/timingFixture'
@@ -19,7 +20,7 @@ const timingTest = claudeTest.extend<{ timingWorker: TimingWorker }>({
   }, use),
 })
 
-claudeTest.describe('Agent Settings', () => {
+claudeTest.describe('agent settings', () => {
   claudeTest('default settings on startup', async ({ authenticatedWorkspace, page }) => {
     void authenticatedWorkspace
     const trigger = settingsBar(page)
@@ -38,7 +39,7 @@ function findNewAgentId(logLines: LogLine[], offset: number): string | null {
   return null
 }
 
-timingTest.describe('Claude Code agent open timing', () => {
+timingTest.describe('agent open timing for Claude Code', () => {
   timingTest.describe.configure({ retries: 0 })
   const ITERATIONS = 3
 
@@ -242,7 +243,7 @@ function renderMedianDeltas(runs: PhaseMark[][]): string {
   return lines.join('\n')
 }
 
-claudeTest.describe('Claude Code agent startup queue', () => {
+claudeTest.describe('agent startup queue for Claude Code', () => {
   claudeTest('queues a typed-during-startup message and delivers it on ACTIVE', async ({ native, page }) => {
     await exerciseAgentStartup(native, {
       launch: nativeLaunch(native),
@@ -251,4 +252,12 @@ claudeTest.describe('Claude Code agent startup queue', () => {
     })
     await expectAssistantAnswer(page)
   })
+})
+
+claudeTest('opens another provider agent from the menu and button', async ({ native }) => {
+  await exerciseProviderAgentButtons(native)
+})
+
+claudeTest('retains queued input after the actual native startup fails', async ({ native }) => {
+  await exerciseAgentStartup(native, { launch: nativeLaunch(native), failed: true })
 })

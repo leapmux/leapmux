@@ -12,3 +12,5 @@ reasonixTest('smart-permissions-shortcut: applies Reasonix session settings and 
 reasonixTest('proves the native smart-permissions-shortcut limit after a real sidebar operation', async ({ native }) => {
   await expectMissingPermissionShortcut(native, { preset: 'smart', relatedProof: () => relatedNativeProof(native) })
 })
+
+// Track this LeapMux limitation: https://github.com/leapmux/leapmux/issues/514.

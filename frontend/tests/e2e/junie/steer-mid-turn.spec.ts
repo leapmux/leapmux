@@ -38,3 +38,5 @@ junieTest.describe('junie unsupported controls', () => {
     await expect(page.locator('[data-testid="result-divider"]:visible')).toHaveCount(2)
   })
 })
+
+// Track this LeapMux limitation: https://github.com/leapmux/leapmux/issues/519.

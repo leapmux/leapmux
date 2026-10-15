@@ -8,7 +8,7 @@ import { retryUntilPass } from '../helpers/retryUntilPass'
 import { backgroundTasksSection, expectNoRegistryRows, expectRowBecomesFinal, expectSectionPersists, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { agentTabs, ASSISTANT_BUBBLE_SELECTOR, expectAgentTabCount, sendMessage, tabById, waitForAgentIdle } from '../helpers/ui'
 
-claudeTest.describe('Claude subagent background tasks', () => {
+claudeTest.describe('subagent background tasks for Claude', () => {
   claudeTest('subagent spawn creates a registry row, a child tab, and isolates the transcript', async ({
     authenticatedWorkspace,
     page,
@@ -74,6 +74,7 @@ claudeTest.describe('Claude subagent background tasks', () => {
 
     // 6. Completion: the row reaches a final status; the section persists.
     await expectRowBecomesFinal(page, row)
+    await tabById(page, parentTabId).click()
     await expectSectionPersists(page)
 
     // 7. The registry's kind tabs. A subagent row lives under Subagents and not

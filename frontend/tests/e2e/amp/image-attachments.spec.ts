@@ -1,8 +1,8 @@
 import { ampTest } from '../amp-fixtures'
-import { exerciseAttachmentDelivery } from '../helpers/attachmentModelProbe'
+import { exerciseImageAttachmentDelivery } from '../helpers/attachmentModelProbe'
 
-ampTest.describe('Amp attachments', () => {
+ampTest.describe('attachments for Amp', () => {
   ampTest('delivers an image attachment to the model', async ({ native }) => {
-    await exerciseAttachmentDelivery(native, 'image', 'amp-shot.png')
+    await exerciseImageAttachmentDelivery(native, 'amp-shot.png')
   })
 })

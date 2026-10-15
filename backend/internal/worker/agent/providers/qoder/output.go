@@ -216,10 +216,24 @@ func (a *Agent) markTurnActiveFromOutput() {
 
 // persistRaw forwards one verbatim NDJSON frame to the transcript.
 func (a *Agent) persistRaw(raw []byte) {
-	content := agent.MessageContent{Original: raw, AgentSessionID: a.nativeSessionID()}
+	content := qoderMessageContent(raw, a.nativeSessionID())
 	if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{}); err != nil {
 		slog.Debug("qoder: persist message", "agent_id", a.AgentID(), "error", err)
 	}
+}
+
+// qoderMessageContent preserves the native flag on an aborted assistant frame.
+// Qoder sends this frame before the result, including when it cuts a text block.
+func qoderMessageContent(raw []byte, sessionID string) agent.MessageContent {
+	content := agent.MessageContent{Original: raw, AgentSessionID: sessionID}
+	var frame struct {
+		Type    string `json:"type"`
+		Aborted bool   `json:"aborted"`
+	}
+	if json.Unmarshal(raw, &frame) == nil && frame.Type == contracts.QoderFrameKindAssistant && frame.Aborted {
+		content.Completion = agent.MessageCompletionInterrupted
+	}
+	return content
 }
 
 func (a *Agent) nativeSessionID() string {
@@ -253,8 +267,9 @@ func (a *Agent) persistNativeToolFrame(target agent.ProviderServices, raw []byte
 	if sessionID == "" {
 		sessionID = a.nativeSessionID()
 	}
+	nativeContent := qoderMessageContent(raw, sessionID)
 	for _, block := range frame.Message.Content {
-		content := agent.MessageContent{Original: raw, AgentSessionID: sessionID}
+		content := nativeContent
 		if frame.Type == contracts.QoderFrameKindAssistant && block.Type == "tool_use" && block.ID != "" && block.Name != "" {
 			stored = true
 			opened++

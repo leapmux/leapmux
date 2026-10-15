@@ -15,6 +15,8 @@ export interface ControlQuestion extends QuestionPrompt {
   id?: string
   multiSelect?: boolean
   allowEmpty?: boolean
+  /** False when the native transport accepts selected options only. Absent permits custom text. */
+  allowCustomText?: boolean
   /**
    * How many options a multiple-selection answer must choose, when the native
    * question states counts. Absent means the provider states none: any number

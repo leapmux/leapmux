@@ -1,3 +1,5 @@
+// The native cancel_subagent command is not integrated.
+// See https://github.com/leapmux/leapmux/issues/506.
 import { openHeldChildTab } from '../helpers/subagentRegistry'
 import { applyPermissionPreset } from '../helpers/ui'
 import { expectUnsupportedSubagent } from '../helpers/unsupportedSubagent'

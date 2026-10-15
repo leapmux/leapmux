@@ -11,7 +11,8 @@ import { assertPrivateNativePath } from '../helpers/nativePrivatePath'
 import { currentNativeAgent, nativeModelToolNames } from '../helpers/nativeScenario'
 import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
 import { runNativeToolTurn } from '../helpers/nativeToolExecution'
-import { claudeWorkflowToolCall } from '../helpers/providerToolCalls'
+import { nativeWorkflowScripts } from '../helpers/nativeWorkflowScripts'
+import { codeExecutionToolCall } from '../helpers/providerToolCalls'
 import { retryUntilPass } from '../helpers/retryUntilPass'
 import { getGlobalState } from '../helpers/server'
 import { uniqueMarker } from '../helpers/shellArguments'
@@ -29,19 +30,12 @@ claudeTest('executes native Workflow code and preserves the computed result and 
   // Workflow completion can start another parent turn after the launch turn ends.
   await modelScript.fallback({ text: 'The native Workflow notification arrived.' })
   const runs: { launch: ClaudeWorkflowLaunch, failed: boolean }[] = []
-  for (const failed of [false, true]) {
-    const callId = `workflow-code-${failed ? 'error' : 'output'}`
-    const name = `native-code-${failed ? 'error' : 'output'}-${marker}`
-    const source = [
-      `export const meta = { name: ${JSON.stringify(name)}, description: 'Compute one local value.' };`,
-      failed ? `throw new Error(${JSON.stringify(marker)} + (70 + 7));` : `return ${JSON.stringify(marker)} + (40 + 2);`,
-    ].join('\n')
-    const expected = `${marker}${failed ? 77 : 42}`
+  for (const { callId, source, expected, failed } of nativeWorkflowScripts(marker)) {
     expect(source).not.toContain(expected)
     const evidence: Record<string, unknown> = { callId, source, agentId: agent.id, agentSessionId: agent.agentSessionId }
     await withCleanup(async () => {
       await runNativeToolTurn(context, {
-        toolCalls: [claudeWorkflowToolCall(callId, source)],
+        toolCalls: [codeExecutionToolCall(context.provider, callId, source)],
         prompt: `Run the native Workflow ${failed ? 'error' : 'output'} script.`,
         answer: 'The native Workflow launch turn ended.',
       })

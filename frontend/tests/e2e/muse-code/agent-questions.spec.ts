@@ -1,6 +1,7 @@
 import type { QuestionRequest } from '../helpers/providerToolCalls'
 import { expect } from '@playwright/test'
-import { chooseQuestionOption, exerciseQuestionAnswer, pickQuestionOption } from '../helpers/nativeQuestion'
+import { chooseQuestionOption, chooseQuestionOptionWithNote, exerciseQuestionAnswer, exerciseQuestionPreviews, pickQuestionOption, restoreQuestionSelection, restoreQuestionTextDraft } from '../helpers/nativeQuestion'
+import { exerciseQuestionIsolation } from '../helpers/nativeQuestionIsolation'
 import { controlButton, focusComposer, questionPagination, savedControlAnswer } from '../helpers/ui'
 import { museTest } from '../muse-fixtures'
 
@@ -30,7 +31,7 @@ museTest('returns the selected native answer and retains it after reload', async
     callId: 'muse-style-question',
     prompt: 'Ask me which native style to use.',
     answer: 'The native style answer was recorded.',
-    reply: chooseQuestionOption('Beta'),
+    reply: chooseQuestionOption('Beta', native),
   })
   expect(request.protocol).toBe('openai-responses')
   expect(result).toContain('Beta')
@@ -42,7 +43,7 @@ museTest('returns the selected native answer and retains it after reload', async
 
 for (const multiSelect of [false, true]) {
   const mode = multiSelect ? 'multiple' : 'single'
-  for (const kind of ['selected', 'typed'] as const) {
+  for (const kind of ['selected', 'typed', 'noted'] as const) {
     museTest(`returns the ${kind} native ${mode} answer and keeps its saved response after reload`, async ({ native }) => {
       const { result, request } = await exerciseQuestionAnswer(native, {
         questions: [question(multiSelect)],
@@ -51,9 +52,10 @@ for (const multiSelect of [false, true]) {
           ? async () => {
             await focusComposer(native.page)
             await native.page.keyboard.insertText('A native typed answer')
+            await restoreQuestionTextDraft(native, 'A native typed answer')
             await controlButton(native.page, 'submit').click()
           }
-          : chooseQuestionOption('Beta'),
+          : kind === 'noted' ? chooseQuestionOptionWithNote(native, 'Beta', 'Keep the selected option.') : chooseQuestionOption('Beta', native),
       })
       expect(request.mockCredential?.accepted).toBe(true)
       expect(JSON.parse(result)).toEqual({
@@ -61,12 +63,17 @@ for (const multiSelect of [false, true]) {
         answers: [{
           id: 'question-1',
           ...(kind === 'typed' ? { free_text: 'A native typed answer' } : multiSelect ? { selected_labels: ['Beta'] } : { selected_label: 'Beta' }),
+          ...(kind === 'noted' ? { note: 'Keep the selected option.' } : {}),
         }],
       })
       const answer = kind === 'typed' ? 'A native typed answer' : 'Beta'
       await expect(savedControlAnswer(native.page)).toContainText(answer)
+      if (kind === 'noted')
+        await expect(savedControlAnswer(native.page)).toContainText('Keep the selected option.')
       await native.page.reload()
       await expect(savedControlAnswer(native.page)).toContainText(answer)
+      if (kind === 'noted')
+        await expect(savedControlAnswer(native.page)).toContainText('Keep the selected option.')
     })
   }
   for (const text of ['', ' \t\n']) {
@@ -110,6 +117,7 @@ museTest('returns each native question answer on its own page', async ({ native 
       await expect(controlButton(native.page, 'submit')).toBeDisabled()
       await pickQuestionOption(banner, 'Alpha')
       await pickQuestionOption(banner, 'Gamma')
+      await restoreQuestionSelection(native, banner, 'Gamma', 1)
       await questionPagination(native.page).getByRole('button', { name: '1', exact: true }).click()
       await expect(banner).toContainText(first.question)
       await expect(banner.getByTestId('question-option-Beta').locator('input')).toBeChecked()
@@ -145,4 +153,12 @@ museTest('requires the explicit native selection count and keeps selected option
   })
   expect(request.mockCredential?.accepted).toBe(true)
   expect(JSON.parse(result)).toEqual({ status: 'answered', answers: [{ id: 'question-1', selected_labels: ['Beta', 'Gamma'] }] })
+})
+
+museTest('preserves native option previews in a narrow layout after reload', async ({ native }) => {
+  await exerciseQuestionPreviews(native)
+})
+
+museTest('keeps a native question on its owner tab and workspace after reload', async ({ native }) => {
+  await exerciseQuestionIsolation(native, { customAnswerDraft: true })
 })

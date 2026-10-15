@@ -30,6 +30,7 @@ import { fileURLToPath } from 'node:url'
 import { AMP_TOOL_NAME } from '../../../src/components/chat/providers/amp/toolNames'
 import { AMP_SHELL_TOOL, AMP_SUBAGENT_TOOL } from '../../../src/generated/contracts/amp-protocol'
 import { isObject } from '../../../src/lib/jsonPick'
+import { AMP_CODE_EXEC_TOOL, executeAmpCodeFixture } from './ampCodeExecution'
 import { mockCredentialReceipt } from './mockCredentials'
 import { readMockBody, waitUnlessDisconnected, writeMockJSON } from './mockHttp'
 import { bufferModelOutput, createBufferedModelStream } from './modelStream'
@@ -646,12 +647,15 @@ export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
    * Run one tool call, and return the executor's `run` record.
    *
    * A subagent tool runs HERE, as Amp runs it on its server: its prompt is one more
-   * inference, and the answer's text is its report. The mock leases every other tool to
+   * inference, and the answer's text is its report. The code_exec fixture also runs here.
+   * The mock leases local tools to
    * the executor, which runs it -- after its permission rules, which is where the
    * LeapMux helper decides.
    */
   async function runTool(thread: ActorThread, turn: RunningTurn, call: MockModelToolCall, id: string, messageId: string): Promise<unknown> {
     const args = call.arguments ?? {}
+    if (call.name === AMP_CODE_EXEC_TOOL)
+      return executeAmpCodeFixture(args.code)
     if (AMP_SERVER_SUBAGENT_TOOLS.has(call.name)) {
       const prompt = subagentPrompt(call.name, args)
       const inference: AmpInference = {

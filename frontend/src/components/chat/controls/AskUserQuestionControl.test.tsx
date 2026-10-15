@@ -11,6 +11,16 @@ import { createControlAnswerState } from './types'
 import '../providers'
 
 describe('trySubmitAskUserQuestion', () => {
+  it('keeps selected-only answers intact when an indirect caller supplies custom text', () => {
+    const state = createControlAnswerState({ selections: { 0: ['first'] } })
+    const send = vi.fn()
+    const questions = [{ question: 'Choose', options: [{ value: 'first', label: 'First' }], allowCustomText: false }]
+    expect(trySubmitAskUserQuestion(state, questions, 'Do not discard this.', send)).toBe(false)
+    expect(send).not.toHaveBeenCalled()
+    expect(state.selections()[0]).toEqual(['first'])
+    expect(trySubmitAskUserQuestion(state, questions, '', send)).toBe(true)
+    expect(send).toHaveBeenCalledOnce()
+  })
   it('saves the current page draft and navigates to the next unanswered page', () => {
     const state = createControlAnswerState({
       currentPage: 0,
@@ -53,6 +63,46 @@ describe('trySubmitAskUserQuestion', () => {
     expect(onSubmit).toHaveBeenCalledOnce()
     expect(state.customTexts()[0]).toBe('note for selected option')
     expect(state.selections()[0]).toEqual(['Build'])
+  })
+})
+
+describe('questions that accept selected options only', () => {
+  function actions(options: { count?: number, minimum?: number, maximum?: number } = {}) {
+    const state = createControlAnswerState({ customTexts: { 0: 'A stale custom answer' } })
+    const send = vi.fn().mockResolvedValue(undefined)
+    const questions = [{
+      question: 'Choose',
+      allowCustomText: false,
+      multiSelect: true,
+      options: Array.from({ length: options.count ?? 2 }, (_, index) => ({ value: `id-${index}`, label: `Option ${index}` })),
+      ...(options.minimum === undefined ? {} : { minimumSelections: options.minimum }),
+      ...(options.maximum === undefined ? {} : { maximumSelections: options.maximum }),
+    }]
+    render(() => <AskUserQuestionActions request={{ requestId: 'select-only', agentId: 'a', payload: {} }} questions={questions} answerState={state} hasEditorContent={true} onTriggerSend={() => {}} onRespond={vi.fn()} onSubmitAnswers={send} onReject={vi.fn()} editorContentRef={() => ({ get: () => 'Unsaved custom text', set: vi.fn() })} />)
+    return { state, send }
+  }
+
+  it('ignores saved and unsaved custom text and fills a native option', async () => {
+    const { state, send } = actions()
+    expect(screen.getByTestId('control-submit-btn')).toBeDisabled()
+    fireEvent.click(screen.getByTestId('control-yolo-btn'))
+    await vi.waitFor(() => expect(send).toHaveBeenCalledOnce())
+    expect(state.selections()[0]).toEqual(['id-0'])
+    expect(state.customTexts()[0]).toBe('')
+  })
+
+  it('fills the required number of native options', async () => {
+    const { state, send } = actions({ minimum: 2, maximum: 2 })
+    fireEvent.click(screen.getByTestId('control-yolo-btn'))
+    await vi.waitFor(() => expect(send).toHaveBeenCalledOnce())
+    expect(state.selections()[0]).toEqual(['id-0', 'id-1'])
+  })
+
+  it.each([{ count: 0 }, { minimum: 3 }, { maximum: 0 }])('refuses automatic answers without a valid option set: %j', (options) => {
+    const { send } = actions(options)
+    expect(screen.getByTestId('control-yolo-btn')).toBeDisabled()
+    expect(screen.getByTestId('control-submit-btn')).toBeDisabled()
+    expect(send).not.toHaveBeenCalled()
   })
 })
 

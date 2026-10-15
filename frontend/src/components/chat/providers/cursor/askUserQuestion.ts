@@ -31,6 +31,8 @@ export function getCursorQuestions(payload: Record<string, unknown>): ControlQue
       question: prompt,
       ...(header !== undefined ? { header } : {}),
       multiSelect: question.allowMultiple === true,
+      // The native ACP adapter copies selectedOptionIds but drops freeformText.
+      allowCustomText: false,
       options: (Array.isArray(question.options) ? question.options : []).filter(isObject).flatMap((option) => {
         const label = pickString(option, 'label') || pickString(option, 'id')
         return label ? [{ value: pickString(option, 'id') || label, label }] : []
@@ -39,25 +41,27 @@ export function getCursorQuestions(payload: Record<string, unknown>): ControlQue
   })
 }
 
-export function sendCursorQuestionResponse(
+export async function sendCursorQuestionResponse(
   onRespond: ControlResponseSender,
   requestId: string,
   questions: ControlQuestion[],
   answerState: ControlAnswerState,
 ): Promise<void> {
-  // Cursor's own answer carries `freeformText` beside `selectedOptionIds`, and its own
-  // interface reads both, so a typed answer travels rather than being dropped. A question
-  // answered with typed text ALONE is still an answer, which is why the survival test
-  // below reads either half. See RL-006.
+  // Cursor's terminal interface supports custom text. Its ACP adapter discards that field.
+  // Refuse stale drafts instead of sending an answer that the model cannot read.
   const answers = questions.map((question, index) => {
     const selected = answerState.selections()[index] ?? []
     const typed = answerState.customTexts()[index]?.trim() ?? ''
+    if (typed)
+      throw new Error('Cursor accepts selected options only on this connection.')
     return {
       questionId: question.id || `q${index}`,
       selectedOptionIds: selected,
-      ...(typed ? { freeformText: typed } : {}),
     }
-  }).filter(answer => answer.selectedOptionIds.length > 0 || answer.freeformText !== undefined)
+  }).filter(answer => answer.selectedOptionIds.length > 0)
+
+  if (answers.length !== questions.length || answers.length === 0)
+    throw new Error('Choose an option for every Cursor question.')
 
   return sendResponse(onRespond, {
     jsonrpc: '2.0',

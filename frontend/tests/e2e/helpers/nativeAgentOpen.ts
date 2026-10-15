@@ -3,9 +3,9 @@ import type { ManagedNativeScenarioContext } from './nativeScenario'
 import type { ProviderWorkingDir } from './providerWorkingDir'
 import type { ProviderAgent } from './workspace'
 import { expect } from '@playwright/test'
-import { selectedAgentTabId } from './nativeScenario'
+import { currentNativeAgent, selectedAgentTabId } from './nativeScenario'
 import { newProviderWorkingDir } from './providerWorkingDir'
-import { openWorkspace } from './ui'
+import { agentTabs, expectAgentTabCount, openWorkspace } from './ui'
 import { openProviderAgent } from './workspace'
 
 /** How {@link openNativeAgent} opens its agent. */
@@ -13,8 +13,9 @@ export interface NativeAgentOpenOptions {
   /** The prefix of the name of the new working directory of the agent. */
   directoryPrefix?: string
   /**
-   * An existing private working directory, for an agent that reads a file of the test there. It replaces the prefix.
-   * The rule of the provider made it ({@link newNativeWorkingDir}), or `deliberateWorkingDir` states its layout.
+   * Use an existing private working directory instead of a directory prefix.
+   * This lets the agent read files that the test already created.
+   * The provider rule creates it through {@link newNativeWorkingDir}, or `deliberateWorkingDir` states its layout.
    */
   workingDir?: ProviderWorkingDir
   /** The open settings over the pinned settings of the provider. */
@@ -22,11 +23,9 @@ export interface NativeAgentOpenOptions {
 }
 
 /**
- * Return how an agent of `context.provider` opens: the `providerAgent` of the context. A helper that creates a working
- * directory for a native agent reads the rule through this function, before it creates the directory.
- *
- * `managedNativeContext` builds a context whose agent is always of its provider. A context built by hand can hold no
- * agent, or the agent of another provider, so the function refuses both.
+ * Return the opening rule for `context.provider` before creating a working directory.
+ * `managedNativeContext` supplies the matching provider rule.
+ * A context built by hand can omit the rule or supply another provider's rule. Reject both cases.
  */
 export function requireOwnProviderAgent(context: Pick<ManagedNativeScenarioContext, 'provider' | 'providerAgent'>): ProviderAgent {
   // The type requires the agent. A context that a test builds by hand through a cast can still lack it.
@@ -39,24 +38,21 @@ export function requireOwnProviderAgent(context: Pick<ManagedNativeScenarioConte
 }
 
 /**
- * Create a new working directory for an agent of `context.provider`, by the rule of the provider
- * (`newProviderWorkingDir`). The name of the directory starts with `prefix`.
- *
- * A provider that reads configuration from the git repository around its directory gets the root of a repository of
- * its own, and every other provider gets a fresh directory of the run. A helper that opens a native agent in a
- * directory of its own creates the directory here, never with `createTestDirectory`.
+ * Create a working directory through the provider's `newProviderWorkingDir` rule. Its name starts with `prefix`.
+ * A provider that reads configuration from its surrounding git repository gets a private repository root.
+ * Other providers get a fresh directory within the run.
+ * Use this helper instead of `createTestDirectory` for native agent directories.
  */
 export function newNativeWorkingDir(context: Pick<ManagedNativeScenarioContext, 'provider' | 'providerAgent'>, prefix: string): ProviderWorkingDir {
   return newProviderWorkingDir(requireOwnProviderAgent(context), prefix)
 }
 
 /**
- * Open a new agent of `context.provider`, show its workspace, and require that its tab is the selected tab. Return the
- * ID of the agent and its working directory.
- *
- * A new working directory follows the rule of the provider of the context ({@link newNativeWorkingDir}). The open
- * applies the merge rule of `openProviderAgent`, so an override that the rule refuses creates no directory.
- * The next turn goes to the selected tab, so a workspace whose earlier agent stays selected fails here.
+ * Open a new agent of `context.provider` and show its workspace. Require the new agent's tab to be selected.
+ * Return the agent ID and its working directory.
+ * A new directory follows the provider rule through {@link newNativeWorkingDir}.
+ * `openProviderAgent` merges and validates option overrides before creating the directory.
+ * The next turn uses the selected tab, so an earlier agent that stays selected fails this check.
  */
 export async function openNativeAgent(
   context: ManagedNativeScenarioContext,
@@ -72,4 +68,26 @@ export async function openNativeAgent(
   await openWorkspace(context.page, context.workspaceId)
   await expect.poll(() => selectedAgentTabId(context.page), { message: 'the new native agent is the selected tab' }).toBe(opened.agentId)
   return opened
+}
+
+/** Check both provider creation controls against the successfully started Worker agents. */
+export async function exerciseProviderAgentButtons(context: ManagedNativeScenarioContext): Promise<void> {
+  requireOwnProviderAgent(context)
+  const { page, provider } = context
+  const original = await currentNativeAgent(context)
+  const tabsBefore = await agentTabs(page).count()
+  // A UI open records recent provider use and makes its button appear in the tab bar.
+  await page.getByTestId('tab-more-menu').click()
+  await page.locator(`menu[popover]:visible [data-testid="menu-new-agent-${provider}"]`).click()
+  await expectAgentTabCount(page, tabsBefore + 1)
+  const fromMenu = await currentNativeAgent(context)
+  expect(fromMenu.agentProvider, 'the selected Worker agent uses the requested provider').toBe(provider)
+  expect(fromMenu.id, 'the menu selects a new Worker agent').not.toBe(original.id)
+  const button = page.getByTestId(`new-agent-button-${provider}`).filter({ visible: true }).first()
+  await expect(button).toBeVisible()
+  await button.click()
+  await expectAgentTabCount(page, tabsBefore + 2)
+  const fromButton = await currentNativeAgent(context)
+  expect(fromButton.agentProvider, 'the selected Worker agent uses the requested provider').toBe(provider)
+  expect([original.id, fromMenu.id], 'the button selects another new Worker agent').not.toContain(fromButton.id)
 }

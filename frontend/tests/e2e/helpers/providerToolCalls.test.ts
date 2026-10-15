@@ -18,7 +18,6 @@ import {
   claudeSubagentHandbackToolCall,
   claudeTaskCreateToolCall,
   claudeTaskUpdateToolCall,
-  claudeWorkflowToolCall,
   clineRunTeammateTaskToolCall,
   clineSpawnTeammateToolCall,
   codebuddyFindToolsToolCall,
@@ -35,6 +34,7 @@ import {
   codexEscalatedCommandToolCall,
   codexExecToolCall,
   codexWaitAgentToolCall,
+  codexWaitCellToolCall,
   commandCodeTaskCreateToolCall,
   commandCodeTaskUpdateToolCall,
   completeGoalToolCall,
@@ -92,7 +92,6 @@ import {
   piMcpResourceToolCall,
   piTodoToolCall,
   piWorkflowToolCall,
-  qoderWorkflowToolCall,
   qwenWorkflowToolCall,
   readToolCall,
   reasonixInspectCapabilityToolCall,
@@ -433,6 +432,7 @@ describe('codeExecutionToolCall', () => {
   it.each([
     { provider: AgentProvider.CODEX, name: 'exec', field: 'input' },
     { provider: AgentProvider.PI, name: 'codemode', field: 'code' },
+    { provider: AgentProvider.COMMAND_CODE, name: 'codemode', field: 'code' },
     { provider: AgentProvider.CODEWHALE, name: 'execute_tools', field: 'code' },
     { provider: AgentProvider.CODEBUDDY, name: 'DeferExecuteTool', field: 'deferred' },
     { provider: AgentProvider.MIMO_CODE, name: 'exec', field: 'code' },
@@ -443,6 +443,10 @@ describe('codeExecutionToolCall', () => {
     { provider: AgentProvider.OPENCODE, name: 'execute', field: 'code' },
     { provider: AgentProvider.KILO, name: 'execute', field: 'code' },
     { provider: AgentProvider.DROID, name: 'Script', field: 'script' },
+    { provider: AgentProvider.LETTA, name: 'Workflow', field: 'script' },
+    { provider: AgentProvider.CLAUDE_CODE, name: 'Workflow', field: 'script' },
+    { provider: AgentProvider.QODER, name: 'Workflow', field: 'script' },
+    { provider: AgentProvider.AMP, name: 'code_exec', field: 'code' },
     { provider: AgentProvider.DIRAC, name: 'execute_command', field: 'script' },
   ])('preserves native source text for $provider', ({ provider, name, field }) => {
     const source = 'const value = "출력";\nreturn value;'
@@ -456,7 +460,7 @@ describe('codeExecutionToolCall', () => {
   })
 
   it('refuses a provider without an audited native executor', () => {
-    expect(() => codeExecutionToolCall(AgentProvider.CLAUDE_CODE, 'native-code', '')).toThrow('no audited native code executor')
+    expect(() => codeExecutionToolCall(AgentProvider.GITHUB_COPILOT, 'native-code', '')).toThrow('no audited native code executor')
   })
 
   it('selects the native Node script path without constructing a shell command', () => {
@@ -573,8 +577,8 @@ describe('WORKFLOW_TOOL_NAMES', () => {
   })
 
   it.each([
-    { provider: AgentProvider.CLAUDE_CODE, call: claudeWorkflowToolCall('w', 'return 1') },
-    { provider: AgentProvider.QODER, call: qoderWorkflowToolCall('w', 'return 1') },
+    { provider: AgentProvider.CLAUDE_CODE, call: codeExecutionToolCall(AgentProvider.CLAUDE_CODE, 'w', 'return 1') },
+    { provider: AgentProvider.QODER, call: codeExecutionToolCall(AgentProvider.QODER, 'w', 'return 1') },
     { provider: AgentProvider.PI, call: piWorkflowToolCall('w', 'return 1') },
     { provider: AgentProvider.ZCODE, call: zcodeCreateWorkflowToolCall('w', 'probe', 'return 1') },
     { provider: AgentProvider.MIMO_CODE, call: mimoWorkflowToolCall('w', 'return 1') },
@@ -1134,6 +1138,35 @@ describe('spawnSubagentToolCall', () => {
 })
 
 describe('askUserQuestionToolCall', () => {
+  it('uses the native Deepseek model field for multiple selection', () => {
+    const call = askUserQuestionToolCall(AgentProvider.DEEPSEEK_HARNESS, 'question', [{
+      question: 'Which colors?',
+      header: 'Colors',
+      multiSelect: true,
+      options: [{ label: 'Blue', description: 'Use blue.' }, { label: 'Green', description: 'Use green.' }],
+    }])
+    expect(call.arguments).toMatchObject({ questions: [{ multi_select: true }] })
+    expect(JSON.stringify(call.arguments)).not.toContain('multiSelect')
+  })
+  it('uses the native Reasonix ask tool and preserves each question and selection mode', () => {
+    const questions = [{
+      header: 'Database',
+      question: 'Which database?',
+      options: [{ label: 'Postgres', description: 'Use Postgres.' }, { label: 'SQLite', description: 'Use SQLite.' }],
+      multiSelect: false,
+    }]
+    expect(askUserQuestionToolCall(AgentProvider.REASONIX, 'reasonix-ask', questions)).toEqual({
+      id: 'reasonix-ask',
+      name: 'ask',
+      arguments: { questions },
+    })
+  })
+
+  it.each([0, 4])('rejects %i Reasonix questions before starting a native turn', (count) => {
+    const question = { header: 'Choice', question: 'Which?', options: [{ label: 'A', description: 'First' }, { label: 'B', description: 'Second' }] }
+    expect(() => askUserQuestionToolCall(AgentProvider.REASONIX, 'invalid-ask', Array.from<typeof question>({ length: count }).fill(question))).toThrow('one to three questions')
+  })
+
   it('states multiSelect rather than omitting it, which Claude\'s schema requires', () => {
     const questions = [{ question: 'Which?', header: 'Choice', options: [{ label: 'A', description: 'The first' }] }]
     const call = askUserQuestionToolCall(AgentProvider.CLAUDE_CODE, 'call-1', questions)
@@ -1537,7 +1570,7 @@ describe('editToolCall', () => {
     for (const provider of PROVIDERS.filter(p => hasToolFor(p, 'edit'))) {
       const call = editToolCall(provider, 'call-1', { path: '/tmp/a.txt', before: 'ALPHA', after: 'BETA' })
       let payload = call.input ?? JSON.stringify(call.arguments)
-      // Dirac's edit names the old line by an ANCHOR§CONTENT coordinate the
+      // Dirac's edit identifies the old line by an ANCHOR§CONTENT coordinate the
       // step captures out of the request, so its old text rides the capture
       // source rather than the call arguments.
       if (provider === AgentProvider.DIRAC)
@@ -1631,7 +1664,7 @@ describe('kimi code vocabulary', () => {
 describe('qoder cli vocabulary', () => {
   it('passes a native Workflow script without changing its source', () => {
     const script = 'export const meta = { name: "probe", description: "Run one child." };'
-    expect(qoderWorkflowToolCall('qoder-workflow', script)).toEqual({
+    expect(codeExecutionToolCall(AgentProvider.QODER, 'qoder-workflow', script)).toEqual({
       id: 'qoder-workflow',
       name: 'Workflow',
       arguments: { script },
@@ -2771,5 +2804,28 @@ describe('askUserQuestionToolCall selection limits', () => {
     const original = structuredClone(questions)
     expect(() => askUserQuestionToolCall(provider, 'unsupported-counts', questions)).toThrow('question builder accepts no explicit selection counts')
     expect(questions).toEqual(original)
+  })
+})
+
+describe('native question shape limits', () => {
+  const question: QuestionRequest = { question: 'Choose a color.', header: 'Color', options: [{ label: 'Blue', description: 'Use blue.' }, { label: 'Green', description: 'Use green.' }] }
+
+  it.each([AgentProvider.CODEX, AgentProvider.DIRAC])('refuses multiple selection instead of dropping it for %s', (provider) => {
+    expect(() => askUserQuestionToolCall(provider, 'multiple', [{ ...question, multiSelect: true }])).toThrow('single-choice')
+  })
+
+  it('refuses multiple Dirac questions instead of discarding their option sets', () => {
+    expect(() => askUserQuestionToolCall(AgentProvider.DIRAC, 'pages', [question, { ...question, question: 'Choose another color.' }])).toThrow('one question')
+  })
+})
+
+describe('codexWaitCellToolCall', () => {
+  it('passes the exact native cell ID without replacing it with a guessed identifier', () => {
+    expect(codexWaitCellToolCall('await-cell', '42')).toEqual({ id: 'await-cell', name: 'wait', arguments: { cell_id: '42' } })
+    expect(codexWaitCellToolCall('await-captured-cell', '{{codeCell}}').arguments).toEqual({ cell_id: '{{codeCell}}' })
+  })
+
+  it.each([['', '1'], ['wait', ''], ['wait', '  ']])('rejects an absent call or cell identity: %j', (id, cellId) => {
+    expect(() => codexWaitCellToolCall(id!, cellId!)).toThrow('requires a call ID and cell ID')
   })
 })

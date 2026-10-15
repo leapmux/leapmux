@@ -1,5 +1,5 @@
 import { exerciseControlInterrupt } from '../helpers/controlInterrupt'
-import { exerciseInterruptTurn } from '../helpers/nativeLifecycle'
+import { exerciseInterruptedPartialAnswer, exerciseInterruptTurn } from '../helpers/nativeLifecycle'
 import { chooseSettingsOption, waitForSettingsIdle } from '../helpers/ui'
 import { reasonixTest } from '../reasonix-fixtures'
 import { bypassToolRequests } from './scenarios'
@@ -21,4 +21,8 @@ reasonixTest('withdraws a waiting permission and accepts a new prompt after queu
       await waitForSettingsIdle(native.page)
     },
   })
+})
+
+reasonixTest('keeps interrupted partial text and its marker after reload', async ({ native }) => {
+  await exerciseInterruptedPartialAnswer(native, { prepare: () => bypassToolRequests(native) })
 })

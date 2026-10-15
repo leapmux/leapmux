@@ -7,9 +7,10 @@ import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { claudeTest } from '../claude-fixtures'
 import { createWorkspaceViaAPI, openAgentViaAPI } from '../helpers/api'
 import { withCleanup } from '../helpers/cleanup'
-import { ASKED_QUESTIONS_CALL_ID, askQuestions, pickQuestionOption } from '../helpers/nativeQuestion'
+import { ASKED_QUESTIONS_CALL_ID, askQuestions, exerciseQuestionPages, exerciseQuestionPreviews, exerciseTypedQuestionAnswer, pickQuestionOption } from '../helpers/nativeQuestion'
+import { exerciseQuestionIsolation } from '../helpers/nativeQuestionIsolation'
 import { nativeToolResult } from '../helpers/nativeToolResult'
-import { agentTabs, collapseWorkspaceRow, composerEditor, controlBanner, controlButton, expectNoControlBanner, focusComposer, loginViaToken, openAgentViaUI, openWorkspace, PLATFORM_MOD, questionPagination, sidebarLeaves, waitForAgentIdle, waitForControlBanner, waitForEditorDraft, waitForWorkspaceReady, workspaceRow, workspaceRowTitle } from '../helpers/ui'
+import { agentTabs, collapseWorkspaceRow, composerEditor, controlBanner, controlButton, expectNoControlBanner, focusComposer, loginViaToken, openAgentViaUI, openWorkspace, questionPagination, sidebarLeaves, waitForAgentIdle, waitForControlBanner, waitForEditorDraft, waitForWorkspaceReady, workspaceRow, workspaceRowTitle } from '../helpers/ui'
 
 // The mock scripts the actual native question tool. The banner must show these exact options.
 
@@ -67,8 +68,8 @@ async function submitAnswers(page: Page): Promise<void> {
   await submit.click()
 }
 
-claudeTest.describe('Control Request - AskUserQuestion', () => {
-  claudeTest('single question - select an option and submit', async ({ page, authenticatedWorkspace, modelScript }) => {
+claudeTest.describe('native question controls', () => {
+  claudeTest('selects an option for a single native question', async ({ page, authenticatedWorkspace, modelScript }) => {
     // Send a message that triggers AskUserQuestion
     const before = await askQuestions(claude(page, modelScript), [COLOR_Q_3])
 
@@ -100,7 +101,7 @@ claudeTest.describe('Control Request - AskUserQuestion', () => {
     expect(answer).not.toContain('Green color')
   })
 
-  claudeTest('multi-question - pagination with option selection', async ({ page, authenticatedWorkspace, modelScript }) => {
+  claudeTest('keeps selected answers across native question pages', async ({ page, authenticatedWorkspace, modelScript }) => {
     // Send a message with 2 questions
     const before = await askQuestions(claude(page, modelScript), [COLOR_Q_2, SIZE_Q])
 
@@ -131,7 +132,7 @@ claudeTest.describe('Control Request - AskUserQuestion', () => {
     await expectQuestionAnswers(page, modelScript, before, ['Red', 'Large'])
   })
 
-  claudeTest('multi-question - option click auto-advances to next page', async ({ page, authenticatedWorkspace, modelScript }) => {
+  claudeTest('advances to the next question after a single choice', async ({ page, authenticatedWorkspace, modelScript }) => {
     const before = await askQuestions(claude(page, modelScript), [COLOR_Q_2, SIZE_Q])
 
     const banner = await waitForControlBanner(page)
@@ -154,7 +155,7 @@ claudeTest.describe('Control Request - AskUserQuestion', () => {
     await expectQuestionAnswers(page, modelScript, before, ['Red', 'Large'])
   })
 
-  claudeTest('YOLO button fills unanswered questions', async ({ page, authenticatedWorkspace, modelScript }) => {
+  claudeTest('fills unanswered questions through YOLO', async ({ page, authenticatedWorkspace, modelScript }) => {
     const before = await askQuestions(claude(page, modelScript), [COLOR_Q_2, SIZE_Q])
 
     await waitForControlBanner(page)
@@ -172,7 +173,7 @@ claudeTest.describe('Control Request - AskUserQuestion', () => {
     await expectQuestionAnswers(page, modelScript, before, ['Red', 'Go with the recommended option.'])
   })
 
-  claudeTest('Stop button rejects the request', async ({ page, authenticatedWorkspace, modelScript }) => {
+  claudeTest('rejects the question through Stop', async ({ page, authenticatedWorkspace, modelScript }) => {
     await askQuestions(claude(page, modelScript), [COLOR_Q_2])
 
     await waitForControlBanner(page)
@@ -300,8 +301,8 @@ claudeTest.describe('Control Request - AskUserQuestion', () => {
   })
 })
 
-claudeTest.describe('Control Request Draft Persistence', () => {
-  claudeTest('AskUserQuestion custom text draft survives page reload', async ({ page, authenticatedWorkspace, leapmuxServer, modelScript }) => {
+claudeTest.describe('control request draft persistence', () => {
+  claudeTest('restores a custom question draft after reload', async ({ page, authenticatedWorkspace, leapmuxServer, modelScript }) => {
     // Trigger AskUserQuestion.
     await askQuestions(claude(page, modelScript), [COLOR_Q_3])
 
@@ -325,41 +326,19 @@ claudeTest.describe('Control Request Draft Persistence', () => {
     await expect(composerEditor(page)).toContainText('my custom color answer')
   })
 
-  claudeTest('control request draft is isolated from conversation draft', async ({ page, authenticatedWorkspace, leapmuxServer, modelScript }) => {
-    // Type a conversation draft first.
-    await focusComposer(page)
-    await page.keyboard.type('conversation draft text', { delay: 100 })
-
-    // Wait for the debounced save to actually land, not for a fixed margin.
-    await waitForEditorDraft(page, leapmuxServer.adminUserId, 'conversation draft text')
-
-    // Clear the editor and send a message to trigger AskUserQuestion.
-    await page.keyboard.press(`${PLATFORM_MOD}+a`)
-    await page.keyboard.press('Backspace')
-    await askQuestions(claude(page, modelScript), [COLOR_Q_3])
-
-    // Wait for the control banner.
-    await waitForControlBanner(page)
-
-    // Require an empty editor. The control request uses a separate draft key from the conversation.
-    await expect(composerEditor(page)).toHaveText('')
-
-    // Type control request draft text.
-    await focusComposer(page)
-    await page.keyboard.type('control request draft text', { delay: 100 })
-
-    // Wait for the debounced save to actually land, not for a fixed margin.
-    await waitForEditorDraft(page, leapmuxServer.adminUserId, 'control request draft text')
-
-    // Reload the page.
-    await page.reload()
-
-    // Wait for the control banner to reappear.
-    await waitForControlBanner(page)
-
-    // Verify editor contains the control request draft (not the conversation draft).
-    const restoredEditor = composerEditor(page)
-    await expect(restoredEditor).toContainText('control request draft text')
-    await expect(restoredEditor).not.toContainText('conversation draft text')
+  claudeTest('keeps question and conversation drafts separate', async ({ native }) => {
+    await exerciseQuestionIsolation(native, { customAnswerDraft: true })
   })
+})
+
+claudeTest('preserves answers across native question pages and reloads', async ({ native }) => {
+  await exerciseQuestionPages(native)
+})
+
+claudeTest('preserves native option previews in a narrow layout after reload', async ({ native }) => {
+  await exerciseQuestionPreviews(native)
+})
+
+claudeTest('returns a custom native answer after its draft survives reload', async ({ native }) => {
+  await exerciseTypedQuestionAnswer(native)
 })

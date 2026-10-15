@@ -311,7 +311,7 @@ Two JSON files define the coverage:
 
 - [features.json](frontend/tests/e2e/feature-matrix/features.json) holds stable feature IDs and precise descriptions.
   It holds display labels and website publication choices also.
-  It lists the feature groups, and each published feature names its group.
+  It lists the feature groups, and each published feature specifies its group.
   The website shows the groups in that order, and the published features of a group stand together.
 - [checklist.json](frontend/tests/e2e/feature-matrix/checklist.json) holds each provider and feature combination.
   Each entry supplies its distinct spec path and its support state.
@@ -344,6 +344,12 @@ The site includes published features and their descriptions.
 The checklist includes additional provider tests that the site does not publish.
 
 ### E2E execution
+
+Keep provider-specific browser specs directly under `frontend/tests/e2e/<provider-name>/`.
+Keep generic browser specs directly under `frontend/tests/e2e/`.
+Keep shared components under `frontend/tests/e2e/helpers/`, with their unit tests beside them.
+The `.spec.ts` extension selects Playwright. The `.test.ts` extension selects Vitest.
+Browser tests of a shared helper still belong at the E2E root.
 
 The E2E launcher splits the selected files into isolated Playwright processes.
 The default process count is the smaller of four and the available CPU capacity.

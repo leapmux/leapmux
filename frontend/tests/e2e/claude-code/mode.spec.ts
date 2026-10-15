@@ -1,3 +1,4 @@
+import type { Page } from '@playwright/test'
 import { expect } from '@playwright/test'
 import { CLAUDE_MODE } from '../../../src/generated/contracts/claude-protocol'
 import { claudeTest, claudeProcessTest as test } from '../claude-fixtures'
@@ -5,11 +6,14 @@ import { systemText } from '../helpers/mockModelScript'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { chooseNativeModeWithNotice } from '../helpers/nativeModeChange'
 import { currentNativeAgent, nativeOptionGroup } from '../helpers/nativeScenario'
-import { exerciseNativeOption, exerciseRestoredNativeOption, expectSettingsOptionsOffered } from '../helpers/nativeSettings'
+import { copySettingsNotification, exerciseNativeOption, exerciseRestoredNativeOption, expectSettingsOptionsOffered, sentRpcMethods } from '../helpers/nativeSettings'
 import { thinkingIndicatorShownDuring } from '../helpers/thinkingIndicatorWatch'
-import { chooseSettingsOption, composerEditor, expectSettingsChip, permissionModeOffered, settingsBar, visibleOnly, waitForAgentIdle, waitForNativeSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
+import { installRpcListeners } from '../helpers/timingFixture'
+import { chooseSettingsOption, composerEditor, expectSettingsChip, messageBubbles, permissionModeOffered, settingsBar, visibleOnly, waitForAgentIdle, waitForNativeSettingsHydrated, waitForSettingsHydrated, waitForSettingsIdle, workspaceRow } from '../helpers/ui'
+import { authenticatedAgentWorkspace } from '../helpers/workspace'
+import { CLAUDE_AGENT } from './scenarios'
 
-test.describe('Agent Settings', () => {
+test.describe('agent settings', () => {
   test('switch permission modes', async ({ authenticatedWorkspace, page, native }) => {
     const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
@@ -172,4 +176,67 @@ claudeTest('returns from Plan to Default with one notice and native proof after 
     await expectSettingsChip(page, change.label)
     await notice.assertStored()
   }
+})
+
+const notificationTest = claudeTest.extend({
+  authenticatedClaudeWorkspace: authenticatedAgentWorkspace({
+    ...CLAUDE_AGENT,
+    openOptions: { optionValues: { permissionMode: 'default' } },
+  }),
+})
+
+/** Copy the consolidated mode notice with its actual rendering supplement. */
+async function copyModeNotification(page: Page, label: string, mode: string): Promise<void> {
+  await copySettingsNotification(messageBubbles(page).filter({ hasText: label }), { groupId: 'permissionMode', oldValue: 'default', value: mode }, true)
+}
+
+notificationTest.describe('notification consolidation', () => {
+  notificationTest('copies native settings consolidation and received Raw JSON after reload', async ({ authenticatedClaudeWorkspace, page, modelScript }) => {
+    await expect(workspaceRow(page, authenticatedClaudeWorkspace.workspaceId)).toHaveAttribute('data-active', 'true')
+    await waitForSettingsHydrated(page)
+    await expectSettingsChip(page, 'Default')
+    await installRpcListeners(page)
+
+    await chooseSettingsOption(page, 'permissionMode-plan')
+    await expectSettingsChip(page, 'Plan Mode')
+    await waitForSettingsIdle(page)
+    await expect(messageBubbles(page).filter({ hasText: 'Mode (Default → Plan Mode)' })).toHaveCount(1)
+    expect(await sentRpcMethods(page)).toContain('UpdateAgentSettings')
+    await copyModeNotification(page, 'Mode (Default → Plan Mode)', 'plan')
+
+    // Returning to the starting mode cancels the effective change.
+    await chooseSettingsOption(page, 'permissionMode-default')
+    await expectSettingsChip(page, 'Default')
+    await waitForSettingsIdle(page)
+    await expect(messageBubbles(page).filter({ hasText: /Mode \(.*→/ })).toHaveCount(0)
+
+    await chooseSettingsOption(page, 'permissionMode-acceptEdits')
+    await expectSettingsChip(page, 'Accept Edits')
+    await waitForSettingsIdle(page)
+    await expect(messageBubbles(page).filter({ hasText: 'Mode (Default → Accept Edits)' })).toHaveCount(1)
+    await expect(messageBubbles(page).filter({ hasText: 'Mode (Plan Mode → Accept Edits)' })).toHaveCount(0)
+    expect(await sentRpcMethods(page)).toContain('UpdateAgentSettings')
+    await copyModeNotification(page, 'Mode (Default → Accept Edits)', 'acceptEdits')
+
+    await page.reload()
+    await waitForSettingsHydrated(page)
+    await expectSettingsChip(page, 'Accept Edits')
+    await expect(messageBubbles(page).filter({ hasText: 'Mode (Default → Accept Edits)' })).toHaveCount(1)
+
+    // A new document needs its own real RPC positive control before Copy can prove the absence of history requests.
+    await installRpcListeners(page)
+    await chooseSettingsOption(page, 'permissionMode-plan')
+    await expectSettingsChip(page, 'Plan Mode')
+    await waitForSettingsIdle(page)
+    await expect(messageBubbles(page).filter({ hasText: 'Mode (Default → Plan Mode)' })).toHaveCount(1)
+    await chooseSettingsOption(page, 'permissionMode-acceptEdits')
+    await expectSettingsChip(page, 'Accept Edits')
+    await waitForSettingsIdle(page)
+    await expect(messageBubbles(page).filter({ hasText: 'Mode (Default → Plan Mode)' })).toHaveCount(0)
+    await expect(messageBubbles(page).filter({ hasText: 'Mode (Default → Accept Edits)' })).toHaveCount(1)
+    expect(await sentRpcMethods(page)).toContain('UpdateAgentSettings')
+    await copyModeNotification(page, 'Mode (Default → Accept Edits)', 'acceptEdits')
+
+    expect((await modelScript.status()).requests).toHaveLength(0)
+  })
 })

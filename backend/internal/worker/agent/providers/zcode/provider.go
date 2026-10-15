@@ -181,18 +181,15 @@ func (zcodeProvider) TurnEndToolUses(content []byte) (int32, bool) {
 // ChildCapabilities.AcceptsMessages is false: a ZCode subagent runs to completion and takes no
 // further message.
 
-// ReportsDefaultModelSentinel is false: ZCode's catalog names every model
+// ReportsDefaultModelSentinel is false: ZCode's catalog lists every model
 // explicitly, so no entry stands for the account default.
 func (zcodeProvider) ReportsDefaultModelSentinel() bool { return false }
 
 // ValidateAttachment enforces the part of ZCode's attachment policy that does not
 // depend on the running model.
 //
-// A PDF is refused outright. The app-server's attachment normalizer recognizes
-// image, video, file and audio and NOTHING else, so a PDF arrives as a generic
-// file: a small one is decoded as text and reaches the model as binary garbage, and
-// a large one is dropped with no message at all. Both are worse than a refusal that
-// says so.
+// The installed app server accepts PDF attachments, but this adapter does not send that representation.
+// Keep the explicit refusal until native PDF delivery is implemented: https://github.com/leapmux/leapmux/issues/499.
 //
 // The image gate is NOT here, because this check is stateless and an image's
 // acceptance depends on the CURRENT model's declared input modalities. It runs in

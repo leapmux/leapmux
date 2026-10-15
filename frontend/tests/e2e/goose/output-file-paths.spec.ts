@@ -53,3 +53,5 @@ gooseTest('records the native client terminal output limit and retains its exact
     },
   })
 })
+
+// Track this LeapMux limitation: https://github.com/leapmux/leapmux/issues/527.

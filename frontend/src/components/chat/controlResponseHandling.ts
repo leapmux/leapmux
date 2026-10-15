@@ -65,6 +65,8 @@ export interface ControlResponseHandlingResult {
   isAskUserQuestion: Accessor<boolean>
   editorPlaceholder: Accessor<string | undefined>
   editorPurpose: Accessor<'answer' | 'feedback' | 'none' | undefined>
+  /** Whether typed editor content replaces the control's offered options. */
+  editorTextReplacesOptions: Accessor<boolean>
   showInterrupt: Accessor<boolean>
   handleControlSend: (content: string) => boolean | void | Promise<boolean | void>
   handleSend: (content: string) => boolean | void | Promise<boolean | void>
@@ -194,7 +196,7 @@ export function useControlResponseHandling(
     switch (activeSurface()?.kind) {
       // The question form takes the typed answer.
       case 'question':
-        return 'answer'
+        return questionFor(request)?.questions[answerState.currentPage()]?.allowCustomText === false ? 'none' : 'answer'
       // The elicitation form carries its own fields, so the editor adds nothing.
       case 'elicitation':
         return 'none'
@@ -202,6 +204,10 @@ export function useControlResponseHandling(
         return pluginFor(activeProvider())?.controls?.controlEditorPurpose?.(request.payload) ?? 'feedback'
     }
   })
+  const editorTextReplacesOptions = createMemo(() =>
+    editorPurpose() !== 'none'
+    && (!isAskUserQuestion() || !pluginFor(activeProvider())?.controls?.preservesSelectionNotes),
+  )
   const editorPlaceholder = createMemo(() => {
     switch (editorPurpose()) {
       case 'answer': return 'Type a custom answer...'
@@ -583,6 +589,7 @@ export function useControlResponseHandling(
     isAskUserQuestion,
     editorPlaceholder,
     editorPurpose,
+    editorTextReplacesOptions,
     respondTo,
     recordResponse,
     showInterrupt,

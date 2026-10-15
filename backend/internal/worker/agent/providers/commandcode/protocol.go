@@ -66,7 +66,7 @@ type nativeUsage struct {
 
 type contentBlock struct {
 	Type   string       `json:"type"`
-	Text   string       `json:"text,omitempty"`
+	Text   *string      `json:"text,omitempty"`
 	Source *imageSource `json:"source,omitempty"`
 }
 

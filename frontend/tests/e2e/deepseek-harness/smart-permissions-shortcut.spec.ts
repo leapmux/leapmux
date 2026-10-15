@@ -5,3 +5,5 @@ import { expectMissingPermissionShortcut } from '../helpers/unsupportedConfigura
 deepseekHarnessTest('proves the native default presets provide no Smart shortcut', async ({ native }) => {
   await expectMissingPermissionShortcut(native, { preset: 'smart', relatedProof: () => exerciseShellToolExecution(native, { includeFailure: false }) })
 })
+
+// Track this LeapMux limitation: https://github.com/leapmux/leapmux/issues/514.

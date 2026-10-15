@@ -6,3 +6,5 @@ import { COPILOT_CHILD } from './childScenario'
 copilotTest('keeps two actual native children outside workflow groups after reload', async ({ native }) => {
   await exerciseUngroupedNativeChildren(native, { openChild: slot => openProfiledNativeChild(native, COPILOT_CHILD, slot), catalogProof: true })
 })
+
+// Track this LeapMux limitation: https://github.com/leapmux/leapmux/issues/520.

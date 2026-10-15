@@ -1528,15 +1528,15 @@ const (
 // blocks (still in flight), and `idle` fires after the last result flushes and
 // the background-agent loop exits. A ROOT frame that carries it therefore
 // decides alone, and the heuristic below never sees it. A forwarded child's copy
-// decides nothing, for the reason claudeIsRootFrame gives.
+// decides nothing, for the reason claudeIsLiveRootFrame gives.
 //
 // The heuristic below is for a build that publishes no such frame, which is
 // every one that predates the variable. The FIRST session_state_changed frame
 // retires it for the life of the process, so on a current CLI the turn flag
-// moves on the named signals alone -- this frame, the Worker's own SendInput,
+// moves on the listed signals alone -- this frame, the Worker's own SendInput,
 // and `result`. See armTurnFromOutput.
 func (a *Agent) observeTurnFromOutput(content []byte, msgType string) {
-	if msgType == claudeMsgTypeSystem && claudeIsRootFrame(content) {
+	if msgType == claudeMsgTypeSystem && claudeIsLiveRootFrame(content) {
 		if state, ok := claudeSessionStateOf(content); ok {
 			a.noteSessionState(state)
 			return
@@ -1591,7 +1591,7 @@ func claudeSessionStateOf(content []byte) (string, bool) {
 // part of it.
 //
 // The class is "a ROOT frame that only a live turn produces", and
-// claudeIsRootFrame supplies the first half. `result` ENDS a turn, and
+// claudeIsLiveRootFrame supplies the first half. `result` ENDS a turn, and
 // `control_*` frames are the Worker's own traffic, so neither arms anything.
 //
 // The `system` type is the narrow one, because it carries four unrelated
@@ -1632,32 +1632,28 @@ func (a *Agent) armTurnFromOutput(content []byte, msgType string) {
 	default:
 		return
 	}
-	if !claudeIsRootFrame(content) {
+	if !claudeIsLiveRootFrame(content) {
 		return
 	}
 	a.armTurn()
 }
 
-// claudeIsRootFrame reports whether an output frame describes the ROOT agent.
-//
-// A forwarded subagent envelope carries parent_tool_use_id and belongs to the
-// child, whose turn is its own: a child runs on while the root waits for it, and
-// a restarted child runs while the root is idle. So no frame that carries the
-// field may move the root's turn flag, whether it reports the state (a
-// session_state_changed frame) or only implies it (the thinking-token telemetry,
-// an assistant message).
-//
-// A frame this cannot parse is not a root frame. Nothing downstream reads a
-// frame the JSON decoder refused, and answering "root" for one would arm a turn
-// off bytes with no established shape.
-func claudeIsRootFrame(content []byte) bool {
+// claudeIsLiveRootFrame identifies live output from the root agent.
+// Forwarded child frames and replayed records cannot change the root's live turn state.
+// A child can continue or restart while its root is idle. Its parent_tool_use_id identifies that separate turn.
+// Invalid JSON cannot establish a live root frame.
+// Model changes can replay local command output before a resumed process emits its first session-state event.
+// An absent replay flag means live output. A present flag must explicitly state false.
+func claudeIsLiveRootFrame(content []byte) bool {
 	var envelope struct {
-		ParentToolUseID string `json:"parent_tool_use_id"`
+		ParentToolUseID string          `json:"parent_tool_use_id"`
+		IsReplay        json.RawMessage `json:"isReplay"`
 	}
 	if err := json.Unmarshal(content, &envelope); err != nil {
 		return false
 	}
-	return envelope.ParentToolUseID == ""
+	return envelope.ParentToolUseID == "" &&
+		(len(envelope.IsReplay) == 0 || bytes.Equal(bytes.TrimSpace(envelope.IsReplay), []byte("false")))
 }
 
 func (a *Agent) readOutputLoop(scanner *bufio.Scanner) {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -130,8 +131,10 @@ type codexInterruptKey struct {
 }
 
 type codexInterruptCall struct {
-	done chan struct{}
-	err  error
+	commands map[string]struct{}
+	done     chan struct{}
+	err      error
+	accepted bool
 }
 
 // startOrResumeThread sends thread/start, or thread/resume when the launch
@@ -371,9 +374,7 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 		// probing turn state.
 		return nil
 	}
-	if err := a.interruptCodexTurn(threadID, turnID); err != nil {
-		return err
-	}
+	accepted, err := a.interruptCodexTurn(threadID, turnID)
 	// The ANSWERLESS requests go last, and only once the interrupt is accepted.
 	// Codex's four approval methods register a nil cancel answer, because Codex
 	// retires its own approval requests -- so withdrawing one sends the CLI nothing
@@ -382,8 +383,10 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 	// on an approval with the card already gone: the reader had no control that could
 	// answer it, no later SendRawInput could route one, and the thinking indicator
 	// never stopped.
-	a.WithdrawAllControlRequests(a.sink)
-	return nil
+	if accepted {
+		a.WithdrawAllControlRequests(a.sink)
+	}
+	return err
 }
 
 // Stop stops the process, then retains unfinished model output.
@@ -412,9 +415,9 @@ func (a *Agent) Wait() error {
 	return err
 }
 
-func (a *Agent) interruptCodexTurn(threadID, turnID string) error {
+func (a *Agent) interruptCodexTurn(threadID, turnID string) (bool, error) {
 	if threadID == "" || turnID == "" {
-		return nil
+		return false, nil
 	}
 	key := codexInterruptKey{threadID: threadID, turnID: turnID}
 	a.Mu.Lock()
@@ -425,9 +428,9 @@ func (a *Agent) interruptCodexTurn(threadID, turnID string) error {
 		done := existing.done
 		a.Mu.Unlock()
 		<-done
-		return existing.err
+		return existing.accepted, existing.err
 	}
-	call := &codexInterruptCall{done: make(chan struct{})}
+	call := &codexInterruptCall{done: make(chan struct{}), commands: a.commandIDsForTurnLocked(threadID, turnID)}
 	a.interruptCalls[key] = call
 	a.Mu.Unlock()
 
@@ -435,18 +438,25 @@ func (a *Agent) interruptCodexTurn(threadID, turnID string) error {
 	if err == nil {
 		_, err = a.SendRequest("turn/interrupt", params, a.APITimeout())
 	}
+	accepted := err == nil
 	if err != nil {
 		err = fmt.Errorf("turn/interrupt: %w", err)
+	} else {
+		a.Mu.Lock()
+		commands := maps.Clone(call.commands)
+		a.Mu.Unlock()
+		err = a.stopCodexCommands(threadID, commands)
 	}
 
 	a.Mu.Lock()
+	call.accepted = accepted
 	call.err = err
 	close(call.done)
 	if err != nil {
 		delete(a.interruptCalls, key)
 	}
 	a.Mu.Unlock()
-	return err
+	return accepted, err
 }
 
 func (a *Agent) clearInterruptCallsForThread(threadID string) {

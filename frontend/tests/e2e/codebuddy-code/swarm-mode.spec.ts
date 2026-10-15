@@ -5,3 +5,5 @@ import { relatedNativeProof } from './scenarios'
 codebuddyTest('exposes no separate native swarm mode setting', async ({ native }) => {
   await expectMissingSetting(native, { feature: 'swarm-mode', relatedProof: () => relatedNativeProof(native) })
 })
+
+// Track this LeapMux limitation: https://github.com/leapmux/leapmux/issues/523.

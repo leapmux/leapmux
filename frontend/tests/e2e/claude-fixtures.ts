@@ -4,8 +4,7 @@ import { CLAUDE_AGENT, nativeContext } from './claude-code/scenarios'
 import { test as base } from './fixtures'
 import { missingBinaryReason } from './helpers/binaryOnPath'
 import { authenticatedAgentWorkspace } from './helpers/workspace'
-import { processTest } from './process-control-fixtures'
-import { cliSkipFixture } from './provider-fixture-factory'
+import { cliSkipFixture, createProviderProcessTest } from './provider-fixture-factory'
 
 export const CLAUDE_E2E_SKIP_REASON: string | null = missingBinaryReason('claude', 'Claude Code E2E requires the claude CLI on PATH')
 
@@ -25,9 +24,9 @@ export const claudeTest = base.extend<CliSkipFixture & NativeFixture & {
  * Its `native` fixture is the scenario context of the agent of `authenticatedWorkspace`, the Claude Code agent that
  * the separate Hub and Worker run.
  */
-export const claudeProcessTest = processTest.extend<CliSkipFixture & NativeFixture>({
-  cliSkip: cliSkipFixture(CLAUDE_E2E_SKIP_REASON),
-  native: async ({ page, modelScript, separateHubWorker, authenticatedWorkspace }, use) => {
-    await use(await nativeContext({ page, modelScript, leapmuxServer: separateHubWorker, workspaceId: authenticatedWorkspace.workspaceId }))
-  },
+export const claudeProcessTest = createProviderProcessTest({
+  agent: CLAUDE_AGENT,
+  nativeContext,
+  skipReason: CLAUDE_E2E_SKIP_REASON,
+  openOptions: { optionValues: { permissionMode: 'default' } },
 })

@@ -42,6 +42,31 @@ function setup(overrides?: Partial<ControlResponseHandlingProps>) {
   return { result, onSendMessage, resetEditorHeight }
 }
 
+describe('questions with selected answers only', () => {
+  it('offers no custom editor and refuses an indirect text submission', async () => {
+    const request: ControlRequest = {
+      agentId: 'test-agent',
+      requestId: 'cursor-choice',
+      payload: { method: 'cursor/ask_question', params: { questions: [{ id: 'q', prompt: 'Choose', options: [{ id: 'first', label: 'First' }] }] } },
+    }
+    const state = createControlAnswerState()
+    const respond = vi.fn().mockResolvedValue(undefined)
+    const { handling, dispose } = createRoot(dispose => ({
+      dispose,
+      handling: useControlResponseHandling({ agentId: 'test-agent', agent: { agentProvider: AgentProvider.CURSOR }, controlRequests: [request], onControlResponse: respond, onSendMessage: vi.fn() }, state, () => undefined, vi.fn()),
+    }))
+    try {
+      await vi.waitFor(() => expect(state.ready()).toBe(true))
+      expect(handling.editorPurpose()).toBe('none')
+      expect(handling.handleControlSend('Keep this answer.')).toBe(false)
+      expect(respond).not.toHaveBeenCalled()
+    }
+    finally {
+      dispose()
+    }
+  })
+})
+
 function setupWithAttachments(
   attachments: FileAttachment[],
   overrides?: Partial<ControlResponseHandlingProps>,

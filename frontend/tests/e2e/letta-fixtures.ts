@@ -26,7 +26,7 @@ import { LETTA_REASONING_MODEL_ID, LETTA_VISION_MODEL_ID } from './helpers/mockA
 import { authenticatedAgentWorkspace } from './helpers/workspace'
 import { LETTA_TITLE_RULE } from './letta-code/housekeeping'
 import { LETTA_AGENT, nativeContext } from './letta-code/scenarios'
-import { cliSkipFixture } from './provider-fixture-factory'
+import { cliSkipFixture, providerModelScriptFixture } from './provider-fixture-factory'
 
 export const LETTA_E2E_SKIP_REASON: string | null = missingBinaryReason('letta', 'Letta Code E2E requires the letta CLI on PATH (https://docs.letta.com/letta-code)')
 
@@ -59,10 +59,7 @@ export const lettaTest = base.extend<CliSkipFixture & NativeFixture & {
   askingLettaWorkspace: authenticatedAgentWorkspace({ ...LETTA_AGENT, prefix: 'letta-e2e-ask' }),
   // Letta runs its session-title turn at a time that no test controls, so every test of the provider answers it.
   // A spec that needs another answer registers its own rule under another name: a newer rule matches first.
-  modelScript: async ({ modelScript }, use) => {
-    await modelScript.rule(LETTA_TITLE_RULE)
-    await use(modelScript)
-  },
+  modelScript: providerModelScriptFixture([LETTA_TITLE_RULE]),
   native: async ({ page, modelScript, leapmuxServer, authenticatedLettaWorkspace }, use) => {
     await use(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedLettaWorkspace.workspaceId }))
   },

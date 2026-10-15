@@ -322,6 +322,37 @@ export function checkRetry(r) {
   return {}
 }
 
+/** Keep receipt fields distinct from each other and from logger metadata. */
+export function checkGenerationTrace(value) {
+  const fields = Object.values(value.fields)
+  mustBe(new Set(fields).size === fields.length, 'generation-trace.json', 'trace field names must be distinct')
+  const loggerFields = new Set(['time', 'level', 'msg', 'source', 'marker'])
+  mustBe(fields.every(field => !loggerFields.has(field)), 'generation-trace.json', 'trace field names must not replace logger fields')
+}
+
+export function emitGoGenerationTrace(value) {
+  const declarations = [
+    { name: 'GenerationTraceEnv', value: jsonString(value.enabledEnv) },
+    { name: 'GenerationTraceMarker', value: jsonString(value.marker) },
+    ...Object.entries(value.fields).map(([name, field]) => ({ name: `GenerationTraceField${name}`, value: jsonString(field) })),
+  ]
+  return `${GO_HEADER('generation-trace.json')}package contracts
+
+// GenerationTrace constants describe optional native text receipts.
+const (
+${goConstBlock(declarations)}
+)
+`
+}
+
+export function emitTsGenerationTrace(value) {
+  return `${TS_HEADER('generation-trace.json')}
+export const GENERATION_TRACE_ENV = ${jsonString(value.enabledEnv)} as const
+export const GENERATION_TRACE_MARKER = ${jsonString(value.marker)} as const
+export const GENERATION_TRACE_FIELD = ${JSON.stringify(value.fields, null, 2)} as const
+`
+}
+
 // ---------------------------------------------------------------------------
 // user-settings: the account-setting vocabulary the hub and the browser share
 // ---------------------------------------------------------------------------
@@ -852,7 +883,7 @@ export const EFFORT_AUTO = ${jsonString(v.modelSentinels.effortAuto)} as const
 }
 
 // ---------------------------------------------------------------------------
-// tab-names: the pool new agent / terminal tabs are named from
+// tab-names: the title pool for new agent and terminal tabs
 // ---------------------------------------------------------------------------
 
 export function checkTabNames(v) {
@@ -885,7 +916,7 @@ const tsStringRows = (values, perRow) => stringRows(values, perRow, '  ')
 export function emitGoTabNames(v) {
   return `${GO_HEADER('tab-names.json')}package contracts
 
-// The pool new tabs are named from, generated from contracts/tab-names.json.
+// The title pool for new tabs, generated from contracts/tab-names.json.
 // The browser's TAB_NAMES reads the same table, so the worker's fallback name
 // and the dialog's pre-filled name come from one list.
 
@@ -908,7 +939,7 @@ ${goStringRows(v.names, 8)}
 
 export function emitTsTabNames(v) {
   return `${TS_HEADER('tab-names.json')}
-// The pool new tabs are named from, generated from contracts/tab-names.json
+// The title pool for new tabs, generated from contracts/tab-names.json
 // (the worker's contracts.TabNames reads the same table).
 
 /** Prefixes an auto-generated tab title: \`\${prefix} \${name}\`. */
@@ -1567,11 +1598,11 @@ var SessionInvisibleFormat = ${goRangeTable(v.session.invisibleFormat)}
 var SessionRefusedControl = ${goRangeTable(v.session.refusedControl)}
 
 // SessionRefusedASCII holds the printable ASCII a session ID may not carry,
-// named from the contract so the list cannot go stale against the JSON.
+// derived from the contract so the list cannot differ from the JSON.
 var SessionRefusedASCII = []rune{${refusedRunes(v.session.refusedAscii)}} // ${refusedNames(v.session.refusedAscii)}
 
 // BranchForbiddenASCII holds the printable ASCII git refuses in a ref name
-// (excluding the controls, which BranchRefusedControl covers), named from
+// (excluding the controls, which BranchRefusedControl covers), derived from
 // the contract.
 var BranchForbiddenASCII = []rune{${refusedRunes(v.branch.refusedAscii)}} // ${refusedNames(v.branch.refusedAscii)}
 
@@ -3936,7 +3967,7 @@ export function emitGoExternalApps(a) {
 
 // ExternalAppIDsByOS lists the ids each operating system's spec table must
 // carry, keyed by runtime.GOOS. The sidecar's table test compares its own
-// specs against this. The hand-written "core set" it replaces named a handful
+// specs against this. The previous hand-written "core set" listed a few
 // of ids and trusted review for the rest.
 var ExternalAppIDsByOS = map[string][]string{
 ${byOS}
@@ -4058,6 +4089,15 @@ const DOMAINS = [
       checkRetry(r)
       out['backend/generated/contracts/retry.go'] = emitGoRetry(r)
       out['frontend/src/generated/contracts/retry.ts'] = emitTsRetry(r)
+    },
+  },
+  {
+    name: 'generation-trace',
+    emit(out, read) {
+      const value = read('generation-trace')
+      checkGenerationTrace(value)
+      out['backend/generated/contracts/generation-trace.go'] = emitGoGenerationTrace(value)
+      out['frontend/src/generated/contracts/generation-trace.ts'] = emitTsGenerationTrace(value)
     },
   },
   {

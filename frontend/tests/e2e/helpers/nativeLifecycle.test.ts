@@ -10,7 +10,7 @@ import type { NativeWorker } from './nativeWorker'
 import type { ProviderAgent } from './workspace'
 import { Buffer } from 'node:buffer'
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import process from 'node:process'
 import { create } from '@bufbuild/protobuf'
@@ -346,6 +346,28 @@ describe('exerciseSessionResume', () => {
       ...agentOpenOptions(AgentProvider.CODEX),
       title: 'Native resume keeper',
     })
+  })
+
+  it('requires the native checkpoint before it closes the original agent', async () => {
+    const { context, prior } = scenario()
+    const checkpoint = vi.fn(async () => {
+      resume.events.push('checkpoint')
+    })
+    Object.assign(context, { waitForNativeCheckpoint: checkpoint })
+    await exerciseSessionResume(context, options())
+    expect(checkpoint).toHaveBeenCalledExactlyOnceWith(prior.agentSessionId)
+    expect(resume.events.indexOf('checkpoint')).toBeLessThan(resume.events.indexOf('original:close'))
+  })
+
+  it('does not create a keeper or close the original after a checkpoint failure', async () => {
+    const { context } = scenario()
+    const failure = new Error('The native checkpoint did not reach disk.')
+    Object.assign(context, { waitForNativeCheckpoint: async () => {
+      throw failure
+    } })
+    await expect(exerciseSessionResume(context, options())).rejects.toBe(failure)
+    expect(resume.open).not.toHaveBeenCalled()
+    expect(resume.close).not.toHaveBeenCalled()
   })
 
   it('opens the keeper of a provider with a git rule in the root of a git repository of its own', async () => {
@@ -764,6 +786,7 @@ describe('heldToolScript', () => {
     try {
       const exited = new Promise<number | null>(resolveExit => child.once('exit', code => resolveExit(code)))
       await expect.poll(() => existsSync(startedFile)).toBe(true)
+      expect(readFileSync(startedFile, 'utf8'), 'the receipt identifies the actual running command').toBe(String(child.pid))
       expect(child.exitCode).toBeNull()
       writeFileSync(releaseFile, '')
       await expect(exited).resolves.toBe(0)
@@ -1071,6 +1094,34 @@ describe('exerciseInterruptedPartialAnswer', () => {
     const { script } = partialScript(() => {})
     resume.progressCounts = ['512 B']
     await expect(exerciseInterruptedPartialAnswer(partialContext(script))).rejects.toThrow('the live token counter shows that the Worker received the first chunk')
+    expect(resume.events).not.toContain('click:interrupt-button')
+    expect(resume.events.at(-1)).toMatch(RELEASE)
+  })
+
+  it('uses the provider receipt for the exact partial text before interrupting', async () => {
+    const { script } = partialScript((marker) => {
+      resume.assistantRows.push(`PARTIALHEAD${marker}\n\n${INTERRUPTION_MARKER}`)
+      resume.contentRows.push(`PARTIALHEAD${marker}\n\n${INTERRUPTION_MARKER}`)
+    })
+    resume.progressCounts = []
+    const receipt = vi.fn(async (text: string) => {
+      expect(text).toMatch(/^PARTIALHEAD\w+$/)
+      resume.events.push('native-receipt')
+    })
+    await exerciseInterruptedPartialAnswer(partialContext(script), { waitForPartialReceipt: receipt })
+    expect(receipt).toHaveBeenCalledOnce()
+    expect(resume.events.indexOf('native-receipt')).toBeLessThan(resume.events.indexOf('click:interrupt-button'))
+    expect(resume.events).not.toContain('poll')
+  })
+
+  it('releases the stream without an interrupt when the native receipt fails', async () => {
+    const { script } = partialScript(() => {})
+    const failure = new Error('The native client received no partial text.')
+    await expect(exerciseInterruptedPartialAnswer(partialContext(script), {
+      waitForPartialReceipt: async () => {
+        throw failure
+      },
+    })).rejects.toBe(failure)
     expect(resume.events).not.toContain('click:interrupt-button')
     expect(resume.events.at(-1)).toMatch(RELEASE)
   })

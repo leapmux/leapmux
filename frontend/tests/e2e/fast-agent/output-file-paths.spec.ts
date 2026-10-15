@@ -40,3 +40,5 @@ fastAgentTest('records the native client terminal output limit and retains its e
     },
   })
 })
+
+// Track this LeapMux limitation: https://github.com/leapmux/leapmux/issues/527.

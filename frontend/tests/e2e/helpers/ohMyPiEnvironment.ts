@@ -236,6 +236,8 @@ function ohMyPiConfig(options: OhMyPiEnvironmentOptions): Record<string, unknown
     // parent asks for one more turn in a fixed order. A background subagent would
     // wake the parent with a turn of omp's own.
     async: { enabled: false },
+    // The child scenarios use batch calls and finish through the native yield tool.
+    task: { batch: true, structured: true },
     bash: { autoBackground: { enabled: false } },
     // The `replace` edit takes the text before and after. The default `hashline`
     // edit addresses lines by a hash of the file that only omp itself can compute,

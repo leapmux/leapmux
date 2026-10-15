@@ -147,6 +147,52 @@ function questionRequestPayload(): Record<string, unknown> {
   }
 }
 
+describe('agent editor panel question selection notes', () => {
+  const question = { question: 'Which database?', options: [{ label: 'Postgres' }, { label: 'SQLite' }] }
+
+  it.each([
+    {
+      label: 'a provider that preserves notes',
+      provider: AgentProvider.GROK_BUILD,
+      payload: { jsonrpc: '2.0', id: 'ask-note', method: '_x.ai/ask_user_question', params: { sessionId: 'session', questions: [question] } },
+      preserves: true,
+    },
+    {
+      label: 'a provider with mutually exclusive answers',
+      provider: AgentProvider.CLAUDE_CODE,
+      payload: { request: { tool_name: 'AskUserQuestion', input: { questions: [question] } } },
+      preserves: false,
+    },
+  ])('honors the selection policy of $label after the editor debounce', async ({ provider, payload, preserves }) => {
+    const controlStore = createControlStore()
+    addControlRequest(controlStore, { requestId: 'ask-note', claimToken: 'claim-note', payload })
+    renderPanel({ agentProvider: provider, controlStore, onControlResponse: async () => {} })
+    await vi.waitFor(() => expect(screen.getByTestId('question-option-Postgres')).toBeVisible())
+    fireEvent.click(screen.getByTestId('question-option-Postgres'))
+    const option = screen.getByTestId('question-option-Postgres').querySelector('input')
+    expect(option).toBeChecked()
+    await vi.waitFor(() => expect(getEditorRef('a1')).toBeDefined())
+    const editor = getEditorRef('a1')
+    if (!editor)
+      throw new Error('The mounted editor registered no handle.')
+    editor.set('Use version 16')
+    // Advance the editor listener and draft timers before checking the selected option.
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(editor.get()).toBe('Use version 16')
+    if (preserves) {
+      expect(option).toBeChecked()
+      expect(option).not.toBeDisabled()
+      fireEvent.click(screen.getByTestId('question-option-SQLite'))
+      expect(screen.getByTestId('question-option-SQLite').querySelector('input')).toBeChecked()
+      expect(editor.get()).toBe('Use version 16')
+    }
+    else {
+      expect(option).not.toBeChecked()
+      expect(option).toBeDisabled()
+    }
+  })
+})
+
 /** The mutable permission-mode catalog that Claude reports. */
 function claudePermissionModeGroup(currentValue: string = CLAUDE_MODE.Default): AgentInfo['optionGroups'][number] {
   return create(AvailableOptionGroupSchema, {

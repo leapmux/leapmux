@@ -33,3 +33,5 @@ kimiTest('keeps untrusted project MCP configuration unloaded without a browser t
     },
   })
 })
+
+// Track this LeapMux limitation: https://github.com/leapmux/leapmux/issues/522.

@@ -1,3 +1,5 @@
+// The native goal pause and resume operations are not integrated.
+// See https://github.com/leapmux/leapmux/issues/503.
 import { AgentGoalAction } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { exerciseShellToolExecution } from '../helpers/nativeToolExecution'
 import { expectUnsupportedGoalActions } from '../helpers/unsupportedConfiguration'

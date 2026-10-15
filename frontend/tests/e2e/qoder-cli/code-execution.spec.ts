@@ -11,7 +11,8 @@ import { assertPrivateNativePath } from '../helpers/nativePrivatePath'
 import { currentNativeAgent, nativeAgentById, nativeModelToolNames } from '../helpers/nativeScenario'
 import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
 import { waitForNativeToolSteps } from '../helpers/nativeToolExecution'
-import { qoderWorkflowToolCall } from '../helpers/providerToolCalls'
+import { nativeWorkflowScripts } from '../helpers/nativeWorkflowScripts'
+import { codeExecutionToolCall } from '../helpers/providerToolCalls'
 import { retryUntilPass } from '../helpers/retryUntilPass'
 import { getGlobalState } from '../helpers/server'
 import { uniqueMarker } from '../helpers/shellArguments'
@@ -31,16 +32,9 @@ qoderTest('executes native Workflow code and preserves the computed result and s
   // Workflow completion can start another parent turn after the launch turn ends.
   await modelScript.fallback({ text: 'The native Workflow notification arrived.' })
   const runs: { launch: QoderWorkflowLaunch, failed: boolean }[] = []
-  for (const failed of [false, true]) {
-    const callId = `workflow-code-${failed ? 'error' : 'output'}`
-    const name = `native-code-${failed ? 'error' : 'output'}-${marker}`
-    const source = [
-      `export const meta = { name: ${JSON.stringify(name)}, description: 'Compute one local value.' };`,
-      failed ? `throw new Error(${JSON.stringify(marker)} + (70 + 7));` : `return ${JSON.stringify(marker)} + (40 + 2);`,
-    ].join('\n')
-    const expected = `${marker}${failed ? 77 : 42}`
+  for (const { callId, source, expected, failed } of nativeWorkflowScripts(marker)) {
     expect(source).not.toContain(expected)
-    const start = await modelScript.queue({ toolCalls: [qoderWorkflowToolCall(callId, source)] }, { text: 'The native Workflow launch turn ended.' })
+    const start = await modelScript.queue({ toolCalls: [codeExecutionToolCall(context.provider, callId, source)] }, { text: 'The native Workflow launch turn ended.' })
     const evidence: Record<string, unknown> = { callId, source, agentId: agent.id, agentSessionId: agent.agentSessionId }
     await withCleanup(async () => {
       await sendMessage(page, modelScript.prompt(`Run the native Workflow ${failed ? 'error' : 'output'} script.`))

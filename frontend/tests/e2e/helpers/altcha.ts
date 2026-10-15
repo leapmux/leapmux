@@ -5,6 +5,7 @@
 import type { Challenge, DeriveKeyFunction } from 'altcha/lib'
 import { Buffer } from 'node:buffer'
 import { argon2id, pbkdf2, scrypt, sha, solveChallenge } from 'altcha/lib'
+import { fetchHub } from './hubTransport'
 
 // The solver uses the altcha package's own derive funcs (the same code the
 // widget workers run), so it stays correct by construction when the hub
@@ -29,7 +30,7 @@ const deriveKeys: Record<string, DeriveKeyFunction> = {
  * API helpers must not quietly submit an empty payload the hub denies.
  */
 export async function fetchAltchaChallenge(hubUrl: string): Promise<Challenge | null> {
-  const res = await fetch(`${hubUrl}/leapmux.v1.AuthService/GetAltchaChallenge`, {
+  const res = await fetchHub(`${hubUrl}/leapmux.v1.AuthService/GetAltchaChallenge`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({}),

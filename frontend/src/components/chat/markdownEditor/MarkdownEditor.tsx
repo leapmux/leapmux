@@ -16,6 +16,7 @@ import { dismissSoftKeyboard, isSoftKeyboardVisible } from '~/lib/softKeyboard'
 import { syntaxThemeGeneration } from '~/lib/syntaxThemeStore'
 import { errorText } from '~/styles/shared.css'
 import { CodeLanguagePopover } from './CodeLanguagePopover'
+import { isBlankEditorDocument, serializeEditorDocument } from './documentMarkdown'
 import { clearDraft, createDraftSwapper, restoreCursor, saveDraftFromEditor } from './draftManagement'
 import { applyCodeBlockLanguage, applyLinkHref, removeLinkRange } from './editorCommands'
 import { createEditorLayout } from './editorLayout'
@@ -23,7 +24,6 @@ import { setupEditorRefHandlers } from './editorRefHandlers'
 import { buildEditor, computeDocStats, refreshEditorHighlight } from './editorSetup'
 import { LinkPopover } from './LinkPopover'
 import * as styles from './MarkdownEditor.css'
-import { stripNeedlessEscapes } from './needlessEscapes'
 import { decidePasteHandling } from './pasteDecision'
 import { decideSendFocus } from './sendFocus'
 
@@ -362,6 +362,15 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
    * that only drifts.
    */
   const emitDocument = (markdown: string) => {
+    if (editorInstance) {
+      try {
+        editorInstance.action((ctx: Ctx) => {
+          if (isBlankEditorDocument(ctx.get(editorViewCtx).state.doc))
+            markdown = ''
+        })
+      }
+      catch { /* The editor can be unavailable during teardown. Keep the reported snapshot. */ }
+    }
     onMarkdownChangeRef?.(markdown)
     onContentChangeRef?.(markdown.trim().length > 0)
   }
@@ -444,7 +453,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
         const serializer = ctx.get(serializerCtx)
         const view = ctx.get(editorViewCtx)
         initialDocument = view.state.doc
-        text = stripNeedlessEscapes(serializer(view.state.doc)).trim()
+        text = serializeEditorDocument(view.state.doc, serializer).trim()
       })
     }
     catch {
@@ -783,7 +792,7 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
       // re-serializes for the same reason; this is the same path for a draft.
       try {
         editor.action((ctx: Ctx) => {
-          emitDocument(stripNeedlessEscapes(ctx.get(serializerCtx)(ctx.get(editorViewCtx).state.doc)))
+          emitDocument(serializeEditorDocument(ctx.get(editorViewCtx).state.doc, ctx.get(serializerCtx)))
         })
       }
       catch {

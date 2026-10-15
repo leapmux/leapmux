@@ -1,3 +1,5 @@
+// The startup exchange does not declare native form elicitation support.
+// See https://github.com/leapmux/leapmux/issues/502.
 import { Buffer } from 'node:buffer'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
@@ -15,7 +17,7 @@ import { openProviderAgent } from '../helpers/workspace'
 import { withCodebuddyUserMcpServer } from './mcpConfiguration'
 import { CODEBUDDY_AGENT, nativeContext } from './scenarios'
 
-codebuddyTest.describe('CodeBuddy Code MCP input form', () => {
+codebuddyTest.describe('native MCP input form for CodeBuddy Code', () => {
   codebuddyTest('shows no form when stream JSON declines native MCP elicitation', async ({ authenticatedEmptyWorkspace, leapmuxServer, page, modelScript }, testInfo) => {
     const workingDir = newProviderWorkingDir(CODEBUDDY_AGENT)
     const receiptLog = join(workingDir, 'mcp-input-receipt.jsonl')

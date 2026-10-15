@@ -14,6 +14,7 @@ import { AgentInputState, AgentStatus } from '../../../src/generated/proto/leapm
 import { TabType } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
 import { agentOpenOptions } from '../agentSettings'
 import { openAgentViaAPI } from './api'
+import { withCleanup } from './cleanup'
 import { parseGenerationCounters } from './generationProgress'
 import { newNativeWorkingDir } from './nativeAgentOpen'
 import { sendNativeAnswer } from './nativeConversation'
@@ -30,7 +31,7 @@ import { retryUntilPass } from './retryUntilPass'
 import { getGlobalState } from './server'
 import { quotePosixShellArgument, uniqueMarker } from './shellArguments'
 import { RELEASE_POLL_MS } from './toolOutputControl'
-import { assistantBubbles, composerEditor, interruptButton, messageBubbles, messageContents, resumePausedQueue, sendMessage, tabById, toolRows, userBubbles, visibleOnly, waitForAgentIdle } from './ui'
+import { assistantBubbles, composerEditor, interruptButton, messageBubbles, messageContents, resumePausedQueue, sendMessage, tabById, userBubbles, visibleOnly, waitForAgentIdle } from './ui'
 import { closeNativeAgentAndWait, inspectLastTabCloseViaAPI } from './workerTabs'
 
 interface LifecyclePreparation {
@@ -72,10 +73,12 @@ export interface NativeResumeResult extends NativeResumeTexts {
  */
 export function heldToolScript(paths: { startedFile: string, releaseFile: string }): string {
   const startedFile = JSON.stringify(paths.startedFile)
+  const receiptFile = JSON.stringify(`${paths.startedFile}.tmp`)
   const releaseFile = JSON.stringify(paths.releaseFile)
   return [
     `const fs = require('node:fs');`,
-    `fs.writeFileSync(${startedFile}, 'started');`,
+    `fs.writeFileSync(${receiptFile}, String(process.pid));`,
+    `fs.renameSync(${receiptFile}, ${startedFile});`,
     `const release = () => { if (fs.existsSync(${releaseFile})) process.exit(0) };`,
     `setInterval(release, ${RELEASE_POLL_MS});`,
     `release();`,
@@ -171,6 +174,7 @@ export async function exerciseInterruptTurn(
   const releaseFile = join(before.workingDir, `interrupt-release-${marker}`)
   const toolStarted = join(before.workingDir, `interrupt-started-${marker}`)
   let held: MockModelStep
+  let toolPid = 0
   if (options.kind === 'tool') {
     const script = heldToolScript({ startedFile: toolStarted, releaseFile })
     held = { ...(options.reasoning !== undefined ? { reasoning: options.reasoning } : {}), toolCalls: [bashToolCall(context.provider, 'held-native-tool', `${quotePosixShellArgument(process.execPath)} -e ${quotePosixShellArgument(script)}`)] }
@@ -182,7 +186,7 @@ export async function exerciseInterruptTurn(
   else {
     held = { ...nativeTextStep(context, `NEVERCOMPLETED${marker}`), gate }
   }
-  try {
+  await withCleanup(async () => {
     const stepIndex = await context.modelScript.queue(held)
     context.modelScript.allowUnconsumed('The native interruption ends the held turn before its answer completes.')
     await sendMessage(context.page, context.modelScript.prompt(options.prompt ?? 'Run the held native interruption probe.'))
@@ -190,14 +194,13 @@ export async function exerciseInterruptTurn(
       await context.modelScript.waitForSteps(stepIndex + 1)
       // A provider that asks before a tool runs shows an Allow button. The wait allows each actual request.
       await approveNativeToolsUntil(context.page, async () => existsSync(toolStarted))
+      const pid = Number(readFileSync(toolStarted, 'utf8'))
+      expect(Number.isSafeInteger(pid) && pid > 0, 'the native command publishes its actual PID').toBe(true)
+      toolPid = pid
+      expect(isAlive(toolPid), 'the native command runs before interruption').toBe(true)
       await expect(messageBubbles(context.page).filter({ hasText: toolStarted }).first()).toBeVisible()
-      // The started file proves the command runs, not that every native call of
-      // the turn reached the transcript: Codex states its execution wrapper and
-      // the nested command as two rows, and a stop that lands before both exist
-      // leaves the divider counting only the rows that did.
-      const expectedUses = options.expectedToolUses ?? 1
-      if (expectedUses > 1)
-        await expect.poll(() => toolRows(context.page).count()).toBeGreaterThanOrEqual(expectedUses)
+      // A provider callback can verify its own start records before interruption.
+      // A rendered wrapper can appear only after the native tool yields.
     }
     else {
       await context.modelScript.waitForGate(gate)
@@ -219,8 +222,10 @@ export async function exerciseInterruptTurn(
     else
       await expect(divider).toContainText('interrupted')
     // Each provider counts the tool that the stop ended in the totals of the turn.
-    if (options.kind === 'tool')
+    if (options.kind === 'tool') {
       await expect(divider.getByTestId('result-divider-totals'), 'the divider counts the stopped native calls').toHaveText(toolTotals)
+      await expect.poll(() => isAlive(toolPid), { message: 'interruption stops the actual native command' }).toBe(false)
+    }
     // The divider states that the runtime ended the turn, so it read the late answer
     // already. That answer belongs to a cancelled turn, and no row may draw it.
     if (answerArrivesAfterStop)
@@ -229,13 +234,16 @@ export async function exerciseInterruptTurn(
     await expect(interrupt).toHaveCount(0)
     // A stop always pauses the queue, so the next prompt waits until the queue resumes.
     await resumePausedQueue(context.page)
-  }
-  finally {
-    if (options.kind === 'tool')
+  }, async () => {
+    if (options.kind === 'tool') {
       writeFileSync(releaseFile, '')
-    else
+      if (toolPid > 0)
+        await expect.poll(() => isAlive(toolPid), { message: 'the released native command exits before workspace cleanup' }).toBe(false)
+    }
+    else {
       await context.modelScript.releaseGateIfHeld(gate)
-  }
+    }
+  })
   const next = await sendNativeAnswer(context, options.continuation?.prompt ?? 'Continue after the native interruption.', options.continuation?.answer ?? `AFTERINTERRUPT${marker}`)
   expect(nativeScenarioModelContextText(context, next)).toContain(`INTERRUPTANSWER${marker}`)
   for (const contextMarker of options.continuation?.contextMarkers ?? [])
@@ -244,16 +252,15 @@ export async function exerciseInterruptTurn(
 }
 
 /**
- * Interrupt a streamed answer after its first chunk, and prove that the partial answer keeps its interruption marker,
- * live and after a reload.
- *
- * The answer holds after its first chunk, which is exactly `PARTIALHEAD<marker>`. The rest never streams, so no row may
- * draw it, and the chat draws the marker on the cut text alone. The live token counter proves that the Worker received
- * the first chunk before the interrupt: without it,
- * an interrupt that arrives first leaves no partial text, and nothing proves the marker. Each provider that calls this
- * scenario reports the progress of its model text (its `generation-progress` spec states `supported: true`).
+ * Interrupt an answer after its first chunk. Require its interruption marker before and after reload.
+ * The first chunk is exactly `PARTIALHEAD<marker>`. The remaining text never streams and must stay absent.
+ * A live token counter or an explicit native receipt proves that the Worker received text before interruption.
+ * Without that receipt, an early interrupt could leave no partial text to verify.
  */
-export async function exerciseInterruptedPartialAnswer(context: ManagedNativeScenarioContext, options: LifecyclePreparation = {}): Promise<void> {
+export async function exerciseInterruptedPartialAnswer(context: ManagedNativeScenarioContext, options: LifecyclePreparation & {
+  /** Confirm native receipt of this exact text when the provider supplies no live token count. */
+  waitForPartialReceipt?: (text: string) => Promise<void>
+} = {}): Promise<void> {
   await options.prepare?.()
   const marker = uniqueMarker()
   const head = `PARTIALHEAD${marker}`
@@ -267,10 +274,15 @@ export async function exerciseInterruptedPartialAnswer(context: ManagedNativeSce
     await context.modelScript.waitForGate(gate)
     // The first child of each count holds its text for a screen reader, such as "8 tokens". The odometer beside it
     // draws each digit as a strip of all ten, so its text states no number.
-    const counts = context.page.locator('[data-testid="thinking-indicator"]:visible [data-animated-count] > :first-child')
-    await expect.poll(async () => (await counts.allTextContents()).some(count => (parseGenerationCounters(count).tokens ?? 0) > 0), {
-      message: 'the live token counter shows that the Worker received the first chunk',
-    }).toBe(true)
+    if (options.waitForPartialReceipt) {
+      await options.waitForPartialReceipt(head)
+    }
+    else {
+      const counts = context.page.locator('[data-testid="thinking-indicator"]:visible [data-animated-count] > :first-child')
+      await expect.poll(async () => (await counts.allTextContents()).some(count => (parseGenerationCounters(count).tokens ?? 0) > 0), {
+        message: 'the live token counter shows that the Worker received the first chunk',
+      }).toBe(true)
+    }
     await interruptButton(context.page).click()
     await waitForAgentIdle(context.page)
     for (const reload of [false, true]) {
@@ -305,9 +317,8 @@ export async function exerciseCloseAgent(
     throw new Error('The native close scenario requires a working directory.')
   const marker = uniqueMarker()
   const pidFile = join(agent.workingDir, `native-close-${marker}.pid`)
-  // The probe needs no release file: the close of the agent must end it, and the scenario proves that it did. The
-  // timer only limits a process that a failed close leaves behind, and the cleanup below ends that process as well.
-  const script = `require('node:fs').writeFileSync(${JSON.stringify(pidFile)},String(process.pid));setTimeout(()=>{},600000)`
+  // The close must stop this process. The release path stays absent throughout the test.
+  const script = heldToolScript({ startedFile: pidFile, releaseFile: `${pidFile}.release` })
   const stepIndex = await context.modelScript.queue({ toolCalls: [bashToolCall(context.provider, 'held-close-tool', `${quotePosixShellArgument(process.execPath)} -e ${quotePosixShellArgument(script)}`)] })
   // Some native runtimes request a cancellation continuation before their process exits.
   await context.modelScript.fallback(nativeTextStep(context, 'The native close continuation ended.'))
@@ -395,6 +406,7 @@ export async function exerciseSessionResume(
     before.workingDir,
     'The picker lists the stored session in the directory where the Worker ran the original agent, so the reopened agent opens there.',
   )
+  await context.waitForNativeCheckpoint?.(before.agentSessionId)
   if (options.resumeEvidence)
     await options.resumeEvidence({ phase: 'stored', prior: before })
   const originalAnswerRows = await countOriginalAnswerRows(context, before.id, texts)

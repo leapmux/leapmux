@@ -29,3 +29,12 @@ describe('readDroidNativeOutput', () => {
     expect(receipt.paths).toEqual([path])
   })
 })
+
+it('reads the current native middle-cut notice without changing its preview', () => {
+  const content = `head\n\n[... 686415 bytes cut from the middle of 718960; whole output: ${path}]\n\ntail`
+  const captured = { ...frame, content: `${content}\n\n[Process exited with code 0]` }
+  const receipt = readDroidNativeOutput(nativeOutputSnapshot([{ frame: captured, spanId: `droid-tool-${READER_CALL_ID}` }]), READER_CALL_ID)
+  expect(receipt.paths).toEqual([path])
+  expect(receipt.previewText).toBe(content)
+  expect(receipt.frame).toEqual(captured)
+})

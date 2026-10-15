@@ -1,8 +1,9 @@
 import { grokTest } from '../grok-fixtures'
+import { expectCompactionNoticeAfterReload } from '../helpers/compaction'
 import { exerciseNativeCompaction } from '../helpers/manualCompaction'
-import { expectNoCompactionNotice } from '../helpers/unsupportedCompaction'
 import { GROK_COMPACTION } from './compactionScenario'
 
-grokTest('proves native context compaction without a completed compaction notice', async ({ native }) => {
-  await expectNoCompactionNotice(native, { relatedProof: () => exerciseNativeCompaction(native, GROK_COMPACTION) })
+grokTest('retains the completed native compaction status after reload', async ({ native }) => {
+  await exerciseNativeCompaction(native, GROK_COMPACTION)
+  await expectCompactionNoticeAfterReload(native.page)
 })

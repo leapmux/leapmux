@@ -1,9 +1,11 @@
+// The startup exchange does not declare native question support.
+// See https://github.com/leapmux/leapmux/issues/502.
 import { expect } from '@playwright/test'
 import { codebuddyTest } from '../codebuddy-fixtures'
 import { askUserQuestionToolCall } from '../helpers/providerToolCalls'
 import { chatScrollContainer, expectNoControlBanner, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
-codebuddyTest.describe('CodeBuddy Code control answers', () => {
+codebuddyTest.describe('control answers for CodeBuddy Code', () => {
   codebuddyTest('shows the native refusal when AskUserQuestion is unavailable', async ({ native }) => {
     const { page, modelScript } = native
     const start = await modelScript.queue({ toolCalls: [askUserQuestionToolCall(native.provider, 'question-call', [{

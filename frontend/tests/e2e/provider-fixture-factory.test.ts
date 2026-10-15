@@ -4,7 +4,8 @@ import { join } from 'node:path'
 import ts from 'typescript'
 import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
-import { cliSkipFixture } from './provider-fixture-factory'
+import { processTest } from './process-control-fixtures'
+import { cliSkipFixture, createProviderProcessTest } from './provider-fixture-factory'
 
 describe('cliSkipFixture', () => {
   /** Run the fixture callback with a recording test info, as Playwright runs an automatic fixture. */
@@ -227,5 +228,98 @@ describe('providerAgentMember', () => {
     'export const SAMPLE_AGENT: ProviderAgent = { provider: AgentProvider?.CODEX }',
   ])('rejects an absent or ambiguous exact declaration: %s', (source) => {
     expect(providerAgentMember(source, 'SAMPLE_AGENT')).toBeNull()
+  })
+})
+
+describe('createProviderProcessTest', () => {
+  it('registers provider housekeeping before the process scenario uses its model script', async () => {
+    const events: string[] = []
+    const modelRules = [{ name: 'provider-title', when: { system: 'title helper' }, respond: { text: 'A title' } }]
+    const options = {
+      agent: { provider: AgentProvider.CODEX, prefix: 'process-unit' },
+      nativeContext: async () => UNIT_FIXTURES as ManagedNativeScenarioContext,
+      skipReason: null,
+      modelRules,
+    }
+    const capture = vi.spyOn(processTest, 'extend')
+    try {
+      createProviderProcessTest(options)
+      const registered = capture.mock.calls[0]?.[0] as unknown as {
+        modelScript?: (args: object, use: (script: unknown) => Promise<void>) => Promise<void>
+      }
+      expect(registered.modelScript).toBeTypeOf('function')
+      if (!registered.modelScript)
+        throw new Error('The process fixture omitted its model rules.')
+      const script = { rule: vi.fn(async () => {
+        events.push('rules')
+      }) }
+      await registered.modelScript({ modelScript: script }, async (actual) => {
+        expect(actual).toBe(script)
+        events.push('use')
+      })
+      expect(script.rule).toHaveBeenCalledExactlyOnceWith(...modelRules)
+      expect(events).toEqual(['rules', 'use'])
+    }
+    finally {
+      capture.mockRestore()
+    }
+  })
+
+  it('constructs the native context from the separate Worker and the authenticated provider workspace', async () => {
+    const agent = { provider: AgentProvider.CODEX, prefix: 'process-unit' }
+    const expected = { ...UNIT_FIXTURES, provider: agent.provider, providerAgent: agent } as ManagedNativeScenarioContext
+    const nativeContext = vi.fn(async () => expected)
+    const capture = vi.spyOn(processTest, 'extend')
+    try {
+      createProviderProcessTest({ agent, nativeContext, skipReason: null })
+      const registered = capture.mock.calls[0]?.[0] as unknown as {
+        native: (args: object, use: (context: ManagedNativeScenarioContext) => Promise<void>) => Promise<void>
+      }
+      const separateHubWorker = { hubUrl: 'http://process.invalid', workerId: 'process-worker', adminToken: 'process-token' }
+      const use = vi.fn(async () => {})
+      await registered.native({
+        page: UNIT_FIXTURES.page,
+        modelScript: UNIT_FIXTURES.modelScript,
+        separateHubWorker,
+        authenticatedWorkspace: { workspaceId: 'provider-workspace' },
+      }, use)
+      expect(nativeContext).toHaveBeenCalledExactlyOnceWith({
+        page: UNIT_FIXTURES.page,
+        modelScript: UNIT_FIXTURES.modelScript,
+        leapmuxServer: separateHubWorker,
+        workspaceId: 'provider-workspace',
+      })
+      expect(use).toHaveBeenCalledExactlyOnceWith(expected)
+    }
+    finally {
+      capture.mockRestore()
+    }
+  })
+
+  it('rejects a context from another provider before it runs the test', async () => {
+    const agent = { provider: AgentProvider.CODEX, prefix: 'process-unit' }
+    const other = { provider: AgentProvider.CLAUDE_CODE, prefix: 'other-unit' }
+    const capture = vi.spyOn(processTest, 'extend')
+    try {
+      createProviderProcessTest({
+        agent,
+        nativeContext: async () => ({ ...UNIT_FIXTURES, provider: other.provider, providerAgent: other }) as ManagedNativeScenarioContext,
+        skipReason: null,
+      })
+      const registered = capture.mock.calls[0]?.[0] as unknown as {
+        native: (args: object, use: () => Promise<void>) => Promise<void>
+      }
+      const use = vi.fn(async () => {})
+      await expect(registered.native({
+        page: UNIT_FIXTURES.page,
+        modelScript: UNIT_FIXTURES.modelScript,
+        separateHubWorker: {},
+        authenticatedWorkspace: { workspaceId: 'provider-workspace' },
+      }, use)).rejects.toThrow('must use the provider')
+      expect(use).not.toHaveBeenCalled()
+    }
+    finally {
+      capture.mockRestore()
+    }
   })
 })

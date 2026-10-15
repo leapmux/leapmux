@@ -5,3 +5,5 @@ import { relatedNativeProof } from './scenarios'
 qoderTest('exposes no separate native extended thinking setting', async ({ native }) => {
   await expectMissingSetting(native, { feature: 'extended-thinking', relatedProof: () => relatedNativeProof(native) })
 })
+
+// Track this LeapMux limitation: https://github.com/leapmux/leapmux/issues/524.

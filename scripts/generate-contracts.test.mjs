@@ -19,6 +19,7 @@ import {
   checkCodexPermissionPresets,
   checkDesktop,
   checkExternalApps,
+  checkGenerationTrace,
   checkHeaders,
   checkListen,
   checkProviderProtocol,
@@ -44,6 +45,7 @@ import {
   emitGoCodexPermissionPresets,
   emitGoDesktop,
   emitGoExternalApps,
+  emitGoGenerationTrace,
   emitGoHeaders,
   emitGoListen,
   emitGoProviderProtocol,
@@ -58,6 +60,7 @@ import {
   emitTsCodexPermissionPresets,
   emitTsDesktop,
   emitTsExternalApps,
+  emitTsGenerationTrace,
   emitTsHeaders,
   emitTsListen,
   emitTsProviderFrameKinds,
@@ -1092,6 +1095,7 @@ describe('generate', () => {
       'backend/generated/contracts/external-apps.go',
       'backend/generated/contracts/fastagent-protocol.go',
       'backend/generated/contracts/gemini-protocol.go',
+      'backend/generated/contracts/generation-trace.go',
       'backend/generated/contracts/goose-protocol.go',
       'backend/generated/contracts/grok-protocol.go',
       'backend/generated/contracts/headers.go',
@@ -1144,6 +1148,7 @@ describe('generate', () => {
       'frontend/src/generated/contracts/external-apps.ts',
       'frontend/src/generated/contracts/fastagent-protocol.ts',
       'frontend/src/generated/contracts/gemini-protocol.ts',
+      'frontend/src/generated/contracts/generation-trace.ts',
       'frontend/src/generated/contracts/goose-protocol.ts',
       'frontend/src/generated/contracts/grok-protocol.ts',
       'frontend/src/generated/contracts/headers.ts',
@@ -2392,6 +2397,40 @@ describe('checkExternalApps', () => {
     const c = contract()
     c.apps.vscode.oses = ['darwin', 'linux', 'windows', 'freebsd']
     expect(() => checkExternalApps(c)).toThrow(/app vscode lists os freebsd/)
+  })
+})
+
+describe('generation trace vocabulary', () => {
+  const contract = () => ({
+    enabledEnv: 'LEAPMUX_TRACE_UNIT',
+    marker: 'unit_generation',
+    fields: { Scope: 'scope', Kind: 'kind', SHA256: 'sha256', Bytes: 'bytes' },
+  })
+
+  it.each(['time', 'level', 'msg', 'source', 'marker'])('rejects a field that replaces logger metadata: %s', (field) => {
+    const value = contract()
+    value.fields.Scope = field
+    expect(() => checkGenerationTrace(value)).toThrow('trace field names must not replace logger fields')
+  })
+
+  it('rejects duplicate field names that would overwrite a receipt value', () => {
+    const value = contract()
+    value.fields.SHA256 = value.fields.Scope
+    expect(() => checkGenerationTrace(value)).toThrow('trace field names must be distinct')
+  })
+
+  it('emits the same changed vocabulary for Go and TypeScript', () => {
+    const value = contract()
+    value.fields.Scope = 'native_scope'
+    checkGenerationTrace(value)
+    const go = emitGoGenerationTrace(value)
+    const ts = emitTsGenerationTrace(value)
+    expect(go).toMatch(/GenerationTraceFieldScope\s*=\s*"native_scope"/)
+    expect(ts).toContain('"Scope": "native_scope"')
+    for (const token of [value.enabledEnv, value.marker, ...Object.values(value.fields)]) {
+      expect(go).toContain(JSON.stringify(token))
+      expect(ts).toContain(JSON.stringify(token))
+    }
   })
 })
 

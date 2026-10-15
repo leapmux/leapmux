@@ -114,14 +114,15 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 }
 
 func inputBlocks(content string, attachments []agent.ClassifiedAttachment) ([]contentBlock, error) {
-	blocks := []contentBlock{{Type: "text", Text: content}}
+	blocks := []contentBlock{{Type: "text", Text: &content}}
 	for _, attachment := range attachments {
 		if err := (commandcodeProvider{}).ValidateAttachment(attachment); err != nil {
 			return nil, err
 		}
 		switch attachment.Kind {
 		case agent.AttachmentKindText:
-			blocks = append(blocks, contentBlock{Type: "text", Text: providerkit.BuildInlineTextAttachmentBlock(attachment)})
+			text := providerkit.BuildInlineTextAttachmentBlock(attachment)
+			blocks = append(blocks, contentBlock{Type: "text", Text: &text})
 		case agent.AttachmentKindImage:
 			blocks = append(blocks, contentBlock{Type: "image", Source: &imageSource{Type: "base64", MediaType: attachment.MIMEType, Data: base64.StdEncoding.EncodeToString(attachment.Data)}})
 		case agent.AttachmentKindPDF, agent.AttachmentKindBinary:

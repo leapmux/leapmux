@@ -5,3 +5,5 @@ import { kiloTest } from '../kilo-fixtures'
 kiloTest('receives actual quota-bearing model headers without publishing quota UI', async ({ native }) => {
   await expectNoRateLimitState(native, { relatedProof: () => exerciseNativeQuotaHeaders(native) })
 })
+
+// Track this LeapMux limitation: https://github.com/leapmux/leapmux/issues/513.

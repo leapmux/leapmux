@@ -11,6 +11,7 @@
  */
 import type { AgentWorkspace } from './helpers/workspace'
 import type { CliSkipFixture, NativeFixture } from './provider-fixture-factory'
+import { OPTION_ID_PERMISSION_MODE } from '../../src/components/chat/settingsGroups'
 import { test as base } from './fixtures'
 import { missingBinaryReason } from './helpers/binaryOnPath'
 import { authenticatedAgentWorkspace } from './helpers/workspace'
@@ -21,9 +22,11 @@ export const KIRO_E2E_SKIP_REASON: string | null = missingBinaryReason('kiro-cli
 
 export const kiroTest = base.extend<CliSkipFixture & NativeFixture & {
   authenticatedKiroWorkspace: AgentWorkspace
+  askingKiroWorkspace: AgentWorkspace
 }>({
   cliSkip: cliSkipFixture(KIRO_E2E_SKIP_REASON),
   authenticatedKiroWorkspace: authenticatedAgentWorkspace(KIRO_AGENT),
+  askingKiroWorkspace: authenticatedAgentWorkspace({ ...KIRO_AGENT, prefix: 'kiro-e2e-ask', openOptions: { optionValues: { [OPTION_ID_PERMISSION_MODE]: 'spec' } } }),
   native: async ({ page, modelScript, leapmuxServer, authenticatedKiroWorkspace }, use) => {
     await use(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedKiroWorkspace.workspaceId }))
   },

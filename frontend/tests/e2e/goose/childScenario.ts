@@ -1,11 +1,11 @@
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import type { NativeChildProfile } from '../helpers/runningChildProof'
 import { expect } from '@playwright/test'
-import { nativeAgentById } from '../helpers/nativeScenario'
+import { nativeAgentById, selectedAgentTabId } from '../helpers/nativeScenario'
 import { goosePermissionJudgmentToolCall, spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { retryUntilPass } from '../helpers/retryUntilPass'
 import { expectNoRegistryRows, expectRowBecomesFinal, expectSectionPersists, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
-import { sendMessage, subagentReportBubble } from '../helpers/ui'
+import { sendMessage, subagentReportBubble, tabById } from '../helpers/ui'
 import { expectReadOnlySubagentReason } from '../helpers/unsupportedSubagent'
 import { gooseChildTaskMatcher, readGooseChildTaskId } from './childIdentity'
 import { bypassToolRequests } from './scenarios'
@@ -28,6 +28,7 @@ export const GOOSE_CHILD: NativeChildProfile = {
  */
 export async function exerciseGooseDelegateTranscript(context: ManagedNativeScenarioContext): Promise<void> {
   const { page, modelScript } = context
+  const parentId = await selectedAgentTabId(page)
   await expectNoRegistryRows(page, context.leapmuxServer)
   // The child's prompt carries the marker, so the turns it runs on its own reach this script.
   await modelScript.rule({
@@ -68,6 +69,7 @@ export async function exerciseGooseDelegateTranscript(context: ManagedNativeScen
   await expectReadOnlySubagentReason(page)
   await expect(subagentReportBubble(page, /goose-done/)).toBeVisible()
   await expectRowBecomesFinal(page, row)
+  await tabById(page, parentId).click()
   await expectSectionPersists(page)
 
   // Worker-backed: the child agent exists, with its parent linkage. The read

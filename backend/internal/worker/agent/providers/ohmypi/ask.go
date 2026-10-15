@@ -355,8 +355,8 @@ func (p *askPlan) title(index, toggled int) string {
 // askRowEllipsis ends a title row that omp shortened to fit its terminal.
 const askRowEllipsis = "…"
 
-// editorContinuesQuestion reports whether an editor title opens with the question
-// row of the select before it, then a blank line.
+// editorContinuesQuestion matches the question title of the preceding select.
+// Native RPC editors send that title alone. A rendered prompt can append its options after a blank line.
 //
 // omp shortens that row to the width of its terminal, less the panel's chrome
 // (tools/ask.ts, clampLineToWidth). In RPC mode stdout is a pipe, so the width is
@@ -364,6 +364,9 @@ const askRowEllipsis = "…"
 // the whole title, or a prefix of it that ends with an ellipsis. The select titles
 // are not shortened, so they keep the exact match of matchesSelect.
 func editorContinuesQuestion(editorTitle, question string) bool {
+	if editorTitle == question {
+		return true
+	}
 	row, rest, found := strings.Cut(editorTitle, "\n")
 	if !found || !strings.HasPrefix(rest, "\n") {
 		return false

@@ -82,6 +82,24 @@ function deletionResponses(workerTabs: unknown[], onlineWorkers = ['worker-a', '
   return fetch
 }
 
+describe('callHub loopback transport', () => {
+  it('connects to the IPv4 listener and preserves the session cookie', async () => {
+    const transport = vi.fn(async (_url: string, _init?: RequestInit) => Response.json({}))
+    vi.stubGlobal('fetch', transport)
+    await callHub('http://localhost:43210', 'WorkspaceService/ListWorkspaces', {}, {
+      cookie: 'private-session',
+      operation: 'Read the private workspace list',
+    })
+    expect(transport).toHaveBeenCalledOnce()
+    const [url, init] = transport.mock.calls[0]!
+    expect(url).toBe('http://127.0.0.1:43210/leapmux.v1.WorkspaceService/ListWorkspaces')
+    const headers = new Headers(init?.headers)
+    expect(headers.get('Cookie')).toBe('private-session')
+    expect(init?.method).toBe('POST')
+    expect(init?.body).toBe('{}')
+  })
+})
+
 describe('openAgentViaAPI', () => {
   const server = () => ({ hubUrl, adminToken: 'session', workerId: 'worker-a' })
 

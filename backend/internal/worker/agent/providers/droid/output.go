@@ -15,7 +15,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
-// droidAttachmentLabel names the provider in an attachment refusal.
+// droidAttachmentLabel identifies the provider in an attachment refusal.
 const droidAttachmentLabel = "Factory Droid"
 
 // Droid emits thinking blocks separately from assistant text blocks. The
@@ -229,7 +229,7 @@ type droidWorkingState struct {
 	NewState string `json:"newState"`
 }
 
-// onWorkingStateChanged moves the turn flag on the named states only. Every
+// onWorkingStateChanged moves the turn flag on the listed states only. Every
 // other frame must move nothing.
 func (a *Agent) onWorkingStateChanged(payload []byte, childSessionID string) {
 	var n droidWorkingState
@@ -325,11 +325,12 @@ func (a *Agent) onModelTextComplete(payload []byte, kind agent.AssembledMessageK
 		return
 	}
 	scope := modelTextScope(target.state, n.MessageID, n.BlockIndex, kind)
-	raw, ok, err := target.state.generation.Finish(scope, agent.MessageCompletionComplete)
-	if err != nil || !ok {
-		return
+	_, err := target.state.generation.PersistScope(scope, agent.MessageCompletionComplete, func(raw []byte) error {
+		return target.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw}, agent.SpanInfo{SpanID: scope})
+	})
+	if err != nil {
+		slog.Error("droid: persist completed text failed", "agent_id", a.AgentID(), "error", err)
 	}
-	a.persistRow(raw, agent.SpanInfo{SpanID: scope}, target)
 }
 
 // droidToolUse is the tool_use record of a tool_call notification.
@@ -406,25 +407,45 @@ func (a *Agent) onToolResult(payload []byte, target droidOutputTarget) {
 // onAgentTurnCompleted ends the turn. PersistTurnEnd runs before the clear, so
 // the turn's tool count reaches the activity latch first.
 func (a *Agent) onAgentTurnCompleted(payload []byte, target droidOutputTarget) {
+	var n struct {
+		Reason string `json:"reason"`
+	}
+	if err := json.Unmarshal(payload, &n); err != nil {
+		return
+	}
+	completion := agent.MessageCompletionComplete
+	status := bgtask.StatusSucceeded
+	switch n.Reason {
+	case contracts.DroidTurnEndReasonError:
+		completion = agent.MessageCompletionError
+		status = bgtask.StatusFailed
+	case contracts.DroidTurnEndReasonCancelled:
+		completion = agent.MessageCompletionInterrupted
+		status = bgtask.StatusInterrupted
+	}
+	if !a.persistRemainingGeneration(target, completion) {
+		return
+	}
 	a.persistTurnEnd(payload, target)
 	if target.childSessionID != "" {
-		status := bgtask.StatusSucceeded
-		var n struct {
-			Reason string `json:"reason"`
-		}
-		if json.Unmarshal(payload, &n) == nil {
-			switch n.Reason {
-			case contracts.DroidTurnEndReasonError:
-				status = bgtask.StatusFailed
-			case contracts.DroidTurnEndReasonCancelled:
-				status = bgtask.StatusInterrupted
-			}
-		}
 		a.closeChildSession(target.childSessionID, status)
 	} else {
 		a.disarmTurn()
 		a.refreshContextUsage()
 	}
+}
+
+// persistRemainingGeneration saves blocks when Droid omits their completion events.
+// A failed write retains the buffer and its child state for the next boundary.
+func (a *Agent) persistRemainingGeneration(target droidOutputTarget, completion agent.MessageCompletion) bool {
+	err := target.state.generation.PersistAll(completion, func(raw []byte) error {
+		return target.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw}, agent.SpanInfo{})
+	})
+	if err != nil {
+		slog.Error("droid: persist unfinished text failed", "agent_id", a.AgentID(), "error", err)
+		return false
+	}
+	return true
 }
 
 // persistTurnEnd records one native outcome without deciding child lifecycle.
@@ -441,6 +462,9 @@ func (a *Agent) persistTurnEnd(payload []byte, target droidOutputTarget) {
 // onError surfaces a CLI error as a notification row and ends the turn when one
 // runs.
 func (a *Agent) onError(payload []byte, target droidOutputTarget) {
+	if !a.persistRemainingGeneration(target, agent.MessageCompletionError) {
+		return
+	}
 	a.persistNotification(payload, target)
 	if target.childSessionID != "" {
 		a.closeChildSession(target.childSessionID, bgtask.StatusFailed)

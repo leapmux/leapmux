@@ -32,6 +32,25 @@ function scriptRequest(content: unknown, input: unknown = { script: '40 + 2' }, 
 }
 
 describe('readDroidToolResult', () => {
+  it('reads the current native completion footer without a JSON snapshot', () => {
+    const text = 'Computed42\n[Script completed · 0.0 s elapsed · 0 calls · 0 B in sandbox · 11 B emitted]'
+    expect(readDroidToolResult(scriptRequest(text), 'call_script-1', 'Script')).toEqual({ text, failed: false })
+  })
+
+  it.each([
+    'printed\n[Script completed · 1 call · 42 B in sandbox · 11 B emitted]',
+    'printed\n[Script completed · 3.5 s elapsed · 10 calls · 1 KiB in sandbox · 11 B emitted · log: script.log]',
+  ])('reads a native completion footer with variable counters: %s', (text) => {
+    expect(readDroidToolResult(scriptRequest(text), 'call_script-1', 'Script')).toEqual({ text, failed: false })
+  })
+
+  it.each([
+    'prefix[Script completed · 0 calls · 0 B in sandbox · 0 B emitted]',
+    '[Script completed · 0 calls · 0 B in sandbox · 0 B emitted]\nlater output',
+    '[Script completed · no native counters]',
+  ])('rejects an inline or incomplete completion footer: %s', (text) => {
+    expect(() => readDroidToolResult(scriptRequest(text), 'call_script-1', 'Script')).toThrow(SyntaxError)
+  })
   it.each([0, false, null, '', { count: 0, enabled: false, value: '' }])('keeps the native completed script result %j', (result) => {
     const text = JSON.stringify({ status: 'completed', result })
     expect(readDroidToolResult(scriptRequest(text), 'call_script-1', 'Script')).toEqual({ text, failed: false })

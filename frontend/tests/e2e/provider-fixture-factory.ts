@@ -4,7 +4,14 @@
  * `helpers/workspace.ts`, and keeps only the facts of its provider.
  */
 import type { TestFixture } from '@playwright/test'
-import type { ManagedNativeScenarioContext } from './helpers/nativeScenario'
+import type { AgentOpenOverrides } from './agentSettings'
+import type { MockModelRule } from './helpers/mockModelScript'
+import type { ModelScript } from './helpers/modelScriptFixture'
+import type { ManagedNativeScenarioContext, NativeContextFixtures } from './helpers/nativeScenario'
+import type { ProviderAgent } from './helpers/workspace'
+import { deliberateWorkingDir } from './helpers/providerWorkingDir'
+import { agentWorkspaceFixture, openProviderAgent, withTestWorkspace } from './helpers/workspace'
+import { ensureWorkerOnline, processTest } from './process-control-fixtures'
 
 /** The fixture of {@link cliSkipFixture}, for the type parameter of a provider's `extend` call. */
 export interface CliSkipFixture {
@@ -36,4 +43,47 @@ export function cliSkipFixture(reason: string | null): [TestFixture<void, object
     testInfo.skip(reason !== null, reason ?? '')
     await use()
   }, { auto: true }]
+}
+
+/** Register provider housekeeping before a scenario can consume an ordered model answer. */
+export function providerModelScriptFixture(rules: readonly MockModelRule[]): TestFixture<ModelScript, { modelScript: ModelScript }> {
+  return async ({ modelScript }, use) => {
+    if (rules.length > 0)
+      await modelScript.rule(...rules)
+    await use(modelScript)
+  }
+}
+
+/** Build a provider fixture on the separate Hub and Worker that restart scenarios own. */
+export function createProviderProcessTest(options: {
+  agent: ProviderAgent
+  nativeContext: (fixtures: NativeContextFixtures) => Promise<ManagedNativeScenarioContext>
+  skipReason: string | null
+  openOptions?: AgentOpenOverrides
+  modelRules?: readonly MockModelRule[]
+}) {
+  return processTest.extend<CliSkipFixture & NativeFixture>({
+    cliSkip: cliSkipFixture(options.skipReason),
+    modelScript: providerModelScriptFixture(options.modelRules ?? []),
+    workspace: async ({ separateHubWorker, agentWorkingDir }, use) => {
+      await ensureWorkerOnline(separateHubWorker)
+      await withTestWorkspace(separateHubWorker, options.agent.prefix, async (workspace) => {
+        const opened = await openProviderAgent(separateHubWorker, workspace.workspaceId, options.agent, {
+          ...options.openOptions,
+          ...(agentWorkingDir === undefined
+            ? {}
+            : {
+                workingDir: deliberateWorkingDir(agentWorkingDir, 'The restart test explicitly supplies the native agent directory.'),
+              }),
+        })
+        await use(agentWorkspaceFixture(workspace, opened.agentId, opened.workingDir))
+      })
+    },
+    native: async ({ page, modelScript, separateHubWorker, authenticatedWorkspace }, use) => {
+      const context = await options.nativeContext({ page, modelScript, leapmuxServer: separateHubWorker, workspaceId: authenticatedWorkspace.workspaceId })
+      if (context.provider !== options.agent.provider || context.providerAgent !== options.agent)
+        throw new Error('The process fixture context must use the provider that its workspace opened.')
+      await use(context)
+    },
+  })
 }

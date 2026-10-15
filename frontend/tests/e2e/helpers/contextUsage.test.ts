@@ -141,6 +141,10 @@ describe('exerciseContextUsage', () => {
       'open-card',
       `card-contains:${formatTokenCount(12_040)}`,
       'key:Escape',
+      'reload',
+      'open-card',
+      `card-contains:${formatTokenCount(12_040)}`,
+      'key:Escape',
     ])
   })
 
@@ -157,9 +161,20 @@ describe('exerciseContextUsage', () => {
     expect(context.queued).toEqual([{ toolCalls: [{ id: 'answer', name: 'answer', arguments: { text: 'Usage recorded.' } }], usage: SCRIPTED_CONTEXT_USAGE }])
   })
 
-  it('requires the usage again after a reload when the caller asks', async () => {
-    await exerciseContextUsage(usageContext(), { reload: true })
+  it('requires the stored usage after reload for every caller', async () => {
+    await exerciseContextUsage(usageContext())
     expect(card.events.slice(-4)).toEqual(['reload', 'open-card', `card-contains:${formatTokenCount(12_040)}`, 'key:Escape'])
+  })
+
+  it('uses a distinct later usage block without mutating either input', async () => {
+    card.text = 'Context 24.1k / 128.0k'
+    const context = usageContext()
+    const input = { inputTokens: 24_000, outputTokens: 80, contextWindow: 128_000 }
+    const usage = await exerciseContextUsage(context, { usage: input })
+    expect(context.queued).toEqual([{ text: 'Usage recorded.', usage: input }])
+    expect(usage).not.toBe(input)
+    expect(usage).not.toBe(SCRIPTED_CONTEXT_USAGE)
+    expect(card.events.filter(event => event === 'card-contains:24.1k')).toHaveLength(2)
   })
 
   it('returns a copy that a caller cannot use to change the scripted usage', async () => {

@@ -60,8 +60,17 @@ describe('kimiModelContextText', () => {
     expect(() => kimiModelContextText(request({ messages: [message] }))).toThrow('invalid native message')
   })
 
-  it.each([0, false, {}, [{ type: 'text', text: 'blocks' }]].map(content => ({ content })))('rejects non-text native content: $content', ({ content }) => {
+  it.each([0, false, {}].map(content => ({ content })))('rejects non-text native content: $content', ({ content }) => {
     expect(() => kimiModelContextText(request({ messages: [{ role: 'user', content }] }))).toThrow('non-text native message')
+  })
+
+  it('reads text from a multimodal history without leaking image URLs into the text', () => {
+    const value = request({ messages: [{ role: 'user', content: [{ type: 'text', text: 'Look here.' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,IMAGE_ONLY' } }] }, { role: 'user', content: 'Continue.' }] })
+    expect(kimiModelContextText(value)).toBe('Look here.\nContinue.')
+  })
+
+  it.each([null, { type: 'text', text: 0 }, { type: 'image_url', image_url: { url: 0 } }, { type: 'unknown', text: 'ignored' }])('rejects malformed native blocks: %j', (block) => {
+    expect(() => kimiModelContextText(request({ messages: [{ role: 'user', content: [block] }] }))).toThrow('invalid native content block')
   })
 
   it('rejects another model protocol and preserves an explicit empty conversation', () => {

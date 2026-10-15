@@ -1,0 +1,11 @@
+{
+  "_readme": "The Worker and the E2E runner share this optional generation-receipt vocabulary. The trace records a digest and byte count after the Worker buffers native model text. It never records the text. The environment variable enables the trace only when its value is 1. Tests use an isolated Worker and a unique text marker to identify the received segment before interruption.",
+  "enabledEnv": "LEAPMUX_TRACE_GENERATION_BUFFER",
+  "marker": "generation_buffer",
+  "fields": {
+    "Scope": "scope",
+    "Kind": "kind",
+    "SHA256": "sha256",
+    "Bytes": "bytes"
+  }
+}

@@ -1,8 +1,9 @@
+import { expectCompactionNoticeAfterReload } from '../helpers/compaction'
 import { exerciseNativeCompaction } from '../helpers/manualCompaction'
-import { expectNoCompactionNotice } from '../helpers/unsupportedCompaction'
 import { qwenTest } from '../qwen-fixtures'
 import { QWEN_COMPACTION } from './compactionScenario'
 
-qwenTest('proves native context compaction without a completed compaction notice', async ({ native }) => {
-  await expectNoCompactionNotice(native, { relatedProof: () => exerciseNativeCompaction(native, QWEN_COMPACTION) })
+qwenTest('retains the completed native compaction status after reload', async ({ native }) => {
+  await exerciseNativeCompaction(native, QWEN_COMPACTION)
+  await expectCompactionNoticeAfterReload(native.page)
 })

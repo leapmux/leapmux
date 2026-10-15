@@ -8,14 +8,10 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
-// omp's goals are DISPLAY-ONLY over RPC.
-//
-// omp keeps a session goal, and reports every change to it with a goal_updated
-// frame. But goal mode starts only from omp's own terminal (`/goal`,
-// `/guided-goal`): no RPC command reaches the goal runtime, and the `/goal` text
-// sent as a prompt reaches the model as a plain message. So the worker reports the
-// goal the session has -- a resumed session keeps an active goal, and omp's `goal`
-// tool changes it -- and offers no action on it.
+// LeapMux currently displays goals from goal_updated frames without offering goal actions.
+// Oh My Pi exposes a goal RPC with create, pause, resume, and drop operations.
+// Those operations require integration: https://github.com/leapmux/leapmux/issues/503.
+// A resumed session can retain a goal, and the native goal tool can change it.
 
 // SupportedGoalActions reports that the running agent can do nothing to a goal.
 // The goal card still shows a goal omp reports; it offers no control for it.

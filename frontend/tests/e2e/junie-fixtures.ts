@@ -10,7 +10,7 @@ import { JUNIE_NATIVE_EFFORT_MODEL, JUNIE_RESPONSES_MODEL } from './helpers/mock
 import { authenticatedAgentWorkspace } from './helpers/workspace'
 import { JUNIE_HOUSEKEEPING_RULES } from './junie/housekeeping'
 import { JUNIE_AGENT, nativeContext } from './junie/scenarios'
-import { cliSkipFixture } from './provider-fixture-factory'
+import { cliSkipFixture, providerModelScriptFixture } from './provider-fixture-factory'
 
 export const JUNIE_E2E_SKIP_REASON: string | null = missingBinaryReason('junie', 'Junie E2E requires a junie CLI on PATH')
 
@@ -34,10 +34,7 @@ export const junieTest = base.extend<CliSkipFixture & NativeFixture & {
   // Junie runs its capability-filter and task-name turns at times that no test controls, so every test of the
   // provider answers them. A spec that needs another answer registers its own rule under another name: a newer rule
   // matches first.
-  modelScript: async ({ modelScript }, use) => {
-    await modelScript.rule(...JUNIE_HOUSEKEEPING_RULES)
-    await use(modelScript)
-  },
+  modelScript: providerModelScriptFixture(JUNIE_HOUSEKEEPING_RULES),
   native: async ({ page, modelScript, leapmuxServer, authenticatedJunieWorkspace }, use) => {
     await use(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedJunieWorkspace.workspaceId }))
   },

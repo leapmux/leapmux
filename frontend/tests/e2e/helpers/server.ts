@@ -5,9 +5,7 @@ import { readFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { join } from 'node:path'
 import process from 'node:process'
-
-/** The browser origin host and the session-cookie domain for shared E2E servers. */
-export const E2E_BROWSER_HOST = 'localhost'
+import { E2E_BROWSER_HOST, fetchHub } from './hubTransport'
 
 // Dev mode stores the hub database below the fixture's hub subdirectory.
 // Share this path rule between fixtures and tests.
@@ -120,7 +118,7 @@ export function waitForServer(url: string, timeoutMs = 30_000): Promise<void> {
 
     async function check() {
       try {
-        const response = await fetch(url, { signal: controller.signal })
+        const response = await fetchHub(url, { signal: controller.signal })
         if (finished)
           return
         if (response.ok) {
@@ -267,7 +265,7 @@ export function waitForHubReady(url: string, proc: ChildProcess, timeoutMs = 30_
 
     async function check() {
       try {
-        const response = await fetch(url, { signal: controller.signal })
+        const response = await fetchHub(url, { signal: controller.signal })
         if (finished)
           return
         if (response.ok) {

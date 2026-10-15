@@ -15,7 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { exportedFunctionBody, selectorsIn } from '~/test-support/locatorSource'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { ohMyPiYieldToolCall, spawnSubagentToolCall } from './providerToolCalls'
-import { backgroundTaskRows, backgroundTaskRowsIncludingHidden, exerciseHeldChildRow, expectRowBecomesFinal, HELD_CHILD_NAME, HELD_CHILD_REPORT, HELD_CHILD_TASK, HELD_CHILD_TITLE, heldChildAnswer, openChildTabFromRow, openHeldChildTab, requireRegistryRow } from './subagentRegistry'
+import { backgroundTaskRows, backgroundTaskRowsIncludingHidden, exerciseHeldChildRow, expectRowBecomesFinal, expectSectionPersists, HELD_CHILD_NAME, HELD_CHILD_REPORT, HELD_CHILD_TASK, HELD_CHILD_TITLE, heldChildAnswer, openChildTabFromRow, openHeldChildTab, registryIdentityKeys, requireRegistryRow } from './subagentRegistry'
 import { startWaitLimitForTests } from './testDeadline'
 
 /** The end of the wait limit that a failure case starts, so that a wait which never passes ends inside the case. */
@@ -219,12 +219,68 @@ vi.mock('@playwright/test', async (importOriginal) => {
     poll: (read: () => Promise<unknown>, options?: { message?: string }) => ({
       toBe: async (expected: unknown) => expect(await read(), options?.message).toBe(expected),
       toMatch: async (expected: RegExp) => expect(await read(), options?.message).toMatch(expected),
+      toEqual: async (expected: unknown) => expect(await read(), options?.message).toEqual(expected),
       not: {
         toBe: async (expected: unknown) => expect(await read(), options?.message).not.toBe(expected),
         toBeNull: async () => expect(await read(), options?.message).not.toBeNull(),
       },
     }),
   }) }
+})
+
+describe('registryIdentityKeys', () => {
+  it('compares identities independently of row order without losing duplicate pairs', () => {
+    const first = { taskId: 'task-one', childAgentId: 'child-one' }
+    const second = { taskId: 'task-two', childAgentId: 'child-two' }
+    expect(registryIdentityKeys([second, first, first])).toEqual(registryIdentityKeys([first, second, first]))
+    expect(registryIdentityKeys([first, first])).toHaveLength(2)
+    expect(registryIdentityKeys([first])).not.toEqual(registryIdentityKeys([{ ...first, childAgentId: 'another-child' }]))
+  })
+
+  it.each(['', ' ', '\n'])('rejects an absent task identity: %j', (taskId) => {
+    expect(() => registryIdentityKeys([{ taskId, childAgentId: '' }])).toThrow('task ID')
+  })
+
+  it.each(['\u0000', '\n', '\t', '\u007F', '\u0085'])('rejects control characters in either identity: %j', (control) => {
+    expect(() => registryIdentityKeys([{ taskId: `task${control}`, childAgentId: 'child' }])).toThrow('control characters')
+    expect(() => registryIdentityKeys([{ taskId: 'task', childAgentId: `child${control}` }])).toThrow('control characters')
+  })
+
+  it('accepts a shell task without a child and a Unicode display identity', () => {
+    expect(registryIdentityKeys([{ taskId: 'task-界-�', childAgentId: '' }])).toHaveLength(1)
+  })
+})
+
+describe('expectSectionPersists', () => {
+  const original = [{ taskId: 'task-1', childAgentId: 'child-1' }, { taskId: 'task-2', childAgentId: 'child-2' }]
+
+  function persistencePage(after: typeof original) {
+    let rows = original
+    const rowLocator = Object.assign(probe(1), {
+      evaluateAll: async () => rows,
+    })
+    const section = Object.assign(probe(1), { locator: () => rowLocator, evaluate: async () => true })
+    const reload = vi.fn(async () => {
+      rows = after
+    })
+    return { page: { locator: () => section, reload } as unknown as Page, reload }
+  }
+
+  it('reloads the page and requires both original child associations', async () => {
+    const view = persistencePage([...original].reverse())
+    await expectSectionPersists(view.page)
+    expect(view.reload).toHaveBeenCalledOnce()
+  })
+
+  it.each([
+    { after: [] },
+    { after: [original[0]!] },
+    { after: [{ taskId: 'task-1', childAgentId: 'child-2' }, { taskId: 'task-2', childAgentId: 'child-1' }] },
+  ])('rejects lost or changed native child associations: %j', async ({ after }) => {
+    const view = persistencePage(after)
+    await expect(expectSectionPersists(view.page)).rejects.toThrow('the same registry tasks retain their child identities after reload')
+    expect(view.reload).toHaveBeenCalledOnce()
+  })
 })
 
 /** A page whose locator returns its selector, so a case reads the selector that a helper builds. */

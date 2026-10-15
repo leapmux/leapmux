@@ -487,8 +487,47 @@ export async function expectRowBecomesFinal(page: Page, row: Locator): Promise<v
   }
 }
 
-/** Assert the section header and its rows remain visible after tasks finish. */
+export interface RegistryIdentity {
+  taskId: string
+  childAgentId: string
+}
+
+/** Validate display-safe row identities and keep each task-to-child association in the comparison. */
+export function registryIdentityKeys(rows: readonly RegistryIdentity[]): string[] {
+  for (const row of rows) {
+    if (!row.taskId.trim())
+      throw new Error('Every visible registry row must have a task ID.')
+    for (const character of row.taskId + row.childAgentId) {
+      const code = character.codePointAt(0) ?? 0
+      if (code < 0x20 || (code >= 0x7F && code <= 0x9F))
+        throw new Error('Rendered registry identities must contain no control characters.')
+    }
+  }
+  // Display IDs can normalize different native characters. Preserve duplicate pairs rather than discarding them.
+  return rows.map(row => JSON.stringify([row.taskId, row.childAgentId])).sort()
+}
+
+/** Read rows from the first visible sidebar mount, which receives the Worker metadata. */
+export async function readRegistryIdentities(page: Page, selection: BackgroundTaskRowSelection = {}): Promise<RegistryIdentity[]> {
+  const rows = await backgroundTasksSection(page).locator(`${backgroundTaskRowSelector(selection)}:visible`).evaluateAll(elements => elements.map(element => ({
+    taskId: element.getAttribute('data-task-id') ?? '',
+    childAgentId: element.getAttribute('data-child-agent-id') ?? '',
+  })))
+  registryIdentityKeys(rows)
+  return rows
+}
+
+/** Require the same task-to-child associations after reload, including repeated display IDs. */
 export async function expectSectionPersists(page: Page): Promise<void> {
   await expect(backgroundTasksSection(page)).toBeVisible()
-  await expect(backgroundTaskRows(page).first()).toBeVisible()
+  await expandBackgroundTasksSection(page)
+  await expect(backgroundTasksSection(page).locator('[data-testid="bg-task-row"]:visible').first()).toBeVisible()
+  const before = registryIdentityKeys(await readRegistryIdentities(page))
+  expect(before.length, 'the registry contains at least one persisted task').toBeGreaterThan(0)
+  await page.reload()
+  await expect(backgroundTasksSection(page)).toBeVisible()
+  await expandBackgroundTasksSection(page)
+  await expect.poll(async () => registryIdentityKeys(await readRegistryIdentities(page)), {
+    message: 'the same registry tasks retain their child identities after reload',
+  }).toEqual(before)
 }

@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "generation-trace.schema.json",
+  "title": "native generation receipt vocabulary",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["_readme", "enabledEnv", "marker", "fields"],
+  "properties": {
+    "_readme": { "type": "string", "minLength": 1 },
+    "enabledEnv": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]+$" },
+    "marker": { "type": "string", "pattern": "^[a-z][a-z0-9_]+$" },
+    "fields": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["Scope", "Kind", "SHA256", "Bytes"],
+      "properties": {
+        "Scope": { "$ref": "#/$defs/field" },
+        "Kind": { "$ref": "#/$defs/field" },
+        "SHA256": { "$ref": "#/$defs/field" },
+        "Bytes": { "$ref": "#/$defs/field" }
+      }
+    }
+  },
+  "$defs": {
+    "field": { "type": "string", "pattern": "^[a-z][a-z0-9_]+$" }
+  }
+}
