@@ -70,10 +70,12 @@ func (a *Agent) configure(clock quartz.Clock) acp.Hooks {
 	a.clock = clock
 	a.stateMu.Unlock()
 	return acp.Hooks{
-		ModeChannel:    acp.ModeChannelPermissionMode,
-		EffortConfigID: contracts.QwenConfigReasoningEffort,
-		ModelDecorator: decorateModel,
-		ExtraMethod:    a.handleExtraMethod,
+		WithBypassPermission:   func(claim func()) { a.WithOptionValue(agent.OptionIDPermissionMode, contracts.QwenModeYolo, claim) },
+		PermissionAllowsBypass: permissionAllowsBypass,
+		ModeChannel:            acp.ModeChannelPermissionMode,
+		EffortConfigID:         contracts.QwenConfigReasoningEffort,
+		ModelDecorator:         decorateModel,
+		ExtraMethod:            a.handleExtraMethod,
 		// Qwen streams a foreground subagent in the parent session, tagged with
 		// the tool call that spawned it.
 		ChildUpdateRoute:           childUpdateRoute,

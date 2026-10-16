@@ -17,31 +17,11 @@ import (
 	"github.com/leapmux/leapmux/util/validate"
 )
 
-// claudeSessionArgs returns the `--resume` argv pair for a stored session ID,
-// or nil when the worker must not pass one.
-//
-// This is the ONE place any provider puts a session ID into argv: Codex, Pi
-// and the ACP providers each carry theirs inside a JSON request. So the token
-// rule is applied HERE and not at the sink that stores the value.
-// agentOutputSink.UpdateSessionID writes whatever the agent process reports,
-// and what a provider reports is its own shape -- Pi's is a session FILE PATH,
-// which the token rule refuses by design and which no argv of ours ever holds.
-// Applying the rule at the store would refuse a legitimate Pi handle. Applying
-// it at the argv sink refuses nothing real, because a Claude session ID is a
-// UUID. This is the same split the repository states for every provider
-// decision: the hazard belongs to Claude's launch, so the guard lives with it.
-//
-// A stored value that fails the rule is corrupt or hostile, and OpenAgent's
-// own check does not cover this path: the value the agent process reports goes
-// straight to the `agent_session_id` column, and resolveResumeSessionID reads
-// it back. `--resume` takes an OPTIONAL value, so a token that starts with a
-// hyphen is not read as that value at all -- it parses as a flag of its own,
-// and `--dangerously-skip-permissions` is one argv element away. Quoting keeps
-// the SHELL from reading the token as syntax and does nothing about the CLI
-// reading it as syntax.
-//
-// The start fails instead. It never drops the flag and launches on a fresh
-// session; see providerkit.ResumeFailedError.
+// claudeSessionArgs creates a session ID or validates the stored ID before it enters argv.
+// Claude's --resume takes an optional value. A leading hyphen can become another flag,
+// even when shell quoting keeps the value in one argv element.
+// Validate here because session IDs from other providers can contain file paths.
+// A corrupt resume ID fails startup. It never starts a new session instead.
 func claudeSessionArgs(resumeSessionID string) ([]string, error) {
 	if resumeSessionID == "" {
 		sessionID, err := uuid.NewRandom()
@@ -114,14 +94,9 @@ func claudeAgentEnv(environ []string, loginShell bool) []string {
 
 var _ agent.StartFunc = Start
 
-// Start spawns a new Claude Code process and begins reading its output.
-// The sink receives parsed output events via the Agent.HandleOutput method.
-//
-// Claude Code with --input-format stream-json does not produce any output
-// (including the init message) until it receives input on stdin. Therefore,
-// Start returns immediately without waiting for output. The session ID is
-// extracted later from the init message when the first user message triggers
-// output from Claude.
+// Start spawns Claude Code and completes its control-protocol startup handshake.
+// The output reader delivers native replies while the handshake waits for them.
+// The sink receives parsed output through Agent.HandleOutput.
 func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
 	agent.TraceStartupPhase(opts.AgentID, "claude_begin")
 	ctx, cancel := context.WithCancel(ctx)
@@ -268,7 +243,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 // goroutine before the agent is registered with the manager -- the same lock-free
 // pre-registration window buildStartupFlagSettings documents -- so a bare field write
 // needs no a.Mu. The permission-mode writes still go through their own locked helpers
-// (settlePermissionMode, setAutoModeAvailable), because the READER goroutine already
+// (sendSetPermissionMode, setAutoModeAvailable), because the READER goroutine already
 // runs: HandleOutput delivers the control responses this handshake waits for, and a
 // deferred one reaches claudeCodeHandleControlResponse, which writes the same fields.
 func (a *Agent) runStartupHandshake(ctx context.Context, opts agent.Options) error {
@@ -296,6 +271,10 @@ func (a *Agent) runStartupHandshake(ctx context.Context, opts agent.Options) err
 	// resolves over whatever the response carried (with the static fallback) so
 	// effort/window resolution has a usable catalog.
 	a.availableModels = convertClaudeModels(initResp.Models, initResp.UnavailableModels)
+	a.thinkingOffSupport = thinkingOffCapabilities(initResp.Models)
+	if agent.UsesAccountDefaultModel(opts.Model()) {
+		a.accountDefaultModel = agent.DefaultModelSentinel
+	}
 	if initResp.FastModeState == FastModeOn || initResp.FastModeState == "cooldown" {
 		a.fastMode = FastModeOn
 	} else {

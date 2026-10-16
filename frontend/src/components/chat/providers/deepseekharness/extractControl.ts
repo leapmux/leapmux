@@ -1,7 +1,8 @@
 import type { ControlExtractionInput, ExtractedControlRequest } from '../capabilities'
+import { ACP_PERMISSION_KIND } from '~/generated/contracts/acp-protocol'
 import { DEEPSEEK_HARNESS_CONTROL_EVENT } from '~/generated/contracts/deepseek-harness-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
-import { KIND_ALLOW_ONCE, KIND_REJECT_ONCE } from '../../model/controlPrompt'
+import { KIND_REJECT_ONCE } from '../../model/controlPrompt'
 import { deepseekHarnessQuestionRecords } from './askUserQuestion'
 
 export function deepseekHarnessExtractControl(input: ControlExtractionInput): ExtractedControlRequest | null {
@@ -37,7 +38,7 @@ export function deepseekHarnessExtractControl(input: ControlExtractionInput): Ex
       title,
       ...(reason ? { reason } : {}),
       options: [
-        { optionId: 'allow', name: 'Allow once', kind: KIND_ALLOW_ONCE },
+        { optionId: 'allow', name: 'Allow once', kind: ACP_PERMISSION_KIND.AllowOnce },
         { optionId: 'deny', name: 'Deny', kind: KIND_REJECT_ONCE },
       ],
     },

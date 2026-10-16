@@ -6,7 +6,23 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { unitWorkingDir } from '~/test-support/unitWorkingDir'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { agentOpenOptions } from '../agentSettings'
-import { exerciseNativeCodeExecution, expectNativeCodeExecutionAbsent, nativeCodeExecutionSchema, openNativeCatalogTurn, validateNativeScriptCases } from './nativeCodeExecution'
+import { exerciseNativeCodeExecution, expectNativeCodeExecutionAbsent, nativeCodeExecutionSchema, nativeJavaScriptTextCases, openNativeCatalogTurn, validateNativeScriptCases } from './nativeCodeExecution'
+
+describe('nativeJavaScriptTextCases', () => {
+  it('computes output and error values that do not occur literally in the source', () => {
+    const cases = nativeJavaScriptTextCases('NATIVEVALUE')
+    validateNativeScriptCases(cases)
+    const output: unknown[] = []
+    runInNewContext(cases[0]!.source, { text: (value: unknown) => output.push(value) })
+    expect(output).toEqual(['NATIVEVALUE42'])
+    expect(() => runInNewContext(cases[1]!.source)).toThrow('NATIVEVALUE77')
+    expect(cases.map(item => item.failed)).toEqual([false, true])
+  })
+
+  it.each(['', ' ', '"', 'a\nb'])('rejects an invalid marker: %j', (marker) => {
+    expect(() => nativeJavaScriptTextCases(marker)).toThrow('letters and digits')
+  })
+})
 
 const opened = vi.hoisted(() => ({ events: [] as string[], open: vi.fn() }))
 const execution = vi.hoisted(() => ({

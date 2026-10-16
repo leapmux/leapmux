@@ -1,4 +1,5 @@
 import type { ControlQuestion } from './question'
+import { ACP_PERMISSION_KIND } from '~/generated/contracts/acp-protocol'
 
 /**
  * How far an always-allow reaches: this session, the workspace, the project, or
@@ -18,19 +19,18 @@ export interface PermissionOption {
   scope?: PermissionScope
 }
 
-export const KIND_ALLOW_ONCE = 'allow_once'
 export const KIND_ALLOW_ALWAYS = 'allow_always'
 export const KIND_REJECT_ONCE = 'reject_once'
 export const KIND_REJECT_ALWAYS = 'reject_always'
 
-export const CANONICAL_KINDS = [KIND_ALLOW_ONCE, KIND_ALLOW_ALWAYS, KIND_REJECT_ONCE, KIND_REJECT_ALWAYS]
+export const CANONICAL_KINDS = [ACP_PERMISSION_KIND.AllowOnce, KIND_ALLOW_ALWAYS, KIND_REJECT_ONCE, KIND_REJECT_ALWAYS]
 
 export function isRejectPermissionKind(kind: string): boolean {
   return kind === KIND_REJECT_ONCE || kind === KIND_REJECT_ALWAYS
 }
 
 export function isAllowPermissionKind(kind: string): boolean {
-  return kind === KIND_ALLOW_ONCE || kind === KIND_ALLOW_ALWAYS
+  return kind === ACP_PERMISSION_KIND.AllowOnce || kind === KIND_ALLOW_ALWAYS
 }
 
 export interface PlanPermission {

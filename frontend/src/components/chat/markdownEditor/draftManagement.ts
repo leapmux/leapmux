@@ -4,7 +4,7 @@ import type { Draft } from '~/lib/editor/draftPersistence'
 import { editorViewCtx, serializerCtx } from '@milkdown/core'
 import { TextSelection } from '@milkdown/prose/state'
 import { clearDraft, loadDraft, saveDraft } from '~/lib/editor/draftPersistence'
-import { stripNeedlessEscapes } from './needlessEscapes'
+import { serializeEditorDocument } from './documentMarkdown'
 
 /**
  * Restore a saved cursor position in a ProseMirror editor view.  If the saved
@@ -50,7 +50,7 @@ export function readDraftFromEditor(editor: Editor): Draft {
   return editor.action((ctx: Ctx) => {
     const serializer = ctx.get(serializerCtx)
     const view = ctx.get(editorViewCtx)
-    const raw = stripNeedlessEscapes(serializer(view.state.doc))
+    const raw = serializeEditorDocument(view.state.doc, serializer)
     return {
       content: typeof raw === 'string' ? raw.trim() : '',
       cursor: view.state.selection.from,

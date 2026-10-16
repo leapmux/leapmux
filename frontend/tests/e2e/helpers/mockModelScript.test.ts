@@ -21,6 +21,22 @@ import {
   validateStepIndex,
 } from './mockModelScript'
 
+describe('typed native continuation matching', () => {
+  const when = { lastMessage: { type: '^(?:custom_tool_call_output|function_call_output)$', text: '^Script running' } }
+
+  it('accepts a native output discriminator in the serialized rule', () => {
+    const parsed = parseScenarioSpec({ steps: [], rules: [{ name: 'native-output', when, respond: { text: 'Continue.' } }] })
+    expect(parsed.rules?.[0]?.when).toEqual(when)
+  })
+
+  it('cannot mistake a user message for a native tool result', () => {
+    const native = request({ protocol: 'openai-responses', body: { input: [{ type: 'custom_tool_call_output', call_id: 'call', output: 'Script running with cell ID 7' }] } })
+    const user = request({ protocol: 'openai-responses', body: { input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Script running with cell ID 7' }] }] } })
+    expect(matchesRequest(when, native)).toBe(true)
+    expect(matchesRequest(when, user)).toBe(false)
+  })
+})
+
 function request(overrides: Partial<Parameters<typeof matchesRequest>[1]> = {}) {
   return {
     protocol: 'openai-chat-completions' as const,
@@ -797,10 +813,10 @@ describe('matchesRequest lastMessage', () => {
   })
   it('rejects invalid criteria before a model turn', () => {
     for (const [criteria, error] of [
-      [null, 'lastMessage must contain role or text criteria only'],
-      [[], 'lastMessage must contain role or text criteria only'],
-      ['', 'lastMessage must contain role or text criteria only'],
-      [{}, 'lastMessage must contain role or text criteria only'],
+      [null, 'lastMessage must contain recognized message criteria only'],
+      [[], 'lastMessage must contain recognized message criteria only'],
+      ['', 'lastMessage must contain recognized message criteria only'],
+      [{}, 'lastMessage must contain recognized message criteria only'],
       [{ role: '' }, 'lastMessage role is invalid'],
       [{ role: 'invalid' }, 'lastMessage role is invalid'],
       [{ role: 1 }, 'lastMessage role is invalid'],
@@ -809,7 +825,7 @@ describe('matchesRequest lastMessage', () => {
       [{ text: ['valid', ''] }, 'lastMessage text must be a non-empty pattern'],
       [{ text: '[' }, 'lastMessage text is not a valid regular expression'],
       [{ text: 2 }, 'lastMessage text must be a non-empty pattern'],
-      [{ role: 'system', unknown: true }, 'lastMessage must contain role or text criteria only'],
+      [{ role: 'system', unknown: true }, 'lastMessage must contain recognized message criteria only'],
     ] as const)
       expect(() => parsedLastMessageMatcher(criteria), JSON.stringify(criteria)).toThrow(error)
   })

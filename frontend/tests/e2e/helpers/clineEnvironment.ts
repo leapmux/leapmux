@@ -10,8 +10,7 @@ export interface ClineEnvironmentOptions {
   baseURL: string
   modelKey: string
   /**
-   * Cline's provider in the isolated settings: the generic OpenAI Chat Completions
-   * client, which takes any base URL and any model id.
+   * Cline's provider in the isolated settings. Its configured base URL points at the mock model server.
    */
   providerID: string
   modelID: string
@@ -97,7 +96,7 @@ export function createClineEnvironment(options: ClineEnvironmentOptions): Record
  * Cline treats a schema failure as absent settings.
  * An entry without updatedAt selects the built-in provider endpoint, which the private proxy refuses.
  */
-function clineProviders(options: ClineEnvironmentOptions, updatedAt: number): Record<string, unknown> {
+export function clineProviders(options: Pick<ClineEnvironmentOptions, 'providerID' | 'modelID' | 'modelKey' | 'baseURL'>, updatedAt: number): Record<string, unknown> {
   return {
     version: 1,
     lastUsedProvider: options.providerID,

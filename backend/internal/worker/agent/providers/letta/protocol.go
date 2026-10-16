@@ -44,13 +44,13 @@ type runtimeScope struct {
 // is `type`, not `kind`, and every command carries the three correlation fields
 // the RuntimeEnvelope requires.
 type lettaCommand struct {
-	Type           string         `json:"type"`
-	Runtime        *runtimeScope  `json:"runtime,omitempty"`
-	EventSeq       int            `json:"event_seq"`
-	EmittedAt      string         `json:"emitted_at"`
-	IdempotencyKey string         `json:"idempotency_key"`
-	RequestID      string         `json:"request_id,omitempty"`
-	Payload        map[string]any `json:"payload,omitempty"`
+	Type           string        `json:"type"`
+	Runtime        *runtimeScope `json:"runtime,omitempty"`
+	EventSeq       int           `json:"event_seq"`
+	EmittedAt      string        `json:"emitted_at"`
+	IdempotencyKey string        `json:"idempotency_key"`
+	RequestID      string        `json:"request_id,omitempty"`
+	Payload        any           `json:"payload,omitempty"`
 	// runtime_start puts its fields at the top level, not under payload.
 	// A resume names an EXISTING pair (agent_id + conversation_id) and never
 	// sets the create_* fields: the protocol makes each pair mutually

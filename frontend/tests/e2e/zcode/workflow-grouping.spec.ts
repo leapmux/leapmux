@@ -39,3 +39,5 @@ zcodeTest('shows a native CreateWorkflow run without grouped work', async ({ nat
   await expect(backgroundTaskRows(page)).toHaveCount(1)
   await expect.poll(() => workflowGroupHeading(row)).toBe('')
 })
+
+// Track this LeapMux limitation: https://github.com/leapmux/leapmux/issues/520.

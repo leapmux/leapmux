@@ -51,9 +51,13 @@ func (b *bufferStdin) frames() []string {
 // newSteerAgent builds an agent with a capturing stdin and a test sink.
 func newSteerAgent(t *testing.T) (*Agent, *agenttest.Sink, *bufferStdin) {
 	t.Helper()
+	return newSteerAgentWithProcessDone(t, make(chan struct{}))
+}
+
+func newSteerAgentWithProcessDone(t *testing.T, processDone chan struct{}) (*Agent, *agenttest.Sink, *bufferStdin) {
+	t.Helper()
 	stdin := &bufferStdin{written: make(chan struct{}, 1)}
 	ctx, cancel := context.WithCancel(t.Context())
-	processDone := make(chan struct{})
 	t.Cleanup(func() {
 		select {
 		case <-processDone:
@@ -261,7 +265,7 @@ func TestAgentTurnCompletedForAChildDisarmsTheChild(t *testing.T) {
 	row, ok := sink.BackgroundTask("child-1")
 	require.True(t, ok)
 
-	a.HandleOutput([]byte(`{"type":"notification","params":{"sessionId":"child-1","notification":{"type":"agent_turn_completed","turnId":"t-1","reason":"end_turn"}}}`))
+	a.HandleOutput([]byte(`{"type":"notification","params":{"sessionId":"child-1","notification":{"type":"agent_turn_completed","turnId":"t-1","reason":"completed"}}}`))
 	assert.False(t, a.ActiveChildTurnState("child-1").Active, "the child's turn ends")
 	assert.True(t, func() bool { a.Mu.Lock(); defer a.Mu.Unlock(); return a.turnActive }(),
 		"the main turn is not touched by a child's turn end")
@@ -276,7 +280,7 @@ func TestAgentTurnCompletedForTheMainSessionDisarmsTheTurn(t *testing.T) {
 	a, _, _ := newSteerAgent(t)
 	a.armTurn()
 
-	a.HandleOutput([]byte(`{"type":"notification","params":{"sessionId":"main-session","notification":{"type":"agent_turn_completed","turnId":"t-1","reason":"end_turn"}}}`))
+	a.HandleOutput([]byte(`{"type":"notification","params":{"sessionId":"main-session","notification":{"type":"agent_turn_completed","turnId":"t-1","reason":"completed"}}}`))
 	assert.False(t, func() bool { a.Mu.Lock(); defer a.Mu.Unlock(); return a.turnActive }(),
 		"the main turn ends")
 }

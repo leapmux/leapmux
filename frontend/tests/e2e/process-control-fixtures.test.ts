@@ -3,12 +3,13 @@ import { mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createProcessStub } from '~/test-support/childProcess'
-import { listOnlineWorkerIDsViaAPI, listWorkersViaAPI, loginViaAPI, waitForNewOnlineWorkerViaAPI } from './helpers/api'
+import { callHub, listOnlineWorkerIDsViaAPI, listWorkersViaAPI, loginViaAPI, waitForNewOnlineWorkerViaAPI } from './helpers/api'
 import { modelScriptFixtures } from './helpers/modelScriptFixture'
 import { stopProcess, stopProcesses } from './helpers/process'
 import { spawnTestProcess } from './helpers/processRegistry'
 import { findFreePort, waitForHubStart, waitForServer } from './helpers/server'
 import { reportStartupFailure } from './helpers/serverOutput'
+import { loginViaToken, openWorkspace } from './helpers/ui'
 import { ensureWorkerOnline, restartHub, restartWorker, SEPARATE_WORKER_NAME } from './process-control-fixtures'
 
 const startup = vi.hoisted(() => ({ root: '', fixtures: new Map<string, unknown>() }))
@@ -29,6 +30,7 @@ vi.mock('@playwright/test', async (original) => {
 
 vi.mock('./helpers/api', () => ({
   API_POLL_INTERVAL_MS: 150,
+  callHub: vi.fn(async () => ({})),
   listOnlineWorkerIDsViaAPI: vi.fn(),
   listWorkersViaAPI: vi.fn(),
   loginViaAPI: vi.fn(),
@@ -48,6 +50,7 @@ vi.mock('./helpers/processRegistry', () => ({ spawnTestProcess: vi.fn() }))
 vi.mock('./helpers/server', async original => ({
   ...await original<typeof import('./helpers/server')>(),
   getGlobalState: () => ({ binaryPath: 'private-leapmux', tmpDir: startup.root }),
+  mockAgentEnv: () => ({ DIRAC_DIR: '/private/native-dirac' }),
   findFreePort: vi.fn(async () => 12345),
   waitForServer: vi.fn(),
   waitForHubStart: vi.fn(),
@@ -57,7 +60,7 @@ vi.mock('./helpers/serverOutput', async original => ({
   ...await original<typeof import('./helpers/serverOutput')>(),
   reportStartupFailure: vi.fn((_output: unknown, _what: string, error: unknown): never => { throw error }),
 }))
-vi.mock('./helpers/ui', () => ({}))
+vi.mock('./helpers/ui', () => ({ loginViaToken: vi.fn(async () => {}), openWorkspace: vi.fn(async () => {}) }))
 vi.mock('./agentSettings', () => ({ agentDefaultsEnv: () => ({}) }))
 
 let server: SeparateServerInfo
@@ -67,6 +70,7 @@ beforeEach(() => {
   vi.resetAllMocks()
   replacement = Object.assign(createProcessStub({ pid: 456 }).proc, { unref: vi.fn() })
   server = {
+    agentEnv: { DIRAC_DIR: '/private/native-dirac' },
     hubUrl: 'http://localhost:12345',
     adminToken: 'session',
     workerId: 'worker',
@@ -217,7 +221,7 @@ describe('initial process fixture port ownership', () => {
       expect.any(String),
     ], expect.any(Object))
     expect(waitForHubStart).toHaveBeenCalledWith(expect.stringMatching(/hub[/\\]state\.json$/), children[0]?.proc)
-    expect(use).toHaveBeenCalledWith(expect.objectContaining({ hubUrl: 'http://localhost:24680', hubPort: 24680, workerId: 'assigned-worker', workerProc: children[1]?.proc }))
+    expect(use).toHaveBeenCalledWith(expect.objectContaining({ agentEnv: { DIRAC_DIR: '/private/native-dirac' }, hubUrl: 'http://localhost:24680', hubPort: 24680, workerId: 'assigned-worker', workerProc: children[1]?.proc }))
     expect(spawnTestProcess).toHaveBeenNthCalledWith(2, 'private-leapmux', expect.arrayContaining(['--hub', 'http://localhost:24680', '--registration-key', 'private-registration']), expect.objectContaining({
       detached: true,
       env: { LEAPMUX_WORKER_NAME: SEPARATE_WORKER_NAME },
@@ -257,5 +261,46 @@ describe('initial process fixture port ownership', () => {
       throw new Error('The initial fixture did not preserve both failures.')
     expect(result.errors[0]).toBe(failed)
     expect(result.errors[1]).toMatchObject({ errors: [cleanupFailed] })
+  })
+})
+
+describe('process workspace diagnostics', () => {
+  async function runWorkspace(debugLogging: boolean, use: () => Promise<void>) {
+    const run = startup.fixtures.get('authenticatedWorkspace')
+    if (typeof run !== 'function')
+      throw new Error('The authenticated process workspace fixture is absent.')
+    await run({ page: {}, workspace: { workspaceId: 'private-workspace' }, separateHubWorker: server, debugLogging }, use)
+  }
+
+  it.each([false, true])('sets the requested logging state before login without changing worker scope: %s', async (debugLogging) => {
+    const events: string[] = []
+    vi.mocked(callHub).mockImplementation(async () => {
+      events.push('setting')
+      return {}
+    })
+    vi.mocked(loginViaToken).mockImplementation(async () => {
+      events.push('login')
+    })
+    vi.mocked(openWorkspace).mockImplementation(async () => {
+      events.push('workspace')
+    })
+    await runWorkspace(debugLogging, async () => {
+      events.push('use')
+    })
+    expect(events).toEqual(['setting', 'login', 'workspace', 'use'])
+    expect(callHub).toHaveBeenCalledExactlyOnceWith(server.hubUrl, 'UserService/UpdateUserSetting', {
+      key: 'debug_logging',
+      partialJson: String(debugLogging),
+    }, { cookie: server.adminToken, operation: 'Set private process diagnostics before the browser opens' })
+  })
+
+  it('keeps the browser closed when the diagnostic setting fails', async () => {
+    const failure = new Error('The private setting write failed.')
+    vi.mocked(callHub).mockRejectedValueOnce(failure)
+    const use = vi.fn(async () => {})
+    await expect(runWorkspace(true, use)).rejects.toBe(failure)
+    expect(loginViaToken).not.toHaveBeenCalled()
+    expect(openWorkspace).not.toHaveBeenCalled()
+    expect(use).not.toHaveBeenCalled()
   })
 })

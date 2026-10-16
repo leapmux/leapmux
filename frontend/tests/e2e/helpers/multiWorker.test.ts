@@ -65,7 +65,7 @@ beforeEach(() => {
     streams.push(io)
     if (args[0] === 'hub' && args.includes('127.0.0.1:0')) {
       const port = 24680 + hubCount++
-      nativeHubURLs.add(`http://localhost:${port}`)
+      nativeHubURLs.add(`http://127.0.0.1:${port}`)
       states.set(stub.emitter.pid ?? -1, JSON.stringify({ listen: [`127.0.0.1:${port}`] }))
     }
     if (args[0] === 'worker')

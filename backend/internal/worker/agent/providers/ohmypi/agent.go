@@ -63,6 +63,8 @@ type Agent struct {
 	// input, context compaction and ClearContext. It is never held while a
 	// command waits for a turn to end.
 	sessionMu sync.Mutex
+	// approvalWork keeps permission writes off the stdout reader.
+	approvalWork providerkit.CoalescingWork
 
 	// The fields below are guarded by Process.Mu.
 
@@ -77,8 +79,8 @@ type Agent struct {
 	// what the model offers and reports only a level that MOVED, so this is the
 	// one record of the level a set_thinking_level settled on.
 	effectiveThinking string
-	// approvalMode is the tool approval mode the process launched with. omp
-	// changes it at launch only, so it never moves while the process runs.
+	// approvalMode is the effective tool policy. The Worker can apply Yolo live.
+	// Other changes restart the process with the requested native policy.
 	approvalMode    string
 	availableModels []*agent.ModelInfo
 
@@ -101,10 +103,10 @@ type Agent struct {
 	shells map[string]string
 	// asks holds the question bridge's state; see ask.go.
 	asks askBridge
-	// openDialogs holds the id of each dialog that publishDialog published and omp
-	// still waits on. Interrupt answers each dialog that omp's abort leaves open.
+	// openDialogs holds each dialog that omp still waits on.
+	// Interrupt answers each unclaimed dialog that omp's abort leaves open.
 	// See control.go.
-	openDialogs map[string]struct{}
+	openDialogs map[string]*pendingDialog
 
 	// startupSnapshot is true until Start returns. A goal omp reports while the
 	// session opens restates a goal the resumed session already had.

@@ -6,3 +6,5 @@ import { OPENCODE_CHILD } from './childScenario'
 opencodeTest('refuses native child send while the actual child task runs', async ({ native }) => {
   await expectUnsupportedSubagent(native, { operation: 'send', openChild: () => openProfiledNativeChild(native, OPENCODE_CHILD) })
 })
+
+// Track this LeapMux limitation: https://github.com/leapmux/leapmux/issues/517.

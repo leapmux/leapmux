@@ -1,6 +1,6 @@
 import { gooseTest } from '../goose-fixtures'
 import { exerciseControlInterrupt } from '../helpers/controlInterrupt'
-import { exerciseInterruptTurn } from '../helpers/nativeLifecycle'
+import { exerciseInterruptedPartialAnswer, exerciseInterruptTurn } from '../helpers/nativeLifecycle'
 import { askBeforeEachTool, bypassToolRequests } from './scenarios'
 
 gooseTest('stops a native turn and accepts a new prompt after queue resume', async ({ native }) => {
@@ -16,4 +16,8 @@ gooseTest('stops an actual native tool and accepts a new prompt after queue resu
 // Goose asks no native question, so a permission request holds the turn.
 gooseTest('withdraws a waiting permission and accepts a new prompt after queue resume', async ({ native }) => {
   await exerciseControlInterrupt(native, { control: 'permission', prepare: () => askBeforeEachTool(native) })
+})
+
+gooseTest('keeps interrupted partial text and its marker after reload', async ({ native }) => {
+  await exerciseInterruptedPartialAnswer(native, { prepare: () => bypassToolRequests(native) })
 })

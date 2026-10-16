@@ -8,3 +8,6 @@ export const CODEX_EXEC_CONTENT = {
 export const CODEX_EXEC_HEADER = {
   Failed: 'Script failed',
 } as const
+
+/** Read-state metadata does not contain transcript content. */
+export const CODEX_READ_STATE_CHANGED_METHOD = 'thread/readState/changed'

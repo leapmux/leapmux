@@ -14,11 +14,9 @@ import (
 
 // ZCode's control requests: a permission prompt, a plan approval, a question.
 //
-// Each one arrives as a REQUEST on the same pipe the event stream uses, and the
-// app-server blocks the turn until it is answered. LeapMux answers none of them
-// itself: it persists a pending control request, the user decides, and the answer
-// comes back through SendControlResponse -> ResolveControlResponse, which builds
-// the app-server's reply frame.
+// Each request arrives on the event pipe and blocks the turn until an answer arrives.
+// Bypass answers ordinary tool permissions with the offered one-time response.
+// Questions and plan approvals remain manual.
 //
 // The stored payload is a HYBRID: ZCode's own params verbatim, plus the
 // Claude-shaped `{request:{tool_name, tool_use_id, input}}` header. The header is
@@ -97,7 +95,7 @@ func (a *Agent) handlePermissionRequest(id, params json.RawMessage) {
 	// destroy the prompt the user still holds.
 	if stored := a.pendingZCodeControlPayload(requestID); stored != nil {
 		slog.Debug("zcode re-announced permission request republished", "agent_id", a.AgentID(), "request_id", requestID)
-		a.publishZCodeControlRequest(requestID, stored)
+		a.publishZCodeControlRequest(requestID)
 		return
 	}
 
@@ -120,7 +118,7 @@ func (a *Agent) handlePermissionRequest(id, params json.RawMessage) {
 	}
 
 	a.rememberZCodeControlRequest(requestID, payload)
-	a.publishZCodeControlRequest(requestID, payload)
+	a.publishZCodeControlRequest(requestID)
 }
 
 // zcodeUserInputRequest is the interaction/requestUserInput params.
@@ -240,7 +238,7 @@ func (a *Agent) handleUserInputRequest(id, params, original json.RawMessage) {
 	// the prompt the user still holds.
 	if stored := a.pendingZCodeControlPayload(req.RequestID); stored != nil {
 		slog.Debug("zcode re-announced user-input request republished", "agent_id", a.AgentID(), "request_id", req.RequestID)
-		a.publishZCodeControlRequest(req.RequestID, stored)
+		a.publishZCodeControlRequest(req.RequestID)
 		return
 	}
 	// The transcript confirms no row that carries this plan, so this call writes one.
@@ -302,7 +300,7 @@ func (a *Agent) handleUserInputRequest(id, params, original json.RawMessage) {
 	}
 
 	a.rememberZCodeControlRequest(req.RequestID, payload)
-	a.publishZCodeControlRequest(req.RequestID, payload)
+	a.publishZCodeControlRequest(req.RequestID)
 }
 
 // zcodeSharedQuestions projects ZCode's questions into the shared control's shape.
@@ -730,45 +728,96 @@ func zcodeAnswerContent(reply zcodeUserInputReply) map[string]any {
 func (a *Agent) pendingZCodeControlPayload(requestID string) json.RawMessage {
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
-	return a.pendingControls[requestID]
+	if record := a.pendingControls[requestID]; record != nil {
+		return record.payload
+	}
+	return nil
 }
 
-// rememberZCodeControlRequest stores the first announcement's payload for requestID.
+// rememberZCodeControlRequest keeps the first wire identity until native settlement.
 func (a *Agent) rememberZCodeControlRequest(requestID string, payload json.RawMessage) {
+	record := newPendingControl(payload)
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
 	if a.pendingControls == nil {
-		a.pendingControls = map[string]json.RawMessage{}
+		a.pendingControls = make(map[string]*pendingControl)
 	}
-	a.pendingControls[requestID] = payload
+	if a.pendingControls[requestID] != nil {
+		return
+	}
+	record.ownerSessionID = a.sessionID
+	if record.sessionID == "" {
+		record.sessionID = a.sessionID
+	}
+	a.pendingControls[requestID] = record
 }
 
-// publishZCodeControlRequest persists a control prompt and broadcasts it to every window.
-// Shared by the first announcement and by each republished repeat, so the two can never
-// store one payload and show another.
-func (a *Agent) publishZCodeControlRequest(requestID string, payload json.RawMessage) {
-	if err := a.sink.PublishControlRequest(agent.ControlRequest{RequestID: requestID, Payload: payload}); err != nil {
-		slog.Error("publish zcode control request", "agent_id", a.AgentID(), "request_id", requestID, "error", err)
-		a.forgetZCodeControlRequest(requestID)
-		if wireID, _, ok := agent.ExtractJSONRPCID(payload); ok {
-			a.replyZCodeControlFailure(wireID, providerkit.ControlPublicationFailure)
+// publishZCodeControlRequest reuses the first payload and its publication instance.
+func (a *Agent) publishZCodeControlRequest(requestID string) {
+	a.Mu.Lock()
+	record := a.pendingControls[requestID]
+	if record == nil || record.answering {
+		a.Mu.Unlock()
+		return
+	}
+	bypass := a.canBypassControlLocked(record)
+	if bypass {
+		record.ready = true
+		record.publicationOnce.Do(func() { close(record.publicationDone) })
+	}
+	a.Mu.Unlock()
+	if bypass {
+		a.queuePermissionApprovals()
+		return
+	}
+	a.publishRegisteredControl(requestID, record)
+}
+
+func (a *Agent) publishRegisteredControl(requestID string, record *pendingControl) {
+	err := a.sink.PublishControlRequest(agent.ControlRequest{AgentSessionID: record.ownerSessionID, RequestID: requestID, InstanceID: record.instanceID, Payload: record.payload})
+	a.Mu.Lock()
+	current := a.pendingControls[requestID] == record
+	if err == nil && !record.answered {
+		record.published = true
+	}
+	record.ready = true
+	record.publicationOnce.Do(func() { close(record.publicationDone) })
+	refuse := current && err != nil && !record.answering
+	cancel := err == nil && (!current || record.answered) || refuse && record.published
+	if refuse {
+		delete(a.pendingControls, requestID)
+	}
+	bypass := current && err == nil && a.canBypassControlLocked(record)
+	a.Mu.Unlock()
+	if cancel {
+		a.sink.CancelControlRequestInstance(requestID, record.instanceID)
+	}
+	if bypass {
+		a.queuePermissionApprovals()
+	}
+	if refuse {
+		slog.Error("ZCode could not publish a control request", "request_id", requestID, "error", err)
+		if len(record.wireID) > 0 {
+			a.replyZCodeControlFailure(record.wireID, providerkit.ControlPublicationFailure)
 		}
 	}
 }
 
-// forgetZCodeControlRequest reports whether requestID was a prompt LeapMux
-// forwarded, and drops it. Consumed by permission.resolved and userInput.resolved,
-// which is what re-arms the de-duplication for a reused request id.
+// forgetZCodeControlRequest consumes native settlement and retires an undecided or automatic card.
 func (a *Agent) forgetZCodeControlRequest(requestID string) bool {
-	if requestID == "" {
-		return false
-	}
 	a.Mu.Lock()
-	defer a.Mu.Unlock()
-	if a.pendingControls[requestID] == nil {
+	record := a.pendingControls[requestID]
+	if record == nil {
+		a.Mu.Unlock()
 		return false
 	}
 	delete(a.pendingControls, requestID)
+	record.publicationOnce.Do(func() { close(record.publicationDone) })
+	cancel := record.published && (!record.answering || record.automatic)
+	a.Mu.Unlock()
+	if cancel {
+		a.sink.CancelControlRequestInstance(requestID, record.instanceID)
+	}
 	return true
 }
 

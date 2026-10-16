@@ -1,6 +1,7 @@
 import { expect } from '@playwright/test'
+import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { claudeTest } from '../claude-fixtures'
-import { claudeWorkflowToolCall } from '../helpers/providerToolCalls'
+import { codeExecutionToolCall } from '../helpers/providerToolCalls'
 import { backgroundTaskRows, expandBackgroundTasksSection, expectRowBecomesFinal } from '../helpers/subagentRegistry'
 import { agentTabs, answerControl, assistantBubbles, controlButton, expectAgentTabCount, sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
 import { workflowGroupHeading } from '../helpers/workflowGrouping'
@@ -32,7 +33,7 @@ claudeTest('shows a native Claude Workflow run without a grouped child row', asy
   // result. Their count depends on when the workflow notification arrives.
   await modelScript.fallback({ text: 'Workflow notification noted.' })
   const start = await modelScript.queue(
-    { toolCalls: [claudeWorkflowToolCall('workflow-probe', workflowScript(childPrompt))] },
+    { toolCalls: [codeExecutionToolCall(AgentProvider.CLAUDE_CODE, 'workflow-probe', workflowScript(childPrompt))] },
     { text: 'The workflow finished.' },
   )
   await sendMessage(page, modelScript.prompt('Run the one-child workflow and report its result.'))
@@ -60,3 +61,5 @@ claudeTest('shows a native Claude Workflow run without a grouped child row', asy
   await expect(row).toHaveAttribute('data-child-agent-id', '')
   await expectAgentTabCount(page, tabsBefore)
 })
+
+// Track this LeapMux limitation: https://github.com/leapmux/leapmux/issues/520.

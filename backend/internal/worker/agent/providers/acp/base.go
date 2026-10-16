@@ -233,24 +233,26 @@ func (b *Base) handleACPPromptResponse(resp json.RawMessage) {
 // The live text counter now counts the agent turn, so that turn stays open.
 func (b *Base) persistFinishedTurn(frame json.RawMessage) {
 	main := b.main()
+	textCompletion, incomplete := b.turnOutputCompletions()
 	turn, hasPromptBoundary := b.drainPromptTurn()
 	if !hasPromptBoundary {
-		main.persistCompletedText(agentapi.AssembledMessageKindReasoning, turn.thoughtText)
-		main.persistCompletedText(agentapi.AssembledMessageKindText, turn.assistantText)
-	}
-	// An unfinished tool fails unless the reader stopped the turn, which interrupts the tool instead.
-	// A clean cancel returns a prompt response rather than an error.
-	// Cursor therefore enters this path, not the error path.
-	// Its stopped command otherwise stores `completion: error` for work that the reader chose to end.
-	incomplete := agentapi.MessageCompletionError
-	if b.acpInterruptRequested() {
-		incomplete = agentapi.MessageCompletionInterrupted
+		main.persistFinishedText(agentapi.AssembledMessageKindReasoning, turn.thoughtText, textCompletion)
+		main.persistFinishedText(agentapi.AssembledMessageKindText, turn.assistantText, textCompletion)
 	}
 	main.persistIncompleteTools(turn.incompleteTools, incomplete)
 	b.clearCompletedTerminals()
 	numToolUses := turn.completedToolUses + len(turn.incompleteTools)
 
 	b.persistPromptResponse(frame, numToolUses)
+}
+
+// turnOutputCompletions classifies buffered text and unfinished tools at a normal turn-end frame.
+// A clean cancellation returns such a frame, but its buffered output remains interrupted.
+func (b *Base) turnOutputCompletions() (agentapi.MessageCompletion, agentapi.MessageCompletion) {
+	if b.acpInterruptRequested() {
+		return agentapi.MessageCompletionInterrupted, agentapi.MessageCompletionInterrupted
+	}
+	return agentapi.MessageCompletionComplete, agentapi.MessageCompletionError
 }
 
 // acpTextProgressScope is the live-counter scope for one text kind. The scope is
@@ -860,6 +862,7 @@ func (b *Base) UpdateSettings(options optionmap.Map) agentapi.SettingsApplyResul
 	if optionGroupsChanged && b.sink != nil {
 		b.sink.BroadcastStatusActive(sessionID)
 	}
+	b.approvePendingPermissions()
 	if !ok {
 		return agentapi.RestartRequiredSettings(options)
 	}

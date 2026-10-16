@@ -130,8 +130,10 @@ type codexInterruptKey struct {
 }
 
 type codexInterruptCall struct {
-	done chan struct{}
-	err  error
+	commands map[string]struct{}
+	done     chan struct{}
+	err      error
+	accepted bool
 }
 
 // startOrResumeThread sends thread/start, or thread/resume when the launch
@@ -371,9 +373,7 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 		// probing turn state.
 		return nil
 	}
-	if err := a.interruptCodexTurn(threadID, turnID); err != nil {
-		return err
-	}
+	accepted, err := a.interruptCodexTurn(threadID, turnID)
 	// The ANSWERLESS requests go last, and only once the interrupt is accepted.
 	// Codex's four approval methods register a nil cancel answer, because Codex
 	// retires its own approval requests -- so withdrawing one sends the CLI nothing
@@ -382,8 +382,10 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 	// on an approval with the card already gone: the reader had no control that could
 	// answer it, no later SendRawInput could route one, and the thinking indicator
 	// never stopped.
-	a.WithdrawAllControlRequests(a.sink)
-	return nil
+	if accepted {
+		a.WithdrawAllControlRequests(a.sink)
+	}
+	return err
 }
 
 // Stop stops the process, then retains unfinished model output.
@@ -410,53 +412,6 @@ func (a *Agent) Wait() error {
 	a.outputMu.Unlock()
 	a.sink.ReportProgress(agent.ResetProgress())
 	return err
-}
-
-func (a *Agent) interruptCodexTurn(threadID, turnID string) error {
-	if threadID == "" || turnID == "" {
-		return nil
-	}
-	key := codexInterruptKey{threadID: threadID, turnID: turnID}
-	a.Mu.Lock()
-	if a.interruptCalls == nil {
-		a.interruptCalls = make(map[codexInterruptKey]*codexInterruptCall)
-	}
-	if existing := a.interruptCalls[key]; existing != nil {
-		done := existing.done
-		a.Mu.Unlock()
-		<-done
-		return existing.err
-	}
-	call := &codexInterruptCall{done: make(chan struct{})}
-	a.interruptCalls[key] = call
-	a.Mu.Unlock()
-
-	params, err := json.Marshal(map[string]string{"threadId": threadID, "turnId": turnID})
-	if err == nil {
-		_, err = a.SendRequest("turn/interrupt", params, a.APITimeout())
-	}
-	if err != nil {
-		err = fmt.Errorf("turn/interrupt: %w", err)
-	}
-
-	a.Mu.Lock()
-	call.err = err
-	close(call.done)
-	if err != nil {
-		delete(a.interruptCalls, key)
-	}
-	a.Mu.Unlock()
-	return err
-}
-
-func (a *Agent) clearInterruptCallsForThread(threadID string) {
-	a.Mu.Lock()
-	for key := range a.interruptCalls {
-		if key.threadID == threadID {
-			delete(a.interruptCalls, key)
-		}
-	}
-	a.Mu.Unlock()
 }
 
 // ClearContext sends a new thread/start on the running Codex process,

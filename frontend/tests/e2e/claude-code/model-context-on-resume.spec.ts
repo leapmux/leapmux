@@ -2,17 +2,18 @@ import { expect } from '@playwright/test'
 import { claudeProcessTest as test } from '../claude-fixtures'
 import { countOriginalAnswerRows, expectNativeResumeContext, expectResumedConversation, nativeResumeTexts } from '../helpers/nativeResume'
 import { nativeModelConversationTurns } from '../helpers/nativeScenario'
+import { expectAnswerAndTurnEnd, waitForWorkerConnection, withRestartWorkspace } from '../helpers/nativeWorkerRestart'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, composerEditor, expectAssistantAnswer, SECOND_ARITHMETIC_ANSWER, SECOND_ARITHMETIC_ANSWER_TEXT, SECOND_ARITHMETIC_PROMPT, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { restartWorker, stopWorker } from '../process-control-fixtures'
-import { expectAnswerAndTurnEnd, waitForWorkerConnection, withRestartWorkspace } from './workerRestart'
+import { CLAUDE_AGENT } from './scenarios'
 
-test.describe('Agent Session Resume', () => {
+test.describe('agent session resume', () => {
   test('should resume agent session after worker restart', async ({ separateHubWorker, page, modelScript }) => {
     const texts = nativeResumeTexts()
     const priorAnswerMarker = texts.originalAnswer
     const firstPrompt = `${ARITHMETIC_PROMPT} ${texts.originalPrompt}`
     const secondPrompt = `${SECOND_ARITHMETIC_PROMPT} ${texts.resumedPrompt}`
-    await withRestartWorkspace(page, separateHubWorker, { prefix: 'Resume Test' }, async ({ agentId }) => {
+    await withRestartWorkspace(page, separateHubWorker, { provider: CLAUDE_AGENT, prefix: 'Resume Test' }, async ({ agentId }) => {
       const server = { leapmuxServer: separateHubWorker }
 
       // Send a message and wait for response

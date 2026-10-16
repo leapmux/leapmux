@@ -2,7 +2,7 @@ import { cpSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { droidTest } from '../droid-fixtures'
-import { exerciseNativeCodeExecution, nativeCodeExecutionSchema, openNativeCatalogTurn } from '../helpers/nativeCodeExecution'
+import { exerciseNativeCodeExecution, nativeCodeExecutionSchema, nativeJavaScriptTextCases, openNativeCatalogTurn } from '../helpers/nativeCodeExecution'
 import { withNativeWorker } from '../helpers/nativeWorker'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { nativeContext } from './scenarios'
@@ -41,11 +41,7 @@ droidTest('runs native code and retains computed output and script errors after 
         expect(request.mockCredential?.accepted).toBe(true)
         nativeCodeExecutionSchema(request, 'Script', DROID_SCRIPT_ARGUMENTS)
       },
-      scripts: marker => [
-        // Droid returns only what the script emits through text(). A bare expression ends with no output.
-        { label: 'output', source: `text(${JSON.stringify(marker)} + (40 + 2));`, expected: `${marker}42`, failed: false },
-        { label: 'failure', source: `throw new Error(${JSON.stringify(marker)} + (70 + 7));`, expected: `${marker}77`, failed: true },
-      ],
+      scripts: nativeJavaScriptTextCases,
     })
   })
 })

@@ -21,7 +21,7 @@ import { clineAgentRequest, clineAgentResult } from './agent'
 import { clineCommandRequest, clineCommandResults } from './execute'
 import { clineEditRequest, clineEditResult } from './fileEdit'
 import { clineQuestionRequest, clineQuestionResult } from './question'
-import { clineReadRequest, clineReadResult } from './read'
+import { clineReadImages, clineReadRequest, clineReadResult } from './read'
 import { clineSearchRequest, clineSearchResult } from './search'
 import { clineOperations, clineToolFinish, clineToolStart, outputText } from './toolCommon'
 
@@ -216,7 +216,7 @@ export const CLINE_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<ClineToolFacts> 
     const summary = pickString(args, 'subject')
     return { ...(to ? { to } : {}), text: pickString(args, 'body') || pickString(args, 'message') || pickString(args, 'text'), ...(summary ? { summary } : {}) }
   },
-  // A team tool names its teammate `agentId`.
+  // A team tool identifies its teammate with `agentId`.
   agents: (args): ToolRequestByKind['agents'] => {
     const query = pickString(args, 'agentId') || pickString(args, 'name')
     return query ? { query } : {}
@@ -321,7 +321,7 @@ export const CLINE_TOOL_READERS: ToolCallSpecReaderTable<ClineToolFacts> = {
       return early
     const result = clineReadResult(facts.output)
     if (result)
-      return { kind: 'read', ...head, request, result, images: [] }
+      return { kind: 'read', ...head, request, result, images: clineReadImages(facts.output, request.path) }
     const unread = unreadResult(facts)
     return { kind: 'read', ...head, request, ...(unread !== undefined ? { result: unread } : {}) }
   },

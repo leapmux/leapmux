@@ -7,3 +7,5 @@ grokTest('proves the unsupported native child send route while its original task
   await applyPermissionPreset(native.page, 'bypass')
   await expectUnsupportedSubagent(native, { operation: 'send', openChild: () => openHeldChildTab(native, { childTurn: { user: HELD_CHILD_TASK }, rootTurnsAfterSpawn: [{ text: 'The actual native child completed.' }] }) })
 })
+
+// Track this LeapMux limitation: https://github.com/leapmux/leapmux/issues/517.

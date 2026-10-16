@@ -40,3 +40,5 @@ qwenTest('keeps two actual native workflow units inside one opaque workflow row'
   await modelScript.waitForSteps(start + 1)
   await expectOpaqueNativeWorkflowResult(context, { ruleNames: ['native-work-unit-0', 'native-work-unit-1'], heading: 'Workflow' })
 })
+
+// Track this LeapMux limitation: https://github.com/leapmux/leapmux/issues/520.

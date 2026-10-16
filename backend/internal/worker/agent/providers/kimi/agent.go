@@ -50,7 +50,8 @@ type Agent struct {
 	// sessionMu serializes the operations that change which session the agent
 	// drives or how it is configured: ClearContext, UpdateSettings, and the goal
 	// writes. Never held while a.Mu is held.
-	sessionMu sync.Mutex
+	sessionMu    sync.Mutex
+	approvalWork providerkit.CoalescingWork
 
 	// --- guarded by Mu ---
 

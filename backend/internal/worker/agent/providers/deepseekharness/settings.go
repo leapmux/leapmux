@@ -26,7 +26,7 @@ func (a *Agent) SettingsSnapshot() agent.SettingsApplyResult {
 
 func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult {
 	a.opMu.Lock()
-	defer a.opMu.Unlock()
+	defer func() { a.opMu.Unlock(); a.queuePermissionApprovals() }()
 	a.Mu.Lock()
 	catalog, current, mode, permissions, sessionID := a.catalog, a.selection, a.mode, a.permissions, a.sessionID
 	a.Mu.Unlock()

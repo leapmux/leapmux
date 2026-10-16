@@ -16,6 +16,7 @@ import { sleep } from '../../../src/lib/sleep'
 import { solveCaptchaViaAPI } from './altcha'
 import { finishCleanup } from './cleanup'
 import { createTestChannelManager } from './e2e-channel'
+import { fetchHub } from './hubTransport'
 
 /**
  * Poll interval for API readiness checks.
@@ -119,7 +120,7 @@ export interface HubRequestOptions {
  */
 export async function hubRequest(hubUrl: string, method: HubMethod, body: unknown, options: HubRequestOptions = {}): Promise<Response> {
   try {
-    return await fetch(`${hubUrl}/leapmux.v1.${method}`, {
+    return await fetchHub(`${hubUrl}/leapmux.v1.${method}`, {
       method: 'POST',
       headers: options.cookie === undefined ? { 'Content-Type': 'application/json' } : authedHeaders(options.cookie),
       body: JSON.stringify(body),

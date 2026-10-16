@@ -9,13 +9,15 @@ import { basename } from 'node:path'
 import { expect } from '@playwright/test'
 import { isObject, pickObject } from '../../../src/lib/jsonPick'
 import { AMP_ACTOR_PATH_PREFIX } from './ampSurface'
-import { expectAttachmentOutcome, PDF_PAGE_MARKER, sendWithAttachment } from './attachments'
+import { attachmentPills, expectAttachmentOutcome, PDF_PAGE_MARKER, sendWithAttachment } from './attachments'
 import { CURSOR_RUN_PATH } from './cursorSurface'
 import { jsonStringValues } from './jsonStringValues'
 import { kiroCurrentUserInput } from './kiroSurface'
 import { stepRequest } from './mockModelScript'
-import { nativeTextStep } from './nativeScenario'
-import { assistantBubbles, sendMessage, userBubbles, waitForAgentIdle } from './ui'
+import { requestRows, rowContent } from './modelRequestBody'
+import { sendNativeAnswer } from './nativeConversation'
+import { nativeTextBlocks, nativeTextStep } from './nativeScenario'
+import { assistantBubbles, composerEditor, sendMessage, userBubbles, waitForAgentIdle } from './ui'
 
 const CHANNEL_TOLERANCE = 48
 const EXPECTED_QUADRANTS = [
@@ -122,10 +124,9 @@ const INSTRUCTION_ROLES: ReadonlySet<unknown> = new Set(['system', 'developer'])
  * row carries stays out, and so does a file in a system, model, or tool row.
  * An instruction row is skipped, not taken as a turn boundary: Claude Code 2.1 sends its
  * environment as a system row after the current user row.
- * The row of the turn that directly follows a `tool` row is a tool's own output, not user input:
- * Chat Completions agents such as Copilot and Junie return a tool's file there as a synthetic
- * user row, so that row stays out too, while a user row after the assistant row that answered the
- * tool call is input and stays in.
+ * A user row directly after a tool can contain synthetic tool output. Reject that ambiguous row here.
+ * A provider that ends a turn through a tool must validate its next user input before applying this reader.
+ * Dirac's attachmentInput.ts supplies that validation without changing the original receipt.
  */
 function currentUserTurn(rows: unknown): Array<[number, Record<string, unknown>]> {
   if (!Array.isArray(rows))
@@ -145,6 +146,44 @@ function currentUserTurn(rows: unknown): Array<[number, Record<string, unknown>]
     turn.unshift([index, row])
   }
   return turn
+}
+
+/** Read actual text from the current user input. History, tool results, and content metadata cannot prove a file. */
+function currentUserTextParts(request: MockModelRequestRecord): string[] {
+  return attachmentRequestReader(request).textParts(request)
+}
+
+function cursorCurrentUserTextParts({ body }: MockModelRequestRecord): string[] {
+  if (!isObject(body))
+    return []
+  const text = typeof body.prompt === 'string' ? [body.prompt] : []
+  for (const attachment of Array.isArray(body.attachments) ? body.attachments : []) {
+    if (isObject(attachment) && attachment.kind === 'file' && typeof attachment.data === 'string')
+      text.push(attachment.data)
+  }
+  return text
+}
+
+function kiroCurrentUserTextParts({ body }: MockModelRequestRecord): string[] {
+  if (!isObject(body))
+    return []
+  const input = kiroCurrentUserInput(body)
+  const results = pickObject(input, 'userInputMessageContext')?.toolResults
+  return Array.isArray(results) && results.length > 0 ? [] : nativeTextBlocks(input?.content)
+}
+
+function modelCurrentUserTextParts({ protocol, body }: MockModelRequestRecord): string[] {
+  if (!isObject(body) || protocol === 'aws-event-stream')
+    return []
+  const rows = requestRows(protocol, body)
+  if (protocol === 'openai-responses' && typeof rows === 'string')
+    return [rows]
+  return currentUserTurn(rows).flatMap(([, row]) => {
+    const content = rowContent(protocol, row)
+    if (Array.isArray(content) && (holdsAnthropicToolResult(content) || holdsGoogleFunctionResponse(content)))
+      return []
+    return nativeTextBlocks(content)
+  })
 }
 
 /** Describe the kind of a value that stands where a string must be. */
@@ -281,19 +320,8 @@ function googleInlineParts(body: unknown): TypedFilePart[] {
 }
 
 /** Select the typed file parts of the current user turn, by the request's own protocol. */
-function typedFileParts(protocol: MockModelProtocol, body: unknown): TypedFilePart[] {
-  switch (protocol) {
-    case 'anthropic-messages':
-      return anthropicFileParts(body)
-    case 'openai-chat-completions':
-      return chatCompletionFileParts(body)
-    case 'aws-event-stream':
-      return kiroDocumentParts(body)
-    case 'google-generative-language':
-      return googleInlineParts(body)
-    case 'openai-responses':
-      throw new Error('no provider that sends a typed file part uses the openai-responses protocol, so the file proof has no reader for it')
-  }
+function typedFileParts(request: MockModelRequestRecord): TypedFilePart[] {
+  return attachmentRequestReader(request).fileParts(request.body)
 }
 
 function sha256(bytes: Buffer): string {
@@ -342,7 +370,7 @@ function filePartDefect(part: TypedFilePart, source: Buffer, expected: FileTypeE
 /** Require the exact source file in a typed file part of the current user turn, and state each part that came close. */
 function expectTypedFilePart(request: MockModelRequestRecord, source: Buffer, expected: FileTypeExpectation): void {
   const defects: string[] = []
-  for (const part of typedFileParts(request.protocol, request.body)) {
+  for (const part of typedFileParts(request)) {
     const defect = filePartDefect(part, source, expected)
     if (defect === undefined)
       return
@@ -492,18 +520,50 @@ function kiroImageParts(body: unknown): TypedFilePart[] {
 
 /** Select the typed image parts of the current user turn, by the request's own protocol and route. */
 function typedImageParts(request: MockModelRequestRecord): TypedFilePart[] {
-  switch (request.protocol) {
-    case 'anthropic-messages':
-      return request.path === AMP_ACTOR_PATH_PREFIX ? ampImageParts(request.body) : anthropicImageParts(request.body)
-    case 'openai-chat-completions':
-      return chatCompletionImageParts(request.body)
-    case 'openai-responses':
-      return request.path === CURSOR_RUN_PATH ? cursorImageParts(request.body) : responsesImageParts(request.body)
-    case 'aws-event-stream':
-      return kiroImageParts(request.body)
-    case 'google-generative-language':
-      return googleInlineParts(request.body)
-  }
+  return attachmentRequestReader(request).imageParts(request.body)
+}
+
+interface AttachmentRequestReader {
+  textParts: (request: MockModelRequestRecord) => string[]
+  fileParts: (body: unknown) => TypedFilePart[]
+  imageParts: (body: unknown) => TypedFilePart[]
+}
+
+/** Each protocol declares all three attachment readers together. */
+const PROTOCOL_ATTACHMENT_READERS = {
+  'anthropic-messages': { textParts: modelCurrentUserTextParts, fileParts: anthropicFileParts, imageParts: anthropicImageParts },
+  'openai-chat-completions': { textParts: modelCurrentUserTextParts, fileParts: chatCompletionFileParts, imageParts: chatCompletionImageParts },
+  'openai-responses': {
+    textParts: modelCurrentUserTextParts,
+    fileParts: () => { throw new Error('no provider that sends a typed file part uses the openai-responses protocol, so the file proof has no reader for it') },
+    imageParts: responsesImageParts,
+  },
+  'aws-event-stream': { textParts: kiroCurrentUserTextParts, fileParts: kiroDocumentParts, imageParts: kiroImageParts },
+  'google-generative-language': { textParts: modelCurrentUserTextParts, fileParts: googleInlineParts, imageParts: googleInlineParts },
+} satisfies Record<MockModelProtocol, AttachmentRequestReader>
+
+/** Native service routes retain the generic readers for the parts that they do not replace. */
+const ROUTE_ATTACHMENT_READERS: readonly {
+  matches: (request: MockModelRequestRecord) => boolean
+  resolve: (request: MockModelRequestRecord, protocol: AttachmentRequestReader) => AttachmentRequestReader
+}[] = [
+  {
+    matches: request => request.path === CURSOR_RUN_PATH,
+    resolve: (request, protocol) => ({
+      ...protocol,
+      textParts: cursorCurrentUserTextParts,
+      imageParts: request.protocol === 'openai-responses' ? cursorImageParts : protocol.imageParts,
+    }),
+  },
+  {
+    matches: request => request.protocol === 'anthropic-messages' && request.path === AMP_ACTOR_PATH_PREFIX,
+    resolve: (_request, protocol) => ({ ...protocol, imageParts: ampImageParts }),
+  },
+]
+
+function attachmentRequestReader(request: MockModelRequestRecord): AttachmentRequestReader {
+  const protocol = PROTOCOL_ATTACHMENT_READERS[request.protocol]
+  return ROUTE_ATTACHMENT_READERS.find(route => route.matches(request))?.resolve(request, protocol) ?? protocol
 }
 
 /** Decode an image data URI and return the RGBA pixel at the center of each quadrant, in reading order. */
@@ -706,7 +766,8 @@ export async function expectNativeAttachmentProof(
   await expectAttachmentInRequest(page, scriptedRequest(status, protocol, stepIndex), kind, sourcePath, handoff)
 }
 
-async function expectAttachmentInRequest(page: Page, request: MockModelRequestRecord, kind: AttachmentKind, sourcePath: string, handoff: AttachmentHandoff): Promise<void> {
+/** Check an actual native request, including a provider's validated projection of its current input. */
+export async function expectAttachmentInRequest(page: Page, request: MockModelRequestRecord, kind: AttachmentKind, sourcePath: string, handoff: AttachmentHandoff = {}): Promise<void> {
   validateHandoff(kind, handoff)
   const source = readFileSync(sourcePath)
   switch (kind) {
@@ -720,7 +781,10 @@ async function expectAttachmentInRequest(page: Page, request: MockModelRequestRe
       expectNativeFilePart(request, source, binaryMediaType(handoff))
       return
     case 'text': {
-      const content = nativeUserStrings(request.body)
+      // Empty bytes satisfy every substring check. A provider must prove its empty-file descriptor explicitly.
+      if (source.length === 0)
+        throw new Error('An empty text file needs a provider-specific native attachment proof.')
+      const content = currentUserTextParts(request)
       if (content.length === 0)
         throw new Error('the native request has no user content for the attachment')
       expect(content.join('\n'), 'the native user content must include the full text file').toContain(source.toString('utf8'))
@@ -730,6 +794,8 @@ async function expectAttachmentInRequest(page: Page, request: MockModelRequestRe
 
 /** How `exerciseAttachmentDelivery` attaches the file and proves its handoff. */
 export interface AttachmentDeliveryOptions extends AttachmentHandoff {
+  /** Send the attachment with an empty composer after a marked turn establishes this scenario. */
+  attachmentOnly?: boolean
   /** A caller's fixture file, for a provider that needs another valid file. Its base name must be the file name. */
   fixturePath?: string
   /** The model API of the provider. A request on another API fails the proof. */
@@ -762,17 +828,29 @@ export async function exerciseAttachmentDelivery(
   fileName: string,
   options: AttachmentDeliveryOptions = {},
 ): Promise<MockModelRequestRecord> {
-  const { protocol, proof, fixturePath, ...handoff } = options
+  const { protocol, proof, fixturePath, attachmentOnly = false, ...handoff } = options
   if (proof !== undefined && (handoff.transcodedImageType !== undefined || handoff.binaryMediaType !== undefined))
     throw new Error('a custom attachment proof replaces the typed-part proof, so it takes no transcoded image type and no binary media type')
   if (proof === undefined)
     validateHandoff(kind, handoff)
   const { page, modelScript } = context
+  if (attachmentOnly)
+    await sendNativeAnswer(context, 'Prepare for an attachment with no typed prompt.', 'Ready for the attachment.')
   // The step that this helper queues holds the attachment turn, also when the
   // test queued other steps first.
-  const stepIndex = await modelScript.queue(nativeTextStep(context, DELIVERY_ANSWER))
+  const answer = attachmentOnly ? 'Attachment without a prompt received.' : DELIVERY_ANSWER
+  const stepIndex = await modelScript.queue(nativeTextStep(context, answer))
   const sourcePath = await expectAttachmentOutcome(page, kind, { supported: true, fileName, ...(fixturePath === undefined ? {} : { fixturePath }) })
-  await sendWithAttachment(page, modelScript.prompt(DELIVERY_PROMPT))
+  if (attachmentOnly) {
+    await expect(composerEditor(page)).toHaveText('')
+    const send = page.getByTestId('send-button').filter({ visible: true })
+    await expect(send).toBeEnabled()
+    await send.click()
+    await expect(attachmentPills(page)).toHaveCount(0)
+  }
+  else {
+    await sendWithAttachment(page, modelScript.prompt(DELIVERY_PROMPT))
+  }
   await modelScript.waitForSteps(stepIndex + 1)
   await waitForAgentIdle(page)
 
@@ -784,9 +862,25 @@ export async function exerciseAttachmentDelivery(
     await expectAttachmentInRequest(page, request, kind, sourcePath, handoff)
   else
     await proof(request, sourcePath)
-  await expect(userBubbles(page).filter({ hasText: fileName }).filter({ hasText: DELIVERY_PROMPT }).first()).toBeVisible()
-  await expect(assistantBubbles(page).filter({ hasText: DELIVERY_ANSWER }).first()).toBeVisible()
+  const user = userBubbles(page).filter({ hasText: fileName }).last()
+  await expect(user).toBeVisible()
+  if (attachmentOnly)
+    await expect(user).not.toContainText(DELIVERY_PROMPT)
+  else
+    await expect(user).toContainText(DELIVERY_PROMPT)
+  await expect(assistantBubbles(page).filter({ hasText: answer }).first()).toBeVisible()
   return request
+}
+
+/** Prove both prompted and attachment-only image delivery through the provider's native model API. */
+export async function exerciseImageAttachmentDelivery(
+  context: NativeScenarioContext,
+  fileName: string,
+  options: Omit<AttachmentDeliveryOptions, 'attachmentOnly'> = {},
+): Promise<readonly [MockModelRequestRecord, MockModelRequestRecord]> {
+  const prompted = await exerciseAttachmentDelivery(context, 'image', fileName, options)
+  const attachmentOnly = await exerciseAttachmentDelivery(context, 'image', fileName, { ...options, attachmentOnly: true })
+  return [prompted, attachmentOnly]
 }
 
 /** A refused attachment: its kind, or its kind and the name of its fixture file. */

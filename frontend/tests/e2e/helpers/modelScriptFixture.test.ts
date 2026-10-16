@@ -1,14 +1,19 @@
 import type { MockModelScenarioStatus } from './mockModelScript'
 import type { MockModelServer } from './mockModelServer'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MOCK_MODEL_IDS } from './mockAgentEnvironment'
 import { MOCK_SESSION_TITLE, readScenarioStatus } from './mockModelScenario'
 import { MAX_SCENARIO_REQUEST_RECORDS } from './mockModelScript'
 import { createMockModelServer } from './mockModelServer'
-import { expectTurnEndedAfter, modelScriptFixtures, startModelScript } from './modelScriptFixture'
+import { expectTurnEndedAfter, modelScriptFixtures, runModelScriptFixture, startModelScript } from './modelScriptFixture'
 import { currentTestDeadline, WAIT_REPORT_MARGIN_MS } from './testDeadline'
 
 const servers: MockModelServer[] = []
+const fixtureServer = vi.hoisted(() => ({ mockModelUrl: '' }))
+
+vi.mock('./server', () => ({ getGlobalState: () => fixtureServer }))
 
 afterEach(async () => {
   vi.restoreAllMocks()
@@ -37,6 +42,37 @@ async function answer(server: MockModelServer, prompt: string): Promise<string> 
 }
 
 describe('modelScriptFixtures', () => {
+  it('retains the actual model request of a successful test before removing its script', async () => {
+    const server = await startServer()
+    fixtureServer.mockModelUrl = server.url
+    const directory = await mkdtemp(join(resolve(import.meta.dirname, '../../../../.tmp'), 'model-receipt-'))
+    const attachments: MockModelScenarioStatus[] = []
+    let scriptId = ''
+    try {
+      await runModelScriptFixture(async (script) => {
+        scriptId = script.id
+        await script.queue({ text: 'The successful request completed.' })
+        expect(await answer(server, script.prompt('Keep this successful request.'))).toBe('The successful request completed.')
+        await script.waitForSteps()
+      }, {
+        status: 'passed',
+        expectedStatus: 'passed',
+        outputPath: name => join(directory, name),
+        attach: async (_name, { path }) => {
+          attachments.push(JSON.parse(await readFile(path, 'utf8')) as MockModelScenarioStatus)
+        },
+      })
+      expect(attachments).toHaveLength(1)
+      expect(attachments[0]?.complete).toBe(true)
+      expect(attachments[0]?.requests).toHaveLength(1)
+      expect(JSON.stringify(attachments[0]?.requests[0]?.body)).toContain('Keep this successful request.')
+      await expect(readScenarioStatus(server.url, scriptId)).rejects.toThrow('Could not read model scenario')
+    }
+    finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
   type StartFixture = (args: object, use: (startedAt: number) => Promise<void>, testInfo: { timeout: number }) => Promise<void>
 
   function startFixture(): StartFixture {
@@ -102,7 +138,7 @@ describe('expectTurnEndedAfter', () => {
 })
 
 describe('startModelScript', () => {
-  // A cleanup that releases a gate runs after the native client may have cancelled the gated request.
+  // A cleanup can release a gate after the native client cancels the held request.
   // The cancelled request leaves the gate with nothing to release, and that cleanup must not fail.
   it('reports no release, and does not fail, for a gated response that the client cancelled', async () => {
     const server = await createMockModelServer({ models: ['native-cleanup-unit'] })

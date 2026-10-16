@@ -525,6 +525,54 @@ describe('spawnCommandProcess', () => {
     expect(emitter.listenerCount('error')).toBe(0)
   })
 
+  it.each([
+    { failedSignal: 'SIGTERM', descendantsSurvive: false },
+    { failedSignal: 'SIGTERM', descendantsSurvive: true },
+    { failedSignal: 'SIGKILL', descendantsSurvive: false },
+    { failedSignal: 'SIGKILL', descendantsSurvive: true },
+  ] as const)('handles an EOF $failedSignal failure before a queued native exit, with surviving descendants: $descendantsSurvive', async ({ failedSignal, descendantsSurvive }) => {
+    const { emitter, resource } = await treeProcessAfterPipeEnd()
+    const failure = Object.assign(new Error('The root is a zombie until its native exit arrives.'), { code: 'EPERM' })
+    const previousSignal = vi.mocked(process.kill).getMockImplementation()!
+    let firstSignal = true
+    vi.mocked(process.kill).mockImplementation((pid, signal) => {
+      if (firstSignal && signal === failedSignal) {
+        firstSignal = false
+        queueMicrotask(() => {
+          if (!descendantsSurvive)
+            kernel.alive.delete(-123)
+          emitter.exitCode = 7
+          emitter.emit('exit', 7, null)
+        })
+        throw failure
+      }
+      return previousSignal(pid, signal)
+    })
+    let result: unknown
+    const stopped = resource.stop().then(() => {
+      result = 'finished'
+    }, (error) => {
+      result = error
+    })
+    try {
+      await vi.advanceTimersByTimeAsync(failedSignal === 'SIGKILL' ? 50 : 0)
+      expect(result).toBe(descendantsSurvive ? undefined : 'finished')
+      expect(vi.mocked(process.kill).mock.calls.filter(([, signal]) => signal === failedSignal)).toHaveLength(2)
+      if (failedSignal === 'SIGKILL')
+        expect(vi.mocked(process.kill).mock.calls.filter(([, signal]) => signal === 'SIGTERM')).toHaveLength(1)
+    }
+    finally {
+      kernel.alive.delete(-123)
+      await vi.advanceTimersByTimeAsync(25)
+      await stopped
+      vi.mocked(process.kill).mockImplementation(previousSignal)
+    }
+    expect(result).toBe('finished')
+    expect(vi.getTimerCount()).toBe(0)
+    expect(emitter.listenerCount('exit')).toBe(0)
+    expect(emitter.listenerCount('error')).toBe(0)
+  })
+
   it('stops surviving descendants after native exit resolves an EOF permission error', async () => {
     const { emitter, resource } = await treeProcessAfterPipeEnd()
     kernel.failure = Object.assign(new Error('The owned root awaits native exit.'), { code: 'EPERM' })
@@ -651,6 +699,7 @@ describe('spawnCommandProcess', () => {
     emitter.emit('error', failure)
     await vi.advanceTimersByTimeAsync(0)
     expect(await result).toBe(failure)
+    expect(process.kill).not.toHaveBeenCalled()
     expect(emitter.listenerCount('exit')).toBe(0)
     expect(emitter.listenerCount('error')).toBe(0)
     expect(vi.getTimerCount()).toBe(0)

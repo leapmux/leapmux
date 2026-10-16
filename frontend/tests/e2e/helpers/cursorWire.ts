@@ -100,8 +100,11 @@ function lenientFields(bytes: Uint8Array): CursorProtobufFields {
  * caller tells the turn's first frame from the rest of the stream.
  */
 export function cursorPromptOf(clientMessage: Uint8Array): string | undefined {
-  const text = descend(clientMessage, PROMPT_PATH)
-  return text === undefined ? undefined : new TextDecoder().decode(text)
+  const user = descend(clientMessage, PROMPT_PATH.slice(0, -1))
+  if (user === undefined)
+    return undefined
+  // Proto3 omits the text field when an attachment-only prompt has the empty default.
+  return cursorProtobufString(lenientFields(user), PROMPT_PATH.at(-1)!) ?? ''
 }
 
 /** Read the native conversation ID that Cursor sends with a Run request. */

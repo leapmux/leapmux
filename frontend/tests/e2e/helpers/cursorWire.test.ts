@@ -39,6 +39,13 @@ import {
 } from './cursorWire'
 
 describe('cursorPromptOf', () => {
+  it('reads the proto3 empty default from a present user message', () => {
+    let message: Uint8Array = new Uint8Array(0)
+    for (const field of [1, 1, 2, 1])
+      message = encodeLengthDelimited(field, message)
+    expect(cursorPromptOf(message)).toBe('')
+  })
+
   it('reads the prompt out of the five-field path', () => {
     expect(cursorPromptOf(clientMessageWithPrompt('Say the mock word.'))).toBe('Say the mock word.')
   })

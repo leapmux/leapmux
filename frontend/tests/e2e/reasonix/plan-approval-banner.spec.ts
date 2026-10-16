@@ -1,3 +1,5 @@
+// The native exit-plan permission has no completed-plan review surface.
+// See https://github.com/leapmux/leapmux/issues/504.
 import { expect } from '@playwright/test'
 import { exerciseNativeReadOnlyPlan } from '../helpers/nativeReadOnlyPlan'
 import { expectNativeOptionValue, nativeModelContextText } from '../helpers/nativeScenario'

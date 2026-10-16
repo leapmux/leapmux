@@ -1,3 +1,5 @@
+// The native background-task input route is not integrated.
+// See https://github.com/leapmux/leapmux/issues/505.
 import { copilotTest } from '../copilot-fixtures'
 import { openProfiledNativeChild } from '../helpers/runningChildProof'
 import { expectUnsupportedSubagent } from '../helpers/unsupportedSubagent'

@@ -2,6 +2,7 @@ import type { NativeControlFrame } from '../helpers/nativeControlWatch'
 import { expect } from '@playwright/test'
 import { diracTest } from '../dirac-fixtures'
 import { watchNativeControls } from '../helpers/nativeControlWatch'
+import { exerciseQuestionIsolation } from '../helpers/nativeQuestionIsolation'
 import { selectedAgentTabId } from '../helpers/nativeScenario'
 import { controlButton, waitForSettingsHydrated } from '../helpers/ui'
 import { diracQuestionControl } from './questionControl'
@@ -29,7 +30,7 @@ diracTest.describe('dirac agent questions', () => {
         await testInfo.attach('dirac-question-form', { body: await form.evaluate(element => element.outerHTML), contentType: 'text/html' })
         await form.getByRole('button', { name: 'Choose an option *', exact: true }).click()
         await page.getByRole('menuitemradio', { name: 'Red', exact: true }).filter({ visible: true }).click()
-        // A question form names its positive action Approve, and a permission names it Allow.
+        // A question form labels its positive action Approve. A permission labels it Allow.
         const approve = controlButton(page, 'allow')
         await expect(approve).toHaveText('Approve')
         await approve.click()
@@ -79,4 +80,9 @@ diracTest('returns native question cancellation without selecting an offered ans
   })
   expect(result).toContain('The user declined to answer the follow-up question.')
   expect(result).not.toContain('<answer>')
+})
+
+diracTest('keeps a native question on its owner tab and workspace after reload', async ({ page, modelScript, leapmuxServer, askingDiracWorkspace }) => {
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingDiracWorkspace.workspaceId })
+  await exerciseQuestionIsolation(context, { customAnswerDraft: false })
 })

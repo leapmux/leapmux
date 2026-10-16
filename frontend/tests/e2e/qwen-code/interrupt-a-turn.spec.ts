@@ -1,5 +1,5 @@
 import { exerciseControlInterrupt } from '../helpers/controlInterrupt'
-import { exerciseInterruptTurn } from '../helpers/nativeLifecycle'
+import { exerciseInterruptedPartialAnswer, exerciseInterruptTurn } from '../helpers/nativeLifecycle'
 import { qwenTest } from '../qwen-fixtures'
 
 qwenTest('interrupts an actual held native turn and keeps its session usable during a model call', async ({ native }) => {
@@ -12,4 +12,8 @@ qwenTest('interrupts an actual held native turn and keeps its session usable dur
 
 qwenTest('withdraws a waiting question and keeps its session usable', async ({ native }) => {
   await exerciseControlInterrupt(native, { control: 'question' })
+})
+
+qwenTest('keeps interrupted partial text and its marker after reload', async ({ native }) => {
+  await exerciseInterruptedPartialAnswer(native)
 })

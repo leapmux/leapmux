@@ -11,7 +11,6 @@ import (
 	"github.com/coder/quartz"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
@@ -33,16 +32,16 @@ type Agent struct {
 	wsURL         string
 	ws            *wsConn
 
-	dispatchMu sync.Mutex
-	sendMu     sync.Mutex
-	settingsMu sync.Mutex
+	dispatchMu   sync.Mutex
+	sendMu       sync.Mutex
+	settingsMu   sync.Mutex
+	approvalWork providerkit.CoalescingWork
 
 	// --- guarded by Mu ---
 
 	agentID         string
 	conversationID  string
 	turnActive      bool
-	stopped         bool
 	settings        lettaSettings
 	catalog         lettaCatalog
 	tools           map[string]*lettaTool
@@ -51,9 +50,12 @@ type Agent struct {
 	generation      providerkit.GenerationBuffer
 	// runtimeReady holds the open runtime_start handshake, until the response
 	// settles it. Start waits on it before it returns the agent.
-	runtimeReady   *runtimeWaiter
-	catalogPending *lettaCatalogPending
-	modelPending   *lettaModelUpdatePending
+	runtimeReady         *runtimeWaiter
+	catalogPending       *lettaCatalogPending
+	modelPending         *lettaModelUpdatePending
+	modePending          *lettaModePending
+	permissions          map[string]*lettaPendingPermission
+	permissionDeliveries map[string]*lettaPermissionDelivery
 }
 
 var (
@@ -163,7 +165,7 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 		a.Mu.Unlock()
 		return err
 	}
-	if a.stopped {
+	if a.StoppedLocked() {
 		a.Mu.Unlock()
 		return errAgentStopped
 	}
@@ -312,150 +314,17 @@ func (a *Agent) ClearContext() (string, error) {
 	return "", agent.ErrContextClearUnsupported
 }
 
-// OptionGroups returns the live configuration axes.
-func (a *Agent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
-	a.Mu.Lock()
-	settings := a.settings
-	catalog := a.catalog
-	a.Mu.Unlock()
-
-	groups := make([]*leapmuxv1.AvailableOptionGroup, 0, 2)
-	// The model group is always present: the settings menu offers it even when
-	// the session reported no catalog yet. The option list must HOLD the
-	// current value, because the chip resolves its label by looking that value
-	// up in the options -- a list that omits it draws the group label instead
-	// of the model the session is running.
-	models := append([]lettaModel(nil), catalog.models...)
-	seen := make(map[string]bool, len(models))
-	for _, model := range models {
-		seen[model.id] = true
-	}
-	if settings.model != "" && !seen[settings.model] {
-		models = append(models, lettaModel{id: settings.model, displayName: settings.model})
-	}
-	if len(models) == 0 {
-		models = []lettaModel{{id: defaultModels[0].Id, displayName: defaultModels[0].DisplayName}}
-	}
-	groups = append(groups, lettaModelGroup(models, settings.model))
-	groups = append(groups, &leapmuxv1.AvailableOptionGroup{
-		Id:           agent.OptionIDPermissionMode,
-		Label:        PermissionModeLabel,
-		CurrentValue: settings.permissionMode,
-		Mutable:      true,
-		Order:        agent.OptionOrderPermissionMode,
-		Options:      permissionModeGroup.GetOptions(),
-	})
-	return groups
-}
-
-// SettingsSnapshot reports the live option values.
-func (a *Agent) SettingsSnapshot() agent.SettingsApplyResult {
-	groups := a.OptionGroups()
-	values := map[string]string{}
-	for _, g := range groups {
-		if g.GetId() != "" && g.GetCurrentValue() != "" {
-			values[g.GetId()] = g.GetCurrentValue()
-		}
-	}
-	return agent.ConfirmedSettings(values)
-}
-
-// UpdateSettings applies model and effort changes to the running agent.
-// An empty effort restores the native default. A changed mode needs a restart.
-func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult {
-	a.settingsMu.Lock()
-	defer a.settingsMu.Unlock()
-	a.Mu.Lock()
-	agentID := a.agentID
-	previous := a.settings
-	a.Mu.Unlock()
-	mode, modeRequested := options[agent.OptionIDPermissionMode]
-	if modeRequested && mode != previous.permissionMode {
-		return agent.RestartRequiredSettings(options)
-	}
-	if agentID == "" {
-		return agent.RestartRequiredSettings(options)
-	}
-	model, modelPresent := options[agent.OptionIDModel]
-	effort, effortPresent := options[agent.OptionIDEffort]
-	if !modelPresent && !effortPresent {
-		if modeRequested {
-			return agent.ConfirmedSettings(map[string]string{agent.OptionIDPermissionMode: previous.permissionMode})
-		}
-		return agent.ConfirmedSettings(nil)
-	}
-	if modelPresent && model == "" && !effortPresent {
-		confirmed := map[string]string{agent.OptionIDModel: previous.model}
-		if modeRequested {
-			confirmed[agent.OptionIDPermissionMode] = previous.permissionMode
-		}
-		return agent.ConfirmedSettings(confirmed)
-	}
-	if model == "" {
-		model = previous.model
-	}
-	if model == "" {
-		return agent.RestartRequiredSettings(options)
-	}
-	patch := map[string]any{"model_handle": model}
-	if effortPresent {
-		if effort == "" {
-			patch["reasoning_effort"] = nil
-		} else {
-			patch["reasoning_effort"] = effort
-		}
-	}
-	cmd := newLettaCommand("update_model", a.nextRequestID())
-	scope := a.runtime()
-	cmd.Runtime = &scope
-	cmd.Payload = patch
-	pending := &lettaModelUpdatePending{requestID: cmd.RequestID, model: model, effort: effort, effortPresent: effortPresent, waiter: newRuntimeWaiter()}
-	a.Mu.Lock()
-	a.modelPending = pending
-	a.Mu.Unlock()
-	if err := a.sendCommand(cmd); err != nil {
-		a.clearModelPending(pending)
-		return agent.RestartRequiredSettings(options)
-	}
-	if err := pending.waiter.wait(a.Context(), a.ProcessDone(), lettaSendWait); err != nil {
-		a.clearModelPending(pending)
-		a.Mu.Lock()
-		current := a.settings
-		a.Mu.Unlock()
-		confirmed := map[string]string{}
-		if _, ok := options[agent.OptionIDModel]; ok {
-			confirmed[agent.OptionIDModel] = current.model
-		}
-		if _, ok := options[agent.OptionIDEffort]; ok {
-			confirmed[agent.OptionIDEffort] = current.reasoningLevel
-		}
-		if modeRequested {
-			confirmed[agent.OptionIDPermissionMode] = current.permissionMode
-		}
-		return agent.ConfirmedSettings(confirmed)
-	}
-	a.Mu.Lock()
-	current := a.settings
-	a.Mu.Unlock()
-	confirmed := map[string]string{}
-	if _, ok := options[agent.OptionIDModel]; ok {
-		confirmed[agent.OptionIDModel] = current.model
-	}
-	if _, ok := options[agent.OptionIDEffort]; ok {
-		confirmed[agent.OptionIDEffort] = current.reasoningLevel
-	}
-	if modeRequested {
-		confirmed[agent.OptionIDPermissionMode] = current.permissionMode
-	}
-	return agent.ConfirmedSettings(confirmed)
-}
-
 // Stop ends the process.
 func (a *Agent) Stop() {
-	a.Mu.Lock()
-	a.stopped = true
-	a.Mu.Unlock()
 	a.Process.Stop()
+	a.withdrawPermissions()
+}
+
+// Wait retires permissions when the native server exits without a turn-end frame.
+func (a *Agent) Wait() error {
+	err := a.Process.Wait()
+	a.withdrawPermissions()
+	return err
 }
 
 // nextRequestID issues a command correlation id.

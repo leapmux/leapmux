@@ -23,8 +23,8 @@ import (
 //     request. The client states it in the `_meta.kiro` of session/new and
 //     session/load, Kiro keeps it for the life of the session, and nothing
 //     reports it back or changes it later. LeapMux therefore keeps it itself,
-//     as an option group of its own, and a change of it opens the session
-//     again under the new preset.
+//     as an option group of its own. The Worker applies Allow All immediately
+//     by answering tool permissions. Other changes open the session again.
 //
 // Kiro's `autopilot` config option (Autopilot or Supervised) is a third,
 // narrower axis: Supervised holds the file edits of a turn for a review at the
@@ -177,19 +177,24 @@ func (a *Agent) localOptionGroups() []*leapmuxv1.AvailableOptionGroup {
 // session opened again, which a restart does.
 var errPolicyAppliesAtSessionOpen = fmt.Errorf("the Kiro policy preset applies when the session opens")
 
-// applyLocalOption refuses a live change of the policy, which only a new
-// session applies. UpdateSettings asks for that restart before the base
-// reaches this. The refusal keeps the rule when some other path does.
-func (a *Agent) applyLocalOption(id, _ string) (bool, error) {
+// applyLocalOption applies Allow All through the Worker's standing approval.
+// Every other policy requires the native session to open again.
+func (a *Agent) applyLocalOption(id, value string) (bool, error) {
 	if id != contracts.KiroOptionPolicyPreset {
 		return false, nil
+	}
+	if value == contracts.KiroPolicyPresetAllowAll {
+		a.stateMu.Lock()
+		a.policy.current = value
+		a.stateMu.Unlock()
+		return true, nil
 	}
 	return true, errPolicyAppliesAtSessionOpen
 }
 
-// UpdateSettings applies a change of the settings. A new policy preset needs
-// the session opened again, so it asks for a restart, which opens the session
-// with session/load under the new preset. Every other axis applies live.
+// UpdateSettings applies Allow All without interrupting the current turn.
+// Other policy changes restart the session under the new native preset.
+// Every other axis applies live.
 //
 // A policy value that this build does not know is dropped from the change:
 // the session keeps its preset, and the snapshot reports that preset back.
@@ -200,7 +205,7 @@ func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult 
 			slog.Warn("kiro policy preset unknown; keeping the current one", "agent_id", a.AgentID(), "requested", requested, "current", current)
 			options = options.Clone()
 			options[contracts.KiroOptionPolicyPreset] = current
-		} else if requested != current {
+		} else if requested != current && requested != contracts.KiroPolicyPresetAllowAll {
 			return agent.RestartRequiredSettings(options)
 		}
 	}

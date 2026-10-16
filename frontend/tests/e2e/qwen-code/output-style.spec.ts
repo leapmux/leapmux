@@ -1,3 +1,5 @@
+// The native ACP output-style command has no LeapMux setting.
+// See https://github.com/leapmux/leapmux/issues/508.
 import { expectMissingSetting } from '../helpers/unsupportedConfiguration'
 import { qwenTest } from '../qwen-fixtures'
 import { relatedNativeProof } from './scenarios'

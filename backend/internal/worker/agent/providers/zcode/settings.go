@@ -110,6 +110,7 @@ func (a *Agent) recordPlanRequestLocked(requested string) {
 // The result is the stored plan-exit mode that this event releases, or empty. The
 // caller sends it, because the request needs a goroutine of its own.
 func (a *Agent) handleZCodeModeChanged(mode string, planEnabled bool, source string) (exitMode string) {
+	defer a.queuePermissionApprovals()
 	a.Mu.Lock()
 	planBefore := a.planEnabled
 	before := a.permissionModeLocked()
@@ -668,6 +669,7 @@ func (a *Agent) applyZCodeThoughtLevel(level string, timeout time.Duration) erro
 // mode is a value of LeapMux's axis, and session/setMode accepts each of them: `plan`
 // turns the plan flag on, and any other mode turns it off.
 func (a *Agent) applyZCodeMode(mode string, timeout time.Duration) error {
+	defer a.queuePermissionApprovals()
 	a.Mu.Lock()
 	sessionID := a.sessionID
 	modeChangesBefore := a.modeChanges
@@ -707,6 +709,7 @@ func (a *Agent) applyZCodeMode(mode string, timeout time.Duration) error {
 // launch options. That is the honest answer for any failed apply: reporting success
 // would strand the picker on a value the running session does not have.
 func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult {
+	defer a.queuePermissionApprovals()
 	a.Mu.Lock()
 	// The axis value, not the native mode: plan mode reads `build` natively, so a
 	// switch from Plan to Build would otherwise compare equal and send nothing.
@@ -881,6 +884,7 @@ func (b *zcodeStatePatchBody) hasSettings() bool {
 // flag alone, and only the SessionModeChanged event reports that -- see
 // handleZCodeModeChanged.
 func (a *Agent) handleZCodeStateUpdated(params json.RawMessage, raw []byte) {
+	defer a.queuePermissionApprovals()
 	if len(params) == 0 {
 		return
 	}

@@ -12,17 +12,19 @@ import (
 	"golang.org/x/tools/go/packages"
 )
 
-// jsonRPCPublication identifies the methods that publish a JSON-RPC control
-// request with no session check: (*providerkit.JSONRPCProcess).PublishControlRequest
-// and (*providerkit.JSONRPCProcess).PublishControlRequestInSession. The first
-// calls the second, so a provider can skip the check through either one.
+// jsonRPCPublication identifies publication and direct-approval methods without a session check.
+// Each entry can admit a request, so the ACP family must call it only inside its ownership guard.
 var jsonRPCPublication = struct {
 	pkgPath, receiver string
 	names             []string
 }{
 	pkgPath:  modulePath + providerTree + "/internal/providerkit",
 	receiver: "JSONRPCProcess",
-	names:    []string{"PublishControlRequest", "PublishControlRequestInSession"},
+	names: []string{
+		"PublishControlRequest", "PublishControlRequestInSession",
+		"PublishControlRequestWithApproval", "PublishSessionControlRequestWithApproval",
+		"ApproveUnpublishedControlRequest", "ApproveUnpublishedSessionControlRequest",
+	},
 }
 
 // isJSONRPCPublication reports whether fn is an unguarded publication method.
@@ -110,8 +112,10 @@ func TestACPProvidersPublishControlRequestsThroughTheSessionGuard(t *testing.T) 
 	// The base itself publishes through the method, inside the guard. Finding
 	// that call proves that the scan recognizes the method.
 	base := calls[modulePath+providerTree+"/acp"]
-	require.Len(t, base, 1, "the ACP base must publish in one place, inside the session guard: %v", base)
-	assert.Regexp(t, `^PublishSessionControlRequest at `, base[0])
+	require.Len(t, base, 3, "manual publication, standing approval, and unpublished approval must remain inside the session guard: %v", base)
+	for _, call := range base {
+		assert.Regexp(t, `^PublishSessionControlRequest at `, call)
+	}
 	for _, key := range family {
 		assert.Emptyf(t, calls[modulePath+providerTree+"/"+key],
 			"%s publishes a control request with no session check; call acp.Base.PublishSessionControlRequest", key)

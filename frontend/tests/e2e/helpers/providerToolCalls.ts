@@ -21,6 +21,7 @@ import { QWEN_TOOL } from '../../../src/generated/contracts/qwen-protocol'
 import { ZCODE_TOOL } from '../../../src/generated/contracts/zcode-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { escapeRegExp } from '../../../src/lib/regexp'
+import { AMP_CODE_EXEC_TOOL } from './ampCodeExecution'
 import {
   CURSOR_CREATE_PLAN_TOOL,
   CURSOR_EXECUTION_TOOLS,
@@ -524,6 +525,13 @@ export function codexExecToolCall(id: string, source: string): MockModelToolCall
   return { id, name: 'exec', input: source }
 }
 
+/** Await the actual cell ID that Codex returned when its execution yielded. */
+export function codexWaitCellToolCall(id: string, cellId: string): MockModelToolCall {
+  if (!id.trim() || !cellId.trim())
+    throw new Error('A native Codex cell wait requires a call ID and cell ID.')
+  return { id, name: 'wait', arguments: { cell_id: cellId } }
+}
+
 /**
  * Prefix each text line with its apply_patch hunk marker.
  */
@@ -637,7 +645,7 @@ const TOOL_VOCABULARY = {
     completeGoal: null,
     blockGoal: null,
     mcpTool: (id, { server, tool, input }) => ({ id, name: `mcp__${server}__${tool}`, arguments: input }),
-    codeExecution: null,
+    codeExecution: (id, source) => ({ id, name: 'Workflow', arguments: { script: source } }),
     workflowTools: ['Workflow'],
   },
   [AgentProvider.CODEWHALE]: {
@@ -652,9 +660,7 @@ const TOOL_VOCABULARY = {
     enterPlanMode: null,
     exitPlanMode: null,
     exitPlanModeFromFile: null,
-    // The runtime defers request_user_input.
-    // The first call returns its schema and asks no question.
-    // Script the second call to raise the question.
+    // The installed runtime raises request_user_input on its first call.
     // Each question requires an ID that the answer repeats.
     // The native multi_select field controls multiple choices.
     // The native allow_free_text field states that the question invites a typed answer. Codewhale 0.10.0 offers the
@@ -716,18 +722,22 @@ const TOOL_VOCABULARY = {
     enterPlanMode: null,
     exitPlanMode: null,
     exitPlanModeFromFile: null,
-    askUserQuestion: questionBuilder((id, questions) => ({
-      id,
-      name: 'request_user_input',
-      arguments: {
-        questions: questions.map((question, index) => ({
-          id: `question_${index + 1}`,
-          header: question.header,
-          question: question.question,
-          options: question.options.map(({ label, description }) => ({ label, description })),
-        })),
-      },
-    })),
+    askUserQuestion: questionBuilder((id, questions) => {
+      if (questions.some(question => question.multiSelect))
+        throw new Error('Codex request_user_input accepts single-choice questions.')
+      return {
+        id,
+        name: 'request_user_input',
+        arguments: {
+          questions: questions.map((question, index) => ({
+            id: `question_${index + 1}`,
+            header: question.header,
+            question: question.question,
+            options: question.options.map(({ label, description }) => ({ label, description })),
+          })),
+        },
+      }
+    }),
     // Send a function call with JSON arguments and the collaboration namespace.
     // An exec call to tools.spawn_agent creates no child and reports no result.
     // A bare spawn_agent function call returns "unsupported call: spawn_agent" in the tool output.
@@ -1309,7 +1319,23 @@ const TOOL_VOCABULARY = {
     enterPlanMode: null,
     exitPlanMode: null,
     exitPlanModeFromFile: null,
-    askUserQuestion: null,
+    // Reasonix exposes HostAsk as `ask`. Its ACP transport sends each answer through a permission option.
+    askUserQuestion: questionBuilder((id, questions) => {
+      if (questions.length < 1 || questions.length > 3)
+        throw new Error('Reasonix ask requires one to three questions.')
+      return {
+        id,
+        name: 'ask',
+        arguments: {
+          questions: questions.map(({ header, question, options, multiSelect }) => ({
+            header,
+            question,
+            options: options.map(({ label, description }) => ({ label, description })),
+            multiSelect: multiSelect ?? false,
+          })),
+        },
+      }
+    }),
     // The native read_only_task schema lives in internal/agent/task.go.
     // It requires prompt.
     // Its description is the 3-to-7-word label that the dispatch line shows.
@@ -1420,7 +1446,7 @@ const TOOL_VOCABULARY = {
     completeGoal: null,
     blockGoal: null,
     mcpTool: (id, { server, tool, input }) => ({ id, name: `mcp__${server}__${tool}`, arguments: input }),
-    codeExecution: null,
+    codeExecution: (id, source) => ({ id, name: AMP_CODE_EXEC_TOOL, arguments: { code: source } }),
     workflowTools: null,
   },
   // Cline's own tool names and argument shapes, read off the tool schemas in the
@@ -1537,7 +1563,7 @@ const TOOL_VOCABULARY = {
     enterPlanMode: null,
     exitPlanMode: null,
     exitPlanModeFromFile: null,
-    // Junie sends ask_user through Agent Client Protocol (ACP) as a permission request.
+    // Junie sends ask_user through Agent Client Protocol (ACP) as an elicitation form.
     // Each question requires name and question.
     // Each option requires a short title and a description sentence.
     // The native choices become the control options.
@@ -1622,7 +1648,7 @@ const TOOL_VOCABULARY = {
     completeGoal: null,
     blockGoal: null,
     mcpTool: null,
-    codeExecution: null,
+    codeExecution: (id, source) => ({ id, name: LETTA_TOOL.Workflow, arguments: { script: source } }),
     workflowTools: [LETTA_TOOL.Workflow],
   },
   [AgentProvider.DIRAC]: {
@@ -1665,15 +1691,18 @@ const TOOL_VOCABULARY = {
     exitPlanModeFromFile: null,
     // The respond question operation requests an ACP form.
     // Its options field supplies 2 to 5 labels.
-    askUserQuestion: questionBuilder((id, questions) => ({
-      id,
-      name: 'respond',
-      arguments: {
-        operation: 'question',
-        text: questions.map(question => question.question).join('\n\n'),
-        options: questions[0]?.options.map(({ label }) => label) ?? [],
-      },
-    })),
+    askUserQuestion: questionBuilder((id, questions) => {
+      const [question, ...rest] = questions
+      if (!question || rest.length > 0)
+        throw new Error('Dirac respond accepts one question.')
+      if (question.multiSelect)
+        throw new Error('Dirac respond accepts a single-choice question.')
+      return {
+        id,
+        name: 'respond',
+        arguments: { operation: 'question', text: question.question, options: question.options.map(({ label }) => label) },
+      }
+    }),
     // The native tool takes one array even when the turn starts one child.
     spawnSubagent: (id, request) => diracSubagentsToolCall(id, [request]),
     spawnSubagentBatch: diracSubagentsToolCall,
@@ -1722,7 +1751,7 @@ const TOOL_VOCABULARY = {
     completeGoal: id => ({ id, name: 'UpdateGoal', arguments: { status: 'complete' } }),
     blockGoal: id => ({ id, name: 'UpdateGoal', arguments: { status: 'blocked' } }),
     mcpTool: (id, { server, tool, input }) => ({ id, name: `mcp__${server}__${tool}`, arguments: input }),
-    codeExecution: null,
+    codeExecution: (id, source) => ({ id, name: 'Workflow', arguments: { script: source } }),
     workflowTools: ['Workflow'],
   },
   [AgentProvider.DROID]: {
@@ -1800,7 +1829,7 @@ const TOOL_VOCABULARY = {
     completeGoal: null,
     blockGoal: null,
     mcpTool: (id, { server, tool, input }) => ({ id, name: `mcp__${server}__${tool}`, arguments: input }),
-    codeExecution: null,
+    codeExecution: (id, source) => ({ id, name: 'codemode', arguments: { code: source } }),
     workflowTools: null,
   },
   [AgentProvider.DEEPSEEK_HARNESS]: {
@@ -1811,7 +1840,7 @@ const TOOL_VOCABULARY = {
     enterPlanMode: null,
     exitPlanMode: (id, plan) => ({ id, name: DEEPSEEK_HARNESS_TOOL.ExitPlanMode, arguments: { plan } }),
     exitPlanModeFromFile: null,
-    askUserQuestion: questionBuilder((id, questions) => ({ id, name: DEEPSEEK_HARNESS_TOOL.AskUserQuestion, arguments: { questions: questions.map(({ freeText: _freeText, ...question }, index) => ({ id: `question-${index + 1}`, ...question })) } })),
+    askUserQuestion: questionBuilder((id, questions) => ({ id, name: DEEPSEEK_HARNESS_TOOL.AskUserQuestion, arguments: { questions: questions.map(({ freeText: _freeText, multiSelect, ...question }, index) => ({ id: `question-${index + 1}`, ...question, multi_select: multiSelect ?? false })) } })),
     spawnSubagent: (id, { description, prompt, background }) => ({ id, name: DEEPSEEK_HARNESS_TOOL.Subagent, arguments: { description, prompt, run_in_background: background ?? true } }),
     spawnSubagentBatch: null,
     backgroundBash: (id, command) => ({ id, name: DEEPSEEK_HARNESS_TOOL.Bash, arguments: { command, description: 'Run the scripted background command.', run_in_background: true } }),
@@ -2489,16 +2518,6 @@ export function clineSpawnTeammateToolCall(id: string, agentId: string, roleProm
 /** Queue a Cline teammate run that emits native run lifecycle events. */
 export function clineRunTeammateTaskToolCall(id: string, agentId: string, task: string): MockModelToolCall {
   return { id, name: 'team_run_task', arguments: { agentId, task, runMode: 'async' } }
-}
-
-/** Run Claude Code's native Workflow tool with a self-contained script. */
-export function claudeWorkflowToolCall(id: string, script: string): MockModelToolCall {
-  return { id, name: 'Workflow', arguments: { script } }
-}
-
-/** Run Qoder CLI's native Workflow tool with a self-contained script. */
-export function qoderWorkflowToolCall(id: string, script: string): MockModelToolCall {
-  return { id, name: 'Workflow', arguments: { script } }
 }
 
 /** Read the complete installed Reasonix capability list without a page cursor. */

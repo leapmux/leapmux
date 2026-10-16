@@ -1,8 +1,8 @@
 import { codexTest } from '../codex-fixtures'
-import { exerciseAttachmentDelivery } from '../helpers/attachmentModelProbe'
+import { exerciseImageAttachmentDelivery } from '../helpers/attachmentModelProbe'
 
-codexTest.describe('Codex attachment support', () => {
+codexTest.describe('attachment support for Codex', () => {
   codexTest('delivers an image attachment to the model', async ({ native }) => {
-    await exerciseAttachmentDelivery(native, 'image', 'codex-shot.png', { protocol: 'openai-responses' })
+    await exerciseImageAttachmentDelivery(native, 'codex-shot.png', { protocol: 'openai-responses' })
   })
 })

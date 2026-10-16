@@ -1,3 +1,5 @@
+// The installed native PDF attachment path is not integrated.
+// See https://github.com/leapmux/leapmux/issues/499.
 import { exerciseAttachmentRefusal } from '../helpers/attachmentModelProbe'
 import { zcodeTest } from '../zcode-fixtures'
 

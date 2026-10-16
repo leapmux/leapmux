@@ -299,9 +299,8 @@ func TestACPTerminal_UnknownTerminalID(t *testing.T) {
 	assert.EqualValues(t, -32602, errObj["code"])
 }
 
-// An empty command falls back to the literal "shell", which is a label rather
-// than something to run -- so the row must not claim its title is a command.
-func TestACPTerminal_EmptyCommandTitleIsNotACommand(t *testing.T) {
+// An empty command must fail before the provider publishes a background task.
+func TestACPTerminal_EmptyCommandCreatesNoTask(t *testing.T) {
 	sink := &agenttest.Sink{}
 	b, rec := newTerminalTestBase(t, sink)
 
@@ -310,21 +309,16 @@ func TestACPTerminal_EmptyCommandTitleIsNotACommand(t *testing.T) {
 		"command":   "",
 		"cwd":       b.workingDir,
 	})
-	resps := rec.wait(t, 1)
-	result, ok := resps[0]["result"].(map[string]interface{})
-	if !ok {
-		t.Skip("the agent rejects an empty command outright; there is no row to inspect")
-	}
-	termID, _ := result["terminalId"].(string)
-	require.NotEmpty(t, termID)
-
-	row, found := sink.BackgroundTask(termID)
-	require.True(t, found)
-	assert.Equal(t, "shell", row.Title)
-	assert.False(t, row.TitleIsCommand, "the fallback label is not a command")
+	responses := rec.wait(t, 1)
+	errObj, ok := responses[0]["error"].(map[string]interface{})
+	require.True(t, ok, "terminal/create must reject an empty command")
+	assert.EqualValues(t, -32602, errObj["code"])
+	assert.Equal(t, "command is required", errObj["message"])
+	assert.NotContains(t, responses[0], "result")
+	assert.Empty(t, sink.BackgroundTasks(), "a rejected command must create no background task")
 }
 
-// A command containing only stripped characters needs the same shell fallback as an empty command.
+// A nonempty command that contains only stripped characters needs the shell label.
 // Clean it here before selecting that fallback because the registry cleans every title also.
 // Otherwise the raw nonempty command would skip the fallback and become a blank row at the sink.
 func TestACPTerminal_CommandOfStrippedCharactersFallsBackToShell(t *testing.T) {

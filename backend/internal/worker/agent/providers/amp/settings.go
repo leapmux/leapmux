@@ -85,7 +85,7 @@ func (a *Agent) SettingsSnapshot() agent.SettingsApplyResult {
 
 // UpdateSettings applies a change live, with no restart.
 //
-//   - The permission mode takes effect at the very next permission request.
+//   - Allow All approves pending requests and takes effect for every later request.
 //     The settings file delegates every call to the helper in both modes, and
 //     the agent decides each request from its current mode (see
 //     decidePermission), so a change writes no file.
@@ -105,6 +105,7 @@ func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult 
 	}
 	mode, permission := a.agentMode, a.permissionMode
 	a.mu.Unlock()
+	a.approvePendingPermissions()
 	a.sink.PersistSettingsRefresh(map[string]string{
 		contracts.AmpOptionAgentMode: mode,
 		agent.OptionIDPermissionMode: permission,

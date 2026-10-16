@@ -1160,7 +1160,7 @@ func TestApplyStartupPermissionMode_TimedOutProbeLeavesNoDeferredAck(t *testing.
 	assert.Equal(t, []string{contracts.ClaudeModeAuto, contracts.ClaudeModePlan}, readHandshakeModes(t, logPath))
 
 	a.Mu.Lock()
-	deferred, confirmed := a.deferredPermissionModeReqID, a.confirmedPermissionMode
+	deferred, confirmed := a.permissionModeChange, a.confirmedPermissionMode
 	a.Mu.Unlock()
 	assert.Empty(t, deferred,
 		"the acknowledged mode supersedes the timed-out probe, so no ack stays deferred")

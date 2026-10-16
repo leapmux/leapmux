@@ -158,7 +158,7 @@ func validApprovalMode(value string) bool {
 
 func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult {
 	a.sendMu.Lock()
-	defer a.sendMu.Unlock()
+	defer func() { a.sendMu.Unlock(); a.drainControls(); a.queuePermissionApprovals() }()
 	result := a.SettingsSnapshot()
 	for id, value := range options {
 		if value == "" || value == result.SurfacedOptions[id] {

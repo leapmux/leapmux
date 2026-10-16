@@ -81,6 +81,8 @@ func (a *Agent) decidePermission(ctx context.Context, request helperRequest) hel
 		// refusal waits in pending.answer, and the select below returns it.
 		a.sink.CancelControlRequest(requestID)
 	}
+	// A mode change can occur between the first mode check and request registration.
+	a.approvePendingPermissions()
 	select {
 	case decision := <-pending.answer:
 		return decision
@@ -91,6 +93,19 @@ func (a *Agent) decidePermission(ctx context.Context, request helperRequest) hel
 		a.sink.CancelControlRequest(requestID)
 		return rejectDecision("LeapMux withdrew the permission request")
 	}
+}
+
+// approvePendingPermissions claims the current requests while Allow All remains active.
+// Delivery and withdrawal run after both locks release, because sink callbacks can read agent settings.
+func (a *Agent) approvePendingPermissions() {
+	a.mu.Lock()
+	if a.stopped || a.permissionMode != contracts.AmpPermissionModeAllowAll || a.bridge == nil {
+		a.mu.Unlock()
+		return
+	}
+	taken, published := a.bridge.takePending()
+	a.mu.Unlock()
+	a.bridge.resolve(taken, published, allowDecision())
 }
 
 // matchToolCall finds the tool call that one permission request is about, and

@@ -1,9 +1,10 @@
 import type { PermissionOption } from '../../model/controlPrompt'
 import type { ControlExtractionInput, ExtractedControlRequest } from '../registry'
+import { ACP_PERMISSION_KIND } from '~/generated/contracts/acp-protocol'
 import { ZCODE_TOOL } from '~/generated/contracts/zcode-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { getToolInput, getToolName } from '~/utils/controlResponse'
-import { KIND_ALLOW_ALWAYS, KIND_ALLOW_ONCE, KIND_REJECT_ONCE } from '../../model/controlPrompt'
+import { KIND_ALLOW_ALWAYS, KIND_REJECT_ONCE } from '../../model/controlPrompt'
 
 /**
  * `Provider.extractControl` for ZCode.
@@ -23,7 +24,7 @@ import { KIND_ALLOW_ALWAYS, KIND_ALLOW_ONCE, KIND_REJECT_ONCE } from '../../mode
 /** The canonical kind one native option kind belongs to. An unknown kind stays as it arrived, so the row keeps the option in its additional buttons instead of guessing a slot for it. */
 function zcodeOptionKind(kind: string): string {
   switch (kind) {
-    case 'allow_once': return KIND_ALLOW_ONCE
+    case 'allow_once': return ACP_PERMISSION_KIND.AllowOnce
     case 'allow_always':
     case 'allow_project':
     case 'allow_session': return KIND_ALLOW_ALWAYS

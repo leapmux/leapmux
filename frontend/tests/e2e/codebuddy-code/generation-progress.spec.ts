@@ -13,3 +13,5 @@ codebuddyTest('reports no byte count throughout an actual native shell output st
     prepareCompletedResultView: callId => expandNativeResultView(toolCallRow(native.page, callId)),
   })
 })
+
+// Track this LeapMux limitation: https://github.com/leapmux/leapmux/issues/521.

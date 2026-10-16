@@ -4,3 +4,5 @@ import { exerciseAttachmentRefusal } from '../helpers/attachmentModelProbe'
 copilotTest('keeps a refused PDF attachment out of the next request', async ({ native }) => {
   await exerciseAttachmentRefusal(native, { kind: 'pdf', fileName: 'copilot-doc.pdf' })
 })
+
+// Track this LeapMux limitation: https://github.com/leapmux/leapmux/issues/510.

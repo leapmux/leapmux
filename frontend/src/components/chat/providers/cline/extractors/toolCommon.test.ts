@@ -111,7 +111,12 @@ describe('clineOperations', () => {
   })
 
   it('skips an entry of the list that is not a record, and reads a field of the wrong type as empty', () => {
-    expect(clineOperations(['text', null, { query: 3, result: ['r'], error: {} }])).toEqual([{ query: '', result: '', error: '', success: true }])
+    expect(clineOperations(['text', null, { query: 3, result: { invalid: true }, error: {} }])).toEqual([{ query: '', result: '', error: '', success: true }])
+  })
+
+  it('preserves text parts from native result arrays without serializing image bytes', () => {
+    expect(clineOperations([{ query: '/w/a.png', result: ['First', { type: 'image', data: 'YQ==', mediaType: 'image/png' }, null, 0, 'Second'], success: true }]))
+      .toEqual([{ query: '/w/a.png', result: 'First\nSecond', error: '', success: true }])
   })
 })
 

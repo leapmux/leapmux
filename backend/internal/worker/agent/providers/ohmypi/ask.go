@@ -240,11 +240,39 @@ func (a *Agent) answerAsk(data []byte) error {
 	a.Mu.Unlock()
 	if err := a.answerDialog(requestID, value); err != nil {
 		a.Mu.Lock()
-		call.plan = nil
+		if !errors.Is(err, agent.ErrDeliveryUncertain) {
+			call.plan = nil
+		}
 		a.Mu.Unlock()
 		return fmt.Errorf("answer the question: %w", err)
 	}
 	return nil
+}
+
+// cancelAsk claims a question cancellation before it reaches the native dialog.
+// A definite write failure keeps the question available for another answer.
+func (a *Agent) cancelAsk(requestID string, data []byte, stop agent.StopContext) (bool, error) {
+	a.Mu.Lock()
+	call := a.asks.byRequest(requestID)
+	if call == nil {
+		a.Mu.Unlock()
+		return false, nil
+	}
+	if call.handOff || call.plan != nil {
+		a.Mu.Unlock()
+		return true, fmt.Errorf("the question %q is no longer open", requestID)
+	}
+	call.handOff = true
+	a.Mu.Unlock()
+	err := a.Process.SendRawInput(data, stop)
+	if err != nil && !errors.Is(err, agent.ErrDeliveryUncertain) {
+		a.Mu.Lock()
+		if a.asks.byRequest(requestID) == call {
+			call.handOff = false
+		}
+		a.Mu.Unlock()
+	}
+	return true, err
 }
 
 // forgetAskDialog drops the call whose request has the given id: the reader
@@ -355,8 +383,8 @@ func (p *askPlan) title(index, toggled int) string {
 // askRowEllipsis ends a title row that omp shortened to fit its terminal.
 const askRowEllipsis = "…"
 
-// editorContinuesQuestion reports whether an editor title opens with the question
-// row of the select before it, then a blank line.
+// editorContinuesQuestion matches the question title of the preceding select.
+// Native RPC editors send that title alone. A rendered prompt can append its options after a blank line.
 //
 // omp shortens that row to the width of its terminal, less the panel's chrome
 // (tools/ask.ts, clampLineToWidth). In RPC mode stdout is a pipe, so the width is
@@ -364,6 +392,9 @@ const askRowEllipsis = "…"
 // the whole title, or a prefix of it that ends with an ellipsis. The select titles
 // are not shortened, so they keep the exact match of matchesSelect.
 func editorContinuesQuestion(editorTitle, question string) bool {
+	if editorTitle == question {
+		return true
+	}
 	row, rest, found := strings.Cut(editorTitle, "\n")
 	if !found || !strings.HasPrefix(rest, "\n") {
 		return false

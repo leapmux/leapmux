@@ -35,6 +35,7 @@ func (a *Agent) rememberCodexIncompleteTool(itemID, itemType, childThreadID stri
 		order:         a.incompleteToolOrder,
 	}
 	a.incompleteToolOrder++
+	a.rememberCommandForStopLocked(itemID, itemType, params)
 	a.Mu.Unlock()
 }
 

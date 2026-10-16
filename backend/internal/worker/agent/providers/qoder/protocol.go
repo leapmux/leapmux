@@ -81,7 +81,6 @@ type controlRequestEnvelope struct {
 // systemInitMessage is the part of a system/init line the worker reads.
 type systemInitMessage struct {
 	SessionID    string   `json:"session_id"`
-	Model        string   `json:"model"`
 	Permission   string   `json:"permissionMode"`
 	Capabilities []string `json:"capabilities"`
 }

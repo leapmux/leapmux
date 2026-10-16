@@ -2,7 +2,7 @@ import type { PermissionOption } from '../../model/controlPrompt'
 import type { ControlResponseSummary } from '../../model/controlResponse'
 import type { PersistedControlResponse } from '../../persistedControlResponse'
 import type { ControlExtractionInput, ExtractedControlRequest } from '../capabilities'
-import { ACP_PERMISSION_OUTCOME } from '~/generated/contracts/acp-protocol'
+import { ACP_PERMISSION_KIND, ACP_PERMISSION_OUTCOME } from '~/generated/contracts/acp-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { buildAllowResponse, buildDenyResponse, getToolInput } from '~/utils/controlResponse'
 import { permissionOptionLabel } from '../../controls/permissionOptionLabels'
@@ -10,7 +10,6 @@ import { buildJsonRpcResult } from '../../controls/types'
 import {
   CANONICAL_KINDS,
   KIND_ALLOW_ALWAYS,
-  KIND_ALLOW_ONCE,
   KIND_REJECT_ALWAYS,
   KIND_REJECT_ONCE,
 } from '../../model/controlPrompt'
@@ -78,7 +77,7 @@ export function acpBuildControlResponse(
   const options = permissionOptionsOf(payload, policy)
   if (options.length > 0) {
     if (!content) {
-      const allow = firstOptionOfKinds(options, [KIND_ALLOW_ONCE, KIND_ALLOW_ALWAYS])
+      const allow = firstOptionOfKinds(options, [ACP_PERMISSION_KIND.AllowOnce, KIND_ALLOW_ALWAYS])
       return allow !== undefined
         ? buildJsonRpcResult(requestId, { outcome: { outcome: ACP_PERMISSION_OUTCOME.Selected, optionId: allow } })
         : undefined
@@ -154,8 +153,8 @@ export function acpControlFeedbackRule(extractControl: ACPControlReader, permiss
  * the only truthful answer.
  */
 const OPTION_ID_KINDS: Record<string, string> = {
-  once: KIND_ALLOW_ONCE,
-  proceed_once: KIND_ALLOW_ONCE,
+  once: ACP_PERMISSION_KIND.AllowOnce,
+  proceed_once: ACP_PERMISSION_KIND.AllowOnce,
   always: KIND_ALLOW_ALWAYS,
   proceed_always: KIND_ALLOW_ALWAYS,
   reject: KIND_REJECT_ONCE,

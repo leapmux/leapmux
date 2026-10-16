@@ -1,3 +1,5 @@
+// The native audio input path is not integrated.
+// See https://github.com/leapmux/leapmux/issues/498.
 import { codexTest } from '../codex-fixtures'
 import { exerciseAttachmentRefusal } from '../helpers/attachmentModelProbe'
 

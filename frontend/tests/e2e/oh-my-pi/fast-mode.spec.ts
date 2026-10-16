@@ -1,3 +1,5 @@
+// The native set_fast_mode command has no LeapMux setting.
+// See https://github.com/leapmux/leapmux/issues/507.
 import { expectMissingSetting } from '../helpers/unsupportedConfiguration'
 import { ohMyPiTest } from '../ohmypi-fixtures'
 import { relatedNativeProof } from './scenarios'

@@ -14,6 +14,8 @@ import { expectSteeredReply, queuedInputRow, steerQueuedInput } from './steer'
 import { createToolOutputControl } from './toolOutputControl'
 import { answerControl, assistantBubbles, interruptButton, messageContents, sendMessage, userBubbles, waitForAgentIdle, waitForControlBanner } from './ui'
 
+export const NATIVE_TOOL_STEERING_TEXT = 'Also append the word steered to your final reply.'
+
 /**
  * Steer only after a real native shell command reports that it runs.
  *
@@ -34,7 +36,7 @@ import { answerControl, assistantBubbles, interruptButton, messageContents, send
 export async function exerciseSteerAfterTool(context: ManagedNativeScenarioContext, options: { expectDisplayedOutput?: boolean } = {}): Promise<void> {
   const agent = await currentNativeAgent(context)
   const output = createToolOutputControl(agent.workingDir)
-  const steering = 'Also append the word steered to your final reply.'
+  const steering = NATIVE_TOOL_STEERING_TEXT
   await withCleanup(async () => {
     const start = await context.modelScript.queue(
       { toolCalls: [bashToolCall(context.provider, 'held-native-steer-tool', output.command)] },

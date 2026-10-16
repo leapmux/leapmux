@@ -1,8 +1,11 @@
 import { diracTest } from '../dirac-fixtures'
-import { exerciseAttachmentDelivery } from '../helpers/attachmentModelProbe'
+import { exerciseImageAttachmentDelivery, expectAttachmentInRequest } from '../helpers/attachmentModelProbe'
+import { diracAttachmentRequest } from './attachmentInput'
 
-diracTest.describe('Dirac attachments', () => {
+diracTest.describe('attachments for Dirac', () => {
   diracTest('accepts an image attachment and carries it through the turn', async ({ native }) => {
-    await exerciseAttachmentDelivery(native, 'image', 'dirac-shot.png')
+    await exerciseImageAttachmentDelivery(native, 'dirac-shot.png', {
+      proof: (request, sourcePath) => expectAttachmentInRequest(native.page, diracAttachmentRequest(request), 'image', sourcePath),
+    })
   })
 })

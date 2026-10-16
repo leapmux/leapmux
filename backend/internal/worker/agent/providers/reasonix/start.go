@@ -30,8 +30,12 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 			storeQuery := agent.StoredSessionQuery{HomeDir: opts.HomeDir, WorkingDir: opts.WorkingDir}
 			transcript := newReasonixToolTranscript(ctx, sink, a.CurrentSessionID, storeQuery, opts.WorkingDir)
 			return acp.Hooks{
-				Sink:               transcript,
-				ClearProviderState: transcript.Reset,
+				WithBypassPermission: func(claim func()) {
+					a.WithOptionValue(contracts.ReasonixConfigToolApproval, contracts.ReasonixApprovalYolo, claim)
+				},
+				PermissionAllowsBypass: permissionAllowsBypass,
+				Sink:                   transcript,
+				ClearProviderState:     transcript.Reset,
 				AdvertisedSteerMethod: func(response []byte) string {
 					return acp.ParseAdvertisedMethod(response, reasonixSteerNamespace, reasonixSteerMethod)
 				},

@@ -5,3 +5,5 @@ import { exerciseCursorRelatedTodo } from './scenarios'
 cursorTest('proves the native bypass-permissions-shortcut limit after a real sidebar operation', async ({ native }) => {
   await expectMissingPermissionShortcut(native, { preset: 'bypass', relatedProof: () => exerciseCursorRelatedTodo(native) })
 })
+
+// Track this LeapMux limitation: https://github.com/leapmux/leapmux/issues/515.

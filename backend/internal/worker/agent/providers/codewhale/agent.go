@@ -55,7 +55,8 @@ type Agent struct {
 	// caller; a test feeds events through HandleOutput. Take it only around one
 	// event, never around an HTTP request: a handler that needs a request runs it
 	// on its own goroutine.
-	dispatchMu sync.Mutex
+	dispatchMu   sync.Mutex
+	approvalWork providerkit.CoalescingWork
 
 	// generationBuffer holds the streamed text of an item until the item's final
 	// event, so a process that dies mid-message still leaves its text behind.
@@ -91,7 +92,7 @@ type Agent struct {
 	tools codewhaleToolCalls
 	// controls holds the control requests that LeapMux published and that
 	// nothing resolved yet. See control.go.
-	controls map[string]codewhalePendingControl
+	controls map[string]*codewhalePendingControl
 	// usage is the latest context reading. See usage.go.
 	usage codewhaleUsage
 	// shells holds the background shell jobs that run. See subagent.go.

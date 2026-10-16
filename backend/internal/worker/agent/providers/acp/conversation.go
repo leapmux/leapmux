@@ -181,17 +181,14 @@ func (c *conversation) flushTextBuffer(kind agent.AssembledMessageKind) {
 	if text == "" {
 		return
 	}
-	c.persistCompletedText(kind, text)
+	c.persistFinishedText(kind, text, agent.MessageCompletionComplete)
 }
 
-// persistCompletedText ends one text kind's live counter and stores the segment.
-//
-// The counter closes even when the text is empty, because the caller reaches this
-// point only when the segment ended. A scope that stays open keeps counting its
-// characters into the next segment.
-func (c *conversation) persistCompletedText(kind agent.AssembledMessageKind, text string) {
+// persistFinishedText closes the live counter and stores the segment with its actual completion.
+// Close the counter even for empty text, so it cannot count characters from the next segment.
+func (c *conversation) persistFinishedText(kind agent.AssembledMessageKind, text string, completion agent.MessageCompletion) {
 	c.sink().ReportProgress(agent.CompleteModelProgress("acp:" + acpTextProgressScope(kind)))
-	c.persistAssembledText(kind, text, agent.MessageCompletionComplete)
+	c.persistAssembledText(kind, text, completion)
 }
 
 // persistAssembledText stores one assembled text segment.

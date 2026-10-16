@@ -1,8 +1,8 @@
-import { exerciseAttachmentDelivery } from '../helpers/attachmentModelProbe'
+import { exerciseImageAttachmentDelivery } from '../helpers/attachmentModelProbe'
 import { qoderTest } from '../qoder-fixtures'
 
-qoderTest.describe('Qoder CLI attachments and context usage', () => {
+qoderTest.describe('attachments and context usage for Qoder CLI', () => {
   qoderTest('delivers image attachment bytes to the model', async ({ native }) => {
-    await exerciseAttachmentDelivery(native, 'image', 'qoder-shot.png', { protocol: 'openai-chat-completions' })
+    await exerciseImageAttachmentDelivery(native, 'qoder-shot.png', { protocol: 'openai-chat-completions' })
   })
 })

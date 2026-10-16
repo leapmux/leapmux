@@ -1,12 +1,14 @@
 package kimi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 
@@ -46,7 +48,15 @@ type kimiPendingControl struct {
 	sessionID string
 	// answered is set once LeapMux delivered an answer, so the server's
 	// resolution that follows does not withdraw a request the user answered.
-	answered bool
+	answered        bool
+	bypassable      bool
+	payload         []byte
+	ready           bool
+	published       bool
+	answering       bool
+	automaticFailed bool
+	publicationDone chan struct{}
+	publicationOnce sync.Once
 }
 
 // kimiApprovalRequest is the part of event.approval.requested the worker reads.
@@ -81,7 +91,10 @@ func (a *Agent) handleApprovalRequested(event kimiEvent) {
 			a.sink.UpdatePlan([]byte(request.ToolInputDisplay.Plan), leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE, providerkit.ExtractPlanTitle(plan))
 		}
 	}
-	a.publishControl(request.ApprovalID, kimiControlApproval, event.Raw)
+	bypassable := request.ToolName != "" && request.ToolName != contracts.KimiToolExitPlanMode &&
+		request.ToolName != contracts.KimiToolCreateGoal && request.ToolName != contracts.KimiToolAskUserQuestion &&
+		request.ToolInputDisplay.Kind != contracts.KimiDisplayPlanReview && request.ToolInputDisplay.Kind != contracts.KimiDisplayGoalStart
+	a.publishControl(request.ApprovalID, kimiControlApproval, event.Raw, bypassable)
 }
 
 // kimiQuestionRequest is the part of event.question.requested the worker reads.
@@ -100,7 +113,7 @@ func (a *Agent) handleQuestionRequested(event kimiEvent) {
 		agentID = event.AgentID
 	}
 	a.flushAgentText(agentID)
-	a.publishControl(request.QuestionID, kimiControlQuestion, event.Raw)
+	a.publishControl(request.QuestionID, kimiControlQuestion, event.Raw, false)
 }
 
 // flushAgentText persists what an agent streamed so far. An empty id is the
@@ -120,7 +133,7 @@ func (a *Agent) flushAgentText(agentID string) {
 // A request the store refused cannot reach the user, and the tool call it
 // parks would wait for good. The worker cancels it instead, which the server
 // reports to the model as a refusal it can act on.
-func (a *Agent) publishControl(requestID string, kind kimiControlKind, payload []byte) {
+func (a *Agent) publishControl(requestID string, kind kimiControlKind, payload []byte, bypassable bool) {
 	a.Mu.Lock()
 	sessionID := a.sessionID
 	if a.controls == nil {
@@ -130,20 +143,129 @@ func (a *Agent) publishControl(requestID string, kind kimiControlKind, payload [
 		a.Mu.Unlock()
 		return
 	}
-	a.controls[requestID] = &kimiPendingControl{kind: kind, sessionID: sessionID}
+	bypass := bypassable && a.settings.permissionOption() == contracts.KimiModeAuto && !a.StoppedLocked()
+	pending := &kimiPendingControl{kind: kind, sessionID: sessionID, bypassable: bypassable,
+		payload: append([]byte(nil), payload...), ready: bypass, publicationDone: make(chan struct{})}
+	a.controls[requestID] = pending
 	a.Mu.Unlock()
+	if bypass {
+		a.queuePermissionApprovals()
+		return
+	}
+	a.publishRegisteredControl(requestID, pending)
+}
 
+func (a *Agent) publishRegisteredControl(requestID string, pending *kimiPendingControl) {
+	a.Mu.Lock()
+	if a.controls[requestID] != pending || a.StoppedLocked() {
+		if a.controls[requestID] == pending {
+			delete(a.controls, requestID)
+		}
+		pending.publicationOnce.Do(func() { close(pending.publicationDone) })
+		a.Mu.Unlock()
+		return
+	}
+	a.Mu.Unlock()
 	err := a.sink.PublishControlRequest(agent.ControlRequest{
-		RequestID: requestID, Payload: payload, AgentSessionID: sessionID,
+		RequestID: requestID, Payload: pending.payload, AgentSessionID: pending.sessionID,
 	})
+	a.Mu.Lock()
+	pending.ready, pending.published = true, err == nil
+	current := a.controls[requestID] == pending && !a.StoppedLocked()
+	if (err != nil || !current) && a.controls[requestID] == pending {
+		delete(a.controls, requestID)
+	}
+	bypass := a.settings.permissionOption() == contracts.KimiModeAuto && pending.bypassable && !pending.automaticFailed
+	pending.publicationOnce.Do(func() { close(pending.publicationDone) })
+	a.Mu.Unlock()
 	if err == nil {
+		if !current {
+			a.sink.CancelControlRequest(requestID)
+		} else if bypass {
+			a.queuePermissionApprovals()
+		}
 		return
 	}
 	slog.Error("kimi publish control request", "agent_id", a.AgentID(), "request_id", requestID, "error", err)
+	if current {
+		go a.cancelUnpublishedControl(pending.sessionID, requestID, pending.kind)
+	}
+}
+
+func (a *Agent) queuePermissionApprovals() {
+	a.approvalWork.Run("permissions", func() {
+		a.sessionMu.Lock()
+		defer a.sessionMu.Unlock()
+		a.approvePendingPermissions()
+	})
+}
+
+// approvePendingPermissions runs while the caller holds sessionMu.
+// Plan reviews, goal confirmations and questions always keep their own answers.
+func (a *Agent) approvePendingPermissions() {
 	a.Mu.Lock()
-	delete(a.controls, requestID)
+	if a.StoppedLocked() {
+		a.Mu.Unlock()
+		return
+	}
+	claimed := make(map[string]*kimiPendingControl)
+	toPublish := make(map[string]*kimiPendingControl)
+	for id, pending := range a.controls {
+		if pending.sessionID != a.sessionID || !pending.ready || pending.answering || pending.answered {
+			continue
+		}
+		if a.settings.permissionOption() == contracts.KimiModeAuto && pending.bypassable && !pending.automaticFailed {
+			pending.answering = true
+			claimed[id] = pending
+		} else if !pending.published {
+			pending.ready = false
+			toPublish[id] = pending
+		}
+	}
 	a.Mu.Unlock()
-	go a.cancelUnpublishedControl(sessionID, requestID, kind)
+	for id, pending := range toPublish {
+		a.publishRegisteredControl(id, pending)
+	}
+	answer, _ := json.Marshal(contracts.KimiApprovalReply{Decision: contracts.KimiDecisionApproved})
+	for id, pending := range claimed {
+		err := a.deliverApproval(pending.sessionID, id, answer)
+		a.finishControlReply(id, pending, err, true)
+		if err != nil {
+			slog.Warn("kimi could not approve a pending tool", "request_id", id, "error", err)
+		}
+	}
+}
+
+func (a *Agent) finishControlReply(requestID string, pending *kimiPendingControl, err error, automatic bool) {
+	a.Mu.Lock()
+	current := a.controls[requestID] == pending
+	retire := errors.Is(err, agent.ErrDeliveryUncertain) || errors.Is(err, errKimiControlGone) || a.StoppedLocked()
+	published := pending.published
+	if current {
+		pending.answering = false
+		if retire {
+			delete(a.controls, requestID)
+			pending.publicationOnce.Do(func() { close(pending.publicationDone) })
+		} else if err == nil {
+			pending.answered = true
+		} else {
+			pending.automaticFailed = pending.automaticFailed || automatic
+			if !published {
+				pending.ready = false
+			}
+		}
+	}
+	a.Mu.Unlock()
+	if !current {
+		return
+	}
+	if retire || err == nil {
+		if published && (automatic || retire) {
+			a.sink.CancelControlRequest(requestID)
+		}
+	} else if !published {
+		a.publishRegisteredControl(requestID, pending)
+	}
 }
 
 // cancelUnpublishedControl resolves a request no user can answer. It runs off
@@ -197,8 +319,12 @@ func (a *Agent) resolveControl(requestID string) {
 	a.Mu.Lock()
 	pending := a.controls[requestID]
 	delete(a.controls, requestID)
+	withdraw := pending != nil && !pending.answered && pending.published
+	if pending != nil {
+		pending.publicationOnce.Do(func() { close(pending.publicationDone) })
+	}
 	a.Mu.Unlock()
-	if pending == nil || pending.answered {
+	if !withdraw {
 		return
 	}
 	a.sink.CancelControlRequest(requestID)
@@ -210,7 +336,8 @@ func (a *Agent) withdrawAllControls() {
 	a.Mu.Lock()
 	ids := make([]string, 0, len(a.controls))
 	for id, pending := range a.controls {
-		if !pending.answered {
+		pending.publicationOnce.Do(func() { close(pending.publicationDone) })
+		if !pending.answered && pending.published {
 			ids = append(ids, id)
 		}
 	}
@@ -254,7 +381,8 @@ func (a *Agent) reconcileControls(sessionID string, approvals, questions []json.
 			continue
 		}
 		delete(a.controls, requestID)
-		if !control.answered {
+		control.publicationOnce.Do(func() { close(control.publicationDone) })
+		if !control.answered && control.published {
 			resolved = append(resolved, requestID)
 		}
 	}
@@ -348,17 +476,37 @@ func (a *Agent) deliverControlResponse(raw []byte) error {
 	}
 	a.Mu.Lock()
 	pending := a.controls[requestID]
-	current := a.sessionID
+	unpublished := pending != nil && pending.ready && !pending.published
 	a.Mu.Unlock()
-	if pending == nil {
+	if pending == nil || unpublished {
 		return errKimiControlGone
 	}
-	if pending.sessionID != current {
+	ctx := a.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case <-pending.publicationDone:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	a.sessionMu.Lock()
+	defer a.sessionMu.Unlock()
+	a.Mu.Lock()
+	if pending.sessionID != a.sessionID {
+		a.Mu.Unlock()
 		return errors.New("the Kimi Code control request belongs to a previous session")
 	}
+	if a.controls[requestID] != pending || pending.answered || pending.answering || !pending.published {
+		a.Mu.Unlock()
+		return errKimiControlGone
+	}
 	if err := kimiCheckID("session", pending.sessionID); err != nil {
+		a.Mu.Unlock()
 		return err
 	}
+	pending.answering = true
+	a.Mu.Unlock()
 	var err error
 	switch pending.kind {
 	case kimiControlApproval:
@@ -368,15 +516,8 @@ func (a *Agent) deliverControlResponse(raw []byte) error {
 	default:
 		err = fmt.Errorf("unknown Kimi Code control kind %d", pending.kind)
 	}
-	if err != nil {
-		return err
-	}
-	a.Mu.Lock()
-	if still := a.controls[requestID]; still == pending {
-		pending.answered = true
-	}
-	a.Mu.Unlock()
-	return nil
+	a.finishControlReply(requestID, pending, err, false)
+	return err
 }
 
 // deliverApproval posts an approval decision. An approval that switches the
@@ -431,9 +572,5 @@ func classifyKimiControlError(err error) error {
 		}
 		return err
 	}
-	var statusErr *providerkit.HTTPStatusError
-	if errors.As(err, &statusErr) {
-		return err
-	}
-	return fmt.Errorf("%w: Kimi Code did not confirm the answer: %v", agent.ErrDeliveryUncertain, err)
+	return providerkit.ClassifyHTTPDeliveryError("Kimi Code control answer", err)
 }

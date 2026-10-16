@@ -26,9 +26,8 @@ const ApprovalModeLabel = "Approval Mode"
 // read it, so the list the static fallback offers and the list a running agent
 // offers cannot drift apart.
 //
-// omp fixes the three modes itself (`tools.approvalMode`), and it applies a mode
-// only at launch: no RPC command changes it for a running session. A change
-// therefore restarts the agent with `--approval-mode`.
+// omp applies its native mode at launch. No RPC command changes it during a session.
+// The Worker grants Yolo tool approvals immediately. A narrower mode requires a restart.
 var approvalModeGroup = &leapmuxv1.AvailableOptionGroup{
 	Id:           agent.OptionIDPermissionMode,
 	Label:        ApprovalModeLabel,

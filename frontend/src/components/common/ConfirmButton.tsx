@@ -1,5 +1,6 @@
 import type { Component, JSX } from 'solid-js'
 import { createEffect, createSignal, onCleanup, splitProps } from 'solid-js'
+import * as styles from './ConfirmButton.css'
 import { Tooltip } from './Tooltip'
 
 const RESET_TIMEOUT_MS = 10_000
@@ -89,7 +90,6 @@ export const ConfirmButton: Component<ConfirmButtonProps & ConfirmButtonTooltips
   const [local, buttonProps] = splitProps(props, ['confirmLabel', 'tooltip', 'confirmTooltip', 'blocked', 'onClick', 'children'])
   const [armed, setArmed] = createSignal(false)
   let resetTimer: ReturnType<typeof setTimeout> | undefined
-  let blurResetTimer: ReturnType<typeof setTimeout> | undefined
 
   const clearResetTimer = () => {
     if (resetTimer !== undefined) {
@@ -99,18 +99,11 @@ export const ConfirmButton: Component<ConfirmButtonProps & ConfirmButtonTooltips
   }
 
   const reset = () => {
-    if (blurResetTimer !== undefined) {
-      clearTimeout(blurResetTimer)
-      blurResetTimer = undefined
-    }
     clearResetTimer()
     setArmed(false)
   }
 
   onCleanup(() => {
-    if (blurResetTimer !== undefined) {
-      clearTimeout(blurResetTimer)
-    }
     clearResetTimer()
   })
 
@@ -151,11 +144,12 @@ export const ConfirmButton: Component<ConfirmButtonProps & ConfirmButtonTooltips
       {...(armed() ? { 'data-variant': 'danger' } : {})}
       data-armed={armed() || undefined}
       onClick={handleClick}
-      onBlur={() => {
-        blurResetTimer = setTimeout(reset, 0)
-      }}
+      onBlur={reset}
     >
-      {armed() ? (local.confirmLabel ?? 'Confirm?') : local.children}
+      <span class={styles.labels}>
+        <span class={styles.label} aria-hidden={armed()}>{local.children}</span>
+        <span class={styles.label} aria-hidden={!armed()}>{local.confirmLabel ?? 'Confirm?'}</span>
+      </span>
     </button>
   )
 

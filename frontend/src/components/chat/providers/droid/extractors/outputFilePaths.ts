@@ -5,6 +5,7 @@ import { isObject } from '~/lib/jsonPick'
 import { isFilesystemPath } from '~/lib/paths'
 
 const OUTPUT_NOTICE = /(?:^|\r?\n)Full command output saved to: ([^\r\n]+) \([^\r\n]+\)(?=\r?\n|$)/gu
+const MIDDLE_CUT_NOTICE = /(?:^|\r?\n)\[\.\.\. ([1-9]\d*) bytes cut from the middle of ([1-9]\d*); whole output: ([^\r\n]+)\](?=\r?\n|$)/gu
 const OUTPUT_FILE = /[\\/]droid-terminal-[\w-]+[\\/][0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\.log$/iu
 
 /** Read the native footer. The terminal UUID is separate from the tool call ID. */
@@ -14,13 +15,24 @@ export function droidOutputFilePaths(input: RowExtractionInput, call: ToolCall):
     || native[DROID_NOTIFICATION_FIELD.ToolUseID] !== call.id) {
     return []
   }
-  const content = native[DROID_NOTIFICATION_FIELD.Content]
+  return droidNativeOutputFilePaths(native[DROID_NOTIFICATION_FIELD.Content])
+}
+
+/** Read one native output pointer across text blocks and retain the terminal UUID constraint. */
+export function droidNativeOutputFilePaths(content: unknown): readonly string[] {
   const texts = typeof content === 'string'
     ? [content]
     : Array.isArray(content)
       ? content.filter(isObject).filter(block => block.type === 'text').map(block => block.text).filter((text): text is string => typeof text === 'string')
       : []
-  const matches = texts.flatMap(text => [...text.matchAll(OUTPUT_NOTICE)])
-  const path = matches.length === 1 ? matches[0]?.[1] : undefined
+  const paths = texts.flatMap(text => [...text.matchAll(OUTPUT_NOTICE)].map(match => match[1]!))
+  for (const text of texts) {
+    for (const match of text.matchAll(MIDDLE_CUT_NOTICE)) {
+      if (BigInt(match[1]!) >= BigInt(match[2]!))
+        return []
+      paths.push(match[3]!)
+    }
+  }
+  const path = paths.length === 1 ? paths[0] : undefined
   return isFilesystemPath(path) && OUTPUT_FILE.test(path) ? [path] : []
 }

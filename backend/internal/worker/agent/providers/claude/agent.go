@@ -57,14 +57,12 @@ type Agent struct {
 	pendingControlMu        sync.Mutex
 	pendingControl          map[string]chan<- claudeCodeControlResult
 	confirmedPermissionMode string
-	// deferredPermissionModeReqID is the request_id of the LATEST set_permission_mode toggle
-	// whose ack the CLI deferred (it holds the response until the active turn ends). Guarded by
-	// a.Mu, alongside confirmedPermissionMode. claudeCodeHandleControlResponse folds back ONLY
-	// the deferred ack whose request_id matches this, so a stale/duplicate ack -- or an earlier
-	// toggle's ack arriving after a newer toggle superseded it -- can't clobber the confirmed
-	// mode. Tracking only the latest (a later toggle overwrites it) means a superseded toggle's
-	// ack is ignored, leaving the mode the user last asked for. Empty when nothing is pending.
-	deferredPermissionModeReqID string
+	// The request identity exists before its first write. A deferred request
+	// supplies the displayed mode until its matching reply arrives.
+	permissionModeChange *permissionModeChange
+	permissionModeMu     sync.Mutex
+	incomingControls     map[string]*claudePendingControl
+	approvalWork         providerkit.CoalescingWork
 	// unresolvedSettings records flag axes whose last write had no successful
 	// get_settings readback.
 	unresolvedSettings map[string]struct{}
@@ -83,6 +81,10 @@ type Agent struct {
 	// already hold it). nil/empty ⇒ fall back to the static claudeCodeAvailableModels
 	// catalog.
 	availableModels []*agent.ModelInfo
+	// Native thinking capabilities stay immutable after startup.
+	thinkingOffSupport map[string]bool
+	// Mu guards the account-default resolution when the first native readback arrives.
+	accountDefaultModel string
 
 	// tasks indexes everything this agent knows about a Claude task. It carries
 	// its own mutex, so the eight maps no longer contend on Process.Mu --
@@ -95,11 +97,13 @@ type Agent struct {
 
 func (a *Agent) Stop() {
 	a.Process.Stop()
+	a.withdrawControls()
 	a.sink.ReportProgress(agent.ResetProgress())
 }
 
 func (a *Agent) Wait() error {
 	err := a.Process.Wait()
+	a.withdrawControls()
 	a.sink.ReportProgress(agent.ResetProgress())
 	return err
 }
@@ -286,7 +290,9 @@ func (a *Agent) disarmTurn() {
 	// The note belongs to the turn that just ended. A turn end that ran without one
 	// (a process exit, a refused dispatch) must not leave it for the next turn.
 	a.interruptRequested = false
+	retired := a.takeControlsLocked(func(record *claudePendingControl) bool { return record.agentID == "" })
 	a.Mu.Unlock()
+	a.cancelControls(retired)
 	a.PublishTurnActive()
 }
 

@@ -2,6 +2,7 @@ import { expect } from '@playwright/test'
 import { CLINE_PERMISSION_MODE } from '../../../src/generated/contracts/cline-protocol'
 import { clineTest } from '../cline-fixtures'
 import { exerciseBypassPermissions } from '../helpers/nativeBypassPermissions'
+import { exerciseMidTurnBypass } from '../helpers/nativeMidTurnBypass'
 import { nativeOptionValue } from '../helpers/nativeScenario'
 import { expectPermissionShortcuts, expectSettingsChip } from '../helpers/ui'
 import { nativeContext } from './scenarios'
@@ -12,6 +13,10 @@ import { nativeContext } from './scenarios'
  * The Worker starts one private Cline hub for this agent. Cline's DeepSeek provider sends requests to the isolated mock.
  */
 clineTest.describe('Cline control requests', () => {
+  clineTest('approves a pending tool and the next tool when Bypass changes during a turn', async ({ askingClineWorkspace, page, modelScript, leapmuxServer }) => {
+    await exerciseMidTurnBypass(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingClineWorkspace.workspaceId }))
+  })
+
   clineTest('runs every call without a banner in Auto-approve, which the Bypass shortcut selects', async ({ askingClineWorkspace, page, modelScript, leapmuxServer }) => {
     await expectSettingsChip(page, 'Act')
     // Cline has no mode that asks for the risky calls alone, so it offers no Smart

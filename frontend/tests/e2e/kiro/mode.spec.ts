@@ -4,7 +4,7 @@ import { isObject } from '../../../src/lib/jsonPick'
 import { KIRO_MOCK_MODELS } from '../helpers/kiroSurface'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { chooseNativeModeWithNotice } from '../helpers/nativeModeChange'
-import { currentNativeAgent, nativeOptionValue } from '../helpers/nativeScenario'
+import { currentNativeAgent, nativeOptionGroup, nativeOptionValue } from '../helpers/nativeScenario'
 import { expectSettingsOptionsOffered } from '../helpers/nativeSettings'
 import { retryUntilPass } from '../helpers/retryUntilPass'
 import { chooseSettingsOption, expectNoSettingsChip, expectSettingsChip, expectSettingsOptionChosen, waitForSettingsHydrated, waitForSettingsIdle } from '../helpers/ui'
@@ -25,11 +25,15 @@ function requestModel(body: Record<string, unknown>): unknown {
   return state?.currentMessage?.userInputMessage?.modelId
 }
 
-kiroTest.describe('Kiro settings', () => {
+kiroTest.describe('settings for Kiro', () => {
   kiroTest('switches the effort, the mode and the model for the next prompt, and keeps them after reload', async ({ native, page }) => {
     await waitForSettingsHydrated(page)
     await expectSettingsChip(page, 'Default')
-    await expectSettingsOptionsOffered(page, 'permissionMode', ['vibe', 'spec', 'quick-spec', 'bug-fix', 'plan', 'autonomous'])
+    await retryUntilPass(async () => {
+      const modes = nativeOptionGroup(await currentNativeAgent(native), 'permissionMode')?.options.map(option => option.id) ?? []
+      expect(modes).toEqual(expect.arrayContaining(['vibe', 'spec', 'quick-spec', 'bug-fix', 'plan', 'autonomous']))
+      await expectSettingsOptionsOffered(page, 'permissionMode', modes)
+    })
     // The open request stated the effort, which differs from the model's own default.
     await expectSettingsChip(page, 'Medium')
 

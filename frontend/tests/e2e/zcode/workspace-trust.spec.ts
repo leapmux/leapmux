@@ -6,3 +6,5 @@ zcodeTest('starts and reads a private project without a workspace trust request'
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
   await exerciseNativeWorkspaceTrustLimit(context, { projectConfiguration: instructionFileConfiguration('AGENTS.md') })
 })
+
+// Track this LeapMux limitation: https://github.com/leapmux/leapmux/issues/522.

@@ -307,6 +307,7 @@ func (a *Agent) onTurnFinished(payload []byte) {
 		slog.Debug("letta: persist turn end failed", "agent_id", a.AgentID(), "error", err)
 	}
 	a.finishToolOutputScope("", a.sink)
+	a.withdrawPermissions()
 	a.disarmTurn()
 }
 

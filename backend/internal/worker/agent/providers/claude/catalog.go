@@ -10,9 +10,9 @@ import (
 
 // claudeCodeModelInfo is one entry of the `models` array in the Claude Code
 // initialize control response (SDK schema ModelInfoSchema). Only the fields
-// LeapMux consumes are decoded; adaptive-thinking/fast-mode/auto-mode flags are
-// derived separately (modelSupportsAdaptiveThinking) and omitted here.
+// LeapMux consumes are decoded. The native thinking capability controls the Off option.
 type claudeCodeModelInfo struct {
+	SupportsThinkingOff   *bool    `json:"supportsThinkingOff"`
 	Value                 string   `json:"value"`                 // id passed to --model / set_model (e.g. "opus[1m]"); "default" is an alias sentinel
 	DisplayName           string   `json:"displayName"`           // e.g. "Opus", or "Sonnet (1M context)" where a 1M window is opt-in
 	Description           string   `json:"description"`           // capability blurb shown on hover
@@ -233,18 +233,10 @@ func normalizeClaudeCodeModel(model string) string {
 	return alias + suffix
 }
 
-// modelSupportsAdaptiveThinking reports whether Claude Code emits
-// thinking.type:"adaptive" for this model (Opus and Sonnet) versus
-// thinking.type:"enabled" with a budget (Haiku). Unknown model strings
-// default to true to match Claude Code's first-party fallback. This is
-// used purely to pick the "Adaptive" vs "On" display label in
-// AvailableOptionGroups — the wire payload (alwaysThinkingEnabled) is
-// identical either way.
-//
-// Expects the short alias (e.g. "opus", "haiku"). `a.model` is kept
-// normalized after every refreshSettingsFromAgent call, so internal
-// callers can pass it directly without re-normalizing.
-func modelSupportsAdaptiveThinking(model string) bool {
+// modelUsesAdaptiveThinkingLabel selects the native UI label for the enabled state.
+// Haiku uses "On" even when its native requests use adaptive thinking.
+// The normalized model alias controls this label only, not the request payload.
+func modelUsesAdaptiveThinkingLabel(model string) bool {
 	return !strings.HasPrefix(model, "haiku")
 }
 

@@ -4,3 +4,5 @@ import { zcodeTest } from '../zcode-fixtures'
 zcodeTest('offers no Steer control while the native prompt holds the session', async ({ native }) => {
   await exerciseQueuedTurnWithoutSteering(native)
 })
+
+// Track this LeapMux limitation: https://github.com/leapmux/leapmux/issues/519.

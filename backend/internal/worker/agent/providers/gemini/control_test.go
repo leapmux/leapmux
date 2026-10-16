@@ -11,9 +11,30 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestPermissionBypassExcludesEveryPlanIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name, params string
+		allow        bool
+	}{
+		{"ordinary", `{"toolCall":{"toolCallId":"run_shell_command__one"}}`, true},
+		{"plan", `{"toolCall":{"toolCallId":"exit_plan_mode"}}`, false},
+		{"plan with invalid path", `{"toolCall":{"toolCallId":"exit_plan_mode__one","title":"invalid path"}}`, false},
+		{"plan without suffix", `{"toolCall":{"toolCallId":"exit_plan_mode__"}}`, false},
+		{"another identifier", `{"toolCall":{"toolCallId":"exit_plan_mode_other"}}`, true},
+		{"empty", `{}`, false},
+		{"wrong identifier type", `{"toolCall":{"toolCallId":0}}`, false},
+		{"malformed", `[`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.allow, permissionAllowsBypass(&providerkit.ParsedLine{Params: []byte(tc.params)}))
+		})
+	}
+}
 
 func geminiPlanRequest(t *testing.T, path string) []byte {
 	t.Helper()

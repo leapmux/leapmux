@@ -6,7 +6,7 @@ import type { ModelScript } from './modelScriptFixture'
 import type { NativeScenarioContext } from './nativeScenario'
 import { Buffer } from 'node:buffer'
 import { createHash } from 'node:crypto'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { afterAll, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
@@ -124,7 +124,7 @@ const SOURCE_QUADRANTS = [[255, 0, 0, 255], [0, 255, 0, 255], [0, 0, 255, 255], 
 /**
  * Bytes that start with a WebP signature. A unit test decodes no pixels, so the
  * signature is all that the format check reads. The browser suite in
- * attachmentModelProbe.spec.ts decodes a real WebP.
+ * ../209-attachment-model-proof.spec.ts decodes a real WebP.
  */
 const webp = Buffer.concat([Buffer.from('RIFF', 'latin1'), Buffer.from([0x1A, 0, 0, 0]), Buffer.from('WEBPVP8L', 'latin1'), Buffer.alloc(18, 0x2F)])
 const webpBase64 = webp.toString('base64')
@@ -188,6 +188,44 @@ describe('nativeUserStrings', () => {
   it('preserves the existing generic API user content reader', () => {
     expect(nativeUserStrings({ messages: [{ role: 'system', content: 'SYSTEM_ONLY' }, { role: 'user', content: [{ type: 'text', text: 'ACTUAL_USER' }, { type: 'image_url', image_url: { url: 'ACTUAL_IMAGE' } }] }] }))
       .toEqual(['text', 'ACTUAL_USER', 'image_url', 'ACTUAL_IMAGE'])
+  })
+})
+
+describe('current text attachment evidence', () => {
+  it.each(['chat', 'anthropic', 'responses', 'response string', 'Google', 'Cursor', 'Kiro'] as const)('accepts current native text through %s', async (format) => {
+    const path = writeAttachmentFixture('text', 'current-text-positive.txt')
+    const source = readFileSync(path, 'utf8')
+    const record = {
+      'chat': chat({ role: 'user', content: [{ type: 'text', text: source }] }),
+      'anthropic': anthropic({ role: 'user', content: [{ type: 'text', text: source }] }, { role: 'system', content: 'Later native instructions.' }),
+      'responses': nativeRequest('openai-responses', { input: [{ role: 'user', content: [{ type: 'input_text', text: source }] }] }),
+      'response string': nativeRequest('openai-responses', { input: source }),
+      'Google': nativeRequest('google-generative-language', { contents: [{ role: 'user', parts: [{ text: source }] }] }),
+      'Cursor': cursor([{ kind: 'file', filename: 'current-text-positive.txt', data: source }]),
+      'Kiro': nativeRequest('aws-event-stream', { conversationState: { currentMessage: { userInputMessage: { content: source } } } }),
+    }[format]
+    await expect(expectNativeAttachmentProof(noBrowser, status(record), 'text', path)).resolves.toBeUndefined()
+  })
+
+  it.each(['earlier turn', 'tool result', 'Google tool result', 'content metadata'] as const)('rejects file text outside the current input: %s', async (location) => {
+    const path = writeAttachmentFixture('text', 'current-text-proof.txt')
+    const source = readFileSync(path, 'utf8')
+    const record = {
+      'earlier turn': chat({ role: 'user', content: source }, { role: 'assistant', content: 'An earlier answer.' }, { role: 'user', content: 'A new prompt without the file.' }),
+      'tool result': anthropic({ role: 'assistant', content: [{ type: 'tool_use', id: 'read', name: 'Read', input: {} }] }, { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'read', content: source }] }),
+      'Google tool result': nativeRequest('google-generative-language', { contents: [{ role: 'user', parts: [{ functionResponse: { name: 'read', response: { result: 'done' } } }, { text: source }] }] }),
+      'content metadata': chat({ role: 'user', content: [{ type: 'text', text: 'No file text here.', metadata: source }] }),
+    }[location]
+    await expect(expectNativeAttachmentProof(noBrowser, status(record), 'text', path)).rejects.toThrow(location === 'tool result' || location === 'Google tool result'
+      ? 'the native request has no user content for the attachment'
+      : 'the native user content must include the full text file')
+  })
+
+  it('refuses a containment proof for a zero-byte text file, even when its filename appears', async () => {
+    const path = writeAttachmentFixture('text', 'native-empty.txt')
+    writeFileSync(path, '')
+    for (const content of ['No file here.', 'Attached file: native-empty.txt'])
+      await expect(expectNativeAttachmentProof(noBrowser, status(chat({ role: 'user', content })), 'text', path)).rejects.toThrow('empty text file')
   })
 })
 

@@ -39,7 +39,8 @@ type Agent struct {
 	permissions     string
 	active          bool
 	streams         map[string]*sessionStream
-	controls        map[string]nativeControl
+	controls        map[string]*nativeControl
+	approvalWork    providerkit.CoalescingWork
 	children        map[string]*nativeChild
 	childCatalog    map[string]nativeChildDescriptor
 	workflows       map[string]nativeWorkflow
@@ -57,7 +58,7 @@ var _ agent.ChildSteerer = (*Agent)(nil)
 var _ agent.ChildInterrupter = (*Agent)(nil)
 
 func newAgent(sink agent.ProviderServices, workingDir string) *Agent {
-	return &Agent{sink: sink, workingDir: workingDir, streamDone: make(chan struct{}), ready: make(chan struct{}), streams: map[string]*sessionStream{}, controls: map[string]nativeControl{}, children: map[string]*nativeChild{}, childCatalog: map[string]nativeChildDescriptor{}, workflows: map[string]nativeWorkflow{}, mode: "act", permissions: "workspace-write"}
+	return &Agent{sink: sink, workingDir: workingDir, streamDone: make(chan struct{}), ready: make(chan struct{}), streams: map[string]*sessionStream{}, controls: map[string]*nativeControl{}, children: map[string]*nativeChild{}, childCatalog: map[string]nativeChildDescriptor{}, workflows: map[string]nativeWorkflow{}, mode: "act", permissions: "workspace-write"}
 }
 
 func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {

@@ -257,6 +257,8 @@ export interface MockModelMatcher {
   /** Match only the final message of the active generic model API. */
   lastMessage?: {
     role?: 'system' | 'developer' | 'user' | 'assistant' | 'tool'
+    /** Match native message types, including Responses tool outputs that have no role. */
+    type?: MockModelPattern
     text?: MockModelPattern
   }
 }
@@ -486,15 +488,16 @@ function parseMatcher(value: unknown, ruleName: string): MockModelMatcher {
   }
   if (value.lastMessage !== undefined) {
     const message = value.lastMessage
-    if (!isObject(message) || Object.keys(message).length === 0 || Object.keys(message).some(key => key !== 'role' && key !== 'text'))
-      throw new Error(`Model rule ${ruleName} lastMessage must contain role or text criteria only`)
+    if (!isObject(message) || Object.keys(message).length === 0 || Object.keys(message).some(key => !['role', 'type', 'text'].includes(key)))
+      throw new Error(`Model rule ${ruleName} lastMessage must contain recognized message criteria only`)
     const role = (['system', 'developer', 'user', 'assistant', 'tool'] as const).find(candidate => candidate === message.role)
     if (message.role !== undefined && role === undefined)
       throw new Error(`Model rule ${ruleName} lastMessage role is invalid`)
-    if (role === undefined && message.text === undefined)
-      throw new Error(`Model rule ${ruleName} lastMessage needs role or text`)
+    if (role === undefined && message.type === undefined && message.text === undefined)
+      throw new Error(`Model rule ${ruleName} lastMessage needs a message criterion`)
     matcher.lastMessage = {
       ...(role === undefined ? {} : { role }),
+      ...(message.type === undefined ? {} : { type: parseModelPattern(message.type, `Model rule ${ruleName} lastMessage type`) }),
       ...(message.text === undefined ? {} : { text: parseModelPattern(message.text, `Model rule ${ruleName} lastMessage text`) }),
     }
   }
@@ -914,7 +917,12 @@ export function matchesRequest(
     const message: unknown = Array.isArray(rows) ? rows.at(-1) : undefined
     if (!isObject(message) || (matcher.lastMessage.role !== undefined && matcher.lastMessage.role !== message.role))
       return false
-    if (!matchesPattern(matcher.lastMessage.text, rowText(request.protocol, rowContent(request.protocol, message))))
+    if (matcher.lastMessage.type !== undefined && (typeof message.type !== 'string' || !matchesPattern(matcher.lastMessage.type, message.type)))
+      return false
+    const isResponseToolOutput = request.protocol === 'openai-responses'
+      && (message.type === 'function_call_output' || message.type === 'custom_tool_call_output')
+    const content = isResponseToolOutput ? message.output : rowContent(request.protocol, message)
+    if (!matchesPattern(matcher.lastMessage.text, rowText(request.protocol, content)))
       return false
   }
   return true

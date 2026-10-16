@@ -1,12 +1,7 @@
-// Package phasetrace provides env-var-gated structured timing traces
-// used by perf e2e tests to reconstruct phase timelines from stderr.
-// Production logs are unaffected: when the gating env var is not set
-// to "1", every call is a single-bool-check no-op.
-//
-// Each domain constructs one Tracer with a fixed marker + message and
-// exposes a typed wrapper (e.g. agent.TraceStartupPhase,
-// service.traceTabClosePhase) so call sites don't pass marker strings
-// directly.
+// Package phasetrace supplies optional structured traces for performance and end-to-end tests.
+// Each domain selects an environment variable and a fixed marker.
+// Calls do nothing unless that variable equals "1".
+// Typed domain wrappers keep marker strings out of individual call sites.
 package phasetrace
 
 import (
@@ -14,19 +9,16 @@ import (
 	"os"
 )
 
-// Tracer emits structured timing log lines when its gate env var is
-// "1". The marker is written as the first key-value pair on every
-// line so grep-based log parsers can filter on it cheaply.
+// Tracer writes structured records with its marker as the first field.
 type Tracer struct {
 	enabled bool
 	marker  string
 	message string
 }
 
-// New returns a Tracer gated on os.Getenv(envVar) == "1". The env var
-// is read once at construction time; toggling it at runtime has no
-// effect. marker is the value written as the "marker" key on every
-// emitted line; message is the slog record's top-level message.
+// New enables a tracer when envVar equals "1" at construction.
+// Later environment changes do not affect it.
+// Each record carries marker and the top-level message.
 func New(envVar, marker, message string) *Tracer {
 	return &Tracer{
 		enabled: os.Getenv(envVar) == "1",
@@ -35,8 +27,10 @@ func New(envVar, marker, message string) *Tracer {
 	}
 }
 
-// Log emits a slog.Info record with marker=<marker> prepended to the
-// caller-supplied key-value pairs. No-op when the tracer is disabled.
+// Enabled reports the fixed choice captured when the tracer was constructed.
+func (t *Tracer) Enabled() bool { return t.enabled }
+
+// Log writes an Info record when the tracer is enabled.
 func (t *Tracer) Log(kvs ...any) {
 	if !t.enabled {
 		return
@@ -45,4 +39,11 @@ func (t *Tracer) Log(kvs ...any) {
 	args = append(args, "marker", t.marker)
 	args = append(args, kvs...)
 	slog.Info(t.message, args...)
+}
+
+// LogLazy builds the record fields only when the tracer is enabled.
+func (t *Tracer) LogLazy(fields func() []any) {
+	if t.enabled {
+		t.Log(fields()...)
+	}
 }

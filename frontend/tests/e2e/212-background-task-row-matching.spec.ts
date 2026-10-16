@@ -1,6 +1,6 @@
 import { expect } from '@playwright/test'
-import { test } from '../fixtures'
-import { expectRegistryRow, expectRowBecomesFinal } from './subagentRegistry'
+import { test } from './fixtures'
+import { expectRegistryRow, expectRowBecomesFinal } from './helpers/subagentRegistry'
 
 test('matches background task filters on each row before its nested content', async ({ page }) => {
   await page.setContent(`

@@ -1,10 +1,10 @@
 import type { ControlAnswerState, ControlResponseSender } from '../../controls/types'
 import type { ControlQuestion } from '../../model/question'
-import { ACP_PERMISSION_OUTCOME } from '~/generated/contracts/acp-protocol'
+import { ACP_PERMISSION_KIND, ACP_PERMISSION_OUTCOME } from '~/generated/contracts/acp-protocol'
 import { QWEN_META, QWEN_PERMISSION_OPTION } from '~/generated/contracts/qwen-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { questionsFromWire, sendJsonRpcResult } from '../../controls/types'
-import { KIND_ALLOW_ONCE, KIND_REJECT_ONCE } from '../../model/controlPrompt'
+import { KIND_REJECT_ONCE } from '../../model/controlPrompt'
 import { joinAnswerLines, labeledAnswerLine } from '../../persistedControlResponse'
 import { acpPermissionOptions, acpPermissionToolCall } from '../acp/extractControl'
 
@@ -88,7 +88,7 @@ export function qwenQuestionReply(payload: Record<string, unknown>, questions: C
       answers[String(index)] = answer
   })
   return {
-    outcome: { outcome: ACP_PERMISSION_OUTCOME.Selected, optionId: qwenOptionOfKind(payload, KIND_ALLOW_ONCE, QWEN_PERMISSION_OPTION.ProceedOnce) },
+    outcome: { outcome: ACP_PERMISSION_OUTCOME.Selected, optionId: qwenOptionOfKind(payload, ACP_PERMISSION_KIND.AllowOnce, QWEN_PERMISSION_OPTION.ProceedOnce) },
     [QWEN_ANSWERS_FIELD]: answers,
   }
 }

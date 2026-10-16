@@ -3,7 +3,7 @@ import type { Ctx } from '@milkdown/ctx'
 import { editorViewCtx, serializerCtx } from '@milkdown/core'
 import { TextSelection } from '@milkdown/prose/state'
 import { replaceAll } from '@milkdown/utils'
-import { stripNeedlessEscapes } from './needlessEscapes'
+import { serializeEditorDocument } from './documentMarkdown'
 
 /** Options for setting up the ref callbacks exposed to the parent component. */
 export interface EditorRefHandlersOptions {
@@ -32,7 +32,7 @@ export function setupEditorRefHandlers(opts: EditorRefHandlersOptions): void {
         editor.action((ctx: Ctx) => {
           const serializer = ctx.get(serializerCtx)
           const view = ctx.get(editorViewCtx)
-          text = stripNeedlessEscapes(serializer(view.state.doc)).trim()
+          text = serializeEditorDocument(view.state.doc, serializer).trim()
         })
       }
       catch { /* editor may not be ready */ }
@@ -77,7 +77,7 @@ export function setupEditorRefHandlers(opts: EditorRefHandlersOptions): void {
         // one.
         let applied = text
         editor.action((ctx: Ctx) => {
-          applied = stripNeedlessEscapes(ctx.get(serializerCtx)(ctx.get(editorViewCtx).state.doc))
+          applied = serializeEditorDocument(ctx.get(editorViewCtx).state.doc, ctx.get(serializerCtx))
         })
         opts.onDocument(applied)
       }

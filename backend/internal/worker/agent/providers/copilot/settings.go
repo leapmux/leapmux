@@ -122,7 +122,9 @@ func (a *Agent) refreshNativeSettingsInBackground() {
 func (a *Agent) UpdateSettings(requested optionmap.Map) agent.SettingsApplyResult {
 	a.sessionMu.Lock()
 	defer a.sessionMu.Unlock()
-	return a.applyNativeSettings(requested)
+	result := a.applyNativeSettings(requested)
+	a.approvePendingPermissions()
+	return result
 }
 
 // applyOpeningSettings applies the settings that a session opens with.

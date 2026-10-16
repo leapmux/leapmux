@@ -1,8 +1,10 @@
 package deepseekharness
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"sync"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
@@ -11,10 +13,18 @@ import (
 )
 
 type nativeControl struct {
-	event   string
-	agentID string
-	request json.RawMessage
-	sink    agent.ProviderServices
+	event           string
+	toolName        string
+	agentID         string
+	request         json.RawMessage
+	sink            agent.ProviderServices
+	payload         []byte
+	published       bool
+	ready           bool
+	answering       bool
+	automaticFailed bool
+	publicationDone chan struct{}
+	publicationOnce sync.Once
 }
 
 type nativeQuestion struct {
@@ -31,9 +41,8 @@ type nativeQuestion struct {
 	} `json:"intent"`
 }
 
-// storedControlRefusal reads the stored request and the answer's envelope, and
-// states the reason the reader sees when either one is unreadable or mismatched.
-// "" means both stand.
+// storedControlRefusal validates the stored request and the answer envelope.
+// An empty result means that both are valid.
 func storedControlRefusal(ctx agent.ControlResponseContext) string {
 	var payload struct {
 		Type    string          `json:"type"`
@@ -115,11 +124,15 @@ func (a *Agent) publishNativeControl(event, id, sessionID string, request, raw [
 		sink = a.sink.ChildSink(child)
 	}
 	var payload map[string]any
-	if err := json.Unmarshal(raw, &payload); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if err := decoder.Decode(&payload); err != nil {
 		return err
 	}
 	var header map[string]any
-	if err := json.Unmarshal(request, &header); err != nil || header == nil {
+	decoder = json.NewDecoder(bytes.NewReader(request))
+	decoder.UseNumber()
+	if err := decoder.Decode(&header); err != nil || header == nil {
 		return fmt.Errorf("DeepSeek Harness control request is invalid")
 	}
 	if event == contracts.DeepseekHarnessControlEventApproval {
@@ -141,8 +154,7 @@ func (a *Agent) publishNativeControl(event, id, sessionID string, request, raw [
 			if question.Intent != nil && question.Intent.Kind == "plan-review" {
 				header["tool_name"] = contracts.DeepseekHarnessToolExitPlanMode
 				header["tool_use_id"] = question.Intent.CallID
-				// The Worker decodes the plan with the compression that the call states, and it refuses an
-				// unspecified one. A review that carries no plan stores none.
+				// The Worker requires the declared compression. A review without plan text stores no plan.
 				if plan := question.Detail; plan != "" {
 					compressed, compression := msgcodec.Compress([]byte(plan))
 					sink.UpdatePlan(compressed, compression, providerkit.ExtractPlanTitle(plan))
@@ -155,16 +167,49 @@ func (a *Agent) publishNativeControl(event, id, sessionID string, request, raw [
 	if err != nil {
 		return err
 	}
+	toolName, _ := header["tool_name"].(string)
+	control := &nativeControl{event: event, toolName: toolName, agentID: sessionID, request: append([]byte(nil), request...), sink: sink, payload: content, publicationDone: make(chan struct{})}
 	a.Mu.Lock()
-	a.controls[id] = nativeControl{event: event, agentID: sessionID, request: append([]byte(nil), request...), sink: sink}
-	a.Mu.Unlock()
-	if err := sink.PublishControlRequest(agent.ControlRequest{AgentSessionID: sessionID, RequestID: id, Payload: content}); err != nil {
-		a.Mu.Lock()
-		delete(a.controls, id)
+	if a.controls[id] != nil {
 		a.Mu.Unlock()
-		return err
+		return nil
 	}
-	return nil
+	if a.StoppedLocked() || a.streamFailure != nil {
+		a.Mu.Unlock()
+		return fmt.Errorf("DeepSeek Harness cannot publish a control after its connection ends")
+	}
+	a.controls[id] = control
+	automatic := a.canBypassControlLocked(control)
+	if automatic {
+		control.ready = true
+		control.publicationOnce.Do(func() { close(control.publicationDone) })
+	}
+	a.Mu.Unlock()
+	if automatic {
+		a.queuePermissionApprovals()
+		return nil
+	}
+	return a.publishRegisteredControl(id, control)
+}
+
+func (a *Agent) publishRegisteredControl(id string, control *nativeControl) error {
+	err := control.sink.PublishControlRequest(agent.ControlRequest{AgentSessionID: control.agentID, RequestID: id, Payload: control.payload})
+	a.Mu.Lock()
+	current := a.controls[id] == control
+	control.published, control.ready = err == nil, true
+	control.publicationOnce.Do(func() { close(control.publicationDone) })
+	if err != nil && current {
+		delete(a.controls, id)
+	}
+	automatic := current && err == nil && a.canBypassControlLocked(control)
+	a.Mu.Unlock()
+	if !current && err == nil {
+		control.sink.CancelControlRequest(id)
+	}
+	if automatic {
+		a.queuePermissionApprovals()
+	}
+	return err
 }
 
 func (a *Agent) replyRemoteEvent(id string, outcome map[string]any) error {
@@ -179,7 +224,7 @@ func (a *Agent) replyRemoteEvent(id string, outcome map[string]any) error {
 
 func (a *Agent) answerControl(raw []byte) error {
 	id, behavior, _, ok := agent.DecodeControlBehavior(raw)
-	if !ok || id == "" {
+	if !ok || id == "" || behavior != agent.ControlBehaviorAllow && behavior != agent.ControlBehaviorDeny {
 		return fmt.Errorf("DeepSeek Harness control response is invalid")
 	}
 	a.Mu.Lock()
@@ -187,6 +232,13 @@ func (a *Agent) answerControl(raw []byte) error {
 	a.Mu.Unlock()
 	if !exists {
 		return fmt.Errorf("DeepSeek Harness control response has no pending request")
+	}
+	if pending.publicationDone != nil {
+		select {
+		case <-pending.publicationDone:
+		case <-a.Context().Done():
+			return a.Context().Err()
+		}
 	}
 	var value any
 	if pending.event == contracts.DeepseekHarnessControlEventApproval {
@@ -229,13 +281,7 @@ func (a *Agent) answerControl(raw []byte) error {
 			value = map[string]any{"answers": []map[string]any{{"id": question.ID, "selected": []string{label}}}}
 		} else {
 			if behavior != agent.ControlBehaviorAllow {
-				if err := a.replyRemoteEvent(id, map[string]any{"kind": "next"}); err != nil {
-					return err
-				}
-				a.Mu.Lock()
-				delete(a.controls, id)
-				a.Mu.Unlock()
-				return nil
+				return a.sendControlOutcome(id, pending, map[string]any{"kind": "next"})
 			}
 			var answers []map[string]any
 			if len(response.Response.Response.Answers) == 0 || json.Unmarshal(response.Response.Response.Answers, &answers) != nil {
@@ -244,11 +290,5 @@ func (a *Agent) answerControl(raw []byte) error {
 			value = map[string]any{"answers": answers}
 		}
 	}
-	if err := a.replyRemoteEvent(id, map[string]any{"kind": "result", "value": value}); err != nil {
-		return err
-	}
-	a.Mu.Lock()
-	delete(a.controls, id)
-	a.Mu.Unlock()
-	return nil
+	return a.sendControlOutcome(id, pending, map[string]any{"kind": "result", "value": value})
 }

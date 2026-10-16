@@ -1,16 +1,8 @@
-// The naming rule that decides which runner collects a test file, as three
-// pure functions over a path. `testFileNaming.test.ts` beside this module
-// applies them to the real tree.
-//
-// Separate from the guard because a guard built out of filesystem walks has a
-// silent-pass mode: every case there asserts that a list is EMPTY, and a
-// predicate that answers "fine" for every input produces an empty list too.
-// The guard then passes forever and reports nothing. These functions take a
-// string and return a value, so a test states what they must answer for a
-// path that breaks the rule -- no fixture tree, no walk.
-//
-// NOT a `.test.ts`, so vitest does not collect this module as a suite of its
-// own. Its cases live in `testFileNaming.test.ts` beside it.
+import { moduleImportEdges } from './typescriptImports'
+
+// These path predicates select the test runner and validate the E2E layout.
+// Their co-located tests check individual paths and the actual source tree.
+// Individual cases prevent an empty filesystem result from hiding an incorrect predicate.
 
 /** Matches a vitest unit test: `foo.test.ts`, `foo.test.tsx`. */
 const UNIT_TEST = /\.test\.tsx?$/
@@ -28,15 +20,30 @@ export function isPlaywrightSpec(path: string): boolean {
   return PLAYWRIGHT_SPEC.test(path)
 }
 
+/** Accept a relative browser-spec path at the root or directly inside a known provider directory. */
+export function isAllowedE2ESpecPath(path: string, providers: ReadonlySet<string>): boolean {
+  const parts = path.replaceAll('\\', '/').split('/')
+  if (parts.some(part => part === '' || part === '.' || part === '..') || !path.endsWith('.spec.ts'))
+    return false
+  return parts.length === 1 || (parts.length === 2 && providers.has(parts[0]!))
+}
+
+/** Find direct provider dependencies that make a root browser spec provider-specific. */
+export function providerSpecDependencies(source: string, providers: ReadonlySet<string>, fixtures: ReadonlySet<string>): string[] {
+  return moduleImportEdges(source).flatMap(({ specifier }) => {
+    const module = specifier.replace(/\.(?:ts|tsx)$/, '')
+    if (fixtures.has(module))
+      return [specifier]
+    if (module.startsWith('./') && providers.has(module.slice(2).split('/')[0]!))
+      return [specifier]
+    return []
+  })
+}
+
 /**
- * The module a co-located unit test names: `mail.test.ts` -> `mail.ts`, and
- * `Button.test.tsx` -> `Button.tsx`.
- *
- * Anchored at the END of the path, so a directory that happens to hold
- * `.test.` in its name keeps it. Returns the path unchanged when it is not a
- * unit test, which is why every caller filters with `isUnitTest` first: an
- * unchanged path exists on disk, and a co-location check reads that as a
- * module found.
+ * Return the sibling module of a co-located unit test: `mail.test.ts` -> `mail.ts`.
+ * The pattern matches the path suffix, so a directory that contains `.test.` stays unchanged.
+ * Other paths stay unchanged. Callers filter with `isUnitTest` before checking whether the sibling exists.
  */
 export function siblingModulePath(testPath: string): string {
   return testPath.replace(/\.test(\.tsx?)$/, '$1')

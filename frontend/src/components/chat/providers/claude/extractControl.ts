@@ -1,8 +1,9 @@
 import type { PermissionOption } from '../../model/controlPrompt'
 import type { ControlExtractionInput, ExtractedControlRequest } from '../registry'
+import { ACP_PERMISSION_KIND } from '~/generated/contracts/acp-protocol'
 import { isObject, pickString } from '~/lib/jsonPick'
 import { getToolInput, getToolName } from '~/utils/controlResponse'
-import { KIND_ALLOW_ALWAYS, KIND_ALLOW_ONCE, KIND_REJECT_ONCE } from '../../model/controlPrompt'
+import { KIND_ALLOW_ALWAYS, KIND_REJECT_ONCE } from '../../model/controlPrompt'
 import { CLAUDE_TOOL_NAMES } from './toolNames'
 
 /**
@@ -33,7 +34,7 @@ function claudePlanPermissions(payload: Record<string, unknown>) {
  * rule file would outlive the private session that granted it.
  */
 const CLAUDE_PERMISSION_OPTIONS: PermissionOption[] = [
-  { optionId: 'once', kind: KIND_ALLOW_ONCE, name: 'Allow once' },
+  { optionId: 'once', kind: ACP_PERMISSION_KIND.AllowOnce, name: 'Allow once' },
   { optionId: 'session', kind: KIND_ALLOW_ALWAYS, name: 'Allow for this session' },
   { optionId: 'deny', kind: KIND_REJECT_ONCE, name: 'Deny' },
 ]

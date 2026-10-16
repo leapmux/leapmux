@@ -107,16 +107,16 @@ const requestReadTimeout = 30 * time.Second
 
 // pendingPermission is one request that waits for the user.
 //
-// The waiter publishes the banner AFTER it registers the request, so a refusal
-// can arrive before the banner exists. Exactly one side withdraws the banner:
-// the refusal when the banner exists already, and the waiter when the refusal
-// came first (see markPublished). The bridge's mu guards both flags.
+// The waiter publishes the banner after it registers the request.
+// A cancellation or standing approval can resolve the request before the banner exists.
+// The resolver withdraws an existing banner. Otherwise, the publisher withdraws it after publication.
+// The bridge's mu guards both flags.
 type pendingPermission struct {
 	answer chan helperDecision
 	// published is true once the request's banner exists.
 	published bool
-	// refused is true once the bridge refused the request.
-	refused bool
+	// resolved is true once the bridge claims the request for a decision.
+	resolved bool
 }
 
 // permissionBridge is the socket listener that serves one agent's helpers.
@@ -371,6 +371,9 @@ func (b *permissionBridge) answer(requestID string, decision helperDecision) boo
 	b.mu.Lock()
 	pending, ok := b.pending[requestID]
 	delete(b.pending, requestID)
+	if ok {
+		pending.resolved = true
+	}
 	b.mu.Unlock()
 	if !ok {
 		return false
@@ -387,12 +390,12 @@ func (b *permissionBridge) pendingCount() int {
 }
 
 // markPublished records that the banner of one request exists. It reports
-// false when the bridge refused the request first. That refusal found no banner
-// to withdraw, so the caller withdraws the banner that it just published.
+// false when the bridge resolved the request first.
+// The caller then withdraws the banner that it just published.
 func (b *permissionBridge) markPublished(pending *pendingPermission) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if pending.refused {
+	if pending.resolved {
 		return false
 	}
 	pending.published = true
@@ -402,19 +405,24 @@ func (b *permissionBridge) markPublished(pending *pendingPermission) bool {
 // cancelAll refuses every request that waits, with reason, and withdraws each
 // banner.
 func (b *permissionBridge) cancelAll(reason error) {
-	b.mu.Lock()
-	taken, published := b.takePendingLocked()
-	b.mu.Unlock()
-	b.refuse(taken, published, reason)
+	taken, published := b.takePending()
+	b.resolve(taken, published, rejectDecision("LeapMux withdrew the permission request: "+reason.Error()))
 }
 
-// takePendingLocked removes every waiting request and marks each one refused.
+// takePending claims every pending request without delivering a decision under the lock.
+func (b *permissionBridge) takePending() ([]*pendingPermission, []string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.takePendingLocked()
+}
+
+// takePendingLocked removes every waiting request and marks each one resolved.
 // It returns the requests, and the ids of the banners that exist now. The
 // caller holds mu.
 func (b *permissionBridge) takePendingLocked() (taken []*pendingPermission, published []string) {
 	taken = make([]*pendingPermission, 0, len(b.pending))
 	for requestID, pending := range b.pending {
-		pending.refused = true
+		pending.resolved = true
 		taken = append(taken, pending)
 		if pending.published {
 			published = append(published, requestID)
@@ -424,11 +432,9 @@ func (b *permissionBridge) takePendingLocked() (taken []*pendingPermission, publ
 	return taken, published
 }
 
-// refuse answers each taken request with reason, and withdraws each banner in
-// published. A request whose banner did not exist yet withdraws that banner
-// itself once it exists (see markPublished).
-func (b *permissionBridge) refuse(taken []*pendingPermission, published []string, reason error) {
-	decision := rejectDecision("LeapMux withdrew the permission request: " + reason.Error())
+// resolve delivers the claimed decision and withdraws each existing banner.
+// A request whose banner does not exist yet withdraws it after publication.
+func (b *permissionBridge) resolve(taken []*pendingPermission, published []string, decision helperDecision) {
 	for _, pending := range taken {
 		pending.answer <- decision
 	}
@@ -466,7 +472,7 @@ func (b *permissionBridge) close(reason error) {
 	// Refuse first, so each waiting handler writes its refusal before its
 	// connection closes. The helper then states the reason rather than a
 	// broken connection.
-	b.refuse(taken, published, reason)
+	b.resolve(taken, published, rejectDecision("LeapMux withdrew the permission request: "+reason.Error()))
 	b.cancel()
 	done := make(chan struct{})
 	go func() {

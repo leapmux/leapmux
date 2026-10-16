@@ -49,7 +49,7 @@ const (
 // value; the manager re-derives the model group's default badge.
 func (a *Agent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
 	a.Mu.Lock()
-	model, effort, mode := a.model, a.effort, a.confirmedPermissionMode
+	model, effort, mode := a.model, a.effort, a.permissionModeLocked()
 	outputStyle, fastMode, thinking := a.outputStyle, a.fastMode, a.alwaysThinking
 	availStyles := a.availableOutputStyles
 	autoAvail := a.autoModeAvailable
@@ -58,10 +58,8 @@ func (a *Agent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
 	var groups []*leapmuxv1.AvailableOptionGroup
 
 	if catalog := a.availableModelCatalog(); len(catalog) > 0 {
-		// Claude carries an extra per-model sub_group (extended thinking) beyond effort, so it
-		// passes claudeModelSubGroups; otherwise this is the same model+effort projection Codex
-		// and Pi use.
-		groups = append(groups, providerkit.ModelAndEffortGroups(catalog, model, effort, agent.EffortGroupLabel, claudeModelSubGroups)...)
+		// Each model carries effort and thinking groups from the native catalog.
+		groups = append(groups, providerkit.ModelAndEffortGroups(catalog, model, effort, agent.EffortGroupLabel, a.modelSubGroups)...)
 	} else if model != "" {
 		// Hidden model/effort UI (a third-party session, or can_change_model_and_effort
 		// =false): there is no selectable catalog, but the session is running a concrete
@@ -87,7 +85,7 @@ func (a *Agent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
 		{Id: FastModeOff, Name: "Off", Default: true},
 	}))
 
-	groups = append(groups, thinkingGroupForModel(model, thinking))
+	groups = append(groups, a.thinkingGroup(model, thinking))
 
 	if pg := optionids.GroupByID(claudeStaticOptionGroups, agent.OptionIDPermissionMode); pg != nil {
 		groups = append(groups, livePermissionModeGroup(pg, mode, autoAvail))
@@ -96,13 +94,12 @@ func (a *Agent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
 	return groups
 }
 
-// thinkingGroupForModel builds the extended-thinking group for a model. The
-// enabled option's id is always "on"; only its display label varies by model
-// ("Adaptive" for models that pick thinking.type:"adaptive", "On" otherwise --
-// see modelSupportsAdaptiveThinking), so a model switch must re-emit this group.
+// thinkingGroupForModel builds the fallback thinking options for a model.
+// The enabled option keeps the ID "on" and follows the native picker's label.
+// The label does not select the native request's thinking type.
 func thinkingGroupForModel(model, current string) *leapmuxv1.AvailableOptionGroup {
 	enabledName := "On"
-	if modelSupportsAdaptiveThinking(model) {
+	if modelUsesAdaptiveThinkingLabel(model) {
 		enabledName = "Adaptive"
 	}
 	return agent.SelectGroup(OptionAlwaysThinking, "Extended Thinking", agent.OptionOrderProviderFirst, current, []agent.OptionDef{
@@ -153,7 +150,8 @@ func livePermissionModeGroup(static *leapmuxv1.AvailableOptionGroup, current str
 func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult {
 	a.Mu.Lock()
 	curModel, curEffort := a.model, a.effort
-	curPermissionMode := a.confirmedPermissionMode
+	curPermissionMode := a.permissionModeLocked()
+	_, permissionUnresolved := a.unresolvedSettings[agent.OptionIDPermissionMode]
 	curOutputStyle, curFastMode, curThinking := a.outputStyle, a.fastMode, a.alwaysThinking
 	availStyles := a.availableOutputStyles
 	a.Mu.Unlock()
@@ -229,7 +227,11 @@ func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult 
 		changedFlagOptionIDs = append(changedFlagOptionIDs, OptionFastMode)
 	}
 	thinkingChange := ""
-	if v := options[OptionAlwaysThinking]; v != "" && v != curThinking {
+	requestedThinking := options[OptionAlwaysThinking]
+	if !a.supportsThinkingOff(targetModel) {
+		requestedThinking = AlwaysThinkingOn
+	}
+	if v := requestedThinking; v != "" && (v != curThinking || modelChanged) {
 		flagSettings[OptionAlwaysThinking] = flagSettingThinking(v)
 		changedFlagOptionIDs = append(changedFlagOptionIDs, OptionAlwaysThinking)
 		thinkingChange = v
@@ -251,11 +253,8 @@ func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult 
 		}
 	}
 
-	permissionConfirmed := true
-	if mode := options[agent.OptionIDPermissionMode]; mode != "" && mode != curPermissionMode {
-		var applied bool
-		applied, permissionConfirmed = a.applyPermissionModeLive(mode)
-		if !applied {
+	if mode := options[agent.OptionIDPermissionMode]; mode != "" && (mode != curPermissionMode || permissionUnresolved) {
+		if !a.applyPermissionModeLive(mode) {
 			return agent.RestartRequiredSettings(options)
 		}
 	}
@@ -280,11 +279,7 @@ func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult 
 		}
 		a.markSettingsUnresolved(unresolved...)
 	}
-	result := a.SettingsSnapshot()
-	if !permissionConfirmed {
-		result.Settlements[agent.OptionIDPermissionMode] = agent.OptionSettlement{State: agent.OptionSettlementUnresolved}
-	}
-	return result
+	return a.SettingsSnapshot()
 }
 
 var claudeFlagOptionIDs = []string{
@@ -313,8 +308,14 @@ func (a *Agent) SettingsSnapshot() agent.SettingsApplyResult {
 	for id := range a.unresolvedSettings {
 		unresolved = append(unresolved, id)
 	}
-	permissionPending := a.deferredPermissionModeReqID != ""
+	permissionPending := a.permissionModeChange != nil
+	permissionMode := a.permissionModeLocked()
 	a.Mu.Unlock()
+	// Read the value and its settlement from the same state, even if a reply followed OptionGroups.
+	if permissionMode != "" {
+		result.SurfacedOptions[agent.OptionIDPermissionMode] = permissionMode
+		result.Settlements[agent.OptionIDPermissionMode] = agent.OptionSettlement{State: agent.OptionSettlementConfirmed, Value: &permissionMode}
+	}
 	for _, id := range unresolved {
 		result.Settlements[id] = agent.OptionSettlement{State: agent.OptionSettlementUnresolved}
 	}
@@ -324,67 +325,63 @@ func (a *Agent) SettingsSnapshot() agent.SettingsApplyResult {
 	return result
 }
 
-// settlePermissionMode adopts the mode the CLI acknowledged and drops the deferred
-// ack, in ONE critical section. The caller holds no lock.
-//
-// An acknowledged set_permission_mode SETTLES the axis. It supersedes two requests that
-// record their own request id as the deferred ack: an older toggle, and the startup auto
-// probe that timed out. An id that outlives its request costs two things.
-//
-//   - SettingsSnapshot reports the axis UNRESOLVED while an id is set, and
-//     applyPlanOptionsLocked then refuses every plan that specifies the permission mode.
-//   - claudeCodeHandleControlResponse folds the mode of the MATCHING ack back into the
-//     confirmed state. A late ack of a superseded request would therefore replace the
-//     mode this session runs with the mode that request asked for.
-//
-// A mode that LANDED on auto proves the session can enter it, so this also clears a
-// stale autoModeAvailable=false that a transient startup probe failure left behind.
-// Without that, OptionGroups keeps filtering "auto" out of the picker although the
-// session runs it. (livePermissionModeGroup still keeps the current value selectable as
-// a backstop, but the flag then states the catalog accurately instead of only
-// self-correcting.)
-func (a *Agent) settlePermissionMode(mode string) {
-	a.Mu.Lock()
-	defer a.Mu.Unlock()
-	a.confirmedPermissionMode = mode
-	a.deferredPermissionModeReqID = ""
-	if mode == contracts.ClaudeModeAuto {
-		a.autoModeAvailable = true
+type permissionModeChange struct {
+	requestID string
+	requested string
+	deferred  bool
+	completed bool
+	response  claudeCodeControlResult
+	err       error
+}
+
+// permissionModeLocked derives the displayed mode without overwriting the last native confirmation.
+func (a *Agent) permissionModeLocked() string {
+	if change := a.permissionModeChange; change != nil && change.deferred {
+		return change.requested
+	}
+	return a.confirmedPermissionMode
+}
+
+// completePermissionModeLocked consumes one correlated reply. The caller holds Mu.
+func (a *Agent) completePermissionModeLocked(change *permissionModeChange, response claudeCodeControlResult, err error, late bool) {
+	if change.completed {
+		return
+	}
+	change.completed = true
+	change.response, change.err = response, err
+	if a.permissionModeChange != change {
+		return
+	}
+	a.permissionModeChange = nil
+	mode := response.Mode
+	if err == nil && mode == "" {
+		mode = change.requested
+	}
+	if mode != "" {
+		a.confirmedPermissionMode = mode
+		change.response.Mode = mode
+		delete(a.unresolvedSettings, agent.OptionIDPermissionMode)
+		if mode == contracts.ClaudeModeAuto {
+			a.autoModeAvailable = true
+		}
+	} else if late || errors.Is(err, agent.ErrDeliveryUncertain) {
+		if a.unresolvedSettings == nil {
+			a.unresolvedSettings = make(map[string]struct{})
+		}
+		a.unresolvedSettings[agent.OptionIDPermissionMode] = struct{}{}
 	}
 }
 
-// applyPermissionModeLive applies a permission-mode change to the running CLI via
-// set_permission_mode. The first result reports whether the caller can keep the process. The
-// second result reports whether the command acknowledged the value. The caller holds no lock.
-//
-// The control request is capped well below APITimeout: idle, the CLI acks set_permission_mode in
-// well under a second, but while a turn is streaming it defers the ack until the turn ends, so
-// holding the caller (and the per-agent lifecycle lock) for the full APITimeout and then restarting
-// would needlessly kill the in-flight turn.
-func (a *Agent) applyPermissionModeLive(mode string) (applied, confirmed bool) {
-	resp, err := a.sendSetPermissionMode(a.Context(), mode, min(permissionModeApplyTimeout, a.APITimeout()))
-	switch {
-	case err == nil:
-		a.settlePermissionMode(resp.Mode)
-		confirmed = true
-	case errors.Is(err, errControlTimeout):
-		// The ack is deferred because a turn is in progress, but the CLI still queues
-		// and applies the mode. Treat it as accepted-pending: record the requested mode
-		// optimistically and return true so the caller persists it WITHOUT restarting
-		// (which would abort the turn) or rolling the optimistic UI back. When the turn
-		// ends the CLI sends the deferred control_response, which claudeCodeHandleControlResponse
-		// folds back -- reconciling confirmedPermissionMode (and the persisted row) to the
-		// mode the CLI actually applied if it differs from this optimistic value.
-		slog.Info("set_permission_mode ack deferred (turn in progress); applying optimistically",
-			"agent_id", a.AgentID(), "mode", mode)
-		a.Mu.Lock()
-		a.confirmedPermissionMode = mode
-		a.Mu.Unlock()
-	default:
+// A deferred mode request authorizes pending tools without restarting the active turn.
+// Its reply later confirms or replaces the displayed mode.
+func (a *Agent) applyPermissionModeLive(mode string) bool {
+	_, err := a.sendSetPermissionMode(a.Context(), mode, min(permissionModeApplyTimeout, a.APITimeout()))
+	if err != nil && !errors.Is(err, errControlTimeout) {
 		slog.Error("set_permission_mode failed", "agent_id", a.AgentID(), "mode", mode, "error", err)
-		return false, false
+		return false
 	}
-	return true, confirmed
+	a.queuePermissionApprovals()
+	return true
 }
 
 // refreshSettingsFromAgent sends get_settings and updates internal state with
@@ -445,6 +442,9 @@ func (a *Agent) refreshSettingsFromAgent(timeout time.Duration) map[string]struc
 		// the account default -- intended). ensureSettledModelListed then surfaces this
 		// model in the picker when the CLI's selectable list omitted it.
 		a.model = normalizeClaudeCodeModel(settings.Applied.Model)
+		if a.accountDefaultModel == agent.DefaultModelSentinel {
+			a.accountDefaultModel = a.model
+		}
 	} else if a.model == agent.DefaultModelSentinel {
 		// The account-default sentinel launches without --model and relies on
 		// get_settings echoing the concrete model the CLI resolved. Claude Code 2.1.x
@@ -488,6 +488,9 @@ func (a *Agent) refreshSettingsFromAgent(timeout time.Duration) map[string]struc
 		a.alwaysThinking = AlwaysThinkingOff
 	} else if settings.Effective != nil {
 		a.alwaysThinking = AlwaysThinkingOn // nil == cleared to the CLI default (on)
+	}
+	if !a.supportsThinkingOffLocked(a.model) {
+		a.alwaysThinking = AlwaysThinkingOn
 	}
 	model, effort := a.model, a.effort
 	outputStyle, fastMode, thinking := a.outputStyle, a.fastMode, a.alwaysThinking
@@ -563,10 +566,8 @@ func sessionThinkingTokens(v string) *int {
 // as it did at startup, while the readback and the UI reported "Off".
 // set_max_thinking_tokens is the control request that changes the running value.
 //
-// A disabled session reaches the request only for a model that accepts disabled
-// thinking. For a model whose CLI catalog entry carries rejects_disabled_thinking
-// (2.1.289: Sonnet 5.5, Opus 5.5 and Fable), the CLI sends no `thinking` field
-// for a disabled session, and its own toggle refuses to turn thinking off.
+// The native catalog states whether a model accepts disabled thinking.
+// Models that require thinking coerce a disabled session back to adaptive thinking.
 //
 // Call it AFTER the apply_flag_settings that carries the same value. The CLI
 // resolves the null of the "on" case against alwaysThinkingEnabled, so the flag

@@ -108,6 +108,8 @@ exec ${quotePosixShellArgument(installedQoder)} "$@"
  */
 function qoderSettings(options: QoderEnvironmentOptions, formServer: McpProbeServer): Record<string, unknown> {
   return {
+    // The native LLM classifier uses the configured model endpoint. The default Jev classifier uses a separate service.
+    autoMode: { classifier: 'llm' },
     mcpServers: {
       [formServer.name]: { command: formServer.command, args: [...formServer.args] },
     },

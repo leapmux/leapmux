@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { withCleanup } from '../helpers/cleanup'
 import { selectedAgentTabId } from '../helpers/nativeScenario'
-import { qoderWorkflowToolCall, readToolCall } from '../helpers/providerToolCalls'
+import { codeExecutionToolCall, readToolCall } from '../helpers/providerToolCalls'
 import { backgroundTaskRows, expandBackgroundTasksSection, expectRowBecomesFinal, openChildTabFromRow } from '../helpers/subagentRegistry'
 import { answerControl, assistantBubbles, sendMessage, tabById, userBubbles, visibleOnly, waitForControlBanner } from '../helpers/ui'
 import { expectRowsInWorkflowGroup } from '../helpers/workflowGrouping'
@@ -51,7 +51,7 @@ qoderTest.describe('native workflow grouping', () => {
       once: true,
     })
     const start = await modelScript.queue(
-      { toolCalls: [qoderWorkflowToolCall('run-qoder-workflow', script)] },
+      { toolCalls: [codeExecutionToolCall(native.provider, 'run-qoder-workflow', script)] },
       { text: 'The Qoder workflow started.' },
     )
     await modelScript.fallback({ text: 'The Qoder workflow result arrived.' })

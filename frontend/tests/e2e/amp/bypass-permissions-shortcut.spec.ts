@@ -3,6 +3,7 @@ import { expect } from '@playwright/test'
 import { AMP_PERMISSION_MODE } from '../../../src/generated/contracts/amp-protocol'
 import { ampTest } from '../amp-fixtures'
 import { exerciseBypassPermissions } from '../helpers/nativeBypassPermissions'
+import { exerciseMidTurnBypass } from '../helpers/nativeMidTurnBypass'
 import { currentNativeAgent, expectNativeOptionValue, nativeOptionGroup, nativeOptionValue, nativeTextStep, nativeToolOutcome } from '../helpers/nativeScenario'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { applyPermissionPreset, chatText, expectNoControlBanner, expectPermissionShortcuts, expectSettingsChip, sendMessage, waitForAgentIdle } from '../helpers/ui'
@@ -14,6 +15,10 @@ import { nativeContext } from './scenarios'
  * The Worker drives Amp's stream JSON protocol. The isolated mock implements Amp's remote service.
  */
 ampTest.describe('Amp permissions', () => {
+  ampTest('approves a pending tool and the next tool when Bypass changes during a turn', async ({ askingAmpWorkspace, page, modelScript, leapmuxServer }) => {
+    await exerciseMidTurnBypass(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingAmpWorkspace.workspaceId }))
+  })
+
   ampTest('retains an already-selected native Bypass preset across two preparation calls', async ({ native }) => {
     const { page, modelScript } = native
     const before = await currentNativeAgent(native)

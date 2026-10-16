@@ -2,12 +2,12 @@ import { expect } from '@playwright/test'
 import { claudeTest } from '../claude-fixtures'
 import { enterAndExitPlanMode, enterPlanMode, exitPlanMode } from '../helpers/plan-mode'
 import { retryUntilPass } from '../helpers/retryUntilPass'
-import { agentTabs, answerPlanReview, composerEditor, enterControlFeedback, expectNoControlBanner, expectSettingsChip, measureBubbleEdges, openAgentInfoCard, planReviewButton, PLATFORM_MOD, settingsBar, userBubbles, visibleOnly, waitForAgentIdle, waitForControlBanner, waitForEditorDraft, waitForWorkspaceReady } from '../helpers/ui'
+import { agentTabs, answerPlanReview, composerEditor, enterControlFeedback, expectNoControlBanner, expectSettingsChip, focusComposer, measureBubbleEdges, openAgentInfoCard, planReviewButton, PLATFORM_MOD, settingsBar, userBubbles, visibleOnly, waitForAgentIdle, waitForControlBanner, waitForEditorDraft, waitForWorkspaceReady } from '../helpers/ui'
 import { listAgentsViaAPI } from '../helpers/workerTabs'
 import { CLAUDE_AGENT } from './scenarios'
 
-claudeTest.describe('Control Request Draft Persistence', () => {
-  claudeTest('ExitPlanMode draft survives page reload', async ({ page, authenticatedWorkspace, leapmuxServer, modelScript }) => {
+claudeTest.describe('control request draft persistence', () => {
+  claudeTest('restores the ExitPlanMode draft after reload', async ({ page, authenticatedWorkspace, leapmuxServer, modelScript }) => {
     // Enter plan mode, write a dummy plan, and exit.
     const banner = await enterAndExitPlanMode({ page, modelScript, provider: CLAUDE_AGENT.provider })
     await expect(banner.getByText('Plan Ready for Review')).toBeVisible()
@@ -29,7 +29,7 @@ claudeTest.describe('Control Request Draft Persistence', () => {
   })
 })
 
-claudeTest.describe('Plan Mode', () => {
+claudeTest.describe('plan mode', () => {
   claudeTest('enter plan mode, reject exit, then approve exit', async ({ page, authenticatedWorkspace, modelScript }) => {
     const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
@@ -232,7 +232,7 @@ claudeTest.describe('plan mode - bypass permissions', () => {
   })
 })
 
-claudeTest.describe('Plan Mode Tab Auto-Naming', () => {
+claudeTest.describe('tab titles in plan mode', () => {
   claudeTest('auto-names tab from plan title, respects manual rename', async ({ page, authenticatedWorkspace, leapmuxServer, modelScript }) => {
     const agentTab = agentTabs(page).first()
 
@@ -258,7 +258,7 @@ claudeTest.describe('Plan Mode Tab Auto-Naming', () => {
     // The "Executing plan" text may appear too briefly to catch, so wait for
     // the turn to end. Asserting the thinking indicator is absent RIGHT after
     // the approve click passes against a turn that has not started yet;
-    // waitForAgentIdle gives it a bounded chance to appear first.
+    // waitForAgentIdle requires authoritative Worker state before the test continues.
     await waitForAgentIdle(page)
 
     // ── Step 4: Manually rename the tab ──
@@ -279,7 +279,7 @@ claudeTest.describe('Plan Mode Tab Auto-Naming', () => {
     // handler patches local metadata and fires renameAgent without awaiting it,
     // so the tabbar shows the new name immediately while the RPC is still in
     // flight -- and a reload started in that window cancels it, leaving the
-    // agent named after the plan. Polling the server here is what makes the
+    // agent with the plan title. Polling the server here is what makes the
     // assertion below about PERSISTENCE rather than about timing.
     const { hubUrl, adminToken, workerId } = leapmuxServer
     await retryUntilPass(async () => {
@@ -290,5 +290,23 @@ claudeTest.describe('Plan Mode Tab Auto-Naming', () => {
     await page.reload()
     await waitForWorkspaceReady(page)
     await expect(agentTab).toContainText('My Custom Name')
+  })
+})
+
+claudeTest.describe('send feedback button labels', () => {
+  claudeTest('the plan banner shows Reject when editor is empty and Send feedback when typing', async ({ page, authenticatedWorkspace, modelScript }) => {
+    // Enter plan mode, write a dummy plan, and exit. The agent of `authenticatedWorkspace` is a Claude Code agent.
+    const banner = await enterAndExitPlanMode({ page, modelScript, provider: CLAUDE_AGENT.provider })
+    await expect(banner.getByText('Plan Ready for Review')).toBeVisible()
+
+    const rejectBtn = planReviewButton(page, 'reject')
+
+    // With empty editor, button should say "Reject"
+    await expect(rejectBtn).toHaveText('Reject')
+
+    // Type feedback into the editor. The button must switch to "Send feedback".
+    await focusComposer(page)
+    await page.keyboard.type('Please reconsider this approach')
+    await expect(rejectBtn).toHaveText('Send feedback')
   })
 })

@@ -741,7 +741,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
               if (h !== undefined && h <= EDITOR_MIN_HEIGHT)
                 editorHeight.resetEditorHeight()
             }
-            if (has && ctrl.isAskUserQuestion()) {
+            if (has && ctrl.isAskUserQuestion() && ctrl.editorTextReplacesOptions()) {
               const page = answerState.currentPage()
               answerState.setSelections(prev => (prev[page] ?? []).length > 0 ? { ...prev, [page]: [] } : prev)
             }
@@ -805,7 +805,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                 <ControlRequestContent
                   request={request}
                   answerState={answerState}
-                  optionsDisabled={ctrl.editorPurpose() !== 'none' && hasContent()}
+                  optionsDisabled={ctrl.editorTextReplacesOptions() && hasContent()}
                   {...(props.messageContext !== undefined ? { messageContext: props.messageContext } : {})}
                   {...(() => {
                     const agentProvider = ctrl.activeControlProvider()

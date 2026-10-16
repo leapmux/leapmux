@@ -20,6 +20,20 @@ import (
 const geminiPlanTitlePrefix = "Requesting plan approval for: "
 const geminiPlanReadLimit = 4 << 20
 
+// permissionAllowsBypass excludes plan requests even when their plan path is invalid.
+func permissionAllowsBypass(line *providerkit.ParsedLine) bool {
+	var request struct {
+		ToolCall struct {
+			ID string `json:"toolCallId"`
+		} `json:"toolCall"`
+	}
+	if json.Unmarshal(line.Params, &request) != nil {
+		return false
+	}
+	id := request.ToolCall.ID
+	return id != "" && id != contracts.GeminiToolExitPlanMode && !strings.HasPrefix(id, contracts.GeminiToolExitPlanMode+"__")
+}
+
 type geminiControlServices struct {
 	agent.ProviderServices
 	query          agent.StoredSessionQuery

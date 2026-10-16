@@ -1,6 +1,6 @@
 import { diracTest } from '../dirac-fixtures'
 import { exerciseControlInterrupt } from '../helpers/controlInterrupt'
-import { exerciseInterruptTurn } from '../helpers/nativeLifecycle'
+import { exerciseInterruptedPartialAnswer, exerciseInterruptTurn } from '../helpers/nativeLifecycle'
 import { nativeContext } from './scenarios'
 
 diracTest('stops a native model turn and resumes its paused queue', async ({ native }) => {
@@ -16,4 +16,8 @@ diracTest('stops an actual native tool and accepts the next queued turn', async 
 diracTest('withdraws a waiting question form and accepts the next queued turn', async ({ askingDiracWorkspace, page, modelScript, leapmuxServer }) => {
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingDiracWorkspace.workspaceId })
   await exerciseControlInterrupt(context, { control: 'question' })
+})
+
+diracTest('keeps interrupted partial text and its marker after reload', async ({ native }) => {
+  await exerciseInterruptedPartialAnswer(native)
 })

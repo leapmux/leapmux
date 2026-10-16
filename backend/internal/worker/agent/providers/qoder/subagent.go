@@ -521,6 +521,7 @@ func (a *Agent) routeChildFrame(raw []byte) bool {
 	var frame struct {
 		Type            string `json:"type"`
 		ParentToolUseID string `json:"parent_tool_use_id"`
+		SessionID       string `json:"session_id"`
 	}
 	if err := json.Unmarshal(raw, &frame); err != nil || frame.ParentToolUseID == "" {
 		return false
@@ -538,10 +539,15 @@ func (a *Agent) routeChildFrame(raw []byte) bool {
 		a.handleChildStreamFrame(childID, frame.ParentToolUseID, raw)
 		return true
 	}
-	if stored, _ := a.persistNativeToolFrame(a.sink.ChildSink(childID), raw); stored {
+	childSink := a.sink.ChildSink(childID)
+	if stored, _ := a.persistNativeToolFrame(childSink, raw); stored {
 		return true
 	}
-	if err := a.sink.PersistChildMessage(childID, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, raw, agent.SpanInfo{}); err != nil {
+	sessionID := frame.SessionID
+	if sessionID == "" {
+		sessionID = a.nativeSessionID()
+	}
+	if err := childSink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, qoderMessageContent(raw, sessionID), agent.SpanInfo{}); err != nil {
 		slog.Error("qoder persist child frame", "agent_id", a.AgentID(), "error", err)
 	}
 	return true

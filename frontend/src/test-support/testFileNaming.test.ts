@@ -1,9 +1,9 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { collectE2EFiles } from '~/test-support/e2eFiles'
+import { collectE2EFiles, e2eRoot } from '~/test-support/e2eFiles'
 import { collectFiles, frontendRoot, posixRelative } from '~/test-support/sourceTree'
-import { isPlaywrightSpec, isUnitTest, siblingModulePath } from '~/test-support/testFileNaming'
+import { isAllowedE2ESpecPath, isPlaywrightSpec, isUnitTest, providerSpecDependencies, siblingModulePath } from '~/test-support/testFileNaming'
 import { NODE_TEST_FILES } from '../../vitest.node'
 
 // Repo layout guard: the file EXTENSION decides which runner collects a test,
@@ -32,6 +32,34 @@ function collectE2EUnitTests(): string[] {
 }
 
 describe('test file naming', () => {
+  it('keeps browser specs at the root or directly inside a known provider directory', () => {
+    const checklist = JSON.parse(readFileSync(join(e2eRoot, 'feature-matrix/checklist.json'), 'utf8')) as {
+      providerGroups: Array<Array<{ id: string }>>
+    }
+    const providers = new Set(checklist.providerGroups.flat().map(provider => provider.id))
+    expect(providers.size).toBeGreaterThan(0)
+    const misplaced = collectE2EFiles()
+      .filter(isPlaywrightSpec)
+      .map(file => posixRelative(e2eRoot, file))
+      .filter(file => !isAllowedE2ESpecPath(file, providers))
+    expect(misplaced, 'Generic browser specs belong at the root. Provider specs belong directly inside their provider directory.').toEqual([])
+  })
+
+  it('keeps direct provider scenarios and fixtures out of generic root specs', () => {
+    const checklist = JSON.parse(readFileSync(join(e2eRoot, 'feature-matrix/checklist.json'), 'utf8')) as { providerGroups: Array<Array<{ id: string }>> }
+    const providers = new Set(checklist.providerGroups.flat().map(provider => provider.id))
+    const rootFiles = collectE2EFiles().filter(file => !posixRelative(e2eRoot, file).includes('/'))
+    const fixtures = new Set(rootFiles
+      .filter(file => file.endsWith('-fixtures.ts') && providerSpecDependencies(readFileSync(file, 'utf8'), providers, new Set()).length > 0)
+      .map(file => `./${posixRelative(e2eRoot, file).replace(/\.ts$/, '')}`))
+    expect(fixtures.size).toBe(providers.size)
+    const misplaced = rootFiles.filter(isPlaywrightSpec).flatMap(file =>
+      providerSpecDependencies(readFileSync(file, 'utf8'), providers, fixtures)
+        .map(dependency => `${posixRelative(e2eRoot, file)}: ${dependency}`),
+    )
+    expect(misplaced, 'Move each native scenario into its provider directory or remove the concrete dependency from a generic test.').toEqual([])
+  })
+
   it('keeps every .spec file under tests/e2e, where Playwright collects it', () => {
     const strays = collectFiles(srcRoot, { matches: isPlaywrightSpec })
       .map(file => posixRelative(frontendRoot, file))
@@ -145,6 +173,47 @@ describe('isPlaywrightSpec', () => {
     expect(isPlaywrightSpec('helpers/mail.test.ts')).toBe(false)
     expect(isPlaywrightSpec('lib/inspector.ts')).toBe(false)
     expect(isPlaywrightSpec('lib/spec.ts')).toBe(false)
+  })
+})
+
+describe('isAllowedE2ESpecPath', () => {
+  const providers = new Set(['claude-code', 'codex'])
+
+  it.each(['001-auth.spec.ts', 'codex/basic-chat.spec.ts', 'claude-code/basic-chat.spec.ts', 'codex\\basic-chat.spec.ts'])('accepts %s', (path) => {
+    expect(isAllowedE2ESpecPath(path, providers)).toBe(true)
+  })
+
+  it.each(['', '/001-auth.spec.ts', './001-auth.spec.ts', '../001-auth.spec.ts', 'helpers/toolImages.spec.ts', 'unknown/basic-chat.spec.ts', 'codex/nested/basic-chat.spec.ts', 'codex//basic-chat.spec.ts', 'codex/../basic-chat.spec.ts', 'codex/basic-chat.test.ts', 'codex/basic-chat.spec.tsx'])('rejects %s', (path) => {
+    expect(isAllowedE2ESpecPath(path, providers)).toBe(false)
+  })
+
+  it('rejects provider specs when the provider set is empty', () => {
+    expect(isAllowedE2ESpecPath('codex/basic-chat.spec.ts', new Set())).toBe(false)
+    expect(isAllowedE2ESpecPath('001-auth.spec.ts', new Set())).toBe(true)
+  })
+})
+
+describe('providerSpecDependencies', () => {
+  const providers = new Set(['codex', 'claude-code'])
+  const fixtures = new Set(['./codex-fixtures', './claude-fixtures'])
+
+  it('finds provider scenarios and fixtures across static and dynamic imports', () => {
+    expect(providerSpecDependencies(`
+      import { nativeContext } from './claude-code/scenarios'
+      import type { Example } from './codex/scenarios.ts'
+      const test = import('./codex-fixtures')
+      const other = require('./claude-fixtures.ts')
+    `, providers, fixtures)).toEqual(['./claude-code/scenarios', './codex/scenarios.ts', './codex-fixtures', './claude-fixtures.ts'])
+  })
+
+  it('accepts shared fixtures and helpers and ignores comments and ordinary strings', () => {
+    expect(providerSpecDependencies(`
+      import { test } from './fixtures'
+      import { test as processTest } from './process-control-fixtures'
+      import { helper } from './helpers/nativeScenario'
+      // import { ignored } from './codex/scenarios'
+      const example = "import { ignored } from './claude-fixtures'"
+    `, providers, fixtures)).toEqual([])
   })
 })
 

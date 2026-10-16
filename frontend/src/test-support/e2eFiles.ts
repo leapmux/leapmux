@@ -13,7 +13,7 @@ export const e2eRoot = join(frontendRoot, 'tests', 'e2e')
  * - `noNetworkIdleWait.test.ts`: no spec may wait for `networkidle`.
  * - `chatRowReads.test.ts`: no two-round-trip read on a chat locator.
  * - `visibleChatLocators.test.ts`: no unscoped chat locator rooted at the page.
- * - `testFileNaming.test.ts`: a `.test.ts` here names the module beside it.
+ * - `testFileNaming.test.ts`: a `.test.ts` here identifies the module beside it.
  * - `throwingPollReads.test.ts`: no `expect.poll` waits on a Worker or Hub read.
  * - `fixedWaits.test.ts`: no spec or helper sizes a window with `waitForTimeout`.
  * - `platformModifierKeys.test.ts`: no key chord presses a fixed Meta in place
@@ -27,7 +27,7 @@ export const e2eRoot = join(frontendRoot, 'tests', 'e2e')
  * `.mts` helper, a fixtures directory to skip -- thus moves every guard, and
  * no guard scans a different set.
  *
- * `.ts` rather than `.spec.ts`: a helper under `tests/e2e/helpers/` runs inside
+ * Scan `.ts` and `.tsx`, including helpers and tests. A helper under `tests/e2e/helpers/` runs inside
  * the same page and breaks the same rules. That widened the set to the
  * `.test.ts` unit tests beside those helpers, which run under vitest and reach
  * no page at all. They stay in the set: the page rules cost them nothing to
@@ -38,5 +38,6 @@ export const e2eRoot = join(frontendRoot, 'tests', 'e2e')
  * own.
  */
 export function collectE2EFiles(): string[] {
-  return collectFiles(e2eRoot, { matches: name => name.endsWith('.ts') })
+  // A misplaced TSX spec must reach the layout guard even though Playwright does not collect it.
+  return collectFiles(e2eRoot, { matches: name => name.endsWith('.ts') || name.endsWith('.tsx') })
 }

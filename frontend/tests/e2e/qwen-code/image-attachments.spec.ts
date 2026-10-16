@@ -1,8 +1,8 @@
-import { exerciseAttachmentDelivery } from '../helpers/attachmentModelProbe'
+import { exerciseImageAttachmentDelivery } from '../helpers/attachmentModelProbe'
 import { qwenTest } from '../qwen-fixtures'
 
-qwenTest.describe('Qwen Code attachments', () => {
+qwenTest.describe('attachments for Qwen Code', () => {
   qwenTest('delivers an image attachment to the model', async ({ native }) => {
-    await exerciseAttachmentDelivery(native, 'image', 'qwen-shot.png', { protocol: 'openai-chat-completions' })
+    await exerciseImageAttachmentDelivery(native, 'qwen-shot.png', { protocol: 'openai-chat-completions' })
   })
 })

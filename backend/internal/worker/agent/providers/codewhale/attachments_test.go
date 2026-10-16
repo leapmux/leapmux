@@ -41,6 +41,18 @@ func TestBuildTurnInput(t *testing.T) {
 	assert.Len(t, images, 1)
 }
 
+func TestBuildTurnInputDescribesImagesWithoutTypedText(t *testing.T) {
+	t.Parallel()
+	for _, content := range []string{"", " \t\n"} {
+		prompt, images, err := buildTurnInput(content, []agent.ClassifiedAttachment{image("a.png", 3), image("b.png", 2)}, imageInputSupported)
+		require.NoError(t, err)
+		assert.Equal(t, "Image attachments.", prompt)
+		require.Len(t, images, 2)
+		assert.Equal(t, "AQEB", images[0].DataBase64)
+		assert.Equal(t, "AQE=", images[1].DataBase64)
+	}
+}
+
 func TestBuildTurnInputRefusesWhatTheRuntimeRefuses(t *testing.T) {
 	t.Parallel()
 	for name, tc := range map[string]struct {

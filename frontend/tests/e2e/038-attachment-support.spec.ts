@@ -1,11 +1,10 @@
 import type { Page } from '@playwright/test'
 import { readFileSync } from 'node:fs'
 import { expect } from '@playwright/test'
-import { nativeContext } from './claude-code/scenarios'
 import { test } from './fixtures'
 import { attachFile, attachmentPills, attachmentStrip, writeAttachmentFixture } from './helpers/attachments'
-import { sendNativeAnswer } from './helpers/nativeConversation'
-import { selectedAgentTab, selectedAgentTabId } from './helpers/nativeScenario'
+import { nativeModelConversationTurns, selectedAgentTab, selectedAgentTabId } from './helpers/nativeScenario'
+import { sendScriptedTurn } from './helpers/scriptedTurn'
 import { composerEditor, expectClipsToOneLine, focusComposer, openAgentViaUI, tabById, userBubbles, waitForSettingsHydrated } from './helpers/ui'
 
 /**
@@ -32,7 +31,7 @@ async function pastePng(page: Page, options: { name: string, files: PastedFiles 
   }, options)
 }
 
-test.describe('Attachment Support', () => {
+test.describe('attachment support', () => {
   test('attach item opens file dialog and attachment appears in strip', async ({ page, authenticatedWorkspace }) => {
     await expect(composerEditor(page)).toBeVisible()
 
@@ -105,17 +104,18 @@ test.describe('Attachment Support', () => {
     await expect(attachmentPills(page)).toContainText('persist.png')
   })
 
-  test('attachments cleared after send', async ({ page, authenticatedWorkspace, modelScript, leapmuxServer }) => {
+  test('attachments cleared after send', async ({ page, authenticatedWorkspace, modelScript }) => {
     await expect(composerEditor(page)).toBeVisible()
 
     // Upload a file.
     await attachFile(page, writeAttachmentFixture('image'))
     await expect(attachmentPills(page)).toHaveCount(1)
 
-    // Require native prompt delivery and a completed answer before checking the strip reset.
-    // The agent of `authenticatedWorkspace` is a Claude Code agent.
-    const native = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedWorkspace.workspaceId })
-    await sendNativeAnswer(native, 'look at this', 'The attached image reached the completed native turn.')
+    // Check the current user turn before checking the attachment reset.
+    const step = await sendScriptedTurn(page, modelScript, { prompt: 'look at this', answer: 'The attachment turn completed.' })
+    const request = await modelScript.requestAt(step)
+    const userTurn = nativeModelConversationTurns(request).filter(turn => turn.role === 'user').at(-1)
+    expect(userTurn?.text).toContain('look at this')
     await expect(userBubbles(page).filter({ hasText: 'look at this' }).first()).toBeVisible()
 
     // Require removal of the sent attachment.

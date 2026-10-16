@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ConfirmButton } from '~/components/common/ConfirmButton'
 
-describe('confirmButton', () => {
+describe('ConfirmButton', () => {
   beforeEach(() => {
     vi.useFakeTimers()
   })
@@ -17,7 +17,7 @@ describe('confirmButton', () => {
         Delete
       </ConfirmButton>
     ))
-    expect(screen.getByRole('button')).toHaveTextContent('Delete')
+    expect(screen.getByRole('button')).toHaveAccessibleName('Delete')
   })
 
   it('shows confirm label after first click', () => {
@@ -27,7 +27,7 @@ describe('confirmButton', () => {
       </ConfirmButton>
     ))
     fireEvent.click(screen.getByRole('button'))
-    expect(screen.getByRole('button')).toHaveTextContent('Confirm?')
+    expect(screen.getByRole('button')).toHaveAccessibleName('Confirm?')
   })
 
   it('shows custom confirm label', () => {
@@ -37,7 +37,7 @@ describe('confirmButton', () => {
       </ConfirmButton>
     ))
     fireEvent.click(screen.getByRole('button'))
-    expect(screen.getByRole('button')).toHaveTextContent('Sure?')
+    expect(screen.getByRole('button')).toHaveAccessibleName('Sure?')
   })
 
   it('does not call onClick on first click', () => {
@@ -74,7 +74,7 @@ describe('confirmButton', () => {
     const button = screen.getByRole('button')
     fireEvent.click(button)
     fireEvent.click(button)
-    expect(button).toHaveTextContent('Delete')
+    expect(button).toHaveAccessibleName('Delete')
   })
 
   it('resets after 10 seconds of inactivity', () => {
@@ -85,10 +85,10 @@ describe('confirmButton', () => {
     ))
     const button = screen.getByRole('button')
     fireEvent.click(button)
-    expect(button).toHaveTextContent('Confirm?')
+    expect(button).toHaveAccessibleName('Confirm?')
 
     vi.advanceTimersByTime(10_000)
-    expect(button).toHaveTextContent('Delete')
+    expect(button).toHaveAccessibleName('Delete')
   })
 
   it('does not reset before 10 seconds', () => {
@@ -101,7 +101,7 @@ describe('confirmButton', () => {
     fireEvent.click(button)
 
     vi.advanceTimersByTime(9_999)
-    expect(button).toHaveTextContent('Confirm?')
+    expect(button).toHaveAccessibleName('Confirm?')
   })
 
   it('resets on blur', () => {
@@ -112,11 +112,10 @@ describe('confirmButton', () => {
     ))
     const button = screen.getByRole('button')
     fireEvent.click(button)
-    expect(button).toHaveTextContent('Confirm?')
+    expect(button).toHaveAccessibleName('Confirm?')
 
     fireEvent.blur(button)
-    vi.runAllTimers()
-    expect(button).toHaveTextContent('Delete')
+    expect(button).toHaveAccessibleName('Delete')
   })
 
   it('does not swallow a click on a neighboring button after arming', () => {
@@ -136,14 +135,15 @@ describe('confirmButton', () => {
     if (confirmButton === undefined || cancelButton === undefined)
       throw new Error('expected the confirm and cancel buttons to render')
     fireEvent.click(confirmButton)
-    expect(confirmButton).toHaveTextContent('Confirm?')
+    expect(confirmButton).toHaveAccessibleName('Confirm?')
 
     fireEvent.blur(confirmButton)
+    expect(confirmButton).toHaveAccessibleName('Delete')
     fireEvent.click(cancelButton)
     vi.runAllTimers()
 
     expect(onCancel).toHaveBeenCalledOnce()
-    expect(confirmButton).toHaveTextContent('Delete')
+    expect(confirmButton).toHaveAccessibleName('Delete')
   })
 
   it('sets data-armed attribute when armed', () => {
@@ -188,7 +188,8 @@ describe('confirmButton', () => {
 
     expect(screen.getByRole('button', { name: 'Confirm delete?' })).toBeInTheDocument()
     expect(screen.getByTestId('armed-icon')).toBeInTheDocument()
-    expect(screen.queryByTestId('resting-icon')).not.toBeInTheDocument()
+    expect(screen.getByTestId('resting-icon').parentElement).toHaveAttribute('aria-hidden', 'true')
+    expect(screen.getByTestId('armed-icon').parentElement).toHaveAttribute('aria-hidden', 'false')
   })
 
   it('restores the resting name when the reset timer expires', () => {

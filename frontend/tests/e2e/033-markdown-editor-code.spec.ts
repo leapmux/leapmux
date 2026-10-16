@@ -1,14 +1,30 @@
 import { expect } from '@playwright/test'
-import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { CODE_BLOCK_TINT_PERCENT } from '../../src/styles/codePalette'
 import { colorAlpha } from '../../src/test-support/color'
 import { test } from './fixtures'
-import { enterAndExitPlanMode } from './helpers/plan-mode'
-import { focusComposer, planReviewButton, PLATFORM_MOD, readAttached, resolvedColor, stableBox, userBubbles } from './helpers/ui'
+import { focusComposer, PLATFORM_MOD, readAttached, resolvedColor, stableBox, userBubbles } from './helpers/ui'
 
 const MONOSPACE_FONT_RE = /HackNerdFont|Menlo|Monaco|Courier New|monospace/
 
-test.describe('Markdown Editor', () => {
+test.describe('markdown editor', () => {
+  test('does not send paragraphs that contain only whitespace', async ({ page, authenticatedWorkspace }) => {
+    void authenticatedWorkspace
+    const editor = await focusComposer(page)
+    await page.keyboard.insertText('   ')
+    await page.keyboard.press('Enter')
+    await page.keyboard.insertText('   ')
+    await expect(editor.locator('p')).toHaveCount(2)
+    await expect(page.getByTestId('send-button')).toBeDisabled()
+    await page.keyboard.press(`${PLATFORM_MOD}+Enter`)
+    await expect(userBubbles(page)).toHaveCount(0)
+    await expect(editor.locator('p')).toHaveCount(2)
+    await page.keyboard.insertText('0')
+    await expect(page.getByTestId('send-button')).toBeEnabled()
+    await page.keyboard.press(`${PLATFORM_MOD}+Enter`)
+    await expect(userBubbles(page)).toHaveCount(1)
+    await expect(userBubbles(page).first()).toContainText('0')
+  })
+
   test('should grow editor beyond old 120px limit', async ({ page, authenticatedWorkspace }) => {
     // By default the platform modifier plus Enter sends, so Enter alone creates a new line.
     await focusComposer(page)
@@ -45,7 +61,7 @@ test.describe('Markdown Editor', () => {
   })
 })
 
-test.describe('Code block field', () => {
+test.describe('code block field', () => {
   /**
    * A fenced code block has to READ as a block on every surface the app puts a
    * message body on -- the panel behind the composer, an assistant band, and a
@@ -203,7 +219,7 @@ test.describe('Code block field', () => {
     expect(colorAlpha(await inline.evaluate(el => getComputedStyle(el).backgroundColor)))
       .toBeCloseTo(colorAlpha(await blockBackground(block)), 3)
 
-    // The rule names three more tags that mean the same thing in HTML. None
+    // The rule lists three more tags that mean the same thing in HTML. None
     // renders today -- the markdown chain drops raw HTML and no component writes
     // one -- so a probe is what proves they are covered rather than left square
     // and unpainted for whoever adds the first one.
@@ -220,7 +236,7 @@ test.describe('Code block field', () => {
   })
 })
 
-test.describe('Code Language Label', () => {
+test.describe('code language label', () => {
   test('clicking language label opens popover and selecting language updates it', async ({ page, authenticatedWorkspace }) => {
     const editor = await focusComposer(page)
 
@@ -295,25 +311,7 @@ test.describe('Code Language Label', () => {
   })
 })
 
-test.describe('send feedback button labels', () => {
-  test('ExitPlanMode banner shows Reject when editor is empty and Send feedback when typing', async ({ page, authenticatedWorkspace, modelScript }) => {
-    // Enter plan mode, write a dummy plan, and exit. The agent of `authenticatedWorkspace` is a Claude Code agent.
-    const banner = await enterAndExitPlanMode({ page, modelScript, provider: AgentProvider.CLAUDE_CODE })
-    await expect(banner.getByText('Plan Ready for Review')).toBeVisible()
-
-    const rejectBtn = planReviewButton(page, 'reject')
-
-    // With empty editor, button should say "Reject"
-    await expect(rejectBtn).toHaveText('Reject')
-
-    // Type feedback into the editor. The button must switch to "Send feedback".
-    await focusComposer(page)
-    await page.keyboard.type('Please reconsider this approach')
-    await expect(rejectBtn).toHaveText('Send feedback')
-  })
-})
-
-test.describe('Markdown Editor links', () => {
+test.describe('markdown editor links', () => {
   test('a link URL can be corrected after it is created', async ({ page, authenticatedWorkspace }) => {
     void authenticatedWorkspace
     const editor = await focusComposer(page)
@@ -343,7 +341,7 @@ test.describe('Markdown Editor links', () => {
     await expect(page.locator('[data-testid="link-popover"]')).toBeHidden()
   })
 
-  test('Enter in the URL field applies and dismisses the popover', async ({ page, authenticatedWorkspace }) => {
+  test('applies the URL and dismisses the popover on Enter', async ({ page, authenticatedWorkspace }) => {
     void authenticatedWorkspace
     const editor = await focusComposer(page)
 

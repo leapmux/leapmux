@@ -19,6 +19,7 @@ import {
   TEST_ADMIN_USERNAME,
 } from './api'
 import { finishCleanup } from './cleanup'
+import { E2E_HUB_HOST } from './hubTransport'
 import { createMockAgentEnvironment, MOCK_MODEL_IDS } from './mockAgentEnvironment'
 import { registerAmbientScenario } from './mockModelScenario'
 import { createMockModelServer } from './mockModelServer'
@@ -152,7 +153,7 @@ export async function startSuiteServer(options: SuiteServerOptions): Promise<Sta
       proc = spawn(options.binaryPath, [
         'dev',
         '-listen',
-        '127.0.0.1:0',
+        `${E2E_HUB_HOST}:0`,
         '-listen',
         localListen,
         '-data-dir',

@@ -3,6 +3,7 @@ package kimi
 import (
 	"encoding/json"
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -22,6 +23,79 @@ func approvalEvent(approvalID string, display map[string]any) map[string]any {
 func questionEvent(questionID string) map[string]any {
 	return map[string]any{"type": contracts.KimiEventQuestionRequested, "question_id": questionID, "agent_id": kimiMainAgentID,
 		"questions": []map[string]any{{"id": "q_0", "question": "Color?", "options": []map[string]any{{"id": "opt_0_0", "label": "Red"}}}}}
+}
+
+func TestBypassApprovesPendingAndLaterToolsButKeepsSpecialControls(t *testing.T) {
+	t.Parallel()
+	rig := newKimiTestRig(t, agent.Options{})
+	for _, id := range []string{"first", "second"} {
+		rig.feed(t, approvalEvent(id, map[string]any{"kind": "command", "command": "ls"}))
+	}
+	rig.feed(t, approvalEvent("plan", map[string]any{"kind": contracts.KimiDisplayPlanReview, "plan": "# Review this plan"}))
+	rig.feed(t, approvalEvent("goal", map[string]any{"kind": contracts.KimiDisplayGoalStart}))
+	rig.feed(t, questionEvent("question"))
+	rig.agent.UpdateSettings(options(agent.OptionIDPermissionMode, contracts.KimiModeAuto))
+	for _, id := range []string{"first", "second"} {
+		posts := rig.fake.requestsTo("POST " + kimiItemPath(rig.sessionID(), "approvals", id, ""))
+		require.Len(t, posts, 1, "Bypass answers every pending tool permission")
+		assert.JSONEq(t, `{"decision":"approved"}`, string(posts[0].Body))
+	}
+	assert.ElementsMatch(t, []string{"first", "second"}, rig.sink.CanceledControls())
+	for _, id := range []string{"plan", "goal"} {
+		assert.Empty(t, rig.fake.requestsTo("POST "+kimiItemPath(rig.sessionID(), "approvals", id, "")))
+	}
+	assert.Empty(t, rig.fake.requestsTo("POST "+kimiItemPath(rig.sessionID(), "questions", "question", "")))
+	rig.feed(t, approvalEvent("later", map[string]any{"kind": "command", "command": "pwd"}))
+	waitFor(t, func() bool {
+		return len(rig.fake.requestsTo("POST "+kimiItemPath(rig.sessionID(), "approvals", "later", ""))) == 1
+	}, "the later tool is approved")
+	assert.Equal(t, 5, rig.sink.PublishedControlCount(), "the later tool needs no manual card")
+}
+
+func TestDeliveredApprovalCannotBeAnsweredAgainBeforeItsResolutionEvent(t *testing.T) {
+	t.Parallel()
+	rig := newKimiTestRig(t, agent.Options{})
+	rig.feed(t, approvalEvent("approval", map[string]any{"kind": "command", "command": "ls"}))
+	answer := answerFor(t, rig, "approval", "allow", nil, nil)
+	require.NoError(t, rig.agent.SendRawInput(answer, agent.StopContext{}))
+	require.ErrorIs(t, rig.agent.SendRawInput(answer, agent.StopContext{}), errKimiControlGone)
+	require.Len(t, rig.fake.requestsTo("POST "+kimiItemPath(rig.sessionID(), "approvals", "approval", "")), 1)
+}
+
+func TestFailedAutomaticApprovalKeepsItsManualCardWithoutAnotherAttempt(t *testing.T) {
+	t.Parallel()
+	rig := newKimiTestRig(t, agent.Options{Options: options(agent.OptionIDPermissionMode, contracts.KimiModeAuto)})
+	firstRoute := "POST " + kimiItemPath(rig.sessionID(), "approvals", "first", "")
+	rig.fake.reply(firstRoute, fakeKapReply{Code: 40001, Msg: "the decision was refused"})
+	rig.feed(t, approvalEvent("first", map[string]any{"kind": "command"}))
+	waitFor(t, rig.agent.approvalWork.Idle, "the failed approval reaches its manual fallback")
+	rig.feed(t, approvalEvent("later", map[string]any{"kind": "command"}))
+	waitFor(t, rig.agent.approvalWork.Idle, "the later approval finishes")
+	assert.Len(t, rig.fake.requestsTo(firstRoute), 1)
+	assert.Equal(t, 1, rig.sink.PublishedControlCount())
+	assert.Equal(t, "first", rig.sink.LastPublishedControl().RequestID)
+	assert.Empty(t, rig.sink.CanceledControls())
+}
+
+func TestNarrowerPolicyKeepsAnUnclaimedToolForManualApproval(t *testing.T) {
+	t.Parallel()
+	rig := newKimiTestRig(t, agent.Options{Options: options(agent.OptionIDPermissionMode, contracts.KimiModeAuto)})
+	started, release := make(chan struct{}), make(chan struct{})
+	markStarted := sync.OnceFunc(func() { close(started) })
+	defer func() { close(release); waitFor(t, rig.agent.approvalWork.Idle, "the held approval task finishes") }()
+	rig.agent.approvalWork.Run("permissions", func() {
+		markStarted()
+		<-release
+		rig.agent.sessionMu.Lock()
+		defer rig.agent.sessionMu.Unlock()
+		rig.agent.approvePendingPermissions()
+	})
+	<-started
+	rig.feed(t, approvalEvent("approval", map[string]any{"kind": "command"}))
+	require.Zero(t, rig.sink.PublishedControlCount())
+	rig.agent.UpdateSettings(options(agent.OptionIDPermissionMode, contracts.KimiModeManual))
+	assert.Equal(t, 1, rig.sink.PublishedControlCount())
+	assert.Empty(t, rig.fake.requestsTo("POST "+kimiItemPath(rig.sessionID(), "approvals", "approval", "")))
 }
 
 // answerFor resolves a browser answer against the request the sink stored, as
@@ -361,10 +435,10 @@ func TestKimiReconcileControls(t *testing.T) {
 	sink := &agenttest.ControlSink{}
 	a := newOfflineKimiAgent(t, sink)
 	a.controls = map[string]*kimiPendingControl{
-		"approval_gone":     {kind: kimiControlApproval, sessionID: "session_1"},
-		"approval_answered": {kind: kimiControlApproval, sessionID: "session_1", answered: true},
-		"approval_old":      {kind: kimiControlApproval, sessionID: "session_old"},
-		"question_kept":     {kind: kimiControlQuestion, sessionID: "session_1"},
+		"approval_gone":     publishedKimiControl(kimiControlApproval, "session_1", false),
+		"approval_answered": publishedKimiControl(kimiControlApproval, "session_1", true),
+		"approval_old":      publishedKimiControl(kimiControlApproval, "session_old", false),
+		"question_kept":     publishedKimiControl(kimiControlQuestion, "session_1", false),
 	}
 
 	a.reconcileControls("session_1",
@@ -472,7 +546,7 @@ func TestKimiRefusesAnAnswerItCannotPost(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
 		rig.agent.Mu.Lock()
-		rig.agent.controls = map[string]*kimiPendingControl{"approval_1": {kind: kimiControlKind(99), sessionID: rig.agent.sessionID}}
+		rig.agent.controls = map[string]*kimiPendingControl{"approval_1": publishedKimiControl(kimiControlKind(99), rig.agent.sessionID, false)}
 		rig.agent.Mu.Unlock()
 		err := rig.agent.SendRawInput([]byte(`{"response":{"request_id":"approval_1","response":{"decision":"approved"}}}`), agent.StopContext{})
 		require.ErrorContains(t, err, "unknown Kimi Code control kind 99")
@@ -510,4 +584,11 @@ func TestKimiCancelUnpublishedControlRefusesAnUnsafeID(t *testing.T) {
 	rig.agent.cancelUnpublishedControl(rig.sessionID(), "../approvals", kimiControlApproval)
 	rig.agent.cancelUnpublishedControl("../session", "question_1", kimiControlQuestion)
 	assert.Len(t, rig.fake.routes(), before, "an id that Kimi Code does not issue could reach another route")
+}
+
+// publishedKimiControl constructs a completed publication for state-only tests.
+func publishedKimiControl(kind kimiControlKind, sessionID string, answered bool) *kimiPendingControl {
+	pending := &kimiPendingControl{kind: kind, sessionID: sessionID, answered: answered, ready: true, published: true, publicationDone: make(chan struct{})}
+	pending.publicationOnce.Do(func() { close(pending.publicationDone) })
+	return pending
 }

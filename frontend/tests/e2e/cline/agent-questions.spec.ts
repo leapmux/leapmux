@@ -1,6 +1,7 @@
 import { expect } from '@playwright/test'
 import { clineTest } from '../cline-fixtures'
-import { chooseQuestionOption, exerciseQuestionAnswer } from '../helpers/nativeQuestion'
+import { chooseQuestionOption, exerciseQuestionAnswer, exerciseTypedQuestionAnswer } from '../helpers/nativeQuestion'
+import { exerciseQuestionIsolation } from '../helpers/nativeQuestionIsolation'
 import { nativeContext } from './scenarios'
 
 /**
@@ -10,7 +11,7 @@ import { nativeContext } from './scenarios'
  *
  * The Worker answers Cline's native question executor. Its reply must reach the same native call.
  */
-clineTest.describe('Cline control requests', () => {
+clineTest.describe('control requests for Cline', () => {
   clineTest('answers a question with the option the reader picks', async ({ askingClineWorkspace, page, modelScript, leapmuxServer }) => {
     const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingClineWorkspace.workspaceId })
     // The SECOND option: a result that states the first option, or no option at
@@ -24,7 +25,7 @@ clineTest.describe('Cline control requests', () => {
       callId: 'cline-question',
       prompt: 'Ask me for a database.',
       answer: 'Redis it is.',
-      reply: chooseQuestionOption('Redis'),
+      reply: chooseQuestionOption('Redis', context),
     })
     // The worker answered Cline's question executor, and Cline gave the answer to the
     // model as the question's result. The whole request also holds the earlier call
@@ -32,4 +33,13 @@ clineTest.describe('Cline control requests', () => {
     expect(result).toContain('Redis')
     expect(result).not.toContain('Postgres')
   })
+})
+
+clineTest('returns a custom native answer after its draft survives reload', async ({ native }) => {
+  await exerciseTypedQuestionAnswer(native)
+})
+
+clineTest('keeps a native question on its owner tab and workspace after reload', async ({ page, modelScript, leapmuxServer, askingClineWorkspace }) => {
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingClineWorkspace.workspaceId })
+  await exerciseQuestionIsolation(context, { customAnswerDraft: true })
 })

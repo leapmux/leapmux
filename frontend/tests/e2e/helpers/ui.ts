@@ -13,12 +13,13 @@ import { AgentStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { LocateTabResponseSchema, TabType } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
 import { accountStorageKey, getTtlForKey, KEY_BROWSER_PREFS, PREFIX_EDITOR_DRAFT, PREFIX_FILES_SORT_ORDER } from '../../../src/lib/browserStorage'
 import { isObject } from '../../../src/lib/jsonPick'
+import { markdownToPlainText } from '../../../src/lib/markdownPlainText'
 import { callHub, SESSION_COOKIE_NAME, TEST_ADMIN_PASSWORD, TEST_ADMIN_USERNAME } from './api'
 import { solveCaptchaViaUI } from './captcha'
 import { cssAttributeValue } from './cssAttribute'
+import { E2E_BROWSER_HOST } from './hubTransport'
 import { nativeAgentById, nativeOptionGroup, nativeOptionValue, selectedAgentTab, selectedAgentTabId } from './nativeScenario'
 import { retryUntilPass } from './retryUntilPass'
-import { E2E_BROWSER_HOST } from './server'
 import { readEntry, waitForStoredEntry, writeEntry } from './storage'
 import { AGENT_TAB_SELECTOR, tabIdSelector } from './tabSelectors'
 import { terminalXterm } from './terminal'
@@ -424,6 +425,37 @@ export function controlButton(page: Page, action: ControlAction): Locator {
  */
 export function questionPagination(page: Page): Locator {
   return page.getByTestId('control-pagination').filter({ visible: true })
+}
+
+/** Read the control's actual owner even when the narrow layout hides the agent tab. */
+export async function controlAgentId(banner: Locator): Promise<string> {
+  const id = await banner.locator('xpath=ancestor::*[@data-testid="agent-editor-panel"][1]').getAttribute('data-agent-id')
+  if (!id?.trim())
+    throw new Error('The control banner requires an owning agent editor.')
+  return id
+}
+
+/** Bring a stored chat row into view so the virtualizer can measure and reveal it. */
+export async function scrollChatRowIntoView(page: Page, sequence: bigint): Promise<void> {
+  if (sequence < 1n)
+    throw new Error('A chat row requires a positive Worker sequence.')
+  const container = chatScrollContainer(page)
+  await expect.poll(() => container.evaluate((element, sequence) => {
+    // Query inside the stable scroller. A row can detach between separate browser calls.
+    const row = element.querySelector<HTMLElement>(`[data-seq="${sequence}"]`)
+    if (row) {
+      row.scrollIntoView({ block: 'center', behavior: 'instant' })
+      return true
+    }
+    const sequences = [...element.querySelectorAll<HTMLElement>('[data-seq]')].map(row => row.dataset.seq).filter((value): value is string => value !== undefined && /^[1-9]\d*$/.test(value)).map(BigInt)
+    if (sequences.length === 0)
+      return false
+    const target = BigInt(sequence)
+    const first = sequences.reduce((a, b) => a < b ? a : b)
+    const direction = target < first ? -1 : 1
+    element.scrollTop += direction * Math.max(1, element.clientHeight * 0.8)
+    return false
+  }, sequence.toString()), { message: 'the stored chat row enters the rendered viewport' }).toBe(true)
 }
 
 /**
@@ -1671,12 +1703,21 @@ export function treeRowNames(page: Page): Locator {
  * The caller lacks the agent ID, so inspect the draft rows of its account.
  */
 export async function waitForEditorDraft(page: Page, userId: string, text: string) {
+  if (!text.trim())
+    throw new Error('A stored editor draft check requires nonempty text.')
   await waitForStoredEntry(
     page,
     accountStorageKey(userId, PREFIX_EDITOR_DRAFT),
-    value => isObject(value) && typeof value.content === 'string' && value.content.includes(text),
+    value => editorDraftContainsText(value, text),
     `the editor draft "${text}" must be persisted before the reload`,
   )
+}
+
+/** Read the stored Markdown as text when its serializer escapes visible punctuation. */
+export function editorDraftContainsText(value: unknown, text: string): boolean {
+  if (!text.trim() || !isObject(value) || typeof value.content !== 'string')
+    return false
+  return value.content.includes(text) || markdownToPlainText(value.content).includes(text.replace(/\s+/g, ' ').trim())
 }
 
 /**

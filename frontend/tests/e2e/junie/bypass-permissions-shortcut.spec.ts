@@ -5,3 +5,5 @@ import { junieTest } from '../junie-fixtures'
 junieTest('exposes no bypass permission shortcut after actual native tool execution', async ({ native }) => {
   await expectMissingPermissionShortcut(native, { preset: 'bypass', relatedProof: () => exerciseShellToolExecution(native, { includeFailure: false }) })
 })
+
+// Track this LeapMux limitation: https://github.com/leapmux/leapmux/issues/515.

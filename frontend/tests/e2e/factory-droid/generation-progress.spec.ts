@@ -8,3 +8,5 @@ droidTest('exposes no token or byte counter throughout the completed native stre
 droidTest('reports no byte count throughout an actual native shell output stream', async ({ native }) => {
   await exerciseOutputByteProgress(native, { supported: false })
 })
+
+// Track this LeapMux limitation: https://github.com/leapmux/leapmux/issues/521.

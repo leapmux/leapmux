@@ -2,6 +2,7 @@ package muse
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"testing"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -15,9 +16,13 @@ func TestInputPartsRetainsTextAndImageBytes(t *testing.T) {
 	parts, err := inputParts("", []*leapmuxv1.Attachment{{Filename: "proof.png", MimeType: "image/png", Data: data}})
 	require.NoError(t, err)
 	require.Len(t, parts, 2)
-	assert.Equal(t, "", parts[0].Text)
+	require.NotNil(t, parts[0].Text)
+	assert.Equal(t, "", *parts[0].Text)
 	assert.Equal(t, base64.StdEncoding.EncodeToString(data), parts[1].Base64Data)
 	assert.Equal(t, "image/png", parts[1].MediaType)
+	raw, err := json.Marshal(parts)
+	require.NoError(t, err)
+	assert.JSONEq(t, `[{"type":"text","text":""},{"type":"image","mediaType":"image/png","base64Data":"AAEC/w=="}]`, string(raw))
 }
 
 func TestInputPartsRejectsUnsupportedBinaryPayloads(t *testing.T) {

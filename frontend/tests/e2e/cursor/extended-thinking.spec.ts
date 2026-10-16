@@ -5,3 +5,5 @@ import { relatedNativeProof } from './scenarios'
 cursorTest('proves the native extended-thinking limit after a real sidebar operation', async ({ native }) => {
   await expectMissingSetting(native, { feature: 'extended-thinking', relatedProof: () => relatedNativeProof(native) })
 })
+
+// Track this LeapMux limitation: https://github.com/leapmux/leapmux/issues/524.

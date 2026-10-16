@@ -664,7 +664,8 @@ func (a *Agent) InterruptChild(childKey string, stop agent.StopContext) error {
 		return fmt.Errorf("%w: unknown codex subagent thread %q", agent.ErrChildRouteNotReady, childKey)
 	}
 	turnID := a.childTurnID(threadID)
-	return a.interruptCodexTurn(threadID, turnID)
+	_, err := a.interruptCodexTurn(threadID, turnID)
+	return err
 }
 
 // publishCodexChildTurnActive reports activity without a steering capability.

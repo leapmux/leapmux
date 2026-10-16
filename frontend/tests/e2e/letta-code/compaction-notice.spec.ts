@@ -1,3 +1,5 @@
+// The native compaction result is not integrated.
+// See https://github.com/leapmux/leapmux/issues/500.
 import { expectNoCompactionNotice } from '../helpers/unsupportedCompaction'
 import { lettaTest } from '../letta-fixtures'
 import { exerciseOrdinaryCompactText } from './compactionScenarios'

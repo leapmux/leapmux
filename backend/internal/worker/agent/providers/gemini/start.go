@@ -36,6 +36,8 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 			}, query, a.observeNativeMode)
 			controls.transcript = transcript
 			return acp.Hooks{
+				WithBypassPermission:   func(claim func()) { a.WithOptionValue(agent.OptionIDPermissionMode, contracts.GeminiModeYolo, claim) },
+				PermissionAllowsBypass: permissionAllowsBypass,
 				// Gemini resumes the model after a cancelled permission answer.
 				// Stop the prompt before the answer releases its permission wait.
 				CancelBeforeControlWithdrawal: true,

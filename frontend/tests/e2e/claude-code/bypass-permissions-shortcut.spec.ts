@@ -2,9 +2,10 @@ import { expect } from '@playwright/test'
 import { CLAUDE_MODE } from '../../../src/generated/contracts/claude-protocol'
 import { claudeTest } from '../claude-fixtures'
 import { exerciseBypassPermissions } from '../helpers/nativeBypassPermissions'
+import { exerciseMidTurnBypass } from '../helpers/nativeMidTurnBypass'
 import { nativeOptionValue } from '../helpers/nativeScenario'
 import { enterPlanMode, exitPlanMode } from '../helpers/plan-mode'
-import { answerPlanReview, expectNoControlBanner, expectSettingsChip, planReviewButton, settingsBar, waitForSettingsIdle } from '../helpers/ui'
+import { answerPlanReview, chooseSettingsOption, expectNoControlBanner, expectSettingsChip, planReviewButton, settingsBar, waitForSettingsIdle } from '../helpers/ui'
 import { CLAUDE_AGENT } from './scenarios'
 
 claudeTest.describe('plan mode - bypass permissions', () => {
@@ -59,4 +60,10 @@ claudeTest('executes a protected native Bypass command and keeps the applied mod
       expect(nativeOptionValue(agent, 'permissionMode')).toBe(CLAUDE_MODE.BypassPermissions)
     },
   })
+})
+
+claudeTest('approves a pending tool and the next tool when Bypass changes during a turn', async ({ native }) => {
+  await chooseSettingsOption(native.page, 'permissionMode-default')
+  await waitForSettingsIdle(native.page)
+  await exerciseMidTurnBypass(native)
 })

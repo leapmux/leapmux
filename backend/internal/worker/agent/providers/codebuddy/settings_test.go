@@ -106,3 +106,9 @@ func TestCodebuddyUnchangedEffortIsConfirmedLive(t *testing.T) {
 	require.NotNil(t, result.Settlements[agent.OptionIDEffort].Value)
 	assert.Equal(t, "high", *result.Settlements[agent.OptionIDEffort].Value)
 }
+
+func TestCodebuddySettingsReportTheNativePermissionMode(t *testing.T) {
+	a, _ := newCodebuddySteerAgent(t, nil, codebuddyControlAnswer(`{"mode":"default"}`))
+	result := a.UpdateSettings(map[string]string{agent.OptionIDPermissionMode: contracts.CodebuddyModeBypassPermissions})
+	assert.Equal(t, contracts.CodebuddyModeDefault, result.ConfirmedOptions()[agent.OptionIDPermissionMode])
+}

@@ -65,7 +65,12 @@ func (b *JSONRPCProcess) PublishControlRequest(sink agent.ControlServices, conte
 // settings change that ran between the caller's first check and this registration then
 // still reaches the request.
 func (b *JSONRPCProcess) PublishControlRequestWithApproval(sink agent.ControlServices, content []byte, cancelAnswer, approveAnswer any) PublishedControlRequest {
-	return b.publishControlRequest(sink, "", content, cancelAnswer, approveAnswer)
+	return b.PublishSessionControlRequestWithApproval(sink, "", content, cancelAnswer, approveAnswer)
+}
+
+// PublishSessionControlRequestWithApproval keeps the session identity with the approval record.
+func (b *JSONRPCProcess) PublishSessionControlRequestWithApproval(sink agent.ControlServices, sessionID string, content []byte, cancelAnswer, approveAnswer any) PublishedControlRequest {
+	return b.publishControlRequest(sink, sessionID, content, cancelAnswer, approveAnswer)
 }
 
 // PublishControlRequestInSession registers one control request and publishes it to the

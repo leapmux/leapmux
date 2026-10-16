@@ -56,7 +56,7 @@ ampTest('records the native large shell output limit and retains its exact tail 
       expect(originals).not.toHaveLength(0)
       await proveNativeToolOutputFilePaths({
         context: native,
-        callId: nativeId,
+        callId: capture.call.id,
         previewText: retained.output,
         previewMarkers: [output.lastMarker],
         // Amp keeps only the tail, so the row must show neither the first line nor the middle line.

@@ -1,7 +1,8 @@
 import type { PermissionOption, PlanChoice } from '../../model/controlPrompt'
 import type { ControlExtractionInput, ExtractedControlRequest } from '../registry'
 import type { ControlResponseSender } from '~/components/chat/controls/types'
-import { KIND_ALLOW_ALWAYS, KIND_ALLOW_ONCE, KIND_REJECT_ONCE } from '~/components/chat/model/controlPrompt'
+import { KIND_ALLOW_ALWAYS, KIND_REJECT_ONCE } from '~/components/chat/model/controlPrompt'
+import { ACP_PERMISSION_KIND } from '~/generated/contracts/acp-protocol'
 import { KIMI_APPROVAL_SCOPE, KIMI_DISPLAY, KIMI_EVENT, KIMI_GOAL_MODE, KIMI_PLAN_LABEL, KIMI_REPLY } from '~/generated/contracts/kimi-protocol'
 import { isObject, pickString } from '~/lib/jsonPick'
 import { buildControlResponseEnvelope, buildDenyResponse, withControlChoice } from '~/utils/controlResponse'
@@ -42,7 +43,7 @@ export const KIMI_OPTION = {
 
 /** The three answers every approval that is not a plan or a goal offers. */
 const KIMI_PERMISSION_OPTIONS: readonly PermissionOption[] = [
-  { optionId: KIMI_OPTION.Approve, kind: KIND_ALLOW_ONCE, name: 'Allow' },
+  { optionId: KIMI_OPTION.Approve, kind: ACP_PERMISSION_KIND.AllowOnce, name: 'Allow' },
   { optionId: KIMI_OPTION.ApproveForSession, kind: KIND_ALLOW_ALWAYS, name: 'Allow for this session' },
   { optionId: KIMI_OPTION.Reject, kind: KIND_REJECT_ONCE, name: 'Deny' },
 ]
@@ -56,8 +57,8 @@ const KIMI_GOAL_MODE_NAMES: readonly (readonly [string, string])[] = [
 
 /** The answers a goal start offers: start it as it stands, start it in a mode, or decline. */
 const KIMI_GOAL_OPTIONS: readonly PermissionOption[] = [
-  { optionId: KIMI_OPTION.Approve, kind: KIND_ALLOW_ONCE, name: 'Start the goal' },
-  ...KIMI_GOAL_MODE_NAMES.map(([mode, name]) => ({ optionId: `${KIMI_OPTION.GoalModePrefix}${mode}`, kind: KIND_ALLOW_ONCE, name: `Start in ${name}` })),
+  { optionId: KIMI_OPTION.Approve, kind: ACP_PERMISSION_KIND.AllowOnce, name: 'Start the goal' },
+  ...KIMI_GOAL_MODE_NAMES.map(([mode, name]) => ({ optionId: `${KIMI_OPTION.GoalModePrefix}${mode}`, kind: ACP_PERMISSION_KIND.AllowOnce, name: `Start in ${name}` })),
   { optionId: KIMI_OPTION.Reject, kind: KIND_REJECT_ONCE, name: 'Decline' },
 ]
 
@@ -109,8 +110,8 @@ export function kimiPlanChoices(display: Record<string, unknown> | undefined): P
 function kimiSubagentPlanOptions(display: Record<string, unknown> | undefined): PermissionOption[] {
   const choices = kimiPlanChoices(display)
   return [
-    { optionId: KIMI_OPTION.Approve, kind: KIND_ALLOW_ONCE, name: 'Approve the plan' },
-    ...choices.filter(choice => choice.approves).map(choice => ({ optionId: `${KIMI_OPTION.PlanApprovePrefix}${choice.id}`, kind: KIND_ALLOW_ONCE, name: choice.label })),
+    { optionId: KIMI_OPTION.Approve, kind: ACP_PERMISSION_KIND.AllowOnce, name: 'Approve the plan' },
+    ...choices.filter(choice => choice.approves).map(choice => ({ optionId: `${KIMI_OPTION.PlanApprovePrefix}${choice.id}`, kind: ACP_PERMISSION_KIND.AllowOnce, name: choice.label })),
     { optionId: KIMI_OPTION.Reject, kind: KIND_REJECT_ONCE, name: 'Reject' },
     ...choices.filter(choice => !choice.approves).map(choice => ({ optionId: `${KIMI_OPTION.PlanRejectPrefix}${choice.id}`, kind: KIND_REJECT_ONCE, name: choice.label })),
   ]

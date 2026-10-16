@@ -1,9 +1,13 @@
+import type { Editor } from '@milkdown/core'
+import type { Ctx } from '@milkdown/ctx'
 import type { Draft } from '~/lib/editor/draftPersistence'
+import { editorViewCtx, serializerCtx } from '@milkdown/core'
+import { Schema } from '@milkdown/prose/model'
 import { describe, expect, it } from 'vitest'
 import { flushStorageWrites } from '~/lib/browserStorage'
 import { saveDraft } from '~/lib/editor/draftPersistence'
 import { useTestStorage } from '~/test-support/persistentStorage'
-import { createDraftSwapper } from './draftManagement'
+import { createDraftSwapper, readDraftFromEditor } from './draftManagement'
 
 // Drafts are on the ASYNCHRONOUS storage tier -- arbitrary user prose, so the
 // family is unbounded and deliberately unmirrored. These swaps therefore reach
@@ -94,5 +98,21 @@ describe('createDraftSwapper', () => {
     ])
 
     expect(applied.sort()).toEqual(['left composer', 'right composer'])
+  })
+})
+
+describe('readDraftFromEditor', () => {
+  it('treats multiple empty paragraphs as empty instead of a serialized HTML break', () => {
+    const schema = new Schema({ nodes: { doc: { content: 'block*' }, paragraph: { content: 'inline*', group: 'block' }, text: { group: 'inline' } } })
+    const doc = schema.node('doc', null, [schema.node('paragraph'), schema.node('paragraph')])
+    const ctx = { get: (key: unknown) => {
+      if (key === editorViewCtx)
+        return { state: { doc, selection: { from: 1 } } }
+      if (key === serializerCtx)
+        return () => '<br />'
+      throw new Error('The draft regression requested an unexpected editor value.')
+    } } as unknown as Ctx
+    const editor = { action: (run: (ctx: Ctx) => unknown) => run(ctx) } as unknown as Editor
+    expect(readDraftFromEditor(editor)).toEqual({ content: '', cursor: 1 })
   })
 })

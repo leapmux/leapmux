@@ -54,6 +54,17 @@ describe('CLINE_TOOL_REQUEST_OVERRIDES', () => {
 })
 
 describe('cline tool requests', () => {
+  it('preserves native read images and their text in the result', () => {
+    const image = { type: 'image', data: 'aW1hZ2U=', mediaType: 'image/png' }
+    expect(call('read_files', { files: [{ path: '/w/image.png' }] }, [
+      { query: '/w/image.png', result: ['Successfully read image', image], success: true },
+    ])).toMatchObject({
+      kind: 'read',
+      result: { fallbackContent: 'Successfully read image' },
+      images: [{ data: 'aW1hZ2U=', mimeType: 'image/png', filePath: '/w/image.png' }],
+    })
+  })
+
   const request = (name: string, args: Record<string, unknown>) =>
     clineToolCall({ call: { id: 'call_1', name, input: args }, result: undefined, finished: false }).request
 

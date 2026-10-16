@@ -1,5 +1,6 @@
 import { expect } from '@playwright/test'
-import { chooseQuestionOption, exerciseQuestionAnswer } from '../helpers/nativeQuestion'
+import { chooseQuestionOption, exerciseQuestionAnswer, exerciseQuestionPages, exerciseQuestionPreviews, exerciseTypedQuestionAnswer } from '../helpers/nativeQuestion'
+import { exerciseQuestionIsolation } from '../helpers/nativeQuestionIsolation'
 import { savedControlAnswer } from '../helpers/ui'
 import { ohMyPiTest } from '../ohmypi-fixtures'
 
@@ -10,7 +11,7 @@ import { ohMyPiTest } from '../ohmypi-fixtures'
  *
  * Oh My Pi's ask tool sends a series of native dialogs. The Worker combines them into one question request.
  */
-ohMyPiTest.describe('Oh My Pi control requests', () => {
+ohMyPiTest.describe('control requests for Oh My Pi', () => {
   ohMyPiTest('delivers the answer to a question', async ({ native }) => {
     const { result } = await exerciseQuestionAnswer(native, {
       questions: [{
@@ -26,7 +27,7 @@ ohMyPiTest.describe('Oh My Pi control requests', () => {
       answer: 'Recorded the style.',
       reply: async (banner) => {
         await expect(banner.getByText('Use the second style.', { exact: true })).toBeVisible()
-        await chooseQuestionOption('Beta')(banner)
+        await chooseQuestionOption('Beta', native)(banner)
       },
     })
     // The dialog reply reaches Oh My Pi, which sends the selected label to the model as the result of the question
@@ -39,4 +40,20 @@ ohMyPiTest.describe('Oh My Pi control requests', () => {
     // answer, so it cannot prove which one the reader chose.
     await expect(savedControlAnswer(native.page)).toHaveText('Choose a style: Beta')
   })
+})
+
+ohMyPiTest('preserves answers across native question pages and reloads', async ({ native }) => {
+  await exerciseQuestionPages(native)
+})
+
+ohMyPiTest('preserves native option previews in a narrow layout after reload', async ({ native }) => {
+  await exerciseQuestionPreviews(native)
+})
+
+ohMyPiTest('returns a custom native answer after its draft survives reload', async ({ native }) => {
+  await exerciseTypedQuestionAnswer(native)
+})
+
+ohMyPiTest('keeps a native question on its owner tab and workspace after reload', async ({ native }) => {
+  await exerciseQuestionIsolation(native, { customAnswerDraft: true })
 })

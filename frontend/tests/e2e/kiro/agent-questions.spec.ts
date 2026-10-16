@@ -1,21 +1,18 @@
 import { expect } from '@playwright/test'
-import { OPTION_ID_PERMISSION_MODE } from '../../../src/components/chat/settingsGroups'
 import { kiroUserText } from '../helpers/kiroSurface'
-import { chooseQuestionOption, exerciseQuestionAnswer } from '../helpers/nativeQuestion'
-import { expectSettingsChip, openWorkspace } from '../helpers/ui'
-import { openProviderAgent } from '../helpers/workspace'
+import { chooseQuestionOption, exerciseQuestionAnswer, exerciseTypedQuestionAnswer } from '../helpers/nativeQuestion'
+import { exerciseQuestionIsolation } from '../helpers/nativeQuestionIsolation'
+import { expectSettingsChip } from '../helpers/ui'
 import { kiroTest } from '../kiro-fixtures'
-import { KIRO_AGENT, nativeContext } from './scenarios'
+import { nativeContext } from './scenarios'
 
-kiroTest.describe('Kiro control requests', () => {
+kiroTest.describe('control requests for Kiro', () => {
   // Kiro offers its question tool in a spec mode alone, and a spec mode first
   // classifies the prompt, which the housekeeping rules answer. The test chooses
   // the SECOND option, so an answer that Kiro never read cannot pass as the first.
-  kiroTest('answers a question with a chosen option', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, KIRO_AGENT, { optionValues: { [OPTION_ID_PERMISSION_MODE]: 'spec' } })
-    await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
+  kiroTest('answers a question with a chosen option', async ({ page, askingKiroWorkspace, leapmuxServer, modelScript }) => {
     await expectSettingsChip(page, 'Spec')
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingKiroWorkspace.workspaceId })
 
     const { result } = await exerciseQuestionAnswer(context, {
       questions: [{
@@ -26,7 +23,7 @@ kiroTest.describe('Kiro control requests', () => {
       callId: 'kiro-question',
       prompt: 'Ask me for a database.',
       answer: 'SQLite it is.',
-      reply: chooseQuestionOption('SQLite'),
+      reply: chooseQuestionOption('SQLite', context),
       // The call after the question carries the answer as the result of the question
       // tool. The history of the call also lists both options, so the test reads the
       // current message alone.
@@ -35,4 +32,16 @@ kiroTest.describe('Kiro control requests', () => {
     expect(result).toContain('SQLite')
     expect(result).not.toContain('Postgres')
   })
+})
+
+kiroTest('returns a custom native answer after its draft survives reload', async ({ page, modelScript, leapmuxServer, askingKiroWorkspace }) => {
+  await expectSettingsChip(page, 'Spec')
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingKiroWorkspace.workspaceId })
+  await exerciseTypedQuestionAnswer(context, { readResult: request => kiroUserText(request.body) })
+})
+
+kiroTest('keeps a native question on its owner tab and workspace after reload', async ({ page, modelScript, leapmuxServer, askingKiroWorkspace }) => {
+  await expectSettingsChip(page, 'Spec')
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingKiroWorkspace.workspaceId })
+  await exerciseQuestionIsolation(context, { customAnswerDraft: true })
 })

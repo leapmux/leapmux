@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"math"
 	"os"
@@ -598,6 +599,10 @@ func (a *Agent) handlePersistableMessage(content []byte, msgType string) {
 		return
 	}
 
+	if msgType == claudeMsgTypeUser {
+		a.settleToolControls(env.ContentBlocks())
+	}
+
 	// Route subagent output (forwarded via --forward-subagent-text) into the
 	// child's OWN transcript. Every forwarded envelope -- assistant text,
 	// thinking, the child's own tool_use, its tool_result, and the child's
@@ -969,32 +974,7 @@ func (a *Agent) claudeCodeHandleSystemInit(content []byte) {
 	a.sink.BroadcastStatusActive(initMsg.SessionID)
 }
 
-// claudeCodeHandleControlRequest persists and broadcasts a control_request.
-func (a *Agent) claudeCodeHandleControlRequest(content []byte) {
-	var cr struct {
-		RequestID string `json:"request_id"`
-	}
-	if err := json.Unmarshal(content, &cr); err != nil {
-		slog.Warn("invalid control_request JSON", "agent_id", a.AgentID(), "error", err)
-		return
-	}
-	if err := a.sink.PublishControlRequest(agent.ControlRequest{RequestID: cr.RequestID, Payload: content}); err != nil {
-		slog.Error("publish claude control request", "agent_id", a.AgentID(), "request_id", cr.RequestID, "error", err)
-		response, marshalErr := json.Marshal(map[string]any{
-			"type":     "control_response",
-			"response": map[string]any{"subtype": "error", "request_id": cr.RequestID, "error": providerkit.ControlPublicationFailure},
-		})
-		if marshalErr != nil {
-			slog.Error("encode claude control failure", "agent_id", a.AgentID(), "error", marshalErr)
-			return
-		}
-		if err := a.SendRawInput(response, agent.StopContext{}); err != nil {
-			slog.Warn("send claude control failure", "agent_id", a.AgentID(), "error", err)
-		}
-	}
-}
-
-// claudeCodeHandleControlCancel persists and broadcasts a control_cancel_request.
+// claudeCodeHandleControlCancel retires the exact pending publication.
 func (a *Agent) claudeCodeHandleControlCancel(content []byte) {
 	var cc struct {
 		RequestID string `json:"request_id"`
@@ -1003,63 +983,45 @@ func (a *Agent) claudeCodeHandleControlCancel(content []byte) {
 		slog.Warn("invalid control_cancel_request JSON", "agent_id", a.AgentID(), "error", err)
 		return
 	}
-	a.sink.CancelControlRequest(cc.RequestID)
+	a.retireControl(cc.RequestID)
 }
 
-// claudeCodeHandleControlResponse handles a control_response from Claude Code that no
-// pending waiter consumed -- in practice a DEFERRED set_permission_mode ack. The live
-// UpdateSettings path caps its wait at permissionModeApplyTimeout; while a turn is streaming
-// the CLI defers the ack until the turn ends, so UpdateSettings applied the mode
-// optimistically and this late response is the authoritative reconciliation.
-//
-// Re-sync from the provider rather than trusting the optimistic value: adopt the mode the CLI
-// actually applied (response.mode -- present on a success, and on a rejection that reports the
-// still-effective mode) into BOTH the in-memory confirmed state AND the persisted row +
-// broadcast. Updating a.confirmedPermissionMode is the part the optimistic path can't do
-// itself: OptionGroups() reads confirmedPermissionMode, so without this the agent's catalog
-// would keep reporting the optimistic mode even after the CLI settled on a different one.
-// (get_settings omits permission mode and, run from this reader goroutine, would deadlock on
-// its own response -- so the response.mode field is the only provider-authoritative source.)
+// claudeCodeHandleControlResponse settles a reply that arrived after its synchronous wait.
 func (a *Agent) claudeCodeHandleControlResponse(content []byte) {
 	var cr struct {
 		Response struct {
 			Subtype   string `json:"subtype"`
 			RequestID string `json:"request_id"`
+			Error     string `json:"error"`
 			Response  struct {
 				Mode string `json:"mode"`
 			} `json:"response"`
 		} `json:"response"`
 	}
-	if err := json.Unmarshal(content, &cr); err != nil {
+	if err := json.Unmarshal(content, &cr); err != nil || cr.Response.RequestID == "" || cr.Response.Subtype != "success" && cr.Response.Subtype != "error" {
 		return
 	}
-	mode := cr.Response.Response.Mode
-	if mode == "" {
-		return
-	}
-	// Fold the mode back ONLY when this response is the deferred ack of the set_permission_mode
-	// toggle we are awaiting -- matched by request_id. Without the match a stale/duplicate ack,
-	// an earlier (superseded) toggle's ack, or any other mode-bearing control_response would
-	// clobber the confirmed mode with a value the user didn't last choose. Consuming the id
-	// (clearing it) also makes a re-delivered ack a no-op.
-	a.Mu.Lock()
-	matched := cr.Response.RequestID != "" && cr.Response.RequestID == a.deferredPermissionModeReqID
-	if matched {
-		a.deferredPermissionModeReqID = ""
-		a.confirmedPermissionMode = mode
-		// The deferred ack confirming "auto" proves the session can enter it; clear a stale
-		// autoModeAvailable=false (see applyPermissionModeLive) so the picker offers auto again.
-		if mode == contracts.ClaudeModeAuto {
-			a.autoModeAvailable = true
+	result := claudeCodeControlResult{Success: cr.Response.Subtype == "success", Mode: cr.Response.Response.Mode, Error: cr.Response.Error}
+	var err error
+	if !result.Success {
+		reason := result.Error
+		if reason == "" {
+			reason = "Claude Code refused the permission mode"
 		}
+		err = errors.New(reason)
 	}
+	a.Mu.Lock()
+	change := a.permissionModeChange
+	matched := change != nil && change.requestID == cr.Response.RequestID
+	if matched {
+		a.completePermissionModeLocked(change, result, err, true)
+	}
+	mode := a.permissionModeLocked()
 	a.Mu.Unlock()
 	if matched {
 		a.sink.UpdatePermissionMode(mode)
+		a.queuePermissionApprovals()
 	}
-
-	// No need to persist control_response in the timeline — they are
-	// already surfaced as notification threads.
 }
 
 // claudeCodeHandleRateLimitEvent broadcasts rate_limit_event and persists as notification.
@@ -1528,15 +1490,15 @@ const (
 // blocks (still in flight), and `idle` fires after the last result flushes and
 // the background-agent loop exits. A ROOT frame that carries it therefore
 // decides alone, and the heuristic below never sees it. A forwarded child's copy
-// decides nothing, for the reason claudeIsRootFrame gives.
+// decides nothing, for the reason claudeIsLiveRootFrame gives.
 //
 // The heuristic below is for a build that publishes no such frame, which is
 // every one that predates the variable. The FIRST session_state_changed frame
 // retires it for the life of the process, so on a current CLI the turn flag
-// moves on the named signals alone -- this frame, the Worker's own SendInput,
+// moves on the listed signals alone -- this frame, the Worker's own SendInput,
 // and `result`. See armTurnFromOutput.
 func (a *Agent) observeTurnFromOutput(content []byte, msgType string) {
-	if msgType == claudeMsgTypeSystem && claudeIsRootFrame(content) {
+	if msgType == claudeMsgTypeSystem && claudeIsLiveRootFrame(content) {
 		if state, ok := claudeSessionStateOf(content); ok {
 			a.noteSessionState(state)
 			return
@@ -1591,7 +1553,7 @@ func claudeSessionStateOf(content []byte) (string, bool) {
 // part of it.
 //
 // The class is "a ROOT frame that only a live turn produces", and
-// claudeIsRootFrame supplies the first half. `result` ENDS a turn, and
+// claudeIsLiveRootFrame supplies the first half. `result` ENDS a turn, and
 // `control_*` frames are the Worker's own traffic, so neither arms anything.
 //
 // The `system` type is the narrow one, because it carries four unrelated
@@ -1632,32 +1594,28 @@ func (a *Agent) armTurnFromOutput(content []byte, msgType string) {
 	default:
 		return
 	}
-	if !claudeIsRootFrame(content) {
+	if !claudeIsLiveRootFrame(content) {
 		return
 	}
 	a.armTurn()
 }
 
-// claudeIsRootFrame reports whether an output frame describes the ROOT agent.
-//
-// A forwarded subagent envelope carries parent_tool_use_id and belongs to the
-// child, whose turn is its own: a child runs on while the root waits for it, and
-// a restarted child runs while the root is idle. So no frame that carries the
-// field may move the root's turn flag, whether it reports the state (a
-// session_state_changed frame) or only implies it (the thinking-token telemetry,
-// an assistant message).
-//
-// A frame this cannot parse is not a root frame. Nothing downstream reads a
-// frame the JSON decoder refused, and answering "root" for one would arm a turn
-// off bytes with no established shape.
-func claudeIsRootFrame(content []byte) bool {
+// claudeIsLiveRootFrame identifies live output from the root agent.
+// Forwarded child frames and replayed records cannot change the root's live turn state.
+// A child can continue or restart while its root is idle. Its parent_tool_use_id identifies that separate turn.
+// Invalid JSON cannot establish a live root frame.
+// Model changes can replay local command output before a resumed process emits its first session-state event.
+// An absent replay flag means live output. A present flag must explicitly state false.
+func claudeIsLiveRootFrame(content []byte) bool {
 	var envelope struct {
-		ParentToolUseID string `json:"parent_tool_use_id"`
+		ParentToolUseID string          `json:"parent_tool_use_id"`
+		IsReplay        json.RawMessage `json:"isReplay"`
 	}
 	if err := json.Unmarshal(content, &envelope); err != nil {
 		return false
 	}
-	return envelope.ParentToolUseID == ""
+	return envelope.ParentToolUseID == "" &&
+		(len(envelope.IsReplay) == 0 || bytes.Equal(bytes.TrimSpace(envelope.IsReplay), []byte("false")))
 }
 
 func (a *Agent) readOutputLoop(scanner *bufio.Scanner) {

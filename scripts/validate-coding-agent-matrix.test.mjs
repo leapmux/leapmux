@@ -413,7 +413,7 @@ describe('validateCodingAgentMatrix', () => {
         .toContain('cell claude-code/text-attachments is agent-limit but its detail note is not longer than its user note')
     })
 
-    it('pins the support state of every cell of the full grid', () => {
+    it('records the audited support totals and the native question and compaction corrections', () => {
       const { features, checklist, providerContract } = readCodingAgentMatrix()
       expect(validateCodingAgentMatrix(features, checklist, providerContract)).toEqual([])
       const counts = { 'supported': 0, 'agent-limit': 0, 'leapmux-limit': 0 }
@@ -422,7 +422,16 @@ describe('validateCodingAgentMatrix', () => {
           counts[cell.support] += 1
       }
       // A deliberate change of a verdict changes these numbers. Update them with the checklist.
-      expect(counts).toEqual({ 'supported': 1084, 'agent-limit': 420, 'leapmux-limit': 86 })
+      expect(counts).toEqual({ 'supported': 1092, 'agent-limit': 419, 'leapmux-limit': 79 })
+      expect(checklist.cells['images-in-tool-results'].cline).toMatchObject({ support: 'supported', audit: 'covered', testStatus: 'passed' })
+      for (const provider of ['qwen-code', 'grok-build', 'kiro'])
+        expect(checklist.cells['compaction-notice'][provider].support).toBe('supported')
+      expect(checklist.cells['agent-questions'].reasonix.support).toBe('supported')
+      for (const provider of ['letta-code', 'amp', 'command-code'])
+        expect(checklist.cells['code-execution'][provider].support).toBe('supported')
+      expect(checklist.cells['model-context-on-resume'].dirac.support).toBe('supported')
+      expect(checklist.cells['smart-permissions-shortcut'].codex.support).toBe('supported')
+      expect(checklist.cells['extended-thinking']['claude-code']).toMatchObject({ support: 'agent-limit', audit: 'unsupported', testStatus: 'passed' })
       expect(checklist.supportStates).toEqual(SUPPORT_STATES)
     })
   })
@@ -614,7 +623,7 @@ describe('features.schema.json', () => {
   const published = { id: 'pdf-attachments', label: 'PDF attachments', description: 'The agent reads a PDF.', showInMatrix: true, group: 'attachments' }
   const hidden = { id: 'basic-chat', label: 'Basic chat', description: 'The agent answers.', showInMatrix: false }
   const document = features => ({ _readme: 'Feature definitions.', groups: [{ id: 'attachments', label: 'Attachments' }], features })
-  /** Each failure as `keyword path detail`, so a test names the rule that rejects. */
+  /** Each failure as `keyword path detail`, so a test identifies the rule that rejects. */
   const failures = (data) => {
     validate(data)
     return (validate.errors ?? []).map(error => `${error.keyword} ${error.instancePath} ${error.params.missingProperty ?? ''}`.trim())
@@ -657,7 +666,7 @@ describe('checklist.schema.json', () => {
     cells: { 'text-attachments': { 'claude-code': { ...cell, ...cellOverrides } } },
     ...overrides,
   })
-  /** Each failure as `keyword path detail`, so a test names the rule that rejects. */
+  /** Each failure as `keyword path detail`, so a test identifies the rule that rejects. */
   const failures = (data) => {
     validate(data)
     return (validate.errors ?? []).map(error => `${error.keyword} ${error.instancePath} ${error.params.missingProperty ?? error.params.additionalProperty ?? ''}`.trim())

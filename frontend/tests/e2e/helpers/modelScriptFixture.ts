@@ -1,7 +1,6 @@
 import type { Fixtures } from '@playwright/test'
 import type { MockModelRequestRecord, MockModelRule, MockModelScenarioStatus, MockModelStep } from './mockModelScript'
 import { randomUUID } from 'node:crypto'
-import { writeFileSync } from 'node:fs'
 import { expect } from '@playwright/test'
 import { withCleanup } from './cleanup'
 import {
@@ -14,6 +13,7 @@ import {
   removeMockModelScenario,
 } from './mockModelScenario'
 import { describeScenarioStatus, stepRequest, validateGateName, validateStepIndex } from './mockModelScript'
+import { attachModelStatus, withModelReceipt } from './modelReceipt'
 import { getGlobalState } from './server'
 import { currentTestDeadline, startTestDeadline, WAIT_REPORT_MARGIN_MS } from './testDeadline'
 
@@ -332,50 +332,15 @@ export async function runModelScriptFixture(
 ): Promise<void> {
   const lifecycle = await startModelScript(getGlobalState().mockModelUrl, {
     testDeadline: currentTestDeadline,
-    // A failed test attaches the live status above. A passed test reaches this hook when its script ends incomplete.
-    attachStatus: status => attachStatusFile(status, testInfo),
+    // Refresh the receipt if the final consumption check finds a later request.
+    attachStatus: status => attachModelStatus(status, testInfo),
   })
-  try {
-    await use(lifecycle.script)
-  }
-  finally {
-    const passed = testInfo.status === testInfo.expectedStatus
-    // Attach the script before teardown removes it.
-    // The recorded native request bodies show which tools and model turns reached the mock.
-    if (!passed)
-      await attachScriptStatus(lifecycle.script, testInfo)
-    // Do not replace the test failure with a script-consumption failure.
-    // The incomplete script can result from the original test failure.
-    await lifecycle.finish(passed)
-  }
-}
-
-async function attachScriptStatus(
-  script: ModelScript,
-  testInfo: {
-    outputPath?: (name: string) => string
-    attach?: (name: string, options: { path: string, contentType: string }) => Promise<void>
-  },
-): Promise<void> {
-  try {
-    await attachStatusFile(await script.status(), testInfo)
-  }
-  catch {
-    // A diagnostic that fails must not replace the failure it documents.
-  }
-}
-
-/** Write the whole status beside the test report. The file is compact, because a status can hold megabytes. */
-async function attachStatusFile(
-  status: MockModelScenarioStatus,
-  testInfo: {
-    outputPath?: (name: string) => string
-    attach?: (name: string, options: { path: string, contentType: string }) => Promise<void>
-  },
-): Promise<void> {
-  if (!testInfo.outputPath || !testInfo.attach)
-    return
-  const path = testInfo.outputPath('model-script.json')
-  writeFileSync(path, JSON.stringify(status))
-  await testInfo.attach('model-script', { path, contentType: 'application/json' })
+  let completed = false
+  await withCleanup(async () => {
+    await withModelReceipt(lifecycle.script, testInfo, () => use(lifecycle.script))
+    completed = true
+  }, async () => {
+    // A failed test can leave its script incomplete. Cleanup still removes the script after a receipt failure.
+    await lifecycle.finish(completed && testInfo.status === testInfo.expectedStatus)
+  })
 }

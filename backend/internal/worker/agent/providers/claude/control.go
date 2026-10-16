@@ -48,16 +48,11 @@ type claudeCodeControlResult struct {
 // (e.g. `{"subtype":"initialize"}`). Returns the control result or an error
 // on timeout/cancellation/failure.
 func (a *Agent) sendControlAndWait(ctx context.Context, requestBody string, timeout time.Duration) (claudeCodeControlResult, error) {
-	_, resp, err := a.sendControlAndWaitWithID(ctx, requestBody, timeout)
-	return resp, err
+	return a.sendControlAndWaitWithID(ctx, id.Short(), requestBody, timeout)
 }
 
-// sendControlAndWaitWithID is sendControlAndWait that also returns the generated request_id, so
-// a caller that needs to correlate a LATE (deferred) control_response with the request it
-// belongs to -- the set_permission_mode path, whose ack the CLI holds until an active turn
-// ends -- can record that id. Most callers use sendControlAndWait and ignore it.
-func (a *Agent) sendControlAndWaitWithID(ctx context.Context, requestBody string, timeout time.Duration) (string, claudeCodeControlResult, error) {
-	requestID := id.Short()
+// sendControlAndWaitWithID registers the supplied identity before the request reaches stdin.
+func (a *Agent) sendControlAndWaitWithID(ctx context.Context, requestID, requestBody string, timeout time.Duration) (claudeCodeControlResult, error) {
 	ch := make(chan claudeCodeControlResult, 1)
 	a.registerPendingControl(requestID, ch)
 
@@ -73,9 +68,9 @@ func (a *Agent) sendControlAndWaitWithID(ctx context.Context, requestBody string
 		// subprocess exits before the initialize write reaches the pipe.
 		select {
 		case <-a.ProcessDone():
-			return requestID, claudeCodeControlResult{}, a.ProcessExitError()
+			return claudeCodeControlResult{}, a.ProcessExitError()
 		case <-time.After(1 * time.Second):
-			return requestID, claudeCodeControlResult{}, err
+			return claudeCodeControlResult{}, err
 		}
 	}
 	agent.TraceStartupPhase(a.AgentID(), "control_stdin_write")
@@ -84,18 +79,27 @@ func (a *Agent) sendControlAndWaitWithID(ctx context.Context, requestBody string
 	case resp := <-ch:
 		a.unregisterPendingControl(requestID)
 		if !resp.Success {
-			return requestID, resp, fmt.Errorf("%s", resp.Error)
+			return resp, fmt.Errorf("%s", resp.Error)
 		}
-		return requestID, resp, nil
+		return resp, nil
 	case <-a.ProcessDone():
 		a.unregisterPendingControl(requestID)
-		return requestID, claudeCodeControlResult{}, a.ProcessExitError()
+		return claudeCodeControlResult{}, a.ProcessExitError()
 	case <-ctx.Done():
 		a.unregisterPendingControl(requestID)
-		return requestID, claudeCodeControlResult{}, ctx.Err()
+		return claudeCodeControlResult{}, ctx.Err()
 	case <-time.After(timeout):
 		a.unregisterPendingControl(requestID)
-		return requestID, claudeCodeControlResult{}, errControlTimeout
+		// A response delivered before unregister won the race with the timeout.
+		select {
+		case resp := <-ch:
+			if !resp.Success {
+				return resp, fmt.Errorf("%s", resp.Error)
+			}
+			return resp, nil
+		default:
+			return claudeCodeControlResult{}, errControlTimeout
+		}
 	}
 }
 
@@ -154,13 +158,13 @@ func (a *Agent) applyStartupPermissionMode(ctx context.Context, requested string
 		resp, err := a.sendSetPermissionMode(ctx, contracts.ClaudeModeAuto, timeout)
 		if err == nil {
 			a.setAutoModeAvailable(true)
-			return a.settleStartupPermissionMode(resp, nil)
+			return resp, nil
 		}
 		// Registration.PermissionDefaults.NewSession requests auto for each new
 		// session. Fall back after any error, including a timeout or a transport
 		// error. Such an error does not show whether default mode works. The probe
 		// path below also treats a transient failure as unavailable. If default
-		// mode fails too, settleStartupPermissionMode returns its error.
+		// mode fails too, return its error.
 		if isAutoModeUnavailableError(err) {
 			slog.Warn("requested auto permission mode is unavailable; falling back to default",
 				"agent_id", a.AgentID())
@@ -169,7 +173,7 @@ func (a *Agent) applyStartupPermissionMode(ctx context.Context, requested string
 				"agent_id", a.AgentID(), "error", err)
 		}
 		a.setAutoModeAvailable(false)
-		return a.settleStartupPermissionMode(a.sendSetPermissionMode(ctx, contracts.ClaudeModeDefault, timeout))
+		return a.sendSetPermissionMode(ctx, contracts.ClaudeModeDefault, timeout)
 	}
 
 	if _, err := a.sendSetPermissionMode(ctx, contracts.ClaudeModeAuto, timeout); err != nil {
@@ -181,34 +185,15 @@ func (a *Agent) applyStartupPermissionMode(ctx context.Context, requested string
 	} else {
 		a.setAutoModeAvailable(true)
 	}
-	return a.settleStartupPermissionMode(a.sendSetPermissionMode(ctx, requested, timeout))
+	return a.sendSetPermissionMode(ctx, requested, timeout)
 }
 
-// settleStartupPermissionMode records an acknowledged startup mode through
-// settlePermissionMode and passes a failure through unchanged, so every exit of
-// applyStartupPermissionMode settles the axis from one place.
-//
-// The auto PROBE runs before the requested mode, and a probe that times out records its
-// own request id as the deferred ack (see sendSetPermissionMode). The mode that follows
-// it supersedes that request, so the id must go with it. A failure needs no settlement:
-// the caller tears the process down.
-func (a *Agent) settleStartupPermissionMode(resp claudeCodeControlResult, err error) (claudeCodeControlResult, error) {
-	if err == nil {
-		a.settlePermissionMode(resp.Mode)
-	}
-	return resp, err
-}
-
-// sendSetPermissionMode issues set_permission_mode and falls back to the
-// requested mode when the response omits the applied mode field, so callers
-// always receive a non-empty resp.Mode on success.
-// permissionModeApplyTimeout caps how long the live UpdateSettings path waits for a
-// set_permission_mode ack. Kept short so a permission-mode toggle made while a turn is
-// streaming (the CLI defers the ack until the turn ends) fails fast and is applied
-// optimistically, rather than blocking for APITimeout and then restarting the agent.
+// permissionModeApplyTimeout limits the wait while the native turn defers its mode reply.
 const permissionModeApplyTimeout = 2 * time.Second
 
 func (a *Agent) sendSetPermissionMode(ctx context.Context, mode string, timeout time.Duration) (claudeCodeControlResult, error) {
+	a.permissionModeMu.Lock()
+	defer a.permissionModeMu.Unlock()
 	body, err := json.Marshal(map[string]string{
 		"subtype": "set_permission_mode",
 		"mode":    mode,
@@ -216,21 +201,22 @@ func (a *Agent) sendSetPermissionMode(ctx context.Context, mode string, timeout 
 	if err != nil {
 		return claudeCodeControlResult{}, err
 	}
-	requestID, resp, err := a.sendControlAndWaitWithID(ctx, string(body), timeout)
-	if errors.Is(err, errControlTimeout) {
-		// The CLI deferred this ack until the active turn ends. Remember THIS request's id (as
-		// the latest pending toggle) so claudeCodeHandleControlResponse folds back only the ack
-		// that belongs to it -- not a stale/duplicate ack, nor an earlier toggle this one
-		// supersedes. The turn is still streaming, so the deferred ack cannot arrive before this
-		// returns, hence no race with the optimistic write the caller does next.
-		a.Mu.Lock()
-		a.deferredPermissionModeReqID = requestID
-		a.Mu.Unlock()
+	change := &permissionModeChange{requestID: id.Short(), requested: mode}
+	a.Mu.Lock()
+	a.permissionModeChange = change
+	a.Mu.Unlock()
+	response, err := a.sendControlAndWaitWithID(ctx, change.requestID, string(body), timeout)
+	a.Mu.Lock()
+	if change.completed {
+		response, err = change.response, change.err
+	} else if errors.Is(err, errControlTimeout) {
+		change.deferred = true
+	} else {
+		a.completePermissionModeLocked(change, response, err, false)
+		response, err = change.response, change.err
 	}
-	if err == nil && resp.Mode == "" {
-		resp.Mode = mode
-	}
-	return resp, err
+	a.Mu.Unlock()
+	return response, err
 }
 
 // setAutoModeAvailable stores the auto-mode probe result under a.Mu so
@@ -321,6 +307,14 @@ func (a *Agent) handlePendingControlResponse(line *providerkit.ParsedLine) bool 
 		UnavailableModels:     innerResponse.UnavailableModels,
 		RawResponse:           envelope.Response.Response,
 	}
-	ch <- result
+	a.pendingControlMu.Lock()
+	defer a.pendingControlMu.Unlock()
+	if a.pendingControl[reqID] != ch {
+		return false
+	}
+	select {
+	case ch <- result:
+	default:
+	}
 	return true
 }

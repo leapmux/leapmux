@@ -33,6 +33,16 @@ interface NativeScriptCase {
   failed: boolean
 }
 
+/** Build computed output and error cases for a native JavaScript executor with text(). */
+export function nativeJavaScriptTextCases(marker: string): readonly NativeScriptCase[] {
+  if (!/^[a-z0-9]+$/i.test(marker))
+    throw new Error('A native JavaScript marker requires letters and digits.')
+  return [
+    { label: 'output', source: `text(${JSON.stringify(marker)} + (40 + 2));`, expected: `${marker}42`, failed: false },
+    { label: 'failure', source: `throw new Error(${JSON.stringify(marker)} + (70 + 7));`, expected: `${marker}77`, failed: true },
+  ]
+}
+
 /** Require output that only real execution can supply, with success and failure coverage. */
 export function validateNativeScriptCases(cases: readonly NativeScriptCase[]): void {
   if (cases.length < 2 || !cases.some(item => item.failed) || !cases.some(item => !item.failed))

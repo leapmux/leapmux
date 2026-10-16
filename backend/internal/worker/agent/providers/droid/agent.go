@@ -49,7 +49,8 @@ type Agent struct {
 	catalog    droidCatalog
 	// controls holds every permission and question LeapMux published and
 	// nothing resolved yet.
-	controls map[string]*droidPendingControl
+	controls     map[string]*droidPendingControl
+	approvalWork providerkit.CoalescingWork
 	// childTurns tracks each child session's turn flag. The key is the
 	// childSessionId of child_session_available, which is also the registry
 	// row key.
@@ -140,22 +141,26 @@ type droidOutputState struct {
 	tools        map[string]*droidTool
 	turnToolUse  int
 	generation   providerkit.GenerationBuffer
+	pending      []droidPendingOutput
+	ended        bool
 }
 
 // droidPendingControl is one published control request awaiting an answer.
 type droidPendingControl struct {
-	requestID string
-	kind      droidControlKind
-	toolUseID string
+	requestID       string
+	rpcID           string
+	sessionID       string
+	root            bool
+	payload         []byte
+	automaticReply  []byte
+	cancelAnswer    any
+	ready           bool
+	published       bool
+	answering       bool
+	automaticFailed bool
+	publicationDone chan struct{}
+	publicationOnce sync.Once
 }
-
-// droidControlKind distinguishes a permission request from a question.
-type droidControlKind string
-
-const (
-	droidControlPermission droidControlKind = "permission"
-	droidControlAskUser    droidControlKind = "ask_user"
-)
 
 // SendInput delivers a user message to the session.
 //
@@ -296,7 +301,9 @@ func (a *Agent) disarmTurn() {
 	a.turnActive = false
 	seq := a.NextTurnSeq()
 	compacting := a.compaction != nil
+	retired := a.takeControlsLocked(true)
 	a.Mu.Unlock()
+	a.cancelControls(retired)
 	a.sink.SetTurnState(agent.TurnState{Active: compacting}, seq)
 }
 
@@ -339,11 +346,14 @@ func (a *Agent) ClearContext() (string, error) {
 func (a *Agent) Stop() {
 	a.Mu.Lock()
 	a.stopped = true
+	retired := a.takeControlsLocked(false)
 	a.Mu.Unlock()
+	a.cancelControls(retired)
 	a.markChildTailsClosing()
 	a.Process.Stop()
 	a.stopChildConnections()
 	a.stopChildTails()
+	a.finishOutput(agent.MessageCompletionInterrupted)
 	a.cleanupRuntimeSettings()
 }
 
@@ -351,8 +361,14 @@ func (a *Agent) Stop() {
 // temporary settings are closed.
 func (a *Agent) Wait() error {
 	err := a.Process.Wait()
+	a.Mu.Lock()
+	a.stopped = true
+	retired := a.takeControlsLocked(false)
+	a.Mu.Unlock()
+	a.cancelControls(retired)
 	a.stopChildConnections()
 	a.stopChildTails()
+	a.finishOutput(a.ProcessExitCompletion())
 	a.cleanupRuntimeSettings()
 	return err
 }

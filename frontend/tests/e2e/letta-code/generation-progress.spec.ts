@@ -50,3 +50,5 @@ lettaTest('replaces live native shell windows and retains one actual final resul
   await expect(result).toHaveCount(1)
   await expect(result).toHaveAttribute('data-tool-status', 'completed')
 })
+
+// Track this LeapMux limitation: https://github.com/leapmux/leapmux/issues/521.

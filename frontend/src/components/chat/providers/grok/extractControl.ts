@@ -1,8 +1,9 @@
 import type { ElicitationRequest, PermissionOption } from '../../model/controlPrompt'
 import type { ControlExtractionInput, ExtractedControlRequest } from '../registry'
+import { ACP_PERMISSION_KIND } from '~/generated/contracts/acp-protocol'
 import { GROK_METHOD, GROK_TRUST_OUTCOME } from '~/generated/contracts/grok-protocol'
 import { pickObject, pickString, stringArray } from '~/lib/jsonPick'
-import { KIND_ALLOW_ONCE, KIND_REJECT_ONCE } from '../../model/controlPrompt'
+import { KIND_REJECT_ONCE } from '../../model/controlPrompt'
 import { acpElicitation } from '../acp/elicitation'
 import { acpExtractControl } from '../acp/extractControl'
 
@@ -15,7 +16,7 @@ import { acpExtractControl } from '../acp/extractControl'
  * workspace, so the words say that.
  */
 export const GROK_FOLDER_TRUST_OPTIONS: readonly PermissionOption[] = [
-  { optionId: GROK_TRUST_OUTCOME.Trust, kind: KIND_ALLOW_ONCE, name: 'Trust this workspace' },
+  { optionId: GROK_TRUST_OUTCOME.Trust, kind: ACP_PERMISSION_KIND.AllowOnce, name: 'Trust this workspace' },
   { optionId: GROK_TRUST_OUTCOME.Reject, kind: KIND_REJECT_ONCE, name: 'Do not trust' },
 ]
 

@@ -1,7 +1,8 @@
 import type { NumberedFileLine, ReadFileResult } from '../../../model/readFileResult'
 import type { ReadRequest } from '../../../model/tools/read'
+import type { ImageResultSource } from '~/lib/imageBlocks'
 import { isObject, pickNumber, pickString } from '~/lib/jsonPick'
-import { clineOperations } from './toolCommon'
+import { clineOperationRecords, clineOperations } from './toolCommon'
 
 /**
  * Cline's `read_files` tool.
@@ -14,6 +15,23 @@ import { clineOperations } from './toolCommon'
  */
 
 const NUMBERED_LINE = /^\s*(\d+) \| ?(.*)$/
+
+/** Extract native images from successful reads in their original operation and part order. */
+export function clineReadImages(output: unknown, requestPath: string): ImageResultSource[] {
+  const records = clineOperationRecords(output)
+  return records.flatMap((record) => {
+    if (record.success === false || !Array.isArray(record.result))
+      return []
+    const filePath = pickString(record, 'query') || (records.length === 1 ? requestPath : '')
+    return record.result.filter(isObject).flatMap((part) => {
+      const data = pickString(part, 'data')
+      const mimeType = pickString(part, 'mediaType')
+      if (part.type !== 'image' || !data.trim() || !/^image\/[\w.+-]+$/i.test(mimeType))
+        return []
+      return [{ data, mimeType, ...(filePath ? { filePath } : {}) }]
+    })
+  })
+}
 
 /** The files one call states. The first file is the request's path; each other one follows it. */
 export function clineReadRequest(args: Record<string, unknown>): ReadRequest {

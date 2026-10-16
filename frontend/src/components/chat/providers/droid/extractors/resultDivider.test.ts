@@ -7,6 +7,23 @@ function turnCompleted(reason: string | undefined): Record<string, unknown> {
 }
 
 describe('droidResultDivider', () => {
+  it.each(['permission_rejected', 'structured_output_missing', 'structured_output_invalid', 'structured_output_schema_invalid', 'model_usage_exhausted', 'model_authentication_failed', 'model_request_rejected', 'model_provider_unreachable', 'model_provider_unavailable', 'model_rate_limited', 'prompt_rejected', 'completion_persistence_failed', 'no_approver_available'])('reports native reason %s as a failure', (reason) => {
+    expect(droidResultDivider(turnCompleted(reason))).toEqual({ label: 'Turn failed', isError: true })
+  })
+
+  it('reports an early process exit as an interruption', () => {
+    expect(droidResultDivider(turnCompleted('process_exit'))).toEqual({ label: 'Turn interrupted', isError: true })
+  })
+
+  it('keeps a native handoff successful', () => {
+    expect(droidResultDivider(turnCompleted('spec_handoff'))).toEqual({ label: 'Turn ended' })
+  })
+
+  it('reports an unknown native outcome or a recorded failure as failed', () => {
+    expect(droidResultDivider(turnCompleted('unknown-outcome'))).toEqual({ label: 'Turn failed', isError: true })
+    expect(droidResultDivider(turnCompleted('completed'), MessageCompletion.ERROR)).toEqual({ label: 'Turn failed', isError: true })
+  })
+
   it('says a completed turn ended', () => {
     expect(droidResultDivider(turnCompleted('completed'))).toEqual({ label: 'Turn ended' })
   })

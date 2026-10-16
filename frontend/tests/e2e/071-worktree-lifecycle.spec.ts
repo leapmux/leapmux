@@ -318,8 +318,17 @@ test.describe('Worktree Lifecycle', () => {
     await expect(closeDialog).toBeVisible()
     await expect(agentTab).toBeVisible()
 
-    // Click "Cancel" — resets the armed button and closes dialog
-    await closeDialog.getByRole('button', { name: 'Cancel' }).click()
+    // Let blur reset the confirmation label between pointer press and release.
+    // Cancel must stay under the pointer throughout that reset.
+    const cancelButton = closeDialog.getByRole('button', { name: 'Cancel' })
+    const cancelRect = await cancelButton.boundingBox()
+    expect(cancelRect).not.toBeNull()
+    if (!cancelRect)
+      throw new Error('Cancel has no visible rectangle.')
+    await page.mouse.move(cancelRect.x + cancelRect.width / 2, cancelRect.y + cancelRect.height / 2)
+    await page.mouse.down()
+    await expect(closeDialog.getByRole('button', { name: 'Delete worktree' })).toBeVisible()
+    await page.mouse.up()
 
     // Dialog should close
     await expect(closeDialog).not.toBeVisible()

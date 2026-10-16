@@ -6,3 +6,5 @@ import { OPENCODE_COMPACTION } from './compactionScenario'
 opencodeTest('completes actual native compaction without a completed notice row', async ({ native }) => {
   await expectNoCompactionNotice(native, { relatedProof: () => exerciseNativeCompaction(native, OPENCODE_COMPACTION) })
 })
+
+// Track this LeapMux limitation: https://github.com/leapmux/leapmux/issues/512.

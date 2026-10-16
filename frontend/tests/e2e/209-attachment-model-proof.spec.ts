@@ -1,10 +1,10 @@
 import type { Page } from '@playwright/test'
-import type { MockModelProtocol, MockModelScenarioStatus } from './mockModelScript'
+import type { MockModelProtocol, MockModelScenarioStatus } from './helpers/mockModelScript'
 import { readFileSync } from 'node:fs'
 import { expect } from '@playwright/test'
-import { test } from '../fixtures'
-import { expectNativeAttachmentProof, expectNoRejectedContent } from './attachmentModelProbe'
-import { writeAttachmentFixture } from './attachments'
+import { test } from './fixtures'
+import { expectNativeAttachmentProof, expectNoRejectedContent } from './helpers/attachmentModelProbe'
+import { writeAttachmentFixture } from './helpers/attachments'
 
 function scriptedStatus(body: unknown, protocol: MockModelProtocol = 'openai-chat-completions'): MockModelScenarioStatus {
   return {

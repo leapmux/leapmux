@@ -5,3 +5,5 @@ import { relatedNativeProof } from './scenarios'
 copilotTest('proves the native swarm-mode limit after a real sidebar operation', async ({ native }) => {
   await expectMissingSetting(native, { feature: 'swarm-mode', relatedProof: () => relatedNativeProof(native) })
 })
+
+// Track this LeapMux limitation: https://github.com/leapmux/leapmux/issues/523.

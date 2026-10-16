@@ -2,10 +2,9 @@ import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { ConfirmDialog } from './ConfirmDialog'
 
-// jsdom does not implement the native <dialog> API. Patch the prototype with
-// spy-able stubs that keep the `open` attribute and `close` event consistent,
-// so the component's mount (showModal) and cleanup (close) logic behaves as it
-// would in a real browser.
+// jsdom does not implement the native dialog methods.
+// These spies keep the open attribute and close event consistent.
+// Component mount and cleanup then match the browser behavior.
 beforeEach(() => {
   HTMLDialogElement.prototype.showModal = vi.fn(function (this: HTMLDialogElement) {
     this.setAttribute('open', '')
@@ -16,7 +15,7 @@ beforeEach(() => {
   })
 })
 
-describe('confirm dialog', () => {
+describe('ConfirmDialog', () => {
   it('renders with title and message', () => {
     render(() => (
       <ConfirmDialog
@@ -92,23 +91,27 @@ describe('confirm dialog', () => {
   })
 
   it('uses ConfirmButton in danger mode', () => {
+    const onConfirm = vi.fn()
     render(() => (
       <ConfirmDialog
         title="Test"
         confirmLabel="Delete"
         danger
-        onConfirm={() => {}}
+        onConfirm={onConfirm}
         onCancel={() => {}}
       >
         <p>Message</p>
       </ConfirmDialog>
     ))
-    // In danger mode, the confirm button is a ConfirmButton (requires two clicks)
-    const deleteBtn = screen.getByText('Delete')
-    expect(deleteBtn).toBeInTheDocument()
-    // First click arms it, doesn't trigger confirm
+    // ConfirmButton requires two clicks in danger mode.
+    const deleteBtn = screen.getByRole('button', { name: 'Delete' })
+    expect(screen.queryByRole('button', { name: 'Confirm?' })).not.toBeInTheDocument()
+    // The first click arms the button without confirming.
     fireEvent.click(deleteBtn)
-    expect(screen.getByText('Confirm?')).toBeInTheDocument()
+    expect(onConfirm).not.toHaveBeenCalled()
+    expect(deleteBtn).toHaveAccessibleName('Confirm?')
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm?' }))
+    expect(onConfirm).toHaveBeenCalledOnce()
   })
 
   it('calls showModal on mount', () => {
@@ -142,7 +145,7 @@ describe('confirm dialog', () => {
     expect(screen.getByTestId('my-confirm')).toBeInTheDocument()
   })
 
-  it('non-danger primary submits via Enter (form submit handler)', () => {
+  it('submits the primary action through Enter outside danger mode', () => {
     const onConfirm = vi.fn()
     render(() => (
       <ConfirmDialog
@@ -160,7 +163,7 @@ describe('confirm dialog', () => {
     expect(onConfirm).toHaveBeenCalledOnce()
   })
 
-  it('danger primary does NOT fire on form submit (ConfirmButton must arm)', () => {
+  it('does not confirm a danger action through form submission', () => {
     const onConfirm = vi.fn()
     render(() => (
       <ConfirmDialog
@@ -180,7 +183,7 @@ describe('confirm dialog', () => {
     expect(onConfirm).not.toHaveBeenCalled()
   })
 
-  it('busy disables form submit (Enter cannot bypass)', () => {
+  it('blocks form submission while busy', () => {
     const onConfirm = vi.fn()
     render(() => (
       <ConfirmDialog
@@ -246,7 +249,7 @@ describe('confirm dialog', () => {
       expect(screen.getByTestId('my-secondary')).toBeInTheDocument()
     })
 
-    it('non-danger secondary fires on a single click', () => {
+    it('calls the secondary action on one click outside danger mode', () => {
       const onSecondary = vi.fn()
       render(() => (
         <ConfirmDialog
@@ -266,7 +269,7 @@ describe('confirm dialog', () => {
       expect(onSecondary).toHaveBeenCalledOnce()
     })
 
-    it('danger secondary requires two clicks (ConfirmButton arming)', () => {
+    it('requires two clicks for a secondary action in danger mode', () => {
       const onSecondary = vi.fn()
       render(() => (
         <ConfirmDialog
@@ -284,13 +287,15 @@ describe('confirm dialog', () => {
         </ConfirmDialog>
       ))
       const btn = screen.getByTestId('my-secondary')
+      expect(btn).toHaveAccessibleName('Close all')
       fireEvent.click(btn)
       expect(onSecondary).not.toHaveBeenCalled()
-      fireEvent.click(btn)
+      expect(btn).toHaveAccessibleName('Confirm?')
+      fireEvent.click(screen.getByRole('button', { name: 'Confirm?' }))
       expect(onSecondary).toHaveBeenCalledOnce()
     })
 
-    it('busy disables the secondary button', () => {
+    it('disables the secondary button while busy', () => {
       render(() => (
         <ConfirmDialog
           title="Test"

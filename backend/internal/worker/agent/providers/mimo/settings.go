@@ -57,6 +57,8 @@ func (a *Agent) SettingsSnapshot() agent.SettingsApplyResult {
 // value that stays. A permission policy the server refuses leaves the old
 // policy in place, and asks for a restart, which applies the policy at startup.
 func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult {
+	a.settingsApplyMu.Lock()
+	defer func() { a.settingsApplyMu.Unlock(); a.queuePermissionApprovals() }()
 	a.Mu.Lock()
 	catalog, current := a.catalog, a.settingsLocked()
 	a.Mu.Unlock()

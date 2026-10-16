@@ -2,12 +2,21 @@ import { rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { frontendRoot } from '~/test-support/sourceTree'
-import { test } from './fixtures'
+import { test as base } from './fixtures'
 import { settleFrames, settleTransitions } from './helpers/frames'
 import { createTestDirectory } from './helpers/runDirectory'
-import { agentTabs, clickTreeContextItem, openTreeContextMenu, terminalTabs, treeRow, treeRowNames, waitForFilesSortOrder } from './helpers/ui'
+import { agentTabs, clickTreeContextItem, openTreeContextMenu, terminalTabs, treeMenuItem, treeRow, treeRowNames, waitForFilesSortOrder } from './helpers/ui'
 import { waitForAgentStartupViaAPI } from './helpers/workerTabs'
 import { showWorkspaceWithAgents } from './helpers/workspace'
+
+// The Files tree rebuilds when startup ends. Wait before a case opens a menu or selects a row.
+const test = base.extend({
+  authenticatedWorkspace: async ({ authenticatedWorkspace, leapmuxServer }, use) => {
+    const { hubUrl, adminToken, workerId } = leapmuxServer
+    await waitForAgentStartupViaAPI(hubUrl, adminToken, workerId, authenticatedWorkspace.workspaceId)
+    await use(authenticatedWorkspace)
+  },
+})
 
 const ABSOLUTE_PATH_RE = /^\//
 
@@ -39,18 +48,18 @@ test.describe('DirectoryTree', () => {
     await expect(rootNode).toBeVisible()
 
     // Hover the root node and open context menu
-    await openTreeContextMenu(rootNode)
+    await openTreeContextMenu(rootNode, 'tree-info-button')
 
     // Every directory item should be visible (use :visible to scope to the open popover).
     // The info block leads: a directory reports a modification time but no size.
-    const dirInfo = page.locator('[data-testid="tree-info-button"]:visible')
+    const dirInfo = treeMenuItem(rootNode, 'tree-info-button')
     await expect(dirInfo).toBeVisible()
     await expect(dirInfo).toContainText('Modified:')
     await expect(dirInfo).not.toContainText('Size:')
-    await expect(page.locator('[data-testid="tree-mention-button"]:visible')).toBeVisible()
-    await expect(page.locator('[data-testid="tree-open-terminal-button"]:visible')).toBeVisible()
-    await expect(page.locator('[data-testid="tree-copy-path-button"]:visible')).toBeVisible()
-    await expect(page.locator('[data-testid="tree-copy-relative-path-button"]:visible')).toBeVisible()
+    await expect(treeMenuItem(rootNode, 'tree-mention-button')).toBeVisible()
+    await expect(treeMenuItem(rootNode, 'tree-open-terminal-button')).toBeVisible()
+    await expect(treeMenuItem(rootNode, 'tree-copy-path-button')).toBeVisible()
+    await expect(treeMenuItem(rootNode, 'tree-copy-relative-path-button')).toBeVisible()
   })
 
   test('file context menu shows size and modified but no terminal item', async ({ page, authenticatedWorkspace }) => {
@@ -63,19 +72,20 @@ test.describe('DirectoryTree', () => {
     // tree-row test id, because a Tooltip wraps the label in a pair of spans.
     // A `.locator('..')` from the label text does not reach the row that holds
     // the menu button.
-    await openTreeContextMenu(treeRow(page, 'package.json'))
+    const row = treeRow(page, 'package.json')
+    await openTreeContextMenu(row, 'tree-info-button')
 
     // The menu of a file holds these items, and no terminal item:
     // - The info block, with the size and the modification time.
     // - The mention item.
     // - The two copy items.
-    const fileInfo = page.locator('[data-testid="tree-info-button"]:visible')
+    const fileInfo = treeMenuItem(row, 'tree-info-button')
     await expect(fileInfo).toContainText('Size:')
     await expect(fileInfo).toContainText('Modified:')
-    await expect(page.locator('[data-testid="tree-mention-button"]:visible')).toBeVisible()
-    await expect(page.locator('[data-testid="tree-copy-path-button"]:visible')).toBeVisible()
-    await expect(page.locator('[data-testid="tree-copy-relative-path-button"]:visible')).toBeVisible()
-    await expect(page.locator('[data-testid="tree-open-terminal-button"]:visible')).toHaveCount(0)
+    await expect(treeMenuItem(row, 'tree-mention-button')).toBeVisible()
+    await expect(treeMenuItem(row, 'tree-copy-path-button')).toBeVisible()
+    await expect(treeMenuItem(row, 'tree-copy-relative-path-button')).toBeVisible()
+    await expect(treeMenuItem(row, 'tree-open-terminal-button')).toHaveCount(0)
   })
 
   test('open terminal tab from directory context menu', async ({ page, authenticatedWorkspace }) => {
@@ -358,14 +368,8 @@ test.describe('DirectoryTree', () => {
    * The tree is the clean control for the right-click path: its rows carry no
    * drag, so nothing else competes for the press.
    */
-  test('right-click opens a row menu without selecting the row', async ({ page, leapmuxServer, authenticatedWorkspace }) => {
-    // The Files tree waits for the active agent: while the agent starts, a
-    // startup spinner takes its place, and the tree builds its rows again when
-    // the agent leaves STARTING. A menu that opened on the old rows closes with
-    // them. So the right-click waits until the Worker reports the agent started.
-    const { hubUrl, adminToken, workerId } = leapmuxServer
-    await waitForAgentStartupViaAPI(hubUrl, adminToken, workerId, authenticatedWorkspace.workspaceId)
-
+  test('right-click opens a row menu without selecting the row', async ({ page, authenticatedWorkspace }) => {
+    void authenticatedWorkspace
     const row = treeRow(page, 'package.json')
     await expect(row).toBeVisible()
 

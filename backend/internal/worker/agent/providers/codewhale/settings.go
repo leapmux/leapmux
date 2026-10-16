@@ -138,6 +138,7 @@ func (a *Agent) SettingsSnapshot() agent.SettingsApplyResult {
 // states the values the runtime settled on. The effort is LeapMux's own and
 // takes effect at the next turn.
 func (a *Agent) UpdateSettings(requested optionmap.Map) agent.SettingsApplyResult {
+	defer a.approvePendingPermissions()
 	result := agent.SettingsApplyResult{AppliedLive: true, Settlements: make(agent.OptionSettlements)}
 	var update updateThreadRequest
 	patched := false

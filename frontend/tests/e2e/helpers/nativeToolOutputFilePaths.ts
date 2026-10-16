@@ -16,6 +16,7 @@ import { openWorkspace, readAttachedWithArgument, toolCallRow } from './ui'
 
 export interface NativeToolOutputFilePathsOptions {
   context: Pick<ManagedNativeScenarioContext, 'page' | 'workspaceId' | 'resolveToolRowId'>
+  /** The model call ID. The provider resolver supplies the native row ID once. */
   callId: string
   previewText: string
   previewMarkers: readonly string[]

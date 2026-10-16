@@ -1,6 +1,7 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { codewhaleTest } from '../codewhale-fixtures'
+import { exerciseMidTurnBypass } from '../helpers/nativeMidTurnBypass'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { answerControl, expectNoControlBanner, expectSettingsOptionChosen, sendMessage, toolRows, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
 
@@ -41,4 +42,8 @@ codewhaleTest.describe('Codewhale approvals', () => {
     await expect(toolRows(page).filter({ hasText: 'unasked-42' }).first()).toBeVisible()
     await expectNoControlBanner(page)
   })
+})
+
+codewhaleTest('approves a pending tool and the next tool when Bypass changes during a turn', async ({ native }) => {
+  await exerciseMidTurnBypass(native)
 })

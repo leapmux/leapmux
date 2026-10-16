@@ -6,9 +6,11 @@ import type { AgentWorkspaceFixture } from './helpers/workspace'
 import { rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { test as base } from '@playwright/test'
+import { SETTING_KEY_DEBUG_LOGGING } from '../../src/generated/contracts/user-settings'
 import { agentDefaultsEnv } from './agentSettings'
 import {
   API_POLL_INTERVAL_MS,
+  callHub,
   closeTestChannels,
   elevateSessionViaAPI,
   enableSignupViaAPI,
@@ -23,12 +25,13 @@ import {
 } from './helpers/api'
 import { cleanupOnFailure, finishCleanup, withCleanup } from './helpers/cleanup'
 import { closeAllUserEventsSubscriptions } from './helpers/crdt'
+import { E2E_HUB_HOST } from './helpers/hubTransport'
 import { modelScriptFixtures } from './helpers/modelScriptFixture'
 import { spawnRegisteredWorker, spawnWorkerProcess } from './helpers/nativeWorker'
 import { stopProcess, stopProcesses } from './helpers/process'
 import { spawnTestProcess } from './helpers/processRegistry'
 import { createTestDirectory } from './helpers/runDirectory'
-import { getGlobalState, hubSpawnEnv, waitForHubStart, waitForServer } from './helpers/server'
+import { getGlobalState, hubSpawnEnv, mockAgentEnv, waitForHubStart, waitForServer } from './helpers/server'
 import { attachServerLog, createServerOutput, reportStartupFailure } from './helpers/serverOutput'
 import { attachToastLog, installToastRecorder } from './helpers/toast'
 import { loginViaToken, openWorkspace } from './helpers/ui'
@@ -38,6 +41,8 @@ import { agentWorkspaceFixture, withTestWorkspace } from './helpers/workspace'
 export const SEPARATE_WORKER_NAME = 'test-worker'
 
 export interface SeparateServerInfo {
+  /** The isolated provider configuration that every process spawn inherits. */
+  agentEnv: Record<string, string>
   hubUrl: string
   adminToken: string
   workerId: string
@@ -154,6 +159,7 @@ export async function restartHub(serverInfo: SeparateServerInfo): Promise<void> 
 
 export const processTest = base.extend<
   ModelScriptFixtures & {
+    debugLogging: boolean
     toastRecorder: void
     /** The working directory of the agent that the `workspace` fixture opens. See the same option in `./fixtures.ts`. */
     agentWorkingDir: string | undefined
@@ -168,6 +174,8 @@ export const processTest = base.extend<
   // Every agent reaches the run's mock endpoint. Teardown verifies each test's model script.
   ...modelScriptFixtures,
 
+  debugLogging: [false, { option: true }],
+
   // One Playwright worker owns this separate Hub and Worker.
   // eslint-disable-next-line no-empty-pattern
   separateHubWorker: [async ({}, use) => {
@@ -181,7 +189,7 @@ export const processTest = base.extend<
     let serverInfo: SeparateServerInfo | undefined
     await withCleanup(async () => {
       console.log('[e2e] Start the separate Hub on an assigned port.')
-      const hubProc = spawnSeparateHub('127.0.0.1:0', dataDir, output)
+      const hubProc = spawnSeparateHub(`${E2E_HUB_HOST}:0`, dataDir, output)
       started.push(hubProc)
 
       // Startup waits run outside a test. Print recent server output on failure because no test attachment exists yet.
@@ -217,6 +225,7 @@ export const processTest = base.extend<
       const newuserToken = await signUpViaAPI(hubUrl, 'newuser', 'password123', 'New User', 'new@test.com')
 
       serverInfo = {
+        agentEnv: mockAgentEnv(),
         hubUrl,
         adminToken,
         workerId,
@@ -270,7 +279,11 @@ export const processTest = base.extend<
   },
 
   // Sign in and open the test workspace.
-  authenticatedWorkspace: async ({ page, workspace, separateHubWorker }, use) => {
+  authenticatedWorkspace: async ({ page, workspace, separateHubWorker, debugLogging }, use) => {
+    await callHub(separateHubWorker.hubUrl, 'UserService/UpdateUserSetting', { key: SETTING_KEY_DEBUG_LOGGING, partialJson: String(debugLogging) }, {
+      cookie: separateHubWorker.adminToken,
+      operation: 'Set private process diagnostics before the browser opens',
+    })
     await loginViaToken(page, separateHubWorker.adminToken)
     await openWorkspace(page, workspace.workspaceId)
     await use(workspace)

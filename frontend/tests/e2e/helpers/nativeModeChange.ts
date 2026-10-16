@@ -6,10 +6,12 @@ import { NOTIFICATION_FIELD, NOTIFICATION_THREAD_TYPE, NOTIFICATION_TYPE } from 
 import { MessageSource } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
 import { escapeRegExp } from '../../../src/lib/regexp'
-import { nativeMessageBody, readAllAgentMessages, sameAgentOwnership } from './nativeMessages'
+import { withCleanup } from './cleanup'
+import { isStoredMessageSeq, nativeMessageBody, readAllAgentMessages, sameAgentOwnership } from './nativeMessages'
 import { currentNativeAgent } from './nativeScenario'
+import { copySettingsNotification } from './notificationCopy'
 import { thinkingIndicatorShownDuring } from './thinkingIndicatorWatch'
-import { chooseSettingsOption, expectSettingsChip, visibleOnly, waitForSettingsIdle } from './ui'
+import { chatScrollContainer, chooseSettingsOption, expectSettingsChip, scrollChatRowIntoView, visibleOnly, waitForSettingsIdle } from './ui'
 
 /** The initial rendered notice and a later check of its exact stored entry. */
 export interface NativeModeNotice extends Locator {
@@ -109,14 +111,33 @@ export async function captureStoredNativeModeNotice(
     const matches = matchingStoredNotices(messages, owner, storedChange)
     if (matches.length !== 1 || !matches[0])
       throw new Error(`The native mode change requires exactly one stored native mode notice, found ${matches.length}.`)
+    if (!isStoredMessageSeq(matches[0].seq))
+      throw new Error('The stored mode notice must have a positive Worker sequence.')
     return matches[0]
   }
-  const messageId = requireNotice(captured.messages).id
+  const capturedNotice = requireNotice(captured.messages)
+  const messageId = capturedNotice.id
+  const assertCopy = async (message: AgentChatMessage) => {
+    const scroller = chatScrollContainer(context.page)
+    const position = await scroller.evaluate(element => ({ top: element.scrollTop, atEnd: element.scrollHeight - element.clientHeight - element.scrollTop < 1 }))
+    await withCleanup(async () => {
+      await scrollChatRowIntoView(context.page, message.seq)
+      await copySettingsNotification(
+        scroller.locator(`[data-seq="${message.seq}"]`).locator('[data-testid="message-bubble"]:visible'),
+        { groupId: change.groupId, oldValue: change.oldValue, value: change.value },
+      )
+    }, () => scroller.evaluate((element, position) => {
+      element.scrollTop = position.atEnd ? element.scrollHeight : position.top
+    }, position))
+  }
+  await assertCopy(capturedNotice)
   return Object.assign(locator, {
     assertStored: async () => {
       const snapshot = await storedModeMessages(context, owner)
-      if (requireNotice(snapshot.messages).id !== messageId)
+      const restoredNotice = requireNotice(snapshot.messages)
+      if (restoredNotice.id !== messageId)
         throw new Error('The stored native mode notice differs from its captured message owner.')
+      await assertCopy(restoredNotice)
     },
   })
 }

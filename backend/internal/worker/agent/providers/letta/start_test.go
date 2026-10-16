@@ -1,12 +1,14 @@
 package letta
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -34,12 +36,15 @@ import (
 // live `letta server --listen` run (ids shortened).
 const lettaLiveRuntimeStartResponse = `{"type":"runtime_start_response","request_id":"rs-1","success":true,"runtime":{"agent_id":"agent-local-ae1e0bbf-7eab-4dce-9182-64e3106c755d","conversation_id":"local-conv-1"},"agent":{"id":"agent-local-ae1e0bbf-7eab-4dce-9182-64e3106c755d"},"conversation":{"id":"local-conv-1"},"created":true}`
 
-// fakeAppServer is one `letta server --listen` that answers on its WebSocket
-// only when the test tells it to. It records every command the driver writes.
+// fakeAppServer records every command and returns native approval receipts.
+// A test can hold those receipts. Every other reply is explicit.
 type fakeAppServer struct {
-	server   *httptest.Server
-	commands chan map[string]any
-	replies  chan []byte
+	server                *httptest.Server
+	commands              chan map[string]any
+	replies               chan []byte
+	readDone              chan struct{}
+	done                  chan struct{}
+	holdPermissionReplies atomic.Bool
 }
 
 // newFakeAppServer starts the server and dials the driver's socket to it.
@@ -55,6 +60,8 @@ func newFakeAppServerWithSink(t *testing.T, sink *agenttest.Sink) (*fakeAppServe
 	fake := &fakeAppServer{
 		commands: make(chan map[string]any, 8),
 		replies:  make(chan []byte, 8),
+		readDone: make(chan struct{}),
+		done:     make(chan struct{}),
 	}
 	upgrader := func(w http.ResponseWriter, r *http.Request) {
 		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
@@ -63,8 +70,15 @@ func newFakeAppServerWithSink(t *testing.T, sink *agenttest.Sink) (*fakeAppServe
 		}
 		defer func() { _ = conn.Close(websocket.StatusNormalClosure, "") }()
 		go func() {
-			for reply := range fake.replies {
-				if err := conn.Write(r.Context(), websocket.MessageText, reply); err != nil {
+			for {
+				select {
+				case reply := <-fake.replies:
+					if err := conn.Write(r.Context(), websocket.MessageText, reply); err != nil {
+						return
+					}
+				case <-r.Context().Done():
+					return
+				case <-fake.done:
 					return
 				}
 			}
@@ -75,10 +89,28 @@ func newFakeAppServerWithSink(t *testing.T, sink *agenttest.Sink) (*fakeAppServe
 				return
 			}
 			var command map[string]any
-			if json.Unmarshal(data, &command) != nil {
+			decoder := json.NewDecoder(bytes.NewReader(data))
+			decoder.UseNumber()
+			if decoder.Decode(&command) != nil {
 				continue
 			}
-			fake.commands <- command
+			select {
+			case fake.commands <- command:
+			case <-fake.done:
+				return
+			}
+			payload, _ := command["payload"].(map[string]any)
+			if command["type"] == "input" && payload["kind"] == "approval_response" && !fake.holdPermissionReplies.Load() {
+				reply, encodeErr := json.Marshal(map[string]any{"type": "input_accepted", "request_id": command["request_id"], "runtime": command["runtime"], "accepted": true})
+				if encodeErr != nil {
+					return
+				}
+				select {
+				case fake.replies <- reply:
+				case <-fake.done:
+					return
+				}
+			}
 		}
 	}
 	fake.server = httptest.NewServer(http.HandlerFunc(upgrader))
@@ -88,6 +120,7 @@ func newFakeAppServerWithSink(t *testing.T, sink *agenttest.Sink) (*fakeAppServe
 	conn, err := dial(ctx, "ws"+strings.TrimPrefix(fake.server.URL, "http"))
 	require.NoError(t, err)
 	t.Cleanup(func() {
+		close(fake.done)
 		conn.close()
 		cancel()
 	})
@@ -106,7 +139,7 @@ func newFakeAppServerWithSink(t *testing.T, sink *agenttest.Sink) (*fakeAppServe
 	}
 	// The readLoop is what dispatches the response onto adoptRuntime. Start
 	// starts it before openConversation; the test must too.
-	go a.readLoop(ctx, conn)
+	go func() { a.readLoop(ctx, conn); close(fake.readDone) }()
 	return fake, a
 }
 
@@ -454,6 +487,7 @@ func TestSendRawInputSendsTheAnswerOverTheSocket(t *testing.T) {
 	a.Mu.Unlock()
 
 	answer := []byte(`{"kind":"approval_response","request_id":"perm-call-1","decision":{"behavior":"allow"}}`)
+	a.HandleOutput(permissionFrame("perm-call-1", "Bash", "call-1"))
 	require.NoError(t, a.SendRawInput(answer, agent.StopContext{}))
 
 	command := fake.nextCommand(t)

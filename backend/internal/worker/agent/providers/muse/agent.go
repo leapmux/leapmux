@@ -27,6 +27,7 @@ type Agent struct {
 	controlMu           sync.Mutex
 	controlQueue        []*controlRecord
 	controlDraining     bool
+	approvalWork        providerkit.CoalescingWork
 	sessionID           string
 	settings            optionmap.Map
 	models              []*agent.ModelInfo
@@ -70,10 +71,10 @@ type itemState struct {
 }
 
 type inputPart struct {
-	Type       string `json:"type"`
-	Text       string `json:"text,omitempty"`
-	Base64Data string `json:"base64Data,omitempty"`
-	MediaType  string `json:"mediaType,omitempty"`
+	Type       string  `json:"type"`
+	Text       *string `json:"text,omitempty"`
+	Base64Data string  `json:"base64Data,omitempty"`
+	MediaType  string  `json:"mediaType,omitempty"`
 }
 
 var (
@@ -83,14 +84,15 @@ var (
 )
 
 func inputParts(text string, attachments []*leapmuxv1.Attachment) ([]inputPart, error) {
-	parts := []inputPart{{Type: "text", Text: text}}
+	parts := []inputPart{{Type: "text", Text: &text}}
 	for _, attachment := range agent.ClassifyAttachments(attachments) {
 		if err := (museProvider{}).ValidateAttachment(attachment); err != nil {
 			return nil, err
 		}
 		switch attachment.Kind {
 		case agent.AttachmentKindText:
-			parts = append(parts, inputPart{Type: "text", Text: providerkit.BuildInlineTextAttachmentBlock(attachment)})
+			attachmentText := providerkit.BuildInlineTextAttachmentBlock(attachment)
+			parts = append(parts, inputPart{Type: "text", Text: &attachmentText})
 		case agent.AttachmentKindPDF, agent.AttachmentKindBinary:
 			return nil, fmt.Errorf("the Muse MSP input does not accept %s attachments", attachment.Kind)
 		case agent.AttachmentKindImage:

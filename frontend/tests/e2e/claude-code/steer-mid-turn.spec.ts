@@ -3,27 +3,32 @@ import { expect } from '@playwright/test'
 import { claudeTest, claudeProcessTest as test } from '../claude-fixtures'
 import { expectNativePdfPart, nativeUserStrings } from '../helpers/attachmentModelProbe'
 import { attachFile, sendWithAttachment, writeAttachmentFixture } from '../helpers/attachments'
+import { finishCleanup, withCleanup } from '../helpers/cleanup'
 import { exerciseSteerAfterTool } from '../helpers/nativeToolSteering'
 import { queuedInputRow, steerButton, steerQueuedInput } from '../helpers/steer'
 import { chooseSettingsOption, interruptButton, sendMessage, waitForAgentIdle, waitForSettingsIdle } from '../helpers/ui'
 
 test.describe('agent input queue', () => {
   test('offers Steer for input queued during a Claude turn', async ({ page, authenticatedWorkspace, modelScript }) => {
-    void authenticatedWorkspace
+    await withCleanup(async () => {
+      void authenticatedWorkspace
 
-    // Keep the first turn active long enough to put the next message in the
-    // durable queue. The Interrupt button is the Worker's turn-state signal.
-    // The HOLD is what keeps it active: against the mock endpoint a long prompt
-    // finishes as fast as a short one, so the turn has to be held open.
-    const start = await modelScript.queue({ text: 'A report.', delayMs: 60_000 })
-    modelScript.allowUnconsumed('the steer ends the turn before the held answer arrives')
-    await sendMessage(page, modelScript.prompt('Write a 2,000-word technical report about Go concurrency.'))
-    await modelScript.waitForSteps(start + 1)
-    await expect(interruptButton(page)).toBeVisible()
+      // Keep the first turn active long enough to put the next message in the
+      // durable queue. The Interrupt button is the Worker's turn-state signal.
+      // The HOLD is what keeps it active: against the mock endpoint a long prompt
+      // finishes as fast as a short one, so the turn has to be held open.
+      const start = await modelScript.queue({ text: 'A report.', gate: 'claude-code-steer-mid-turn-hold-1' })
+      modelScript.allowUnconsumed('the steer ends the turn before the held answer arrives')
+      await sendMessage(page, modelScript.prompt('Write a 2,000-word technical report about Go concurrency.'))
+      await modelScript.waitForSteps(start + 1)
+      await expect(interruptButton(page)).toBeVisible()
 
-    await steerQueuedInput(page, {
-      message: modelScript.prompt('Stop the report now and reply with the single word STEERED.'),
-      match: 'Stop the report',
+      await steerQueuedInput(page, {
+        message: modelScript.prompt('Stop the report now and reply with the single word STEERED.'),
+        match: 'Stop the report',
+      })
+    }, async () => {
+      await finishCleanup([modelScript.releaseGateIfHeld('claude-code-steer-mid-turn-hold-1')])
     })
   })
 

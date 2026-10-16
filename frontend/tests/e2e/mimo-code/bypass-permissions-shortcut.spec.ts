@@ -1,6 +1,8 @@
 import { expect } from '@playwright/test'
 import { MIMO_OPTION, MIMO_PERMISSION_POLICY } from '../../../src/generated/contracts/mimo-protocol'
 import { exerciseBypassPermissions } from '../helpers/nativeBypassPermissions'
+import { exerciseMidTurnBypass } from '../helpers/nativeMidTurnBypass'
+import { createNativePermissionRemoval } from '../helpers/nativePermissionRemoval'
 import { nativeOptionValue } from '../helpers/nativeScenario'
 import { expectPermissionShortcuts, expectSettingsOptionChosen, openWorkspace, waitForSettingsHydrated } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
@@ -24,4 +26,9 @@ mimoTest.describe('MiMo Code settings', () => {
     // The policy is not a status-bar axis, so its own group in the menu states it.
     await expectSettingsOptionChosen(page, `${MIMO_OPTION.PermissionPolicy}-${MIMO_PERMISSION_POLICY.Bypass}`)
   })
+})
+
+mimoTest('approves a pending tool and the next tool when Bypass changes during a turn', async ({ native }) => {
+  const operations = await Promise.all([createNativePermissionRemoval(native), createNativePermissionRemoval(native)])
+  await exerciseMidTurnBypass(native, operations)
 })

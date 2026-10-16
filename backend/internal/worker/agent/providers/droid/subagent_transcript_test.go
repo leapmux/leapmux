@@ -292,7 +292,7 @@ func TestDroidFinishedChildAnnouncementDoesNotRestartTail(t *testing.T) {
 	path := filepath.Join(dir, archiveChildID+".jsonl")
 	appendDroidArchive(t, path,
 		droidArchiveStart(archiveChildID, work),
-		`{"type":"agent_turn_outcome","turnId":"turn-1","reason":"end_turn","resultKind":"success"}`,
+		`{"type":"agent_turn_outcome","turnId":"turn-1","reason":"completed","resultKind":"text"}`,
 	)
 	a.HandleOutput([]byte(droidTaskCall))
 	announcement := []byte(droidArchiveChildAvailable(archiveChildID, "task-1"))
@@ -322,7 +322,7 @@ func TestDroidChildAnnouncementRejectsReusedSessionWithDifferentTool(t *testing.
 	path := filepath.Join(dir, archiveChildID+".jsonl")
 	appendDroidArchive(t, path,
 		droidArchiveStart(archiveChildID, work),
-		`{"type":"agent_turn_outcome","turnId":"turn-1","reason":"end_turn","resultKind":"success"}`,
+		`{"type":"agent_turn_outcome","turnId":"turn-1","reason":"completed","resultKind":"text"}`,
 	)
 	a.HandleOutput([]byte(droidTaskCall))
 	a.HandleOutput([]byte(droidArchiveChildAvailable(archiveChildID, "task-1")))
@@ -392,7 +392,7 @@ func TestDroidChildTailContinuesAtSavedOffset(t *testing.T) {
 	appendDroidArchive(t, path,
 		droidArchiveStart(archiveChildID, work),
 		`{"type":"message","id":"assistant-first","message":{"role":"assistant","content":[{"type":"text","text":"ARCHIVE_FIRST_TURN"}]}}`,
-		`{"type":"agent_turn_outcome","turnId":"turn-1","reason":"end_turn","resultKind":"success"}`,
+		`{"type":"agent_turn_outcome","turnId":"turn-1","reason":"completed","resultKind":"text"}`,
 	)
 	a.HandleOutput([]byte(droidTaskCall))
 	a.HandleOutput([]byte(droidArchiveChildAvailable(archiveChildID, "task-1")))
@@ -416,7 +416,7 @@ func TestDroidChildTailContinuesAtSavedOffset(t *testing.T) {
 
 	appendDroidArchive(t, path,
 		`{"type":"message","id":"assistant-second","message":{"role":"assistant","content":[{"type":"text","text":"ARCHIVE_SECOND_TURN"}]}}`,
-		`{"type":"agent_turn_outcome","turnId":"turn-2","reason":"end_turn","resultKind":"success"}`,
+		`{"type":"agent_turn_outcome","turnId":"turn-2","reason":"completed","resultKind":"text"}`,
 	)
 	// SendChildInput resumes this same native session through startChildTail.
 	a.startChildTail(archiveChildID)
@@ -454,9 +454,9 @@ func TestDroidChildTailReadsTwoTurnsInOneChunk(t *testing.T) {
 	appendDroidArchive(t, path,
 		droidArchiveStart(archiveChildID, work),
 		`{"type":"message","id":"assistant-first","message":{"role":"assistant","content":[{"type":"text","text":"ARCHIVE_FIRST_TURN"}]}}`,
-		`{"type":"agent_turn_outcome","turnId":"turn-1","reason":"end_turn","resultKind":"success"}`,
+		`{"type":"agent_turn_outcome","turnId":"turn-1","reason":"completed","resultKind":"text"}`,
 		`{"type":"message","id":"assistant-second","message":{"role":"assistant","content":[{"type":"text","text":"ARCHIVE_SECOND_TURN"}]}}`,
-		`{"type":"agent_turn_outcome","turnId":"turn-2","reason":"end_turn","resultKind":"success"}`,
+		`{"type":"agent_turn_outcome","turnId":"turn-2","reason":"completed","resultKind":"text"}`,
 	)
 	a.HandleOutput([]byte(droidTaskCall))
 	a.HandleOutput([]byte(droidArchiveChildAvailable(archiveChildID, "task-1")))
@@ -534,11 +534,11 @@ func droidEarlySendArchive(t *testing.T, sends int) (*Agent, *agenttest.Sink, *q
 		}
 		require.NoError(t, a.SendChildInput(archiveChildID, fmt.Sprintf("follow-up %d", index+1), nil))
 	}
-	records := []string{`{"type":"agent_turn_outcome","turnId":"turn-1","reason":"end_turn","resultKind":"success"}`}
+	records := []string{`{"type":"agent_turn_outcome","turnId":"turn-1","reason":"completed","resultKind":"text"}`}
 	for index := range sends {
 		records = append(records,
 			fmt.Sprintf(`{"type":"message","id":"assistant-%d","message":{"role":"assistant","content":[{"type":"text","text":"ARCHIVE_FOLLOWUP_%d"}]}}`, index+2, index+1),
-			fmt.Sprintf(`{"type":"agent_turn_outcome","turnId":"turn-%d","reason":"end_turn","resultKind":"success"}`, index+2),
+			fmt.Sprintf(`{"type":"agent_turn_outcome","turnId":"turn-%d","reason":"completed","resultKind":"text"}`, index+2),
 		)
 	}
 	appendDroidArchive(t, path, records...)
@@ -599,7 +599,7 @@ func TestDroidChildTailKeepsPartialNextTurnAfterOutcome(t *testing.T) {
 	appendDroidArchive(t, path,
 		droidArchiveStart(archiveChildID, work),
 		`{"type":"message","id":"assistant-first","message":{"role":"assistant","content":[{"type":"text","text":"ARCHIVE_FIRST_TURN"}]}}`,
-		`{"type":"agent_turn_outcome","turnId":"turn-1","reason":"end_turn","resultKind":"success"}`,
+		`{"type":"agent_turn_outcome","turnId":"turn-1","reason":"completed","resultKind":"text"}`,
 	)
 	second := `{"type":"message","id":"assistant-second","message":{"role":"assistant","content":[{"type":"text","text":"ARCHIVE_PARTIAL_SECOND_TURN"}]}}`
 	cut := len(second) / 2
@@ -622,7 +622,7 @@ func TestDroidChildTailKeepsPartialNextTurnAfterOutcome(t *testing.T) {
 		return tail.finished
 	}, "the first outcome stops before the partial next record")
 	appendDroidArchive(t, path, second[cut:],
-		`{"type":"agent_turn_outcome","turnId":"turn-2","reason":"end_turn","resultKind":"success"}`)
+		`{"type":"agent_turn_outcome","turnId":"turn-2","reason":"completed","resultKind":"text"}`)
 	a.startChildTail(archiveChildID)
 	advanceDroidArchive(t, clock)
 	testutil.RequireEventually(t, func() bool {
@@ -657,7 +657,7 @@ func TestDroidChildArchiveProjectsLiveRows(t *testing.T) {
 
 	appendDroidArchive(t, path,
 		`{"type":"message","id":"assistant-2","message":{"role":"assistant","content":[{"type":"text","text":"ARCHIVE_CHILD_FINAL"}]}}`,
-		`{"type":"agent_turn_outcome","turnId":"turn-1","reason":"end_turn","resultKind":"success"}`,
+		`{"type":"agent_turn_outcome","turnId":"turn-1","reason":"completed","resultKind":"text"}`,
 	)
 	advanceDroidArchive(t, clock)
 	testutil.RequireEventually(t, func() bool {

@@ -1,7 +1,8 @@
 import type { ControlResponseSummary } from '../../model/controlResponse'
 import type { PersistedControlResponse } from '../../persistedControlResponse'
+import { ACP_PERMISSION_KIND } from '~/generated/contracts/acp-protocol'
 import { pickObject, pickString } from '~/lib/jsonPick'
-import { KIND_ALLOW_ALWAYS, KIND_ALLOW_ONCE } from '../../model/controlPrompt'
+import { KIND_ALLOW_ALWAYS } from '../../model/controlPrompt'
 import { CONTROL_DECISION_WORDS, label, labelOrNull } from '../../persistedControlResponse'
 import { acpControlResponseSummary, acpOptionIdKind } from '../acp/controlResponse'
 import { acpPermissionOptions } from '../acp/extractControl'
@@ -20,7 +21,7 @@ function qwenPlanDisplay(request: Record<string, unknown>, optionId: string): Co
   const kind = acpPermissionOptions(request).find(option => option.optionId === optionId)?.kind ?? acpOptionIdKind(optionId)
   if (!kind)
     return null
-  return label(kind === KIND_ALLOW_ONCE || kind === KIND_ALLOW_ALWAYS ? CONTROL_DECISION_WORDS.plan.allow : CONTROL_DECISION_WORDS.plan.deny)
+  return label(kind === ACP_PERMISSION_KIND.AllowOnce || kind === KIND_ALLOW_ALWAYS ? CONTROL_DECISION_WORDS.plan.allow : CONTROL_DECISION_WORDS.plan.deny)
 }
 
 /**

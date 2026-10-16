@@ -25,7 +25,8 @@ type codexProvider struct {
 	agent.ProviderDefaults
 }
 
-// Codex accepts text and image blocks; PDF and binary have no representation in its input.
+// LeapMux currently sends text and image blocks through this provider.
+// Native audio inputs are not integrated: https://github.com/leapmux/leapmux/issues/498.
 func (codexProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
 	return providerkit.RejectPDFAndBinaryAttachment("codex", attachment)
 }

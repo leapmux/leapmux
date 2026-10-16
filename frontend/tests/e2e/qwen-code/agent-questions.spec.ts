@@ -1,16 +1,13 @@
 import { expect } from '@playwright/test'
-import { chooseQuestionOption, exerciseQuestionAnswer } from '../helpers/nativeQuestion'
-import { messageBubbles, openWorkspace } from '../helpers/ui'
-import { openProviderAgent } from '../helpers/workspace'
+import { chooseQuestionOption, exerciseQuestionAnswer, exerciseQuestionPages, exerciseTypedQuestionAnswer } from '../helpers/nativeQuestion'
+import { exerciseQuestionIsolation } from '../helpers/nativeQuestionIsolation'
+import { messageBubbles } from '../helpers/ui'
 import { qwenTest } from '../qwen-fixtures'
-import { nativeContext, QWEN_AGENT } from './scenarios'
 
-qwenTest.describe('Qwen Code control requests', () => {
-  qwenTest('answers a question through its own reply field', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, QWEN_AGENT)
-    await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-    const { result } = await exerciseQuestionAnswer(context, {
+qwenTest.describe('control requests for Qwen Code', () => {
+  qwenTest('answers a question through its own reply field', async ({ native }) => {
+    const { page } = native
+    const { result } = await exerciseQuestionAnswer(native, {
       questions: [{
         question: 'Which color do you want?',
         header: 'Color',
@@ -19,7 +16,7 @@ qwenTest.describe('Qwen Code control requests', () => {
       callId: 'qwen-question',
       prompt: 'Ask me for a color.',
       answer: 'You chose Blue.',
-      reply: chooseQuestionOption('Blue'),
+      reply: chooseQuestionOption('Blue', native),
     })
 
     // Qwen's native reply field carries the answer. Its tool result states that answer.
@@ -27,4 +24,16 @@ qwenTest.describe('Qwen Code control requests', () => {
     expect(result).toContain('**Color**: Blue')
     await expect(messageBubbles(page).filter({ hasText: 'Color: Blue' }).first()).toBeVisible()
   })
+})
+
+qwenTest('preserves answers across native question pages and reloads', async ({ native }) => {
+  await exerciseQuestionPages(native)
+})
+
+qwenTest('returns a custom native answer after its draft survives reload', async ({ native }) => {
+  await exerciseTypedQuestionAnswer(native)
+})
+
+qwenTest('keeps a native question on its owner tab and workspace after reload', async ({ native }) => {
+  await exerciseQuestionIsolation(native, { customAnswerDraft: true })
 })

@@ -97,7 +97,7 @@ function isPageAnsweredWithOption(state: ControlAnswerState, qIdx: number, quest
   if (sel.length > 0)
     return selectionWithinLimits(question, sel.length)
   const customText = state.customTexts()[qIdx]?.trim()
-  if (customText)
+  if (customText && question?.allowCustomText !== false)
     return true
   return question?.allowEmpty === true
 }
@@ -129,6 +129,8 @@ export function submitBlockedReason(questions: ControlQuestion[], isAnswered: (i
   // guard alone.
   const waitingQuestion = questions[waiting]
   const counts = waitingQuestion ? selectionCountPhrase(waitingQuestion) : null
+  if (waitingQuestion?.allowCustomText === false)
+    return counts !== null ? `${counts}.` : 'Choose an option. This agent accepts selected options only.'
   const reason = counts !== null
     ? `${counts}, or type a custom answer below.`
     : waitingQuestion?.options?.length
@@ -227,6 +229,8 @@ export function trySubmitAskUserQuestion(
 
   // Save current editor text to the current page.
   const page = state.currentPage()
+  if (questions[page]?.allowCustomText === false && currentContent.trim())
+    return false
   state.setCustomTexts(prev => ({ ...prev, [page]: currentContent }))
   if (currentContent && !preserveSelectionNotes) {
     state.setSelections(prev => ({ ...prev, [page]: [] }))
@@ -357,6 +361,9 @@ export const AskUserQuestionContent: Component<{ request: ControlRequest, answer
                   />
                 </Show>
               </div>
+              <Show when={q().allowCustomText === false}>
+                <p class={styles.bannerHint}>This agent accepts selected options only.</p>
+              </Show>
             </div>
           )
         }}
@@ -381,6 +388,7 @@ export const AskUserQuestionActions: Component<ActionsProps & {
     // selection is a NOTE on it, and a selection outside the native counts
     // stays incomplete whatever the note says.
     return qIdx === props.answerState.currentPage() && props.hasEditorContent
+      && questions()[qIdx]?.allowCustomText !== false
       && (props.answerState.selections()[qIdx] ?? []).length === 0
   }
 
@@ -412,6 +420,8 @@ export const AskUserQuestionActions: Component<ActionsProps & {
       return
     const text = editor.get()
     const page = props.answerState.currentPage()
+    if (questions()[page]?.allowCustomText === false)
+      return
     props.answerState.setCustomTexts(prev => ({ ...prev, [page]: text }))
     if (text && !preservesSelectionNotes(props.agentProvider)) {
       // Clear selections for this page since custom text overrides for providers
@@ -483,6 +493,13 @@ export const AskUserQuestionActions: Component<ActionsProps & {
     }
   }
 
+  const canAutoFill = () => questions().every((question, index) => {
+    if (isPageAnswered(index) || question.allowCustomText !== false)
+      return true
+    const count = Math.max(1, question.minimumSelections ?? 1)
+    return question.options.length >= count && selectionWithinLimits(question, count)
+  })
+
   /**
    * Fill every unanswered page with the recommended-option answer, then submit.
    *
@@ -493,10 +510,19 @@ export const AskUserQuestionActions: Component<ActionsProps & {
    * through handleSubmit, which saves the editor again.
    */
   const handleYolo = () => {
+    if (!canAutoFill())
+      return
     saveEditorToCurrentPage()
     const qs = questions()
     for (let i = 0; i < qs.length; i++) {
       if (!isPageAnsweredWithOption(props.answerState, i, qs[i])) {
+        const question = qs[i]!
+        if (question.allowCustomText === false) {
+          const count = Math.max(1, question.minimumSelections ?? 1)
+          props.answerState.setCustomTexts(prev => ({ ...prev, [i]: '' }))
+          props.answerState.setSelections(prev => ({ ...prev, [i]: question.options.slice(0, count).map(questionOptionValue) }))
+          continue
+        }
         // A page left unanswered can hold a selection outside its native
         // counts; the fill replaces that partial answer, not just fills a blank.
         props.answerState.setCustomTexts(prev => ({ ...prev, [i]: 'Go with the recommended option.' }))
@@ -523,7 +549,7 @@ export const AskUserQuestionActions: Component<ActionsProps & {
             <button
               class={actionButtonClass(true)}
               onClick={handleYolo}
-              disabled={!anyUnanswered()}
+              disabled={!anyUnanswered() || !canAutoFill()}
               data-testid="control-yolo-btn"
             >
               YOLO

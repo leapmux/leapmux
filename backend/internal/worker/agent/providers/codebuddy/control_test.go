@@ -5,7 +5,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -114,7 +116,7 @@ func TestCodebuddyInterruptKeepsAPermissionWhenItsRefusalFails(t *testing.T) {
 	require.Error(t, a.Interrupt(agent.StopContext{}))
 	assert.Empty(t, controls.CanceledControls())
 	a.mu.Lock()
-	_, open := a.openPermissions["perm_1"]
+	_, open := a.controls["perm_1"]
 	assert.Empty(t, a.interruptRequests, "a failed refusal marks no stop")
 	a.mu.Unlock()
 	assert.True(t, open)
@@ -150,7 +152,7 @@ func TestCodebuddyFailedRefusalDoesNotRestoreARetiredPermission(t *testing.T) {
 			a.SetStdinForTest(agenttest.NopStdin(permissionRetiringWriter{retire: func() { retire(a) }, err: failure}))
 			require.ErrorIs(t, a.Interrupt(agent.StopContext{}), failure)
 			a.mu.Lock()
-			assert.Empty(t, a.openPermissions, "the failed write must not restore a retired permission")
+			assert.Empty(t, a.controls, "the failed write must not restore a retired permission")
 			a.mu.Unlock()
 		})
 	}
@@ -177,7 +179,7 @@ func TestCodebuddyFailedAnswerKeepsTheNativePermissionOpen(t *testing.T) {
 	a.SetStdinForTest(agenttest.FailingStdin{})
 	require.Error(t, a.SendRawInput([]byte(`{"type":"control_response","response":{"subtype":"success","request_id":"perm_1","response":{"allowed":true}}}`), agent.StopContext{}))
 	a.mu.Lock()
-	_, open := a.openPermissions["perm_1"]
+	_, open := a.controls["perm_1"]
 	a.mu.Unlock()
 	assert.True(t, open, "the failed answer cannot release the native permission wait")
 }
@@ -260,4 +262,32 @@ func TestCodebuddyInterruptRefusesNoPermissionThatNoLongerWaits(t *testing.T) {
 			assert.Len(t, controls.CanceledControls(), canceled, "the interrupt withdraws no card")
 		})
 	}
+}
+
+func TestCodebuddyBypassApprovesPendingAndLaterTools(t *testing.T) {
+	a, peer := newCodebuddySteerAgent(t, nil, codebuddyControlAnswer(`{"mode":"bypassPermissions"}`))
+	sink := &agenttest.ControlSink{}
+	a.sink = agent.NewProviderServices(sink)
+	a.HandleOutput([]byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"waiting-control","name":"Bash"}]}}`))
+	a.HandleOutput(canUseTool("first"))
+	a.HandleOutput(bytes.ReplaceAll(canUseTool("question"), []byte(`"tool_name":"Bash"`), []byte(`"tool_name":"AskUserQuestion"`)))
+	result := a.UpdateSettings(map[string]string{agent.OptionIDPermissionMode: "bypassPermissions"})
+	require.Equal(t, "bypassPermissions", result.ConfirmedOptions()[agent.OptionIDPermissionMode])
+	require.Eventually(t, func() bool { return len(sink.CanceledControls()) == 1 }, 30*time.Second, time.Millisecond)
+	assert.Equal(t, []string{"first"}, sink.CanceledControls())
+	assert.Contains(t, peer.String(), `"allowed":true`)
+	a.HandleOutput(canUseTool("later"))
+	require.Eventually(t, func() bool { return strings.Contains(peer.String(), `"request_id":"later"`) }, 30*time.Second, time.Millisecond)
+	assert.Equal(t, 2, sink.PublishedControlCount())
+}
+
+func TestCodebuddyRefusesAnUnknownOrRepeatedPermissionAnswer(t *testing.T) {
+	a, _, stdin := permissionFixture(t)
+	answer := []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"perm_1","response":{"allowed":true}}}`)
+	assert.Error(t, a.SendRawInput(answer, agent.StopContext{}))
+	assert.Empty(t, stdinFrames(t, stdin))
+	a.HandleOutput(canUseTool("perm_1"))
+	require.NoError(t, a.SendRawInput(answer, agent.StopContext{}))
+	assert.Error(t, a.SendRawInput(answer, agent.StopContext{}))
+	assert.Len(t, stdinFrames(t, stdin), 1)
 }

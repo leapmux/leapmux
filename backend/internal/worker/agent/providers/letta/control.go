@@ -94,7 +94,12 @@ func (a *Agent) onControlRequest(line []byte, body []byte, requestID string) {
 	}
 
 	if requestID == "" {
-		requestID = "letta-perm-" + req.ToolCallID
+		if req.ToolCallID == "" {
+			slog.Warn("letta permission request has no native identity", "agent_id", a.AgentID())
+			return
+		}
+		// Native Letta derives permission IDs from tool-call IDs with this prefix.
+		requestID = "perm-" + req.ToolCallID
 	}
 	kind := lettaControlPermission
 	slog.Info("letta: control request",
@@ -115,13 +120,7 @@ func (a *Agent) onControlRequest(line []byte, body []byte, requestID string) {
 	if err != nil {
 		return
 	}
-	if err := a.sink.PublishControlRequest(agent.ControlRequest{
-		AgentSessionID: a.lettaSession(),
-		RequestID:      requestID,
-		Payload:        payloadBytes,
-	}); err != nil {
-		slog.Debug("letta: publish control failed", "agent_id", a.AgentID(), "error", err)
-	}
+	a.registerPermission(requestID, payloadBytes, req.ToolName != "")
 }
 
 // lettaQuestionRequestID is the request id of the question that one call posts.
@@ -437,17 +436,7 @@ func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) error {
 	}
 	switch {
 	case head.Kind == contracts.LettaReplyKindApprovalResponse:
-		var payload map[string]any
-		if err := json.Unmarshal(data, &payload); err != nil {
-			return fmt.Errorf("the Letta control answer is not JSON: %w", err)
-		}
-		cmd := newLettaCommand("input", a.nextRequestID())
-		cmd.Runtime = &scope
-		cmd.Payload = payload
-		slog.Info("letta: send control answer",
-			"agent_id", a.AgentID(), "request_id", cmd.RequestID,
-			"runtime_conversation_id", scope.ConversationID)
-		return a.sendCommand(cmd)
+		return a.answerPermission(data, scope)
 	case head.Type == contracts.LettaQuestionResponseType:
 		notification, err := lettaQuestionNotification(data)
 		if err != nil {

@@ -1,5 +1,40 @@
 import { describe, expect, it } from 'vitest'
-import { clineReadRequest, clineReadResult } from './read'
+import { clineReadImages, clineReadRequest, clineReadResult } from './read'
+
+describe('clineReadImages', () => {
+  it('keeps valid images in operation order and preserves accompanying text', () => {
+    const output = [
+      { query: '/w/a.png', success: true, result: ['First image', { type: 'image', data: 'YQ==', mediaType: 'image/png' }, { type: 'image', data: 'Yg==', mediaType: 'image/webp' }] },
+      { query: '/w/b.png', success: true, result: ['Second image', { type: 'image', data: 'Yw==', mediaType: 'image/png' }] },
+    ]
+    expect(clineReadImages(JSON.stringify(output), '/fallback')).toEqual([
+      { data: 'YQ==', mimeType: 'image/png', filePath: '/w/a.png' },
+      { data: 'Yg==', mimeType: 'image/webp', filePath: '/w/a.png' },
+      { data: 'Yw==', mimeType: 'image/png', filePath: '/w/b.png' },
+    ])
+    expect(clineReadResult(output)?.fallbackContent).toBe('/w/a.png\nFirst image\n\n/w/b.png\nSecond image')
+  })
+
+  it('ignores failed operations and invalid image parts without dropping a valid sibling', () => {
+    const valid = { type: 'image', data: 'YQ==', mediaType: 'image/png' }
+    const output = [
+      { query: '/w/failed.png', success: false, result: [valid] },
+      { query: '/w/valid.png', result: [null, 0, {}, { ...valid, data: '' }, { ...valid, data: 0 }, { ...valid, mediaType: 'text/plain' }, { ...valid, mediaType: null }, { ...valid, type: 'text' }, valid] },
+    ]
+    expect(clineReadImages(output, '')).toEqual([{ data: 'YQ==', mimeType: 'image/png', filePath: '/w/valid.png' }])
+    for (const empty of [undefined, null, '', 'bad JSON', [], {}])
+      expect(clineReadImages(empty, '/fallback')).toEqual([])
+  })
+
+  it('uses the request path only for a single operation that omits its query', () => {
+    const image = { type: 'image', data: 'YQ==', mediaType: 'image/png' }
+    expect(clineReadImages([{ result: [image] }], '/w/a.png')).toEqual([{ data: 'YQ==', mimeType: 'image/png', filePath: '/w/a.png' }])
+    expect(clineReadImages([{ result: [image] }, { result: [image] }], '/w/a.png, /w/b.png')).toEqual([
+      { data: 'YQ==', mimeType: 'image/png' },
+      { data: 'YQ==', mimeType: 'image/png' },
+    ])
+  })
+})
 
 describe('clineReadRequest', () => {
   it('reads one file with its inclusive line range', () => {

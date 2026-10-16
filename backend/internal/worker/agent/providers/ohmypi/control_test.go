@@ -4,17 +4,41 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/coder/quartz"
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestBypassApprovesPendingAndLaterToolsButKeepsExtensionDialogs(t *testing.T) {
+	t.Parallel()
+	r := withCatalog(newRig(t))
+	r.emit(frameApprovedBashStart, frameApprovalDialog,
+		`{"type":"extension_ui_request","id":"question","method":"select","title":"Which color?","options":["Blue","Red"]}`)
+	result := r.agent.UpdateSettings(map[string]string{agent.OptionIDPermissionMode: contracts.OhMyPiApprovalModeYolo})
+	require.True(t, result.AppliedLive, "Bypass must not wait for a process restart")
+	answers := r.waitForCommand(contracts.OhMyPiEventExtensionUIResponse, 1)
+	require.Len(t, answers, 1)
+	assert.Equal(t, "158b2ba5001bfb93", answers[0].Payload["id"])
+	assert.Equal(t, contracts.OhMyPiApprovalDialogApprove, answers[0].Payload["value"])
+	waitFor(t, func() bool { return len(r.sink.CanceledControls()) == 1 })
+	assert.Equal(t, []string{"158b2ba5001bfb93"}, r.sink.CanceledControls())
+	r.emit(`{"type":"extension_ui_request","id":"later","method":"select","title":"Allow tool: bash","options":["Approve","Deny"]}`)
+	answers = r.waitForCommand(contracts.OhMyPiEventExtensionUIResponse, 2)
+	assert.Equal(t, "later", answers[1].Payload["id"])
+	assert.Equal(t, 2, r.sink.PublishedControlCount(), "the later tool needs no card")
+	assert.False(t, r.agent.UpdateSettings(map[string]string{agent.OptionIDPermissionMode: contracts.OhMyPiApprovalModeWrite}).AppliedLive,
+		"a narrower mode still restarts with the native policy")
+}
 
 // Probe s2 (`tools.approvalMode: always-ask`): omp starts the call, then asks.
 const (
@@ -436,11 +460,80 @@ func TestExtensionNoticesPersist(t *testing.T) {
 func TestSendRawInputPassesADialogAnswerThrough(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
+	r.emit(frameApprovalDialog)
 	answer := `{"type":"extension_ui_response","id":"158b2ba5001bfb93","value":"Approve"}`
 	require.NoError(t, r.agent.SendRawInput([]byte(answer), agent.StopContext{}))
 
 	answers := r.waitForCommand("extension_ui_response", 1)
 	assert.JSONEq(t, answer, string(answers[0].Raw), "omp reads the browser's answer unchanged")
+}
+
+func TestFailedDialogAnswerKeepsTheRequest(t *testing.T) {
+	t.Parallel()
+	done := make(chan struct{})
+	a := &Agent{
+		Process: providerkit.NewProcessFrom(providerkit.ProcessConfig{Ctx: t.Context(), Stdin: agenttest.FailingStdin{}, ProcessDone: done}),
+		sink:    agent.NewProviderServices(&agenttest.ControlSink{}),
+	}
+	t.Cleanup(func() { close(done); a.Process.Stop() })
+	a.publishDialog(dialogHeader{ID: "request", Method: "confirm"}, []byte(`{"type":"extension_ui_request","id":"request","method":"confirm"}`))
+	require.Error(t, a.SendRawInput([]byte(`{"type":"extension_ui_response","id":"request","confirmed":true}`), agent.StopContext{}))
+	a.Mu.Lock()
+	_, pending := a.openDialogs["request"]
+	a.Mu.Unlock()
+	assert.True(t, pending, "a failed write must not discard the pending request")
+}
+
+type refusedDialogStdin struct{ writes agenttest.Stdin }
+
+func (w *refusedDialogStdin) Write(data []byte) (int, error) {
+	_, _ = w.writes.Write(data)
+	return 0, errors.New("the pipe refused the write")
+}
+
+func (*refusedDialogStdin) Close() error { return nil }
+
+func TestFailedAutomaticDialogAnswerFallsBackWithoutAnotherAttempt(t *testing.T) {
+	t.Parallel()
+	r := withCatalog(newRig(t))
+	writer := &refusedDialogStdin{}
+	r.agent.SetStdinForTest(writer)
+	r.emit(frameApprovalDialog)
+	r.agent.UpdateSettings(map[string]string{agent.OptionIDPermissionMode: contracts.OhMyPiApprovalModeYolo})
+	r.emit(`{"type":"extension_ui_request","id":"later","method":"select","title":"Allow tool: bash","options":["Approve","Deny"]}`)
+	waitFor(t, r.agent.approvalWork.Idle)
+	assert.Equal(t, 1, strings.Count(writer.writes.String(), "158b2ba5001bfb93"))
+	assert.Equal(t, 1, strings.Count(writer.writes.String(), `"id":"later"`))
+	assert.Equal(t, 2, r.sink.PublishedControlCount(), "failed automatic answers remain available for manual decisions")
+	assert.Empty(t, r.sink.CanceledControls())
+}
+
+type dialogPublicationHook struct {
+	*agenttest.ControlSink
+	before func()
+}
+
+func (s dialogPublicationHook) PublishControlRequest(request agent.ControlRequest) error {
+	s.before()
+	return s.ControlSink.PublishControlRequest(request)
+}
+
+func TestDialogPublicationDuringStopRetiresTheCard(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.agent.sink = agent.NewProviderServices(dialogPublicationHook{ControlSink: r.sink, before: func() { r.agent.SetStoppedForTest(true) }})
+	r.emit(frameApprovalDialog)
+	assert.Equal(t, []string{"158b2ba5001bfb93"}, r.sink.CanceledControls())
+}
+
+func TestDialogAnswerRefusesUnknownAndRepeatedRequests(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	answer := []byte(`{"type":"extension_ui_response","id":"158b2ba5001bfb93","value":"Approve"}`)
+	require.Error(t, r.agent.SendRawInput(answer, agent.StopContext{}))
+	r.emit(frameApprovalDialog)
+	require.NoError(t, r.agent.SendRawInput(answer, agent.StopContext{}))
+	require.Error(t, r.agent.SendRawInput(answer, agent.StopContext{}))
 }
 
 func TestSendRawInputFailsAfterExit(t *testing.T) {

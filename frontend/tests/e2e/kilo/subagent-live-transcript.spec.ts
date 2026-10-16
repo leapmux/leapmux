@@ -14,3 +14,5 @@ kiloTest('keeps actual child tool output out of the child tab before native comp
   const child = await openProfiledNativeChild(native, KILO_CHILD, { childTool: readToolCall(AgentProvider.KILO, READ_CALL_ID, file.path) })
   await expectChildToolOutputDeferred(native, child, { marker: file.marker, fileName: 'native-child-live.txt', readCallId: READ_CALL_ID, restoredAfterCompletion: false })
 })
+
+// Track this LeapMux limitation: https://github.com/leapmux/leapmux/issues/516.

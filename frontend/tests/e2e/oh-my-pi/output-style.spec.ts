@@ -5,3 +5,5 @@ import { relatedNativeProof } from './scenarios'
 ohMyPiTest('proves the missing output-style setting against the live catalog and a native tool', async ({ native }) => {
   await expectMissingSetting(native, { feature: 'output-style', relatedProof: () => relatedNativeProof(native) })
 })
+
+// Track this LeapMux limitation: https://github.com/leapmux/leapmux/issues/526.

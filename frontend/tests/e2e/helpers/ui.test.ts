@@ -31,9 +31,11 @@ import {
   COMPOSER_EDITOR_SELECTOR,
   composerEditor,
   controlActions,
+  controlAgentId,
   controlBanner,
   controlButton,
   deleteWorkspaceViaUI,
+  editorDraftContainsText,
   elevationPrompt,
   enterControlFeedback,
   enterMessageText,
@@ -62,6 +64,7 @@ import {
   resumePausedQueue,
   resumeQueueAfterFailure,
   rowOrderProblem,
+  scrollChatRowIntoView,
   SECOND_ARITHMETIC_ANSWER,
   SECOND_ARITHMETIC_ANSWER_TEXT,
   SECOND_ARITHMETIC_PROMPT,
@@ -85,6 +88,81 @@ import {
   workspaceMenuItem,
   workspaceRowTitle,
 } from './ui'
+
+describe('editorDraftContainsText', () => {
+  it('matches visible punctuation after the Markdown serializer escapes it', () => {
+    expect(editorDraftContainsText({ content: 'Custom color 0 界 & \\<value>' }, 'Custom color 0 界 & <value>')).toBe(true)
+    expect(editorDraftContainsText({ content: 'Literal \\*value\\*' }, 'Literal *value*')).toBe(true)
+    expect(editorDraftContainsText({ content: 'first\n\nsecond' }, 'first\nsecond')).toBe(true)
+  })
+
+  it('preserves checks that intentionally use Markdown source', () => {
+    expect(editorDraftContainsText({ content: '**a bold draft**' }, '**a bold draft**')).toBe(true)
+  })
+
+  it.each([null, {}, { content: 0 }, { content: '' }, { content: 'another draft' }])('rejects an absent or unrelated stored draft: %j', (value) => {
+    expect(editorDraftContainsText(value, 'the expected draft')).toBe(false)
+  })
+
+  it.each(['', ' \t\n'])('refuses an empty expected value: %j', (text) => {
+    expect(editorDraftContainsText({ content: 'any draft' }, text)).toBe(false)
+  })
+})
+
+describe('scrollChatRowIntoView', () => {
+  it('reveals an unmeasured row without requiring it to be visible first', async () => {
+    const scrollIntoView = vi.fn()
+    const element = { querySelector: () => ({ scrollIntoView }) }
+    const page = { locator: () => ({ evaluate: async (read: (element: unknown, sequence: string) => unknown, sequence: string) => read(element, sequence) }) } as unknown as Page
+    await scrollChatRowIntoView(page, 7n)
+    expect(scrollIntoView).toHaveBeenCalledExactlyOnceWith({ block: 'center', behavior: 'instant' })
+  })
+
+  it.each([10n, 100n])('moves toward an unmounted row and ignores optimistic zero sequences: %s', async (sequence) => {
+    let attempts = 0
+    const scrollIntoView = vi.fn()
+    const element = {
+      scrollTop: 200,
+      clientHeight: 100,
+      querySelector: () => attempts > 1 ? { scrollIntoView } : null,
+      querySelectorAll: () => [{ dataset: { seq: '0' } }, { dataset: { seq: '50' } }],
+    }
+    const page = { locator: () => ({ evaluate: async (read: (element: unknown, sequence: string) => unknown, sequence: string) => {
+      attempts++
+      return read(element, sequence)
+    } }) } as unknown as Page
+    await scrollChatRowIntoView(page, sequence)
+    expect(scrollIntoView).toHaveBeenCalledOnce()
+    if (sequence < 50n)
+      expect(element.scrollTop).toBeLessThan(200)
+    else
+      expect(element.scrollTop).toBeGreaterThan(200)
+  })
+
+  it.each([0n, -1n])('rejects an unstored sequence: %s', async (sequence) => {
+    await expect(scrollChatRowIntoView({} as Page, sequence)).rejects.toThrow('positive Worker sequence')
+  })
+})
+
+describe('controlAgentId', () => {
+  function banner(id: string | null): PlaywrightLocator {
+    return { locator: (selector: string) => {
+      expect(selector).toBe('xpath=ancestor::*[@data-testid="agent-editor-panel"][1]')
+      return { getAttribute: async (attribute: string) => {
+        expect(attribute).toBe('data-agent-id')
+        return id
+      } }
+    } } as unknown as PlaywrightLocator
+  }
+
+  it('reads the control owner without requiring a visible agent tab', async () => {
+    await expect(controlAgentId(banner('native-owner'))).resolves.toBe('native-owner')
+  })
+
+  it.each([null, '', '   '])('rejects an absent owner: %j', async (id) => {
+    await expect(controlAgentId(banner(id))).rejects.toThrow('owning agent editor')
+  })
+})
 
 const native = vi.hoisted(() => ({ agent: vi.fn<typeof import('./nativeScenario').nativeAgentById>() }))
 vi.mock('./nativeScenario', async (importOriginal) => {

@@ -114,6 +114,9 @@ func (a *Agent) ClearContext() (string, error) {
 		logSubscription = previous.log.subscriptionID
 	}
 	a.stateMu.Unlock()
+	if old != replacement {
+		a.retireControlPublications(state)
+	}
 	a.sink.ResetSpans()
 	a.sink.UpdateSessionID(replacement)
 	// Both native subscriptions of the old session close after the commit. A

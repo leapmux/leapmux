@@ -80,5 +80,11 @@ func buildTurnInput(content string, classified []agent.ClassifiedAttachment, ima
 			// and images alone.
 		}
 	}
-	return strings.Join(blocks, "\n\n"), images, nil
+	prompt := strings.Join(blocks, "\n\n")
+	// Codewhale requires nonempty prompt text even with inline images.
+	// Describe the attachments when the user supplied no text. Keep the image bytes separate.
+	if strings.TrimSpace(prompt) == "" && len(images) > 0 {
+		prompt = "Image attachments."
+	}
+	return prompt, images, nil
 }

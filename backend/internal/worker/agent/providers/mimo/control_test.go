@@ -504,9 +504,20 @@ func TestExecuteControlReply(t *testing.T) {
 			if tc.body != "" {
 				assert.JSONEq(t, tc.body, string(requests[0].Body))
 			}
-			assert.Empty(t, a.controls, "an answered request is forgotten")
+			require.Len(t, a.controls, 1, "the receipt stays until native settlement to reject stale replays")
+			for _, control := range a.controls {
+				assert.True(t, control.answered)
+			}
 			assert.Empty(t, sink.PermissionMode(), "only an approved plan moves the session")
 			assert.ErrorContains(t, a.SendRawInput(tc.answer, agent.StopContext{}), "no pending request", "a request takes one answer")
+			for _, control := range a.controls {
+				event := eventPermissionReplied
+				if control.kind != controlPermission {
+					event = contracts.OpenCodeEventQuestionReplied
+				}
+				feed(a, eventJSON(t, event, map[string]any{"sessionID": testSessionID, "requestID": control.nativeID}))
+			}
+			assert.Empty(t, a.controls, "native settlement retires the receipt")
 		})
 	}
 }

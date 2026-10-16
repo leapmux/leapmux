@@ -21,6 +21,7 @@ import { fromBinary } from '@bufbuild/protobuf'
 import { customAlphabet } from 'nanoid'
 import { WatchUserEventSchema } from '../../../src/generated/proto/leapmux/v1/user_ops_pb'
 import { callHub, pollHub } from './api'
+import { hubTransportUrl } from './hubTransport'
 
 const HTTP_TO_WS_RE = /^http/i
 
@@ -72,7 +73,8 @@ async function openUserEventsSubscription(
   cookie: string,
 ): Promise<UserEventsSubscription> {
   const wsUrl = `${hubUrl.replace(HTTP_TO_WS_RE, 'ws')}/ws/userevents`
-  const ws = new WebSocket(wsUrl, { headers: { Cookie: cookie } } as any)
+  const transportUrl = hubTransportUrl(wsUrl)
+  const ws = new WebSocket(transportUrl, { headers: { Cookie: cookie } } as any)
   ws.binaryType = 'arraybuffer'
 
   // workspaceId -> rootNodeId once observed.

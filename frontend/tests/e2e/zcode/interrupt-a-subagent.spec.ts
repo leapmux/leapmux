@@ -6,3 +6,5 @@ import { ZCODE_CHILD } from './childScenario'
 zcodeTest('refuses native child interrupt while the actual child task runs', async ({ native }) => {
   await expectUnsupportedSubagent(native, { operation: 'interrupt', openChild: () => openProfiledNativeChild(native, ZCODE_CHILD) })
 })
+
+// Track this LeapMux limitation: https://github.com/leapmux/leapmux/issues/518.

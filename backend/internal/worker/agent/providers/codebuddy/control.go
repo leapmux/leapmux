@@ -2,6 +2,7 @@ package codebuddy
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"slices"
 	"strings"
@@ -33,25 +34,26 @@ func codebuddyPermissionInterruptedResult(result resultMessage) bool {
 // the refused call.
 const codebuddyInterruptedPermissionReason = "The user interrupted the turn."
 
-// rememberOpenPermission records a published can_use_tool request that CodeBuddy waits
-// on, so an interrupt can refuse it (see refuseOpenPermissions).
-func (a *Agent) rememberOpenPermission(requestID string) {
+// forgetControl retires one native request. Its publisher retires a card that appears afterwards.
+func (a *Agent) forgetControl(requestID string) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.openPermissions == nil {
-		a.openPermissions = make(map[string]struct{})
+	record := a.controls[requestID]
+	if record == nil {
+		return false
 	}
-	a.openPermissions[requestID] = struct{}{}
+	delete(a.controls, requestID)
+	record.publicationOnce.Do(func() { close(record.publicationDone) })
+	return record.published
 }
 
-// forgetOpenPermission drops a permission that CodeBuddy no longer waits on: the reader
-// answered it, or the CLI withdrew it.
-func (a *Agent) forgetOpenPermission(requestID string) bool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	_, open := a.openPermissions[requestID]
-	delete(a.openPermissions, requestID)
-	return open
+func (a *Agent) hasOpenRootPermissionLocked() bool {
+	for _, record := range a.controls {
+		if record.rootPermission && !record.answering {
+			return true
+		}
+	}
+	return false
 }
 
 // refuseOpenPermissions refuses each permission that CodeBuddy still waits on, with a
@@ -61,9 +63,11 @@ func (a *Agent) forgetOpenPermission(requestID string) bool {
 // A separate interrupt replaces the refusal with a generic rejection and resumes the model loop.
 func (a *Agent) refuseOpenPermissions() (bool, error) {
 	a.mu.Lock()
-	requestIDs := make([]string, 0, len(a.openPermissions))
-	for requestID := range a.openPermissions {
-		requestIDs = append(requestIDs, requestID)
+	requestIDs := make([]string, 0, len(a.controls))
+	for requestID, record := range a.controls {
+		if record.rootPermission && !record.answering {
+			requestIDs = append(requestIDs, requestID)
+		}
 	}
 	a.mu.Unlock()
 	// Refuse in a stable order, so one interrupt always writes the same lines.
@@ -71,7 +75,11 @@ func (a *Agent) refuseOpenPermissions() (bool, error) {
 	refused := false
 	for _, requestID := range requestIDs {
 		a.mu.Lock()
-		_, open := a.openPermissions[requestID]
+		record := a.controls[requestID]
+		open := record != nil && record.rootPermission && !record.answering
+		if open {
+			record.answering = true
+		}
 		a.mu.Unlock()
 		if !open {
 			continue
@@ -88,21 +96,17 @@ func (a *Agent) refuseOpenPermissions() (bool, error) {
 			slog.Error("codebuddy: encode the interrupt refusal", "agent_id", a.AgentID(), "error", err)
 			return refused, err
 		}
-		if err := a.Process.SendRawInput(frame, agent.StopContext{}); err != nil {
+		err = a.Process.SendRawInput(frame, agent.StopContext{})
+		a.finishControlWrite(requestID, record, err, true, false)
+		if err != nil {
 			return refused, err
 		}
 		refused = true
-		// A native cancel or turn end can retire the request during the write.
-		// A failed write retains only the requests that still wait.
-		if a.forgetOpenPermission(requestID) {
-			a.sink.CancelControlRequest(requestID)
-		}
 	}
 	return refused, nil
 }
 
-// SendRawInput forwards one raw stdin frame. A control_response that answers a waiting
-// permission retires it, so an interrupt does not refuse it again.
+// SendRawInput claims each control response before it writes to the native process.
 func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) error {
 	var frame struct {
 		Type     string `json:"type"`
@@ -110,14 +114,23 @@ func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) error {
 			RequestID string `json:"request_id"`
 		} `json:"response"`
 	}
-	if json.Unmarshal(data, &frame) == nil && frame.Type == frameTypeControlResponse && frame.Response.RequestID != "" {
-		a.permissionWriteMu.Lock()
-		defer a.permissionWriteMu.Unlock()
-		if err := a.Process.SendRawInput(data, stop); err != nil {
-			return err
-		}
-		a.forgetOpenPermission(frame.Response.RequestID)
-		return nil
+	if json.Unmarshal(data, &frame) != nil || frame.Type != frameTypeControlResponse {
+		return a.Process.SendRawInput(data, stop)
 	}
-	return a.Process.SendRawInput(data, stop)
+	a.mu.Lock()
+	record := a.controls[frame.Response.RequestID]
+	a.mu.Unlock()
+	if record == nil {
+		return fmt.Errorf("the CodeBuddy control request is no longer pending")
+	}
+	select {
+	case <-record.publicationDone:
+	case <-a.Context().Done():
+		return a.Context().Err()
+	}
+	claimed, err := a.writeControlAnswer(frame.Response.RequestID, record, data, stop, false)
+	if claimed {
+		a.finishControlWrite(frame.Response.RequestID, record, err, false, false)
+	}
+	return err
 }

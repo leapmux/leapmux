@@ -16,8 +16,9 @@ import (
 
 // The worker enables these Codex CLI features at launch.
 const (
-	codexMemoriesFeature     = "memories"
-	codexMultiAgentV2Feature = "multi_agent_v2"
+	codexMemoriesFeature          = "memories"
+	codexMultiAgentV2Feature      = "multi_agent_v2"
+	codexCodeModeInterruptFeature = "code_mode_interrupt"
 )
 
 var _ agent.StartFunc = Start
@@ -39,8 +40,8 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		LoginShell:   opts.LoginShell,
 		Launch:       launchSpec,
 		StripEnvKeys: []string{"CODEX_CI"},
-		// Codex leaves Multi-Agent V2 and memories off by default. Enable both
-		// stable features for every app-server process, independent of user config.
+		// Enable the features that LeapMux requires for each app-server process.
+		// Code mode interruption must cancel nested tools as well as the model turn.
 		BaseArgs:   codexBaseArgs(),
 		WorkingDir: opts.WorkingDir,
 	})
@@ -192,6 +193,7 @@ func codexBaseArgs() []string {
 	return []string{
 		"--enable", codexMultiAgentV2Feature,
 		"--enable", codexMemoriesFeature,
+		"--enable", codexCodeModeInterruptFeature,
 		"app-server",
 	}
 }

@@ -876,7 +876,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   }
 
   // Sticky-bottom record + re-stick logic (see createStickyBottom). It owns the
-  // "last clamped bottom" record; the hook borrows its three public operations.
+  // "last clamped bottom" record and its recovery operations.
   // dropDeferredFlingDrift is passed lazily (it's wired to flingSettle.reset
   // below, after this unit is created).
   const stickyBottom = createStickyBottom(scrollCtx, {
@@ -993,15 +993,14 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
    * as drift and the only kind that (re)arms the fling-end settle, so the two stay in
    * lockstep behind one predicate.
    */
-  const classifyScrollEvent = (forceUserScroll = false): {
+  const classifyScrollEvent = ({ forceUserScroll, layoutScroll }: { forceUserScroll: boolean, layoutScroll: boolean }): {
     programmaticEcho: boolean
     isMomentumScroll: boolean
     discretePage: boolean
   } => {
-    // A scroll event landing at the exact pixel we last wrote is our own programmatic
-    // scroll echoing back, not a user gesture -- so it has no momentum to protect and
-    // must not suppress the re-pin.
-    const programmaticEcho = !forceUserScroll && isProgrammaticEcho()
+    // A known layout position or a matched write is not a user gesture.
+    // Neither event must enter the momentum tracker or suppress an anchor correction.
+    const programmaticEcho = !forceUserScroll && (layoutScroll || isProgrammaticEcho())
     // Is THIS event the in-flight keyboard PageUp/PageDown's own scroll? Match by
     // position (its clamped target), not "the next scroll event", so an unrelated
     // fling interleaving before the page's native event isn't mistaken for it. A
@@ -1101,14 +1100,20 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   }
 
   const handleScroll = () => {
+    // Record this event's marker before layout recovery writes a new position.
+    // The new position's marker belongs to a later browser event.
+    const echoGen = progGuard.matchedEchoGen()
+    // A resize can clamp the old bottom before a new row grows the content.
+    // Recover that known position before anchor capture. Reader input keeps control.
+    let layoutScroll = false
+    if (!hasNewerMessages() && discretePageTarget === null && !isScrollInputActive()
+      && !hasRecentMomentumInput() && !hasRecentKeyboardScroll() && !scrollVelocity.isCoasting()) {
+      layoutScroll = stickyBottom.restickAfterLayoutChange()
+    }
     // Re-arm the stall memos: this position move may have clamped the view against (or
     // freed it from) a loaded edge, which is invisible to them otherwise (scrollTop has
     // no signal). Cheap -- the memos short-circuit on the fetch flags before measuring.
     bumpGeomTick(t => t + 1)
-    // Snapshot THIS event's own echo marker BEFORE handling it: if checkAtBottom
-    // re-sticks below (a fresh programmatic write), it arms another marker whose echo is
-    // still pending, so we name this event's marker now and consume only it below.
-    const echoGen = progGuard.matchedEchoGen()
     const staleNativeScrollTranslated = staleNativeTranslator.translate()
     // Scroll mode BEFORE the capture block below can flip it: a teleport that LANDS in
     // the bottom sticky band re-engages follow inside this very handler, and Detector B
@@ -1211,9 +1216,10 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     // refreshViewport mounts+measures rows) suppresses its scrollTop write; an echo
     // or a discrete page leaves userScrolling false so it writes immediately rather
     // than deferring ~150ms into flingSettle.
-    const { programmaticEcho, isMomentumScroll, discretePage } = classifyScrollEvent(
-      staleNativeScrollTranslated,
-    )
+    const { programmaticEcho, isMomentumScroll, discretePage } = classifyScrollEvent({
+      forceUserScroll: staleNativeScrollTranslated,
+      layoutScroll,
+    })
     // Defer the re-pin as fling drift only for a momentum scroll.
     userScrolling = isMomentumScroll
     // The reader's own motion, still going. The rail relights on it, so a

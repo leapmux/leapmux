@@ -22,7 +22,9 @@ func testAgent(t *testing.T) (*Agent, *agenttest.Sink) {
 	sink := &agenttest.Sink{}
 	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
-	a := &Agent{connection: &connection{JSONRPCProcess: providerkit.JSONRPCProcess{Process: providerkit.NewProcessFrom(providerkit.ProcessConfig{AgentID: "muse-test", ProviderName: "Muse Code", Ctx: ctx, Cancel: cancel, Stdin: &agenttest.Stdin{}})}}, sink: agent.NewProviderServices(sink), sessionID: "session", settings: optionmap.Map{agent.OptionIDModel: "native"}, sessions: make(map[string]*sessionState)}
+	done := make(chan struct{})
+	a := &Agent{connection: &connection{JSONRPCProcess: providerkit.JSONRPCProcess{Process: providerkit.NewProcessFrom(providerkit.ProcessConfig{AgentID: "muse-test", ProviderName: "Muse Code", Ctx: ctx, Cancel: cancel, Stdin: &agenttest.Stdin{}, ProcessDone: done})}}, sink: agent.NewProviderServices(sink), sessionID: "session", settings: optionmap.Map{agent.OptionIDModel: "native"}, sessions: make(map[string]*sessionState)}
+	t.Cleanup(func() { close(done); a.Process.Stop() })
 	a.sessions["session"] = &sessionState{sink: a.sink, items: make(map[string]*itemState), completed: make(map[string]bool), log: newNativeLog("session")}
 	return a, sink
 }

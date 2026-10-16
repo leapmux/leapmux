@@ -1,8 +1,8 @@
 import { fastAgentTest } from '../fastagent-fixtures'
-import { exerciseAttachmentDelivery } from '../helpers/attachmentModelProbe'
+import { exerciseImageAttachmentDelivery } from '../helpers/attachmentModelProbe'
 
-fastAgentTest.describe('Fast Agent attachments', () => {
+fastAgentTest.describe('attachments for Fast Agent', () => {
   fastAgentTest('delivers image attachment bytes to the model', async ({ native }) => {
-    await exerciseAttachmentDelivery(native, 'image', 'fa-shot.png', { protocol: 'openai-chat-completions' })
+    await exerciseImageAttachmentDelivery(native, 'fa-shot.png', { protocol: 'openai-chat-completions' })
   })
 })

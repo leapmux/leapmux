@@ -5,3 +5,5 @@ import { runningChild } from './scenarios'
 qoderTest('refuses native child interrupt while the original child task still runs', async ({ native }) => {
   await expectUnsupportedSubagent(native, { operation: 'interrupt', openChild: () => runningChild(native) })
 })
+
+// Track this LeapMux limitation: https://github.com/leapmux/leapmux/issues/518.

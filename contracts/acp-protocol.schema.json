@@ -16,6 +16,7 @@
     "contentBlock",
     "blockTypes",
     "permissionOutcomes",
+    "permissionKinds",
     "toolKinds"
   ],
   "$defs": {
@@ -156,6 +157,9 @@
       "$ref": "#/$defs/table"
     },
     "permissionOutcomes": {
+      "$ref": "#/$defs/table"
+    },
+    "permissionKinds": {
       "$ref": "#/$defs/table"
     },
     "structs": {

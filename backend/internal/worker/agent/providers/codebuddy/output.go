@@ -82,6 +82,7 @@ func (a *Agent) handleSystem(raw []byte) {
 			// even when the previous turn already reported the same mode.
 			if mode != "" {
 				a.sink.UpdatePermissionMode(mode)
+				a.queuePermissionApprovals()
 			}
 			if settleRejectedPlan {
 				a.setTurnActive(false)
@@ -327,51 +328,6 @@ func (a *Agent) armTurnFromOutput() {
 	}
 }
 
-// handleInboundControlRequest publishes an outbound control_request
-// (can_use_tool, hook_callback, elicitation_create) so the worker can raise a
-// control banner and answer it. The publish is what raises the banner: the
-// transcript copy alone never reaches the hub's control-request store, and the
-// CLI then waits on a request nobody can answer until stop cancels it.
-func (a *Agent) handleInboundControlRequest(raw []byte) {
-	var envelope controlRequestEnvelope
-	if err := json.Unmarshal(raw, &envelope); err != nil {
-		slog.Warn("codebuddy: malformed control_request", "agent_id", a.AgentID(), "error", err)
-		return
-	}
-	var request struct {
-		Subtype   string `json:"subtype"`
-		AgentID   string `json:"agent_id"`
-		ToolUseID string `json:"tool_use_id"`
-	}
-	permission := json.Unmarshal(envelope.Request, &request) == nil && request.Subtype == contracts.CodebuddyControlRequestSubtypeCanUseTool && request.AgentID == ""
-	if permission {
-		a.mu.Lock()
-		_, permission = a.turnToolCalls[request.ToolUseID]
-		a.mu.Unlock()
-	}
-	a.persistRaw(raw)
-	// Recorded BEFORE the publish, so an answer that the reader sends at once finds the
-	// permission to forget.
-	if permission {
-		a.rememberOpenPermission(envelope.RequestID)
-	}
-	if err := a.sink.PublishControlRequest(agent.ControlRequest{RequestID: envelope.RequestID, Payload: raw}); err != nil {
-		a.forgetOpenPermission(envelope.RequestID)
-		slog.Error("codebuddy: publish control request", "agent_id", a.AgentID(), "request_id", envelope.RequestID, "error", err)
-		response, marshalErr := json.Marshal(map[string]any{
-			"type":     frameTypeControlResponse,
-			"response": map[string]any{"subtype": "error", "request_id": envelope.RequestID, "error": providerkit.ControlPublicationFailure},
-		})
-		if marshalErr != nil {
-			slog.Error("codebuddy: encode control failure", "agent_id", a.AgentID(), "error", marshalErr)
-			return
-		}
-		if err := a.SendRawInput(response, agent.StopContext{}); err != nil {
-			slog.Warn("codebuddy: send control failure", "agent_id", a.AgentID(), "error", err)
-		}
-	}
-}
-
 // handleInboundControlCancel retires the hub request a control_cancel_request
 // withdraws, so a cancelled can_use_tool does not leave a banner open.
 func (a *Agent) handleInboundControlCancel(raw []byte) {
@@ -383,8 +339,9 @@ func (a *Agent) handleInboundControlCancel(raw []byte) {
 		return
 	}
 	a.persistRaw(raw)
-	a.forgetOpenPermission(envelope.RequestID)
-	a.sink.CancelControlRequest(envelope.RequestID)
+	if a.forgetControl(envelope.RequestID) {
+		a.sink.CancelControlRequest(envelope.RequestID)
+	}
 }
 
 // handlePendingControlResponse intercepts a control_response that answers one
@@ -514,6 +471,7 @@ func (a *Agent) applyPermissionMode(mode string) error {
 	}
 	a.nativeTurnRestartRequired = false
 	a.mu.Unlock()
+	a.queuePermissionApprovals()
 	return nil
 }
 

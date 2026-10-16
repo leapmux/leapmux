@@ -2,25 +2,20 @@ import type { Locator, Page } from '@playwright/test'
 import { expect } from '@playwright/test'
 import { chatScrollContainer, waitForAgentIdle } from './ui'
 
-/**
- * The compaction notice row.
- *
- * A `/compact` turn compacts the context and the transcript draws one notice
- * row for it. The row carries the label plus a detail in parentheses
- * ("Context compacted (manual, 12.0k → 3.0k)"). The selector takes the first
- * visible notification divider whose text starts with the label.
- */
-
 /** The label of the notice row the transcript draws after a compaction. */
 export const COMPACTION_NOTICE_TEXT = 'Context compacted'
-const COMPACTION_NOTICE_PATTERN = new RegExp(`^\\s*${COMPACTION_NOTICE_TEXT}(?:\\s|\\(|$)`)
+const COMPACTION_NOTICE_PATTERN = new RegExp(`(?:^|,)\\s*${COMPACTION_NOTICE_TEXT}(?:\\s|\\(|$)`)
 
-/** The first notice row in the visible transcript. */
+/** Find a completed divider or Worker status. Assistant text cannot prove native compaction. */
 export function compactionNoticeRow(page: Page): Locator {
-  return chatScrollContainer(page)
+  const transcript = chatScrollContainer(page)
+  const dividers = transcript
     .locator('[data-testid="notification-divider"]:visible')
     .filter({ hasText: COMPACTION_NOTICE_PATTERN })
-    .first()
+  const statuses = transcript
+    .locator('[data-testid="message-bubble"][data-role="leapmux"]:visible')
+    .getByText(COMPACTION_NOTICE_PATTERN)
+  return dividers.or(statuses).first()
 }
 
 /** Assert the transcript draws the compaction notice. */

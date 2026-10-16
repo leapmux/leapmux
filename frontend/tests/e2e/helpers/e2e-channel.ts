@@ -12,6 +12,7 @@ import { EncryptionMode } from '../../../src/generated/proto/leapmux/v1/channel_
 import { hydrateStorageAccount, setStorageAccount } from '../../../src/lib/browserStorage'
 import { ChannelManager, KeyPinStore } from '../../../src/lib/channel'
 import { authedHeaders, getUserId } from './api'
+import { fetchHub, hubTransportUrl } from './hubTransport'
 
 // ---- Base64 helpers for JSON ↔ bytes conversion ----
 
@@ -31,7 +32,7 @@ class FetchChannelTransport implements ChannelTransport {
   constructor(private hubUrl: string, private cookie: string) {}
 
   async getWorkerHandshakeParams(workerId: string): Promise<{ keys: WorkerKeyBundle, encryptionMode: EncryptionMode }> {
-    const resp = await fetch(`${this.hubUrl}/leapmux.v1.ChannelService/GetWorkerHandshakeParams`, {
+    const resp = await fetchHub(`${this.hubUrl}/leapmux.v1.ChannelService/GetWorkerHandshakeParams`, {
       method: 'POST',
       headers: authedHeaders(this.cookie),
       body: JSON.stringify({ workerId }),
@@ -61,7 +62,7 @@ class FetchChannelTransport implements ChannelTransport {
   }
 
   async openChannel(workerId: string, handshakePayload: Uint8Array): Promise<{ channelId: string, handshakePayload: Uint8Array, userId: string, maxMessageSize: number }> {
-    const resp = await fetch(`${this.hubUrl}/leapmux.v1.ChannelService/OpenChannel`, {
+    const resp = await fetchHub(`${this.hubUrl}/leapmux.v1.ChannelService/OpenChannel`, {
       method: 'POST',
       headers: authedHeaders(this.cookie),
       body: JSON.stringify({
@@ -84,7 +85,7 @@ class FetchChannelTransport implements ChannelTransport {
   }
 
   async closeChannel(channelId: string): Promise<void> {
-    await fetch(`${this.hubUrl}/leapmux.v1.ChannelService/CloseChannel`, {
+    await fetchHub(`${this.hubUrl}/leapmux.v1.ChannelService/CloseChannel`, {
       method: 'POST',
       headers: authedHeaders(this.cookie),
       body: JSON.stringify({ channelId }),
@@ -95,7 +96,8 @@ class FetchChannelTransport implements ChannelTransport {
     const wsUrl = `${this.hubUrl.replace(HTTP_TO_WS_RE, 'ws')}/ws/channel`
     // Bun/Node.js WebSocket doesn't send cookies automatically like browsers do.
     // Pass the session cookie via the headers option so the server can authenticate.
-    const ws = new WebSocket(wsUrl, {
+    const transportUrl = hubTransportUrl(wsUrl)
+    const ws = new WebSocket(transportUrl, {
       headers: { Cookie: this.cookie },
     } as any)
     ws.binaryType = 'arraybuffer'

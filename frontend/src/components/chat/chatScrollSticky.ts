@@ -1,16 +1,11 @@
 import type { ScrollContext } from './useChatScroll'
 import { untrack } from 'solid-js'
-import { maxScrollTopOf } from './chatScrollGeometry'
+import { EDGE_INTENT_TOLERANCE_PX, maxScrollTopOf } from './chatScrollGeometry'
 
 /**
- * The sticky-bottom unit: owns the "follow the live tail" record -- the last
- * clamped bottom we pinned to (scrollTop + the scrollHeight at that instant) --
- * and the re-stick / re-baseline logic that keeps the viewport glued to the
- * bottom across content growth, a shrink, and trims. Pulling it out of the hook
- * localizes the invariant "the record is always the clamped bottom" so an
- * unrelated edit elsewhere can't leave a stale-high record (which silently drops
- * stickiness). Its dependencies on the live scroll state are passed in (mirrors
- * createFlingSettle).
+ * Keep the last pinned position and its content and viewport heights together.
+ * Use that record to follow the live tail across layout changes.
+ * The scroll controller supplies user intent and the shared position writer.
  */
 export function createStickyBottom(ctx: ScrollContext, extras: {
   /** Clear the one-prepend "don't auto-stick" window once we pin to the bottom. */
@@ -22,6 +17,7 @@ export function createStickyBottom(ctx: ScrollContext, extras: {
   // never stuck (no record yet); `stickyScrollHeight` starts at -1 (no record).
   let stickyScrollTop: number | undefined
   let stickyScrollHeight = -1
+  let stickyClientHeight = -1
 
   /**
    * Pin scrollTop to the bottom WITHOUT recomputing the rendered slice. Safe to
@@ -48,6 +44,7 @@ export function createStickyBottom(ctx: ScrollContext, extras: {
     ctx.writeScrollTop(el.scrollHeight, 'stick-bottom')
     stickyScrollTop = el.scrollTop
     stickyScrollHeight = el.scrollHeight
+    stickyClientHeight = el.clientHeight
     ctx.setAtBottom(true)
     extras.clearPreserveBrowsingPosition()
     ctx.followTail()
@@ -92,30 +89,17 @@ export function createStickyBottom(ctx: ScrollContext, extras: {
       && el.scrollHeight > stickyScrollHeight
   }
 
-  /**
-   * Re-baseline the sticky record to the CURRENT clamped bottom. Called when the
-   * geometry changed while we were following the bottom but didn't grow past the
-   * record -- a shrink (an over-estimated row measuring smaller; the estimator
-   * biases UP, so this is the common case) or a window trim, after which the
-   * browser clamps scrollTop down to a new, lower bottom. Without this, the record
-   * keeps its pre-shrink (higher) values, and the NEXT growth's restick guard
-   * (`scrollTop + 1 >= stickyScrollTop`) compares the new lower scrollTop against
-   * the stale higher record, misreads it as a user scroll-up, and drops the
-   * re-stick -- silently losing bottom stickiness.
-   */
+  /** Update the pinned geometry after a shrink or a window trim clamps the position. */
   const rebaseStickyBottom = () => {
     const el = ctx.getEl()
     if (!el)
       return
-    // Record the CLAMPED bottom. On a shrink the browser clamps scrollTop down to
-    // the new (lower) max; reading scrollHeight forces that reflow, but clamp
-    // explicitly so a pre-clamp stale-high scrollTop can never be banked as the
-    // record -- otherwise the next growth's restick guard (scrollTop + 1 >=
-    // stickyScrollTop) would compare a real lower scrollTop against a stale-high
-    // record, misread it as a scroll-up, and silently drop bottom stickiness.
+    // Read the current maximum before saving the position. This forces layout and
+    // prevents a stale position above the new maximum from entering the record.
     const maxTop = maxScrollTopOf(el)
     stickyScrollTop = Math.min(el.scrollTop, maxTop)
     stickyScrollHeight = el.scrollHeight
+    stickyClientHeight = el.clientHeight
   }
 
   /**
@@ -158,9 +142,31 @@ export function createStickyBottom(ctx: ScrollContext, extras: {
     }
   }
 
+  /** Recover a known layout position and report that its event is not reader input. */
+  const restickAfterLayoutChange = (): boolean => {
+    const el = ctx.getEl()
+    if (!el || el.clientHeight === 0 || ctx.isAnimating() || !ctx.isFollowing()
+      || !untrack(ctx.atBottom) || stickyScrollTop === undefined
+      || (stickyClientHeight === el.clientHeight && stickyScrollHeight === el.scrollHeight)) {
+      return false
+    }
+    // The browser can clamp the old bottom before it delivers a scroll event.
+    // New content can grow between that clamp and the event. Match the old geometry,
+    // then use the new bottom. A different position belongs to the reader.
+    const previousBottom = Math.max(0, Math.min(stickyScrollHeight, el.scrollHeight) - el.clientHeight)
+    const clampedPosition = Math.min(stickyScrollTop, previousBottom)
+    if (Math.abs(el.scrollTop - clampedPosition) > EDGE_INTENT_TOLERANCE_PX || !stickToBottomPosition())
+      return false
+    // A native clamp can already be at the new bottom. No write marker exists then,
+    // but its displacement must still stay out of the reader's velocity samples.
+    ctx.syncVelocityToProgrammatic(el.scrollTop)
+    return true
+  }
+
   return {
     stickToBottom,
     shouldRestickToBottom,
     restickIfAtBottom,
+    restickAfterLayoutChange,
   }
 }

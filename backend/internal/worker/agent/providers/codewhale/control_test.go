@@ -2,7 +2,10 @@ package codewhale
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -10,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
@@ -25,6 +29,136 @@ func approvalEvent(seq uint64, approvalID, callID, tool string) []byte {
 var testQuestions = []map[string]any{
 	{"header": "Color", "id": "color", "question": "Which color?", "options": []map[string]any{{"label": "Red"}, {"label": "Blue"}}, "allow_free_text": true},
 	{"header": "Sizes", "id": "sizes", "question": "Which sizes?", "options": []map[string]any{{"label": "S"}, {"label": "M"}}, "multi_select": true},
+}
+
+func TestBypassApprovesPendingAndLaterToolsButKeepsQuestions(t *testing.T) {
+	t.Parallel()
+	rt := newFakeRuntime(t)
+	rt.respondJSON(http.MethodPatch, threadRoute, http.StatusOK, threadRecord{
+		ID: testThreadID, Model: "deepseek-flash", ModelProvider: "deepseek", ModelProviderID: "deepseek",
+		Mode: contracts.CodewhaleModeAgent, PermissionPosture: contracts.CodewhalePostureFullAccess,
+	})
+	for _, id := range []string{"first", "second", "later"} {
+		rt.respondJSON(http.MethodPost, routeApprovals+"/"+id, http.StatusOK, map[string]any{"ok": true, "delivered": true})
+	}
+	a, sink := settledAgent(t, rt)
+	a.HandleOutput(approvalEvent(1, "first", "call-1", contracts.CodewhaleToolBash))
+	a.HandleOutput(approvalEvent(2, "second", "call-2", contracts.CodewhaleToolApplyPatch))
+	a.HandleOutput(userInputEvent(3, "question"))
+	a.UpdateSettings(map[string]string{agent.OptionIDPermissionMode: contracts.CodewhalePostureFullAccess})
+	for _, id := range []string{"first", "second"} {
+		require.Len(t, rt.requestsTo(http.MethodPost, routeApprovals+"/"+id), 1, "Bypass answers every pending permission")
+		assert.Equal(t, map[string]any{"decision": "allow", "remember": false}, rt.lastBody(t, http.MethodPost, routeApprovals+"/"+id))
+	}
+	assert.ElementsMatch(t, []string{"approval:first", "approval:second"}, sink.CanceledControls())
+	assert.Empty(t, rt.requestsTo(http.MethodPost, routeUserInput+"/"+testThreadID+"/question"))
+	a.HandleOutput(approvalEvent(4, "later", "call-3", contracts.CodewhaleToolBash))
+	require.Eventually(t, func() bool { return len(rt.requestsTo(http.MethodPost, routeApprovals+"/later")) == 1 }, 30*time.Second, time.Millisecond)
+	assert.Equal(t, 3, sink.PublishedControlCount(), "the later tool needs no manual card")
+}
+
+func TestUncertainControlDeliveryPreventsAnotherAnswer(t *testing.T) {
+	t.Parallel()
+	for _, question := range []bool{false, true} {
+		t.Run(fmt.Sprintf("question=%t", question), func(t *testing.T) {
+			t.Parallel()
+			rt := newFakeRuntime(t)
+			path := routeApprovals + "/approval"
+			frame := []byte(`{"frame":"approval","approval_id":"approval","decision":"allow"}`)
+			if question {
+				path = routeUserInput + "/" + testThreadID + "/question"
+				frame = mustJSON(t, codewhaleReplyFrame{Frame: contracts.CodewhaleReplyFrameUserInput, ThreadID: testThreadID, InputID: "question"})
+			}
+			rt.handle(http.MethodPost, path, func(w http.ResponseWriter, _ *http.Request) {
+				connection, _, err := http.NewResponseController(w).Hijack()
+				if !assert.NoError(t, err) {
+					return
+				}
+				assert.NoError(t, connection.Close())
+			})
+			a, _ := newTestAgent(t, rt)
+			if question {
+				a.HandleOutput(userInputEvent(1, "question"))
+			} else {
+				a.HandleOutput(approvalEvent(1, "approval", "call", contracts.CodewhaleToolBash))
+			}
+			require.ErrorIs(t, a.SendRawInput(frame, agent.StopContext{}), agent.ErrDeliveryUncertain)
+			require.ErrorIs(t, a.SendRawInput(frame, agent.StopContext{}), errControlNotPending)
+			require.Len(t, rt.requestsTo(http.MethodPost, path), 1)
+		})
+	}
+}
+
+func TestConcurrentApprovalAnswersReachTheRuntimeOnce(t *testing.T) {
+	t.Parallel()
+	rt := newFakeRuntime(t)
+	entered, duplicate, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	releaseFirst := sync.OnceFunc(func() { close(release) })
+	defer releaseFirst()
+	ctx := testutil.DeadlineContext(t)
+	var calls atomic.Int32
+	rt.handle(http.MethodPost, routeApprovals+"/approval", func(w http.ResponseWriter, _ *http.Request) {
+		if calls.Add(1) == 1 {
+			close(entered)
+			<-release
+		} else {
+			close(duplicate)
+		}
+		writeFakeJSON(w, http.StatusOK, map[string]bool{"ok": true, "delivered": true})
+	})
+	a, _ := newTestAgent(t, rt)
+	a.HandleOutput(approvalEvent(1, "approval", "call", contracts.CodewhaleToolBash))
+	frame := []byte(`{"frame":"approval","approval_id":"approval","decision":"allow"}`)
+	first := make(chan error, 1)
+	go func() { first <- a.SendRawInput(frame, agent.StopContext{}) }()
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("the first answer did not arrive")
+	}
+	second := make(chan error, 1)
+	go func() { second <- a.SendRawInput(frame, agent.StopContext{}) }()
+	select {
+	case <-duplicate:
+		t.Fatal("two answers reached the same native approval")
+	case err := <-second:
+		require.ErrorIs(t, err, errControlNotPending)
+	case <-ctx.Done():
+		t.Fatal("the competing answer did not finish")
+	}
+	releaseFirst()
+	select {
+	case err := <-first:
+		require.NoError(t, err)
+	case <-ctx.Done():
+		t.Fatal("the first answer did not finish")
+	}
+}
+
+func TestNarrowerPolicyPublishesAnApprovalBeforeItsAutomaticClaim(t *testing.T) {
+	t.Parallel()
+	rt := newFakeRuntime(t)
+	rt.respondJSON(http.MethodPatch, threadRoute, http.StatusOK, threadRecord{
+		ID: testThreadID, Model: "deepseek-flash", ModelProvider: "deepseek", ModelProviderID: "deepseek",
+		Mode: contracts.CodewhaleModeAgent, PermissionPosture: contracts.CodewhalePostureAsk,
+	})
+	a, sink := settledAgent(t, rt)
+	a.settings.posture = contracts.CodewhalePostureFullAccess
+	started, release := make(chan struct{}), make(chan struct{})
+	markStarted := sync.OnceFunc(func() { close(started) })
+	defer func() { close(release); require.Eventually(t, a.approvalWork.Idle, 30*time.Second, time.Millisecond) }()
+	a.approvalWork.Run("permissions", func() { markStarted(); <-release; a.approvePendingPermissions() })
+	ctx := testutil.DeadlineContext(t)
+	select {
+	case <-started:
+	case <-ctx.Done():
+		t.Fatal("the approval task did not start")
+	}
+	a.HandleOutput(approvalEvent(1, "approval", "call", contracts.CodewhaleToolBash))
+	require.Zero(t, sink.PublishedControlCount())
+	a.UpdateSettings(map[string]string{agent.OptionIDPermissionMode: contracts.CodewhalePostureAsk})
+	assert.Equal(t, 1, sink.PublishedControlCount(), "the narrower policy must leave a manual approval")
+	assert.Empty(t, rt.requestsTo(http.MethodPost, routeApprovals+"/approval"))
 }
 
 // userInputEvent is a `user_input.required` for testQuestions.
@@ -511,9 +645,9 @@ func TestQuestionWithNoIDPublishesNothing(t *testing.T) {
 func TestATurnEndRetiresOnlyTheCardsOfItsTurn(t *testing.T) {
 	t.Parallel()
 	a, sink := newTestAgent(t, nil)
-	require.True(t, a.publishControl("approval:mine", testTurnID, []byte(`{}`)))
-	require.True(t, a.publishControl("approval:turnless", "", []byte(`{}`)))
-	require.True(t, a.publishControl("approval:theirs", "turn_other", []byte(`{}`)))
+	require.True(t, a.publishControl("approval:mine", testTurnID, []byte(`{}`), "mine"))
+	require.True(t, a.publishControl("approval:turnless", "", []byte(`{}`), "turnless"))
+	require.True(t, a.publishControl("approval:theirs", "turn_other", []byte(`{}`), "theirs"))
 
 	a.withdrawControlsOfTurn(testTurnID)
 	assert.ElementsMatch(t, []string{"approval:mine", "approval:turnless"}, sink.CanceledControls())
