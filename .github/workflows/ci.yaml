@@ -240,7 +240,6 @@ jobs:
         with:
           variant: alpine
           arch: amd64
-          save-caches: 'true'
 
   desktop-artifacts:
     # Build, sign, and notarize the binaries that get attached to the
