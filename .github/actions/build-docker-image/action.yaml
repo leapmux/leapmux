@@ -1,0 +1,237 @@
+name: Build Docker image
+description: >
+  Build (and optionally push) one architecture of one LeapMux Docker variant,
+  with the dependency downloads and the Go build output injected into the
+  Dockerfile's cache mounts.
+
+# ci.yaml, docker.yaml and release.yaml each held a near-identical
+# docker/build-push-action block. This action holds the one definition.
+#
+# The cache design:
+# * `tools` and `builder` do not change with each commit. The alpine variant
+#   exports their layers under `tools-<arch>` with `mode=max`, and both
+#   variants import that scope. Only one job writes it, so the two variants
+#   cannot race for the key.
+# * The final-image layers change with every commit. Each variant exports
+#   them under `<variant>-<arch>` with `mode=min`, which keeps the per-commit
+#   builder layers out of the cache.
+# * The Dockerfile's cache mounts are not cache entries of their own. This
+#   action fills them from the GitHub Actions caches through
+#   buildkit-cache-dance, and extracts the Go build output back for saving.
+#   The dependency archives stay owned by the CI jobs.
+#
+# Every build is native: the caches are per architecture, so `arch` must match
+# the runner.
+inputs:
+  variant:
+    description: Docker variant to build. Either `alpine` or `ubuntu`.
+    required: true
+  arch:
+    description: Architecture to build. Either `amd64` or `arm64`.
+    required: true
+  version-override:
+    description: >
+      Value to write over VERSION from versions.env. Used by the release path,
+      which builds a tagged version rather than the checked-in dev default.
+    required: false
+    default: ''
+  outputs:
+    description: >
+      The buildx outputs of the image build, for example the push-by-digest
+      string. Empty means a dry run: the build result stays in the build
+      cache.
+    required: false
+    default: ''
+  save-caches:
+    description: >
+      Whether this job writes the Docker caches. Set 'true' only on main:
+      actions/cache never replaces an existing key, so the first saver's
+      partial archive would stay.
+    required: false
+    default: 'false'
+
+outputs:
+  digest:
+    description: The digest of the built image.
+    value: ${{ steps.image.outputs.digest }}
+
+runs:
+  using: composite
+  steps:
+    - name: Validate the inputs
+      shell: bash
+      env:
+        ARCH: ${{ inputs.arch }}
+        VARIANT: ${{ inputs.variant }}
+      run: |
+        case "$VARIANT" in
+          alpine|ubuntu) ;;
+          *)
+            echo "::error::variant must be alpine or ubuntu, got '$VARIANT'" >&2
+            exit 1
+            ;;
+        esac
+        case "$RUNNER_ARCH" in
+          X64) native=amd64 ;;
+          ARM64) native=arm64 ;;
+          *)
+            echo "::error::Unsupported RUNNER_ARCH: $RUNNER_ARCH" >&2
+            exit 1
+            ;;
+        esac
+        if [ "$ARCH" != "$native" ]; then
+          echo "::error::arch must match the runner architecture ($native), got '$ARCH'" >&2
+          exit 1
+        fi
+
+    - name: Load tool versions
+      uses: ./.github/actions/load-versions
+      with:
+        version-override: ${{ inputs.version-override }}
+
+    - name: Write git metadata
+      shell: bash
+      run: |
+        echo "COMMIT_HASH=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
+        echo "COMMIT_TIME=$(git log -1 --format=%cI)" >> "$GITHUB_ENV"
+
+    - name: Setup Docker Buildx
+      id: buildx
+      uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+    - name: Restore dependency caches
+      # Restore only: this job runs no Go tool, so it cannot fill the
+      # archive. Bun is off: the Docker build installs the npm packages in
+      # seconds even without a cache (3.7 s cold for 991 packages), so the
+      # extra cache-dance build would cost more than it saves.
+      # buildkit-cache-dance deletes the host source directory after it
+      # injects that directory. No later step may read
+      # steps.deps.outputs.go-modcache.
+      id: deps
+      uses: ./.github/actions/dependency-caches
+      with:
+        go: 'true'
+        bun: 'false'
+        populate: 'false'
+
+    - name: Define the build inputs
+      id: plan
+      shell: bash
+      env:
+        ARCH: ${{ inputs.arch }}
+        SAVE_CACHES: ${{ inputs.save-caches }}
+        VARIANT: ${{ inputs.variant }}
+      run: |
+        if [ "$VARIANT" = "alpine" ]; then
+          base_image="$ALPINE_IMAGE"
+        else
+          base_image="$UBUNTU_IMAGE"
+        fi
+        writes_shared=false
+        if [ "$SAVE_CACHES" = "true" ] && [ "$VARIANT" = "alpine" ]; then
+          writes_shared=true
+        fi
+        hash='${{ hashFiles('go.work', 'backend/go.mod', 'backend/go.sum', 'desktop/go/go.mod', 'desktop/go/go.sum') }}'
+        prefix="docker-go-build-${ARCH}-go${GOLANG_VERSION}-"
+        {
+          echo "writes-shared=$writes_shared"
+          echo "key=${prefix}${hash}"
+          echo "restore-prefix=${prefix}"
+          echo "build-args<<LEAPMUX_BUILD_ARGS"
+          echo "BASE_IMAGE=$base_image"
+          echo "BUF_VERSION=$BUF_VERSION"
+          echo "TASK_VERSION=$TASK_VERSION"
+          echo "S6_OVERLAY_VERSION=$S6_OVERLAY_VERSION"
+          echo "BUN_VERSION=$BUN_VERSION"
+          echo "NODE_VERSION=$NODE_VERSION"
+          echo "GOLANG_VERSION=$GOLANG_VERSION"
+          echo "VERSION=$VERSION"
+          echo "COMMIT_HASH=$COMMIT_HASH"
+          echo "COMMIT_TIME=$COMMIT_TIME"
+          echo "LEAPMUX_BUILD_ARGS"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Cache Docker Go build outputs
+      # The Go build output of the Docker build. The alpine variant saves it
+      # on main: both variants compile the same builder stage.
+      if: steps.plan.outputs.writes-shared == 'true'
+      id: go-build
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/docker-go-build
+        key: ${{ steps.plan.outputs.key }}
+        restore-keys: ${{ steps.plan.outputs.restore-prefix }}
+
+    - name: Restore Docker Go build outputs
+      if: steps.plan.outputs.writes-shared != 'true'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/docker-go-build
+        key: ${{ steps.plan.outputs.key }}
+        restore-keys: ${{ steps.plan.outputs.restore-prefix }}
+
+    - name: Inject the dependency downloads
+      # The block scalar keeps the value a JSON string: a bare `{...}` would
+      # parse as a YAML mapping, which the runner rejects. No extraction:
+      # the CI jobs own these keys. Only the Go modules are injected: a cold
+      # `go mod download` in the Docker build took about 155 s, while a cold
+      # `bun install` took 3.7 s. The Bun mapping would add a cache-dance
+      # build that costs more than the install it saves.
+      uses: reproducible-containers/buildkit-cache-dance@5422eac04292c961a382e0f584ea0f03ad9da723 # v3.4.0
+      with:
+        builder: ${{ steps.buildx.outputs.name }}
+        cache-map: |
+          {"${{ steps.deps.outputs.go-modcache }}": "/go/pkg/mod"}
+        skip-extraction: true
+        scratch-dir: ${{ runner.temp }}/cache-dance-deps
+
+    - name: Inject the Go build outputs
+      # This step must come after the cache step above. The runner runs the
+      # post steps in reverse order, so the extraction below runs before the
+      # actions/cache save. scratch-dir must sit on the same filesystem as
+      # the cache directory, because the extraction renames.
+      uses: reproducible-containers/buildkit-cache-dance@5422eac04292c961a382e0f584ea0f03ad9da723 # v3.4.0
+      with:
+        builder: ${{ steps.buildx.outputs.name }}
+        cache-map: |
+          {"${{ runner.temp }}/docker-go-build": "/root/.cache/go-build"}
+        skip-extraction: ${{ steps.plan.outputs.writes-shared != 'true' || steps.go-build.outputs.cache-hit == 'true' }}
+        scratch-dir: ${{ runner.temp }}/cache-dance-go-build
+
+    - name: Build the tools stage
+      # `mode=max` exports every layer of the tools stage, which does not
+      # change with each commit. A job that only reads needs no such step:
+      # the image build below imports the same scope.
+      if: steps.plan.outputs.writes-shared == 'true'
+      uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+      with:
+        context: .
+        file: docker/Dockerfile
+        target: tools
+        platforms: linux/${{ inputs.arch }}
+        outputs: type=cacheonly
+        push: false
+        build-args: ${{ steps.plan.outputs.build-args }}
+        cache-from: type=gha,scope=tools-${{ inputs.arch }}
+        cache-to: type=gha,mode=max,scope=tools-${{ inputs.arch }}
+      env:
+        DOCKER_BUILD_SUMMARY: 'false'
+        DOCKER_BUILD_RECORD_UPLOAD: 'false'
+
+    - name: Build the image
+      # `mode=min` exports only the final-image layers, so the per-commit
+      # builder layers stay out of the cache. An empty `cache-to` exports
+      # nothing.
+      id: image
+      uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+      with:
+        context: .
+        file: docker/Dockerfile
+        platforms: linux/${{ inputs.arch }}
+        push: false
+        outputs: ${{ inputs.outputs }}
+        build-args: ${{ steps.plan.outputs.build-args }}
+        cache-from: |
+          type=gha,scope=tools-${{ inputs.arch }}
+          type=gha,scope=${{ inputs.variant }}-${{ inputs.arch }}
+        cache-to: ${{ inputs.save-caches == 'true' && format('type=gha,mode=min,scope={0}-{1}', inputs.variant, inputs.arch) || '' }}

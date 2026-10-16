@@ -12,28 +12,29 @@ concurrency:
 
 env:
   # Shrink the desktop/rust debug artifacts that `cargo test` (dev profile)
-  # bakes into the cached `target/` -- full DWARF debuginfo is the single
-  # largest slice of the Swatinem/rust-cache blob. `line-tables-only` keeps
-  # file/line numbers in panic backtraces (so test failures stay
-  # diagnosable) while dropping the variable/type info nobody reads in CI.
+  # writes into the cached `target/`. Full DWARF debuginfo is the single
+  # largest slice of the Swatinem/rust-cache archive. `line-tables-only` keeps
+  # file and line numbers in panic backtraces, so test failures stay
+  # diagnosable, and drops the variable and type info that nobody reads in CI.
   # Set here, not in desktop/rust/Cargo.toml, so local builds keep full debug
-  # for debuggers. MUST stay identical to desktop-artifacts.yaml: every
-  # CARGO_* var is hashed into the rust-cache key, so a mismatch would split
-  # the `shared-key: desktop` cache the two workflows are meant to share.
+  # info for debuggers. MUST stay identical to desktop-artifacts.yaml: every
+  # `CARGO_*` var is hashed into the rust-cache key, so a mismatch would split
+  # the `shared-key: desktop` cache that the two workflows share.
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
 
 jobs:
   linux:
     # UBUNTU VERSION: `runs-on` is evaluated before any step can populate
     # $GITHUB_ENV, so this runner label cannot come from versions.env the way
-    # every other pin does -- it is spelled out here and in four sibling
+    # every other pin does. It is spelled out here and in four sibling
     # workflows (desktop-artifacts.yaml, notice.yaml, publish-site.yaml, and
-    # the arm64 arm of docker.yaml / release.yaml). Moving to a newer Ubuntu
-    # means editing all of them; this is the only occurrence in THIS workflow.
+    # the arm64 runner of docker.yaml / release.yaml). Moving to a newer
+    # Ubuntu means editing all of them. This is the only occurrence in THIS
+    # workflow.
     #
     # Distinct from UBUNTU_IMAGE in versions.env, which is the Docker base
-    # image the container is built FROM, not the runner it is built ON. The two
-    # track the same release today but are not the same knob.
+    # image that the container is built FROM, not the runner it is built ON.
+    # The two track the same release today but are not the same knob.
     runs-on: ubuntu-24.04${{ matrix.runner_suffix }}
     strategy:
       fail-fast: false
@@ -44,15 +45,15 @@ jobs:
           - arch: arm64
             runner_suffix: '-arm'
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup build toolchain
         uses: ./.github/actions/setup-build
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           rust-components: clippy
-          # Only push-to-main writes the shared Rust cache; see the input's docs.
-          rust-save-if: ${{ github.ref == 'refs/heads/main' }}
+          # Only push-to-main saves the compiled caches; see the input's docs.
+          save-build-caches: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Generate code (proto + sqlc)
         run: task generate
@@ -81,7 +82,7 @@ jobs:
           ls -la desktop/rust/target/release/bundle/appimage/ 2>/dev/null
           echo
           echo "=== linuxdeploy wrapper --version (exit=?) ==="
-          ~/.cache/tauri/linuxdeploy-$(uname -m).AppImage --version
+          "$HOME/.cache/tauri/linuxdeploy-$(uname -m).AppImage" --version
           echo "wrapper exit=$?"
           echo
           echo "=== extracted AppRun --list-plugins (exit=?) ==="
@@ -90,12 +91,12 @@ jobs:
           echo
           echo "=== Re-run linuxdeploy against Tauri's partial AppDir ==="
           # Tauri suppresses linuxdeploy's stdout/stderr on failure; invoking
-          # it directly against the AppDir it already populated surfaces the
+          # it directly against the AppDir it already populated shows the
           # actual error.
-          appdir="$(ls -d desktop/rust/target/release/bundle/appimage/*.AppDir 2>/dev/null | head -1)"
+          appdir="$(find desktop/rust/target/release/bundle/appimage -maxdepth 1 -name '*.AppDir' -print -quit 2>/dev/null)"
           if [ -n "$appdir" ]; then
             echo "appdir=$appdir"
-            ~/.cache/tauri/linuxdeploy-$(uname -m).AppImage \
+            "$HOME/.cache/tauri/linuxdeploy-$(uname -m).AppImage" \
               --appdir "$appdir" \
               --output appimage \
               --plugin gtk 2>&1 | tail -80
@@ -105,7 +106,7 @@ jobs:
           fi
           echo
           echo "=== Go sidecar linkage (source copy) ==="
-          src_sidecar="$(ls desktop/go/bin/leapmux-desktop-service-* 2>/dev/null | head -1)"
+          src_sidecar="$(find desktop/go/bin -maxdepth 1 -name 'leapmux-desktop-service-*' -print -quit 2>/dev/null)"
           if [ -n "$src_sidecar" ]; then
             echo "path=$src_sidecar"
             file "$src_sidecar"
@@ -144,15 +145,15 @@ jobs:
       - name: Test (no Docker-backed storage)
         if: matrix.arch == 'arm64'
         # testcontainers-backed tests for postgres/mysql/cockroachdb/tidb/
-        # yugabytedb exercise SQL-dialect glue, not the runner arch. Skip
-        # them on arm64 (and macOS/Windows) to save minutes and reduce
-        # flake surface; amd64 still runs the full suite every commit.
+        # yugabytedb test the SQL-dialect code, not the runner architecture.
+        # Skip them on arm64 (and macOS/Windows) to save minutes and to avoid
+        # flaky failures. amd64 still runs the full suite every commit.
         run: task test-no-docker
 
   macos:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup build toolchain
         uses: ./.github/actions/setup-build
@@ -161,7 +162,7 @@ jobs:
           # `task test-no-docker` reaches `cargo clippy` through test-desktop ->
           # lint-desktop, and rust-toolchain installs the minimal profile.
           rust-components: clippy
-          rust-save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-build-caches: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Generate code (proto + sqlc)
         run: task generate
@@ -176,26 +177,27 @@ jobs:
         run: task test-no-docker
 
       - name: Build
-        # MACOS_CODESIGN_IDENTITY is intentionally unset here. The .app gets
-        # ad-hoc signed by Taskfile.yaml's build-desktop-darwin so the test
-        # job builds cleanly without secrets. Release artifacts (signed +
-        # notarized DMG) come from the desktop-artifacts reusable workflow,
-        # which the desktop-artifacts job below invokes only on push-to-main.
+        # MACOS_CODESIGN_IDENTITY is intentionally unset here.
+        # build-desktop-darwin in Taskfile.yaml signs the .app with an ad-hoc
+        # identity, so the test job builds cleanly without secrets. The
+        # desktop-artifacts reusable workflow produces the release artifacts
+        # (signed and notarized DMG). The desktop-artifacts job below invokes
+        # it only on push-to-main.
         run: task build
 
       - name: Check the unchanged native build
         run: task check-build-cache
 
   windows:
-    # windows-2022, NOT windows-latest: since 2026-10-13 ~17:00Z the latest
-    # image's fleet degrades mid-run -- every spawned process starts failing
-    # with STATUS_DLL_INIT_FAILED (0xC0000142) late in the suite, and the
-    # runner then loses communication with no logs uploaded (six consecutive
-    # attempts; the same suite content passed green on the image earlier that
-    # day). Unpin back to windows-latest only after that image stabilizes.
+    # windows-2022, NOT windows-latest. Since 2026-10-13 ~17:00Z the latest
+    # image's fleet degrades mid-run. Every spawned process starts failing
+    # with STATUS_DLL_INIT_FAILED (0xC0000142) late in the suite. The runner
+    # then loses communication and uploads no logs. Six consecutive attempts
+    # showed this. The same suite content passed green on that image earlier
+    # that day. Unpin back to windows-latest only after the image stabilizes.
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup build toolchain
         uses: ./.github/actions/setup-build
@@ -203,7 +205,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           # See the macos job: test-no-docker lints the Rust crate too.
           rust-components: clippy
-          rust-save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-build-caches: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Test (no Docker-backed storage)
         # Run under pwsh (not bash) for the same reason `task build` does:
@@ -214,10 +216,10 @@ jobs:
         run: task test-no-docker
 
       - name: Build all modules
-        # Run under pwsh rather than bash: Git Bash prepends /usr/bin to
+        # Run under pwsh rather than bash. Git Bash prepends /usr/bin to
         # PATH, and /usr/bin/link.exe (a Unix hard-link utility shipped
-        # with Git for Windows) shadows MSVC's link.exe, causing the
-        # Rust/Tauri build to fail with "/usr/bin/link: extra operand".
+        # with Git for Windows) shadows MSVC's link.exe. The Rust/Tauri
+        # build then fails with "/usr/bin/link: extra operand".
         shell: pwsh
         run: task build
 
@@ -229,53 +231,26 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Load tool versions and git metadata
-        run: |
-          grep -E '^[A-Z_][A-Z0-9_]*=' versions.env >> "$GITHUB_ENV"
-          echo "COMMIT_HASH=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
-          echo "COMMIT_TIME=$(git log -1 --format=%cI)" >> "$GITHUB_ENV"
-
-      - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
+      # A dry run only reads the caches. It writes none: the composite
+      # exports nothing with the default `outputs` and `save-caches`.
       - name: Docker build (dry run)
-        uses: docker/build-push-action@v7
+        uses: ./.github/actions/build-docker-image
         with:
-          context: .
-          file: docker/Dockerfile
-          platforms: linux/amd64
-          push: false
-          build-args: |
-            BASE_IMAGE=${{ env.ALPINE_IMAGE }}
-            BUF_VERSION=${{ env.BUF_VERSION }}
-            TASK_VERSION=${{ env.TASK_VERSION }}
-            S6_OVERLAY_VERSION=${{ env.S6_OVERLAY_VERSION }}
-            BUN_VERSION=${{ env.BUN_VERSION }}
-            NODE_VERSION=${{ env.NODE_VERSION }}
-            GOLANG_VERSION=${{ env.GOLANG_VERSION }}
-            VERSION=${{ env.VERSION }}
-            COMMIT_HASH=${{ env.COMMIT_HASH }}
-            COMMIT_TIME=${{ env.COMMIT_TIME }}
-          # Read the scope docker.yaml actually writes on push-to-main
-          # (`${{ matrix.variant }}-${{ matrix.arch }}`). This read a bare
-          # `alpine` nobody writes and wrote a `ci-docker` nobody reads, so the
-          # dry run rebuilt every stage from cold and then uploaded a mode=max
-          # blob that only evicted the Rust and APT caches. The dry run is a
-          # consumer, so it no longer writes at all.
-          cache-from: type=gha,scope=alpine-amd64
+          variant: alpine
+          arch: amd64
 
   desktop-artifacts:
     # Build, sign, and notarize the binaries that get attached to the
     # auto-generated prerelease. Runs only on push-to-main; PR runs do not
     # trigger this and therefore never request the apple-signing environment
-    # secrets the macos-app-sign step needs.
+    # secrets that the macos-app-sign job needs.
     #
     # `secrets: inherit` is required so the macos-app-sign job in the called
-    # workflow can read the apple-signing environment secrets — without it,
+    # workflow can read the apple-signing environment secrets. Without it,
     # `${{ secrets.X }}` in the called workflow resolves to empty even for
-    # env-scoped secrets, and `security import` fails with errSecParam on
+    # env-scoped secrets. `security import` then fails with errSecParam on
     # an empty .p12. Env scoping still holds: only jobs that declare
     # `environment: apple-signing` can read those secrets.
     needs: [linux, macos, windows]
@@ -293,14 +268,14 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Full history + tags so `git log <prev-prerelease>..HEAD` can
           # build the changelog block in the release notes below.
           fetch-depth: 0
 
       - name: Download installers
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: artifacts
           pattern: desktop-*
@@ -313,7 +288,7 @@ jobs:
         run: |
           # UTC timestamp (YYYYMMDD-HHMMSS) sorts lexicographically the same
           # as chronologically, so GitHub's name-descending release list
-          # surfaces the newest pre-release at the top.
+          # shows the newest pre-release at the top.
           TIMESTAMP=$(date -u +%Y%m%d-%H%M%S)
           SHORT_SHA=${GITHUB_SHA::7}
           . ./versions.env
@@ -322,18 +297,18 @@ jobs:
           REPO_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
           RELEASE_URL="${REPO_URL}/releases/download/${TAG}"
 
-          # Find the most recent auto-generated pre-release tag to bound
-          # the changelog. Match the same strict regex the prune step
-          # uses so stable `vX.Y.Z` releases are ignored.
+          # Find the most recent auto-generated pre-release tag to limit
+          # the changelog. Use the same filter as the prune step, so stable
+          # `vX.Y.Z` releases are ignored.
           PREV_TAG=$(gh release list --limit 100 \
             --json tagName,isPrerelease,createdAt \
             --jq '[.[] | select(.isPrerelease) | select(.tagName | startswith("prerelease-"))] | sort_by(.createdAt) | reverse | .[0].tagName // empty')
 
-          # Write the static part of the release notes. Unquoted heredoc
-          # expands ${VERSION}/${GITHUB_SHA}/${REPO_URL}/${RELEASE_URL};
-          # backticks are escaped so they stay literal in the markdown
-          # instead of being re-parsed. Each filename is wrapped in a
-          # markdown link to its download URL on this release.
+          # Write the static part of the release notes. The unquoted heredoc
+          # expands ${VERSION}/${GITHUB_SHA}/${REPO_URL}/${RELEASE_URL}.
+          # Backticks are escaped, so they stay literal in the markdown and
+          # no tool re-parses them. Each filename is wrapped in a markdown
+          # link to its download URL on this release.
           cat > release-notes.md <<EOF
           Pre-release from commit [\`${SHORT_SHA}\`](${REPO_URL}/commit/${GITHUB_SHA}).
 
@@ -359,12 +334,11 @@ jobs:
               - [\`leapmux_${VERSION}_linux_arm64.tar.gz\`](${RELEASE_URL}/leapmux_${VERSION}_linux_arm64.tar.gz)
           EOF
 
-          # Append the changelog. Write the commit list via `git log` output
-          # appended raw — avoids running commit subjects through another
-          # round of shell parsing, so subjects containing backticks or
-          # dollar signs stay intact in the rendered markdown. Each
-          # abbreviated hash is wrapped in a markdown link to the commit
-          # on this repo (using the full %H SHA in the URL).
+          # Append the changelog. Append the `git log` output raw, so no
+          # second round of shell parsing reads the commit subjects. Subjects
+          # with backticks or dollar signs then stay intact in the rendered
+          # markdown. Each abbreviated hash is wrapped in a markdown link to
+          # the commit on this repo (with the full %H SHA in the URL).
           {
             echo
             if [ -n "$PREV_TAG" ] && git rev-parse --verify "$PREV_TAG" >/dev/null 2>&1; then

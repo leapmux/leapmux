@@ -9,8 +9,9 @@ name: NOTICE
 #
 # The path filter is the whole design. Licenses can only change when a manifest
 # or the generator does, so this runs on exactly those changes rather than on
-# every push -- it costs a `cargo fetch`, a `go mod download` and a `bun
-# install`, which is minutes, and paying that on a docs-only commit would buy
+# every push. It costs a `cargo fetch`, a `go mod download` and a `bun
+# install`, which is minutes on a cold cache. The dependency caches make
+# repeat runs cheap. Running this on a docs-only commit would still buy
 # nothing.
 #
 # Two things the filter must cover that are easy to miss. `go.work` is a real
@@ -18,7 +19,7 @@ name: NOTICE
 # list and runs `go list -m -json all` workspace-wide, so adding or dropping a
 # member changes the module set NOTICE describes. And NOTICE.md/NOTICE.html
 # themselves are here, because a filter listing only inputs lets a PR hand-edit
-# the very artifact the gate protects and match nothing.
+# the very artifact the check protects and match nothing.
 on:
   push:
     branches: [main]
@@ -38,8 +39,10 @@ on:
       - 'NOTICE.html'
       - '.github/workflows/notice.yaml'
       - '.github/actions/setup-build/action.yaml'
+      - '.github/actions/dependency-caches/action.yaml'
+      - '.github/actions/load-versions/action.yaml'
   # Commits reach main outside a PR (an admin push, a merge landed with checks
-  # bypassed), and a gate that only runs on pull_request would never see them.
+  # bypassed), and a check that only runs on pull_request would never see them.
   pull_request:
     branches: [main]
     paths: *notice-inputs
@@ -52,7 +55,7 @@ jobs:
   check:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup build toolchain
         uses: ./.github/actions/setup-build
@@ -64,7 +67,6 @@ jobs:
           # and Task: `task generate-notice` depends on prepare-frontend, which
           # runs `buf generate`, the spinner clone and `bun install`.
           compile: 'false'
-          rust-save-if: 'false'
 
       - name: Regenerate NOTICE
         run: task generate-notice

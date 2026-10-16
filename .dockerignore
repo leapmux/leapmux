@@ -47,7 +47,9 @@ frontend/playwright-report/
 # Docker files (not needed in build context except rootfs)
 docker/Dockerfile
 
-# Desktop app (only go.mod/go.sum needed for workspace-aware go mod download)
+# Desktop app (go.mod/go.sum only: go.work lists ./desktop/go, so workspace
+# mode needs that module's manifests. The Docker build downloads the module
+# set through the cache mount, not through a copied layer.)
 desktop/
 !desktop/go/go.mod
 !desktop/go/go.sum

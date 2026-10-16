@@ -11,16 +11,16 @@ ARG NODE_VERSION
 FROM node:${NODE_VERSION}-alpine AS node
 
 # ------------------------------------------------------------------
-# Stage 1: Build everything via `task build-backend-docker`
+# Stage: tools (the pinned build toolchain)
 # ------------------------------------------------------------------
-FROM golang:${GOLANG_VERSION}-alpine AS builder
+FROM golang:${GOLANG_VERSION}-alpine AS tools
 
-ARG VERSION=dev
-ARG COMMIT_HASH
-ARG COMMIT_TIME
-# Import BuildKit's target values without defaults that override --platform.
-ARG TARGETOS
-ARG TARGETARCH
+# BusyBox ash runs each RUN below. `pipefail` makes a failed download fail
+# the step. Without it, `wget ... | bash` ran an empty script and hid the
+# failure of the Bun installer download. `wget | tar` was already safe,
+# because tar reads to EOF and fails on a truncated archive.
+SHELL ["/bin/ash", "-eo", "pipefail", "-c"]
+
 ARG BUF_VERSION
 ARG TASK_VERSION
 ARG BUN_VERSION
@@ -40,28 +40,38 @@ RUN apk add --no-cache bash curl git libgcc libstdc++ rsync && \
 # Install Bun (pinned)
 RUN wget -qO- https://bun.sh/install | BUN_INSTALL=/usr bash -s "bun-v${BUN_VERSION}"
 
-# Download Go dependencies (cache layer)
-COPY go.work .
-COPY backend/go.mod backend/go.sum backend/
-COPY desktop/go/go.mod desktop/go/go.sum desktop/go/
-RUN --mount=type=cache,target=/go/pkg/mod \
-    go mod download
-
-# Install frontend dependencies (cache layer)
-# scripts/only-bun.mjs is needed by the preinstall hook in package.json.
-COPY frontend/package.json frontend/bun.lock frontend/
-COPY frontend/patches/ frontend/patches/
-COPY frontend/scripts/ frontend/scripts/
-RUN --mount=type=cache,target=/root/.bun/install/cache \
-    cd frontend && bun install --frozen-lockfile
+# ------------------------------------------------------------------
+# Stage: build everything via `task build-backend-docker`
+# ------------------------------------------------------------------
+FROM tools AS builder
 
 # Copy all remaining source
 COPY . .
 
+# BuildKit passes every ARG to each later RUN. A per-commit value must
+# therefore come after the toolchain layers above: a declaration before
+# them runs the tool installation again on every commit.
+ARG VERSION=dev
+ARG COMMIT_HASH
+ARG COMMIT_TIME
+# Import BuildKit's target values without defaults that override --platform.
+ARG TARGETOS
+ARG TARGETARCH
+
 # Build the backend binary via task (single source of truth).
 # NITRO_PRESET=node-server avoids bun preset auto-detection which hangs in buildkit.
+#
+# Local builds keep these cache mounts here. CI fills the Go module mount
+# through .github/actions/build-docker-image (buildkit-cache-dance), because
+# the GitHub Actions exporter does not save cache mounts:
+# https://docs.docker.com/build/ci/github-actions/cache/#cache-mounts
+# CI fills no Bun mount: a cold `bun install` takes 3.7 s, less than the
+# cache-dance build that would supply it.
+# Task downloads the Go modules and the Bun packages itself, so no separate
+# download layer exists: each download lands in one of the mounts below.
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/root/.bun/install/cache \
     NITRO_PRESET=node-server VERSION=${VERSION} COMMIT_HASH=${COMMIT_HASH} COMMIT_TIME=${COMMIT_TIME} \
     task build-backend-docker GOOS=${TARGETOS} GOARCH=${TARGETARCH}
 

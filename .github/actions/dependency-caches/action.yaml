@@ -1,0 +1,156 @@
+name: Dependency caches
+description: >
+  Restore the downloaded dependency archives (Go modules, Bun packages, Cargo
+  registry), and optionally fill and save each one on a miss.
+
+# Dependency-cache policy, shared by every job that downloads dependencies:
+#
+# * The key is the lockfile hash only. No compiler or toolchain version is in
+#   the key, because a toolchain change does not change what the lockfile
+#   lists.
+# * On a miss, one step downloads everything the lockfile lists and the next
+#   step saves the archive at once. Any job may do this, PR jobs included, so
+#   the content never depends on which job saved it.
+# * There are no restore keys. An archive holds exactly the current lockfile's
+#   set of files, so it cannot grow with a stale prefix match.
+# * Each archive is per OS. @actions/cache stores each path relative to the
+#   workspace. On Windows the workspace is on D: and the home directory is on
+#   C:, so an archive that another OS saved restores the paths to the wrong
+#   drive. The two Linux architectures share an archive, because the path
+#   strings are identical. Bun is per architecture, because Bun installs
+#   platform-specific packages.
+#
+# The callers check out the repository first: `hashFiles` resolves against
+# GITHUB_WORKSPACE, which must hold the lockfiles.
+inputs:
+  go:
+    description: Restore the Go module downloads.
+    required: false
+    default: 'true'
+  bun:
+    description: Restore the Bun package downloads.
+    required: false
+    default: 'true'
+  cargo:
+    description: >
+      Restore the Cargo registry downloads. Requires `cargo` and `CARGO_HOME`
+      in the environment, which Setup Rust supplies.
+    required: false
+    default: 'false'
+  populate:
+    description: >
+      On a restore miss, run the full download for each selected ecosystem and
+      save the archive at once. Requires that ecosystem's tool. With 'false',
+      this action only restores.
+    required: false
+    default: 'false'
+
+outputs:
+  go-modcache:
+    description: The Go module cache directory that holds `cache/download`.
+    value: ${{ steps.paths.outputs.go-modcache }}
+  bun-cache:
+    description: The Bun install cache directory.
+    value: ${{ steps.paths.outputs.bun-cache }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set the dependency cache locations
+      id: paths
+      # Write the tools' own defaults explicitly, so that each cache path and
+      # each tool cannot disagree about where the downloads live.
+      shell: bash
+      run: |
+        if [ "$RUNNER_OS" = "Windows" ]; then
+          gomodcache="$USERPROFILE\\go\\pkg\\mod"
+          go_downloads="$USERPROFILE\\go\\pkg\\mod\\cache\\download"
+          bun_cache="$USERPROFILE\\.bun\\install\\cache"
+        else
+          gomodcache="$HOME/go/pkg/mod"
+          go_downloads="$HOME/go/pkg/mod/cache/download"
+          bun_cache="$HOME/.bun/install/cache"
+        fi
+        {
+          echo "GOMODCACHE=$gomodcache"
+          echo "BUN_INSTALL_CACHE_DIR=$bun_cache"
+        } >> "$GITHUB_ENV"
+        {
+          echo "go-modcache=$gomodcache"
+          echo "go-downloads=$go_downloads"
+          echo "bun-cache=$bun_cache"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Restore Go module downloads
+      id: go
+      if: inputs.go == 'true'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.paths.outputs.go-downloads }}
+        key: go-modules-${{ runner.os }}-${{ hashFiles('go.work', 'backend/go.mod', 'backend/go.sum', 'desktop/go/go.mod', 'desktop/go/go.sum') }}
+
+    - name: Download Go modules
+      # With no arguments, `go mod download` downloads `all` in workspace
+      # mode, which includes the `tool` dependencies.
+      if: inputs.go == 'true' && inputs.populate == 'true' && steps.go.outputs.cache-hit != 'true'
+      shell: bash
+      run: go mod download
+
+    - name: Save Go module downloads
+      if: inputs.go == 'true' && inputs.populate == 'true' && steps.go.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.paths.outputs.go-downloads }}
+        key: ${{ steps.go.outputs.cache-primary-key }}
+
+    - name: Restore Bun package downloads
+      id: bun
+      if: inputs.bun == 'true'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.paths.outputs.bun-cache }}
+        key: bun-packages-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('frontend/bun.lock') }}
+
+    - name: Download Bun packages
+      if: inputs.bun == 'true' && inputs.populate == 'true' && steps.bun.outputs.cache-hit != 'true'
+      shell: bash
+      working-directory: frontend
+      run: bun install --frozen-lockfile --ignore-scripts
+
+    - name: Save Bun package downloads
+      if: inputs.bun == 'true' && inputs.populate == 'true' && steps.bun.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.paths.outputs.bun-cache }}
+        key: ${{ steps.bun.outputs.cache-primary-key }}
+
+    - name: Restore Cargo registry downloads
+      id: cargo
+      # `git/db` does not exist today. Only zero matched paths fail a save, so
+      # its absence is harmless.
+      if: inputs.cargo == 'true'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ${{ env.CARGO_HOME }}/registry/index
+          ${{ env.CARGO_HOME }}/registry/cache
+          ${{ env.CARGO_HOME }}/git/db
+        key: cargo-registry-${{ runner.os }}-${{ hashFiles('desktop/rust/Cargo.lock') }}
+
+    - name: Download Cargo registry
+      # Without `--target`, `cargo fetch` reads the lockfile and fetches the
+      # crates for every platform.
+      if: inputs.cargo == 'true' && inputs.populate == 'true' && steps.cargo.outputs.cache-hit != 'true'
+      shell: bash
+      working-directory: desktop/rust
+      run: cargo fetch --locked
+
+    - name: Save Cargo registry downloads
+      if: inputs.cargo == 'true' && inputs.populate == 'true' && steps.cargo.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ${{ env.CARGO_HOME }}/registry/index
+          ${{ env.CARGO_HOME }}/registry/cache
+          ${{ env.CARGO_HOME }}/git/db
+        key: ${{ steps.cargo.outputs.cache-primary-key }}
