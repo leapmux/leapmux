@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -54,6 +55,8 @@ type copilotPendingControl struct {
 	ready           chan struct{}
 	publicationErr  error
 	responding      bool
+	published       bool
+	automaticFailed bool
 }
 
 // copilotEventInterests are the events that reach LeapMux only through an explicit
@@ -172,9 +175,20 @@ func (a *Agent) handleNativeControlEvent(raw []byte, event copilotEvent) bool {
 		a.controls[identifier] = pending
 	}
 	a.controlMu.Unlock()
-	err := a.sink.PublishControlRequest(agent.ControlRequest{RequestID: identifier, Payload: pending.payload, AgentSessionID: sessionID})
+	a.stateMu.Lock()
+	bypass := spec.kind == "permission" && a.options[agent.OptionIDPermissionMode] == contracts.CopilotPermissionModeAllowAll
+	a.stateMu.Unlock()
+	a.controlMu.Lock()
+	bypass = bypass && !pending.automaticFailed
+	a.controlMu.Unlock()
+	var err error
+	if !bypass {
+		err = a.publishNativeControl(identifier, pending)
+	}
 	if fresh {
+		a.controlMu.Lock()
 		pending.publicationErr = err
+		a.controlMu.Unlock()
 		close(pending.ready)
 	}
 	if err != nil {
@@ -188,15 +202,35 @@ func (a *Agent) handleNativeControlEvent(raw []byte, event copilotEvent) bool {
 			go a.abortNativeControlSession(sessionID)
 		}
 	}
+	if err == nil && spec.kind == "permission" {
+		a.offReader(copilotApprovePermissions, a.approvePendingPermissions)
+	}
 	return true
+}
+
+// publishNativeControl also retires a card whose native completion raced publication.
+func (a *Agent) publishNativeControl(identifier string, pending *copilotPendingControl) error {
+	err := a.sink.PublishControlRequest(agent.ControlRequest{RequestID: identifier, Payload: pending.payload, AgentSessionID: pending.sessionID})
+	if err != nil {
+		return err
+	}
+	a.controlMu.Lock()
+	pending.published = true
+	current := a.controls[identifier] == pending
+	a.controlMu.Unlock()
+	if !current {
+		a.sink.CancelControlRequest(identifier)
+	}
+	return nil
 }
 
 func (a *Agent) removeNativeControl(identifier string) {
 	a.controlMu.Lock()
-	_, exists := a.controls[identifier]
+	pending := a.controls[identifier]
 	delete(a.controls, identifier)
+	published := pending != nil && pending.published
 	a.controlMu.Unlock()
-	if exists {
+	if published {
 		a.sink.CancelControlRequest(identifier)
 	}
 }
@@ -204,8 +238,10 @@ func (a *Agent) removeNativeControl(identifier string) {
 func (a *Agent) clearNativeControls() {
 	a.controlMu.Lock()
 	identifiers := make([]string, 0, len(a.controls))
-	for identifier := range a.controls {
-		identifiers = append(identifiers, identifier)
+	for identifier, pending := range a.controls {
+		if pending.published {
+			identifiers = append(identifiers, identifier)
+		}
 	}
 	clear(a.controls)
 	a.controlMu.Unlock()
@@ -245,38 +281,60 @@ func (a *Agent) SendRawInput(raw []byte, stop agent.StopContext) error {
 	if pending == nil {
 		return fmt.Errorf("the Copilot control request is no longer pending")
 	}
+	// Publication must finish before this answer can hold the session in place.
 	select {
 	case <-pending.ready:
 	case <-a.Context().Done():
 		return a.Context().Err()
 	}
-	if pending.publicationErr != nil {
-		return pending.publicationErr
-	}
 	a.sessionMu.RLock()
 	defer a.sessionMu.RUnlock()
+	return a.answerNativeControl(identifier, pending, envelope.Response.Response, false)
+}
+
+var errBypassInactive = errors.New("the Copilot Bypass preset no longer applies")
+
+// answerNativeControl claims one exact request. The caller holds sessionMu.
+func (a *Agent) answerNativeControl(identifier string, pending *copilotPendingControl, response json.RawMessage, automatic bool) error {
+	select {
+	case <-pending.ready:
+	case <-a.Context().Done():
+		return a.Context().Err()
+	}
 	if pending.sessionID != a.currentNativeSessionID() {
 		return fmt.Errorf("the Copilot control request belongs to a previous session")
 	}
-	if len(envelope.Response.Response) == 0 {
+	if len(response) == 0 {
 		return fmt.Errorf("the Copilot control response is absent")
 	}
+	a.stateMu.Lock()
+	if automatic && a.options[agent.OptionIDPermissionMode] != contracts.CopilotPermissionModeAllowAll {
+		a.stateMu.Unlock()
+		return errBypassInactive
+	}
 	a.controlMu.Lock()
+	if pending.publicationErr != nil {
+		a.controlMu.Unlock()
+		a.stateMu.Unlock()
+		return pending.publicationErr
+	}
 	if a.controls[identifier] != pending || pending.responding {
 		a.controlMu.Unlock()
+		a.stateMu.Unlock()
 		return fmt.Errorf("the Copilot control request is no longer pending")
 	}
 	pending.responding = true
 	a.controlMu.Unlock()
-	accepted := false
+	a.stateMu.Unlock()
+	retainClaim := false
 	defer func() {
-		if !accepted {
+		if !retainClaim {
 			a.controlMu.Lock()
 			pending.responding = false
 			a.controlMu.Unlock()
 		}
 	}()
-	answer, err := a.completeNativeControlAnswer(envelope.Response.Response)
+	answer, err := a.completeNativeControlAnswer(response)
 	if err != nil {
 		return err
 	}
@@ -285,19 +343,70 @@ func (a *Agent) SendRawInput(raw []byte, stop agent.StopContext) error {
 		pending.spec.responseField: answer,
 	})
 	if err != nil {
-		return providerkit.ClassifyJSONRPCDeliveryError("control response", err)
+		err = providerkit.ClassifyJSONRPCDeliveryError("control response", err)
+		retainClaim = errors.Is(err, agent.ErrDeliveryUncertain)
+		return err
 	}
 	var receipt struct {
 		Success *bool `json:"success"`
 	}
 	if json.Unmarshal(result, &receipt) != nil || receipt.Success == nil {
+		retainClaim = true
 		return fmt.Errorf("%w: Copilot returned no valid control response receipt", agent.ErrDeliveryUncertain)
 	}
 	if !*receipt.Success {
 		return fmt.Errorf("the Copilot runtime did not accept the control response")
 	}
-	accepted = true
+	retainClaim = true
 	return nil
+}
+
+// approvePendingPermissions runs under sessionMu, outside the event reader.
+// The existing delivery path checks native receipts and excludes competing answers.
+func (a *Agent) approvePendingPermissions() {
+	a.controlMu.Lock()
+	permissions := make(map[string]*copilotPendingControl)
+	for identifier, pending := range a.controls {
+		if pending.spec.kind == "permission" && !pending.responding && !pending.automaticFailed {
+			select {
+			case <-pending.ready:
+				permissions[identifier] = pending
+			default:
+			}
+		}
+	}
+	a.controlMu.Unlock()
+	response, _ := json.Marshal(map[string]string{"kind": contracts.CopilotDecisionApproveOnce})
+	for identifier, pending := range permissions {
+		err := a.answerNativeControl(identifier, pending, response, true)
+		a.controlMu.Lock()
+		current := a.controls[identifier] == pending
+		published := pending.published
+		retire := current && (err == nil || errors.Is(err, agent.ErrDeliveryUncertain))
+		if retire {
+			delete(a.controls, identifier)
+		} else if current && err != nil && !errors.Is(err, errBypassInactive) {
+			pending.automaticFailed = true
+		}
+		a.controlMu.Unlock()
+		if retire && published {
+			a.sink.CancelControlRequest(identifier)
+		}
+		if err == nil || !current || retire {
+			continue
+		}
+		if !errors.Is(err, errBypassInactive) {
+			slog.Warn("Copilot could not approve a pending tool", "request_id", identifier, "error", err)
+		}
+		// A failed automatic answer needs a manual card. A narrower mode does too.
+		if !published {
+			if publishErr := a.publishNativeControl(identifier, pending); publishErr != nil {
+				slog.Error("Publish Copilot permission after failed approval", "request_id", identifier, "error", publishErr)
+				a.removeNativeControl(identifier)
+				a.abortNativeControlSession(pending.sessionID)
+			}
+		}
+	}
 }
 
 // completeNativeControlAnswer fills the one native field that only the runtime can

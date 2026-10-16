@@ -2,10 +2,12 @@ package ohmypi
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"math"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -27,6 +29,30 @@ type dialogHeader struct {
 	// Timeout is the wait in milliseconds after which omp answers the dialog
 	// itself, with its default. Zero states no limit.
 	Timeout float64 `json:"timeout"`
+}
+
+type pendingDialog struct {
+	header          dialogHeader
+	raw             []byte
+	ready           bool
+	published       bool
+	answering       bool
+	automaticFailed bool
+	publicationDone chan struct{}
+	publicationOnce sync.Once
+}
+
+func (h dialogHeader) approvalTool() string {
+	if h.Method != contracts.OhMyPiDialogMethodSelect || !strings.HasPrefix(h.Title, contracts.OhMyPiApprovalDialogTitlePrefix) {
+		return ""
+	}
+	name, _, _ := strings.Cut(strings.TrimPrefix(h.Title, contracts.OhMyPiApprovalDialogTitlePrefix), "\n")
+	return strings.TrimSpace(name)
+}
+
+func (h dialogHeader) isToolApproval() bool {
+	return h.approvalTool() != "" && slices.Contains(h.Options, contracts.OhMyPiApprovalDialogApprove) &&
+		slices.Contains(h.Options, contracts.OhMyPiApprovalDialogDeny)
 }
 
 // maxDialogTimeoutMillis is the largest timeout that a time.Duration holds. A
@@ -101,30 +127,66 @@ func (a *Agent) handleExtensionUIRequest(raw []byte) {
 // BEFORE the publish, so an answer that the reader sends at once finds both to
 // clear.
 func (a *Agent) publishDialog(head dialogHeader, raw []byte) {
+	a.Mu.Lock()
+	if a.openDialogs[head.ID] != nil || a.StoppedLocked() {
+		a.Mu.Unlock()
+		return
+	}
+	if a.openDialogs == nil {
+		a.openDialogs = make(map[string]*pendingDialog)
+	}
+	bypass := a.approvalMode == contracts.OhMyPiApprovalModeYolo && head.isToolApproval()
+	pending := &pendingDialog{header: head, raw: append([]byte(nil), raw...), ready: bypass, publicationDone: make(chan struct{})}
+	a.openDialogs[head.ID] = pending
+	a.Mu.Unlock()
+	if bypass {
+		a.approvalWork.Run("permissions", a.approvePendingDialogs)
+		return
+	}
+	a.publishRegisteredDialog(pending)
+}
+
+func (a *Agent) publishRegisteredDialog(pending *pendingDialog) {
+	head := pending.header
+	a.Mu.Lock()
+	if a.openDialogs[head.ID] != pending || a.StoppedLocked() {
+		if a.openDialogs[head.ID] == pending {
+			delete(a.openDialogs, head.ID)
+		}
+		pending.publicationOnce.Do(func() { close(pending.publicationDone) })
+		a.Mu.Unlock()
+		return
+	}
+	a.Mu.Unlock()
 	a.dialogDeadlines.Arm(a.Clock(), head.ID, head.deadline(), func() { a.withdrawDialog(head.ID) })
-	a.rememberOpenDialog(head.ID)
 	err := a.sink.PublishControlRequest(agent.ControlRequest{
 		RequestID: head.ID,
-		Payload:   raw,
+		Payload:   pending.raw,
 		SourceSeq: a.approvalSourceSeq(head),
 	})
+	a.Mu.Lock()
+	pending.ready = true
+	pending.published = err == nil
+	current := a.openDialogs[head.ID] == pending && !a.StoppedLocked()
+	if (err != nil || !current) && a.openDialogs[head.ID] == pending {
+		delete(a.openDialogs, head.ID)
+	}
+	bypass := a.approvalMode == contracts.OhMyPiApprovalModeYolo && !pending.automaticFailed
+	pending.publicationOnce.Do(func() { close(pending.publicationDone) })
+	a.Mu.Unlock()
 	if err == nil {
+		if !current {
+			a.sink.CancelControlRequest(head.ID)
+		} else if bypass {
+			a.approvalWork.Run("permissions", a.approvePendingDialogs)
+		}
 		return
 	}
 	a.dialogDeadlines.Disarm(head.ID)
-	a.forgetOpenDialog(head.ID)
 	slog.Error("omp publish dialog", "agent_id", a.AgentID(), "request_id", head.ID, "error", err)
-	a.cancelDialog(head.ID)
-}
-
-// rememberOpenDialog records a published dialog that omp waits on.
-func (a *Agent) rememberOpenDialog(id string) {
-	a.Mu.Lock()
-	defer a.Mu.Unlock()
-	if a.openDialogs == nil {
-		a.openDialogs = make(map[string]struct{})
+	if current {
+		a.cancelDialog(head.ID)
 	}
-	a.openDialogs[id] = struct{}{}
 }
 
 // forgetOpenDialog drops a dialog that omp no longer waits on: the reader answered
@@ -132,7 +194,78 @@ func (a *Agent) rememberOpenDialog(id string) {
 func (a *Agent) forgetOpenDialog(id string) {
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
+	if pending := a.openDialogs[id]; pending != nil {
+		pending.publicationOnce.Do(func() { close(pending.publicationDone) })
+	}
 	delete(a.openDialogs, id)
+}
+
+// approvePendingDialogs claims native tool approvals under the current policy.
+// Extension dialogs and the question bridge keep their own answers.
+func (a *Agent) approvePendingDialogs() {
+	a.Mu.Lock()
+	if a.StoppedLocked() {
+		a.Mu.Unlock()
+		return
+	}
+	claimed := make(map[string]*pendingDialog)
+	var publish []*pendingDialog
+	for id, pending := range a.openDialogs {
+		if !pending.ready || pending.answering {
+			continue
+		}
+		if a.approvalMode == contracts.OhMyPiApprovalModeYolo && pending.header.isToolApproval() && !pending.automaticFailed {
+			pending.answering = true
+			claimed[id] = pending
+		} else if !pending.published {
+			pending.ready = false
+			publish = append(publish, pending)
+		}
+	}
+	a.Mu.Unlock()
+	for _, pending := range publish {
+		a.publishRegisteredDialog(pending)
+	}
+	for id, pending := range claimed {
+		err := a.answerDialog(id, contracts.OhMyPiApprovalDialogApprove)
+		a.finishDialogAnswer(pending, err, true)
+		if err != nil {
+			slog.Warn("omp could not approve a pending tool", "request_id", id, "error", err)
+		}
+	}
+}
+
+func (a *Agent) finishDialogAnswer(pending *pendingDialog, err error, automatic bool) {
+	id := pending.header.ID
+	a.Mu.Lock()
+	current := a.openDialogs[id] == pending
+	retire := err == nil || errors.Is(err, agent.ErrDeliveryUncertain) || a.StoppedLocked()
+	published := pending.published
+	if current {
+		if retire {
+			delete(a.openDialogs, id)
+			pending.publicationOnce.Do(func() { close(pending.publicationDone) })
+		} else {
+			pending.answering = false
+			pending.automaticFailed = pending.automaticFailed || automatic
+			if !published {
+				pending.ready = false
+			}
+		}
+	}
+	a.Mu.Unlock()
+	if !current {
+		return
+	}
+	if retire {
+		a.dialogDeadlines.Disarm(id)
+		a.forgetAskDialog(id)
+		if automatic && published {
+			a.sink.CancelControlRequest(id)
+		}
+	} else if !published {
+		a.publishRegisteredDialog(pending)
+	}
 }
 
 // settleOpenDialogs answers each dialog that omp still waits on with a
@@ -154,8 +287,11 @@ func (a *Agent) settleOpenDialogs() {
 		return
 	}
 	ids := make([]string, 0, len(a.openDialogs))
-	for id := range a.openDialogs {
-		ids = append(ids, id)
+	for id, pending := range a.openDialogs {
+		if !pending.answering {
+			ids = append(ids, id)
+		}
+		pending.publicationOnce.Do(func() { close(pending.publicationDone) })
 	}
 	clear(a.openDialogs)
 	a.Mu.Unlock()
@@ -220,11 +356,7 @@ func (a *Agent) withdrawDialog(targetID string) {
 // one, and the control request carries its row so the browser can show the call's
 // arguments. With two or more, no row is stated rather than a wrong one.
 func (a *Agent) approvalSourceSeq(head dialogHeader) int64 {
-	if head.Method != contracts.OhMyPiDialogMethodSelect || !strings.HasPrefix(head.Title, contracts.OhMyPiApprovalDialogTitlePrefix) {
-		return 0
-	}
-	name, _, _ := strings.Cut(strings.TrimPrefix(head.Title, contracts.OhMyPiApprovalDialogTitlePrefix), "\n")
-	name = strings.TrimSpace(name)
+	name := head.approvalTool()
 	if name == "" {
 		return 0
 	}
@@ -264,19 +396,42 @@ func (a *Agent) approvalSourceSeq(head dialogHeader) int64 {
 // bridge's state for that call.
 func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) error {
 	var head struct {
-		Type string `json:"type"`
-		ID   string `json:"id"`
+		Type      string `json:"type"`
+		ID        string `json:"id"`
+		Cancelled bool   `json:"cancelled"`
 	}
 	if json.Unmarshal(data, &head) == nil {
 		switch head.Type {
 		case contracts.OhMyPiAskTypeAnswer:
 			return a.answerAsk(data)
 		case contracts.OhMyPiEventExtensionUIResponse:
-			// The reader answered, so the dialog's deadline withdraws nothing, and
-			// an interrupt has nothing left to answer.
-			a.dialogDeadlines.Disarm(head.ID)
-			a.forgetAskDialog(head.ID)
-			a.forgetOpenDialog(head.ID)
+			if head.Cancelled {
+				if handled, err := a.cancelAsk(head.ID, data, stop); handled {
+					return err
+				}
+			}
+			a.Mu.Lock()
+			pending := a.openDialogs[head.ID]
+			unpublished := pending != nil && pending.ready && !pending.published
+			a.Mu.Unlock()
+			if pending == nil || unpublished {
+				return errors.New("the omp dialog no longer waits for a manual answer")
+			}
+			select {
+			case <-pending.publicationDone:
+			case <-a.Context().Done():
+				return a.Context().Err()
+			}
+			a.Mu.Lock()
+			if a.openDialogs[head.ID] != pending || pending.answering || !pending.published {
+				a.Mu.Unlock()
+				return errors.New("the omp dialog no longer waits for a manual answer")
+			}
+			pending.answering = true
+			a.Mu.Unlock()
+			err := a.Process.SendRawInput(data, stop)
+			a.finishDialogAnswer(pending, err, false)
+			return err
 		}
 	}
 	return a.Process.SendRawInput(data, stop)

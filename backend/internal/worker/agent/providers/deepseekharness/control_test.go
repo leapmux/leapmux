@@ -3,6 +3,7 @@ package deepseekharness
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -61,4 +62,41 @@ func TestPlanReviewWithoutAPlanStoresNothingAndStillAsksTheReader(t *testing.T) 
 
 	assert.Zero(t, sink.PlanUpdateCount())
 	require.Equal(t, 1, sink.PublishedControlCount())
+}
+
+func TestBypassApprovesPendingAndLaterNativeTools(t *testing.T) {
+	sink := &agenttest.ControlSink{}
+	a := newOfflineAgentServing(t, agent.NewProviderServices(sink), nil)
+	a.clientID = "client"
+	catalog, err := convertModelCatalog(decodeNativeCatalog(t, twoReasoningModelsFixture))
+	require.NoError(t, err)
+	a.catalog, a.selection = catalog, catalog.defaultSelection
+	calls := serveNativeSettings(t, a)
+	publish := func(id string) {
+		request := json.RawMessage(`{"toolName":"bash","callId":"call"}`)
+		raw, err := json.Marshal(map[string]any{"type": "waterfall", "event": contracts.DeepseekHarnessControlEventApproval, "eventId": id, "agentId": "native-root", "request": request})
+		require.NoError(t, err)
+		require.NoError(t, a.publishNativeControl(contracts.DeepseekHarnessControlEventApproval, id, "native-root", request, raw))
+	}
+	publish("first")
+	request, raw := planReviewRequest(t, "# Plan")
+	require.NoError(t, a.publishNativeControl(contracts.DeepseekHarnessControlEventUserQuestions, "plan-event", "native-root", request, raw))
+	result := a.UpdateSettings(map[string]string{contracts.DeepseekHarnessOptionPermissions: contracts.DeepseekHarnessPermissionPresetDangerFullAccess})
+	require.Equal(t, contracts.DeepseekHarnessPermissionPresetDangerFullAccess, result.ConfirmedOptions()[contracts.DeepseekHarnessOptionPermissions])
+	require.Eventually(t, func() bool { return len(sink.CanceledControls()) == 1 }, 30*time.Second, time.Millisecond)
+	assert.Equal(t, []string{"first"}, sink.CanceledControls())
+	assert.Equal(t, map[string]any{"kind": "result", "value": "allowed-once"}, calls.first("$events/result")["outcome"])
+	publish("later")
+	require.Eventually(t, func() bool {
+		calls.mu.Lock()
+		defer calls.mu.Unlock()
+		count := 0
+		for _, call := range calls.calls {
+			if call.method == "$events/result" {
+				count++
+			}
+		}
+		return count == 2
+	}, 30*time.Second, time.Millisecond)
+	assert.Equal(t, 2, sink.PublishedControlCount(), "the later tool needs no manual card")
 }

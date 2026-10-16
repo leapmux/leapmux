@@ -50,6 +50,23 @@ type qwenPermissionRequest struct {
 	} `json:"params"`
 }
 
+// permissionAllowsBypass keeps plan approvals and questions under user control.
+func permissionAllowsBypass(line *providerkit.ParsedLine) bool {
+	var request qwenPermissionRequest
+	if json.Unmarshal(line.Raw, &request) != nil {
+		return false
+	}
+	var meta map[string]json.RawMessage
+	if json.Unmarshal(request.Params.ToolCall.Meta, &meta) != nil {
+		return false
+	}
+	if _, interactive := meta[contracts.QwenMetaInteractionKind]; interactive {
+		return false
+	}
+	tool := qwenToolName(request.Params.ToolCall.Meta)
+	return tool != "" && tool != contracts.QwenToolExitPlanMode && tool != contracts.QwenToolAskUserQuestion
+}
+
 // isPlanApproval reports whether a stored request is Qwen's plan approval.
 func isPlanApproval(payload json.RawMessage) bool {
 	var request qwenPermissionRequest

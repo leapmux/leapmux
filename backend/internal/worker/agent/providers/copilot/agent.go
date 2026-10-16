@@ -76,21 +76,22 @@ type Agent struct {
 	goalMu sync.Mutex
 	goal   copilotGoalSnapshot
 
-	// backgroundReads coalesces the reads offReader starts. It carries its OWN
+	// backgroundWork coalesces the work offReader starts. It carries its OWN
 	// mutex: its bookkeeping has nothing to do with the session snapshot, the
 	// option map or the model catalog that stateMu guards, and riding that lock
 	// only widened what a reader must hold in mind to order six of them.
-	backgroundReads coalescingRunner
+	backgroundWork providerkit.CoalescingWork
 }
 
 var _ agent.Agent = (*Agent)(nil)
 var _ agent.InputSteerer = (*Agent)(nil)
 var _ agent.ContextCompactor = (*Agent)(nil)
 
-// The keys of the background reads that offReader keeps apart.
+// The keys of the background operations that offReader keeps apart.
 const (
-	copilotReadGoal     = "goal"
-	copilotReadSettings = "settings"
+	copilotReadGoal           = "goal"
+	copilotReadSettings       = "settings"
+	copilotApprovePermissions = "approve-permissions"
 )
 
 // offReader runs work on its own goroutine, and keeps ONE run of each key in flight.
@@ -110,68 +111,7 @@ const (
 // Each run holds sessionMu for reading, so a session replacement cannot start under
 // it, and it does nothing once the process is stopped.
 func (a *Agent) offReader(key string, work func()) {
-	a.backgroundReads.run(key, func() { a.runUnderNativeSession(work) })
-}
-
-// coalescingRunner runs one goroutine for each key, and collapses every request
-// that arrives while that key's run is in flight into ONE follow-up run.
-//
-// It is a general mechanism, so it owns its own mutex rather than riding a lock
-// that guards unrelated state. The follow-up is what makes the last run read a
-// state no pending request can precede.
-type coalescingRunner struct {
-	mu sync.Mutex
-	// pending maps a key with a run in flight to whether another request arrived
-	// during it. Absence means no run is in flight for that key.
-	pending map[string]bool
-}
-
-// idle reports that no run is in flight for any key.
-func (r *coalescingRunner) idle() bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return len(r.pending) == 0
-}
-
-// inFlight reports the run of each key, and whether one more request arrived
-// during it. It copies the map, so a caller never reads the runner's own state
-// without the lock.
-func (r *coalescingRunner) inFlight() map[string]bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	out := make(map[string]bool, len(r.pending))
-	for key, queued := range r.pending {
-		out[key] = queued
-	}
-	return out
-}
-
-// run starts work for key, or marks the in-flight run to repeat once more.
-func (r *coalescingRunner) run(key string, work func()) {
-	r.mu.Lock()
-	if _, running := r.pending[key]; running {
-		r.pending[key] = true
-		r.mu.Unlock()
-		return
-	}
-	if r.pending == nil {
-		r.pending = make(map[string]bool)
-	}
-	r.pending[key] = false
-	r.mu.Unlock()
-	go func() {
-		for {
-			work()
-			r.mu.Lock()
-			if !r.pending[key] {
-				delete(r.pending, key)
-				r.mu.Unlock()
-				return
-			}
-			r.pending[key] = false
-			r.mu.Unlock()
-		}
-	}()
+	a.backgroundWork.Run(key, func() { a.runUnderNativeSession(work) })
 }
 
 // stopNativeConnection ends the process and drops the state of the session it served.

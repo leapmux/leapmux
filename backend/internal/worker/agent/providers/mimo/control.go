@@ -11,10 +11,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -61,15 +63,24 @@ const (
 
 // mimoControl is one control request LeapMux published and MiMo still waits on.
 type mimoControl struct {
-	kind mimoControlKind
+	instanceID string
+	kind       mimoControlKind
 	// nativeID is MiMo's own id, which the reply route takes.
 	nativeID  string
 	sessionID string
 	// actorID is the actor whose tool call asked.
-	actorID    string
-	actorKnown bool
-	messageID  string
-	payload    []byte
+	actorID         string
+	actorKnown      bool
+	messageID       string
+	payload         []byte
+	ready           bool
+	published       bool
+	answering       bool
+	answered        bool
+	automatic       bool
+	automaticFailed bool
+	publicationDone chan struct{}
+	publicationOnce sync.Once
 }
 
 // mimoControlHeader is the shared request header of a stored payload. The
@@ -282,32 +293,82 @@ func (a *Agent) publishControl(requestID string, control *mimoControl) {
 	if record := a.messages[control.messageID]; record != nil && record.sessionID == control.sessionID {
 		control.actorKnown = control.actorKnown || record.identityKnown && record.actorKnown
 	}
-	if existing := a.controls[requestID]; existing != nil && bytes.Equal(existing.payload, control.payload) {
-		control = existing
-	} else {
-		a.controls[requestID] = control
+	if existing := a.controls[requestID]; existing != nil {
+		if existing.answering {
+			a.Mu.Unlock()
+			return
+		}
+		if bytes.Equal(existing.payload, control.payload) {
+			control = existing
+		} else {
+			existing.publicationOnce.Do(func() { close(existing.publicationDone) })
+		}
+	}
+	if control.publicationDone == nil {
+		control.instanceID = id.Generate()
+		control.publicationDone = make(chan struct{})
+	}
+	a.controls[requestID] = control
+	bypass := a.canBypassControlLocked(control)
+	if bypass {
+		control.ready = true
+		control.publicationOnce.Do(func() { close(control.publicationDone) })
 	}
 	a.Mu.Unlock()
-	err := a.sink.PublishControlRequest(agent.ControlRequest{RequestID: requestID, Payload: control.payload})
-	if err == nil {
+	if bypass {
+		a.queuePermissionApprovals()
 		return
 	}
-	slog.Error("mimo publish control request", "agent_id", a.AgentID(), "request_id", requestID, "error", err)
-	a.forgetControl(requestID)
-	if control.kind == controlPermission {
-		a.replyPermissionLater(control.nativeID, mimoPermissionReplyBody{Reply: contracts.MiMoPermissionReplyReject, Message: providerkit.ControlPublicationFailure})
-		return
-	}
-	a.rejectQuestionLater(control.nativeID)
+	a.publishRegisteredControl(requestID, control)
 }
 
-// forgetControl drops a request and reports whether LeapMux held it.
-func (a *Agent) forgetControl(requestID string) bool {
+func (a *Agent) publishRegisteredControl(requestID string, control *mimoControl) {
+	err := a.sink.PublishControlRequest(agent.ControlRequest{AgentSessionID: control.sessionID, RequestID: requestID, InstanceID: control.instanceID, Payload: control.payload})
+	a.Mu.Lock()
+	current := a.controls[requestID] == control
+	if err == nil && !control.answered {
+		control.published = true
+	}
+	control.ready = true
+	control.publicationOnce.Do(func() { close(control.publicationDone) })
+	refuse := current && err != nil && !control.answering
+	cancel := err == nil && (!current || control.answered) || refuse && control.published
+	if refuse {
+		delete(a.controls, requestID)
+	}
+	bypass := current && err == nil && a.canBypassControlLocked(control)
+	a.Mu.Unlock()
+	if cancel {
+		a.sink.CancelControlRequestInstance(requestID, control.instanceID)
+	}
+	if bypass {
+		a.queuePermissionApprovals()
+	}
+	if !refuse {
+		return
+	}
+	slog.Error("mimo could not publish a control request", "request_id", requestID, "error", err)
+	if control.kind == controlPermission {
+		a.replyPermissionLater(control.nativeID, mimoPermissionReplyBody{Reply: contracts.MiMoPermissionReplyReject, Message: providerkit.ControlPublicationFailure})
+	} else {
+		a.rejectQuestionLater(control.nativeID)
+	}
+}
+
+// forgetControl drops one native request and returns the instance that needs withdrawal.
+func (a *Agent) forgetControl(requestID string) *mimoControl {
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
-	_, held := a.controls[requestID]
+	control := a.controls[requestID]
+	if control == nil {
+		return nil
+	}
 	delete(a.controls, requestID)
-	return held
+	control.publicationOnce.Do(func() { close(control.publicationDone) })
+	if control.published && (!control.answering || control.automatic) {
+		return control
+	}
+	return nil
 }
 
 // handlePermissionReplied and handleQuestionSettled retire the card of a
@@ -326,8 +387,8 @@ func (a *Agent) retireSettled(event mimoEvent, prefix string) {
 		return
 	}
 	requestID := prefix + settled.RequestID
-	if a.forgetControl(requestID) {
-		a.sink.CancelControlRequest(requestID)
+	if control := a.forgetControl(requestID); control != nil {
+		a.sink.CancelControlRequestInstance(requestID, control.instanceID)
 	}
 }
 
@@ -355,19 +416,27 @@ func (a *Agent) retireAllControls() {
 
 func (a *Agent) retireControls(match func(*mimoControl) bool) {
 	a.Mu.Lock()
-	retired := map[string]*mimoControl{}
-	for requestID, control := range a.controls {
-		if match(control) {
-			retired[requestID] = control
-			delete(a.controls, requestID)
+	cancel := make(map[string]string)
+	var reject []string
+	for id, control := range a.controls {
+		if !match(control) {
+			continue
 		}
+		if control.published && (!control.answering || control.automatic) {
+			cancel[id] = control.instanceID
+		}
+		if control.kind != controlPermission && !control.answering {
+			reject = append(reject, control.nativeID)
+		}
+		control.publicationOnce.Do(func() { close(control.publicationDone) })
+		delete(a.controls, id)
 	}
 	a.Mu.Unlock()
-	for requestID, control := range retired {
-		a.sink.CancelControlRequest(requestID)
-		if control.kind != controlPermission {
-			a.rejectQuestionLater(control.nativeID)
-		}
+	for id, instance := range cancel {
+		a.sink.CancelControlRequestInstance(id, instance)
+	}
+	for _, id := range reject {
+		a.rejectQuestionLater(id)
 	}
 }
 
@@ -726,6 +795,19 @@ func (a *Agent) executeControlReply(data []byte) error {
 	if err != nil {
 		return fmt.Errorf("read the answer to %q: %w", requestID, err)
 	}
+	select {
+	case <-control.publicationDone:
+	case <-a.Context().Done():
+		return a.Context().Err()
+	}
+	a.Mu.Lock()
+	if a.controls[requestID] != control || !control.published || control.answering || a.StoppedLocked() || a.sessionSwitching || !a.ownsSessionLocked(control.sessionID) {
+		a.Mu.Unlock()
+		return fmt.Errorf("MiMo holds no pending request %q", requestID)
+	}
+	control.answering = true
+	control.automatic = false
+	a.Mu.Unlock()
 	ctx := a.Context()
 	switch control.kind {
 	case controlPermission:
@@ -737,18 +819,14 @@ func (a *Agent) executeControlReply(data []byte) error {
 			err = a.rpc.replyQuestion(ctx, control.nativeID, answer.answers)
 		}
 	}
+	err = providerkit.ClassifyHTTPDeliveryError("send the answer to "+requestID, err)
+	a.finishControlAnswer(requestID, control, err)
 	if providerkit.IsHTTPStatus(err, http.StatusNotFound) {
-		// MiMo no longer holds the request: its turn ended, or another client
-		// answered it. No answer can reach it now, so its card goes.
-		if a.forgetControl(requestID) {
-			a.sink.CancelControlRequest(requestID)
-		}
 		return fmt.Errorf("MiMo no longer waits on %q: %w", requestID, err)
 	}
 	if err != nil {
-		return fmt.Errorf("send the answer to %q: %w", requestID, err)
+		return err
 	}
-	a.forgetControl(requestID)
 	if control.kind == controlPlan && len(answer.answers) == 1 && len(answer.answers[0]) == 1 && answer.answers[0][0] == planAnswerYes {
 		// MiMo moves the session to build as it takes the answer. The next prompt
 		// must say build too, or it would put the session back into plan mode.

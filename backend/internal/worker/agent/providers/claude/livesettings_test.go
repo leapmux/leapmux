@@ -662,12 +662,12 @@ func TestUpdateSettings_ConfirmedPermissionSupersedesDeferredRequest(t *testing.
 	a := newTestAgentWithControlProtocol(t)
 	defer stopTestAgent(a)
 	a.confirmedPermissionMode = contracts.ClaudeModeDefault
-	a.deferredPermissionModeReqID = "older-request"
+	a.permissionModeChange = &permissionModeChange{requestID: "older-request", requested: a.confirmedPermissionMode, deferred: true}
 
 	result := a.UpdateSettings(map[string]string{agent.OptionIDPermissionMode: contracts.ClaudeModePlan})
 
 	require.True(t, result.AppliedLive)
-	assert.Empty(t, a.deferredPermissionModeReqID)
+	assert.Nil(t, a.permissionModeChange)
 	assert.Equal(t, agent.OptionSettlementConfirmed, result.Settlements[agent.OptionIDPermissionMode].State)
 }
 
@@ -727,8 +727,10 @@ func TestUpdateSettings_PermissionModeDeferredAck(t *testing.T) {
 	assert.True(t, result.AppliedLive, "a deferred set_permission_mode ack must not request a restart")
 	assert.Equal(t, agent.OptionSettlementUnresolved, result.Settlements[agent.OptionIDPermissionMode].State,
 		"a deferred acknowledgement must not claim that the provider confirmed the mode")
-	assert.Equal(t, contracts.ClaudeModePlan, a.confirmedPermissionMode,
-		"the requested mode is recorded optimistically while the ack is pending")
+	assert.Equal(t, contracts.ClaudeModePlan, a.SettingsSnapshot().SurfacedOptions[agent.OptionIDPermissionMode],
+		"the pending request supplies the displayed mode")
+	assert.Equal(t, contracts.ClaudeModeDefault, a.confirmedPermissionMode,
+		"the pending request retains the last native confirmation")
 }
 
 // TestClaudeHandleControlResponse_DeferredModeReconcilesInMemory is the regression guard for
@@ -744,7 +746,7 @@ func TestClaudeHandleControlResponse_DeferredModeReconcilesInMemory(t *testing.T
 	a := &Agent{sink: agent.NewProviderServices(sink)}
 	// The live path recorded "plan" optimistically and remembered the deferred toggle's id.
 	a.confirmedPermissionMode = contracts.ClaudeModePlan
-	a.deferredPermissionModeReqID = "req-1"
+	a.permissionModeChange = &permissionModeChange{requestID: "req-1", requested: a.confirmedPermissionMode, deferred: true}
 
 	// The deferred control_response for THAT request: the CLI actually settled on acceptEdits.
 	a.claudeCodeHandleControlResponse([]byte(
@@ -754,7 +756,7 @@ func TestClaudeHandleControlResponse_DeferredModeReconcilesInMemory(t *testing.T
 		"the in-memory confirmed mode is reconciled to the CLI's applied mode")
 	require.Equal(t, []string{contracts.ClaudeModeAcceptEdits}, sink.PermissionModes(),
 		"the persisted row + broadcast are reconciled to the applied mode too")
-	assert.Empty(t, a.deferredPermissionModeReqID, "the consumed deferred id is cleared")
+	assert.Nil(t, a.permissionModeChange, "the consumed deferred request is cleared")
 }
 
 // TestClaudeHandleControlResponse_IgnoresUncorrelatedMode is the regression guard for the
@@ -767,7 +769,7 @@ func TestClaudeHandleControlResponse_IgnoresUncorrelatedMode(t *testing.T) {
 	sink := &agenttest.Sink{}
 	a := &Agent{sink: agent.NewProviderServices(sink)}
 	a.confirmedPermissionMode = contracts.ClaudeModePlan
-	a.deferredPermissionModeReqID = "req-current"
+	a.permissionModeChange = &permissionModeChange{requestID: "req-current", requested: a.confirmedPermissionMode, deferred: true}
 
 	// A stale ack for a different (already-superseded) request.
 	a.claudeCodeHandleControlResponse([]byte(
@@ -776,7 +778,8 @@ func TestClaudeHandleControlResponse_IgnoresUncorrelatedMode(t *testing.T) {
 	assert.Equal(t, contracts.ClaudeModePlan, a.confirmedPermissionMode,
 		"an uncorrelated ack must not clobber the confirmed mode")
 	assert.Empty(t, sink.PermissionModes(), "no broadcast for an uncorrelated ack")
-	assert.Equal(t, "req-current", a.deferredPermissionModeReqID,
+	require.NotNil(t, a.permissionModeChange)
+	assert.Equal(t, "req-current", a.permissionModeChange.requestID,
 		"the awaited deferred id is left pending")
 }
 
@@ -791,7 +794,7 @@ func TestClaudeHandleControlResponse_DeferredAutoClearsStaleAutoModeAvailable(t 
 	a := &Agent{sink: agent.NewProviderServices(sink)}
 	a.autoModeAvailable = false // a transient startup probe failure left this stale
 	a.confirmedPermissionMode = contracts.ClaudeModeAuto
-	a.deferredPermissionModeReqID = "req-auto"
+	a.permissionModeChange = &permissionModeChange{requestID: "req-auto", requested: a.confirmedPermissionMode, deferred: true}
 
 	a.claudeCodeHandleControlResponse([]byte(
 		`{"type":"control_response","response":{"subtype":"success","request_id":"req-auto","response":{"mode":"auto"}}}`))
@@ -799,7 +802,7 @@ func TestClaudeHandleControlResponse_DeferredAutoClearsStaleAutoModeAvailable(t 
 	assert.Equal(t, contracts.ClaudeModeAuto, a.confirmedPermissionMode)
 	assert.True(t, a.autoModeAvailable,
 		"a deferred ack confirming auto clears the stale autoModeAvailable=false")
-	assert.Empty(t, a.deferredPermissionModeReqID, "the consumed deferred id is cleared")
+	assert.Nil(t, a.permissionModeChange, "the consumed deferred request is cleared")
 }
 
 // TestUpdateSettings_PermissionModeGenuineError verifies that a genuine (non-timeout)

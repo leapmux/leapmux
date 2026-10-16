@@ -240,11 +240,39 @@ func (a *Agent) answerAsk(data []byte) error {
 	a.Mu.Unlock()
 	if err := a.answerDialog(requestID, value); err != nil {
 		a.Mu.Lock()
-		call.plan = nil
+		if !errors.Is(err, agent.ErrDeliveryUncertain) {
+			call.plan = nil
+		}
 		a.Mu.Unlock()
 		return fmt.Errorf("answer the question: %w", err)
 	}
 	return nil
+}
+
+// cancelAsk claims a question cancellation before it reaches the native dialog.
+// A definite write failure keeps the question available for another answer.
+func (a *Agent) cancelAsk(requestID string, data []byte, stop agent.StopContext) (bool, error) {
+	a.Mu.Lock()
+	call := a.asks.byRequest(requestID)
+	if call == nil {
+		a.Mu.Unlock()
+		return false, nil
+	}
+	if call.handOff || call.plan != nil {
+		a.Mu.Unlock()
+		return true, fmt.Errorf("the question %q is no longer open", requestID)
+	}
+	call.handOff = true
+	a.Mu.Unlock()
+	err := a.Process.SendRawInput(data, stop)
+	if err != nil && !errors.Is(err, agent.ErrDeliveryUncertain) {
+		a.Mu.Lock()
+		if a.asks.byRequest(requestID) == call {
+			call.handOff = false
+		}
+		a.Mu.Unlock()
+	}
+	return true, err
 }
 
 // forgetAskDialog drops the call whose request has the given id: the reader

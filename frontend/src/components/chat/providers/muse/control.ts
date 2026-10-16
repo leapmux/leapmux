@@ -2,10 +2,11 @@ import type { ControlAnswerState } from '../../controls/types'
 import type { PermissionOption, PermissionPrompt, PermissionScope } from '../../model/controlPrompt'
 import type { ControlQuestion } from '../../model/question'
 import type { ProviderAskUserQuestion, ProviderControlCapability } from '../capabilities'
+import { ACP_PERMISSION_KIND } from '~/generated/contracts/acp-protocol'
 import { MUSE_APPROVAL_DECISION, MUSE_CHOICE_SCOPE, MUSE_METHOD, MUSE_QUESTION_SELECTION_MODE } from '~/generated/contracts/muse-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { buildJsonRpcResult, sendJsonRpcResult } from '../../controls/types'
-import { KIND_ALLOW_ALWAYS, KIND_ALLOW_ONCE, KIND_REJECT_ALWAYS, KIND_REJECT_ONCE } from '../../model/controlPrompt'
+import { KIND_ALLOW_ALWAYS, KIND_REJECT_ALWAYS, KIND_REJECT_ONCE } from '../../model/controlPrompt'
 import { museParams } from './protocol'
 
 export function museQuestions(payload: Record<string, unknown>): ControlQuestion[] {
@@ -159,7 +160,7 @@ export const museControl: ProviderControlCapability = {
         scope = 'workspace'
       const persistent = scope !== undefined
       const allow = ALLOW_DECISIONS.has(choice.decision)
-      const kind = allow ? persistent ? KIND_ALLOW_ALWAYS : KIND_ALLOW_ONCE : persistent ? KIND_REJECT_ALWAYS : KIND_REJECT_ONCE
+      const kind = allow ? persistent ? KIND_ALLOW_ALWAYS : ACP_PERMISSION_KIND.AllowOnce : persistent ? KIND_REJECT_ALWAYS : KIND_REJECT_ONCE
       return { optionId: choice.choiceId, name: choice.label, kind, ...(scope ? { scope } : {}) }
     })
     const subject = pickObject(params, 'subject')

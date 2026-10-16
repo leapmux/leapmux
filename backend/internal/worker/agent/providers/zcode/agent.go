@@ -131,20 +131,11 @@ type Agent struct {
 	toolCalls     map[string]*zcodeToolCall
 	nextToolOrder uint64
 
-	// pendingControls maps the request id of each control prompt LeapMux forwarded to the
-	// user, and that nothing resolved yet, to the payload of its FIRST announcement. It
-	// answers two questions.
-	//
-	// It de-duplicates the app-server's RE-ANNOUNCEMENTS. An unanswered interaction
-	// request is re-sent every second -- the interval doubles to ten -- with the same
-	// `requestId` and a FRESH wire id, until it is answered. Each repeat republishes the
-	// STORED payload, so a banner the user already holds is left alone (the frontend
-	// de-duplicates on the payload) and one that is gone comes back.
-	//
-	// It also tells an echo apart from an automatic decision: the app-server emits
-	// `permission.resolved` for EVERY decision, including the one it just received
-	// from us.
-	pendingControls map[string]json.RawMessage
+	// pendingControls keeps the first payload and wire identity until native settlement.
+	// Reannouncements reuse the publication instance. An accepted answer keeps its claim,
+	// so a late reannouncement cannot send that answer twice.
+	pendingControls map[string]*pendingControl
+	approvalWork    providerkit.CoalescingWork
 
 	// latestContextUsage is the broadcast-shaped context-usage map, kept so a
 	// reconnecting frontend can be rehydrated from the persisted turn end.

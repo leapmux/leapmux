@@ -111,7 +111,9 @@ type Agent struct {
 	spawnActors map[string]string
 	workflows   map[string]*mimoWorkflow
 
-	controls map[string]*mimoControl
+	controls        map[string]*mimoControl
+	approvalWork    providerkit.CoalescingWork
+	settingsApplyMu sync.Mutex
 
 	goal mimoGoalState
 	// compactionAck is non-nil while CompactContext waits for the compaction to

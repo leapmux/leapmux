@@ -380,7 +380,6 @@ func (a *Agent) ClearContext() (string, error) {
 		return "", err
 	}
 	a.applyStartupSettings(current, timeout)
-	subscribeErr := a.subscribe(timeout)
 	// The turn belonged to the session this call replaced, so it ends with it. The
 	// flag and the window go in ONE critical section: a frame that arrived between
 	// them re-armed the window, which then fired into the NEW session.
@@ -398,9 +397,9 @@ func (a *Agent) ClearContext() (string, error) {
 	a.latestContextUsage = nil
 	clear(a.toolCalls)
 	a.nextToolOrder = 0
-	clear(a.pendingControls)
 	sessionID := a.sessionID
 	a.Mu.Unlock()
+	a.withdrawPendingControls()
 	a.PublishTurnActive()
 	a.toolCallPrompts.Clear()
 	a.children.clear()
@@ -418,5 +417,5 @@ func (a *Agent) ClearContext() (string, error) {
 		return "", fmt.Errorf("the new ZCode session has no ID")
 	}
 	a.sink.UpdateSessionID(sessionID)
-	return sessionID, subscribeErr
+	return sessionID, a.subscribe(timeout)
 }

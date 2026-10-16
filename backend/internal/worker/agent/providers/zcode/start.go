@@ -78,7 +78,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		builtinProviderConfigPath: zcodeLaunchEnvValue(cmd.Env, zcodeBuiltinProviderConfigEnv),
 		mode:                      contracts.ZCodeDefaultMode,
 		toolCalls:                 map[string]*zcodeToolCall{},
-		pendingControls:           map[string]json.RawMessage{},
+		pendingControls:           map[string]*pendingControl{},
 	}
 	a.sink = agent.NewModelProgressResetSink(a.sink)
 	a.sink = newZCodeToolTranscript(ctx, a.sink, func() zcodeToolStoreLocation {

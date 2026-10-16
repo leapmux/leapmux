@@ -258,6 +258,7 @@ func kimiValidPermission(mode string) bool {
 func (a *Agent) UpdateSettings(requested optionmap.Map) agent.SettingsApplyResult {
 	a.sessionMu.Lock()
 	defer a.sessionMu.Unlock()
+	defer a.approvePendingPermissions()
 	result := agent.SettingsApplyResult{AppliedLive: true, Settlements: make(agent.OptionSettlements)}
 
 	a.Mu.Lock()

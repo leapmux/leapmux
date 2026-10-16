@@ -63,7 +63,8 @@ func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult 
 			result.Settlements[agent.OptionIDPermissionMode] = agent.OptionSettlement{State: agent.OptionSettlementUnresolved}
 			result.AppliedLive = false
 		} else {
-			result.Settlements[agent.OptionIDPermissionMode] = agent.OptionSettlement{State: agent.OptionSettlementConfirmed, Value: &mode}
+			confirmed := a.SettingsSnapshot().SurfacedOptions[agent.OptionIDPermissionMode]
+			result.Settlements[agent.OptionIDPermissionMode] = agent.OptionSettlement{State: agent.OptionSettlementConfirmed, Value: &confirmed}
 		}
 	}
 	if effort, ok := options[agent.OptionIDEffort]; ok {

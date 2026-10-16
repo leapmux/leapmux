@@ -1,9 +1,10 @@
 import type { DialogPrompt } from '../../model/controlPrompt'
 import type { ExtractedControlRequest } from '../capabilities'
 import type { ControlExtractionInput } from '../registry'
+import { ACP_PERMISSION_KIND } from '~/generated/contracts/acp-protocol'
 import { OH_MY_PI_APPROVAL_DIALOG, OH_MY_PI_DIALOG_METHOD, OH_MY_PI_EVENT, OH_MY_PI_FRAME_FIELD } from '~/generated/contracts/ohmypi-protocol'
 import { pickNumber, pickObject, pickString } from '~/lib/jsonPick'
-import { KIND_ALLOW_ONCE, KIND_REJECT_ONCE } from '../../model/controlPrompt'
+import { KIND_REJECT_ONCE } from '../../model/controlPrompt'
 import { isOhMyPiApproval } from './controlResponse'
 
 /** The detail line of an approval title that states the command a `bash` call runs. */
@@ -119,7 +120,7 @@ export function ohMyPiExtractControl(input: ControlExtractionInput): ExtractedCo
       ...(command ? { command } : {}),
       ...(args ? { input: args } : {}),
       options: [
-        { optionId: OH_MY_PI_APPROVAL_DIALOG.Approve, kind: KIND_ALLOW_ONCE, name: OH_MY_PI_APPROVAL_DIALOG.Approve },
+        { optionId: OH_MY_PI_APPROVAL_DIALOG.Approve, kind: ACP_PERMISSION_KIND.AllowOnce, name: OH_MY_PI_APPROVAL_DIALOG.Approve },
         { optionId: OH_MY_PI_APPROVAL_DIALOG.Deny, kind: KIND_REJECT_ONCE, name: OH_MY_PI_APPROVAL_DIALOG.Deny },
       ],
     },

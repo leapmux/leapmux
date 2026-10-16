@@ -1,6 +1,7 @@
 import { expect } from '@playwright/test'
 import { KIRO_OPTION, KIRO_POLICY_PRESET } from '../../../src/generated/contracts/kiro-protocol'
 import { exerciseBypassPermissions } from '../helpers/nativeBypassPermissions'
+import { exerciseMidTurnBypass } from '../helpers/nativeMidTurnBypass'
 import { nativeOptionValue } from '../helpers/nativeScenario'
 import { expectPermissionShortcuts, expectSettingsOptionChosen, openWorkspace, waitForSettingsHydrated } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
@@ -25,4 +26,8 @@ kiroTest.describe('Kiro settings', () => {
     })
     await expectSettingsOptionChosen(page, `${KIRO_OPTION.PolicyPreset}-${KIRO_POLICY_PRESET.AllowAll}`)
   })
+})
+
+kiroTest('approves a pending tool and the next tool when Bypass changes during a turn', async ({ native }) => {
+  await exerciseMidTurnBypass(native)
 })

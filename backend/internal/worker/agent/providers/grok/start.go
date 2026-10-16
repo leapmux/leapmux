@@ -6,6 +6,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 var _ agent.StartFunc = Start
@@ -57,8 +58,16 @@ func (a *Agent) configure(opts agent.Options) acp.Hooks {
 	a.approval.current = initialApprovalMode(opts.Get(contracts.GrokOptionApprovalMode))
 	a.stateMu.Unlock()
 	return acp.Hooks{
-		ModeChannel:    acp.ModeChannelPermissionMode,
-		EffortConfigID: contracts.GrokConfigReasoningEffort,
+		WithBypassPermission: func(claim func()) {
+			a.stateMu.Lock()
+			defer a.stateMu.Unlock()
+			if a.approval.current == contracts.GrokApprovalModeAlwaysApprove {
+				claim()
+			}
+		},
+		PermissionAllowsBypass: func(*providerkit.ParsedLine) bool { return true },
+		ModeChannel:            acp.ModeChannelPermissionMode,
+		EffortConfigID:         contracts.GrokConfigReasoningEffort,
 		// Grok runs its shell commands itself. Through the host terminal it would
 		// lose its own background commands and their completion events.
 		DisableHostTerminal: true,

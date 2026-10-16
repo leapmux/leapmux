@@ -1,10 +1,12 @@
 package muse
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 func (a *Agent) Interrupt(stop agent.StopContext) error {
@@ -33,10 +35,10 @@ func (a *Agent) SendRawInput(raw []byte, stop agent.StopContext) error {
 	}
 	switch message.Method {
 	case methodApprovalDecide, methodUserInputAnswer, methodUserInputCancel:
-		a.sendMu.Lock()
-		defer a.sendMu.Unlock()
 		var params map[string]any
-		if json.Unmarshal(message.Params, &params) != nil {
+		decoder := json.NewDecoder(bytes.NewReader(message.Params))
+		decoder.UseNumber()
+		if decoder.Decode(&params) != nil {
 			return fmt.Errorf("the Muse control answer is invalid")
 		}
 		var identity controlParams
@@ -44,7 +46,12 @@ func (a *Agent) SendRawInput(raw []byte, stop agent.StopContext) error {
 			return fmt.Errorf("the Muse control identity is invalid")
 		}
 		if message.Method == methodApprovalDecide {
+			if identity.ApprovalID == "" || identity.UserInputID != "" {
+				return fmt.Errorf("the Muse approval answer has an invalid identity")
+			}
 			identity.Requirement = json.RawMessage(paramsRawField(message.Params, "requirementId"))
+		} else if identity.UserInputID == "" || identity.ApprovalID != "" {
+			return fmt.Errorf("the Muse question answer has an invalid identity")
 		}
 		key, err := controlID(identity)
 		if err != nil {
@@ -60,12 +67,31 @@ func (a *Agent) SendRawInput(raw []byte, stop agent.StopContext) error {
 		}
 		a.stateMu.Lock()
 		state := a.sessions[identity.SessionID]
-		current := state != nil && (state.childID != "" || identity.SessionID == a.sessionID) && state.controls[nativeID].key == key
+		a.stateMu.Unlock()
+		if err := a.awaitControlPublication(state, nativeID, key); err != nil {
+			return err
+		}
+		a.sendMu.Lock()
+		defer func() { a.sendMu.Unlock(); a.drainControls() }()
+		a.stateMu.Lock()
+		control := controlState{}
+		if state != nil {
+			control = state.controls[nativeID]
+		}
+		current := a.currentSessionState(identity.SessionID, state) && control.key == key && control.published && !control.responding
+		if current {
+			control.responding = true
+			state.controls[nativeID] = control
+		}
 		a.stateMu.Unlock()
 		if !current {
 			return fmt.Errorf("the Muse control requirement is no longer current")
 		}
 		_, err = a.command(message.Method, params, a.APITimeout(), nil)
+		if err != nil {
+			err = providerkit.ClassifyJSONRPCDeliveryError("Muse control answer", err)
+		}
+		a.finishControlDecision(state, identity.SessionID, nativeID, control, err, false)
 		return err
 	default:
 		return fmt.Errorf("the Muse raw input method %q is unsupported", message.Method)

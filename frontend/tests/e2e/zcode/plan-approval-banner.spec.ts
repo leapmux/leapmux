@@ -5,7 +5,8 @@ import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { OPTION_ID_PERMISSION_MODE } from '../../../src/components/chat/settingsGroups'
 import { ZCODE_ACTION, ZCODE_ANSWER_FIELD, ZCODE_METHOD, ZCODE_PLAN_CONTROL, ZCODE_REPLY_FIELD, ZCODE_TOOL } from '../../../src/generated/contracts/zcode-protocol'
-import { AgentProvider, ControlResponseState } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { ControlDeliveryState } from '../../../src/generated/proto/leapmux/v1/hub_storage_pb'
 import { RAIL } from '../helpers/chatScrollRail'
 import { withCleanup } from '../helpers/cleanup'
 import { watchNativeControls } from '../helpers/nativeControlWatch'
@@ -25,10 +26,8 @@ zcodeTest('rejects a native ZCode plan and delivers approval-shaped feedback as 
   const { agentId } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, ZCODE_AGENT, { directoryPrefix: 'zcode-feedback-', optionValues: { [OPTION_ID_PERMISSION_MODE]: 'plan' } })
   await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
   await expectSettingsChip(page, 'Plan')
-  // Two turns: the plan request, then the answer to the rejection feedback. The
-  // SUBJECT is that approval-shaped feedback text ("approve") reaches the agent
-  // as FEEDBACK and not as an approval, so both turns are scripted and the
-  // control round trip is the only variable left.
+  // Script the plan request and the reply to its feedback as separate turns.
+  // Approval-shaped feedback must remain feedback.
   const start = await modelScript.queue(
     { toolCalls: [exitPlanModeToolCall(AgentProvider.ZCODE, 'feedback-probe', '# Feedback probe\n\n- Change no files.')] },
     { text: 'FEEDBACK_RECEIVED' },
@@ -47,27 +46,13 @@ zcodeTest('rejects a native ZCode plan and delivers approval-shaped feedback as 
   await expect(banner).toHaveCount(0)
   await expect(assistantBubbles(page).filter({ hasText: 'FEEDBACK_RECEIVED' }).last()).toBeVisible()
   await waitForAgentIdle(page)
-  // The FEEDBACK, not the bare label. `feedbackOrLabel` renders the reason when
-  // a deny carries one and falls back to "Rejected" only when it does not, so a
-  // deny WITH feedback shows the feedback -- which is this test's whole name.
-  // Asserting "Rejected" here contradicted the rule the product documents.
-  //
-  // The model's reasoning can move the earlier response outside the rendered
-  // message window. The scroll rail then holds the one dot of that response.
-  // Each locator is strict, because the test sends one control response only.
+  // The saved rejection shows the feedback text. The scroll rail can restore its row after virtualization.
   const rejection = userBubbles(page).getByText('approve', { exact: true })
   if (await rejection.count() === 0)
     await visibleOnly(page.locator(RAIL).getByRole('button', { name: 'Your response', exact: true })).click()
   await rejection.scrollIntoViewIfNeeded()
   await expect(rejection).toBeInViewport({ ratio: 1 })
-  // PLAN, not Build. ZCode asks for the plan approval as the permission check of
-  // its ExitPlanMode tool, and the tool's handler, which leaves plan mode, runs
-  // only after an approval. This test declines (the stored row below records
-  // `action: decline`), so the handler never runs and the session stays in plan
-  // mode for the model to revise the plan. ZCode keeps plan mode in a
-  // `planEnabled` flag beside the native mode, and `settings.mode.current` reads
-  // `build` throughout, so a chip that reads Build here follows that field instead
-  // of the flag.
+  // A rejection leaves planEnabled true. The native mode stays build, so the chip must follow the plan flag.
   await expectSettingsChip(page, 'Plan')
   const database = join(leapmuxServer.dataDir, 'worker', 'worker.db')
   const agent = `'${agentId.replaceAll('\'', '\'\'')}'`
@@ -76,10 +61,8 @@ zcodeTest('rejects a native ZCode plan and delivers approval-shaped feedback as 
   const [row] = rows
   if (row === undefined)
     throw new Error('expected exactly one stored approval feedback row')
-  // The column stores the proto enum ORDINAL, not its name -- see "Enum columns
-  // store proto enum ordinals" in AGENTS.md. Binding the generated constant
-  // means a renumber propagates here instead of leaving a stale literal.
-  expect(row.state).toBe(ControlResponseState.COMPLETED)
+  // This view exposes the delivery enum stored in control_deliveries, not the public response enum.
+  expect(row.state).toBe(ControlDeliveryState.COMPLETED)
   expect(JSON.parse(Buffer.from(row.content, 'hex').toString()).result.action).toBe('decline')
   expect(errors).toEqual([])
 })
@@ -92,14 +75,8 @@ function zcodePlanFileStem(sessionId: string): string {
   return sessionId.trim().replace(/[^\w.-]+/g, '-').replace(/^-+|-+$/g, '')
 }
 
-// Approve answers ZCode's plan approval with `accept` and the approval word. ZCode
-// then runs its ExitPlanMode handler, which runs for an approval alone:
-// - It writes the plan to a plan file in the working directory.
-// - It turns plan mode off.
-// - It gives the model a result that approves the plan, so the model answers once
-//   more in the same turn.
-// ZCode keeps plan mode as a flag beside its mode, and LeapMux stores Build as the
-// mode that the approval leaves plan mode for.
+// An approved ExitPlanMode writes the plan file and leaves plan mode.
+// Its native result makes the model continue in the same turn.
 zcodeTest('approves a native ZCode plan and runs the native exit in the same turn', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
   const directory = newProviderWorkingDir(ZCODE_AGENT, 'zcode-approval-')
   const { agentId } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, ZCODE_AGENT, { workingDir: directory, optionValues: { [OPTION_ID_PERMISSION_MODE]: 'plan' } })
@@ -146,14 +123,8 @@ zcodeTest('approves a native ZCode plan and runs the native exit in the same tur
   }, async () => watch.cancel())
 })
 
-// Approving with a permission preset picks the mode the session continues in.
-// ZCode cannot take that mode before its ExitPlanMode ran -- session/setMode
-// turns the plan flag off, which makes the exit fail with "You are not in plan
-// mode" -- so the worker hands the mode to the agent, which sends it once the
-// exit's own mode event reports the flag off. The chip settles on the chosen
-// mode only after ZCode itself reports running in it, and the plan still
-// executes: an early setMode would have failed the exit and ended the turn
-// without the approved continuation.
+// ZCode applies the selected preset after ExitPlanMode reports that plan mode ended.
+// An earlier mode change would make ExitPlanMode fail and prevent the native continuation.
 zcodeTest('approves a native ZCode plan into a chosen mode applied after the native exit', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
   const directory = newProviderWorkingDir(ZCODE_AGENT, 'zcode-approval-yolo-')
   const { agentId } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, ZCODE_AGENT, { workingDir: directory, optionValues: { [OPTION_ID_PERMISSION_MODE]: 'plan' } })
@@ -179,9 +150,7 @@ zcodeTest('approves a native ZCode plan into a chosen mode applied after the nat
   await expect(assistantBubbles(page).filter({ hasText: 'BYPASS_APPROVAL_RECEIVED' }).last()).toBeVisible()
   await waitForAgentIdle(page)
   await expect(savedControlAnswer(page)).toHaveText('Approve')
-  // The deferred Yolo mode went out after the exit: ZCode reports the session
-  // in it, and the axis follows the report. A mode never sent leaves the chip
-  // on the exit's own Build.
+  // The native report confirms that the deferred preset replaced Build after the plan exit.
   await expectSettingsChip(page, 'Yolo')
   expect(readFileSync(join(directory, '.zcode', 'plans', `plan-${zcodePlanFileStem(agent.agentSessionId)}.md`), 'utf8')).toBe(plan)
 })

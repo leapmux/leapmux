@@ -1,7 +1,8 @@
 import type { ControlQuestion } from '../../model/question'
 import { describe, expect, it, vi } from 'vitest'
+import { ACP_PERMISSION_KIND } from '~/generated/contracts/acp-protocol'
 import { createControlAnswerState } from '../../controls/types'
-import { KIND_ALLOW_ALWAYS, KIND_ALLOW_ONCE, KIND_REJECT_ALWAYS, KIND_REJECT_ONCE } from '../../model/controlPrompt'
+import { KIND_ALLOW_ALWAYS, KIND_REJECT_ALWAYS, KIND_REJECT_ONCE } from '../../model/controlPrompt'
 import { museAnswers, museAskUserQuestion, museControl, museQuestions } from './control'
 
 function approval(choices: unknown) {
@@ -28,7 +29,7 @@ describe('museControl', () => {
     expect(frame).toEqual(original)
   })
   it.each([
-    ['approved', 'once', KIND_ALLOW_ONCE, undefined],
+    ['approved', 'once', ACP_PERMISSION_KIND.AllowOnce, undefined],
     ['approvedForSession', 'session', KIND_ALLOW_ALWAYS, 'session'],
     ['approvedPolicyAmendment', 'localPersistent', KIND_ALLOW_ALWAYS, 'workspace'],
     ['denied', 'once', KIND_REJECT_ONCE, undefined],

@@ -1,3 +1,4 @@
+import type { PermissionOption } from '../model/controlPrompt'
 /**
  * The permission-option VOCABULARY: what an agent's option is, and the words LeapMux
  * shows for it.
@@ -7,14 +8,14 @@
  * it directly, so one answer reads the same before and after the user gives it.
  */
 
-import type { PermissionOption } from '../model/controlPrompt'
-import { KIND_ALLOW_ALWAYS, KIND_ALLOW_ONCE, KIND_REJECT_ALWAYS, KIND_REJECT_ONCE } from '../model/controlPrompt'
+import { ACP_PERMISSION_KIND } from '~/generated/contracts/acp-protocol'
+import { KIND_ALLOW_ALWAYS, KIND_REJECT_ALWAYS, KIND_REJECT_ONCE } from '../model/controlPrompt'
 
 // The four option kinds the Agent Client Protocol defines. They are the only stable
 // discriminator across agents, because each agent spells its own optionId vocabulary.
 /** Goose sets every option's name to its kind (`name === optionId === kind`), which is no label at all. */
 const KIND_FALLBACK_LABELS: Record<string, string> = {
-  [KIND_ALLOW_ONCE]: 'Allow once',
+  [ACP_PERMISSION_KIND.AllowOnce]: 'Allow once',
   [KIND_ALLOW_ALWAYS]: 'Allow always',
   [KIND_REJECT_ONCE]: 'Reject',
   [KIND_REJECT_ALWAYS]: 'Reject always',

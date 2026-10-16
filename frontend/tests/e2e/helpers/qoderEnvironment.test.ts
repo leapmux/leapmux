@@ -34,6 +34,7 @@ describe('createQoderEnvironment', () => {
     createQoderEnvironment(options())
     const qoderHome = join(runDirectory, 'home', '.qoder')
     const settings = JSON.parse(readFileSync(join(qoderHome, 'settings.json'), 'utf8'))
+    expect(settings.autoMode).toEqual({ classifier: 'llm' })
     expect(Object.keys(settings.providers)).toEqual(['mockprov'])
     expect(settings.providers.mockprov).toMatchObject({ baseUrl: 'http://127.0.0.1:4567/v1', apiKey: 'unit-key' })
     expect(settings.providers.mockprov.models.map((model: { model: string }) => model.model)).toEqual(['unit-model', 'unit-alt'])

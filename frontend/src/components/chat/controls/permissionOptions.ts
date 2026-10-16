@@ -1,7 +1,8 @@
 import type { PermissionOption, PermissionScope } from '~/components/chat/model/controlPrompt'
 import type { PillOptions } from '~/components/common/pillOptions'
-import { CANONICAL_KINDS, KIND_ALLOW_ALWAYS, KIND_ALLOW_ONCE, KIND_REJECT_ALWAYS, KIND_REJECT_ONCE } from '~/components/chat/model/controlPrompt'
+import { CANONICAL_KINDS, KIND_ALLOW_ALWAYS, KIND_REJECT_ALWAYS, KIND_REJECT_ONCE } from '~/components/chat/model/controlPrompt'
 import { disambiguateLabels, isPillOptions, PILL_OPTION_LIMIT } from '~/components/common/pillOptions'
+import { ACP_PERMISSION_KIND } from '~/generated/contracts/acp-protocol'
 import { permissionOptionLabel } from './permissionOptionLabels'
 
 /**
@@ -41,7 +42,7 @@ export function layoutPermissionOptions(options: PermissionOption[]): Permission
     if (CANONICAL_KINDS.includes(option.kind) && !byKind.has(option.kind))
       byKind.set(option.kind, option)
   }
-  const allowOnce = byKind.get(KIND_ALLOW_ONCE)
+  const allowOnce = byKind.get(ACP_PERMISSION_KIND.AllowOnce)
   const allowAlways = byKind.get(KIND_ALLOW_ALWAYS)
   const rejectOnce = byKind.get(KIND_REJECT_ONCE)
   const rejectAlways = byKind.get(KIND_REJECT_ALWAYS)
@@ -51,7 +52,7 @@ export function layoutPermissionOptions(options: PermissionOption[]): Permission
   // Require the group to fit the pill limit.
   // Keep wider choices available as additional buttons.
   // Require distinct option IDs because the native reply carries that ID.
-  const allOnces = options.filter(option => option.kind === KIND_ALLOW_ONCE)
+  const allOnces = options.filter(option => option.kind === ACP_PERMISSION_KIND.AllowOnce)
   const allAlways = options.filter(option => option.kind === KIND_ALLOW_ALWAYS)
   const once = allOnces.length === 1 ? allOnces[0] : undefined
   const scopeAlways: PermissionOption[] = []
@@ -206,7 +207,7 @@ const SCOPE_LABELS: Record<PermissionScope, string> = {
  * An explicit plugin scope avoids that ambiguity.
  */
 export function allowScopeLabel(option: PermissionOption): string {
-  if (option.kind === KIND_ALLOW_ONCE)
+  if (option.kind === ACP_PERMISSION_KIND.AllowOnce)
     return 'Once'
   if (option.scope)
     return SCOPE_LABELS[option.scope]

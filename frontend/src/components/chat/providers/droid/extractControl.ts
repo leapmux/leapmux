@@ -1,8 +1,9 @@
 import type { PermissionOption } from '../../model/controlPrompt'
 import type { ControlExtractionInput, ExtractedControlRequest } from '../registry'
+import { ACP_PERMISSION_KIND } from '~/generated/contracts/acp-protocol'
 import { DROID_CONFIRMATION_TYPE, DROID_NOTIFICATION_FIELD, DROID_PERMISSION_OPTION, DROID_REQUEST_TYPE } from '~/generated/contracts/droid-protocol'
 import { pickObject, pickString } from '~/lib/jsonPick'
-import { KIND_ALLOW_ALWAYS, KIND_ALLOW_ONCE, KIND_REJECT_ONCE } from '../../model/controlPrompt'
+import { KIND_ALLOW_ALWAYS, KIND_REJECT_ONCE } from '../../model/controlPrompt'
 import { droidToolKind } from './toolKinds'
 
 /**
@@ -26,7 +27,7 @@ import { droidToolKind } from './toolKinds'
  */
 function droidOptionKind(option: string): string {
   switch (option) {
-    case DROID_PERMISSION_OPTION.ProceedOnce: return KIND_ALLOW_ONCE
+    case DROID_PERMISSION_OPTION.ProceedOnce: return ACP_PERMISSION_KIND.AllowOnce
     case DROID_PERMISSION_OPTION.ProceedAlways:
     case DROID_PERMISSION_OPTION.ProceedAlwaysFile:
     case DROID_PERMISSION_OPTION.ProceedAlwaysTools:

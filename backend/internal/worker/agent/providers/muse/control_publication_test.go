@@ -10,6 +10,7 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -18,6 +19,51 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestMuseAnswerWaitsForThePublicationThatMadeItsCardVisible(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a, sink := museControlPublicationAgent(t)
+		release := make(chan struct{})
+		sink.onPublish = func(agent.ControlRequest) { <-release }
+		a.SetStdinForTest(&museTestPeer{agent: a, reply: func(_ string, raw json.RawMessage) agenttest.RPCReply {
+			var params struct {
+				CommandID string `json:"commandId"`
+			}
+			if err := json.Unmarshal(raw, &params); err != nil {
+				t.Error(err)
+			}
+			encoded, _ := json.Marshal(map[string]string{"commandId": params.CommandID, "status": "accepted"})
+			return agenttest.RPCReply{Result: encoded}
+		}})
+		request := approvalRequest("session", 0)
+		published := make(chan struct{})
+		go func() { a.HandleOutput(request); close(published) }()
+		synctest.Wait()
+		key := testApprovalKey("session", "approval", 0)
+		answer := (museProvider{}).ResolveControlResponse(agent.ControlResponseContext{RequestID: key, RequestPayload: request, ResponseContent: approvalAnswer(key)})
+		require.False(t, answer.Withhold)
+		result := make(chan error, 1)
+		go func() { result <- a.SendRawInput(answer.Content, agent.StopContext{}) }()
+		synctest.Wait()
+		early := false
+		select {
+		case err := <-result:
+			early = true
+			t.Errorf("the answer finished before publication completed: %v", err)
+		default:
+		}
+		close(release)
+		synctest.Wait()
+		if !early {
+			require.NoError(t, <-result)
+		}
+		select {
+		case <-published:
+		default:
+			t.Fatal("the publication did not finish")
+		}
+	})
+}
 
 type museControlLogHandler struct {
 	handle func(slog.Record)

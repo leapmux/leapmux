@@ -764,7 +764,7 @@ func TestNativeCopilotSettingsChangeEventsShareOneRead(t *testing.T) {
 		a.HandleOutput(nativeCopilotEvent(t, "", eventType, map[string]any{}))
 	}
 
-	assert.Equal(t, map[string]bool{copilotReadSettings: true}, a.backgroundReads.inFlight(),
+	assert.Equal(t, map[string]bool{copilotReadSettings: true}, a.backgroundWork.InFlight(),
 		"three change events start one read, with one more queued behind it")
 }
 
@@ -781,7 +781,7 @@ func TestNativeCopilotObjectiveChangeEventsShareOneRead(t *testing.T) {
 			contracts.CopilotEventSessionAutopilotObjectiveChanged, map[string]any{}))
 	}
 
-	assert.Equal(t, map[string]bool{copilotReadGoal: true}, a.backgroundReads.inFlight())
+	assert.Equal(t, map[string]bool{copilotReadGoal: true}, a.backgroundWork.InFlight())
 }
 
 // The runtime marks both progress frames "do not store", and they carry the only

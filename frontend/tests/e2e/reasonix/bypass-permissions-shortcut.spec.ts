@@ -1,4 +1,5 @@
 import { REASONIX_APPROVAL, REASONIX_CONFIG } from '../../../src/generated/contracts/reasonix-protocol'
+import { exerciseMidTurnBypass } from '../helpers/nativeMidTurnBypass'
 import { exerciseNativeToolWrite } from '../helpers/nativePermission'
 import { expectNativeOptionValue } from '../helpers/nativeScenario'
 import { applyPermissionPreset, chooseSettingsOption, waitForSettingsIdle } from '../helpers/ui'
@@ -19,4 +20,11 @@ reasonixTest('runs a real native write without a permission request after the By
   await applyPermissionPreset(page, 'bypass')
   await expectNativeOptionValue(native, REASONIX_CONFIG.ToolApproval, REASONIX_APPROVAL.Yolo)
   await exerciseNativeToolWrite(native, { permission: 'absent' })
+})
+
+reasonixTest('approves a pending tool and the next tool when Bypass changes during a turn', async ({ native }) => {
+  await chooseSettingsOption(native.page, 'permissionMode-normal')
+  await chooseSettingsOption(native.page, 'tool_approval-ask')
+  await waitForSettingsIdle(native.page)
+  await exerciseMidTurnBypass(native)
 })

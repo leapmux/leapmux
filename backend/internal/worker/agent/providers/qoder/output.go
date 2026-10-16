@@ -99,9 +99,8 @@ func (a *Agent) handleSystem(raw []byte) {
 				if init.SessionID != "" {
 					a.sessionID = init.SessionID
 				}
-				if init.Model != "" {
-					a.model = init.Model
-				}
+				// The SDK init frame carries a model display label, which the native reviewer cannot resolve.
+				// Keep the ID from launch, a model change, or available_models_update.currentModel.
 				if init.Permission != "" {
 					a.permissionMode = init.Permission
 				}

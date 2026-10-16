@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -64,10 +65,21 @@ const (
 // pendingControl is one approval or question that LeapMux published and
 // nothing resolved yet. Guarded by Agent.Mu.
 type pendingControl struct {
-	kind       controlKind
-	sessionID  string
-	toolName   string
-	toolCallID string
+	kind            controlKind
+	sessionID       string
+	toolName        string
+	toolCallID      string
+	published       bool
+	answering       bool
+	answered        bool
+	automatic       bool
+	automaticFailed bool
+	ready           bool
+	instanceID      string
+	payload         []byte
+	sourceSeq       int64
+	publicationDone chan struct{}
+	publicationOnce sync.Once
 }
 
 // approvalRequest is the payload of approval.requested that the worker reads.
@@ -112,20 +124,10 @@ func (a *Agent) handleApprovalRequested(event hubEvent) {
 	}
 	a.Mu.Lock()
 	_, known := a.controls[request.ApprovalID]
-	mode := a.settings.permissionMode
 	a.Mu.Unlock()
 	if known {
 		// The hub states each pending approval again to a client that
 		// subscribes again after a reconnect.
-		return
-	}
-	if mode == contracts.ClinePermissionModeAutoApprove || safeAutoApproveTools[request.ToolName] {
-		// respondApproval logs a failed answer. The answer fails only with the
-		// connection, and the hub states the approval again to the client that
-		// subscribes after the reconnect, which answers it again.
-		a.sendInBackground(func() error {
-			return a.respondApproval(contracts.ClineApprovalReply{ApprovalId: request.ApprovalID, Approved: true})
-		})
 		return
 	}
 	if request.ToolName == contracts.ClineToolSwitchToActMode {
@@ -136,28 +138,21 @@ func (a *Agent) handleApprovalRequested(event hubEvent) {
 			a.sink.UpdatePlan([]byte(plan), leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE, providerkit.ExtractPlanTitle(plan))
 		}
 	}
-	a.Mu.Lock()
-	if a.controls == nil {
-		a.controls = make(map[string]*pendingControl)
-	}
-	a.controls[request.ApprovalID] = &pendingControl{
+	control := &pendingControl{
 		kind: controlApproval, sessionID: event.SessionID, toolName: request.ToolName, toolCallID: request.ToolCallID,
+		payload: event.Raw,
 	}
-	a.Mu.Unlock()
-	if err := a.sink.PublishControlRequest(agent.ControlRequest{
-		AgentSessionID: event.SessionID,
-		RequestID:      request.ApprovalID,
-		Payload:        event.Raw,
-	}); err != nil {
-		// Fail closed: a request that no user can see must not wait, and it must
-		// not run.
-		slog.Error("cline publish approval request", "agent_id", a.AgentID(), "tool", request.ToolName, "error", err)
-		a.dropControl(request.ApprovalID)
-		reason := fmt.Sprintf("LeapMux could not show the permission request: %v", err)
-		a.sendInBackground(func() error {
-			return a.respondApproval(contracts.ClineApprovalReply{ApprovalId: request.ApprovalID, Reason: reason})
-		})
+	a.registerControl(request.ApprovalID, control)
+}
+
+// bypassPermissionsLocked reads the requested policy, including a deferred
+// session rebuild. The caller holds Mu. Tool approval does not need a rebuild.
+func (a *Agent) bypassPermissionsLocked() bool {
+	mode := a.settings.permissionMode
+	if a.modeRebuild != nil {
+		mode = a.modeRebuild.settings.permissionMode
 	}
+	return !a.StoppedLocked() && mode == contracts.ClinePermissionModeAutoApprove
 }
 
 // handleCapabilityRequested answers or publishes one capability request. The
@@ -190,35 +185,10 @@ func (a *Agent) handleCapabilityRequested(event hubEvent) {
 
 // publishQuestion publishes one `ask_question` as a control request.
 func (a *Agent) publishQuestion(event hubEvent, request capabilityRequest) {
-	a.Mu.Lock()
-	_, known := a.controls[request.RequestID]
-	if !known {
-		if a.controls == nil {
-			a.controls = make(map[string]*pendingControl)
-		}
-		a.controls[request.RequestID] = &pendingControl{
-			kind: controlQuestion, sessionID: event.SessionID,
-			toolName: contracts.ClineToolAskQuestion, toolCallID: request.Payload.Context.ToolCallID,
-		}
-	}
-	a.Mu.Unlock()
-	if known {
-		return
-	}
-	if err := a.sink.PublishControlRequest(agent.ControlRequest{
-		AgentSessionID: event.SessionID,
-		RequestID:      request.RequestID,
-		Payload:        event.Raw,
-		SourceSeq:      a.toolCallRow(request.Payload.Context.ToolCallID),
-	}); err != nil {
-		slog.Error("cline publish question", "agent_id", a.AgentID(), "error", err)
-		a.dropControl(request.RequestID)
-		reply := contracts.ClineCapabilityReply{
-			RequestId: request.RequestID,
-			Error:     fmt.Sprintf("LeapMux could not show the question: %v", err),
-		}
-		a.sendInBackground(func() error { return a.respondCapability(reply) })
-	}
+	a.registerControl(request.RequestID, &pendingControl{
+		kind: controlQuestion, sessionID: event.SessionID, toolName: contracts.ClineToolAskQuestion,
+		toolCallID: request.Payload.Context.ToolCallID, payload: event.Raw, sourceSeq: a.toolCallRow(request.Payload.Context.ToolCallID),
+	})
 }
 
 // answerSwitchToActMode runs the plan tool: the user approved its call a moment
@@ -274,34 +244,42 @@ func (a *Agent) handleControlResolved(event hubEvent) {
 	if id == "" {
 		return
 	}
-	if a.dropControl(id) {
-		a.sink.CancelControlRequest(id)
+	if control := a.dropControl(id); control != nil {
+		a.sink.CancelControlRequestInstance(id, control.instanceID)
 	}
 }
 
-// dropControl forgets one request, and reports whether it was pending.
-func (a *Agent) dropControl(id string) bool {
+// dropControl forgets one native request and returns the card that needs withdrawal.
+func (a *Agent) dropControl(id string) *pendingControl {
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
-	if _, ok := a.controls[id]; !ok {
-		return false
+	control := a.controls[id]
+	if control == nil {
+		return nil
 	}
 	delete(a.controls, id)
-	return true
+	control.publicationOnce.Do(func() { close(control.publicationDone) })
+	if control.published && (!control.answering || control.automatic) {
+		return control
+	}
+	return nil
 }
 
 // withdrawAllControls withdraws every pending request. Their answers can no
 // longer reach a run: the turn ended, the session changed, or the agent stops.
 func (a *Agent) withdrawAllControls() {
 	a.Mu.Lock()
-	ids := make([]string, 0, len(a.controls))
-	for id := range a.controls {
-		ids = append(ids, id)
+	ids := make(map[string]string)
+	for id, control := range a.controls {
+		if control.published {
+			ids[id] = control.instanceID
+		}
+		control.publicationOnce.Do(func() { close(control.publicationDone) })
 	}
 	a.controls = nil
 	a.Mu.Unlock()
-	for _, id := range ids {
-		a.sink.CancelControlRequest(id)
+	for id, instance := range ids {
+		a.sink.CancelControlRequestInstance(id, instance)
 	}
 }
 
@@ -340,45 +318,31 @@ func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) error {
 // plan tool that states a mode sets the mode the session rebuilds in when the
 // turn ends.
 func (a *Agent) answerApproval(reply contracts.ClineApprovalReply) error {
-	a.Mu.Lock()
-	control, ok := a.controls[reply.ApprovalId]
-	if ok && control.kind == controlApproval {
-		delete(a.controls, reply.ApprovalId)
-	}
-	current := ok && control.sessionID == a.sessionID
-	a.Mu.Unlock()
-	if !ok || control.kind != controlApproval {
-		return errUnknownControl
-	}
-	if !current {
-		return agent.ErrInputSessionChanged
+	control, err := a.claimPublishedControl(reply.ApprovalId, controlApproval)
+	if err != nil {
+		return err
 	}
 	if reply.Approved && control.toolName == contracts.ClineToolSwitchToActMode {
 		a.setPlanExitMode(reply.PermissionMode)
 	}
-	return a.respondApproval(contracts.ClineApprovalReply{
+	err = a.respondApproval(contracts.ClineApprovalReply{
 		ApprovalId: reply.ApprovalId,
 		Approved:   reply.Approved,
 		Reason:     reply.Reason,
 	})
+	a.finishControlAnswer(reply.ApprovalId, control, err)
+	return err
 }
 
 // answerCapability sends the user's answer to one question.
 func (a *Agent) answerCapability(reply contracts.ClineCapabilityReply) error {
-	a.Mu.Lock()
-	control, ok := a.controls[reply.RequestId]
-	if ok && control.kind == controlQuestion {
-		delete(a.controls, reply.RequestId)
+	control, err := a.claimPublishedControl(reply.RequestId, controlQuestion)
+	if err != nil {
+		return err
 	}
-	current := ok && control.sessionID == a.sessionID
-	a.Mu.Unlock()
-	if !ok || control.kind != controlQuestion {
-		return errUnknownControl
-	}
-	if !current {
-		return agent.ErrInputSessionChanged
-	}
-	return a.respondCapability(reply)
+	err = a.respondCapability(reply)
+	a.finishControlAnswer(reply.RequestId, control, err)
+	return err
 }
 
 // respondApproval sends approval.respond. The reply carries no LeapMux field.
@@ -386,7 +350,7 @@ func (a *Agent) respondApproval(reply contracts.ClineApprovalReply) error {
 	reply.PermissionMode = ""
 	ctx, cancel := a.requestContext()
 	defer cancel()
-	if _, err := a.hub.command(ctx, commandApprovalRespond, "", reply); err != nil {
+	if _, err := a.sendControlCommand(ctx, commandApprovalRespond, reply); err != nil {
 		slog.Warn("cline approval answer failed", "agent_id", a.AgentID(), "approval_id", reply.ApprovalId, "error", err)
 		return fmt.Errorf("answer the Cline approval: %w", err)
 	}
@@ -397,9 +361,16 @@ func (a *Agent) respondApproval(reply contracts.ClineApprovalReply) error {
 func (a *Agent) respondCapability(reply contracts.ClineCapabilityReply) error {
 	ctx, cancel := a.requestContext()
 	defer cancel()
-	if _, err := a.hub.command(ctx, commandCapabilityRespond, "", reply); err != nil {
+	payload, err := a.sendControlCommand(ctx, commandCapabilityRespond, reply)
+	if err != nil {
 		slog.Warn("cline capability answer failed", "agent_id", a.AgentID(), "request_id", reply.RequestId, "error", err)
 		return fmt.Errorf("answer the Cline request: %w", err)
+	}
+	var result struct {
+		Ignored bool `json:"ignored"`
+	}
+	if json.Unmarshal(payload, &result) == nil && result.Ignored {
+		return errUnknownControl
 	}
 	return nil
 }

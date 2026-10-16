@@ -52,7 +52,7 @@ func (a *Agent) SettingsSnapshot() agent.SettingsApplyResult {
 // UpdateSettings applies each included option and reads Droid's settled values.
 func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult {
 	a.settingsApplyMu.Lock()
-	defer a.settingsApplyMu.Unlock()
+	defer func() { a.settingsApplyMu.Unlock(); a.queuePermissionApprovals() }()
 
 	a.Mu.Lock()
 	sessionID := a.sessionID
@@ -296,6 +296,7 @@ func (a *Agent) onSettingsUpdated(payload []byte) {
 		}
 		a.sink.PersistSettingsRefresh(refresh)
 	}
+	a.queuePermissionApprovals()
 	target, ok := a.outputTargetFor("")
 	if ok {
 		a.persistNotification(payload, target)

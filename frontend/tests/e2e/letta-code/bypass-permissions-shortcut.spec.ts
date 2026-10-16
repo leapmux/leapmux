@@ -1,6 +1,7 @@
 import { expect } from '@playwright/test'
 import { LETTA_MODE } from '../../../src/generated/contracts/letta-protocol'
 import { exerciseBypassPermissions } from '../helpers/nativeBypassPermissions'
+import { exerciseMidTurnBypass } from '../helpers/nativeMidTurnBypass'
 import { nativeOptionValue } from '../helpers/nativeScenario'
 import { expectPermissionShortcuts, expectSettingsChip, expectSettingsOptionChosen, waitForNativeSettingsHydrated } from '../helpers/ui'
 import { lettaTest } from '../letta-fixtures'
@@ -21,4 +22,9 @@ lettaTest.describe('Letta Code bypass permissions', () => {
     // The mode group states the same value that the shortcut set.
     await expectSettingsOptionChosen(page, `permissionMode-${LETTA_MODE.Unrestricted}`)
   })
+})
+
+lettaTest('approves a pending tool and the next tool when Bypass changes during a turn', async ({ askingLettaWorkspace, page, modelScript, leapmuxServer }) => {
+  const native = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingLettaWorkspace.workspaceId })
+  await exerciseMidTurnBypass(native)
 })

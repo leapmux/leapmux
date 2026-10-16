@@ -10,7 +10,6 @@ import (
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
-	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
@@ -19,15 +18,14 @@ func TestProcessEndRetriesRetainedDroidOutput(t *testing.T) {
 	for _, stop := range []bool{false, true} {
 		t.Run(fmt.Sprintf("stop=%t", stop), func(t *testing.T) {
 			t.Parallel()
-			a, sink, _ := newSteerAgent(t)
+			done := make(chan struct{})
+			a, sink, _ := newSteerAgentWithProcessDone(t, done)
 			a.HandleOutput(droidAuditNotification(t, "main-session", []byte(`{"type":"assistant_text_delta","messageId":"partial","textDelta":"retained"}`)))
 			sink.PersistErr = errors.New("write refused")
 			a.HandleOutput(droidAuditNotification(t, "main-session", []byte(`{"type":"agent_turn_completed","reason":"cancelled"}`)))
 			attempts := len(sink.Messages())
 			sink.PersistErr = nil
-			done := make(chan struct{})
 			close(done)
-			a.Process = providerkit.NewProcessFrom(providerkit.ProcessConfig{AgentID: a.AgentID(), ProviderName: "droid", Ctx: t.Context(), ProcessDone: done})
 			if stop {
 				a.Stop()
 			} else {

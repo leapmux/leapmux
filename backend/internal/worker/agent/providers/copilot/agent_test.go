@@ -55,7 +55,7 @@ func TestCopilotOffReaderKeepsOneRunOfAKeyInFlight(t *testing.T) {
 	require.Eventually(t, func() bool { return runs.Load() == 2 }, offReaderWait, time.Millisecond)
 	// The runner deletes the entry after the work returns, so the count can reach
 	// its end a moment before the entry goes.
-	assert.Eventually(t, a.backgroundReads.idle, offReaderWait, time.Millisecond, "a finished read leaves no entry behind")
+	assert.Eventually(t, a.backgroundWork.Idle, offReaderWait, time.Millisecond, "a finished read leaves no entry behind")
 }
 
 // offReaderWait limits each wait for a background read. A wait that succeeds
@@ -68,7 +68,7 @@ func TestCopilotOffReaderRunsOnceForOneRequest(t *testing.T) {
 	var runs atomic.Int64
 	a.offReader(copilotReadGoal, func() { runs.Add(1) })
 	require.Eventually(t, func() bool { return runs.Load() == 1 }, offReaderWait, time.Millisecond)
-	assert.Eventually(t, a.backgroundReads.idle, offReaderWait, time.Millisecond, "a finished read leaves no entry behind")
+	assert.Eventually(t, a.backgroundWork.Idle, offReaderWait, time.Millisecond, "a finished read leaves no entry behind")
 }
 
 // The keys stand apart: an objective read and a settings read never wait for each other.
@@ -98,7 +98,7 @@ func TestCopilotOffReaderRefusesAStoppedProcess(t *testing.T) {
 	a.SetStoppedForTest(true)
 	var runs atomic.Int64
 	a.offReader(copilotReadGoal, func() { runs.Add(1) })
-	require.Eventually(t, a.backgroundReads.idle, offReaderWait, time.Millisecond)
+	require.Eventually(t, a.backgroundWork.Idle, offReaderWait, time.Millisecond)
 	assert.Zero(t, runs.Load())
 }
 

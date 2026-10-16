@@ -166,6 +166,7 @@ func (a *Agent) retireHost(ended agent.MessageCompletion) {
 		}
 		a.stateMu.Unlock()
 		for id, state := range states {
+			a.retireControlPublications(state)
 			a.stateMu.Lock()
 			turnID := state.turnID
 			controls := state.controls
@@ -176,7 +177,9 @@ func (a *Agent) retireHost(ended agent.MessageCompletion) {
 			}
 			a.retryFinalizations(state)
 			for _, control := range controls {
-				a.enqueueControl(&controlRecord{kind: controlCancel, state: state, key: control.key})
+				if control.published {
+					a.enqueueControl(&controlRecord{kind: controlCancel, state: state, key: control.key})
+				}
 			}
 			if state.childKey != "" {
 				if err := a.sink.CloseBackgroundTask(state.childKey, bgtask.StatusStopped); err != nil {

@@ -95,6 +95,12 @@ func (e *HubCommandError) Error() string {
 	return fmt.Sprintf("the Cline hub refused %s: %s (%s)", e.Command, e.Message, e.Code)
 }
 
+// hubWriteError identifies a frame write that can fail after the hub receives its bytes.
+type hubWriteError struct{ err error }
+
+func (e *hubWriteError) Error() string { return fmt.Sprintf("write to the Cline hub: %v", e.err) }
+func (e *hubWriteError) Unwrap() error { return e.err }
+
 // hubErrorCode returns the code of a refused command, and whether err is one.
 func hubErrorCode(err error) (string, bool) {
 	var refused *HubCommandError
@@ -455,7 +461,7 @@ func (c *hubClient) writeFrame(frame hubFrame) error {
 	writeCtx, cancel := context.WithTimeout(clientCtx, hubWriteTimeout)
 	defer cancel()
 	if err := conn.Write(writeCtx, websocket.MessageText, data); err != nil {
-		return fmt.Errorf("write to the Cline hub: %w", err)
+		return &hubWriteError{err: err}
 	}
 	return nil
 }

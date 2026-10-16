@@ -135,7 +135,7 @@ func TestRemoteStreamFailureEndsOwnedWorkAndRefusesFurtherNativeInput(t *testing
 	a.streams["child"] = childStream
 	require.NoError(t, a.handleSessionEvent(a.streams["root"], []byte(`{"type":"tool/call","seq":1,"time":1000,"data":{"turn":1,"callId":"root-call","name":"bash","arguments":"{}"}}`)))
 	require.NoError(t, a.handleSessionEvent(childStream, []byte(`{"type":"tool/call","seq":1,"time":1000,"data":{"turn":1,"callId":"child-call","name":"read","arguments":"{}"}}`)))
-	a.controls["native-control"] = nativeControl{agentID: "native-root", sink: a.sink}
+	a.controls["native-control"] = &nativeControl{agentID: "native-root", sink: a.sink, published: true}
 	cause := errors.New("the native Remote connection failed")
 	a.reportStreamFailure(cause)
 	require.Error(t, a.SendInput("This prompt must not reach the disconnected native process.", nil))

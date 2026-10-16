@@ -84,6 +84,7 @@ func (a *Agent) applyProjections(stream *sessionStream, values map[string]json.R
 	if stream.childAgentID != "" {
 		return nil
 	}
+	defer a.queuePermissionApprovals()
 	if raw, present := values["subagentCatalog"]; present {
 		var entries []struct {
 			ID        string  `json:"id"`

@@ -252,6 +252,45 @@ func TestPermissionFollowsTheCurrentMode(t *testing.T) {
 	assert.Equal(t, helperExitAllow, run.exitCode(t))
 }
 
+func TestBypassApprovesPendingAndLaterPermissions(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.startToolTurn(
+		toolUseBlock("TU-1", "shell_command", `{"command":"ls"}`),
+		toolUseBlock("TU-2", "shell_command", `{"command":"pwd"}`),
+		toolUseBlock("TU-3", "shell_command", `{"command":"whoami"}`),
+	)
+	first := h.runHelper("shell_command", `{"command":"ls"}`)
+	h.awaitPublished(1)
+	second := h.runHelper("shell_command", `{"command":"pwd"}`)
+	h.awaitPublished(2)
+	published := h.sink.PublishedControls()
+	h.agent.UpdateSettings(map[string]string{agent.OptionIDPermissionMode: contracts.AmpPermissionModeAllowAll})
+	require.Zero(t, h.agent.bridge.pendingCount(), "Bypass claims every pending permission before returning")
+	assert.Equal(t, helperExitAllow, first.exitCode(t))
+	assert.Equal(t, helperExitAllow, second.exitCode(t))
+	for _, request := range published {
+		h.awaitCanceled(request.RequestID)
+		assert.Error(t, h.agent.SendRawInput(controlAnswer(t, request.RequestID, agent.ControlBehaviorAllow, ""), agent.StopContext{}))
+	}
+	assert.Equal(t, helperExitAllow, h.runHelper("shell_command", `{"command":"whoami"}`).exitCode(t))
+	assert.Equal(t, 2, h.sink.PublishedControlCount(), "the later request needs no banner")
+}
+
+func TestBypassDuringPermissionPublicationRetiresThePublishedRequest(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.startToolTurn()
+	h.events.runBeforeNextPublish(func() {
+		h.agent.UpdateSettings(map[string]string{agent.OptionIDPermissionMode: contracts.AmpPermissionModeAllowAll})
+	})
+	run := h.runHelper("shell_command", shellInput)
+	h.awaitPublished(1)
+	require.Zero(t, h.agent.bridge.pendingCount(), "Bypass claims the request during publication")
+	assert.Equal(t, helperExitAllow, run.exitCode(t))
+	h.awaitCanceled(h.sink.LastPublishedControl().RequestID)
+}
+
 // Two identical calls in parallel: the helper states no tool-use id, so the
 // requests claim the calls first in, first out, and each banner links a row of
 // its own. Each answer reaches its own helper.

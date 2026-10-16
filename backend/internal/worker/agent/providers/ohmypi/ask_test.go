@@ -341,6 +341,23 @@ func TestAskCancellationEndsTheBridge(t *testing.T) {
 	assert.Empty(t, r.sink.CanceledControls(), "the reader closed the request already")
 }
 
+type partialDialogStdin struct{}
+
+func (partialDialogStdin) Write([]byte) (int, error) {
+	return 1, errors.New("the pipe stopped after one byte")
+}
+func (partialDialogStdin) Close() error { return nil }
+
+func TestUncertainQuestionDeliveryKeepsItsClaim(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.emit(askCallMessage("call_1", singleAskArgs), singleAskDialog)
+	r.agent.SetStdinForTest(partialDialogStdin{})
+	answer := askAnswer(t, "158b2ba4525bfb89", contracts.OhMyPiAskQuestionAnswer{ID: "db", Selected: []string{"SQLite"}})
+	require.ErrorIs(t, r.agent.SendRawInput(answer, agent.StopContext{}), agent.ErrDeliveryUncertain)
+	require.ErrorContains(t, r.agent.SendRawInput(answer, agent.StopContext{}), "already answered")
+}
+
 func TestAskWithdrawsAnUnansweredRequestWhenTheCallEnds(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)

@@ -8,6 +8,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 var _ agent.StartFunc = Start
@@ -69,8 +70,17 @@ func (a *Agent) configure(opts agent.Options) acp.Hooks {
 	a.policy.current = initialPolicyPreset(opts.Get(contracts.KiroOptionPolicyPreset))
 	a.stateMu.Unlock()
 	return acp.Hooks{
-		ModeChannel:    acp.ModeChannelPermissionMode,
-		EffortConfigID: contracts.KiroConfigEffortLevel,
+		WithBypassPermission: func(claim func()) {
+			a.stateMu.Lock()
+			defer a.stateMu.Unlock()
+			if a.policy.current == contracts.KiroPolicyPresetAllowAll {
+				claim()
+			}
+		},
+		// Kiro sends questions and elicitation through separate extension methods.
+		PermissionAllowsBypass: func(*providerkit.ParsedLine) bool { return true },
+		ModeChannel:            acp.ModeChannelPermissionMode,
+		EffortConfigID:         contracts.KiroConfigEffortLevel,
 		// Kiro reports the effort axis of the session's model only after a
 		// model write, so the start writes the model that the session runs.
 		ModelWriteRevealsOptions: true,

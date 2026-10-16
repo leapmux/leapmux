@@ -115,7 +115,7 @@ func newZCodeTestAgentWithStdin(t *testing.T, sink agent.ProviderServices, stdin
 		sessionID:       "sess-1",
 		mode:            contracts.ZCodeDefaultMode,
 		toolCalls:       map[string]*zcodeToolCall{},
-		pendingControls: map[string]json.RawMessage{},
+		pendingControls: map[string]*pendingControl{},
 	}
 	a.sink = agent.NewModelProgressResetSink(a.sink)
 	return a

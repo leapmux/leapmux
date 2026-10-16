@@ -269,6 +269,9 @@ func (a *Agent) UpdateSettings(requested optionmap.Map) agent.SettingsApplyResul
 		a.applyLive(have, want)
 	}
 
+	if err := a.approvePendingPermissions(); err != nil {
+		slog.Warn("cline could not approve pending tools", "agent_id", a.AgentID(), "error", err)
+	}
 	result := a.SettingsSnapshot()
 	// The refresh is a delta, and an axis it leaves out keeps its stored value.
 	// It leaves out each axis that a change waiting for the turn's end sets, so

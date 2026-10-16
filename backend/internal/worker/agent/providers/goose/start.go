@@ -6,6 +6,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 var _ agent.StartFunc = Start
@@ -20,7 +21,9 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		Base:         func(a *Agent) *acp.Base { return &a.Base },
 		Configure: func(a *Agent, _ agent.ProviderServices) acp.Hooks {
 			return acp.Hooks{
-				ModeChannel: acp.ModeChannelPermissionMode,
+				WithBypassPermission:   func(claim func()) { a.WithOptionValue(agent.OptionIDPermissionMode, contracts.GooseModeAuto, claim) },
+				PermissionAllowsBypass: func(*providerkit.ParsedLine) bool { return true },
+				ModeChannel:            acp.ModeChannelPermissionMode,
 				// Smart Approve is Goose's safe new-session mode, so it leads every rebuilt
 				// list and is the mode the group badges as its default.
 				PreferredFirstMode: contracts.GooseModeSmartApprove,

@@ -107,16 +107,6 @@ func (a *Agent) onRequestPermission(env *droidEnvelope) {
 	}
 	toolUse := params.ToolUses[0]
 	requestID := "droid-perm-" + toolUse.ToolUse.ID
-	a.Mu.Lock()
-	if a.controls == nil {
-		a.controls = make(map[string]*droidPendingControl)
-	}
-	a.controls[requestID] = &droidPendingControl{
-		requestID: requestID,
-		kind:      droidControlPermission,
-		toolUseID: toolUse.ToolUse.ID,
-	}
-	a.Mu.Unlock()
 
 	payload, err := json.Marshal(map[string]any{
 		"type":             contracts.DroidRequestTypePermission,
@@ -131,14 +121,28 @@ func (a *Agent) onRequestPermission(env *droidEnvelope) {
 		a.respond(env.ID, cancel)
 		return
 	}
-	if err := a.sink.PublishControlRequest(agent.ControlRequest{
-		AgentSessionID: a.droidSession(),
-		RequestID:      requestID,
-		Payload:        payload,
-	}); err != nil {
-		slog.Debug("droid: publish permission failed", "agent_id", a.AgentID(), "error", err)
-		a.respond(env.ID, cancel)
+	record := &droidPendingControl{requestID: requestID, rpcID: env.ID, payload: payload, cancelAnswer: cancel}
+	a.Mu.Lock()
+	record.sessionID = a.sessionID
+	a.Mu.Unlock()
+	record.root = true
+	for _, id := range params.AssociatedSessionIDs {
+		if id != record.sessionID {
+			record.root = false
+		}
 	}
+	ordinary := true
+	for _, use := range params.ToolUses {
+		if use.ToolUse.Name == "" || (droidProvider{}).PlanModeControl(use.ToolUse.Name) != agent.PlanModeControlNone || use.ToolUse.Name == contracts.DroidToolAskUser {
+			ordinary = false
+		}
+	}
+	if ordinary && record.root {
+		if result, err := droidPermissionReply(droidOptionValues(params.Options), true, json.RawMessage(`{}`)); err == nil {
+			record.automaticReply, _ = json.Marshal(droidResponseEnvelope(env.ID, result))
+		}
+	}
+	a.registerControl(record)
 }
 
 // onAskUser publishes a question control request.
@@ -161,16 +165,6 @@ func (a *Agent) onAskUser(env *droidEnvelope) {
 			contracts.DroidAskUserFieldMultiSelect: q.MultiSelect,
 		})
 	}
-	a.Mu.Lock()
-	if a.controls == nil {
-		a.controls = make(map[string]*droidPendingControl)
-	}
-	a.controls[requestID] = &droidPendingControl{
-		requestID: requestID,
-		kind:      droidControlAskUser,
-		toolUseID: params.ToolCallID,
-	}
-	a.Mu.Unlock()
 
 	payload, err := json.Marshal(map[string]any{
 		"type":                                contracts.DroidRequestTypeAskUser,
@@ -183,13 +177,7 @@ func (a *Agent) onAskUser(env *droidEnvelope) {
 		a.respond(env.ID, droidCancelledAskUser())
 		return
 	}
-	if err := a.sink.PublishControlRequest(agent.ControlRequest{
-		RequestID: requestID,
-		Payload:   payload,
-	}); err != nil {
-		slog.Debug("droid: publish question failed", "agent_id", a.AgentID(), "error", err)
-		a.respond(env.ID, droidCancelledAskUser())
-	}
+	a.registerControl(&droidPendingControl{requestID: requestID, rpcID: env.ID, payload: payload, root: true, cancelAnswer: droidCancelledAskUser()})
 }
 
 // respond sends a JSON-RPC response for a server->client request.
@@ -458,12 +446,4 @@ func droidOptionValues(options []struct {
 		}
 	}
 	return values
-}
-
-// droidSession reads the provider session id, which the control request must
-// stamp so the service's delivery check matches it.
-func (a *Agent) droidSession() string {
-	a.Mu.Lock()
-	defer a.Mu.Unlock()
-	return a.sessionID
 }

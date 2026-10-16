@@ -22,6 +22,12 @@ import (
 //
 // A zero hook keeps the base behavior that the hook controls.
 type Hooks struct {
+	// WithBypassPermission invokes the claim while the provider's settings lock
+	// confirms Bypass. The claim never waits for delivery or calls the sink.
+	WithBypassPermission func(claim func())
+	// PermissionAllowsBypass distinguishes tool permissions from provider dialogs.
+	// A nil hook leaves every request under manual control.
+	PermissionAllowsBypass func(line *providerkit.ParsedLine) bool
 	// Sink replaces the provider services that the start received. Cursor and
 	// Reasonix wrap them in a tool transcript. Nil keeps them.
 	Sink agent.ProviderServices

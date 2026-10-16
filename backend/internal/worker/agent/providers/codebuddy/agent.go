@@ -33,9 +33,9 @@ type Agent struct {
 	turnToolCalls             map[string]struct{}
 	interruptRequests         map[uint64]struct{}
 	interruptAttempt          uint64
-	// openPermissions is the can_use_tool requests that CodeBuddy still waits on, so
-	// an interrupt can refuse each one (see refuseOpenPermissions).
-	openPermissions map[string]struct{}
+	// controls holds each native request until its answer or withdrawal.
+	controls     map[string]*nativeControl
+	approvalWork providerkit.CoalescingWork
 	// permissionInterruptPending holds the global stop until the main run ends.
 	permissionInterruptPending bool
 	permissionWriteMu          sync.Mutex
@@ -111,18 +111,30 @@ func (a *Agent) PublishTurnActive() agent.TurnState {
 
 func (a *Agent) setTurnActive(active bool) {
 	a.mu.Lock()
+	var retired []string
 	if active && !a.active {
 		a.turnToolCalls = nil
 		a.interruptRequests = nil
 	}
 	a.active = active
 	if !active {
-		clear(a.openPermissions)
+		for id, record := range a.controls {
+			if record.rootPermission {
+				delete(a.controls, id)
+				if record.published {
+					retired = append(retired, id)
+				}
+				record.publicationOnce.Do(func() { close(record.publicationDone) })
+			}
+		}
 		a.permissionInterruptPending = false
 	}
 	a.activityRev++
 	seq := a.turnOrder.NextTurnSeq()
 	a.mu.Unlock()
+	for _, id := range retired {
+		a.sink.CancelControlRequest(id)
+	}
 	providerkit.PublishTurnStateTo(a.sink, agent.TurnState{Active: active, Steerable: active}, seq)
 }
 
@@ -273,7 +285,7 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 	sessionID := a.sessionID
 	revision := a.activityRev
 	requested := a.active
-	permissionStop := requested && len(a.openPermissions) > 0
+	permissionStop := requested && a.hasOpenRootPermissionLocked()
 	a.permissionInterruptPending = permissionStop
 	a.interruptAttempt++
 	attempt := a.interruptAttempt
@@ -316,6 +328,7 @@ func (a *Agent) Stop() {
 	a.NoteIntentionalStop()
 	a.Process.Stop()
 	a.stopWorkflowArchiveRetries()
+	a.withdrawControls()
 	a.setTurnActive(false)
 }
 
@@ -323,6 +336,7 @@ func (a *Agent) Stop() {
 func (a *Agent) Wait() error {
 	err := a.Process.Wait()
 	a.stopWorkflowArchiveRetries()
+	a.withdrawControls()
 	a.setTurnActive(false)
 	return err
 }

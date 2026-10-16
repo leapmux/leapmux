@@ -1,8 +1,9 @@
 import type { PermissionOption } from '../../model/controlPrompt'
 import type { ControlExtractionInput, ExtractedControlRequest } from '../registry'
+import { ACP_PERMISSION_KIND } from '~/generated/contracts/acp-protocol'
 import { pickString } from '~/lib/jsonPick'
 import { getToolInput, getToolName } from '~/utils/controlResponse'
-import { KIND_ALLOW_ALWAYS, KIND_ALLOW_ONCE, KIND_REJECT_ONCE } from '../../model/controlPrompt'
+import { KIND_ALLOW_ALWAYS, KIND_REJECT_ONCE } from '../../model/controlPrompt'
 
 /** The Qoder tool names this extractor draws with a shell command. */
 const QODER_SHELL_TOOLS = new Set(['Bash'])
@@ -15,7 +16,7 @@ const QODER_SHELL_TOOLS = new Set(['Bash'])
  * outlives the private session that granted it.
  */
 const QODER_PERMISSION_OPTIONS: PermissionOption[] = [
-  { optionId: 'once', kind: KIND_ALLOW_ONCE, name: 'Allow once' },
+  { optionId: 'once', kind: ACP_PERMISSION_KIND.AllowOnce, name: 'Allow once' },
   { optionId: 'session', kind: KIND_ALLOW_ALWAYS, name: 'Allow for this session' },
   { optionId: 'deny', kind: KIND_REJECT_ONCE, name: 'Deny' },
 ]

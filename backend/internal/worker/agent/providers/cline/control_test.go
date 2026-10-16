@@ -115,6 +115,45 @@ func TestAutoApproveRunsEveryTool(t *testing.T) {
 	waitFor(t, func() bool { return len(approvalReplies(t, r.hub)) == 2 }, "both calls are approved")
 }
 
+func TestBypassApprovesPendingAndLaterToolsButKeepsQuestionsAndPlans(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{contracts.ClinePermissionModeAct, contracts.ClinePermissionModePlan} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			r := newRig(t, func(c *rigConfig) { c.opts.Options = options(agent.OptionIDPermissionMode, mode) })
+			r.startTurn(t, "Run the tools.")
+			r.feed(t, contracts.ClineEventApprovalRequested, approval("first", "editor"))
+			r.feed(t, contracts.ClineEventApprovalRequested, approval("second", contracts.ClineToolRunCommands))
+			r.feed(t, contracts.ClineEventApprovalRequested, approval("plan", contracts.ClineToolSwitchToActMode))
+			r.feed(t, contracts.ClineEventCapabilityRequested, question(r, "question"))
+			r.agent.UpdateSettings(options(agent.OptionIDPermissionMode, contracts.ClinePermissionModeAutoApprove))
+			replies := approvalReplies(t, r.hub)
+			require.Len(t, replies, 2, "Bypass resolves every pending tool before settings return")
+			for _, reply := range replies {
+				assert.True(t, reply.Approved)
+				assert.Contains(t, []string{"first", "second"}, reply.ApprovalId)
+			}
+			assert.ElementsMatch(t, []string{"first", "second"}, r.sink.CanceledControls())
+			assert.Empty(t, capabilityReplies(t, r.hub))
+			r.feed(t, contracts.ClineEventApprovalRequested, approval("later", "editor"))
+			waitFor(t, func() bool { return len(approvalReplies(t, r.hub)) == 3 }, "the later tool is approved")
+			assert.Equal(t, 4, r.sink.PublishedControlCount())
+			require.ErrorIs(t, r.agent.answerApproval(contracts.ClineApprovalReply{ApprovalId: "first", Approved: false}), errUnknownControl)
+			require.NoError(t, r.agent.answerApproval(contracts.ClineApprovalReply{ApprovalId: "plan", Approved: false}))
+			require.NoError(t, r.agent.answerCapability(contracts.ClineCapabilityReply{RequestId: "question", Ok: true}))
+		})
+	}
+}
+
+func TestBypassStillAsksBeforeAPlanApproval(t *testing.T) {
+	t.Parallel()
+	r := newRig(t, func(c *rigConfig) {
+		c.opts.Options = options(agent.OptionIDPermissionMode, contracts.ClinePermissionModeAutoApprove)
+	})
+	r.feed(t, contracts.ClineEventApprovalRequested, approval("plan", contracts.ClineToolSwitchToActMode))
+	assert.Equal(t, 1, r.sink.PublishedControlCount())
+}
+
 func TestPlanAsksBeforeACommand(t *testing.T) {
 	t.Parallel()
 	r := newRig(t, func(c *rigConfig) {

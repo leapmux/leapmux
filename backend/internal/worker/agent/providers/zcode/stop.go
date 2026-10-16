@@ -243,7 +243,7 @@ func (a *Agent) SendRawInput(data []byte, stop agent.StopContext) error {
 		Method string `json:"method"`
 	}
 	if json.Unmarshal(data, &method) != nil || method.Method != MethodSessionStop {
-		return a.Process.SendRawInput(data, stop)
+		return a.sendControlOrRaw(data, stop)
 	}
 	var frame struct {
 		ID     *int64 `json:"id"`
@@ -441,6 +441,7 @@ func (a *Agent) Stop() {
 		_, _ = a.sendZCodeRequest(MethodSessionStop, map[string]any{"sessionId": sessionID}, zcodeStopTimeout)
 	}
 	a.Process.Stop()
+	a.withdrawPendingControls()
 	a.Mu.Lock()
 	a.compactionSessionID = ""
 	a.Mu.Unlock()
@@ -455,6 +456,7 @@ func (a *Agent) Stop() {
 // Wait retains unfinished model output after an unexpected process exit.
 func (a *Agent) Wait() error {
 	err := a.Process.Wait()
+	a.withdrawPendingControls()
 	a.cancelStoppedZCodeTurn()
 	a.Mu.Lock()
 	a.compactionSessionID = ""

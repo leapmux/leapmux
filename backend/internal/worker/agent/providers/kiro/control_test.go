@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -12,6 +13,37 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 )
+
+func TestBypassApprovesPendingAndLaterToolsWithoutRestartOrQuestionAnswers(t *testing.T) {
+	t.Parallel()
+	a, sink, requests := newKiroAgent(t, agent.Options{}, nil)
+	a.SetPromptActiveForTest(true)
+	tool := func(id int) []byte {
+		return frame(t, map[string]any{"id": id, "method": "session/request_permission", "params": map[string]any{
+			"sessionId": kiroTestSession,
+			"toolCall":  map[string]any{"toolCallId": "shell", "kind": "execute"},
+			"options":   []any{map[string]any{"optionId": "accept", "kind": "allow_once"}},
+		}})
+	}
+	a.HandleOutput(tool(10))
+	a.HandleOutput(userInputRequest(t, 11, "question"))
+	result := a.UpdateSettings(map[string]string{contracts.KiroOptionPolicyPreset: contracts.KiroPolicyPresetAllowAll})
+	require.True(t, result.AppliedLive, "Bypass must release the active turn without a restart")
+	syncPeer(t, a)
+	answers := agenttest.JSONRPCResultsByID(t, rawLines(requests()))
+	require.Contains(t, answers, "10")
+	assert.JSONEq(t, `{"outcome":{"outcome":"selected","optionId":"accept"}}`, answers["10"])
+	assert.NotContains(t, answers, "11")
+	require.Eventually(t, func() bool { return len(sink.CanceledControls()) == 1 }, 30*time.Second, time.Millisecond)
+	a.HandleOutput(tool(12))
+	syncPeer(t, a)
+	answers = agenttest.JSONRPCResultsByID(t, rawLines(requests()))
+	require.Contains(t, answers, "12")
+	assert.Equal(t, 2, sink.PublishedControlCount())
+	assert.Equal(t, contracts.KiroPolicyPresetAllowAll, result.SurfacedOptions[contracts.KiroOptionPolicyPreset])
+	assert.False(t, a.UpdateSettings(map[string]string{contracts.KiroOptionPolicyPreset: kiroPolicyAsk}).AppliedLive,
+		"a narrower native policy still requires a session restart")
+}
 
 func TestKiroControlRequestsKeepNumericAndStringIdentitiesSeparate(t *testing.T) {
 	t.Parallel()

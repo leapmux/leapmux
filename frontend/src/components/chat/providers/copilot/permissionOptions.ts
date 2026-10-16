@@ -2,9 +2,9 @@ import type { ControlResponseSender } from '~/components/chat/controls/types'
 import type { PermissionOption } from '~/components/chat/model/controlPrompt'
 import {
   KIND_ALLOW_ALWAYS,
-  KIND_ALLOW_ONCE,
   KIND_REJECT_ONCE,
 } from '~/components/chat/model/controlPrompt'
+import { ACP_PERMISSION_KIND } from '~/generated/contracts/acp-protocol'
 import { COPILOT_APPROVAL_SCOPE, COPILOT_DECISION, COPILOT_EVENT } from '~/generated/contracts/copilot-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { buildControlResponseEnvelope, CONTROL_REJECTED_BY_USER_MESSAGE } from '~/utils/controlResponse'
@@ -42,7 +42,7 @@ const DECISION_OPTION_IDS: Record<string, string> = {
 
 /** The permission-option kind one native decision word belongs to, for a request that never offered it. */
 const DECISION_KINDS: Record<string, string> = {
-  [COPILOT_DECISION.ApproveOnce]: KIND_ALLOW_ONCE,
+  [COPILOT_DECISION.ApproveOnce]: ACP_PERMISSION_KIND.AllowOnce,
   [COPILOT_DECISION.ApproveForSession]: KIND_ALLOW_ALWAYS,
   [COPILOT_DECISION.ApproveForLocation]: KIND_ALLOW_ALWAYS,
   [COPILOT_DECISION.Reject]: KIND_REJECT_ONCE,
@@ -122,7 +122,7 @@ function copilotOffersSessionApproval(request: Record<string, unknown> | undefin
 export function copilotPermissionOptions(payload: Record<string, unknown>): PermissionOption[] {
   const request = copilotPermission(payload)
   const options: PermissionOption[] = [
-    { optionId: COPILOT_ALLOW_ONCE, kind: KIND_ALLOW_ONCE, name: 'Allow once' },
+    { optionId: COPILOT_ALLOW_ONCE, kind: ACP_PERMISSION_KIND.AllowOnce, name: 'Allow once' },
   ]
   // The two wider scopes need the same approval rule, so a request that can express
   // one can express the other. The project scope outlives the session: the runtime

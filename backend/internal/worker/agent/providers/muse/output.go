@@ -28,6 +28,9 @@ func (a *Agent) handleOutput(line *providerkit.ParsedLine) {
 		apply()
 	}
 	a.drainControls()
+	if line.Method == methodSessionApprovalChanged {
+		a.queuePermissionApprovals()
+	}
 }
 
 func (a *Agent) dispatchOutput(line *providerkit.ParsedLine) {

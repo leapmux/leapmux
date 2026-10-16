@@ -1,6 +1,7 @@
 import type { ControlExtractionInput, ExtractedControlRequest } from '../registry'
 import type { PermissionOption } from '~/components/chat/model/controlPrompt'
-import { KIND_ALLOW_ALWAYS, KIND_ALLOW_ONCE, KIND_REJECT_ONCE } from '~/components/chat/model/controlPrompt'
+import { KIND_ALLOW_ALWAYS, KIND_REJECT_ONCE } from '~/components/chat/model/controlPrompt'
+import { ACP_PERMISSION_KIND } from '~/generated/contracts/acp-protocol'
 import { MIMO_CONTROL_FIELD, MIMO_EVENT, MIMO_PERMISSION_REPLY, MIMO_TOOL } from '~/generated/contracts/mimo-protocol'
 import { OPENCODE_EVENT } from '~/generated/contracts/opencode-protocol'
 import { isObject, pickObject, pickString, stringArray } from '~/lib/jsonPick'
@@ -15,7 +16,7 @@ import { MIMO_FORCED_ASK_PERMISSIONS } from './protocol'
  * {@link mimoPermissionOptions} decides which of them one request offers.
  */
 export const MIMO_PERMISSION_OPTIONS: readonly PermissionOption[] = [
-  { optionId: MIMO_PERMISSION_REPLY.Once, kind: KIND_ALLOW_ONCE, name: 'Allow once' },
+  { optionId: MIMO_PERMISSION_REPLY.Once, kind: ACP_PERMISSION_KIND.AllowOnce, name: 'Allow once' },
   { optionId: MIMO_PERMISSION_REPLY.Always, kind: KIND_ALLOW_ALWAYS, name: 'Always allow' },
   { optionId: MIMO_PERMISSION_REPLY.Reject, kind: KIND_REJECT_ONCE, name: 'Reject' },
 ]

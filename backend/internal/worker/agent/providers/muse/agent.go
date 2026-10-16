@@ -27,6 +27,7 @@ type Agent struct {
 	controlMu           sync.Mutex
 	controlQueue        []*controlRecord
 	controlDraining     bool
+	approvalWork        providerkit.CoalescingWork
 	sessionID           string
 	settings            optionmap.Map
 	models              []*agent.ModelInfo

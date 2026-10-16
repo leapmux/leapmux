@@ -104,7 +104,7 @@ func TestKiroPolicyGroupCarriesTheLiveValue(t *testing.T) {
 func TestKiroUpdateSettingsRestartsForANewPolicy(t *testing.T) {
 	t.Parallel()
 	a, _, requests := newKiroAgent(t, agent.Options{}, nil)
-	options := map[string]string{contracts.KiroOptionPolicyPreset: contracts.KiroPolicyPresetAllowAll}
+	options := map[string]string{contracts.KiroOptionPolicyPreset: "dev-shell"}
 
 	result := a.UpdateSettings(options)
 

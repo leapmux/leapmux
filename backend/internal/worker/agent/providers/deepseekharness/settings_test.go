@@ -72,6 +72,8 @@ func serveNativeSettings(t *testing.T, a *Agent) *nativeCalls {
 		case "session/selectModel":
 			selected, _ := request.Payload.Args["request"].(map[string]any)
 			value = map[string]any{"selected": map[string]any{"provider": selected["provider"], "model": selected["model"], "reasoningEffort": selected["reasoningEffort"]}}
+		case "$events/result":
+			value = nil
 		case "commands/execute":
 			value = map[string]any{"commandId": "cmd-1", "result": map[string]any{"kind": "success", "text": "done"}}
 		default:

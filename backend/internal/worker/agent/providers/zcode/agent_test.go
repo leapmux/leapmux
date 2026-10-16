@@ -544,7 +544,7 @@ func TestZCodeClearContext_OpensAFreshSessionAndDropsPerSessionState(t *testing.
 	a.backgroundTurn = true
 	a.lastSeq = 99
 	a.toolCalls["call-1"] = &zcodeToolCall{name: "Bash", input: json.RawMessage(`{"command":"ls"}`), final: true}
-	a.pendingControls["req-1"] = json.RawMessage(`{"type":"control_request"}`)
+	a.pendingControls["req-1"] = newPendingControl(json.RawMessage(`{"type":"control_request"}`))
 	a.latestContextUsage = map[string]any{"context_tokens": int64(12)}
 	a.Mu.Unlock()
 	a.children.rememberChild("spawn-1", "sub-1", "child-1")

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -27,8 +28,13 @@ type controlParams struct {
 }
 
 type controlState struct {
-	key         string
-	fingerprint [32]byte
+	key             string
+	fingerprint     [32]byte
+	published       bool
+	responding      bool
+	automaticFailed bool
+	automaticReply  map[string]any
+	raw             []byte
 }
 
 type controlRecordKind uint8
@@ -41,17 +47,21 @@ const (
 )
 
 type controlRecord struct {
-	kind        controlRecordKind
-	state       *sessionState
-	sessionID   string
-	nativeID    string
-	key         string
-	fingerprint [32]byte
-	raw         []byte
-	publishDone bool
-	cancelKey   string
-	cancelDone  bool
-	err         error
+	kind             controlRecordKind
+	state            *sessionState
+	sessionID        string
+	nativeID         string
+	key              string
+	fingerprint      [32]byte
+	raw              []byte
+	publishDone      bool
+	cancelKey        string
+	cancelDone       bool
+	err              error
+	automaticReply   map[string]any
+	forceManual      bool
+	publicationReady chan struct{}
+	publicationOnce  sync.Once
 }
 
 func approvalControlID(params controlParams) (string, error) {
@@ -124,7 +134,12 @@ func (a *Agent) publishControl(line *providerkit.ParsedLine) {
 		return
 	}
 	a.stateMu.Unlock()
-	a.enqueueControl(&controlRecord{kind: controlPublish, state: state, sessionID: params.SessionID, nativeID: nativeID, key: key, fingerprint: fingerprint, raw: slices.Clone(line.Raw)})
+	var automaticReply map[string]any
+	if validControlRequestMethod(line.Method, params) {
+		automaticReply = onceApprovalReply(params)
+	}
+	a.enqueueControl(&controlRecord{kind: controlPublish, state: state, sessionID: params.SessionID, nativeID: nativeID, key: key,
+		fingerprint: fingerprint, raw: slices.Clone(line.Raw), automaticReply: automaticReply, publicationReady: make(chan struct{})})
 }
 
 func (a *Agent) settleControl(line *providerkit.ParsedLine, state *sessionState) {
@@ -159,7 +174,7 @@ func (a *Agent) enqueueControl(record *controlRecord) {
 	a.controlMu.Lock()
 	if record.kind == controlPublish {
 		for _, queued := range a.controlQueue {
-			if queued.kind == controlPublish && queued.state == record.state && queued.key == record.key && queued.fingerprint == record.fingerprint {
+			if queued.kind == controlPublish && queued.state == record.state && queued.key == record.key && queued.fingerprint == record.fingerprint && queued.forceManual == record.forceManual {
 				a.controlMu.Unlock()
 				return
 			}
@@ -225,7 +240,8 @@ func (a *Agent) applyControlRecord(record *controlRecord) bool {
 	case controlSettlement:
 		if !record.cancelDone {
 			a.stateMu.Lock()
-			current := a.currentSessionState(record.sessionID, record.state) && record.state.controls[record.nativeID].key == record.key
+			control := record.state.controls[record.nativeID]
+			current := a.currentSessionState(record.sessionID, record.state) && control.key == record.key
 			if current {
 				delete(record.state.controls, record.nativeID)
 			}
@@ -233,7 +249,11 @@ func (a *Agent) applyControlRecord(record *controlRecord) bool {
 			if !current {
 				return true
 			}
-			record.cancel(record.key)
+			if control.published {
+				record.cancel(record.key)
+			} else {
+				record.cancelDone = true
+			}
 		}
 		if _, err := record.state.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: record.raw}); err != nil {
 			slog.Warn("persist a Muse control settlement", "error", err)
@@ -245,38 +265,70 @@ func (a *Agent) applyControlRecord(record *controlRecord) bool {
 			record.cancel(record.cancelKey)
 			return true
 		}
-		a.stateMu.Lock()
-		current := a.currentSessionState(record.sessionID, record.state)
-		a.stateMu.Unlock()
-		if !current {
+		if a.installControlPublication(record, false) {
 			return true
 		}
 		request := agent.ControlRequest{AgentSessionID: record.sessionID, RequestID: record.key, Payload: slices.Clone(record.raw)}
 		if err := record.state.sink.PublishControlRequest(request); err != nil {
+			if a.installControlPublication(record, false) {
+				return true
+			}
 			slog.Warn("publish a Muse control request", "error", err)
 			return false
 		}
-		record.publishDone = true
-		a.stateMu.Lock()
-		if !a.currentSessionState(record.sessionID, record.state) {
-			a.stateMu.Unlock()
-			record.cancelKey = record.key
-			record.cancel(record.cancelKey)
-			return true
-		}
-		previous := record.state.controls[record.nativeID]
-		if record.state.controls == nil {
-			record.state.controls = make(map[string]controlState)
-		}
-		record.state.controls[record.nativeID] = controlState{key: record.key, fingerprint: record.fingerprint}
-		a.stateMu.Unlock()
-		if previous.key != "" && previous.key != record.key {
-			record.cancelKey = previous.key
-			record.cancel(record.cancelKey)
-		}
+		a.installControlPublication(record, true)
 		return true
 	default:
 		return true
+	}
+}
+
+func (a *Agent) installControlPublication(record *controlRecord, published bool) bool {
+	a.stateMu.Lock()
+	if !a.currentSessionState(record.sessionID, record.state) {
+		a.stateMu.Unlock()
+		record.publishDone = true
+		record.completePublication()
+		if published {
+			record.cancelKey = record.key
+			record.cancel(record.key)
+		}
+		return true
+	}
+	bypass := a.canBypassSessionLocked(record.sessionID, record.state)
+	if !published && (record.forceManual || record.automaticReply == nil || !bypass) {
+		a.stateMu.Unlock()
+		return false
+	}
+	previous := record.state.controls[record.nativeID]
+	if record.state.controls == nil {
+		record.state.controls = make(map[string]controlState)
+	}
+	next := controlState{key: record.key, fingerprint: record.fingerprint, published: published, automaticReply: record.automaticReply}
+	if !published {
+		next.raw = slices.Clone(record.raw)
+	}
+	if previous.key == record.key && previous.fingerprint == record.fingerprint {
+		next.responding, next.automaticFailed = previous.responding, previous.automaticFailed
+	}
+	record.state.controls[record.nativeID] = next
+	approve := bypass && next.automaticReply != nil && !next.responding && !next.automaticFailed
+	a.stateMu.Unlock()
+	record.publishDone = true
+	record.completePublication()
+	if approve {
+		a.queuePermissionApprovals()
+	}
+	if previous.published && (previous.key != record.key || !published) {
+		record.cancelKey = previous.key
+		record.cancel(previous.key)
+	}
+	return true
+}
+
+func (record *controlRecord) completePublication() {
+	if record.publicationReady != nil {
+		record.publicationOnce.Do(func() { close(record.publicationReady) })
 	}
 }
 

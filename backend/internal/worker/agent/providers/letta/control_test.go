@@ -2,16 +2,162 @@ package letta
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 )
+
+func permissionFrame(requestID, tool, callID string) []byte {
+	return []byte(fmt.Sprintf(`{"type":"control_request","request_id":%q,"request":{"subtype":"can_use_tool","tool_name":%q,"tool_call_id":%q,"input":{}},"runtime":{"agent_id":"agent-local-1","conversation_id":"local-conv-1"}}`, requestID, tool, callID))
+}
+
+func TestBypassApprovesPendingAndLaterToolsButKeepsPostedQuestions(t *testing.T) {
+	t.Parallel()
+	fake, a := openedAgent(t)
+	sink := &agenttest.ControlSink{}
+	a.sink = agent.NewProviderServices(sink)
+	a.settings.permissionMode = contracts.LettaModeStandard
+	a.armTurn()
+	a.HandleOutput(permissionFrame("first", contracts.LettaToolBash, "shell-1"))
+	a.HandleOutput(permissionFrame("second", contracts.LettaToolAskUserQuestion, "ask-1"))
+	for _, frame := range receiptFrames() {
+		a.HandleOutput([]byte(frame))
+	}
+	result := applyNativeMode(t, fake, a, contracts.LettaModeUnrestricted)
+	require.True(t, result.AppliedLive, "Bypass releases the active turn without restarting the runtime")
+	var answered []string
+	for range 2 {
+		payload := inputPayload(t, fake)
+		assert.Equal(t, contracts.LettaReplyKindApprovalResponse, payload["kind"])
+		answered = append(answered, payload["request_id"].(string))
+		assert.Equal(t, "allow", payload["decision"].(map[string]any)["behavior"])
+	}
+	assert.ElementsMatch(t, []string{"first", "second"}, answered)
+	require.Eventually(t, func() bool { return len(sink.CanceledControls()) == 2 }, 30*time.Second, time.Millisecond)
+	assert.ElementsMatch(t, []string{"first", "second"}, sink.CanceledControls())
+	a.HandleOutput(permissionFrame("later", contracts.LettaToolBash, "shell-2"))
+	assert.Equal(t, "later", inputPayload(t, fake)["request_id"])
+	assert.Equal(t, 3, sink.PublishedControlCount(), "only the first permissions and the posted question have cards")
+	assert.Equal(t, contracts.LettaModeUnrestricted, result.ConfirmedOptions()[agent.OptionIDPermissionMode])
+	assert.True(t, applyNativeMode(t, fake, a, contracts.LettaModeStandard).AppliedLive)
+}
+
+func TestPermissionAnswerKeepsUnknownNumbersAndEmptyValues(t *testing.T) {
+	t.Parallel()
+	fake, a := openedAgent(t)
+	a.HandleOutput(permissionFrame("permission", contracts.LettaToolBash, "shell"))
+	answer := []byte(`{"kind":"approval_response","request_id":"permission","decision":{"behavior":"allow","counter":9007199254740993,"zero":0,"enabled":false,"text":""}}`)
+	require.NoError(t, a.SendRawInput(answer, agent.StopContext{}))
+	decision := inputPayload(t, fake)["decision"].(map[string]any)
+	assert.Equal(t, json.Number("9007199254740993"), decision["counter"])
+	assert.Equal(t, json.Number("0"), decision["zero"])
+	assert.Equal(t, false, decision["enabled"])
+	assert.Equal(t, "", decision["text"])
+}
+
+func TestPermissionAnswerNeedsNativeAcceptance(t *testing.T) {
+	t.Parallel()
+	fake, a := openedAgent(t)
+	fake.holdPermissionReplies.Store(true)
+	a.HandleOutput(permissionFrame("permission", contracts.LettaToolBash, "shell"))
+	result := make(chan error, 1)
+	go func() {
+		result <- a.SendRawInput([]byte(`{"kind":"approval_response","request_id":"permission","decision":{"behavior":"allow"}}`), agent.StopContext{})
+	}()
+	command := fake.nextCommand(t)
+	ack, err := json.Marshal(map[string]any{"type": "input_accepted", "request_id": command["request_id"], "runtime": command["runtime"], "accepted": false, "error": "Approval request is no longer pending"})
+	require.NoError(t, err)
+	fake.replies <- ack
+	ctx := testutil.DeadlineContext(t)
+	select {
+	case err := <-result:
+		require.Error(t, err, "a socket write cannot prove native acceptance")
+	case <-ctx.Done():
+		t.Fatal("the native refusal did not reach the answer")
+	}
+}
+
+func TestPermissionAnswerRefusesUnknownAndRepeatedRequests(t *testing.T) {
+	t.Parallel()
+	_, a := openedAgent(t)
+	answer := []byte(`{"kind":"approval_response","request_id":"permission","decision":{"behavior":"allow"}}`)
+	require.Error(t, a.SendRawInput(answer, agent.StopContext{}))
+	a.HandleOutput(permissionFrame("permission", contracts.LettaToolBash, "shell"))
+	require.NoError(t, a.SendRawInput(answer, agent.StopContext{}))
+	require.Error(t, a.SendRawInput(answer, agent.StopContext{}))
+}
+
+func TestStoppedProcessCannotSendInputOverAnOpenSocket(t *testing.T) {
+	t.Parallel()
+	fake, a := openedAgent(t)
+	a.SetStoppedForTest(true)
+	result := make(chan error, 1)
+	go func() { result <- a.SendInput("This must not reach the stopped runtime.", nil) }()
+	ctx := testutil.DeadlineContext(t)
+	select {
+	case err := <-result:
+		require.ErrorIs(t, err, errAgentStopped)
+	case <-fake.commands:
+		t.Fatal("the stopped process sent a command over its socket")
+	case <-ctx.Done():
+		t.Fatal("the stopped process did not refuse input")
+	}
+}
+
+func TestFailedPermissionPublicationRefusesTheNativeRequest(t *testing.T) {
+	t.Parallel()
+	fake, a := openedAgent(t)
+	sink := &agenttest.ControlSink{PublicationError: errors.New("the control store is unavailable")}
+	a.sink = agent.NewProviderServices(sink)
+	a.HandleOutput(permissionFrame("permission", contracts.LettaToolBash, "shell"))
+	payload := inputPayload(t, fake)
+	assert.Equal(t, contracts.LettaReplyKindApprovalResponse, payload["kind"])
+	assert.Equal(t, "permission", payload["request_id"])
+	assert.NotEmpty(t, payload["error"], "an invisible permission must not leave the native tool waiting")
+	assert.Zero(t, sink.PublishedControlCount())
+}
+
+func TestMalformedPermissionAnswersKeepTheRequestOpen(t *testing.T) {
+	t.Parallel()
+	for _, decision := range []string{
+		`{"behavior":"allow","updated_input":true}`,
+		`{"behavior":"allow","selected_permission_suggestion_ids":null}`,
+		`{"behavior":"allow","selected_permission_suggestion_ids":[null]}`,
+		`{"behavior":"allow","message":null}`,
+		`{"behavior":"deny"}`,
+	} {
+		t.Run(decision, func(t *testing.T) {
+			t.Parallel()
+			fake, a := openedAgent(t)
+			a.HandleOutput(permissionFrame("permission", contracts.LettaToolBash, "shell"))
+			invalid := []byte(`{"kind":"approval_response","request_id":"permission","decision":` + decision + `}`)
+			require.Error(t, a.SendRawInput(invalid, agent.StopContext{}))
+			require.NoError(t, a.SendRawInput([]byte(`{"kind":"approval_response","request_id":"permission","decision":{"behavior":"allow"}}`), agent.StopContext{}))
+			assert.Equal(t, map[string]any{"behavior": "allow"}, inputPayload(t, fake)["decision"], "only the valid decision reaches the native runtime")
+		})
+	}
+}
+
+func TestMissingPermissionIDUsesTheNativeToolCallIdentity(t *testing.T) {
+	t.Parallel()
+	_, a := openedAgent(t)
+	sink := &agenttest.ControlSink{}
+	a.sink = agent.NewProviderServices(sink)
+	a.HandleOutput(permissionFrame("", contracts.LettaToolBash, "shell"))
+	require.Equal(t, "perm-shell", sink.LastPublishedControl().RequestID)
+	a.HandleOutput(permissionFrame("", contracts.LettaToolBash, ""))
+	assert.Equal(t, 1, sink.PublishedControlCount(), "an absent native identity must not create an unanswerable card")
+}
 
 // Letta Code 0.34 made AskUserQuestion asynchronous. The tool belongs to no
 // built-in toolset any more: a client that wants it names it in

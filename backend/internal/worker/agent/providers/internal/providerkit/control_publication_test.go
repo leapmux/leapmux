@@ -41,10 +41,9 @@ func TestJSONRPCControlPublicationDoesNotReplyOnSuccess(t *testing.T) {
 	base := JSONRPCProcess{Process: Process{stdin: agenttest.NopStdin(output)}}
 	payload := []byte(` {"jsonrpc":"2.0", "id":"007","method":"request"} `)
 	base.PublishControlRequest(sink, payload, nil)
-	// Never, not a bare Empty: a reply travels on the stdin writer, so an assertion
-	// straight after this call cannot tell "no reply" from "not written yet".
-	require.Never(t, func() bool { return output.String() != "" },
-		200*time.Millisecond, 5*time.Millisecond, "a published request draws no reply")
+	// A marker completes after every earlier frame in the same stdin queue.
+	require.NoError(t, base.SendResponse([]byte(`"marker"`), map[string]any{}))
+	assert.JSONEq(t, `{"jsonrpc":"2.0","id":"marker","result":{}}`, output.String())
 	require.Len(t, sink.PublishedControls(), 1)
 	assert.Equal(t, payload, sink.LastPublishedControl().Payload)
 }
@@ -81,8 +80,9 @@ func TestJSONRPCControlPublicationFailureWithoutWireIDDoesNotReply(t *testing.T)
 	sink := &agenttest.ControlSink{PublicationError: errors.New("storage unavailable")}
 	base := JSONRPCProcess{Process: Process{stdin: agenttest.NopStdin(output)}}
 	base.PublishControlRequest(sink, []byte(`{"method":"notification"}`), nil)
-	require.Never(t, func() bool { return output.String() != "" },
-		200*time.Millisecond, 5*time.Millisecond, "a frame with no wire id draws no reply")
+	require.NoError(t, base.SendResponse([]byte(`"marker"`), map[string]any{}))
+	assert.JSONEq(t, `{"jsonrpc":"2.0","id":"marker","result":{}}`, output.String())
+	assert.Empty(t, sink.PublishedControls())
 }
 
 func TestJSONRPCControlPublicationHandlesReplyFailure(t *testing.T) {

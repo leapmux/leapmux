@@ -1,11 +1,13 @@
 package codewhale
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -14,11 +16,9 @@ import (
 
 // Codewhale's control requests: an approval, and a question.
 //
-// The runtime states each one as an EVENT on the thread's stream, and it reads
-// the answer from a REST route. LeapMux answers neither itself: it persists a
-// control request, the reader decides, and the answer comes back through
-// SendControlResponse -> ResolveControlResponse, which builds a reply frame, and
-// SendRawInput, which posts that frame to the route.
+// The runtime emits each request on the thread's stream and reads its answer from a REST route.
+// Full Access approves tool requests immediately. Questions keep their own answers.
+// Manual answers pass through ResolveControlResponse and SendRawInput.
 //
 // The stored payload is a HYBRID. The Claude-shaped `{request:{tool_name,
 // tool_use_id, input}}` header is what the SHARED control surfaces read: the
@@ -52,7 +52,16 @@ const codewhaleControlType = "control_request"
 // codewhalePendingControl is one control request LeapMux published and nothing
 // resolved yet.
 type codewhalePendingControl struct {
-	turnID string
+	turnID          string
+	threadID        string
+	approvalID      string
+	payload         []byte
+	ready           bool
+	published       bool
+	answering       bool
+	automaticFailed bool
+	publicationDone chan struct{}
+	publicationOnce sync.Once
 }
 
 // codewhaleControlHeader is the shared header of a stored control request.
@@ -156,7 +165,7 @@ func (a *Agent) handleApprovalRequired(env codewhaleEnvelope) {
 		a.denyUnpublishedApproval(approvalID)
 		return
 	}
-	if !a.publishControl(requestID, env.TurnID, content) {
+	if !a.publishControl(requestID, env.TurnID, content, approvalID) {
 		a.denyUnpublishedApproval(approvalID)
 	}
 }
@@ -228,7 +237,7 @@ func (a *Agent) handleUserInputRequired(env codewhaleEnvelope) {
 		a.declineUnpublishedQuestion(inputID, payload.Request)
 		return
 	}
-	if !a.publishControl(requestID, env.TurnID, content) {
+	if !a.publishControl(requestID, env.TurnID, content, "") {
 		a.declineUnpublishedQuestion(inputID, payload.Request)
 	}
 }
@@ -331,39 +340,77 @@ func declinedAnswers(request json.RawMessage, text string) []userInputAnswer {
 // publishControl stores and broadcasts one control request, and reports whether
 // it did. A request already published keeps its card: the stream can deliver an
 // event twice across a reconnect.
-func (a *Agent) publishControl(requestID, turnID string, payload []byte) bool {
+func (a *Agent) publishControl(requestID, turnID string, payload []byte, approvalID string) bool {
 	a.Mu.Lock()
 	if _, pending := a.controls[requestID]; pending {
 		a.Mu.Unlock()
 		return true
 	}
 	if a.controls == nil {
-		a.controls = make(map[string]codewhalePendingControl)
+		a.controls = make(map[string]*codewhalePendingControl)
 	}
-	a.controls[requestID] = codewhalePendingControl{turnID: turnID}
-	threadID := a.threadID
+	bypass := approvalID != "" && a.settings.posture == contracts.CodewhalePostureFullAccess && !a.StoppedLocked()
+	control := &codewhalePendingControl{turnID: turnID, threadID: a.threadID, approvalID: approvalID,
+		payload: append([]byte(nil), payload...), ready: bypass, publicationDone: make(chan struct{})}
+	a.controls[requestID] = control
 	a.Mu.Unlock()
-	if err := a.sink.PublishControlRequest(agent.ControlRequest{
+	if bypass {
+		a.approvalWork.Run("permissions", a.approvePendingPermissions)
+		return true
+	}
+	return a.publishRegisteredControl(requestID, control)
+}
+
+func (a *Agent) publishRegisteredControl(requestID string, control *codewhalePendingControl) bool {
+	a.Mu.Lock()
+	if a.controls[requestID] != control || a.StoppedLocked() {
+		if a.controls[requestID] == control {
+			delete(a.controls, requestID)
+		}
+		control.publicationOnce.Do(func() { close(control.publicationDone) })
+		a.Mu.Unlock()
+		return true
+	}
+	a.Mu.Unlock()
+	err := a.sink.PublishControlRequest(agent.ControlRequest{
 		RequestID:      requestID,
-		Payload:        payload,
-		AgentSessionID: threadID,
-	}); err != nil {
+		Payload:        control.payload,
+		AgentSessionID: control.threadID,
+	})
+	a.Mu.Lock()
+	control.ready, control.published = true, err == nil
+	current := a.controls[requestID] == control && !a.StoppedLocked()
+	if (err != nil || !current) && a.controls[requestID] == control {
+		delete(a.controls, requestID)
+	}
+	bypass := a.settings.posture == contracts.CodewhalePostureFullAccess && !control.automaticFailed
+	control.publicationOnce.Do(func() { close(control.publicationDone) })
+	a.Mu.Unlock()
+	if err != nil {
 		slog.Error("codewhale publish control request", "agent_id", a.AgentID(), "request_id", requestID, "error", err)
-		a.forgetControl(requestID)
 		return false
+	}
+	if !current {
+		a.sink.CancelControlRequest(requestID)
+	} else if bypass && control.approvalID != "" {
+		a.approvalWork.Run("permissions", a.approvePendingPermissions)
 	}
 	return true
 }
 
-// forgetControl drops a pending request and reports whether it was there. The
+// forgetControl drops a pending request and reports whether its card existed. The
 // answer path and the event path both retire a request, and only the one that
 // took the record acts.
 func (a *Agent) forgetControl(requestID string) bool {
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
-	_, pending := a.controls[requestID]
+	control := a.controls[requestID]
 	delete(a.controls, requestID)
-	return pending
+	if control == nil {
+		return false
+	}
+	control.publicationOnce.Do(func() { close(control.publicationDone) })
+	return control.published
 }
 
 // withdrawControl retires the card of one request that the runtime settled.
@@ -379,11 +426,12 @@ func (a *Agent) withdrawControlsOfTurn(turnID string) {
 	var stale []string
 	for requestID, control := range a.controls {
 		if turnID == "" || control.turnID == "" || control.turnID == turnID {
-			stale = append(stale, requestID)
+			if control.published {
+				stale = append(stale, requestID)
+			}
+			delete(a.controls, requestID)
+			control.publicationOnce.Do(func() { close(control.publicationDone) })
 		}
-	}
-	for _, requestID := range stale {
-		delete(a.controls, requestID)
 	}
 	a.Mu.Unlock()
 	for _, requestID := range stale {
@@ -435,18 +483,7 @@ func (a *Agent) sendApprovalReply(frame codewhaleReplyFrame) error {
 		return fmt.Errorf("the Codewhale approval reply identifies no approval")
 	}
 	requestID := approvalRequestID(frame.ApprovalID)
-	if !a.controlPending(requestID) {
-		return errControlNotPending
-	}
-	if err := a.postApproval(frame.ApprovalID, approvalBody(frame.Decision)); err != nil {
-		if providerkit.IsHTTPStatus(err, httpStatusNotFound) {
-			a.withdrawControl(requestID)
-			return errControlNotPending
-		}
-		return err
-	}
-	a.forgetControl(requestID)
-	return nil
+	return a.sendControlReply(requestID, "", func() error { return a.postApproval(frame.ApprovalID, approvalBody(frame.Decision)) })
 }
 
 func (a *Agent) sendUserInputReply(frame codewhaleReplyFrame) error {
@@ -454,22 +491,114 @@ func (a *Agent) sendUserInputReply(frame codewhaleReplyFrame) error {
 		return fmt.Errorf("the Codewhale answer identifies no question")
 	}
 	requestID := userInputRequestID(frame.InputID)
-	if !a.controlPending(requestID) {
-		return errControlNotPending
-	}
 	answers := frame.Answers
 	if answers == nil {
 		answers = []userInputAnswer{}
 	}
-	if err := a.postUserInput(frame.ThreadID, frame.InputID, userInputBody(answers)); err != nil {
-		if providerkit.IsHTTPStatus(err, httpStatusNotFound) {
-			a.withdrawControl(requestID)
-			return errControlNotPending
-		}
-		return err
+	return a.sendControlReply(requestID, frame.ThreadID, func() error { return a.postUserInput(frame.ThreadID, frame.InputID, userInputBody(answers)) })
+}
+
+func (a *Agent) sendControlReply(requestID, threadID string, send func() error) error {
+	a.Mu.Lock()
+	control := a.controls[requestID]
+	unpublished := control != nil && control.ready && !control.published
+	a.Mu.Unlock()
+	if control == nil || unpublished {
+		return errControlNotPending
 	}
-	a.forgetControl(requestID)
-	return nil
+	ctx := a.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case <-control.publicationDone:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	a.Mu.Lock()
+	if a.controls[requestID] != control || control.answering || !control.published {
+		a.Mu.Unlock()
+		return errControlNotPending
+	}
+	if control.threadID != a.threadID || threadID != "" && threadID != control.threadID {
+		a.Mu.Unlock()
+		return agent.ErrInputSessionChanged
+	}
+	control.answering = true
+	a.Mu.Unlock()
+	err := providerkit.ClassifyHTTPDeliveryError("Codewhale control answer", send())
+	a.finishControlReply(requestID, control, err, false)
+	if providerkit.IsHTTPStatus(err, httpStatusNotFound) {
+		return errControlNotPending
+	}
+	return err
+}
+
+func (a *Agent) approvePendingPermissions() {
+	a.Mu.Lock()
+	if a.StoppedLocked() {
+		a.Mu.Unlock()
+		return
+	}
+	claimed := make(map[string]*codewhalePendingControl)
+	toPublish := make(map[string]*codewhalePendingControl)
+	for requestID, control := range a.controls {
+		if control.threadID != a.threadID || !control.ready || control.answering {
+			continue
+		}
+		if a.settings.posture == contracts.CodewhalePostureFullAccess && control.approvalID != "" && !control.automaticFailed {
+			control.answering = true
+			claimed[requestID] = control
+		} else if !control.published {
+			control.ready = false
+			toPublish[requestID] = control
+		}
+	}
+	a.Mu.Unlock()
+	for requestID, control := range toPublish {
+		if !a.publishRegisteredControl(requestID, control) {
+			a.denyUnpublishedApproval(control.approvalID)
+		}
+	}
+	for requestID, control := range claimed {
+		err := providerkit.ClassifyHTTPDeliveryError("Codewhale automatic approval", a.postApproval(control.approvalID, approvalBody(contracts.CodewhaleDecisionAllow)))
+		a.finishControlReply(requestID, control, err, true)
+		if err != nil {
+			slog.Warn("codewhale could not approve a pending tool", "request_id", requestID, "error", err)
+		}
+	}
+}
+
+func (a *Agent) finishControlReply(requestID string, control *codewhalePendingControl, err error, automatic bool) {
+	a.Mu.Lock()
+	current := a.controls[requestID] == control
+	uncertain := errors.Is(err, agent.ErrDeliveryUncertain)
+	gone := providerkit.IsHTTPStatus(err, httpStatusNotFound) || a.StoppedLocked()
+	retire := err == nil || uncertain || gone
+	published := control.published
+	if current {
+		if retire {
+			delete(a.controls, requestID)
+			control.publicationOnce.Do(func() { close(control.publicationDone) })
+		} else {
+			control.answering = false
+			control.automaticFailed = control.automaticFailed || automatic
+			if !published {
+				control.ready = false
+			}
+		}
+	}
+	a.Mu.Unlock()
+	if !current {
+		return
+	}
+	if retire {
+		if published && (automatic || uncertain || gone) {
+			a.sink.CancelControlRequest(requestID)
+		}
+	} else if !published && !a.publishRegisteredControl(requestID, control) {
+		a.denyUnpublishedApproval(control.approvalID)
+	}
 }
 
 // controlPending reports whether a request is still waiting for an answer.

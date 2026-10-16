@@ -368,9 +368,13 @@ func (a *Agent) handleRemoteEvent(raw []byte) error {
 	case "cancel":
 		a.Mu.Lock()
 		control, ok := a.controls[frame.EventID]
+		published := ok && control.published
 		delete(a.controls, frame.EventID)
+		if ok && control.publicationDone != nil {
+			control.publicationOnce.Do(func() { close(control.publicationDone) })
+		}
 		a.Mu.Unlock()
-		if ok {
+		if published {
 			control.sink.CancelControlRequest(frame.EventID)
 		}
 	case "emit":
@@ -410,9 +414,14 @@ func (a *Agent) reportStreamFailure(err error) {
 	for _, stream := range a.streams {
 		streams = append(streams, stream)
 	}
-	controls := make(map[string]nativeControl, len(a.controls))
+	controls := make(map[string]*nativeControl, len(a.controls))
 	for id, control := range a.controls {
-		controls[id] = control
+		if control.published {
+			controls[id] = control
+		}
+		if control.publicationDone != nil {
+			control.publicationOnce.Do(func() { close(control.publicationDone) })
+		}
 	}
 	clear(a.controls)
 	a.Mu.Unlock()

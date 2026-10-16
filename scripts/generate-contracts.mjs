@@ -2363,6 +2363,7 @@ export const PROVIDER_PROTOCOLS = [
       { key: 'contentBlock', goTable: 'ContentBlock', tsTable: 'CONTENT_BLOCK', tsType: 'ACPContentBlockField', doc: 'fields of a tool call\'s own content array, which lists the terminals it refers to' },
       { key: 'blockTypes', goTable: 'BlockType', tsTable: 'BLOCK_TYPE', tsType: 'ACPBlockType', doc: 'content block `type` values both sides dispatch on' },
       { key: 'permissionOutcomes', goTable: 'PermissionOutcome', tsTable: 'PERMISSION_OUTCOME', tsType: 'ACPPermissionOutcome', doc: 'the `outcome` of a reply to session/request_permission' },
+      { key: 'permissionKinds', goTable: 'PermissionKind', tsTable: 'PERMISSION_KIND', tsType: 'ACPPermissionKind', doc: 'permission option kinds that the worker and browser select' },
     ],
   },
   {

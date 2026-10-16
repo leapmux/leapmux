@@ -268,7 +268,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 // goroutine before the agent is registered with the manager -- the same lock-free
 // pre-registration window buildStartupFlagSettings documents -- so a bare field write
 // needs no a.Mu. The permission-mode writes still go through their own locked helpers
-// (settlePermissionMode, setAutoModeAvailable), because the READER goroutine already
+// (sendSetPermissionMode, setAutoModeAvailable), because the READER goroutine already
 // runs: HandleOutput delivers the control responses this handshake waits for, and a
 // deferred one reaches claudeCodeHandleControlResponse, which writes the same fields.
 func (a *Agent) runStartupHandshake(ctx context.Context, opts agent.Options) error {

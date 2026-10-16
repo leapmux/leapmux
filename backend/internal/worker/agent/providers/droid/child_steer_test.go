@@ -51,9 +51,13 @@ func (b *bufferStdin) frames() []string {
 // newSteerAgent builds an agent with a capturing stdin and a test sink.
 func newSteerAgent(t *testing.T) (*Agent, *agenttest.Sink, *bufferStdin) {
 	t.Helper()
+	return newSteerAgentWithProcessDone(t, make(chan struct{}))
+}
+
+func newSteerAgentWithProcessDone(t *testing.T, processDone chan struct{}) (*Agent, *agenttest.Sink, *bufferStdin) {
+	t.Helper()
 	stdin := &bufferStdin{written: make(chan struct{}, 1)}
 	ctx, cancel := context.WithCancel(t.Context())
-	processDone := make(chan struct{})
 	t.Cleanup(func() {
 		select {
 		case <-processDone:

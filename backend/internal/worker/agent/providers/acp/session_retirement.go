@@ -98,43 +98,6 @@ func (b *Base) ServesSession(sessionID string) bool {
 	return sessionID == "" || b.IsCurrentSession(sessionID) || b.childSessionRow(sessionID) != ""
 }
 
-// PublishSessionControlRequest publishes one control request that a session of
-// the agent raised. The base publishes its permission request and its MCP
-// elicitation through it, and a provider publishes each dialog of its own
-// through it too, never through PublishControlRequest or
-// PublishControlRequestInSession directly, so that no dialog of a retired
-// session reaches the reader.
-//
-// A request of a session that the agent does not serve never reaches the
-// reader. That session's updates reach no transcript, so a card for it would
-// let the reader approve work that LeapMux never shows. The base refuses such a
-// request at once (see refuseControlRequest), because its turn waits on the
-// answer and no card could ever give one.
-//
-// A request that passes is stored under the session that owns it (see
-// agentSessionOfControlRequest), because the worker accepts an answer only
-// while the agent is in that session.
-//
-// The text that the session streamed before a request that passes is stored
-// first (see storeTextBeforeControlRequest), so the reader sees it while the
-// agent waits on the answer.
-//
-// The provider's ControlRequestObserver reads each request that passes, BEFORE
-// the publication, so a withdrawal that the provider reads right after the
-// publication finds the request recorded.
-func (b *Base) PublishSessionControlRequest(line *providerkit.ParsedLine, cancelAnswer any) {
-	sessionID := controlRequestSessionID(line.Params)
-	if !b.ServesSession(sessionID) {
-		b.refuseControlRequest(line, sessionID, cancelAnswer)
-		return
-	}
-	b.storeTextBeforeControlRequest(sessionID)
-	if b.hooks.ControlRequestObserver != nil {
-		b.hooks.ControlRequestObserver(line)
-	}
-	b.PublishControlRequestInSession(b.sink, b.agentSessionOfControlRequest(sessionID), line.Raw, cancelAnswer)
-}
-
 // storeTextBeforeControlRequest stores the text that the session sessionID
 // assembled before one of its control requests. The main conversation owns a
 // request of the current session and a request that states no session. The

@@ -74,6 +74,7 @@ func (a *Agent) readLoop(ctx context.Context, conn *wsConn) {
 			// A handshake that never settles must fail at once, not at its
 			// timeout: the socket is gone, so no response can arrive.
 			a.settleRuntime(fmt.Errorf("the WebSocket ended before runtime_start was answered: %w", err))
+			a.failPendingRequests(fmt.Errorf("the Letta WebSocket ended before requests settled: %w", err))
 			return
 		}
 		a.handleFrame(data)
@@ -205,14 +206,37 @@ func (a *Agent) handleFrame(line []byte) {
 		a.handleListModelsResponse(line)
 	case "update_model_response":
 		a.handleUpdateModelResponse(line)
+	case "update_device_status":
+		a.handleDeviceStatus(line)
+	case "sync_response":
+		a.handleSettingsSyncResponse(line)
 	case "loop_error":
 		a.persistNotification(line)
-	case "input_accepted", "abort_message_response":
-		// Delivery and interrupt acknowledgements. The turn flag already
-		// carries what the reader sees.
+	case "input_accepted":
+		a.handlePermissionReceipt(line, head.RequestID)
+	case "abort_message_response":
+		// The native turn events report the result of an interrupt.
 	default:
 		// An unknown message kind, a `*_response` ack and a state snapshot
-		// (`update_queue`, `update_device_status`) all move nothing.
+		// (`update_queue`) all move nothing.
+	}
+}
+
+func (a *Agent) failPendingRequests(err error) {
+	a.Mu.Lock()
+	var waiters []*runtimeWaiter
+	if a.modelPending != nil {
+		waiters = append(waiters, a.modelPending.waiter)
+	}
+	if a.modePending != nil {
+		waiters = append(waiters, a.modePending.waiter)
+	}
+	for _, delivery := range a.permissionDeliveries {
+		waiters = append(waiters, delivery.waiter)
+	}
+	a.Mu.Unlock()
+	for _, waiter := range waiters {
+		waiter.settle(err)
 	}
 }
 

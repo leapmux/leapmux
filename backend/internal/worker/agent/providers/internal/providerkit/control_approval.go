@@ -63,12 +63,17 @@ func (b *JSONRPCProcess) ApproveOutstandingControlRequest(sink agent.ControlServ
 // ApproveUnpublishedControlRequest normally answers without a browser card.
 // A definite delivery failure publishes the original request so the user can still answer it.
 func (b *JSONRPCProcess) ApproveUnpublishedControlRequest(sink agent.ControlServices, content []byte, cancelAnswer, answer any) bool {
+	return b.ApproveUnpublishedSessionControlRequest(sink, "", content, cancelAnswer, answer)
+}
+
+// ApproveUnpublishedSessionControlRequest keeps the session identity if failed delivery requires publication.
+func (b *JSONRPCProcess) ApproveUnpublishedSessionControlRequest(sink agent.ControlServices, sessionID string, content []byte, cancelAnswer, answer any) bool {
 	wireID, _, found := agent.ExtractJSONRPCID(content)
 	identity, valid := agent.NewControlRequestIdentity(wireID)
 	if !found || !valid {
 		return false
 	}
-	record := b.registerControl(identity, &outstandingControlRequest{payload: content, cancelAnswer: cancelAnswer, approveAnswer: answer, pending: true, publishOnFailure: true})
+	record := b.registerControl(identity, &outstandingControlRequest{payload: content, sessionID: sessionID, cancelAnswer: cancelAnswer, approveAnswer: answer, pending: true, publishOnFailure: true})
 	if record == nil {
 		return false
 	}

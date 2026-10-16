@@ -862,6 +862,7 @@ func (b *Base) UpdateSettings(options optionmap.Map) agentapi.SettingsApplyResul
 	if optionGroupsChanged && b.sink != nil {
 		b.sink.BroadcastStatusActive(sessionID)
 	}
+	b.approvePendingPermissions()
 	if !ok {
 		return agentapi.RestartRequiredSettings(options)
 	}

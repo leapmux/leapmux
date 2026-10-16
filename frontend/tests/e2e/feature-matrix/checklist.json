@@ -4984,9 +4984,9 @@
       "codewhale": {
         "support": "supported",
         "userNote": "",
-        "detailNote": "",
+        "detailNote": "The spec proves native reviewer approval and denial before and after reload. Each operation requires one fresh reviewer receipt and its native result. Approval writes the expected file bytes. Denial leaves the file absent. Both decisions complete without a manual permission request.",
         "spec": "frontend/tests/e2e/codewhale/smart-permissions-shortcut.spec.ts",
-        "audit": "source-verified",
+        "audit": "covered",
         "testStatus": "passed",
         "verified": true
       },
@@ -5101,9 +5101,9 @@
       "qoder-cli": {
         "support": "supported",
         "userNote": "",
-        "detailNote": "",
+        "detailNote": "Qoder CLI 1.1.72 runs its native reviewer in headless Auto mode. The spec requires a fresh reviewer receipt and the actual file write before and after reload. Separate cases force a reviewer HTTP failure, then prove manual approval and denial with native requests, results, and file effects. The Worker preserves the canonical model ID because SDK init.model carries a display label that the reviewer cannot resolve.",
         "spec": "frontend/tests/e2e/qoder-cli/smart-permissions-shortcut.spec.ts",
-        "audit": "source-verified",
+        "audit": "covered",
         "testStatus": "passed",
         "verified": true
       },
@@ -6170,8 +6170,8 @@
       },
       "letta-code": {
         "support": "supported",
-        "userNote": "Letta Code offers the modes Standard, Accept Edits, Unrestricted, and Strict. A change of mode restarts the agent.",
-        "detailNote": "Letta Code offers these modes:\n- **Standard**\n- **Accept Edits**\n- **Unrestricted**\n- **Strict**",
+        "userNote": "Letta Code offers Standard, Accept Edits, Unrestricted, and Strict modes. A mode change applies to the running agent.",
+        "detailNote": "Letta Code offers these modes:\n- **Standard**\n- **Accept Edits**\n- **Unrestricted**\n- **Strict**\n\nA mode change applies through native change_device_state. The Worker confirms it through a correlated sync response and device-status snapshot.",
         "spec": "frontend/tests/e2e/letta-code/mode.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -11103,9 +11103,9 @@
       "codex": {
         "support": "supported",
         "userNote": "",
-        "detailNote": "",
+        "detailNote": "The complete spec covers native session resume and Worker or Hub-and-Worker restarts. Smart and Bypass cases verify restored option values and native tool execution after a Worker restart. Smart requires a fresh native reviewer receipt. Bypass requires no manual permission request.",
         "spec": "frontend/tests/e2e/codex/session-resume.spec.ts",
-        "audit": "source-verified",
+        "audit": "covered",
         "verified": true,
         "testStatus": "passed"
       },

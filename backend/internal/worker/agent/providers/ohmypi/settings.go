@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -36,19 +37,22 @@ func (a *Agent) SettingsSnapshot() agent.SettingsApplyResult {
 	return agent.ConfirmedSettings(agent.CurrentOptions(a.OptionGroups()))
 }
 
-// UpdateSettings applies a model or thinking-level change live. An approval-mode
-// change, and a move to Auto, restart the agent instead.
+// UpdateSettings applies model, thinking-level and Yolo changes live.
+// Other approval-mode changes and a move to Auto restart the agent.
 //
-// omp applies the approval mode at launch only, and no RPC command UNSETS a thinking
-// level, which is what Auto asks for. A live apply that fails also restarts: the
-// caller relaunches with the requested settings as launch options, so the change
-// takes effect rather than leaving the reader on a value the agent never took.
+// omp applies its native approval mode at launch. The Worker grants Yolo tool approvals itself.
+// No RPC command removes a thinking level, which is what Auto requires.
+// If a live change fails, the caller restarts the agent with the requested settings.
 func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult {
+	defer a.approvePendingDialogs()
 	a.Mu.Lock()
 	curModel, curEffort, curApproval := a.model, a.thinkingLevel, a.approvalMode
+	if options[agent.OptionIDPermissionMode] == contracts.OhMyPiApprovalModeYolo {
+		a.approvalMode = contracts.OhMyPiApprovalModeYolo
+	}
 	a.Mu.Unlock()
 
-	if mode := options[agent.OptionIDPermissionMode]; mode != "" && mode != curApproval {
+	if mode := options[agent.OptionIDPermissionMode]; mode != "" && mode != curApproval && mode != contracts.OhMyPiApprovalModeYolo {
 		return agent.RestartRequiredSettings(options)
 	}
 	if agent.IsEffortAutoTransition(options[agent.OptionIDEffort], curEffort) {

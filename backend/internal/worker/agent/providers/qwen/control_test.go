@@ -1,15 +1,82 @@
 package qwen
 
 import (
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 )
+
+func TestBypassReleasesAPendingToolWhenAnotherSettingFails(t *testing.T) {
+	t.Parallel()
+	a, _, requests := newQwenAgent(t, nil, nil)
+	a.SetAvailableModesForTest(qwenModes())
+	a.SetPermissionModeForTest(contracts.QwenModeDefault)
+	a.HooksForTest().ModelSetter = func(string) error { return errors.New("the model is unavailable") }
+	a.HandleOutput(frame(t, map[string]any{"id": 10, "method": "session/request_permission", "params": map[string]any{
+		"sessionId": qwenTestSession,
+		"toolCall":  map[string]any{"toolCallId": "shell", "_meta": map[string]any{"toolName": contracts.QwenToolRunShellCommand}},
+		"options":   []any{map[string]any{"optionId": "proceed_once", "kind": "allow_once"}},
+	}}))
+	result := a.UpdateSettings(map[string]string{agent.OptionIDModel: "unavailable", agent.OptionIDPermissionMode: contracts.QwenModeYolo})
+	assert.False(t, result.AppliedLive, "the failed model change still requires a restart")
+	syncPeer(t, a)
+	answers := agenttest.JSONRPCResultsByID(t, rawLines(requests()))
+	require.Contains(t, answers, "10", "the applied Bypass change must release the turn before the queued restart")
+}
+
+func TestBypassApprovesPendingAndLaterToolsButKeepsPlansAndQuestions(t *testing.T) {
+	t.Parallel()
+	a, sink, requests := newQwenAgent(t, nil, nil)
+	a.SetAvailableModesForTest(qwenModes())
+	a.SetPermissionModeForTest(contracts.QwenModeDefault)
+	a.SetPromptActiveForTest(true)
+	tool := func(id int) []byte {
+		return frame(t, map[string]any{"id": id, "method": "session/request_permission", "params": map[string]any{
+			"sessionId": qwenTestSession,
+			"toolCall":  map[string]any{"toolCallId": "shell", "kind": "execute", "_meta": map[string]any{"toolName": contracts.QwenToolRunShellCommand}},
+			"options": []any{
+				map[string]any{"optionId": "proceed_once", "kind": "allow_once"},
+				map[string]any{"optionId": "cancel", "kind": "reject_once"},
+			},
+		}})
+	}
+	a.HandleOutput(tool(10))
+	a.HandleOutput(planApproval(t, 11, qwenTestSession))
+	question := func(id int) []byte {
+		return frame(t, map[string]any{"id": id, "method": "session/request_permission", "params": map[string]any{
+			"sessionId": qwenTestSession,
+			"toolCall":  map[string]any{"toolCallId": "question", "_meta": map[string]any{"toolName": contracts.QwenToolAskUserQuestion, contracts.QwenMetaInteractionKind: "user_question"}},
+			"options":   []any{map[string]any{"optionId": "submit", "kind": "allow_once"}},
+		}})
+	}
+	a.HandleOutput(question(14))
+	a.UpdateSettings(map[string]string{agent.OptionIDPermissionMode: contracts.QwenModeYolo})
+	syncPeer(t, a)
+	answers := agenttest.JSONRPCResultsByID(t, rawLines(requests()))
+	require.Contains(t, answers, "10", "Bypass answers the pending tool")
+	assert.JSONEq(t, `{"outcome":{"outcome":"selected","optionId":"proceed_once"}}`, answers["10"])
+	assert.NotContains(t, answers, "11", "the plan still requires its own approval")
+	assert.NotContains(t, answers, "14", "the question still requires its own answer")
+	require.Eventually(t, func() bool { return len(sink.CanceledControls()) == 1 }, 30*time.Second, time.Millisecond)
+	a.HandleOutput(tool(12))
+	a.HandleOutput(planApproval(t, 13, qwenTestSession))
+	a.HandleOutput(question(15))
+	syncPeer(t, a)
+	answers = agenttest.JSONRPCResultsByID(t, rawLines(requests()))
+	require.Contains(t, answers, "12")
+	assert.JSONEq(t, `{"outcome":{"outcome":"selected","optionId":"proceed_once"}}`, answers["12"])
+	assert.NotContains(t, answers, "13")
+	assert.NotContains(t, answers, "15")
+	assert.Equal(t, 5, sink.PublishedControlCount(), "the later tool needs no card")
+}
 
 // planApproval is Qwen's plan approval: a session/request_permission of its
 // `exit_plan_mode` tool, raised in sessionID with plan as the tool's argument.
