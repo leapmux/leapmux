@@ -43,6 +43,7 @@ func newCodexAgentForRPCRequests(t *testing.T, respond func(request codexRecorde
 	ctx, cancel := context.WithCancel(context.Background())
 	readPipe, writePipe, err := os.Pipe()
 	require.NoError(t, err)
+	peerError := make(chan error, 1)
 
 	sink := &agenttest.Sink{}
 	agent := &Agent{
@@ -72,6 +73,9 @@ func newCodexAgentForRPCRequests(t *testing.T, respond func(request codexRecorde
 
 	go func() {
 		scanner := bufio.NewScanner(readPipe)
+		defer func() {
+			peerError <- errors.Join(scanner.Err(), readPipe.Close())
+		}()
 		for scanner.Scan() {
 			var req struct {
 				ID     int64                  `json:"id"`
@@ -91,8 +95,16 @@ func newCodexAgentForRPCRequests(t *testing.T, respond func(request codexRecorde
 
 	t.Cleanup(func() {
 		cancel()
-		_ = readPipe.Close()
-		_ = writePipe.Close()
+		// Some tests simulate exit before cleanup. Only this cleanup closes an active fake process.
+		select {
+		case <-agent.ProcessDone():
+		default:
+			agent.SimulateExitForTest()
+		}
+		// Stop closes the writer. The error channel then waits for the reader.
+		// Closing a pipe reader during a synchronous Windows read can deadlock.
+		agent.Process.Stop()
+		require.NoError(t, <-peerError)
 	})
 
 	return agent, sink, func() []codexRecordedRequest {
@@ -101,6 +113,45 @@ func newCodexAgentForRPCRequests(t *testing.T, respond func(request codexRecorde
 		out := make([]codexRecordedRequest, len(requests))
 		copy(out, requests)
 		return out
+	}
+}
+
+func TestCodexRPCFixtureStopsAfterCleanup(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name   string
+		active bool
+		exited bool
+	}{
+		{name: "idle"},
+		{name: "active", active: true},
+		{name: "exited", active: true, exited: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			var peer *Agent
+			t.Run("fixture", func(t *testing.T) {
+				peer, _, _ = newCodexAgentForRPC(t, func(string) agenttest.RPCReply {
+					return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+				})
+				if test.active {
+					_, err := peer.SendRequest("test/cleanup", json.RawMessage(`{}`), 30*time.Second)
+					require.NoError(t, err)
+				}
+				if test.exited {
+					peer.SimulateExitForTest()
+				}
+			})
+			require.NotNil(t, peer)
+			assert.True(t, peer.IsStopped(), "cleanup must stop the asynchronous writer")
+			assert.ErrorIs(t, peer.Context().Err(), context.Canceled)
+			select {
+			case <-peer.ProcessDone():
+			default:
+				t.Error("cleanup did not complete the fake process lifecycle")
+			}
+		})
 	}
 }
 

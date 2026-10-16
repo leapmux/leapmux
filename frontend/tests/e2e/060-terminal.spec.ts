@@ -1,6 +1,8 @@
 import { expect } from '@playwright/test'
-import { TerminalStatus } from '../../src/generated/proto/leapmux/v1/terminal_pb'
+import { InspectTerminalProcessesRequestSchema, InspectTerminalProcessesResponseSchema, TerminalStatus } from '../../src/generated/proto/leapmux/v1/terminal_pb'
 import { test } from './fixtures'
+import { getTestChannel } from './helpers/api'
+import { retryUntilPass } from './helpers/retryUntilPass'
 import { tabIdSelector } from './helpers/tabSelectors'
 import { activeXterm, focusActiveTerminal, getTerminalRows, getTerminalText, typeInTerminal, waitForTerminalReady, waitForTerminalText } from './helpers/terminal'
 import { agentTabs, openTerminalViaUI, sidebarLeaves, terminalTabs, visibleOnly, waitForLayoutSave } from './helpers/ui'
@@ -14,22 +16,41 @@ test.describe('Terminal', () => {
   // exists for: the tab strip's X is one click, and the work it kills leaves no
   // trace. The dialog has to name the process, because "something is running"
   // tells a user nothing they can act on.
-  test('warns before closing a terminal that is still running a process', async ({ page, authenticatedWorkspace }) => {
+  test('warns before closing a terminal that is still running a process', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
     await openTerminalViaUI(page)
     await waitForTerminalReady(page)
 
     // Backgrounded on purpose: a foreground-process-group probe cannot see this,
     // and it is exactly the work a user loses without a warning.
     await typeInTerminal(page, 'sleep 120 &')
-    await waitForTerminalText(page, 'sleep 120')
-
     const tab = visibleOnly(terminalTabs(page)).first()
+    const terminalId = await tab.getAttribute('data-tab-id')
+    expect(terminalId).toBeTruthy()
+    if (!terminalId)
+      throw new Error('The terminal tab has no ID.')
+    const channel = await getTestChannel(leapmuxServer.hubUrl, leapmuxServer.adminToken)
+    // Input echo precedes execution. The child can still be zsh before exec starts sleep.
+    const sleepProcess = await retryUntilPass(async () => {
+      const response = await channel.callWorker(
+        leapmuxServer.workerId,
+        'InspectTerminalProcesses',
+        InspectTerminalProcessesRequestSchema,
+        InspectTerminalProcessesResponseSchema,
+        { terminalIds: [terminalId] },
+      )
+      const process = response.terminals
+        .find(entry => entry.terminalId === terminalId)
+        ?.processes
+        .find(process => process.name === 'sleep')
+      expect(process, 'the Worker reports the running sleep process').toBeDefined()
+      return process!
+    })
     await tab.locator('[data-testid="tab-close"]').click()
 
     const dialog = page.locator('dialog[data-testid="busy-tab-close-dialog"]')
     await expect(dialog).toBeVisible()
     await expect(dialog.getByTestId('busy-processes')).toContainText('sleep')
-    await expect(dialog.getByTestId('busy-processes')).toContainText('pid')
+    await expect(dialog.getByTestId('busy-processes')).toContainText(`pid ${sleepProcess.pid}`)
 
     // Cancel keeps the tab: a guard that closed anyway would be worse than none.
     await dialog.getByTestId('busy-tab-close-cancel').click()
