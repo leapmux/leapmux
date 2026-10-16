@@ -308,7 +308,10 @@ func processMatches(ctx context.Context, pid int32, createTime int64, port int) 
 // reclaimStore ends a runtime that an earlier worker left running on this
 // store. It refuses when the worker that started that runtime still runs.
 func reclaimStore(ctx context.Context, store codewhaleStore, clock quartz.Clock) error {
-	return reclaimStoreWithStop(ctx, store, clock, stopOrphanRuntime)
+	if err := reclaimStoreWithStop(ctx, store, clock, stopOrphanRuntime); err != nil {
+		return err
+	}
+	return retireDeadNativeReceipt(ctx, store)
 }
 
 // stopOrphanRuntime retains the verified creation identity while it captures descendants.
@@ -345,7 +348,7 @@ func reclaimStoreWithStop(ctx context.Context, store codewhaleStore, clock quart
 	}
 	if owner.WorkerPID == int32(os.Getpid()) {
 		// This worker runs it: another agent of this worker has the session open.
-		// The runtime's own lock error states that when the start runs.
+		// The native receipt check refuses the live owner before startup.
 		return nil
 	}
 	slog.Warn("codewhale ending a runtime that an earlier worker left on its store", "store", store.dir, "pid", owner.RuntimePID)

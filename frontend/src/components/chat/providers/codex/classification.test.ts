@@ -79,6 +79,24 @@ describe('classifyCodexMessage', () => {
     expect(result).toEqual({ kind: 'hidden' })
   })
 
+  it.each([null, { type: 'turn', turnId: 'turn-1' }])('hides native read-state metadata with first unread %j', (firstUnread) => {
+    const frame = {
+      method: 'thread/readState/changed',
+      params: { threadId: 'thread-1', readState: { firstUnread, revision: 'revision-1' } },
+      emittedAtMs: 1792140694686,
+    }
+    expect(classifyCodexMessage(input(frame))).toEqual({ kind: 'hidden' })
+    expect(classifyCodexMessage(input(undefined, { old_seqs: [], messages: [frame] }))).toEqual({ kind: 'hidden' })
+  })
+
+  it('keeps unknown content beside native read-state metadata visible', () => {
+    const wrapper = { old_seqs: [], messages: [
+      { method: 'thread/readState/changed', params: { threadId: 'thread-1', readState: { firstUnread: null, revision: 'r1' } } },
+      { method: 'thread/futureContent', params: { text: 'Preserve this native content.' } },
+    ] }
+    expect(classifyCodexMessage(input(undefined, wrapper))).toEqual({ kind: 'unknown' })
+  })
+
   it('hides skills/changed notifications', () => {
     const parent = {
       method: 'skills/changed',

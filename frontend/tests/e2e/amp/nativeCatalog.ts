@@ -25,6 +25,7 @@ import { approveNativeToolsUntil } from '../helpers/nativeToolExecution'
 import { processExecutable } from '../helpers/processExecutable'
 import { listProcesses } from '../helpers/processTree'
 import { bashToolCall } from '../helpers/providerToolCalls'
+import { retryUntilPass } from '../helpers/retryUntilPass'
 import { getGlobalState, hubSpawnEnv } from '../helpers/server'
 import { quotePosixShellArgument } from '../helpers/shellArguments'
 import { nativeCommandTimeout } from '../helpers/testDeadline'
@@ -367,12 +368,15 @@ export async function readAmpExecutorCatalog(
     const settings: unknown = JSON.parse(readFileSync(settingsPath, 'utf8'))
     if (!isObject(settings))
       throw new Error('The native Amp generated settings must contain an object.')
-    // An Amp thread can start with the first turn, so the agent before the held turn can hold no session yet. The
-    // check requires the same agent with a session now, and the session that it held before when it held one.
-    const agent = await currentNativeAgent(context)
-    expect(agent.id).toBe(before.id)
-    expect(agent.workingDir).toBe(before.workingDir)
-    expect(agent.agentSessionId.trim()).not.toBe('')
+    // The native tool can start before the Worker persists the thread identity.
+    // Keep the agent identity checks on each read while the native identity arrives.
+    const agent = await retryUntilPass(async () => {
+      const current = await currentNativeAgent(context)
+      expect(current.id).toBe(before.id)
+      expect(current.workingDir).toBe(before.workingDir)
+      expect(current.agentSessionId.trim()).not.toBe('')
+      return current
+    })
     if (before.agentSessionId !== '')
       expect(agent.agentSessionId).toBe(before.agentSessionId)
     const mode = nativeOptionValue(agent, 'agent_mode')

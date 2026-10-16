@@ -12,6 +12,7 @@ import { extractItem } from './extractors/item'
 import { codexNotificationEntry } from './extractors/notification'
 import { codexPlanItemMarkdown, codexTurnPlanParams, codexTurnPlanTodos } from './extractors/plan'
 import { codexReasoningHasText } from './extractors/row'
+import { CODEX_READ_STATE_CHANGED_METHOD } from './protocol'
 import { CODEX_RATE_LIMITS_METHOD } from './rateLimits'
 
 const CODEX_TURN_FAILED_NOTIFICATION = 'Codex turn failed'
@@ -104,6 +105,7 @@ const CODEX_HIDDEN_TRANSCRIPT_METHODS = new Set<string>([
   CODEX_METHOD.ToolRequestUserInput,
   CODEX_METHOD.McpToolCallProgress,
   CODEX_METHOD.RawResponseItemCompleted,
+  CODEX_READ_STATE_CHANGED_METHOD,
   CODEX_RATE_LIMITS_METHOD,
   CODEX_THREAD_COMPACTED_METHOD,
 ])
@@ -195,10 +197,9 @@ export function classifyCodexMessage(input: ClassificationInput): MessageCategor
   const wrapper = input.wrapper
   const notification = notificationClassifierFor(input.agentProvider, codexNotificationEntry)
 
-  // Empty wrapper — hide. This runs BEFORE the thread test, which narrows `wrapper`
-  // to `null` on its false path. The thread test refuses an empty wrapper anyway, so
-  // the order changes no answer.
-  if (wrapper && wrapper.messages.length === 0)
+  // Empty wrappers and read-state metadata have no transcript content.
+  // A mixed wrapper keeps its other content, including unknown native frames.
+  if (wrapper && wrapper.messages.every(message => isObject(message) && message.method === CODEX_READ_STATE_CHANGED_METHOD))
     return { kind: 'hidden' }
 
   // Notification threads (settings_changed, context_cleared, etc.)

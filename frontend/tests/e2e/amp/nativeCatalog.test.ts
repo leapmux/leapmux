@@ -25,6 +25,20 @@ vi.mock('../helpers/server', () => ({ getGlobalState: () => calls.state, hubSpaw
 vi.mock('../helpers/ui', () => ({ sendMessage: calls.send, waitForAgentIdle: calls.idle }))
 vi.mock('../helpers/nativeControlWatch', () => ({ watchNativeControls: calls.watch }))
 vi.mock('../helpers/api', async importOriginal => ({ ...await importOriginal<typeof import('../helpers/api')>(), getTestChannel: calls.channel }))
+vi.mock('../helpers/retryUntilPass', () => ({
+  retryUntilPass: async (attempt: () => Promise<unknown>) => {
+    let failure: unknown
+    for (let count = 0; count < 5; count++) {
+      try {
+        return await attempt()
+      }
+      catch (error) {
+        failure = error
+      }
+    }
+    throw failure
+  },
+}))
 vi.mock('@playwright/test', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@playwright/test')>()
   /**
@@ -361,6 +375,37 @@ describe('ampExecutorToolNames', () => {
 })
 
 describe('readAmpExecutorCatalog', () => {
+  it.each(['id', 'workingDir', 'agentSessionId'] as const)('refuses a changed %s after the held tool starts', async (field) => {
+    const { context } = catalogFixture()
+    const live = await calls.current(context)
+    calls.current.mockClear()
+    calls.current.mockResolvedValueOnce(live).mockResolvedValue(create(AgentInfoSchema, { ...live, [field]: 'changed-identity' }))
+    const failure = await readAmpExecutorCatalog(context, {}, calls.catalog).catch(error => error)
+    const errors = failure instanceof AggregateError ? failure.errors : [failure]
+    expect(errors[0]).toHaveProperty('message', expect.stringContaining('changed-identity'))
+    expect(calls.catalog).not.toHaveBeenCalled()
+  })
+
+  it('waits through a Worker reconnect after the held tool starts', async () => {
+    const { context } = catalogFixture()
+    const live = await calls.current(context)
+    calls.current.mockClear()
+    calls.current.mockResolvedValueOnce(live).mockRejectedValueOnce(new Error('The Worker reconnects.')).mockResolvedValue(live)
+    await readAmpExecutorCatalog(context, {}, calls.catalog)
+    expect(calls.catalog).toHaveBeenCalledTimes(1)
+  })
+
+  it('waits for the native thread identity after the held tool starts', async () => {
+    const { context } = catalogFixture()
+    const live = await calls.current(context)
+    const pending = create(AgentInfoSchema, { ...live, agentSessionId: '' })
+    calls.current.mockClear()
+    calls.current.mockResolvedValueOnce(pending).mockResolvedValueOnce(pending).mockResolvedValue(live)
+    await readAmpExecutorCatalog(context, {}, calls.catalog)
+    expect(calls.catalog).toHaveBeenCalledTimes(1)
+    expect(calls.current.mock.calls.length).toBeGreaterThanOrEqual(4)
+  })
+
   it('approves the exact focused editor when it renders outside every tile', async () => {
     const { context, approve } = catalogFixture({ permission: 'ask', editorOutsideTile: true })
     await readAmpExecutorCatalog(context, {}, calls.catalog)

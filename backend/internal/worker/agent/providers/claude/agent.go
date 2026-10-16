@@ -81,6 +81,10 @@ type Agent struct {
 	// already hold it). nil/empty ⇒ fall back to the static claudeCodeAvailableModels
 	// catalog.
 	availableModels []*agent.ModelInfo
+	// Native thinking capabilities stay immutable after startup.
+	thinkingOffSupport map[string]bool
+	// Mu guards the account-default resolution when the first native readback arrives.
+	accountDefaultModel string
 
 	// tasks indexes everything this agent knows about a Claude task. It carries
 	// its own mutex, so the eight maps no longer contend on Process.Mu --

@@ -422,7 +422,7 @@ describe('validateCodingAgentMatrix', () => {
           counts[cell.support] += 1
       }
       // A deliberate change of a verdict changes these numbers. Update them with the checklist.
-      expect(counts).toEqual({ 'supported': 1093, 'agent-limit': 418, 'leapmux-limit': 79 })
+      expect(counts).toEqual({ 'supported': 1092, 'agent-limit': 419, 'leapmux-limit': 79 })
       expect(checklist.cells['images-in-tool-results'].cline).toMatchObject({ support: 'supported', audit: 'covered', testStatus: 'passed' })
       for (const provider of ['qwen-code', 'grok-build', 'kiro'])
         expect(checklist.cells['compaction-notice'][provider].support).toBe('supported')
@@ -431,6 +431,7 @@ describe('validateCodingAgentMatrix', () => {
         expect(checklist.cells['code-execution'][provider].support).toBe('supported')
       expect(checklist.cells['model-context-on-resume'].dirac.support).toBe('supported')
       expect(checklist.cells['smart-permissions-shortcut'].codex.support).toBe('supported')
+      expect(checklist.cells['extended-thinking']['claude-code']).toMatchObject({ support: 'agent-limit', audit: 'unsupported', testStatus: 'passed' })
       expect(checklist.supportStates).toEqual(SUPPORT_STATES)
     })
   })

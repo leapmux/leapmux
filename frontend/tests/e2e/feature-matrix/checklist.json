@@ -13540,11 +13540,11 @@
         "testStatus": "passed"
       },
       "claude-code": {
-        "support": "supported",
+        "support": "agent-limit",
         "userNote": "",
-        "detailNote": "",
+        "detailNote": "Claude Code 2.1.300 reports supportsThinkingOff=false for the current native model catalog. It coerces disabled thinking to adaptive thinking. LeapMux shows the required thinking state as read-only and explains the model limit. Catalogs that report supportsThinkingOff=true retain the independent toggle. Complete browser tests verify the read-only state across model changes and reload, then inspect native thinking and effort fields. Backend tests cover both capability values, an absent capability, and the resolved account default.",
         "spec": "frontend/tests/e2e/claude-code/extended-thinking.spec.ts",
-        "audit": "source-verified",
+        "audit": "unsupported",
         "verified": true,
         "testStatus": "passed"
       },

@@ -100,9 +100,8 @@ func TestAvailableOptionGroups_AlwaysIncludesThinking(t *testing.T) {
 	assert.Equal(t, AlwaysThinkingOn, thinkingGroup.GetDefaultValue())
 }
 
-// The enabled option's display name tracks Claude Code's per-model
-// thinking-type gate: "Adaptive" for first-party models, "On" for Haiku
-// (legacy type:"enabled"). The option ID stays "on" for all models.
+// The enabled label follows the native picker: "On" for Haiku and "Adaptive" otherwise.
+// The option ID stays "on" for all models.
 func TestAvailableOptionGroups_ThinkingLabelsByModel(t *testing.T) {
 	t.Parallel()
 
@@ -205,7 +204,7 @@ func TestOptionGroups_ModelOptionsCarrySubGroups(t *testing.T) {
 	assert.Equal(t, "On", haikuThinking.GetOptions()[0].GetName())
 }
 
-func TestModelSupportsAdaptiveThinking(t *testing.T) {
+func TestModelUsesAdaptiveThinkingLabel(t *testing.T) {
 	t.Parallel()
 
 	// Expects the short alias. Fully-qualified IDs should be normalized
@@ -221,7 +220,7 @@ func TestModelSupportsAdaptiveThinking(t *testing.T) {
 	}
 	for model, want := range cases {
 		t.Run(model, func(t *testing.T) {
-			assert.Equal(t, want, modelSupportsAdaptiveThinking(model))
+			assert.Equal(t, want, modelUsesAdaptiveThinkingLabel(model))
 		})
 	}
 }
@@ -1431,6 +1430,12 @@ func TestHelperProcessWithControlProtocol(t *testing.T) {
 
 		var responseBody interface{}
 		switch msg.Request.Subtype {
+		case "initialize":
+			if models := os.Getenv("GO_HELPER_MODELS"); models != "" {
+				responseBody = map[string]interface{}{"models": json.RawMessage(models)}
+			} else {
+				responseBody = map[string]interface{}{}
+			}
 		case "set_permission_mode":
 			if os.Getenv("GO_HELPER_NO_ACK_PERMISSION_MODE") == "1" {
 				// Simulate the CLI deferring the set_permission_mode ack until the active

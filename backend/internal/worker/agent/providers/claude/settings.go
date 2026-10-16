@@ -58,10 +58,8 @@ func (a *Agent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
 	var groups []*leapmuxv1.AvailableOptionGroup
 
 	if catalog := a.availableModelCatalog(); len(catalog) > 0 {
-		// Claude carries an extra per-model sub_group (extended thinking) beyond effort, so it
-		// passes claudeModelSubGroups; otherwise this is the same model+effort projection Codex
-		// and Pi use.
-		groups = append(groups, providerkit.ModelAndEffortGroups(catalog, model, effort, agent.EffortGroupLabel, claudeModelSubGroups)...)
+		// Each model carries effort and thinking groups from the native catalog.
+		groups = append(groups, providerkit.ModelAndEffortGroups(catalog, model, effort, agent.EffortGroupLabel, a.modelSubGroups)...)
 	} else if model != "" {
 		// Hidden model/effort UI (a third-party session, or can_change_model_and_effort
 		// =false): there is no selectable catalog, but the session is running a concrete
@@ -87,7 +85,7 @@ func (a *Agent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
 		{Id: FastModeOff, Name: "Off", Default: true},
 	}))
 
-	groups = append(groups, thinkingGroupForModel(model, thinking))
+	groups = append(groups, a.thinkingGroup(model, thinking))
 
 	if pg := optionids.GroupByID(claudeStaticOptionGroups, agent.OptionIDPermissionMode); pg != nil {
 		groups = append(groups, livePermissionModeGroup(pg, mode, autoAvail))
@@ -96,13 +94,12 @@ func (a *Agent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
 	return groups
 }
 
-// thinkingGroupForModel builds the extended-thinking group for a model. The
-// enabled option's id is always "on"; only its display label varies by model
-// ("Adaptive" for models that pick thinking.type:"adaptive", "On" otherwise --
-// see modelSupportsAdaptiveThinking), so a model switch must re-emit this group.
+// thinkingGroupForModel builds the fallback thinking options for a model.
+// The enabled option keeps the ID "on" and follows the native picker's label.
+// The label does not select the native request's thinking type.
 func thinkingGroupForModel(model, current string) *leapmuxv1.AvailableOptionGroup {
 	enabledName := "On"
-	if modelSupportsAdaptiveThinking(model) {
+	if modelUsesAdaptiveThinkingLabel(model) {
 		enabledName = "Adaptive"
 	}
 	return agent.SelectGroup(OptionAlwaysThinking, "Extended Thinking", agent.OptionOrderProviderFirst, current, []agent.OptionDef{
@@ -230,7 +227,11 @@ func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult 
 		changedFlagOptionIDs = append(changedFlagOptionIDs, OptionFastMode)
 	}
 	thinkingChange := ""
-	if v := options[OptionAlwaysThinking]; v != "" && v != curThinking {
+	requestedThinking := options[OptionAlwaysThinking]
+	if !a.supportsThinkingOff(targetModel) {
+		requestedThinking = AlwaysThinkingOn
+	}
+	if v := requestedThinking; v != "" && (v != curThinking || modelChanged) {
 		flagSettings[OptionAlwaysThinking] = flagSettingThinking(v)
 		changedFlagOptionIDs = append(changedFlagOptionIDs, OptionAlwaysThinking)
 		thinkingChange = v
@@ -441,6 +442,9 @@ func (a *Agent) refreshSettingsFromAgent(timeout time.Duration) map[string]struc
 		// the account default -- intended). ensureSettledModelListed then surfaces this
 		// model in the picker when the CLI's selectable list omitted it.
 		a.model = normalizeClaudeCodeModel(settings.Applied.Model)
+		if a.accountDefaultModel == agent.DefaultModelSentinel {
+			a.accountDefaultModel = a.model
+		}
 	} else if a.model == agent.DefaultModelSentinel {
 		// The account-default sentinel launches without --model and relies on
 		// get_settings echoing the concrete model the CLI resolved. Claude Code 2.1.x
@@ -484,6 +488,9 @@ func (a *Agent) refreshSettingsFromAgent(timeout time.Duration) map[string]struc
 		a.alwaysThinking = AlwaysThinkingOff
 	} else if settings.Effective != nil {
 		a.alwaysThinking = AlwaysThinkingOn // nil == cleared to the CLI default (on)
+	}
+	if !a.supportsThinkingOffLocked(a.model) {
+		a.alwaysThinking = AlwaysThinkingOn
 	}
 	model, effort := a.model, a.effort
 	outputStyle, fastMode, thinking := a.outputStyle, a.fastMode, a.alwaysThinking
@@ -559,10 +566,8 @@ func sessionThinkingTokens(v string) *int {
 // as it did at startup, while the readback and the UI reported "Off".
 // set_max_thinking_tokens is the control request that changes the running value.
 //
-// A disabled session reaches the request only for a model that accepts disabled
-// thinking. For a model whose CLI catalog entry carries rejects_disabled_thinking
-// (2.1.289: Sonnet 5.5, Opus 5.5 and Fable), the CLI sends no `thinking` field
-// for a disabled session, and its own toggle refuses to turn thinking off.
+// The native catalog states whether a model accepts disabled thinking.
+// Models that require thinking coerce a disabled session back to adaptive thinking.
 //
 // Call it AFTER the apply_flag_settings that carries the same value. The CLI
 // resolves the null of the "on" case against alwaysThinkingEnabled, so the flag
