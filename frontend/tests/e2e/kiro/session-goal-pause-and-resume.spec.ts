@@ -9,7 +9,7 @@ import { isObject } from '../../../src/lib/jsonPick'
 import { getTestChannel } from '../helpers/api'
 import { finishCleanup, withCleanup } from '../helpers/cleanup'
 import { clearGoal, expandGoalsAndTodosSection, expectEmptyGoalCard, expectGoalObjective, expectGoalStatus, goalAction, openGoalMenu, scriptedObjective, setGoal } from '../helpers/goalsAndTodos'
-import { ruleRequest, stepRequest } from '../helpers/mockModelScript'
+import { ruleRequest } from '../helpers/mockModelScript'
 import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { assertPrivateNativePath } from '../helpers/nativePrivatePath'
 import { currentNativeAgent, nativeAgentById, nativeModelContextText } from '../helpers/nativeScenario'
@@ -19,9 +19,10 @@ import { isFileNameComponent } from '../helpers/runDirectory'
 import { getGlobalState } from '../helpers/server'
 import { uniqueMarker } from '../helpers/shellArguments'
 import { backgroundTaskRows, expandBackgroundTasksSection, openChildTabFromRow } from '../helpers/subagentRegistry'
-import { assistantBubbles, messageContents, openWorkspace, sendMessage, tabById, waitForAgentIdle, waitForSettingsHydrated } from '../helpers/ui'
+import { messageContents, openWorkspace, tabById, waitForSettingsHydrated } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { kiroTest } from '../kiro-fixtures'
+import { sendKiroGoalBarrier } from './goalBarrier'
 import { kiroGoalCancellation, kiroGoalExecutionId, kiroGoalSessionId, readKiroGoalMessages } from './goalReceipt'
 import { KIRO_AGENT, nativeContext } from './scenarios'
 
@@ -246,27 +247,12 @@ kiroTest.describe('Kiro session goal', () => {
         }))
         await testInfo.attach(`kiro-${stage}-worker-evidence`, { body: Buffer.from(JSON.stringify(evidence)), contentType: 'application/json' })
       }
-      const sendBarrier = async (stage: string, prompt: string, answer: string) => {
-        const index = await modelScript.queue({ text: answer })
-        await sendMessage(page, modelScript.prompt(prompt))
-        let finished = await modelScript.waitForSteps(index + 1)
-        // The mock records a request when it consumes its step, so the record
-        // exists after the wait. `stepRequest` throws only when the record cap
-        // dropped it, and a dropped record never returns, so a throw that ends
-        // the poll at once states the cause.
-        await expect.poll(async () => {
-          finished = await modelScript.status()
-          return stepRequest(finished, index).response?.status
-        }).toBe(200)
-        await attachBarrierEvidence(`${stage}-model-finished`, finished, answer)
-        await waitForAgentIdle(page)
-        await attachBarrierEvidence(`${stage}-worker-idle`, finished, answer)
-        // Read the record after the turn. A native client states more of its request after the mock counts the step.
-        const request = await modelScript.requestAt(index)
-        expect(nativeModelContextText(request)).toContain(prompt)
-        await expect(assistantBubbles(page).filter({ hasText: answer }).first()).toBeVisible()
-        return request
-      }
+      const sendBarrier = (stage: string, prompt: string, answer: string) => sendKiroGoalBarrier(context, {
+        name: `kiro-${stage}-barrier-${marker}`,
+        prompt,
+        answer,
+        onStage: (phase, status) => attachBarrierEvidence(`${stage}-${phase}`, status, answer),
+      })
       // Kiro writes its session files while the test reads them, so each wait on them retries a read that throws.
       const setExecutionId = await retryUntilPass(() => {
         const id = kiroGoalExecutionId(nativeMessages())
