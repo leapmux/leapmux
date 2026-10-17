@@ -151,14 +151,15 @@ func (a *Agent) observeSlashCommands(content []byte) {
 // `commands_changed` frame.
 //
 // The frame's own contract tells a client to REPLACE its cached command list
-// with this payload, so a present list re-answers the /goal question even when
-// its replacement drops the command. Its elements are the command line
-// interface's own command descriptors ({name, description, argumentHint,
-// aliases?, builtin?, plugin?}); only `name` matters here, and it carries the
-// bare name without the leading slash, exactly like the init frame's
-// `slash_commands`. A frame that carries no list at all leaves the answer
-// alone, so a future shape change degrades to "unknown" instead of silently
-// disabling a working feature.
+// with this payload. A present list updates /goal availability even when it drops the command.
+//
+// Each element is a command descriptor from the command line interface.
+// Its shape is {name, description, argumentHint, aliases?, builtin?, plugin?}.
+// Only `name` matters here.
+// It carries the bare command name without the leading slash, exactly like `slash_commands` in the init frame.
+//
+// A frame without a list leaves the current answer unchanged.
+// An unknown replacement shape must not silently disable a working feature.
 func (a *Agent) observeChangedCommands(content []byte) {
 	var frame struct {
 		Subtype  string          `json:"subtype"`

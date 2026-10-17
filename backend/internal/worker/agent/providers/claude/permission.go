@@ -20,20 +20,20 @@ type claudePendingControl struct {
 	sessionID  string
 	agentID    string
 	toolUseID  string
-	// elicitationID identifies the MCP elicitation that an `elicitation`
-	// request asks. An `elicitation_complete` frame finds the request by it
-	// (see handleElicitationComplete). Empty for every other request.
-	elicitationID   string
-	payload         []byte
-	automaticReply  []byte
-	ready           bool
-	published       bool
-	answering       bool
-	answered        bool
-	automatic       bool
-	automaticFailed bool
-	publicationDone chan struct{}
-	publicationOnce sync.Once
+	// elicitationServer and elicitationID identify one server's elicitation.
+	// A completion must match both values. Each MCP server assigns its own IDs.
+	elicitationServer string
+	elicitationID     string
+	payload           []byte
+	automaticReply    []byte
+	ready             bool
+	published         bool
+	answering         bool
+	answered          bool
+	automatic         bool
+	automaticFailed   bool
+	publicationDone   chan struct{}
+	publicationOnce   sync.Once
 }
 
 func (a *Agent) claudeCodeHandleControlRequest(content []byte) {
@@ -48,12 +48,11 @@ func (a *Agent) claudeCodeHandleControlRequest(content []byte) {
 	// mistyped field costs only itself. A `can_use_tool` is the permission
 	// decision that reaches the reader, so the call that it escalates waits on
 	// no automatic check any more. An `elicitation` keeps its elicitation id on
-	// the record, because a later `elicitation_complete` states the
-	// elicitation alone (see handleElicitationComplete).
+	// the record with its server, because a completion identifies that pair.
 	fields := parseClaudeControlRequestFields(content)
 	if fields.Subtype == claudeControlRequestCanUseTool {
 		if sink, ok := a.claudePermissionCheckSink(fields.AgentID); ok {
-			clearClaudePermissionCheck(sink, fields.ToolUseID)
+			providerkit.PublishPermissionCheck(sink, fields.ToolUseID, false)
 		}
 	}
 	elicitationID := ""
@@ -70,7 +69,8 @@ func (a *Agent) claudeCodeHandleControlRequest(content []byte) {
 	}
 	valid := json.Unmarshal(envelope.Request, &request) == nil
 	record := &claudePendingControl{instanceID: id.Generate(), agentID: request.AgentID, toolUseID: request.ToolUseID,
-		elicitationID: elicitationID, payload: bytes.Clone(content), publicationDone: make(chan struct{})}
+		elicitationServer: fields.MCPServerName, elicitationID: elicitationID,
+		payload: bytes.Clone(content), publicationDone: make(chan struct{})}
 	var input map[string]json.RawMessage
 	if valid && request.Subtype == "can_use_tool" && request.ToolName != "" && !request.RequiresInteraction &&
 		request.ToolName != ToolNameAskUserQuestion && (claudeProvider{}).PlanModeControl(request.ToolName) == agent.PlanModeControlNone &&
@@ -270,12 +270,10 @@ func (a *Agent) finishControlAnswer(requestID string, record *claudePendingContr
 	}
 }
 
-// claimElicitation claims the published elicitation request that elicitationID
-// identifies, for an answer that the Worker sends. It returns nil when no such
-// request waits for an answer: the id is unknown, the reader answered it
-// already, or the request belongs to an earlier session.
-func (a *Agent) claimElicitation(elicitationID string) (string, *claudePendingControl) {
-	if elicitationID == "" {
+// claimElicitation claims an unanswered request from the specified MCP server.
+// Both identities must match, and the request must belong to the current session.
+func (a *Agent) claimElicitation(server, elicitationID string) (string, *claudePendingControl) {
+	if server == "" || elicitationID == "" {
 		return "", nil
 	}
 	a.Mu.Lock()
@@ -284,7 +282,7 @@ func (a *Agent) claimElicitation(elicitationID string) (string, *claudePendingCo
 		return "", nil
 	}
 	for requestID, record := range a.incomingControls {
-		if record.elicitationID != elicitationID || !record.ready || record.answering || record.answered ||
+		if record.elicitationServer != server || record.elicitationID != elicitationID || !record.ready || record.answering || record.answered ||
 			record.sessionID != a.sessionID {
 			continue
 		}

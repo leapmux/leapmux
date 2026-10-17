@@ -18,13 +18,13 @@ import (
 // The frames that a retry exchanges with Codex.
 const (
 	retryTurnCompleted = `{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"interrupted"}}}`
-	retryForkReply     = `{"thread":{"id":"fork-1"},"model":"gpt-5.4"}`
-	retryTurnStarted   = `{"method":"turn/started","params":{"threadId":"fork-1","turn":{"id":"turn-2"}}}`
+	retryRevertReply   = `{"thread":{"id":"main-thread","historyMode":"paginated","ephemeral":false}}`
+	retryTurnStarted   = `{"method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"turn-2"}}}`
 )
 
 // retryResponder answers the requests of one turn retry as Codex does. The
-// turn/interrupt ends turn-1, the thread/fork returns fork-1 on the model of
-// the source thread, and the turn/start starts turn-2 on fork-1. A non-nil
+// turn/interrupt ends turn-1, the thread/revert returns main-thread on the model of
+// the source thread, and the turn/start starts turn-2 on main-thread. A non-nil
 // override answers a method in place of the default when it returns true.
 func retryResponder(a **Agent, override func(method string) (agenttest.RPCReply, bool)) func(string) agenttest.RPCReply {
 	return func(method string) agenttest.RPCReply {
@@ -36,8 +36,8 @@ func retryResponder(a **Agent, override func(method string) (agenttest.RPCReply,
 		switch method {
 		case "turn/interrupt":
 			handleCodexOutput(*a, providerkit.ParseLine([]byte(retryTurnCompleted)))
-		case "thread/fork":
-			return agenttest.RPCReply{Result: json.RawMessage(retryForkReply)}
+		case "thread/revert":
+			return agenttest.RPCReply{Result: json.RawMessage(retryRevertReply)}
 		case "turn/start":
 			handleCodexOutput(*a, providerkit.ParseLine([]byte(retryTurnStarted)))
 		}
@@ -52,7 +52,9 @@ func armRetryableTurn(t *testing.T, a *Agent, sink *agenttest.Sink) {
 	t.Helper()
 	a.Mu.Lock()
 	a.threadID = "main-thread"
-	a.pendingTurnInput = []map[string]interface{}{{"type": "text", "text": "Hello."}}
+	a.turnRetrySupported = true
+	sink.UpdateSessionID("main-thread")
+	a.pendingStart = newCodexTurnStart("main-thread", []map[string]interface{}{{"type": "text", "text": "Hello."}}, a.turnSettingsLocked())
 	a.Mu.Unlock()
 	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"turn-1"}}}`)))
 	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"model/safetyBuffering/updated","params":{"threadId":"main-thread","turnId":"turn-1","model":"gpt-5.4","showBufferingUi":true,"fasterModel":"gpt-5.5"}}`)))
@@ -64,7 +66,7 @@ func armRetryableTurn(t *testing.T, a *Agent, sink *agenttest.Sink) {
 func (a *Agent) retryingForTest() bool {
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
-	return a.retrying
+	return a.retry != nil
 }
 
 func (a *Agent) modelAndEffortForTest() (string, string) {
@@ -81,11 +83,9 @@ func requestMethods(requests []codexRecordedRequest) []string {
 	return methods
 }
 
-// The retry stops the running turn, forks its thread without the stopped
-// attempt and sends the retained input again on the faster model. The fork
-// keeps the source thread's settings: only the new turn overrides the model and
-// the effort.
-func TestCodexTurnRetrySendsTheRetainedInputOnAFork(t *testing.T) {
+// Retry removes the stopped attempt from native history and resends its retained input.
+// The thread keeps its settings until the new turn overrides the model and effort.
+func TestCodexTurnRetrySendsTheRetainedInputAfterRevert(t *testing.T) {
 	t.Parallel()
 
 	gapRefusals := make(chan error, 2)
@@ -94,13 +94,13 @@ func TestCodexTurnRetrySendsTheRetainedInputOnAFork(t *testing.T) {
 		switch method {
 		case "turn/start":
 			a.Mu.Lock()
-			original := a.threadID == "main-thread"
+			original := a.mainTurn.id == "" && a.retry == nil
 			a.Mu.Unlock()
 			if original {
 				handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"turn-1"}}}`)))
 				return agenttest.RPCReply{Result: json.RawMessage(`{}`)}, true
 			}
-		case "thread/fork":
+		case "thread/revert":
 			// Inside the gap: the input queue must not drain into it.
 			gapRefusals <- a.SendInput("more", nil)
 			gapRefusals <- a.SteerInput("more", nil)
@@ -108,12 +108,14 @@ func TestCodexTurnRetrySendsTheRetainedInputOnAFork(t *testing.T) {
 		return agenttest.RPCReply{}, false
 	}))
 	a.threadID = "main-thread"
+	a.turnRetrySupported = true
 
 	// The turn carries a message and one steer, so the retry sends both again.
 	require.NoError(t, a.sendTurnStart("main-thread", []map[string]interface{}{{"type": "text", "text": "Hello."}},
 		turnSettings{model: "gpt-5.4", effort: "high", collaborationMode: contracts.CodexOptionDefaultCollaborationMode}))
 	require.NoError(t, a.SteerInput("guide", nil))
 	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"model/safetyBuffering/updated","params":{"threadId":"main-thread","turnId":"turn-1","model":"gpt-5.4","showBufferingUi":true,"fasterModel":"gpt-5.5"}}`)))
+	beforeRetry := len(sink.TurnKinds())
 
 	retry, err := a.BeginTurnRetry("turn-1", "gpt-5.5")
 	require.NoError(t, err)
@@ -131,25 +133,21 @@ func TestCodexTurnRetrySendsTheRetainedInputOnAFork(t *testing.T) {
 	require.ErrorIs(t, <-gapRefusals, agent.ErrAgentBusy, "SendInput refuses during the retry")
 	require.ErrorIs(t, <-gapRefusals, agent.ErrAgentBusy, "SteerInput refuses during the retry")
 	model, effort := a.modelAndEffortForTest()
-	assert.Equal(t, "gpt-5.4", model, "the swap keeps the model until the new turn starts")
+	assert.Equal(t, "gpt-5.4", model, "the revert keeps the model until the new turn starts")
 	assert.Equal(t, "high", effort)
-	assert.Equal(t, "fork-1", a.threadID)
+	assert.Equal(t, "main-thread", a.threadID)
 
 	require.NoError(t, retry.Start())
 	sent := requests()
-	require.Equal(t, []string{"turn/start", "turn/steer", "turn/interrupt", "thread/fork", "turn/start", "thread/unsubscribe"}, requestMethods(sent))
+	require.Equal(t, []string{"turn/start", "turn/steer", "turn/interrupt", "thread/revert", "turn/start"}, requestMethods(sent))
 	assert.Equal(t, "main-thread", sent[2].Params["threadId"])
 	assert.Equal(t, "turn-1", sent[2].Params["turnId"])
 
-	fork := sent[3]
-	assert.Equal(t, "main-thread", fork.Params["threadId"])
-	assert.Equal(t, "turn-1", fork.Params["beforeTurnId"])
-	assert.Equal(t, "gpt-5.4", fork.Params["model"], "the fork keeps the model of the source thread")
-	assert.Equal(t, true, fork.Params["deferGoalContinuation"])
-	assert.Equal(t, true, fork.Params["excludeTurns"])
+	revert := sent[3]
+	assert.Equal(t, map[string]interface{}{"threadId": "main-thread", "beforeTurnId": "turn-1"}, revert.Params)
 
 	turn := sent[4]
-	assert.Equal(t, "fork-1", turn.Params["threadId"])
+	assert.Equal(t, "main-thread", turn.Params["threadId"])
 	assert.Equal(t, "gpt-5.5", turn.Params["model"])
 	assert.Equal(t, "low", turn.Params["effort"])
 	assert.Equal(t, []interface{}{
@@ -166,12 +164,9 @@ func TestCodexTurnRetrySendsTheRetainedInputOnAFork(t *testing.T) {
 		},
 	}, turn.Params["collaborationMode"])
 
-	// Start unsubscribes the old thread last, after the new turn started.
-	assert.Equal(t, "main-thread", sent[5].Params["threadId"])
-
 	// The transcript records the retry, and the settings display follows the
 	// override that Codex keeps for later turns.
-	notifications := sink.LeapMuxNotifications()
+	notifications := codexLeapMuxNotices(t, sink)
 	require.Len(t, notifications, 1)
 	assert.Equal(t, contracts.NotificationTypeTurnRetried, notifications[0][contracts.NotificationFieldType])
 	assert.Equal(t, "gpt-5.5", notifications[0][contracts.NotificationFieldModel])
@@ -184,8 +179,8 @@ func TestCodexTurnRetrySendsTheRetainedInputOnAFork(t *testing.T) {
 
 	// The retry's own turn/started cleared the hold and opened the new turn.
 	assert.False(t, a.retryingForTest())
-	assert.Equal(t, "turn-2", a.turnID)
-	assert.Zero(t, sink.GoalClears(), "the fork keeps the goal of its source thread")
+	assert.Equal(t, "turn-2", a.mainTurn.id)
+	assert.Zero(t, sink.GoalClears(), "the revert keeps the existing goal")
 
 	// The gap never looked idle, so no queued item drained into it. It is also
 	// not steerable: the new turn carries the retained input again. Only the two
@@ -193,11 +188,20 @@ func TestCodexTurnRetrySendsTheRetainedInputOnAFork(t *testing.T) {
 	assert.NotContains(t, sink.TurnActives(), false)
 	kinds := sink.TurnKinds()
 	require.GreaterOrEqual(t, len(kinds), 3)
-	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, kinds[0])
+	assert.Contains(t, kinds[:beforeRetry], leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE)
 	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, kinds[len(kinds)-1])
-	for _, kind := range kinds[1 : len(kinds)-1] {
-		assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED, kind, "the gap is not steerable")
+	accepted := false
+	for _, kind := range kinds[beforeRetry:] {
+		if kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE {
+			accepted = true
+		}
+		if accepted {
+			assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, kind, "the accepted turn remains steerable")
+		} else {
+			assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED, kind, "the retry gap is not steerable")
+		}
 	}
+	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED, kinds[beforeRetry], "retry acceptance closes steering immediately")
 }
 
 // The offer identifies one turn and one model. BeginTurnRetry refuses anything
@@ -216,13 +220,13 @@ func TestCodexBeginTurnRetryRefusesARetryThatIsNotOffered(t *testing.T) {
 		{name: "a withdrawn offer", turnID: "turn-1", model: "gpt-5.5", prepare: func(a *Agent) { a.withdrawTurnRetryOffer() }},
 		{name: "a retry in flight", turnID: "turn-1", model: "gpt-5.5", prepare: func(a *Agent) {
 			a.Mu.Lock()
-			a.retrying = true
+			a.retry = &codexTurnRetry{a: a}
 			a.Mu.Unlock()
 		}},
 		{name: "a stopped agent", turnID: "turn-1", model: "gpt-5.5", prepare: func(a *Agent) { a.SetStoppedForTest(true) }},
 		{name: "no retained input", turnID: "turn-1", model: "gpt-5.5", prepare: func(a *Agent) {
 			a.Mu.Lock()
-			delete(a.turnInput, "turn-1")
+			a.mainTurn.input = nil
 			a.Mu.Unlock()
 		}},
 	} {
@@ -244,22 +248,22 @@ func TestCodexBeginTurnRetryRefusesARetryThatIsNotOffered(t *testing.T) {
 			assert.ErrorIs(t, err, agent.ErrTurnRetryUnavailable)
 			assert.Nil(t, retry)
 			assert.Empty(t, requests(), "a refusal sends no request")
-			assert.Equal(t, "turn-1", a.turnID, "a refusal leaves the running turn alone")
+			assert.Equal(t, "turn-1", a.mainTurn.id, "a refusal leaves the running turn alone")
 			assert.Equal(t, retryingBefore, a.retryingForTest(), "a refusal leaves the retry hold alone")
 			assert.Len(t, sink.TurnActives(), turnStates, "a refusal publishes no turn state")
 		})
 	}
 }
 
-// A fork that Codex refuses ends the retry hold and states the failure. The
-// stopped attempt ended, so the user can send the message again.
-func TestCodexTurnRetryForkFailureStatesTheFailure(t *testing.T) {
+// A revert error can follow a history change or pending runtime shutdown.
+// The retry reports the error and keeps input paused until recovery.
+func TestCodexTurnRetryRevertFailureKeepsInputPaused(t *testing.T) {
 	t.Parallel()
 
 	var a *Agent
 	a, sink, _ := newCodexAgentForRPC(t, retryResponder(&a, func(method string) (agenttest.RPCReply, bool) {
-		if method == "thread/fork" {
-			return agenttest.RPCReply{Error: json.RawMessage(`{"code":-32000,"message":"fork refused"}`)}, true
+		if method == "thread/revert" {
+			return agenttest.RPCReply{Error: json.RawMessage(`{"code":-32000,"message":"revert refused"}`)}, true
 		}
 		return agenttest.RPCReply{}, false
 	}))
@@ -267,19 +271,20 @@ func TestCodexTurnRetryForkFailureStatesTheFailure(t *testing.T) {
 	retry, err := a.BeginTurnRetry("turn-1", "gpt-5.5")
 	require.NoError(t, err)
 
-	err = retry.Replace()
+	require.NoError(t, retry.Replace())
+	err = retry.Start()
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "fork refused", "the server's refusal is the failure")
-	assert.False(t, a.retryingForTest(), "the input queue resumes")
-	assert.Equal(t, "main-thread", a.threadID, "a failed fork replaces nothing")
+	assert.Contains(t, err.Error(), "revert refused", "the server's refusal is the failure")
+	assert.True(t, a.retryingForTest(), "the input queue remains paused")
+	assert.Equal(t, "main-thread", a.threadID, "a failed revert must not replace the session identity")
 	last, _ := sink.LastTurnActive()
-	assert.False(t, last, "no turn runs after the failed retry")
-	texts := agenttest.AgentErrorTexts(sink.LeapMuxNotifications())
+	assert.True(t, last, "an uncertain runtime must not accept input")
+	texts := agenttest.AgentErrorTexts(codexLeapMuxNotices(t, sink))
 	require.Len(t, texts, 1)
-	assert.Contains(t, texts[0], "Failed to retry with a faster model: ")
-	assert.Contains(t, texts[0], "fork refused")
-	assert.Contains(t, texts[0], ". Send the message again to retry.")
+	assert.Contains(t, texts[0], "Cannot confirm the retry's history change:")
+	assert.Contains(t, texts[0], "revert refused")
+	assert.Contains(t, texts[0], "Clear context or restart this agent to recover.")
 	model, effort := a.modelAndEffortForTest()
 	assert.Equal(t, "gpt-5.4", model)
 	assert.Equal(t, "high", effort)
@@ -302,7 +307,7 @@ func TestCodexTurnRetryOfATurnThatEndedByItselfSendsNothing(t *testing.T) {
 	assert.Empty(t, requests(), "no request reaches a turn that already ended")
 	assert.False(t, a.retryingForTest())
 	assert.Equal(t, "main-thread", a.threadID)
-	assert.Empty(t, sink.LeapMuxNotifications())
+	assert.Empty(t, codexLeapMuxNotices(t, sink))
 	last, _ := sink.LastTurnActive()
 	assert.False(t, last, "the input queue resumes")
 }
@@ -329,7 +334,7 @@ func TestCodexTurnRetryInterruptRefusedForAnEndedTurnStatesNothing(t *testing.T)
 
 	assert.Equal(t, []string{"turn/interrupt"}, requestMethods(requests()))
 	assert.False(t, a.retryingForTest())
-	assert.Empty(t, sink.LeapMuxNotifications())
+	assert.Empty(t, codexLeapMuxNotices(t, sink))
 }
 
 // A retry of an agent that the user stopped fails because the process goes
@@ -339,7 +344,7 @@ func TestCodexTurnRetryOfAStoppedAgentStatesNoFailure(t *testing.T) {
 
 	var a *Agent
 	a, sink, _ := newCodexAgentForRPC(t, retryResponder(&a, func(method string) (agenttest.RPCReply, bool) {
-		if method == "thread/fork" {
+		if method == "thread/revert" {
 			a.SetStoppedForTest(true)
 			return agenttest.RPCReply{Error: json.RawMessage(`{"code":-32000,"message":"the process stops"}`)}, true
 		}
@@ -349,10 +354,11 @@ func TestCodexTurnRetryOfAStoppedAgentStatesNoFailure(t *testing.T) {
 	retry, err := a.BeginTurnRetry("turn-1", "gpt-5.5")
 	require.NoError(t, err)
 
-	require.Error(t, retry.Replace())
+	require.NoError(t, retry.Replace())
+	require.Error(t, retry.Start())
 
 	assert.False(t, a.retryingForTest())
-	assert.Empty(t, sink.LeapMuxNotifications())
+	assert.Empty(t, codexLeapMuxNotices(t, sink))
 }
 
 // The stage of a failure reads as a word in the log.
@@ -360,7 +366,8 @@ func TestCodexTurnRetryStageString(t *testing.T) {
 	t.Parallel()
 
 	assert.Equal(t, "stopping", codexTurnRetryStopping.String())
-	assert.Equal(t, "replacing", codexTurnRetryReplacing.String())
+	assert.Equal(t, "preparing", codexTurnRetryPreparing.String())
+	assert.Equal(t, "reverting", codexTurnRetryReverting.String())
 	assert.Equal(t, "starting", codexTurnRetryStarting.String())
 	assert.Equal(t, "codexTurnRetryStage(9)", codexTurnRetryStage(9).String())
 }
@@ -385,10 +392,10 @@ func TestCodexTurnRetryInterruptFailureLetsTheAttemptContinue(t *testing.T) {
 
 	assert.Equal(t, []string{"turn/interrupt"}, requestMethods(requests()))
 	assert.False(t, a.retryingForTest())
-	assert.Equal(t, "turn-1", a.turnID, "the attempt still runs")
+	assert.Equal(t, "turn-1", a.mainTurn.id, "the attempt still runs")
 	last, _ := sink.LastTurnActive()
 	assert.True(t, last, "the turn state reports the attempt that still runs")
-	texts := agenttest.AgentErrorTexts(sink.LeapMuxNotifications())
+	texts := agenttest.AgentErrorTexts(codexLeapMuxNotices(t, sink))
 	require.Len(t, texts, 1)
 	assert.Contains(t, texts[0], "Failed to retry with a faster model: ")
 	assert.Contains(t, texts[0], "interrupt refused")
@@ -421,53 +428,36 @@ func TestCodexTurnRetryStopDuringTheWaitCancelsTheRetry(t *testing.T) {
 	require.NoError(t, <-interruptErr)
 
 	assert.Equal(t, []string{"turn/interrupt"}, requestMethods(requests()), "the cancelled retry stops the turn and nothing else")
-	assert.Empty(t, agenttest.AgentErrorTexts(sink.LeapMuxNotifications()), "the user's stop is not an error")
+	assert.Empty(t, agenttest.AgentErrorTexts(codexLeapMuxNotices(t, sink)), "the user's stop is not an error")
 	assert.False(t, a.retryingForTest())
 	assert.Equal(t, "main-thread", a.threadID)
 	model, _ := a.modelAndEffortForTest()
 	assert.Equal(t, "gpt-5.4", model, "a cancelled retry keeps the model")
 }
 
-// A stop while the fork runs wins too. The source thread keeps the stopped
-// turn, as after a plain stop, and the retry retires and releases the unused
-// fork.
-func TestCodexTurnRetryStopDuringTheForkDropsTheFork(t *testing.T) {
+// A stop during revert prevents resubmission without retiring the retained thread.
+func TestCodexTurnRetryStopDuringRevertKeepsTheThread(t *testing.T) {
 	t.Parallel()
-
-	unsubscribed := make(chan struct{})
 	var a *Agent
 	a, sink, requests := newCodexAgentForRPC(t, retryResponder(&a, func(method string) (agenttest.RPCReply, bool) {
-		switch method {
-		case "thread/fork":
-			if err := a.Interrupt(agent.StopContext{}); err != nil {
-				return agenttest.RPCReply{Error: json.RawMessage(`{"code":-32000,"message":"the stop failed"}`)}, true
-			}
-		case "thread/unsubscribe":
-			close(unsubscribed)
+		if method == "thread/revert" {
+			require.NoError(t, a.Interrupt(agent.StopContext{}))
 		}
 		return agenttest.RPCReply{}, false
 	}))
 	armRetryableTurn(t, a, sink)
 	retry, err := a.BeginTurnRetry("turn-1", "gpt-5.5")
 	require.NoError(t, err)
-
-	assert.ErrorIs(t, retry.Replace(), errCodexTurnRetryCancelled)
-
-	assert.Equal(t, "main-thread", a.threadID, "the source thread stays the main thread")
-	assert.True(t, a.isRetiredCodexThread("fork-1"), "the unused fork's frames reach no transcript")
-	select {
-	case <-unsubscribed:
-	case <-testutil.DeadlineContext(t).Done():
-		t.Fatal("the unused fork was never released")
-	}
-	sent := requests()
-	require.Equal(t, []string{"turn/interrupt", "thread/fork", "thread/unsubscribe"}, requestMethods(sent))
-	assert.Equal(t, "fork-1", sent[2].Params["threadId"], "the unused fork is released")
+	require.NoError(t, retry.Replace())
+	require.ErrorIs(t, retry.Start(), errCodexTurnRetryCancelled)
+	assert.Equal(t, "main-thread", a.currentThreadID())
+	assert.False(t, a.isRetiredCodexThread("main-thread"))
+	assert.Equal(t, []string{"turn/interrupt", "thread/revert"}, requestMethods(requests()))
 	assert.False(t, a.retryingForTest())
-	assert.Empty(t, sink.LeapMuxNotifications(), "the user's stop is not an error, and no retry ran")
+	assert.Empty(t, codexLeapMuxNotices(t, sink))
 }
 
-// A stop between the swap and the start wins the same way: Start sends no
+// A stop after revert submission and before the start wins the same way: Start sends no
 // turn, states no retry, and keeps the model.
 func TestCodexTurnRetryStopBeforeTheStartSkipsTheTurn(t *testing.T) {
 	t.Parallel()
@@ -482,9 +472,9 @@ func TestCodexTurnRetryStopBeforeTheStartSkipsTheTurn(t *testing.T) {
 
 	assert.ErrorIs(t, retry.Start(), errCodexTurnRetryCancelled)
 
-	assert.Equal(t, []string{"turn/interrupt", "thread/fork", "thread/unsubscribe"}, requestMethods(requests()),
+	assert.Equal(t, []string{"turn/interrupt", "thread/revert"}, requestMethods(requests()),
 		"no turn starts, and the retired thread is still released")
-	assert.Empty(t, sink.LeapMuxNotifications(), "no retry ran, and the user's stop is not an error")
+	assert.Empty(t, codexLeapMuxNotices(t, sink), "no retry ran, and the user's stop is not an error")
 	assert.False(t, a.retryingForTest())
 	model, effort := a.modelAndEffortForTest()
 	assert.Equal(t, "gpt-5.4", model)
@@ -520,14 +510,14 @@ func TestCodexTurnRetryStopDuringTheStartStopsTheNewTurn(t *testing.T) {
 	require.NoError(t, <-stopErr)
 
 	sent := requests()
-	require.Equal(t, []string{"turn/interrupt", "thread/fork", "turn/start", "turn/interrupt", "thread/unsubscribe"}, requestMethods(sent))
-	assert.Equal(t, "fork-1", sent[3].Params["threadId"])
+	require.Equal(t, []string{"turn/interrupt", "thread/revert", "turn/start", "turn/interrupt"}, requestMethods(sent))
+	assert.Equal(t, "main-thread", sent[3].Params["threadId"])
 	assert.Equal(t, "turn-2", sent[3].Params["turnId"], "the new turn stops")
-	assert.Empty(t, agenttest.AgentErrorTexts(sink.LeapMuxNotifications()))
+	assert.Empty(t, agenttest.AgentErrorTexts(codexLeapMuxNotices(t, sink)))
 }
 
 // Only the retry's own turn/started ends the retry hold. A turn that Codex
-// starts by itself on the old thread, before the swap, leaves the queue held.
+// starts by itself before the revert reply, leaves the queue held.
 func TestCodexTurnRetryHoldSurvivesATurnThatCodexStarts(t *testing.T) {
 	t.Parallel()
 
@@ -540,7 +530,7 @@ func TestCodexTurnRetryHoldSurvivesATurnThatCodexStarts(t *testing.T) {
 			// A goal continuation that Codex starts on the old thread.
 			handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"turn-x"}}}`)))
 			return agenttest.RPCReply{Result: json.RawMessage(`{}`)}, true
-		case "thread/fork":
+		case "thread/revert":
 			retryingInGap <- a.retryingForTest()
 		}
 		return agenttest.RPCReply{}, false
@@ -551,14 +541,14 @@ func TestCodexTurnRetryHoldSurvivesATurnThatCodexStarts(t *testing.T) {
 
 	require.NoError(t, retry.Replace())
 	assert.True(t, <-retryingInGap, "a turn that Codex starts keeps the hold")
-	assert.True(t, a.retryingForTest(), "the swap keeps the hold")
+	assert.True(t, a.retryingForTest(), "the pending revert keeps the hold")
 
 	require.NoError(t, retry.Start())
 	assert.False(t, a.retryingForTest(), "the retry's own turn/started ends the hold")
-	assert.Equal(t, "turn-2", a.turnID)
+	assert.Equal(t, "turn-2", a.mainTurn.id)
 }
 
-// A turn/start that Codex refuses after the swap leaves no running turn. The
+// A turn/start that Codex refuses after the revert leaves no running turn. The
 // transcript states the retry and then its failure, the input queue resumes,
 // and the model stays, because no turn ran on the faster one.
 func TestCodexTurnRetryStartFailureStatesTheFailure(t *testing.T) {
@@ -580,7 +570,7 @@ func TestCodexTurnRetryStartFailureStatesTheFailure(t *testing.T) {
 
 	require.Error(t, startErr)
 	assert.Contains(t, startErr.Error(), "start refused", "the server's refusal is the failure")
-	notifications := sink.LeapMuxNotifications()
+	notifications := codexLeapMuxNotices(t, sink)
 	require.Len(t, notifications, 2)
 	assert.Equal(t, contracts.NotificationTypeTurnRetried, notifications[0][contracts.NotificationFieldType])
 	assert.Equal(t, contracts.NotificationTypeAgentError, notifications[1][contracts.NotificationFieldType])
@@ -593,7 +583,7 @@ func TestCodexTurnRetryStartFailureStatesTheFailure(t *testing.T) {
 	assert.Equal(t, "gpt-5.4", model, "the model changes only when the retry's turn starts")
 	assert.Equal(t, "high", effort, "the effort changes only when the retry's turn starts")
 	sent := requests()
-	assert.Equal(t, "thread/unsubscribe", sent[len(sent)-1].Method, "the retired thread is still released")
+	assert.Equal(t, []string{"turn/interrupt", "thread/revert", "turn/start"}, requestMethods(sent), "a failed input does not replace the subscription")
 }
 
 // A turn/start without its turn/started in time can still start the turn. The
@@ -624,19 +614,19 @@ func TestCodexTurnRetryUnconfirmedStartSaysTheRetryCanStillStart(t *testing.T) {
 	clock.Advance(turnStartAckTimeout).MustWait(ctx)
 
 	assert.ErrorIs(t, <-started, agent.ErrDeliveryUncertain)
-	texts := agenttest.AgentErrorTexts(sink.LeapMuxNotifications())
+	texts := agenttest.AgentErrorTexts(codexLeapMuxNotices(t, sink))
 	require.Len(t, texts, 1)
 	assert.Contains(t, texts[0], "Failed to retry with a faster model: ")
 	assert.Contains(t, texts[0], ". The retry can still start. Wait before you send the message again.")
 	assert.NotContains(t, texts[0], "Send the message again to retry.")
-	assert.False(t, a.retryingForTest())
+	assert.True(t, a.retryingForTest(), "an unresolved delivery keeps the queue hold")
 	model, _ := a.modelAndEffortForTest()
 	assert.Equal(t, "gpt-5.4", model, "an unconfirmed turn changes no setting")
 
 	// The late turn is the retry's turn, so it keeps the retained input.
 	handleCodexOutput(a, providerkit.ParseLine([]byte(retryTurnStarted)))
 	a.Mu.Lock()
-	retained := a.turnInput["turn-2"]
+	retained := a.mainTurn.input
 	a.Mu.Unlock()
 	assert.Equal(t, []map[string]interface{}{{"type": "text", "text": "Hello."}}, retained)
 }
@@ -670,9 +660,9 @@ func TestCodexTurnRetryWaitForTheStoppedTurnTimesOut(t *testing.T) {
 	replaceErr := <-replaced
 	require.Error(t, replaceErr)
 	assert.Contains(t, replaceErr.Error(), "the stopped turn did not end within")
-	assert.Equal(t, []string{"turn/interrupt"}, requestMethods(requests()), "no fork follows a turn that did not end")
+	assert.Equal(t, []string{"turn/interrupt"}, requestMethods(requests()), "no revert follows a turn that did not end")
 	assert.False(t, a.retryingForTest())
-	texts := agenttest.AgentErrorTexts(sink.LeapMuxNotifications())
+	texts := agenttest.AgentErrorTexts(codexLeapMuxNotices(t, sink))
 	require.Len(t, texts, 1)
 	assert.Contains(t, texts[0], "the stopped turn did not end within")
 	assert.Contains(t, texts[0], ". Send the message again to retry.")
@@ -710,7 +700,7 @@ func TestCodexTurnRetryProcessExitDuringTheWaitEndsTheRetry(t *testing.T) {
 	assert.Equal(t, a.ProcessExitError().Error(), replaceErr.Error(), "the exit is the failure, not a wrapper around it")
 	assert.Equal(t, []string{"turn/interrupt"}, requestMethods(requests()))
 	assert.False(t, a.retryingForTest())
-	texts := agenttest.AgentErrorTexts(sink.LeapMuxNotifications())
+	texts := agenttest.AgentErrorTexts(codexLeapMuxNotices(t, sink))
 	require.Len(t, texts, 1)
 	assert.Contains(t, texts[0], a.ProcessExitError().Error())
 }
@@ -731,16 +721,14 @@ func TestCodexTurnRetryAbandonEndsTheHoldWithoutANotice(t *testing.T) {
 
 	assert.Empty(t, requests())
 	assert.False(t, a.retryingForTest())
-	assert.Empty(t, sink.LeapMuxNotifications())
+	assert.Empty(t, codexLeapMuxNotices(t, sink))
 	last, _ := sink.LastTurnActive()
 	assert.True(t, last, "the untouched turn still runs")
 }
 
-// A failing thread/unsubscribe never fails the retry. The old thread is
-// retired anyway, so its late frames reach nothing.
-func TestCodexTurnRetryAFailingUnsubscribeStillInstallsTheFork(t *testing.T) {
+// Retry keeps the existing subscription, even when unsubscribe would fail.
+func TestCodexTurnRetryKeepsItsSubscription(t *testing.T) {
 	t.Parallel()
-
 	var a *Agent
 	a, sink, requests := newCodexAgentForRPC(t, retryResponder(&a, func(method string) (agenttest.RPCReply, bool) {
 		if method == "thread/unsubscribe" {
@@ -749,23 +737,17 @@ func TestCodexTurnRetryAFailingUnsubscribeStillInstallsTheFork(t *testing.T) {
 		return agenttest.RPCReply{}, false
 	}))
 	armRetryableTurn(t, a, sink)
+	sink.UpdateSessionID("main-thread")
 	retry, err := a.BeginTurnRetry("turn-1", "gpt-5.5")
 	require.NoError(t, err)
 	require.NoError(t, retry.Replace())
 	require.NoError(t, retry.Start())
-
-	assert.Equal(t, "fork-1", a.threadID, "the fork is installed")
-	assert.Equal(t, "fork-1", sink.LastSessionID())
-	sent := requests()
-	require.Equal(t, []string{"turn/interrupt", "thread/fork", "turn/start", "thread/unsubscribe"}, requestMethods(sent))
-	assert.Equal(t, "main-thread", sent[3].Params["threadId"], "the failure is the server's, not a skipped request")
-	assert.Empty(t, agenttest.AgentErrorTexts(sink.LeapMuxNotifications()))
-
-	// The retry retired the old thread although its unsubscribe failed. Its
-	// late frame adds no row.
-	notifications := sink.NotificationCount()
-	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"warning","params":{"threadId":"main-thread","message":"late"}}`)))
-	assert.Equal(t, notifications, sink.NotificationCount(), "the late frame joins no notification thread")
+	assert.Equal(t, "main-thread", sink.LastSessionID())
+	assert.Equal(t, []string{"turn/interrupt", "thread/revert", "turn/start"}, requestMethods(requests()))
+	assert.Empty(t, agenttest.AgentErrorTexts(codexLeapMuxNotices(t, sink)))
+	before := sink.NotificationCount()
+	feedCodexLines(a, `{"method":"warning","params":{"threadId":"main-thread","message":"still subscribed"}}`)
+	assert.Equal(t, before+1, sink.NotificationCount())
 }
 
 // orderRecordingSink records the order of the session calls that a thread swap
@@ -815,14 +797,15 @@ func (s *orderRecordingSink) Calls() []string {
 	return append([]string(nil), s.calls...)
 }
 
-// A clear publishes the swap in a fixed order: the turn state, the progress
-// reset, the goal removal, and the new session last. A clear unsubscribes the
-// old thread after the swap.
+// A clear installs the session identity before it publishes the replacement state.
+// Retired-thread cleanup runs independently of the completed clear.
 func TestCodexClearContextPublishesTheSwapInOrder(t *testing.T) {
 	t.Parallel()
 
+	unsubscribed := make(chan struct{})
 	a, _, requests := newCodexAgentForRPC(t, func(method string) agenttest.RPCReply {
 		if method == "thread/unsubscribe" {
+			close(unsubscribed)
 			return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
 		}
 		return agenttest.RPCReply{Result: json.RawMessage(`{"thread":{"id":"fresh-1"},"model":"gpt-5.4"}`)}
@@ -835,46 +818,45 @@ func TestCodexClearContextPublishesTheSwapInOrder(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, "fresh-1", sessionID)
-	assert.Equal(t, []string{"turn_state", "progress", "clear_goal", "session_id"}, recorder.Calls())
+	assert.Equal(t, []string{"session_id", "turn_state", "progress", "clear_goal"}, recorder.Calls())
 	assert.Equal(t, 1, recorder.GoalClears(), "a fresh thread has no goal")
+	<-unsubscribed
 	sent := requests()
 	require.Equal(t, []string{"thread/start", "thread/unsubscribe"}, requestMethods(sent))
 	assert.Equal(t, "old-1", sent[1].Params["threadId"])
 }
 
-// The retry's swap publishes in the order of a clear, without the goal
-// removal: a fork keeps the goal of its source thread.
-func TestCodexTurnRetryPublishesTheSwapInOrderAndKeepsTheGoal(t *testing.T) {
+// A same-ID revert preserves the goal and transcript identity.
+func TestCodexTurnRetryKeepsTheGoalAndSession(t *testing.T) {
 	t.Parallel()
-
 	recorder := &orderRecordingSink{Sink: &agenttest.Sink{}}
 	var a *Agent
-	a, _, _ = newCodexAgentForRPC(t, retryResponder(&a, func(method string) (agenttest.RPCReply, bool) {
-		if method == "thread/fork" {
-			// Everything after the fork reply is the swap.
-			recorder.Reset()
-		}
-		return agenttest.RPCReply{}, false
-	}))
+	a, _, _ = newCodexAgentForRPC(t, retryResponder(&a, nil))
 	a.sink = agent.NewProviderServices(recorder)
 	armRetryableTurn(t, a, recorder.Sink)
+	recorder.UpdateSessionID("main-thread")
 	retry, err := a.BeginTurnRetry("turn-1", "gpt-5.5")
 	require.NoError(t, err)
-
+	recorder.Reset()
 	require.NoError(t, retry.Replace())
-
-	assert.Equal(t, []string{"turn_state", "progress", "session_id"}, recorder.Calls())
-	assert.Zero(t, recorder.GoalClears(), "the fork keeps the goal of its source thread")
+	require.NoError(t, retry.Start())
+	assert.NotContains(t, recorder.Calls(), "session_id")
+	assert.NotContains(t, recorder.Calls(), "clear_goal")
+	assert.Equal(t, "main-thread", recorder.LastSessionID())
+	assert.Zero(t, recorder.GoalClears())
 }
 
 // A clear replaces the thread that a running retry targets. The retry stops
-// before it sends a request: a fork of the cleared thread would bring back the
-// conversation that the clear removed.
+// before it sends a request. A late retry must not restore the cleared conversation.
 func TestCodexClearContextCancelsARunningRetry(t *testing.T) {
 	t.Parallel()
 
+	unsubscribed := make(chan struct{})
 	var a *Agent
 	a, sink, requests := newCodexAgentForRPC(t, retryResponder(&a, func(method string) (agenttest.RPCReply, bool) {
+		if method == "thread/unsubscribe" {
+			close(unsubscribed)
+		}
 		if method == "thread/start" {
 			return agenttest.RPCReply{Result: json.RawMessage(`{"thread":{"id":"fresh-1"},"model":"gpt-5.4"}`)}, true
 		}
@@ -888,10 +870,11 @@ func TestCodexClearContextCancelsARunningRetry(t *testing.T) {
 
 	assert.ErrorIs(t, retry.Replace(), errCodexTurnRetryCancelled)
 
+	<-unsubscribed
 	assert.Equal(t, []string{"thread/start", "thread/unsubscribe"}, requestMethods(requests()), "the retry sends nothing")
 	assert.Equal(t, "fresh-1", a.threadID)
 	assert.False(t, a.retryingForTest())
-	assert.Empty(t, agenttest.AgentErrorTexts(sink.LeapMuxNotifications()))
+	assert.Empty(t, agenttest.AgentErrorTexts(codexLeapMuxNotices(t, sink)))
 }
 
 // A clear replaces the thread, so the offer for the replaced turn is
@@ -928,13 +911,14 @@ func TestCodexSteerOfATurnWithoutRetainedInputRetainsNothing(t *testing.T) {
 
 	a, sink, _ := newCodexAgentForRPC(t, func(string) agenttest.RPCReply { return agenttest.RPCReply{Result: json.RawMessage(`{}`)} })
 	a.threadID = "main-thread"
+	a.turnRetrySupported = true
 	// A goal continuation: Codex starts the turn, so LeapMux holds no input.
 	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"turn-1"}}}`)))
 
 	require.NoError(t, a.SteerInput("guide", nil))
 
 	a.Mu.Lock()
-	retained := a.turnInput["turn-1"]
+	retained := a.mainTurn.input
 	a.Mu.Unlock()
 	assert.Empty(t, retained, "the steer alone is not the input of the turn")
 	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"model/safetyBuffering/updated","params":{"threadId":"main-thread","turnId":"turn-1","model":"gpt-5.4","showBufferingUi":true,"fasterModel":"gpt-5.5"}}`)))
@@ -954,7 +938,7 @@ func TestCodexClearContextDropsThePendingTurnInput(t *testing.T) {
 		return agenttest.RPCReply{Result: json.RawMessage(`{"thread":{"id":"fresh-1"},"model":"gpt-5.4"}`)}
 	})
 	a.threadID = "old-1"
-	a.pendingTurnInput = []map[string]interface{}{{"type": "text", "text": "stale"}}
+	a.pendingStart = newCodexTurnStart("old-1", []map[string]interface{}{{"type": "text", "text": "stale"}}, turnSettings{})
 
 	_, err := a.ClearContext()
 	require.NoError(t, err)
@@ -962,8 +946,8 @@ func TestCodexClearContextDropsThePendingTurnInput(t *testing.T) {
 
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
-	assert.Nil(t, a.pendingTurnInput)
-	assert.Nil(t, a.turnInput["turn-9"], "the turn that Codex started retains nothing")
+	assert.Nil(t, a.pendingStart)
+	assert.Nil(t, a.mainTurn.input, "the turn that Codex started retains nothing")
 }
 
 // A turn/start that fails starts no turn, so its input does not stay pending
@@ -985,6 +969,7 @@ func TestCodexFailedTurnStartDropsItsPendingInput(t *testing.T) {
 
 			a, _, _ := newCodexAgentForRPC(t, func(string) agenttest.RPCReply { return tc.reply })
 			a.threadID = "main-thread"
+			a.turnRetrySupported = true
 			if tc.prepare != nil {
 				tc.prepare(a)
 			}
@@ -993,8 +978,8 @@ func TestCodexFailedTurnStartDropsItsPendingInput(t *testing.T) {
 
 			a.Mu.Lock()
 			defer a.Mu.Unlock()
-			assert.Nil(t, a.pendingTurnInput)
-			assert.Nil(t, a.turnInput["turn-9"], "the turn that Codex started retains nothing")
+			assert.Nil(t, a.pendingStart)
+			assert.Nil(t, a.mainTurn.input, "the turn that Codex started retains nothing")
 		})
 	}
 }
@@ -1012,6 +997,7 @@ func TestCodexUnconfirmedTurnStartKeepsItsPendingInput(t *testing.T) {
 		return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
 	})
 	a.threadID = "main-thread"
+	a.turnRetrySupported = true
 
 	sent := make(chan error, 1)
 	go func() { sent <- a.SendInput("Hello.", nil) }()
@@ -1023,5 +1009,20 @@ func TestCodexUnconfirmedTurnStartKeepsItsPendingInput(t *testing.T) {
 
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
-	assert.Equal(t, []map[string]interface{}{{"type": "text", "text": "Hello."}}, a.turnInput["turn-1"])
+	assert.Equal(t, []map[string]interface{}{{"type": "text", "text": "Hello."}}, a.mainTurn.input)
+}
+
+// codexLeapMuxNotices reads worker notices from both sink entry points.
+func codexLeapMuxNotices(t *testing.T, sink *agenttest.Sink) []map[string]interface{} {
+	t.Helper()
+	notices := sink.LeapMuxNotifications()
+	for _, message := range sink.PersistedNotifications() {
+		if message.Source != leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX {
+			continue
+		}
+		var notice map[string]interface{}
+		require.NoError(t, json.Unmarshal(message.Content, &notice))
+		notices = append(notices, notice)
+	}
+	return notices
 }

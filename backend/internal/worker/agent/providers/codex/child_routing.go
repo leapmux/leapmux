@@ -271,7 +271,7 @@ func (a *Agent) enqueuePendingCodexChildEvent(threadID string, event codexPendin
 	if threadID == "" {
 		return
 	}
-	size := len(event.raw) + len(event.params)
+	size := len(event.raw) + len(event.params) + len(event.noticeKey)
 	a.Mu.Lock()
 	state := a.codexChildStateLocked(threadID)
 	if len(state.pendingEvents) >= codexPendingChildEventLimit ||
@@ -334,11 +334,25 @@ func (a *Agent) replayPendingCodexChildEvents(threadID string, route codexChildR
 		case codexPendingTurnCompleted:
 			a.handleChildTurnCompleted(threadID, event.params, route)
 		case codexPendingHookCompleted, codexPendingMcpOauthCompleted, codexPendingMcpStartupUpdated, codexPendingAutoReview, codexPendingNotification, codexPendingRawMessage:
-			a.persistCodexNotificationForSink(route.childSink, route.agentID, event.kind, event.raw)
+			a.persistCodexNotificationForSink(route.childSink, route.agentID, event)
 		case codexPendingRawExecution:
 			a.handleCodexRawExecution(event.raw, event.params)
 		case codexPendingDroppedGeneration:
 			a.persistDroppedCodexGeneration(a.codexChildGenerationBuffer(threadID), route.childSink, event.scopeIDs)
 		}
 	}
+}
+
+// codexReadyThreadSink replays pending child events before a live publication.
+// Specialized callers retain their own queue and generation-buffer policies.
+func (a *Agent) codexReadyThreadSink(threadID string) (agent.ProviderServices, bool) {
+	if a.isMainThreadID(threadID) {
+		return a.sink, true
+	}
+	route, routed := a.ensureCodexChildRoute(threadID)
+	if !routed {
+		return nil, false
+	}
+	a.replayPendingCodexChildEvents(threadID, route)
+	return route.childSink, true
 }

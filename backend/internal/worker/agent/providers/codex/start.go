@@ -26,6 +26,7 @@ const (
 const (
 	codexMethodTurnDiffUpdated               = "turn/diff/updated"
 	codexMethodAccountGatewayOAuthChanged    = "account/gatewayOAuth/changed"
+	codexMethodThreadReverted                = "thread/reverted"
 	codexMethodThreadReadStateChanged        = "thread/readState/changed"
 	codexMethodThreadQueueChanged            = "thread/queue/changed"
 	codexMethodThreadEnvironmentConnected    = "thread/environment/connected"
@@ -40,6 +41,8 @@ const (
 // frames. Methods that Codex sends only after a request LeapMux never makes are
 // absent: they cannot arrive.
 var codexOptedOutNotificationMethods = []string{
+	// The correlated revert response confirms the operation. LeapMux retains its own transcript.
+	codexMethodThreadReverted,
 	// One streaming diff per tool call. The tool card already shows the change.
 	codexMethodTurnDiffUpdated,
 	// Opaque moderation metadata. The Codex TUI ignores it.
@@ -48,7 +51,7 @@ var codexOptedOutNotificationMethods = []string{
 	contracts.CodexMethodAccountUpdated,
 	// Account state that LeapMux does not display.
 	codexMethodAccountGatewayOAuthChanged,
-	// LeapMux reads the thread/start and thread/fork response.
+	// LeapMux reads the thread/start response.
 	contracts.CodexMethodThreadStarted,
 	// turn/started and turn/completed own the turn state.
 	contracts.CodexMethodThreadStatusChanged,

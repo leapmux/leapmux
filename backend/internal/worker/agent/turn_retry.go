@@ -3,8 +3,8 @@ package agent
 import "errors"
 
 // TurnRetrier is the one provider route for a turn retry: stop the running turn
-// and send its input again on another model, in a new provider thread that
-// excludes the stopped attempt.
+// and send its input again on another model. Native history excludes the stopped attempt.
+// LeapMux retains the stopped attempt in its own transcript.
 //
 // The worker offers the retry only while the running provider broadcasts a
 // `turn_retry_offer` for this turn, so BeginTurnRetry refuses a turn or a model
@@ -14,7 +14,7 @@ type TurnRetrier interface {
 	// BeginTurnRetry validates the offer and marks the retry in flight, so the
 	// input queue holds at once. It sends no request and returns without a
 	// wait. It returns ErrTurnRetryUnavailable when the provider does not offer
-	// this retry.
+	// this retry. ErrAgentBusy means that an earlier input still awaits delivery.
 	BeginTurnRetry(turnID, model string) (TurnRetry, error)
 }
 
@@ -26,14 +26,13 @@ type TurnRetrier interface {
 // Each phase reports its own failure in the transcript, because no caller
 // waits for the phases: the RPC answers when BeginTurnRetry returns.
 type TurnRetry interface {
-	// Replace stops the running turn, waits for it to end, and installs a new
-	// provider thread without the stopped attempt. A failure ends the retry,
-	// states the failure in the transcript, and returns the error. Start must
-	// not run after a failure.
+	// Replace stops the turn and submits the native history change.
+	// It returns after submission so a slow reply does not hold the lifecycle lock.
+	// Start must not run after a failure.
 	Replace() error
-	// Start sends the retained input on the new thread. A failure ends the
-	// retry and states the failure in the transcript. The returned error is for
-	// the log only.
+	// Start confirms the history change, then sends the retained input.
+	// An uncertain history change retains the input hold until confirmation or context replacement.
+	// Each failure reaches the transcript. The returned error is for the log only.
 	Start() error
 	// Abandon ends the retry without a transcript notice. err states why, for
 	// the log.

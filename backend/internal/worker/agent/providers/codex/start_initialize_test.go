@@ -25,6 +25,7 @@ func TestCodexInitializeParamsCarryTheOptOutList(t *testing.T) {
 	optedOut, ok := capabilities["optOutNotificationMethods"].([]string)
 	require.True(t, ok, "initialize must carry the opt-out list")
 	assert.Equal(t, []string{
+		"thread/reverted",
 		"turn/diff/updated",
 		contracts.CodexMethodTurnModerationMetadata,
 		contracts.CodexMethodAccountUpdated,

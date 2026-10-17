@@ -3,6 +3,7 @@ package codex
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"regexp"
@@ -37,7 +38,7 @@ type codexRawExecutionCall struct {
 	output        agent.MessageContent
 	owner         agent.TranscriptOwner
 	sink          agent.ProviderServices
-	suppressed    bool
+	commands      map[codexStoredCommandResult]struct{}
 	completed     bool
 	requestStored bool
 	color         int32
@@ -94,7 +95,7 @@ func (a *Agent) handleCodexRawExecution(raw, params json.RawMessage) {
 		sink = route.childSink
 	}
 	a.Mu.Lock()
-	turnID := a.turnID
+	turnID := a.mainTurn.id
 	if !mainThread {
 		if state := a.collabChildren[envelope.ThreadID]; state != nil {
 			turnID = state.turnID
@@ -157,7 +158,7 @@ func (a *Agent) startCodexRawExecution(key codexRawExecutionKey, raw json.RawMes
 				oldest, oldestCall = candidate, tracked
 			}
 		}
-		delete(a.rawExecutionCalls, oldest)
+		a.finishCodexRawExecution(oldest, agent.MessageCompletionInterrupted)
 	}
 	// Capture the owner now. Capture row geometry only when the pair reaches storage.
 	captured := sink.CaptureMessage(agent.MessageContent{}, agent.SpanInfo{})
@@ -180,17 +181,13 @@ func (a *Agent) handleCodexExecOutput(key codexRawExecutionKey, raw, output json
 		return
 	}
 	if call.output.Original == nil {
-		if call.suppressed {
-			call.release()
-			return
-		}
 		call.output = agent.MessageContent{Original: append([]byte(nil), raw...), AgentSessionID: call.request.AgentSessionID}
-		segment := parseCodexExecSegment(output)
+		segment := parseCodexExecSegment(output, call.commands)
 		if segment.running {
 			call.cellID = segment.cellID
 			return
 		}
-		if a.endCodexCell(call, output) {
+		if a.endCodexCell(call, output, segment) {
 			return
 		}
 	}
@@ -243,15 +240,12 @@ func (a *Agent) handleCodexCellWaitOutput(waitKey codexRawExecutionKey, output j
 		if call.completed || call.ended {
 			return
 		}
-		if call.suppressed {
-			call.release()
-			return
-		}
 		call.continuations = append(call.continuations, append(json.RawMessage(nil), bytes.TrimSpace(output)...))
-		if parseCodexExecSegment(output).running {
+		segment := parseCodexExecSegment(output, call.commands)
+		if segment.running {
 			return
 		}
-		if !a.endCodexCell(call, nil) {
+		if !a.endCodexCell(call, nil, segment) {
 			a.persistCodexRawExecution(key, call)
 		}
 		return
@@ -261,12 +255,13 @@ func (a *Agent) handleCodexCellWaitOutput(waitKey codexRawExecutionKey, output j
 // endCodexCell records that the cell ended and decides its card once. It
 // reports true when the rule suppresses the card. execOutput is the exec output
 // when the caller holds it decoded, or nil to read it from the stored frame.
-func (a *Agent) endCodexCell(call *codexRawExecutionCall, execOutput json.RawMessage) bool {
+func (a *Agent) endCodexCell(call *codexRawExecutionCall, execOutput json.RawMessage, last codexExecSegment) bool {
 	call.ended = true
 	if execOutput == nil {
 		execOutput = codexStoredExecOutput(call.output.Original)
 	}
-	if codexSuppressCellOutputs(call.outputs(execOutput)...) {
+	outputs := call.outputs(execOutput)
+	if last.completed && max(last.content, codexCellContent(outputs[:len(outputs)-1], call.commands)) == codexExecContentPolls {
 		call.release()
 		return true
 	}
@@ -390,7 +385,7 @@ type codexExecContent int
 const (
 	// codexExecContentNone: no output at all.
 	codexExecContentNone codexExecContent = iota
-	// codexExecContentPolls: only empty shell-poll receipts (see codexEmptyPollValue).
+	// codexExecContentPolls: empty polls or receipts that stored commands already show.
 	codexExecContentPolls
 	// codexExecContentOther: output that no typed row shows.
 	codexExecContentOther
@@ -406,11 +401,61 @@ type codexExecSegment struct {
 	content   codexExecContent
 }
 
+// codexExecBlock retains ambiguity that a plain struct decoder would discard.
+type codexExecBlock struct {
+	Type      string
+	Text      string
+	ambiguous bool
+}
+
+func (block *codexExecBlock) UnmarshalJSON(raw []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	opening, err := decoder.Token()
+	if err != nil || opening != json.Delim('{') {
+		return fmt.Errorf("the Codex content block is not an object")
+	}
+	seen := make(map[string]bool)
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		key, ok := token.(string)
+		if !ok {
+			return fmt.Errorf("the Codex content key is not a string")
+		}
+		block.ambiguous = block.ambiguous || seen[key]
+		seen[key] = true
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return err
+		}
+		switch key {
+		case "type", "text":
+			var text string
+			if len(value) == 0 || value[0] != '"' || json.Unmarshal(value, &text) != nil {
+				block.ambiguous = true
+				continue
+			}
+			if key == "type" {
+				block.Type = text
+			} else {
+				block.Text = text
+			}
+		default:
+			block.ambiguous = true
+		}
+	}
+	_, err = decoder.Token()
+	block.ambiguous = block.ambiguous || !seen["type"] || !seen["text"]
+	return err
+}
+
 // parseCodexExecSegment reads the status and the content of one output.
 //
 // Text output keeps the rule that it had before cells: completed text output
 // always shows, and so does a yield with text after its header.
-func parseCodexExecSegment(raw json.RawMessage) codexExecSegment {
+func parseCodexExecSegment(raw json.RawMessage, commands map[codexStoredCommandResult]struct{}) codexExecSegment {
 	other := codexExecSegment{content: codexExecContentOther}
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 {
@@ -421,27 +466,19 @@ func parseCodexExecSegment(raw json.RawMessage) codexExecSegment {
 		if json.Unmarshal(raw, &text) != nil {
 			return other
 		}
-		if match := codexRunningExecHeader.FindStringSubmatch(text); match != nil {
-			segment := codexExecSegment{running: true, cellID: match[1], content: codexExecContentNone}
-			if len(text) > len(match[0]) {
-				segment.content = codexExecContentOther
-			}
+		if segment, ok := parseCodexRunningSegment(text); ok {
 			return segment
 		}
 		return other
 	}
-	var blocks []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	}
+	var blocks []codexExecBlock
 	if json.Unmarshal(raw, &blocks) != nil || len(blocks) == 0 || blocks[0].Type != contracts.CodexExecOutputTextContent {
 		return other
 	}
 	var segment codexExecSegment
-	if match := codexRunningExecHeader.FindStringSubmatch(blocks[0].Text); match != nil {
-		segment = codexExecSegment{running: true, cellID: match[1], content: codexExecContentNone}
-		if len(blocks[0].Text) > len(match[0]) {
-			segment.content = codexExecContentOther
+	if running, ok := parseCodexRunningSegment(blocks[0].Text); ok {
+		segment = running
+		if segment.content == codexExecContentOther {
 			return segment
 		}
 	} else if codexCompletedExecHeader.MatchString(blocks[0].Text) {
@@ -449,13 +486,17 @@ func parseCodexExecSegment(raw json.RawMessage) codexExecSegment {
 	} else {
 		return other
 	}
+	if blocks[0].ambiguous {
+		segment.content = codexExecContentOther
+		return segment
+	}
 	for _, block := range blocks[1:] {
 		switch {
-		case block.Type != contracts.CodexExecOutputTextContent:
+		case block.ambiguous || block.Type != contracts.CodexExecOutputTextContent:
 			segment.content = codexExecContentOther
 		case block.Text == "" && segment.running:
 			// An empty block of a yield holds nothing.
-		case codexEmptyPollJSON(block.Text):
+		case codexCoveredReceiptJSON(block.Text, commands):
 			segment.content = max(segment.content, codexExecContentPolls)
 		default:
 			segment.content = codexExecContentOther
@@ -467,22 +508,36 @@ func parseCodexExecSegment(raw json.RawMessage) codexExecSegment {
 	return segment
 }
 
-// codexSuppressCellOutputs reports that an ended cell adds no card: its last
-// output completed, and all its outputs hold only empty shell-poll receipts,
-// with one at least. A cell with no output at all keeps its card, because the
-// card shows that the script ran.
-func codexSuppressCellOutputs(outputs ...json.RawMessage) bool {
-	if len(outputs) == 0 || !parseCodexExecSegment(outputs[len(outputs)-1]).completed {
-		return false
+// parseCodexRunningSegment preserves every byte after a recognized yield header.
+func parseCodexRunningSegment(text string) (codexExecSegment, bool) {
+	match := codexRunningExecHeader.FindStringSubmatch(text)
+	if match == nil {
+		return codexExecSegment{}, false
 	}
-	return codexCellContent(outputs) == codexExecContentPolls
+	segment := codexExecSegment{running: true, cellID: match[1]}
+	if len(text) > len(match[0]) {
+		segment.content = codexExecContentOther
+	}
+	return segment, true
 }
 
-// codexCellContent returns what all the outputs of a cell hold together.
-func codexCellContent(outputs []json.RawMessage) codexExecContent {
+// codexSuppressCellOutputs accepts only completed cells of empty poll receipts.
+func codexSuppressCellOutputs(outputs ...json.RawMessage) bool {
+	if len(outputs) == 0 {
+		return false
+	}
+	last := parseCodexExecSegment(outputs[len(outputs)-1], nil)
+	return last.completed && max(last.content, codexCellContent(outputs[:len(outputs)-1], nil)) == codexExecContentPolls
+}
+
+// codexCellContent stops when one segment requires a visible card.
+func codexCellContent(outputs []json.RawMessage, commands map[codexStoredCommandResult]struct{}) codexExecContent {
 	content := codexExecContentNone
 	for _, output := range outputs {
-		content = max(content, parseCodexExecSegment(output).content)
+		content = max(content, parseCodexExecSegment(output, commands).content)
+		if content == codexExecContentOther {
+			break
+		}
 	}
 	return content
 }
@@ -492,18 +547,18 @@ const codexPollJSONDepthLimit = 10000
 
 // Read exactly one printed JSON value. Stop when content makes suppression unsafe.
 // Tokens preserve duplicate keys and avoid allocating a complete tree for rejected output.
-func codexEmptyPollJSON(text string) bool {
+func codexCoveredReceiptJSON(text string, commands map[codexStoredCommandResult]struct{}) bool {
 	decoder := json.NewDecoder(strings.NewReader(text))
 	decoder.UseNumber()
 	token, err := decoder.Token()
-	if err != nil || !codexEmptyPollValue(decoder, token, 0) {
+	if err != nil || !codexCoveredReceiptValue(decoder, token, 0, commands) {
 		return false
 	}
 	_, err = decoder.Token()
 	return err == io.EOF
 }
 
-// codexEmptyPollValue accepts a receipt or a nonempty collection of empty successful receipts.
+// codexCoveredReceiptValue accepts empty polls or receipts that stored commands already show.
 // A script can print receipts in arrays or under container keys, including receipt field keys.
 // These values keep the execution pair:
 //   - A string outside a recognized receipt or status field.
@@ -511,7 +566,7 @@ func codexEmptyPollJSON(text string) bool {
 //   - A number outside a recognized receipt field or an i/index label.
 //   - A rejected record.
 //   - A duplicate object key.
-func codexEmptyPollValue(decoder *json.Decoder, token json.Token, depth int) bool {
+func codexCoveredReceiptValue(decoder *json.Decoder, token json.Token, depth int, commands map[codexStoredCommandResult]struct{}) bool {
 	if depth >= codexPollJSONDepthLimit {
 		return false
 	}
@@ -522,14 +577,14 @@ func codexEmptyPollValue(decoder *json.Decoder, token json.Token, depth int) boo
 		}
 		for decoder.More() {
 			item, err := decoder.Token()
-			if err != nil || !codexEmptyPollValue(decoder, item, depth+1) {
+			if err != nil || !codexCoveredReceiptValue(decoder, item, depth+1, commands) {
 				return false
 			}
 		}
 		closing, err := decoder.Token()
 		return err == nil && closing == json.Delim(']')
 	case json.Delim('{'):
-		return codexEmptyPollObject(decoder, depth)
+		return codexCoveredReceiptObject(decoder, depth, commands)
 	default:
 		return false
 	}
@@ -538,9 +593,10 @@ func codexEmptyPollValue(decoder *json.Decoder, token json.Token, depth int) boo
 // Classify each object as a receipt or a container while reading each field once.
 // Nested receipts can use any key except status, which identifies a settled record.
 // A scalar receipt field cannot become a container label when receipt validation fails.
-func codexEmptyPollObject(decoder *json.Decoder, depth int) bool {
+func codexCoveredReceiptObject(decoder *json.Decoder, depth int, commands map[codexStoredCommandResult]struct{}) bool {
 	fields := make(map[string]bool)
-	receipt, container := true, true
+	receipt, emptyReceipt, container := true, true, true
+	var result codexStoredCommandResult
 	foundPoll, valuePoll := false, false
 	for decoder.More() {
 		token, err := decoder.Token()
@@ -554,7 +610,7 @@ func codexEmptyPollObject(decoder *json.Decoder, depth int) bool {
 			return false
 		}
 		if _, nested := value.(json.Delim); nested {
-			if !codexEmptyPollValue(decoder, value, depth+1) {
+			if !codexCoveredReceiptValue(decoder, value, depth+1, commands) {
 				return false
 			}
 			receipt = false
@@ -564,7 +620,20 @@ func codexEmptyPollObject(decoder *json.Decoder, depth int) bool {
 				valuePoll = true
 			}
 		} else {
-			receipt = receipt && codexEmptyPollReceiptField(key, value)
+			emptyReceipt = emptyReceipt && codexEmptyPollReceiptField(key, value)
+			valid := codexEmptyPollReceiptField(key, value)
+			if len(commands) > 0 {
+				switch key {
+				case "output":
+					result.output, valid = value.(string)
+				case "exit_code":
+					result.exitCode, valid = codexJSONInteger(value)
+				case "original_token_count":
+					count, ok := codexJSONInteger(value)
+					valid = ok && count >= 0
+				}
+			}
+			receipt = receipt && valid
 			container = container && codexEmptyPollLabelField(key, value)
 		}
 		if !receipt && !container {
@@ -576,8 +645,18 @@ func codexEmptyPollObject(decoder *json.Decoder, depth int) bool {
 		return false
 	}
 	if receipt {
-		return fields["chunk_id"] && fields["wall_time_seconds"] && fields["original_token_count"] && fields["output"] &&
-			(fields["session_id"] || fields["exit_code"])
+		complete := fields["chunk_id"] && fields["wall_time_seconds"] && fields["original_token_count"] && fields["output"]
+		if !complete {
+			return false
+		}
+		if emptyReceipt {
+			return fields["session_id"] || fields["exit_code"]
+		}
+		if !fields["exit_code"] || fields["session_id"] {
+			return false
+		}
+		_, stored := commands[result]
+		return stored
 	}
 	return container && foundPoll && (!fields["status"] || valuePoll)
 }
@@ -640,6 +719,7 @@ func (call *codexRawExecutionCall) release() {
 	call.sink = nil
 	call.waits = nil
 	call.continuations = nil
+	call.commands = nil
 }
 
 func (a *Agent) persistCodexRawExecution(key codexRawExecutionKey, call *codexRawExecutionCall) {
@@ -695,25 +775,32 @@ func (a *Agent) persistCodexRawExecution(key codexRawExecutionKey, call *codexRa
 	}
 }
 
-// Codex omits parent execution IDs. Tool events suppress pending pairs within the same thread and turn.
+// codexStoredCommandResult proves which output and exit status already reached storage.
+type codexStoredCommandResult struct {
+	output   string
+	exitCode int64
+}
+
+// observeCodexRawExecutionTool records only a successfully stored command completion.
+// Temporal overlap alone cannot prove that a typed row covers a cell's output.
 func (a *Agent) observeCodexRawExecutionTool(event codexItemEvent) {
-	switch event.itemType {
-	case contracts.CodexItemTypeCommandExecution, contracts.CodexItemTypeFileChange,
-		contracts.CodexItemTypeMcpToolCall, contracts.CodexItemTypeDynamicToolCall,
-		contracts.CodexItemTypeImageGeneration, contracts.CodexItemTypeImageView,
-		contracts.CodexItemTypeCollabAgentToolCall, contracts.CodexItemTypeWebSearch,
-		contracts.CodexItemTypeSleep, contracts.CodexItemTypeEnteredReviewMode,
-		contracts.CodexItemTypeExitedReviewMode, contracts.CodexItemTypeHookPrompt,
-		contracts.CodexItemTypeFunctionCallOutput:
-	default:
+	if event.itemType != contracts.CodexItemTypeCommandExecution || event.itemID == "" || event.threadID == "" || event.turnID == "" {
 		return
 	}
-	if event.itemID == "" || event.threadID == "" || event.turnID == "" {
+	var command struct {
+		Output   *string `json:"aggregatedOutput"`
+		ExitCode *int64  `json:"exitCode"`
+	}
+	if json.Unmarshal(event.item, &command) != nil || command.Output == nil || command.ExitCode == nil {
 		return
 	}
+	result := codexStoredCommandResult{output: *command.Output, exitCode: *command.ExitCode}
 	for key, call := range a.rawExecutionCalls {
 		if key.threadID == event.threadID && key.turnID == event.turnID && call.awaited() {
-			call.suppressed = true
+			if call.commands == nil {
+				call.commands = make(map[codexStoredCommandResult]struct{})
+			}
+			call.commands[result] = struct{}{}
 		}
 	}
 }
@@ -723,27 +810,46 @@ func (a *Agent) observeCodexRawExecutionTool(event codexItemEvent) {
 // A cell that still runs keeps the output that it stated, with the retained
 // completion of the turn, because LeapMux reads no more of the cell after the
 // turn. A cell that holds no output, or only empty shell-poll receipts, keeps
-// no card, and neither does a cell that a nested tool row covers.
+// no card. Other output remains visible even when a typed tool ran nearby.
 func (a *Agent) finishCodexRawExecutions(threadID string, completion agent.MessageCompletion) {
+	a.finishMatchingCodexRawExecutions(completion, func(key codexRawExecutionKey) bool { return key.threadID == threadID })
+}
+
+// finishAllCodexRawExecutions retains output before the process or thread tree ends.
+// The caller holds outputMu and keeps each old transcript owner available.
+func (a *Agent) finishAllCodexRawExecutions(completion agent.MessageCompletion) {
+	a.finishMatchingCodexRawExecutions(completion, func(codexRawExecutionKey) bool { return true })
+}
+
+func (a *Agent) finishMatchingCodexRawExecutions(completion agent.MessageCompletion, matches func(codexRawExecutionKey) bool) {
 	var keys []codexRawExecutionKey
 	for key := range a.rawExecutionCalls {
-		if key.threadID == threadID {
+		if matches(key) {
 			keys = append(keys, key)
 		}
 	}
 	sort.Slice(keys, func(i, j int) bool { return a.rawExecutionCalls[keys[i]].order < a.rawExecutionCalls[keys[j]].order })
 	for _, key := range keys {
-		call := a.rawExecutionCalls[key]
-		switch {
-		case call.completed || call.output.Original == nil:
-		case call.ended:
-			a.persistCodexRawExecution(key, call)
-		case !call.suppressed && codexCellContent(call.outputs(codexStoredExecOutput(call.output.Original))) == codexExecContentOther:
-			call.output.Completion = codexRetainedCompletion(completion)
-			a.persistCodexRawExecution(key, call)
-		}
-		delete(a.rawExecutionCalls, key)
+		a.finishCodexRawExecution(key, completion)
 	}
+}
+
+// finishCodexRawExecution retains available output before it removes a cell.
+// Every lifecycle removal uses this rule, including capacity eviction.
+func (a *Agent) finishCodexRawExecution(key codexRawExecutionKey, completion agent.MessageCompletion) {
+	call := a.rawExecutionCalls[key]
+	if call == nil {
+		return
+	}
+	switch {
+	case call.completed || call.output.Original == nil:
+	case call.ended:
+		a.persistCodexRawExecution(key, call)
+	case codexCellContent(call.outputs(codexStoredExecOutput(call.output.Original)), nil) == codexExecContentOther:
+		call.output.Completion = codexRetainedCompletion(completion)
+		a.persistCodexRawExecution(key, call)
+	}
+	delete(a.rawExecutionCalls, key)
 }
 
 // codexRetainedCompletion is the completion of a call that the turn ended
@@ -755,11 +861,9 @@ func codexRetainedCompletion(completion agent.MessageCompletion) agent.MessageCo
 	return completion
 }
 
-// A new turn drops stale state even when the preceding turn sent no completion.
+// A new turn retains prior output even when the preceding turn sent no completion.
 func (a *Agent) clearCodexRawExecutionsBeforeTurn(threadID, turnID string) {
-	for key := range a.rawExecutionCalls {
-		if key.threadID == threadID && key.turnID != turnID {
-			delete(a.rawExecutionCalls, key)
-		}
-	}
+	a.finishMatchingCodexRawExecutions(agent.MessageCompletionInterrupted, func(key codexRawExecutionKey) bool {
+		return key.threadID == threadID && key.turnID != turnID
+	})
 }

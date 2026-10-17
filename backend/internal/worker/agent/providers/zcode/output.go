@@ -1012,7 +1012,10 @@ func (p zcodeSessionUpdatedPayload) kind() zcodeSessionUpdateKind {
 			return zcodeSessionUpdateSubagent
 		}
 	}
-	if _, ok := zcodeRawString(p.Content); ok {
+	// Callers decode the complete JSON payload before classification.
+	// RawMessage therefore starts at the value, and a quote identifies a string.
+	// Decode its text only when the selected handler needs the main reply.
+	if len(p.Content) > 0 && p.Content[0] == '"' {
 		if stopReason, ok := zcodeRawString(p.StopReason); ok && stopReason != "" {
 			return zcodeSessionUpdateModelResponse
 		}

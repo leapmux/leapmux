@@ -900,22 +900,15 @@ func (a *Agent) handleZCodeStateUpdated(params json.RawMessage) {
 		slog.Debug("zcode state.updated patch not a session patch", "agent_id", a.AgentID(), "scope", notif.Scope)
 		return
 	}
-	// Only the session scope carries SESSION state. The workspace scope patches
-	// `modelCatalog`, and a workspace patch that happened to carry a `goal` key
-	// would otherwise reach the session goal -- a `"goal": null` there would
-	// clear a live goal and write a "Goal cleared" row for a change the user
-	// never made. The runtime state is session state for the same reason.
+	// Only session patches can change this agent's runtime and settings.
+	// A workspace patch updates the model catalog and must not change session state.
 	if notif.Scope != ScopeSession {
 		return
 	}
-	// And only THIS session's state. ClearContext mints a new session without
-	// stopping the old one, so a patch already in flight for the replaced
-	// session arrives after the swap; applying it resurrects the goal the user
-	// just cleared and writes a "Goal set" row for it. Reasonix guards the same
-	// hazard with IsCurrentSession and Codex with isMainThreadID.
+	// A context clear creates a new session without stopping the previous one.
+	// A late patch from the previous session must not change the current settings.
 	//
-	// An empty id cannot contradict the current session, so it passes -- the
-	// same rule those two guards use.
+	// An empty ID cannot contradict the current session, so it passes.
 	if !a.isCurrentZCodeSession(notif.SessionID) {
 		return
 	}

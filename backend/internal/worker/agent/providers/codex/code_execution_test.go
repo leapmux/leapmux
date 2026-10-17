@@ -21,7 +21,7 @@ func TestCodexRawExecDefersRequestUntilOutput(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}
 	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
-	a.turnID = "raw-turn"
+	a.mainTurn.id = "raw-turn"
 	request, _ := codexRawExecFrames(t)
 	handleCodexOutput(a, providerkit.ParseLine(request))
 	require.Empty(t, sink.Messages())
@@ -38,7 +38,7 @@ func TestCodexRawExecPersistsCapturedNativeLifecycle(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}
 	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
-	a.turnID = "raw-turn"
+	a.mainTurn.id = "raw-turn"
 	request, output := codexRawExecFrames(t)
 	handleCodexOutput(a, providerkit.ParseLine(request))
 	messages := sink.Messages()
@@ -59,7 +59,7 @@ func TestCodexRawExecSuppressesDuplicatesAndUnpairedOutputs(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}
 	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
-	a.turnID = "raw-turn"
+	a.mainTurn.id = "raw-turn"
 	request, output := codexRawExecFrames(t)
 	handleCodexOutput(a, providerkit.ParseLine(output))
 	assert.Empty(t, sink.Messages())
@@ -78,7 +78,7 @@ func TestCodexRawExecRejectsWrongIdentityAndTool(t *testing.T) {
 			t.Parallel()
 			sink := &agenttest.Sink{}
 			a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
-			a.turnID = "raw-turn"
+			a.mainTurn.id = "raw-turn"
 			request, output := codexRawExecFrames(t)
 			var frame map[string]any
 			require.NoError(t, json.Unmarshal(request, &frame))
@@ -115,7 +115,7 @@ func TestCodexRawExecClearsPendingCallsAtTurnEnd(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}
 	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
-	a.turnID = "raw-turn"
+	a.mainTurn.id = "raw-turn"
 	request, output := codexRawExecFrames(t)
 	handleCodexOutput(a, providerkit.ParseLine(request))
 	require.Empty(t, sink.Messages())
@@ -133,7 +133,7 @@ func TestCodexRawExecPreservesFailureHeaderAndImages(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}
 	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
-	a.turnID = "raw-turn"
+	a.mainTurn.id = "raw-turn"
 	request, _ := codexRawExecFrames(t)
 	output := []byte(`{"method":"rawResponseItem/completed","params":{"threadId":"main-thread","turnId":"raw-turn","item":{"type":"custom_tool_call_output","call_id":"raw-exec-call","output":[{"type":"input_text","text":"Script failed\nWall time 0.0 seconds\nOutput:\n"},{"type":"input_text","text":"Script error:\nError: NATIVE_CODE_FAILURE"},{"type":"input_image","image_url":"data:image/png;base64,AAAA"}]}}}`)
 	handleCodexOutput(a, providerkit.ParseLine(request))
@@ -164,7 +164,7 @@ func TestCodexRawExecRetriesOnlyFailedPersistence(t *testing.T) {
 		t.Run(fmt.Sprint(failResult), func(t *testing.T) {
 			sink := &codexRawExecFailingSink{failures: 1, failResult: failResult}
 			a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
-			a.turnID = "raw-turn"
+			a.mainTurn.id = "raw-turn"
 			request, output := codexRawExecFrames(t)
 			handleCodexOutput(a, providerkit.ParseLine(request))
 			require.Empty(t, sink.Messages())
@@ -220,7 +220,7 @@ func TestCodexRawExecDoesNotReusePairAcrossTurns(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}
 	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
-	a.turnID = "raw-turn"
+	a.mainTurn.id = "raw-turn"
 	request, output := codexRawExecFrames(t)
 	handleCodexOutput(a, providerkit.ParseLine(request))
 	handleCodexOutput(a, providerkit.ParseLine(output))
@@ -241,7 +241,7 @@ func TestCodexRawExecPreservesExplicitEmptySource(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}
 	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
-	a.turnID = "raw-turn"
+	a.mainTurn.id = "raw-turn"
 	request := []byte(`{"method":"rawResponseItem/completed","params":{"threadId":"main-thread","turnId":"raw-turn","item":{"type":"custom_tool_call","call_id":"empty-script","name":"exec","input":""}}}`)
 	handleCodexOutput(a, providerkit.ParseLine(request))
 	require.Empty(t, sink.Messages())
@@ -259,7 +259,7 @@ func TestCodexRawExecAcceptsNativeDefaultNamespace(t *testing.T) {
 			t.Parallel()
 			sink := &agenttest.Sink{}
 			a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
-			a.turnID = "raw-turn"
+			a.mainTurn.id = "raw-turn"
 			request, output := codexRawExecFrames(t)
 			request = []byte(strings.Replace(string(request), `"name":"exec"`, `"name":"exec","namespace":`+strconv.Quote(namespace), 1))
 			output = []byte(strings.Replace(string(output), `"call_id":"raw-exec-call"`, `"call_id":"raw-exec-call","name":"exec","namespace":`+strconv.Quote(namespace), 1))
@@ -279,7 +279,7 @@ func TestCodexRawExecRejectsForeignResultIdentity(t *testing.T) {
 			t.Parallel()
 			sink := &agenttest.Sink{}
 			a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
-			a.turnID = "raw-turn"
+			a.mainTurn.id = "raw-turn"
 			request, output := codexRawExecFrames(t)
 			output = []byte(strings.Replace(string(output), `"call_id":"raw-exec-call"`, `"call_id":"raw-exec-call",`+fields, 1))
 			handleCodexOutput(a, providerkit.ParseLine(request))
@@ -293,7 +293,7 @@ func TestCodexRawExecSuppressesEmptyShellPoll(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}
 	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
-	a.turnID = "raw-turn"
+	a.mainTurn.id = "raw-turn"
 	request, _ := codexRawExecFrames(t)
 	handleCodexOutput(a, providerkit.ParseLine(request))
 	output := `{"method":"rawResponseItem/completed","params":{"threadId":"main-thread","turnId":"raw-turn","item":{"type":"custom_tool_call_output","call_id":"raw-exec-call","output":[{"type":"input_text","text":"Script completed\nWall time 5.0 seconds\nOutput:\n"},{"type":"input_text","text":"{\"chunk_id\":\"ee87f5\",\"wall_time_seconds\":5.00207375,\"session_id\":31766,\"original_token_count\":0,\"output\":\"\"}"}]}}}`
@@ -308,10 +308,10 @@ func TestCodexRawExecSuppressesSettledShellPolls(t *testing.T) {
 	sink := &agenttest.Sink{}
 	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	a.threadID = "01a13afd-8be5-7362-b9a6-842b40e5fdaf"
-	a.turnID = "01a13cc8-c875-7b10-a087-e97b2e58a1bb"
+	a.mainTurn.id = "01a13cc8-c875-7b10-a087-e97b2e58a1bb"
 	request := `{"method":"rawResponseItem/completed","params":{"threadId":"01a13afd-8be5-7362-b9a6-842b40e5fdaf","turnId":"01a13cc8-c875-7b10-a087-e97b2e58a1bb","item":{"type":"custom_tool_call","id":"ctc_060b11e00cd3790d016ad038e31f40819198792a512e1814db","status":"completed","call_id":"call_6bd2e783fc574d7bbffaf4dc7d7d2ce6","name":"exec","input":"const r=await Promise.allSettled([tools.write_stdin({session_id:5687,chars:\"\",yield_time_ms:1000,max_output_tokens:1000}),tools.write_stdin({session_id:59563,chars:\"\",yield_time_ms:1000,max_output_tokens:1000})]);for(let i=0;i<r.length;i++)text({i,...r[i]});\n","internal_chat_message_metadata_passthrough":{"turn_id":"01a13cc8-c875-7b10-a087-e97b2e58a1bb","create_time":1792030947.1308835}}},"emittedAtMs":1792030947454}`
 	output := `{"method":"rawResponseItem/completed","params":{"threadId":"01a13afd-8be5-7362-b9a6-842b40e5fdaf","turnId":"01a13cc8-c875-7b10-a087-e97b2e58a1bb","item":{"type":"custom_tool_call_output","id":"ctco_01a13d5e-4c10-70d0-8f8d-209ac38361b0","call_id":"call_6bd2e783fc574d7bbffaf4dc7d7d2ce6","output":[{"type":"input_text","text":"Script completed\nWall time 5.0 seconds\nOutput:\n"},{"type":"input_text","text":"{\"i\":0,\"status\":\"fulfilled\",\"value\":{\"chunk_id\":\"bea1b2\",\"wall_time_seconds\":0.00001425,\"exit_code\":0,\"original_token_count\":0,\"output\":\"\"}}"},{"type":"input_text","text":"{\"i\":1,\"status\":\"fulfilled\",\"value\":{\"chunk_id\":\"47f8a2\",\"wall_time_seconds\":5.002878459,\"session_id\":59563,\"original_token_count\":0,\"output\":\"\"}}"}],"internal_chat_message_metadata_passthrough":{"turn_id":"01a13cc8-c875-7b10-a087-e97b2e58a1bb","create_time":1792030952.464418}}},"emittedAtMs":1792030952467}`
-	key := codexRawExecutionKey{threadID: a.threadID, turnID: a.turnID, callID: "call_6bd2e783fc574d7bbffaf4dc7d7d2ce6"}
+	key := codexRawExecutionKey{threadID: a.threadID, turnID: a.mainTurn.id, callID: "call_6bd2e783fc574d7bbffaf4dc7d7d2ce6"}
 	handleCodexOutput(a, providerkit.ParseLine([]byte(request)))
 	require.Contains(t, a.rawExecutionCalls, key, "the request reaches the pending pair")
 	handleCodexOutput(a, providerkit.ParseLine([]byte(output)))
@@ -469,8 +469,9 @@ func TestCodexRawExecToolIntervals(t *testing.T) {
 			t.Run(kind+method, func(t *testing.T) {
 				sink := &agenttest.Sink{}
 				a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
-				a.turnID = "raw-turn"
-				request, output := codexRawExecFrames(t)
+				a.mainTurn.id = "raw-turn"
+				request, _ := codexRawExecFrames(t)
+				output := codexCellOutputFrame(t, "custom_tool_call_output", "raw-exec-call", codexTestCellCompleted, "main-thread", "raw-turn", codexHelloReceipt)
 				handleCodexOutput(a, providerkit.ParseLine(request))
 				handleCodexOutput(a, providerkit.ParseLine(rawExecToolEvent(method, kind, "main-thread", "raw-turn")))
 				handleCodexOutput(a, providerkit.ParseLine(output))
@@ -480,12 +481,11 @@ func TestCodexRawExecToolIntervals(t *testing.T) {
 						rows = append(rows, row)
 					}
 				}
-				switch kind {
-				case "agentMessage", "reasoning", "plan", "userMessage", "contextCompaction", "subAgentActivity":
-					require.Len(t, rows, 2)
-				default:
+				if kind == "commandExecution" && method == "item/completed" {
 					require.Empty(t, rows)
 					require.NotContains(t, sink.ReservedColorSpans(), "raw-exec-call")
+				} else {
+					require.Len(t, rows, 2)
 				}
 			})
 		}
@@ -498,11 +498,12 @@ func TestCodexRawExecIntervalIsolation(t *testing.T) {
 		t.Run(position, func(t *testing.T) {
 			sink := &agenttest.Sink{}
 			a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
-			a.turnID = "raw-turn"
-			request, output := codexRawExecFrames(t)
-			event, _ := newCodexItemEvent(nil, json.RawMessage(`{"threadId":"main-thread","turnId":"raw-turn","item":{"type":"commandExecution","id":"nested"}}`))
+			a.mainTurn.id = "raw-turn"
+			request, _ := codexRawExecFrames(t)
+			output := codexCellOutputFrame(t, "custom_tool_call_output", "raw-exec-call", codexTestCellCompleted, "main-thread", "raw-turn", codexHelloReceipt)
+			event, _ := newCodexItemEvent(nil, providerkit.ParseLine(rawExecToolEvent("item/completed", "commandExecution", "main-thread", "raw-turn")).Params)
 			if position == "before" {
-				a.observeCodexRawExecutionTool(event)
+				a.handleCodexItemCompletedForSink(a.sink, a.AgentID(), true, event)
 			}
 			handleCodexOutput(a, providerkit.ParseLine(request))
 			if position == "other turn" {
@@ -512,16 +513,16 @@ func TestCodexRawExecIntervalIsolation(t *testing.T) {
 				event.threadID = "other"
 			}
 			if position != "before" && position != "after" {
-				a.observeCodexRawExecutionTool(event)
+				a.handleCodexItemCompletedForSink(a.sink, a.AgentID(), true, event)
 			}
 			handleCodexOutput(a, providerkit.ParseLine(output))
 			if position == "after" {
-				a.observeCodexRawExecutionTool(event)
+				a.handleCodexItemCompletedForSink(a.sink, a.AgentID(), true, event)
 			}
 			if position == "during" {
-				require.Empty(t, sink.Messages())
+				require.Empty(t, codexSpanRows(sink.Messages(), "raw-exec-call"))
 			} else {
-				require.Len(t, sink.Messages(), 2)
+				require.Len(t, codexSpanRows(sink.Messages(), "raw-exec-call"), 2)
 			}
 		})
 	}
@@ -531,10 +532,11 @@ func TestCodexRawExecMarksAllOverlappingRequests(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}
 	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
-	a.turnID = "raw-turn"
+	a.mainTurn.id = "raw-turn"
 	var outputs [][]byte
 	for i := 0; i < 3; i++ {
-		request, output := rawExecPair(t, fmt.Sprint(i), "main-thread", "raw-turn")
+		request, _ := rawExecPair(t, fmt.Sprint(i), "main-thread", "raw-turn")
+		output := codexCellOutputFrame(t, "custom_tool_call_output", fmt.Sprint(i), codexTestCellCompleted, "main-thread", "raw-turn", codexHelloReceipt)
 		handleCodexOutput(a, providerkit.ParseLine(request))
 		outputs = append(outputs, output)
 	}
@@ -554,7 +556,7 @@ func TestCodexRawExecCapsIdentitiesAndDiscardsLateOutput(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}
 	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
-	a.turnID = "raw-turn"
+	a.mainTurn.id = "raw-turn"
 	for i := 0; i < 128; i++ {
 		request, _ := rawExecPair(t, fmt.Sprint(i), "main-thread", "raw-turn")
 		handleCodexOutput(a, providerkit.ParseLine(request))
@@ -576,7 +578,7 @@ func TestCodexRawExecPreservesSpanGeometry(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}
 	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
-	a.turnID = "raw-turn"
+	a.mainTurn.id = "raw-turn"
 	request, output := codexRawExecFrames(t)
 	handleCodexOutput(a, providerkit.ParseLine(request))
 	require.Empty(t, sink.OpenSpans())
@@ -596,7 +598,7 @@ func TestCodexRawExecRetriesAtTurnEnd(t *testing.T) {
 	t.Parallel()
 	sink := &codexRawExecFailingSink{failures: 1, failResult: true}
 	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
-	a.turnID = "raw-turn"
+	a.mainTurn.id = "raw-turn"
 	request, output := codexRawExecFrames(t)
 	handleCodexOutput(a, providerkit.ParseLine(request))
 	handleCodexOutput(a, providerkit.ParseLine(output))
@@ -612,7 +614,7 @@ func TestCodexRawExecDropsStaleTurns(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}
 	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
-	a.turnID = "raw-turn"
+	a.mainTurn.id = "raw-turn"
 	request, output := codexRawExecFrames(t)
 	handleCodexOutput(a, providerkit.ParseLine(request))
 	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"next-turn"}}}`)))
@@ -625,7 +627,7 @@ func TestCodexRawExecRetainsLargePayloads(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}
 	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
-	a.turnID = "raw-turn"
+	a.mainTurn.id = "raw-turn"
 	request, output := codexRawExecFrames(t)
 	source := strings.Repeat("x", 9*1024*1024)
 	var frame map[string]any
@@ -706,7 +708,7 @@ func TestCodexRawExecCleanupOnProcessEnd(t *testing.T) {
 		t.Run(fmt.Sprint(stop), func(t *testing.T) {
 			sink := &agenttest.Sink{}
 			a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
-			a.turnID = "raw-turn"
+			a.mainTurn.id = "raw-turn"
 			request, _ := codexRawExecFrames(t)
 			handleCodexOutput(a, providerkit.ParseLine(request))
 			a.SimulateExitForTest()
@@ -732,7 +734,7 @@ func TestCodexRawExecCleanupOnContextReset(t *testing.T) {
 		return agenttest.RPCReply{Result: json.RawMessage(`{"thread":{"id":"new-thread"},"model":"gpt-5.6-sol","approvalPolicy":"never","sandbox":{"type":"dangerFullAccess"}}`)}
 	})
 	a.threadID = "main-thread"
-	a.turnID = "raw-turn"
+	a.mainTurn.id = "raw-turn"
 	request, _ := codexRawExecFrames(t)
 	handleCodexOutput(a, providerkit.ParseLine(request))
 	require.Len(t, a.rawExecutionCalls, 1)
@@ -747,8 +749,9 @@ func TestCodexRawExecReplaysChildIntervals(t *testing.T) {
 		t.Run(fmt.Sprint(nested), func(t *testing.T) {
 			sink := &agenttest.Sink{}
 			a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
-			a.turnID = "root-turn"
-			request, output := rawExecPair(t, "child-exec", "child-thread", "child-turn")
+			a.mainTurn.id = "root-turn"
+			request, _ := rawExecPair(t, "child-exec", "child-thread", "child-turn")
+			output := codexCellOutputFrame(t, "custom_tool_call_output", "child-exec", codexTestCellCompleted, "child-thread", "child-turn", codexHelloReceipt)
 			handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"turn/started","params":{"threadId":"child-thread","turn":{"id":"child-turn"}}}`)))
 			handleCodexOutput(a, providerkit.ParseLine(request))
 			if nested {
@@ -779,8 +782,9 @@ func TestCodexRawExecMalformedOutputDoesNotFinishInterval(t *testing.T) {
 		t.Run(output, func(t *testing.T) {
 			sink := &agenttest.Sink{}
 			a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
-			a.turnID = "raw-turn"
-			request, valid := codexRawExecFrames(t)
+			a.mainTurn.id = "raw-turn"
+			request, _ := codexRawExecFrames(t)
+			valid := codexCellOutputFrame(t, "custom_tool_call_output", "raw-exec-call", codexTestCellCompleted, "main-thread", "raw-turn", codexHelloReceipt)
 			handleCodexOutput(a, providerkit.ParseLine(request))
 			raw := fmt.Sprintf(`{"method":"rawResponseItem/completed","params":{"threadId":"main-thread","turnId":"raw-turn","item":{"type":"custom_tool_call_output","call_id":"raw-exec-call","output":%s}}}`, output)
 			handleCodexOutput(a, providerkit.ParseLine([]byte(raw)))
@@ -825,7 +829,7 @@ func TestCodexRawExecDropsChangedTranscriptOwner(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}
 	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
-	a.turnID = "raw-turn"
+	a.mainTurn.id = "raw-turn"
 	request, output := codexRawExecFrames(t)
 	handleCodexOutput(a, providerkit.ParseLine(request))
 	sink.UpdateSessionID("replacement-session")
@@ -838,7 +842,7 @@ func TestCodexRawExecReleasesFailedPairAtTurnEnd(t *testing.T) {
 	t.Parallel()
 	sink := &codexRawExecFailingSink{failures: 3, failResult: true}
 	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
-	a.turnID = "raw-turn"
+	a.mainTurn.id = "raw-turn"
 	request, output := codexRawExecFrames(t)
 	handleCodexOutput(a, providerkit.ParseLine(request))
 	handleCodexOutput(a, providerkit.ParseLine(output))
@@ -854,7 +858,7 @@ func TestCodexRawExecSerializesConcurrentRequests(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}
 	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
-	a.turnID = "raw-turn"
+	a.mainTurn.id = "raw-turn"
 	var requests, outputs [][]byte
 	for i := 0; i < 16; i++ {
 		request, output := rawExecPair(t, fmt.Sprint(i), "main-thread", "raw-turn")
@@ -889,7 +893,7 @@ func TestCodexRawExecSuppressesEmptyYield(t *testing.T) {
 		t.Run(fmt.Sprint(wrapped), func(t *testing.T) {
 			sink := &agenttest.Sink{}
 			a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
-			a.turnID = "raw-turn"
+			a.mainTurn.id = "raw-turn"
 			request, output := codexRawExecFrames(t)
 			var frame map[string]any
 			require.NoError(t, json.Unmarshal(output, &frame))
@@ -932,7 +936,7 @@ func TestCodexRawExecRetainsFirstOutputOnRetry(t *testing.T) {
 		t.Run(fmt.Sprint(failResult), func(t *testing.T) {
 			sink := &codexRawExecFailingSink{failures: 1, failResult: failResult}
 			a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
-			a.turnID = "raw-turn"
+			a.mainTurn.id = "raw-turn"
 			request, output := codexRawExecFrames(t)
 			handleCodexOutput(a, providerkit.ParseLine(request))
 			handleCodexOutput(a, providerkit.ParseLine(output))
@@ -954,7 +958,7 @@ func TestCodexRawExecTurnEndPreservesOtherThread(t *testing.T) {
 		t.Run(endedThread, func(t *testing.T) {
 			sink := &agenttest.Sink{}
 			a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
-			a.turnID = "raw-turn"
+			a.mainTurn.id = "raw-turn"
 			handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"raw-turn","item":{"type":"subAgentActivity","id":"spawn","kind":"started","agentThreadId":"child-thread","agentPath":"/root/child"}}}`)))
 			handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"turn/started","params":{"threadId":"child-thread","turn":{"id":"raw-turn"}}}`)))
 			rootRequest, rootOutput := rawExecPair(t, "shared-exec", "main-thread", "raw-turn")
@@ -1059,7 +1063,7 @@ func TestCodexRawExecJoinsAWaitedCellIntoOneCard(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}
 	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
-	a.turnID = "raw-turn"
+	a.mainTurn.id = "raw-turn"
 	request, _ := codexRawExecFrames(t)
 	yield := codexCellOutputFrame(t, "custom_tool_call_output", "raw-exec-call", codexTestCellYield, "main-thread", "raw-turn", "partial")
 	firstWait := codexWaitCallFrame(t, "wait-1", "205", "main-thread", "raw-turn")
@@ -1096,7 +1100,7 @@ func TestCodexRawExecWritesNoSupplementForACellThatNeverYields(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}
 	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
-	a.turnID = "raw-turn"
+	a.mainTurn.id = "raw-turn"
 	request, output := codexRawExecFrames(t)
 	handleCodexOutput(a, providerkit.ParseLine(request))
 	handleCodexOutput(a, providerkit.ParseLine(output))
@@ -1105,18 +1109,15 @@ func TestCodexRawExecWritesNoSupplementForACellThatNeverYields(t *testing.T) {
 	assert.Empty(t, rows[1].SupplementalContent)
 }
 
-// Codex omits the parent of a nested tool call, so a typed tool event covers a
-// cell only while the model waits on that cell: between the exec request and
-// its output, and between a wait call and its output. A tool call that the
-// model makes while the cell runs in the background is not the cell's.
-func TestCodexRawExecSuppressesAWaitedCellOnlyInsideAWait(t *testing.T) {
+// A nearby tool result must not hide independent output from either cell segment.
+func TestCodexRawExecKeepsIndependentOutputAcrossAWait(t *testing.T) {
 	t.Parallel()
 	for _, position := range []string{"inside the wait", "between yield and wait"} {
 		t.Run(position, func(t *testing.T) {
 			t.Parallel()
 			sink := &agenttest.Sink{}
 			a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
-			a.turnID = "raw-turn"
+			a.mainTurn.id = "raw-turn"
 			request, _ := codexRawExecFrames(t)
 			tool := rawExecToolEvent("item/completed", "commandExecution", "main-thread", "raw-turn")
 			frames := [][]byte{request, codexCellOutputFrame(t, "custom_tool_call_output", "raw-exec-call", codexTestCellYield, "main-thread", "raw-turn", "partial")}
@@ -1132,12 +1133,9 @@ func TestCodexRawExecSuppressesAWaitedCellOnlyInsideAWait(t *testing.T) {
 				handleCodexOutput(a, providerkit.ParseLine(frame))
 			}
 			rows := codexSpanRows(sink.Messages(), "raw-exec-call")
-			if position == "inside the wait" {
-				assert.Empty(t, rows, "the nested tool row covers the cell")
-				assert.NotContains(t, sink.ReservedColorSpans(), "raw-exec-call")
-			} else {
-				assert.Len(t, rows, 2, "a tool call outside the wait is not the cell's")
-			}
+			require.Len(t, rows, 2)
+			assert.Contains(t, string(rows[1].Content), "partial")
+			assert.Contains(t, string(rows[1].SupplementalContent), "final")
 		})
 	}
 }
@@ -1148,7 +1146,7 @@ func TestCodexRawExecIgnoresAWaitForAnUnknownCell(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}
 	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
-	a.turnID = "raw-turn"
+	a.mainTurn.id = "raw-turn"
 	request, _ := codexRawExecFrames(t)
 	for _, frame := range [][]byte{
 		request,
@@ -1169,7 +1167,7 @@ func TestCodexRawExecEndsACellThatAWaitTerminates(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}
 	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
-	a.turnID = "raw-turn"
+	a.mainTurn.id = "raw-turn"
 	request, _ := codexRawExecFrames(t)
 	terminated := codexCellOutputFrame(t, "function_call_output", "wait-1", "Script terminated", "main-thread", "raw-turn")
 	for _, frame := range [][]byte{
@@ -1195,7 +1193,7 @@ func TestCodexRawExecRetainsAnUnfinishedCellAtTurnEnd(t *testing.T) {
 			t.Parallel()
 			sink := &agenttest.Sink{}
 			a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
-			a.turnID = "raw-turn"
+			a.mainTurn.id = "raw-turn"
 			request, _ := codexRawExecFrames(t)
 			var bodies []string
 			if scenario != "without output" {
@@ -1232,7 +1230,7 @@ func TestCodexRawExecSuppressesAWaitedCellOfEmptyPolls(t *testing.T) {
 			t.Parallel()
 			sink := &agenttest.Sink{}
 			a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
-			a.turnID = "raw-turn"
+			a.mainTurn.id = "raw-turn"
 			request, _ := codexRawExecFrames(t)
 			var bodies []string
 			if scenario == "text in the yield" {
@@ -1265,7 +1263,7 @@ func TestCodexRawExecJoinsAWaitedCellOfASubagent(t *testing.T) {
 			t.Parallel()
 			sink := &agenttest.Sink{}
 			a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
-			a.turnID = "root-turn"
+			a.mainTurn.id = "root-turn"
 			spawn := []byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"spawn","kind":"started","agentThreadId":"child-thread","agentPath":"/root/child"}}}`)
 			request, _ := rawExecPair(t, "child-exec", "child-thread", "child-turn")
 			cell := [][]byte{

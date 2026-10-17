@@ -813,15 +813,12 @@ func (m *Manager) ApproveAutoReviewDenial(agentID string, entries []json.RawMess
 
 // RetryTurn stops the running turn and sends its input again on another model.
 //
-// It returns when the provider accepts the retry. The stop, the thread swap and
-// the new turn run in their own goroutine, and each phase states its own
-// failure in the transcript. A caller with an RPC deadline therefore waits for
-// the validation only, never for the provider requests.
+// It returns when the provider accepts the retry. A separate goroutine changes history and resends the input.
+// Each phase reports its failure in the transcript. The RPC caller waits for validation only.
 //
 // BeginTurnRetry runs under the lifecycle lock, so the offer check addresses one
-// provider instance. Replace runs under the lock also, so a restart or a
-// context clear cannot interleave with the thread swap. Start runs after the
-// lock releases, because it waits for the new turn to start.
+// provider instance. Replace submits the history change under that lock.
+// Start confirms the change after the lock releases, so context clear remains available during a delayed reply.
 func (m *Manager) RetryTurn(agentID, turnID, model string) error {
 	entry, release := m.lockRegistration(agentID)
 	p := entry.providerOrNil()
@@ -870,7 +867,7 @@ func (m *Manager) runTurnRetry(agentID string, accepted *agentRegistration, retr
 	// stop also ends a phase with an error. So these records are for debugging
 	// only.
 	if err != nil {
-		slog.Debug("turn retry ended before the thread swap", "agent_id", agentID, "error", err)
+		slog.Debug("turn retry ended before the history change", "agent_id", agentID, "error", err)
 		return
 	}
 	if err := retry.Start(); err != nil {

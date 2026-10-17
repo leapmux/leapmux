@@ -11,7 +11,7 @@ import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
 import { createToolCall } from '../../../model/createToolCall'
 import { unparsedResult } from '../../../model/toolCall'
 import { retainedOutcome, retainedRowIsFinal } from '../../registry'
-import { CODEX_EXEC_CONTENT, CODEX_EXEC_HEADER } from '../protocol'
+import { CODEX_EXEC_CANCELLATION, CODEX_EXEC_CONTENT, CODEX_EXEC_DISPATCH_FAILURE, CODEX_EXEC_HEADER } from '../protocol'
 import { extractItem } from './item'
 
 export type CodexRawExecRole = 'request' | 'result'
@@ -98,6 +98,17 @@ function codexExecStatus(firstLine: string): CodexExecStatus | null {
 
 /** Read the native header before script text. A status line that the script prints cannot change the outcome. */
 function codexExecSegment(output: unknown): CodexExecSegment | null {
+  if (typeof output === 'string') {
+    if (output === CODEX_EXEC_DISPATCH_FAILURE)
+      return { status: 'failed', text: [output], body: [output], images: [] }
+    const cancellation = CODEX_EXEC_CANCELLATION.exec(output)
+    const seconds = cancellation && cancellation[0] === output ? Number(cancellation[1]) : Number.NaN
+    const durationMs = seconds * 1000
+    // The native producer applies a 0.1-second minimum to elapsed time.
+    // A script's text block cannot supply this provider outcome.
+    if (seconds >= 0.1 && Number.isFinite(durationMs))
+      return { status: 'terminated', text: [output], body: [output], images: [], durationMs }
+  }
   const blocks: unknown[] | null = typeof output === 'string' ? [{ type: CODEX_EXEC_OUTPUT.TextContent, text: output }] : Array.isArray(output) ? output : null
   if (!blocks)
     return null

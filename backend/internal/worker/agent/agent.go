@@ -259,7 +259,7 @@ type ControlServices interface {
 type SessionServices interface {
 	// MessageSessionID is the session that this sink stamps on the rows it
 	// writes. A provider that broadcasts session state for a CHILD resolves the
-	// child's sink first, so the broadcast names the same session as the child's
+	// child's sink first, so the broadcast identifies the same session as the child's
 	// rows.
 	MessageSessionID() string
 	UpdateSessionID(sessionID string)

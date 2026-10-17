@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -17,11 +18,7 @@ func (a *Agent) clearReasoningStateForThread(threadID string) {
 	a.Mu.Lock()
 	for key := range a.reasoningStreamKind {
 		if strings.HasPrefix(key, prefix) {
-			delete(a.reasoningStreamKind, key)
-			delete(a.reasoningRetainedKind, key)
-			delete(a.reasoningSummaryIndex, key)
-			delete(a.reasoningSummarySeen, key)
-			delete(a.reasoningSummaryBreak, key)
+			a.deleteCodexReasoningStateLocked(key)
 		}
 	}
 	a.Mu.Unlock()
@@ -54,14 +51,9 @@ func (a *Agent) bufferCodexModelText(
 }
 
 func (a *Agent) reportCodexModelProgress(scopeID, threadID, text string) {
-	sink := a.sink
-	if !a.isMainThreadID(threadID) {
-		route, routed := a.ensureCodexChildRoute(threadID)
-		if !routed {
-			return
-		}
-		a.replayPendingCodexChildEvents(threadID, route)
-		sink = route.childSink
+	sink, routed := a.codexReadyThreadSink(threadID)
+	if !routed {
+		return
 	}
 	sink.ReportProgress(agent.ModelTextProgress(scopeID, text))
 }
@@ -359,16 +351,23 @@ func (a *Agent) handleThreadSettingsUpdated(params json.RawMessage) {
 	}
 	settings := notif.ThreadSettings
 	a.Mu.Lock()
+	pending := a.pendingStart
 	// Each axis moves ONLY when the frame states it. An absent field is the app
 	// server saying nothing about that axis, and writing "" would clear a value
 	// the reader chose.
-	if settings.Model != "" {
+	if settings.Model != "" && a.codexStartOwnsSettingLocked(pending, agent.OptionIDModel) {
 		a.model = settings.Model
+		if pending != nil {
+			pending.modelObserved = true
+		}
 	}
-	if settings.Effort != "" {
+	if settings.Effort != "" && a.codexStartOwnsSettingLocked(pending, agent.OptionIDEffort) {
 		a.effort = settings.Effort
+		if pending != nil {
+			pending.effortObserved = true
+		}
 	}
-	if settings.CollaborationMode != nil && settings.CollaborationMode.Mode != "" {
+	if settings.CollaborationMode != nil && settings.CollaborationMode.Mode != "" && a.codexStartOwnsSettingLocked(pending, contracts.CodexOptionCollaborationMode) {
 		a.collaborationMode = settings.CollaborationMode.Mode
 	}
 	vals := a.codexAxisValuesLocked()
@@ -470,4 +469,14 @@ func (a *Agent) handleCodexToolOutputDelta(params json.RawMessage) {
 		}
 		reportOutput(a.sink)
 	}
+}
+
+// deleteCodexReasoningStateLocked removes every field for one reasoning item.
+// The caller holds a.Mu and selects the item that it must remove.
+func (a *Agent) deleteCodexReasoningStateLocked(key string) {
+	delete(a.reasoningStreamKind, key)
+	delete(a.reasoningRetainedKind, key)
+	delete(a.reasoningSummaryIndex, key)
+	delete(a.reasoningSummarySeen, key)
+	delete(a.reasoningSummaryBreak, key)
 }

@@ -567,27 +567,25 @@ func (a *Agent) handlePersistableMessage(content []byte, msgType string) {
 	}
 
 	if msgType == claudeMsgTypeSystem {
-		// thinking_tokens is live telemetry. The handler reports the estimate as
-		// progress. The hidden-subtype table below drops the frame also, but
-		// only after this intercept, because a dropped frame reports nothing.
-		if a.handleThinkingTokens(content) {
-			return
-		}
-
-		// permission_check_status is live state for the same reason: the
-		// handler broadcasts the badge state of the call, and no row persists.
-		if a.handlePermissionCheckStatus(content) {
-			return
-		}
-
-		// Task/Workflow events drive the background-task registry (and, for
-		// Task subagents, the child transcript via --forward-subagent-text).
-		// They are consumed here and never persist into the parent transcript.
-		if a.claudeHandleTaskEvent(content) {
-			return
-		}
-
 		subtype := claudeSystemSubtypeOf(content)
+		// Select the native handler before it decodes its payload fields.
+		// An unrelated malformed field must not affect this event's handler.
+		switch subtype {
+		case contracts.ClaudeHiddenSystemSubtypeThinkingTokens:
+			a.handleThinkingTokens(content)
+			return
+		case contracts.ClaudeHiddenSystemSubtypePermissionCheckStatus:
+			a.handlePermissionCheckStatus(content)
+			return
+		case contracts.ClaudeHiddenSystemSubtypeTaskStarted,
+			contracts.ClaudeHiddenSystemSubtypeTaskProgress,
+			contracts.ClaudeHiddenSystemSubtypeTaskNotification,
+			contracts.ClaudeHiddenSystemSubtypeTaskUpdated,
+			contracts.ClaudeHiddenSystemSubtypeBackgroundTasksChanged,
+			contracts.ClaudeHiddenSystemSubtypeSessionStateChanged:
+			a.claudeHandleTaskEvent(content)
+			return
+		}
 
 		// Three hidden subtypes change state before they return.
 		switch subtype {
@@ -856,7 +854,7 @@ func (a *Agent) handlePermissionCheckStatus(content []byte) bool {
 	// `done`, and any status that this build does not know, ends the wait. The
 	// badge must clear at the earliest signal, so an unknown word is read as
 	// its end rather than as a reason to keep it standing.
-	setClaudePermissionCheck(sink, toolUseID, status == claudePermissionCheckChecking)
+	providerkit.PublishPermissionCheck(sink, toolUseID, status == claudePermissionCheckChecking)
 	return true
 }
 
@@ -963,39 +961,6 @@ func (a *Agent) claudePermissionCheckSink(agentID string) (agent.ProviderService
 	return a.sink.ChildSink(known.childID), true
 }
 
-// setClaudePermissionCheck broadcasts the permission-check state of one tool
-// call. The browser keys its live entry by the span id AND the session
-// together, so the update states the session that the resolved sink stamps on
-// its rows. A call with no tool_use_id identifies no row and broadcasts
-// nothing.
-//
-// checking is true while the check runs. When it is false, the value travels as
-// an explicit JSON null, which the browser reads as "the check ended". An
-// absent key would leave the badge standing.
-func setClaudePermissionCheck(sink agent.ProviderServices, toolUseID string, checking bool) {
-	if toolUseID == "" {
-		return
-	}
-	var value interface{}
-	if checking {
-		value = true
-	}
-	sink.BroadcastSessionInfo(map[string]interface{}{
-		contracts.SessionInfoKeyRunningTool: map[string]interface{}{
-			contracts.RunningToolFieldSpanId:          toolUseID,
-			contracts.RunningToolFieldAgentSessionId:  sink.MessageSessionID(),
-			contracts.RunningToolFieldPermissionCheck: value,
-		},
-	})
-}
-
-// clearClaudePermissionCheck states that one tool call waits on no permission
-// check any more. See setClaudePermissionCheck for why the clear is a null
-// value rather than an absent key.
-func clearClaudePermissionCheck(sink agent.ProviderServices, toolUseID string) {
-	setClaudePermissionCheck(sink, toolUseID, false)
-}
-
 // handlePermissionDenied ends the live permission check of a denied call, and
 // persists the denial in the transcript of the agent that made the call. It
 // reports true when it persisted the row itself.
@@ -1019,7 +984,7 @@ func (a *Agent) handlePermissionDenied(content []byte) bool {
 	if !resolved {
 		return false
 	}
-	clearClaudePermissionCheck(sink, msg.ToolUseID)
+	providerkit.PublishPermissionCheck(sink, msg.ToolUseID, false)
 	if msg.AgentID == "" {
 		return false
 	}
@@ -1280,7 +1245,8 @@ type claudeControlRequestFields struct {
 	// AgentID is the task id of the subagent that made the call. It is empty
 	// for a call of the root agent.
 	AgentID string
-	// ElicitationID identifies the MCP elicitation that an `elicitation` asks.
+	// MCPServerName and ElicitationID identify one server's elicitation.
+	MCPServerName string
 	ElicitationID string
 }
 
@@ -1299,6 +1265,7 @@ func parseClaudeControlRequestFields(content []byte) claudeControlRequestFields 
 		Subtype:       claudeOptionalString(frame.Request["subtype"]),
 		ToolUseID:     claudeOptionalString(frame.Request["tool_use_id"]),
 		AgentID:       claudeOptionalString(frame.Request["agent_id"]),
+		MCPServerName: claudeOptionalString(frame.Request["mcp_server_name"]),
 		ElicitationID: claudeOptionalString(frame.Request["elicitation_id"]),
 	}
 }
@@ -1343,12 +1310,13 @@ func (a *Agent) claudeCodeHandleControlCancel(content []byte) {
 // other answer.
 func (a *Agent) handleElicitationComplete(content []byte) {
 	var msg struct {
+		MCPServerName string `json:"mcp_server_name"`
 		ElicitationID string `json:"elicitation_id"`
 	}
 	if err := json.Unmarshal(content, &msg); err != nil {
 		return
 	}
-	requestID, record := a.claimElicitation(msg.ElicitationID)
+	requestID, record := a.claimElicitation(msg.MCPServerName, msg.ElicitationID)
 	if record == nil {
 		return
 	}
@@ -1544,37 +1512,27 @@ func (a *Agent) extractAndBroadcastUsage(env *messageEnvelope, msgType string) {
 		info[contracts.SessionInfoKeyTotalCostUsd] = *env.CostUSD
 	}
 
-	// Snapshot a.model and the effort resolver under a.Mu in one acquisition: this
-	// runs on the readOutputLoop goroutine while refreshSettingsFromAgent may
-	// concurrently rewrite a.model under the same lock, so the a.Mu pairing is what the
-	// a.model read needs. a.availableModels (which the resolver captures) is written
-	// only during the pre-registration startup handshake (convertClaudeModels, then a
-	// possible ensureSettledModelListed insert) and never mutated afterward. This read
-	// happens-after that window: it fires only for assistant/result output, which needs
-	// a user turn, and a user turn can't reach this agent until it has been registered
-	// with the manager -- the registration's lock provides the happens-before edge that
-	// publishes every startup write. So the resolver needs a.Mu only for the a.model
-	// read it pairs with here; the catalog field is already safely published. The
-	// catalog entries are immutable shared data, so the window lookup is safe to compute
-	// after unlocking.
+	// Capture a.model and the effort resolver in one a.Mu critical section.
+	// This handler runs on readOutputLoop while refreshSettingsFromAgent can change a.model under the same mutex.
+	// The resolver captures a.availableModels. Startup builds that catalog with convertClaudeModels, then may insert an entry with ensureSettledModelListed.
+	// No later operation changes the catalog.
+	//
+	// Assistant and result output require a user turn. The manager registers this agent before a user turn can reach it.
+	// The registration lock publishes every startup write before this handler reads the catalog.
+	// The resolver needs a.Mu for the paired model read only. Immutable catalog entries permit the window lookup after the mutex releases.
 	a.Mu.Lock()
 	model := a.model
 	resolver := a.effortResolver()
 	a.Mu.Unlock()
-	// The catalog window is an ESTIMATE inferred from the model id ("[1m]" => 1M, else
-	// 200K). resolver.contextWindow resolves it over the dynamic catalog with the static
-	// fallback -- the same dynamic-first-then-fallback the effort lookups use -- so a
-	// model the live CLI dropped from its list but a resumed session is still running
-	// keeps its known window instead of going dark. It is 0 only when the model has no
-	// known window in EITHER catalog: the unresolved account-default sentinel (its entry
-	// is a placeholder), or a model absent from both lists. We deliberately do NOT
-	// fabricate a window then -- 0 means "unknown" and the broadcast omits context_window
-	// below, matching the frontend, which likewise shows no window when it can't resolve
-	// one. For a concrete model absent from both catalogs, a result message's modelUsage
-	// supplies the real window once one arrives (findPrimaryContextWindow matches its
-	// concrete key). The unresolved sentinel ("default") can't: it matches no concrete
-	// usage key, so it stays unknown until the model resolves off the sentinel (a later
-	// refreshSettingsFromAgent), whose model change re-seeds the window here.
+	// The catalog estimates the window from the model ID: "[1m]" means 1M, otherwise 200K.
+	// resolver.contextWindow reads the dynamic catalog first, then the static fallback, as the effort lookups do.
+	// A resumed model that the live CLI omits can therefore retain its known window.
+	// Zero means neither catalog supplies a window, including an unresolved account-default sentinel or a model absent from both catalogs.
+	// The broadcast omits context_window for zero. The frontend also shows no window when it cannot resolve one.
+	//
+	// For a concrete model absent from both catalogs, result modelUsage supplies the real window through findPrimaryContextWindow.
+	// The "default" sentinel matches no concrete usage key, so its window stays unknown.
+	// A later refreshSettingsFromAgent can resolve that sentinel. Its model change initializes the window again here.
 	contextWindow := resolver.contextWindow(model)
 
 	snapshot := a.getOrCreateUsageSnapshot()

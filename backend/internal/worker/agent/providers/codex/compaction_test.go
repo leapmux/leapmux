@@ -22,7 +22,7 @@ func TestCodexCompactContextUsesNativeCompaction(t *testing.T) {
 		return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
 	})
 	agent.threadID = "thread-1"
-	agent.turnID = "turn-1"
+	agent.mainTurn.id = "turn-1"
 
 	require.NoError(t, agent.CompactContext())
 	require.Len(t, requests(), 1)

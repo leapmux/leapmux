@@ -2411,14 +2411,14 @@ describe('checkWorkerVocab / checkDesktop', () => {
 })
 
 describe('enumValues', () => {
-  it('reads enum names from a buf descriptor, reserved values absent', () => {
-    // Use the real descriptor. Reserved slot 3 must stay absent. Otherwise, the
-    // provider check requests metadata for a provider that cannot exist.
+  it('reads the current provider enum from a buf descriptor', () => {
+    // The real descriptor supplies provider metadata coverage, including Cursor.
     const set = DESCRIPTOR
     const names = enumValues(set, 'leapmux/v1/agent.proto', 'AgentProvider')
     expect(names).toContain('AGENT_PROVIDER_CLAUDE_CODE')
     expect(names.filter(n => n.includes('RESERVED'))).toEqual([])
-    expect(names).not.toContain('AGENT_PROVIDER_3')
+    expect(names).toContain('AGENT_PROVIDER_CURSOR')
+    expect(names).toContain('AGENT_PROVIDER_UNSPECIFIED')
   })
 
   it('fails with a ContractError for an unknown enum or file', () => {

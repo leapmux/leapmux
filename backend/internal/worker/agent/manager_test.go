@@ -194,7 +194,7 @@ func TestManager_RetryTurnPropagatesABeginError(t *testing.T) {
 }
 
 // The RPC answers when the provider accepts the retry. The phases that wait for
-// provider requests run after the answer, so a slow stop or fork can never
+// provider requests run after the answer, so a slow stop or history change can never
 // reach the caller's deadline.
 func TestManager_RetryTurnAnswersBeforeThePhasesRun(t *testing.T) {
 	t.Parallel()

@@ -27,9 +27,8 @@ import (
 //   - `target` of a `target_changed` event, which the app-server sends on
 //     `session.updated` for each goal transition. The event ANNOUNCES the goal.
 //
-// LeapMux also reads a `goal` key of a snapshot and of a `state.updated` patch.
-// ZCode 3.14.5 sends neither: its snapshot schema is strict and holds no `goal`
-// key, and its `state.updated` patch holds only a run status or the settings.
+// ZCode 3.14.5 sends no `goal` key in its strict snapshot schema.
+// Its `state.updated` patches carry run status or settings, not goal state.
 const (
 	zcodeMethodSessionGoal = "session/goal"
 
@@ -61,8 +60,8 @@ const (
 // is what sets it.
 const zcodeGoalDetailVerifying = "verifying"
 
-// zcodeGoalState is the `goal` object in a snapshot or a patch, and the `target`
-// of a `target_changed` event. The three spell its native id differently.
+// zcodeGoalState reads `session.target` from a snapshot and `target` from a goal-change event.
+// Those sources use different spellings for the native ID.
 type zcodeGoalState struct {
 	TargetID        string `json:"targetId"`
 	TargetIDUpper   string `json:"targetID"`
@@ -170,8 +169,8 @@ func (a *Agent) reportZCodeGoal(raw json.RawMessage, snapshot bool) {
 		Snapshot:        snapshot,
 	}
 	a.Mu.Lock()
-	// The goal check's lifecycle reports this goal again with its own detail, so
-	// the last report is kept for it.
+	// The goal check's lifecycle reports this goal again with its own detail.
+	// The agent keeps the last report for that lifecycle.
 	a.lastGoalUpdate = update
 	a.Mu.Unlock()
 	a.sink.UpsertGoal(update)

@@ -43,6 +43,12 @@ func newCodexAgentForRPCWithClock(t *testing.T, clock quartz.Clock, respond func
 // the parameters of the request.
 func newCodexAgentForRPCRequests(t *testing.T, respond func(request codexRecordedRequest) agenttest.RPCReply, clocks ...quartz.Clock) (*Agent, *agenttest.Sink, func() []codexRecordedRequest) {
 	t.Helper()
+	return newCodexAgentForAsyncRPCRequests(t, func(request codexRecordedRequest, reply func(agenttest.RPCReply)) { reply(respond(request)) }, clocks...)
+}
+
+// newCodexAgentForAsyncRPCRequests lets a test delay one reply without blocking other requests.
+func newCodexAgentForAsyncRPCRequests(t *testing.T, respond func(codexRecordedRequest, func(agenttest.RPCReply)), clocks ...quartz.Clock) (*Agent, *agenttest.Sink, func() []codexRecordedRequest) {
+	t.Helper()
 	var clock quartz.Clock
 	if len(clocks) > 0 {
 		clock = clocks[0]
@@ -97,7 +103,8 @@ func newCodexAgentForRPCRequests(t *testing.T, respond func(request codexRecorde
 			mu.Lock()
 			requests = append(requests, request)
 			mu.Unlock()
-			agent.Deliver(req.ID, agenttest.JSONRPCResponse(req.ID, respond(request)))
+			requestID := req.ID
+			respond(request, func(reply agenttest.RPCReply) { agent.Deliver(requestID, agenttest.JSONRPCResponse(requestID, reply)) })
 		}
 	}()
 
@@ -446,7 +453,7 @@ func TestCodexThreadParams(t *testing.T) {
 	// A non-default service tier is included.
 	fast := codexThreadParams("gpt-5.4", "/work", workspace, ServiceTierFast)
 	assert.Equal(t, map[string]interface{}{"model_reasoning_summary": "detailed"}, fast["config"])
-	assert.Equal(t, true, fast["experimentalRawEvents"], "spawn arguments must reach the live child transcript")
+	assert.NotContains(t, fast, "experimentalRawEvents", "only thread/start accepts the raw-events flag")
 	assert.Equal(t, "gpt-5.4", fast["model"])
 	assert.Equal(t, "/work", fast["cwd"])
 	assert.Equal(t, ModeAskForApproval, fast["approvalPolicy"])
@@ -620,12 +627,13 @@ func TestCodexUpdateSettings_ConcreteModelAppliesLive(t *testing.T) {
 	assert.Equal(t, "gpt-5.6-luna", ag.model)
 }
 
-// TestCodexModelSwitchCarriesTheHeldAxesIntoTheNextTurn pins a model switch that keeps the held
-// effort and service tier. The worker passes the whole merged option set, so the update carries the
-// new model next to the kept effort and tier. Codex applies a setting as an override for "this turn
-// and subsequent turns", and the next turn/start states every axis again. So the switch sends no
-// request of its own, and the next turn names the new model, the kept effort, the kept tier, and
-// the same model and effort inside the collaboration mode.
+// TestCodexModelSwitchCarriesTheHeldAxesIntoTheNextTurn checks a model switch that keeps the effort and service tier.
+// The worker supplies the complete merged options. Codex applies overrides to the current and subsequent turns.
+// The switch sends no request itself. The next turn/start specifies:
+//   - The new model.
+//   - The retained effort.
+//   - The retained service tier.
+//   - The same model and effort inside the collaboration mode.
 func TestCodexModelSwitchCarriesTheHeldAxesIntoTheNextTurn(t *testing.T) {
 	t.Parallel()
 
@@ -633,13 +641,7 @@ func TestCodexModelSwitchCarriesTheHeldAxesIntoTheNextTurn(t *testing.T) {
 	var requests func() []codexRecordedRequest
 	a, _, requests = newCodexAgentForRPC(t, func(method string) agenttest.RPCReply {
 		if method == "turn/start" {
-			a.Mu.Lock()
-			ack := a.turnStartAck
-			a.turnStartAck = nil
-			a.Mu.Unlock()
-			if ack != nil {
-				close(ack)
-			}
+			feedCodexLines(a, fmt.Sprintf(`{"method":"turn/started","params":{"threadId":"thread-1","turn":{"id":"turn-%d"}}}`, len(requests())))
 		}
 		return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
 	})
@@ -704,13 +706,7 @@ func TestCodexSendTurnStartOmitsAccountDefaultModel(t *testing.T) {
 			var requests func() []codexRecordedRequest
 			a, _, requests = newCodexAgentForRPC(t, func(method string) agenttest.RPCReply {
 				if method == "turn/start" {
-					a.Mu.Lock()
-					ack := a.turnStartAck
-					a.turnStartAck = nil
-					a.Mu.Unlock()
-					if ack != nil {
-						close(ack)
-					}
+					feedCodexLines(a, fmt.Sprintf(`{"method":"turn/started","params":{"threadId":"thread-1","turn":{"id":"turn-%d"}}}`, len(requests())))
 				}
 				return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
 			})
@@ -767,13 +763,7 @@ func TestCodexSendTurnStartClearsFastServiceTier(t *testing.T) {
 						nativeTier, _ = value.(string)
 					}
 					observed <- nativeTierState{present: present, value: value, tier: nativeTier}
-					a.Mu.Lock()
-					ack := a.turnStartAck
-					a.turnStartAck = nil
-					a.Mu.Unlock()
-					if ack != nil {
-						close(ack)
-					}
+					feedCodexLines(a, fmt.Sprintf(`{"method":"turn/started","params":{"threadId":"thread-1","turn":{"id":"turn-%d"}}}`, len(requests())))
 				}
 				return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
 			})
@@ -1071,7 +1061,7 @@ func TestCodexUpdateSettingsChangesTheActiveTurnReviewer(t *testing.T) {
 	a, _, requests := newCodexThreadAgentForRPC(t, func(string) agenttest.RPCReply {
 		return agenttest.RPCReply{Result: json.RawMessage(`{"status":"applied"}`)}
 	})
-	a.turnID = "turn-1"
+	a.mainTurn.id = "turn-1"
 
 	a.UpdateSettings(map[string]string{agent.OptionIDPermissionMode: contracts.CodexPermissionModeApproveForMe})
 
@@ -1098,7 +1088,7 @@ func TestCodexUpdateSettingsRestoresARefusedPermission(t *testing.T) {
 	})
 	a.permissionMode = ModeAskForApproval
 	a.permissionProfile = contracts.CodexPermissionProfileWorkspace
-	a.turnID = "turn-1"
+	a.mainTurn.id = "turn-1"
 
 	result := a.UpdateSettings(map[string]string{agent.OptionIDPermissionMode: contracts.CodexPermissionModeApproveForMe})
 
@@ -1121,7 +1111,7 @@ func TestCodexUpdateSettingsReportsAnUnconfirmedActiveReviewer(t *testing.T) {
 			}
 			return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
 		})
-		a.turnID = "turn-1"
+		a.mainTurn.id = "turn-1"
 		result := a.UpdateSettings(map[string]string{agent.OptionIDPermissionMode: contracts.CodexPermissionModeApproveForMe})
 		for _, id := range codexPermissionOptionIDs {
 			assert.Equal(t, agent.OptionSettlementUnresolved, result.Settlements[id].State)
@@ -1153,7 +1143,7 @@ func TestCodexActiveReviewerSettlementFollowsTheRequestedTurn(t *testing.T) {
 					return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
 				}
 				a.Mu.Lock()
-				a.turnID = test.nextTurn
+				a.mainTurn.id = test.nextTurn
 				if test.nextThread != "" {
 					a.threadID = test.nextThread
 				}
@@ -1163,7 +1153,7 @@ func TestCodexActiveReviewerSettlementFollowsTheRequestedTurn(t *testing.T) {
 				}
 				return agenttest.RPCReply{Result: json.RawMessage(test.response)}
 			})
-			a.turnID = "turn-1"
+			a.mainTurn.id = "turn-1"
 			result := a.UpdateSettings(map[string]string{agent.OptionIDPermissionMode: contracts.CodexPermissionModeApproveForMe})
 			for _, id := range codexPermissionOptionIDs {
 				assert.Equal(t, test.unresolved, result.Settlements[id].State == agent.OptionSettlementUnresolved)
@@ -1182,7 +1172,7 @@ func TestCodexUpdateSettingsKeepsTheChangeForAnOlderCodex(t *testing.T) {
 		}
 		return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
 	})
-	a.turnID = "turn-1"
+	a.mainTurn.id = "turn-1"
 
 	result := a.UpdateSettings(map[string]string{agent.OptionIDPermissionMode: contracts.CodexPermissionModeApproveForMe})
 

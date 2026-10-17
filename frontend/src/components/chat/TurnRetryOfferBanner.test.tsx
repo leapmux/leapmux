@@ -158,7 +158,7 @@ describe('TurnRetryOfferBanner', () => {
 
     expect(within(dialog).getByText('Stop this attempt and retry?')).toBeInTheDocument()
     expect(within(dialog).getByText(
-      'This stops the current attempt and retries in a new thread. File changes and other actions that the agent already took stay. Your message is sent again on GPT-6 Luna, which can be less capable on complex tasks.',
+      'This stops the current attempt and removes it from the native conversation history. LeapMux keeps the stopped attempt in this transcript. File changes and other actions that the agent already took stay. LeapMux sends your message again on GPT-6 Luna, which can be less capable on complex tasks.',
     )).toBeInTheDocument()
     expect(within(dialog).getByRole('button', { name: 'Keep waiting' })).toBeInTheDocument()
     expect(within(dialog).getByRole('button', { name: 'Stop and retry' })).toBeInTheDocument()
@@ -187,7 +187,7 @@ describe('TurnRetryOfferBanner', () => {
     ))
     const dialog = await openConfirmDialog()
     setOffer({ ...OFFER, model: 'gpt-7-quicker' })
-    expect(within(dialog).getByText(/Your message is sent again on gpt-7-quicker,/)).toBeInTheDocument()
+    expect(within(dialog).getByText(/LeapMux sends your message again on gpt-7-quicker,/)).toBeInTheDocument()
     await fireEvent.click(within(dialog).getByRole('button', { name: 'Stop and retry' }))
 
     expect(onRetry).toHaveBeenCalledWith('turn-1', 'gpt-7-quicker')

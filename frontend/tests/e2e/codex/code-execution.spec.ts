@@ -40,6 +40,29 @@ codexTest('runs native code and retains computed output and script errors after 
   } })
 })
 
+codexTest('reports a native model without code-mode execution as failed after reload', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+  await openNativeAgent(context, { directoryPrefix: 'native-code-unavailable-', overrides: { model: 'gpt-5.5' } })
+  const callId = 'native-unsupported-exec'
+  const start = await modelScript.queue({ toolCalls: [codexExecToolCall(callId, 'text(40 + 2);')] }, { text: 'The native executor is unavailable for this model.' })
+  await sendMessage(page, modelScript.prompt('Attempt the unsupported native execution call.'))
+  await modelScript.waitForSteps(start + 2)
+  await waitForAgentIdle(page)
+  expect((await modelScript.requestAt(start)).body).toMatchObject({ model: 'gpt-5.5' })
+  const failure = 'unsupported custom tool call: exec'
+  expect(nativeToolResult(await modelScript.requestAt(start + 1), callId)).toBe(failure)
+  for (const reload of [false, true]) {
+    if (reload) {
+      await page.reload()
+      await openWorkspace(page, context.workspaceId)
+    }
+    const row = toolCallRow(page, callId)
+    await expect(row).toHaveCount(1)
+    await expect(row).toHaveAttribute('data-tool-status', 'failed')
+    await expect(row).toContainText(failure)
+  }
+})
+
 codexTest('retains a completed native script with empty output after reload', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
   const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
   const { workspaceId } = context
@@ -119,6 +142,30 @@ codexTest('omits outer execution rows when a nested shell command supplies the o
     await expect(toolCallRow(page, callId)).toHaveCount(0)
     for (const message of snapshot.messages)
       expect(message.spanLines).not.toContain(callId)
+  }
+})
+
+codexTest('retains independent script output beside a nested shell receipt after reload', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+  await openNativeAgent(context, { directoryPrefix: 'native-code-mixed-' })
+  const callId = 'native-code-mixed'
+  const source = 'text(await tools.exec_command({cmd:"printf NESTED_MIXED",max_output_tokens:500})); text("INDEPENDENT_" + (40 + 2));'
+  const start = await modelScript.queue({ toolCalls: [codexExecToolCall(callId, source)] }, { text: 'The mixed script completed.' })
+  await sendMessage(page, modelScript.prompt('Run the script with independent output.'))
+  await modelScript.waitForSteps(start + 2)
+  await waitForAgentIdle(page)
+  expect(nativeToolResult(await modelScript.requestAt(start + 1), callId)).toContain('INDEPENDENT_42')
+  const agent = await currentNativeAgent(context)
+  for (const reload of [false, true]) {
+    if (reload) {
+      await page.reload()
+      await openWorkspace(page, context.workspaceId)
+    }
+    const snapshot = await readNativeMessageSnapshot(context, agent.id)
+    expect(snapshot.messages.filter(message => message.spanId === callId)).toHaveLength(2)
+    await expect(toolCallRow(page, callId)).toHaveCount(1)
+    await expect(toolCallRow(page, callId)).toContainText('INDEPENDENT_42')
+    await expect(toolCallRow(page, callId)).toContainText('NESTED_MIXED')
   }
 })
 

@@ -19,6 +19,7 @@ func TestTurnRetryErrorPreservesTheFailureClass(t *testing.T) {
 		code codes.Code
 		text string
 	}{
+		{"pending input", agent.ErrAgentBusy, codes.FailedPrecondition, "pending input delivery"},
 		{"offer withdrawn", agent.ErrTurnRetryUnavailable, codes.FailedPrecondition, "no longer offers this retry"},
 		{"missing", agent.ErrAgentNotFound, codes.NotFound, "not found"},
 		{"unexpected failure", errors.New("the provider refused the retry"), codes.Internal, "provider refused the retry"},

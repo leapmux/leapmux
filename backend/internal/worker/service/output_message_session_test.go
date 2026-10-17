@@ -15,7 +15,7 @@ import (
 // TestMessageSessionIDMatchesTheRowsEachSinkWrites pins the contract a
 // session-info broadcast relies on: the session a sink reports is the session
 // its own rows carry. A child sink reports its own session, never its parent's,
-// so a broadcast a provider makes for a child names the child's transcript.
+// so a broadcast a provider makes for a child identifies the child's transcript.
 func TestMessageSessionIDMatchesTheRowsEachSinkWrites(t *testing.T) {
 	t.Parallel()
 
@@ -52,7 +52,7 @@ func TestMessageSessionIDMatchesTheRowsEachSinkWrites(t *testing.T) {
 
 // TestMessageSessionIDStartsEmptyAndFollowsEachSessionTransition pins the
 // value the sink reports at every point of a session change. It is empty until
-// the first UpdateSessionID, and it names the newest session after each one.
+// the first UpdateSessionID, and it identifies the newest session after each one.
 // Each row carries the value the sink reported when the row was written.
 func TestMessageSessionIDStartsEmptyAndFollowsEachSessionTransition(t *testing.T) {
 	t.Parallel()

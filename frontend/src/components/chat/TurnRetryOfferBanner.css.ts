@@ -1,21 +1,41 @@
 import { style } from '@vanilla-extract/css'
-import { compactActionLabelled, compactTextSize } from '~/styles/tokens'
+import { compactActionLabelled, compactActionSize, compactTextSize } from '~/styles/tokens'
 
 /**
  * The turn-retry offer, directly above the queue and the composer.
  *
- * No background, no border and no horizontal padding: it is a line of text in
- * the composer's own column, not a card sitting on top of it. Vertical padding
- * is zero too, because `inputArea` owns every gap in that column -- see the
- * `inputArea` comment in `~/components/chat/ChatView.css.ts`.
+ * The composer supplies the background and the gaps between its children.
+ * See `inputArea` in `~/components/chat/ChatView.css.ts`.
+ * The notice and its actions wrap according to the composer width.
  */
 export const banner = style({
   display: 'flex',
+  flexWrap: 'wrap',
   alignItems: 'center',
   gap: 'var(--space-2)',
   padding: 0,
   fontSize: compactTextSize,
   color: 'var(--muted-foreground)',
+})
+
+/** Keep the icon beside a readable sentence when the actions require another row. */
+export const notice = style({
+  display: 'flex',
+  alignItems: 'center',
+  gap: 'var(--space-2)',
+  flex: '1 1 20rem',
+  minWidth: 0,
+})
+
+/** Let the controls wrap inside a narrow tile or floating window. */
+export const actions = style({
+  display: 'flex',
+  flexWrap: 'wrap',
+  alignItems: 'center',
+  gap: 'var(--space-2)',
+  marginLeft: 'auto',
+  minWidth: 0,
+  maxWidth: '100%',
 })
 
 /** Takes the free width, so the actions stay at the end of the row. */
@@ -25,8 +45,18 @@ export const text = style({
 })
 
 /**
- * The two buttons and the "Learn more" link sit in the same column as the row
- * actions of the queue, so all three take the shared compact-action geometry
- * from `~/styles/tokens.ts`. One source, so the heights cannot drift.
+ * Use the shared compact control size as a minimum.
+ * A long model label can wrap without clipping or increasing the composer width.
  */
-export const action = style({ ...compactActionLabelled })
+export const action = style({
+  ...compactActionLabelled,
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  height: 'auto',
+  minHeight: compactActionSize,
+  minWidth: 0,
+  maxWidth: '100%',
+  whiteSpace: 'normal',
+  overflowWrap: 'anywhere',
+})

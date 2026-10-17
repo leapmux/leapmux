@@ -8,10 +8,10 @@ import { createStore, reconcile } from 'solid-js/store'
 // identifies the turn and the faster model that the safety-buffering notice
 // proposes.
 //
-// It is NOT part of the agent-session store: that store persists to browser
-// storage, and a live offer must not survive a reload. The turn that the offer
-// identifies no longer runs after the reload, and the worker withdraws the
-// offer at every turn boundary.
+// Keep this state outside the agent-session store, which persists to browser
+// storage. Browser storage can retain an offer after the worker withdraws it.
+// On reconnect, the worker replays its current offer or its withdrawal.
+// The browser uses that replay to restore the live state.
 // ---------------------------------------------------------------------------
 
 /** The retry that the worker offers for one running turn. */

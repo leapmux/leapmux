@@ -11,7 +11,7 @@ import { currentNativeAgent } from '../helpers/nativeScenario'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { retryUntilPass } from '../helpers/retryUntilPass'
 import { expectNoRegistryRows, requireRegistryRow } from '../helpers/subagentRegistry'
-import { chooseSettingsOption, interruptButton, sendMessage, waitForSettingsIdle } from '../helpers/ui'
+import { chooseSettingsOption, interruptButton, openWorkspace, sendMessage, toolCallRow, waitForSettingsIdle } from '../helpers/ui'
 
 codexTest('resumes the input queue and reaches the same native session after interruption', async ({ native }) => {
   await exerciseInterruptTurn(native)
@@ -19,26 +19,28 @@ codexTest('resumes the input queue and reaches the same native session after int
 
 codexTest('stops an actual native tool and reaches the same native session after interruption', async ({ native }, testInfo) => {
   // Codex emits an execution wrapper and its nested command.
-  // The Worker suppresses the wrapper when the nested command already represents that operation.
+  // The wrapper's native cancellation message remains visible with its own outcome.
   const readCalls = async () => {
     const agent = await currentNativeAgent(native)
     const snapshot = await readNativeMessageSnapshot(native, agent.id)
     const frames = snapshot.messages.map(nativeMessageBody)
-    const wrapper = frames.find((frame) => {
+    const rawItems = frames.flatMap((frame) => {
       if (!isObject(frame) || pickString(frame, 'method') !== CODEX_METHOD.RawResponseItemCompleted)
-        return false
+        return []
       const item = pickObject(pickObject(frame, 'params'), 'item')
-      return pickString(item, 'type') === CODEX_RAW_ITEM.CustomToolCall && pickString(item, 'call_id') === 'held-native-tool'
+      return item && pickString(item, 'call_id') === 'held-native-tool' ? [item] : []
     })
+    const wrapper = rawItems.find(item => pickString(item, 'type') === CODEX_RAW_ITEM.CustomToolCall)
+    const result = rawItems.find(item => pickString(item, 'type') === CODEX_RAW_ITEM.CustomToolCallOutput)
     const command = frames.find((frame) => {
       const item = pickObject(isObject(frame) ? frame : undefined, 'item')
       return pickString(item, 'type') === CODEX_ITEM.CommandExecution && pickString(item, 'command').includes('interrupt-started-')
     })
-    return { wrapper, command }
+    return { wrapper, result, command }
   }
   await exerciseInterruptTurn(native, {
     kind: 'tool',
-    expectedToolUses: 1,
+    expectedToolUses: 2,
     beforeInterrupt: async () => {
       await retryUntilPass(async () => {
         const { command } = await readCalls()
@@ -46,11 +48,20 @@ codexTest('stops an actual native tool and reaches the same native session after
       })
     },
   })
-  const { wrapper, command } = await readCalls()
-  expect(wrapper, 'the stored transcript contains no duplicate execution wrapper').toBeUndefined()
-  expect(command, 'the wrapper starts a separate native shell call').toBeDefined()
+  for (const reload of [false, true]) {
+    if (reload) {
+      await native.page.reload()
+      await openWorkspace(native.page, native.workspaceId)
+    }
+    const { wrapper, result, command } = await readCalls()
+    expect(wrapper, 'the stored transcript retains the cancelled execution request').toBeDefined()
+    expect(command, 'the wrapper starts a separate native shell call').toBeDefined()
+    expect(pickString(result, 'output')).toMatch(/^aborted by user after \d+\.\ds$/)
+    await expect(toolCallRow(native.page, 'held-native-tool')).toHaveAttribute('data-tool-status', 'cancelled')
+    await expect(toolCallRow(native.page, 'held-native-tool')).toContainText('aborted by user after')
+  }
   await testInfo.attach('native-interrupted-codex-calls', {
-    body: JSON.stringify({ wrapper, command }, null, 2),
+    body: JSON.stringify(await readCalls(), null, 2),
     contentType: 'application/json',
   })
 })

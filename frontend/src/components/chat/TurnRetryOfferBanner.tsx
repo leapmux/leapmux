@@ -30,30 +30,22 @@ export interface TurnRetryOfferBannerProps {
 }
 
 /**
- * Offers to stop a request that buffers and send it again on a faster model.
+ * Offer to stop a buffered request and send it again on a faster model.
  *
- * ONE node carries the sentence, and it is ALWAYS mounted. A live region that
- * appears together with its content announces nothing on several screen
- * readers, and the offer arrives with no user action to explain it -- so the
- * region cannot wait for the offer. A SECOND node holding the same sentence is
- * equally wrong: a screen reader then announces the sentence twice, and every
- * lookup that matches on that text resolves two elements. So the class swaps
- * instead. While no offer exists the region is `srOnly`, which is `position:
- * absolute` and therefore out of `inputArea`'s flex flow, so it opens no gap;
- * once the offer arrives the same node becomes the visible banner. This mirrors
- * `AgentInputQueuePauseBanner`, which states the full rationale.
+ * Keep one status node mounted before the offer arrives.
+ * Some screen readers announce nothing when a live region appears with its content.
+ * A second copy would announce the sentence twice and make text lookups ambiguous.
  *
- * "Keep waiting" hides the banner for the dismissed turn only. The banner and
- * the confirm dialog both have this action, and the two mean the same thing:
- * the user declines the retry for this turn. A later turn's offer is a new
- * decision and shows the banner again.
+ * Without an offer, the node uses `srOnly` and stays outside the composer's flex flow.
+ * An offer makes the same node visible, without another copy of the sentence.
+ * `AgentInputQueuePauseBanner` uses the same live-region pattern.
  *
- * The open dialog and the disabled retry button belong to one turn. An offer
- * for another turn, or a withdrawal, ends both, so the next offer always waits
- * for a click. The retry button stays disabled after the confirm, because the
- * worker withdraws the offer only after it accepts the retry, and a second
- * retry of the same turn can only fail. A refusal enables it again: the offer
- * can still stand, for example after a lost connection.
+ * "Keep waiting" dismisses this turn's offer from either the banner or its dialog.
+ * A later turn shows its own offer.
+ * A replacement or withdrawal closes the dialog and enables the next offer's button.
+ *
+ * A confirmed retry keeps its button disabled until the worker withdraws the offer.
+ * A refusal enables the button again because the offer can still apply.
  */
 export const TurnRetryOfferBanner: Component<TurnRetryOfferBannerProps> = (props) => {
   const [dismissedTurnId, setDismissedTurnId] = createSignal<string>()
@@ -122,46 +114,50 @@ export const TurnRetryOfferBanner: Component<TurnRetryOfferBannerProps> = (props
         data-testid={visible() ? 'turn-retry-offer-banner' : undefined}
       >
         <Show when={visible()}>
-          <Icon icon={Info} size="xs" />
-          <span class={styles.text}>{BANNER_TEXT}</span>
-          <button
-            class={`outline ${styles.action}`}
-            type="button"
-            disabled={retrying()}
-            onClick={() => {
-              const offer = props.offer
-              if (offer)
-                setConfirmingTurnId(offer.turnId)
-            }}
-            data-testid="turn-retry-offer-retry"
-          >
-            {`Retry with ${label()}`}
-          </button>
-          <button
-            class={`outline ${styles.action}`}
-            type="button"
-            onClick={() => {
-              const offer = props.offer
-              if (offer)
-                keepWaiting(offer.turnId)
-            }}
-            data-testid="turn-retry-offer-keep-waiting"
-          >
-            Keep waiting
-          </button>
-          <Show when={props.offer?.learnMoreUrl}>
-            {url => (
-              <a
-                class={styles.action}
-                href={url()}
-                target="_blank"
-                rel="noopener noreferrer nofollow"
-                {...{ [UNTRUSTED_LINK_ATTRIBUTE]: '' }}
-              >
-                Learn more
-              </a>
-            )}
-          </Show>
+          <div class={styles.notice}>
+            <Icon icon={Info} size="xs" />
+            <span class={styles.text}>{BANNER_TEXT}</span>
+          </div>
+          <div class={styles.actions}>
+            <button
+              class={`outline ${styles.action}`}
+              type="button"
+              disabled={retrying()}
+              onClick={() => {
+                const offer = props.offer
+                if (offer)
+                  setConfirmingTurnId(offer.turnId)
+              }}
+              data-testid="turn-retry-offer-retry"
+            >
+              {`Retry with ${label()}`}
+            </button>
+            <button
+              class={`outline ${styles.action}`}
+              type="button"
+              onClick={() => {
+                const offer = props.offer
+                if (offer)
+                  keepWaiting(offer.turnId)
+              }}
+              data-testid="turn-retry-offer-keep-waiting"
+            >
+              Keep waiting
+            </button>
+            <Show when={props.offer?.learnMoreUrl}>
+              {url => (
+                <a
+                  class={styles.action}
+                  href={url()}
+                  target="_blank"
+                  rel="noopener noreferrer nofollow"
+                  {...{ [UNTRUSTED_LINK_ATTRIBUTE]: '' }}
+                >
+                  Learn more
+                </a>
+              )}
+            </Show>
+          </div>
         </Show>
       </div>
       <Show when={confirmingOffer()}>
@@ -178,7 +174,7 @@ export const TurnRetryOfferBanner: Component<TurnRetryOfferBannerProps> = (props
             onConfirm={() => void retry(offer())}
             onCancel={() => keepWaiting(offer().turnId)}
           >
-            {`This stops the current attempt and retries in a new thread. File changes and other actions that the agent already took stay. Your message is sent again on ${label()}, which can be less capable on complex tasks.`}
+            {`This stops the current attempt and removes it from the native conversation history. LeapMux keeps the stopped attempt in this transcript. File changes and other actions that the agent already took stay. LeapMux sends your message again on ${label()}, which can be less capable on complex tasks.`}
           </ConfirmDialog>
         )}
       </Show>

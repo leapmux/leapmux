@@ -22,7 +22,7 @@ import './plugin'
 const PAYLOAD: Record<string, Record<string, unknown>> = {
   // `session.updated` is the app-server's catch-all, and a MODEL RESPONSE of the
   // main turn is the one variant that carries assistant text. It states a
-  // `stopReason` beside its content and names its source, which is what tells it
+  // `stopReason` beside its content and identifies its source, which is what tells it
   // from the side queries and telemetry variants that share the type.
   [ZCODE_EVENT.SessionUpdated]: { content: 'Done.', querySource: 'main_turn', stopReason: 'end_turn' },
   [ZCODE_EVENT.ToolUpdated]: {
@@ -58,7 +58,7 @@ describe('zcode event vocabulary', () => {
     expect(Object.keys(ZCODE_EVENT).length).toBeGreaterThanOrEqual(25)
   })
 
-  it.each(Object.values(ZCODE_EVENT))('names %s', (type) => {
+  it.each(Object.values(ZCODE_EVENT))('classifies %s', (type) => {
     const kind = classify(type)
     const expected = STRUCTURAL[type]
     if (expected) {

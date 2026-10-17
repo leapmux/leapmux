@@ -24,6 +24,62 @@ function cellSupplement(...continuationOutputs: unknown[]) {
 }
 
 describe('codex native exec extraction', () => {
+  it('reports the native unsupported execution call as failed', () => {
+    const output = 'unsupported custom tool call: exec'
+    expect(rawExecRow(output)).toMatchObject({ kind: 'tool', call: { kind: 'execute', status: 'failed', result: { commands: [{ output, failed: true }] } } })
+  })
+
+  it.each([
+    'prefix unsupported custom tool call: exec',
+    'unsupported custom tool call: exec suffix',
+    'unsupported custom tool call: exec\n',
+    'unsupported custom tool call: another_tool',
+  ])('preserves an unknown dispatch message as text: %j', (output) => {
+    expect(rawExecRow(output)).toMatchObject({ kind: 'tool', call: { result: { unparsed: true, text: output } } })
+  })
+
+  it('keeps printed dispatch errors separate from native failure', () => {
+    const output = 'unsupported custom tool call: exec'
+    expect(rawExecRow([cellHeader('Script completed'), cellText(output)])).toMatchObject({ kind: 'tool', call: { status: 'completed', result: { commands: [{ output }] } } })
+    expect(rawExecRow([cellText(output)])).toMatchObject({ kind: 'tool', call: { result: { unparsed: true, text: output } } })
+  })
+
+  it.each([0.1, 0.3, 1234567890.1])('retains native cancellation after %s seconds', (seconds) => {
+    const output = `aborted by user after ${seconds.toFixed(1)}s`
+    expect(rawExecRow(output)).toMatchObject({ kind: 'tool', call: { kind: 'execute', status: 'cancelled', result: { commands: [{ output, durationMs: seconds * 1000 }] } } })
+  })
+
+  it.each([
+    '',
+    'prefix aborted by user after 0.3s',
+    'aborted by user after 0.3s suffix',
+    'aborted by user after 0.3s\n',
+    'aborted by user after -0.3s',
+    'aborted by user after 0.0s',
+    'aborted by user after 3s',
+    'aborted by user after 0.30s',
+    `aborted by user after ${'9'.repeat(400)}.1s`,
+    `aborted by user after 1${'0'.repeat(306)}.1s`,
+  ])('preserves a malformed cancellation as unknown text: %j', (output) => {
+    expect(rawExecRow(output)).toMatchObject({ kind: 'tool', call: { kind: 'execute', result: { unparsed: true, text: output } } })
+  })
+
+  it('keeps a printed cancellation inside the script body as ordinary output', () => {
+    const output = 'aborted by user after 0.3s'
+    expect(rawExecRow([cellHeader('Script completed'), cellText(output)])).toMatchObject({ kind: 'tool', call: { status: 'completed', result: { commands: [{ output }] } } })
+    expect(rawExecRow([cellText(output)])).toMatchObject({ kind: 'tool', call: { result: { unparsed: true, text: output } } })
+  })
+
+  it('retains earlier output when a native cancellation ends a yielded cell', () => {
+    const row = rawExecRow([cellHeader(cellYield), cellText('partial')], rawExecRequest, {
+      supplementalContent: cellSupplement('aborted by user after 0.3s'),
+    })
+    expect(row).toMatchObject({ kind: 'tool', call: { kind: 'execute', status: 'cancelled', result: { commands: [{ output: 'partial\naborted by user after 0.3s' }] } } })
+    if (row?.kind !== 'tool' || row.call.kind !== 'execute' || !row.call.result || !('commands' in row.call.result))
+      throw new Error('The cancelled cell lost its output.')
+    expect(row.call.result.commands[0]).not.toHaveProperty('durationMs')
+  })
+
   it.each([
     { label: 'absent', namespace: undefined },
     { label: 'null', namespace: null },

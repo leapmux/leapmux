@@ -172,8 +172,9 @@ func newCodexAgentWithSink(sink agentapi.ProviderServices) *Agent {
 		JSONRPCProcess: providerkit.JSONRPCProcess{Process: providerkit.NewProcessFrom(providerkit.ProcessConfig{
 			AgentID: "test-agent",
 		})},
-		sink:     sink,
-		threadID: "main-thread",
+		sink:               sink,
+		threadID:           "main-thread",
+		turnRetrySupported: true,
 	}
 	a.sink = agentapi.NewModelProgressResetSink(a.sink)
 	return a
@@ -191,7 +192,7 @@ func TestHandleCodexOutput_TurnStartedOpensTheTurn(t *testing.T) {
 	statusActiveCount := sink.StatusActiveCount()
 	sessionInfoCount := sink.SessionInfoCount()
 	agent.Mu.Lock()
-	turnID := agent.turnID
+	turnID := agent.mainTurn.id
 	agent.Mu.Unlock()
 	assert.Equal(t, 0, statusActiveCount, "turn/started must NOT re-broadcast full status")
 	assert.Equal(t, "turn-42", turnID, "interrupts and steering target this turn")
@@ -780,8 +781,8 @@ func TestHandleCodexOutput_SafetyBufferingOffersAFasterRetry(t *testing.T) {
 	sink := &agenttest.Sink{}
 	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	a.model = "gpt-5.4"
-	a.turnID = "turn-1"
-	a.turnInput = map[string][]map[string]interface{}{"turn-1": {{"type": "text", "text": "Hello."}}}
+	a.mainTurn.id = "turn-1"
+	a.mainTurn.input = []map[string]interface{}{{"type": "text", "text": "Hello."}}
 	input := `{"method":"model/safetyBuffering/updated","params":{"threadId":"main-thread","turnId":"turn-1","model":"gpt-5.4","useCases":["cyber"],"reasons":["probes"],"showBufferingUi":true,"fasterModel":"gpt-5.5"}}`
 
 	handleCodexOutput(a, providerkit.ParseLine([]byte(input)))
@@ -825,21 +826,21 @@ func TestHandleCodexOutput_SafetyBufferingOfferConditions(t *testing.T) {
 			name:  "no retained input",
 			frame: fmt.Sprintf(frame, "gpt-5.5"),
 			prepare: func(a *Agent) {
-				a.turnInput = nil
+				a.mainTurn.input = nil
 			},
 		},
 		{
 			name:  "the answer already started",
 			frame: fmt.Sprintf(frame, "gpt-5.5"),
 			prepare: func(a *Agent) {
-				a.turnAgentMessageStarted = map[string]bool{"turn-1": true}
+				a.mainTurn.agentMessageStarted = true
 			},
 		},
 		{
 			name:  "a retry is in flight",
 			frame: fmt.Sprintf(frame, "gpt-5.5"),
 			prepare: func(a *Agent) {
-				a.retrying = true
+				a.retry = &codexTurnRetry{a: a}
 			},
 		},
 	} {
@@ -849,8 +850,8 @@ func TestHandleCodexOutput_SafetyBufferingOfferConditions(t *testing.T) {
 			sink := &agenttest.Sink{}
 			a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 			a.model = "gpt-5.4"
-			a.turnID = "turn-1"
-			a.turnInput = map[string][]map[string]interface{}{"turn-1": {{"type": "text", "text": "Hello."}}}
+			a.mainTurn.id = "turn-1"
+			a.mainTurn.input = []map[string]interface{}{{"type": "text", "text": "Hello."}}
 			if tc.prepare != nil {
 				tc.prepare(a)
 			}
@@ -902,7 +903,7 @@ func TestHandleCodexOutput_SafetyBufferingClearTriggers(t *testing.T) {
 			trigger: func(a *Agent) {
 				// A stop with no running turn still withdraws the offer.
 				a.Mu.Lock()
-				a.turnID = ""
+				a.mainTurn.id = ""
 				a.Mu.Unlock()
 				_ = a.Interrupt(agentapi.StopContext{})
 			},
@@ -937,8 +938,8 @@ func TestHandleCodexOutput_SafetyBufferingOnAChildMakesNoOffer(t *testing.T) {
 	sink := &agenttest.Sink{}
 	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	a.model = "gpt-5.4"
-	a.turnID = "turn-1"
-	a.turnInput = map[string][]map[string]interface{}{"turn-1": {{"type": "text", "text": "Hello."}}}
+	a.mainTurn.id = "turn-1"
+	a.mainTurn.input = []map[string]interface{}{{"type": "text", "text": "Hello."}}
 	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"spawn-1","kind":"started","agentThreadId":"child-1","agentPath":"/root/child"}}}`)))
 	input := `{"method":"model/safetyBuffering/updated","params":{"threadId":"child-1","turnId":"child-turn","model":"gpt-5.4","showBufferingUi":true,"fasterModel":"gpt-5.5"}}`
 
@@ -951,7 +952,7 @@ func TestHandleCodexOutput_SafetyBufferingOnAChildMakesNoOffer(t *testing.T) {
 	assert.Empty(t, sink.SessionInfoValues(contracts.SessionInfoKeyTurnRetryOffer))
 }
 
-// A child's answer starts the child's own turn. The parent's offer names the
+// A child's answer starts the child's own turn. The parent's offer identifies the
 // parent turn and stays live: only the parent's own text ends it.
 func TestHandleCodexOutput_ChildAgentTextKeepsTheParentRetryOffer(t *testing.T) {
 	t.Parallel()
@@ -3176,7 +3177,7 @@ func TestHandleCodexOutput_ChildThreadTurnStartedDoesNotReplaceInterruptTurn(t *
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"turn/started","params":{"threadId":"child-1","turn":{"id":"child-turn"}}}`)))
 
 	agent.Mu.Lock()
-	turnID := agent.turnID
+	turnID := agent.mainTurn.id
 	agent.Mu.Unlock()
 	assert.Equal(t, "main-turn", turnID, "interrupts and steering must keep targeting the active main-thread turn")
 	// A collab child's run is its background-task registry row, which the Worker
@@ -3564,7 +3565,7 @@ func TestCodexInterruptKeepsAnApprovalCardWhenTheInterruptFails(t *testing.T) {
 	a.SetContextForTest(context.Background())
 	a.SetStdinForTest(agenttest.NopStdin(refusingWriter{}))
 	a.Mu.Lock()
-	a.threadID, a.turnID = "thread", "turn"
+	a.threadID, a.mainTurn.id = "thread", "turn"
 	a.Mu.Unlock()
 
 	a.HandleOutput([]byte(`{"jsonrpc":"2.0","id":7,"method":"item/commandExecution/requestApproval","params":{}}`))
@@ -3590,7 +3591,7 @@ func TestCodexInterruptAnswersAnElicitationBeforeItInterrupts(t *testing.T) {
 	a.SetContextForTest(context.Background())
 	a.SetStdinForTest(agenttest.NopStdin(refusingWriter{}))
 	a.Mu.Lock()
-	a.threadID, a.turnID = "thread", "turn"
+	a.threadID, a.mainTurn.id = "thread", "turn"
 	a.Mu.Unlock()
 
 	a.HandleOutput([]byte(`{"jsonrpc":"2.0","id":7,"method":"` + contracts.MCPElicitationMethodCodex + `","params":{}}`))

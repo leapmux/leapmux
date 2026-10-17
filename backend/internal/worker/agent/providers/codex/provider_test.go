@@ -175,7 +175,7 @@ func TestCodexClassifyFoldsRetryAndBufferingNotices(t *testing.T) {
 	assert.NotEqual(t, plugin.Classify(buffering).Key, plugin.Classify(otherTurn).Key,
 		"two turns must not fold into one row")
 
-	// A frame that names no turn folds with the other turnless frames.
+	// A frame that identifies no turn folds with the other turnless frames.
 	noTurn := json.RawMessage(`{"method":"model/safetyBuffering/updated","params":{"threadId":"t1","showBufferingUi":true,"fasterModel":"gpt-6-luna"}}`)
 	assert.Equal(t, agent.NotificationClassification{
 		Kind: agent.NotificationKindProviderScoped,

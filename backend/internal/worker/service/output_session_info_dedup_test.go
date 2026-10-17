@@ -332,7 +332,7 @@ func TestSessionInfoKeysStateTheirDedupPolicy(t *testing.T) {
 		// and the dedup is what makes a report whose numbers did not move cost
 		// nothing.
 		contracts.SessionInfoKeyGoalProgress: {},
-		// The offer names one turn and one model, so its identical repeat is
+		// The offer identifies one turn and one model, so its identical repeat is
 		// nothing new. The withdrawal broadcasts `null`, which the dedup lets
 		// through against the cached offer.
 		contracts.SessionInfoKeyTurnRetryOffer: {},
