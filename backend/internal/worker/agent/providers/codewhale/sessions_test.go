@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -104,14 +105,50 @@ func TestNewCodewhaleStore(t *testing.T) {
 	assert.Error(t, err)
 }
 
+// invalidPathName holds a NUL byte. Go rejects such a path with EINVAL on every OS before it
+// makes a system call, so the copyHomeEntry tests get the same error on every OS. A path under a
+// plain file is not a usable fixture here. POSIX reports ENOTDIR for it, but Windows reports
+// ERROR_PATH_NOT_FOUND, and Go maps that code to ErrNotExist. copyHomeEntry then treats the
+// source as absent and returns nil.
+const invalidPathName = "config\x00.toml"
+
 func TestCopyHomeEntryReportsAnUnreadableSource(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	parent := filepath.Join(root, "plain-file")
-	require.NoError(t, os.WriteFile(parent, []byte("not a directory"), 0o600))
-	err := copyHomeEntry(filepath.Join(parent, "config.toml"), filepath.Join(root, "copy"))
-	require.Error(t, err)
-	require.NoError(t, copyHomeEntry(filepath.Join(root, "absent"), filepath.Join(root, "copy")))
+	destination := filepath.Join(root, "copy")
+
+	err := copyHomeEntry(filepath.Join(root, invalidPathName), destination)
+	require.ErrorIs(t, err, syscall.EINVAL)
+	assert.NotErrorIs(t, err, os.ErrNotExist, "an unreadable source is not an absent one")
+	_, err = os.Lstat(destination)
+	assert.ErrorIs(t, err, os.ErrNotExist, "a failed copy creates no destination")
+
+	require.NoError(t, copyHomeEntry(filepath.Join(root, "absent"), destination), "an absent source shares nothing")
+	_, err = os.Lstat(destination)
+	assert.ErrorIs(t, err, os.ErrNotExist, "an absent source creates no destination")
+}
+
+func TestCopyHomeEntryReportsAnInvalidDestination(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	source := filepath.Join(root, "config.toml")
+	require.NoError(t, os.WriteFile(source, []byte("provider = \"deepseek\"\n"), 0o600))
+
+	assert.ErrorIs(t, copyHomeEntry(source, filepath.Join(root, invalidPathName)), syscall.EINVAL)
+}
+
+func TestCopyHomeEntryKeepsAnExistingDestination(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	source := filepath.Join(root, "config.toml")
+	destination := filepath.Join(root, "copy")
+	require.NoError(t, os.WriteFile(source, []byte("provider = \"deepseek\"\n"), 0o600))
+	require.NoError(t, os.WriteFile(destination, []byte("shared by an earlier attempt\n"), 0o600))
+
+	require.NoError(t, copyHomeEntry(source, destination))
+	data, err := os.ReadFile(destination)
+	require.NoError(t, err)
+	assert.Equal(t, "shared by an earlier attempt\n", string(data), "a retry keeps the entry that it already shared")
 }
 
 func TestFindCodewhaleStore(t *testing.T) {
