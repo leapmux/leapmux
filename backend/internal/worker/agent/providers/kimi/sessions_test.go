@@ -172,10 +172,10 @@ func TestKimiStoredSessions(t *testing.T) {
 		home := t.TempDir()
 		root := filepath.Join(home, ".kimi-code")
 		workDir := filepath.Join(home, "project")
-		// One timestamp for every state file, as a store with coarse file times
-		// writes them. The state's own updatedAt values still order the five
-		// sessions, so the listing must read past the tie to find the newest
-		// two: the name order inside a tie carries no recency.
+		// Every state file gets the same timestamp, as on a filesystem with coarse file times.
+		// The updatedAt fields still order the five sessions. The reader must examine the complete tie to
+		// select the newest two.
+		// Filename order supplies no recency inside the tie.
 		stamped := time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC)
 		for i := range 5 {
 			dir := writeKimiState(t, root, workDir, "session_"+string(rune('a'+i)), map[string]any{"updatedAt": 1790000000000 + i})

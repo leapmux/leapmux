@@ -28,15 +28,6 @@ on:
         type: boolean
         default: true
 
-env:
-  # Match ci.yaml: trim the dev-profile debuginfo, so the cached desktop/rust
-  # `target/` stays small. rust-cache hashes this value into its key, so it
-  # MUST equal ci.yaml's setting. Otherwise the `shared-key: desktop` cache
-  # that the two workflows share splits in two. A reusable workflow does not
-  # inherit the caller's env, so this file declares the value again. See
-  # ci.yaml for the full rationale.
-  CARGO_PROFILE_DEV_DEBUG: line-tables-only
-
 jobs:
   linux:
     runs-on: ubuntu-24.04${{ matrix.runner_suffix }}
@@ -51,12 +42,10 @@ jobs:
           - arch: arm64
             runner_suffix: '-arm'
     steps:
-      # `ref` is not optional here: the `github` context in a called workflow
-      # is the CALLER's, so a bare checkout takes main as of dispatch. On the
-      # release path, that is the commit BEFORE `chore: release vX.Y.Z`. The
-      # artifacts would then be built from a different tree than the tag they
-      # ship under, and nothing would error, because version-override supplies
-      # the right VERSION string either way.
+      # The called workflow receives the caller GitHub context. Its default checkout can select
+      # the dispatch commit before the release-version commit.
+      # Use inputs.ref so every artifact uses the release tag tree. The version override alone
+      # would hide the wrong tree by supplying the expected VERSION string.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.ref }}
@@ -86,64 +75,7 @@ jobs:
         # Run the wrapper and extracted AppRun directly to retain their diagnostics, as ci.yaml does.
         # Run these diagnostics only after a native build failure. Cache-check failures have their own complete logs.
         if: failure() && steps.build.outcome == 'failure'
-        run: |
-          set +e
-          echo "=== ~/.cache/tauri contents ==="
-          ls -la ~/.cache/tauri/
-          echo
-          echo "=== Tauri's AppImage bundle dir ==="
-          ls -la desktop/rust/target/release/bundle/appimage/ 2>/dev/null
-          echo
-          echo "=== linuxdeploy wrapper --version (exit=?) ==="
-          "$HOME/.cache/tauri/linuxdeploy-$(uname -m).AppImage" --version
-          echo "wrapper exit=$?"
-          echo
-          echo "=== extracted AppRun --list-plugins (exit=?) ==="
-          ~/.cache/tauri/linuxdeploy-extracted/AppRun --list-plugins
-          echo "AppRun exit=$?"
-          echo
-          echo "=== Re-run linuxdeploy against Tauri's partial AppDir ==="
-          appdir="$(find desktop/rust/target/release/bundle/appimage -maxdepth 1 -name '*.AppDir' -print -quit 2>/dev/null)"
-          if [ -n "$appdir" ]; then
-            echo "appdir=$appdir"
-            "$HOME/.cache/tauri/linuxdeploy-$(uname -m).AppImage" \
-              --appdir "$appdir" \
-              --output appimage \
-              --plugin gtk 2>&1 | tail -80
-            echo "direct linuxdeploy exit=${PIPESTATUS[0]}"
-          else
-            echo "No AppDir found — Tauri didn't reach the linuxdeploy step."
-          fi
-          echo
-          echo "=== Go sidecar linkage (source copy) ==="
-          src_sidecar="$(find desktop/go/bin -maxdepth 1 -name 'leapmux-desktop-service-*' -print -quit 2>/dev/null)"
-          if [ -n "$src_sidecar" ]; then
-            echo "path=$src_sidecar"
-            file "$src_sidecar"
-            echo "--- readelf -l | grep INTERP ---"
-            readelf -l "$src_sidecar" 2>&1 | grep -E 'INTERP|interpreter' || echo "(no INTERP segment: static binary)"
-            echo "--- ldd output ---"
-            ldd "$src_sidecar" 2>&1
-            echo "ldd exit=$?"
-          else
-            echo "No sidecar found under desktop/go/bin/"
-          fi
-          echo
-          echo "=== Go sidecar linkage (AppDir copy) ==="
-          ad_sidecar="$(find "$appdir" -name 'leapmux-desktop-service-*' 2>/dev/null | head -1)"
-          if [ -n "$ad_sidecar" ]; then
-            echo "path=$ad_sidecar"
-            file "$ad_sidecar"
-            ldd "$ad_sidecar" 2>&1
-            echo "ldd exit=$?"
-          else
-            echo "No sidecar found inside AppDir."
-          fi
-          echo
-          echo "=== Toolchain sanity ==="
-          echo "gcc: $(command -v gcc) $(gcc --version 2>/dev/null | head -1)"
-          echo "CGO_ENABLED (go env): $(go env CGO_ENABLED)"
-          echo "/lib/ld-linux-aarch64.so.1: $(ls -la /lib/ld-linux-aarch64.so.1 2>&1 || true)"
+        run: bash scripts/diagnose-linuxdeploy.sh
 
       - name: Package CLI server tarball
         run: |
@@ -321,20 +253,12 @@ jobs:
 
       - name: Cleanup
         if: always()
-        run: |
-          if [ -n "${KEYCHAIN_PATH:-}" ] && [ -e "$KEYCHAIN_PATH" ]; then
-            security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
-          fi
-          if [ -n "${APPLE_API_KEY_P8_PATH:-}" ]; then
-            rm -f "$APPLE_API_KEY_P8_PATH"
-          fi
+        run: bash scripts/cleanup-apple-signing.sh
 
   macos-cli-sign:
-    # Re-signs and notarizes the leapmux Go CLI binary in parallel with
-    # macos-app-sign. Both depend on `macos`, both use the apple-signing
-    # environment, and both run on independent macos-latest runners so
-    # the wall-clock for the signing phase is max(.app, .dmg notarizations,
-    # CLI notarization) rather than the sum.
+    # This job signs and notarizes the CLI independently of the app signing job. Both depend on
+    # macos and use the apple-signing environment. Separate runners let their signing work
+    # overlap. Total signing time follows the slower job instead of adding both durations.
     needs: macos
     if: ${{ inputs.sign_macos }}
     runs-on: macos-latest
@@ -402,13 +326,7 @@ jobs:
 
       - name: Cleanup
         if: always()
-        run: |
-          if [ -n "${KEYCHAIN_PATH:-}" ] && [ -e "$KEYCHAIN_PATH" ]; then
-            security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
-          fi
-          if [ -n "${APPLE_API_KEY_P8_PATH:-}" ]; then
-            rm -f "$APPLE_API_KEY_P8_PATH"
-          fi
+        run: bash scripts/cleanup-apple-signing.sh
 
   windows:
     # windows-2022, the same image that ci.yaml's windows job tests on. The

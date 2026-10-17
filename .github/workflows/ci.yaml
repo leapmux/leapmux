@@ -10,18 +10,6 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  # Shrink the desktop/rust debug artifacts that `cargo test` (dev profile)
-  # writes into the cached `target/`. Full DWARF debuginfo is the single
-  # largest slice of the Swatinem/rust-cache archive. `line-tables-only` keeps
-  # file and line numbers in panic backtraces, so test failures stay
-  # diagnosable, and drops the variable and type info that nobody reads in CI.
-  # Set here, not in desktop/rust/Cargo.toml, so local builds keep full debug
-  # info for debuggers. MUST stay identical to desktop-artifacts.yaml: every
-  # `CARGO_*` var is hashed into the rust-cache key, so a mismatch would split
-  # the `shared-key: desktop` cache that the two workflows share.
-  CARGO_PROFILE_DEV_DEBUG: line-tables-only
-
 jobs:
   linux:
     # UBUNTU VERSION: `runs-on` is evaluated before any step can populate
@@ -44,16 +32,44 @@ jobs:
             runner_suffix: ''
           - arch: arm64
             runner_suffix: '-arm'
+    permissions:
+      contents: read
+      actions: write
+    concurrency:
+      group: compiled-go-native-linux-${{ matrix.arch }}-${{ github.ref }}
+      cancel-in-progress: false
+      queue: max
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup build toolchain
+        id: setup
         uses: ./.github/actions/setup-build
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           rust-components: clippy
           # Only push-to-main saves the compiled caches; see the input's docs.
           save-build-caches: ${{ github.ref == 'refs/heads/main' }}
+
+      # Keep these post contexts separate. A prune failure must stop the save.
+      - name: Cache Go build outputs
+        id: go-cache
+        if: github.ref == 'refs/heads/main'
+        uses: ./.github/actions/build-output-cache
+        with:
+          path: |
+            ${{ steps.setup.outputs.go-cache }}
+            ${{ steps.setup.outputs.lint-cache }}
+          key: ${{ steps.setup.outputs.cache-key }}
+          restore-keys: ${{ steps.setup.outputs.cache-prefix }}
+          save: 'true'
+
+      - name: Replace older Go build caches
+        if: github.ref == 'refs/heads/main' && steps.go-cache.outputs.cache-hit != 'true'
+        uses: ./.github/actions/prune-build-cache
+        with:
+          key: ${{ steps.setup.outputs.cache-key }}
+          prefix: ${{ steps.setup.outputs.cache-prefix }}
 
       - name: Generate code (proto + sqlc)
         run: task generate
@@ -73,67 +89,7 @@ jobs:
         # Run the wrapper and extracted AppRun directly to retain their diagnostics.
         # Run these diagnostics only after a native build failure. Cache-check failures have their own complete logs.
         if: failure() && steps.build.outcome == 'failure'
-        run: |
-          set +e
-          echo "=== ~/.cache/tauri contents ==="
-          ls -la ~/.cache/tauri/
-          echo
-          echo "=== Tauri's AppImage bundle dir ==="
-          ls -la desktop/rust/target/release/bundle/appimage/ 2>/dev/null
-          echo
-          echo "=== linuxdeploy wrapper --version (exit=?) ==="
-          "$HOME/.cache/tauri/linuxdeploy-$(uname -m).AppImage" --version
-          echo "wrapper exit=$?"
-          echo
-          echo "=== extracted AppRun --list-plugins (exit=?) ==="
-          ~/.cache/tauri/linuxdeploy-extracted/AppRun --list-plugins
-          echo "AppRun exit=$?"
-          echo
-          echo "=== Re-run linuxdeploy against Tauri's partial AppDir ==="
-          # Tauri suppresses linuxdeploy's stdout/stderr on failure; invoking
-          # it directly against the AppDir it already populated shows the
-          # actual error.
-          appdir="$(find desktop/rust/target/release/bundle/appimage -maxdepth 1 -name '*.AppDir' -print -quit 2>/dev/null)"
-          if [ -n "$appdir" ]; then
-            echo "appdir=$appdir"
-            "$HOME/.cache/tauri/linuxdeploy-$(uname -m).AppImage" \
-              --appdir "$appdir" \
-              --output appimage \
-              --plugin gtk 2>&1 | tail -80
-            echo "direct linuxdeploy exit=${PIPESTATUS[0]}"
-          else
-            echo "No AppDir found — Tauri didn't reach the linuxdeploy step."
-          fi
-          echo
-          echo "=== Go sidecar linkage (source copy) ==="
-          src_sidecar="$(find desktop/go/bin -maxdepth 1 -name 'leapmux-desktop-service-*' -print -quit 2>/dev/null)"
-          if [ -n "$src_sidecar" ]; then
-            echo "path=$src_sidecar"
-            file "$src_sidecar"
-            echo "--- readelf -l | grep INTERP ---"
-            readelf -l "$src_sidecar" 2>&1 | grep -E 'INTERP|interpreter' || echo "(no INTERP segment: static binary)"
-            echo "--- ldd output ---"
-            ldd "$src_sidecar" 2>&1
-            echo "ldd exit=$?"
-          else
-            echo "No sidecar found under desktop/go/bin/"
-          fi
-          echo
-          echo "=== Go sidecar linkage (AppDir copy) ==="
-          ad_sidecar="$(find "$appdir" -name 'leapmux-desktop-service-*' 2>/dev/null | head -1)"
-          if [ -n "$ad_sidecar" ]; then
-            echo "path=$ad_sidecar"
-            file "$ad_sidecar"
-            ldd "$ad_sidecar" 2>&1
-            echo "ldd exit=$?"
-          else
-            echo "No sidecar found inside AppDir."
-          fi
-          echo
-          echo "=== Toolchain sanity ==="
-          echo "gcc: $(command -v gcc) $(gcc --version 2>/dev/null | head -1)"
-          echo "CGO_ENABLED (go env): $(go env CGO_ENABLED)"
-          echo "/lib/ld-linux-aarch64.so.1: $(ls -la /lib/ld-linux-aarch64.so.1 2>&1 || true)"
+        run: bash scripts/diagnose-linuxdeploy.sh
 
       - name: Test (full)
         if: matrix.arch == 'amd64'
@@ -152,10 +108,18 @@ jobs:
 
   macos:
     runs-on: macos-latest
+    permissions:
+      contents: read
+      actions: write
+    concurrency:
+      group: compiled-go-native-macos-${{ github.ref }}
+      cancel-in-progress: false
+      queue: max
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup build toolchain
+        id: setup
         uses: ./.github/actions/setup-build
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -163,6 +127,26 @@ jobs:
           # lint-desktop, and rust-toolchain installs the minimal profile.
           rust-components: clippy
           save-build-caches: ${{ github.ref == 'refs/heads/main' }}
+
+      # Keep these post contexts separate. A prune failure must stop the save.
+      - name: Cache Go build outputs
+        id: go-cache
+        if: github.ref == 'refs/heads/main'
+        uses: ./.github/actions/build-output-cache
+        with:
+          path: |
+            ${{ steps.setup.outputs.go-cache }}
+            ${{ steps.setup.outputs.lint-cache }}
+          key: ${{ steps.setup.outputs.cache-key }}
+          restore-keys: ${{ steps.setup.outputs.cache-prefix }}
+          save: 'true'
+
+      - name: Replace older Go build caches
+        if: github.ref == 'refs/heads/main' && steps.go-cache.outputs.cache-hit != 'true'
+        uses: ./.github/actions/prune-build-cache
+        with:
+          key: ${{ steps.setup.outputs.cache-key }}
+          prefix: ${{ steps.setup.outputs.cache-prefix }}
 
       - name: Generate code (proto + sqlc)
         run: task generate
@@ -196,10 +180,18 @@ jobs:
     # showed this. The same suite content passed green on that image earlier
     # that day. Unpin back to windows-latest only after the image stabilizes.
     runs-on: windows-2022
+    permissions:
+      contents: read
+      actions: write
+    concurrency:
+      group: compiled-go-native-windows-${{ github.ref }}
+      cancel-in-progress: false
+      queue: max
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup build toolchain
+        id: setup
         uses: ./.github/actions/setup-build
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -207,11 +199,30 @@ jobs:
           rust-components: clippy
           save-build-caches: ${{ github.ref == 'refs/heads/main' }}
 
+      # Keep these post contexts separate. A prune failure must stop the save.
+      - name: Cache Go build outputs
+        id: go-cache
+        if: github.ref == 'refs/heads/main'
+        uses: ./.github/actions/build-output-cache
+        with:
+          path: |
+            ${{ steps.setup.outputs.go-cache }}
+            ${{ steps.setup.outputs.lint-cache }}
+          key: ${{ steps.setup.outputs.cache-key }}
+          restore-keys: ${{ steps.setup.outputs.cache-prefix }}
+          save: 'true'
+
+      - name: Replace older Go build caches
+        if: github.ref == 'refs/heads/main' && steps.go-cache.outputs.cache-hit != 'true'
+        uses: ./.github/actions/prune-build-cache
+        with:
+          key: ${{ steps.setup.outputs.cache-key }}
+          prefix: ${{ steps.setup.outputs.cache-prefix }}
+
       - name: Test (no Docker-backed storage)
-        # Run under pwsh (not bash) for the same reason `task build` does:
-        # Git Bash prepends /usr/bin to PATH, and /usr/bin/link.exe
-        # shadows MSVC's link.exe, which breaks `cargo test` (invoked by
-        # `task test-desktop`). pwsh inherits MSVC's PATH cleanly.
+        # Run under pwsh to preserve the MSVC PATH. Git Bash prepends /usr/bin, whose link.exe
+        # shadows the MSVC linker. That prevents task test-desktop from running Cargo tests
+        # correctly.
         shell: pwsh
         run: task test-no-docker
 
@@ -230,8 +241,34 @@ jobs:
   docker:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Docker build
+        id: setup
+        uses: ./.github/actions/setup-docker-build
+        with:
+          variant: alpine
+          arch: amd64
+
+      # Separate job steps make extraction and pruning failures stop the save.
+      - name: Cache Docker Go build outputs
+        id: go-cache
+        uses: ./.github/actions/build-output-cache
+        with:
+          path: ${{ steps.setup.outputs.cache-path }}
+          key: ${{ steps.setup.outputs.cache-key }}
+          restore-keys: ${{ steps.setup.outputs.cache-prefix }}
+          save: ${{ steps.setup.outputs.writes-shared }}
+
+      - name: Replace older Docker Go build caches
+        if: steps.setup.outputs.writes-shared == 'true' && steps.go-cache.outputs.cache-hit != 'true'
+        uses: ./.github/actions/prune-build-cache
+        with:
+          key: ${{ steps.setup.outputs.cache-key }}
+          prefix: ${{ steps.setup.outputs.cache-prefix }}
 
       # A dry run only reads the caches. It writes none: the composite
       # exports nothing with the default `outputs` and `save-caches`.
@@ -240,6 +277,12 @@ jobs:
         with:
           variant: alpine
           arch: amd64
+          builder: ${{ steps.setup.outputs.builder }}
+          go-modcache: ${{ steps.setup.outputs.go-modcache }}
+          cache-path: ${{ steps.setup.outputs.cache-path }}
+          writes-shared: ${{ steps.setup.outputs.writes-shared }}
+          go-cache-hit: ${{ steps.go-cache.outputs.cache-hit }}
+          build-args: ${{ steps.setup.outputs.build-args }}
 
   desktop-artifacts:
     # Build, sign, and notarize the binaries that get attached to the

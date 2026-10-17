@@ -1,0 +1,22 @@
+name: Prune older build caches
+description: Remove older archives before the writer saves its replacement after a successful job.
+inputs:
+  key:
+    description: The exact weekly key that the writer will save.
+    required: true
+  prefix:
+    description: The exact native or Docker Go cache partition.
+    required: true
+  token:
+    description: The job token with Actions write permission.
+    default: ${{ github.token }}
+runs:
+  using: node24
+  # Nesting this hook with the writer can permit saving after a pruning failure.
+  # Register it as a separate job step after the cache writer.
+  # The runner updates job.status only after a top-level post step returns.
+  # The runner resolves these paths relative to this action directory.
+  # Keeping the source under scripts includes it in the project test and lint targets.
+  main: ../../../scripts/register-build-cache-replacement.mjs
+  post: ../../../scripts/prune-build-caches.mjs
+  post-if: success()

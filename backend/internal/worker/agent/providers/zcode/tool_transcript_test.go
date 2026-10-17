@@ -1,17 +1,15 @@
-//
-// This suite needs a Windows bring-up that only a local Windows run can state:
-// this file shares the fixtures of a gated Windows suite.
-// The suite keeps its full coverage on macOS and Linux.
-
 package zcode
 
 import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -140,20 +138,103 @@ func (f *zcodeTranscriptFixture) boundary(t *testing.T) {
 	f.transcript.WaitForSupplementsForTest()
 }
 
-// awaitSupplement sends boundary messages until the tool result carries its
-// supplement. An interim pass may read the store before a late record or output
-// file is observable and answer nothing: the design recovers at a later pass,
-// and the boundary message is what asks for one. The deadline is generous and
-// unasserted: the test asserts the supplement, not the speed.
-func (f *zcodeTranscriptFixture) awaitSupplement(t *testing.T) agenttest.Message {
+type zcodeSupplementRead struct {
+	err        error
+	contextErr error
+}
+
+// retryAllowed permits only a read that exhausted its interim deadline.
+// A successful empty read or another error must fail the test immediately.
+func (r zcodeSupplementRead) retryAllowed() bool {
+	return errors.Is(r.contextErr, context.DeadlineExceeded) && onlyZCodeDeadlineErrors(r.err)
+}
+
+// A joined read failure must contain no unrelated cause, even when one cause is a deadline.
+func onlyZCodeDeadlineErrors(err error) bool {
+	if err == nil || err == context.DeadlineExceeded {
+		return true
+	}
+	switch wrapped := err.(type) {
+	case interface{ Unwrap() []error }:
+		children := wrapped.Unwrap()
+		if len(children) == 0 {
+			return false
+		}
+		for _, child := range children {
+			if !onlyZCodeDeadlineErrors(child) {
+				return false
+			}
+		}
+		return true
+	case interface{ Unwrap() error }:
+		child := wrapped.Unwrap()
+		return child != nil && onlyZCodeDeadlineErrors(child)
+	default:
+		return false
+	}
+}
+
+// observedZCodeToolSource records the real native reader's result before the worker cancels its context.
+type observedZCodeToolSource struct {
+	*zcodeToolSource
+	mu    sync.Mutex
+	reads []zcodeSupplementRead
+}
+
+func (s *observedZCodeToolSource) ReadSupplements(ctx context.Context, path string, pending map[string]agent.MessageContent, final bool) (map[string][]byte, error) {
+	result, err := s.zcodeToolSource.ReadSupplements(ctx, path, pending, final)
+	s.mu.Lock()
+	s.reads = append(s.reads, zcodeSupplementRead{err: err, contextErr: ctx.Err()})
+	s.mu.Unlock()
+	return result, err
+}
+
+func (s *observedZCodeToolSource) takeReads() []zcodeSupplementRead {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	reads := s.reads
+	s.reads = nil
+	return reads
+}
+
+// awaitSupplement requests an interim pass and joins it before reading its result.
+// Only an expired interim deadline permits another pass. The overall deadline limits a broken test.
+func (f *zcodeTranscriptFixture) awaitSupplement(t *testing.T, source *observedZCodeToolSource) agenttest.Message {
 	t.Helper()
+	source.takeReads()
 	deadline := time.Now().Add(30 * time.Second)
 	for {
 		f.boundary(t)
+		reads := source.takeReads()
+		require.Len(t, reads, 1, "each joined boundary must invoke the native reader once")
 		result := f.sink.Messages()[1]
-		if len(result.SupplementalContent) > 0 || !time.Now().Before(deadline) {
+		if len(result.SupplementalContent) > 0 {
 			return result
 		}
+		require.True(t, reads[0].retryAllowed(), "the available output needs a supplement: read error=%v, context error=%v", reads[0].err, reads[0].contextErr)
+		require.True(t, time.Now().Before(deadline), "the interim reads exhausted the overall deadline")
+	}
+}
+
+func TestZCodeSupplementReadRetriesOnlyDeadlineExpiry(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		read zcodeSupplementRead
+		want bool
+	}{
+		{name: "successful empty read"},
+		{name: "context expired", read: zcodeSupplementRead{contextErr: context.DeadlineExceeded}, want: true},
+		{name: "wrapped deadline", read: zcodeSupplementRead{err: fmt.Errorf("read: %w", context.DeadlineExceeded), contextErr: context.DeadlineExceeded}, want: true},
+		{name: "unrelated failure", read: zcodeSupplementRead{err: errors.New("fixture failure"), contextErr: context.DeadlineExceeded}},
+		{name: "mixed failure", read: zcodeSupplementRead{err: errors.Join(context.DeadlineExceeded, errors.New("fixture failure")), contextErr: context.DeadlineExceeded}},
+		{name: "cancelled", read: zcodeSupplementRead{err: context.Canceled, contextErr: context.Canceled}},
+		{name: "deadline without context expiry", read: zcodeSupplementRead{err: context.DeadlineExceeded}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, tc.read.retryAllowed())
+		})
 	}
 }
 
@@ -167,6 +248,9 @@ func (f *zcodeTranscriptFixture) writeOutputFile(t *testing.T, sessionID string)
 func TestZCodeToolTranscriptRetriesLateRecordsAndOutputFiles(t *testing.T) {
 	t.Parallel()
 	f := newZCodeTranscriptFixture(t, true)
+	source := &observedZCodeToolSource{zcodeToolSource: f.transcript.SourceForTest().(*zcodeToolSource)}
+	f.transcript = tooltranscript.New(t.Context(), agent.NewProviderServices(f.sink), source)
+	tooltranscripttest.ReleaseToolStoreAtTestEnd(t, f.transcript)
 	_, err := f.db.Exec(`INSERT INTO part VALUES ('part', 'session', 'message', ?)`, zcodeNativeToolFixture("running"))
 	require.NoError(t, err)
 	f.persistPair(t)
@@ -177,7 +261,7 @@ func TestZCodeToolTranscriptRetriesLateRecordsAndOutputFiles(t *testing.T) {
 	f.boundary(t)
 	assert.Empty(t, f.sink.Messages()[1].SupplementalContent)
 	f.writeOutputFile(t, "session")
-	result := f.awaitSupplement(t)
+	result := f.awaitSupplement(t, source)
 	assert.Equal(t, zcodeStoredImageResult, string(result.Content))
 	assert.Contains(t, string(result.SupplementalContent), zcodeOutputFileFixtureData)
 	assert.Contains(t, string(result.SupplementalContent), `"futureCounter":9007199254740993`)

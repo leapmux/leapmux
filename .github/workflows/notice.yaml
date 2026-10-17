@@ -1,29 +1,12 @@
 name: NOTICE
 
-# NOTICE.md and NOTICE.html are committed artifacts that no build target
-# produces. README documents their regeneration as a manual step after a
-# dependency change. They are therefore the one thing in the tree that can go
-# stale with no message. They are also a legal artifact. When a dependency is
-# added, removed or relicensed without a regeneration, the release ships a
-# notice that no longer matches what the project distributes.
-#
-# The path filter is the whole design. Licenses can change only when a
-# manifest or the generator changes, so this workflow runs on exactly those
-# changes, not on every push. Each run does these downloads, which take
-# minutes on a cold cache:
-# * `cargo fetch`;
-# * `go mod download`;
-# * `bun install`.
-# The dependency caches make a repeat run cheap. A run on a docs-only commit
-# would still find nothing.
-#
-# The filter must cover two inputs that are easy to miss:
-# * `go.work` is a real input, not only a workspace convenience.
-#   generate-notice reads its `use (...)` list and runs
-#   `go list -m -json all` across the workspace. A member that is added or
-#   dropped therefore changes the module set that NOTICE describes.
-# * NOTICE.md and NOTICE.html themselves. A filter that lists only the inputs
-#   would let a PR edit the protected artifact by hand and match nothing.
+# NOTICE.md and NOTICE.html are committed artifacts. No normal build regenerates them. The README
+# requires manual regeneration after dependency changes.
+# If a dependency changes without regeneration, the distributed legal notice can become stale.
+# The path filter covers dependency manifests and the notice generator.
+# It includes the generated notices so direct artifact edits still require validation.
+# go.work controls the workspace module list that the generator reads.
+# Metadata downloads can take minutes on a cold cache, so unrelated commits skip this workflow.
 on:
   push:
     branches: [main]
@@ -43,10 +26,11 @@ on:
       - 'NOTICE.html'
       - '.github/workflows/notice.yaml'
       - '.github/actions/setup-build/action.yaml'
+      - '.github/actions/build-output-cache/action.yaml'
       - '.github/actions/dependency-caches/action.yaml'
       - '.github/actions/load-versions/action.yaml'
-  # Commits reach main outside a PR (an admin push, a merge landed with checks
-  # bypassed), and a check that only runs on pull_request would never see them.
+  # An administrator can push directly to main or merge without checks. A pull-request-only
+  # workflow would miss those changes.
   pull_request:
     branches: [main]
     paths: *notice-inputs
@@ -65,12 +49,14 @@ jobs:
         uses: ./.github/actions/setup-build
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          # This job reads dependency metadata and compiles nothing, so it
-          # skips the Tauri system packages, the linuxdeploy download cache and
-          # the ~1.3 GB Rust target cache. It still needs Go, Rust, Bun, buf
-          # and Task: `task generate-notice` depends on prepare-frontend, which
-          # runs `buf generate`, the spinner clone and `bun install`.
-          compile: 'false'
+          # This job reads dependency metadata without building the desktop app. It skips these
+          # desktop prerequisites:
+          # - Tauri system packages.
+          # - The linuxdeploy download cache.
+          # - The approximately 1.3 GB Rust target cache.
+          # It still installs the tools that prepare-frontend requires. That target generates
+          # protobuf code and spinner assets. It installs Bun dependencies also.
+          setup-desktop: 'false'
 
       - name: Regenerate NOTICE
         run: task generate-notice

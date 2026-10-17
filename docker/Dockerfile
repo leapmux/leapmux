@@ -32,7 +32,7 @@ COPY --from=node /usr/local/bin/node /usr/local/bin/node
 
 # Git supplies the spinner sources that Task requires.
 # Go tool dependencies reside in backend/go.mod and desktop/go/go.mod.
-# Task invokes them through go tool, so no separate go install step is needed.
+# Task invokes them through go tool, so the build needs no separate go install step.
 RUN apk add --no-cache bash curl git libgcc libstdc++ rsync && \
     wget -qO- "https://github.com/go-task/task/releases/download/v${TASK_VERSION}/task_linux_$(uname -m | sed 's/x86_64/amd64/' | sed 's/aarch64/arm64/').tar.gz" | tar -xz -C /usr/local/bin task && \
     wget -qO /usr/local/bin/buf "https://github.com/bufbuild/buf/releases/download/v${BUF_VERSION}/buf-Linux-$(uname -m)" && chmod +x /usr/local/bin/buf
@@ -61,14 +61,13 @@ ARG TARGETARCH
 # Build the backend binary via task (single source of truth).
 # NITRO_PRESET=node-server avoids bun preset auto-detection which hangs in buildkit.
 #
-# Local builds keep these cache mounts here. CI fills the Go module mount
-# through .github/actions/build-docker-image (buildkit-cache-dance), because
-# the GitHub Actions exporter does not save cache mounts:
-# https://docs.docker.com/build/ci/github-actions/cache/#cache-mounts
-# CI fills no Bun mount: a cold `bun install` takes 3.7 s, less than the
-# cache-dance build that would supply it.
-# Task downloads the Go modules and the Bun packages itself, so no separate
-# download layer exists: each download lands in one of the mounts below.
+# Local builds retain these cache mounts. CI supplies the Go module mount through
+# buildkit-cache-dance. The GitHub Actions exporter does not save cache mounts.
+# See https://docs.docker.com/build/ci/github-actions/cache/#cache-mounts.
+# CI does not supply a Bun mount. A cold Bun install took 3.7 seconds, less than the cache-dance
+# build.
+# Task downloads both dependency sets into the mounts below. Separate download layers are
+# unnecessary.
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/root/.bun/install/cache \
@@ -85,8 +84,11 @@ ARG TARGETARCH
 
 # Install s6-overlay. Docker uses amd64/arm64, but the s6-overlay releases
 # use x86_64/aarch64, so the script maps the architecture name first.
-# Alpine needs ca-certificates for HTTPS; Ubuntu needs ca-certificates, wget,
-# and xz-utils (Alpine's BusyBox provides wget and xz-capable tar natively).
+# Alpine needs ca-certificates for HTTPS. Ubuntu needs these packages:
+# - ca-certificates.
+# - wget.
+# - xz-utils.
+# Alpine BusyBox already supplies wget and xz-capable tar.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     case "${TARGETARCH}" in \
@@ -109,11 +111,11 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     rm /tmp/s6-overlay-*.tar.xz
 
 # Install runtime dependencies:
-#   ca-certificates  TLS certificate validation
-#   tzdata           timezone data
-#   git              worktree management, status, branch operations
-#   bash, zsh        user-facing terminal shells
-#   ncurses          terminfo database for xterm-256color
+# - ca-certificates supplies TLS certificate validation.
+# - tzdata supplies timezone data.
+# - git supports worktrees and branches. It reports repository status also.
+# - bash and zsh supply terminal shells.
+# - ncurses supplies the xterm-256color terminfo entry.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     if [ -f /etc/alpine-release ]; then \

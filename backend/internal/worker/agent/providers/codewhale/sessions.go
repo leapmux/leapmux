@@ -16,31 +16,25 @@ import (
 	"github.com/leapmux/leapmux/util/pathutil"
 )
 
-// Where LeapMux keeps Codewhale's thread stores, and how the session picker
-// reads them.
+// This file locates Codewhale thread stores and reads their sessions.
 //
-// Each agent runs its own runtime on its OWN task store. The runtime takes an
-// exclusive lock on its store for the life of the process, so two agents cannot
-// share one, and the default store (`~/.codewhale/tasks`) belongs to the user's
-// own `codewhale web` and `app-server`, which a LeapMux agent must not lock out.
+// Each agent uses a separate runtime store. The runtime holds an exclusive store lock for its
+// lifetime, so agents cannot share that store. The user's codewhale web and app-server own the
+// default ~/.codewhale/tasks store. LeapMux must not prevent their access.
 //
-// The stores live at `$CODEWHALE_HOME/leapmux/<store>/`, and `$CODEWHALE_HOME`
-// defaults to `~/.codewhale`. Codewhale's own home is the one place both the
-// launch and the session picker can find without a LeapMux data directory:
-// the picker receives only the user's home and environment.
+// Stores reside under $CODEWHALE_HOME/leapmux/<store>/. CODEWHALE_HOME defaults to ~/.codewhale.
+// Launch and discovery can both resolve that location without a LeapMux data directory. The
+// picker receives only the user's home and environment.
 //
-// ONE store holds ONE thread. A fresh agent makes a fresh store, a resume finds
-// the store that holds its thread, and a clear restarts the agent on a fresh
-// store (see Agent.ClearContext). So a resume never takes another tab's thread
-// along with its own, and the picker lists a store by its one thread.
+// LeapMux starts one thread per store. A new agent creates a store. Resume selects the store
+// that holds the thread. ClearContext restarts the agent with a new store. The reader still
+// accepts multiple valid thread records when a store contains them.
 //
-// The runtime keeps the store as one JSON file for each record:
-//
-//	<store>/runtime/state.json                 {schema_version, next_seq}, written on every event
-//	<store>/runtime/threads/<thread_id>.json   ThreadRecord
-//	<store>/runtime/turns/<turn_id>.json       TurnRecord
-//
-// A reader never writes into a store: the runtime owns every file in it.
+// The runtime owns every record file:
+// - runtime/state.json contains schema_version and next_seq. Each event rewrites it.
+// - runtime/threads/<thread_id>.json contains a ThreadRecord.
+// - runtime/turns/<turn_id>.json contains a TurnRecord.
+// Readers never write to the store.
 
 // codewhaleStoresDirName is the directory under Codewhale's home that holds
 // LeapMux's stores.
@@ -53,10 +47,8 @@ const codewhaleHomeDirName = ".codewhale"
 // under the stores root is not read as a store.
 const codewhaleStorePrefix = "store-"
 
-// codewhaleHomePrefix starts the private runtime home that belongs to one
-// store. It sits beside its store under the same root, because a Codewhale
-// daemon socket path must stay within the platform's limit and a nested home
-// would push a deep workspace past it.
+// codewhaleHomePrefix identifies a store's private runtime home. The home sits beside the store.
+// A nested home could exceed the platform's daemon socket path limit in a deep workspace.
 const codewhaleHomePrefix = "home-"
 
 // storeRecordMaxBytes limits one record the reader opens. A thread record
@@ -125,21 +117,18 @@ func (s codewhaleStore) threadPath(threadID string) string {
 	return filepath.Join(s.runtimeDir(), "threads", threadID+".json")
 }
 
-// codewhaleSharedHomeEntries are the configuration entries of a Codewhale home
-// that every runtime reads and no runtime owns: the provider configuration, the
-// MCP server registration, and the model catalog. A store's own home copies
-// each entry that the configured home holds -- the runtime refuses a symlinked
-// configuration -- so a runtime of one store reads the same configuration while
-// keeping its state to itself.
+// codewhaleSharedHomeEntries identifies shared configuration that no runtime owns:
+// - Provider configuration.
+// - MCP server registrations.
+// - The model catalog.
+// Each private home copies the configured entries because the runtime rejects symlinked
+// configuration. Each runtime shares the configuration but keeps separate state.
 var codewhaleSharedHomeEntries = []string{"config.toml", "mcp.json", "catalog"}
 
-// newCodewhaleStore makes a fresh, empty store under root.
-//
-// The store also brings a home of its own for its runtime. Codewhale coordinates
-// every process of one home -- one daemon socket, one owner ledger -- and refuses
-// a second runtime while another holds that state, so an agent of another worker
-// in the same configured home could never start. A per-store home ends that
-// coordination at the store.
+// newCodewhaleStore creates an empty store and a private runtime home.
+// Codewhale coordinates each home's processes through one daemon socket and one owner ledger. It
+// refuses a second runtime while another runtime holds that state. A separate home lets another
+// worker's agent start without sharing that coordination state.
 func newCodewhaleStore(root string) (codewhaleStore, error) {
 	if root == "" {
 		return codewhaleStore{}, errors.New("no home directory to keep a Codewhale store in")
@@ -170,7 +159,10 @@ func newCodewhaleStore(root string) (codewhaleStore, error) {
 func copyHomeEntry(source, destination string) error {
 	info, err := os.Lstat(source)
 	if err != nil {
-		return nil
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
 	}
 	if _, err := os.Lstat(destination); err == nil {
 		return nil
@@ -206,16 +198,15 @@ func copyHomeEntry(source, destination string) error {
 // errThreadNotStored reports a resume handle that no LeapMux store holds.
 var errThreadNotStored = errors.New("no LeapMux store holds this Codewhale thread")
 
-// findCodewhaleStore returns the store that holds a thread. Two stores can hold
-// the same thread id only by a collision of its random suffix; the newer record
-// wins, because it is the thread the reader last used.
+// findCodewhaleStore returns the store that contains a thread. A random-suffix collision can put
+// one thread ID in two stores. The newer record takes precedence because it identifies the most
+// recently used thread.
 func findCodewhaleStore(root, threadID string) (codewhaleStore, error) {
 	if root == "" || threadID == "" || strings.ContainsAny(threadID, `/\`) {
 		return codewhaleStore{}, errThreadNotStored
 	}
-	// Windows "lists" a plain file as its own single entry instead of
-	// answering an error, so the directory check states the contract the
-	// POSIX error path already enforced.
+	// Windows can list a plain file as one entry instead of returning an error. The explicit
+	// directory check preserves the POSIX path contract.
 	if info, err := os.Stat(root); err == nil && !info.IsDir() {
 		return codewhaleStore{}, fmt.Errorf("read the Codewhale stores: %s is not a directory", root)
 	}
@@ -248,13 +239,10 @@ func findCodewhaleStore(root, threadID string) (codewhaleStore, error) {
 	return found, nil
 }
 
-// codewhaleStoredSessions lists the threads of LeapMux's stores that ran in
-// the query's working directory, newest first.
-//
-// A store is timed by its `runtime/state.json`, which the runtime rewrites on
-// every event, and that order is what the walk caps by. The working directory
-// is inside the thread record, so every candidate is read until the limit is
-// met.
+// codewhaleStoredSessions lists matching threads, newest first.
+// The runtime rewrites runtime/state.json on every event. That file supplies the candidate
+// timestamp. Each thread record supplies its working directory and activity timestamp. The
+// reader completes the boundary timestamp group before selecting results.
 func codewhaleStoredSessions(ctx context.Context, q agent.StoredSessionQuery) ([]agent.StoredSession, error) {
 	if strings.TrimSpace(q.WorkingDir) == "" {
 		return nil, nil
@@ -276,19 +264,14 @@ func codewhaleStoredSessions(ctx context.Context, q agent.StoredSessionQuery) ([
 		return nil, err
 	}
 	limit := q.EffectiveLimit()
-	var sessions []agent.StoredSession
-	for _, entry := range entries {
-		if len(sessions) >= limit || ctx.Err() != nil {
-			break
-		}
-		sessions = append(sessions, readStoreSessions(codewhaleStore{dir: entry.Path, home: storeHome(entry.Path)}, q.WorkingDir)...)
-	}
+	sessions := sessionstore.CollectMany(ctx, entries, limit, func(entry sessionstore.Entry) []agent.StoredSession {
+		return readStoreSessions(codewhaleStore{dir: entry.Path, home: storeHome(entry.Path)}, q.WorkingDir)
+	})
 	return agent.SortAndCapSessions(sessions, limit), nil
 }
 
-// readStoreSessions reads the threads of one store that ran in workingDir. A
-// thread that ran no turn is an agent that opened and never spoke, so it is not
-// a session worth offering; neither is an archived one.
+// readStoreSessions reads the store's threads for workingDir. An unused thread has no
+// conversation to resume. The reader excludes it and archived threads.
 func readStoreSessions(store codewhaleStore, workingDir string) []agent.StoredSession {
 	threadsDir := filepath.Join(store.runtimeDir(), "threads")
 	entries, err := os.ReadDir(threadsDir)

@@ -2,6 +2,7 @@ package reasonix
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -16,6 +17,60 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestReasonixStoredSessions_KeepsTimestampTies(t *testing.T) {
+	t.Parallel()
+	for _, project := range []bool{false, true} {
+		t.Run(fmt.Sprintf("project root %t", project), func(t *testing.T) {
+			t.Parallel()
+			home := t.TempDir()
+			workDir := filepath.Join(home, "project")
+			root := filepath.Join(home, ".reasonix", "sessions")
+			if project {
+				slug, ok := reasonixWorkspaceSlug(workDir)
+				require.True(t, ok)
+				root = filepath.Join(home, ".reasonix", "projects", slug, "sessions")
+			}
+			stamp := time.Date(2026, 10, 17, 0, 0, 0, 0, time.UTC)
+			for i, id := range []string{"a-old", "z-new"} {
+				writeReasonixSession(t, root, id, fmt.Sprintf(`{"id":%q,"turns":1,"updated_at":%q,"workspace_root":%s}`, id, stamp.Add(time.Duration(i)*time.Hour).Format(time.RFC3339), agenttest.JSONString(workDir)), "")
+				agenttest.TouchFixture(t, filepath.Join(root, id+reasonixSessionMetaSuffix), stamp)
+			}
+			got, err := reasonixStoredSessions(t.Context(), agent.StoredSessionQuery{WorkingDir: workDir, HomeDir: home, Getenv: agenttest.FixtureEnv(nil), Limit: 1})
+			require.NoError(t, err)
+			assert.Equal(t, []string{"z-new"}, agenttest.Handles(got))
+		})
+	}
+}
+
+func TestReasonixStoredSessionsSharesTheBudgetAcrossRoots(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	workDir := filepath.Join(home, "project")
+	slug, ok := reasonixWorkspaceSlug(workDir)
+	require.True(t, ok)
+	project := filepath.Join(home, ".reasonix", "projects", slug, "sessions")
+	global := filepath.Join(home, ".reasonix", "sessions")
+	stamp := time.Date(2026, 10, 17, 0, 0, 0, 0, time.UTC)
+	write := func(root, id, title string, activity time.Time) {
+		writeReasonixSession(t, root, id, fmt.Sprintf(`{"id":%q,"turns":1,"custom_title":%q,"updated_at":%q,"workspace_root":%s}`, id, title, activity.Format(time.RFC3339), agenttest.JSONString(workDir)), "")
+		agenttest.TouchFixture(t, filepath.Join(root, id+reasonixSessionMetaSuffix), stamp)
+	}
+	write(project, "shared", "project copy", stamp.Add(3*time.Hour))
+	write(global, "shared", "global copy", stamp.Add(4*time.Hour))
+	write(global, "a-old", "old", stamp)
+	write(global, "z-new", "new", stamp.Add(time.Hour))
+	query := agent.StoredSessionQuery{WorkingDir: workDir, HomeDir: home, Getenv: agenttest.FixtureEnv(nil), Limit: 2}
+	got, err := reasonixStoredSessions(t.Context(), query)
+	require.NoError(t, err)
+	require.Equal(t, []string{"shared", "z-new"}, agenttest.Handles(got))
+	assert.Equal(t, "project copy", got[0].Title)
+	query.Limit = 1
+	got, err = reasonixStoredSessions(t.Context(), query)
+	require.NoError(t, err)
+	require.Equal(t, []string{"shared"}, agenttest.Handles(got))
+	assert.Equal(t, "project copy", got[0].Title)
+}
+
 // writeReasonixSession writes the `.jsonl.meta` listing sidecar, and optionally
 // the `.acp.json` one beside it.
 func writeReasonixSession(t *testing.T, sessionsDir, id, metaJSON, acpJSON string) {
@@ -29,9 +84,8 @@ func writeReasonixSession(t *testing.T, sessionsDir, id, metaJSON, acpJSON strin
 func TestReasonixWorkspaceSlug(t *testing.T) {
 	t.Parallel()
 
-	// The expectation is per HOST, because the fold is per host: Reasonix
-	// lowercases the path on Windows and nowhere else, so one expectation
-	// cannot state both. Each case pins the spelling that platform produces.
+	// The expectation depends on the host. Reasonix ignores path case only on Windows. Each case
+	// verifies the spelling that its platform produces.
 	if runtime.GOOS == "windows" {
 		slug, ok := reasonixWorkspaceSlug(`C:\Users\trustin\Workspaces\leapmux`)
 		require.True(t, ok)
@@ -43,9 +97,8 @@ func TestReasonixWorkspaceSlug(t *testing.T) {
 		assert.Equal(t, "-Users-trustin-Workspaces-leapmux", slug)
 	}
 
-	// Past the per-component budget Reasonix appends an FNV-1a hash this code
-	// does not reproduce, so it declines the project directory and lets the
-	// global root answer instead.
+	// Reasonix appends an FNV-1a hash beyond its component limit. This reader does not reproduce
+	// the hash. It uses the global root instead.
 	_, ok := reasonixWorkspaceSlug("/" + strings.Repeat("a", reasonixSlugMaxLen))
 	assert.False(t, ok)
 }
@@ -246,9 +299,9 @@ func TestReasonixStoredSessions_SkipsCorruptSidecars(t *testing.T) {
 	assert.Equal(t, []string{"good"}, agenttest.Handles(got))
 }
 
-// Reasonix keeps its OWN walk loop rather than the shared collector, because
-// its budget and its `seen` map span two roots. That means its cancellation
-// check is its own too, and the helper's test does not cover it.
+// Reasonix checks cancellation before each root scan. The shared collector checks it before each
+// candidate read.
+// This test verifies the provider's cancellation behavior.
 func TestReasonixStoredSessions_StopsOnACancelledContext(t *testing.T) {
 	t.Parallel()
 	dir := testutil.NativeAbsPath("/Users/dev/project")
@@ -268,9 +321,8 @@ func TestReasonixStoredSessions_StopsOnACancelledContext(t *testing.T) {
 	assert.Empty(t, got, "a cancelled scan reads no sidecar")
 }
 
-// A decoder fills each field it reads BEFORE it reports a type error on a later
-// one, so a rejected `.acp.json` leaves the struct partly populated. Nothing
-// from a document this reader rejected may reach the title or the time.
+// A decoder can populate earlier fields before it rejects a later field. A rejected ACP sidecar
+// must supply neither the title nor the timestamp.
 func TestReasonixStoredSessions_IgnoresARejectedACPSidecar(t *testing.T) {
 	t.Parallel()
 	dir := testutil.NativeAbsPath("/Users/dev/project")

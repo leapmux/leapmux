@@ -1,7 +1,9 @@
 name: Dependency caches
-description: >
-  Restore the downloaded dependency archives (Go modules, Bun packages, Cargo
-  registry), and optionally fill and save each one on a miss.
+description: |
+  Restore dependency archives and optionally populate each missing archive:
+  - Go modules.
+  - Bun packages.
+  - Cargo registry files.
 
 # Dependency-cache policy, shared by every job that downloads dependencies:
 #
@@ -14,14 +16,12 @@ description: >
 # * There are no restore keys. An archive holds exactly the current lockfile's
 #   set of files, so it cannot grow with a stale prefix match.
 # * Each archive is per OS. @actions/cache stores each path relative to the
-#   workspace. On Windows the workspace is on D: and the home directory is on
-#   C:, so an archive that another OS saved restores the paths to the wrong
-#   drive. The two Linux architectures share an archive, because the path
-#   strings are identical. Bun is per architecture, because Bun installs
-#   platform-specific packages.
-#
-# The callers check out the repository first: `hashFiles` resolves against
-# GITHUB_WORKSPACE, which must hold the lockfiles.
+#   workspace. Windows places the workspace on D: and the home directory on C:.
+#   An archive from another operating system would restore paths to the wrong drive.
+#   The Linux architectures share Go archives because their path strings match.
+#   Bun archives remain per architecture because Bun installs platform-specific packages.
+# Callers must check out first because hashFiles reads the workspace lockfiles.
+# Store compressed Go downloads to reduce archive size. Clean runners expand them once per module.
 inputs:
   go:
     description: Restore the Go module downloads.
@@ -37,6 +37,10 @@ inputs:
       in the environment, which Setup Rust supplies.
     required: false
     default: 'false'
+  cargo-lookup-only:
+    description: Check the Cargo archive without downloading it on an exact hit.
+    required: false
+    default: 'false'
   populate:
     description: >
       On a restore miss, run the full download for each selected ecosystem and
@@ -46,6 +50,9 @@ inputs:
     default: 'false'
 
 outputs:
+  cargo-cache-hit:
+    description: Whether the Cargo dependency archive exists for the exact key.
+    value: ${{ steps.cargo.outputs.cache-hit }}
   go-modcache:
     description: The Go module cache directory that holds `cache/download`.
     value: ${{ steps.paths.outputs.go-modcache }}
@@ -131,6 +138,7 @@ runs:
       if: inputs.cargo == 'true'
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
+        lookup-only: ${{ inputs.cargo-lookup-only }}
         path: |
           ${{ env.CARGO_HOME }}/registry/index
           ${{ env.CARGO_HOME }}/registry/cache

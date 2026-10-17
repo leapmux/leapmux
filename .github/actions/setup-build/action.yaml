@@ -1,9 +1,14 @@
 name: Setup build toolchain
-description: >
-  Install every toolchain a LeapMux build needs (Node, Go, Rust, Bun, buf,
-  protoc, Task) and restore the caches around them. Shared by ci.yaml,
-  desktop-artifacts.yaml and notice.yaml so an action-version bump is one edit
-  instead of one per job.
+description: |
+  Install the build toolchains and restore their caches:
+  - Node.js.
+  - Go.
+  - Rust.
+  - Bun.
+  - buf.
+  - protoc.
+  - Task.
+  CI and artifact jobs share this setup. The NOTICE job uses it also.
 
 # The OS differences live here, not in the caller. Each of these is a
 # function of `runner.os`, so the caller does not have to know them:
@@ -20,11 +25,10 @@ description: >
 # Checkout is deliberately NOT here: a composite action can only run once its
 # own file is on disk, so the caller must check out first.
 #
-# Cache classes. A DEPENDENCY cache holds downloaded files: its key is the
-# lockfile hash only, and any job may fill it on a miss (see
-# .github/actions/dependency-caches/action.yaml). A COMPILED cache holds build
-# output: its key includes the toolchain and the runner image, and only the
-# ci.yaml platform jobs save it, on main only.
+# A dependency archive contains downloads and uses a lockfile key. Any job can populate it on a
+# miss. See dependency-caches/action.yaml.
+# A compiled archive contains build outputs. Its key includes the toolchain and runner image.
+# Only the main-branch CI platform jobs save it.
 inputs:
   github-token:
     description: >
@@ -45,24 +49,34 @@ inputs:
   save-build-caches:
     description: >
       Whether this job may save the COMPILED caches (Go build output and the
-      Rust target directory). Only the ci.yaml platform jobs may: each runs
-      the full build, lint and test set for its runner, on main only. A subset
+      Rust target directory). Only the ci.yaml platform jobs may: each completes
+      the full build and validation for its runner on main. A subset
       job must not save, because actions/cache never replaces an existing key,
       so the first saver's partial archive would stay.
+      Writers register the Go cache and pruner as separate job steps after this action.
     required: false
     default: 'false'
-  compile:
+  setup-desktop:
     description: >
-      Whether this job COMPILES anything. Set 'false' for a job that only
-      reads dependency metadata, for example with `cargo metadata` and
-      `go list`. That job then skips the three heaviest steps, which only the
-      Tauri build needs. The first installs about 20 WebKitGTK and GStreamer
-      -dev packages. The second restores the linuxdeploy download cache. The
-      third restores the Rust target cache, which is about 1.3 GB. The Go
-      build cache is restored even when this input is 'false', because
-      prepare-backend builds sqlc.
+      Prepare desktop system dependencies and caches. Set 'false' for a job
+      that reads dependency metadata without a desktop build. Go setup and
+      its build cache remain active because prepare-backend compiles sqlc.
     required: false
     default: 'true'
+
+outputs:
+  go-cache:
+    description: The directory of compiled Go objects.
+    value: ${{ steps.go-build.outputs.gocache }}
+  lint-cache:
+    description: The directory of Go lint results.
+    value: ${{ steps.go-build.outputs.lint-cache }}
+  cache-key:
+    description: The exact weekly Go output key.
+    value: ${{ steps.go-build.outputs.key }}
+  cache-prefix:
+    description: The Go output partition used for restore and replacement.
+    value: ${{ steps.go-build.outputs.restore-prefix }}
 
 runs:
   using: composite
@@ -75,9 +89,9 @@ runs:
 
     - name: Derive cache key inputs
       # Runner variables are not in the `env` expression context, so this step
-      # writes them where the later key expressions can read them. CACHE_WEEK
-      # rotates the caches that must refresh (APT, Tauri, spinners).
-      # CACHE_IMAGE keys the compiled caches by the runner image family.
+      # writes them where the later key expressions can read them.
+      # CACHE_WEEK identifies the UTC week for every rotating cache, including Go outputs.
+      # CACHE_IMAGE separates compiled caches by runner image family.
       shell: bash
       run: |
         echo "CACHE_WEEK=$(date -u +%G-W%V)" >> "$GITHUB_ENV"
@@ -94,7 +108,7 @@ runs:
       # Keep the downloaded .deb files after each install, and let
       # actions/cache restore into the archive directory. apt keeps only
       # partial/ owned by _apt, and `lock` belongs to root.
-      if: runner.os == 'Linux' && inputs.compile == 'true'
+      if: runner.os == 'Linux' && inputs.setup-desktop == 'true'
       shell: bash
       run: |
         sudo rm -f /etc/apt/apt.conf.d/docker-clean
@@ -102,7 +116,7 @@ runs:
         sudo chown "$(id -u):$(id -g)" /var/cache/apt/archives
 
     - name: Cache APT packages
-      if: runner.os == 'Linux' && inputs.compile == 'true'
+      if: runner.os == 'Linux' && inputs.setup-desktop == 'true'
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         # Only the package files. The `lock` file and `partial/` belong to
@@ -119,7 +133,7 @@ runs:
         restore-keys: apt-${{ runner.os }}-${{ runner.arch }}-
 
     - name: Install Tauri system dependencies
-      if: runner.os == 'Linux' && inputs.compile == 'true'
+      if: runner.os == 'Linux' && inputs.setup-desktop == 'true'
       shell: bash
       # GStreamer dev + runtime plugins are required for AppImages built
       # with `bundle.linux.appimage.bundleMediaFramework: true`. Without
@@ -162,10 +176,9 @@ runs:
         node-version: ${{ env.NODE_VERSION }}
 
     - name: Setup Go
-      # Caching off: the built-in cache mixes GOMODCACHE and GOCACHE in one
-      # archive, and its post step never repairs an archive that another job
-      # saved with a subset of the sources. The dependency caches and the Go
-      # build cache below split those two on purpose.
+      # The built-in cache is off because it combines GOMODCACHE and GOCACHE. Its post step
+      # cannot repair an archive that another job saved with only some sources. Separate archives
+      # preserve independent dependency and build-output ownership.
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version: ${{ env.GOLANG_VERSION }}
@@ -182,7 +195,7 @@ runs:
       # into its key, and each runner image ships its own `stable`, which the
       # image refreshes weekly. Keep exactly the project toolchain so the key
       # changes only with RUST_VERSION.
-      if: inputs.compile == 'true'
+      if: inputs.setup-desktop == 'true'
       shell: bash
       run: |
         rustup default "$RUST_VERSION"
@@ -207,6 +220,7 @@ runs:
         bun-version: ${{ env.BUN_VERSION }}
 
     - name: Restore dependency caches
+      id: deps
       # After the tool installs above: each fill step downloads with the tool
       # that step installed. Any job may fill and save these archives, because
       # their content is the lockfile's file set and nothing else.
@@ -214,6 +228,7 @@ runs:
       with:
         populate: 'true'
         cargo: 'true'
+        cargo-lookup-only: ${{ inputs.setup-desktop == 'true' }}
 
     - name: Locate the Go build caches
       id: go-build
@@ -233,47 +248,42 @@ runs:
         {
           echo "gocache=$gocache"
           echo "lint-cache=$lint_cache"
-          echo "key=${prefix}${hash}"
+          echo "key=${prefix}${hash}-${CACHE_WEEK}"
           echo "restore-prefix=${prefix}"
         } >> "$GITHUB_OUTPUT"
 
-    - name: Cache Go build outputs
-      # The compiled cache: toolchain and image in the key, with the lockfile
-      # hash as a suffix and as a restore-key prefix. Only the ci.yaml
-      # platform jobs save it (see the save-build-caches input).
-      if: inputs.save-build-caches == 'true'
-      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-      with:
-        path: |
-          ${{ steps.go-build.outputs.gocache }}
-          ${{ steps.go-build.outputs.lint-cache }}
-        key: ${{ steps.go-build.outputs.key }}
-        restore-keys: ${{ steps.go-build.outputs.restore-prefix }}
-
     - name: Restore Go build outputs
+      # Writers register their cache and pruning hooks as separate job steps.
+      # A failed top-level post step updates job.status before the save runs.
       if: inputs.save-build-caches != 'true'
-      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      uses: ./.github/actions/build-output-cache
       with:
         path: |
           ${{ steps.go-build.outputs.gocache }}
           ${{ steps.go-build.outputs.lint-cache }}
         key: ${{ steps.go-build.outputs.key }}
         restore-keys: ${{ steps.go-build.outputs.restore-prefix }}
+        save: 'false'
+
+    - name: Set the Cargo debug information level
+      if: inputs.setup-desktop == 'true'
+      # Keep file and line numbers in panic reports. Omit variable and type
+      # details to reduce the compiled archive. Every caller uses this value,
+      # so the Rust cache key cannot differ through duplicated settings.
+      shell: bash
+      run: echo 'CARGO_PROFILE_DEV_DEBUG=line-tables-only' >> "$GITHUB_ENV"
 
     - name: Cache Cargo build outputs
-      # Swatinem/rust-cache replaces a raw actions/cache for desktop/rust/
-      # target: it splits the key by rustc + target triple, stores only
-      # fingerprinted artifacts that match the current Cargo.lock, and prunes
-      # stale outputs before save. `shared-key: desktop` keeps ci.yaml and
-      # desktop-artifacts.yaml on one key. The key covers only the project
-      # toolchain, because `Remove ambient Rust toolchains` above drops the
-      # image's own toolchains first. `env-vars: CACHE_IMAGE` adds the runner
-      # image family. Save on main only, for the reason in the
-      # save-build-caches input.
-      #
-      # This action archives `~/.cargo/registry` again, which the dependency
-      # caches already hold. No input turns that off.
-      if: inputs.compile == 'true'
+      id: rust-cache
+      # Swatinem/rust-cache keys compiled artifacts by rustc and target triple. It keeps
+      # fingerprinted artifacts for the current Cargo.lock and removes stale outputs before
+      # saving.
+      # The shared desktop key connects CI and artifact builds. Only the selected toolchain
+      # affects it because the earlier step removes ambient toolchains. CACHE_IMAGE separates
+      # runner image families. Only authorized main-branch jobs save the archive.
+      # The action also archives the Cargo registry, and no input excludes it. An earlier
+      # dependency lookup avoids a duplicate download on an exact Rust hit.
+      if: inputs.setup-desktop == 'true'
       uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       with:
         workspaces: desktop/rust
@@ -281,41 +291,45 @@ runs:
         env-vars: CACHE_IMAGE
         save-if: ${{ inputs.save-build-caches == 'true' }}
 
+    - name: Restore Cargo downloads after a Rust cache miss
+      # An exact Rust hit already supplies the registry. A miss or prefix
+      # hit needs the complete archive for the current lockfile.
+      if: inputs.setup-desktop == 'true' && steps.deps.outputs.cargo-cache-hit == 'true' && steps.rust-cache.outputs.cache-hit != 'true'
+      uses: ./.github/actions/dependency-caches
+      with:
+        go: 'false'
+        bun: 'false'
+        cargo: 'true'
+        populate: 'false'
+
     - name: Cache Tauri downloads
-      # On Linux, desktop/rust/scripts/patch-linuxdeploy.sh changes the cached
-      # files: the linuxdeploy AppImage, the extracted AppRun and the
-      # linuxdeploy-plugin-* scripts. It also installs a compiled wrapper that
-      # it builds from linuxdeploy-wrapper.c. The script is idempotent on a
-      # clean download, but it skips each patch that it already applied. On a
-      # cache hit, a changed patch input would therefore keep the old patches
-      # until the weekly rotation, with no message. The Linux key hashes both
-      # inputs for that reason. The Windows cache holds other tooling that
-      # those scripts never touch, so its key is only the weekly epoch.
-      #
-      # macOS is absent: the macOS build creates no Tauri cache directory, and
-      # the save then fails with a path validation error.
-      #
-      # Skipped when `compile: false`: every cached artifact here is Tauri
-      # bundling tooling, which only a build invokes.
-      if: inputs.compile == 'true' && runner.os != 'macOS'
+      # The Linux patch script changes these cached files:
+      # - The linuxdeploy AppImage and its extracted AppRun.
+      # - The linuxdeploy plugin scripts.
+      # - The compiled wrapper from linuxdeploy-wrapper.c.
+      # The script skips existing patch markers. Both the exact key and fallback prefix must
+      # therefore include the patch inputs.
+      # The Windows tooling does not use those patches, so its key needs only the weekly suffix.
+      # macOS creates no Tauri cache directory. Attempting to save one causes a path validation
+      # error.
+      # Only desktop builds use these tools, so metadata jobs skip this step.
+      if: inputs.setup-desktop == 'true' && runner.os != 'macOS'
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ runner.os == 'Linux' && '~/.cache/tauri' || '~/AppData/Local/tauri' }}
-        key: tauri-${{ runner.os }}-${{ runner.arch }}-${{ env.CACHE_WEEK }}${{ runner.os == 'Linux' && format('-{0}', hashFiles('desktop/rust/scripts/patch-linuxdeploy.sh', 'desktop/rust/scripts/linuxdeploy-wrapper.c')) || '' }}
-        # Fall back to the cache of the previous week when CACHE_WEEK rotates
-        # on Monday. Without the fallback, each Monday's jobs download the
-        # linuxdeploy AppImage and the GTK plugins again.
-        restore-keys: tauri-${{ runner.os }}-${{ runner.arch }}-
+        key: tauri-${{ runner.os }}-${{ runner.arch }}${{ runner.os == 'Linux' && format('-{0}', hashFiles('desktop/rust/scripts/patch-linuxdeploy.sh', 'desktop/rust/scripts/linuxdeploy-wrapper.c')) || '' }}-${{ env.CACHE_WEEK }}
+        # Reuse earlier weeks only when the platform and patch fingerprint match. A changed Linux
+        # patch must start with fresh artifacts.
+        restore-keys: tauri-${{ runner.os }}-${{ runner.arch }}${{ runner.os == 'Linux' && format('-{0}', hashFiles('desktop/rust/scripts/patch-linuxdeploy.sh', 'desktop/rust/scripts/linuxdeploy-wrapper.c')) || '' }}-
 
     - name: Cache awesome-claude-spinners
       # `task fetch-spinners` clones into ~/.cache/awesome-claude-spinners and
       # reuses that clone within the week (see SPINNERS_CACHE_DIR in
       # Taskfile.yaml). Keyed on CACHE_WEEK to refresh weekly.
       #
-      # Per OS, unlike the content: @actions/cache stores each path relative to
-      # the workspace, and on Windows the workspace and the home directory are
-      # on different drives. A cross-OS archive would restore the clone to the
-      # wrong drive.
+      # Separate archives by operating system. The cache stores paths relative to the workspace.
+      # Windows places the home and workspace on different drives. A cross-platform archive would
+      # restore the clone to the wrong drive.
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ~/.cache/awesome-claude-spinners

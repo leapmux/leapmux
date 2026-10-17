@@ -1,8 +1,54 @@
-import { readdirSync, readFileSync } from 'node:fs'
-import { join, resolve } from 'node:path'
-import { describe, expect, it } from 'bun:test'
+import { spawnSync } from 'node:child_process'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { join, posix, resolve } from 'node:path'
+import process from 'node:process'
+import { afterEach, describe, expect, it } from 'bun:test'
 
 const root = resolve(import.meta.dirname, '..')
+const fixtures = []
+
+afterEach(() => {
+  for (const dir of fixtures.splice(0)) rmSync(dir, { recursive: true, force: true })
+})
+
+function fixture() {
+  mkdirSync(join(root, '.tmp'), { recursive: true })
+  const dir = mkdtempSync(join(root, '.tmp', 'actions-test-'))
+  fixtures.push(dir)
+  return dir
+}
+
+function runShell(script, dir, extra = {}) {
+  return spawnSync('bash', ['--noprofile', '--norc', '-e', '-o', 'pipefail', '-c', script], {
+    cwd: dir,
+    encoding: 'utf8',
+    env: { ...process.env, GITHUB_ENV: join(dir, 'environment'), GITHUB_OUTPUT: join(dir, 'output'), ...extra },
+  })
+}
+
+// GitHub expressions remain literal text until the runner evaluates the workflow.
+function expression(body) {
+  return `\${{ ${body} }}`
+}
+
+function outputFile(dir, file = 'output') {
+  const path = join(dir, file)
+  return existsSync(path) ? readFileSync(path, 'utf8') : ''
+}
+
+function git(dir, ...args) {
+  const result = spawnSync('git', args, { cwd: dir, encoding: 'utf8' })
+  expect(result.status, result.stdout + result.stderr).toBe(0)
+  return result.stdout.trim()
+}
+
+function initGit(dir, bare = false) {
+  mkdirSync(dir, { recursive: true })
+  git(dir, 'init', '--initial-branch=main', ...(bare ? ['--bare'] : []))
+  for (const [key, value] of Object.entries({ 'core.fsmonitor': 'false', 'gc.auto': '0', 'maintenance.auto': 'false', 'commit.gpgsign': 'false', 'tag.gpgsign': 'false', 'user.name': 'Test', 'user.email': 'test@example.invalid' })) {
+    git(dir, 'config', key, value)
+  }
+}
 
 function yaml(relPath) {
   return Bun.YAML.parse(readFileSync(join(root, relPath), 'utf8'))
@@ -45,7 +91,7 @@ function dockerStage(name) {
   const lines = raw('docker/Dockerfile').split('\n')
   const starts = []
   for (const [index, line] of lines.entries()) {
-    const match = line.match(/^FROM\s+\S+\s+AS\s+(\S+)\s*$/)
+    const match = line.match(/^FROM\s+\S+(?:\s+AS\s+(\S+))?\s*$/i)
     if (match)
       starts.push({ name: match[1], index })
   }
@@ -59,15 +105,417 @@ function argLine(lines, arg) {
   return lines.findIndex(line => new RegExp(`^ARG\\s+${arg}(\\s|=|$)`).test(line))
 }
 
-function globToRegExp(glob) {
-  const body = glob
-    .split('*')
-    .map(part => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-    .join('[^/]*')
-  return new RegExp(`^${body}$`)
+function cachePaths(step) {
+  return String(step.with.path).split('\n').map(line => line.trim()).filter(Boolean)
 }
 
 describe('cache and pin invariants of the GitHub Actions workflows', () => {
+  it('uses the prepared builder for every Docker cache and build operation', () => {
+    const steps = actionSteps('.github/actions/build-docker-image/action.yaml')
+    const operations = steps.filter(step => String(step.uses).startsWith('docker/build-push-action@') || String(step.uses).startsWith('reproducible-containers/buildkit-cache-dance@'))
+    expect(operations).toHaveLength(4)
+    for (const step of operations) expect(step.with.builder).toBe(expression('inputs.builder'))
+  })
+
+  it('supplies each local action input and reads only its declared outputs', () => {
+    for (const file of [...workflowFiles, ...actionFiles]) {
+      const steps = allSteps(yaml(file))
+      for (const { jobName, step } of steps) {
+        if (!String(step.uses).startsWith('./.github/actions/'))
+          continue
+        const target = yaml(`${step.uses.slice(2)}/action.yaml`)
+        for (const name of Object.keys(step.with ?? {})) {
+          expect(target.inputs, `${file}: ${step.name}: ${name}`).toHaveProperty(name)
+        }
+        for (const [name, input] of Object.entries(target.inputs ?? {})) {
+          if (input.required && input.default === undefined)
+            expect(step.with, `${file}: ${step.name}: ${name}`).toHaveProperty(name)
+        }
+        if (!step.id)
+          continue
+        const pattern = new RegExp(`steps\\.${step.id}\\.outputs\\.([\\w-]+)`, 'g')
+        for (const sibling of steps.filter(entry => entry.jobName === jobName)) {
+          for (const match of JSON.stringify(sibling.step).matchAll(pattern)) {
+            expect(target.outputs, `${file}: ${step.id}: ${match[1]}`).toHaveProperty(match[1])
+          }
+        }
+      }
+    }
+  })
+
+  it('serializes native and Docker cache writers through their post steps', () => {
+    const ci = yaml('.github/workflows/ci.yaml')
+    const groups = []
+    for (const name of ['linux', 'macos', 'windows']) {
+      const job = ci.jobs[name]
+      expect(job.permissions).toEqual({ contents: 'read', actions: 'write' })
+      expect(job.concurrency['cancel-in-progress']).toBe(false)
+      expect(job.concurrency.queue).toBe('max')
+      expect(job.concurrency.group).toContain(expression('github.ref'))
+      groups.push(job.concurrency.group)
+      const writer = job.steps.find(step => step.id === 'go-cache')
+      const prune = job.steps.find(step => step.uses === './.github/actions/prune-build-cache')
+      expect(writer.if).toBe('github.ref == \'refs/heads/main\'')
+      expect(prune.if).toBe('github.ref == \'refs/heads/main\' && steps.go-cache.outputs.cache-hit != \'true\'')
+      expect(writer.with.save).toBe('true')
+      expect(prune['continue-on-error'] ?? false).toBe(false)
+      expect(job.steps.indexOf(prune)).toBeGreaterThan(job.steps.indexOf(writer))
+    }
+    expect(new Set(groups).size).toBe(3)
+    expect(ci.jobs.linux.concurrency.group).toContain(expression('matrix.arch'))
+    expect(ci.jobs.docker.permissions).toEqual({ contents: 'read' })
+    const docker = yaml('.github/workflows/docker.yaml').jobs.build
+    const release = yaml('.github/workflows/release.yaml').jobs.docker
+    expect(docker.concurrency).toEqual(release.concurrency)
+    expect(docker.concurrency).toEqual({ 'group': `compiled-go-docker-${expression('matrix.variant')}-${expression('matrix.arch')}`, 'cancel-in-progress': false, 'queue': 'max' })
+    for (const job of [docker, release]) expect(job.permissions.actions).toBe('write')
+    const nativeRestore = actionSteps('.github/actions/setup-build/action.yaml').find(step => step.name === 'Restore Go build outputs')
+    expect(nativeRestore.if).toBe('inputs.save-build-caches != \'true\'')
+    expect(nativeRestore.with.save).toBe('false')
+  })
+
+  for (const [file, stepName] of [
+    ['setup-build', 'Locate the Go build caches'],
+    ['setup-docker-build', 'Define the build inputs'],
+  ]) {
+    it(`refreshes the ${file} Go cache key each UTC week`, () => {
+      const step = actionSteps(`.github/actions/${file}/action.yaml`).find(entry => entry.name === stepName)
+      const keys = []
+      const prefixes = []
+      for (const week of ['2026-W53', '2027-W01', '2027-W01']) {
+        const dir = fixture()
+        const bin = join(dir, 'bin')
+        mkdirSync(bin)
+        for (const [name, body] of Object.entries({
+          go: 'printf "%s\\n" "$FIXTURE_GOCACHE"',
+          date: 'printf "%s\\n" "$FIXTURE_WEEK"',
+        })) {
+          writeFileSync(join(bin, name), `#!/bin/sh\n${body}\n`)
+          chmodSync(join(bin, name), 0o755)
+        }
+        const run = step.run.replace(/\$\{\{\s*hashFiles\([^)]*\)\s*\}\}/g, 'a'.repeat(64))
+        const result = runShell(run, dir, {
+          PATH: `${bin}${process.platform === 'win32' ? ';' : ':'}${process.env.PATH}`,
+          FIXTURE_GOCACHE: join(dir, 'go-cache'),
+          FIXTURE_WEEK: week,
+          CACHE_WEEK: week,
+          CACHE_IMAGE: 'ubuntu24',
+          RUNNER_OS: 'Linux',
+          RUNNER_ARCH: 'ARM64',
+          GOLANG_VERSION: '1.27.1',
+          GITHUB_REF: 'refs/heads/main',
+          GITHUB_EVENT_NAME: 'push',
+          RUNNER_TEMP: dir,
+          COMMIT_HASH: `fixture-${keys.length}`,
+          ARCH: 'arm64',
+          VARIANT: 'alpine',
+          SAVE_CACHES: 'true',
+          ALPINE_IMAGE: 'alpine:fixture',
+        })
+        expect(result.status, result.stderr).toBe(0)
+        const output = outputFile(dir)
+        keys.push(/^key=(.*)$/m.exec(output)?.[1])
+        prefixes.push(/^restore-prefix=(.*)$/m.exec(output)?.[1])
+        expect(keys.at(-1)).toEndWith(`-${week}`)
+      }
+      expect(keys[0]).not.toBe(keys[1])
+      expect(keys[1]).toBe(keys[2])
+      expect(new Set(prefixes).size).toBe(1)
+      expect(prefixes[0]).not.toContain('2026-W53')
+      expect(prefixes[0]).not.toContain('2027-W01')
+    })
+  }
+
+  it('ends the builder stage at the unnamed runtime stage', () => {
+    expect(dockerStage('builder').some(line => line.startsWith('ARG S6_OVERLAY_VERSION'))).toBe(false)
+  })
+
+  it('preserves complete diagnostics and continues after command failures', () => {
+    const dir = fixture()
+    mkdirSync(join(dir, 'scripts'))
+    writeFileSync(join(dir, 'scripts', 'diagnose-linuxdeploy.sh'), raw('scripts/diagnose-linuxdeploy.sh'))
+    const bin = join(dir, 'bin')
+    mkdirSync(bin)
+    for (const [name, body] of Object.entries({
+      gcc: 'for ((i=0; i<150; i++)); do printf "diagnostic-%s\\n" "$i"; done\nexit 17',
+      go: 'printf "CGO fixture\\n"\nexit 18',
+    })) {
+      writeFileSync(join(bin, name), `#!/usr/bin/env bash\n${body}\n`)
+      chmodSync(join(bin, name), 0o755)
+    }
+    const result = runShell('bash scripts/diagnose-linuxdeploy.sh', dir, {
+      HOME: dir,
+      PATH: `${bin}${process.platform === 'win32' ? ';' : ':'}${process.env.PATH}`,
+    })
+    expect(result.status, result.stderr).toBe(0)
+    expect(result.stdout).toContain('No AppDir exists')
+    expect(result.stdout).toContain('No sidecar exists')
+    const logs = join(dir, '.tmp', 'linuxdeploy-diagnostics')
+    const compiler = readFileSync(join(logs, 'gcc-version.log'), 'utf8')
+    expect(compiler).toContain('diagnostic-0\n')
+    expect(compiler).toContain('diagnostic-149\n')
+    expect(compiler).toEndWith('EXIT: 17\n')
+    expect(readFileSync(join(logs, 'cgo.log'), 'utf8')).toBe('CGO fixture\nEXIT: 18\n')
+    expect(readFileSync(join(logs, 'arm64-loader.log'), 'utf8')).toMatch(/EXIT: \d+\n$/)
+  })
+  it('restores build outputs before Docker extracts and saves them', () => {
+    const helper = actionSteps('.github/actions/build-output-cache/action.yaml')
+    expect(helper).toHaveLength(2)
+    expect(helper.map(step => step.if)).toEqual(['inputs.save == \'true\'', 'inputs.save != \'true\''])
+    for (const step of helper) {
+      expect(step.with).toEqual({ 'path': expression('inputs.path'), 'key': expression('inputs.key'), 'restore-keys': expression('inputs.restore-keys') })
+    }
+    expect(helper[0].uses).toStartWith('actions/cache@')
+    expect(helper[1].uses).toStartWith('actions/cache/restore@')
+    const buildSteps = actionSteps('.github/actions/build-docker-image/action.yaml')
+    expect(buildSteps.some(step => step.uses === './.github/actions/build-output-cache')).toBe(false)
+    expect(buildSteps.some(step => step.uses === './.github/actions/prune-build-cache')).toBe(false)
+    const pruning = yaml('.github/actions/prune-build-cache/action.yaml')
+    expect(pruning.runs['post-if']).toBe('success()')
+    expect(pruning.runs.using).toBe('node24')
+    for (const phase of ['main', 'post']) {
+      expect(existsSync(resolve(root, '.github/actions/prune-build-cache', pruning.runs[phase]))).toBe(true)
+    }
+    for (const [file, jobName] of [['ci.yaml', 'docker'], ['docker.yaml', 'build'], ['release.yaml', 'docker']]) {
+      const steps = yaml(`.github/workflows/${file}`).jobs[jobName].steps
+      const setupIndex = steps.findIndex(step => step.uses === './.github/actions/setup-docker-build')
+      const cacheIndex = steps.findIndex(step => step.uses === './.github/actions/build-output-cache')
+      const pruneIndex = steps.findIndex(step => step.uses === './.github/actions/prune-build-cache')
+      const buildIndex = steps.findIndex(step => step.uses === './.github/actions/build-docker-image')
+      expect(setupIndex).toBeGreaterThanOrEqual(0)
+      expect(cacheIndex).toBeGreaterThan(setupIndex)
+      expect(pruneIndex).toBeGreaterThan(cacheIndex)
+      expect(buildIndex).toBeGreaterThan(pruneIndex)
+      expect(steps[pruneIndex]['continue-on-error'] ?? false).toBe(false)
+      expect(steps[buildIndex]['continue-on-error'] ?? false).toBe(false)
+      expect(steps[pruneIndex].if).toBe('steps.setup.outputs.writes-shared == \'true\' && steps.go-cache.outputs.cache-hit != \'true\'')
+      expect(steps[cacheIndex].with.save).toBe(expression('steps.setup.outputs.writes-shared'))
+      expect(steps[cacheIndex].with.key).toBe(expression('steps.setup.outputs.cache-key'))
+      expect(steps[pruneIndex].with).toEqual({ key: expression('steps.setup.outputs.cache-key'), prefix: expression('steps.setup.outputs.cache-prefix') })
+      expect(steps[buildIndex].with['go-cache-hit']).toBe(expression('steps.go-cache.outputs.cache-hit'))
+      expect(steps[buildIndex].with['cache-path']).toBe(steps[cacheIndex].with.path)
+      expect(steps[buildIndex].with.builder).toBe(expression('steps.setup.outputs.builder'))
+      expect(steps[buildIndex].with['build-args']).toBe(expression('steps.setup.outputs.build-args'))
+    }
+  })
+
+  it('uses a Cargo lookup before an exact Rust cache hit', () => {
+    const steps = actionSteps('.github/actions/setup-build/action.yaml')
+    const dependency = steps.find(step => step.id === 'deps')
+    const rust = steps.find(step => step.id === 'rust-cache')
+    const fallback = steps.find(step => step.name === 'Restore Cargo downloads after a Rust cache miss')
+    expect(dependency.with['cargo-lookup-only']).toBe(expression('inputs.setup-desktop == \'true\''))
+    expect(fallback.if).toBe('inputs.setup-desktop == \'true\' && steps.deps.outputs.cargo-cache-hit == \'true\' && steps.rust-cache.outputs.cache-hit != \'true\'')
+    expect(fallback.with).toEqual({ go: 'false', bun: 'false', cargo: 'true', populate: 'false' })
+    expect(steps.indexOf(dependency)).toBeLessThan(steps.indexOf(rust))
+    expect(steps.indexOf(rust)).toBeLessThan(steps.indexOf(fallback))
+    const cargoRestore = actionSteps('.github/actions/dependency-caches/action.yaml').find(step => step.id === 'cargo')
+    expect(cargoRestore.with['lookup-only']).toBe(expression('inputs.cargo-lookup-only'))
+  })
+
+  it('sets one shared Cargo debug level before cache restoration', () => {
+    const steps = actionSteps('.github/actions/setup-build/action.yaml')
+    const setting = steps.find(step => step.name === 'Set the Cargo debug information level')
+    expect(steps.indexOf(setting)).toBeLessThan(steps.findIndex(step => step.id === 'rust-cache'))
+    const dir = fixture()
+    expect(runShell(setting.run, dir).status).toBe(0)
+    expect(outputFile(dir, 'environment')).toBe('CARGO_PROFILE_DEV_DEBUG=line-tables-only\n')
+    for (const file of ['ci.yaml', 'desktop-artifacts.yaml']) {
+      expect(yaml(`.github/workflows/${file}`).env?.CARGO_PROFILE_DEV_DEBUG).toBeUndefined()
+    }
+  })
+
+  it('writes validated image digests under their original artifact layout', () => {
+    const action = actionSteps('.github/actions/upload-docker-digest/action.yaml')
+    const digest = `sha256:${'a'.repeat(64)}`
+    for (const variant of ['alpine', 'ubuntu']) {
+      for (const arch of ['amd64', 'arm64']) {
+        const dir = fixture()
+        expect(runShell(action[0].run, dir, { DIGEST: digest, VARIANT: variant, ARCH: arch, RUNNER_TEMP: dir }).status).toBe(0)
+        expect(readFileSync(join(dir, 'digests', variant, arch), 'utf8')).toBe(`${digest}\n`)
+      }
+    }
+    for (const invalid of [{ DIGEST: '' }, { DIGEST: `${digest}\ninjected` }, { VARIANT: '../outside' }, { ARCH: 'x86' }]) {
+      const dir = fixture()
+      expect(runShell(action[0].run, dir, { DIGEST: digest, VARIANT: 'alpine', ARCH: 'amd64', RUNNER_TEMP: dir, ...invalid }).status).not.toBe(0)
+      expect(existsSync(join(dir, 'digests'))).toBe(false)
+    }
+    expect(action[1].with['retention-days']).toBe(1)
+    for (const [file, prefix, job] of [['docker.yaml', 'digest', 'build'], ['release.yaml', 'release-digest', 'docker']]) {
+      const caller = yaml(`.github/workflows/${file}`).jobs[job].steps.find(step => step.uses === './.github/actions/upload-docker-digest')
+      expect(caller.with['artifact-name']).toBe(`${prefix}-\${{ matrix.variant }}-\${{ matrix.arch }}`)
+    }
+  })
+
+  it('continues credential cleanup after a keychain deletion failure', () => {
+    const dir = fixture()
+    const bin = join(dir, 'bin')
+    mkdirSync(bin)
+    writeFileSync(join(bin, 'security'), '#!/bin/sh\nexit 19\n')
+    chmodSync(join(bin, 'security'), 0o755)
+    const keychain = join(dir, 'test.keychain')
+    const key = join(dir, 'test.p8')
+    writeFileSync(keychain, 'fixture')
+    writeFileSync(key, 'fixture')
+    expect(runShell(raw('scripts/cleanup-apple-signing.sh'), dir, {
+      KEYCHAIN_PATH: keychain,
+      APPLE_API_KEY_P8_PATH: key,
+      PATH: `${bin}${process.platform === 'win32' ? ';' : ':'}${process.env.PATH}`,
+    }).status).toBe(0)
+    expect(existsSync(key)).toBe(false)
+    expect(runShell(raw('scripts/cleanup-apple-signing.sh'), dir, { KEYCHAIN_PATH: '', APPLE_API_KEY_P8_PATH: '' }).status).toBe(0)
+  })
+  it('serializes complete releases and checks out the current main branch', () => {
+    const release = yaml('.github/workflows/release.yaml')
+    expect(release.concurrency).toEqual({ 'group': 'release', 'cancel-in-progress': false, 'queue': 'max' })
+    const checkout = release.jobs.release.steps.find(step => String(step.uses).startsWith('actions/checkout@'))
+    expect(checkout.with.ref).toBe('refs/heads/main')
+  })
+
+  for (const conflict of ['branch', 'tag', 'none']) {
+    it(`publishes the release refs atomically with ${conflict} conflict`, () => {
+      const dir = fixture()
+      const remote = join(dir, 'remote')
+      const local = join(dir, 'release')
+      initGit(remote, true)
+      initGit(local)
+      writeFileSync(join(local, 'versions.env'), 'VERSION=1.2.3-dev\n')
+      git(local, 'add', 'versions.env')
+      git(local, 'commit', '-m', 'chore: Set the initial version')
+      const initial = git(local, 'rev-parse', 'HEAD')
+      git(local, 'remote', 'add', 'origin', remote)
+      git(local, 'push', '-u', 'origin', 'main')
+      writeFileSync(join(local, 'versions.env'), 'VERSION=1.2.3\n')
+      git(local, 'commit', '-am', 'chore: Release v1.2.3')
+      const releaseCommit = git(local, 'rev-parse', 'HEAD')
+      git(local, 'tag', 'v1.2.3')
+      writeFileSync(join(local, 'versions.env'), 'VERSION=1.2.4-dev\n')
+      git(local, 'commit', '-am', 'chore: Bump version to 1.2.4-dev')
+      let expectedMain = initial
+      if (conflict === 'branch') {
+        const other = join(dir, 'other')
+        initGit(other)
+        git(other, 'remote', 'add', 'origin', remote)
+        git(other, 'fetch', 'origin', 'main')
+        git(other, 'reset', '--hard', 'origin/main')
+        writeFileSync(join(other, 'unrelated'), 'another writer\n')
+        git(other, 'add', 'unrelated')
+        git(other, 'commit', '-m', 'test: Add another change')
+        git(other, 'push', 'origin', 'main')
+        expectedMain = git(other, 'rev-parse', 'HEAD')
+      }
+      if (conflict === 'tag')
+        git(remote, 'update-ref', 'refs/tags/v1.2.3', initial)
+      const steps = yaml('.github/workflows/release.yaml').jobs.release.steps
+      const push = steps.find(step => String(step.run).includes('git push') && String(step.run).includes('inputs.version'))
+      const result = runShell(push.run.replaceAll(expression('inputs.version'), '1.2.3'), local)
+      expect(result.status === 0).toBe(conflict === 'none')
+      if (conflict === 'none') {
+        expect(git(remote, 'rev-parse', 'refs/heads/main')).toBe(git(local, 'rev-parse', 'HEAD'))
+        expect(git(remote, 'rev-parse', 'refs/tags/v1.2.3')).toBe(releaseCommit)
+        expect(git(remote, 'show', 'main:versions.env')).toBe('VERSION=1.2.4-dev')
+        expect(git(remote, 'show', 'v1.2.3:versions.env')).toBe('VERSION=1.2.3')
+      }
+      else {
+        expect(git(remote, 'rev-parse', 'refs/heads/main')).toBe(expectedMain)
+        const tag = spawnSync('git', ['rev-parse', '--verify', 'refs/tags/v1.2.3'], { cwd: remote, encoding: 'utf8' })
+        if (conflict === 'tag')
+          expect(tag.stdout.trim()).toBe(initial)
+        else expect(tag.status).not.toBe(0)
+      }
+    })
+  }
+  it('keeps the patch fingerprint in every Tauri restore prefix', () => {
+    const step = actionSteps('.github/actions/setup-build/action.yaml')
+      .find(entry => entry.name === 'Cache Tauri downloads')
+    const prefix = step.with['restore-keys']
+    for (const file of ['patch-linuxdeploy.sh', 'linuxdeploy-wrapper.c']) {
+      expect(prefix).toContain(file)
+    }
+    expect(prefix).not.toContain('CACHE_WEEK')
+    expect(step.with.key).toBe(`${prefix}\${{ env.CACHE_WEEK }}`)
+  })
+
+  it('deploys changes to every external Hugo mount and the tool versions', () => {
+    const paths = yaml('.github/workflows/publish-site.yaml').on.push.paths
+    const matches = file => paths.some(pattern => new Bun.Glob(pattern).match(file))
+    for (const mount of yaml('site/hugo.yaml').module.mounts) {
+      if (!mount.source.startsWith('../'))
+        continue
+      expect(matches(`${mount.source.slice(3)}/changed.json`)).toBe(true)
+    }
+    expect(matches('versions.env')).toBe(true)
+    expect(matches('site/content/docs/using/coding-agents.md')).toBe(true)
+    expect(matches('backend/cmd/leapmux/main.go')).toBe(false)
+  })
+
+  it('requires the exact main branch before checkout or release writes', () => {
+    const steps = yaml('.github/workflows/release.yaml').jobs.release.steps
+    expect(steps[0].name).toBe('Validate release branch')
+    for (const ref of ['refs/heads/main', 'refs/heads/Main', 'refs/heads/MAIN', 'refs/tags/main', 'refs/heads/main-feature', '']) {
+      const result = runShell(steps[0].run, fixture(), { GITHUB_REF: ref })
+      expect(result.error).toBeUndefined()
+      expect(result.status === 0).toBe(ref === 'refs/heads/main')
+    }
+  })
+
+  it('validates canonical release versions before it derives the next version', () => {
+    const steps = yaml('.github/workflows/release.yaml').jobs.release.steps
+    const validate = steps.find(step => step.name === 'Validate version format')
+    const derive = steps.find(step => step.id === 'next')
+    expect(steps.indexOf(validate)).toBeLessThan(steps.findIndex(step => String(step.run).includes('git commit')))
+    const cases = [
+      ['0.0.0', '0.0.1-dev'],
+      ['1.2.8', '1.2.9-dev'],
+      ['1.2.77', '1.2.78-dev'],
+      ['255.255.65534', '255.255.65535-dev'],
+      ...['', '1.2.08', '1.2.077', '01.2.3', '1.02.3', '256.0.0', '0.256.0', '0.0.65535', '1.2.9223372036854775807', '1.2.-1', ' 1.2.3', '1.2.3\n2.3.4', '1.2.$(false)'].map(value => [value, null]),
+    ]
+    for (const [version, expected] of cases) {
+      const dir = fixture()
+      const script = `${validate.run}\n${derive.run.replaceAll(expression('inputs.version'), `\${VERSION_INPUT}`)}`
+      const result = runShell(script, dir, { VERSION_INPUT: version })
+      expect(result.error).toBeUndefined()
+      expect(result.status === 0, version).toBe(expected !== null)
+      expect(outputFile(dir)).toBe(expected === null ? '' : `dev_version=${expected}\n`)
+    }
+  })
+
+  it('registers the API key for cleanup before a failed decode', () => {
+    const dir = fixture()
+    const bin = join(dir, 'bin')
+    mkdirSync(bin)
+    writeFileSync(join(bin, 'base64'), '#!/bin/sh\nprintf fake-private-prefix\nexit 17\n')
+    chmodSync(join(bin, 'base64'), 0o755)
+    const steps = actionSteps('.github/actions/apple-signing-setup/action.yaml')
+    const register = steps.find(step => String(step.run).includes('KEYCHAIN_PATH=') && !String(step.run).includes('security '))
+    const key = steps.find(step => String(step.run).includes('P8='))
+    const certificate = steps.find(step => step.name === 'Import Developer ID certificate')
+    expect(steps.indexOf(register)).toBeLessThan(steps.indexOf(key))
+    expect(steps.indexOf(register)).toBeLessThan(steps.indexOf(certificate))
+    const env = { RUNNER_TEMP: dir, APPLE_API_KEY_P8_BASE64: 'fixture', PATH: `${bin}${process.platform === 'win32' ? ';' : ':'}${process.env.PATH}` }
+    expect(runShell(register.run, dir, env).status).toBe(0)
+    const exported = Object.fromEntries(outputFile(dir, 'environment').trim().split('\n').map((line) => {
+      const index = line.indexOf('=')
+      return [line.slice(0, index), line.slice(index + 1)]
+    }))
+    const result = runShell(key.run, dir, { ...env, ...exported })
+    expect(result.status).not.toBe(0)
+    expect(existsSync(join(dir, 'apple_api.p8'))).toBe(true)
+    if (process.platform !== 'win32')
+      expect(statSync(join(dir, 'apple_api.p8')).mode & 0o777).toBe(0o600)
+    const cleanup = yaml('.github/workflows/desktop-artifacts.yaml').jobs['macos-app-sign'].steps.find(step => step.name === 'Cleanup')
+    const cleanupScript = cleanup.run.startsWith('bash scripts/')
+      ? raw(cleanup.run.slice('bash '.length).trim())
+      : cleanup.run
+    expect(runShell(cleanupScript, dir, { ...env, ...exported }).status).toBe(0)
+    expect(existsSync(join(dir, 'apple_api.p8'))).toBe(false)
+    for (const job of ['macos-app-sign', 'macos-cli-sign']) {
+      const step = yaml('.github/workflows/desktop-artifacts.yaml').jobs[job].steps.find(entry => entry.name === 'Cleanup')
+      expect(step.if).toBe('always()')
+      expect(step.run).toBe('bash scripts/cleanup-apple-signing.sh')
+    }
+  })
   it('stores the spinner cache in the directory that Task clones into', () => {
     const step = actionSteps('.github/actions/setup-build/action.yaml')
       .find(entry => entry.name === 'Cache awesome-claude-spinners')
@@ -82,6 +530,15 @@ describe('cache and pin invariants of the GitHub Actions workflows', () => {
     const desktop = yaml('.github/workflows/desktop-artifacts.yaml')
     for (const jobName of ['linux', 'macos', 'windows']) {
       expect(desktop.jobs[jobName]['runs-on']).toBe(ci.jobs[jobName]['runs-on'])
+    }
+  })
+
+  it('checks out the supplied release ref in every artifact job', () => {
+    const jobs = Object.values(yaml('.github/workflows/desktop-artifacts.yaml').jobs)
+    expect(jobs).toHaveLength(5)
+    for (const job of jobs) {
+      const checkout = job.steps.find(step => String(step.uses).startsWith('actions/checkout@'))
+      expect(checkout.with.ref).toBe(expression('inputs.ref'))
     }
   })
 
@@ -155,7 +612,7 @@ describe('cache and pin invariants of the GitHub Actions workflows', () => {
       for (const { step } of allSteps(yaml(file))) {
         if (String(step.with?.enableCrossOsArchive ?? '') !== 'true')
           continue
-        for (const path of String(step.with.path).split('\n').map(line => line.trim()).filter(Boolean)) {
+        for (const path of cachePaths(step)) {
           expect(path.startsWith('~')).toBe(false)
           expect(path.startsWith('/')).toBe(false)
           expect(path.includes('${{')).toBe(false)
@@ -171,7 +628,7 @@ describe('cache and pin invariants of the GitHub Actions workflows', () => {
           continue
         if (!String(step.with?.path ?? '').toLowerCase().includes('apt'))
           continue
-        for (const path of String(step.with.path).split('\n').map(line => line.trim()).filter(Boolean)) {
+        for (const path of cachePaths(step)) {
           expect(path.endsWith('*.deb')).toBe(true)
         }
       }
@@ -262,12 +719,9 @@ describe('cache and pin invariants of the GitHub Actions workflows', () => {
     expect(entry).toBeDefined()
     const directories = Array.isArray(entry.directories) ? entry.directories : [entry.directory]
     expect(directories).toContain('/')
-    const names = readdirSync(join(root, '.github/actions'), { withFileTypes: true })
-      .filter(candidate => candidate.isDirectory())
-      .map(candidate => candidate.name)
-    for (const name of names) {
-      const target = `/.github/actions/${name}`
-      expect(directories.some(glob => globToRegExp(String(glob)).test(target))).toBe(true)
+    for (const file of actionFiles) {
+      const target = `/${posix.dirname(file)}`
+      expect(directories.some(glob => new Bun.Glob(String(glob)).match(target))).toBe(true)
     }
   })
 })

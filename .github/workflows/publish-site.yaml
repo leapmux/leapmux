@@ -1,28 +1,23 @@
 name: Publish site
 
-# Builds the documentation site (Hugo + Hextra, under site/) and deploys it to
-# the Cloudflare Worker "leapmux-site" (Workers Static Assets) on every push to
-# main that touches the site.
-#
-# leapmux-site is a Worker, not a Pages project, so the deployment runs
-# `wrangler deploy` against site/wrangler.jsonc. That file holds the Worker
-# name and the ./public assets directory.
-#
-# Configure a "cloudflare-publish" GitHub environment with:
-#   - secret CLOUDFLARE_API_TOKEN   - API token with the "Workers Scripts: Edit"
-#                                     permission (the dashboard's "Edit
-#                                     Cloudflare Workers" template grants it)
-#   - secret CLOUDFLARE_ACCOUNT_ID  - the Cloudflare account ID
+# This workflow builds the Hugo and Hextra site under site/. It deploys the result to the
+# leapmux-site Cloudflare Worker after relevant main-branch changes.
+# The Worker uses Static Assets, not Pages. The wrangler deploy command reads
+# site/wrangler.jsonc. That file specifies the Worker and its public assets directory.
 
+# The cloudflare-publish environment supplies these secrets:
+# - CLOUDFLARE_API_TOKEN with the Workers Scripts: Edit permission.
+# - CLOUDFLARE_ACCOUNT_ID for the Cloudflare account.
 on:
   push:
     branches: [main]
-    # Deploy again only when the site or this workflow changes. A commit that
-    # changes only the backend or the frontend leaves the published site
-    # current.
-    # Remove this `paths` filter to deploy on every commit to main.
+    # Deploy when a site input or this workflow changes.
     paths:
       - "site/**"
+      - "icons/agents/**"
+      - "frontend/tests/e2e/feature-matrix/**"
+      - "versions.env"
+      - ".github/actions/load-versions/action.yaml"
       - ".github/workflows/publish-site.yaml"
   workflow_dispatch:
 
@@ -47,7 +42,7 @@ jobs:
           fetch-depth: 0
 
       - name: Load tool versions
-        run: grep -E '^[A-Z_][A-Z0-9_]*=' versions.env >> "$GITHUB_ENV"
+        uses: ./.github/actions/load-versions
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:

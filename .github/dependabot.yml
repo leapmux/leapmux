@@ -1,9 +1,6 @@
-# Dependabot keeps the pinned actions current. For each `uses:` it updates
-# the commit SHA and the `# <version>` comment together, so the "require
-# actions to be pinned to a full-length commit SHA" policy stays satisfied.
-#
-# The `/` entry covers the workflows. The glob covers each composite action
-# under .github/actions/.
+# Dependabot updates each pinned action commit and its version comment together. This preserves
+# the full-commit pin policy.
+# The root entry covers workflows. The glob covers each composite action under .github/actions/.
 version: 2
 updates:
   - package-ecosystem: github-actions

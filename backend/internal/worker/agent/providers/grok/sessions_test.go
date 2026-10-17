@@ -232,10 +232,8 @@ func TestGrokSessionStoreCapsTheList(t *testing.T) {
 		id := "s" + string(rune('a'+i))
 		lastActive := now.Add(time.Duration(i) * time.Minute)
 		path := writeGrokSession(t, group, id, grokSummaryFixture(id, dir, id, lastActive))
-		// Grok rewrites each summary at its activity time, so the file's
-		// modification time tracks it. Without this, one write tick makes the
-		// mtimes tie on filesystems with coarse stamps, and the entry scan
-		// then caps before it ever reads the stated activity.
+		// Grok rewrites each summary at its activity time. Give these entries
+		// distinct modification times to test a cutoff between timestamp groups.
 		agenttest.TouchFixture(t, path, lastActive)
 	}
 	got, err := grokStoredSessions(context.Background(), agent.StoredSessionQuery{
@@ -300,4 +298,25 @@ func TestGrokListsASessionOnceWhenTwoGroupsHoldIt(t *testing.T) {
 	}
 
 	assert.ElementsMatch(t, []string{"copied", "only-project-aaaa", "only-project-bbbb"}, agenttest.Handles(listGrokSessions(t, home, dir, nil)))
+}
+
+func TestGrokKeepsFirstCopiesBeforeSelectingTheNewest(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	dir := longGrokCwd(t, home)
+	root := filepath.Join(home, ".grok", "sessions")
+	stamp := time.Date(2026, 10, 17, 0, 0, 0, 0, time.UTC)
+	for index, groupName := range []string{"project-aaaa", "project-bbbb"} {
+		group := filepath.Join(root, groupName)
+		agenttest.WriteFixtureFile(t, filepath.Join(group, grokCwdMarkerFile), dir)
+		path := writeGrokSession(t, group, "x", grokSummaryFixture("x", dir, "First copy", stamp.Add(time.Duration(index)*2*time.Hour)))
+		agenttest.TouchFixture(t, path, stamp)
+		if index == 0 {
+			path = writeGrokSession(t, group, "y", grokSummaryFixture("y", dir, "Newest unique session", stamp.Add(time.Hour)))
+			agenttest.TouchFixture(t, path, stamp)
+		}
+	}
+	got, err := grokStoredSessions(t.Context(), agent.StoredSessionQuery{WorkingDir: dir, HomeDir: home, Getenv: agenttest.FixtureEnv(nil), Limit: 1})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"y"}, agenttest.Handles(got))
 }
