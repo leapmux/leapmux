@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -139,6 +140,23 @@ func (f *zcodeTranscriptFixture) boundary(t *testing.T) {
 	f.transcript.WaitForSupplementsForTest()
 }
 
+// awaitSupplement sends boundary messages until the tool result carries its
+// supplement. An interim pass may read the store before a late record or output
+// file is observable and answer nothing: the design recovers at a later pass,
+// and the boundary message is what asks for one. The deadline is generous and
+// unasserted: the test asserts the supplement, not the speed.
+func (f *zcodeTranscriptFixture) awaitSupplement(t *testing.T) agenttest.Message {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		f.boundary(t)
+		result := f.sink.Messages()[1]
+		if len(result.SupplementalContent) > 0 || !time.Now().Before(deadline) {
+			return result
+		}
+	}
+}
+
 func (f *zcodeTranscriptFixture) writeOutputFile(t *testing.T, sessionID string) {
 	t.Helper()
 	directory := filepath.Join(f.location.outputFileRoot, zcodeOutputFileSegment(sessionID))
@@ -159,8 +177,7 @@ func TestZCodeToolTranscriptRetriesLateRecordsAndOutputFiles(t *testing.T) {
 	f.boundary(t)
 	assert.Empty(t, f.sink.Messages()[1].SupplementalContent)
 	f.writeOutputFile(t, "session")
-	f.boundary(t)
-	result := f.sink.Messages()[1]
+	result := f.awaitSupplement(t)
 	assert.Equal(t, zcodeStoredImageResult, string(result.Content))
 	assert.Contains(t, string(result.SupplementalContent), zcodeOutputFileFixtureData)
 	assert.Contains(t, string(result.SupplementalContent), `"futureCounter":9007199254740993`)
