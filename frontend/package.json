@@ -97,6 +97,7 @@
   },
   "overrides": {
     "@types/hast": "^3.0.5",
+    "nan": "^2.29.0",
     "vite": "$vite"
   },
   "patchedDependencies": {
