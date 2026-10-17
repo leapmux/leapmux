@@ -4,9 +4,10 @@ export const CODEX_EXEC_CONTENT = {
   ImageURL: 'image_url',
 } as const
 
-/** The executor prepends this header before any script output. */
+/** The executor prepends one of these headers before any script output. */
 export const CODEX_EXEC_HEADER = {
   Failed: 'Script failed',
+  Terminated: 'Script terminated',
 } as const
 
 /** Read-state metadata does not contain transcript content. */

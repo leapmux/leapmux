@@ -1,7 +1,9 @@
 import type { AutoReviewEntry, NotificationEntry } from './model/notification'
-import { describe, expect, it } from 'vitest'
+import { create } from '@bufbuild/protobuf'
+import { afterEach, describe, expect, it } from 'vitest'
 import { GOAL_STATUS_TOKEN, GOAL_TRANSITION, NOTIFICATION_FIELD, NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
-import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentProvider, AvailableOptionGroupSchema } from '~/generated/proto/leapmux/v1/agent_pb'
+import { clearSettingsLabelCache, updateSettingsLabelCache } from '~/lib/settingsLabelCache'
 import { autoReviewTitle, COMPACTING_LABEL, flattenNotificationEntries, leapmuxNotificationEntry, notificationEntriesFor, pendingRequestsApprovedLabel } from './notificationEntries'
 import { providerFor } from './providers/registry'
 
@@ -73,6 +75,53 @@ describe('leapmuxNotificationEntry', () => {
     expect(providerFor(AgentProvider.OPENCODE)?.transcript.notificationEntry).toBeUndefined()
     expect(flattenNotificationEntries(notificationEntriesFor({ type: NOTIFICATION_TYPE.Compacting }, AgentProvider.OPENCODE)))
       .toStrictEqual([{ kind: 'divider', text: COMPACTING_LABEL, loading: true }])
+  })
+})
+
+describe('neutral turn-retry notification entries', () => {
+  // The settings-label cache is shared across tests. Clear it so one case cannot
+  // change another case's labels.
+  afterEach(() => {
+    clearSettingsLabelCache()
+  })
+
+  // The retry runs on a model that the reader may never have seen. The raw ID
+  // keeps the row readable when the label cache has no display name for it.
+  it('states the model that the retry used', () => {
+    expect(leapmuxNotificationEntry(
+      { type: NOTIFICATION_TYPE.TurnRetried, [NOTIFICATION_FIELD.Model]: 'gpt-5.5' },
+      AgentProvider.CODEX,
+    )).toEqual([{ kind: 'text', text: 'Stopped this attempt and retried on gpt-5.5' }])
+  })
+
+  // The provider gives each model an ID of its own. The cached display label
+  // is the name that the user saw in the model picker.
+  it('shows the cached display label of the model', () => {
+    updateSettingsLabelCache(AgentProvider.CODEX, [
+      create(AvailableOptionGroupSchema, {
+        id: 'model',
+        label: 'Model',
+        options: [{ id: 'gpt-5.5', name: 'GPT-5.5 Turbo' }],
+      }),
+    ])
+    expect(leapmuxNotificationEntry(
+      { type: NOTIFICATION_TYPE.TurnRetried, [NOTIFICATION_FIELD.Model]: 'gpt-5.5' },
+      AgentProvider.CODEX,
+    )).toEqual([{ kind: 'text', text: 'Stopped this attempt and retried on GPT-5.5 Turbo' }])
+  })
+
+  // A row that gives no model must still read as a complete sentence, never
+  // as a sentence that stops after "on".
+  it.each([
+    ['an absent model', {}],
+    ['an empty model', { [NOTIFICATION_FIELD.Model]: '' }],
+    ['a blank model', { [NOTIFICATION_FIELD.Model]: '  ' }],
+    ['a model that is not a string', { [NOTIFICATION_FIELD.Model]: 42 }],
+  ])('states a faster model for %s', (_label, fields) => {
+    expect(leapmuxNotificationEntry(
+      { type: NOTIFICATION_TYPE.TurnRetried, ...fields },
+      AgentProvider.CODEX,
+    )).toEqual([{ kind: 'text', text: 'Stopped this attempt and retried on a faster model' }])
   })
 })
 

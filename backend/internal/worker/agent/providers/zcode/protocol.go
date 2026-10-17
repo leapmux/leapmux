@@ -221,7 +221,7 @@ const (
 	// a restoreWarning stays set on the session, so every later prompt raises the
 	// same code and a retry can never clear it -- and the app-server always states
 	// a human-readable `message`, which classifyZCodeInputDeliveryError already
-	// returns unchanged. It is named here because the table documents the codes
+	// returns unchanged. The table lists it because the table documents the codes
 	// observed on the wire, so the next reader does not investigate it again.
 	ErrRuntimeUnavailable = -32031
 )

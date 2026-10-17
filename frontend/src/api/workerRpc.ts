@@ -27,6 +27,7 @@ import type {
   OpenAgentResponse,
   PreemptQueuedAgentInputResponse,
   RenameAgentResponse,
+  RetryAgentTurnResponse,
   RetryQueuedAgentInputResponse,
   SendAgentRawMessageResponse,
   SendControlResponseResponse,
@@ -127,6 +128,8 @@ import {
   PreemptQueuedAgentInputResponseSchema,
   RenameAgentRequestSchema,
   RenameAgentResponseSchema,
+  RetryAgentTurnRequestSchema,
+  RetryAgentTurnResponseSchema,
   RetryQueuedAgentInputRequestSchema,
   RetryQueuedAgentInputResponseSchema,
   SendAgentRawMessageRequestSchema,
@@ -526,6 +529,22 @@ export function updateAgentGoal(workerId: string, req: MessageInitShape<typeof U
  */
 export function approveAutoReviewDenial(workerId: string, req: MessageInitShape<typeof ApproveAutoReviewDenialRequestSchema>): Promise<ApproveAutoReviewDenialResponse> {
   return callWorker(workerId, 'ApproveAutoReviewDenial', ApproveAutoReviewDenialRequestSchema, ApproveAutoReviewDenialResponseSchema, req)
+}
+
+/**
+ * Stop the running turn and send its input again on another model, in a new
+ * provider thread that excludes the stopped attempt. File changes and other
+ * actions that the stopped attempt already took stay.
+ *
+ * The worker refuses the call unless its running agent offers this retry for
+ * this turn, so a browser that acts on a stale offer gets a refusal instead of
+ * a turn that it never saw. The worker answers when it accepts the retry, and
+ * it then stops the turn and starts the new one. The transcript reports a
+ * failure of those later steps, so a resolved call does not mean that the new
+ * turn started.
+ */
+export function retryAgentTurn(workerId: string, req: MessageInitShape<typeof RetryAgentTurnRequestSchema>): Promise<RetryAgentTurnResponse> {
+  return callWorker(workerId, 'RetryAgentTurn', RetryAgentTurnRequestSchema, RetryAgentTurnResponseSchema, req)
 }
 
 export function sendControlResponse(workerId: string, req: MessageInitShape<typeof SendControlResponseRequestSchema>): Promise<SendControlResponseResponse> {

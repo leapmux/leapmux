@@ -51,12 +51,26 @@ const (
 	// codexPendingAutoReview holds an auto-review frame that the transcript keeps:
 	// a completed review, the denial-limit warning, or the strict-review notice.
 	codexPendingAutoReview
+	// codexPendingNotification carries one raw frame that the switch claims:
+	// a notice for which the frontend writes the text. It stores as a
+	// notification-thread entry.
+	codexPendingNotification
+	// codexPendingRawMessage carries one raw frame that the dispatcher does not
+	// claim and that identifies a child thread before its route exists. It
+	// stores as its own message row, as the direct path does.
+	codexPendingRawMessage
+	// codexPendingDroppedGeneration marks the partial items of a response that
+	// a new input preempted (see persistDroppedCodexResponse). scopeIDs lists
+	// the items that were open at the userMessage frame.
+	codexPendingDroppedGeneration
 )
 
 type codexPendingChildEvent struct {
 	kind   codexPendingChildEventKind
 	raw    json.RawMessage
 	params json.RawMessage
+	// scopeIDs is for codexPendingDroppedGeneration only.
+	scopeIDs []string
 }
 
 // codexChildState owns one child thread's route, output, and run lifecycle.

@@ -522,6 +522,7 @@ export const SESSION_INFO_TABLES = [
   { json: 'runningToolFields', goPrefix: 'RunningToolField', ts: 'RUNNING_TOOL_FIELD', tsType: 'RunningToolField', what: 'fields of the running_tool object' },
   { json: 'runningToolRetryFields', goPrefix: 'RunningToolRetryField', ts: 'RUNNING_TOOL_RETRY_FIELD', tsType: 'RunningToolRetryField', what: 'fields of running_tool.retry' },
   { json: 'goalProgressFields', goPrefix: 'GoalProgressField', ts: 'GOAL_PROGRESS_FIELD', tsType: 'GoalProgressField', what: 'fields of the goal_progress object' },
+  { json: 'turnRetryOfferFields', goPrefix: 'TurnRetryOfferField', ts: 'TURN_RETRY_OFFER_FIELD', tsType: 'TurnRetryOfferField', what: 'fields of the turn_retry_offer object' },
 ]
 
 export function checkSessionInfo(v) {
@@ -2428,6 +2429,16 @@ export const PROVIDER_PROTOCOLS = [
       // nothing the wording does not.
       { key: 'storedAttachment', goTable: 'StoredAttachment', tsTable: 'STORED_ATTACHMENT', tsType: 'ZCodeStoredAttachmentField', doc: 'keys of one stored attachment at all three levels: the list on the part state, the record itself, and its nested metadata' },
       { key: 'storedAttachmentTypes', goTable: 'StoredAttachmentType', tsTable: 'STORED_ATTACHMENT_TYPE', tsType: 'ZCodeStoredAttachmentType', doc: 'the `type` an attachment must state to carry a file' },
+      { key: 'querySources', goTable: 'QuerySource', tsTable: 'QUERY_SOURCE', tsType: 'ZCodeQuerySource', doc: '`querySource` values of a model response -- the one source whose text is the turn reply' },
+      { key: 'stopReasons', goTable: 'StopReason', tsTable: 'STOP_REASON', tsType: 'ZCodeStopReason', doc: '`stopReason` values that state a side query when the payload carries no `querySource`' },
+      { key: 'compactionStatuses', goTable: 'CompactionStatus', tsTable: 'COMPACTION_STATUS', tsType: 'ZCodeCompactionStatus', doc: '`status` words of the compaction lifecycle event' },
+      { key: 'goalVerificationStatuses', goTable: 'GoalVerificationStatus', tsTable: 'GOAL_VERIFICATION_STATUS', tsType: 'ZCodeGoalVerificationStatus', doc: '`status` words of a goal check lifecycle' },
+      { key: 'goalActions', goTable: 'GoalAction', tsTable: 'GOAL_ACTION', tsType: 'ZCodeGoalAction', readers: ['go'], readersWhy: 'the worker clears the goal on this action; the browser renders the neutral goal rows that the worker writes', doc: '`action` words of a goal change event' },
+      { key: 'networkStatuses', goTable: 'NetworkStatus', tsTable: 'NETWORK_STATUS', tsType: 'ZCodeNetworkStatus', doc: 'network status `type` words both sides dispatch on' },
+      { key: 'networkStatusPrefixes', goTable: 'NetworkStatusPrefix', tsTable: 'NETWORK_STATUS_PREFIX', tsType: 'ZCodeNetworkStatusPrefix', doc: 'the `type` prefix that marks a network status payload' },
+      { key: 'microcompactStrategies', goTable: 'MicrocompactStrategy', tsTable: 'MICROCOMPACT_STRATEGY', tsType: 'ZCodeMicrocompactStrategy', doc: 'the `strategy` that marks a microcompaction payload' },
+      { key: 'hookRunOutcomes', goTable: 'HookRunOutcome', tsTable: 'HOOK_RUN_OUTCOME', tsType: 'ZCodeHookRunOutcome', doc: 'hook-run `outcome` words that produce a row' },
+      { key: 'modelSelectionOrigins', goTable: 'ModelSelectionOrigin', tsTable: 'MODEL_SELECTION_ORIGIN', tsType: 'ZCodeModelSelectionOrigin', doc: 'the `origin` that marks a model switch the registry made' },
     ],
   },
   {
@@ -2530,7 +2541,14 @@ export const PROVIDER_PROTOCOLS = [
       // `status` is also a `system` subtype that both sides read, but it stays out: the
       // shared `isFinalCompactingStatus` in frontend/src/components/chat/messageUtils.ts
       // reads that shape for the Claude, Codex and ACP plugins.
-      { key: 'systemSubtypes', frameKind: 'name', goTable: 'SystemSubtype', tsTable: 'SYSTEM_SUBTYPE', tsType: 'ClaudeSystemSubtype', doc: '`subtype` values of a `system` line that states an API retry or a compaction boundary' },
+      { key: 'systemSubtypes', frameKind: 'name', goTable: 'SystemSubtype', tsTable: 'SYSTEM_SUBTYPE', tsType: 'ClaudeSystemSubtype', doc: '`subtype` values of a `system` line that both readers dispatch on' },
+      // `goSlice`, because the MEMBERSHIP crosses the boundary: the worker returns
+      // early for a subtype it never persists, and the browser hides the same set
+      // when an older build stored a row for it. Iterating the ordered slice reads
+      // every key on the Go side.
+      { key: 'hiddenSystemSubtypes', goSlice: true, goTable: 'HiddenSystemSubtype', tsTable: 'HIDDEN_SYSTEM_SUBTYPE', tsType: 'ClaudeHiddenSystemSubtype', doc: '`system` subtypes the Worker never persists and the browser always hides' },
+      { key: 'informationalLevels', goTable: 'InformationalLevel', tsTable: 'INFORMATIONAL_LEVEL', tsType: 'ClaudeInformationalLevel', doc: '`level` of an `informational` line that the Worker drops and the browser hides' },
+      { key: 'hookOutcomes', goTable: 'HookOutcome', tsTable: 'HOOK_OUTCOME', tsType: 'ClaudeHookOutcome', doc: '`outcome` of a `hook_response` line that becomes a row' },
     ],
   },
   {

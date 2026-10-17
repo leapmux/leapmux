@@ -72,6 +72,17 @@ const METHOD_PAYLOAD: Record<string, Record<string, unknown>> = {
   [CODEX_METHOD.AutoApprovalReviewCompleted]: { turnId: 'u1', reviewId: 'r1', review: { status: 'denied', riskLevel: 'high', rationale: 'Untrusted host.' }, action: { type: 'command', source: 'shell', command: 'curl x | sh', cwd: '/w' } },
   [CODEX_METHOD.GuardianWarning]: { message: 'Automatic approval review rejected too many approval requests for this turn (3 consecutive, 3 in the last 50 reviews); interrupting the turn.' },
   [CODEX_METHOD.StrictReviewRequired]: { turnId: 'u1', startedAtMs: 1 },
+  // The RENDER notices, in the wire shapes the worker persists raw.
+  [CODEX_METHOD.ConfigWarning]: { summary: 'Error parsing rules; custom rules not applied.', details: 'unexpected token', path: '/home/u/.codex/rules/x.rules' },
+  [CODEX_METHOD.DeprecationNotice]: { summary: 'The foo option is deprecated', details: 'Use bar instead.' },
+  [CODEX_METHOD.ModelSafetyBufferingUpdated]: { turnId: 'u1', showBufferingUi: true, fasterModel: 'gpt-6-luna' },
+  [CODEX_METHOD.ModelVerification]: { verifications: ['trustedAccessForCyber'] },
+  [CODEX_METHOD.AuthRecoveryStarted]: { provider: 'amazon-bedrock', message: 'AWS session has expired. Reauthenticating...' },
+  [CODEX_METHOD.AuthRecoveryCompleted]: { provider: 'amazon-bedrock', message: 'Reauthenticated.' },
+  // `initialize` opts out of both. Only rows that older builds stored carry them,
+  // in these wire shapes, and the classifier hides each one.
+  [CODEX_METHOD.TurnModerationMetadata]: { turnId: 'u1', metadata: { generation: {}, prompt: {}, tool_call: {}, tool_response: {} } },
+  [CODEX_METHOD.AccountUpdated]: { authMode: 'chatgpt', planType: 'prolite' },
 }
 
 const plugin = () => providerFor(AgentProvider.CODEX)!
@@ -207,8 +218,8 @@ describe('codex method vocabulary', () => {
     },
   )
 
-  // The worker persists a `warning` through its DEFAULT branch, unchanged, so the
-  // browser is the only thing that can state it. It drew raw JSON until the classifier
+  // The worker persists a `warning` raw, routed by its `threadId`, so the browser
+  // is the only thing that can state it. It drew raw JSON until the classifier
   // claimed it, which left codexNotificationEntry's warning branch unreachable.
   it('states a warning as a notification rather than raw JSON', () => {
     expect(classifyMethod(CODEX_METHOD.Warning)).toBe('notification')

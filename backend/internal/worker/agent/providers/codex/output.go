@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -21,10 +22,14 @@ var codexRetryableDisconnectPattern = regexp.MustCompile(`^stream disconnected b
 const codexMultiAgentV2Namespace = "collaboration"
 const codexCollabToolSpawnAgent = "spawnAgent"
 
+// codexMethodThreadClosed is a Codex method that no contract table lists,
+// because only Go reads it.
+const codexMethodThreadClosed = "thread/closed"
+
 // codexSystemMetadataMethods contains Codex JSON-RPC notifications that the
 // transcript stores as agent metadata. Methods that need extra state changes
-// use dedicated cases below. An unhandled method reaches the default case and
-// lands in the transcript as a raw JSON-RPC row.
+// use dedicated cases below. The default case stores an unhandled method as a
+// raw JSON-RPC row.
 var codexSystemMetadataMethods = map[string]struct{}{
 	contracts.CodexMethodThreadCompacted:   {},
 	contracts.CodexMethodThreadNameUpdated: {},
@@ -41,9 +46,7 @@ func handleCodexOutput(a *Agent, line *providerkit.ParsedLine) {
 	slog.Debug("codex HandleOutput", "agent_id", a.AgentID(), "method", line.Method, "len", len(line.Raw))
 
 	if _, ok := codexSystemMetadataMethods[line.Method]; ok {
-		if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: line.Raw}); err != nil {
-			slog.Error("codex persist system metadata", "agent_id", a.AgentID(), "method", line.Method, "error", err)
-		}
+		a.persistCodexThreadNotification(codexNotificationThreadID(line.Params), codexPendingNotification, line.Raw, line.Params)
 		return
 	}
 
@@ -102,26 +105,6 @@ func handleCodexOutput(a *Agent, line *providerkit.ParsedLine) {
 		a.handleRawResponseItemCompleted(line.Params)
 		a.handleCodexRawExecution(line.Raw, line.Params)
 
-	case "rawResponse/completed":
-		// The typed turn and token-usage notifications already carry this state.
-
-	case contracts.CodexMethodThreadStatusChanged:
-		// turn/started and turn/completed own the Worker's turn state. Codex sends
-		// this second lifecycle view around the same turn, so it adds no state for
-		// the transcript, the thinking indicator, or turn-end detection.
-
-	case contracts.CodexMethodSkillsChanged:
-		// Skill discovery state does not describe a transcript row or LeapMux
-		// session state.
-
-	case contracts.CodexMethodRemoteControlStatusChanged:
-		// Codex remote control reports app-server transport state. It does not
-		// describe the LeapMux session, turn, or control channel.
-
-	case contracts.CodexMethodHookStarted:
-		// A hook start has no outcome and no transcript content. Keep the matching
-		// unsuccessful completion below, which carries the failure details.
-
 	case contracts.CodexMethodHookCompleted:
 		a.handleHookCompleted(line.Raw, line.Params)
 
@@ -147,9 +130,14 @@ func handleCodexOutput(a *Agent, line *providerkit.ParsedLine) {
 		// The completed review carries the outcome, and a command review also starts
 		// an in-progress commandExecution item, which already shows the command. A
 		// started frame on its own would stay in the transcript as a review that never
-		// ends.
+		// ends. The tool card's badge shows the hold instead.
+		a.handleAutoApprovalReviewStarted(line)
 
-	case contracts.CodexMethodAutoApprovalReviewCompleted, contracts.CodexMethodStrictReviewRequired:
+	case contracts.CodexMethodAutoApprovalReviewCompleted:
+		a.endCodexAutoReviewCheck(line)
+		a.persistCodexAutoReviewFrame(line.Raw, line.Params)
+
+	case contracts.CodexMethodStrictReviewRequired:
 		a.persistCodexAutoReviewFrame(line.Raw, line.Params)
 
 	case contracts.CodexMethodGuardianWarning:
@@ -160,6 +148,25 @@ func handleCodexOutput(a *Agent, line *providerkit.ParsedLine) {
 
 	case "account/rateLimits/updated":
 		a.handleRateLimitsUpdated(line.Raw, line.Params)
+
+	case contracts.CodexMethodWarning:
+		a.persistCodexThreadNotification(codexNotificationThreadID(line.Params), codexPendingNotification, line.Raw, line.Params)
+
+	case contracts.CodexMethodConfigWarning, contracts.CodexMethodDeprecationNotice:
+		a.handleCodexDedupedNotice(line, codexNoticeTextKey(line.Method, line.Params))
+
+	case contracts.CodexMethodModelVerification:
+		// One fixed notice per flag set per Codex process.
+		a.handleCodexDedupedNotice(line, codexVerificationKey(line.Params))
+
+	case contracts.CodexMethodModelSafetyBufferingUpdated:
+		a.handleSafetyBufferingUpdated(line)
+
+	case contracts.CodexMethodAuthRecoveryStarted, contracts.CodexMethodAuthRecoveryCompleted:
+		a.persistCodexThreadNotification(codexNotificationThreadID(line.Params), codexPendingNotification, line.Raw, line.Params)
+
+	case codexMethodThreadClosed:
+		a.handleThreadClosed(line.Params)
 
 	// The session goal. These are claimed out of the `default:` case below on
 	// purpose: Codex reports the goal after EVERY completed tool call, so the
@@ -173,7 +180,7 @@ func handleCodexOutput(a *Agent, line *providerkit.ParsedLine) {
 		a.handleGoalCleared(line.Params)
 
 	case "error":
-		a.handleErrorNotification(line.Params)
+		a.handleErrorNotification(line)
 
 	default:
 		// An inbound REQUEST needs an answer. The comment above states that Codex
@@ -185,10 +192,14 @@ func handleCodexOutput(a *Agent, line *providerkit.ParsedLine) {
 	}
 }
 
+// persistUnknownCodexNotification stores one raw frame the dispatcher does not
+// claim. The frame keeps every field a future reader needs, and its `threadId`
+// selects the transcript that owns it: a child's frame must never reach the
+// parent transcript, whose to-do list reads only the parent's own rows. Each
+// frame stores as its own message row, so the plan card reads the frame the row
+// holds.
 func (a *Agent) persistUnknownCodexNotification(line *providerkit.ParsedLine) {
-	if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: line.Raw}, agent.SpanInfo{}); err != nil {
-		slog.Error("codex persist notification", "agent_id", a.AgentID(), "method", line.Method, "error", err)
-	}
+	a.persistCodexThreadNotification(codexNotificationThreadID(line.Params), codexPendingRawMessage, line.Raw, line.Params)
 }
 
 // handleTurnStarted processes turn/started notifications.
@@ -232,9 +243,31 @@ func (a *Agent) handleMainTurnStarted(turnID string) {
 		a.turnStartAck = nil
 	}
 	a.turnID = turnID
+	if a.retryStarting {
+		// The retry's own turn started, so the retry hold ends here, in the same
+		// critical section that sets the turn. A turn that Codex starts by
+		// itself, before the swap or in the gap, leaves the hold in place.
+		a.retrying = false
+		a.retryStarting = false
+	}
 	a.TurnToolUses = 0
 	a.turnSawPlan = false
 	a.turnPlanText = ""
+	if len(a.pendingTurnInput) > 0 {
+		if a.turnInput == nil {
+			a.turnInput = make(map[string][]map[string]interface{})
+		}
+		a.turnInput[turnID] = a.pendingTurnInput
+	}
+	a.pendingTurnInput = nil
+	if a.turnAgentMessageStarted == nil {
+		a.turnAgentMessageStarted = make(map[string]bool)
+	}
+	delete(a.turnAgentMessageStarted, turnID)
+	if a.turnEnded == nil {
+		a.turnEnded = make(map[string]chan struct{})
+	}
+	a.turnEnded[turnID] = make(chan struct{})
 	a.Mu.Unlock()
 	a.PublishTurnActive()
 	a.sink.ReportProgress(agent.ResetModelProgress())
@@ -298,6 +331,9 @@ func (a *Agent) handleItemStarted(raw []byte, params json.RawMessage) {
 		a.handleCodexSubAgentActivity(event.item, event.threadID)
 		return
 	}
+	if event.itemType == contracts.CodexItemTypeUserMessage {
+		a.persistDroppedCodexResponse(event.threadID)
+	}
 
 	if !a.isMainThreadID(event.threadID) {
 		if codexItemIsTool(event.itemType) {
@@ -336,6 +372,11 @@ func (a *Agent) handleCodexItemStartedForSink(
 	}
 	switch event.itemType {
 	case contracts.CodexItemTypeAgentMessage:
+		if mainThread {
+			// The first agent text ends any retry offer: from here the faster
+			// model would answer a different request.
+			a.markCodexTurnAgentMessage()
+		}
 		// Wait for the authoritative completed item.
 	case contracts.CodexItemTypeContextCompaction:
 		if mainThread {
@@ -511,7 +552,7 @@ func (a *Agent) handleTurnCompleted(params json.RawMessage) {
 	completion := codexTurnCompletion(params)
 	a.flushCodexGeneration(completion)
 	incompleteToolUses := a.persistIncompleteCodexTools("", false, completion)
-	a.finishCodexRawExecutions(notif.ThreadID)
+	a.finishCodexRawExecutions(notif.ThreadID, completion)
 
 	// Enrich the params with num_tool_uses so the frontend can distinguish
 	// simple text-only exchanges from complex multi-tool turns.
@@ -546,11 +587,25 @@ func (a *Agent) handleTurnCompleted(params json.RawMessage) {
 	// Clear provider turn state before the deferred publish below releases the
 	// Worker's input queue. This lets the next queued input start a new turn.
 	a.Mu.Lock()
+	activeTurnID := a.turnID
 	a.turnID = ""
 	a.turnSawPlan = false
 	a.turnPlanText = ""
 	clear(a.codexSpawnPrompts)
+	for _, id := range []string{turnID, activeTurnID} {
+		if id == "" {
+			continue
+		}
+		delete(a.turnInput, id)
+		delete(a.turnAgentMessageStarted, id)
+		if ch := a.turnEnded[id]; ch != nil {
+			delete(a.turnEnded, id)
+			close(ch)
+		}
+	}
 	a.Mu.Unlock()
+	// The turn ended, so its retry offer ends with it.
+	a.withdrawTurnRetryOffer()
 	// Deferred, so it lands AFTER the PersistTurnEnd below. That call hands the
 	// finished turn's tool-call count to the Worker's activity latch, and the
 	// clear published here is the settle edge that spends it -- publishing at
@@ -627,7 +682,7 @@ func (a *Agent) handleChildTurnCompleted(threadID string, params json.RawMessage
 	completion := codexTurnCompletion(params)
 	a.flushCodexChildGeneration(threadID, completion)
 	a.persistIncompleteCodexTools(threadID, false, completion)
-	a.finishCodexRawExecutions(threadID)
+	a.finishCodexRawExecutions(threadID, completion)
 	if reportID, label, report, ok := a.takeCodexChildReportCandidate(threadID); ok {
 		providerkit.PersistSubagentReport(route.parentSink, agent.SubagentReportWrite{
 			ReportID: reportID,
@@ -843,17 +898,13 @@ func (a *Agent) handleMcpStartupStatusUpdated(content []byte, params json.RawMes
 	case "starting", "ready", "cancelled":
 		return
 	}
-	var notification struct {
-		ThreadID string `json:"threadId"`
-	}
-	_ = json.Unmarshal(params, &notification)
-	a.persistCodexThreadNotification(notification.ThreadID, codexPendingMcpStartupUpdated, content, params)
+	a.persistCodexThreadNotification(codexNotificationThreadID(params), codexPendingMcpStartupUpdated, content, params)
 }
 
-// persistCodexThreadNotification persists one notification frame verbatim in the
-// transcript of the thread that sent it: the main transcript, or the child
-// transcript of a subagent. A child whose route is not ready yet holds the frame
-// until the route exists.
+// persistCodexThreadNotification stores one raw frame in the transcript that
+// owns its thread. A child frame waits in the child queue until the route
+// exists. The kind states the persist primitive, so a queued frame renders the
+// same way as one the route resolved at once.
 func (a *Agent) persistCodexThreadNotification(threadID string, kind codexPendingChildEventKind, content, params json.RawMessage) {
 	if a.isMainThreadID(threadID) {
 		a.persistCodexNotificationForSink(a.sink, a.AgentID(), kind, content)
@@ -870,7 +921,18 @@ func (a *Agent) persistCodexThreadNotification(threadID string, kind codexPendin
 	a.persistCodexNotificationForSink(route.childSink, route.agentID, kind, content)
 }
 
+// persistCodexNotificationForSink stores one routed raw frame for one sink. A
+// frame the switch claims stores as a notification-thread entry: hook failures,
+// MCP failures, safety-buffering notices and the RENDER notices. A frame the
+// dispatcher does not claim stores as its own message row, so the plan card
+// reads the frame the row holds.
 func (a *Agent) persistCodexNotificationForSink(sink agent.ProviderServices, agentID string, kind codexPendingChildEventKind, content json.RawMessage) {
+	if kind == codexPendingRawMessage {
+		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: content}, agent.SpanInfo{}); err != nil {
+			slog.Error("codex persist raw message", "agent_id", agentID, "kind", kind, "error", err)
+		}
+		return
+	}
 	if _, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: content}); err != nil {
 		slog.Error("codex persist thread notification", "agent_id", agentID, "kind", kind, "error", err)
 	}
@@ -888,7 +950,7 @@ func (a *Agent) handleRawResponseItemCompleted(params json.RawMessage) {
 		} `json:"item"`
 	}
 	if json.Unmarshal(params, &notification) != nil || !a.isMainThreadID(notification.ThreadID) ||
-		notification.Item.Type != "function_call" || notification.Item.Name != "spawn_agent" ||
+		notification.Item.Type != codexRawItemFunctionCall || notification.Item.Name != "spawn_agent" ||
 		notification.Item.Namespace != codexMultiAgentV2Namespace || notification.Item.CallID == "" {
 		return
 	}
@@ -968,15 +1030,246 @@ func (a *Agent) handleServerRequestResolved(params json.RawMessage) {
 }
 
 // handleErrorNotification processes error notifications.
-func (a *Agent) handleErrorNotification(params json.RawMessage) {
+//
+// Codex sends `error` while it retries and after it stops. A frame
+// with `willRetry: true` reaches the transcript as a raw notification routed by
+// its `threadId`, so the reader can see that the turn is still in flight. A
+// frame with `willRetry: false` is dropped: the failed turn's `turn/completed`
+// carries the same TurnError, and codexResultDivider already draws it with its
+// details.
+func (a *Agent) handleErrorNotification(line *providerkit.ParsedLine) {
 	var notif struct {
-		Message string `json:"message"`
+		Error struct {
+			Message           string          `json:"message"`
+			CodexErrorInfo    json.RawMessage `json:"codexErrorInfo"`
+			AdditionalDetails *string         `json:"additionalDetails"`
+		} `json:"error"`
+		WillRetry bool   `json:"willRetry"`
+		ThreadID  string `json:"threadId"`
+		TurnID    string `json:"turnId"`
 	}
-	if json.Unmarshal(params, &notif) == nil && notif.Message != "" {
-		a.sink.PersistLeapMuxNotification(map[string]interface{}{
-			contracts.NotificationFieldType:  contracts.NotificationTypeAgentError,
-			contracts.NotificationFieldError: notif.Message,
-		})
+	if json.Unmarshal(line.Params, &notif) != nil || !notif.WillRetry {
+		return
+	}
+	a.persistCodexThreadNotification(notif.ThreadID, codexPendingNotification, line.Raw, line.Params)
+}
+
+// codexNotificationThreadID reads the `threadId` of a notification. An empty
+// value routes the frame to the main thread.
+func codexNotificationThreadID(params json.RawMessage) string {
+	var notif struct {
+		ThreadID string `json:"threadId"`
+	}
+	_ = json.Unmarshal(params, &notif)
+	return notif.ThreadID
+}
+
+// codexNoticeTextKey builds the dedupe key of one repeating notice. It joins
+// the method and the fields that the display text reads, so two notices of one
+// method with the same text share one row. The method keeps two methods apart:
+// a config warning and a deprecation notice with the same fields draw different
+// text.
+func codexNoticeTextKey(method string, params json.RawMessage) string {
+	var notif struct {
+		Summary string `json:"summary"`
+		Details string `json:"details"`
+		Path    string `json:"path"`
+	}
+	_ = json.Unmarshal(params, &notif)
+	return strings.Join([]string{method, notif.Summary, notif.Details, notif.Path}, "\x00")
+}
+
+// codexVerificationKey builds the dedupe key of one verification notice. The
+// frontend draws text only for some flags, so the key holds the sorted flag
+// set: a frame without a drawn flag must not use up the row of a frame that
+// has one.
+func codexVerificationKey(params json.RawMessage) string {
+	var notif struct {
+		Verifications []string `json:"verifications"`
+	}
+	_ = json.Unmarshal(params, &notif)
+	flags := slices.Clone(notif.Verifications)
+	slices.Sort(flags)
+	return strings.Join(append([]string{contracts.CodexMethodModelVerification}, flags...), "\x00")
+}
+
+// handleCodexDedupedNotice persists one notice per distinct text per Codex
+// process. A notice that repeats on every call tells the reader nothing new.
+func (a *Agent) handleCodexDedupedNotice(line *providerkit.ParsedLine, key string) {
+	a.Mu.Lock()
+	if a.seenNoticeTexts == nil {
+		a.seenNoticeTexts = make(map[string]struct{})
+	}
+	if _, seen := a.seenNoticeTexts[key]; seen {
+		a.Mu.Unlock()
+		return
+	}
+	a.seenNoticeTexts[key] = struct{}{}
+	a.Mu.Unlock()
+	a.persistCodexThreadNotification(codexNotificationThreadID(line.Params), codexPendingNotification, line.Raw, line.Params)
+}
+
+// handleAutoApprovalReviewStarted reports the automatic review that holds one
+// call before it runs. It writes no transcript row: the tool card's badge shows
+// the hold.
+func (a *Agent) handleAutoApprovalReviewStarted(line *providerkit.ParsedLine) {
+	var notif struct {
+		ThreadID     string `json:"threadId"`
+		TargetItemID string `json:"targetItemId"`
+	}
+	_ = json.Unmarshal(line.Params, &notif)
+	a.publishCodexPermissionCheck(notif.ThreadID, notif.TargetItemID, true)
+}
+
+// endCodexAutoReviewCheck ends the hold of an automatic review on its call.
+// Every outcome ends it: an approved call runs, and a denied, timed-out or
+// aborted call never runs. persistCodexAutoReviewFrame keeps the review row.
+func (a *Agent) endCodexAutoReviewCheck(line *providerkit.ParsedLine) {
+	var notif struct {
+		ThreadID     string `json:"threadId"`
+		TargetItemID string `json:"targetItemId"`
+	}
+	_ = json.Unmarshal(line.Params, &notif)
+	a.publishCodexPermissionCheck(notif.ThreadID, notif.TargetItemID, false)
+}
+
+// publishCodexPermissionCheck reports the automatic review that holds one call.
+// A child thread's review broadcasts on the child sink, and an unrouted child
+// broadcasts nothing.
+func (a *Agent) publishCodexPermissionCheck(threadID, targetItemID string, checking bool) {
+	if targetItemID == "" {
+		return
+	}
+	sink := a.sink
+	if !a.isMainThreadID(threadID) {
+		route, routed := a.ensureCodexChildRoute(threadID)
+		if !routed {
+			return
+		}
+		// The child frames that waited for this route go first, as at every
+		// other route site, so the child transcript keeps the provider order.
+		a.replayPendingCodexChildEvents(threadID, route)
+		sink = route.childSink
+	}
+	value := interface{}(nil)
+	if checking {
+		value = true
+	}
+	sink.BroadcastSessionInfo(map[string]interface{}{
+		contracts.SessionInfoKeyRunningTool: map[string]interface{}{
+			contracts.RunningToolFieldSpanId:          targetItemID,
+			contracts.RunningToolFieldAgentSessionId:  sink.MessageSessionID(),
+			contracts.RunningToolFieldPermissionCheck: value,
+		},
+	})
+}
+
+// handleThreadClosed drops the notice. A main thread that closes under the
+// running worker gets one warning log.
+func (a *Agent) handleThreadClosed(params json.RawMessage) {
+	threadID := codexNotificationThreadID(params)
+	if threadID != "" && a.isMainThreadID(threadID) {
+		slog.Warn("codex closed the main thread", "agent_id", a.AgentID(), "thread", threadID)
+	}
+}
+
+// codexTurnRetryLearnMoreURL is the Codex help page for the extra safety
+// buffering that makes a turn retry available.
+const codexTurnRetryLearnMoreURL = "https://help.openai.com/en/articles/20001326"
+
+// broadcastTurnRetryOffer broadcasts the live turn-retry offer, or its
+// withdrawal for a nil offer. Call it with a.retryOfferMu held, right after the
+// critical section that changed a.retryOffer, so the broadcasts keep the order
+// of the changes.
+func (a *Agent) broadcastTurnRetryOffer(offer *codexTurnRetryOffer) {
+	// A NIL sink publishes nowhere, as providerkit.PublishTurnStateTo states.
+	if a.sink == nil {
+		return
+	}
+	value := interface{}(nil)
+	if offer != nil {
+		value = map[string]interface{}{
+			contracts.TurnRetryOfferFieldTurnId:       offer.turnID,
+			contracts.TurnRetryOfferFieldModel:        offer.model,
+			contracts.TurnRetryOfferFieldLearnMoreUrl: codexTurnRetryLearnMoreURL,
+		}
+	}
+	a.sink.BroadcastSessionInfo(map[string]interface{}{
+		contracts.SessionInfoKeyTurnRetryOffer: value,
+	})
+}
+
+// withdrawTurnRetryOffer ends the live turn-retry offer and broadcasts the
+// withdrawal.
+func (a *Agent) withdrawTurnRetryOffer() {
+	a.retryOfferMu.Lock()
+	defer a.retryOfferMu.Unlock()
+	a.Mu.Lock()
+	a.retryOffer = nil
+	a.Mu.Unlock()
+	a.broadcastTurnRetryOffer(nil)
+}
+
+// markCodexTurnAgentMessage records that the running turn produced its first
+// agent text. The turn's retry offer ends here: from this point the faster model
+// would answer a different request.
+func (a *Agent) markCodexTurnAgentMessage() {
+	a.Mu.Lock()
+	turnID := a.turnID
+	if turnID == "" || a.turnAgentMessageStarted[turnID] {
+		a.Mu.Unlock()
+		return
+	}
+	if a.turnAgentMessageStarted == nil {
+		a.turnAgentMessageStarted = make(map[string]bool)
+	}
+	a.turnAgentMessageStarted[turnID] = true
+	a.Mu.Unlock()
+	a.withdrawTurnRetryOffer()
+}
+
+// handleSafetyBufferingUpdated shows the buffering notice and offers a retry on
+// a faster model while the request still buffers. A child thread persists its
+// own notice and holds no offer: the offer belongs to the running main turn.
+func (a *Agent) handleSafetyBufferingUpdated(line *providerkit.ParsedLine) {
+	var notif struct {
+		ThreadID        string `json:"threadId"`
+		TurnID          string `json:"turnId"`
+		ShowBufferingUI bool   `json:"showBufferingUi"`
+		FasterModel     string `json:"fasterModel"`
+	}
+	_ = json.Unmarshal(line.Params, &notif)
+	if !notif.ShowBufferingUI {
+		if a.isMainThreadID(notif.ThreadID) {
+			a.withdrawTurnRetryOffer()
+		}
+		return
+	}
+	a.persistCodexThreadNotification(notif.ThreadID, codexPendingNotification, line.Raw, line.Params)
+	if !a.isMainThreadID(notif.ThreadID) {
+		return
+	}
+	a.retryOfferMu.Lock()
+	defer a.retryOfferMu.Unlock()
+	// The check and the record share one critical section. A retry that starts
+	// between them would otherwise find no offer to spend, and this notice would
+	// then record an offer that the running retry makes stale.
+	a.Mu.Lock()
+	// The Codex TUI offers the retry only while the answer can still be replayed:
+	// a faster model, the running turn, no agent text yet, the turn's input
+	// retained, and no retry in flight.
+	eligible := notif.FasterModel != "" && notif.FasterModel != a.model &&
+		notif.TurnID != "" && notif.TurnID == a.turnID &&
+		a.turnInputRetainedLocked(notif.TurnID) && !a.turnAgentMessageStarted[notif.TurnID] &&
+		!a.retrying
+	var offer *codexTurnRetryOffer
+	if eligible {
+		offer = &codexTurnRetryOffer{turnID: notif.TurnID, model: notif.FasterModel}
+		a.retryOffer = offer
+	}
+	a.Mu.Unlock()
+	if offer != nil {
+		a.broadcastTurnRetryOffer(offer)
 	}
 }
 

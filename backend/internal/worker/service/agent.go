@@ -1064,6 +1064,42 @@ func registerAgentHandlers(d registrar, svc *Service) {
 
 	registerAutoReviewApprovalHandler(d, svc)
 
+	// RetryAgentTurn stops the running turn and sends its input again on
+	// another model, in a new provider thread that excludes the stopped
+	// attempt. File changes and other actions that the stopped attempt already
+	// took stay. The worker refuses the call unless the running agent offers
+	// this retry for this turn (the `turn_retry_offer` session-info key).
+	//
+	// The response states that the agent accepted the retry, not that the new
+	// turn started. The stop, the thread swap and the new turn arrive through
+	// the normal events, and a failure after the acceptance reaches the
+	// transcript as an agent_error notification.
+	registerAgentGuardedByID(d, "RetryAgentTurn", leapmuxv1.Scope_SCOPE_AGENT_WRITE, dispatchPlain,
+		func(_ context.Context, _ channel.Caller, r *leapmuxv1.RetryAgentTurnRequest, sender channel.ResponseWriter) {
+			agentID := r.GetAgentId()
+			turnID := strings.TrimSpace(r.GetTurnId())
+			model := strings.TrimSpace(r.GetModel())
+			if turnID == "" || model == "" {
+				sendInvalidArgument(sender, "a turn retry needs the offered turn and model")
+				return
+			}
+			dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
+			if err != nil {
+				sendNotFoundError(sender, "agent not found")
+				return
+			}
+			if dbAgent.ParentAgentID.Valid {
+				sendFailedPrecondition(sender, "a subagent cannot retry its parent's turn")
+				return
+			}
+			if err := svc.Agents.RetryTurn(agentID, turnID, model); err != nil {
+				slog.Warn("retry agent turn failed", "agent_id", agentID, "error", err)
+				sendTurnRetryError(sender, err)
+				return
+			}
+			sendProtoResponse(sender, &leapmuxv1.RetryAgentTurnResponse{})
+		})
+
 	// WatchWorkerPrivateEvents streams this worker's private tab events
 	// (TabRenamed, TabPayloadRegistered, TabPayloadRevoked, QuakePanelCommand)
 	// over the existing E2EE channel. The bootstrap-replay sends one

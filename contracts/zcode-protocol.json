@@ -1,5 +1,5 @@
 {
-  "_readme": "The Go provider and TypeScript plugin share these ZCode app-server values. The protocol uses line-delimited JSON without a `jsonrpc` field. Both readers dispatch on the envelope type and payload kind. A value that only one reader uses stays in that reader's code. Z.ai owns the native values. Follow the installed native protocol when you change them.\n\n`toolKinds.Raw` identifies a native raw frame that can close a tool call. The app server can store that frame as the call's last frame. Both readers must recognize it to preserve the closing row.\n\n`resultTypes` includes four native `error_*` variants. The turn divider uses those values to identify a failure. An unknown value can incorrectly show an ordinary completion.\n\nLeapMux owns `supplement`. A retained tool row carries the native stored record beside the `tool.updated` envelope. It can carry native image bytes also. The browser checks the envelope before it uses those bytes.\n\n`storedTool` and `storedPart` identify fields in ZCode's native store. The Worker copies the complete native record. The plugin reads its fields. Reasonix uses the same division of responsibility for its own `toolRecord`.\n\nThe Worker writes ZCode's native envelope fields. The browser matches them against the current row:\n\n- `type` and `payload`.\n- `supplementPayload.kind`.\n- `supplementPayload.toolCallId`.\n- `supplementPayload.input`.\n\n`storedAttachment` covers all three levels of one native attachment:\n\n- `attachments` belongs to the part's `state`.\n- `artifactUri` belongs to the attachment's nested `metadata`.\n- The other fields belong to the attachment record.\n\nBoth readers use one table for this object graph. A field change must reach both readers. Native attachment fields `sessionID` and `messageID` differ in case from `storedTool.sessionId` and `storedTool.messageId`. Preserve those native spellings. The Worker stores image bytes under `artifactUri`, and the browser uses that same key.\n\nThe browser owns native serialization fields and strategies in its provider protocol module. The stored tool and part fields preserve the native session and call identity. An explicit artifactPath supplies a filesystem path. An artifact URI alone supplies no filesystem path. The browser shows the path beside the original preview. LeapMux reads no serialized output file.",
+  "_readme": "The Go provider and TypeScript plugin share these ZCode app-server values. The protocol uses line-delimited JSON without a `jsonrpc` field. Both readers dispatch on the envelope type and payload kind. A value that only one reader uses stays in that reader's code. Z.ai owns the native values. Follow the installed native protocol when you change them.\n\n`toolKinds.Raw` identifies a native raw frame that can close a tool call. The app server can store that frame as the call's last frame. Both readers must recognize it to preserve the closing row.\n\n`resultTypes` includes four native `error_*` variants. The turn divider uses those values to identify a failure. An unknown value can incorrectly show an ordinary completion.\n\nLeapMux owns `supplement`. A retained tool row carries the native stored record beside the `tool.updated` envelope. It can carry native image bytes also. The browser checks the envelope before it uses those bytes.\n\n`storedTool` and `storedPart` identify fields in ZCode's native store. The Worker copies the complete native record. The plugin reads its fields. Reasonix uses the same division of responsibility for its own `toolRecord`.\n\nThe Worker writes ZCode's native envelope fields. The browser matches them against the current row:\n\n- `type` and `payload`.\n- `supplementPayload.kind`.\n- `supplementPayload.toolCallId`.\n- `supplementPayload.input`.\n\n`storedAttachment` covers all three levels of one native attachment:\n\n- `attachments` belongs to the part's `state`.\n- `artifactUri` belongs to the attachment's nested `metadata`.\n- The other fields belong to the attachment record.\n\nBoth readers use one table for this object graph. A field change must reach both readers. Native attachment fields `sessionID` and `messageID` differ in case from `storedTool.sessionId` and `storedTool.messageId`. Preserve those native spellings. The Worker stores image bytes under `artifactUri`, and the browser uses that same key.\n\nThe browser owns native serialization fields and strategies in its provider protocol module. The stored tool and part fields preserve the native session and call identity. An explicit artifactPath supplies a filesystem path. An artifact URI alone supplies no filesystem path. The browser shows the path beside the original preview. LeapMux reads no serialized output file.\n\nquerySources and stopReasons hold the words that separate a turn reply from a side query. Only main_turn is the reply of the running turn, so the worker persists only that one. tool_internal is the stop reason that marks a side query when the payload carries no querySource. goalVerificationStatuses holds the goal check lifecycle, and compactionStatuses holds the compaction lifecycle. goalActions holds cleared, which is a worker decision and not a row. networkStatuses holds the retry notice, and networkStatusPrefixes holds the type prefix that marks a network status payload. microcompactStrategies holds the strategy that marks a microcompaction. hookRunOutcomes holds the hook outcomes that a user must see. modelSelectionOrigins holds the one origin that marks a switch the registry made.",
   "toolPrefixes": {
     "Subagent": "tool_subagent_"
   },
@@ -177,6 +177,46 @@
   "storedPartStatuses": {
     "Completed": "completed",
     "Error": "error"
+  },
+  "querySources": {
+    "MainTurn": "main_turn"
+  },
+  "stopReasons": {
+    "ToolInternal": "tool_internal"
+  },
+  "compactionStatuses": {
+    "Started": "started",
+    "Retrying": "retrying",
+    "Skipped": "skipped",
+    "Completed": "completed",
+    "Failed": "failed",
+    "Interrupted": "interrupted"
+  },
+  "goalVerificationStatuses": {
+    "Started": "started",
+    "Completed": "completed",
+    "FailedClosed": "failed_closed",
+    "Cancelled": "cancelled"
+  },
+  "goalActions": {
+    "Cleared": "cleared"
+  },
+  "networkStatuses": {
+    "RetryScheduled": "model_retry_scheduled"
+  },
+  "networkStatusPrefixes": {
+    "Model": "model_"
+  },
+  "microcompactStrategies": {
+    "LocalToolResultClear": "local_tool_result_clear"
+  },
+  "hookRunOutcomes": {
+    "Failed": "failed",
+    "Blocked": "blocked",
+    "TimedOut": "timed_out"
+  },
+  "modelSelectionOrigins": {
+    "RegistryFallback": "registryFallback"
   },
   "defaultMode": "Build",
   "_unread": {

@@ -257,6 +257,11 @@ type ControlServices interface {
 
 // SessionServices publishes provider session state and settings.
 type SessionServices interface {
+	// MessageSessionID is the session that this sink stamps on the rows it
+	// writes. A provider that broadcasts session state for a CHILD resolves the
+	// child's sink first, so the broadcast names the same session as the child's
+	// rows.
+	MessageSessionID() string
 	UpdateSessionID(sessionID string)
 	UpdatePermissionMode(mode string)
 	// NotifyPermissionModeChanged emits the chat-view settings_changed notification

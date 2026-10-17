@@ -11,27 +11,37 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestZCodeGoal_StatePatchReportsAChange(t *testing.T) {
+// A state patch never states the goal. ZCode 3.14.5 sends a session patch of
+// `status` alone or of the settings, and its `target_changed` event announces
+// each goal change. So no patch shape reaches the goal: a stray `goal` key that
+// the worker read would set, replace or clear the goal with no event behind it.
+func TestZCodeGoal_AStatePatchNeverTouchesTheGoal(t *testing.T) {
 	t.Parallel()
 
-	sink := &agenttest.Sink{}
-	ag := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+	for _, tc := range []struct {
+		name  string
+		patch string
+	}{
+		{"a session patch of status", `{"scope":"session","sessionId":"sess-1","revision":13,"patch":{"status":"running"}}`},
+		{"a session patch with a goal object", `{"scope":"session","sessionId":"sess-1","revision":12,"patch":{"goal":{"targetId":"t-1","objective":"green build","status":"paused"}}}`},
+		{"a session patch with a null goal", `{"scope":"session","sessionId":"sess-1","revision":14,"patch":{"goal":null}}`},
+		{"a workspace patch with a null goal", `{"scope":"workspace","patch":{"goal":null}}`},
+		{"a patch for a replaced session", `{"scope":"session","sessionId":"sess-old","patch":{"goal":{"objective":"stale goal","status":"active"}}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	ag.handleZCodeStateUpdated(json.RawMessage(`{"scope":"session","sessionId":"sess-1",`+
-		`"revision":12,"patch":{"goal":{"targetId":"t-1","objective":"green build",`+
-		`"status":"verifying","timeUsedSeconds":90,"iteration":4}}}`), nil)
+			sink := &agenttest.Sink{}
+			ag := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+			ag.reportZCodeGoal(json.RawMessage(`{"targetId":"t-0","objective":"live goal","status":"active"}`), false)
+			require.Len(t, sink.Goals(), 1)
 
-	got, ok := sink.LastGoal()
-	require.True(t, ok)
-	assert.Equal(t, "green build", got.Objective)
-	// `verifying` is still being pursued, so it maps to ACTIVE; the word itself
-	// survives in the detail, which is where a reader learns a check is running.
-	assert.Equal(t, agent.GoalStatusActive, got.Status)
-	assert.Equal(t, "verifying", got.StatusDetail)
-	require.NotNil(t, got.Iterations)
-	assert.EqualValues(t, 4, *got.Iterations)
-	assert.False(t, got.Snapshot, "a patch reports a change as it happens")
-	assert.Nil(t, got.TokensUsed, "ZCode reports a budget, never a consumed count")
+			ag.handleZCodeStateUpdated(json.RawMessage(tc.patch))
+
+			assert.Len(t, sink.Goals(), 1, "a patch sets no goal")
+			assert.Zero(t, sink.GoalClears(), "a patch clears no goal")
+		})
+	}
 }
 
 func TestZCodeGoalPreservesDistinctNativeIdentities(t *testing.T) {
@@ -42,50 +52,8 @@ func TestZCodeGoalPreservesDistinctNativeIdentities(t *testing.T) {
 	a.reportZCodeGoal(json.RawMessage(`{"targetId":"second","objective":"Same objective","status":"active"}`), false)
 	updates := sink.Goals()
 	require.Len(t, updates, 2)
-	assert.NotEqual(t, updates[0], updates[1], "distinct native goals must not become the same goal update")
-}
-
-// A patch that changed something else omits `goal` entirely. Treating an absent
-// key as "no goal" would clear the goal on every settings change.
-func TestZCodeGoal_PatchWithoutAGoalKeyLeavesItAlone(t *testing.T) {
-	t.Parallel()
-
-	sink := &agenttest.Sink{}
-	agent := newZCodeTestAgent(t, agent.NewProviderServices(sink))
-
-	agent.handleZCodeStateUpdated(json.RawMessage(
-		`{"scope":"session","sessionId":"sess-1","revision":13,"patch":{"status":"prompt_started"}}`), nil)
-
-	assert.Empty(t, sink.Goals())
-	assert.Equal(t, 0, sink.GoalClears())
-}
-
-func TestZCodeGoal_NullGoalClears(t *testing.T) {
-	t.Parallel()
-
-	sink := &agenttest.Sink{}
-	agent := newZCodeTestAgent(t, agent.NewProviderServices(sink))
-
-	agent.handleZCodeStateUpdated(json.RawMessage(
-		`{"scope":"session","sessionId":"sess-1","revision":14,"patch":{"goal":null}}`), nil)
-
-	assert.Equal(t, 1, sink.GoalClears())
-}
-
-func TestZCodeGoal_StatusMapping(t *testing.T) {
-	t.Parallel()
-
-	for wire, want := range map[string]agent.GoalStatus{
-		"active":       agent.GoalStatusActive,
-		"verifying":    agent.GoalStatusActive,
-		"paused":       agent.GoalStatusPaused,
-		"verified":     agent.GoalStatusDone,
-		"notSatisfied": agent.GoalStatusBlocked,
-		"failed":       agent.GoalStatusBlocked,
-		"somethingNew": agent.GoalStatusBlocked,
-	} {
-		assert.Equal(t, want, zcodeGoalStatus(wire), "status %q", wire)
-	}
+	assert.Equal(t, "first", updates[0].NativeID, "each goal keeps the native id its writer stated")
+	assert.Equal(t, "second", updates[1].NativeID, "the same objective under two ids stays two goals")
 }
 
 // The revision only moves forward. A stale patch arriving out of order must not
@@ -132,10 +100,10 @@ func TestZCodeGoal_SessionSnapshotIsARestatement(t *testing.T) {
 	assert.True(t, got.Snapshot, "a resume restates the goal; it does not announce one")
 }
 
-// The same call with snapshot=false is what a state PATCH uses, and that one
-// does announce. The pair is what proves the flag is threaded rather than
-// hardcoded.
-func TestZCodeGoal_StatePatchIsNotARestatement(t *testing.T) {
+// The same call with snapshot=false is what a `target_changed` event uses, and
+// that one does announce. The pair is what proves the flag is threaded rather
+// than hardcoded.
+func TestZCodeGoal_AGoalChangeIsNotARestatement(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
@@ -179,23 +147,6 @@ func TestZCodeGoal_SessionSnapshotSeedsTheStateRevision(t *testing.T) {
 	got := agent.stateRevision
 	agent.Mu.Unlock()
 	assert.EqualValues(t, 42, got, "a resumed session must know its revision before its first turn ends")
-}
-
-// A workspace-scope patch carries no SESSION state. A `goal` key on one must
-// not reach the session goal: a null there would clear a live goal and write a
-// "Goal cleared" row for a change the user never made.
-func TestZCodeGoal_WorkspaceScopePatchNeverTouchesTheGoal(t *testing.T) {
-	t.Parallel()
-
-	sink := &agenttest.Sink{}
-	agent := newZCodeTestAgent(t, agent.NewProviderServices(sink))
-	agent.reportZCodeGoal(json.RawMessage(`{"objective":"live goal","status":"active"}`), false)
-	require.Equal(t, 1, len(sink.Goals()))
-
-	agent.handleZCodeStateUpdated(json.RawMessage(
-		`{"scope":"workspace","patch":{"goal":null}}`), nil)
-
-	assert.Equal(t, 0, sink.GoalClears(), "a workspace patch must not clear the session goal")
 }
 
 // A settings reply folds its state document through applyStateSnapshot, and
@@ -273,23 +224,6 @@ func TestZCodeGoal_RetriesARevisionConflictOnce(t *testing.T) {
 	require.NoError(t, <-result)
 }
 
-// A patch for a session ClearContext already replaced must not apply. It would
-// resurrect the goal the user just cleared and write a "Goal set" row for it.
-func TestZCodeGoal_IgnoresAPatchForAReplacedSession(t *testing.T) {
-	t.Parallel()
-
-	sink := &agenttest.Sink{}
-	agent := newZCodeTestAgent(t, agent.NewProviderServices(sink))
-	agent.Mu.Lock()
-	agent.sessionID = "sess-new"
-	agent.Mu.Unlock()
-
-	agent.handleZCodeStateUpdated(json.RawMessage(
-		`{"scope":"session","sessionId":"sess-old","patch":{"goal":{"objective":"stale goal","status":"active"}}}`), nil)
-
-	assert.Empty(t, sink.Goals(), "a patch for the replaced session is not this session's goal")
-}
-
 // ZCode reports its own change. SetGoal must not write local state first.
 func TestGoal_ZCodeWritesNothingLocally(t *testing.T) {
 	t.Parallel()
@@ -297,11 +231,11 @@ func TestGoal_ZCodeWritesNothingLocally(t *testing.T) {
 	zsink := &agenttest.Sink{}
 	stdin := &zcodeRecordedStdin{}
 	zagent := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(zsink), stdin)
-	// A reply with no goal: the patch that states the goal comes separately.
+	// A reply with no goal: the event that states the goal comes separately.
 	answerZCodeRequest(t, zagent, stdin, zcodeMethodSessionGoal, `{"response":"Goal active"}`)
 	_, err := zagent.PerformGoalAction(agent.GoalActionSet, "ship it")
 	require.NoError(t, err)
-	assert.Empty(t, zsink.Goals(), "ZCode answers a session/goal with a state patch")
+	assert.Empty(t, zsink.Goals(), "ZCode states the goal in its own target_changed event")
 	assert.Zero(t, zsink.GoalClears())
 }
 

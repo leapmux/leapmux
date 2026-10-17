@@ -4,8 +4,10 @@ import type { ParsedMessageContent } from '~/lib/messageParser'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { providerQuotableText, providerRowPreviewText } from '~/test-support/toolCallFixture'
+import { extractChatRow } from '../../rowExtraction'
 import { providerFor, resolveMessageForRendering } from '../registry'
 import { input } from '../testUtils'
+import { classifyClaudeCodeMessage } from './classification'
 
 // Side-effect import to register the Claude plugin.
 import './plugin'
@@ -295,5 +297,98 @@ describe('claude relatedMessages', () => {
     for (const name of ['Agent', 'Task', 'TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskGet'])
       expect(plugin?.transcript.relatedMessages!(input(toolUse(name)))).toEqual(['result'])
     expect(plugin?.transcript.relatedMessages!(input(toolUse('Read')))).toEqual([])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The Claude Code 2.1.300 frames that reach LeapMux.
+// ---------------------------------------------------------------------------
+
+/**
+ * One frame per subtype that Claude Code 2.1.300 sends on LeapMux's stream, as a
+ * stored row carries it. A row of any of them draws a row or a hidden row, never
+ * the no-display card (`unsupported()`). `tool_progress` and the control frames
+ * are absent: the Worker stores no message row for them. A
+ * `task_started`/`task_progress` row carries the spawn span as its parent,
+ * which is the shape that its hide rule reads.
+ */
+const CLAUDE_FRAME_CORPUS: { name: string, frame: Record<string, unknown>, parentSpanId?: string }[] = [
+  // The system notices: each one draws its own words, hides, or feeds the Worker's state.
+  { name: 'init', frame: { type: 'system', subtype: 'init', slash_commands: ['goal'], session_id: 's-1' } },
+  { name: 'commands_changed', frame: { type: 'system', subtype: 'commands_changed', commands: [{ name: 'review', description: 'Review the diff', argumentHint: '' }], uuid: 'u-1', session_id: 's-1' } },
+  { name: 'elicitation_complete', frame: { type: 'system', subtype: 'elicitation_complete', mcp_server_name: 'github', elicitation_id: 'e1', uuid: 'u-1', session_id: 's-1' } },
+  { name: 'permission_check_status', frame: { type: 'system', subtype: 'permission_check_status', tool_use_id: 'toolu_1', status: 'checking', uuid: 'u-1', session_id: 's-1' } },
+  { name: 'permission_denied', frame: { type: 'system', subtype: 'permission_denied', tool_name: 'Bash', tool_use_id: 'toolu_1', decision_reason_type: 'classifier', decision_reason: 'the command removes a directory', uuid: 'u-1', session_id: 's-1' } },
+  { name: 'model_fallback', frame: { type: 'system', subtype: 'model_fallback', trigger: 'overloaded', original_model: 'claude-opus-5-5', fallback_model: 'claude-sonnet-5-5', content: 'Switched to claude-sonnet-5-5 due to high demand for claude-opus-5-5', uuid: 'u-1', session_id: 's-1' } },
+  { name: 'model_refusal_fallback', frame: { type: 'system', subtype: 'model_refusal_fallback', trigger: 'refusal', direction: 'retry', scope: 'session', original_model: 'claude-opus-5-5', fallback_model: 'claude-sonnet-5-5', request_id: null, content: 'Switched to claude-sonnet-5-5', uuid: 'u-1', session_id: 's-1' } },
+  { name: 'model_consent_fallback', frame: { type: 'system', subtype: 'model_consent_fallback', choice: 'switch_default', original_model: 'claude-opus-5-5', fallback_model: 'claude-sonnet-5-5', content: 'Switched to claude-sonnet-5-5', uuid: 'u-1', session_id: 's-1' } },
+  { name: 'model_refusal_no_fallback', frame: { type: 'system', subtype: 'model_refusal_no_fallback', uuid: 'u-1', session_id: 's-1' } },
+  { name: 'notification', frame: { type: 'system', subtype: 'notification', key: 'compact-error', text: 'Error compacting conversation', priority: 'high', color: 'error', uuid: 'u-1', session_id: 's-1' } },
+  { name: 'informational warning', frame: { type: 'system', subtype: 'informational', content: 'Stop hook failed: boom', level: 'warning', uuid: 'u-1', session_id: 's-1' } },
+  { name: 'informational info', frame: { type: 'system', subtype: 'informational', content: 'verbose only', level: 'info', uuid: 'u-1', session_id: 's-1' } },
+  { name: 'memory_recall', frame: { type: 'system', subtype: 'memory_recall', mode: 'select', memories: [{ path: '/m/a.md', scope: 'personal' }], uuid: 'u-1', session_id: 's-1' } },
+  { name: 'hook_response error', frame: { type: 'system', subtype: 'hook_response', hook_id: 'h1', hook_name: 'setup.sh', hook_event: 'SessionStart', output: '', stdout: '', stderr: 'boom', exit_code: 2, outcome: 'error', uuid: 'u-1', session_id: 's-1' } },
+  { name: 'hook_response success', frame: { type: 'system', subtype: 'hook_response', hook_id: 'h1', hook_name: 'setup.sh', hook_event: 'SessionStart', output: '', stdout: '', stderr: '', exit_code: 0, outcome: 'success', uuid: 'u-1', session_id: 's-1' } },
+  { name: 'hook_started', frame: { type: 'system', subtype: 'hook_started', hook_id: 'h1', hook_event: 'SessionStart', uuid: 'u-1', session_id: 's-1' } },
+  { name: 'hook_progress', frame: { type: 'system', subtype: 'hook_progress', hook_id: 'h1', hook_event: 'SessionStart', uuid: 'u-1', session_id: 's-1' } },
+  { name: 'ui_log', frame: { type: 'system', subtype: 'ui_log', plugin: 'my-plugin', text: 'hello', uuid: 'u-1', session_id: 's-1' } },
+  { name: 'ui_toast', frame: { type: 'system', subtype: 'ui_toast', plugin: 'my-plugin', text: 'hello', timeout_ms: 3000, uuid: 'u-1', session_id: 's-1' } },
+  { name: 'ui_status', frame: { type: 'system', subtype: 'ui_status', plugin: 'my-plugin', uuid: 'u-1', session_id: 's-1' } },
+  { name: 'ui_invalidate', frame: { type: 'system', subtype: 'ui_invalidate', plugin: 'my-plugin', uuid: 'u-1', session_id: 's-1' } },
+  { name: 'ui_panes', frame: { type: 'system', subtype: 'ui_panes', plugin: 'my-plugin', uuid: 'u-1', session_id: 's-1' } },
+  { name: 'ui_scroll', frame: { type: 'system', subtype: 'ui_scroll', plugin: 'my-plugin', uuid: 'u-1', session_id: 's-1' } },
+  { name: 'ui_focus', frame: { type: 'system', subtype: 'ui_focus', plugin: 'my-plugin', uuid: 'u-1', session_id: 's-1' } },
+  { name: 'vcs_state_changed', frame: { type: 'system', subtype: 'vcs_state_changed', kind: 'push', branch: 'main', cwd: '/w', uuid: 'u-1', session_id: 's-1' } },
+  { name: 'code_change_published', frame: { type: 'system', subtype: 'code_change_published', kind: 'push', branch: 'main', uuid: 'u-1', session_id: 's-1' } },
+  { name: 'dev_intent', frame: { type: 'system', subtype: 'dev_intent', uuid: 'u-1', session_id: 's-1' } },
+  { name: 'session_title_changed', frame: { type: 'system', subtype: 'session_title_changed', title: 'Fix the tests', uuid: 'u-1', session_id: 's-1' } },
+  { name: 'per_turn_effort_changed', frame: { type: 'system', subtype: 'per_turn_effort_changed', effortLevel: 'high', uuid: 'u-1', session_id: 's-1' } },
+  { name: 'feedback_draft_queued', frame: { type: 'system', subtype: 'feedback_draft_queued', uuid: 'u-1', session_id: 's-1' } },
+  { name: 'peer_message_hold', frame: { type: 'system', subtype: 'peer_message_hold', uuid: 'u-1', session_id: 's-1' } },
+  { name: 'post_turn_summary', frame: { type: 'system', subtype: 'post_turn_summary', uuid: 'u-1', session_id: 's-1' } },
+
+  // The conversation, compaction, retry and background-task frames.
+  { name: 'status compacting', frame: { type: 'system', subtype: 'status', status: 'compacting', uuid: 'u-1', session_id: 's-1' } },
+  { name: 'compact_boundary', frame: { type: 'system', subtype: 'compact_boundary', compact_metadata: { trigger: 'auto', tokensBefore: 180000, tokensAfter: 12000 }, uuid: 'u-1', session_id: 's-1' } },
+  { name: 'microcompact_boundary', frame: { type: 'system', subtype: 'microcompact_boundary', uuid: 'u-1', session_id: 's-1' } },
+  { name: 'api_retry', frame: { type: 'system', subtype: 'api_retry', attempt: 2, max_retries: 5, retry_delay_ms: 4000, error_status: 529, error: 'overloaded', uuid: 'u-1', session_id: 's-1' } },
+  { name: 'thinking_tokens', frame: { type: 'system', subtype: 'thinking_tokens', estimated_tokens: 230, uuid: 'u-1', session_id: 's-1' } },
+  { name: 'session_state_changed', frame: { type: 'system', subtype: 'session_state_changed', state: 'running', uuid: 'u-1', session_id: 's-1' } },
+  { name: 'task_started', frame: { type: 'system', subtype: 'task_started', task_id: 't-1', tool_use_id: 'tu-spawn', task_type: 'local_agent', description: 'd', prompt: 'p', uuid: 'u-1', session_id: 's-1' }, parentSpanId: 'tu-spawn' },
+  { name: 'task_progress', frame: { type: 'system', subtype: 'task_progress', task_id: 't-1', tool_use_id: 'tu-spawn', description: 'd', uuid: 'u-1', session_id: 's-1' }, parentSpanId: 'tu-spawn' },
+  { name: 'task_notification', frame: { type: 'system', subtype: 'task_notification', task_id: 't-1', tool_use_id: 'tu-spawn', status: 'completed', summary: 's', uuid: 'u-1', session_id: 's-1' } },
+  { name: 'task_updated', frame: { type: 'system', subtype: 'task_updated', task_id: 't-1', patch: { status: 'completed' }, uuid: 'u-1', session_id: 's-1' } },
+  { name: 'background_tasks_changed', frame: { type: 'system', subtype: 'background_tasks_changed', tasks: [], uuid: 'u-1', session_id: 's-1' } },
+  { name: 'conversation_reset', frame: { type: 'conversation_reset', new_conversation_id: 'conv-2' } },
+  { name: 'rate_limit_event', frame: { type: 'rate_limit_event', rate_limit_info: { status: 'rejected', resets_at: 1792000060 }, uuid: 'u-1', session_id: 's-1' } },
+  { name: 'assistant', frame: { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] }, uuid: 'u-1', session_id: 's-1' } },
+  { name: 'user', frame: { type: 'user', message: { role: 'user', content: 'hi' }, uuid: 'u-1', session_id: 's-1' } },
+  { name: 'result', frame: { type: 'result', subtype: 'success', is_error: false, duration_ms: 1234, num_turns: 1, result: 'Done', uuid: 'u-1', session_id: 's-1' } },
+]
+
+describe('claude 2.1.300 frame corpus', () => {
+  it.each(CLAUDE_FRAME_CORPUS)('extracts a row for $name', ({ frame, parentSpanId }) => {
+    const classified = parentSpanId === undefined ? input(frame) : { ...input(frame), parentSpanId }
+    const category = classifyClaudeCodeMessage(classified)
+    const extraction = extractChatRow(AgentProvider.CLAUDE_CODE, classified, category)
+    expect(extraction.kind).not.toBe('unsupported')
+  })
+
+  // A known frame that states no words draws nothing, never the no-display
+  // card. An unknown subtype keeps that card, because it is the signal that a
+  // new frame exists.
+  it.each([
+    { name: 'notification with an error color and no text', frame: { type: 'system', subtype: 'notification', key: 'compact-error', text: '', priority: 'high', color: 'error', uuid: 'u-1', session_id: 's-1' } },
+    { name: 'memory_recall with no memory', frame: { type: 'system', subtype: 'memory_recall', mode: 'select', memories: [], uuid: 'u-1', session_id: 's-1' } },
+  ])('extracts a hidden row for $name', ({ frame }) => {
+    const classified = input(frame)
+    const extraction = extractChatRow(AgentProvider.CLAUDE_CODE, classified, classifyClaudeCodeMessage(classified))
+    expect(extraction).toEqual(extractChatRow(AgentProvider.CLAUDE_CODE, classified, { kind: 'hidden' }))
+  })
+
+  it('extracts the no-display card for an unknown subtype', () => {
+    const classified = input({ type: 'system', subtype: 'some_future_event', uuid: 'u-1', session_id: 's-1' })
+    const extraction = extractChatRow(AgentProvider.CLAUDE_CODE, classified, classifyClaudeCodeMessage(classified))
+    expect(extraction.kind).toBe('unsupported')
   })
 })

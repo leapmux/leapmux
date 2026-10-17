@@ -1,0 +1,77 @@
+{
+  "_readme": "The ZCode model-response main-reply predicate, pinned on BOTH sides of the language boundary. A `session.updated` payload that states a finished generation carries `content` beside `stopReason`; only the RUNNING TURN's reply may reach the transcript and the context meter. Every other source is a side query: the app-server runs it for itself, and persisting it puts raw verifier JSON and summary titles into the chat. `TestZCodeModelResponseConformance` in the worker replays these cases against `zcodeIsMainReply`, and the browser's `modelResponseConformance.test.ts` replays them against `zcodeIsMainReply` in the provider plugin. The source words come from contracts/zcode-protocol.json. A payload with no `querySource` states its role through `stopReason`: `tool_internal` marks a side query, and any other stop reason is the turn reply. A `querySource` that is not the JSON string `main_turn` is never the reply, whatever its JSON type.",
+  "cases": [
+    {
+      "name": "the main turn is the reply",
+      "payload": {
+        "content": "Hello",
+        "querySource": "main_turn",
+        "stopReason": "stop",
+        "toolCallCount": 0,
+        "usage": { "inputTokens": 10, "outputTokens": 2, "totalTokens": 12, "cacheReadTokens": 0, "cacheWriteTokens": 0 },
+        "contextWindow": 1000000
+      },
+      "isMainReply": true
+    },
+    {
+      "name": "a subagent query is not the reply",
+      "payload": { "content": "Subagent answer", "querySource": "subagent", "stopReason": "stop", "toolCallCount": 0, "usage": {} },
+      "isMainReply": false
+    },
+    {
+      "name": "a compaction query is not the reply",
+      "payload": { "content": "Summary: ...", "querySource": "compact", "stopReason": "stop", "toolCallCount": 0, "usage": {} },
+      "isMainReply": false
+    },
+    {
+      "name": "a goal summary title query is not the reply",
+      "payload": { "content": "{\"title\":\"Verify Wave 01\"}", "querySource": "goal_summary_title", "stopReason": "stop", "toolCallCount": 0, "usage": {} },
+      "isMainReply": false
+    },
+    {
+      "name": "a target completion verification query is not the reply",
+      "payload": { "content": "{\"passed\": true, \"reason\": \"...\", \"nextAction\": \"\"}", "querySource": "target_completion_verification", "stopReason": "stop", "toolCallCount": 0, "usage": {} },
+      "isMainReply": false
+    },
+    {
+      "name": "a git commit message query is not the reply",
+      "payload": { "content": "Fix the parser", "querySource": "git_commit_message", "stopReason": "stop", "toolCallCount": 0, "usage": {} },
+      "isMainReply": false
+    },
+    {
+      "name": "a workspace generate text query is not the reply",
+      "payload": { "content": "Generated text", "querySource": "workspace_generate_text", "stopReason": "stop", "toolCallCount": 0, "usage": {} },
+      "isMainReply": false
+    },
+    {
+      "name": "an unknown source is not the reply",
+      "payload": { "content": "Some text", "querySource": "some_new_source", "stopReason": "stop", "toolCallCount": 0, "usage": {} },
+      "isMainReply": false
+    },
+    {
+      "name": "an absent source with a turn stop reason is the reply",
+      "payload": { "content": "Some text", "stopReason": "end_turn", "toolCallCount": 0, "usage": {} },
+      "isMainReply": true
+    },
+    {
+      "name": "an absent source with the tool-internal stop reason is not the reply",
+      "payload": { "content": "", "stopReason": "tool_internal", "toolCallCount": 0, "usage": {} },
+      "isMainReply": false
+    },
+    {
+      "name": "an empty source string is not the reply",
+      "payload": { "content": "Some text", "querySource": "", "stopReason": "stop", "toolCallCount": 0, "usage": {} },
+      "isMainReply": false
+    },
+    {
+      "name": "a non-string source is not the reply",
+      "payload": { "content": "Some text", "querySource": 5, "stopReason": "stop", "toolCallCount": 0, "usage": {} },
+      "isMainReply": false
+    },
+    {
+      "name": "a null source is present and not the reply beside a turn stop reason",
+      "payload": { "content": "Some text", "querySource": null, "stopReason": "stop", "toolCallCount": 0, "usage": {} },
+      "isMainReply": false
+    }
+  ]
+}

@@ -57,6 +57,10 @@ type Manager struct {
 	// for ever and this manager is constructed before the startup concurrency is
 	// read from the configuration. SetStartupConcurrency replaces it.
 	startupSlots chan struct{}
+
+	// turnRetries counts the goroutines that run accepted turn retries. Only
+	// WaitTurnRetriesForTest reads it: no production caller waits for a retry.
+	turnRetries sync.WaitGroup
 }
 
 // cachedCatalog holds the last catalog and the model that supplies it.
@@ -216,6 +220,13 @@ func (m *Manager) PutAgentForTest(agentID string, a Agent) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.agents[agentID] = &agentRegistration{provider: a}
+}
+
+// WaitTurnRetriesForTest waits until every turn retry that RetryTurn accepted
+// finished its phases. A test reads the phases that ran after this returns,
+// instead of a sleep that guesses when the retry goroutine ends.
+func (m *Manager) WaitTurnRetriesForTest() {
+	m.turnRetries.Wait()
 }
 
 // LifecycleLockCallersForTest reports how many callers hold or wait for the
@@ -595,14 +606,20 @@ func (m *Manager) providerAfterLifecycle(agentID string) (Agent, error) {
 // LockProvider returns the current provider, which can be nil, and retains the lifecycle lock.
 // Always call release. Release the lock before an input operation waits for its response.
 func (m *Manager) LockProvider(agentID string) (Agent, func()) {
+	entry, unlock := m.lockRegistration(agentID)
+	return entry.providerOrNil(), unlock
+}
+
+// lockRegistration returns the current registration, which can be nil, and
+// retains the lifecycle lock. Always call release.
+func (m *Manager) lockRegistration(agentID string) (*agentRegistration, func()) {
 	unlock := m.LockAgent(agentID)
 
 	m.mu.RLock()
 	entry := m.agents[agentID]
-	p := entry.providerOrNil()
 	m.mu.RUnlock()
 
-	return p, unlock
+	return entry, unlock
 }
 
 // SendRawInput writes raw bytes directly to the specified agent's stdin
@@ -792,6 +809,73 @@ func (m *Manager) ApproveAutoReviewDenial(agentID string, entries []json.RawMess
 		return ErrAutoReviewApprovalUnsupported
 	}
 	return approver.ApproveAutoReviewDenial(entries, reviewID)
+}
+
+// RetryTurn stops the running turn and sends its input again on another model.
+//
+// It returns when the provider accepts the retry. The stop, the thread swap and
+// the new turn run in their own goroutine, and each phase states its own
+// failure in the transcript. A caller with an RPC deadline therefore waits for
+// the validation only, never for the provider requests.
+//
+// BeginTurnRetry runs under the lifecycle lock, so the offer check addresses one
+// provider instance. Replace runs under the lock also, so a restart or a
+// context clear cannot interleave with the thread swap. Start runs after the
+// lock releases, because it waits for the new turn to start.
+func (m *Manager) RetryTurn(agentID, turnID, model string) error {
+	entry, release := m.lockRegistration(agentID)
+	p := entry.providerOrNil()
+	if p == nil {
+		release()
+		return fmt.Errorf("%w: %s", ErrAgentNotFound, agentID)
+	}
+	retrier, ok := p.(TurnRetrier)
+	if !ok {
+		release()
+		return ErrTurnRetryUnavailable
+	}
+	retry, err := retrier.BeginTurnRetry(turnID, model)
+	release()
+	if err != nil {
+		return err
+	}
+	m.turnRetries.Add(1)
+	go func() {
+		defer m.turnRetries.Done()
+		m.runTurnRetry(agentID, entry, retry)
+	}()
+	return nil
+}
+
+// runTurnRetry runs the phases of one accepted turn retry.
+//
+// The registration pointer identifies the provider instance that accepted the
+// retry. A provider value cannot do that, because a provider type need not be
+// comparable. A restart or a stop between the acceptance and this goroutine
+// replaces or retires the registration, and the retry then ends without a
+// request.
+func (m *Manager) runTurnRetry(agentID string, accepted *agentRegistration, retry TurnRetry) {
+	entry, release := m.lockRegistration(agentID)
+	m.mu.RLock()
+	current := entry == accepted && !entry.exiting
+	m.mu.RUnlock()
+	if !current {
+		release()
+		retry.Abandon(fmt.Errorf("the agent %s restarted or stopped before the turn retry ran", agentID))
+		return
+	}
+	err := retry.Replace()
+	release()
+	// The provider states each failure in the transcript and logs it, and a user
+	// stop also ends a phase with an error. So these records are for debugging
+	// only.
+	if err != nil {
+		slog.Debug("turn retry ended before the thread swap", "agent_id", agentID, "error", err)
+		return
+	}
+	if err := retry.Start(); err != nil {
+		slog.Debug("turn retry ended before its turn started", "agent_id", agentID, "error", err)
+	}
 }
 
 // StopAgent stops the agent with the given agent ID.

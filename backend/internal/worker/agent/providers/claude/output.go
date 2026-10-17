@@ -42,21 +42,34 @@ const (
 	// the session. LeapMux states the same fact as `context_cleared`, which every
 	// other provider already writes and the transcript already draws.
 	claudeMsgTypeConversationReset = "conversation_reset"
+
+	// claudeControlRequestCanUseTool is the `request.subtype` of the control
+	// request that escalates one tool call to the reader. It carries the
+	// `tool_use_id` of the call it escalates, and the `agent_id` of the
+	// subagent that made the call.
+	claudeControlRequestCanUseTool = "can_use_tool"
+
+	// claudePermissionCheckChecking is the `status` of a
+	// `permission_check_status` frame while an automatic reviewer holds the
+	// call. Only the Worker reads it, so it is not in the contract.
+	claudePermissionCheckChecking = "checking"
+
+	// claudeModelFallbackScopeLocal is the `scope` of a `model_refusal_fallback`
+	// frame whose fallback model serves one response only. Only the Worker
+	// reads it, so it is not in the contract.
+	claudeModelFallbackScopeLocal = "local"
 )
 
-// claudeSystemSubtypeThinkingTokens is the `subtype` of the `system` telemetry
-// line Claude Code emits during extended thinking. It carries a running
-// `estimated_tokens` count for the in-flight turn and streams frequently. Like
-// thinking-text deltas, it is live progress rather than timeline content, so we
-// broadcast the latest estimate over the ephemeral agent_session_info channel
-// and never persist it.
-//
-// It happens to share the literal "thinking_tokens" with
-// contracts.SessionInfoKeyThinkingTokens, the agent_session_info key the
-// estimate is broadcast under, but the two are distinct concepts -- a Claude
-// wire `subtype` against a platform session-info key -- so they stay separate
-// and a change to one does not force a change to the other.
-const claudeSystemSubtypeThinkingTokens = "thinking_tokens"
+// claudeHiddenSystemSubtypes is the set of `system` subtypes the transcript
+// never shows. The contract table is the one list: the browser hides a stored
+// row of each entry, and this set stops the Worker from storing one.
+var claudeHiddenSystemSubtypes = func() map[string]struct{} {
+	subtypes := make(map[string]struct{}, len(contracts.ClaudeHiddenSystemSubtypeKeys))
+	for _, subtype := range contracts.ClaudeHiddenSystemSubtypeKeys {
+		subtypes[subtype] = struct{}{}
+	}
+	return subtypes
+}()
 
 // contextUsageSnapshot tracks token usage for debounced broadcasting.
 type contextUsageSnapshot struct {
@@ -554,11 +567,16 @@ func (a *Agent) handlePersistableMessage(content []byte, msgType string) {
 	}
 
 	if msgType == claudeMsgTypeSystem {
-		// thinking_tokens is broadcast-only telemetry — intercept it before
-		// session-init handling so its per-delta session_id doesn't needlessly
-		// re-fire UpdateSessionID/BroadcastStatusActive, and before the persist
-		// fallthrough so it never lands in the timeline.
+		// thinking_tokens is live telemetry. The handler reports the estimate as
+		// progress. The hidden-subtype table below drops the frame also, but
+		// only after this intercept, because a dropped frame reports nothing.
 		if a.handleThinkingTokens(content) {
+			return
+		}
+
+		// permission_check_status is live state for the same reason: the
+		// handler broadcasts the badge state of the call, and no row persists.
+		if a.handlePermissionCheckStatus(content) {
 			return
 		}
 
@@ -569,7 +587,77 @@ func (a *Agent) handlePersistableMessage(content []byte, msgType string) {
 			return
 		}
 
-		a.claudeCodeHandleSystemInit(content)
+		subtype := claudeSystemSubtypeOf(content)
+
+		// Three hidden subtypes change state before they return.
+		switch subtype {
+		case contracts.ClaudeHiddenSystemSubtypeInit:
+			// The init frame states the session and which slash commands THIS
+			// build has (observeSlashCommands already read the latter on every
+			// system frame). ONLY init moves the session: the side-event queue
+			// stamps session_id on every frame it writes, and firing session
+			// init from each one would re-broadcast the same session at every
+			// step of a turn.
+			a.claudeCodeHandleSystemInit(content)
+			return
+		case contracts.ClaudeHiddenSystemSubtypeCommandsChanged:
+			a.observeChangedCommands(content)
+			return
+		case contracts.ClaudeHiddenSystemSubtypeElicitationComplete:
+			a.handleElicitationComplete(content)
+			return
+		}
+
+		// The table of system subtypes the transcript never shows. A frame of
+		// one is consumed or dropped here, so no row exists for the browser to
+		// hide. An UNKNOWN subtype still persists: a stored no-display card is
+		// the signal that a new frame exists.
+		if _, hidden := claudeHiddenSystemSubtypes[subtype]; hidden {
+			return
+		}
+
+		switch subtype {
+		case contracts.ClaudeSystemSubtypePermissionDenied:
+			// The denial persists (the transcript draws "Permission denied:
+			// ..."), and it ends the live permission check of the call it
+			// identifies: a host must stop showing the check at any frame for
+			// the call but its own status. A subagent's denial persists in that
+			// subagent's transcript, so the handler persists it and returns.
+			if a.handlePermissionDenied(content) {
+				return
+			}
+		case contracts.ClaudeSystemSubtypeInformational:
+			// The interface shows level info in its own transcript mode only, so
+			// a stored row would contradict it. The browser hides the rows an
+			// older build stored.
+			if claudeInformationalLevel(content) == contracts.ClaudeInformationalLevelInfo {
+				return
+			}
+		case contracts.ClaudeSystemSubtypeHookResponse:
+			// A hook that blocks a call reports itself in that call's own
+			// result. Only a FAILED hook needs a row of its own; the rest would
+			// add one row per hook per turn with nothing new to state.
+			if claudeHookResponseOutcome(content) != contracts.ClaudeHookOutcomeError {
+				return
+			}
+		case contracts.ClaudeSystemSubtypeModelRefusalFallback:
+			// The session model follows the fallback unless the swap is
+			// request-local: `scope: "local"` serves one response and leaves the
+			// session model unchanged, and an ABSENT scope is the session-scoped
+			// swap ("Absent from older CLIs (treat as 'session')" in the
+			// interface's own schema). The row itself persists either way.
+			//
+			// The frame also lists `retracted_message_uuids`, the refused partial
+			// messages that the CLI removed. LeapMux keeps those rows for now:
+			// https://github.com/leapmux/leapmux/issues/533
+			if claudeModelFallbackScope(content) != claudeModelFallbackScopeLocal {
+				a.adoptClaudeModelFallback(content)
+			}
+		case contracts.ClaudeSystemSubtypeModelConsentFallback:
+			// The consent check swaps the session off the requested model, so the
+			// session model follows the fallback. The row itself persists.
+			a.adoptClaudeModelFallback(content)
+		}
 
 		if isNotificationThreadable(content, source) {
 			if statusVal, ok := extractStatusValue(content); ok {
@@ -717,11 +805,21 @@ func (a *Agent) handlePersistableMessage(content []byte, msgType string) {
 }
 
 // handleThinkingTokens intercepts Claude Code's `system`/`thinking_tokens`
-// telemetry. When the line is a thinking-token update it broadcasts the latest
-// running estimate over the ephemeral agent_session_info channel (seq -1, never
-// written to the messages table) and returns true so the caller skips both
-// session-init handling and persistence. Returns false for any other system
-// message, which continues down the normal persist path.
+// telemetry. Claude Code emits the line during extended thinking. It carries a
+// running `estimated_tokens` count for the turn and streams frequently. Like a
+// thinking-text delta, it is live progress rather than timeline content.
+//
+// When the line is a thinking-token update, the handler reports the latest
+// estimate as progress, which the sink broadcasts over the ephemeral
+// agent_session_info channel (seq -1, never written to the messages table). It
+// then returns true, so the caller persists nothing. It returns false for any
+// other system message, which continues down the normal persist path.
+//
+// The subtype shares the literal "thinking_tokens" with
+// contracts.SessionInfoKeyThinkingTokens, the agent_session_info key of the
+// estimate. The two are different concepts: a Claude wire `subtype` and a
+// platform session-info key. Each one keeps its own constant, so a change to
+// one does not force a change to the other.
 func (a *Agent) handleThinkingTokens(content []byte) bool {
 	estimate, ok := parseThinkingTokens(content)
 	if !ok {
@@ -731,6 +829,206 @@ func (a *Agent) handleThinkingTokens(content []byte) bool {
 		a.sink.ReportProgress(agent.CompleteModelProgress("claude:thinking"))
 	} else {
 		a.sink.ReportProgress(agent.NativeTokenProgress("claude:thinking", estimate))
+	}
+	return true
+}
+
+// handlePermissionCheckStatus intercepts Claude Code's
+// `system`/`permission_check_status` frame. It broadcasts the live permission
+// check state of the call that the frame identifies. The broadcast goes over
+// the ephemeral agent_session_info channel. It returns true, so the caller
+// persists nothing. The tool card shows the badge, so a stored row would only
+// draw a no-display card for a fact that the card already states. It returns
+// false for any other system message.
+//
+// A frame that states an `agent_id` resolves to the child sink of that task,
+// so a subagent's call gets its badge in the subagent's own tool card. An
+// unknown child consumes the frame and broadcasts nothing.
+func (a *Agent) handlePermissionCheckStatus(content []byte) bool {
+	toolUseID, agentID, status, ok := parsePermissionCheckStatus(content)
+	if !ok {
+		return false
+	}
+	sink, resolved := a.claudePermissionCheckSink(agentID)
+	if !resolved {
+		return true
+	}
+	// `done`, and any status that this build does not know, ends the wait. The
+	// badge must clear at the earliest signal, so an unknown word is read as
+	// its end rather than as a reason to keep it standing.
+	setClaudePermissionCheck(sink, toolUseID, status == claudePermissionCheckChecking)
+	return true
+}
+
+// parsePermissionCheckStatus reads the fields the permission-check state
+// broadcast needs from a `permission_check_status` line, and reports ok=false
+// for every other line. Pure (no sink, no I/O) so the routing rule is
+// unit-testable directly.
+func parsePermissionCheckStatus(content []byte) (toolUseID, agentID, status string, ok bool) {
+	var msg struct {
+		Subtype   string `json:"subtype"`
+		ToolUseID string `json:"tool_use_id"`
+		AgentID   string `json:"agent_id"`
+		Status    string `json:"status"`
+	}
+	if err := json.Unmarshal(content, &msg); err != nil || msg.Subtype != contracts.ClaudeHiddenSystemSubtypePermissionCheckStatus {
+		return "", "", "", false
+	}
+	return msg.ToolUseID, msg.AgentID, msg.Status, true
+}
+
+// claudeSystemSubtypeOf reads the `subtype` of a `system` line, or "" when the
+// line states none.
+func claudeSystemSubtypeOf(content []byte) string {
+	var msg struct {
+		Subtype string `json:"subtype"`
+	}
+	if err := json.Unmarshal(content, &msg); err != nil {
+		return ""
+	}
+	return msg.Subtype
+}
+
+// claudeInformationalLevel reads the `level` of an `informational` line, or ""
+// when the line carries none. The closed set is info, notice, suggestion and
+// warning (the interface's own render levels).
+func claudeInformationalLevel(content []byte) string {
+	var msg struct {
+		Level string `json:"level"`
+	}
+	if err := json.Unmarshal(content, &msg); err != nil {
+		return ""
+	}
+	return msg.Level
+}
+
+// claudeHookResponseOutcome reads the `outcome` of a `hook_response` line, or ""
+// when the line carries none. The closed set is success, error and cancelled.
+func claudeHookResponseOutcome(content []byte) string {
+	var msg struct {
+		Outcome string `json:"outcome"`
+	}
+	if err := json.Unmarshal(content, &msg); err != nil {
+		return ""
+	}
+	return msg.Outcome
+}
+
+// claudeModelFallbackScope reads the `scope` of a `model_refusal_fallback`
+// line, or "" when the line carries none. The closed set is session and local,
+// and the schema states that an absent scope is the session-scoped swap, so ""
+// is read as session everywhere (only "local" opts out of the model follow).
+func claudeModelFallbackScope(content []byte) string {
+	var msg struct {
+		Scope string `json:"scope"`
+	}
+	if err := json.Unmarshal(content, &msg); err != nil {
+		return ""
+	}
+	return msg.Scope
+}
+
+// adoptClaudeModelFallback folds the fallback model of a model-swap frame into
+// the session's model, so the settings the reader sees follow the swap the row
+// reports.
+func (a *Agent) adoptClaudeModelFallback(content []byte) {
+	var msg struct {
+		FallbackModel string `json:"fallback_model"`
+	}
+	if err := json.Unmarshal(content, &msg); err != nil || msg.FallbackModel == "" {
+		return
+	}
+	a.Mu.Lock()
+	a.model = msg.FallbackModel
+	a.Mu.Unlock()
+	a.sink.PersistSettingsRefresh(map[string]string{agent.OptionIDModel: msg.FallbackModel})
+}
+
+// claudePermissionCheckSink resolves the sink of the agent that made a tool
+// call. Claude Code identifies that agent by its `agent_id`, the task id of the
+// subagent. A signal with no `agent_id` describes the root. A signal that
+// identifies an unknown child resolves to nothing, and ok reports that.
+//
+// The permission-check broadcasts and the subagent's permission denial share
+// this one rule, so a badge and the denial of its call always reach the same
+// transcript.
+func (a *Agent) claudePermissionCheckSink(agentID string) (agent.ProviderServices, bool) {
+	if agentID == "" {
+		return a.sink, true
+	}
+	known := lookupClaudeKnownTask(a.sink, agentID)
+	if !known.exists || known.childID == "" {
+		return nil, false
+	}
+	return a.sink.ChildSink(known.childID), true
+}
+
+// setClaudePermissionCheck broadcasts the permission-check state of one tool
+// call. The browser keys its live entry by the span id AND the session
+// together, so the update states the session that the resolved sink stamps on
+// its rows. A call with no tool_use_id identifies no row and broadcasts
+// nothing.
+//
+// checking is true while the check runs. When it is false, the value travels as
+// an explicit JSON null, which the browser reads as "the check ended". An
+// absent key would leave the badge standing.
+func setClaudePermissionCheck(sink agent.ProviderServices, toolUseID string, checking bool) {
+	if toolUseID == "" {
+		return
+	}
+	var value interface{}
+	if checking {
+		value = true
+	}
+	sink.BroadcastSessionInfo(map[string]interface{}{
+		contracts.SessionInfoKeyRunningTool: map[string]interface{}{
+			contracts.RunningToolFieldSpanId:          toolUseID,
+			contracts.RunningToolFieldAgentSessionId:  sink.MessageSessionID(),
+			contracts.RunningToolFieldPermissionCheck: value,
+		},
+	})
+}
+
+// clearClaudePermissionCheck states that one tool call waits on no permission
+// check any more. See setClaudePermissionCheck for why the clear is a null
+// value rather than an absent key.
+func clearClaudePermissionCheck(sink agent.ProviderServices, toolUseID string) {
+	setClaudePermissionCheck(sink, toolUseID, false)
+}
+
+// handlePermissionDenied ends the live permission check of a denied call, and
+// persists the denial in the transcript of the agent that made the call. It
+// reports true when it persisted the row itself.
+//
+// A denial that states the `agent_id` of a known task came from a subagent's
+// call. The row of that call is in the subagent's transcript, so the denial
+// persists there, under the span of the call. A denial with no `agent_id`
+// returns false, and the caller persists it in the root transcript. A denial
+// whose `agent_id` identifies no known task also returns false: no child
+// transcript can take the row, and the root keeps it rather than losing it. No
+// known sink holds a badge for that call, so it clears nothing.
+func (a *Agent) handlePermissionDenied(content []byte) bool {
+	var msg struct {
+		ToolUseID string `json:"tool_use_id"`
+		AgentID   string `json:"agent_id"`
+	}
+	if err := json.Unmarshal(content, &msg); err != nil {
+		return false
+	}
+	sink, resolved := a.claudePermissionCheckSink(msg.AgentID)
+	if !resolved {
+		return false
+	}
+	clearClaudePermissionCheck(sink, msg.ToolUseID)
+	if msg.AgentID == "" {
+		return false
+	}
+	// The denial sits under the span of the call that it denies, as a root
+	// denial does: a system frame that states a tool_use_id and no
+	// parent_tool_use_id takes that tool_use_id as its parent span.
+	span := agent.SpanInfo{ParentSpanID: msg.ToolUseID}
+	if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: content}, span); err != nil {
+		slog.Warn("persist claude subagent permission denial", "agent_id", a.AgentID(), "task_id", msg.AgentID, "error", err)
 	}
 	return true
 }
@@ -747,12 +1045,10 @@ func (a *Agent) handleThinkingTokens(content []byte) bool {
 // whenever no span was open, which is exactly the state during a top-level
 // Agent/Task call (claudeToolSpawnsSubagent opens none).
 func (a *Agent) claudeHandleToolProgress(content []byte) {
-	// a.Mu guards a.sessionID, which claudeCodeHandleSystemInit rewrites when the
-	// CLI reports a different session.
-	a.Mu.Lock()
-	sessionID := a.sessionID
-	a.Mu.Unlock()
-	update, ok := parseClaudeToolProgress(content, sessionID)
+	// The update states the session that the root sink stamps on its rows. The
+	// permission-check broadcast reads its session from its sink the same way,
+	// so the updates of one call address the same browser entry.
+	update, ok := parseClaudeToolProgress(content, a.sink.MessageSessionID())
 	if !ok {
 		return
 	}
@@ -932,11 +1228,12 @@ func claudeNonNegativeCount(raw json.RawMessage) (int64, bool) {
 //
 // estimated_tokens is captured as RawMessage, not a typed number, so the subtype
 // match never depends on the count's wire form. A typed float64 (or int64) field
-// would make json.Unmarshal error on a malformed or out-of-range count -- a
-// quoted "230", an overflowing 1e400 -- returning ok=false and letting the
-// telemetry fall through to session-init + persistence, i.e. the exact timeline
-// bloat this interception exists to prevent. Matching the subtype first
-// decouples "is this a thinking_tokens line?" from "did the count parse?".
+// would make json.Unmarshal fail on a malformed or out-of-range count -- a
+// quoted "230", an overflowing 1e400 -- and return ok=false. The line would then
+// report no progress: the hidden-subtype table drops it, and the counter keeps a
+// stale estimate instead of the clear that an unreadable count sends. Matching
+// the subtype first separates "is this a thinking_tokens line?" from "did the
+// count parse?".
 //
 // claudeNonNegativeCount states what a malformed, negative, or out-of-range
 // count becomes. Its "no usable number" flag is DISCARDED here, on purpose: an
@@ -948,7 +1245,7 @@ func parseThinkingTokens(content []byte) (estimate int64, ok bool) {
 		Subtype         string          `json:"subtype"`
 		EstimatedTokens json.RawMessage `json:"estimated_tokens"`
 	}
-	if err := json.Unmarshal(content, &msg); err != nil || msg.Subtype != claudeSystemSubtypeThinkingTokens {
+	if err := json.Unmarshal(content, &msg); err != nil || msg.Subtype != contracts.ClaudeHiddenSystemSubtypeThinkingTokens {
 		return 0, false
 	}
 	estimate, _ = claudeNonNegativeCount(msg.EstimatedTokens)
@@ -974,6 +1271,48 @@ func (a *Agent) claudeCodeHandleSystemInit(content []byte) {
 	a.sink.BroadcastStatusActive(initMsg.SessionID)
 }
 
+// claudeControlRequestFields holds the optional fields of a control_request's
+// `request` object that the Worker reads beside the request id.
+type claudeControlRequestFields struct {
+	Subtype string
+	// ToolUseID identifies the call that a `can_use_tool` escalates.
+	ToolUseID string
+	// AgentID is the task id of the subagent that made the call. It is empty
+	// for a call of the root agent.
+	AgentID string
+	// ElicitationID identifies the MCP elicitation that an `elicitation` asks.
+	ElicitationID string
+}
+
+// parseClaudeControlRequestFields reads the optional fields of a
+// control_request's `request` object. Each field decodes on its own: a field
+// that is absent, null, or of the wrong type reads as "", and it costs only
+// itself. A `request` that is not an object reads as no fields at all.
+func parseClaudeControlRequestFields(content []byte) claudeControlRequestFields {
+	var frame struct {
+		Request map[string]json.RawMessage `json:"request"`
+	}
+	if err := json.Unmarshal(content, &frame); err != nil {
+		return claudeControlRequestFields{}
+	}
+	return claudeControlRequestFields{
+		Subtype:       claudeOptionalString(frame.Request["subtype"]),
+		ToolUseID:     claudeOptionalString(frame.Request["tool_use_id"]),
+		AgentID:       claudeOptionalString(frame.Request["agent_id"]),
+		ElicitationID: claudeOptionalString(frame.Request["elicitation_id"]),
+	}
+}
+
+// claudeOptionalString decodes one optional JSON string. An absent, null, or
+// non-string value reads as "".
+func claudeOptionalString(raw json.RawMessage) string {
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return ""
+	}
+	return value
+}
+
 // claudeCodeHandleControlCancel retires the exact pending publication.
 func (a *Agent) claudeCodeHandleControlCancel(content []byte) {
 	var cc struct {
@@ -984,6 +1323,51 @@ func (a *Agent) claudeCodeHandleControlCancel(content []byte) {
 		return
 	}
 	a.retireControl(cc.RequestID)
+}
+
+// handleElicitationComplete answers and withdraws the elicitation control
+// request that the frame completes. An unknown elicitation id, and a request
+// that the reader answered already, do nothing.
+//
+// The MCP server confirmed that the out-of-band flow of a URL-mode elicitation
+// finished, so the reader acted on the URL. Claude Code 2.1.300's headless
+// completion handler only logs the completion and writes this frame. Its
+// elicitation handler still waits for the host's answer, so the MCP call stays
+// blocked until the Worker answers. The Worker therefore accepts the request,
+// as the browser does for a reader who accepts it (buildElicitationResponse in
+// frontend/src/components/chat/controls/elicitationForm.ts).
+//
+// The answer is automatic, so finishControlAnswer withdraws the reader's card,
+// which is stale now. retireControl then removes the record. It also
+// withdraws the card when the write fails, because the request can get no
+// other answer.
+func (a *Agent) handleElicitationComplete(content []byte) {
+	var msg struct {
+		ElicitationID string `json:"elicitation_id"`
+	}
+	if err := json.Unmarshal(content, &msg); err != nil {
+		return
+	}
+	requestID, record := a.claimElicitation(msg.ElicitationID)
+	if record == nil {
+		return
+	}
+	answer, err := json.Marshal(map[string]any{
+		"type": claudeMsgTypeControlResponse,
+		"response": map[string]any{
+			"subtype":    "success",
+			"request_id": requestID,
+			"response":   map[string]any{"action": contracts.MCPElicitationActionAccept},
+		},
+	})
+	if err == nil {
+		err = a.Process.SendRawInput(answer, agent.StopContext{})
+	}
+	a.finishControlAnswer(requestID, record, err)
+	if err != nil {
+		slog.Warn("send claude elicitation answer", "agent_id", a.AgentID(), "request_id", requestID, "error", err)
+	}
+	a.retireControl(requestID)
 }
 
 // claudeCodeHandleControlResponse settles a reply that arrived after its synchronous wait.
@@ -1099,9 +1483,9 @@ func (a *Agent) claudeCodeHandleRateLimitEvent(content []byte) {
 
 	// Decide whether this event is an actual block that warrants waiting for a
 	// reset. Only a hard "rejected" status blocks; "allowed" and
-	// "allowed_warning" are both served -- a warning is just a heads-up that the
-	// window is filling up -- so they clear any pending resume. This mirrors
-	// Claude Code's own gate (it shows the blocking countdown only on "rejected")
+	// "allowed_warning" are both served -- a warning only states that the window
+	// fills -- so they clear any pending resume. This mirrors Claude Code's own
+	// block rule (it shows the blocking countdown only on "rejected")
 	// and fixes a bug where any non-"allowed" status, notably "allowed_warning",
 	// scheduled a spurious auto-continue.
 	usingOverage := rlInfo.IsUsingOverage != nil && *rlInfo.IsUsingOverage
@@ -1133,7 +1517,7 @@ const claudeRateLimitStatusRejected = "rejected"
 
 // claudeRateLimitResume reports whether a Claude rate_limit_event represents an
 // actual block and, if so, the Unix reset time to auto-resume at (nil when the
-// event is a block but carries no reset). Mirrors Claude Code's own gate:
+// event is a block but carries no reset). Mirrors Claude Code's own block rule:
 //
 //   - While NOT on overage, the base window blocks only on a "rejected" status,
 //     lifting at resetsAt. "allowed" / "allowed_warning" are served.
@@ -1462,17 +1846,6 @@ func isSimpleUserTextEcho(content []byte) bool {
 	return len(trimmed) > 0 && trimmed[0] == '"'
 }
 
-// claudeSystemSubtypeSessionStateChanged is the `subtype` of the `system` frame
-// Claude Code publishes for its own turn state. It emits the frame only when
-// claudeSessionStateEnv is set.
-//
-// Two paths read it, and the split is deliberate. observeTurnFromOutput reads
-// the STATE it carries, which is the whole reason this Worker asks for the
-// frame. claudeHandleTaskEvent drops the frame from the timeline, because the
-// turn flag already carries what it means and the CLI sends one at every edge of
-// every turn.
-const claudeSystemSubtypeSessionStateChanged = "session_state_changed"
-
 // The states that a `system`/`session_state_changed` frame carries.
 const (
 	claudeSessionStateIdle           = "idle"
@@ -1515,6 +1888,14 @@ func (a *Agent) observeTurnFromOutput(content []byte, msgType string) {
 // claudeSessionStateOf reads the state of a `session_state_changed` frame, and
 // reports false for every other frame.
 //
+// Claude Code publishes that `system` frame for its own turn state. It emits
+// the frame only when claudeSessionStateEnv is set. Two paths read it, and the
+// split is deliberate. observeTurnFromOutput reads the STATE it carries through
+// this function, which is the whole reason this Worker asks for the frame.
+// claudeHandleTaskEvent drops the frame from the timeline, because the turn
+// flag already carries what it means and the CLI sends one at every edge of
+// every turn.
+//
 // An unknown state value is REFUSED rather than treated as a turn. The three
 // states are a closed set that the CLI's own schema states, so a fourth one is
 // a build this Worker does not know -- and answering "a turn runs" for it would
@@ -1524,7 +1905,7 @@ func claudeSessionStateOf(content []byte) (string, bool) {
 		Subtype string `json:"subtype"`
 		State   string `json:"state"`
 	}
-	if err := json.Unmarshal(content, &msg); err != nil || msg.Subtype != claudeSystemSubtypeSessionStateChanged {
+	if err := json.Unmarshal(content, &msg); err != nil || msg.Subtype != contracts.ClaudeHiddenSystemSubtypeSessionStateChanged {
 		return "", false
 	}
 	switch msg.State {

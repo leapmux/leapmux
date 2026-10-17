@@ -5,7 +5,7 @@ import type { ToolSpanContext } from '~/components/chat/rowExtractionTypes'
 import type { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ImageResultSource } from '~/lib/imageBlocks'
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import { CODEX_EXEC_OUTPUT, CODEX_ITEM, CODEX_ITEM_FIELD, CODEX_RAW_FIELD, CODEX_RAW_ITEM, CODEX_RAW_NAMESPACE, CODEX_RAW_TOOL } from '~/generated/contracts/codex-protocol'
+import { CODEX_EXEC_OUTPUT, CODEX_ITEM, CODEX_ITEM_FIELD, CODEX_RAW_FIELD, CODEX_RAW_ITEM, CODEX_RAW_NAMESPACE, CODEX_RAW_TOOL, CODEX_SUPPLEMENT } from '~/generated/contracts/codex-protocol'
 import { parseImageBlock } from '~/lib/imageBlocks'
 import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
 import { createToolCall } from '../../../model/createToolCall'
@@ -63,17 +63,41 @@ function matchingRawExecSide(payload: Record<string, unknown>, side: ParsedMessa
   return item
 }
 
-interface CodexRawExecOutput {
-  text: string
+/** How one output of a code-mode cell ends: the status line of its header. */
+type CodexExecStatus = 'completed' | 'failed' | 'terminated' | 'running'
+
+/** One output of a code-mode cell: the exec output, or one wait output after a yield. */
+interface CodexExecSegment {
+  /** The status that the header states, or null when the header is not a native header. */
+  status: CodexExecStatus | null
+  /** The text of every text block, the header included. */
+  text: string[]
+  /** The script output after the header. */
+  body: string[]
   images: ImageResultSource[]
-  failed: boolean
-  recognized: boolean
   durationMs?: number
 }
 
+const CODEX_EXEC_TIMING = /^Wall time (\d+(?:\.\d+)?) seconds(?: \(code-mode [\d.]+ seconds; overhead -?[\d.]+ seconds\))?\nOutput:\n/
+
+/** The status that one header line states, or null for a line that no native header starts with. */
+function codexExecStatus(firstLine: string): CodexExecStatus | null {
+  switch (firstLine) {
+    case CODEX_EXEC_OUTPUT.CompletedHeader:
+      return 'completed'
+    case CODEX_EXEC_HEADER.Failed:
+      return 'failed'
+    case CODEX_EXEC_HEADER.Terminated:
+      return 'terminated'
+    default:
+      return firstLine.startsWith(CODEX_EXEC_OUTPUT.RunningHeaderPrefix) && firstLine.length > CODEX_EXEC_OUTPUT.RunningHeaderPrefix.length
+        ? 'running'
+        : null
+  }
+}
+
 /** Read the native header before script text. A status line that the script prints cannot change the outcome. */
-function codexRawExecOutput(item: Record<string, unknown>): CodexRawExecOutput | null {
-  const output = item[CODEX_RAW_FIELD.Output]
+function codexExecSegment(output: unknown): CodexExecSegment | null {
   const blocks: unknown[] | null = typeof output === 'string' ? [{ type: CODEX_EXEC_OUTPUT.TextContent, text: output }] : Array.isArray(output) ? output : null
   if (!blocks)
     return null
@@ -94,22 +118,64 @@ function codexRawExecOutput(item: Record<string, unknown>): CodexRawExecOutput |
   }
   const first = blocks[0]
   const header = isObject(first) && first.type === CODEX_EXEC_OUTPUT.TextContent && typeof first.text === 'string' ? first.text : ''
-  const firstLine = header.split('\n', 1)[0]
-  const timing = /^Wall time (\d+(?:\.\d+)?) seconds(?: \(code-mode [\d.]+ seconds; overhead -?[\d.]+ seconds\))?\nOutput:\n/.exec(header.slice(header.indexOf('\n') + 1))
+  const timing = CODEX_EXEC_TIMING.exec(header.slice(header.indexOf('\n') + 1))
+  const status = timing === null ? null : codexExecStatus(header.split('\n', 1)[0] ?? '')
   const seconds = timing?.[1] === undefined ? undefined : Number(timing[1])
-  const recognized = (firstLine === CODEX_EXEC_HEADER.Failed || firstLine === CODEX_EXEC_OUTPUT.CompletedHeader) && timing !== null
   let body = text
-  if (recognized && timing) {
+  if (status !== null && timing) {
     const remainder = header.slice(header.indexOf('\n') + 1 + timing[0].length)
     body = remainder === '' ? text.slice(1) : [remainder, ...text.slice(1)]
   }
   return {
-    // Status and duration belong to the model fields. The command body and Copy action contain script output only.
+    status,
+    text,
+    body,
+    images,
+    ...(seconds !== undefined && Number.isFinite(seconds) ? { durationMs: seconds * 1000 } : {}),
+  }
+}
+
+/** Every output of a code-mode cell, joined into what one card states. */
+interface CodexRawExecOutput {
+  text: string
+  images: ImageResultSource[]
+  /** The status of the last output, or null when a header is not a native header. */
+  status: CodexExecStatus | null
+  durationMs?: number
+}
+
+/**
+ * Read every output of a code-mode cell, in order.
+ *
+ * A cell that yields keeps running, and the model reads the rest of its output through
+ * `wait` calls. The worker stores each wait output beside the exec output, and the
+ * resolve puts them on the item under `continuationOutputs` (see resolveMessage.ts).
+ * Each yield returns only the output since the yield before it, so the card joins
+ * every body, and the last header states how the cell ended. A continuation value
+ * that is neither text nor a list holds no output, so the card skips it.
+ *
+ * The status and the duration belong to the model fields. The command body and the
+ * Copy action contain script output only. A cell that ran across several calls states
+ * no duration, because no one wall time covers the cell.
+ */
+function codexRawExecOutput(item: Record<string, unknown>): CodexRawExecOutput | null {
+  const first = codexExecSegment(item[CODEX_RAW_FIELD.Output])
+  if (!first)
+    return null
+  const continuation = item[CODEX_SUPPLEMENT.ContinuationOutputs]
+  const later = Array.isArray(continuation) ? continuation.map(codexExecSegment).filter(segment => segment !== null) : []
+  const segments = [first, ...later]
+  const last = segments[segments.length - 1]!
+  const images = segments.flatMap(segment => segment.images)
+  if (segments.some(segment => segment.status === null))
+    return { text: segments.flatMap(segment => segment.text).join('\n'), images, status: null }
+  // A yield that printed nothing adds no empty line between the bodies around it.
+  const body = segments.flatMap(segment => segment.status === 'running' ? segment.body.filter(text => text !== '') : segment.body)
+  return {
     text: body.join('\n'),
     images,
-    failed: firstLine === CODEX_EXEC_HEADER.Failed && timing !== null,
-    recognized,
-    ...(seconds !== undefined && Number.isFinite(seconds) ? { durationMs: seconds * 1000 } : {}),
+    status: last.status,
+    ...(segments.length === 1 && last.durationMs !== undefined ? { durationMs: last.durationMs } : {}),
   }
 }
 
@@ -129,7 +195,7 @@ export function codexRawExecCall(payload: Record<string, unknown>, sides: ToolSp
     name: CODEX_RAW_TOOL.Exec,
     lifecycle: {
       frameStatus: result ? 'unstated' : 'in_progress',
-      providerOutcome: output?.failed ? 'failed' : null,
+      providerOutcome: output?.status === 'failed' ? 'failed' : output?.status === 'terminated' ? 'interrupted' : null,
       retainedOutcome: retainedOutcome(completion),
       rowFinal: ended,
       resultFrameLanded: result !== undefined,
@@ -140,8 +206,8 @@ export function codexRawExecCall(payload: Record<string, unknown>, sides: ToolSp
     request: { command: pickString(request, CODEX_RAW_FIELD.Input), language: 'javascript' },
     ...(output
       ? {
-          result: output.recognized
-            ? { commands: [{ output: output.text, ...(output.failed ? { failed: true as const } : {}), ...(output.durationMs !== undefined ? { durationMs: output.durationMs } : {}) }], unresolvedTerminals: [] }
+          result: output.status !== null
+            ? { commands: [{ output: output.text, ...(output.status === 'failed' ? { failed: true as const } : {}), ...(output.durationMs !== undefined ? { durationMs: output.durationMs } : {}) }], unresolvedTerminals: [] }
             : unparsedResult(output.text),
           images: output.images,
         }

@@ -359,14 +359,26 @@ export async function createMockModelServer(options: MockModelServerOptions): Pr
       }
       const { step, scenario } = answer
       recordModelResponse(response, answer.record, () => step.error ? genericModelError(step.error) : undefined)
-      if (!await holdStep(scenario, step, { request, response }))
+      const transport = { request, response }
+      const stream = createModelStream(response, step.stream, name => holdGate(scenario, name, transport))
+      // Codex reads a `response.metadata` event while the held step still runs. A step that
+      // carries responseMetadata therefore writes its head before the hold (its gate or its
+      // delay), and the rest of its answer after the hold. Every other step holds before the mock
+      // writes any byte. A client that disconnects during the hold ends the exchange: the hold
+      // returns false, and the writer stops after the head.
+      if (protocol === 'openai-responses' && step.responseMetadata !== undefined) {
+        responseSequence++
+        await writeOpenAIResponse(response, body, step, `mock-response-${responseSequence}`, stream, () => holdStep(scenario, step, transport))
+        return
+      }
+      if (!await holdStep(scenario, step, transport))
         return
       if (step.error) {
         writeModelError(response, protocol, body, step.error)
         return
       }
       responseSequence++
-      await writeModelResponse(response, protocol, body, step, `mock-response-${responseSequence}`, createModelStream(response, step.stream, name => holdGate(scenario, name, { request, response })))
+      await writeModelResponse(response, protocol, body, step, `mock-response-${responseSequence}`, stream)
     }
     catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -538,11 +550,22 @@ function holdStep(scenario: ScenarioState, step: MockModelStep, transport: Disco
   return waitUnlessDisconnected(step.delayMs ?? 0, transport)
 }
 
-/** Keep a model request open until its test releases the gate. */
-function holdGate(scenario: ScenarioState, name: string, transport: DisconnectSignals): Promise<boolean> {
+/**
+ * Keep a model request open until its test releases the gate.
+ *
+ * It reads only the two fields that a gate needs, so a unit test can call it
+ * with a small scenario.
+ */
+export function holdGate(scenario: Pick<ScenarioState, 'closed' | 'gates'>, name: string, transport: DisconnectSignals): Promise<boolean> {
   const { request, response, signal } = transport
-  if (scenario.closed)
+  if (scenario.closed) {
+    // A closed scenario answers nothing more. End the response here, as
+    // cancelGates does for a request that already waits, so the client sees the
+    // end at once and does not wait for its own timeout.
+    if (response && !response.destroyed)
+      response.destroy()
     return Promise.resolve(false)
+  }
   let gate = scenario.gates.get(name)
   if (!gate) {
     gate = { released: false, waiters: new Set() }
@@ -887,12 +910,21 @@ async function writeOpenAIChatCompletion(response: ServerResponse, requestBody: 
   response.end('data: [DONE]\n\n')
 }
 
-async function writeOpenAIResponse(response: ServerResponse, requestBody: unknown, step: MockModelStep, id: string, stream: ModelStream): Promise<void> {
+/**
+ * Write one OpenAI Responses answer.
+ *
+ * `hold` takes the step's own hold at the split point of this writer: after `response.created` and
+ * the `response.metadata` events on a stream, before the one JSON body otherwise. A caller that
+ * already held the step passes nothing.
+ */
+async function writeOpenAIResponse(response: ServerResponse, requestBody: unknown, step: MockModelStep, id: string, stream: ModelStream, hold?: () => Promise<boolean>): Promise<void> {
   const output = responseItems(step, id)
   const model = modelFrom(requestBody)
   const responseBase = { id, object: 'response', created_at: 1, model, tools: [] }
   const completed = { ...responseBase, status: 'completed', output, usage: responseUsage(step) }
   if (!streamRequested(requestBody)) {
+    if (hold && !await hold())
+      return
     if (step.stream && !await bufferModelOutput(stream, step))
       return
     writeJSON(response, 200, completed, step)
@@ -905,6 +937,10 @@ async function writeOpenAIResponse(response: ServerResponse, requestBody: unknow
     writeSSEEvent(response, { ...event, sequence_number: sequenceNumber++ })
   }
   emit({ type: 'response.created', response: { ...responseBase, status: 'in_progress', output: [] } })
+  for (const entry of step.responseMetadata ?? [])
+    emit({ type: 'response.metadata', metadata: entry })
+  if (hold && !await hold())
+    return
   for (const [outputIndex, item] of output.entries()) {
     const startItem = item.type === 'message'
       ? { ...item, status: 'in_progress', content: [] }

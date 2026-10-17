@@ -16,6 +16,7 @@ import { retryUntilPass } from '../helpers/retryUntilPass'
 import { quotePosixShellArgument } from '../helpers/shellArguments'
 import { assistantBubbles, openWorkspace, sendMessage, toolCallRow, waitForAgentIdle } from '../helpers/ui'
 import { closeNativeAgentAndWait } from '../helpers/workerTabs'
+import { codexAsyncExecRules } from './asyncExec'
 import { nativeContext } from './scenarios'
 
 codexTest('runs native code and retains computed output and script errors after reload', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
@@ -277,6 +278,48 @@ codexTest('omits a yielded execution with no output or nested rows', async ({ au
       expect(snapshot.messages.filter(message => message.spanId === callId)).toHaveLength(0)
       await expect(toolCallRow(page, callId)).toHaveCount(0)
       await expect(assistantBubbles(page).filter({ hasText: 'The native script yielded without output.' }).first()).toBeVisible()
+    }
+  }
+  finally {
+    await closeNativeAgentAndWait(context, agent.id)
+  }
+})
+
+// A cell that yields keeps running, and the model reads the rest of its output through
+// a wait call. Each yield returns only the output since the yield before it, so the
+// card joins the output of the exec call and of the wait. The card states neither
+// the yield header nor a second row for the wait.
+codexTest('joins the output that a waited cell states after its yield into one card after reload', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+  await openNativeAgent(context, { directoryPrefix: 'native-code-waited-cell-' })
+  const agent = await currentNativeAgent(context)
+  try {
+    const callId = 'native-waited-cell'
+    await modelScript.rule(...codexAsyncExecRules())
+    const start = await modelScript.queue(
+      { toolCalls: [codexExecToolCall(callId, 'text("CELLPARTONE"); yield_control(); await new Promise(resolve => setTimeout(resolve, 300)); text("CELLPARTTWO");')] },
+      { text: 'The waited native cell completed.' },
+    )
+    await sendMessage(page, modelScript.prompt('Run the waited native cell.'))
+    await modelScript.waitForSteps(start + 2)
+    await waitForAgentIdle(page)
+    const finalRequest = await modelScript.requestAt(start + 1)
+    expect(nativeToolResult(finalRequest, callId), 'the exec call yields').toContain('Script running with cell ID')
+    expect(nativeToolResult(finalRequest, 'await-native-cell'), 'the wait reads the rest of the cell').toContain('CELLPARTTWO')
+    const bubble = toolCallRow(page, callId)
+    for (const reload of [false, true]) {
+      if (reload) {
+        await page.reload()
+        await openWorkspace(page, context.workspaceId)
+      }
+      const snapshot = await readNativeMessageSnapshot(context, agent.id)
+      expect(snapshot.messages.filter(message => message.spanId === callId), 'the cell is one request row and one result row').toHaveLength(2)
+      await expect(bubble).toHaveCount(1)
+      await expect(bubble).toHaveAttribute('data-tool-status', 'completed')
+      await expect(bubble).toContainText('CELLPARTONE')
+      await expect(bubble).toContainText('CELLPARTTWO')
+      await expect(bubble).not.toContainText('Script running with cell ID')
+      await expect(assistantBubbles(page).filter({ hasText: 'The waited native cell completed.' }).first()).toBeVisible()
     }
   }
   finally {

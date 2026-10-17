@@ -161,6 +161,87 @@ describe('codex hook notifications', () => {
   })
 })
 
+describe('codex render notices', () => {
+  it('renders a config warning with its detail and path', () => {
+    expect(renderText([{
+      method: 'configWarning',
+      params: { summary: 'Error parsing rules', details: 'unexpected token', path: '/home/u/.codex/rules/x.rules' },
+    }])).toBe('Warning: Error parsing rules: unexpected token (/home/u/.codex/rules/x.rules)')
+  })
+
+  it('renders a config warning without the optional path', () => {
+    expect(renderText([{
+      method: 'configWarning',
+      params: { summary: 'Error parsing rules', details: 'unexpected token' },
+    }])).toBe('Warning: Error parsing rules: unexpected token')
+  })
+
+  it('renders a config warning without the optional detail', () => {
+    expect(renderText([{
+      method: 'configWarning',
+      params: { summary: 'Error parsing rules' },
+    }])).toBe('Warning: Error parsing rules')
+  })
+
+  it('renders a deprecation notice with its detail', () => {
+    expect(renderText([{
+      method: 'deprecationNotice',
+      params: { summary: 'The foo option is deprecated', details: 'Use bar instead.' },
+    }])).toBe('Deprecated: The foo option is deprecated — Use bar instead.')
+  })
+
+  it('renders a deprecation notice without the optional detail', () => {
+    expect(renderText([{
+      method: 'deprecationNotice',
+      params: { summary: 'The foo option is deprecated' },
+    }])).toBe('Deprecated: The foo option is deprecated')
+  })
+
+  it('renders the buffering notice', () => {
+    expect(renderText([{
+      method: 'model/safetyBuffering/updated',
+      params: { turnId: 'u1', showBufferingUi: true, fasterModel: 'gpt-6-luna' },
+    }])).toBe('Giving this request a little extra thought')
+  })
+
+  // The URL is plain text: the notification row draws no markdown, so angle
+  // brackets around it would show as typed.
+  it('renders the verification notice', () => {
+    expect(renderText([{
+      method: 'model/verification',
+      params: { verifications: ['trustedAccessForCyber'] },
+    }])).toBe('Your conversations have multiple flags for possible cybersecurity risk. Responses may take longer because extra safety checks are on. To get authorized for security work, join the Trusted Access for Cyber program: https://chatgpt.com/cyber')
+  })
+
+  // The Codex TUI states the notice only for the trustedAccessForCyber flag.
+  it.each([
+    ['an empty flag list', { verifications: [] }],
+    ['a flag from a later release', { verifications: ['aFlagFromALaterRelease'] }],
+    ['no flag list', {}],
+  ])('renders nothing for a verification with %s', (_, params) => {
+    expect(renderText([{ method: 'model/verification', params }])).toBe('')
+  })
+
+  it.each([
+    { method: 'modelProvider/authRecoveryStarted', message: 'AWS session has expired. Reauthenticating...' },
+    { method: 'modelProvider/authRecoveryCompleted', message: 'Reauthenticated.' },
+  ])('renders the $method message', ({ method, message }) => {
+    expect(renderText([{ method, params: { provider: 'amazon-bedrock', message } }])).toBe(message)
+  })
+
+  it('renders nothing for an auth recovery without a message', () => {
+    expect(renderText([{ method: 'modelProvider/authRecoveryStarted', params: { provider: 'amazon-bedrock' } }])).toBe('')
+  })
+
+  // A notice that carries no words draws no row: an empty status line is worse
+  // than none.
+  it('renders nothing for a notice without its summary or message', () => {
+    expect(renderText([{ method: 'warning', params: {} }])).toBe('')
+    expect(renderText([{ method: 'configWarning', params: { details: 'unexpected token', path: '/home/u/.codex/rules/x.rules' } }])).toBe('')
+    expect(renderText([{ method: 'deprecationNotice', params: { details: 'Use bar instead.' } }])).toBe('')
+  })
+})
+
 describe('renderNotificationThread (Codex provider): MCP startup grouping', () => {
   it('does not render skills or remote-control metadata entries', () => {
     const text = renderText([

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -124,16 +125,16 @@ func (a *Agent) claudeHandleTaskEvent(content []byte) bool {
 		return false
 	}
 	switch ev.Subtype {
-	case "task_started":
+	case contracts.ClaudeHiddenSystemSubtypeTaskStarted:
 		a.handleClaudeTaskStarted(&ev)
 		return true
-	case "task_progress":
+	case contracts.ClaudeHiddenSystemSubtypeTaskProgress:
 		a.handleClaudeTaskProgress(&ev)
 		return true
-	case "task_notification":
+	case contracts.ClaudeHiddenSystemSubtypeTaskNotification:
 		a.handleClaudeTaskNotification(&ev)
 		return true
-	case "task_updated", "background_tasks_changed":
+	case contracts.ClaudeHiddenSystemSubtypeTaskUpdated, contracts.ClaudeHiddenSystemSubtypeBackgroundTasksChanged:
 		// Consume both events without changing a row because the task start and end events drive the registry.
 		//
 		// background_tasks_changed distinguishes foreground and background shells rather than merely repeating other events.
@@ -149,7 +150,7 @@ func (a *Agent) claudeHandleTaskEvent(content []byte) bool {
 		// The CLI's task-event queue holds 1000 events and first discards an event that is neither a start nor an end.
 		// Losing one background list could therefore hide a real background shell for its complete run.
 		return true
-	case claudeSystemSubtypeSessionStateChanged:
+	case contracts.ClaudeHiddenSystemSubtypeSessionStateChanged:
 		// Consume this frame without timeline persistence.
 		// observeTurnFromOutput already reads its native turn state, and the turn flag exposes that state to the reader.
 		// The CLI emits the frame at every turn transition, so storing it adds no reader information.

@@ -19,7 +19,7 @@ import { classifyAgentMessage } from '~/components/chat/messageClassifier'
 import { compactionContextTokens } from '~/components/chat/notificationEntries'
 import { providerFor, resolvedSpanRole, resolveMessageForRendering } from '~/components/chat/providers/registry'
 import { mergeStableOptionGroupRefs, OPTION_ID_MODEL, optionGroup } from '~/components/chat/settingsGroups'
-import { GOAL_PROGRESS_FIELD, RATE_LIMIT_FIELD, RATE_LIMIT_UPDATE_FIELD, RATE_LIMIT_UPDATE_MODE, RUNNING_TOOL_FIELD, RUNNING_TOOL_RETRY_FIELD, SESSION_INFO_KEY } from '~/generated/contracts/session-info'
+import { GOAL_PROGRESS_FIELD, RATE_LIMIT_FIELD, RATE_LIMIT_UPDATE_FIELD, RATE_LIMIT_UPDATE_MODE, RUNNING_TOOL_FIELD, RUNNING_TOOL_RETRY_FIELD, SESSION_INFO_KEY, TURN_RETRY_OFFER_FIELD } from '~/generated/contracts/session-info'
 import { NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
 import { AgentStatus, ControlResponseState, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
@@ -147,6 +147,9 @@ function wireGenerationProgress(info: Record<string, unknown> | undefined): Live
  * - An object supplies a retry update.
  * - An explicit null clears the retry.
  *
+ * The permission-check field has the same three outcomes, with `true` as the
+ * only value that sets it.
+ *
  * Retain only the badge's fields. The tool row already supplies the tool name and subagent type.
  */
 export function wireRunningToolToUpdate(value: unknown): ToolProgressUpdate | undefined {
@@ -170,6 +173,13 @@ export function wireRunningToolToUpdate(value: unknown): ToolProgressUpdate | un
     // Only an explicit null clears the retry.
     if (retry !== undefined)
       update.retry = retry
+  }
+  if (RUNNING_TOOL_FIELD.PermissionCheck in value) {
+    const v = value[RUNNING_TOOL_FIELD.PermissionCheck]
+    if (v === true)
+      update.permissionCheck = true
+    else if (v === null)
+      update.permissionCheck = null
   }
   // An empty output tail is a real value for a command that produced no output.
   // Check the field's presence and type instead of its truthiness.
@@ -263,6 +273,27 @@ export function handleAgentSessionInfo(
   const runningTool = wireRunningToolToUpdate(info?.[SESSION_INFO_KEY.RunningTool])
   if (runningTool)
     chatStore.applyToolProgress(agentId, runningTool)
+  // A live turn-retry offer is per-turn state. A null withdraws it. An object
+  // that gives a turn and a model sets it. This handler ignores every other
+  // value, so a malformed frame leaves the live offer as it is.
+  if (info && SESSION_INFO_KEY.TurnRetryOffer in info) {
+    const value = info[SESSION_INFO_KEY.TurnRetryOffer]
+    if (value === null) {
+      chatStore.clearTurnRetryOffer(agentId)
+    }
+    else if (isObject(value)) {
+      const turnId = pickString(value, TURN_RETRY_OFFER_FIELD.TurnId)
+      const model = pickString(value, TURN_RETRY_OFFER_FIELD.Model)
+      if (turnId !== '' && model !== '') {
+        const learnMoreUrl = pickString(value, TURN_RETRY_OFFER_FIELD.LearnMoreUrl)
+        chatStore.setTurnRetryOffer(agentId, {
+          turnId,
+          model,
+          ...(learnMoreUrl !== '' ? { learnMoreUrl } : {}),
+        })
+      }
+    }
+  }
   // Keep goal_progress beside the goal in the chat store.
   // Its ephemeral updates can occur after each tool call without a goal transition.
   // AgentGoalChanged carries the goal and supported actions separately.
@@ -467,6 +498,7 @@ export function clearPerTurnLiveState(
   stores.agentSessionStore.clearThinkingTokens(agentId)
   stores.agentSessionStore.clearOutputBytes(agentId)
   stores.chatStore.clearToolProgress(agentId)
+  stores.chatStore.clearTurnRetryOffer(agentId)
 }
 
 /**

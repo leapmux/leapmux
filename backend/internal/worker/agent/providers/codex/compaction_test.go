@@ -139,7 +139,7 @@ func TestHandleCodexOutput_ContextCompactionCompletionPersistsBoundary(t *testin
 	// the matching item/started opened, and the consolidator never drops the
 	// "Compacting context..." status. The status then stays for the session.
 	assert.Equal(t, 0, sink.MessageCount(),
-		"the compaction boundary must not land in the transcript as a chat row")
+		"the compaction boundary must not reach the transcript as a chat row")
 	require.Equal(t, 1, sink.NotificationCount())
 	last := sink.LastNotification()
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, last.Source)
@@ -161,14 +161,14 @@ func TestHandleCodexOutput_ContextCompactionCompletionPersistsBoundary(t *testin
 // The Codex app-server still emits thread/compacted for an auto-compaction. It
 // belongs to codexSystemMetadataMethods, so it persists verbatim as a
 // threadable agent notification. Without that entry it falls to the default
-// branch and lands in the transcript as a raw JSON-RPC bubble.
+// branch, and the transcript draws it as a raw JSON-RPC bubble.
 func TestHandleCodexOutput_ThreadCompactedPersistsRawAsAgent(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
 	agent := newCodexAgentWithSink(agent.NewProviderServices(sink))
 
-	input := `{"method":"thread/compacted","params":{"threadId":"t1","turnId":"turn1"}}`
+	input := `{"method":"thread/compacted","params":{"threadId":"main-thread","turnId":"turn1"}}`
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(input)))
 
 	require.Equal(t, 1, sink.NotificationCount())

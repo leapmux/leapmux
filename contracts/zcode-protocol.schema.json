@@ -29,7 +29,17 @@
     "defaultMode",
     "storedAttachment",
     "storedAttachmentTypes",
-    "storedPartStatuses"
+    "storedPartStatuses",
+    "querySources",
+    "stopReasons",
+    "compactionStatuses",
+    "goalVerificationStatuses",
+    "goalActions",
+    "networkStatuses",
+    "networkStatusPrefixes",
+    "microcompactStrategies",
+    "hookRunOutcomes",
+    "modelSelectionOrigins"
   ],
   "$defs": {
     "table": {
@@ -213,6 +223,36 @@
       "$ref": "#/$defs/table"
     },
     "storedPartStatuses": {
+      "$ref": "#/$defs/table"
+    },
+    "querySources": {
+      "$ref": "#/$defs/table"
+    },
+    "stopReasons": {
+      "$ref": "#/$defs/table"
+    },
+    "compactionStatuses": {
+      "$ref": "#/$defs/table"
+    },
+    "goalVerificationStatuses": {
+      "$ref": "#/$defs/table"
+    },
+    "goalActions": {
+      "$ref": "#/$defs/table"
+    },
+    "networkStatuses": {
+      "$ref": "#/$defs/table"
+    },
+    "networkStatusPrefixes": {
+      "$ref": "#/$defs/table"
+    },
+    "microcompactStrategies": {
+      "$ref": "#/$defs/table"
+    },
+    "hookRunOutcomes": {
+      "$ref": "#/$defs/table"
+    },
+    "modelSelectionOrigins": {
       "$ref": "#/$defs/table"
     },
     "structs": {

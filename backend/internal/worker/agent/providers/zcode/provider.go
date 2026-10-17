@@ -27,24 +27,9 @@ type zcodeProvider struct {
 //
 // A permission ZCode decided by itself and a steering queue notice both repeat, and
 // a chat that shows each one separately is unreadable. The key includes the tool
-// name so two different tools' denials stay distinguishable.
+// name so two different tools' denials stay distinguishable. The compaction
+// lifecycle folds under one key: the start of a rewrite and its end are one row.
 func (zcodeProvider) Classify(raw json.RawMessage) agent.NotificationClassification {
-	var state struct {
-		Method string `json:"method"`
-		Params struct {
-			Reason string `json:"reason"`
-		} `json:"params"`
-	}
-	if json.Unmarshal(raw, &state) == nil && state.Method == contracts.ZCodeMethodStateUpdated {
-		switch state.Params.Reason {
-		case contracts.ZCodeStateReasonCompactStarted:
-			return agent.NotificationClassification{Kind: agent.NotificationKindStatus, Key: "zcode:compaction"}
-		case contracts.ZCodeStateReasonSessionCompacted,
-			contracts.ZCodeStateReasonSessionCompactFailed,
-			contracts.ZCodeStateReasonSessionCompactCancelled:
-			return agent.NotificationClassification{Kind: agent.NotificationKindCompactionBoundary, Key: "zcode:compaction"}
-		}
-	}
 	var env zcodeEventEnvelope
 	if err := json.Unmarshal(raw, &env); err != nil {
 		return agent.NotificationClassification{}
@@ -61,6 +46,39 @@ func (zcodeProvider) Classify(raw json.RawMessage) agent.NotificationClassificat
 		// The steering queue flaps while the user types ahead of the model, so the
 		// latest state is the only interesting one.
 		return agent.NotificationClassification{Kind: agent.NotificationKindStatus, Key: "zcode:steer"}
+	case contracts.ZCodeEventSessionUpdated:
+		var payload zcodeSessionUpdatedPayload
+		if json.Unmarshal(env.Payload, &payload) != nil {
+			return agent.NotificationClassification{}
+		}
+		switch payload.kind() {
+		case zcodeSessionUpdateCompaction:
+			status, _ := zcodeRawString(payload.Status)
+			switch status {
+			case contracts.ZCodeCompactionStatusStarted, contracts.ZCodeCompactionStatusRetrying:
+				return agent.NotificationClassification{Kind: agent.NotificationKindStatus, Key: "zcode:compaction"}
+			case contracts.ZCodeCompactionStatusCompleted, contracts.ZCodeCompactionStatusSkipped,
+				contracts.ZCodeCompactionStatusFailed, contracts.ZCodeCompactionStatusInterrupted:
+				return agent.NotificationClassification{Kind: agent.NotificationKindCompactionBoundary, Key: "zcode:compaction"}
+			}
+		case zcodeSessionUpdateNetworkStatus:
+			// A burst of retries repeats one event. The notice keeps the latest state.
+			status, _ := zcodeRawString(payload.Type)
+			if status == contracts.ZCodeNetworkStatusRetryScheduled && payload.networkStatusHasAPIRetry() {
+				return agent.NotificationClassification{Kind: agent.NotificationKindAPIRetry, Key: "zcode:api_retry"}
+			}
+		case zcodeSessionUpdateHookAdmission:
+			// One notice per session. The pending count is the whole state.
+			return agent.NotificationClassification{Kind: agent.NotificationKindProviderScoped, Key: "zcode:hook_admission"}
+		case zcodeSessionUpdateSteerDiscarded:
+			// The discard replaces the queued notice the same key already holds.
+			return agent.NotificationClassification{Kind: agent.NotificationKindStatus, Key: "zcode:steer"}
+		default:
+			// Every other `session.updated` shape is classified per row. A new
+			// kind therefore lands here and gets no folding key, which is the
+			// right outcome until someone gives it one.
+		}
+		return agent.NotificationClassification{}
 	default:
 		return agent.NotificationClassification{}
 	}

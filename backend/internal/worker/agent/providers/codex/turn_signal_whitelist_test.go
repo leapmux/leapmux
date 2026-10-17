@@ -30,7 +30,20 @@ func TestTurnSignalWhitelist_Codex(t *testing.T) {
 		{Name: "thread compacted", Line: `{"jsonrpc":"2.0","method":"thread/compacted","params":{"threadId":"main-thread"}}`},
 		{Name: "fs changed", Line: `{"jsonrpc":"2.0","method":"fs/changed","params":{}}`},
 		{Name: "warning", Line: `{"jsonrpc":"2.0","method":"warning","params":{"message":"careful"}}`},
-		{Name: "error", Line: `{"jsonrpc":"2.0","method":"error","params":{"message":"boom"}}`},
+		{Name: "error", Line: `{"jsonrpc":"2.0","method":"error","params":{"error":{"message":"Reconnecting... 2/5","codexErrorInfo":null,"additionalDetails":null},"willRetry":true,"threadId":"main-thread","turnId":"turn-1"}}`},
+
+		// The RENDER and LIVE notices move no turn flag either.
+		{Name: "config warning", Line: `{"jsonrpc":"2.0","method":"configWarning","params":{"summary":"Error parsing rules","details":"unexpected token","path":"/home/u/.codex/rules/x.rules"}}`},
+		{Name: "deprecation notice", Line: `{"jsonrpc":"2.0","method":"deprecationNotice","params":{"summary":"The foo option is deprecated","details":"Use bar instead."}}`},
+		{Name: "guardian warning", Line: `{"jsonrpc":"2.0","method":"guardianWarning","params":{"threadId":"main-thread","message":"This command touches 12 files"}}`},
+		{Name: "strict review required", Line: `{"jsonrpc":"2.0","method":"autoApprovalReview/strictReviewRequired","params":{"threadId":"main-thread","turnId":"turn-1","startedAtMs":1792000000000}}`},
+		{Name: "review started", Line: `{"jsonrpc":"2.0","method":"item/autoApprovalReview/started","params":{"threadId":"main-thread","turnId":"turn-1","reviewId":"r1","targetItemId":"call_1","review":{"status":"inProgress"}}}`},
+		{Name: "review completed", Line: `{"jsonrpc":"2.0","method":"item/autoApprovalReview/completed","params":{"threadId":"main-thread","turnId":"turn-1","reviewId":"r1","targetItemId":"call_1","review":{"status":"denied"},"action":{"type":"command","source":"shell","command":"rm -rf build","cwd":"/w"}}}`},
+		{Name: "model verification", Line: `{"jsonrpc":"2.0","method":"model/verification","params":{"threadId":"main-thread","turnId":"turn-1","verifications":["trustedAccessForCyber"]}}`},
+		{Name: "auth recovery started", Line: `{"jsonrpc":"2.0","method":"modelProvider/authRecoveryStarted","params":{"threadId":"main-thread","turnId":"turn-1","provider":"amazon-bedrock","message":"AWS session has expired."}}`},
+		{Name: "auth recovery completed", Line: `{"jsonrpc":"2.0","method":"modelProvider/authRecoveryCompleted","params":{"threadId":"main-thread","turnId":"turn-1","provider":"amazon-bedrock","message":"Reauthenticated."}}`},
+		{Name: "safety buffering", Line: `{"jsonrpc":"2.0","method":"model/safetyBuffering/updated","params":{"threadId":"main-thread","turnId":"turn-1","showBufferingUi":true,"fasterModel":"gpt-5.5"}}`},
+		{Name: "thread closed", Line: `{"jsonrpc":"2.0","method":"thread/closed","params":{"threadId":"main-thread"}}`},
 
 		{Name: "a method from a later release", Line: `{"jsonrpc":"2.0","method":"turn/futureSignal","params":{"threadId":"main-thread"}}`},
 	}, func(t *testing.T, tc agenttest.TurnFrameCase) []bool {

@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"strings"
 
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
@@ -71,6 +72,60 @@ func (a *Agent) discardCodexModelText(scopeID, threadID string) {
 		return
 	}
 	a.codexChildGenerationBuffer(threadID).Discard(scopeID)
+}
+
+// persistDroppedCodexResponse persists the partial items of the response that
+// a new input preempted in one thread.
+//
+// A new input preempts the response that streams (the instant_interrupt
+// feature). The input is a user's steer, or a parent's message to a subagent.
+// Codex then drops the partial items of that response: they got item/started
+// and deltas, but they get no item/completed, and no frame states the drop.
+// Codex records a new input only after every frame of the response before it,
+// so the userMessage item/started of the input is the first frame at which an
+// open item is certainly dropped. A response that ended normally left no open
+// item, so the input that starts a turn finds nothing here.
+//
+// The input queue writes the steer's own row after Codex accepts the steer, on
+// another goroutine, so the partial rows can land on either side of that row.
+// They always precede the follow-up answer, and they state that the model
+// stopped.
+func (a *Agent) persistDroppedCodexResponse(threadID string) {
+	if a.isMainThreadID(threadID) {
+		a.persistDroppedCodexGeneration(&a.generationBuffer, a.sink, a.generationBuffer.ScopeIDs())
+		return
+	}
+	buffer := a.codexChildGenerationBuffer(threadID)
+	scopeIDs := buffer.ScopeIDs()
+	if len(scopeIDs) == 0 {
+		return
+	}
+	route, routed := a.ensureCodexChildRoute(threadID)
+	if !routed {
+		// The items that stream after this frame join the same buffer before
+		// the route exists, so the event keeps the open items of THIS frame.
+		a.enqueuePendingCodexChildEvent(threadID, codexPendingChildEvent{kind: codexPendingDroppedGeneration, scopeIDs: scopeIDs})
+		return
+	}
+	a.replayPendingCodexChildEvents(threadID, route)
+	a.persistDroppedCodexGeneration(buffer, route.childSink, scopeIDs)
+}
+
+// persistDroppedCodexGeneration persists each listed segment of buffer as
+// interrupted, in the order given, and ends its model progress. A segment that
+// fails to persist stays in the buffer for the turn end.
+func (a *Agent) persistDroppedCodexGeneration(buffer *providerkit.GenerationBuffer, sink providerkit.GenerationServices, scopeIDs []string) {
+	discarding := a.IsDiscardingOutput()
+	for _, scopeID := range scopeIDs {
+		if discarding {
+			buffer.Discard(scopeID)
+		} else if _, err := buffer.PersistScope(scopeID, agent.MessageCompletionInterrupted, func(raw []byte) error {
+			return sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw}, agent.SpanInfo{})
+		}); err != nil {
+			slog.Error("codex persist dropped partial generation", "agent_id", a.AgentID(), "scope", scopeID, "error", err)
+		}
+		sink.ReportProgress(agent.CompleteModelProgress(scopeID))
+	}
 }
 
 func (a *Agent) codexChildGenerationBuffer(threadID string) *providerkit.GenerationBuffer {
@@ -324,6 +379,11 @@ func (a *Agent) handleThreadSettingsUpdated(params json.RawMessage) {
 // handleAgentMessageDelta counts and buffers item/agentMessage/delta.
 func (a *Agent) handleAgentMessageDelta(params json.RawMessage) {
 	if delta, ok := parseCodexModelDelta(params); ok {
+		if a.isMainThreadID(delta.ThreadID) {
+			// The first agent text ends any retry offer: from here the faster
+			// model would answer a different request.
+			a.markCodexTurnAgentMessage()
+		}
 		if delta.ItemID == "" {
 			delta.ItemID = codexAssistantFallbackScope
 		}

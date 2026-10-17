@@ -9,6 +9,9 @@ import { codexMcpOauthIsFailureOrUnknown, codexMcpStartupIsFailureOrUnknown } fr
 
 const STARTUP_METHOD = CODEX_METHOD.McpServerStartupStatusUpdated
 
+/** The `model/verification` flag for which the Codex TUI states its notice. */
+const CODEX_TRUSTED_ACCESS_FOR_CYBER = 'trustedAccessForCyber'
+
 type StartupKind = 'failed' | 'unknown'
 
 interface ParsedMcpStartup {
@@ -173,6 +176,44 @@ export function codexNotificationEntry(msg: Record<string, unknown>): Notificati
     const params = pickObject(msg, 'params') ?? msg
     const text = pickString(params, 'message') || pickString(pickObject(params, 'warning'), 'message')
     return text ? [{ kind: 'status', text: `Warning: ${text}` }] : []
+  }
+  if (msg.method === CODEX_METHOD.ConfigWarning) {
+    const params = pickObject(msg, 'params') ?? msg
+    const summary = pickString(params, 'summary').trim()
+    const details = pickString(params, 'details').trim()
+    const path = pickString(params, 'path').trim()
+    if (!summary)
+      return []
+    const text = `Warning: ${summary}${details ? `: ${details}` : ''}${path ? ` (${path})` : ''}`
+    return [{ kind: 'status', text }]
+  }
+  if (msg.method === CODEX_METHOD.DeprecationNotice) {
+    const params = pickObject(msg, 'params') ?? msg
+    const summary = pickString(params, 'summary').trim()
+    const details = pickString(params, 'details').trim()
+    if (!summary)
+      return []
+    return [{ kind: 'status', text: `Deprecated: ${summary}${details ? ` — ${details}` : ''}` }]
+  }
+  if (msg.method === CODEX_METHOD.ModelSafetyBufferingUpdated) {
+    return [{ kind: 'text', text: 'Giving this request a little extra thought' }]
+  }
+  if (msg.method === CODEX_METHOD.ModelVerification) {
+    // The Codex TUI states this notice only for the trustedAccessForCyber flag.
+    // The row draws plain text, so the URL carries no markdown brackets.
+    const params = pickObject(msg, 'params') ?? msg
+    const verifications = Array.isArray(params.verifications) ? params.verifications : []
+    if (!verifications.includes(CODEX_TRUSTED_ACCESS_FOR_CYBER))
+      return []
+    return [{
+      kind: 'text',
+      text: 'Your conversations have multiple flags for possible cybersecurity risk. Responses may take longer because extra safety checks are on. To get authorized for security work, join the Trusted Access for Cyber program: https://chatgpt.com/cyber',
+    }]
+  }
+  if (msg.method === CODEX_METHOD.AuthRecoveryStarted || msg.method === CODEX_METHOD.AuthRecoveryCompleted) {
+    const params = pickObject(msg, 'params') ?? msg
+    const text = pickString(params, 'message').trim()
+    return text ? [{ kind: 'text', text }] : []
   }
 
   if (msg.method === CODEX_METHOD.AutoApprovalReviewCompleted) {

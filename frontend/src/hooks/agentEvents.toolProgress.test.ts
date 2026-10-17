@@ -120,6 +120,23 @@ describe('wireRunningToolToUpdate', () => {
     expect(update && 'retry' in update).toBe(false)
   })
 
+  // The permission check has the same three states as the retry. A value that
+  // is neither `true` nor an explicit null carries no decision, so it leaves the
+  // entry's check alone rather than inventing one.
+  it('translates the permission check as true, null, or absent', () => {
+    expect(wireRunningToolToUpdate({ span_id: 'toolu_A', agent_session_id: SESSION, permission_check: true })?.permissionCheck).toBe(true)
+    expect(wireRunningToolToUpdate({ span_id: 'toolu_A', agent_session_id: SESSION, permission_check: null })?.permissionCheck).toBeNull()
+    for (const value of ['true', 1, false, 0, undefined, {}, []]) {
+      const update = wireRunningToolToUpdate({ span_id: 'toolu_A', agent_session_id: SESSION, permission_check: value })
+      expect(update && 'permissionCheck' in update).toBe(false)
+    }
+  })
+
+  it('leaves `permissionCheck` absent when the payload omits it', () => {
+    const update = wireRunningToolToUpdate({ span_id: 'toolu_A', agent_session_id: SESSION, tool_name: 'Bash', elapsed_seconds: 30 })
+    expect(update && 'permissionCheck' in update).toBe(false)
+  })
+
   it('rejects a payload that identifies no span', () => {
     for (const value of [undefined, null, 'x', 42, {}, { span_id: '' }, { span_id: 7 }])
       expect(wireRunningToolToUpdate(value)).toBeUndefined()
@@ -232,6 +249,25 @@ describe('handleAgentSessionInfo running_tool', () => {
     })
   })
 
+  it('starts and ends the permission check from the running_tool payload', () => {
+    createRoot((dispose) => {
+      const s = stores()
+      handleAgentSessionInfo('a1', parseMessageContent(sessionInfoMessage({
+        running_tool: { span_id: 'toolu_A', agent_session_id: SESSION, elapsed_seconds: 90 },
+      })), s)
+      handleAgentSessionInfo('a1', parseMessageContent(sessionInfoMessage({
+        running_tool: { span_id: 'toolu_A', agent_session_id: SESSION, permission_check: true },
+      })), s)
+      expect(s.chatStore.getToolProgress('a1', span('toolu_A'))?.permissionCheck).toBe(true)
+      handleAgentSessionInfo('a1', parseMessageContent(sessionInfoMessage({
+        running_tool: { span_id: 'toolu_A', agent_session_id: SESSION, permission_check: null },
+      })), s)
+      expect(s.chatStore.getToolProgress('a1', span('toolu_A'))?.permissionCheck).toBeUndefined()
+      expect(s.chatStore.getToolProgress('a1', span('toolu_A'))?.elapsedSeconds).toBe(90)
+      dispose()
+    })
+  })
+
   // The store uses the session ID and span ID together.
   // A heartbeat must not update another session that reuses the span ID.
   it('keeps the entries of two provider sessions apart', () => {
@@ -249,24 +285,15 @@ describe('handleAgentSessionInfo running_tool', () => {
     })
   })
 
-  it('ignores a payload whose running_tool identifies no span', () => {
-    createRoot((dispose) => {
-      const s = stores()
-      const msg = sessionInfoMessage({ running_tool: { agent_session_id: SESSION, tool_name: 'Bash', elapsed_seconds: 30 } })
-      expect(handleAgentSessionInfo('a1', parseMessageContent(msg), s)).toBe(true)
-      expect(s.chatStore.getToolProgress('a1', span('toolu_A'))).toBeUndefined()
-      dispose()
-    })
-  })
-
-  it('writes nothing for a running_tool the translation rejects', () => {
+  // The handler consumes a frame it cannot translate instead of leaving it for
+  // the transcript. A payload with no span id joins these shapes: nothing could
+  // carry its badge, so the progress badge of a running span must survive them.
+  it('consumes a running_tool the translation rejects and preserves the progress badge', () => {
     createRoot((dispose) => {
       const s = stores()
       s.chatStore.applyToolProgress('a1', { ...span('toolu_A'), elapsedSeconds: 30 })
-      for (const value of [null, 'x', 42, {}])
-        handleAgentSessionInfo('a1', parseMessageContent(sessionInfoMessage({ running_tool: value })), s)
-      // A malformed payload must preserve the current progress badge.
-
+      for (const value of [null, 'x', 42, {}, { agent_session_id: SESSION, tool_name: 'Bash', elapsed_seconds: 30 }])
+        expect(handleAgentSessionInfo('a1', parseMessageContent(sessionInfoMessage({ running_tool: value })), s)).toBe(true)
       expect(s.chatStore.getToolProgress('a1', span('toolu_A'))).toEqual({ elapsedSeconds: 30 })
       dispose()
     })
@@ -298,7 +325,9 @@ describe('tool progress is cleared at every turn and agent boundary', () => {
     void harness
     const tabs = createTestTabStores(WS)
     const chatStore = createChatStore()
-    chatStore.applyToolProgress('a1', { ...span('toolu_A'), elapsedSeconds: 30 })
+    // toolu_A also holds a permission check, so every boundary test proves that
+    // a live check cannot survive a turn or agent boundary.
+    chatStore.applyToolProgress('a1', { ...span('toolu_A'), elapsedSeconds: 30, permissionCheck: true })
     chatStore.applyToolProgress('a1', { ...span('toolu_B'), elapsedSeconds: 60 })
     const agentSessionStore = createAgentSessionStore()
     // The thinking counter and tool badges both describe the live turn.
@@ -384,7 +413,7 @@ describe('tool progress is cleared at every turn and agent boundary', () => {
       handleControlRequest('a1', req, 'live', s)
       expect(s.controlStore.getRequests('a1')[0]?.agentProvider).toBe(AgentProvider.REASONIX)
       expect(running(s.chatStore)).toHaveLength(2)
-      expect(s.chatStore.getToolProgress('a1', span('toolu_A'))).toEqual({ elapsedSeconds: 30 })
+      expect(s.chatStore.getToolProgress('a1', span('toolu_A'))?.elapsedSeconds).toBe(30)
       expect(s.agentSessionStore.getProgress('a1').thinkingTokens).toBe(500)
       expect(s.agentSessionStore.getProgress('a1').output?.bytes).toBe(2048)
       dispose()
@@ -416,7 +445,9 @@ describe('tool progress is cleared at every turn and agent boundary', () => {
 describe('dropFinishedToolProgress', () => {
   function seeded() {
     const chatStore = createChatStore()
-    chatStore.applyToolProgress('a1', { ...span('toolu_A'), elapsedSeconds: 30 })
+    // A live permission check rides the entry, so every drop test proves that a
+    // finished call cannot leave one behind.
+    chatStore.applyToolProgress('a1', { ...span('toolu_A'), elapsedSeconds: 30, permissionCheck: true })
     return chatStore
   }
 

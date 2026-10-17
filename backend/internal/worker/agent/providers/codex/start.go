@@ -21,7 +21,73 @@ const (
 	codexCodeModeInterruptFeature = "code_mode_interrupt"
 )
 
+// Codex methods that no contract table lists because only Go reads them. The
+// opt-out list in codexOptedOutNotificationMethods uses them.
+const (
+	codexMethodTurnDiffUpdated               = "turn/diff/updated"
+	codexMethodAccountGatewayOAuthChanged    = "account/gatewayOAuth/changed"
+	codexMethodThreadReadStateChanged        = "thread/readState/changed"
+	codexMethodThreadQueueChanged            = "thread/queue/changed"
+	codexMethodThreadEnvironmentConnected    = "thread/environment/connected"
+	codexMethodThreadEnvironmentDisconnected = "thread/environment/disconnected"
+	codexMethodRawResponseCompleted          = "rawResponse/completed"
+	codexMethodItemFileChangePatchUpdated    = "item/fileChange/patchUpdated"
+	codexMethodModelRerouted                 = "model/rerouted"
+)
+
+// codexOptedOutNotificationMethods lists the Codex notifications that LeapMux
+// never wants. `initialize` sends the list, so Codex writes none of these
+// frames. Methods that Codex sends only after a request LeapMux never makes are
+// absent: they cannot arrive.
+var codexOptedOutNotificationMethods = []string{
+	// One streaming diff per tool call. The tool card already shows the change.
+	codexMethodTurnDiffUpdated,
+	// Opaque moderation metadata. The Codex TUI ignores it.
+	contracts.CodexMethodTurnModerationMetadata,
+	// Account state that LeapMux does not display.
+	contracts.CodexMethodAccountUpdated,
+	// Account state that LeapMux does not display.
+	codexMethodAccountGatewayOAuthChanged,
+	// LeapMux reads the thread/start and thread/fork response.
+	contracts.CodexMethodThreadStarted,
+	// turn/started and turn/completed own the turn state.
+	contracts.CodexMethodThreadStatusChanged,
+	// Read cursors for multi-client apps.
+	codexMethodThreadReadStateChanged,
+	// Another Codex client's queue.
+	codexMethodThreadQueueChanged,
+	// A remote environment. LeapMux runs local processes.
+	codexMethodThreadEnvironmentConnected,
+	// A remote environment. LeapMux runs local processes.
+	codexMethodThreadEnvironmentDisconnected,
+	// Skill discovery state has no transcript row and no session state.
+	contracts.CodexMethodSkillsChanged,
+	// Remote-control transport state does not describe the LeapMux session.
+	contracts.CodexMethodRemoteControlStatusChanged,
+	// A hook start has no outcome and no content.
+	contracts.CodexMethodHookStarted,
+	// The typed turn and token-usage notifications carry this state.
+	codexMethodRawResponseCompleted,
+	// An off-by-default streaming feature that would write one raw row per update.
+	codexMethodItemFileChangePatchUpdated,
+	// The paired warning explains the reroute, and the model display follows
+	// thread/settings/updated.
+	codexMethodModelRerouted,
+}
+
 var _ agent.StartFunc = Start
+
+// codexInitializeParams builds the `initialize` request: the client identity
+// and the capabilities the worker opts into or out of.
+func codexInitializeParams() map[string]interface{} {
+	return map[string]interface{}{
+		"clientInfo": map[string]string{"name": "leapmux", "title": "LeapMux", "version": version.Value},
+		"capabilities": map[string]interface{}{
+			"experimentalApi":           true,
+			"optOutNotificationMethods": codexOptedOutNotificationMethods,
+		},
+	}
+}
 
 // Start starts a Codex agent process and performs the JSON-RPC handshake.
 func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
@@ -93,13 +159,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	timeout := opts.EffectiveStartupTimeout()
 
 	// 1. Send "initialize" request.
-	initParams, err := json.Marshal(map[string]interface{}{
-		"clientInfo": map[string]string{"name": "leapmux", "title": "LeapMux", "version": version.Value},
-		"capabilities": map[string]interface{}{
-			"experimentalApi":           true,
-			"optOutNotificationMethods": []string{"turn/diff/updated"},
-		},
-	})
+	initParams, err := json.Marshal(codexInitializeParams())
 	if err != nil {
 		cleanup()
 		return nil, fmt.Errorf("marshal initialize params: %w", err)

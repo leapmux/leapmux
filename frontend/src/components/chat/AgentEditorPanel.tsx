@@ -9,6 +9,7 @@ import type { WorkingTreeInfo } from '~/components/common/WorkingTree'
 import type { BranchMenuActions } from '~/components/workspace/branchActions'
 import type { AgentActivityState, AgentInfo, AgentInputQueueSnapshot, QueuedAgentInput } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { AgentSessionInfo } from '~/stores/agentSession.store'
+import type { TurnRetryOffer } from '~/stores/chatTurnRetryOffer'
 import type { ControlRequest } from '~/stores/control.store'
 import type { createRepoGitStore } from '~/stores/repoGit.store'
 import type { Tab } from '~/stores/tab.types'
@@ -60,6 +61,7 @@ import {
   optionGroup,
   selectedModelContextWindow,
 } from './settingsGroups'
+import { TurnRetryOfferBanner } from './TurnRetryOfferBanner'
 import { useChatAttachments } from './useChatAttachments'
 import { useEditorMinHeight } from './useEditorMinHeight'
 import { ContextUsageGrid } from './widgets/ContextUsageGrid'
@@ -111,6 +113,18 @@ export interface AgentEditorPanelProps {
    */
   canInterrupt?: boolean
   settingsLoading?: boolean
+  /** The live turn-retry offer that the worker made, or undefined when it made none. */
+  turnRetryOffer?: TurnRetryOffer
+  /**
+   * Stop the offered attempt and send its input again on the offered model.
+   * It resolves true when the worker accepts the retry and false when the
+   * worker refuses it. The handler reports a refusal itself, and it must never
+   * reject.
+   *
+   * Omit it on a surface that cannot retry. The panel then shows no offer,
+   * because a "Retry with" button that can do nothing must not appear.
+   */
+  onRetryTurn?: (turnId: string, model: string) => Promise<boolean>
   agentSessionInfo?: AgentSessionInfo
   /** The activity level the Worker last published; the Interrupt button reads it. */
   agentActivity?: AgentActivityState
@@ -659,6 +673,14 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           busy={pauseInFlight()}
           reason={props.inputQueue?.pauseReason ?? AgentInputQueuePauseReason.UNSPECIFIED}
           onResume={() => setQueuePaused(false)}
+        />
+        <TurnRetryOfferBanner
+          offer={props.onRetryTurn ? props.turnRetryOffer : undefined}
+          provider={props.agent?.agentProvider}
+          optionGroups={props.agent?.optionGroups}
+          // The banner calls this only while it shows an offer, and it shows
+          // none without onRetryTurn. The fallback only satisfies the type.
+          onRetry={(turnId, model) => props.onRetryTurn?.(turnId, model) ?? Promise.resolve(false)}
         />
         <AgentInputQueue
           clientId={props.queueClientId ?? ''}

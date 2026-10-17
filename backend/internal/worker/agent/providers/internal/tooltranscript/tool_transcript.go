@@ -431,6 +431,10 @@ func (s *Transcript) PendingSpanIDsForTest() []string {
 	return ids
 }
 
+// UpdateSessionID forwards the new session to the wrapped sink. The wrapped
+// sink stamps the session on every row, including each row that this wrapper
+// writes through it. The embedded ProviderServices.MessageSessionID therefore
+// reports the session of those rows, and this wrapper needs no override.
 func (s *Transcript) UpdateSessionID(sessionID string) {
 	s.ProviderServices.UpdateSessionID(sessionID)
 	content := s.ProviderServices.CaptureMessage(agent.MessageContent{}, agent.SpanInfo{})

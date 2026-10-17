@@ -86,6 +86,8 @@ interface RenderPanelOptions {
   agentActivity?: AgentActivityState
   optionGroups?: AgentInfo['optionGroups']
   inputQueue?: AgentEditorPanelProps['inputQueue']
+  turnRetryOffer?: AgentEditorPanelProps['turnRetryOffer']
+  onRetryTurn?: AgentEditorPanelProps['onRetryTurn']
 }
 
 function renderPanel(options: RenderPanelOptions = {}) {
@@ -116,6 +118,8 @@ function renderPanel(options: RenderPanelOptions = {}) {
         {...(options.onInterrupt !== undefined ? { onInterrupt: options.onInterrupt } : {})}
         {...(options.agentActivity !== undefined ? { agentActivity: options.agentActivity } : {})}
         {...(options.inputQueue !== undefined ? { inputQueue: options.inputQueue } : {})}
+        {...(options.turnRetryOffer !== undefined ? { turnRetryOffer: options.turnRetryOffer } : {})}
+        {...(options.onRetryTurn !== undefined ? { onRetryTurn: options.onRetryTurn } : {})}
         branchActions={stubBranchMenuActions()}
         branchWorkerId={workerId}
       />
@@ -296,6 +300,18 @@ describe('AgentEditorPanel', () => {
     finally {
       resolveDelivery()
     }
+  })
+
+  it('shows a retry offer only when the panel can send the retry', () => {
+    const offer = { turnId: 'turn-1', model: 'gpt-5.5' }
+    const withoutHandler = renderPanel({ turnRetryOffer: offer })
+    expect(screen.queryByTestId('turn-retry-offer-banner')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('turn-retry-offer-retry')).not.toBeInTheDocument()
+    withoutHandler.unmount()
+
+    renderPanel({ turnRetryOffer: offer, onRetryTurn: vi.fn().mockResolvedValue(true) })
+    expect(screen.getByTestId('turn-retry-offer-banner')).toBeInTheDocument()
+    expect(screen.getByTestId('turn-retry-offer-retry')).toBeInTheDocument()
   })
 
   it.each([false, true])('hides the queue toggle during a control request and restores its state (paused=%s)', (paused) => {

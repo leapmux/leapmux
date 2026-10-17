@@ -1,12 +1,12 @@
 import type { MessageCategory } from '../../messageClassifier'
 import type { ClassificationContext, ClassificationInput } from '../registry'
-import { CLAUDE_FRAME_KIND } from '~/generated/contracts/claude-protocol'
+import { CLAUDE_FRAME_KIND, CLAUDE_HOOK_OUTCOME, CLAUDE_INFORMATIONAL_LEVEL, CLAUDE_SYSTEM_SUBTYPE } from '~/generated/contracts/claude-protocol'
 import { NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { isPlainNotificationType } from '~/lib/notificationTypes'
 import { isFinalCompactingStatus, isNotificationThreadWrapper } from '../../messageUtils'
 import { classifyNotifications } from '../../notificationClassification'
-import { claudeNotificationEntry, claudeSystemSubtypeHidden } from './extractors/notification'
+import { claudeNotificationEntry, claudeReadsSystemSubtype, claudeSystemSubtypeHidden } from './extractors/notification'
 import { claudeExitPlanText } from './extractors/plan'
 import { canonicalClaudeToolName, claudeToolRowHidden } from './toolKinds'
 
@@ -43,6 +43,11 @@ function isClaudeNotifThread(wrapper: { messages: unknown[] } | null): wrapper i
  * - `rate_limit_event` whose `rate_limit_info.status` is "allowed" -- a no-op
  *   refresh, not a throttle the user needs to see.
  * - `system` whose subtype {@link claudeSystemSubtypeHidden} lists.
+ * - `informational` at level "info" -- the interface shows that level in its own
+ *   transcript mode only.
+ * - `hook_response` whose outcome is not "error" -- a hook that blocks a call
+ *   reports itself in that call's own result, and a passing hook states nothing
+ *   to show.
  * - `system` `status` updates other than the live "compacting" one -- e.g. the
  *   final `{status:null, compact_result:"success"}` ending a compaction. The
  *   user-facing "Context compacted (...)" line comes from compact_boundary, so
@@ -55,7 +60,12 @@ function isHiddenClaudeNotification(m: Record<string, unknown>): boolean {
     return info?.status === 'allowed'
   }
   if (type === CLAUDE_FRAME_KIND.System) {
-    if (claudeSystemSubtypeHidden(pickString(m, 'subtype')))
+    const subtype = pickString(m, 'subtype')
+    if (claudeSystemSubtypeHidden(subtype))
+      return true
+    if (subtype === CLAUDE_SYSTEM_SUBTYPE.Informational && pickString(m, 'level') === CLAUDE_INFORMATIONAL_LEVEL.Info)
+      return true
+    if (subtype === CLAUDE_SYSTEM_SUBTYPE.HookResponse && pickString(m, 'outcome') !== CLAUDE_HOOK_OUTCOME.Error)
       return true
     if (isFinalCompactingStatus(m))
       return true
@@ -82,11 +92,12 @@ type ClaudeTypeClassifier = (
 const CLAUDE_NOTIFICATION_CLASSIFIERS: Record<string, ClaudeTypeClassifier> = {
   [CLAUDE_FRAME_KIND.System](parent, input) {
     const subtype = pickString(parent, 'subtype')
-    if (input.parentSpanId && (subtype === 'task_started' || subtype === 'task_progress'))
-      return { kind: 'hidden' }
     if (isHiddenClaudeNotification(parent))
       return { kind: 'hidden' }
-    return classifyNotifications([parent], input.agentProvider, claudeNotificationEntry)
+    // A known subtype that states no words draws nothing. An unknown subtype
+    // keeps the no-display card, because that card is the signal that a new
+    // frame exists.
+    return classifyNotifications([parent], input.agentProvider, claudeNotificationEntry, claudeReadsSystemSubtype(subtype) ? 'hidden' : 'notification')
   },
   rate_limit_event(parent, input) {
     if (isHiddenClaudeNotification(parent))

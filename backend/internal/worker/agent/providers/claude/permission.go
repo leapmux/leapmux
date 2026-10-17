@@ -16,10 +16,14 @@ import (
 )
 
 type claudePendingControl struct {
-	instanceID      string
-	sessionID       string
-	agentID         string
-	toolUseID       string
+	instanceID string
+	sessionID  string
+	agentID    string
+	toolUseID  string
+	// elicitationID identifies the MCP elicitation that an `elicitation`
+	// request asks. An `elicitation_complete` frame finds the request by it
+	// (see handleElicitationComplete). Empty for every other request.
+	elicitationID   string
 	payload         []byte
 	automaticReply  []byte
 	ready           bool
@@ -40,6 +44,22 @@ func (a *Agent) claudeCodeHandleControlRequest(content []byte) {
 	if json.Unmarshal(content, &envelope) != nil || envelope.RequestID == "" {
 		return
 	}
+	// The optional fields that touch the live state decode one at a time, so a
+	// mistyped field costs only itself. A `can_use_tool` is the permission
+	// decision that reaches the reader, so the call that it escalates waits on
+	// no automatic check any more. An `elicitation` keeps its elicitation id on
+	// the record, because a later `elicitation_complete` states the
+	// elicitation alone (see handleElicitationComplete).
+	fields := parseClaudeControlRequestFields(content)
+	if fields.Subtype == claudeControlRequestCanUseTool {
+		if sink, ok := a.claudePermissionCheckSink(fields.AgentID); ok {
+			clearClaudePermissionCheck(sink, fields.ToolUseID)
+		}
+	}
+	elicitationID := ""
+	if fields.Subtype == contracts.MCPElicitationSubtypeClaude {
+		elicitationID = fields.ElicitationID
+	}
 	var request struct {
 		Subtype             string          `json:"subtype"`
 		ToolName            string          `json:"tool_name"`
@@ -50,7 +70,7 @@ func (a *Agent) claudeCodeHandleControlRequest(content []byte) {
 	}
 	valid := json.Unmarshal(envelope.Request, &request) == nil
 	record := &claudePendingControl{instanceID: id.Generate(), agentID: request.AgentID, toolUseID: request.ToolUseID,
-		payload: bytes.Clone(content), publicationDone: make(chan struct{})}
+		elicitationID: elicitationID, payload: bytes.Clone(content), publicationDone: make(chan struct{})}
 	var input map[string]json.RawMessage
 	if valid && request.Subtype == "can_use_tool" && request.ToolName != "" && !request.RequiresInteraction &&
 		request.ToolName != ToolNameAskUserQuestion && (claudeProvider{}).PlanModeControl(request.ToolName) == agent.PlanModeControlNone &&
@@ -248,6 +268,31 @@ func (a *Agent) finishControlAnswer(requestID string, record *claudePendingContr
 	if current && publish {
 		a.publishRegisteredControl(requestID, record)
 	}
+}
+
+// claimElicitation claims the published elicitation request that elicitationID
+// identifies, for an answer that the Worker sends. It returns nil when no such
+// request waits for an answer: the id is unknown, the reader answered it
+// already, or the request belongs to an earlier session.
+func (a *Agent) claimElicitation(elicitationID string) (string, *claudePendingControl) {
+	if elicitationID == "" {
+		return "", nil
+	}
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	if a.StoppedLocked() {
+		return "", nil
+	}
+	for requestID, record := range a.incomingControls {
+		if record.elicitationID != elicitationID || !record.ready || record.answering || record.answered ||
+			record.sessionID != a.sessionID {
+			continue
+		}
+		record.answering = true
+		record.automatic = true
+		return requestID, record
+	}
+	return "", nil
 }
 
 func (a *Agent) retireControl(requestID string) {

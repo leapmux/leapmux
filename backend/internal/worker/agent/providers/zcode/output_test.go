@@ -693,8 +693,8 @@ func TestHandleZCodeOutput_ToolBatch_BackfillsOnlyTheLostCalls(t *testing.T) {
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
 	a.toolCalls["finished"] = &zcodeToolCall{name: "Bash", final: true, lastFrame: []byte(`{"type":"tool.updated"}`)}
 	a.toolCalls["lost"] = &zcodeToolCall{name: "Read", lastFrame: []byte(`{"type":"tool.updated","payload":{"kind":"scheduled","toolCallId":"lost","toolName":"Read"}}`)}
-	// A call the model stream named but the agent never announced opened no span, so
-	// the batch has nothing to close for it.
+	// A call that the model stream identified but the agent never announced opened
+	// no span, so the batch has nothing to close for it.
 	a.toolCalls["stream-only"] = &zcodeToolCall{name: "Grep"}
 
 	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventToolUpdated,
@@ -873,24 +873,523 @@ func TestHandleZCodeOutput_SessionUpdated_EmptyContentPersistsNothingButKeepsThe
 	assert.Equal(t, int64(7), usage["input_tokens"])
 }
 
+// `main_turn` is the running turn's reply. It persists like every model response
+// did before the predicate existed.
+func TestHandleZCodeOutput_SessionUpdated_MainTurnPersistsTheAssistantText(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated,
+		`{"content":"The answer.","querySource":"main_turn","stopReason":"end_turn","usage":{"inputTokens":3,"outputTokens":1,"totalTokens":4}}`))
+
+	require.Equal(t, 1, sink.MessageCount())
+	usage, ok := sink.LastSessionInfo()["context_usage"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, int64(3), usage["input_tokens"])
+}
+
+// Every generation the app-server makes for itself -- the completion verifier, the
+// goal summary title, the compaction summary -- rides the same event. Persisting one
+// puts raw verifier JSON into the chat, and recording its usage moves the context
+// meter for a request the user never made. The running turn's own deltas stay
+// buffered through it: the side query is a DIFFERENT model call, and its response
+// must not close the main turn's stream.
+func TestHandleZCodeOutput_SessionUpdated_SideQueryPersistsNothingAndKeepsTheMainTurnBuffered(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventModelStreaming,
+		`{"kind":"text_delta","assistantMessageId":"main-1","delta":"answer"}`))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventModelStreaming,
+		`{"kind":"reasoning_delta","assistantMessageId":"main-1","delta":"think"}`))
+
+	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventSessionUpdated,
+		`{"content":"{\"passed\": true}","querySource":"target_completion_verification","stopReason":"stop","usage":{"inputTokens":99,"outputTokens":9,"totalTokens":108}}`))
+
+	assert.Equal(t, 0, sink.MessageCount())
+	assert.Equal(t, 0, sink.NotificationCount())
+	_, usage := sink.LastSessionInfoValue(contracts.SessionInfoKeyContextUsage)
+	assert.False(t, usage, "a side query's usage must not reach the context meter")
+	assert.Equal(t, len("think"), a.generationBuffer.RetainedTextLenForTest(zcodeReasoningScope("main-1")),
+		"the running turn's reasoning stays buffered")
+	assert.Equal(t, len("answer"), a.generationBuffer.RetainedTextLenForTest(zcodeTextScope("main-1")),
+		"the running turn's text stays buffered")
+}
+
 func TestHandleZCodeOutput_SessionUpdated_TelemetryVariantsAreIgnored(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.ControlSink{}
 	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
 
-	for _, payload := range []string{
+	for seq, payload := range []string{
 		`{"messageCount":12,"modelRef":{"providerId":"p","modelId":"m"},"iteration":3}`,
 		`{"baseURL":"https://api.example","requestId":"r-1","maxAttempts":3}`,
 		`{}`,
 		`{"stopReason":"end_turn"}`,
 	} {
-		a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated, payload))
+		a.HandleOutput(zcodeEventLine(t, int64(seq+1), contracts.ZCodeEventSessionUpdated, payload))
 	}
 
 	assert.Equal(t, 0, sink.MessageCount())
 	assert.Equal(t, 0, sink.NotificationCount())
 	assert.Equal(t, 0, len(sink.BackgroundTasks()))
+}
+
+// --- goal lifecycle (session.updated) ---
+
+// A `target_changed` announcement is the app-server's own statement of a goal
+// transition. It reports the goal LIVE, so the neutral sink writes the
+// `goal_updated` row when the status or objective really changed.
+func TestHandleZCodeOutput_GoalChangedSetReportsALiveGoal(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated,
+		`{"action":"set","source":"command","target":{"targetID":"g1","sessionID":"sess-1",`+
+			`"objective":"Ship the parity matrix","summaryTitle":"Parity","status":"active",`+
+			`"tokenBudget":null,"tokensUsed":0,"timeUsedSeconds":0,"time":{"created":1,"updated":2}}}`))
+
+	goals := sink.Goals()
+	require.Len(t, goals, 1)
+	assert.Equal(t, "Ship the parity matrix", goals[0].Objective)
+	assert.Equal(t, "g1", goals[0].NativeID)
+	assert.Equal(t, agent.GoalStatusActive, goals[0].Status)
+	assert.False(t, goals[0].Snapshot, "a target change announces; it does not restate")
+	assert.Equal(t, 0, sink.MessageCount())
+}
+
+// The completion transition is the one the card has been wrong about: the
+// protocol word `complete` maps to DONE.
+func TestHandleZCodeOutput_GoalChangedStatusUpdatedToCompleteReportsDone(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated,
+		`{"action":"status_updated","source":"runtime","target":{"targetID":"g1","sessionID":"sess-1",`+
+			`"objective":"Ship the parity matrix","summaryTitle":"Parity","status":"complete",`+
+			`"tokenBudget":null,"tokensUsed":1200,"timeUsedSeconds":90,"time":{"created":1,"updated":2}}}`))
+
+	got, ok := sink.LastGoal()
+	require.True(t, ok)
+	assert.Equal(t, agent.GoalStatusDone, got.Status)
+	assert.Empty(t, got.StatusDetail,
+		"DONE states the whole word; a detail would read \"Goal achieved: X (complete)\"")
+}
+
+// `cleared` and a null target both state the removal. The action word wins even
+// beside a full target object: a stale object must not resurrect a cleared goal.
+func TestHandleZCodeOutput_GoalChangedClearedCallsClearGoal(t *testing.T) {
+	t.Parallel()
+
+	for name, payload := range map[string]string{
+		"the cleared action": `{"action":"cleared","source":"command","target":null}`,
+		"a null target":      `{"action":"status_updated","source":"runtime","target":null}`,
+		"the cleared action beside a target object": `{"action":"cleared","source":"command","target":{` +
+			`"targetID":"g1","objective":"Ship it","status":"active"}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.ControlSink{}
+			a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+			a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated, payload))
+
+			assert.Equal(t, 1, sink.GoalClears())
+			assert.Empty(t, sink.Goals(), "the cleared action wins alone; the stale object writes nothing")
+			assert.Equal(t, []bool{false}, sink.GoalClearSnapshots(),
+				"a target change announces the removal; it does not restate it")
+		})
+	}
+}
+
+// The goal check's `started` marks the goal "verifying" in its detail and writes
+// no row of its own. The three finals persist their frame and drop the detail.
+func TestHandleZCodeOutput_GoalVerificationStartedReportsTheVerifyingDetail(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated,
+		`{"action":"set","source":"command","target":{"targetID":"g1","sessionID":"sess-1",`+
+			`"objective":"Ship the parity matrix","summaryTitle":"Parity","status":"active",`+
+			`"tokenBudget":null,"tokensUsed":0,"timeUsedSeconds":0,"time":{"created":1,"updated":2}}}`))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventSessionUpdated,
+		`{"verificationId":"v1","targetId":"g1","goalIteration":1,"status":"started"}`))
+
+	got, ok := sink.LastGoal()
+	require.True(t, ok)
+	assert.Equal(t, "Ship the parity matrix", got.Objective)
+	assert.Equal(t, agent.GoalStatusActive, got.Status, "the goal keeps its status while the check runs")
+	assert.Equal(t, "verifying", got.StatusDetail)
+	assert.Equal(t, 0, sink.NotificationCount(), "the start of a check is no row")
+}
+
+func TestHandleZCodeOutput_GoalVerificationFinalsPersistAndDropTheDetail(t *testing.T) {
+	t.Parallel()
+
+	for _, status := range []string{"completed", "failed_closed", "cancelled"} {
+		t.Run(status, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.ControlSink{}
+			a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+			a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated,
+				`{"action":"set","source":"command","target":{"targetID":"g1","sessionID":"sess-1",`+
+					`"objective":"Ship the parity matrix","summaryTitle":"Parity","status":"active",`+
+					`"tokenBudget":null,"tokensUsed":0,"timeUsedSeconds":0,"time":{"created":1,"updated":2}}}`))
+			a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventSessionUpdated,
+				`{"verificationId":"v1","targetId":"g1","goalIteration":1,"status":"started"}`))
+			a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventSessionUpdated,
+				`{"verificationId":"v1","targetId":"g1","goalIteration":2,"status":"`+status+`",`+
+					`"verification":{"passed":false,"reason":"not yet","nextAction":"Run the tests"}}`))
+
+			require.Equal(t, 1, sink.NotificationCount(), "the final state of a check is a row")
+			got, ok := sink.LastGoal()
+			require.True(t, ok)
+			assert.Empty(t, got.StatusDetail, "the check is over and the report drops the phrase")
+		})
+	}
+}
+
+// --- compaction lifecycle and microcompact (session.updated) ---
+
+// The compaction lifecycle is the single source of ZCode compaction rows. Every
+// state of it persists its own frame, and `Classify` folds start into end.
+func TestHandleZCodeOutput_CompactionLifecyclePersists(t *testing.T) {
+	t.Parallel()
+
+	for _, status := range []string{"started", "retrying", "skipped", "completed", "failed", "interrupted"} {
+		t.Run(status, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.ControlSink{}
+			a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+			a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated,
+				`{"operationId":"c1","status":"`+status+`","trigger":"auto","phase":"standalone_turn",`+
+					`"display":"separator","preCompactTokenCount":180000,"postCompactTokenCount":12000}`))
+
+			require.Equal(t, 1, sink.NotificationCount())
+			assert.Equal(t, 0, sink.MessageCount())
+		})
+	}
+}
+
+// A microcompact rewrites a fraction of the context and carries no metadata. It
+// is its own boundary.
+func TestHandleZCodeOutput_MicrocompactBoundaryPersists(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated,
+		`{"strategy":"local_tool_result_clear","tokensSaved":4000,"clearedToolCallIds":["t1"],"trigger":"token_pressure"}`))
+
+	require.Equal(t, 1, sink.NotificationCount())
+	assert.Equal(t, 0, sink.MessageCount())
+}
+
+// --- the other session.updated shapes ---
+
+// Only the scheduled retry is worth a row: it is the one network status a user
+// must see, and the others hold headers and base URLs.
+func TestHandleZCodeOutput_NetworkRetryPersistsAndOtherStatusesDrop(t *testing.T) {
+	t.Parallel()
+
+	for name, tc := range map[string]struct {
+		payload string
+		rows    int
+	}{
+		"a scheduled retry with its api-retry record": {
+			payload: `{"type":"model_retry_scheduled","requestId":"q1","attempt":2,"maxAttempts":5,"delayMs":4000,` +
+				`"statusCode":529,"_meta":{"zcode":{"apiRetry":{"kind":"api_retry","attempt":2,"maxRetries":5,` +
+				`"retryDelayMs":4000,"errorStatus":529,"error":"overloaded"}}}}`,
+			rows: 1,
+		},
+		"a scheduled retry with no api-retry record": {
+			payload: `{"type":"model_retry_scheduled","requestId":"q1","attempt":2}`,
+			rows:    0,
+		},
+		"a started request": {
+			payload: `{"type":"model_request_started","requestId":"q1","baseURL":"https://api.example","querySource":"main_turn"}`,
+			rows:    0,
+		},
+		"a scheduled retry of the main turn": {
+			payload: `{"type":"model_retry_scheduled","requestId":"q1","querySource":"main_turn",` +
+				`"_meta":{"zcode":{"apiRetry":{"kind":"api_retry","attempt":2,"maxRetries":5}}}}`,
+			rows: 1,
+		},
+		// A side query is a model call the app-server makes for itself. Its retry
+		// is no more the user's than its reply, so the main-reply rule drops it.
+		"a scheduled retry of the completion verifier": {
+			payload: `{"type":"model_retry_scheduled","requestId":"q1","querySource":"target_completion_verification",` +
+				`"_meta":{"zcode":{"apiRetry":{"kind":"api_retry","attempt":2,"maxRetries":5}}}}`,
+			rows: 0,
+		},
+		"a scheduled retry of the goal summary title": {
+			payload: `{"type":"model_retry_scheduled","requestId":"q1","querySource":"goal_summary_title",` +
+				`"_meta":{"zcode":{"apiRetry":{"kind":"api_retry","attempt":2,"maxRetries":5}}}}`,
+			rows: 0,
+		},
+		"a scheduled retry of the compaction summary": {
+			payload: `{"type":"model_retry_scheduled","requestId":"q1","querySource":"compact",` +
+				`"_meta":{"zcode":{"apiRetry":{"kind":"api_retry","attempt":2,"maxRetries":5}}}}`,
+			rows: 0,
+		},
+		"a scheduled retry with a query source that is not a string": {
+			payload: `{"type":"model_retry_scheduled","requestId":"q1","querySource":5,` +
+				`"_meta":{"zcode":{"apiRetry":{"kind":"api_retry","attempt":2,"maxRetries":5}}}}`,
+			rows: 0,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.ControlSink{}
+			a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+			a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated, tc.payload))
+
+			assert.Equal(t, tc.rows, sink.NotificationCount())
+			assert.Equal(t, 0, sink.MessageCount())
+		})
+	}
+}
+
+// The registry fallback is the one model selection that states a switch. A
+// selection with no origin is the session's own, and the post-turn session/read
+// refreshes it.
+func TestHandleZCodeOutput_ModelSelectedFallbackPersists(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated,
+		`{"modelSelection":{"providerId":"p","modelId":"glm-5.3","options":{}},"previousModelSelection":{`+
+			`"providerId":"p","modelId":"glm-6","options":{}},"origin":"registryFallback","contextWindow":200000}`))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventSessionUpdated,
+		`{"modelSelection":{"providerId":"p","modelId":"glm-5.3","options":{}},"previousModelSelection":{`+
+			`"providerId":"p","modelId":"glm-6","options":{}},"contextWindow":200000}`))
+
+	require.Equal(t, 1, sink.NotificationCount(), "only the registry fallback is a row")
+	assert.Equal(t, 0, sink.MessageCount())
+}
+
+// A hook the user must see is a client-visible failure. An internal hook runs
+// out of the user's sight and its failure is not theirs to read.
+func TestHandleZCodeOutput_HookFailurePersistsOnlyWhenClientVisible(t *testing.T) {
+	t.Parallel()
+
+	for name, tc := range map[string]struct {
+		payload string
+		rows    int
+	}{
+		"a visible failure": {
+			payload: `{"hookRunId":"h1","hookInvocationId":"i1","hookEventName":"PreToolUse","outcome":"failed",` +
+				`"descriptor":{"clientVisible":true,"sourceKind":"user"},"errorMessage":"boom"}`,
+			rows: 1,
+		},
+		"a visible block": {
+			payload: `{"hookRunId":"h1","hookInvocationId":"i1","hookEventName":"PreToolUse","outcome":"blocked",` +
+				`"descriptor":{"clientVisible":true,"sourceKind":"user"},"blockReason":"policy"}`,
+			rows: 1,
+		},
+		"an internal failure": {
+			payload: `{"hookRunId":"h1","hookInvocationId":"i1","hookEventName":"PreToolUse","outcome":"failed",` +
+				`"descriptor":{"clientVisible":false,"sourceKind":"internal"},"errorMessage":"boom"}`,
+			rows: 0,
+		},
+		"a successful run": {
+			payload: `{"hookRunId":"h1","hookInvocationId":"i1","hookEventName":"PreToolUse","outcome":"success",` +
+				`"descriptor":{"clientVisible":true,"sourceKind":"user"}}`,
+			rows: 0,
+		},
+		// ZCode reports a hook that ran past its time limit as a failed run whose
+		// outcome is `timed_out`. The hook did not do its work, so the user must
+		// see it.
+		"a visible timeout": {
+			payload: `{"hookRunId":"h1","hookInvocationId":"i1","hookEventName":"PreToolUse","outcome":"timed_out",` +
+				`"descriptor":{"clientVisible":true,"sourceKind":"user"},"errorMessage":"Hook timed out"}`,
+			rows: 1,
+		},
+		// A cancelled hook stopped because its turn stopped. That is not a failure.
+		"a visible cancellation": {
+			payload: `{"hookRunId":"h1","hookInvocationId":"i1","hookEventName":"PreToolUse","outcome":"cancelled",` +
+				`"descriptor":{"clientVisible":true,"sourceKind":"user"},"errorMessage":"aborted"}`,
+			rows: 0,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.ControlSink{}
+			a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+			a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated, tc.payload))
+
+			assert.Equal(t, tc.rows, sink.NotificationCount())
+			assert.Equal(t, 0, sink.MessageCount())
+		})
+	}
+}
+
+// Pending workspace hooks are worth one notice; an admission with nothing
+// pending states no change.
+func TestHandleZCodeOutput_WorkspaceHookAdmissionPersists(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated,
+		`{"pendingCount":2,"bundleDigest":"abc"}`))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventSessionUpdated,
+		`{"pendingCount":0,"bundleDigest":"abc"}`))
+
+	require.Equal(t, 1, sink.NotificationCount())
+	assert.Equal(t, 0, sink.MessageCount())
+}
+
+// The discard notice replaces the queued notice the same key already holds, so
+// the reader sees the input is gone rather than still waiting.
+func TestHandleZCodeOutput_SteerDiscardedPersists(t *testing.T) {
+	t.Parallel()
+
+	for _, reason := range []string{"user_removed", "session_resumed", "a_reason_from_a_later_release"} {
+		t.Run(reason, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.ControlSink{}
+			a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+			a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated,
+				`{"pendingInputIds":["p1"],"reason":"`+reason+`","targetTurnId":"turn_1"}`))
+
+			require.Equal(t, 1, sink.NotificationCount())
+			assert.Equal(t, 0, sink.MessageCount())
+		})
+	}
+}
+
+// A promotion moves a queued input into a turn of its own. ZCode reports that as
+// a discard from the steering queue, but the input runs: ZCode's own client
+// skips the discard for this reason. A row would tell the user that the input is
+// lost.
+func TestHandleZCodeOutput_SteerPromotedPersistsNothing(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated,
+		`{"pendingInputIds":["p1"],"reason":"promoted","targetTurnId":"turn_1"}`))
+
+	assert.Equal(t, 0, sink.NotificationCount())
+	assert.Equal(t, 0, sink.MessageCount())
+}
+
+// The payload decode reads every discriminator raw. A key that one shape carries
+// with an unexpected JSON type must not fail the decode, or the shape loses its
+// row. The usage and the context window of a model response are such keys: a
+// wrong type in either drops that value only, and the reply text still lands.
+func TestHandleZCodeOutput_SessionUpdated_AWrongUsageTypeKeepsTheRow(t *testing.T) {
+	t.Parallel()
+
+	for name, tc := range map[string]struct {
+		payload  string
+		messages int
+		rows     int
+	}{
+		"a reply with a usage string": {
+			payload:  `{"content":"The answer.","querySource":"main_turn","stopReason":"end_turn","usage":"n/a"}`,
+			messages: 1,
+		},
+		"a reply with a context window string": {
+			payload:  `{"content":"The answer.","querySource":"main_turn","stopReason":"end_turn","contextWindow":"200k"}`,
+			messages: 1,
+		},
+		"a compaction with a usage array": {
+			payload: `{"operationId":"c1","status":"completed","trigger":"auto","usage":[1,2]}`,
+			rows:    1,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.ControlSink{}
+			a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+			a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated, tc.payload))
+
+			assert.Equal(t, tc.messages, sink.MessageCount())
+			assert.Equal(t, tc.rows, sink.NotificationCount())
+			_, usage := sink.LastSessionInfoValue(contracts.SessionInfoKeyContextUsage)
+			assert.False(t, usage, "a usage of the wrong type states no usage")
+		})
+	}
+}
+
+// A context window of the wrong type drops the window only. The usage beside it
+// still reaches the context meter.
+func TestHandleZCodeOutput_SessionUpdated_AWrongContextWindowTypeKeepsTheUsage(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated,
+		`{"content":"The answer.","querySource":"main_turn","stopReason":"end_turn","contextWindow":"200k",`+
+			`"usage":{"inputTokens":50,"outputTokens":10,"totalTokens":60}}`))
+
+	require.Equal(t, 1, sink.MessageCount())
+	usage, ok := sink.LastSessionInfo()["context_usage"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, int64(50), usage["input_tokens"])
+	a.Mu.Lock()
+	window := a.contextWindow
+	a.Mu.Unlock()
+	assert.Zero(t, window, "a context window that is not a number states no window")
+}
+
+// The shapes LeapMux does not read stay unread: the compaction boundary record,
+// the model anomaly warning, the model request, the queue and steer bookkeeping,
+// the feedback record, the hook review, the auto-resolution and the session fork.
+// Each carries no conversation, and the raw bubble would say nothing.
+func TestHandleZCodeOutput_SessionUpdatedDropShapesPersistNothing(t *testing.T) {
+	t.Parallel()
+
+	for name, payload := range map[string]string{
+		"a compact boundary":       `{"boundaryId":"b1","trigger":"auto","phase":"pre_request","preCompactTokenCount":180000,"postCompactTokenCount":12000}`,
+		"a model anomaly warning":  `{"type":"model_anomaly_warning","reason":"strange"}`,
+		"a model request":          `{"operationId":"op-1","querySource":"main_turn","messages":[]}`,
+		"queue bookkeeping":        `{"queueLength":2,"autoDrain":true}`,
+		"steer bookkeeping":        `{"pendingInputIds":["p1"],"targetTurnId":"turn_1"}`,
+		"feedback":                 `{"feedback":"meh"}`,
+		"a network request":        `{"requestId":"q1","baseURL":"https://api.example","headers":{"a":"b"}}`,
+		"hook review":              `{"reviewFlowId":"r1","bundleDigest":"abc"}`,
+		"auto-resolution":          `{"autoResolved":true,"requestId":"q1"}`,
+		"a session fork":           `{"parentSessionId":"sess-old"}`,
+		"an empty payload":         `{}`,
+		"a payload of mixed types": `{"content":5,"stopReason":true,"target":3}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.ControlSink{}
+			a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+
+			a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated, payload))
+
+			assert.Equal(t, 0, sink.MessageCount())
+			assert.Equal(t, 0, sink.NotificationCount())
+		})
+	}
 }
 
 // --- background tasks ---
@@ -1373,25 +1872,53 @@ func TestHandleZCodeOutput_StreamRecoveryTakesNoAction(t *testing.T) {
 	t.Parallel()
 
 	for name, payload := range map[string]string{
-		"an anchor":               `{"kind":"tool_result","anchorId":"a-1"}`,
-		"a retry with no kind":    `{"attemptId":"x","retryNumber":1,"maxRetries":3,"streamMode":"sse"}`,
-		"discarded output":        `{"discardedTextBytes":420,"streamMode":"sse"}`,
-		"one of the old triggers": `{"kind":"retry_started"}`,
-		"an empty payload":        `{}`,
+		"an anchor":                       `{"kind":"tool_result","anchorId":"a-1"}`,
+		"a retry with no kind":            `{"attemptId":"x","retryNumber":1,"maxRetries":3,"streamMode":"sse"}`,
+		"discarded output for no message": `{"discardedTextBytes":420,"streamMode":"sse"}`,
+		"one of the old triggers":         `{"kind":"retry_started"}`,
+		"an empty payload":                `{}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			sink := &agenttest.ControlSink{}
 			a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), &zcodeRecordedStdin{})
 
-			a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventStreamRecoveryUpdated, payload))
+			a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventModelStreaming,
+				`{"kind":"text_delta","assistantMessageId":"m1","delta":"answer"}`))
+			a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventStreamRecoveryUpdated, payload))
 
 			assert.Empty(t, a.StdinForTest().(*zcodeRecordedStdin).Frames(),
 				"no RPC: a re-subscribe would replay nothing, because the subscription never lapsed")
 			assert.Equal(t, 0, sink.MessageCount(), "the retry's own outcome arrives on turn.failed or turn.completed")
 			assert.Equal(t, 0, sink.NotificationCount())
+			assert.Equal(t, len("answer"), a.generationBuffer.RetainedTextLenForTest(zcodeTextScope("m1")),
+				"a recovery that discarded nothing keeps the stream")
 		})
 	}
+}
+
+// A discarded tail is text the app-server threw away before its retry. Keeping it
+// buffered lets a later failure persist the discarded text as if it were the
+// reply, so the discard drops both buffered scopes of that message.
+func TestHandleZCodeOutput_StreamRecoveryTailDiscardedEmptiesTheBufferScopes(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), &zcodeRecordedStdin{})
+
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventModelStreaming,
+		`{"kind":"text_delta","assistantMessageId":"m1","delta":"answer"}`))
+	a.HandleOutput(zcodeEventLine(t, 2, contracts.ZCodeEventModelStreaming,
+		`{"kind":"reasoning_delta","assistantMessageId":"m1","delta":"think"}`))
+
+	a.HandleOutput(zcodeEventLine(t, 3, contracts.ZCodeEventStreamRecoveryUpdated,
+		`{"attemptId":"a1","anchorId":"x","assistantMessageId":"m1","discardedReasoningBytes":10,"discardedTextBytes":20,"discardedToolCallIds":[]}`))
+
+	assert.Equal(t, 0, a.generationBuffer.RetainedTextLenForTest(zcodeReasoningScope("m1")))
+	assert.Equal(t, 0, a.generationBuffer.RetainedTextLenForTest(zcodeTextScope("m1")))
+	assert.Empty(t, a.StdinForTest().(*zcodeRecordedStdin).Frames(), "the discard is consumed, never re-subscribed")
+	assert.Equal(t, 0, sink.MessageCount())
+	assert.Equal(t, 0, sink.NotificationCount())
 }
 
 // A `raw` frame carries an opaque payload rather than the fields a row reads. It

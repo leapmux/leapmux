@@ -2,9 +2,11 @@
 import type { ToolProgressEntry } from '~/stores/chatToolProgress'
 import { render } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { createToolProgressStore } from '~/stores/chatToolProgress'
+import { hoverForTooltip } from '~/test-support/clipStub'
 import { retryDetailText, ToolRunningBadge } from './ToolRunningBadge'
+import * as styles from './ToolRunningBadge.css'
 
 const RETRY = { attempt: 2, maxRetries: 5, retryDelayMs: 4000, errorStatus: 529, errorCategory: 'overloaded' }
 
@@ -32,15 +34,18 @@ describe('ToolRunningBadge', () => {
 
   it('renders nothing for an entry that reports neither an elapsed time nor a retry', () => {
     // A provider that reports a running tool but measures nothing (ZCode today)
-    // must not produce an empty badge box.
-    const { container } = renderBadge({ })
+    // must not produce an empty badge box. Text alone cannot see the box, so the
+    // element must be absent.
+    const { container, queryByTestId } = renderBadge({ })
     expect(container.textContent).toBe('')
+    expect(queryByTestId('tool-running-badge')).toBeNull()
   })
 
   it('renders nothing for a zero elapsed time', () => {
     // The agent reports whole seconds, so 0 means "not measured yet".
-    const { container } = renderBadge({ elapsedSeconds: 0 })
+    const { container, queryByTestId } = renderBadge({ elapsedSeconds: 0 })
     expect(container.textContent).toBe('')
+    expect(queryByTestId('tool-running-badge')).toBeNull()
   })
 
   it('formats the elapsed time the way the result divider formats a duration', () => {
@@ -62,6 +67,54 @@ describe('ToolRunningBadge', () => {
     const { container } = renderBadge({ elapsedSeconds: 90, retry: RETRY })
     expect(container.textContent).toContain('Retrying 2/5')
     expect(container.textContent).not.toContain('1m 30s')
+  })
+
+  it('shows the permission check instead of the elapsed time while a reviewer holds the call', () => {
+    const { container } = renderBadge({ elapsedSeconds: 90, permissionCheck: true })
+    expect(container.textContent).toBe('Checking permission…')
+    expect(container.textContent).not.toContain('1m 30s')
+  })
+
+  // The check says what holds the call RIGHT NOW, so it wins over the retry of
+  // a previous attempt and over the elapsed time.
+  it('shows the permission check instead of a retry', () => {
+    const { container } = renderBadge({ elapsedSeconds: 90, retry: RETRY, permissionCheck: true })
+    expect(container.textContent).toBe('Checking permission…')
+    expect(container.textContent).not.toContain('Retrying 2/5')
+  })
+
+  it('keeps the retry class off while the permission check is the shown state', () => {
+    const { getByTestId } = renderBadge({ elapsedSeconds: 90, retry: RETRY, permissionCheck: true })
+    expect(getByTestId('tool-running-badge').className).toBe(styles.root)
+    const { getByTestId: retryBadge } = renderBadge({ elapsedSeconds: 90, retry: RETRY })
+    expect(retryBadge('tool-running-badge').className).toBe(`${styles.root} ${styles.retry}`)
+  })
+
+  it('states the permission check reason in the tooltip', () => {
+    vi.useFakeTimers()
+    try {
+      const { getByTestId } = renderBadge({ permissionCheck: true })
+      expect(hoverForTooltip(getByTestId('tool-running-badge'))?.textContent)
+        .toBe('An automatic reviewer checks this call before it runs.')
+    }
+    finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // The tooltip must agree with the label. While the permission check is the
+  // shown state, its reason is the one the tooltip states -- not the reason of
+  // a retry that a previous attempt left on the entry.
+  it('states the permission check reason in the tooltip instead of the retry reason', () => {
+    vi.useFakeTimers()
+    try {
+      const { getByTestId } = renderBadge({ retry: RETRY, permissionCheck: true })
+      expect(hoverForTooltip(getByTestId('tool-running-badge'))?.textContent)
+        .toBe('An automatic reviewer checks this call before it runs.')
+    }
+    finally {
+      vi.useRealTimers()
+    }
   })
 
   it('falls back to the elapsed time once the retry resolves', () => {
@@ -251,6 +304,23 @@ describe('ToolRunningBadge', () => {
     expect(getByTestId('tool-running-badge')).toBe(badge)
     expect(badge.firstChild).toBe(textNode)
     expect(badge.textContent).toBe('Retrying 2/5')
+
+    setProgress({ elapsedSeconds: 120 })
+    expect(getByTestId('tool-running-badge')).toBe(badge)
+    expect(badge.firstChild).toBe(textNode)
+    expect(badge.textContent).toBe('2m')
+  })
+
+  it('keeps its span and its text node when the permission check starts and ends', () => {
+    const { getByTestId, setProgress } = renderBadge({ elapsedSeconds: 90 })
+    const badge = getByTestId('tool-running-badge')
+    const textNode = badge.firstChild
+    expect(badge.textContent).toBe('1m 30s')
+
+    setProgress({ elapsedSeconds: 90, permissionCheck: true })
+    expect(getByTestId('tool-running-badge')).toBe(badge)
+    expect(badge.firstChild).toBe(textNode)
+    expect(badge.textContent).toBe('Checking permission…')
 
     setProgress({ elapsedSeconds: 120 })
     expect(getByTestId('tool-running-badge')).toBe(badge)

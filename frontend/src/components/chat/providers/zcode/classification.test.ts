@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest'
-import { ZCODE_EVENT, ZCODE_METHOD, ZCODE_STATE_REASON, ZCODE_TOOL, ZCODE_TOOL_KIND } from '~/generated/contracts/zcode-protocol'
+import {
+  ZCODE_COMPACTION_STATUS,
+  ZCODE_EVENT,
+  ZCODE_GOAL_VERIFICATION_STATUS,
+  ZCODE_METHOD,
+  ZCODE_MICROCOMPACT_STRATEGY,
+  ZCODE_STATE_REASON,
+  ZCODE_TOOL,
+  ZCODE_TOOL_KIND,
+} from '~/generated/contracts/zcode-protocol'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { input } from '../testUtils'
 import { classifyZCodeMessage } from './classification'
@@ -51,6 +60,48 @@ describe('classifyZCodeMessage', () => {
     }
   })
 
+  // Every generation the app-server runs for itself -- the completion verifier, the
+  // goal summary title, the compaction summary -- is a SIDE QUERY. Older builds
+  // stored its text; the row stays hidden rather than drawing raw verifier JSON.
+  it('hides a side-query session.updated even when it carries text', () => {
+    for (const payload of [
+      { content: '{"passed": true}', querySource: 'target_completion_verification', stopReason: 'stop' },
+      { content: '{"title":"Verify Wave 01"}', querySource: 'goal_summary_title', stopReason: 'stop' },
+      { content: 'Summary: ...', querySource: 'compact', stopReason: 'stop' },
+      { content: '', stopReason: 'tool_internal' },
+    ]) {
+      expect(classifyZCodeMessage(input(event(ZCODE_EVENT.SessionUpdated, payload))))
+        .toEqual({ kind: 'hidden' })
+    }
+  })
+
+  // The rows the worker persists for the goal, compaction, retry and hook shapes
+  // thread through the notification reader, which words each one.
+  it('classifies the persisted session.updated shapes as notifications', () => {
+    const parent = event(ZCODE_EVENT.SessionUpdated, {
+      operationId: 'c1',
+      status: 'completed',
+      trigger: 'auto',
+      preCompactTokenCount: 180000,
+      postCompactTokenCount: 12000,
+    })
+    expect(classifyZCodeMessage(input(parent))).toEqual({
+      kind: 'notification',
+      entries: [{ kind: 'compaction', phase: 'end', detail: { trigger: 'auto', pre: 180000, post: 12000 } }],
+    })
+  })
+
+  // A goal change drives the goal card. The worker writes the neutral
+  // `goal_updated` row for its transition, so the frame itself draws nothing.
+  it('hides a goal change session.updated', () => {
+    for (const payload of [
+      { action: 'set', source: 'command', target: { targetID: 'g1', objective: 'Ship it', status: 'active' } },
+      { action: 'cleared', source: 'command', target: null },
+    ]) {
+      expect(classifyZCodeMessage(input(event(ZCODE_EVENT.SessionUpdated, payload)))).toEqual({ kind: 'hidden' })
+    }
+  })
+
   // A background task belongs to the registry, which draws it as its own card.
   it('hides a background-task session.updated even when it carries text', () => {
     const parent = event(ZCODE_EVENT.SessionUpdated, {
@@ -71,7 +122,7 @@ describe('classifyZCodeMessage', () => {
 
   // The worker backfills the input from the model stream, but a build that omits the
   // name entirely must still open a span rather than fall through to raw JSON.
-  it('falls back to a generic tool name on a scheduled row that names none', () => {
+  it('falls back to a generic tool name on a scheduled row that gives none', () => {
     const result = classifyZCodeMessage(input(toolEvent(ZCODE_TOOL_KIND.Scheduled)))
     expect(result).toMatchObject({ kind: 'tool_use' })
   })
@@ -212,6 +263,60 @@ describe('classifyZCodeMessage on consolidated notification threads', () => {
     const messages = [{ type: ZCODE_EVENT.PermissionResolved }, { type: ZCODE_EVENT.PermissionResolved }]
     expect(classifyZCodeMessage(input(messages[0], { old_seqs: [], messages })))
       .toEqual({ kind: 'hidden' })
+  })
+
+  // An automatic compaction can end in the same notification thread as a goal
+  // check verdict: the worker persists both as notification rows. Each member
+  // draws its own entry, so the verdict does not hide behind the boundary that
+  // comes before it.
+  it('renders each member of a thread that holds a compaction and a goal check verdict', () => {
+    const compacted = event(ZCODE_EVENT.SessionUpdated, {
+      operationId: 'c1',
+      status: ZCODE_COMPACTION_STATUS.Completed,
+      trigger: 'auto',
+      preCompactTokenCount: 180000,
+      postCompactTokenCount: 12000,
+    })
+    const verdict = event(ZCODE_EVENT.SessionUpdated, {
+      verificationId: 'v1',
+      targetId: 'g1',
+      goalIteration: 1,
+      status: ZCODE_GOAL_VERIFICATION_STATUS.Completed,
+      verification: { passed: false, reason: 'The tests still fail.', nextAction: 'Fix the failing test.' },
+    })
+    expect(classifyZCodeMessage(input(compacted, { old_seqs: [], messages: [compacted, verdict] }))).toEqual({
+      kind: 'notification',
+      entries: [
+        { kind: 'compaction', phase: 'end', detail: { trigger: 'auto', pre: 180000, post: 12000 } },
+        { kind: 'text', text: 'Iteration 1 · Goal incomplete, continuing — The tests still fail. Next: Fix the failing test.' },
+      ],
+    })
+  })
+
+  // Two persisted notification rows fold into ONE thread row, and the row draws
+  // one entry per member in order.
+  it('folds two notification-shape session.updated rows into one thread', () => {
+    const micro = event(ZCODE_EVENT.SessionUpdated, { strategy: ZCODE_MICROCOMPACT_STRATEGY.LocalToolResultClear, tokensSaved: 4000 })
+    const steer = event(ZCODE_EVENT.SessionUpdated, { pendingInputIds: ['p1'], reason: 'user_removed', targetTurnId: 'turn_1' })
+    expect(classifyZCodeMessage(input(micro, { old_seqs: [], messages: [micro, steer] }))).toEqual({
+      kind: 'notification',
+      entries: [
+        { kind: 'compaction', phase: 'end', micro: true },
+        { kind: 'text', text: 'Queued input discarded (you removed it)' },
+      ],
+    })
+  })
+
+  // Two model responses are two assistant rows. Folding them into one thread
+  // would draw the first reply and drop the second, so a wrapper that holds only
+  // model responses falls through to the per-message classification.
+  it('does not fold two model-response session.updated rows into a thread', () => {
+    const first = event(ZCODE_EVENT.SessionUpdated, { content: 'first', stopReason: 'stop' })
+    const second = event(ZCODE_EVENT.SessionUpdated, { content: 'second', stopReason: 'end_turn' })
+    expect(classifyZCodeMessage(input(first, { old_seqs: [], messages: [first, second] })))
+      .toEqual({ kind: 'assistant_text' })
+    expect(classifyZCodeMessage(input(second, { old_seqs: [], messages: [first, second] })))
+      .toEqual({ kind: 'assistant_text' })
   })
 
   it('hides an empty wrapper', () => {

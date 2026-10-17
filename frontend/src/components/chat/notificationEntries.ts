@@ -157,6 +157,15 @@ export function leapmuxNotificationEntry(
       const count = m[NOTIFICATION_FIELD.Count]
       return [{ kind: 'text', text: pendingRequestsApprovedLabel(typeof count === 'number' ? count : 0) }]
     }
+    // The worker states the model that the retry used. The cached label of the
+    // provider gives its display name, and the raw ID keeps the row readable
+    // when the cache has no label. A row that gives no model still reads as a
+    // complete sentence.
+    case NOTIFICATION_TYPE.TurnRetried: {
+      const model = pickString(m, NOTIFICATION_FIELD.Model).trim()
+      const target = model ? displayValue(agentProvider, 'model', model) : 'a faster model'
+      return [{ kind: 'text', text: `Stopped this attempt and retried on ${target}` }]
+    }
     // The provider reader handles this message type.
     default:
       return null

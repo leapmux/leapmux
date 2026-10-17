@@ -1327,16 +1327,16 @@ func TestHandleOutput_NonThinkingSystemMessageStillPersists(t *testing.T) {
 	agent := newTestAgent(agent.NewProviderServices(sink))
 
 	// Persist an ordinary system message unchanged when it is neither thinking_tokens nor a notification-threaded subtype.
-	// The telemetry filter must not discard other system lines.
+	// The telemetry filter must not discard other system lines. An unknown subtype is the sharpest case: its stored row is the signal that a new frame exists.
 	agent.HandleOutput([]byte(`{
 		"type": "system",
-		"subtype": "init",
+		"subtype": "some_future_event",
 		"session_id": "a40e65f9-f1f2-4e8b-b089-abc9692345b2"
 	}`))
 
 	assert.Equal(t, 1, sink.MessageCount(), "non-thinking system message must persist")
 	assert.Equal(t, 0, sink.SessionInfoCount(), "non-thinking system message must not broadcast thinking session info")
-	assert.Equal(t, 1, sink.SessionIDCount(), "init message should update session id")
+	assert.Equal(t, 0, sink.SessionIDCount(), "only init moves the session")
 }
 
 func TestIsRetryableClaudeResultError(t *testing.T) {
@@ -2467,4 +2467,442 @@ func TestHandleOutput_ConversationResetPersistsContextCleared(t *testing.T) {
 	assert.JSONEq(t, `{"type":"context_cleared"}`, string(notifications[0].Content))
 	// The frame is a notice, not a transcript row: nothing is persisted as a message.
 	assert.Empty(t, sink.Messages())
+}
+
+// --- The system-subtype verdicts: the hidden table and the rendered frames. ---
+
+func TestHandleOutput_HiddenSystemSubtypesAreNeverPersisted(t *testing.T) {
+	t.Parallel()
+
+	for _, subtype := range contracts.ClaudeHiddenSystemSubtypeKeys {
+		t.Run(subtype, func(t *testing.T) {
+			sink := &outputTestSink{}
+			a := newTestAgent(agent.NewProviderServices(sink))
+			a.HandleOutput([]byte(fmt.Sprintf(`{"type":"system","subtype":%q,"uuid":"u-1","session_id":"s-1"}`, subtype)))
+			assert.Empty(t, sink.Messages(), "%s must not persist a message", subtype)
+			assert.Empty(t, sink.PersistedNotifications(), "%s must not persist a notification", subtype)
+		})
+	}
+}
+
+func TestHandleOutput_RenderedSystemSubtypesPersist(t *testing.T) {
+	t.Parallel()
+
+	fixtures := []struct{ name, line string }{
+		{name: "permission_denied", line: `{"type":"system","subtype":"permission_denied","tool_name":"Bash","tool_use_id":"toolu_1","decision_reason_type":"classifier","decision_reason":"the command removes a directory","uuid":"u-1","session_id":"s-1"}`},
+		{name: "model_fallback", line: `{"type":"system","subtype":"model_fallback","trigger":"overloaded","original_model":"claude-opus-5-5","fallback_model":"claude-sonnet-5-5","content":"Switched to claude-sonnet-5-5 due to high demand for claude-opus-5-5","uuid":"u-1","session_id":"s-1"}`},
+		{name: "model_refusal_fallback", line: `{"type":"system","subtype":"model_refusal_fallback","trigger":"refusal","direction":"retry","scope":"local","original_model":"claude-opus-5-5","fallback_model":"claude-sonnet-5-5","request_id":null,"content":"Switched to claude-sonnet-5-5","uuid":"u-1","session_id":"s-1"}`},
+		{name: "model_consent_fallback", line: `{"type":"system","subtype":"model_consent_fallback","choice":"switch_default","original_model":"claude-opus-5-5","fallback_model":"claude-sonnet-5-5","content":"Switched to claude-sonnet-5-5","uuid":"u-1","session_id":"s-1"}`},
+		{name: "notification", line: `{"type":"system","subtype":"notification","key":"compact-error","text":"Error compacting conversation","priority":"high","color":"error","uuid":"u-1","session_id":"s-1"}`},
+		{name: "informational", line: `{"type":"system","subtype":"informational","content":"Stop hook failed: boom","level":"warning","uuid":"u-1","session_id":"s-1"}`},
+		{name: "memory_recall", line: `{"type":"system","subtype":"memory_recall","mode":"select","memories":[{"path":"/m/a.md","scope":"personal"}],"uuid":"u-1","session_id":"s-1"}`},
+		{name: "hook_response", line: `{"type":"system","subtype":"hook_response","hook_id":"h1","hook_name":"setup.sh","hook_event":"SessionStart","output":"","stdout":"","stderr":"boom","exit_code":2,"outcome":"error","uuid":"u-1","session_id":"s-1"}`},
+		{name: "ui_log", line: `{"type":"system","subtype":"ui_log","plugin":"my-plugin","text":"hello","uuid":"u-1","session_id":"s-1"}`},
+		{name: "ui_toast", line: `{"type":"system","subtype":"ui_toast","plugin":"my-plugin","text":"hello","timeout_ms":3000,"uuid":"u-1","session_id":"s-1"}`},
+	}
+	for _, fixture := range fixtures {
+		t.Run(fixture.name, func(t *testing.T) {
+			sink := &outputTestSink{}
+			a := newTestAgent(agent.NewProviderServices(sink))
+			a.HandleOutput([]byte(fixture.line))
+			assert.Len(t, sink.Messages(), 1, "%s must persist its row", fixture.name)
+		})
+	}
+}
+
+func TestHandleOutput_InitIsConsumedAndNotPersisted(t *testing.T) {
+	t.Parallel()
+
+	sink := &outputTestSink{}
+	a := newTestAgent(agent.NewProviderServices(sink))
+	a.HandleOutput([]byte(`{"type":"system","subtype":"init","slash_commands":["goal"],"session_id":"s-1"}`))
+
+	assert.Empty(t, sink.Messages(), "init must not persist a message")
+	assert.Empty(t, sink.PersistedNotifications(), "init must not persist a notification")
+	assert.Equal(t, 1, sink.SessionIDCount(), "init states the session")
+	assert.Equal(t, "s-1", sink.LastSessionID())
+}
+
+func TestHandleOutput_ANonInitSystemFrameDoesNotReFireSessionInit(t *testing.T) {
+	t.Parallel()
+
+	sink := &outputTestSink{}
+	a := newTestAgent(agent.NewProviderServices(sink))
+	a.HandleOutput([]byte(`{"type":"system","subtype":"init","session_id":"s-1"}`))
+	a.HandleOutput([]byte(`{"type":"system","subtype":"notification","key":"k","text":"hi","priority":"low","uuid":"u-1","session_id":"s-2"}`))
+
+	assert.Equal(t, 1, sink.SessionIDCount(), "only init moves the session")
+	assert.Equal(t, "s-1", sink.LastSessionID())
+	assert.Equal(t, []string{"s-1"}, sink.StatusActives(), "only init re-broadcasts status active")
+}
+
+func TestHandleOutput_InformationalDropsInfoAndPersistsTheRest(t *testing.T) {
+	t.Parallel()
+
+	sink := &outputTestSink{}
+	a := newTestAgent(agent.NewProviderServices(sink))
+	a.HandleOutput([]byte(`{"type":"system","subtype":"informational","content":"verbose only","level":"info","uuid":"u-1","session_id":"s-1"}`))
+	assert.Empty(t, sink.Messages(), "the interface shows level info in its own transcript mode only")
+
+	a.HandleOutput([]byte(`{"type":"system","subtype":"informational","content":"Stop hook failed: boom","level":"warning","uuid":"u-2","session_id":"s-1"}`))
+	assert.Len(t, sink.Messages(), 1)
+}
+
+func TestHandleOutput_InformationalWithoutALevelPersists(t *testing.T) {
+	t.Parallel()
+
+	// Only the stated level info is dropped. A frame that states no level, or a
+	// level of the wrong type, is not known to be verbose-only, so it persists
+	// as every level other than info does.
+	for name, line := range map[string]string{
+		"absent level":   `{"type":"system","subtype":"informational","content":"Stop hook failed: boom","uuid":"u-1","session_id":"s-1"}`,
+		"null level":     `{"type":"system","subtype":"informational","content":"Stop hook failed: boom","level":null,"uuid":"u-1","session_id":"s-1"}`,
+		"mistyped level": `{"type":"system","subtype":"informational","content":"Stop hook failed: boom","level":3,"uuid":"u-1","session_id":"s-1"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			sink := &outputTestSink{}
+			a := newTestAgent(agent.NewProviderServices(sink))
+			a.HandleOutput([]byte(line))
+			assert.Len(t, sink.Messages(), 1, "%s must persist its row", name)
+		})
+	}
+}
+
+func TestHandleOutput_HookResponsePersistsOnlyFailures(t *testing.T) {
+	t.Parallel()
+
+	sink := &outputTestSink{}
+	a := newTestAgent(agent.NewProviderServices(sink))
+	a.HandleOutput([]byte(`{"type":"system","subtype":"hook_response","hook_id":"h1","hook_name":"setup.sh","hook_event":"SessionStart","output":"","stdout":"","stderr":"","exit_code":0,"outcome":"success","uuid":"u-1","session_id":"s-1"}`))
+	assert.Empty(t, sink.Messages(), "a passing hook states nothing to show")
+
+	a.HandleOutput([]byte(`{"type":"system","subtype":"hook_response","hook_id":"h1","hook_name":"setup.sh","hook_event":"SessionStart","output":"","stdout":"","stderr":"","exit_code":null,"outcome":"cancelled","uuid":"u-2","session_id":"s-1"}`))
+	assert.Empty(t, sink.Messages(), "a cancelled hook states nothing to show")
+
+	a.HandleOutput([]byte(`{"type":"system","subtype":"hook_response","hook_id":"h1","hook_name":"setup.sh","hook_event":"SessionStart","output":"","stdout":"","stderr":"boom","exit_code":2,"outcome":"error","uuid":"u-3","session_id":"s-1"}`))
+	assert.Len(t, sink.Messages(), 1, "a failing hook reports itself")
+}
+
+func TestHandleOutput_ModelFallbacksRefreshTheSessionModel(t *testing.T) {
+	t.Parallel()
+
+	sink := &outputTestSink{}
+	a := newTestAgent(agent.NewProviderServices(sink))
+
+	a.HandleOutput([]byte(`{"type":"system","subtype":"model_refusal_fallback","trigger":"refusal","direction":"retry","scope":"local","original_model":"claude-opus-5-5","fallback_model":"claude-sonnet-5-5","request_id":null,"content":"Switched to claude-sonnet-5-5","uuid":"u-1","session_id":"s-1"}`))
+	assert.Equal(t, 0, sink.SettingsRefreshCount(), "a local fallback serves one response only")
+
+	a.HandleOutput([]byte(`{"type":"system","subtype":"model_refusal_fallback","trigger":"refusal","direction":"sticky","scope":"session","original_model":"claude-opus-5-5","fallback_model":"claude-haiku-4-5","request_id":null,"content":"Switched to claude-haiku-4-5","uuid":"u-2","session_id":"s-1"}`))
+	require.Equal(t, 1, sink.SettingsRefreshCount())
+	assert.Equal(t, "claude-haiku-4-5", sink.LastSettingsRefresh().Model)
+	assert.Equal(t, "claude-haiku-4-5", a.model, "the session model follows the fallback")
+
+	a.HandleOutput([]byte(`{"type":"system","subtype":"model_consent_fallback","choice":"switch_default","original_model":"claude-opus-5-5","fallback_model":"claude-opus-5-5","content":"Switched to claude-opus-5-5","uuid":"u-3","session_id":"s-1"}`))
+	require.Equal(t, 2, sink.SettingsRefreshCount())
+	assert.Equal(t, "claude-opus-5-5", sink.LastSettingsRefresh().Model)
+	assert.Equal(t, "claude-opus-5-5", a.model)
+
+	assert.Len(t, sink.Messages(), 3, "every fallback row still persists")
+}
+
+func TestHandleOutput_ModelRefusalFallbackWithoutScopeRefreshesTheSessionModel(t *testing.T) {
+	t.Parallel()
+
+	sink := &outputTestSink{}
+	a := newTestAgent(agent.NewProviderServices(sink))
+
+	// `scope` is optional on the wire, and the interface's own schema states
+	// that an absent scope is the session-scoped swap ("Absent from older CLIs
+	// (treat as 'session')"). Only a PRESENT `scope: "local"` serves one
+	// response and leaves the session model alone.
+	a.HandleOutput([]byte(`{"type":"system","subtype":"model_refusal_fallback","trigger":"refusal","direction":"retry","original_model":"claude-opus-5-5","fallback_model":"claude-haiku-4-5","request_id":null,"content":"Switched to claude-haiku-4-5","uuid":"u-1","session_id":"s-1"}`))
+
+	require.Equal(t, 1, sink.SettingsRefreshCount(), "an absent scope is the session-scoped swap")
+	assert.Equal(t, "claude-haiku-4-5", sink.LastSettingsRefresh().Model)
+	assert.Equal(t, "claude-haiku-4-5", a.model, "the session model follows the fallback")
+	assert.Len(t, sink.Messages(), 1, "the row itself still persists")
+}
+
+func TestHandleOutput_CommandsChangedReplacesTheSlashCommands(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	a := newTestAgent(agent.NewProviderServices(sink))
+	a.HandleOutput([]byte(`{"type":"system","subtype":"init","slash_commands":["bash"],"session_id":"s-1"}`))
+	require.Equal(t, 1, sink.GoalCapabilityPublishes())
+	assert.Empty(t, a.SupportedGoalActions())
+
+	a.HandleOutput([]byte(`{"type":"system","subtype":"commands_changed","commands":[{"name":"review","description":"Review the diff"},{"name":"goal","description":"Set a goal","argumentHint":"[objective]"}],"uuid":"u-1","session_id":"s-1"}`))
+	assert.Len(t, a.SupportedGoalActions(), 2, "the replacement list re-answers the /goal question")
+	assert.Equal(t, 2, sink.GoalCapabilityPublishes())
+
+	a.HandleOutput([]byte(`{"type":"system","subtype":"commands_changed","commands":[{"name":"review","description":"Review the diff"}],"uuid":"u-2","session_id":"s-1"}`))
+	assert.Empty(t, a.SupportedGoalActions(), "the replacement list dropped /goal")
+	assert.Equal(t, 3, sink.GoalCapabilityPublishes())
+}
+
+func TestHandleOutput_CommandsChangedWithoutAListKeepsTheSlashCommands(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	a := newTestAgent(agent.NewProviderServices(sink))
+	a.HandleOutput([]byte(`{"type":"system","subtype":"init","slash_commands":["goal"],"session_id":"s-1"}`))
+	require.Len(t, a.SupportedGoalActions(), 2)
+
+	// A `null` states no list at all. The frame's contract says a client
+	// replaces its cached list with the payload, and a payload that states no
+	// list cannot be one. The init reader treats a null the same way.
+	a.HandleOutput([]byte(`{"type":"system","subtype":"commands_changed","commands":null,"uuid":"u-1","session_id":"s-1"}`))
+	assert.Len(t, a.SupportedGoalActions(), 2, "a null commands list leaves the answer alone")
+	assert.Equal(t, 1, sink.GoalCapabilityPublishes())
+
+	a.HandleOutput([]byte(`{"type":"system","subtype":"commands_changed","uuid":"u-2","session_id":"s-1"}`))
+	assert.Len(t, a.SupportedGoalActions(), 2, "an absent commands list leaves the answer alone")
+	assert.Equal(t, 1, sink.GoalCapabilityPublishes())
+
+	// A real array REPLACES the cached list, an empty one included.
+	a.HandleOutput([]byte(`{"type":"system","subtype":"commands_changed","commands":[],"uuid":"u-3","session_id":"s-1"}`))
+	assert.Empty(t, a.SupportedGoalActions(), "an empty array replaces the cached list")
+	assert.Equal(t, 2, sink.GoalCapabilityPublishes())
+}
+
+func TestHandleOutput_CommandsChangedRepublishesOnlyOnAChangedAnswer(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	a := newTestAgent(agent.NewProviderServices(sink))
+	a.HandleOutput([]byte(`{"type":"system","subtype":"init","slash_commands":["goal","review"],"session_id":"s-1"}`))
+	require.Equal(t, 1, sink.GoalCapabilityPublishes())
+
+	// A publish states that the answer CHANGED. A replacement that re-states
+	// the same answer changes nothing the browser reads, so it must not
+	// re-publish.
+	a.HandleOutput([]byte(`{"type":"system","subtype":"commands_changed","commands":[{"name":"review"},{"name":"goal"}],"uuid":"u-1","session_id":"s-1"}`))
+	assert.Equal(t, 1, sink.GoalCapabilityPublishes(), "a re-stated answer states no change")
+	assert.Len(t, a.SupportedGoalActions(), 2)
+
+	a.HandleOutput([]byte(`{"type":"system","subtype":"commands_changed","commands":[{"name":"goal"},{"name":"review"}],"uuid":"u-2","session_id":"s-1"}`))
+	assert.Equal(t, 1, sink.GoalCapabilityPublishes(), "a re-ordered list states the same answer")
+	assert.Len(t, a.SupportedGoalActions(), 2)
+}
+
+func TestObserveGoalCommand_RefusesAfterAReplacementDroppedTheCommand(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	a := newTestAgent(agent.NewProviderServices(sink))
+	a.HandleOutput([]byte(`{"type":"system","subtype":"init","slash_commands":["goal"],"session_id":"s-1"}`))
+	a.HandleOutput([]byte(`{"type":"system","subtype":"commands_changed","commands":[{"name":"review"}],"uuid":"u-1","session_id":"s-1"}`))
+
+	a.ObserveGoalCommand(agent.GoalDeliverySend, "/goal ship it")
+	assert.Empty(t, sink.Goals(), "the replacement list dropped the command, so the write is refused")
+
+	a.HandleOutput([]byte(`{"type":"system","subtype":"commands_changed","commands":[{"name":"goal"}],"uuid":"u-2","session_id":"s-1"}`))
+	a.ObserveGoalCommand(agent.GoalDeliverySend, "/goal ship it")
+	goals := sink.Goals()
+	require.Len(t, goals, 1, "the replacement list restored the command")
+	assert.Equal(t, "ship it", goals[0].Objective)
+}
+
+func TestHandleOutput_ElicitationCompleteAcceptsAndWithdrawsTheMatchingRequest(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a, stdin := newClaudeAgentWithStdin(agent.NewProviderServices(sink))
+	a.HandleOutput([]byte(`{"type":"control_request","request_id":"r1","request":{"subtype":"elicitation","mcp_server_name":"github","message":"Sign in","mode":"url","url":"https://example.invalid/auth","elicitation_id":"e1"}}`))
+	require.Len(t, sink.PublishedControls(), 1)
+
+	a.HandleOutput([]byte(`{"type":"system","subtype":"elicitation_complete","mcp_server_name":"github","elicitation_id":"e-unknown","uuid":"u-1","session_id":"s-1"}`))
+	assert.Empty(t, stdin.String(), "an unknown elicitation id writes nothing")
+	assert.Empty(t, sink.CanceledControls(), "an unknown elicitation id withdraws nothing")
+
+	// Claude Code 2.1.300 only logs the completion and writes this frame. Its
+	// headless elicitation handler still waits for an answer, so the MCP call
+	// stays blocked until the worker answers the request.
+	a.HandleOutput([]byte(`{"type":"system","subtype":"elicitation_complete","mcp_server_name":"github","elicitation_id":"e1","uuid":"u-2","session_id":"s-1"}`))
+	assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"success","request_id":"r1","response":{"action":"accept"}}}`, stdin.String(),
+		"the worker accepts the request that the completion ends")
+	assert.Equal(t, []string{"r1"}, sink.CanceledControls(), "the matching card is withdrawn")
+
+	stdin.Reset()
+	a.HandleOutput([]byte(`{"type":"system","subtype":"elicitation_complete","mcp_server_name":"github","elicitation_id":"e1","uuid":"u-3","session_id":"s-1"}`))
+	assert.Empty(t, stdin.String(), "the request is retired, so a repeated completion writes nothing")
+	assert.Equal(t, []string{"r1"}, sink.CanceledControls(), "the request is retired")
+}
+
+// answeringControlSink starts the answer of each control request before its
+// publish call returns, as a fast reader can: the publish broadcasts the card,
+// and the answer can reach the provider on another goroutine at once.
+type answeringControlSink struct {
+	agenttest.ControlSink
+	answer   func(requestID string) error
+	answered chan error
+}
+
+func (s *answeringControlSink) PublishControlRequest(request agent.ControlRequest) error {
+	if err := s.ControlSink.PublishControlRequest(request); err != nil {
+		return err
+	}
+	go func() { s.answered <- s.answer(request.RequestID) }()
+	return nil
+}
+
+func TestHandleOutput_AnElicitationAnsweredDuringItsPublishKeepsNoEntry(t *testing.T) {
+	t.Parallel()
+
+	sink := &answeringControlSink{answered: make(chan error, 1)}
+	a, stdin := newClaudeAgentWithStdin(agent.NewProviderServices(sink))
+	sink.answer = func(requestID string) error {
+		answer := fmt.Sprintf(`{"type":"control_response","response":{"subtype":"success","request_id":%q,"response":{"action":"decline"}}}`, requestID)
+		return a.SendRawInput([]byte(answer), agent.StopContext{})
+	}
+
+	a.HandleOutput([]byte(`{"type":"control_request","request_id":"r1","request":{"subtype":"elicitation","mcp_server_name":"github","message":"Sign in","elicitation_id":"e1"}}`))
+	require.NoError(t, <-sink.answered, "the answer waits for the publish, then reaches the CLI")
+	assert.Empty(t, elicitationEntries(a), "the answer claimed the request, so no entry outlives it")
+
+	answered := stdin.String()
+	a.HandleOutput([]byte(`{"type":"system","subtype":"elicitation_complete","mcp_server_name":"github","elicitation_id":"e1","uuid":"u-1","session_id":"s-1"}`))
+	assert.Equal(t, answered, stdin.String(), "the reader answered already, so the worker writes no second answer")
+	assert.Empty(t, sink.CanceledControls(), "no card is left to withdraw")
+}
+
+func TestHandleOutput_AnElicitationThatFailsToPublishKeepsNoEntry(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{PublicationError: errors.New("storage unavailable")}
+	a, stdin := newClaudeAgentWithStdin(agent.NewProviderServices(sink))
+
+	a.HandleOutput([]byte(`{"type":"control_request","request_id":"r1","request":{"subtype":"elicitation","mcp_server_name":"github","message":"Sign in","elicitation_id":"e1"}}`))
+	assert.Empty(t, elicitationEntries(a), "a request that no reader can see keeps no entry")
+	assert.JSONEq(t, `{"type":"control_response","response":{"subtype":"error","request_id":"r1","error":"LeapMux could not store this control request."}}`, stdin.String(),
+		"the provider learns that the request failed")
+
+	stdin.Reset()
+	a.HandleOutput([]byte(`{"type":"system","subtype":"elicitation_complete","mcp_server_name":"github","elicitation_id":"e1","uuid":"u-1","session_id":"s-1"}`))
+	assert.Empty(t, stdin.String(), "the failed request gets no second answer")
+	assert.Empty(t, sink.CanceledControls())
+}
+
+func TestHandleOutput_AControlRequestWithAMistypedOptionalFieldStillPublishes(t *testing.T) {
+	t.Parallel()
+
+	// Only `request_id` is required to publish. A mistyped optional field must
+	// cost only that field: an unpublished request leaves Claude Code waiting
+	// for an answer that no reader can give.
+	for name, line := range map[string]string{
+		"tool_use_id":    `{"type":"control_request","request_id":"r1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{},"tool_use_id":42}}`,
+		"agent_id":       `{"type":"control_request","request_id":"r1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{},"tool_use_id":"toolu_1","agent_id":{"id":"task-1"}}}`,
+		"elicitation_id": `{"type":"control_request","request_id":"r1","request":{"subtype":"elicitation","mcp_server_name":"github","message":"Sign in","elicitation_id":7}}`,
+		"subtype":        `{"type":"control_request","request_id":"r1","request":{"subtype":["can_use_tool"],"tool_name":"Bash","input":{}}}`,
+		"request":        `{"type":"control_request","request_id":"r1","request":"can_use_tool"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			sink := &agenttest.ControlSink{}
+			a, stdin := newClaudeAgentWithStdin(agent.NewProviderServices(sink))
+			a.HandleOutput([]byte(line))
+
+			published := sink.PublishedControls()
+			require.Len(t, published, 1, "the request reaches the reader")
+			assert.Equal(t, "r1", published[0].RequestID)
+			assert.Empty(t, stdin.String(), "a published request needs no failure answer")
+			assert.Empty(t, elicitationEntries(a), "a mistyped elicitation field records no entry")
+		})
+	}
+}
+
+func TestHandleOutput_AControlRequestWithAMistypedAgentIDStillClearsTheCheck(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newTestAgent(agent.NewProviderServices(sink))
+	sink.UpdateSessionID("root-session")
+
+	// A mistyped `agent_id` states no subagent, which is the root. The correct
+	// `tool_use_id` beside it still ends the check of the call it escalates.
+	a.HandleOutput([]byte(`{"type":"control_request","request_id":"r1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{},"tool_use_id":"toolu_1","agent_id":42}}`))
+
+	value, ok := sink.LastSessionInfoValue(contracts.SessionInfoKeyRunningTool)
+	require.True(t, ok, "the clear lands on the root sink")
+	update, ok := value.(map[string]interface{})
+	require.True(t, ok, "running_tool must be an object, got %T", value)
+	assert.Equal(t, "toolu_1", update[contracts.RunningToolFieldSpanId])
+	assert.Equal(t, "root-session", update[contracts.RunningToolFieldAgentSessionId])
+	assert.Contains(t, update, contracts.RunningToolFieldPermissionCheck)
+	assert.Nil(t, update[contracts.RunningToolFieldPermissionCheck])
+}
+
+func TestHandleOutput_AnsweredAndCancelledElicitationsForgetTheirRequest(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a, stdin := newClaudeAgentWithStdin(agent.NewProviderServices(sink))
+
+	a.HandleOutput([]byte(`{"type":"control_request","request_id":"r1","request":{"subtype":"elicitation","mcp_server_name":"github","message":"Sign in","elicitation_id":"e1"}}`))
+	assert.Equal(t, map[string]string{"e1": "r1"}, elicitationEntries(a),
+		"a published elicitation records its request id")
+	require.NoError(t, a.SendRawInput([]byte(`{"type":"control_response","response":{"request_id":"r1","response":{"action":"accept","content":{"token":"x"}}}}`), agent.StopContext{}))
+	assert.Empty(t, elicitationEntries(a), "the answered request is forgotten")
+	answered := stdin.String()
+	a.HandleOutput([]byte(`{"type":"system","subtype":"elicitation_complete","mcp_server_name":"github","elicitation_id":"e1","uuid":"u-1","session_id":"s-1"}`))
+	assert.Empty(t, sink.CanceledControls(), "the reader already answered, so there is no card left to withdraw")
+	assert.Equal(t, answered, stdin.String(), "the reader already answered, so the worker writes no second answer")
+
+	a.HandleOutput([]byte(`{"type":"control_request","request_id":"r2","request":{"subtype":"elicitation","mcp_server_name":"github","message":"Sign in","elicitation_id":"e2"}}`))
+	a.HandleOutput([]byte(`{"type":"control_cancel_request","request_id":"r2"}`))
+	assert.Equal(t, []string{"r2"}, sink.CanceledControls(), "the cancelled request retires its card")
+	assert.Empty(t, elicitationEntries(a), "the cancelled request is forgotten")
+	a.HandleOutput([]byte(`{"type":"system","subtype":"elicitation_complete","mcp_server_name":"github","elicitation_id":"e2","uuid":"u-2","session_id":"s-1"}`))
+	assert.Equal(t, []string{"r2"}, sink.CanceledControls(), "the cancelled request is retired")
+}
+
+func TestSendRawInput_AFrameThatAnswersNothingKeepsTheElicitation(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a, _ := newClaudeAgentWithStdin(agent.NewProviderServices(sink))
+	a.HandleOutput([]byte(`{"type":"control_request","request_id":"r1","request":{"subtype":"elicitation","mcp_server_name":"github","message":"Sign in","elicitation_id":"e1"}}`))
+
+	// A frame that answers no request carries no request id, so it changes no
+	// bookkeeping and the pending card is still withdrawn at the completion.
+	require.NoError(t, a.SendRawInput([]byte(`{"type":"user","message":{"role":"user","content":"hello"}}`), agent.StopContext{}))
+	a.HandleOutput([]byte(`{"type":"system","subtype":"elicitation_complete","mcp_server_name":"github","elicitation_id":"e1","uuid":"u-1","session_id":"s-1"}`))
+	assert.Equal(t, []string{"r1"}, sink.CanceledControls(), "the entry outlived the input")
+}
+
+func TestSendRawInput_AnAnswerRetiresOnlyItsOwnElicitation(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a, _ := newClaudeAgentWithStdin(agent.NewProviderServices(sink))
+	a.HandleOutput([]byte(`{"type":"control_request","request_id":"r1","request":{"subtype":"elicitation","mcp_server_name":"github","message":"Sign in","elicitation_id":"e1"}}`))
+	a.HandleOutput([]byte(`{"type":"control_request","request_id":"r2","request":{"subtype":"elicitation","mcp_server_name":"gitlab","message":"Sign in","elicitation_id":"e2"}}`))
+
+	require.NoError(t, a.SendRawInput([]byte(`{"type":"control_response","response":{"request_id":"r1","response":{"action":"accept","content":{"token":"x"}}}}`), agent.StopContext{}))
+
+	a.HandleOutput([]byte(`{"type":"system","subtype":"elicitation_complete","mcp_server_name":"gitlab","elicitation_id":"e2","uuid":"u-1","session_id":"s-1"}`))
+	assert.Equal(t, []string{"r2"}, sink.CanceledControls(),
+		"the answer for r1 leaves e2 pending")
+
+	a.HandleOutput([]byte(`{"type":"system","subtype":"elicitation_complete","mcp_server_name":"github","elicitation_id":"e1","uuid":"u-2","session_id":"s-1"}`))
+	assert.Equal(t, []string{"r2"}, sink.CanceledControls(),
+		"the answer for r1 already retired its own entry")
+}
+
+// elicitationEntries maps the elicitation id of each pending elicitation
+// request that no answer claimed to its request id, for an assertion.
+func elicitationEntries(a *Agent) map[string]string {
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	entries := make(map[string]string)
+	for requestID, record := range a.incomingControls {
+		if record.elicitationID != "" && !record.answering && !record.answered {
+			entries[record.elicitationID] = requestID
+		}
+	}
+	return entries
 }

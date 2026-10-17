@@ -1,5 +1,5 @@
 {
-  "_readme": "Codex typed items and raw model items use separate vocabulary tables. Both the Go provider and TypeScript plugin read these tables. Native exec has raw request and output items without a typed command mirror. Exact thread, turn, and call identity pairs those rows.\n\nCodex streams command output through outputDelta events and fills aggregatedOutput on the completed typed item. LeapMux stores retained deltas beside an incomplete item. The supplement keys belong to LeapMux. Native item keys belong to OpenAI.\n\nThe options and optionDefaults tables keep shared option IDs and launch values consistent. The worker builds its option groups from them. The browser uses the same values for agent configuration. The permission_profile axis holds a Codex permission profile ID, such as :workspace. It replaced the legacy sandbox_policy and network_access axes, because upstream Codex now selects permissions by profile.\n\nThe autoReviewStatus and autoReviewActions tables hold the words of an item/autoApprovalReview/completed notification. The browser reads them to draw an auto-review row. The worker reads them to convert a denied review into the core event that thread/approveGuardianDeniedAction accepts.\n\nThe executables table lists the names that the worker probes on the search path, in preference order. The worker starts the first name that the shell finds. The second name is the full Rust host triple that `cargo install` produces on Windows when the shorter codex shim is absent. The E2E suite reads the same list, so it skips the Codex specs only when the worker cannot find any of the names.\n\nThe execOutput table holds native output values that storage filtering and browser extraction both read.",
+  "_readme": "Codex typed items and raw model items use separate vocabulary tables. Both the Go provider and TypeScript plugin read these tables. Native exec has raw request and output items without a typed command mirror. Exact thread, turn, and call identity pairs those rows.\n\nCodex streams command output through outputDelta events and fills aggregatedOutput on the completed typed item. LeapMux stores retained deltas beside an incomplete item. The supplement keys belong to LeapMux. Native item keys belong to OpenAI.\n\nThe options and optionDefaults tables keep shared option IDs and launch values consistent. The worker builds its option groups from them. The browser uses the same values for agent configuration. The permission_profile axis holds a Codex permission profile ID, such as :workspace. It replaced the legacy sandbox_policy and network_access axes, because upstream Codex now selects permissions by profile.\n\nThe autoReviewStatus and autoReviewActions tables hold the words of an item/autoApprovalReview/completed notification. The browser reads them to draw an auto-review row. The worker reads them to convert a denied review into the core event that thread/approveGuardianDeniedAction accepts.\n\nThe executables table lists the names that the worker probes on the search path, in preference order. The worker starts the first name that the shell finds. The second name is the full Rust host triple that `cargo install` produces on Windows when the shorter codex shim is absent. The E2E suite reads the same list, so it skips the Codex specs only when the worker cannot find any of the names.\n\nThe execOutput table holds native output values that storage filtering and browser extraction both read.\n\nA code-mode cell that yields keeps running, and the model reads the rest of its output through `wait` calls. Each yield returns only the output since the yield before it. The worker joins a waited cell into one card: the exec request row, and the exec output row with each later wait output beside it in a CodexExecSupplement. The callId identifies the exec output that the supplement belongs to. The execOutput RunningHeaderPrefix opens the header of a yield, and both sides read it.",
   "_unread": {
     "autoReviewStatus": {
       "InProgress": {
@@ -13,7 +13,9 @@
   "supplement": {
     "ItemID": "itemId",
     "ItemType": "itemType",
-    "AggregatedOutput": "aggregatedOutput"
+    "AggregatedOutput": "aggregatedOutput",
+    "CallID": "callId",
+    "ContinuationOutputs": "continuationOutputs"
   },
   "item": {
     "Envelope": "item",
@@ -53,6 +55,7 @@
     "ThreadNameUpdated": "thread/name/updated",
     "ThreadSettingsUpdated": "thread/settings/updated",
     "TurnPlanUpdated": "turn/plan/updated",
+    "TurnModerationMetadata": "turn/moderationMetadata",
     "ThreadTokenUsageUpdated": "thread/tokenUsage/updated",
     "McpToolCallProgress": "item/mcpToolCall/progress",
     "McpServerOauthLoginCompleted": "mcpServer/oauthLogin/completed",
@@ -73,6 +76,13 @@
     "PermissionsRequestApproval": "item/permissions/requestApproval",
     "ToolRequestUserInput": "item/tool/requestUserInput",
     "ThreadCompacted": "thread/compacted",
+    "AccountUpdated": "account/updated",
+    "ModelSafetyBufferingUpdated": "model/safetyBuffering/updated",
+    "ModelVerification": "model/verification",
+    "AuthRecoveryStarted": "modelProvider/authRecoveryStarted",
+    "AuthRecoveryCompleted": "modelProvider/authRecoveryCompleted",
+    "ConfigWarning": "configWarning",
+    "DeprecationNotice": "deprecationNotice",
     "Error": "error",
     "Warning": "warning"
   },
@@ -118,6 +128,20 @@
         {
           "key": "AggregatedOutput",
           "type": "string"
+        }
+      ]
+    },
+    "CodexExecSupplement": {
+      "doc": "CodexExecSupplement stores the wait outputs of a code-mode cell that yielded, in order. The call identity keeps the supplement on the exec output row that it continues.",
+      "table": "supplement",
+      "fields": [
+        {
+          "key": "CallID",
+          "type": "string"
+        },
+        {
+          "key": "ContinuationOutputs",
+          "type": "[]json.RawMessage"
         }
       ]
     },
@@ -197,6 +221,7 @@
   },
   "execOutput": {
     "TextContent": "input_text",
-    "CompletedHeader": "Script completed"
+    "CompletedHeader": "Script completed",
+    "RunningHeaderPrefix": "Script running with cell ID "
   }
 }

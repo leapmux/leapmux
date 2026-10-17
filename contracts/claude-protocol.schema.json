@@ -9,6 +9,9 @@
     "_readme",
     "modes",
     "systemSubtypes",
+    "hiddenSystemSubtypes",
+    "informationalLevels",
+    "hookOutcomes",
     "defaultMode",
     "frameKinds"
   ],
@@ -129,6 +132,15 @@
       "$ref": "#/$defs/table"
     },
     "systemSubtypes": {
+      "$ref": "#/$defs/table"
+    },
+    "hiddenSystemSubtypes": {
+      "$ref": "#/$defs/table"
+    },
+    "informationalLevels": {
+      "$ref": "#/$defs/table"
+    },
+    "hookOutcomes": {
       "$ref": "#/$defs/table"
     },
     "defaultMode": {

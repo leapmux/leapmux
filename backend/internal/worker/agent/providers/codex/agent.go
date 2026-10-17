@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -23,6 +24,12 @@ import (
 // unacknowledged send surfaces as a stated failure rather than as the client
 // giving up on a message the worker did deliver.
 const turnStartAckTimeout = 10 * time.Second
+
+// The tags of the ack timers. A test traps them on a mock clock.
+const (
+	codexTurnStartAckTimerTag  = "codex-turn-start-ack"
+	codexCompactionAckTimerTag = "codex-compaction-ack"
+)
 
 // Agent manages a single Codex app-server process.
 type Agent struct {
@@ -122,6 +129,48 @@ type Agent struct {
 	// successful call stays cached until the turn ends, so a late retry cannot
 	// send another request for an already interrupted turn. Guarded by Mu.
 	interruptCalls map[codexInterruptKey]*codexInterruptCall
+	// seenNoticeTexts deduplicates the notices that repeat with the same text
+	// (config warnings, deprecation notices, the verification notice). One set
+	// per Codex process. Guarded by Mu.
+	seenNoticeTexts map[string]struct{}
+	// turnInput retains the input blocks of each running main turn, keyed by
+	// turn ID, so a turn retry can send them again. Only a turn that LeapMux
+	// started has an entry: a turn that Codex starts by itself has no input to
+	// send again. turn/completed releases the entry. Guarded by Mu.
+	turnInput map[string][]map[string]interface{}
+	// pendingTurnInput holds the blocks of the turn/start that waits for its
+	// turn/started. handleMainTurnStarted moves them to turnInput. A refused
+	// turn/start drops them. A turn/start without its ack in time keeps them,
+	// because its turn can still start. Guarded by Mu.
+	pendingTurnInput []map[string]interface{}
+	// turnAgentMessageStarted records the main turns that already produced
+	// agent text. A turn retry cannot replay a request whose answer already
+	// started. Cleared with the turn. Guarded by Mu.
+	turnAgentMessageStarted map[string]bool
+	// turnEnded closes when the main turn's turn/completed arrives. The retry
+	// waits on the stopped turn's channel. Guarded by Mu.
+	turnEnded map[string]chan struct{}
+	// retryOffer is the live turn-retry offer. Guarded by Mu.
+	retryOffer *codexTurnRetryOffer
+	// retryOfferMu serializes each change of retryOffer with its broadcast, so
+	// the broadcasts reach the sink in the order of the changes. The sink
+	// caches the last value, and a stale offer that arrives last would stay
+	// on the banner. Take it before Mu, never while Mu is held.
+	retryOfferMu sync.Mutex
+	// retrying holds the input queue off the gap between the stopped turn and
+	// the retry's turn/started. retryStarting is true while the retry waits for
+	// its own turn/started, which alone clears retrying. retryCancelled records
+	// a user stop or a context clear during the retry. Guarded by Mu.
+	retrying       bool
+	retryStarting  bool
+	retryCancelled bool
+}
+
+// codexTurnRetryOffer is the retry the safety-buffering notice offers: send the
+// running turn's input again on a faster model.
+type codexTurnRetryOffer struct {
+	turnID string
+	model  string
 }
 
 type codexInterruptKey struct {
@@ -354,10 +403,35 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 	stopped := a.StoppedLocked()
 	threadID := a.threadID
 	turnID := a.turnID
+	if !stopped && a.retrying {
+		// The user's stop overrides a running retry: its next phase sends no
+		// turn/start. A stop in the gap before the retry's turn/started finds no
+		// turn to stop, so the retry stops its own turn when that turn starts.
+		//
+		// The cancel shares the critical section that reads turnID. A retry
+		// turn/started between two sections would clear retrying after this read
+		// found no turn, and the stop would then reach neither turn.
+		a.retryCancelled = true
+	}
 	a.Mu.Unlock()
 	if stopped {
 		return fmt.Errorf("agent is stopped")
 	}
+	a.withdrawTurnRetryOffer()
+	_, err := a.interruptMainTurn(threadID, turnID)
+	return err
+}
+
+// interruptMainTurn stops one main-thread turn and retires the control
+// requests that wait on it. Interrupt and the turn retry share it, so a retry
+// leaves no request behind that a plain stop would retire.
+//
+// An empty threadID or turnID means that no turn runs. The answers still go,
+// and the call returns false and nil, so a caller can stop without a check of
+// the turn state first. accepted reports that Codex accepted the turn/interrupt.
+// An error with accepted true means that the turn stops, but a command process
+// that the turn started did not stop.
+func (a *Agent) interruptMainTurn(threadID, turnID string) (accepted bool, err error) {
 	// The answers go FIRST, as Base.Interrupt sends them: a request the runtime
 	// still waits on outlives the turn that raised it. Codex is the one publisher
 	// that registers a real cancel answer -- the MCP elicitation at
@@ -368,12 +442,9 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 	// past the point the user believes the turn ended.
 	a.AnswerOutstandingControlRequests(a.sink)
 	if threadID == "" || turnID == "" {
-		// No active turn — nothing to interrupt. Treat as benign so
-		// scripts can call Interrupt unconditionally without first
-		// probing turn state.
-		return nil
+		return false, nil
 	}
-	accepted, err := a.interruptCodexTurn(threadID, turnID)
+	accepted, err = a.interruptCodexTurn(threadID, turnID)
 	// The ANSWERLESS requests go last, and only once the interrupt is accepted.
 	// Codex's four approval methods register a nil cancel answer, because Codex
 	// retires its own approval requests -- so withdrawing one sends the CLI nothing
@@ -385,7 +456,7 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 	if accepted {
 		a.WithdrawAllControlRequests(a.sink)
 	}
-	return err
+	return accepted, err
 }
 
 // Stop stops the process, then retains unfinished model output.
@@ -414,87 +485,12 @@ func (a *Agent) Wait() error {
 	return err
 }
 
-// ClearContext sends a new thread/start on the running Codex process,
-// replacing the current thread with a fresh one.
-func (a *Agent) ClearContext() (string, error) {
-	a.Mu.Lock()
-	oldThreadID := a.threadID
-	permissions := a.permissionSettingsLocked()
-	serviceTier := a.serviceTier
-	model := a.model
-	workingDir := a.workingDir
-	a.Mu.Unlock()
-
-	threadParams := codexThreadParams(model, workingDir, permissions, serviceTier)
-	// Codex uses this source to distinguish a deliberate context clear from an
-	// unrelated new conversation. Both sources start with empty model history.
-	threadParams["sessionStartSource"] = "clear"
-
-	thread, err := a.startThread(threadParams, a.APITimeout())
-	if err != nil {
-		return "", err
-	}
-	if thread.ID == "" {
-		return "", fmt.Errorf("the new Codex thread has no ID")
-	}
-	a.outputMu.Lock()
-	a.flushAllCodexGeneration(agent.MessageCompletionInterrupted)
-	a.persistIncompleteCodexTools("", true, agent.MessageCompletionInterrupted)
-
-	a.Mu.Lock()
-	if a.retiredCodexThreads == nil {
-		a.retiredCodexThreads = make(map[string]struct{})
-	}
-	if oldThreadID != "" {
-		a.retiredCodexThreads[oldThreadID] = struct{}{}
-	}
-	for childThreadID := range a.collabChildren {
-		a.retiredCodexThreads[childThreadID] = struct{}{}
-	}
-	a.applyThreadResult(thread)
-	// The response states the settings that the new thread holds, so Codex
-	// acknowledged them.
-	a.permissionsAcknowledged = true
-	a.threadID = thread.ID
-	a.turnID = ""
-	a.turnSawPlan = false
-	a.turnPlanText = ""
-	a.turnAssistantText = ""
-	clear(a.reasoningStreamKind)
-	clear(a.reasoningRetainedKind)
-	clear(a.reasoningSummaryIndex)
-	clear(a.reasoningSummarySeen)
-	clear(a.reasoningSummaryBreak)
-	// Clear the child routes: a new root thread owns a different child tree. A
-	// completed run keeps its route only while its root thread lives.
-	clear(a.collabChildren)
-	clear(a.collabChildItems)
-	clear(a.codexSpawnPrompts)
-	clear(a.rawExecutionCalls)
-	a.rawExecutionOrder = 0
-	clear(a.incompleteTools)
-	a.incompleteToolOrder = 0
-	a.Mu.Unlock()
-	a.generationBuffer.Reset()
-	a.outputMu.Unlock()
-	a.PublishTurnActive()
-	a.sink.ReportProgress(agent.ResetProgress())
-
-	// A goal belongs to a THREAD, and this call replaced the thread. Codex
-	// sends thread/goal/cleared only after a real removal and on a resume, so a
-	// fresh thread/start reports nothing at all -- the stored goal would stay,
-	// and the card would offer Pause and Clear for a thread that has no goal.
-	a.sink.ClearGoal(false)
-
-	a.sink.UpdateSessionID(thread.ID)
-	return thread.ID, nil
-}
-
-// PublishTurnActive republishes the Worker-visible turn state from turnID, the
-// single source. Call it after EVERY critical section that writes turnID.
+// PublishTurnActive republishes the Worker-visible turn state from its two
+// sources: turnID and retrying. Call it after EVERY critical section that
+// writes either field.
 //
 // It re-reads rather than taking a value, so a caller cannot publish something
-// the field does not say, and the sink deduplicates, so a redundant call costs
+// the fields do not say, and the sink deduplicates, so a redundant call costs
 // nothing. A MISSING call is the only way the two can drift -- which is why
 // this is a re-read and not an argument.
 //
@@ -502,12 +498,19 @@ func (a *Agent) ClearContext() (string, error) {
 // on a slow transport.
 func (a *Agent) PublishTurnActive() agent.TurnState {
 	a.Mu.Lock()
-	active := a.turnID != ""
+	running := a.turnID != ""
+	retrying := a.retrying
 	seq := a.NextTurnSeq()
 	a.Mu.Unlock()
 	// Each child route tracks its own turn. The background-task registry supplies
 	// that state to the child tab. This method reports the main thread only.
-	return providerkit.PublishSteerableTurnActiveTo(a.sink, active, seq)
+	//
+	// A retry in flight keeps the flag Active. The queue reads the flag before
+	// it drains, and a gap between the stopped turn and the retry's
+	// turn/started would drain a queued item into a thread that is about to be
+	// replaced. The gap is also not steerable: the new turn carries the
+	// retained input again.
+	return providerkit.PublishTurnStateTo(a.sink, agent.TurnState{Active: running || retrying, Steerable: running && !retrying}, seq)
 }
 
 // SendInput starts a new turn with the current settings. It refuses an active
@@ -536,6 +539,12 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 	if a.StoppedLocked() {
 		a.Mu.Unlock()
 		return fmt.Errorf("agent is stopped")
+	}
+	if a.retrying {
+		// A retry owns the gap between the stopped turn and the new one. The
+		// refusal is transient: the queue requeues the input without a pause.
+		a.Mu.Unlock()
+		return fmt.Errorf("%w: retrying", agent.ErrAgentBusy)
 	}
 	threadID := a.threadID
 	turnID := a.turnID
@@ -594,8 +603,8 @@ func (a *Agent) CompactContext() error {
 		_, requestErr := a.SendRequest("thread/compact/start", params, 0)
 		response <- requestErr
 	}()
-	timer := time.NewTimer(turnStartAckTimeout)
-	defer timer.Stop()
+	timer := a.Clock().NewTimer(turnStartAckTimeout, codexCompactionAckTimerTag)
+	defer timer.Stop(codexCompactionAckTimerTag)
 	select {
 	case <-ack:
 		return nil
@@ -627,24 +636,47 @@ func (a *Agent) SupportsSteering() bool { return true }
 func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
 	a.Mu.Lock()
 	threadID, turnID := a.threadID, a.turnID
+	retrying := a.retrying
 	stopped := a.StoppedLocked()
 	a.Mu.Unlock()
 	if stopped {
 		return fmt.Errorf("agent is stopped")
 	}
+	if retrying {
+		// A retry owns the gap between the stopped turn and the new one. The
+		// turn flag still reports Active, so the refusal must not claim the turn
+		// ended.
+		return fmt.Errorf("%w: retrying", agent.ErrAgentBusy)
+	}
 	if threadID == "" || turnID == "" {
 		return agent.ErrNoActiveTurn
 	}
-	if err := a.sendTurnSteer(threadID, turnID, buildCodexInputBlocks(content, agent.ClassifyAttachments(attachments))); err != nil {
+	input := buildCodexInputBlocks(content, agent.ClassifyAttachments(attachments))
+	if err := a.sendTurnSteer(threadID, turnID, input); err != nil {
 		return err
 	}
 	a.Mu.Lock()
 	stillActive := a.turnID == turnID
+	if stillActive && a.turnInputRetainedLocked(turnID) {
+		// A turn retry sends the retained input again: the first input, then
+		// each steer with its separator, as the Codex TUI does. A turn that
+		// Codex started by itself retains nothing, and a steer alone must not
+		// make it retryable: the retry would send the steer without the request
+		// that it steers.
+		a.turnInput[turnID] = append(a.turnInput[turnID], map[string]interface{}{"type": "text", "text": "\n"})
+		a.turnInput[turnID] = append(a.turnInput[turnID], input...)
+	}
 	a.Mu.Unlock()
 	if !stillActive {
 		return agent.ErrNoActiveTurn
 	}
 	return nil
+}
+
+// turnInputRetainedLocked reports whether the agent retains input for turnID,
+// which a turn retry needs to send the turn again. Call it with a.Mu held.
+func (a *Agent) turnInputRetainedLocked(turnID string) bool {
+	return len(a.turnInput[turnID]) > 0
 }
 
 // buildCodexInputBlocks converts text + classified attachments into Codex's
@@ -738,11 +770,18 @@ func (a *Agent) sendTurnStart(
 	ack := make(chan struct{})
 	a.Mu.Lock()
 	a.turnStartAck = ack
+	a.pendingTurnInput = slices.Clone(input)
 	a.Mu.Unlock()
-	clearAck := func() {
+	// clearAck stops the wait for this request's turn/started. dropInput also
+	// drops the retained input: a refused request starts no turn, and a later
+	// turn that Codex starts by itself must not take this input as its own.
+	clearAck := func(dropInput bool) {
 		a.Mu.Lock()
 		if a.turnStartAck == ack {
 			a.turnStartAck = nil
+			if dropInput {
+				a.pendingTurnInput = nil
+			}
 		}
 		a.Mu.Unlock()
 	}
@@ -757,8 +796,8 @@ func (a *Agent) sendTurnStart(
 		}
 	}()
 
-	timer := time.NewTimer(turnStartAckTimeout)
-	defer timer.Stop()
+	timer := a.Clock().NewTimer(turnStartAckTimeout, codexTurnStartAckTimerTag)
+	defer timer.Stop(codexTurnStartAckTimerTag)
 	select {
 	case <-ack:
 		// `turn/started` also set turnID for explicit steering. Codex started the turn
@@ -771,15 +810,16 @@ func (a *Agent) sendTurnStart(
 		a.approveOutstandingForBypass()
 		return nil
 	case err := <-requestErr:
-		clearAck()
+		clearAck(true)
 		return classifyCodexTurnStartRequestError("turn/start", err)
 	case <-a.ProcessDone():
-		clearAck()
+		clearAck(true)
 		return classifyCodexTurnStartRequestError("turn/start", a.ProcessExitError())
 	case <-timer.C:
 		// The request can still start a turn. Report uncertain delivery and stop
-		// waiting for its acceptance notification.
-		clearAck()
+		// waiting for its acceptance notification. The input stays retained, so
+		// a late turn/started still finds it.
+		clearAck(false)
 		return fmt.Errorf("%w: turn/start received no turn/started within %s", agent.ErrDeliveryUncertain, turnStartAckTimeout)
 	}
 }

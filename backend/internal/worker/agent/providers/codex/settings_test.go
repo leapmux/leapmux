@@ -31,6 +31,14 @@ func newCodexAgentForRPC(t *testing.T, respond func(method string) agenttest.RPC
 	return newCodexAgentForRPCRequests(t, func(request codexRecordedRequest) agenttest.RPCReply { return respond(request.Method) })
 }
 
+// newCodexAgentForRPCWithClock builds the agent of newCodexAgentForRPC on
+// clock. A nil clock selects the real clock. A test that drives a mock clock
+// reaches the agent's timers without a sleep.
+func newCodexAgentForRPCWithClock(t *testing.T, clock quartz.Clock, respond func(method string) agenttest.RPCReply) (*Agent, *agenttest.Sink, func() []codexRecordedRequest) {
+	t.Helper()
+	return newCodexAgentForRPCRequests(t, func(request codexRecordedRequest) agenttest.RPCReply { return respond(request.Method) }, clock)
+}
+
 // newCodexAgentForRPCRequests is newCodexAgentForRPC for a fake whose reply depends on
 // the parameters of the request.
 func newCodexAgentForRPCRequests(t *testing.T, respond func(request codexRecordedRequest) agenttest.RPCReply, clocks ...quartz.Clock) (*Agent, *agenttest.Sink, func() []codexRecordedRequest) {
@@ -49,12 +57,12 @@ func newCodexAgentForRPCRequests(t *testing.T, respond func(request codexRecorde
 	agent := &Agent{
 		JSONRPCProcess: providerkit.JSONRPCProcess{Process: providerkit.NewProcessFrom(providerkit.ProcessConfig{
 			AgentID:     "test-codex",
-			Clock:       clock,
 			Stdin:       writePipe,
 			Ctx:         ctx,
 			Cancel:      cancel,
 			ProcessDone: make(chan struct{}),
 			StderrDone:  make(chan struct{}),
+			Clock:       clock,
 		})},
 		model:             "gpt-5.4",
 		effort:            "high",
@@ -104,6 +112,10 @@ func newCodexAgentForRPCRequests(t *testing.T, respond func(request codexRecorde
 		// Stop closes the writer. The error channel then waits for the reader.
 		// Closing a pipe reader during a synchronous Windows read can deadlock.
 		agent.Process.Stop()
+		// A test that marks the process stopped (SetStoppedForTest) makes Stop
+		// return at once, with the writer still open. The fixture therefore
+		// closes the writer itself. A second close only returns os.ErrClosed.
+		_ = writePipe.Close()
 		require.NoError(t, <-peerError)
 	})
 
