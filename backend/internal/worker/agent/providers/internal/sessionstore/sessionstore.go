@@ -214,7 +214,9 @@ func NewestEntries(dir string, limit int, sel EntrySelector) ([]Entry, error) {
 //
 // The name breaks a timestamp tie, so a store whose timestamps have one-second
 // resolution still produces one stable order rather than whatever the scan
-// happened to yield.
+// happened to yield. The cut keeps a tie group WHOLE: the name order inside a
+// tie carries no recency, so a cut that split one would drop a session that
+// the reader's own timestamp ranks first.
 func SortAndCapEntries(found []Entry, limit int) []Entry {
 	sort.SliceStable(found, func(i, j int) bool {
 		if !found[i].ModTime.Equal(found[j].ModTime) {
@@ -223,7 +225,11 @@ func SortAndCapEntries(found []Entry, limit int) []Entry {
 		return found[i].Name < found[j].Name
 	})
 	if limit > 0 && len(found) > limit {
-		found = found[:limit]
+		cut := limit
+		for cut < len(found) && found[cut].ModTime.Equal(found[cut-1].ModTime) {
+			cut++
+		}
+		found = found[:cut]
 	}
 	return found
 }
@@ -437,6 +443,12 @@ func OverridePath(q agent.StoredSessionQuery, envVar, dir string) (string, bool)
 // say which working directory it belongs to. For a reader whose walk was
 // already capped it is a no-op that costs one comparison and keeps one shape.
 //
+// The stop never splits a timestamp tie: it keeps reading while the candidate
+// carries the timestamp of the oldest accepted session. The entry order inside
+// a tie is the file NAME, which carries no recency, so a cut that split one
+// would read an older session and miss a newer one that the reader's own
+// timestamp ranks first.
+//
 // The cancellation check is per CANDIDATE, not per call: each read opens a file
 // or a database, so a dismissed dialog has to be observed between candidates
 // and not only inside one read.
@@ -452,9 +464,14 @@ func Collect(
 	read func(Entry) (agent.StoredSession, bool),
 ) []agent.StoredSession {
 	sessions := make([]agent.StoredSession, 0, min(limit, len(entries)))
+	var oldestAccepted time.Time
 	for _, entry := range entries {
 		if len(sessions) >= limit {
-			break
+			// A limit of zero or less keeps none, as before. Otherwise the
+			// stop never splits a timestamp tie.
+			if limit <= 0 || !entry.ModTime.Equal(oldestAccepted) {
+				break
+			}
 		}
 		if ctx.Err() != nil {
 			break
@@ -464,6 +481,9 @@ func Collect(
 			continue
 		}
 		sessions = append(sessions, session)
+		if len(sessions) == 1 || entry.ModTime.Before(oldestAccepted) {
+			oldestAccepted = entry.ModTime
+		}
 	}
 	return sessions
 }

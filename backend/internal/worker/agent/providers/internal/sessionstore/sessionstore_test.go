@@ -309,6 +309,26 @@ func TestNewestEntries_CapsAfterOrdering(t *testing.T) {
 	assert.Equal(t, "00000.jsonl", all[0].Name)
 }
 
+// The cut keeps a timestamp tie group whole: the name order inside a tie
+// carries no recency, so a cut that split one would drop a session that the
+// reader's own timestamp ranks first.
+func TestSortAndCapEntries_KeepsATieWhole(t *testing.T) {
+	t.Parallel()
+	base := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	found := []Entry{
+		{Name: "a", ModTime: base},
+		{Name: "b", ModTime: base},
+		{Name: "c", ModTime: base},
+		{Name: "d", ModTime: base.Add(-time.Minute)},
+	}
+	kept := SortAndCapEntries(found, 2)
+	names := make([]string, 0, len(kept))
+	for _, entry := range kept {
+		names = append(names, entry.Name)
+	}
+	assert.Equal(t, []string{"a", "b", "c"}, names)
+}
+
 // NamedFileInside times a session DIRECTORY by a file inside it. The directory's
 // own time is not the session's: it moves when any program adds a file, and a
 // read-only SQLite open adds the `-shm` sidecar, so a walk timed that way
@@ -347,7 +367,13 @@ func TestNamedFileInside_TimesByTheInnerFile(t *testing.T) {
 
 func TestCollectStoredSessions(t *testing.T) {
 	t.Parallel()
-	entries := []Entry{{Name: "a"}, {Name: "b"}, {Name: "c"}, {Name: "d"}}
+	base := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	entries := []Entry{
+		{Name: "a", ModTime: base},
+		{Name: "b", ModTime: base.Add(-time.Minute)},
+		{Name: "c", ModTime: base.Add(-2 * time.Minute)},
+		{Name: "d", ModTime: base.Add(-3 * time.Minute)},
+	}
 	accept := func(e Entry) (agent.StoredSession, bool) { return agent.StoredSession{Handle: e.Name}, true }
 
 	t.Run("stops reading at the limit rather than filtering afterwards", func(t *testing.T) {
@@ -361,6 +387,26 @@ func TestCollectStoredSessions(t *testing.T) {
 		assert.Equal(t, []string{"a", "b"}, agenttest.Handles(got))
 		assert.Equal(t, 2, reads,
 			"an uncapped walk is only affordable because the READ stops, not the result")
+	})
+
+	// The order inside a timestamp tie is the file NAME, which carries no
+	// recency, so the budget reads a tie group whole and lets the caller's
+	// content sort pick the newest of it.
+	t.Run("reads a timestamp tie whole", func(t *testing.T) {
+		t.Parallel()
+		tied := []Entry{
+			{Name: "a", ModTime: base},
+			{Name: "b", ModTime: base},
+			{Name: "c", ModTime: base},
+		}
+		reads := 0
+		counted := func(e Entry) (agent.StoredSession, bool) {
+			reads++
+			return accept(e)
+		}
+		got := Collect(t.Context(), tied, 2, counted)
+		assert.Equal(t, []string{"a", "b", "c"}, agenttest.Handles(got))
+		assert.Equal(t, 3, reads, "the tie group carries no recency order to cut against")
 	})
 
 	// A candidate the reader refuses -- another directory's session, a subagent
