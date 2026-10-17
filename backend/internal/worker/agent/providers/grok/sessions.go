@@ -124,12 +124,11 @@ func grokStoredSessions(ctx context.Context, q agent.StoredSessionQuery) ([]agen
 	}
 	root := filepath.Join(home, "sessions")
 	limit := q.EffectiveLimit()
-	// Grok's own picker also lists the sessions of the resolved path. This one
-	// does not: Grok resumes a session only under the cwd string that it stored,
-	// and LeapMux resumes under the working directory, so such a session would
-	// fail to open.
+	// Grok's picker includes sessions under the resolved path. LeapMux excludes them because Grok
+	// resumes only with the stored cwd string. LeapMux uses the selected working directory, so
+	// those resolved-path sessions would fail to open.
 	seen := make(map[string]struct{}, limit)
-	sessions := make([]agent.StoredSession, 0, limit)
+	collector := agent.NewStoredSessionCollector(limit)
 	var firstErr error
 	for _, group := range grokSessionGroups(root, workingDir) {
 		if ctx.Err() != nil {
@@ -143,20 +142,20 @@ func grokStoredSessions(ctx context.Context, q agent.StoredSessionQuery) ([]agen
 			continue
 		}
 		// One id in two groups is a copy; Grok's own picker skips the second.
-		for _, session := range sessionstore.Collect(ctx, entries, limit, func(entry sessionstore.Entry) (agent.StoredSession, bool) {
+		sessionstore.VisitAccepted(ctx, entries, limit, func(entry sessionstore.Entry) (agent.StoredSession, bool) {
 			return readGrokSession(entry, workingDir)
-		}) {
-			if _, dup := seen[session.Handle]; dup {
-				continue
+		}, func(session agent.StoredSession) {
+			if _, duplicate := seen[session.Handle]; duplicate {
+				return
 			}
 			seen[session.Handle] = struct{}{}
-			sessions = append(sessions, session)
-		}
+			collector.Add(session)
+		})
 	}
-	if len(sessions) == 0 && firstErr != nil {
+	if collector.Len() == 0 && firstErr != nil {
 		return nil, firstErr
 	}
-	return agent.SortAndCapSessions(sessions, limit), nil
+	return collector.Sessions(), nil
 }
 
 // readGrokSession derives one session from its summary, or rejects it.
@@ -178,8 +177,8 @@ func readGrokSession(entry sessionstore.Entry, workingDir string) (agent.StoredS
 		return agent.StoredSession{}, false
 	}
 	title := strings.TrimSpace(sessionstore.FirstNonBlank(summary.GeneratedTitle, summary.SessionSummary))
-	// A session that never ran a turn is a husk: Grok's own picker drops it,
-	// unless it is a fork or a worktree that the user made on purpose.
+	// Grok's picker normally excludes a session without turns. It preserves a fork or worktree that
+	// the user created deliberately.
 	if summary.NumMessages == 0 && title == "" && summary.WorktreeLabel == "" &&
 		summary.SessionKind != "worktree" && summary.SessionKind != "fork" {
 		return agent.StoredSession{}, false

@@ -76,14 +76,12 @@ func reasonixHome(q agent.StoredSessionQuery) string {
 	return filepath.Join(home, ".reasonix")
 }
 
-// reasonixWorkspaceSlug reproduces Reasonix's `WorkspaceSlug`: fold case on
-// Windows, then replace every `/`, `\` and `:` with a hyphen.
+// reasonixWorkspaceSlug follows Reasonix path encoding. Windows ignores path case. Every slash
+// or backslash becomes a hyphen. Every colon becomes a hyphen also.
 //
-// The truncated form is NOT reproduced. Reasonix appends an FNV-1a hash past
-// 255 bytes, and rather than reimplement that, an over-long slug simply yields
-// no project directory -- the global root still lists those sessions, and the
-// cwd check places them. A working directory whose slug passes 255 bytes is far
-// past what a filesystem accepts for a single component anyway.
+// Reasonix appends an FNV-1a hash beyond 255 bytes. This reader does not reproduce that
+// truncated form. It instead uses the global root and checks the recorded working directory.
+// Such a long slug already exceeds a normal filesystem component limit.
 func reasonixWorkspaceSlug(absPath string) (string, bool) {
 	if runtime.GOOS == "windows" {
 		absPath = strings.ToLower(absPath)
@@ -128,21 +126,18 @@ func reasonixStoredSessions(ctx context.Context, q agent.StoredSessionQuery) ([]
 	sessions := make([]agent.StoredSession, 0, limit)
 	var firstErr error
 	for _, root := range roots {
-		// The budget is shared across the roots, and it is checked HERE as well
-		// as inside. The project root is walked first, so once it supplies a
-		// full answer the global root -- which holds every session on the
-		// machine and is walked uncapped -- would otherwise be read and sorted
-		// in full and then discarded on its first candidate.
+		// The roots share one accepted-session budget. The project root takes precedence. Once it
+		// supplies a complete answer, skip the global root. Otherwise, the reader would scan and sort
+		// that entire root before discarding its first candidate.
 		if len(sessions) >= limit {
 			break
 		}
 		if ctx.Err() != nil {
 			break
 		}
-		// Unlimited walk, then a capped read: only the sidecar says which
-		// working directory a session in the GLOBAL root belongs to, so a cut
-		// before reading would drop this directory's sessions in favour of
-		// another's.
+		// Read accepted sessions after scanning the candidates. The global root can contain other
+		// working directories. Only each sidecar identifies its directory, so a cut before reading can
+		// discard matching sessions.
 		entries, err := sessionstore.NewestEntries(root, 0, sessionstore.EntryItself(isReasonixSessionMeta))
 		if err != nil {
 			if !errors.Is(err, sessionstore.ErrAbsent) && firstErr == nil {
@@ -150,20 +145,18 @@ func reasonixStoredSessions(ctx context.Context, q agent.StoredSessionQuery) ([]
 			}
 			continue
 		}
-		for _, entry := range entries {
-			if len(sessions) >= limit {
-				break
-			}
+		collected := sessionstore.Collect(ctx, entries, limit-len(sessions), func(entry sessionstore.Entry) (agent.StoredSession, bool) {
 			session, ok := readReasonixSession(entry, workingDir)
 			if !ok {
-				continue
+				return agent.StoredSession{}, false
 			}
-			if _, dup := seen[session.Handle]; dup {
-				continue
+			if _, duplicate := seen[session.Handle]; duplicate {
+				return agent.StoredSession{}, false
 			}
 			seen[session.Handle] = struct{}{}
-			sessions = append(sessions, session)
-		}
+			return session, true
+		})
+		sessions = append(sessions, collected...)
 	}
 	if len(sessions) == 0 && firstErr != nil {
 		return nil, firstErr
@@ -204,10 +197,8 @@ func readReasonixSession(entry sessionstore.Entry, workingDir string) (agent.Sto
 	cwd := strings.TrimSpace(meta.WorkspaceRoot)
 	var acp reasonixACPMeta
 	acpPath := filepath.Join(filepath.Dir(entry.Path), id+reasonixACPSuffix)
-	// A decode that failed leaves `acp` PARTIALLY populated, because the decoder
-	// writes each field it reads before it reports a type error on a later one.
-	// The whole struct is discarded, so nothing from a document this reader
-	// rejected can reach the title or the time further down.
+	// A failed decode can leave earlier fields populated. Discard the complete ACP value on error.
+	// No rejected sidecar field may supply the title or activity time.
 	if err := sessionstore.ReadSidecarFile(acpPath, sessionstore.MaxSidecarBytes, func(data []byte) error {
 		return json.Unmarshal(data, &acp)
 	}); err != nil {
@@ -229,9 +220,12 @@ func readReasonixSession(entry sessionstore.Entry, workingDir string) (agent.Sto
 	}, true
 }
 
-// reasonixTitle states the title precedence: the title the user set, then the
-// topic the model derived, then the branch name, then the ACP sidecar's own
-// title, then the stored preview of the first prompt.
+// reasonixTitle selects the first available title in this order:
+// - The user title.
+// - The derived topic.
+// - The branch name.
+// - The ACP title.
+// - The stored first-prompt preview.
 func reasonixTitle(meta reasonixBranchMeta, acp reasonixACPMeta) string {
 	return sessionstore.FirstNonBlank(meta.CustomTitle, meta.TopicTitle, meta.Name, acp.Title, meta.Preview)
 }

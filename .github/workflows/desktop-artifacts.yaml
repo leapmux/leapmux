@@ -28,14 +28,6 @@ on:
         type: boolean
         default: true
 
-env:
-  # Match ci.yaml: trim dev-profile debuginfo so the cached desktop/rust
-  # `target/` stays small. This value is hashed into the rust-cache key, so
-  # it MUST equal ci.yaml's setting or the `shared-key: desktop` cache the
-  # two workflows share would split in two. Reusable workflows don't inherit
-  # caller env, so it's redeclared here. See ci.yaml for the full rationale.
-  CARGO_PROFILE_DEV_DEBUG: line-tables-only
-
 jobs:
   linux:
     runs-on: ubuntu-24.04${{ matrix.runner_suffix }}
@@ -50,13 +42,11 @@ jobs:
           - arch: arm64
             runner_suffix: '-arm'
     steps:
-      # `ref` is not optional here: the `github` context in a called workflow
-      # is the CALLER's, so a bare checkout takes main as of dispatch -- which,
-      # on the release path, is the commit BEFORE `chore: release vX.Y.Z`. The
-      # artifacts would then be built from a different tree than the tag they
-      # ship under, and nothing would error, because version-override supplies
-      # the right VERSION string either way.
-      - uses: actions/checkout@v7
+      # The called workflow receives the caller GitHub context. Its default checkout can select
+      # the dispatch commit before the release-version commit.
+      # Use inputs.ref so every artifact uses the release tag tree. The version override alone
+      # would hide the wrong tree by supplying the expected VERSION string.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.ref }}
 
@@ -66,7 +56,6 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           version-override: ${{ inputs.version }}
           rust-components: clippy
-          rust-save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Generate code (proto + sqlc)
         run: task generate
@@ -86,64 +75,7 @@ jobs:
         # Run the wrapper and extracted AppRun directly to retain their diagnostics, as ci.yaml does.
         # Run these diagnostics only after a native build failure. Cache-check failures have their own complete logs.
         if: failure() && steps.build.outcome == 'failure'
-        run: |
-          set +e
-          echo "=== ~/.cache/tauri contents ==="
-          ls -la ~/.cache/tauri/
-          echo
-          echo "=== Tauri's AppImage bundle dir ==="
-          ls -la desktop/rust/target/release/bundle/appimage/ 2>/dev/null
-          echo
-          echo "=== linuxdeploy wrapper --version (exit=?) ==="
-          ~/.cache/tauri/linuxdeploy-$(uname -m).AppImage --version
-          echo "wrapper exit=$?"
-          echo
-          echo "=== extracted AppRun --list-plugins (exit=?) ==="
-          ~/.cache/tauri/linuxdeploy-extracted/AppRun --list-plugins
-          echo "AppRun exit=$?"
-          echo
-          echo "=== Re-run linuxdeploy against Tauri's partial AppDir ==="
-          appdir="$(ls -d desktop/rust/target/release/bundle/appimage/*.AppDir 2>/dev/null | head -1)"
-          if [ -n "$appdir" ]; then
-            echo "appdir=$appdir"
-            ~/.cache/tauri/linuxdeploy-$(uname -m).AppImage \
-              --appdir "$appdir" \
-              --output appimage \
-              --plugin gtk 2>&1 | tail -80
-            echo "direct linuxdeploy exit=${PIPESTATUS[0]}"
-          else
-            echo "No AppDir found — Tauri didn't reach the linuxdeploy step."
-          fi
-          echo
-          echo "=== Go sidecar linkage (source copy) ==="
-          src_sidecar="$(ls desktop/go/bin/leapmux-desktop-service-* 2>/dev/null | head -1)"
-          if [ -n "$src_sidecar" ]; then
-            echo "path=$src_sidecar"
-            file "$src_sidecar"
-            echo "--- readelf -l | grep INTERP ---"
-            readelf -l "$src_sidecar" 2>&1 | grep -E 'INTERP|interpreter' || echo "(no INTERP segment — static binary)"
-            echo "--- ldd output ---"
-            ldd "$src_sidecar" 2>&1
-            echo "ldd exit=$?"
-          else
-            echo "No sidecar found under desktop/go/bin/"
-          fi
-          echo
-          echo "=== Go sidecar linkage (AppDir copy) ==="
-          ad_sidecar="$(find "$appdir" -name 'leapmux-desktop-service-*' 2>/dev/null | head -1)"
-          if [ -n "$ad_sidecar" ]; then
-            echo "path=$ad_sidecar"
-            file "$ad_sidecar"
-            ldd "$ad_sidecar" 2>&1
-            echo "ldd exit=$?"
-          else
-            echo "No sidecar found inside AppDir."
-          fi
-          echo
-          echo "=== Toolchain sanity ==="
-          echo "gcc: $(command -v gcc) $(gcc --version 2>/dev/null | head -1)"
-          echo "CGO_ENABLED (go env): $(go env CGO_ENABLED)"
-          echo "/lib/ld-linux-aarch64.so.1: $(ls -la /lib/ld-linux-aarch64.so.1 2>&1 || true)"
+        run: bash scripts/diagnose-linuxdeploy.sh
 
       - name: Package CLI server tarball
         run: |
@@ -153,7 +85,7 @@ jobs:
           tar -czf "${DIR}.tar.gz" -C dist "${DIR}"
 
       - name: Upload release artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: desktop-linux-${{ matrix.arch }}
           path: |
@@ -170,7 +102,7 @@ jobs:
     steps:
       # See the linux job: a called workflow's default checkout is the
       # caller's ref, not this workflow's `ref` input.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.ref }}
 
@@ -180,7 +112,6 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           version-override: ${{ inputs.version }}
           rust-components: clippy
-          rust-save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Generate code (proto + sqlc)
         run: task generate
@@ -189,10 +120,11 @@ jobs:
         run: task prepare-frontend
 
       - name: Build
-        # MACOS_CODESIGN_IDENTITY is intentionally unset here. The .app gets
-        # ad-hoc signed by Taskfile.yaml's build-desktop-darwin so it builds
-        # cleanly without secrets; the macos-app-sign job below downloads the
-        # unsigned .app and re-signs it with the Developer ID identity.
+        # MACOS_CODESIGN_IDENTITY is intentionally unset here.
+        # build-desktop-darwin in Taskfile.yaml signs the .app with an ad-hoc
+        # identity, so this job builds cleanly without secrets. The
+        # macos-app-sign job below downloads the unsigned .app and signs it
+        # again with the Developer ID identity.
         run: task build
 
       - name: Check the unchanged native build
@@ -206,7 +138,7 @@ jobs:
         run: tar -cf macos-app-unsigned.tar "LeapMux Desktop.app"
 
       - name: Upload unsigned .app
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: macos-app-unsigned
           path: macos-app-unsigned.tar
@@ -221,7 +153,7 @@ jobs:
         # actions/upload-artifact@v7 preserves the executable bit on Unix,
         # but the signing job re-asserts `chmod 0755` before tarring just
         # in case.
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: macos-cli-unsigned
           path: leapmux
@@ -237,7 +169,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.ref }}
 
@@ -249,24 +181,33 @@ jobs:
       - name: Setup Node.js
         # create-dmg.sh's generate-dsstore.mjs needs Node + the macos-alias
         # native module rebuilt for this runner.
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ env.NODE_VERSION }}
 
       - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: ${{ env.BUN_VERSION }}
 
       - name: Setup Task
-        uses: arduino/setup-task@v3
+        uses: arduino/setup-task@c0bc642852239c2689f73f4ea6459c29405f3c52 # v3.0.0
         with:
           version: ${{ env.TASK_VERSION }}
-          # Authenticate the action's GitHub API calls (listing releases,
-          # downloading assets) so it doesn't hit the 60/hr unauthenticated
-          # rate limit on shared-IP runners — has been failing intermittently
-          # on Windows without it.
+          # Authenticate the action's GitHub API calls, which list releases
+          # and download assets. Without the token, the calls share the 60/hr
+          # unauthenticated rate limit of the runner's IP, and they fail
+          # intermittently on Windows.
           repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Restore dependency caches
+        # Fill the Bun package cache that `task prepare-dmg-tools` installs
+        # into. Go is off: this job runs no Go tool.
+        uses: ./.github/actions/dependency-caches
+        with:
+          go: 'false'
+          bun: 'true'
+          populate: 'true'
 
       - name: Prepare disk image tools
         # Use the same dependency installation and pinned node-gyp version as the native build.
@@ -285,7 +226,7 @@ jobs:
           api-key-issuer-id: ${{ secrets.APPLE_API_KEY_ISSUER_ID }}
 
       - name: Download unsigned .app
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: macos-app-unsigned
           path: .
@@ -303,7 +244,7 @@ jobs:
         run: task sign-and-notarize-darwin-app
 
       - name: Upload signed DMG
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: desktop-macos-dmg-signed
           path: LeapMuxDesktop_*.dmg
@@ -312,20 +253,12 @@ jobs:
 
       - name: Cleanup
         if: always()
-        run: |
-          if [ -n "${KEYCHAIN_PATH:-}" ] && [ -e "$KEYCHAIN_PATH" ]; then
-            security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
-          fi
-          if [ -n "${APPLE_API_KEY_P8_PATH:-}" ]; then
-            rm -f "$APPLE_API_KEY_P8_PATH"
-          fi
+        run: bash scripts/cleanup-apple-signing.sh
 
   macos-cli-sign:
-    # Re-signs and notarizes the leapmux Go CLI binary in parallel with
-    # macos-app-sign. Both depend on `macos`, both use the apple-signing
-    # environment, and both run on independent macos-latest runners so
-    # the wall-clock for the signing phase is max(.app, .dmg notarizations,
-    # CLI notarization) rather than the sum.
+    # This job signs and notarizes the CLI independently of the app signing job. Both depend on
+    # macos and use the apple-signing environment. Separate runners let their signing work
+    # overlap. Total signing time follows the slower job instead of adding both durations.
     needs: macos
     if: ${{ inputs.sign_macos }}
     runs-on: macos-latest
@@ -334,7 +267,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.ref }}
 
@@ -344,13 +277,13 @@ jobs:
           version-override: ${{ inputs.version }}
 
       - name: Setup Task
-        uses: arduino/setup-task@v3
+        uses: arduino/setup-task@c0bc642852239c2689f73f4ea6459c29405f3c52 # v3.0.0
         with:
           version: ${{ env.TASK_VERSION }}
-          # Authenticate the action's GitHub API calls (listing releases,
-          # downloading assets) so it doesn't hit the 60/hr unauthenticated
-          # rate limit on shared-IP runners — has been failing intermittently
-          # on Windows without it.
+          # Authenticate the action's GitHub API calls, which list releases
+          # and download assets. Without the token, the calls share the 60/hr
+          # unauthenticated rate limit of the runner's IP, and they fail
+          # intermittently on Windows.
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Apple signing
@@ -365,7 +298,7 @@ jobs:
           api-key-issuer-id: ${{ secrets.APPLE_API_KEY_ISSUER_ID }}
 
       - name: Download unsigned CLI binary
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: macos-cli-unsigned
           path: .
@@ -384,7 +317,7 @@ jobs:
         run: task sign-and-notarize-darwin-cli
 
       - name: Upload signed CLI tarball
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: desktop-macos-cli
           path: leapmux_*_darwin_*.tar.gz
@@ -393,22 +326,20 @@ jobs:
 
       - name: Cleanup
         if: always()
-        run: |
-          if [ -n "${KEYCHAIN_PATH:-}" ] && [ -e "$KEYCHAIN_PATH" ]; then
-            security delete-keychain "$KEYCHAIN_PATH" 2>/dev/null || true
-          fi
-          if [ -n "${APPLE_API_KEY_P8_PATH:-}" ]; then
-            rm -f "$APPLE_API_KEY_P8_PATH"
-          fi
+        run: bash scripts/cleanup-apple-signing.sh
 
   windows:
-    runs-on: windows-latest
+    # windows-2022, the same image that ci.yaml's windows job tests on. The
+    # compiled caches are keyed by the runner image, so the two jobs share
+    # them only on the same image. See ci.yaml for the reason to avoid
+    # windows-latest.
+    runs-on: windows-2022
     permissions:
       contents: read
     steps:
       # See the linux job: a called workflow's default checkout is the
       # caller's ref, not this workflow's `ref` input.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.ref }}
 
@@ -418,7 +349,6 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           version-override: ${{ inputs.version }}
           rust-components: clippy
-          rust-save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Build all modules
         # Run under pwsh: Git Bash prepends /usr/bin to PATH, and
@@ -440,7 +370,7 @@ jobs:
           Compress-Archive -Path "dist/$dir" -DestinationPath "${dir}.zip" -Force
 
       - name: Upload release artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: desktop-windows
           path: |

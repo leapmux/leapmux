@@ -1,0 +1,113 @@
+name: Build Docker image
+description: Build one prepared native Docker image and extract its Go cache.
+# setup-docker-build supplies the builder and inputs. The caller registers the
+# cache writer and pruner between setup and this action as separate job steps.
+# The post steps run in this order:
+# - Extract the build outputs.
+# - Prune older archives.
+# - Save the new archive.
+# A failure at either earlier stage prevents the later stages.
+# The tools stage uses mode=max. Final images use mode=min to exclude changing builder layers.
+inputs:
+  variant:
+    description: The alpine or ubuntu image variant.
+    required: true
+  arch:
+    description: The amd64 or arm64 native architecture.
+    required: true
+  builder:
+    description: The Buildx builder from setup-docker-build.
+    required: true
+  go-modcache:
+    description: The restored Go module directory from setup-docker-build.
+    required: true
+  cache-path:
+    description: The host directory for Docker Go build outputs.
+    required: true
+  writes-shared:
+    description: Whether this build may save the shared Go and tools caches.
+    default: 'false'
+  go-cache-hit:
+    description: Whether the Go build cache restored the exact weekly key.
+    default: 'false'
+  build-args:
+    description: The complete Docker build arguments from setup-docker-build.
+    required: true
+  outputs:
+    description: The optional buildx output specification. Empty keeps the result in the build cache.
+    default: ''
+  save-caches:
+    description: Whether this main-branch build may export its final-image cache.
+    default: 'false'
+outputs:
+  digest:
+    description: The digest of the built image.
+    value: ${{ steps.image.outputs.digest }}
+runs:
+  using: composite
+  steps:
+    - name: Inject the dependency downloads
+      # The block scalar keeps the cache map as a JSON string. A bare mapping would become a YAML
+      # object that the runner rejects.
+      # The CI jobs own dependency archives, so this step performs no extraction.
+      # A cold Go module download took about 155 seconds. A cold Bun install took 3.7 seconds.
+      # Inject only the Go modules because a Bun cache-dance build costs more than that install.
+      uses: reproducible-containers/buildkit-cache-dance@5422eac04292c961a382e0f584ea0f03ad9da723 # v3.4.0
+      with:
+        builder: ${{ inputs.builder }}
+        cache-map: |
+          {"${{ inputs.go-modcache }}": "/go/pkg/mod"}
+        skip-extraction: true
+        scratch-dir: ${{ runner.temp }}/cache-dance-deps
+
+    - name: Inject the Go build outputs
+      # The caller registers the writer and pruner before this composite.
+      # Separate job steps propagate extraction failure before pruning or saving.
+      # scratch-dir shares the cache filesystem because extraction uses a rename.
+      uses: reproducible-containers/buildkit-cache-dance@5422eac04292c961a382e0f584ea0f03ad9da723 # v3.4.0
+      with:
+        builder: ${{ inputs.builder }}
+        cache-map: |
+          {"${{ inputs.cache-path }}": "/root/.cache/go-build"}
+        skip-extraction: ${{ inputs.writes-shared != 'true' || inputs.go-cache-hit == 'true' }}
+        scratch-dir: ${{ runner.temp }}/cache-dance-go-build
+
+    - name: Build the tools stage
+      # `mode=max` exports every layer of the tools stage, which does not
+      # change with each commit. A job that only reads needs no such step:
+      # the image build below imports the same scope.
+      if: inputs.writes-shared == 'true'
+      uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+      with:
+        builder: ${{ inputs.builder }}
+        context: .
+        file: docker/Dockerfile
+        target: tools
+        platforms: linux/${{ inputs.arch }}
+        outputs: type=cacheonly
+        push: false
+        build-args: ${{ inputs.build-args }}
+        cache-from: type=gha,scope=tools-${{ inputs.arch }}
+        cache-to: type=gha,mode=max,scope=tools-${{ inputs.arch }}
+      env:
+        DOCKER_BUILD_SUMMARY: 'false'
+        DOCKER_BUILD_RECORD_UPLOAD: 'false'
+
+    - name: Build the image
+      # `mode=min` exports only the final-image layers, so the per-commit
+      # builder layers stay out of the cache. An empty `cache-to` exports
+      # nothing.
+      id: image
+      uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+      with:
+        builder: ${{ inputs.builder }}
+        context: .
+        file: docker/Dockerfile
+        platforms: linux/${{ inputs.arch }}
+        push: false
+        outputs: ${{ inputs.outputs }}
+        build-args: ${{ inputs.build-args }}
+        cache-from: |
+          type=gha,scope=tools-${{ inputs.arch }}
+          type=gha,scope=${{ inputs.variant }}-${{ inputs.arch }}
+        cache-to: ${{ inputs.save-caches == 'true' && format('type=gha,mode=min,scope={0}-{1}', inputs.variant, inputs.arch) || '' }}

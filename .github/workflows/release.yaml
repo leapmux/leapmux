@@ -8,38 +8,64 @@ on:
         required: true
         type: string
 
+# Keep each release active through its final image and artifact publication.
+concurrency:
+  group: release
+  cancel-in-progress: false
+  queue: max
+
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   release:
-    # Belt-and-braces: the apple-signing environment used by the desktop-artifacts
-    # call below already restricts secrets to runs targeting `main`, but we also
-    # refuse to dispatch any sensitive job from a non-main ref so the entire
-    # release pipeline cannot run from a feature branch by accident.
+    # The job condition filters other refs. The first step checks the exact
+    # branch spelling because GitHub expression equality ignores case.
+    # The apple-signing environment independently restricts its secrets.
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
 
     steps:
-      - uses: actions/checkout@v7
+      - name: Validate release branch
+        shell: bash
+        run: |
+          if [ "${GITHUB_REF:-}" != 'refs/heads/main' ]; then
+            echo "::error::Release requires the main branch."
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: refs/heads/main
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Validate version format
+        # MSI versions permit major and minor values through 255, and patch
+        # values through 65535. Reserve one patch value for the next dev build.
+        # Check canonical decimal text before arithmetic to exclude octal and overflow.
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
         run: |
-          if ! echo "${{ inputs.version }}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-            echo "::error::Version must be in X.Y.Z format (e.g. 1.0.0), got '${{ inputs.version }}'"
+          if [[ ! $VERSION_INPUT =~ ^(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,4})$ ]]; then
+            echo "::error::Release version must use canonical X.Y.Z decimal components."
+            exit 1
+          fi
+          IFS='.' read -r major minor patch <<< "$VERSION_INPUT"
+          if (( major > 255 || minor > 255 || patch > 65534 )); then
+            echo "::error::Release version must fit MSI limits and leave room for the next patch version."
             exit 1
           fi
 
       - name: Derive next development version
         id: next
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
         run: |
-          IFS='.' read -r major minor patch <<< "${{ inputs.version }}"
+          IFS='.' read -r major minor patch <<< "$VERSION_INPUT"
           echo "dev_version=${major}.${minor}.$((patch + 1))-dev" >> "$GITHUB_OUTPUT"
 
       - name: Configure git
@@ -51,19 +77,28 @@ jobs:
         run: |
           sed -i -E 's|^VERSION=.*|VERSION=${{ inputs.version }}|' versions.env
           git add versions.env
-          git commit -m "chore: release v${{ inputs.version }}"
+          git commit -m "chore: Release v${{ inputs.version }}"
 
       - name: Create tag
         run: git tag "v${{ inputs.version }}"
 
-      - name: Push release commit and tag
-        run: git push origin HEAD "v${{ inputs.version }}"
+      - name: Bump to next development version
+        run: |
+          sed -i -E 's|^VERSION=.*|VERSION=${{ steps.next.outputs.dev_version }}|' versions.env
+          git add versions.env
+          git commit -m "chore: Bump version to ${{ steps.next.outputs.dev_version }}"
+
+      - name: Push version commits and release tag
+        run: git push --atomic origin HEAD:refs/heads/main "refs/tags/v${{ inputs.version }}"
 
       - name: Create GitHub Release (draft)
-        # Create as a draft so users don't see a release with missing assets
-        # while desktop builds, signing, notarization, and docker pushes are
-        # still in flight. The publish-release job below flips draft=false
-        # only after all artifacts have been attached and all images pushed.
+        # Create the release as a draft, so that users do not see a release
+        # with missing assets while these jobs still run:
+        # * the desktop builds;
+        # * the signing and the notarization;
+        # * the Docker pushes.
+        # The publish-release job sets draft=false after the jobs attach every
+        # artifact and push every image.
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -71,13 +106,6 @@ jobs:
             --title "v${{ inputs.version }}" \
             --generate-notes \
             --draft
-
-      - name: Bump to next development version
-        run: |
-          sed -i -E 's|^VERSION=.*|VERSION=${{ steps.next.outputs.dev_version }}|' versions.env
-          git add versions.env
-          git commit -m "chore: bump version to ${{ steps.next.outputs.dev_version }}"
-          git push origin HEAD
 
   desktop-artifacts:
     # Build, sign, and notarize the desktop binaries that get attached to
@@ -87,8 +115,8 @@ jobs:
     # only by the macos-app-sign job inside this reusable workflow.
     #
     # See ci.yaml's matching call site for why `secrets: inherit` is
-    # required — env-scoped secrets do not flow into a `workflow_call`
-    # target without it, even for jobs that declare the environment.
+    # required. Without it, env-scoped secrets do not flow into a
+    # `workflow_call` target, even for jobs that declare the environment.
     needs: release
     if: github.ref == 'refs/heads/main'
     uses: ./.github/workflows/desktop-artifacts.yaml
@@ -107,7 +135,7 @@ jobs:
       contents: write
     steps:
       - name: Download desktop artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: artifacts
           pattern: desktop-*
@@ -134,6 +162,12 @@ jobs:
     permissions:
       contents: read
       packages: write
+      actions: write
+
+    concurrency:
+      group: compiled-go-docker-${{ matrix.variant }}-${{ matrix.arch }}
+      cancel-in-progress: false
+      queue: max
 
     strategy:
       fail-fast: false
@@ -142,21 +176,38 @@ jobs:
         arch: [amd64, arm64]
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: v${{ inputs.version }}
 
-      - name: Load tool versions and git metadata
-        run: |
-          grep -E '^[A-Z_][A-Z0-9_]*=' versions.env >> "$GITHUB_ENV"
-          echo "COMMIT_HASH=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
-          echo "COMMIT_TIME=$(git log -1 --format=%cI)" >> "$GITHUB_ENV"
+      - name: Setup Docker build
+        id: setup
+        uses: ./.github/actions/setup-docker-build
+        with:
+          variant: ${{ matrix.variant }}
+          arch: ${{ matrix.arch }}
+          save-caches: 'true'
+          version-override: ${{ inputs.version }}
 
-      - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@v4
+      # Separate job steps make extraction and pruning failures stop the save.
+      - name: Cache Docker Go build outputs
+        id: go-cache
+        uses: ./.github/actions/build-output-cache
+        with:
+          path: ${{ steps.setup.outputs.cache-path }}
+          key: ${{ steps.setup.outputs.cache-key }}
+          restore-keys: ${{ steps.setup.outputs.cache-prefix }}
+          save: ${{ steps.setup.outputs.writes-shared }}
+
+      - name: Replace older Docker Go build caches
+        if: steps.setup.outputs.writes-shared == 'true' && steps.go-cache.outputs.cache-hit != 'true'
+        uses: ./.github/actions/prune-build-cache
+        with:
+          key: ${{ steps.setup.outputs.cache-key }}
+          prefix: ${{ steps.setup.outputs.cache-prefix }}
 
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -164,38 +215,27 @@ jobs:
 
       - name: Build and push (per-arch)
         id: build
-        uses: docker/build-push-action@v7
+        uses: ./.github/actions/build-docker-image
         with:
-          context: .
-          file: docker/Dockerfile
-          platforms: linux/${{ matrix.arch }}
-          push: false
+          variant: ${{ matrix.variant }}
+          arch: ${{ matrix.arch }}
+          builder: ${{ steps.setup.outputs.builder }}
+          go-modcache: ${{ steps.setup.outputs.go-modcache }}
+          cache-path: ${{ steps.setup.outputs.cache-path }}
+          writes-shared: ${{ steps.setup.outputs.writes-shared }}
+          go-cache-hit: ${{ steps.go-cache.outputs.cache-hit }}
+          build-args: ${{ steps.setup.outputs.build-args }}
           outputs: type=image,"name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}",push-by-digest=true,name-canonical=true,push=true
-          build-args: |
-            BASE_IMAGE=${{ matrix.variant == 'alpine' && env.ALPINE_IMAGE || env.UBUNTU_IMAGE }}
-            BUF_VERSION=${{ env.BUF_VERSION }}
-            TASK_VERSION=${{ env.TASK_VERSION }}
-            S6_OVERLAY_VERSION=${{ env.S6_OVERLAY_VERSION }}
-            BUN_VERSION=${{ env.BUN_VERSION }}
-            NODE_VERSION=${{ env.NODE_VERSION }}
-            GOLANG_VERSION=${{ env.GOLANG_VERSION }}
-            VERSION=${{ inputs.version }}
-            COMMIT_HASH=${{ env.COMMIT_HASH }}
-            COMMIT_TIME=${{ env.COMMIT_TIME }}
-          cache-from: type=gha,scope=${{ matrix.variant }}-${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.variant }}-${{ matrix.arch }}
+          # The release pipeline runs only from main.
+          save-caches: 'true'
 
-      - name: Export digest
-        run: |
-          mkdir -p ${{ runner.temp }}/digests/${{ matrix.variant }}
-          echo "${{ steps.build.outputs.digest }}" > "${{ runner.temp }}/digests/${{ matrix.variant }}/${{ matrix.arch }}"
-
-      - name: Upload digest
-        uses: actions/upload-artifact@v7
+      - name: Upload image digest
+        uses: ./.github/actions/upload-docker-digest
         with:
-          name: release-digest-${{ matrix.variant }}-${{ matrix.arch }}
-          path: ${{ runner.temp }}/digests/${{ matrix.variant }}/
-          retention-days: 1
+          digest: ${{ steps.build.outputs.digest }}
+          variant: ${{ matrix.variant }}
+          arch: ${{ matrix.arch }}
+          artifact-name: release-digest-${{ matrix.variant }}-${{ matrix.arch }}
 
   docker-merge:
     needs: docker
@@ -215,20 +255,20 @@ jobs:
             suffix: '-ubuntu'
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Download digests
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: release-digest-${{ matrix.variant }}-*
           path: ${{ runner.temp }}/digests/${{ matrix.variant }}
@@ -242,9 +282,9 @@ jobs:
 
       - name: Create multi-arch manifests
         run: |
-          DIGESTS=""
+          DIGESTS=()
           for f in ${{ runner.temp }}/digests/${{ matrix.variant }}/*; do
-            DIGESTS="$DIGESTS ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@$(cat "$f")"
+            DIGESTS+=("${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@$(cat "$f")")
           done
           IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
           SUFFIX="${{ matrix.suffix }}"
@@ -252,7 +292,7 @@ jobs:
             -t "${IMAGE}:${{ inputs.version }}${SUFFIX}" \
             -t "${IMAGE}:${{ steps.tags.outputs.major }}${SUFFIX}" \
             -t "${IMAGE}:latest${SUFFIX}" \
-            $DIGESTS
+            "${DIGESTS[@]}"
 
   publish-release:
     # Flip the v<version> release from draft to published only after BOTH

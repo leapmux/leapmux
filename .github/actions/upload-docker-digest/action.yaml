@@ -1,0 +1,40 @@
+name: Upload Docker digest
+description: Save one architecture's image digest for the manifest job.
+inputs:
+  digest:
+    description: The image's SHA-256 digest.
+    required: true
+  variant:
+    description: The alpine or ubuntu image variant.
+    required: true
+  arch:
+    description: The amd64 or arm64 architecture.
+    required: true
+  artifact-name:
+    description: The artifact name that the manifest job downloads.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Write the digest
+      shell: bash
+      env:
+        DIGEST: ${{ inputs.digest }}
+        VARIANT: ${{ inputs.variant }}
+        ARCH: ${{ inputs.arch }}
+      run: |
+        case "$VARIANT" in alpine|ubuntu) ;; *) exit 1 ;; esac
+        case "$ARCH" in amd64|arm64) ;; *) exit 1 ;; esac
+        if [[ ! $DIGEST =~ ^sha256:[0-9a-f]{64}$ ]]; then
+          echo '::error::The image digest is invalid.' >&2
+          exit 1
+        fi
+        mkdir -p "$RUNNER_TEMP/digests/$VARIANT"
+        printf '%s\n' "$DIGEST" > "$RUNNER_TEMP/digests/$VARIANT/$ARCH"
+    - name: Upload the digest
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ runner.temp }}/digests/${{ inputs.variant }}/
+        retention-days: 1
+        if-no-files-found: error

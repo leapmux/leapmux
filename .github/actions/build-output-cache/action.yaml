@@ -1,0 +1,38 @@
+name: Build output cache
+description: Restore build outputs and optionally save them after the job succeeds.
+inputs:
+  path:
+    description: Cache paths, one per line.
+    required: true
+  key:
+    description: The exact cache key.
+    required: true
+  restore-keys:
+    description: Fallback key prefixes, one per line.
+    required: true
+  save:
+    description: Save the outputs after a successful job when the exact key is absent.
+    default: 'false'
+outputs:
+  cache-hit:
+    description: Whether the restored archive matches the exact key.
+    value: ${{ steps.writer.outputs.cache-hit || steps.reader.outputs.cache-hit || 'false' }}
+runs:
+  using: composite
+  steps:
+    - name: Restore and save build outputs
+      id: writer
+      if: inputs.save == 'true'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ inputs.path }}
+        key: ${{ inputs.key }}
+        restore-keys: ${{ inputs.restore-keys }}
+    - name: Restore build outputs
+      id: reader
+      if: inputs.save != 'true'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ inputs.path }}
+        key: ${{ inputs.key }}
+        restore-keys: ${{ inputs.restore-keys }}

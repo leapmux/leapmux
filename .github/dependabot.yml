@@ -1,0 +1,18 @@
+# Dependabot updates each pinned action commit and its version comment together. This preserves
+# the full-commit pin policy.
+# The root entry covers workflows. The glob covers each composite action under .github/actions/.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directories:
+      - '/'
+      - '/.github/actions/*'
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns:
+          - '*'
+    commit-message:
+      prefix: chore
+      include: scope

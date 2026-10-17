@@ -1,19 +1,21 @@
-// Package sessionstore holds the readers that several providers share for
-// another program's session store: a read-only SQLite handle, a newest-first
-// directory walk, a capped JSONL read, and a checked archive-file read. The
-// session record and listing query are provider-neutral. Providers choose the
-// directory, table, title field, archive path, and ancestor-symlink rule.
+// Package sessionstore holds readers that several providers share for another program's session
+// store.
+// The readers support these operations:
+// - A read-only SQLite connection.
+// - A newest-first directory scan.
+// - A limited JSONL read.
+// - A checked archive-file read.
+// The session record and listing query are provider-neutral. Each provider selects its store layout
+// and ancestor-symlink rule.
 //
-// Every store here belongs to another program. Nothing in this package or its
-// callers may write to a store's DATA. The read is not free of every side
-// effect: a read-only open of a WAL database makes SQLite create the `-shm`
-// sidecar, and the `-wal` file when it is absent, inside the store's own
-// directory. Thus a reader must never take a session's time from that
-// directory's modification time -- see NamedFileInside.
+// Nothing in this package or its callers may write to the other program's stored data.
+// A read-only WAL database open still creates SQLite sidecars in the store directory. SQLite
+// creates the -shm file and an absent -wal file.
+// Therefore, readers must not derive session activity from that directory's modification time. See
+// NamedFileInside.
 //
-// A store that is absent, unreadable, or shaped differently than the version
-// this code was written against means "no sessions from this provider" --
-// never a failed RPC.
+// An absent store normally means that the provider has no sessions. Unreadable stores or unfamiliar
+// shapes do not justify a failed RPC.
 package sessionstore
 
 import (
@@ -35,56 +37,52 @@ import (
 	"github.com/leapmux/leapmux/util/pathutil"
 )
 
-// storedSessionScanCap limits how many CANDIDATES a directory-walking reader
-// carries past the sort. A user with years of history has tens of thousands of
-// session files, and the picker needs the newest few.
+// storedSessionScanCap sets the nominal candidate limit after directory ordering.
+// A user with years of history can have tens of thousands of session files. The picker needs only
+// the newest records.
+// The limit preserves the complete boundary timestamp group, so a large tie can exceed it.
 //
-// The cap applies AFTER the modification times order the entries, never during
-// the walk. os.ReadDir returns a directory sorted by FILE NAME, and every store
-// here names a session with a UUID or a timestamp, so a cut taken during the
-// walk keeps the lexicographically first entries and discards the newest ones.
-// One real Claude directory holds 3905 transcripts, and six of its ten newest
-// sessions sort past position 2000 by name.
+// The limit applies after sorting by modification time. os.ReadDir sorts by filename, which can
+// hold a UUID or a timestamp.
+// A cut during that scan would retain the first filenames and discard newer sessions.
+// One real Claude directory holds 3905 transcripts. Six of its ten newest sessions sort after
+// position 2000 by filename.
 const storedSessionScanCap = 2000
 
-// JSONLProbeBytes is how much of a JSONL session file a reader looks at from
-// each end. Claude's own lister uses the same shape (first and last 64 KB),
-// because a session's identity is in the first records and its latest title is
-// in the last ones, while the middle is a transcript nothing here reads.
+// JSONLProbeBytes limits the JSONL bytes that a reader examines at each end of a session file.
+// Claude's own lister reads the first and last 64 KB also.
+// The first records identify the session. The last records hold its latest title. The middle
+// contains transcript records that this reader does not need.
 const JSONLProbeBytes = 64 * 1024
 
-// ErrAbsent reports that this provider keeps no store on this
-// machine. That is the NORMAL state for a CLI the user never ran, so a reader
-// turns it into an empty result and a caller must not log it as a failure.
+// ErrAbsent reports that this provider has no store on this machine.
+// This state is normal when the user never ran the CLI. A reader returns no sessions, and callers
+// must not log a failure.
 var ErrAbsent = errors.New("session store not present")
 
-// Moved reports whether a cached session store is no longer the file
-// at `path`, so its handle and everything read through it must be dropped.
+// Moved reports whether the cached session store no longer identifies the file at path.
+// The caller must then discard its handle and the data from that handle.
 //
-// A path comparison alone is NOT enough, and that is the whole reason this exists.
-// A runtime that deletes and recreates its store at the SAME path leaves the cached
-// handle open on the unlinked inode -- sqlitedb.OpenReadOnly holds one connection
-// with no lifetime -- and every later read answers from the deleted file for the
-// life of the agent. os.SameFile is what catches that; `cached == nil` catches a
-// store that was never stated.
+// A runtime can delete and recreate a store at the same path. sqlitedb.OpenReadOnly keeps one
+// connection without a lifetime limit.
+// That connection can retain the unlinked inode and return deleted data for the agent's lifetime.
+// os.SameFile detects that replacement. A nil cached value identifies a store without a previous
+// stat result.
 //
-// On Windows the file-identity half does no work, and it never needs to. SQLite opens
-// every file with FILE_SHARE_READ|FILE_SHARE_WRITE and no FILE_SHARE_DELETE, so an
-// open handle refuses the owning runtime the delete that a replacement needs: the file
-// under a cached handle cannot be replaced there. os.SameFile is also unable to see
-// one. A Windows os.FileInfo carries a file id that loads lazily, by a re-open of the
-// PATH, so a stale FileInfo resolves to whatever that path holds at the first
-// comparison. The path comparison is what does the work on that platform, and
-// TestZCodeToolStoreReopensAStoreReplacedAtTheSamePath skips there for both reasons.
+// On Windows, SQLite opens files with FILE_SHARE_READ and FILE_SHARE_WRITE, but without
+// FILE_SHARE_DELETE.
+// An open handle therefore prevents the runtime from deleting and replacing the store.
+// Windows os.FileInfo loads its file ID lazily by reopening the path. A stale value can therefore
+// identify the replacement at its first comparison.
+// The path comparison supplies the useful check on Windows.
+// TestZCodeToolStoreReopensAStoreReplacedAtTheSamePath skips Windows for both reasons.
 func Moved(cachedPath string, cached os.FileInfo, path string, current os.FileInfo) bool {
 	return cachedPath != path || cached == nil || !os.SameFile(cached, current)
 }
 
 // OpenDB opens another program's SQLite session store for reading.
-//
-// The os.Stat comes first so an absent store is reported as
-// ErrAbsent rather than as a driver error: `mode=ro` refuses to
-// create the file, but its message describes a failure and this is not one.
+// The initial os.Stat identifies an absent store as ErrAbsent. The mode=ro option refuses file
+// creation, but its driver error would incorrectly suggest a failure.
 func OpenDB(ctx context.Context, path string) (*sql.DB, error) {
 	if path == "" {
 		return nil, ErrAbsent
@@ -113,10 +111,9 @@ type Entry struct {
 // EntrySelector filters one directory entry and, when it accepts the entry,
 // supplies the Entry that times and orders it.
 //
-// Filtering and timing are one step because the two answers come from the same
-// stat: which file carries a candidate's time is a per-store decision, and
-// splitting it into a separate parameter invites a reader to take the time from
-// whichever file the walk happened to visit.
+// Filtering and timing use the same stat result. Each store decides which file supplies a
+// candidate's activity time.
+// Separate parameters could let a reader use the time of whichever file the scan encountered.
 type EntrySelector func(dir string, entry os.DirEntry) (Entry, bool)
 
 // EntryItself times a candidate by the entry's OWN modification time, and keeps
@@ -139,22 +136,18 @@ func EntryItself(keep func(os.DirEntry) bool) EntrySelector {
 	}
 }
 
-// NamedFileInside times a candidate DIRECTORY by one named file inside it, and
-// keeps only the directories that hold that file. It is the right selector for
-// a store whose sessions are directories.
+// NamedFileInside selects candidate directories that contain fileName. It derives each timestamp
+// from that file.
 //
-// A directory's own modification time is never the session's activity. It
-// changes only when a file appears in the directory or leaves it, so it tracks
-// the session's CREATION and not its use. Worse, any program that adds a file
-// rewrites it: a read-only SQLite open creates the `-shm` sidecar, which
-// TestOpenReadOnly_CreatesShmButLeavesTheDatabaseFile pins, so a Cursor walk
-// timed that way reports the moment LeapMux looked rather than the moment
-// Cursor wrote. A store migration has the same effect on a whole store at once:
-// four directories of one real Copilot store carry the single timestamp of the
-// move that created them, while the sessions inside span eight days.
+// A directory's modification time tracks file creation and removal, not session activity.
+// A read-only SQLite open can create the -shm sidecar and change the directory time.
+// TestOpenReadOnly_CreatesShmButLeavesTheDatabaseFile verifies this behavior.
+// A Cursor scan that used the directory time would report when LeapMux inspected it, not when
+// Cursor wrote it.
+// A store migration can change all directory times also. Four directories in one real Copilot store
+// have one migration timestamp, although their sessions span eight days.
 //
-// The Path of the returned entry is the DIRECTORY, because the caller reads
-// more than the timing file out of it.
+// The returned Path identifies the directory because callers read more than its timing file.
 func NamedFileInside(fileName string) EntrySelector {
 	return func(dir string, entry os.DirEntry) (Entry, bool) {
 		if !entry.IsDir() {
@@ -171,18 +164,17 @@ func NamedFileInside(fileName string) EntrySelector {
 	}
 }
 
-// NewestEntries lists the entries of `dir` that `sel` accepts, newest first,
-// truncated to `limit`.
+// NewestEntries lists the entries that sel accepts, newest first. It preserves the complete
+// timestamp group at the selected limit.
 //
-// The stat-then-sort order is the point: these stores have no index, so the
-// only cheap recency signal is the modification time, and reading the files to
-// find out which are recent would read every file in the directory. An entry
-// whose stat fails is dropped rather than sorted to the epoch, so a file
-// deleted mid-walk cannot displace a real answer.
+// These stores have no index. Modification time supplies the cheap recency signal before the reader
+// opens the files.
+// Reading content timestamps first would require every file read. A failed stat excludes that
+// candidate instead of assigning the epoch.
+// Thus, a file removed during the scan cannot displace a real result.
 func NewestEntries(dir string, limit int, sel EntrySelector) ([]Entry, error) {
-	// Windows "lists" a plain file as its own single entry instead of
-	// answering an error, so the directory check states the contract the
-	// POSIX error path already enforced.
+	// Windows can list a plain file as one entry instead of returning an error.
+	// The directory check preserves the contract that the POSIX error path already enforces.
 	if info, err := os.Stat(dir); err == nil && !info.IsDir() {
 		return nil, fmt.Errorf("read session store directory: %s is not a directory", dir)
 	}
@@ -201,20 +193,21 @@ func NewestEntries(dir string, limit int, sel EntrySelector) ([]Entry, error) {
 		}
 		found = append(found, selected)
 	}
-	// Both caps apply after the sort, never during the walk. os.ReadDir already
-	// read and sorted the whole directory by name before this loop started, so
-	// a cut taken here would only choose the wrong entries -- see
-	// storedSessionScanCap.
-	found = SortAndCapEntries(found, storedSessionScanCap)
+	// Apply the smaller positive limit after one sort. os.ReadDir already lists the complete directory
+	// by filename.
+	// A cut during that scan would select the wrong entries. See storedSessionScanCap.
+	if limit <= 0 || limit > storedSessionScanCap {
+		limit = storedSessionScanCap
+	}
 	return SortAndCapEntries(found, limit), nil
 }
 
-// SortAndCapEntries orders candidates newest first and truncates to `limit`.
-// A `limit` of zero or less keeps every entry.
+// SortAndCapEntries orders candidates newest first and preserves the complete group at the limit.
+// A nonpositive limit keeps every entry.
 //
-// The name breaks a timestamp tie, so a store whose timestamps have one-second
-// resolution still produces one stable order rather than whatever the scan
-// happened to yield.
+// The name breaks equal timestamps to give a stable order on stores with coarse timestamps.
+// Names do not indicate recency inside a tie. Splitting that group could discard the session with
+// the newest content timestamp.
 func SortAndCapEntries(found []Entry, limit int) []Entry {
 	sort.SliceStable(found, func(i, j int) bool {
 		if !found[i].ModTime.Equal(found[j].ModTime) {
@@ -223,25 +216,26 @@ func SortAndCapEntries(found []Entry, limit int) []Entry {
 		return found[i].Name < found[j].Name
 	})
 	if limit > 0 && len(found) > limit {
-		found = found[:limit]
+		cut := limit
+		for cut < len(found) && found[cut].ModTime.Equal(found[cut-1].ModTime) {
+			cut++
+		}
+		found = found[:cut]
 	}
 	return found
 }
 
-// JSONLHead returns the complete lines within the first `maxBytes` of a file,
-// and reports whether that window reached the END of the file.
+// JSONLHead returns complete lines within the first maxBytes bytes. It reports whether the window
+// reaches the end of the file.
 //
-// A trailing PARTIAL line is dropped, because the caller unmarshals what it
-// gets and half a JSON object is not a record. When the whole file fits, the
-// last line is complete by definition and is kept.
+// It discards a trailing partial line because the caller cannot decode part of a JSON record.
+// When the complete file fits, the last line is complete and remains in the result.
 //
-// The read asks for one byte MORE than the window, which is the only way to
-// tell a file of exactly `maxBytes` from a longer one: io.ReadFull reports the
-// same count and a nil error for both. A comparison against the window size
-// alone dropped the last complete line of a file that ends exactly on the
-// boundary, and lost the whole file when that line was its only record -- which
-// takes the session's `cwd` with it and removes the session from the picker.
-// JSONLTail never had the defect, because its `size > maxBytes` is strict.
+// The read requests one extra byte to distinguish an exact fit from a longer file.
+// io.ReadFull otherwise returns the same count and nil error in both cases.
+// An exact-fit check once discarded the last complete line. A single-record file then lost its
+// working directory and disappeared from the picker.
+// JSONLTail uses a strict size comparison.
 func JSONLHead(path string, maxBytes int64) (lines [][]byte, atEOF bool, err error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -261,11 +255,9 @@ func JSONLHead(path string, maxBytes int64) (lines [][]byte, atEOF bool, err err
 	return splitJSONLines(buf[:n], truncated, false), !truncated, nil
 }
 
-// JSONLTail returns the complete lines within the last `maxBytes` of a file.
-//
-// The leading partial line is dropped, for the same reason JSONLHead drops the
-// trailing one. When the file is shorter than the window the whole file is
-// read, and then the first line is complete and is kept.
+// JSONLTail returns complete lines within the last maxBytes bytes.
+// It checks the byte before the window to distinguish a complete first line from a partial line.
+// A shorter file needs no leading-line removal.
 func JSONLTail(path string, maxBytes int64) ([][]byte, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -283,6 +275,13 @@ func JSONLTail(path string, maxBytes int64) ([][]byte, error) {
 	if size > maxBytes {
 		start = size - maxBytes
 		truncated = true
+		if maxBytes > 0 {
+			var previous [1]byte
+			if _, err := f.ReadAt(previous[:], start-1); err != nil {
+				return nil, err
+			}
+			truncated = previous[0] != '\n'
+		}
 	}
 	if _, err := f.Seek(start, io.SeekStart); err != nil {
 		return nil, err
@@ -315,21 +314,17 @@ func splitJSONLines(buf []byte, dropLast, dropFirst bool) [][]byte {
 	return out
 }
 
-// MaxSidecarBytes caps a read of a small metadata file next to a session --
-// a configuration file, a `.meta`, a `workspace.yaml`. Generous for every such
-// file, and small enough that a file which is not what its name says cannot be
-// read into memory whole.
+// MaxSidecarBytes limits small metadata files beside a session. These include configuration files
+// and session sidecars.
+// The limit accommodates those files without reading an unexpectedly large file into memory.
 const MaxSidecarBytes = 256 * 1024
 
-// ReadSidecarFile reads a small metadata file beside a session and hands its
-// bytes to the caller's decoder. The decoder, not this function, decides the
-// format: these sidecars are JSON in some stores and YAML in others.
+// ReadSidecarFile reads a limited metadata file and passes the bytes to the caller's decoder.
+// The caller selects the format because stores use both JSON and YAML.
 //
-// `maxBytes` caps the read so a file that is not what its name says cannot be
-// pulled into memory whole. A caller must DISCARD everything the decoder wrote
-// when this function reports an error: a decoder fills each field it reads
-// before it reports a fault on a later one, so a rejected document can leave
-// the target partly populated.
+// The limit prevents a mislabeled large file from consuming unrestricted memory.
+// When this function returns an error, the caller must discard everything that the decoder wrote.
+// A decoder can populate earlier fields before it rejects a later field.
 func ReadSidecarFile(path string, maxBytes int64, unmarshal func([]byte) error) error {
 	f, err := os.Open(path)
 	if err != nil {
@@ -343,9 +338,9 @@ func ReadSidecarFile(path string, maxBytes int64, unmarshal func([]byte) error) 
 	return unmarshal(data)
 }
 
-// ParseRFC3339 reads an ISO timestamp, or returns the zero time -- which means
-// "the store said nothing" and sorts last, unlike a parse failure that fell
-// back to the epoch.
+// ParseRFC3339 reads an ISO timestamp. An invalid value returns the zero time, which means that the
+// store supplied no timestamp.
+// That value sorts last. It must not become an epoch timestamp.
 func ParseRFC3339(value string) time.Time {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -360,16 +355,15 @@ func ParseRFC3339(value string) time.Time {
 
 // SameDir reports whether two paths identify the same directory.
 //
-// It delegates to pathutil.SamePath, which cleans both sides and folds case on
-// Windows. That comparison touches no filesystem, deliberately: the value on
-// the left comes from a foreign store and may identify a directory that no
-// longer exists, and a comparison that needs the filesystem would answer "not
-// equal" for every session whose worktree was since removed -- while costing a
-// syscall per candidate on the dialog path.
+// pathutil.SamePath cleans both paths and ignores case on Windows. This comparison deliberately
+// performs no filesystem access.
+// A foreign store can identify a directory that no longer exists. A filesystem comparison would
+// reject every session from a removed worktree.
+// It would also add a system call for each candidate in the picker.
 //
-// The empty check is load-bearing and stays here. SamePath cleans "" to "." and
-// answers true for two empty paths, while a store that recorded NO working
-// directory must never be offered under an arbitrary one.
+// The empty check is required. SamePath cleans an empty path to a dot and considers two empty paths
+// equal.
+// A store with no recorded working directory must never match an arbitrary directory.
 func SameDir(a, b string) bool {
 	if a == "" || b == "" {
 		return false
@@ -389,12 +383,12 @@ func FirstNonBlank(candidates ...string) string {
 	return ""
 }
 
-// HomeDirFromEnv resolves a provider's state directory: `envVar` wins and may
-// begin with `~`, and `name` is the default directory under the user's home.
+// HomeDirFromEnv resolves a provider's state directory. envVar takes precedence and can start with
+// a tilde.
+// The default is name under the user's home.
 //
-// A provider whose resolution has more steps than these two -- a platform
-// branch, or a configuration file that can move the store -- keeps its own
-// resolver rather than passing a flag here.
+// A provider with more resolution rules keeps its own resolver. Examples include a platform branch
+// or a configuration file that changes the store location.
 func HomeDirFromEnv(q agent.StoredSessionQuery, envVar, name string) string {
 	if dir := strings.TrimSpace(q.Env(envVar)); dir != "" {
 		return pathutil.ExpandHome(dir, q.Home())
@@ -406,14 +400,13 @@ func HomeDirFromEnv(q agent.StoredSessionQuery, envVar, name string) string {
 	return filepath.Join(home, name)
 }
 
-// OverridePath resolves an environment variable that points at a store
-// FILE: an absolute path wins, and a bare name is taken under `dir`. It is the
-// rule OPENCODE_DB and KILO_DB share, and the CLIs' own.
+// OverridePath resolves a store-file environment variable. An absolute path takes precedence. A
+// relative filename resolves under dir.
+// OPENCODE_DB and KILO_DB share this rule with their CLIs.
 //
-// The second return reports that the variable was SET, which the path alone
-// cannot: an override under an unresolvable data directory yields "", and a
-// caller that read only the path would fall through to its default name under
-// the same unresolvable directory and answer "" a second time by accident.
+// The second result distinguishes a set override from an absent override.
+// A relative override with no resolvable directory returns an empty path. The caller must not then
+// attempt its default filename.
 func OverridePath(q agent.StoredSessionQuery, envVar, dir string) (string, bool) {
 	override := strings.TrimSpace(q.Env(envVar))
 	if override == "" {
@@ -428,44 +421,62 @@ func OverridePath(q agent.StoredSessionQuery, envVar, dir string) (string, bool)
 	return filepath.Join(dir, override), true
 }
 
-// Collect reads the candidates in order and keeps the ones the
-// reader accepts, stopping at `limit` accepted sessions or at a cancelled
-// context.
-//
-// The limit stop is what makes an uncapped walk affordable: Claude and Copilot
-// hand this every candidate in the store, because only the file's own contents
-// say which working directory it belongs to. For a reader whose walk was
-// already capped it is a no-op that costs one comparison and keeps one shape.
-//
-// The cancellation check is per CANDIDATE, not per call: each read opens a file
-// or a database, so a dismissed dialog has to be observed between candidates
-// and not only inside one read.
-//
-// Reasonix does NOT route through this. Its walk spans two roots with one
-// shared budget and a `seen` map across them, which no per-root call can carry
-// -- and its loop states that difference rather than hiding it behind a
-// parameter four other readers would pass nil for.
-func Collect(
-	ctx context.Context,
-	entries []Entry,
-	limit int,
-	read func(Entry) (agent.StoredSession, bool),
-) []agent.StoredSession {
-	sessions := make([]agent.StoredSession, 0, min(limit, len(entries)))
+// Collect reads accepted candidates and returns the newest sessions in display order.
+// A nonpositive limit returns no sessions. The read includes the complete boundary timestamp group.
+func Collect(ctx context.Context, entries []Entry, limit int, read func(Entry) (agent.StoredSession, bool)) []agent.StoredSession {
+	collector := agent.NewStoredSessionCollector(limit)
+	VisitAccepted(ctx, entries, limit, read, collector.Add)
+	return collector.Sessions()
+}
+
+// CollectMany reads candidates that can supply several sessions, such as stores with several threads.
+// It uses the same accepted-session budget and timestamp groups as Collect.
+func CollectMany(ctx context.Context, entries []Entry, limit int, read func(Entry) []agent.StoredSession) []agent.StoredSession {
+	collector := agent.NewStoredSessionCollector(limit)
+	visitEntries(ctx, entries, limit, func(entry Entry, accept func(agent.StoredSession)) {
+		for _, session := range read(entry) {
+			accept(session)
+		}
+	}, collector.Add)
+	return collector.Sessions()
+}
+
+// VisitAccepted visits every accepted session before selection or deduplication.
+// A caller can retain its first occurrence across groups without retaining every parsed record.
+func VisitAccepted(ctx context.Context, entries []Entry, limit int, read func(Entry) (agent.StoredSession, bool), visit func(agent.StoredSession)) {
+	visitEntries(ctx, entries, limit, func(entry Entry, accept func(agent.StoredSession)) {
+		if session, ok := read(entry); ok {
+			accept(session)
+		}
+	}, visit)
+}
+
+// visitEntries expects newest-first entries. Acceptance controls the read budget independently of the result count.
+// A boundary tie can require every candidate read. Cancellation stops before the next candidate.
+func visitEntries(ctx context.Context, entries []Entry, limit int, read func(Entry, func(agent.StoredSession)), visit func(agent.StoredSession)) {
+	if limit <= 0 {
+		return
+	}
+	accepted := 0
+	var oldestAccepted time.Time
 	for _, entry := range entries {
-		if len(sessions) >= limit {
+		if accepted >= limit && !entry.ModTime.Equal(oldestAccepted) {
 			break
 		}
 		if ctx.Err() != nil {
 			break
 		}
-		session, ok := read(entry)
-		if !ok {
-			continue
-		}
-		sessions = append(sessions, session)
+		read(entry, func(session agent.StoredSession) {
+			// Only the threshold matters. Saturation prevents a large batch from overflowing the count.
+			if accepted < limit {
+				accepted++
+			}
+			if accepted == 1 || entry.ModTime.Before(oldestAccepted) {
+				oldestAccepted = entry.ModTime
+			}
+			visit(session)
+		})
 	}
-	return sessions
 }
 
 // EpochMillis converts one of these stores' millisecond timestamps to a time.
@@ -485,22 +496,31 @@ type ContentBlock struct {
 	Text string `json:"text"`
 }
 
-// ContentBlocks decodes a message's content, which is either a plain string or
-// an array of typed blocks. A plain string is one text block.
+// ContentBlocks decodes a plain string or an array of typed content blocks. A plain string produces
+// one text block.
 //
-// The encoding is shared, not one provider's: Claude Code, Qoder, Pi and Oh My
-// Pi all write it, so it sits here rather than in any one reader. Which block
-// holds the prompt is each CLI's own rule, so each reader applies its rule to
-// these blocks. An array item that is not a block object, or whose type or text
-// is not a string, carries no block and is skipped. Content of any other shape
-// gives nil.
+// Several providers share this encoding:
+// - Claude Code.
+// - Qoder.
+// - Pi.
+// - Oh My Pi.
+// Each provider still selects the block that contains its prompt.
+// An array item with an incompatible object or field type contributes no block. Other content
+// shapes return nil.
 func ContentBlocks(content json.RawMessage) []ContentBlock {
+	content = bytes.TrimSpace(content)
 	if len(content) == 0 {
 		return nil
 	}
-	var text string
-	if json.Unmarshal(content, &text) == nil {
+	if content[0] == '"' {
+		var text string
+		if json.Unmarshal(content, &text) != nil {
+			return nil
+		}
 		return []ContentBlock{{Type: "text", Text: text}}
+	}
+	if content[0] != '[' {
+		return nil
 	}
 	var items []json.RawMessage
 	if json.Unmarshal(content, &items) != nil {
@@ -508,6 +528,10 @@ func ContentBlocks(content json.RawMessage) []ContentBlock {
 	}
 	blocks := make([]ContentBlock, 0, len(items))
 	for _, item := range items {
+		item = bytes.TrimSpace(item)
+		if len(item) == 0 || item[0] != '{' {
+			continue
+		}
 		var block ContentBlock
 		if json.Unmarshal(item, &block) != nil {
 			continue
@@ -532,21 +556,21 @@ func ContentBlockText(content json.RawMessage) string {
 	return ""
 }
 
-// Query runs one SQL-backed store's listing query.
+// Query runs a SQL-backed session listing query.
+// Codex and Goose use it. The OpenCode store readers use it also.
+// The shared procedure performs these steps:
+// - Reject an empty working directory.
+// - Open the store read-only.
+// - Return no sessions for an absent store.
+// - Bind the cleaned working directory and result limit.
+// - Skip rows that the provider cannot scan.
+// - Sort the accepted sessions.
+// Each provider supplies its database path and SQL. It supplies the row decoder also.
 //
-// Several providers keep their sessions in a SQLite database -- Codex, Goose,
-// and the OpenCode store that OpenCode, Kilo, ZCode and MiMo Code read -- and
-// the steps around the query are the same for every one of them: refuse an empty working
-// directory, open the store read-only, turn an ABSENT store into the empty
-// result rather than a failure, bind the cleaned working directory and the
-// limit, skip a row this reader cannot scan, and order the survivors. Only the
-// path, the SQL and the row shape differ, so only those are parameters.
-//
-// The working directory is compared in SQL rather than in Go so the scan stays
-// in SQLite: these tables carry no index on their directory column and hold
-// thousands of rows. The bound value is filepath.Clean-ed because that is the
-// form the worker holds, and these stores hold the CLI's own `process.cwd()`,
-// which is already clean.
+// SQL compares the working directory to keep the scan inside SQLite.
+// These tables have no directory index and can hold thousands of rows.
+// filepath.Clean normalizes the parameter. The worker uses this form, and the stores contain their
+// CLI's already-clean process.cwd() value.
 func Query(
 	ctx context.Context,
 	dbPath, query string,
@@ -574,9 +598,9 @@ func Query(
 
 	sessions := make([]agent.StoredSession, 0, limit)
 	for rows.Next() {
-		// One unreadable row must not lose the rest: a column whose type
-		// changed in a newer CLI is exactly the drift this reader has to
-		// survive without failing the dialog.
+		// One unreadable row must not discard the remaining rows.
+		// A newer CLI can change a column type. The reader must tolerate that change without failing the
+		// picker.
 		session, ok := scan(rows)
 		if !ok {
 			continue
@@ -607,13 +631,12 @@ func ScanEpochMillisSession(rows *sql.Rows) (agent.StoredSession, bool) {
 	}, true
 }
 
-// TrimTitle normalizes a title taken from a foreign store: one line, no edge
-// whitespace, capped.
+// TrimTitle normalizes a stored title to one line without edge whitespace. It limits the result
+// length.
 //
-// Several stores put the first user PROMPT in the title field, and a prompt is
-// arbitrary user text -- multi-line, and long enough to fill a menu row on its
-// own. The cap is applied in RUNES so a multi-byte character is never cut in
-// half into invalid UTF-8.
+// Some stores use the first user prompt as the title. That arbitrary text can span several lines or
+// exceed a menu row.
+// The limit counts runes, so it cannot cut a multibyte character into invalid UTF-8.
 func TrimTitle(title string) string {
 	title = strings.TrimSpace(title)
 	if title == "" {
@@ -629,7 +652,6 @@ func TrimTitle(title string) string {
 	return title
 }
 
-// maxStoredSessionTitleRunes caps a title from a foreign store. One menu row
-// holds far less than this; the cap exists so a prompt-shaped title cannot make
-// the response large, not to do the layout's job.
+// maxStoredSessionTitleRunes limits titles from foreign stores. A menu row holds much less text.
+// The limit controls response size, not layout.
 const maxStoredSessionTitleRunes = 120

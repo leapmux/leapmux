@@ -1,8 +1,3 @@
-//
-// This suite needs a Windows bring-up that only a local Windows run can state:
-// the store detection differs under the Windows runner in a way a local run must state.
-// The suite keeps its full coverage on macOS and Linux.
-
 package codewhale
 
 import (
@@ -22,8 +17,10 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 )
 
-// seedStore writes one store the way the runtime lays it out: the state file
-// the picker times the store by, the thread record, and the latest turn.
+// seedStore writes these native records:
+// - The state file that supplies the candidate timestamp.
+// - The thread record.
+// - The latest turn, when supplied.
 func seedStore(t *testing.T, root, name string, thread threadRecord, turn *turnRecord, touched time.Time) codewhaleStore {
 	t.Helper()
 	store := codewhaleStore{dir: filepath.Join(root, name)}
@@ -73,9 +70,8 @@ func TestNewCodewhaleStore(t *testing.T) {
 	assert.Equal(t, first.dir, first.tasksDir())
 	assert.Equal(t, filepath.Join(first.dir, "runtime"), first.runtimeDir())
 
-	// The store keeps a home of its own, linked to the configuration entries of
-	// the configured home and nothing else: one Codewhale home coordinates one
-	// daemon, so a second runtime of the same configured home needs its own.
+	// Each store has a private home with copies of the configured entries. One Codewhale home
+	// coordinates one daemon. A second runtime therefore needs its own home.
 	require.Equal(t, filepath.Join(root, codewhaleHomePrefix+strings.TrimPrefix(filepath.Base(first.dir), codewhaleStorePrefix)), first.home, "the private home sits beside its store")
 	homeInfo, err := os.Stat(first.home)
 	require.NoError(t, err)
@@ -106,6 +102,16 @@ func TestNewCodewhaleStore(t *testing.T) {
 
 	_, err = newCodewhaleStore("")
 	assert.Error(t, err)
+}
+
+func TestCopyHomeEntryReportsAnUnreadableSource(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	parent := filepath.Join(root, "plain-file")
+	require.NoError(t, os.WriteFile(parent, []byte("not a directory"), 0o600))
+	err := copyHomeEntry(filepath.Join(parent, "config.toml"), filepath.Join(root, "copy"))
+	require.Error(t, err)
+	require.NoError(t, copyHomeEntry(filepath.Join(root, "absent"), filepath.Join(root, "copy")))
 }
 
 func TestFindCodewhaleStore(t *testing.T) {
@@ -163,6 +169,34 @@ func TestCodewhaleStoredSessions(t *testing.T) {
 	assert.Len(t, limited, 1)
 }
 
+func TestCodewhaleStoredSessionsKeepsTimestampTies(t *testing.T) {
+	t.Parallel()
+	for _, multiple := range []bool{false, true} {
+		t.Run(map[bool]string{false: "one thread", true: "multiple threads"}[multiple], func(t *testing.T) {
+			t.Parallel()
+			home := t.TempDir()
+			root := filepath.Join(home, ".codewhale", codewhaleStoresDirName)
+			workDir := filepath.Join(home, "project")
+			stamp := time.Date(2026, 10, 17, 0, 0, 0, 0, time.UTC)
+			old := threadRecord{ID: "old", Workspace: workDir, LatestTurnID: "turn-old", UpdatedAt: stamp.Format(time.RFC3339)}
+			store := seedStore(t, root, "store-a", old, nil, stamp)
+			limit := 1
+			if multiple {
+				older := old
+				older.ID = "older"
+				older.UpdatedAt = stamp.Add(-time.Hour).Format(time.RFC3339)
+				require.NoError(t, os.WriteFile(store.threadPath(older.ID), mustJSON(t, older), 0o600))
+				limit = 2
+			}
+			seedStore(t, root, "store-z", threadRecord{ID: "new", Workspace: workDir, LatestTurnID: "turn-new", UpdatedAt: stamp.Add(time.Hour).Format(time.RFC3339)}, nil, stamp)
+			got, err := codewhaleStoredSessions(t.Context(), agent.StoredSessionQuery{WorkingDir: workDir, HomeDir: home, Getenv: agenttest.FixtureEnv(nil), Limit: limit})
+			require.NoError(t, err)
+			want := []string{"new", "old"}
+			assert.Equal(t, want[:limit], agenttest.Handles(got))
+		})
+	}
+}
+
 func TestCodewhaleStoredSessionsFindNothingWithoutAStore(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
@@ -206,8 +240,8 @@ func TestReadsSessionStore(t *testing.T) {
 	})
 }
 
-// The thread record in a store and on the wire is one shape: the picker reads
-// the file the runtime writes with the struct the REST reply decodes into.
+// The stored thread record and the wire record share one shape. The picker decodes the stored
+// record with the REST response type.
 func TestThreadRecordReadsTheStoredShape(t *testing.T) {
 	t.Parallel()
 	stored := []byte(`{"schema_version":2,"id":"thr_97fda004","created_at":"2026-09-23T18:10:25Z","updated_at":"2026-09-23T18:10:36Z","model":"mock-model","model_provider":"openai","model_provider_id":"openai","workspace":"/w","mode":"plan","permission_posture":"ask","allow_shell":true,"latest_turn_id":"turn_8c418bde","archived":false}`)

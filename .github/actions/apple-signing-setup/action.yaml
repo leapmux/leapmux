@@ -1,11 +1,12 @@
 name: Apple signing setup
 description: |
-  Verify Apple signing secrets, create a temporary keychain, import the
-  Developer ID certificate, and materialize the App Store Connect API
-  key. Sets `KEYCHAIN_PATH` and `APPLE_API_KEY_P8_PATH` in `$GITHUB_ENV`
-  so the calling job can reference them in subsequent steps. Caller
-  remains responsible for the matching `if: always()` cleanup step that
-  removes the keychain and `.p8` after the signing work finishes.
+  Prepare the credentials for Apple signing:
+  - Verify required secrets.
+  - Create a temporary keychain.
+  - Import the Developer ID certificate.
+  - Write the App Store Connect API key.
+  Export both credential paths before creating their files.
+  The calling job must remove them in an always() cleanup step.
 
 inputs:
   certificate-base64:
@@ -35,12 +36,9 @@ runs:
   using: composite
   steps:
     - name: Verify Apple signing secrets are configured
-      # Fail fast with a named list of missing secrets if the apple-signing
-      # environment isn't fully populated. Without this, an empty secret
-      # silently feeds an empty file into `security import` / `notarytool`,
-      # which surface as cryptic errors like "SecKeychainItemImport: One or
-      # more parameters passed to a function were not valid" — leaving the
-      # operator to guess that a secret was missing.
+      # Reject missing secrets before creating credential files. Otherwise, security import or
+      # notarytool receives an empty file and reports an unrelated error. The list identifies
+      # each missing secret explicitly.
       shell: bash
       env:
         MACOS_CERTIFICATE_P12_BASE64: ${{ inputs.certificate-base64 }}
@@ -70,12 +68,14 @@ runs:
           exit 1
         fi
 
-    - name: Pre-record keychain path for cleanup
-      # Set $KEYCHAIN_PATH BEFORE we try to create/import, so the caller's
-      # `if: always()` cleanup can still find the keychain even if the
-      # import step fails partway through.
+    - name: Register the credential paths for cleanup
+      # Register both paths before any step creates a credential file.
+      # The caller's always() step can then remove partial files after failure.
       shell: bash
-      run: echo "KEYCHAIN_PATH=${RUNNER_TEMP}/build.keychain-db" >> "$GITHUB_ENV"
+      run: |
+        set -euo pipefail
+        echo "KEYCHAIN_PATH=${RUNNER_TEMP}/build.keychain-db" >> "$GITHUB_ENV"
+        echo "APPLE_API_KEY_P8_PATH=${RUNNER_TEMP}/apple_api.p8" >> "$GITHUB_ENV"
 
     - name: Import Developer ID certificate
       shell: bash
@@ -85,6 +85,7 @@ runs:
         MACOS_KEYCHAIN_PASSWORD: ${{ inputs.keychain-password }}
       run: |
         set -euo pipefail
+        umask 077
         CERT_PATH="${RUNNER_TEMP}/cert.p12"
         # Always remove the cert file even if a later command in this step fails.
         trap 'rm -f "$CERT_PATH"' EXIT
@@ -94,9 +95,8 @@ runs:
         security unlock-keychain -p "$KP" "$KEYCHAIN_PATH"
         # `--decode` is supported by both BSD (macOS) and GNU base64.
         printf '%s' "$MACOS_CERTIFICATE_P12_BASE64" | base64 --decode > "$CERT_PATH"
-        # Belt-and-braces: if the secret somehow round-tripped to empty or
-        # non-base64 garbage, fail with a clear message instead of letting
-        # `security import` return errSecParam.
+        # Reject empty decoded data before security import. Otherwise, the command reports
+        # errSecParam without identifying the missing certificate.
         if [ ! -s "$CERT_PATH" ]; then
           echo "::error::Decoded p12 is empty — MACOS_CERTIFICATE_P12_BASE64 is missing or not valid base64."
           exit 1
@@ -112,6 +112,7 @@ runs:
         APPLE_API_KEY_P8_BASE64: ${{ inputs.api-key-base64 }}
       run: |
         set -euo pipefail
+        umask 077
         P8="${RUNNER_TEMP}/apple_api.p8"
         printf '%s' "$APPLE_API_KEY_P8_BASE64" | base64 --decode > "$P8"
         if [ ! -s "$P8" ]; then
@@ -119,4 +120,3 @@ runs:
           exit 1
         fi
         chmod 600 "$P8"
-        echo "APPLE_API_KEY_P8_PATH=$P8" >> "$GITHUB_ENV"

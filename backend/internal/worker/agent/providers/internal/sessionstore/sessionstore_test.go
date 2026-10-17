@@ -45,10 +45,8 @@ func TestSameDir(t *testing.T) {
 	assert.True(t, SameDir("/a/b/", "/a/b"))
 	assert.True(t, SameDir("/a/./b", "/a/b"))
 	assert.False(t, SameDir("/a/b", "/a/c"))
-	// An empty side is never a match: a store that recorded no working
-	// directory must not be offered under an arbitrary one. pathutil.SamePath
-	// cleans "" to "." and answers TRUE for two empty paths, so the guard in
-	// SameDir is what produces this answer and not the delegate.
+	// An empty path never matches a directory. pathutil.SamePath cleans an empty path to a dot and
+	// considers two empty paths equal. SameDir must reject them before delegation.
 	assert.False(t, SameDir("", "/a/b"))
 	assert.False(t, SameDir("/a/b", ""))
 	assert.False(t, SameDir("", ""))
@@ -90,6 +88,8 @@ func TestContentBlocks(t *testing.T) {
 		want    []ContentBlock
 	}{
 		{name: "a plain string is one text block", content: `"hello"`, want: []ContentBlock{{Type: "text", Text: "hello"}}},
+		{name: "null is no content", content: `null`},
+		{name: "a null array item is not a block", content: `[null,{"type":"text","text":"kept"}]`, want: []ContentBlock{{Type: "text", Text: "kept"}}},
 		{name: "an empty string is one empty text block", content: `""`, want: []ContentBlock{{Type: "text"}}},
 		{
 			name:    "an array keeps its blocks in order",
@@ -121,6 +121,15 @@ func TestContentBlocks(t *testing.T) {
 func TestJSONLHeadAndTail(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+
+	t.Run("keeps a complete first record at the tail window", func(t *testing.T) {
+		t.Parallel()
+		path := filepath.Join(dir, "tail-boundary.jsonl")
+		agenttest.WriteFixtureFile(t, path, "{\"i\":\"a\"}\n{\"i\":\"b\"}\n")
+		lines, err := JSONLTail(path, 10)
+		require.NoError(t, err)
+		assert.Equal(t, [][]byte{[]byte(`{"i":"b"}`)}, lines)
+	})
 
 	t.Run("reads every line of a short file from both ends", func(t *testing.T) {
 		t.Parallel()
@@ -157,10 +166,9 @@ func TestJSONLHeadAndTail(t *testing.T) {
 		assert.JSONEq(t, `{"i":"c"}`, string(tail[0]))
 	})
 
-	// The boundary io.ReadFull cannot report on its own. A window of exactly
-	// the file's size returns the same count and the same nil error as a window
-	// that filled from a longer file, so a check against the window size alone
-	// treated a complete last line as a partial one and dropped it.
+	// io.ReadFull cannot distinguish an exact fit from a longer file through its count and error
+	// alone. Both return the full count and nil error. A check against only the count would discard
+	// a complete last line.
 	t.Run("keeps the last line of a file that ends exactly at the window", func(t *testing.T) {
 		t.Parallel()
 		path := filepath.Join(dir, "exact.jsonl")
@@ -272,23 +280,21 @@ func TestNewestEntries(t *testing.T) {
 		"an absent directory is the normal state for a CLI never run, not a failure")
 }
 
-// The scan cap must apply to the ORDERED list. os.ReadDir returns a directory
-// sorted by file name, and these stores name a session with a UUID, so a cap
-// taken during the walk keeps the lexicographically first entries -- which is
-// uncorrelated with recency. One real Claude directory holds 3905 transcripts
-// and loses six of its ten newest sessions that way.
+// The scan limit must apply after ordering by modification time. os.ReadDir sorts filenames, and
+// session filenames can hold UUIDs. A cut during that scan can discard newer sessions. One real
+// Claude directory holds 3905 transcripts and loses six of its ten newest sessions that way.
 func TestNewestEntries_CapsAfterOrdering(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	base := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 
-	// The name order is the REVERSE of the time order, so a cap taken during
-	// the walk and a cap taken after the sort cannot agree.
+	// Filename order opposes timestamp order in this fixture. A cut before sorting therefore cannot
+	// return the newest records.
 	total := storedSessionScanCap + 5
 	for i := range total {
 		path := filepath.Join(dir, fmt.Sprintf("%05d.jsonl", i))
 		agenttest.WriteFixtureFile(t, path, "{}\n")
-		agenttest.TouchFixture(t, path, base.Add(-time.Duration(i)*time.Minute))
+		agenttest.TouchFixture(t, path, base.Add(time.Duration(i)*time.Minute))
 	}
 
 	keepJSONL := func(entry os.DirEntry) bool {
@@ -297,7 +303,7 @@ func TestNewestEntries_CapsAfterOrdering(t *testing.T) {
 	entries, err := NewestEntries(dir, 3, EntryItself(keepJSONL))
 	require.NoError(t, err)
 	require.Len(t, entries, 3)
-	assert.Equal(t, []string{"00000.jsonl", "00001.jsonl", "00002.jsonl"},
+	assert.Equal(t, []string{fmt.Sprintf("%05d.jsonl", total-1), fmt.Sprintf("%05d.jsonl", total-2), fmt.Sprintf("%05d.jsonl", total-3)},
 		[]string{entries[0].Name, entries[1].Name, entries[2].Name},
 		"the three newest by modification time, not the first three by name")
 
@@ -306,13 +312,31 @@ func TestNewestEntries_CapsAfterOrdering(t *testing.T) {
 	all, err := NewestEntries(dir, 0, EntryItself(keepJSONL))
 	require.NoError(t, err)
 	assert.Len(t, all, storedSessionScanCap)
-	assert.Equal(t, "00000.jsonl", all[0].Name)
+	assert.Equal(t, fmt.Sprintf("%05d.jsonl", total-1), all[0].Name)
 }
 
-// NamedFileInside times a session DIRECTORY by a file inside it. The directory's
-// own time is not the session's: it moves when any program adds a file, and a
-// read-only SQLite open adds the `-shm` sidecar, so a walk timed that way
-// reports the moment LeapMux looked.
+// The cut preserves each complete timestamp group. Filename order supplies no recency inside a
+// tie. A partial group could omit the newest content timestamp.
+func TestSortAndCapEntries_KeepsATieWhole(t *testing.T) {
+	t.Parallel()
+	base := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	found := []Entry{
+		{Name: "a", ModTime: base},
+		{Name: "b", ModTime: base},
+		{Name: "c", ModTime: base},
+		{Name: "d", ModTime: base.Add(-time.Minute)},
+	}
+	kept := SortAndCapEntries(found, 2)
+	names := make([]string, 0, len(kept))
+	for _, entry := range kept {
+		names = append(names, entry.Name)
+	}
+	assert.Equal(t, []string{"a", "b", "c"}, names)
+}
+
+// NamedFileInside derives each directory candidate timestamp from a file inside it. A read-only
+// SQLite open creates the -shm sidecar and changes the directory time. The directory time would
+// then report when LeapMux inspected the store.
 func TestNamedFileInside_TimesByTheInnerFile(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -347,8 +371,33 @@ func TestNamedFileInside_TimesByTheInnerFile(t *testing.T) {
 
 func TestCollectStoredSessions(t *testing.T) {
 	t.Parallel()
-	entries := []Entry{{Name: "a"}, {Name: "b"}, {Name: "c"}, {Name: "d"}}
+	base := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	entries := []Entry{
+		{Name: "a", ModTime: base},
+		{Name: "b", ModTime: base.Add(-time.Minute)},
+		{Name: "c", ModTime: base.Add(-2 * time.Minute)},
+		{Name: "d", ModTime: base.Add(-3 * time.Minute)},
+	}
 	accept := func(e Entry) (agent.StoredSession, bool) { return agent.StoredSession{Handle: e.Name}, true }
+
+	for _, limit := range []int{0, -1, -int(^uint(0)>>1) - 1} {
+		t.Run(fmt.Sprintf("reads nothing for limit %d", limit), func(t *testing.T) {
+			t.Parallel()
+			for _, input := range [][]Entry{nil, entries} {
+				reads := 0
+				var got []agent.StoredSession
+				require.NotPanics(t, func() {
+					got = Collect(t.Context(), input, limit, func(e Entry) (agent.StoredSession, bool) {
+						reads++
+						return accept(e)
+					})
+				})
+				assert.NotNil(t, got)
+				assert.Empty(t, got)
+				assert.Zero(t, reads)
+			}
+		})
+	}
 
 	t.Run("stops reading at the limit rather than filtering afterwards", func(t *testing.T) {
 		t.Parallel()
@@ -363,9 +412,32 @@ func TestCollectStoredSessions(t *testing.T) {
 			"an uncapped walk is only affordable because the READ stops, not the result")
 	})
 
-	// A candidate the reader refuses -- another directory's session, a subagent
-	// transcript -- must not spend the budget, or a store whose newest entries
-	// all belong elsewhere reports that this directory has nothing.
+	// Filename order supplies no recency inside a timestamp tie. Read the complete group before
+	// selecting the newest content timestamps.
+	t.Run("reads a timestamp tie whole", func(t *testing.T) {
+		t.Parallel()
+		tied := []Entry{
+			{Name: "a", ModTime: base},
+			{Name: "b", ModTime: base},
+			{Name: "c", ModTime: base},
+		}
+		reads := 0
+		counted := func(e Entry) (agent.StoredSession, bool) {
+			reads++
+			session, ok := accept(e)
+			if e.Name == "c" {
+				session.UpdatedAt = base
+			}
+			return session, ok
+		}
+		got := Collect(t.Context(), tied, 2, counted)
+		assert.Equal(t, []string{"c", "a"}, agenttest.Handles(got))
+		assert.Equal(t, 3, reads, "the tie group carries no recency order to cut against")
+	})
+
+	// Rejected candidates must not consume the accepted-session budget. Another directory or a
+	// subagent can own those records. Otherwise, a store could report no sessions for a directory
+	// that does have sessions.
 	t.Run("a refused candidate does not consume the budget", func(t *testing.T) {
 		t.Parallel()
 		skipB := func(e Entry) (agent.StoredSession, bool) {
@@ -392,6 +464,53 @@ func TestCollectStoredSessions(t *testing.T) {
 		assert.Empty(t, Collect(ctx, entries, 4, counted))
 		assert.Zero(t, reads)
 	})
+}
+
+func TestCollectManyPreservesTheBoundaryGroup(t *testing.T) {
+	t.Parallel()
+	stamp := time.Date(2026, 10, 17, 0, 0, 0, 0, time.UTC)
+	entries := []Entry{{Name: "empty", ModTime: stamp}, {Name: "batch", ModTime: stamp}, {Name: "new", ModTime: stamp}, {Name: "older", ModTime: stamp.Add(-time.Hour)}}
+	var reads []string
+	got := CollectMany(t.Context(), entries, 2, func(entry Entry) []agent.StoredSession {
+		reads = append(reads, entry.Name)
+		switch entry.Name {
+		case "empty":
+			return nil
+		case "batch":
+			return []agent.StoredSession{{Handle: "old", UpdatedAt: stamp}, {Handle: "oldest", UpdatedAt: stamp.Add(-time.Hour)}}
+		default:
+			return []agent.StoredSession{{Handle: entry.Name, UpdatedAt: stamp.Add(time.Hour)}}
+		}
+	})
+	assert.Equal(t, []string{"empty", "batch", "new"}, reads)
+	assert.Equal(t, []string{"new", "old"}, agenttest.Handles(got))
+
+	ctx, cancel := context.WithCancel(t.Context())
+	reads = nil
+	got = CollectMany(ctx, entries, 2, func(entry Entry) []agent.StoredSession {
+		reads = append(reads, entry.Name)
+		cancel()
+		return []agent.StoredSession{{Handle: "first"}}
+	})
+	assert.Equal(t, []string{"empty"}, reads)
+	assert.Equal(t, []string{"first"}, agenttest.Handles(got))
+}
+
+func TestCollectLimitsRetainedSessionsWithinTimestampTie(t *testing.T) {
+	t.Parallel()
+	stamp := time.Date(2026, 10, 17, 0, 0, 0, 0, time.UTC)
+	entries := make([]Entry, 10000)
+	for i := range entries {
+		entries[i] = Entry{Name: fmt.Sprintf("%05d", i), ModTime: stamp}
+	}
+	reads := 0
+	got := Collect(t.Context(), entries, 2, func(entry Entry) (agent.StoredSession, bool) {
+		reads++
+		return agent.StoredSession{Handle: entry.Name, UpdatedAt: stamp.Add(time.Duration(reads))}, true
+	})
+	assert.Equal(t, len(entries), reads)
+	assert.Equal(t, []string{"09999", "09998"}, agenttest.Handles(got))
+	assert.LessOrEqual(t, cap(got), 2)
 }
 
 func TestOpenSessionStoreDB_AbsentIsNotAFailure(t *testing.T) {

@@ -172,8 +172,14 @@ func TestKimiStoredSessions(t *testing.T) {
 		home := t.TempDir()
 		root := filepath.Join(home, ".kimi-code")
 		workDir := filepath.Join(home, "project")
+		// Every state file gets the same timestamp, as on a filesystem with coarse file times.
+		// The updatedAt fields still order the five sessions. The reader must examine the complete tie to
+		// select the newest two.
+		// Filename order supplies no recency inside the tie.
+		stamped := time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC)
 		for i := range 5 {
-			writeKimiState(t, root, workDir, "session_"+string(rune('a'+i)), map[string]any{"updatedAt": 1790000000000 + i})
+			dir := writeKimiState(t, root, workDir, "session_"+string(rune('a'+i)), map[string]any{"updatedAt": 1790000000000 + i})
+			agenttest.TouchFixture(t, filepath.Join(dir, kimiStateFile), stamped)
 		}
 		sessions, err := kimiProvider{}.ListStoredSessions(context.Background(), agent.StoredSessionQuery{
 			WorkingDir: workDir, HomeDir: home, Getenv: agenttest.FixtureEnv(nil), Limit: 2,
