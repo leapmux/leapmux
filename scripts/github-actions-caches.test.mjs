@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { join, posix, resolve } from 'node:path'
+import { delimiter, join, posix, resolve } from 'node:path'
 import process from 'node:process'
 import { afterEach, describe, expect, it } from 'bun:test'
 
@@ -18,11 +18,26 @@ function fixture() {
   return dir
 }
 
-function runShell(script, dir, extra = {}) {
-  return spawnSync('bash', ['--noprofile', '--norc', '-e', '-o', 'pipefail', '-c', script], {
+// Put the directory of fake commands first INSIDE the script. A fake
+// directory at the front of the spawn PATH is not enough: Git for Windows'
+// bin\bash.exe launcher puts its own mingw64\bin and usr\bin before the PATH
+// that it receives. A fake for a command that Git ships, such as `date` or
+// `base64`, then loses to the real command. cygpath converts the Windows path
+// for MSYS bash. Other platforms have no cygpath and use the path as it is.
+const fakeBinPrelude = 'PATH="$(cygpath -u "$ACTIONS_TEST_FAKE_BIN" 2>/dev/null || printf \'%s\' "$ACTIONS_TEST_FAKE_BIN"):$PATH"\n'
+
+function runShell(script, dir, extra = {}, fakeBin) {
+  const prelude = fakeBin === undefined ? '' : fakeBinPrelude
+  return spawnSync('bash', ['--noprofile', '--norc', '-e', '-o', 'pipefail', '-c', prelude + script], {
     cwd: dir,
     encoding: 'utf8',
-    env: { ...process.env, GITHUB_ENV: join(dir, 'environment'), GITHUB_OUTPUT: join(dir, 'output'), ...extra },
+    env: {
+      ...process.env,
+      GITHUB_ENV: join(dir, 'environment'),
+      GITHUB_OUTPUT: join(dir, 'output'),
+      ...(fakeBin === undefined ? {} : { ACTIONS_TEST_FAKE_BIN: fakeBin }),
+      ...extra,
+    },
   })
 }
 
@@ -108,6 +123,25 @@ function argLine(lines, arg) {
 function cachePaths(step) {
   return String(step.with.path).split('\n').map(line => line.trim()).filter(Boolean)
 }
+
+describe('runShell', () => {
+  it('runs a fake command before the system command of the same name', () => {
+    const dir = fixture()
+    const bin = join(dir, 'bin')
+    mkdirSync(bin)
+    writeFileSync(join(bin, 'date'), '#!/bin/sh\nprintf "fake date\\n"\n')
+    chmodSync(join(bin, 'date'), 0o755)
+    // Start the shell with the system directories first, as Git for Windows'
+    // bin\bash.exe launcher does with its own usr\bin. On Windows that launcher
+    // reorders PATH by itself.
+    const systemFirst = process.platform === 'win32'
+      ? process.env.PATH
+      : ['/usr/bin', '/bin', process.env.PATH].join(delimiter)
+    const result = runShell('date', dir, { PATH: systemFirst }, bin)
+    expect(result.status, result.stderr).toBe(0)
+    expect(result.stdout).toBe('fake date\n')
+  })
+})
 
 describe('cache and pin invariants of the GitHub Actions workflows', () => {
   it('uses the prepared builder for every Docker cache and build operation', () => {
@@ -195,7 +229,6 @@ describe('cache and pin invariants of the GitHub Actions workflows', () => {
         }
         const run = step.run.replace(/\$\{\{\s*hashFiles\([^)]*\)\s*\}\}/g, 'a'.repeat(64))
         const result = runShell(run, dir, {
-          PATH: `${bin}${process.platform === 'win32' ? ';' : ':'}${process.env.PATH}`,
           FIXTURE_GOCACHE: join(dir, 'go-cache'),
           FIXTURE_WEEK: week,
           CACHE_WEEK: week,
@@ -211,7 +244,7 @@ describe('cache and pin invariants of the GitHub Actions workflows', () => {
           VARIANT: 'alpine',
           SAVE_CACHES: 'true',
           ALPINE_IMAGE: 'alpine:fixture',
-        })
+        }, bin)
         expect(result.status, result.stderr).toBe(0)
         const output = outputFile(dir)
         keys.push(/^key=(.*)$/m.exec(output)?.[1])
@@ -243,10 +276,7 @@ describe('cache and pin invariants of the GitHub Actions workflows', () => {
       writeFileSync(join(bin, name), `#!/usr/bin/env bash\n${body}\n`)
       chmodSync(join(bin, name), 0o755)
     }
-    const result = runShell('bash scripts/diagnose-linuxdeploy.sh', dir, {
-      HOME: dir,
-      PATH: `${bin}${process.platform === 'win32' ? ';' : ':'}${process.env.PATH}`,
-    })
+    const result = runShell('bash scripts/diagnose-linuxdeploy.sh', dir, { HOME: dir }, bin)
     expect(result.status, result.stderr).toBe(0)
     expect(result.stdout).toContain('No AppDir exists')
     expect(result.stdout).toContain('No sidecar exists')
@@ -360,8 +390,7 @@ describe('cache and pin invariants of the GitHub Actions workflows', () => {
     expect(runShell(raw('scripts/cleanup-apple-signing.sh'), dir, {
       KEYCHAIN_PATH: keychain,
       APPLE_API_KEY_P8_PATH: key,
-      PATH: `${bin}${process.platform === 'win32' ? ';' : ':'}${process.env.PATH}`,
-    }).status).toBe(0)
+    }, bin).status).toBe(0)
     expect(existsSync(key)).toBe(false)
     expect(runShell(raw('scripts/cleanup-apple-signing.sh'), dir, { KEYCHAIN_PATH: '', APPLE_API_KEY_P8_PATH: '' }).status).toBe(0)
   })
@@ -493,22 +522,23 @@ describe('cache and pin invariants of the GitHub Actions workflows', () => {
     const certificate = steps.find(step => step.name === 'Import Developer ID certificate')
     expect(steps.indexOf(register)).toBeLessThan(steps.indexOf(key))
     expect(steps.indexOf(register)).toBeLessThan(steps.indexOf(certificate))
-    const env = { RUNNER_TEMP: dir, APPLE_API_KEY_P8_BASE64: 'fixture', PATH: `${bin}${process.platform === 'win32' ? ';' : ':'}${process.env.PATH}` }
-    expect(runShell(register.run, dir, env).status).toBe(0)
+    const env = { RUNNER_TEMP: dir, APPLE_API_KEY_P8_BASE64: 'fixture' }
+    expect(runShell(register.run, dir, env, bin).status).toBe(0)
     const exported = Object.fromEntries(outputFile(dir, 'environment').trim().split('\n').map((line) => {
       const index = line.indexOf('=')
       return [line.slice(0, index), line.slice(index + 1)]
     }))
-    const result = runShell(key.run, dir, { ...env, ...exported })
+    const result = runShell(key.run, dir, { ...env, ...exported }, bin)
     expect(result.status).not.toBe(0)
-    expect(existsSync(join(dir, 'apple_api.p8'))).toBe(true)
+    // The fake decoder wrote this partial output, so the step ran the fake.
+    expect(readFileSync(join(dir, 'apple_api.p8'), 'utf8')).toBe('fake-private-prefix')
     if (process.platform !== 'win32')
       expect(statSync(join(dir, 'apple_api.p8')).mode & 0o777).toBe(0o600)
     const cleanup = yaml('.github/workflows/desktop-artifacts.yaml').jobs['macos-app-sign'].steps.find(step => step.name === 'Cleanup')
     const cleanupScript = cleanup.run.startsWith('bash scripts/')
       ? raw(cleanup.run.slice('bash '.length).trim())
       : cleanup.run
-    expect(runShell(cleanupScript, dir, { ...env, ...exported }).status).toBe(0)
+    expect(runShell(cleanupScript, dir, { ...env, ...exported }, bin).status).toBe(0)
     expect(existsSync(join(dir, 'apple_api.p8'))).toBe(false)
     for (const job of ['macos-app-sign', 'macos-cli-sign']) {
       const step = yaml('.github/workflows/desktop-artifacts.yaml').jobs[job].steps.find(entry => entry.name === 'Cleanup')
