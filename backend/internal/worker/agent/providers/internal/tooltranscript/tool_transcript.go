@@ -431,15 +431,17 @@ func (s *Transcript) PendingSpanIDsForTest() []string {
 	return ids
 }
 
+// UpdateSessionID forwards the new session to the wrapped sink. The wrapped
+// sink stamps the session on every row, including each row that this wrapper
+// writes through it. The embedded ProviderServices.MessageSessionID therefore
+// reports the session of those rows, and this wrapper needs no override.
 func (s *Transcript) UpdateSessionID(sessionID string) {
 	s.ProviderServices.UpdateSessionID(sessionID)
 	content := s.ProviderServices.CaptureMessage(agent.MessageContent{}, agent.SpanInfo{})
 	s.sourceMu.Lock()
 	state, orphans := s.adoptSource(content)
 	s.mu.Lock()
-	if state != nil && state.location.Ready && len(s.pending) > 0 {
-		s.requestSupplementPass()
-	}
+	s.requestPendingSupplementLocked(state)
 	s.mu.Unlock()
 	s.sourceMu.Unlock()
 	s.retainRetired(retireToolTranscripts(orphans))
@@ -456,9 +458,7 @@ func (s *Transcript) PersistMessage(source leapmuxv1.MessageSource, content agen
 	s.sourceMu.Lock()
 	state, orphans := s.adoptSource(content)
 	s.mu.Lock()
-	if state != nil && state.location.Ready && len(s.pending) > 0 {
-		s.requestSupplementPass()
-	}
+	s.requestPendingSupplementLocked(state)
 	s.mu.Unlock()
 	toolCallID := ""
 	if state != nil && span.Closing && span.SpanID != "" {
@@ -1055,4 +1055,12 @@ func MergeSupplements(initial, later []byte) ([]byte, error) {
 		fields[key] = value
 	}
 	return json.Marshal(fields)
+}
+
+// requestPendingSupplementLocked schedules a pass only for a ready current source.
+// The caller holds sourceMu and mu. A nil state must not reuse an earlier source.
+func (s *Transcript) requestPendingSupplementLocked(state *toolSourceState) {
+	if state != nil && state.location.Ready && len(s.pending) > 0 {
+		s.requestSupplementPass()
+	}
 }

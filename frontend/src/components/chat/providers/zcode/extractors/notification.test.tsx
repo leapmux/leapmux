@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ZCODE_DECISION, ZCODE_EVENT, ZCODE_TOOL } from '~/generated/contracts/zcode-protocol'
+import { ZCODE_COMPACTION_STATUS, ZCODE_DECISION, ZCODE_EVENT, ZCODE_TOOL } from '~/generated/contracts/zcode-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { renderThreadHasIcon, renderThreadText } from '~/test-support/messageRenderProbes'
 import { describeZCodeNotification, zcodeNotificationEntry } from './notification'
@@ -44,7 +44,7 @@ describe('describeZCodeNotification', () => {
     // An escalation and an input rewrite are in the app-server's enumeration. Reading
     // either as a denial would report a refusal that never happened, so each has its
     // own sentence.
-    it('names an escalation and a modification without calling either a denial', () => {
+    it('states an escalation and a modification without calling either a denial', () => {
       expect(describeZCodeNotification(event(ZCODE_EVENT.PermissionResolved, {
         decision: ZCODE_DECISION.Escalate,
         toolName: ZCODE_TOOL.Bash,
@@ -55,7 +55,7 @@ describe('describeZCodeNotification', () => {
       }))).toBe('Ran Edit with modified input')
     })
 
-    it('names the tool generically when the payload does not name one', () => {
+    it('states a generic tool when the payload gives no tool name', () => {
       expect(describeZCodeNotification(event(ZCODE_EVENT.PermissionResolved, {
         decision: ZCODE_DECISION.Deny,
       }))).toBe('Denied a tool')
@@ -131,7 +131,7 @@ describe('zcode notification rendering (markup)', () => {
   it('renders a standalone notification as a plain line with no divider icon', () => {
     const msg = event(ZCODE_EVENT.SessionClosed, { reason: 'idle timeout' })
     expect(renderZCodeText(msg)).toBe('Session closed — idle timeout')
-    // ZCode emits no compaction boundary, so no thread entry of its own is a divider.
+    // A plain notification line draws no divider. Only a compaction entry does.
     expect(renderThreadHasIcon([msg], AgentProvider.ZCODE)).toBe(false)
   })
 
@@ -146,6 +146,21 @@ describe('zcode notification rendering (markup)', () => {
     expect(text).toContain('also run the linter')
     expect(text).toContain('Queued input delivered to the agent')
     expect(text).toContain('Denied Bash')
+  })
+
+  // The completed compaction row is the boundary of the rewrite, so it draws the
+  // divider, with the sizes before and after it.
+  it('renders a completed compaction as a divider with its sizes', () => {
+    const msg = event(ZCODE_EVENT.SessionUpdated, {
+      operationId: 'c1',
+      status: ZCODE_COMPACTION_STATUS.Completed,
+      trigger: 'auto',
+      preCompactTokenCount: 180000,
+      postCompactTokenCount: 14000,
+      truePostCompactTokenCount: 12000,
+    })
+    expect(renderThreadHasIcon([msg], AgentProvider.ZCODE)).toBe(true)
+    expect(renderZCodeText(msg)).toBe('Context compacted (auto, 180.0k → 12.0k)')
   })
 
   it('renders nothing for a shape neither ZCode nor the shared switch owns', () => {
@@ -170,7 +185,7 @@ describe('the stop row LeapMux writes', () => {
  * `[object Undefined]` as the whole sentence, and `__proto__` threw and took the
  * message into the ErrorBoundary.
  */
-describe('a decision word that names an Object.prototype member', () => {
+describe('a decision word that matches an Object.prototype member', () => {
   it.each(['toString', 'constructor', 'valueOf', 'hasOwnProperty', '__proto__'])('reports %s as unreadable', (decision) => {
     expect(describeZCodeNotification(event(ZCODE_EVENT.PermissionResolved, {
       decision,

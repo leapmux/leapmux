@@ -2,6 +2,8 @@
 // Run this script through `task validate-json`.
 // Each selected file requires the rule's schema or a sibling <name>.schema.json.
 // A selected file without a schema fails validation.
+// A key that one object states more than once fails validation also, in a data file
+// and in a schema (see findDuplicateKeys).
 // External tools define their own package, configuration, and lock-file formats.
 // RULES excludes those formats and gitignored build output.
 // createRequire resolves Ajv from frontend/node_modules because the repository has no root package.json.
@@ -106,10 +108,86 @@ export function resolveSchemaPath(entry, root = '.') {
 }
 
 /**
+ * List each key that one object of a JSON text states more than once.
+ *
+ * JSON.parse keeps the last value of a repeated key and reports nothing. A merge that
+ * repeats a key therefore changes the data without notice, and no schema can see the
+ * value that JSON.parse dropped. Call this only on text that JSON.parse accepted: the
+ * scan reads the tokens and does not check the grammar again.
+ *
+ * The scan compares the decoded keys, so "a" and "\u0061" are one key. It walks the
+ * text without recursion, so no nesting depth can overflow the stack, and it builds a
+ * pointer only for a key that it reports.
+ *
+ * Return one { path, key } for each extra occurrence. path is the JSON Pointer of the
+ * object that states the key, and '' is the root.
+ */
+export function findDuplicateKeys(text) {
+  const duplicates = []
+  // One frame for each open object or array. Its segment is the pointer step from its
+  // parent. An object frame holds its keys, the key of its current member, and whether
+  // the next string is a key. An array frame counts its elements through the commas.
+  const stack = []
+  const nextSegment = () => {
+    const parent = stack.at(-1)
+    if (!parent)
+      return ''
+    return parent.keys ? `/${escapePointerToken(parent.key)}` : `/${parent.index}`
+  }
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]
+    if (c === '"') {
+      let end = i + 1
+      while (end < text.length && text[end] !== '"')
+        end += text[end] === '\\' ? 2 : 1
+      const top = stack.at(-1)
+      if (top?.keys && top.expectKey) {
+        const key = JSON.parse(text.slice(i, end + 1))
+        if (top.keys.has(key))
+          duplicates.push({ path: stack.map(frame => frame.segment).join(''), key })
+        top.keys.add(key)
+        top.key = key
+        top.expectKey = false
+      }
+      i = end
+    }
+    else if (c === '{') {
+      stack.push({ segment: nextSegment(), keys: new Set(), key: '', expectKey: true })
+    }
+    else if (c === '[') {
+      stack.push({ segment: nextSegment(), keys: null, index: 0 })
+    }
+    else if (c === '}' || c === ']') {
+      stack.pop()
+    }
+    else if (c === ',') {
+      const top = stack.at(-1)
+      if (top?.keys)
+        top.expectKey = true
+      else if (top)
+        top.index++
+    }
+  }
+  return duplicates
+}
+
+/** Escape one JSON Pointer token (RFC 6901): `~` becomes `~0`, and `/` becomes `~1`. */
+function escapePointerToken(token) {
+  return token.replaceAll('~', '~0').replaceAll('/', '~1')
+}
+
+/** The message for one repeated key in a data file. */
+function duplicateKeyMessage(key) {
+  return `the key ${JSON.stringify(key)} appears more than once in this object. JSON.parse keeps only the last value.`
+}
+
+/**
  * Validate dataPath against schemaPath and reuse successfully compiled schemas.
  * Return null when the data conforms. Return a failure record otherwise.
  * File read, JSON parse, and schema compilation failures return records instead of exceptions.
  * Invalid data uses reason 'invalid' with errors. Schema failures use 'bad-schema' with reasonText.
+ * A repeated key makes the data invalid, or the schema bad, although JSON.parse accepts it.
+ * The errors of a data file list the repeated keys first, then the schema errors.
  */
 export function validateAgainstSchema(ajv, compiled, dataPath, schemaPath) {
   let validate
@@ -118,11 +196,18 @@ export function validateAgainstSchema(ajv, compiled, dataPath, schemaPath) {
   }
   else {
     let schema
+    let schemaText
     try {
-      schema = JSON.parse(readFileSync(schemaPath, 'utf8'))
+      schemaText = readFileSync(schemaPath, 'utf8')
+      schema = JSON.parse(schemaText)
     }
     catch (err) {
       return { reason: 'bad-schema', reasonText: `schema is not valid JSON: ${err.message}` }
+    }
+    const schemaDuplicates = findDuplicateKeys(schemaText)
+    if (schemaDuplicates.length > 0) {
+      const list = schemaDuplicates.map(d => `the key ${JSON.stringify(d.key)} at ${d.path || '/'}`).join(', ')
+      return { reason: 'bad-schema', reasonText: `schema states a key more than once: ${list}. JSON.parse keeps only the last value.` }
     }
     try {
       validate = ajv.compile(schema)
@@ -134,22 +219,24 @@ export function validateAgainstSchema(ajv, compiled, dataPath, schemaPath) {
     compiled.set(schemaPath, validate)
   }
   let data
+  let dataText
   try {
-    data = JSON.parse(readFileSync(dataPath, 'utf8'))
+    dataText = readFileSync(dataPath, 'utf8')
+    data = JSON.parse(dataText)
   }
   catch (err) {
     return { reason: 'invalid', errors: [{ path: '/', message: `not valid JSON: ${err.message}` }] }
   }
+  const errors = findDuplicateKeys(dataText).map(d => ({ path: d.path || '/', message: duplicateKeyMessage(d.key) }))
   if (!validate(data)) {
-    return {
-      reason: 'invalid',
-      errors: (validate.errors ?? []).map(e => ({
+    for (const e of validate.errors ?? []) {
+      errors.push({
         path: e.instancePath || '/',
         message: `${e.message ?? 'invalid'}${e.params ? ` (${JSON.stringify(e.params)})` : ''}`,
-      })),
+      })
     }
   }
-  return null
+  return errors.length > 0 ? { reason: 'invalid', errors } : null
 }
 
 /**

@@ -3,9 +3,9 @@ import type { MockModelCredential, MockModelScenarioStatus } from './mockModelSc
 import type { MockModelServer } from './mockModelServer'
 import { Buffer } from 'node:buffer'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { request as httpRequest } from 'node:http'
+import { request as httpRequest, IncomingMessage, ServerResponse } from 'node:http'
 import { connect as connectHttp2 } from 'node:http2'
-import { connect as connectTcp } from 'node:net'
+import { connect as connectTcp, Socket } from 'node:net'
 import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -18,7 +18,7 @@ import { connectFrame, takeConnectFrames } from './cursorWire'
 import { MOCK_COPILOT_GITHUB_TOKEN, MOCK_MODEL_IDS, MOCK_MODELS, MODEL_KEY } from './mockAgentEnvironment'
 import { mockScenarioPrompt, readScenarioStatus } from './mockModelScenario'
 import { AMBIENT_SCENARIO_ID } from './mockModelScript'
-import { createMockModelServer } from './mockModelServer'
+import { createMockModelServer, holdGate } from './mockModelServer'
 import { CLAUDE_SUBAGENT_HANDBACK_TOOL, claudeSubagentHandbackToolDefinition, cursorRequestContextToolCall } from './providerToolCalls'
 
 const servers: MockModelServer[] = []
@@ -76,6 +76,22 @@ async function waitForGate(server: MockModelServer, id: string, gate: string): P
   throw new Error(`The model scenario ${id} never held gate ${gate}`)
 }
 
+/**
+ * Wait until no request holds the gate.
+ *
+ * The mock pushes no signal when a disconnect ends a hold, so this polls the scenario status. Each
+ * poll awaits its own request and sleeps no interval, so the wait ends exactly with the condition.
+ */
+async function waitForGateAbandoned(server: MockModelServer, id: string, gate: string): Promise<MockModelScenarioStatus> {
+  const deadline = Date.now() + 4_000
+  while (Date.now() < deadline) {
+    const status = await readScenarioStatus(server.url, id)
+    if (!status.pendingGates.includes(gate))
+      return status
+  }
+  throw new Error(`The model scenario ${id} still holds gate ${gate}`)
+}
+
 async function responseText(response: Response): Promise<string> {
   expect(response.status).toBe(200)
   return response.text()
@@ -87,6 +103,49 @@ function chat(server: MockModelServer, content: string, stream = true): Promise<
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ model: 'mock-model', stream, messages: [{ role: 'user', content }] }),
   })
+}
+
+/**
+ * The `data:` events of an open SSE response, collected as they arrive.
+ *
+ * `read(count)` resolves when `count` events arrived. `readAll()` reads until the stream ends.
+ */
+function sseEventStream(response: Response): { events: Record<string, unknown>[], read: (count: number) => Promise<void>, readAll: () => Promise<void> } {
+  const body = response.body
+  if (!body)
+    throw new Error('An SSE response states no body to read.')
+  const reader = body.getReader()
+  const decoder = new TextDecoder()
+  const events: Record<string, unknown>[] = []
+  let buffered = ''
+  let ended = false
+  const drain = (): void => {
+    const frames = buffered.split('\n\n')
+    buffered = frames.pop() ?? ''
+    for (const frame of frames) {
+      const data = frame.split('\n').find(line => line.startsWith('data: '))
+      if (data !== undefined)
+        events.push(JSON.parse(data.slice('data: '.length)))
+    }
+  }
+  const pump = async (count: number): Promise<void> => {
+    while (!ended && events.length < count) {
+      const chunk = await reader.read()
+      if (chunk.done) {
+        ended = true
+        buffered += decoder.decode()
+        drain()
+        return
+      }
+      buffered += decoder.decode(chunk.value, { stream: true })
+      drain()
+    }
+  }
+  return {
+    events,
+    read: count => pump(count),
+    readAll: () => pump(Number.POSITIVE_INFINITY),
+  }
 }
 
 /** Send the native Cursor Run frame with the conversation that owns the prompt, and read the whole answer. */
@@ -994,6 +1053,270 @@ describe('createMockModelServer', () => {
     expect(await nonStreaming.json()).toMatchObject({ object: 'response', created_at: events[0].response.created_at, status: 'completed' })
   })
 
+  it('sends the response metadata events before the hold and the answer after it', async () => {
+    const server = await startServer()
+    const safetyNotice = { type: 'safety_buffering', use_cases: ['cyber'], reasons: ['probes'], retry_model: 'gpt-5.5' }
+    const moderationNotice = { openai_chatgpt_moderation_metadata: { generation: {}, prompt: {}, tool_call: {}, tool_response: {} } }
+    await registerScenario(server, 'metadata-hold', {
+      steps: [{ responseMetadata: [safetyNotice, moderationNotice], gate: 'buffered', text: 'The slow answer.' }],
+    })
+
+    const response = await fetch(`${server.url}/v1/responses`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'mock-model',
+        stream: true,
+        input: [{ role: 'user', content: [{ type: 'input_text', text: mockScenarioPrompt('metadata-hold', 'Answer slowly.') }] }],
+      }),
+    })
+    const sse = sseEventStream(response)
+    // The head reaches the client before the rest of the answer. This read waits for the events
+    // themselves, so no interval stands between the hold and the assertion.
+    await sse.read(3)
+    expect(sse.events).toEqual([
+      { type: 'response.created', response: { id: 'mock-response-1', object: 'response', created_at: 1, model: 'mock-model', tools: [], status: 'in_progress', output: [] }, sequence_number: 0 },
+      { type: 'response.metadata', metadata: safetyNotice, sequence_number: 1 },
+      { type: 'response.metadata', metadata: moderationNotice, sequence_number: 2 },
+    ])
+
+    expect((await fetch(`${server.url}/__e2e/scenarios/metadata-hold/gates/buffered/release`, { method: 'POST' })).status).toBe(204)
+    await sse.readAll()
+    expect(sse.events.map(event => event.type)).toEqual([
+      'response.created',
+      'response.metadata',
+      'response.metadata',
+      'response.output_item.added',
+      'response.content_part.added',
+      'response.output_text.delta',
+      'response.output_text.done',
+      'response.content_part.done',
+      'response.output_item.done',
+      'response.completed',
+    ])
+    expect(sse.events.map(event => event.sequence_number)).toEqual(sse.events.map((_, index) => index))
+    expect(sse.events.at(-1)).toMatchObject({
+      type: 'response.completed',
+      response: { status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: 'The slow answer.' }] }] },
+    })
+  })
+
+  it('holds a step with no response metadata before any byte and writes its exact byte order after release', async () => {
+    const server = await startServer()
+    await registerScenario(server, 'plain-hold', { steps: [{ text: 'The plain answer.', gate: 'child-answer' }] })
+
+    let answered = false
+    const answer = fetch(`${server.url}/v1/responses`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'mock-model',
+        stream: true,
+        input: [{ role: 'user', content: [{ type: 'input_text', text: mockScenarioPrompt('plain-hold', 'Answer plainly.') }] }],
+      }),
+    }).then(async (response) => {
+      answered = true
+      return responseText(response)
+    })
+    await waitForGate(server, 'plain-hold', 'child-answer')
+    // A step with no response metadata holds before the mock writes any byte, so not even the
+    // response headers reached the client.
+    expect(answered).toBe(false)
+
+    expect((await fetch(`${server.url}/__e2e/scenarios/plain-hold/gates/child-answer/release`, { method: 'POST' })).status).toBe(204)
+    // The complete body pins the byte order of a step with no response metadata: the answer follows
+    // its hold unchanged.
+    expect(await answer).toBe(
+      'event: response.created\n'
+      + 'data: {"type":"response.created","response":{"id":"mock-response-1","object":"response","created_at":1,"model":"mock-model","tools":[],"status":"in_progress","output":[]},"sequence_number":0}\n\n'
+      + 'event: response.output_item.added\n'
+      + 'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","role":"assistant","id":"mock-response-1-message","status":"in_progress","content":[]},"sequence_number":1}\n\n'
+      + 'event: response.content_part.added\n'
+      + 'data: {"type":"response.content_part.added","output_index":0,"item_id":"mock-response-1-message","content_index":0,"part":{"type":"output_text","text":"","annotations":[]},"sequence_number":2}\n\n'
+      + 'event: response.output_text.delta\n'
+      + 'data: {"type":"response.output_text.delta","output_index":0,"item_id":"mock-response-1-message","content_index":0,"delta":"The plain answer.","sequence_number":3}\n\n'
+      + 'event: response.output_text.done\n'
+      + 'data: {"type":"response.output_text.done","output_index":0,"item_id":"mock-response-1-message","content_index":0,"text":"The plain answer.","sequence_number":4}\n\n'
+      + 'event: response.content_part.done\n'
+      + 'data: {"type":"response.content_part.done","output_index":0,"item_id":"mock-response-1-message","content_index":0,"part":{"type":"output_text","text":"The plain answer.","annotations":[]},"sequence_number":5}\n\n'
+      + 'event: response.output_item.done\n'
+      + 'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","role":"assistant","id":"mock-response-1-message","status":"completed","content":[{"type":"output_text","text":"The plain answer.","annotations":[]}]},"sequence_number":6}\n\n'
+      + 'event: response.completed\n'
+      + 'data: {"type":"response.completed","response":{"id":"mock-response-1","object":"response","created_at":1,"model":"mock-model","tools":[],"status":"completed","output":[{"type":"message","role":"assistant","id":"mock-response-1-message","status":"completed","content":[{"type":"output_text","text":"The plain answer.","annotations":[]}]}],"usage":{"input_tokens":1,"input_tokens_details":{"cached_tokens":0},"output_tokens":1,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":2}},"sequence_number":7}\n\n',
+    )
+  })
+
+  it('abandons a held response metadata step when the client disconnects', async () => {
+    const server = await startServer()
+    await registerScenario(server, 'metadata-disconnect', {
+      steps: [{ responseMetadata: [{ type: 'safety_buffering', use_cases: ['cyber'], reasons: ['probes'], retry_model: 'gpt-5.5' }], gate: 'buffered', text: 'Never sent.' }],
+    })
+
+    const controller = new AbortController()
+    const response = await fetch(`${server.url}/v1/responses`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model: 'mock-model',
+        stream: true,
+        input: [{ role: 'user', content: [{ type: 'input_text', text: mockScenarioPrompt('metadata-disconnect', 'Disconnect me.') }] }],
+      }),
+    })
+    const sse = sseEventStream(response)
+    await sse.read(2)
+    expect(sse.events.map(event => event.type)).toEqual(['response.created', 'response.metadata'])
+
+    controller.abort()
+    await expect(sse.readAll()).rejects.toMatchObject({ name: 'AbortError' })
+    // The held answer stays out of the stream: the head is all the client ever received.
+    expect(sse.events.map(event => event.type)).toEqual(['response.created', 'response.metadata'])
+
+    // The step counts as consumed, the hold ends with the exchange, and the mock stays available.
+    expect(await waitForGateAbandoned(server, 'metadata-disconnect', 'buffered')).toMatchObject({ complete: true, nextStep: 1 })
+    await registerScenario(server, 'after-metadata-disconnect', { steps: [{ text: 'Still serving' }] })
+    expect(await responseText(await chat(server, mockScenarioPrompt('after-metadata-disconnect', 'Run.')))).toContain('Still serving')
+  })
+
+  // The metadata events do not need a hold. A step with no gate and no delay
+  // writes them after `response.created` and continues with its answer.
+  it('writes the response metadata events and the answer of a step with no hold in one stream', async () => {
+    const server = await startServer()
+    const safetyNotice = { type: 'safety_buffering', use_cases: ['cyber'], reasons: ['probes'], retry_model: 'gpt-5.5' }
+    await registerScenario(server, 'metadata-no-hold', {
+      steps: [{ responseMetadata: [safetyNotice], text: 'The prompt answer.' }],
+    })
+
+    const response = await fetch(`${server.url}/v1/responses`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'mock-model',
+        stream: true,
+        input: [{ role: 'user', content: [{ type: 'input_text', text: mockScenarioPrompt('metadata-no-hold', 'Answer at once.') }] }],
+      }),
+    })
+    const sse = sseEventStream(response)
+    await sse.readAll()
+    expect(sse.events.map(event => event.type)).toEqual([
+      'response.created',
+      'response.metadata',
+      'response.output_item.added',
+      'response.content_part.added',
+      'response.output_text.delta',
+      'response.output_text.done',
+      'response.content_part.done',
+      'response.output_item.done',
+      'response.completed',
+    ])
+    expect(sse.events[1]).toEqual({ type: 'response.metadata', metadata: safetyNotice, sequence_number: 1 })
+    expect(sse.events.map(event => event.sequence_number)).toEqual(sse.events.map((_, index) => index))
+    expect(sse.events.at(-1)).toMatchObject({
+      type: 'response.completed',
+      response: { status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: 'The prompt answer.' }] }] },
+    })
+    expect(await readScenarioStatus(server.url, 'metadata-no-hold')).toMatchObject({ complete: true, nextStep: 1 })
+  })
+
+  // A delay holds the step at the same point as a gate: after the head. A
+  // client that disconnects during the delay ends the exchange, and the mock
+  // keeps serving.
+  it('abandons a delayed response metadata step when the client disconnects during the delay', async () => {
+    const server = await startServer()
+    await registerScenario(server, 'metadata-delay-disconnect', {
+      steps: [{ responseMetadata: [{ type: 'safety_buffering', use_cases: ['cyber'], reasons: ['probes'], retry_model: 'gpt-5.5' }], delayMs: 60_000, text: 'Never sent.' }],
+    })
+
+    const controller = new AbortController()
+    const response = await fetch(`${server.url}/v1/responses`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model: 'mock-model',
+        stream: true,
+        input: [{ role: 'user', content: [{ type: 'input_text', text: mockScenarioPrompt('metadata-delay-disconnect', 'Disconnect me.') }] }],
+      }),
+    })
+    const sse = sseEventStream(response)
+    // The head arrives while the delay holds the answer. This read waits for
+    // the events themselves, so no interval stands before the abort.
+    await sse.read(2)
+    expect(sse.events.map(event => event.type)).toEqual(['response.created', 'response.metadata'])
+
+    controller.abort()
+    await expect(sse.readAll()).rejects.toMatchObject({ name: 'AbortError' })
+    expect(sse.events.map(event => event.type)).toEqual(['response.created', 'response.metadata'])
+
+    expect(await readScenarioStatus(server.url, 'metadata-delay-disconnect')).toMatchObject({ complete: true, nextStep: 1 })
+    await registerScenario(server, 'after-metadata-delay-disconnect', { steps: [{ text: 'Still serving' }] })
+    expect(await responseText(await chat(server, mockScenarioPrompt('after-metadata-delay-disconnect', 'Run.')))).toContain('Still serving')
+  })
+
+  it('ignores the response metadata entries on a request that asks for no stream', async () => {
+    const server = await startServer()
+    await registerScenario(server, 'metadata-nostream', {
+      steps: [{ responseMetadata: [{ type: 'safety_buffering', use_cases: ['cyber'], reasons: ['probes'], retry_model: 'gpt-5.5' }], gate: 'buffered', text: 'The plain body.' }],
+    })
+
+    let answered = false
+    const answer = fetch(`${server.url}/v1/responses`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'mock-model',
+        stream: false,
+        input: [{ role: 'user', content: [{ type: 'input_text', text: mockScenarioPrompt('metadata-nostream', 'Answer without a stream.') }] }],
+      }),
+    }).then(async (response) => {
+      answered = true
+      return response.json()
+    })
+    await waitForGate(server, 'metadata-nostream', 'buffered')
+    // The entries belong to a stream head, so the one JSON body still waits for its hold.
+    expect(answered).toBe(false)
+    expect((await fetch(`${server.url}/__e2e/scenarios/metadata-nostream/gates/buffered/release`, { method: 'POST' })).status).toBe(204)
+
+    // The body is the plain answer: no entry reaches it under any field name.
+    expect(await answer).toEqual({
+      id: 'mock-response-1',
+      object: 'response',
+      created_at: 1,
+      model: 'mock-model',
+      tools: [],
+      status: 'completed',
+      output: [{ type: 'message', role: 'assistant', id: 'mock-response-1-message', status: 'completed', content: [{ type: 'output_text', text: 'The plain body.', annotations: [] }] }],
+      usage: { input_tokens: 1, input_tokens_details: { cached_tokens: 0 }, output_tokens: 1, output_tokens_details: { reasoning_tokens: 0 }, total_tokens: 2 },
+    })
+  })
+
+  it('ignores the response metadata entries on a route that is not the OpenAI Responses one', async () => {
+    const safetyNotice = { type: 'safety_buffering', use_cases: ['cyber'], reasons: ['probes'], retry_model: 'gpt-5.5' }
+    const server = await startServer()
+    await registerScenario(server, 'metadata-chat', {
+      steps: [{ responseMetadata: [safetyNotice], gate: 'buffered', text: 'A chat answer.' }],
+    })
+
+    let answered = false
+    const gated = chat(server, mockScenarioPrompt('metadata-chat', 'Answer in chat.')).then(async (response) => {
+      answered = true
+      return responseText(response)
+    })
+    await waitForGate(server, 'metadata-chat', 'buffered')
+    // A step on another route holds before the mock writes any byte, entries or none.
+    expect(answered).toBe(false)
+    expect((await fetch(`${server.url}/__e2e/scenarios/metadata-chat/gates/buffered/release`, { method: 'POST' })).status).toBe(204)
+
+    // The chat route ignores the entries: it writes no metadata frame, and its
+    // stream is byte for byte the stream of the same step without the entries.
+    const body = await gated
+    expect(body).toContain('A chat answer.')
+    expect(body).not.toContain('response.metadata')
+    const plain = await startServer()
+    await registerScenario(plain, 'plain-chat', { steps: [{ text: 'A chat answer.' }] })
+    expect(body).toBe(await responseText(await chat(plain, mockScenarioPrompt('plain-chat', 'Answer in chat.'))))
+  })
+
   it('streams Anthropic text and tool blocks', async () => {
     const server = await startServer()
     await registerScenario(server, 'anthropic-tools', {
@@ -1438,6 +1761,21 @@ describe('createMockModelServer', () => {
     })
     expect(await (await register({ rules: [{ name: 'bad', when: { user: '(' }, respond: { text: 'x' } }] })).json()).toMatchObject({
       error: { message: expect.stringContaining('not a valid regular expression') },
+    })
+    expect(await (await register({ steps: [{ text: 'x', responseMetadata: 'not-an-array' }] })).json()).toMatchObject({
+      error: { message: expect.stringContaining('responseMetadata must be an array') },
+    })
+    expect(await (await register({ steps: [{ text: 'x', responseMetadata: ['not-an-object'] }] })).json()).toMatchObject({
+      error: { message: expect.stringContaining('responseMetadata entry 0 must be an object') },
+    })
+    // An empty list states no event, but it would still move the hold of the
+    // step after the stream head. The parser refuses it, so a step holds before
+    // its first byte unless it states an entry.
+    expect(await (await register({ steps: [{ text: 'x', responseMetadata: [] }] })).json()).toMatchObject({
+      error: { message: expect.stringContaining('responseMetadata must hold at least one entry') },
+    })
+    expect(await (await register({ steps: [{ error: { status: 500, message: 'y' }, responseMetadata: [{}] }] })).json()).toMatchObject({
+      error: { message: expect.stringContaining('cannot combine responseMetadata with an error') },
     })
   })
 
@@ -2001,5 +2339,27 @@ describe('native Copilot credential receipts', () => {
     expect(status.requests[0]).toMatchObject({ protocol: 'openai-chat-completions', path: '/chat/completions', stepIndex: 0, mockCredential: { kind: 'bearer', accepted: true } })
     expect(Object.keys(status.requests[0]?.mockCredential ?? {}).sort()).toEqual(['accepted', 'kind'])
     expect(JSON.stringify(status)).not.toContain(MOCK_COPILOT_GITHUB_TOKEN)
+  })
+})
+
+describe('holdGate', () => {
+  // A stream gate can come after the test closed its scenario. The hold then
+  // refuses at once, and it must also end the response, as cancelGates does for
+  // a request that waits on a gate. Otherwise the client waits for its own timeout.
+  it('ends the response when a closed scenario reaches a gate', async () => {
+    const response = new ServerResponse(new IncomingMessage(new Socket()))
+    await expect(holdGate({ closed: true, gates: new Map() }, 'late-gate', { response })).resolves.toBe(false)
+    expect(response.destroyed).toBe(true)
+  })
+
+  it('keeps the response open while an open scenario holds the gate', async () => {
+    const response = new ServerResponse(new IncomingMessage(new Socket()))
+    const scenario = { closed: false, gates: new Map() }
+    const held = holdGate(scenario, 'gate', { response })
+    expect(response.destroyed).toBe(false)
+    for (const finish of [...scenario.gates.get('gate')!.waiters])
+      finish(true)
+    await expect(held).resolves.toBe(true)
+    expect(response.destroyed).toBe(false)
   })
 })

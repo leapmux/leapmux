@@ -3,6 +3,7 @@ import type { ContextUsageInfo } from '~/models/agentSession'
 import { ZCODE_EVENT } from '~/generated/contracts/zcode-protocol'
 import { pickNumber, pickObject } from '~/lib/jsonPick'
 import { zcodeEnvelope } from './extractors/toolCommon'
+import { zcodeIsMainReply } from './messageContent'
 
 /**
  * ZCode context usage from a model-response `session.updated`.
@@ -15,6 +16,10 @@ import { zcodeEnvelope } from './extractors/toolCommon'
 export function zcodeContextUsageFromMessage(parsed: ParsedMessageContent): ContextUsageInfo | null {
   const envelope = zcodeEnvelope(parsed.parentObject)
   if (!envelope || envelope.type !== ZCODE_EVENT.SessionUpdated)
+    return null
+  // A side query's usage is not what the turn cost the context. Only the main
+  // reply's counts belong on the meter.
+  if (!zcodeIsMainReply(envelope.payload))
     return null
   const usage = pickObject(envelope.payload, 'usage')
   if (!usage)

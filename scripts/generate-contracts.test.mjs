@@ -1216,6 +1216,64 @@ describe('generate', () => {
       .toContain('export const CLAUDE_DEFAULT_MODE = CLAUDE_MODE.Default')
   })
 
+  // hiddenSystemSubtypes is a goSlice table: its MEMBERSHIP crosses the boundary.
+  // providers/claude/output.go iterates the ordered Go slice to skip the subtypes
+  // it never persists, and the claude plugin derives the same set with
+  // Object.values(). A member that reaches one side alone leaves the worker
+  // persisting rows the browser hides, with no failure on either side.
+  it('emits the hidden system subtypes as one membership in both languages', () => {
+    const files = generate(join(ROOT, 'contracts'), DESCRIPTOR)
+    const go = files['backend/generated/contracts/claude-protocol.go']
+    const ts = files['frontend/src/generated/contracts/claude-protocol.ts']
+    const subtypes = readContract('claude-protocol').hiddenSystemSubtypes
+    // The slice lists every table key under the name its Go reader iterates.
+    const slice = /var ClaudeHiddenSystemSubtypeKeys = \[\]string\{\n([\s\S]*?)\n\}/.exec(go)?.[1] ?? ''
+    const listed = slice.split('\n').map(line => line.trim()).filter(line => line !== '')
+    expect(listed).toEqual(Object.keys(subtypes).map(key => `ClaudeHiddenSystemSubtype${key},`))
+    // providers/claude/output.go parses the permission-check frame by this name,
+    // although it never persists the row.
+    expect(go).toMatch(/ClaudeHiddenSystemSubtypePermissionCheckStatus\s+=\s+"permission_check_status"/)
+    // The TS table carries the same membership and spellings for the browser's set.
+    const rows = Object.entries(subtypes).map(([key, token]) => `  ${key}: ${JSON.stringify(token)},`).join('\n')
+    expect(ts).toContain(`export const CLAUDE_HIDDEN_SYSTEM_SUBTYPE = {\n${rows}\n} as const`)
+  })
+
+  // The zcode provider and its plugin dispatch on these words: the goal lifecycle
+  // in providers/zcode/goal.go, the side-query and lifecycle classification in
+  // its output.go and provider.go, and the browser rows in the zcode extractors.
+  // Pin the generated names those readers import, so a wrong table registration
+  // fails here instead of at a Go or TypeScript build.
+  it('emits the zcode dispatch vocabulary under the names its readers import', () => {
+    const files = generate(join(ROOT, 'contracts'), DESCRIPTOR)
+    const go = files['backend/generated/contracts/zcode-protocol.go']
+    const ts = files['frontend/src/generated/contracts/zcode-protocol.ts']
+    for (const [name, token] of [
+      ['ZCodeQuerySourceMainTurn', 'main_turn'],
+      ['ZCodeStopReasonToolInternal', 'tool_internal'],
+      ['ZCodeCompactionStatusInterrupted', 'interrupted'],
+      ['ZCodeGoalVerificationStatusFailedClosed', 'failed_closed'],
+      ['ZCodeGoalActionCleared', 'cleared'],
+      ['ZCodeNetworkStatusRetryScheduled', 'model_retry_scheduled'],
+      ['ZCodeHookRunOutcomeBlocked', 'blocked'],
+      ['ZCodeModelSelectionOriginRegistryFallback', 'registryFallback'],
+    ]) {
+      expect(go).toMatch(new RegExp(`\\b${name}\\s+=\\s+${JSON.stringify(token)}`))
+    }
+    for (const symbol of [
+      'ZCODE_QUERY_SOURCE',
+      'ZCODE_STOP_REASON',
+      'ZCODE_COMPACTION_STATUS',
+      'ZCODE_GOAL_VERIFICATION_STATUS',
+      'ZCODE_NETWORK_STATUS',
+      'ZCODE_HOOK_RUN_OUTCOME',
+      'ZCODE_MODEL_SELECTION_ORIGIN',
+    ]) {
+      expect(ts).toContain(`export const ${symbol} = {`)
+    }
+    expect(ts).toContain('MainTurn: "main_turn",')
+    expect(ts).toContain('FailedClosed: "failed_closed",')
+  })
+
   // The lint reads this list, so each marked table of the real contracts must reach it.
   it('collects the frame kinds of the real contracts', () => {
     const kinds = generate(join(ROOT, 'contracts'), DESCRIPTOR)['frontend/src/generated/contracts/provider-frame-kinds.ts']
@@ -1848,6 +1906,7 @@ describe('checkSessionInfo', () => {
       runningToolFields: { SpanId: 'span_id' },
       runningToolRetryFields: { Attempt: 'attempt' },
       goalProgressFields: { TokensUsed: 'tokens_used' },
+      turnRetryOfferFields: { TurnId: 'turn_id' },
       ...overrides,
     }
   }
@@ -1864,10 +1923,15 @@ describe('checkSessionInfo', () => {
   })
 
   it('rejects a duplicate token in a NESTED table too', () => {
-    expectContractError(
-      () => checkSessionInfo(sessionInfo({ rateLimitFields: { A: 'status', B: 'status' } })),
-      'two rateLimitFields entries share one wire token',
-    )
+    for (const [table, fields] of [
+      ['rateLimitFields', { A: 'status', B: 'status' }],
+      ['turnRetryOfferFields', { A: 'turn_id', B: 'turn_id' }],
+    ]) {
+      expectContractError(
+        () => checkSessionInfo(sessionInfo({ [table]: fields })),
+        `two ${table} entries share one wire token`,
+      )
+    }
   })
 
   it('accepts the same token in two DIFFERENT tables', () => {
@@ -1939,6 +2003,35 @@ describe('checkSessionInfo', () => {
     ]) {
       expect(go).toMatch(new RegExp(`\\b${name} += "${token}"$`, 'm'))
     }
+  })
+
+  // The worker fills the turn_retry_offer fields in providers/codex/output.go,
+  // and the browser reads them in hooks/agentEvents.ts. The permission_check
+  // field rides the running_tool object to the same two sides. A wrong table
+  // prefix in SESSION_INFO_TABLES renames every constant and fails only at a
+  // language build. Pin the names and spellings that each reader imports.
+  it('emits the turn_retry_offer and permission_check vocabulary their readers import', () => {
+    const s = readContract('session-info')
+    const go = emitGoSessionInfo(s)
+    const ts = emitTsSessionInfo(s)
+    for (const [name, token] of [
+      ['SessionInfoKeyTurnRetryOffer', 'turn_retry_offer'],
+      ['TurnRetryOfferFieldTurnId', 'turn_id'],
+      ['TurnRetryOfferFieldModel', 'model'],
+      ['TurnRetryOfferFieldLearnMoreUrl', 'learn_more_url'],
+      ['RunningToolFieldPermissionCheck', 'permission_check'],
+    ]) {
+      expect(go).toMatch(new RegExp(`\\b${name} += "${token}"$`, 'm'))
+    }
+    expect(ts).toContain('TurnRetryOffer: "turn_retry_offer",')
+    expect(ts).toContain('PermissionCheck: "permission_check",')
+    expect(ts).toContain(`export const TURN_RETRY_OFFER_FIELD = {
+  TurnId: "turn_id",
+  Model: "model",
+  LearnMoreUrl: "learn_more_url",
+} as const
+
+export type TurnRetryOfferField = typeof TURN_RETRY_OFFER_FIELD[keyof typeof TURN_RETRY_OFFER_FIELD]`)
   })
 })
 
@@ -2318,14 +2411,14 @@ describe('checkWorkerVocab / checkDesktop', () => {
 })
 
 describe('enumValues', () => {
-  it('reads enum names from a buf descriptor, reserved values absent', () => {
-    // Use the real descriptor. Reserved slot 3 must stay absent. Otherwise, the
-    // provider check requests metadata for a provider that cannot exist.
+  it('reads the current provider enum from a buf descriptor', () => {
+    // The real descriptor supplies provider metadata coverage, including Cursor.
     const set = DESCRIPTOR
     const names = enumValues(set, 'leapmux/v1/agent.proto', 'AgentProvider')
     expect(names).toContain('AGENT_PROVIDER_CLAUDE_CODE')
     expect(names.filter(n => n.includes('RESERVED'))).toEqual([])
-    expect(names).not.toContain('AGENT_PROVIDER_3')
+    expect(names).toContain('AGENT_PROVIDER_CURSOR')
+    expect(names).toContain('AGENT_PROVIDER_UNSPECIFIED')
   })
 
   it('fails with a ContractError for an unknown enum or file', () => {

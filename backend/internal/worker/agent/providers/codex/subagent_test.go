@@ -14,8 +14,9 @@ import (
 // sendTurnStart uses it because response timing differs across Codex versions.
 func TestCodex_TurnStartedIsTheAckThatReleasesASend(t *testing.T) {
 	t.Parallel()
-	ack := make(chan struct{})
-	a := &Agent{turnStartAck: ack}
+	pending := newCodexTurnStart("t-1", nil, turnSettings{})
+	ack := pending.done
+	a := &Agent{pendingStart: pending}
 	a.threadID = "t-1"
 	a.sink = agenttest.Nop()
 
@@ -26,16 +27,17 @@ func TestCodex_TurnStartedIsTheAckThatReleasesASend(t *testing.T) {
 	default:
 		t.Fatal("turn/started must release the waiting send")
 	}
-	assert.Nil(t, a.turnStartAck, "the waiter is cleared, so a later turn cannot close it twice")
-	assert.Equal(t, "turn-1", a.turnID, "and the turn id it carries is what makes the next send steer")
+	assert.Nil(t, a.pendingStart, "the waiter is cleared, so a later turn cannot close it twice")
+	assert.Equal(t, "turn-1", a.mainTurn.id, "and the turn id it carries is what makes the next send steer")
 }
 
 // A CHILD's turn/started must not release the primary send: it belongs to a
 // collab subagent thread, and the main thread has not accepted anything yet.
 func TestCodex_AChildTurnStartedDoesNotReleaseTheSend(t *testing.T) {
 	t.Parallel()
-	ack := make(chan struct{})
-	a := &Agent{turnStartAck: ack}
+	pending := newCodexTurnStart("t-main", nil, turnSettings{})
+	ack := pending.done
+	a := &Agent{pendingStart: pending}
 	a.threadID = "t-main"
 	a.sink = agenttest.Nop()
 
@@ -46,7 +48,7 @@ func TestCodex_AChildTurnStartedDoesNotReleaseTheSend(t *testing.T) {
 		t.Fatal("a child's turn must not acknowledge the main thread's send")
 	default:
 	}
-	assert.NotNil(t, a.turnStartAck, "the main send is still waiting")
+	assert.NotNil(t, a.pendingStart, "the main send is still waiting")
 }
 
 func TestCodex_MultiAgentV2ChildDoesNotAdvertiseDirectInput(t *testing.T) {
@@ -71,9 +73,8 @@ func TestCodex_InterruptChildUnknownThreadReturnsRetryable(t *testing.T) {
 }
 
 // Codex declares `prompt` on the collabAgentToolCall thread item
-// (app-server-protocol schema/typescript/v2/ThreadItem.ts). The spawn item names
-// the receiver threads, but the child transcript is created later from
-// agentsStates, so the prompt waits in the index until then.
+// (app-server-protocol schema/typescript/v2/ThreadItem.ts). The spawn item identifies the receiver threads.
+// The worker creates the child transcript from agentsStates later. The index retains the prompt until then.
 func TestCodex_CollabPromptHeldUntilTheChildExists(t *testing.T) {
 	t.Parallel()
 

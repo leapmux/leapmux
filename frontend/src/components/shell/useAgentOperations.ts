@@ -391,6 +391,25 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     }
   }
 
+  /**
+   * Ask the worker to stop the running turn and send its input again on a
+   * faster model. It resolves true when the worker accepts the retry. A
+   * refusal shows a toast and resolves false, so the call never rejects.
+   *
+   * The worker answers when it accepts the retry, before the stop and the new
+   * turn. The transcript reports a failure of those later steps, not this call.
+   */
+  const handleRetryTurn = async (agentId: string, turnId: string, model: string): Promise<boolean> => {
+    try {
+      await workerRpc.retryAgentTurn(getAgentWorkerId(agentId), { agentId, turnId, model })
+      return true
+    }
+    catch (err) {
+      showWarnToast('Failed to retry with a faster model', err)
+      return false
+    }
+  }
+
   const settingVersions = new Map<string, Map<string, number>>()
   const pendingSettingRequests = new Map<string, number>()
 
@@ -660,6 +679,7 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     updateGoal,
     handleGoalAction,
     handleApproveAutoReviewDenial,
+    handleRetryTurn,
     handleAgentSettingChange,
     handleAgentClose,
     retireAgentTabLocally,

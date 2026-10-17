@@ -61,12 +61,17 @@ const CODEX_NOTIF_METHODS = new Set<string>([
   CODEX_METHOD.McpServerOauthLoginCompleted,
   CODEX_METHOD.ThreadNameUpdated,
   CODEX_METHOD.McpServerStartupStatusUpdated,
-  // The two the notification reader already builds an entry for -- a `retry` entry
-  // stating whether Codex will try again, and a `status` entry for a warning. Neither
-  // was claimed here, so the frames classified `unknown` and drew raw JSON: the entry
-  // builder was reachable only in theory.
+  // The RENDER notices, for which the notification reader writes the text: the
+  // retry entry for an `error` that Codex will try again, and one sentence for
+  // each notice below.
   CODEX_METHOD.Error,
   CODEX_METHOD.Warning,
+  CODEX_METHOD.ConfigWarning,
+  CODEX_METHOD.DeprecationNotice,
+  CODEX_METHOD.ModelSafetyBufferingUpdated,
+  CODEX_METHOD.ModelVerification,
+  CODEX_METHOD.AuthRecoveryStarted,
+  CODEX_METHOD.AuthRecoveryCompleted,
   // Auto-review: the worker keeps the completed review, the denial-limit warning and
   // the strict-review notice, and the notification reader draws each one.
   CODEX_METHOD.AutoApprovalReviewCompleted,
@@ -106,6 +111,10 @@ const CODEX_HIDDEN_TRANSCRIPT_METHODS = new Set<string>([
   CODEX_METHOD.McpToolCallProgress,
   CODEX_METHOD.RawResponseItemCompleted,
   CODEX_READ_STATE_CHANGED_METHOD,
+  // `initialize` opts out of both now. The set hides the rows that older builds
+  // stored.
+  CODEX_METHOD.TurnModerationMetadata,
+  CODEX_METHOD.AccountUpdated,
   CODEX_RATE_LIMITS_METHOD,
   CODEX_THREAD_COMPACTED_METHOD,
 ])
@@ -233,15 +242,14 @@ export function classifyCodexMessage(input: ClassificationInput): MessageCategor
   if (CODEX_HIDDEN_TRANSCRIPT_METHODS.has(method))
     return { kind: 'hidden' }
 
-  // The two method frames whose entries `codexNotificationEntry` already builds --
-  // a `retry` entry stating whether Codex will try again, and a `status` entry for
-  // a warning. Neither was claimed here, so both classified `unknown` and drew raw
-  // JSON, and the entry builder was reachable only in theory. The worker converts a
-  // live `error` into an agent_error notification, so that one arrives this way
-  // from replayed history; `warning` has no worker case at all and arrives raw on
-  // every session.
-  if (method === CODEX_METHOD.Error || method === CODEX_METHOD.Warning)
-    return notification([parent])
+  // The method frames whose entries `codexNotificationEntry` builds: a `retry`
+  // entry stating whether Codex will try again, one sentence per RENDER notice,
+  // and the status entries for hook and MCP failures. The empty policy is
+  // `hidden`: a frame the entry builder suppresses draws nothing rather than
+  // raw JSON. The worker persists these rows raw and routed, so this claims
+  // both the standalone row and its notification thread.
+  if (CODEX_NOTIF_METHODS.has(method))
+    return notification([parent], 'hidden')
 
   if (type === 'system') {
     if (subtype === 'init' || subtype === 'task_notification')
@@ -293,20 +301,6 @@ export function classifyCodexMessage(input: ClassificationInput): MessageCategor
       return { kind: 'plan_execution' }
     return { kind: 'user_content' }
   }
-
-  if (method === CODEX_METHOD.McpServerStartupStatusUpdated)
-    return notification([parent], 'hidden')
-
-  if (method === CODEX_METHOD.McpServerOauthLoginCompleted)
-    return notification([parent], 'hidden')
-
-  if (method === CODEX_METHOD.HookCompleted)
-    return notification([parent], 'hidden')
-
-  // The auto-review frames that the worker keeps. A frame with nothing to state, such
-  // as a review without an id, hides rather than drawing the raw frame.
-  if (method === CODEX_METHOD.AutoApprovalReviewCompleted || method === CODEX_METHOD.GuardianWarning || method === CODEX_METHOD.StrictReviewRequired)
-    return notification([parent], 'hidden')
 
   // The LeapMux envelope every provider answers the same way. The shared predicate is
   // the one list: a copy here held six of the seven types and drew the raw frame for

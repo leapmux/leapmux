@@ -277,6 +277,8 @@ func codexPermissionProfileGroup(static *leapmuxv1.AvailableOptionGroup, discove
 // at once through thread/settings/update. Every other axis waits for the next
 // turn/start, which carries every axis.
 func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult {
+	a.turnDispatchMu.Lock()
+	defer a.turnDispatchMu.Unlock()
 	a.Mu.Lock()
 	curEffort := a.effort
 	curModel := a.model
@@ -302,6 +304,7 @@ func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult 
 		return agent.RestartRequiredSettings(options)
 	}
 	prior := a.permissionSettingsLocked()
+	priorValues := a.codexAxisValuesLocked()
 	priorAcknowledged := a.permissionsAcknowledged
 	// Table-driven so every axis applies the same "non-empty value overwrites" rule and
 	// a newly-added axis can't be forgotten here. The effort-auto guard above stays out
@@ -327,6 +330,15 @@ func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult 
 	if !a.offersPermissionProfileLocked(a.permissionProfile) {
 		a.permissionProfile = prior.profile
 	}
+	// Only an effective local change takes ownership from a pending start.
+	for _, axis := range codexAxes {
+		if axis.get(a) != priorValues[axis.id] {
+			if a.settingRevisions == nil {
+				a.settingRevisions = make(map[string]uint64)
+			}
+			a.settingRevisions[axis.id]++
+		}
+	}
 	settings := a.turnSettingsLocked()
 	requested := settings.permissions
 	permissionsChanged := requested != prior
@@ -336,7 +348,7 @@ func (a *Agent) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult 
 		a.permissionsAcknowledged = false
 	}
 	threadID := a.threadID
-	turnID := a.turnID
+	turnID := a.mainTurn.id
 	a.Mu.Unlock()
 
 	unresolved := false
@@ -475,7 +487,7 @@ func (a *Agent) updateActiveTurnReviewer(threadID, turnID, reviewer string) (unr
 	slog.Warn("codex did not confirm the active reviewer", "agent_id", a.AgentID(), "turn_id", turnID, "error", err)
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
-	return a.threadID == threadID && a.turnID == turnID
+	return a.threadID == threadID && a.mainTurn.id == turnID
 }
 
 // The settings methods that LeapMux sends. Only the worker sends them, so they are
@@ -512,4 +524,10 @@ func (a *Agent) publishSettings() {
 	)
 
 	a.sink.PersistSettingsRefresh(vals)
+}
+
+// codexStartOwnsSettingLocked checks one axis independently of unrelated edits.
+// The caller holds Mu. Without a pending start, native settings keep their usual authority.
+func (a *Agent) codexStartOwnsSettingLocked(pending *codexPendingTurnStart, id string) bool {
+	return pending == nil || pending.settingRevisions[id] == a.settingRevisions[id]
 }

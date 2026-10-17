@@ -110,7 +110,7 @@ func TestCodexAgent_Interrupt_TimesOutWhenCodexDoesNotAnswer(t *testing.T) {
 
 	rig := newCodexInterruptRigWithAutoResponse(t, false)
 	rig.agent.threadID = "thread-A"
-	rig.agent.turnID = "turn-42"
+	rig.agent.mainTurn.id = "turn-42"
 	rig.agent.SetAPITimeoutForTest(20 * time.Millisecond)
 
 	err := rig.agent.Interrupt(agentapi.StopContext{})
@@ -125,7 +125,7 @@ func TestCodexAgent_Interrupt_CoalescesConcurrentRequests(t *testing.T) {
 
 	rig := newCodexInterruptRigWithAutoResponse(t, false)
 	rig.agent.threadID = "thread-A"
-	rig.agent.turnID = "turn-42"
+	rig.agent.mainTurn.id = "turn-42"
 	rig.agent.SetAPITimeoutForTest(time.Second)
 
 	results := make(chan error, 2)
@@ -148,7 +148,7 @@ func TestCodexAgent_Interrupt_ReturnsRPCError(t *testing.T) {
 
 	rig := newCodexInterruptRig(t)
 	rig.agent.threadID = "thread-A"
-	rig.agent.turnID = "turn-42"
+	rig.agent.mainTurn.id = "turn-42"
 	rig.responseBodies <- agenttest.RPCReply{Error: json.RawMessage(`{"code":-32602,"message":"turn is not active"}`)}
 
 	err := rig.agent.Interrupt(agentapi.StopContext{})
@@ -161,7 +161,7 @@ func TestCodexAgent_Interrupt_SendsTurnInterruptRequest(t *testing.T) {
 
 	rig := newCodexInterruptRig(t)
 	rig.agent.threadID = "thread-A"
-	rig.agent.turnID = "turn-42"
+	rig.agent.mainTurn.id = "turn-42"
 
 	interruptDone := make(chan error, 1)
 	go func() {
@@ -284,7 +284,7 @@ func TestCodexAgent_Interrupt_AfterStopErrors(t *testing.T) {
 
 	rig := newCodexInterruptRig(t)
 	rig.agent.threadID = "t"
-	rig.agent.turnID = "u"
+	rig.agent.mainTurn.id = "u"
 	rig.agent.SetStoppedForTest(true)
 
 	err := rig.agent.Interrupt(agentapi.StopContext{})

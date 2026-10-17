@@ -31,7 +31,7 @@ func handleZCodeOutput(a *Agent, line *providerkit.ParsedLine) {
 		}
 		a.dispatchZCodeEvent(event)
 	case contracts.ZCodeMethodStateUpdated:
-		a.handleZCodeStateUpdated(line.Params, line.Raw)
+		a.handleZCodeStateUpdated(line.Params)
 	case "":
 		// An id with no method and no pending request: a reply nobody waited for. It
 		// happens when a request timed out and its answer arrived afterwards.
@@ -319,7 +319,7 @@ func (a *Agent) handleZCodeTurnFailed(event zcodeEventEnvelope) {
 // zcodeFailureIsRetryable reports whether a failed turn should be retried.
 //
 // The app-server's own `retryable` flag decides when it states one. A missing flag
-// falls back to "not retryable", with one named exception: a provider that carries no
+// falls back to "not retryable", with one exception: a provider that carries no
 // usable credential is NEVER retryable, because a retry re-reads the same empty
 // configuration and produces the same failure forever.
 func zcodeFailureIsRetryable(payload zcodeTurnFailed) bool {
@@ -887,74 +887,363 @@ func zcodeBatchTaskStatus(batch zcodeToolUpdated) bgtask.Status {
 
 // --- session.updated ---
 
-// handleZCodeSessionUpdated splits the one overloaded event.
+// zcodeSessionUpdateKind identifies the one shape that a `session.updated` payload
+// carries.
+type zcodeSessionUpdateKind int
+
+// The kinds, in the discrimination order of `kind()`.
+const (
+	// zcodeSessionUpdateDrop is a telemetry shape LeapMux does not read.
+	zcodeSessionUpdateDrop zcodeSessionUpdateKind = iota
+	zcodeSessionUpdateNetworkStatus
+	zcodeSessionUpdateBackgroundTask
+	zcodeSessionUpdateSubagent
+	zcodeSessionUpdateModelResponse
+	zcodeSessionUpdateGoalVerification
+	zcodeSessionUpdateGoalChange
+	zcodeSessionUpdateModeChange
+	zcodeSessionUpdateCompaction
+	zcodeSessionUpdateMicrocompact
+	zcodeSessionUpdateModelSelected
+	zcodeSessionUpdateHookRun
+	zcodeSessionUpdateHookAdmission
+	zcodeSessionUpdateSteerDiscarded
+)
+
+// zcodeSessionUpdatedPayload is one `session.updated` payload.
 //
 // `session.updated` is the app-server's catch-all: every internal event it does not
-// map explicitly becomes one, with a free-form payload. So the shapes are told apart
-// by which fields they carry, in order of specificity.
+// map explicitly becomes one, with a free-form payload. Every field is therefore
+// kept raw: a payload of one shape that gives a key another JSON type must not
+// fail the decode for every shape. The handlers decode what they need from the
+// raw bytes.
+type zcodeSessionUpdatedPayload struct {
+	// A network status. The `type` word starts `model_`.
+	Type      json.RawMessage `json:"type"`
+	RequestID json.RawMessage `json:"requestId"`
+	Meta      json.RawMessage `json:"_meta"`
+
+	// A background task's lifecycle.
+	TaskID json.RawMessage `json:"taskId"`
+
+	// A subagent lifecycle or message event. The public protocol maps all
+	// three internal event types to session.updated, so their payload fields
+	// are the discriminator.
+	AgentID          json.RawMessage `json:"agentId"`
+	ParentToolCallID json.RawMessage `json:"parentToolCallId"`
+
+	// A finished model request: the assistant's text plus what it cost. A network
+	// status carries `querySource` also. usageAndContextWindow decodes the cost.
+	Content       json.RawMessage `json:"content"`
+	StopReason    json.RawMessage `json:"stopReason"`
+	QuerySource   json.RawMessage `json:"querySource"`
+	Usage         json.RawMessage `json:"usage"`
+	ContextWindow json.RawMessage `json:"contextWindow"`
+
+	// A goal check lifecycle and a goal change.
+	VerificationID json.RawMessage `json:"verificationId"`
+	TargetID       json.RawMessage `json:"targetId"`
+	Action         json.RawMessage `json:"action"`
+	Source         json.RawMessage `json:"source"`
+	Target         json.RawMessage `json:"target"`
+
+	// A SessionModeChanged event: the native mode and the plan flag.
+	Mode        json.RawMessage `json:"mode"`
+	PlanEnabled json.RawMessage `json:"planEnabled"`
+
+	// A compaction lifecycle and a microcompact boundary.
+	OperationID json.RawMessage `json:"operationId"`
+	Trigger     json.RawMessage `json:"trigger"`
+	Status      json.RawMessage `json:"status"`
+	Strategy    json.RawMessage `json:"strategy"`
+
+	// A model switch the registry made.
+	ModelSelection json.RawMessage `json:"modelSelection"`
+	Origin         json.RawMessage `json:"origin"`
+
+	// A hook run.
+	HookRunID        json.RawMessage `json:"hookRunId"`
+	HookInvocationID json.RawMessage `json:"hookInvocationId"`
+	Descriptor       json.RawMessage `json:"descriptor"`
+	Outcome          json.RawMessage `json:"outcome"`
+
+	// A workspace hook admission.
+	PendingCount json.RawMessage `json:"pendingCount"`
+	BundleDigest json.RawMessage `json:"bundleDigest"`
+
+	// A discarded queued input.
+	PendingInputIDs json.RawMessage `json:"pendingInputIds"`
+	Reason          json.RawMessage `json:"reason"`
+	TargetTurnID    json.RawMessage `json:"targetTurnId"`
+}
+
+// zcodeRawPresent reports whether a key held a value other than JSON null.
+func zcodeRawPresent(raw json.RawMessage) bool {
+	return len(raw) > 0 && string(raw) != "null"
+}
+
+// zcodeRawString reads a raw key as a JSON string. ok is false for a key that is
+// absent, null or any other JSON type.
+func zcodeRawString(raw json.RawMessage) (string, bool) {
+	if !zcodeRawPresent(raw) {
+		return "", false
+	}
+	var value string
+	if json.Unmarshal(raw, &value) != nil {
+		return "", false
+	}
+	return value, true
+}
+
+// kind tells the shapes apart by which fields they carry, in order of
+// specificity -- never on `status`, `toolCallId`, `requestId`, `source`, `mode` or
+// `turnId` alone. The browser's `zcodeSessionUpdateKind` applies the same order,
+// and the two read the network status prefix and the microcompact strategy from
+// one contract.
+func (p zcodeSessionUpdatedPayload) kind() zcodeSessionUpdateKind {
+	if status, ok := zcodeRawString(p.Type); ok && strings.HasPrefix(status, contracts.ZCodeNetworkStatusPrefixModel) && zcodeRawPresent(p.RequestID) {
+		return zcodeSessionUpdateNetworkStatus
+	}
+	if taskID, ok := zcodeRawString(p.TaskID); ok && taskID != "" {
+		return zcodeSessionUpdateBackgroundTask
+	}
+	if agentID, ok := zcodeRawString(p.AgentID); ok && agentID != "" {
+		if parentCallID, ok := zcodeRawString(p.ParentToolCallID); ok && parentCallID != "" {
+			return zcodeSessionUpdateSubagent
+		}
+	}
+	// Callers decode the complete JSON payload before classification.
+	// RawMessage therefore starts at the value, and a quote identifies a string.
+	// Decode its text only when the selected handler needs the main reply.
+	if len(p.Content) > 0 && p.Content[0] == '"' {
+		if stopReason, ok := zcodeRawString(p.StopReason); ok && stopReason != "" {
+			return zcodeSessionUpdateModelResponse
+		}
+	}
+	if zcodeRawPresent(p.VerificationID) && zcodeRawPresent(p.TargetID) {
+		return zcodeSessionUpdateGoalVerification
+	}
+	// The `target` KEY marks a goal change, and it is present as an object or as
+	// null: `cleared` states its removal through the null.
+	if zcodeRawPresent(p.Action) && zcodeRawPresent(p.Source) && len(p.Target) > 0 {
+		return zcodeSessionUpdateGoalChange
+	}
+	if _, _, ok := parseZCodeModeChange(p.Mode, p.PlanEnabled); ok {
+		return zcodeSessionUpdateModeChange
+	}
+	if zcodeRawPresent(p.OperationID) && zcodeRawPresent(p.Trigger) && zcodeRawPresent(p.Status) {
+		return zcodeSessionUpdateCompaction
+	}
+	if strategy, ok := zcodeRawString(p.Strategy); ok && strategy == contracts.ZCodeMicrocompactStrategyLocalToolResultClear {
+		return zcodeSessionUpdateMicrocompact
+	}
+	if zcodeRawPresent(p.ModelSelection) {
+		return zcodeSessionUpdateModelSelected
+	}
+	if zcodeRawPresent(p.HookRunID) && zcodeRawPresent(p.HookInvocationID) {
+		return zcodeSessionUpdateHookRun
+	}
+	if zcodeRawPresent(p.PendingCount) && zcodeRawPresent(p.BundleDigest) {
+		return zcodeSessionUpdateHookAdmission
+	}
+	if zcodeRawPresent(p.PendingInputIDs) && zcodeRawPresent(p.Reason) && zcodeRawPresent(p.TargetTurnID) {
+		return zcodeSessionUpdateSteerDiscarded
+	}
+	return zcodeSessionUpdateDrop
+}
+
+// usageAndContextWindow decodes what a model response cost. A value of the wrong
+// JSON type, or an absent one, states nothing: usage is nil, and contextWindow is
+// zero. It never drops the reply that carries it.
+func (p zcodeSessionUpdatedPayload) usageAndContextWindow() (usage *zcodeUsage, contextWindow int64) {
+	if zcodeRawPresent(p.Usage) {
+		var decoded zcodeUsage
+		if json.Unmarshal(p.Usage, &decoded) == nil {
+			usage = &decoded
+		}
+	}
+	if json.Unmarshal(p.ContextWindow, &contextWindow) != nil {
+		contextWindow = 0
+	}
+	return usage, contextWindow
+}
+
+// networkStatusHasAPIRetry reports whether a network status carries the normalized
+// retry record `mapModelNetworkStatusPayload` attaches under `_meta.zcode.apiRetry`.
+func (p zcodeSessionUpdatedPayload) networkStatusHasAPIRetry() bool {
+	var meta struct {
+		ZCode struct {
+			APIRetry json.RawMessage `json:"apiRetry"`
+		} `json:"zcode"`
+	}
+	if json.Unmarshal(p.Meta, &meta) != nil {
+		return false
+	}
+	return zcodeRawPresent(meta.ZCode.APIRetry)
+}
+
+// hookRunIsVisibleFailure reports whether a hook run reached an outcome the user
+// must see on a descriptor the app-server marks client-visible.
+//
+// A failure, a block and a timeout each stop the hook short of its work. A
+// `cancelled` hook stopped because its turn stopped, so it is not a failure that
+// the user must read.
+func (p zcodeSessionUpdatedPayload) hookRunIsVisibleFailure() bool {
+	outcome, _ := zcodeRawString(p.Outcome)
+	switch outcome {
+	case contracts.ZCodeHookRunOutcomeFailed, contracts.ZCodeHookRunOutcomeBlocked, contracts.ZCodeHookRunOutcomeTimedOut:
+	default:
+		return false
+	}
+	var descriptor struct {
+		ClientVisible bool `json:"clientVisible"`
+	}
+	if json.Unmarshal(p.Descriptor, &descriptor) != nil {
+		return false
+	}
+	return descriptor.ClientVisible
+}
+
+// zcodeSteerDiscardReasonPromoted is the `reason` of a steering queue discard that
+// moved the input into a turn of its own. The input runs, so the discard is not
+// a loss: ZCode's own client skips it, and the browser never reads the word.
+const zcodeSteerDiscardReasonPromoted = "promoted"
+
+// handleZCodeSessionUpdated splits the one overloaded event.
+//
+// The shapes are told apart by which fields they carry -- see
+// zcodeSessionUpdatedPayload.kind. The zcodeSessionUpdateDrop case drops the
+// shapes that LeapMux does not read:
+//
+//   - `compact_boundary`.
+//   - The model anomaly warning.
+//   - The model request.
+//   - The follow-up, queue and steer bookkeeping.
+//   - Feedback.
+//   - Network requests.
+//   - The hook review.
+//   - Auto-resolution.
+//   - The session fork.
+//
+// They carry no conversation, and persisting them would fill the transcript with
+// telemetry.
 func (a *Agent) handleZCodeSessionUpdated(event zcodeEventEnvelope) {
 	if len(event.Payload) == 0 {
 		return
 	}
-	var payload struct {
-		// A background task's lifecycle.
-		TaskID string `json:"taskId"`
-		Status string `json:"status"`
-
-		// A finished model request: the assistant's text plus what it cost.
-		Content    *string     `json:"content"`
-		StopReason string      `json:"stopReason"`
-		Usage      *zcodeUsage `json:"usage"`
-
-		ContextWindow int64 `json:"contextWindow"`
-
-		// A subagent lifecycle or message event. The public protocol maps all
-		// three internal event types to session.updated, so their payload fields
-		// are the discriminator.
-		AgentID          string `json:"agentId"`
-		ParentToolCallID string `json:"parentToolCallId"`
-
-		// A SessionModeChanged event: the native mode and the plan flag. Both stay
-		// raw, so a payload of another shape that gives either key another JSON type
-		// cannot fail the decode for the cases above.
-		Mode        json.RawMessage `json:"mode"`
-		PlanEnabled json.RawMessage `json:"planEnabled"`
-		// Source tells which part of ZCode changed the mode. It stays raw for the
-		// same reason as the two fields above.
-		Source json.RawMessage `json:"source"`
-	}
+	var payload zcodeSessionUpdatedPayload
 	if err := json.Unmarshal(event.Payload, &payload); err != nil {
 		slog.Warn("zcode session.updated unmarshal failed", "agent_id", a.AgentID(), "error", err)
 		return
 	}
-	mode, planEnabled, isModeChange := parseZCodeModeChange(payload.Mode, payload.PlanEnabled)
 
-	switch {
-	case payload.TaskID != "":
+	switch payload.kind() {
+	case zcodeSessionUpdateNetworkStatus:
+		// Only the retry notice is worth a row. The other network statuses hold
+		// headers and base URLs. A side query's retry follows the rule of its
+		// reply: the model call is the app-server's own, so it is not the user's.
+		status, _ := zcodeRawString(payload.Type)
+		if status == contracts.ZCodeNetworkStatusRetryScheduled && payload.networkStatusHasAPIRetry() && zcodeIsMainQuery(payload.QuerySource) {
+			a.persistZCodeNotification(event)
+		}
+	case zcodeSessionUpdateBackgroundTask:
 		a.handleZCodeBackgroundTask(event)
-	case payload.AgentID != "" && payload.ParentToolCallID != "":
+	case zcodeSessionUpdateSubagent:
 		a.handleZCodeSubagentLifecycle(event)
-	case payload.Content != nil && payload.StopReason != "":
+	case zcodeSessionUpdateModelResponse:
+		stopReason, _ := zcodeRawString(payload.StopReason)
+		if !zcodeIsMainReply(payload.QuerySource, stopReason) {
+			// A side query is a generation the app-server runs for itself. It is
+			// not the turn's reply, so it closes no stream, records no usage and
+			// persists nothing.
+			return
+		}
 		a.flushZCodeGenerationKind(agent.AssembledMessageKindReasoning, agent.MessageCompletionComplete)
 		a.generationBuffer.DiscardKind(agent.AssembledMessageKindText)
-		if payload.ContextWindow > 0 {
+		usage, contextWindow := payload.usageAndContextWindow()
+		if contextWindow > 0 {
 			a.Mu.Lock()
-			a.contextWindow = payload.ContextWindow
+			a.contextWindow = contextWindow
 			a.Mu.Unlock()
 		}
-		if payload.Usage != nil {
-			a.recordZCodeUsage(*payload.Usage)
+		if usage != nil {
+			a.recordZCodeUsage(*usage)
 		}
-		a.persistZCodeAssistantMessage(event, *payload.Content)
-	case isModeChange:
+		content, _ := zcodeRawString(payload.Content)
+		a.persistZCodeAssistantMessage(event, content)
+	case zcodeSessionUpdateGoalVerification:
+		a.handleZCodeGoalVerification(event, payload)
+	case zcodeSessionUpdateGoalChange:
+		a.handleZCodeGoalChanged(payload)
+	case zcodeSessionUpdateModeChange:
+		mode, planEnabled, _ := parseZCodeModeChange(payload.Mode, payload.PlanEnabled)
 		if exitMode := a.handleZCodeModeChanged(mode, planEnabled, parseZCodeModeSource(payload.Source)); exitMode != "" {
 			a.sendDeferredZCodeExitMode(exitMode)
 		}
-	default:
-		// The remaining shapes are telemetry: the per-request model/iteration counters
-		// and the provider request record (baseURL, requestId, maxAttempts). They carry
-		// no conversation, and persisting them would fill the transcript.
+	case zcodeSessionUpdateCompaction, zcodeSessionUpdateMicrocompact:
+		// The compaction lifecycle is the single source of ZCode compaction rows,
+		// and a microcompact is its own boundary.
+		a.persistZCodeNotification(event)
+	case zcodeSessionUpdateModelSelected:
+		// Only the fallback states a switch that the registry made. The post-turn
+		// session/read refreshes every other model selection.
+		if origin, _ := zcodeRawString(payload.Origin); origin == contracts.ZCodeModelSelectionOriginRegistryFallback {
+			a.persistZCodeNotification(event)
+		}
+	case zcodeSessionUpdateHookRun:
+		if payload.hookRunIsVisibleFailure() {
+			a.persistZCodeNotification(event)
+		}
+	case zcodeSessionUpdateHookAdmission:
+		var pending int
+		if json.Unmarshal(payload.PendingCount, &pending) != nil || pending <= 0 {
+			return
+		}
+		a.persistZCodeNotification(event)
+	case zcodeSessionUpdateSteerDiscarded:
+		if reason, _ := zcodeRawString(payload.Reason); reason == zcodeSteerDiscardReasonPromoted {
+			return
+		}
+		a.persistZCodeNotification(event)
+	case zcodeSessionUpdateDrop:
+		// Telemetry: the per-request model and iteration counters, the provider
+		// request record and the shapes that the list above gives.
 	}
+}
+
+// zcodeIsMainReply reports whether a model response is the RUNNING TURN's reply.
+//
+// `session.updated` carries every finished generation the app-server makes, and
+// most of them are side queries it runs for itself: the completion verifier, the
+// goal summary title, the compaction summary, a git commit message. Only the main
+// turn's text belongs in the transcript, and only its usage belongs on the context
+// meter.
+//
+// The payload states its role through `querySource` when it carries one: only
+// `main_turn` is the reply. A payload with no `querySource` falls back to the
+// `stopReason`: `tool_internal` marks a side query. A `querySource` that is not a
+// string is not the reply either. The browser replays the same rule; the shared
+// corpus is testdata/zcode_model_response_conformance.json.
+func zcodeIsMainReply(querySource json.RawMessage, stopReason string) bool {
+	if len(querySource) == 0 {
+		return stopReason != contracts.ZCodeStopReasonToolInternal
+	}
+	return zcodeIsMainQuery(querySource)
+}
+
+// zcodeIsMainQuery reports whether a `querySource` identifies the model call of
+// the running turn. An absent key states no side query. A present key must be
+// the string `main_turn`: any other word, and any other JSON type, is a side
+// query. A network status has no `stopReason`, so this is its whole rule.
+func zcodeIsMainQuery(querySource json.RawMessage) bool {
+	if len(querySource) == 0 {
+		return true
+	}
+	var source string
+	if json.Unmarshal(querySource, &source) != nil {
+		return false
+	}
+	return source == contracts.ZCodeQuerySourceMainTurn
 }
 
 // parseZCodeModeChange reads a SessionModeChanged payload. ok is true only for a
@@ -1250,20 +1539,41 @@ func (a *Agent) handleZCodeUserInputResolved(event zcodeEventEnvelope) {
 
 // --- stream recovery ---
 
-// handleZCodeStreamRecovery logs the app-server's stream-recovery report.
+// handleZCodeStreamRecovery consumes the app-server's stream-recovery report.
 //
-// It takes NO action, and that is the whole point of the function. The report describes
-// a retry of the MODEL PROVIDER's own SSE stream, not a lapse in LeapMux's event
-// subscription: its payloads carry `streamMode:"sse"`, a failure kind, a retry number
-// and the count of assistant bytes discarded before the retry. The event subscription is
-// a separate, sticky registration, and the app-server appends every event to its store
-// before it delivers one -- so there is nothing here for a re-subscribe to recover, and
-// firing one on every model-provider retry would spend an RPC to replay nothing.
+// The report describes a retry of the MODEL PROVIDER's own SSE stream. It is not
+// a lapse in LeapMux's event subscription. Its payloads carry `streamMode:"sse"`,
+// a failure kind, a retry number and the count of assistant bytes discarded before
+// the retry. The event subscription is a separate, sticky registration, and the
+// app-server appends every event to its store before it delivers one. A
+// re-subscribe recovers nothing. A re-subscribe on every model-provider retry would
+// send one RPC that replays nothing. The outcome of the retry still reaches the
+// transcript, on `turn.failed` or `turn.completed`.
 //
-// The outcome of the retry still reaches the transcript, on `turn.failed` or
-// `turn.completed`.
+// The one report that changes what LeapMux holds is the DISCARDED TAIL: text the
+// app-server threw away before its retry. A later failure would otherwise persist
+// it from the generation buffer as if it were the reply, so the discard drops both
+// buffered scopes of the message that it identifies. The payload states the
+// discard through its byte counters -- the only recovery payload that carries
+// them. Every other report keeps the logging-only behavior above.
 func (a *Agent) handleZCodeStreamRecovery(event zcodeEventEnvelope) {
 	slog.Debug("zcode stream recovery", "agent_id", a.AgentID(), "payload_len", len(event.Payload))
+	var payload struct {
+		AssistantMessageID      string          `json:"assistantMessageId"`
+		DiscardedReasoningBytes json.RawMessage `json:"discardedReasoningBytes"`
+		DiscardedTextBytes      json.RawMessage `json:"discardedTextBytes"`
+	}
+	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		return
+	}
+	if payload.AssistantMessageID == "" {
+		return
+	}
+	if !zcodeRawPresent(payload.DiscardedReasoningBytes) && !zcodeRawPresent(payload.DiscardedTextBytes) {
+		return
+	}
+	a.generationBuffer.Discard(zcodeTextScope(payload.AssistantMessageID))
+	a.generationBuffer.Discard(zcodeReasoningScope(payload.AssistantMessageID))
 }
 
 // zcodeJoinOutputTails puts the two progress streams on their own lines.

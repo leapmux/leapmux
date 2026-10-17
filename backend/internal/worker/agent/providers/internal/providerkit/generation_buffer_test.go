@@ -63,6 +63,23 @@ func TestGenerationBufferFinishesScopesInFirstSeenOrder(t *testing.T) {
 	assert.Equal(t, "second", second["text"])
 }
 
+func TestGenerationBufferScopeIDsListsTheRetainedScopesInFirstSeenOrder(t *testing.T) {
+	t.Parallel()
+
+	var buffer GenerationBuffer
+	assert.Empty(t, buffer.ScopeIDs(), "an empty buffer holds no scope")
+
+	buffer.Append("z-scope", agent.AssembledMessageKindText, "first", JoinVerbatim)
+	buffer.Append("a-scope", agent.AssembledMessageKindReasoning, "second", JoinVerbatim)
+	buffer.Append("m-scope", agent.AssembledMessageKindText, "third", JoinVerbatim)
+	// A later delta of the first scope keeps that scope's first place.
+	buffer.Append("z-scope", agent.AssembledMessageKindText, " again", JoinVerbatim)
+	buffer.Discard("a-scope")
+
+	assert.Equal(t, []string{"z-scope", "m-scope"}, buffer.ScopeIDs())
+	assert.Equal(t, 11, buffer.RetainedTextLenForTest("z-scope"), "the read changes no segment")
+}
+
 func TestGenerationBufferDiscardsOnlyTheSelectedScope(t *testing.T) {
 	t.Parallel()
 

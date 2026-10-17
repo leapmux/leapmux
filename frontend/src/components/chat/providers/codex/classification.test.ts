@@ -39,6 +39,44 @@ describe('classifyCodexMessage', () => {
       .toEqual({ kind: 'unknown' })
   })
 
+  // `initialize` opts both methods out now. The rows older builds stored stay
+  // hidden.
+  it.each([
+    ['turn/moderationMetadata', { threadId: 't1', turnId: 'u1', metadata: { generation: {}, prompt: {}, tool_call: {}, tool_response: {} } }],
+    ['account/updated', { authMode: 'chatgpt', planType: 'prolite' }],
+  ])('hides a stored %s row', (method, params) => {
+    expect(classifyCodexMessage(input({ method, params }))).toEqual({ kind: 'hidden' })
+  })
+
+  // Each RENDER notice classifies as a notification with the hidden empty
+  // policy, so the row the entry builder suppresses draws nothing.
+  it.each([
+    ['warning', { message: 'careful' }],
+    ['configWarning', { summary: 'Error parsing rules', details: 'unexpected token', path: '/home/u/.codex/rules/x.rules' }],
+    ['deprecationNotice', { summary: 'The foo option is deprecated', details: 'Use bar instead.' }],
+    ['model/safetyBuffering/updated', { turnId: 'u1', showBufferingUi: true, fasterModel: 'gpt-6-luna' }],
+    ['model/verification', { verifications: ['trustedAccessForCyber'] }],
+    ['modelProvider/authRecoveryStarted', { provider: 'amazon-bedrock', message: 'AWS session has expired. Reauthenticating...' }],
+    ['modelProvider/authRecoveryCompleted', { provider: 'amazon-bedrock', message: 'Reauthenticated.' }],
+  ])('classifies %s as a notification', (method, params) => {
+    const result = classifyCodexMessage(input({ method, params }))
+    expect(result.kind).toBe('notification')
+  })
+
+  // Two persisted notices fold into ONE notification thread, and the thread
+  // states one entry for each member, in order.
+  it('folds consecutive render notices into one notification thread', () => {
+    const configWarning = { method: 'configWarning', params: { summary: 'Error parsing rules' } }
+    const deprecationNotice = { method: 'deprecationNotice', params: { summary: 'The foo option is deprecated' } }
+    expect(classifyCodexMessage(input(configWarning, { old_seqs: [], messages: [configWarning, deprecationNotice] }))).toEqual({
+      kind: 'notification',
+      entries: [
+        { kind: 'status', text: 'Warning: Error parsing rules' },
+        { kind: 'status', text: 'Deprecated: The foo option is deprecated' },
+      ],
+    })
+  })
+
   it('hides thread/started notifications', () => {
     const parent = {
       method: 'thread/started',
@@ -401,6 +439,31 @@ describe('classifyCodexMessage', () => {
     }
     const result = classifyCodexMessage(input(parent))
     expect(result).toEqual({ kind: 'tool_use' })
+  })
+
+  // The worker stores each plan update as its own message row. Two updates in
+  // one notification-thread row would freeze the card on the first plan: the
+  // row's classifier reads the wrapper's first message. So consecutive plan rows
+  // must never be claimed as one notification thread, and each keeps its own
+  // tool-use row.
+  it('does not fold consecutive turn/plan/updated rows into a notification thread', () => {
+    const first = {
+      method: 'turn/plan/updated',
+      params: { threadId: 'thread-1', turnId: 'turn-1', plan: [{ step: 'Inspect messages', status: 'inProgress' }] },
+    }
+    const second = {
+      method: 'turn/plan/updated',
+      params: {
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        plan: [
+          { step: 'Inspect messages', status: 'completed' },
+          { step: 'Update renderer', status: 'inProgress' },
+        ],
+      },
+    }
+    expect(classifyCodexMessage(input(first, { old_seqs: [], messages: [first, second] }))).toEqual({ kind: 'tool_use' })
+    expect(classifyCodexMessage(input(second, { old_seqs: [], messages: [first, second] }))).toEqual({ kind: 'tool_use' })
   })
 
   it('classifies webSearch items as Codex tool-use messages', () => {

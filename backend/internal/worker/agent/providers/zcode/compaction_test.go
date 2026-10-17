@@ -40,8 +40,12 @@ func TestZCodeManualCompactionUsesNativeSessionRequest(t *testing.T) {
 	active, published = sink.LastTurnActive()
 	require.True(t, published)
 	require.False(t, active)
-	require.Len(t, sink.Messages(), 1)
-	assert.Contains(t, string(sink.Messages()[0].Content), contracts.ZCodeStateReasonSessionCompacted)
+	require.Empty(t, sink.Messages(), "the state.updated reason is no row; the lifecycle events own the compaction rows")
+
+	a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventSessionUpdated,
+		`{"operationId":"c1","status":"completed","trigger":"manual","phase":"standalone_turn",`+
+			`"display":"separator","preCompactTokenCount":180000,"postCompactTokenCount":12000}`))
+	require.Len(t, sink.PersistedNotifications(), 1, "the compaction lifecycle is the row")
 }
 
 func TestZCodeManualCompactionRejectsInvalidReceipt(t *testing.T) {
@@ -65,8 +69,7 @@ func TestZCodeManualCompactionPreservesNativeFailure(t *testing.T) {
 	active, published := sink.LastTurnActive()
 	require.True(t, published)
 	require.False(t, active)
-	require.Len(t, sink.Messages(), 1)
-	assert.Contains(t, string(sink.Messages()[0].Content), contracts.ZCodeStateReasonSessionCompactFailed)
+	require.Empty(t, sink.Messages(), "the state.updated reason is no row; the lifecycle events own the compaction rows")
 }
 
 func TestZCodeManualCompactionRefusalReleasesTheQueue(t *testing.T) {

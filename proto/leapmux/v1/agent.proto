@@ -1241,3 +1241,19 @@ message ApproveAutoReviewDenialRequest {
 
 // The worker returns success after it records the approval on the review row and writes its notice.
 message ApproveAutoReviewDenialResponse {}
+
+// RetryAgentTurn stops the running turn and sends its input again on another
+// model, in a new provider thread that excludes the stopped attempt. The worker
+// refuses it unless the running agent offers this retry for this turn (the
+// `turn_retry_offer` session-info key). File changes and other actions that the
+// stopped attempt already took stay.
+message RetryAgentTurnRequest {
+  string agent_id = 1;
+  // The turn that the offer identifies. A different running turn refuses it.
+  string turn_id = 2;
+  // The model that the offer identifies.
+  string model = 3;
+}
+
+// Empty: the new turn and the model change arrive through the normal events.
+message RetryAgentTurnResponse {}

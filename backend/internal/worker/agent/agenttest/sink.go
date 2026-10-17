@@ -1484,6 +1484,13 @@ func (s *Sink) SessionIDCount() int {
 	return len(s.sessionIDs)
 }
 
+// MessageSessionID is the session this sink stamps on the rows it writes.
+func (s *Sink) MessageSessionID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.currentSessionIDLocked()
+}
+
 // LastSessionID returns the most recently recorded session ID.
 func (s *Sink) LastSessionID() string {
 	s.mu.Lock()
@@ -1630,6 +1637,7 @@ func (nop) ReportProgress(agent.ProgressUpdate)               {}
 func (nop) PublishControlRequest(agent.ControlRequest) error  { return nil }
 func (nop) CancelControlRequest(string)                       {}
 func (nop) CancelControlRequestInstance(string, string)       {}
+func (nop) MessageSessionID() string                          { return "" }
 func (nop) UpdateSessionID(string)                            {}
 func (nop) UpdatePermissionMode(string)                       {}
 func (nop) NotifyPermissionModeChanged(string, string)        {}

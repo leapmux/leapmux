@@ -37,10 +37,18 @@ describe('ToolUseLayout running-tool badge', () => {
     expect(container.textContent).toContain('1m 30s')
   })
 
-  it('renders no badge when nothing is running', () => {
-    const { container } = renderCard(undefined)
+  it('renders the permission check in the card header while a reviewer holds the call', () => {
+    const { container } = renderCard({ elapsedSeconds: 90, permissionCheck: true })
     expect(container.textContent).toContain('npm run build')
-    expect(container.textContent).not.toContain('30s')
+    expect(container.textContent).toContain('Checking permission…')
+    expect(container.textContent).not.toContain('1m 30s')
+  })
+
+  it('renders no badge when nothing is running', () => {
+    const { container, queryByTestId } = renderCard(undefined)
+    expect(container.textContent).toContain('npm run build')
+    // The card must carry no badge element at all, not an empty one.
+    expect(queryByTestId('tool-running-badge')).toBeNull()
   })
 
   /**

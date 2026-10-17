@@ -79,7 +79,7 @@ func TestHandleOutput_ToolProgressStatesTheAgentSession(t *testing.T) {
 
 			sink := &outputTestSink{}
 			agent := newTestAgent(agent.NewProviderServices(sink))
-			agent.sessionID = "sess-1"
+			sink.UpdateSessionID("sess-1")
 			agent.HandleOutput([]byte(frame))
 
 			assert.Equal(t, "sess-1", runningToolUpdate(t, sink)[contracts.RunningToolFieldAgentSessionId])
@@ -95,7 +95,7 @@ func TestHandleOutput_ToolProgressFollowsASessionTheCLIReports(t *testing.T) {
 
 	sink := &outputTestSink{}
 	agent := newTestAgent(agent.NewProviderServices(sink))
-	agent.sessionID = "sess-1"
+	sink.UpdateSessionID("sess-1")
 	agent.HandleOutput([]byte(`{"type":"system","subtype":"init","session_id":"sess-2"}`))
 	agent.HandleOutput([]byte(claudeHeartbeatFrame))
 
@@ -310,7 +310,7 @@ func TestHandleOutput_ToolProgressCarriesOnlyWhatTheBadgeRenders(t *testing.T) {
 
 			sink := &outputTestSink{}
 			agent := newTestAgent(agent.NewProviderServices(sink))
-			agent.sessionID = "sess-1"
+			sink.UpdateSessionID("sess-1")
 			agent.HandleOutput([]byte(line))
 
 			update := runningToolUpdate(t, sink)
@@ -386,7 +386,7 @@ func TestHandleOutput_ToolProgressOmitsAnUnreadableElapsedTime(t *testing.T) {
 			agent.HandleOutput([]byte(line + `}`))
 
 			update := runningToolUpdate(t, sink)
-			// The frame still ships -- it names a running tool -- but with no
+			// The frame still ships -- it identifies a running tool -- but with no
 			// elapsed key, so the badge holds whatever it already showed.
 			assert.Equal(t, "toolu_A", update[contracts.RunningToolFieldSpanId])
 			assert.NotContains(t, update, contracts.RunningToolFieldElapsedSeconds)

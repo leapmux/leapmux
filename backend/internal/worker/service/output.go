@@ -1314,6 +1314,11 @@ func (s *agentOutputSink) cancelControlRequest(requestID, instanceID string) {
 	publication.enqueueCancellation(s.h, s.agentID, request.RequestID, request.ClaimToken)
 }
 
+// MessageSessionID is the session this sink stamps on the rows it writes.
+func (s *agentOutputSink) MessageSessionID() string {
+	return s.currentMessageSessionID()
+}
+
 func (s *agentOutputSink) UpdateSessionID(sessionID string) {
 	mutation := s.h.transcriptMutationMutex(s.rootAgentID)
 	mutation.Lock()

@@ -1,5 +1,6 @@
 import type { ChatRailData } from './chatMessageMarks'
 import type { ToolProgressEntry, ToolProgressUpdate } from './chatToolProgress'
+import type { TurnRetryOffer } from './chatTurnRetryOffer'
 import type { SavedViewportScroll } from './chatTypes'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { MessageSpanIdentity, ToolSpanSide } from '~/lib/messageSpan'
@@ -24,6 +25,7 @@ import { createPerAgentStore } from './chatPerAgentStore'
 import { createSpanIndex } from './chatSpanIndex'
 import { createTodoStore } from './chatTodoStore'
 import { createToolProgressStore } from './chatToolProgress'
+import { createTurnRetryOfferStore } from './chatTurnRetryOffer'
 
 /**
  * Limit the loaded messages in a visible agent window.
@@ -144,6 +146,9 @@ export function createChatStore() {
   // A version change would wake automatic scrolling and the classified-entry cache.
   // Replacing the row could then discard the user's text selection.
   const toolProgress = createToolProgressStore()
+  // The live turn-retry offer is per-turn state. It never persists to browser
+  // storage, so it lives in its own slice beside the tool progress.
+  const turnRetryOffer = createTurnRetryOfferStore()
   const todos = createTodoStore()
   const backgroundTasks = createBackgroundTaskStore()
   const goal = createGoalStore()
@@ -331,6 +336,9 @@ export function createChatStore() {
     todos.remove(agentId)
     backgroundTasks.remove(agentId)
     goal.remove(agentId)
+    // The offer identifies a turn that the closed agent can no longer run. A
+    // revive of this agent ID must not show the offer again.
+    turnRetryOffer.clear(agentId)
     viewportScroll.remove(agentId)
   }
 
@@ -755,6 +763,24 @@ export function createChatStore() {
      */
     clearToolProgress(agentId: string) {
       toolProgress.clearAgent(agentId)
+    },
+
+    /** Record the live turn-retry offer that the worker made for the agent. */
+    setTurnRetryOffer(agentId: string, offer: TurnRetryOffer) {
+      turnRetryOffer.set(agentId, offer)
+    },
+
+    /**
+     * Return the live turn-retry offer of the agent, or undefined when the
+     * worker made none. TurnRetryOfferBanner reads it through its panel props.
+     */
+    getTurnRetryOffer(agentId: string): TurnRetryOffer | undefined {
+      return turnRetryOffer.get(agentId)
+    },
+
+    /** Withdraw the live turn-retry offer of the agent. */
+    clearTurnRetryOffer(agentId: string) {
+      turnRetryOffer.clear(agentId)
     },
 
     setLoading(loading: boolean) {

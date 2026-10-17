@@ -146,6 +146,43 @@ func TestProviderFor_CodexClassification(t *testing.T) {
 		"thread/compacted persists as a plain threadable notification; item/completed is the boundary")
 }
 
+// The two notices that fold their repeats: a retryable-error burst collapses to
+// the latest attempt, and one turn's buffering updates collapse to one row.
+func TestCodexClassifyFoldsRetryAndBufferingNotices(t *testing.T) {
+	t.Parallel()
+
+	plugin := agenttest.MustNewRegistry(Registration()).Plugin(leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+
+	willRetry := json.RawMessage(`{"method":"error","params":{"error":{"message":"Reconnecting... 2/5"},"willRetry":true,"threadId":"t1","turnId":"u1"}}`)
+	final := json.RawMessage(`{"method":"error","params":{"error":{"message":"flagged"},"willRetry":false,"threadId":"t1","turnId":"u1"}}`)
+	buffering := json.RawMessage(`{"method":"model/safetyBuffering/updated","params":{"threadId":"t1","turnId":"u1","showBufferingUi":true,"fasterModel":"gpt-6-luna"}}`)
+
+	assert.Equal(t, agent.NotificationClassification{
+		Kind: agent.NotificationKindAPIRetry,
+		Key:  "codex:error:retry",
+	}, plugin.Classify(willRetry))
+
+	assert.Equal(t, agent.NotificationClassification{}, plugin.Classify(final),
+		"a final error never persists, so it classifies as nothing")
+
+	assert.Equal(t, agent.NotificationClassification{
+		Kind: agent.NotificationKindProviderScoped,
+		Key:  "codex:model/safetyBuffering/updated:u1",
+	}, plugin.Classify(buffering))
+
+	// Two turns never fold together: each turn carries its own key.
+	otherTurn := json.RawMessage(`{"method":"model/safetyBuffering/updated","params":{"threadId":"t1","turnId":"u2","showBufferingUi":true,"fasterModel":"gpt-6-luna"}}`)
+	assert.NotEqual(t, plugin.Classify(buffering).Key, plugin.Classify(otherTurn).Key,
+		"two turns must not fold into one row")
+
+	// A frame that identifies no turn folds with the other turnless frames.
+	noTurn := json.RawMessage(`{"method":"model/safetyBuffering/updated","params":{"threadId":"t1","showBufferingUi":true,"fasterModel":"gpt-6-luna"}}`)
+	assert.Equal(t, agent.NotificationClassification{
+		Kind: agent.NotificationKindProviderScoped,
+		Key:  "codex:model/safetyBuffering/updated:unknown",
+	}, plugin.Classify(noTurn))
+}
+
 // The plugin states the child capabilities that the agent type implements. A
 // subagent tab reads them before its root runs.
 func TestPluginStatesTheChildCapabilitiesOfTheAgent(t *testing.T) {

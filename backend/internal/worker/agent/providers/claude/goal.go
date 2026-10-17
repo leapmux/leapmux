@@ -1,12 +1,14 @@
 package claude
 
 import (
+	"bytes"
 	"encoding/json"
 	"log/slog"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
@@ -36,11 +38,6 @@ import (
 // The envelope type itself is claudeMsgTypeActiveGoal, declared with its
 // siblings in output.go.
 
-// claudeSystemSubtypeInit is the `subtype` of the `system` frame Claude Code
-// emits once at startup. It carries `slash_commands`, the list of commands THIS
-// build actually has.
-const claudeSystemSubtypeInit = "init"
-
 // claudeGoalCommand is the slash command that sets or clears the goal.
 //
 // It is the ONLY write Claude Code offers. The control protocol has no goal
@@ -50,7 +47,7 @@ const claudeSystemSubtypeInit = "init"
 const claudeGoalCommand = "/goal"
 
 // claudeGoalRoute is Claude Code's user-message goal vocabulary. Claude accepts
-// six words that clear; LeapMux emits `clear`, the one its own help text names.
+// six words that clear; LeapMux emits `clear`, the one that its own help text gives.
 //
 // SteerCarriesCommand is true because Agent.SteerInput writes the
 // same user message on the same stdin channel, with priority "next". A steered
@@ -126,8 +123,9 @@ func claudeGoalTime(unixMillis int64) time.Time {
 
 // observeSlashCommands records whether THIS Claude build has /goal.
 //
-// It reads the `system` init frame's `slash_commands`, which is the CLI's own
-// statement of what it can do. Without it the capability would be a guess:
+// It reads the `slash_commands` of the `system` init frame, which Claude Code
+// emits once at startup. That list is the CLI's own statement of the commands
+// that THIS build has. Without it the capability would be a guess:
 // /goal shipped in 2.1.139, and against an older build the panel would offer a
 // button whose only effect is sending the literal text "/goal ..." to the
 // model as a prompt.
@@ -140,14 +138,67 @@ func (a *Agent) observeSlashCommands(content []byte) {
 		Subtype       string   `json:"subtype"`
 		SlashCommands []string `json:"slash_commands"`
 	}
-	if err := json.Unmarshal(content, &frame); err != nil || frame.Subtype != claudeSystemSubtypeInit {
+	if err := json.Unmarshal(content, &frame); err != nil || frame.Subtype != contracts.ClaudeHiddenSystemSubtypeInit {
 		return
 	}
 	if len(frame.SlashCommands) == 0 {
 		return
 	}
-	// The list carries bare names, without the leading slash.
-	has := slices.Contains(frame.SlashCommands, strings.TrimPrefix(claudeGoalCommand, "/"))
+	a.applySlashCommandNames(frame.SlashCommands)
+}
+
+// observeChangedCommands replaces the slash-command list from a
+// `commands_changed` frame.
+//
+// The frame's own contract tells a client to REPLACE its cached command list
+// with this payload. A present list updates /goal availability even when it drops the command.
+//
+// Each element is a command descriptor from the command line interface.
+// Its shape is {name, description, argumentHint, aliases?, builtin?, plugin?}.
+// Only `name` matters here.
+// It carries the bare command name without the leading slash, exactly like `slash_commands` in the init frame.
+//
+// A frame without a list leaves the current answer unchanged.
+// An unknown replacement shape must not silently disable a working feature.
+func (a *Agent) observeChangedCommands(content []byte) {
+	var frame struct {
+		Subtype  string          `json:"subtype"`
+		Commands json.RawMessage `json:"commands"`
+	}
+	if err := json.Unmarshal(content, &frame); err != nil || frame.Subtype != contracts.ClaudeHiddenSystemSubtypeCommandsChanged {
+		return
+	}
+	// An ABSENT or `null` `commands` states no list at all, so it cannot be the
+	// replacement payload and the answer stays as it is. A real array runs the
+	// replacement, an empty one included, as the frame's own contract says.
+	raw := bytes.TrimSpace(frame.Commands)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return
+	}
+	var commands []struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(raw, &commands); err != nil {
+		slog.Warn("invalid claude commands_changed JSON", "agent_id", a.AgentID(), "error", err)
+		return
+	}
+	names := make([]string, 0, len(commands))
+	for _, command := range commands {
+		names = append(names, command.Name)
+	}
+	a.applySlashCommandNames(names)
+}
+
+// applySlashCommandNames records whether THIS Claude build has /goal.
+//
+// The list carries bare names, without the leading slash. A change to the
+// answer re-publishes the goal capability, because the Manager's single publish
+// at registration already ran with the old answer. Nothing orders these stdout
+// frames against the control response the startup handshake waits for, so the
+// frame can arrive after the agent registers. Without this the browser keeps an
+// empty action list and the goal card hides its "Set a goal" button.
+func (a *Agent) applySlashCommandNames(names []string) {
+	has := slices.Contains(names, strings.TrimPrefix(claudeGoalCommand, "/"))
 	a.Mu.Lock()
 	changed := a.hasGoalCommand != has || !a.goalCommandKnown
 	a.hasGoalCommand = has
@@ -156,12 +207,6 @@ func (a *Agent) observeSlashCommands(content []byte) {
 	if !changed {
 		return
 	}
-	// Re-publish, because the capability just changed and the Manager's single
-	// publish at registration already ran with the old answer. Nothing orders
-	// this stdout frame against the control response the startup handshake
-	// waits for, so the frame can arrive after the agent registers. Without
-	// this the browser keeps an empty action list and the goal card hides its
-	// "Set a goal" button.
 	a.sink.PublishGoalCapabilities()
 }
 

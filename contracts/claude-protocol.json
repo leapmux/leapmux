@@ -1,5 +1,5 @@
 {
-  "_readme": "Claude Code wire values that both the Go provider and the TypeScript plugin use. Anthropic owns them. modes holds the permission modes. The Worker sends them through set_permission_mode. The browser uses the same strings for permission presets and its plan-mode toggle. defaultMode supplies the fallback when a Claude session stores no mode. A new session requests Auto. PermissionDefaults declares that launch default in Registration, under backend/internal/worker/agent/providers/claude/registration.go. systemSubtypes identifies system lines for an API retry or a compaction boundary. The Worker classifies each line as a notification. The browser draws that notification. The status subtype is not in this table, because the shared isFinalCompactingStatus in frontend/src/components/chat/messageUtils.ts reads that shape for the Claude, Codex and ACP plugins. frameKinds defines the native conversation frames.\n\nThe browser owns native result pointer fields in its provider protocol module. The Worker preserves the original native frame. The browser shows each native path beside the original preview. LeapMux reads no output file.",
+  "_readme": "Claude Code wire values that both the Go provider and the TypeScript plugin use. Anthropic owns them. modes holds the permission modes. The Worker sends them through set_permission_mode. The browser uses the same strings for permission presets and its plan-mode toggle. defaultMode supplies the fallback when a Claude session stores no mode. A new session requests Auto. PermissionDefaults declares that launch default in Registration, under backend/internal/worker/agent/providers/claude/registration.go. systemSubtypes holds the system subtypes that both readers name. Each one is one of these:\n- An API retry or a compaction boundary. The Worker classifies the line as a notification.\n- A permission denial. The Worker clears the live permission check of the call.\n- An informational line or a hook response. The Worker drops the ones that informationalLevels and hookOutcomes do not keep.\n- A model fallback. The Worker moves the session model to the fallback.\nThe browser builds the row text for each of them. The status subtype is not in this table, because the shared isFinalCompactingStatus in frontend/src/components/chat/messageUtils.ts reads that shape for the Claude, Codex and ACP plugins. informationalLevels holds the level that the Worker drops and the browser hides: Claude Code shows an info line only in its transcript view. hookOutcomes holds the one hook outcome that becomes a row. frameKinds defines the native conversation frames.\n\nThe browser owns native result pointer fields in its provider protocol module. The Worker preserves the original native frame. The browser shows each native path beside the original preview. LeapMux reads no output file.\n\nhiddenSystemSubtypes lists each system subtype that the Worker never persists. The browser hides a row that an older build stored for one of them. The reasons:\n- init, session_state_changed: session lifecycle. The Worker consumes them.\n- task_started, task_progress, task_notification, task_updated, background_tasks_changed: the background-task registry consumes them.\n- thinking_tokens: live telemetry. The Worker reports it as progress.\n- api_metrics, turn_duration: telemetry that the turn-end divider already states.\n- hook_started, hook_progress: a hook run without an outcome. A failed hook_response is a row.\n- files_persisted, memory_saved: a write to the agent's own state.\n- local_command_output, local_command, permission_retry, stop_hook_summary, away_summary: rows that the command line interface draws in its own transcript.\n- ui_status, ui_invalidate, ui_panes, ui_scroll, ui_focus: a plugin UI surface that LeapMux does not have.\n- permission_check_status: the tool card shows it as a live badge.\n- elicitation_complete: the Worker accepts and withdraws the pending elicitation.\n- commands_changed: the Worker replaces the slash-command list.\n- code_change_published, vcs_state_changed: the Bash card already shows the commit, the push or the pull request.\n- session_title_changed: LeapMux owns the tab title.\n- dev_intent, per_turn_effort_changed, feedback_draft_queued, peer_message_hold: LeapMux has no surface for them.\n- model_refusal_no_fallback: the assistant error frame already states the refusal.\n- post_turn_summary: Claude Code 2.1.300 sends it only to Desktop and cloud hosts.",
   "modes": {
     "Default": "default",
     "Plan": "plan",
@@ -11,7 +11,56 @@
   "systemSubtypes": {
     "ApiRetry": "api_retry",
     "CompactBoundary": "compact_boundary",
-    "MicrocompactBoundary": "microcompact_boundary"
+    "MicrocompactBoundary": "microcompact_boundary",
+    "PermissionDenied": "permission_denied",
+    "Informational": "informational",
+    "HookResponse": "hook_response",
+    "ModelRefusalFallback": "model_refusal_fallback",
+    "ModelConsentFallback": "model_consent_fallback"
+  },
+  "hiddenSystemSubtypes": {
+    "Init": "init",
+    "SessionStateChanged": "session_state_changed",
+    "TaskStarted": "task_started",
+    "TaskProgress": "task_progress",
+    "TaskNotification": "task_notification",
+    "TaskUpdated": "task_updated",
+    "BackgroundTasksChanged": "background_tasks_changed",
+    "ThinkingTokens": "thinking_tokens",
+    "PermissionCheckStatus": "permission_check_status",
+    "HookStarted": "hook_started",
+    "HookProgress": "hook_progress",
+    "CommandsChanged": "commands_changed",
+    "ElicitationComplete": "elicitation_complete",
+    "CodeChangePublished": "code_change_published",
+    "VcsStateChanged": "vcs_state_changed",
+    "DevIntent": "dev_intent",
+    "SessionTitleChanged": "session_title_changed",
+    "PerTurnEffortChanged": "per_turn_effort_changed",
+    "ModelRefusalNoFallback": "model_refusal_no_fallback",
+    "UiStatus": "ui_status",
+    "UiInvalidate": "ui_invalidate",
+    "UiPanes": "ui_panes",
+    "UiScroll": "ui_scroll",
+    "UiFocus": "ui_focus",
+    "FeedbackDraftQueued": "feedback_draft_queued",
+    "PeerMessageHold": "peer_message_hold",
+    "PostTurnSummary": "post_turn_summary",
+    "ApiMetrics": "api_metrics",
+    "TurnDuration": "turn_duration",
+    "FilesPersisted": "files_persisted",
+    "MemorySaved": "memory_saved",
+    "LocalCommandOutput": "local_command_output",
+    "LocalCommand": "local_command",
+    "PermissionRetry": "permission_retry",
+    "StopHookSummary": "stop_hook_summary",
+    "AwaySummary": "away_summary"
+  },
+  "informationalLevels": {
+    "Info": "info"
+  },
+  "hookOutcomes": {
+    "Error": "error"
   },
   "defaultMode": "Default",
   "frameKinds": {

@@ -1,78 +1,28 @@
 import type { CompactionDetails, NotificationEntry } from '../../../model/notification'
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import { CLAUDE_SYSTEM_SUBTYPE } from '~/generated/contracts/claude-protocol'
+import { CLAUDE_FRAME_KIND, CLAUDE_HIDDEN_SYSTEM_SUBTYPE, CLAUDE_HOOK_OUTCOME, CLAUDE_SYSTEM_SUBTYPE } from '~/generated/contracts/claude-protocol'
 import { NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
 import { isObject, pickNumber, pickString } from '~/lib/jsonPick'
 import { getInnerMessage } from '~/lib/messageParser'
 import { compactionMetaFromBoundary } from '../../../model/notification'
-import { humanizeWireWord } from '../../../rendererUtils'
 import { claudeRateLimitInfo } from '../rateLimits'
 
 /**
  * The `system` subtypes LeapMux draws nothing for.
  *
- * Claude Code sends a `system` row for every step of its own bookkeeping, and
- * most of them state something the transcript already shows or something only a
- * machine reads. Naming each one HERE, with its reason, is what keeps the
- * classifier and the entry table from disagreeing about which rows exist:
- *
- *   - `init`, `session_state_changed` -- session lifecycle the worker consumes.
- *   - `task_notification`, `task_updated`, `background_tasks_changed` -- the
- *     background-task registry, which the sidebar draws from its own store.
- *   - `thinking_tokens`, `api_metrics`, `turn_duration` -- telemetry. The
- *     turn-end divider already states the duration.
- *   - `hook_started`, `hook_progress`, `hook_response` -- a hook that BLOCKS a
- *     call reports itself in that call's own result, and the rest is noise at
- *     one row per hook per turn.
- *   - `files_persisted`, `memory_saved` -- a write the agent made to its own
- *     state, not to the workspace.
- *   - `elicitation_complete` -- the elicitation row already states the answer.
- *   - `local_command_output`, `local_command`, `informational`,
- *     `permission_retry`, `stop_hook_summary`, `away_summary` -- rows the
- *     command line interface draws in ITS transcript, whose content LeapMux
- *     shows through its own surfaces.
+ * The contract table is the one list. The Worker consumes or drops each entry
+ * before it stores a row, and this lookup hides the rows that an older build
+ * stored: the two sides must agree or a stored row draws a no-display card.
+ * The `_readme` of `contracts/claude-protocol.json` gives the reason for each
+ * entry.
  */
-const HIDDEN_SYSTEM_SUBTYPES: ReadonlySet<string> = new Set([
-  'init',
-  'session_state_changed',
-  'task_notification',
-  'task_updated',
-  'background_tasks_changed',
-  'thinking_tokens',
-  'api_metrics',
-  'turn_duration',
-  'hook_started',
-  'hook_progress',
-  'hook_response',
-  'files_persisted',
-  'memory_saved',
-  'elicitation_complete',
-  'local_command_output',
-  'local_command',
-  'informational',
-  'permission_retry',
-  'stop_hook_summary',
-  'away_summary',
-])
+const HIDDEN_SYSTEM_SUBTYPES: Record<string, true> = Object.fromEntries(
+  Object.values(CLAUDE_HIDDEN_SYSTEM_SUBTYPE).map(subtype => [subtype, true] as const),
+)
 
 /** Whether a `system` row of this subtype draws nothing at all. */
 export function claudeSystemSubtypeHidden(subtype: string): boolean {
-  return HIDDEN_SYSTEM_SUBTYPES.has(subtype)
-}
-
-/**
- * The summary Claude Code writes at the end of a turn.
- *
- * `status_category` says what state the turn left the work in -- blocked,
- * waiting, review_ready and failed all mean the reader has something to do -- so
- * it leads the line for every category but the one that says the work finished.
- */
-function postTurnSummaryText(m: Record<string, unknown>): string {
-  const title = pickString(m, 'title') || pickString(m, 'description')
-  if (!title)
-    return ''
-  const category = pickString(m, 'status_category')
-  return category && category !== 'completed' ? `${humanizeWireWord(category)}: ${title}` : title
+  return HIDDEN_SYSTEM_SUBTYPES[subtype] === true
 }
 
 /**
@@ -117,12 +67,139 @@ export function claudeCompactionBoundary(parsed: ParsedMessageContent): Compacti
   return isMicrocompactBoundary(inner) ? {} : null
 }
 
+/** Read the entries of one `system` frame of a known subtype. */
+type ClaudeSystemReader = (m: Record<string, unknown>) => NotificationEntry[]
+
+/** The line of a frame whose own `content` is the line that the interface shows. */
+function contentLine(m: Record<string, unknown>): NotificationEntry[] {
+  const text = pickString(m, 'content')
+  return text ? [{ kind: 'text', text }] : []
+}
+
+/** The line of a plugin's `ui_log` or `ui_toast` frame, led by the plugin. */
+function pluginLine(m: Record<string, unknown>): NotificationEntry[] {
+  const text = pickString(m, 'text')
+  if (!text)
+    return []
+  const plugin = pickString(m, 'plugin')
+  return [{ kind: 'text', text: plugin ? `${plugin}: ${text}` : text }]
+}
+
+/** Claude's API-retry status. Each optional field appears only when the frame states it. */
+function apiRetryEntries(m: Record<string, unknown>): NotificationEntry[] {
+  const errorStatus = m.error_status != null ? String(m.error_status) : ''
+  const attempt = pickNumber(m, 'attempt', undefined)
+  const maxAttempts = pickNumber(m, 'max_retries', undefined)
+  const delayMs = pickNumber(m, 'retry_delay_ms', undefined)
+  const error = [errorStatus, pickString(m, 'error')].filter(Boolean).join(' ') || undefined
+  return [{
+    kind: 'retry',
+    scope: 'api',
+    ...(attempt !== undefined ? { attempt } : {}),
+    ...(maxAttempts !== undefined ? { maxAttempts } : {}),
+    ...(delayMs !== undefined ? { delayMs } : {}),
+    ...(error !== undefined ? { error } : {}),
+  }]
+}
+
+/** A failed hook. A hook with any other outcome states nothing to show. */
+function hookResponseEntries(m: Record<string, unknown>): NotificationEntry[] {
+  if (pickString(m, 'outcome') !== CLAUDE_HOOK_OUTCOME.Error)
+    return []
+  const name = pickString(m, 'hook_name')
+  const subject = [pickString(m, 'hook_event'), name ? `(${name})` : ''].filter(Boolean).join(' ')
+  const exitCode = pickNumber(m, 'exit_code', undefined)
+  return [{
+    kind: 'text',
+    text: `Hook ${subject ? `${subject} ` : ''}failed${exitCode === undefined ? '' : ` (exit ${exitCode})`}`,
+  }]
+}
+
+/**
+ * The reader of each `system` subtype that draws a row, keyed by subtype.
+ *
+ * The table is also the list of the subtypes that this plugin knows. A reader
+ * returns no entry for a frame that states no words, and the classifier then
+ * hides the row (see {@link claudeReadsSystemSubtype}). A subtype that no entry
+ * here lists keeps the no-display card, because that card is the signal that a
+ * new frame exists.
+ *
+ * The `status` subtype is not here: only its `compacting` value has words, and
+ * {@link claudeNotificationEntry} reads that value before this table.
+ */
+const SYSTEM_SUBTYPE_READERS: Record<string, ClaudeSystemReader> = {
+  [CLAUDE_SYSTEM_SUBTYPE.ApiRetry]: apiRetryEntries,
+  [CLAUDE_SYSTEM_SUBTYPE.CompactBoundary]: m => [{ kind: 'compaction', phase: 'end', detail: compactionMetaFromBoundary(m) }],
+  [CLAUDE_SYSTEM_SUBTYPE.MicrocompactBoundary]: () => [{ kind: 'compaction', phase: 'end', micro: true }],
+  [CLAUDE_SYSTEM_SUBTYPE.PermissionDenied]: (m) => {
+    const tool = pickString(m, 'tool_name')
+    const reason = pickString(m, 'decision_reason') || pickString(m, 'message')
+    return [{ kind: 'text', text: [tool ? `Permission denied: ${tool}` : 'Permission denied', reason].filter(Boolean).join(' - ') }]
+  },
+  api_error: (m) => {
+    const detail = pickString(m, 'error') || pickString(m, 'message')
+    return [{ kind: 'text', text: detail ? `API error: ${detail}` : 'API error' }]
+  },
+  notification: (m) => {
+    // The "Error: " prefix alone states no error, so an empty text gets no line.
+    const text = pickString(m, 'text')
+    if (!text)
+      return []
+    return [{ kind: 'text', text: pickString(m, 'color') === 'error' ? `Error: ${text}` : text }]
+  },
+  [CLAUDE_SYSTEM_SUBTYPE.Informational]: contentLine,
+  memory_recall: (m) => {
+    // Claude Code 2.1.300 writes "Recalled N memories" for every scope. Its
+    // line adds "local" only when a feature flag is on, and that build always
+    // sets the flag off, so this line never adds it. A recall of no memory
+    // states nothing that happened.
+    const count = Array.isArray(m.memories) ? m.memories.filter(isObject).length : 0
+    return count > 0 ? [{ kind: 'text', text: `Recalled ${count} ${count === 1 ? 'memory' : 'memories'}` }] : []
+  },
+  [CLAUDE_SYSTEM_SUBTYPE.HookResponse]: hookResponseEntries,
+  ui_log: pluginLine,
+  ui_toast: pluginLine,
+  model_fallback: contentLine,
+  [CLAUDE_SYSTEM_SUBTYPE.ModelRefusalFallback]: contentLine,
+  [CLAUDE_SYSTEM_SUBTYPE.ModelConsentFallback]: contentLine,
+}
+
+/**
+ * The reader of one `system` subtype, or undefined for a subtype that this
+ * plugin does not know.
+ *
+ * `Object.hasOwn`, not a bare read: the subtype comes off the wire, and a value
+ * that spells an `Object.prototype` member would answer with a function that
+ * the caller would then run.
+ */
+function systemSubtypeReader(subtype: string): ClaudeSystemReader | undefined {
+  return Object.hasOwn(SYSTEM_SUBTYPE_READERS, subtype) ? SYSTEM_SUBTYPE_READERS[subtype] : undefined
+}
+
+/**
+ * Whether this plugin reads the words of a `system` subtype.
+ *
+ * The classifier asks this to choose the empty policy of a row. A known
+ * subtype that states no words hides. An unknown subtype keeps the no-display
+ * card.
+ */
+export function claudeReadsSystemSubtype(subtype: string): boolean {
+  return systemSubtypeReader(subtype) !== undefined
+}
+
 /**
  * Read one Claude notification frame into the shared notification model.
  *
- * Every shape here is Claude's own: the rate-limit event, the API-retry status, and
- * the three compaction boundaries. They used to sit in the shared notification switch,
- * where a second provider's frame could reach them by accident.
+ * Every shape here is Claude's own:
+ *
+ * - the rate-limit event
+ * - the `conversation_reset` frame of a transcript that an older Worker stored
+ * - the compaction status
+ * - each `system` subtype that {@link SYSTEM_SUBTYPE_READERS} lists
+ *
+ * They used to sit in the shared notification switch, where a second
+ * provider's frame could reach them by accident. A frame that states no words
+ * gets no entry.
  */
 export function claudeNotificationEntry(m: Record<string, unknown>): NotificationEntry[] {
   if (m.type === NOTIFICATION_TYPE.RateLimitEvent) {
@@ -135,45 +212,14 @@ export function claudeNotificationEntry(m: Record<string, unknown>): Notificatio
     }
     return info.status === 'allowed' ? [] : [{ kind: 'rate-limit', tiers: [claudeRateLimitInfo(info)] }]
   }
-  if (m.type === 'system' && m.subtype === CLAUDE_SYSTEM_SUBTYPE.ApiRetry) {
-    const errorStatus = m.error_status != null ? String(m.error_status) : ''
-    const attempt = pickNumber(m, 'attempt', undefined)
-    const maxAttempts = pickNumber(m, 'max_retries', undefined)
-    const delayMs = pickNumber(m, 'retry_delay_ms', undefined)
-    const error = [errorStatus, pickString(m, 'error')].filter(Boolean).join(' ') || undefined
-    return [{
-      kind: 'retry',
-      scope: 'api',
-      // Each optional half rides only when the frame stated it.
-      ...(attempt !== undefined ? { attempt } : {}),
-      ...(maxAttempts !== undefined ? { maxAttempts } : {}),
-      ...(delayMs !== undefined ? { delayMs } : {}),
-      ...(error !== undefined ? { error } : {}),
-    }]
-  }
   // `/clear`, and the plan exit that starts a fresh conversation. The worker
   // rewrites it into the neutral `context_cleared` type, so this branch serves a
   // transcript recorded before it did.
   if (m.type === 'conversation_reset')
     return [{ kind: 'context-cleared' }]
-  if (m.type === 'system' && m.subtype === 'post_turn_summary') {
-    const text = postTurnSummaryText(m)
-    return text ? [{ kind: 'text', text }] : []
-  }
-  if (m.type === 'system' && m.subtype === 'permission_denied') {
-    const tool = pickString(m, 'tool_name')
-    const reason = pickString(m, 'decision_reason') || pickString(m, 'message')
-    return [{ kind: 'text', text: [tool ? `Permission denied: ${tool}` : 'Permission denied', reason].filter(Boolean).join(' - ') }]
-  }
-  if (m.type === 'system' && m.subtype === 'api_error') {
-    const detail = pickString(m, 'error') || pickString(m, 'message')
-    return [{ kind: 'text', text: detail ? `API error: ${detail}` : 'API error' }]
-  }
+  if (m.type !== CLAUDE_FRAME_KIND.System)
+    return []
   if (isCompactingStatus(m))
     return [{ kind: 'compaction', phase: 'start' }]
-  if (isCompactBoundary(m))
-    return [{ kind: 'compaction', phase: 'end', detail: compactionMetaFromBoundary(m) }]
-  if (isMicrocompactBoundary(m))
-    return [{ kind: 'compaction', phase: 'end', micro: true }]
-  return []
+  return systemSubtypeReader(pickString(m, 'subtype'))?.(m) ?? []
 }

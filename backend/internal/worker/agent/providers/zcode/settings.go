@@ -819,13 +819,9 @@ type zcodeStatePatchBody struct {
 	zcodeSettingsSnapshot
 	Runtime *zcodeRuntimeState `json:"runtime"`
 	// Status is the only other session-scope key the build emits (reason
-	// `prompt_started`). It is named so the shape is documented, not consumed:
-	// turn.started/turn.completed already drive the turn state.
+	// `prompt_started`). The struct lists it to document the shape, and nothing
+	// reads it: turn.started/turn.completed already drive the turn state.
 	Status string `json:"status"`
-	// Goal is RAW for the reason the snapshot's is: a patch that changed
-	// something else omits the key entirely, and reporting an absent key as
-	// "no goal" would clear the goal on every settings change.
-	Goal json.RawMessage `json:"goal"`
 }
 
 // isCurrentZCodeSession reports whether sessionID is the session this agent
@@ -883,7 +879,7 @@ func (b *zcodeStatePatchBody) hasSettings() bool {
 // The plan flag is not here. ZCode's EnterPlanMode and ExitPlanMode tools change the
 // flag alone, and only the SessionModeChanged event reports that -- see
 // handleZCodeModeChanged.
-func (a *Agent) handleZCodeStateUpdated(params json.RawMessage, raw []byte) {
+func (a *Agent) handleZCodeStateUpdated(params json.RawMessage) {
 	defer a.queuePermissionApprovals()
 	if len(params) == 0 {
 		return
@@ -893,7 +889,7 @@ func (a *Agent) handleZCodeStateUpdated(params json.RawMessage, raw []byte) {
 		slog.Warn("zcode state.updated unmarshal failed", "agent_id", a.AgentID(), "error", err)
 		return
 	}
-	defer a.handleZCodeCompactionState(notif, raw)
+	defer a.handleZCodeCompactionState(notif)
 	if len(notif.Patch) == 0 {
 		return
 	}
@@ -904,31 +900,24 @@ func (a *Agent) handleZCodeStateUpdated(params json.RawMessage, raw []byte) {
 		slog.Debug("zcode state.updated patch not a session patch", "agent_id", a.AgentID(), "scope", notif.Scope)
 		return
 	}
-	// Only the session scope carries SESSION state. The workspace scope patches
-	// `modelCatalog`, and a workspace patch that happened to carry a `goal` key
-	// would otherwise reach the session goal -- a `"goal": null` there would
-	// clear a live goal and write a "Goal cleared" row for a change the user
-	// never made. The runtime state is session state for the same reason.
+	// Only session patches can change this agent's runtime and settings.
+	// A workspace patch updates the model catalog and must not change session state.
 	if notif.Scope != ScopeSession {
 		return
 	}
-	// And only THIS session's state. ClearContext mints a new session without
-	// stopping the old one, so a patch already in flight for the replaced
-	// session arrives after the swap; applying it resurrects the goal the user
-	// just cleared and writes a "Goal set" row for it. Reasonix guards the same
-	// hazard with IsCurrentSession and Codex with isMainThreadID.
+	// A context clear creates a new session without stopping the previous one.
+	// A late patch from the previous session must not change the current settings.
 	//
-	// An empty id cannot contradict the current session, so it passes -- the
-	// same rule those two guards use.
+	// An empty ID cannot contradict the current session, so it passes.
 	if !a.isCurrentZCodeSession(notif.SessionID) {
 		return
 	}
 	if body.Runtime != nil {
 		a.applyZCodeRuntimeState(body.Runtime)
 	}
-	// A patch reports a change as it happens, so it is NOT a snapshot: this is
-	// the path that announces a goal transition in the transcript.
-	a.reportZCodeGoal(body.Goal, false)
+	// A patch never states the goal. ZCode 3.14.5 sends a patch of `status`
+	// alone or of the settings, and its `target_changed` event announces each
+	// goal transition (handleZCodeGoalChanged).
 	body.dropStaleMode(notif.Reason, a.modeIsObserved())
 	// A patch that changed something this struct does not read carries no
 	// settings axis, and must not be mistaken for an all-absent settings patch.
@@ -953,9 +942,12 @@ func (a *Agent) handleZCodeStateUpdated(params json.RawMessage, raw []byte) {
 	})
 }
 
-// handleZCodeCompactionState stores the native state transition that the
-// settings snapshot alone cannot show. Completion also releases the queue turn.
-func (a *Agent) handleZCodeCompactionState(notif zcodeStatePatch, raw []byte) {
+// handleZCodeCompactionState reacts to a native compaction state transition.
+//
+// The compaction lifecycle events own the compaction rows now, so a `state.updated`
+// reason persists nothing: one row from both would draw the same rewrite twice.
+// The reason switch stays because a final one releases the queue turn.
+func (a *Agent) handleZCodeCompactionState(notif zcodeStatePatch) {
 	if notif.Scope != ScopeSession || !a.isCurrentZCodeSession(notif.SessionID) {
 		return
 	}
@@ -966,13 +958,6 @@ func (a *Agent) handleZCodeCompactionState(notif zcodeStatePatch, raw []byte) {
 		contracts.ZCodeStateReasonSessionCompactCancelled:
 	default:
 		return
-	}
-	if len(raw) > 0 {
-		if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{
-			Original: raw, AgentSessionID: notif.SessionID,
-		}, agent.SpanInfo{}); err != nil {
-			slog.Error("zcode persist compaction state", "agent_id", a.AgentID(), "error", err)
-		}
 	}
 	if notif.Reason != contracts.ZCodeStateReasonCompactStarted {
 		a.finishZCodeCompaction(notif.SessionID)

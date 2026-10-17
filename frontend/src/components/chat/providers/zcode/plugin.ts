@@ -2,7 +2,7 @@ import type { ProviderPlugin } from '../capabilities'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { registerProvider } from '../registry'
 import { classifyZCodeMessage } from './classification'
-import { zcodeNotificationEntry } from './extractors/notification'
+import { zcodeCompactionBoundary, zcodeNotificationEntry } from './extractors/notification'
 import { zcodeOutputFilePaths } from './extractors/outputFilePaths'
 import { zcodeResultDivider } from './extractors/resultDivider'
 import { zcodeExtractRow } from './extractors/row'
@@ -26,6 +26,7 @@ const zcodePlugin: ProviderPlugin = {
   controls: zcodeControls,
   session: {
     contextUsageFromMessage: zcodeContextUsageFromMessage,
+    compactionBoundaryFromMessage: zcodeCompactionBoundary,
   },
   configuration: zcodeConfiguration,
 }

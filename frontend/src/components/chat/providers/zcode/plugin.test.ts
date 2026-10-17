@@ -1,11 +1,12 @@
 import type { MessageCategory } from '../../messageClassifier'
 import type { ResolvedMessageContent } from '../../rowExtractionTypes'
 import { describe, expect, it } from 'vitest'
-import { ZCODE_EVENT, ZCODE_MODE, ZCODE_TOOL, ZCODE_TOOL_KIND } from '~/generated/contracts/zcode-protocol'
+import { ZCODE_COMPACTION_STATUS, ZCODE_EVENT, ZCODE_GOAL_VERIFICATION_STATUS, ZCODE_MODE, ZCODE_TOOL, ZCODE_TOOL_KIND } from '~/generated/contracts/zcode-protocol'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { renderDivider } from '~/test-support/messageRenderProbes'
 import { providerQuotableText, providerToolMeta } from '~/test-support/toolCallFixture'
 import { buildDenyResponse } from '~/utils/controlResponse'
+import { compactionContextTokens } from '../../notificationEntries'
 import { toolCallMeta } from '../../results/tools/meta'
 import { extractChatRow, extractedRow } from '../../rowExtraction'
 import { providerFor, resolveMessageForRendering } from '../registry'
@@ -78,6 +79,34 @@ describe('zcode plugin metadata', () => {
   // path -- so the UI must not try to render it as a file.
   it('does not treat the session id as a file path', () => {
     expect(plugin?.session?.sessionIdIsFilePath).toBeFalsy()
+  })
+
+  // An automatic compaction ends with no reply of its own, so the context meter
+  // reads the size after the rewrite from the compaction row. The registry
+  // dispatches to the hook: an extractor that the plugin does not register
+  // refreshes nothing.
+  it('refreshes the context meter from a completed compaction through the registry', () => {
+    const completed = event(ZCODE_EVENT.SessionUpdated, {
+      operationId: 'c1',
+      status: ZCODE_COMPACTION_STATUS.Completed,
+      trigger: 'auto',
+      preCompactTokenCount: 180000,
+      postCompactTokenCount: 12000,
+      truePostCompactTokenCount: 15000,
+    })
+    const started = event(ZCODE_EVENT.SessionUpdated, { operationId: 'c1', status: ZCODE_COMPACTION_STATUS.Started, trigger: 'auto' })
+    const verdict = event(ZCODE_EVENT.SessionUpdated, {
+      verificationId: 'v1',
+      targetId: 'g1',
+      goalIteration: 1,
+      status: ZCODE_GOAL_VERIFICATION_STATUS.Completed,
+      verification: { passed: true, reason: 'done' },
+    })
+    expect(compactionContextTokens(input(completed, undefined, AgentProvider.ZCODE), AgentProvider.ZCODE)).toBe(15000)
+    expect(compactionContextTokens(input(started, undefined, AgentProvider.ZCODE), AgentProvider.ZCODE)).toBeUndefined()
+    // A thread reads from its last member back, past a member with no size.
+    expect(compactionContextTokens(input(completed, { old_seqs: [], messages: [completed, verdict] }, AgentProvider.ZCODE), AgentProvider.ZCODE))
+      .toBe(15000)
   })
 
   // Composer send is the reject path (the placeholder says so). Allow lives on its
@@ -242,8 +271,10 @@ describe('zcode quotable text', () => {
 })
 
 describe('zcode contextUsageFromMessage', () => {
-  const usageRow = (usage: Record<string, unknown>): ResolvedMessageContent =>
-    parsedOf(event(ZCODE_EVENT.SessionUpdated, { usage }))
+  // Usage rides a model response: `content` beside a `stopReason` states the
+  // finished generation the counts belong to.
+  const usageRow = (usage: Record<string, unknown>, extra: Record<string, unknown> = {}): ResolvedMessageContent =>
+    parsedOf(event(ZCODE_EVENT.SessionUpdated, { content: 'done', stopReason: 'stop', usage, ...extra }))
 
   it('normalizes a usage snapshot onto the shared context-usage shape', () => {
     expect(plugin?.session?.contextUsageFromMessage!(usageRow({
@@ -279,6 +310,26 @@ describe('zcode contextUsageFromMessage', () => {
       cacheWriteTokens: 0,
       totalTokens: 0,
     }))).toBeNull()
+  })
+
+  // A side query is the app-server's own model call. Its cost is not what the turn
+  // did to the context, and putting it on the meter makes the gauge jump.
+  it('returns null for a side query even when it reports usage', () => {
+    expect(plugin?.session?.contextUsageFromMessage!(usageRow({
+      inputTokens: 100,
+      outputTokens: 10,
+      totalTokens: 110,
+    }, { querySource: 'target_completion_verification' }))).toBeNull()
+    expect(plugin?.session?.contextUsageFromMessage!(usageRow({
+      inputTokens: 100,
+      outputTokens: 10,
+      totalTokens: 110,
+    }, { querySource: 'subagent' }))).toBeNull()
+    expect(plugin?.session?.contextUsageFromMessage!(usageRow({
+      inputTokens: 100,
+      outputTokens: 10,
+      totalTokens: 110,
+    }, { stopReason: 'tool_internal' }))).toBeNull()
   })
 
   it('returns null for a session.updated with no usage and for another event type', () => {

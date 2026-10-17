@@ -183,6 +183,16 @@ export interface MockModelStep {
   /** Rate-limit headers and body fields on the answer. */
   rateLimits?: MockModelRateLimits
   /**
+   * The `response.metadata` entries of an `openai-responses` stream.
+   *
+   * The mock writes one `response.metadata` event per entry, right after
+   * `response.created` and before the step's hold: its gate or its delay. Codex
+   * reads a safety notice there while the held step still runs. A request that
+   * asks for no stream ignores these entries, and so does every other protocol.
+   * The list states at least one entry.
+   */
+  responseMetadata?: Record<string, unknown>[]
+  /**
    * Values that the answer copies from the request, keyed by placeholder name.
    *
    * Each value is a regular-expression source with one capture group. The
@@ -556,6 +566,9 @@ function parseStep(value: unknown, label: string): MockModelStep {
   const rateLimits = parseRateLimits(value.rateLimits, label)
   if (rateLimits && error)
     throw new Error(`Model ${label} cannot combine rateLimits with an error`)
+  const responseMetadata = parseResponseMetadata(value.responseMetadata, label)
+  if (responseMetadata && error)
+    throw new Error(`Model ${label} cannot combine responseMetadata with an error`)
   const step: MockModelStep = {
     ...(typeof value.reasoning === 'string' ? { reasoning: value.reasoning } : {}),
     ...(typeof value.text === 'string' ? { text: value.text } : {}),
@@ -566,6 +579,7 @@ function parseStep(value: unknown, label: string): MockModelStep {
     ...(stream === undefined ? {} : { stream }),
     ...(usage === undefined ? {} : { usage }),
     ...(rateLimits === undefined ? {} : { rateLimits }),
+    ...(responseMetadata === undefined ? {} : { responseMetadata }),
     ...(captures === undefined ? {} : { captures }),
   }
   if (!captures)
@@ -787,6 +801,27 @@ function parseRateLimits(value: unknown, label: string): MockModelRateLimits | u
   return rateLimits
 }
 
+/**
+ * Each entry as the mock writes it, one `response.metadata` event per entry.
+ *
+ * The parser refuses an empty list. Such a list states no event, but the server
+ * still writes the stream head of its step before the hold. A step therefore
+ * holds before its first byte unless it states at least one entry.
+ */
+function parseResponseMetadata(value: unknown, label: string): Record<string, unknown>[] | undefined {
+  if (value === undefined)
+    return undefined
+  if (!Array.isArray(value))
+    throw new Error(`Model ${label} responseMetadata must be an array`)
+  if (value.length === 0)
+    throw new Error(`Model ${label} responseMetadata must hold at least one entry`)
+  return value.map((entry, entryIndex) => {
+    if (!isObject(entry))
+      throw new Error(`Model ${label} responseMetadata entry ${entryIndex} must be an object`)
+    return entry
+  })
+}
+
 function parseToolCall(value: unknown, label: string, toolIndex: number): MockModelToolCall {
   if (!isObject(value) || typeof value.id !== 'string' || !value.id || typeof value.name !== 'string' || !value.name)
     throw new Error(`Model ${label} tool call ${toolIndex} needs id and name`)
@@ -865,8 +900,10 @@ function scenarioMarkers(text: string): string[] {
  * The texts of the user rows that can select a scenario, in conversation order. A Responses `input` string is one
  * user text. A Google row gives the text of its text parts. Another row gives its string content, or each `text` and
  * `input_text` block of its content, so a tool result block cannot select a scenario.
+ *
+ * A spec reads it to count the user rows of a recorded request that hold one prompt.
  */
-function scenarioUserTexts(protocol: MockModelProtocol, body: unknown): string[] {
+export function scenarioUserTexts(protocol: MockModelProtocol, body: unknown): string[] {
   if (protocol === 'aws-event-stream')
     return []
   const rows = requestRows(protocol, body)

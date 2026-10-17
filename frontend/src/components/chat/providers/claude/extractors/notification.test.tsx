@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
+import { CLAUDE_HIDDEN_SYSTEM_SUBTYPE, CLAUDE_SYSTEM_SUBTYPE } from '~/generated/contracts/claude-protocol'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { elementText, renderDivider, renderThreadElement } from '~/test-support/messageRenderProbes'
+import { claudeNotificationEntry, claudeReadsSystemSubtype } from './notification'
 
 // Side-effect import to register the Claude plugin so the shared
 // renderNotificationThread and the shared row extraction consult Claude's
@@ -239,5 +241,179 @@ describe('result_divider: Claude', () => {
   it('still renders a genuinely failed result red even when its text starts with the context-usage header', () => {
     const parsed = { type: 'result', is_error: true, result: '## Context Usage\nboom', duration_ms: 5 }
     expect(isRenderedAsError(parsed)).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// claudeNotificationEntry: the text of every frame that draws a row.
+// ---------------------------------------------------------------------------
+
+describe('claudeNotificationEntry', () => {
+  it('reads a notification frame and leads an error color with "Error:"', () => {
+    expect(claudeNotificationEntry({ type: 'system', subtype: 'notification', key: 'compact-error', text: 'Error compacting conversation', priority: 'high' }))
+      .toEqual([{ kind: 'text', text: 'Error compacting conversation' }])
+    // `color` is optional on the wire; "error" is the one value the interface colours red.
+    expect(claudeNotificationEntry({ type: 'system', subtype: 'notification', key: 'compact-error', text: 'Error compacting conversation', priority: 'high', color: 'error' }))
+      .toEqual([{ kind: 'text', text: 'Error: Error compacting conversation' }])
+  })
+
+  it('states nothing for an error notification with no text', () => {
+    // The prefix alone states no error, so the frame gets no "Error: " line.
+    expect(claudeNotificationEntry({ type: 'system', subtype: 'notification', key: 'compact-error', text: '', priority: 'high', color: 'error' }))
+      .toEqual([])
+    expect(claudeNotificationEntry({ type: 'system', subtype: 'notification', key: 'compact-error', priority: 'high', color: 'error' }))
+      .toEqual([])
+  })
+
+  it('reads an informational frame', () => {
+    expect(claudeNotificationEntry({ type: 'system', subtype: 'informational', content: 'Stop hook failed: boom', level: 'warning' }))
+      .toEqual([{ kind: 'text', text: 'Stop hook failed: boom' }])
+  })
+
+  it('reads a memory_recall frame as the count of recalled memories', () => {
+    // Claude Code 2.1.300 writes "Recalled N memories" for every scope. It adds
+    // "local" only when a feature flag is on, and that build always sets the
+    // flag off.
+    expect(claudeNotificationEntry({ type: 'system', subtype: 'memory_recall', mode: 'select', memories: [{ path: '/m/a.md', scope: 'personal' }, { path: '/m/b.md', scope: 'personal' }] }))
+      .toEqual([{ kind: 'text', text: 'Recalled 2 memories' }])
+    expect(claudeNotificationEntry({ type: 'system', subtype: 'memory_recall', mode: 'select', memories: [{ path: '/m/a.md', scope: 'personal' }, { path: 'https://corp.example/mem/b', scope: 'organization' }] }))
+      .toEqual([{ kind: 'text', text: 'Recalled 2 memories' }])
+    expect(claudeNotificationEntry({ type: 'system', subtype: 'memory_recall', mode: 'select', memories: [{ path: '/m/a.md', scope: 'personal' }] }))
+      .toEqual([{ kind: 'text', text: 'Recalled 1 memory' }])
+  })
+
+  it('states nothing for a memory_recall frame that recalls no memory', () => {
+    // "Recalled 0 memories" states nothing that happened.
+    expect(claudeNotificationEntry({ type: 'system', subtype: 'memory_recall', mode: 'select', memories: [] }))
+      .toEqual([])
+    // `memories` that is absent or not a list reads as no memory.
+    expect(claudeNotificationEntry({ type: 'system', subtype: 'memory_recall', mode: 'select' }))
+      .toEqual([])
+    expect(claudeNotificationEntry({ type: 'system', subtype: 'memory_recall', mode: 'select', memories: 'a.md' }))
+      .toEqual([])
+    // An element that is not an object is not a memory.
+    expect(claudeNotificationEntry({ type: 'system', subtype: 'memory_recall', mode: 'select', memories: ['a.md', null] }))
+      .toEqual([])
+  })
+
+  it('reads a failing hook_response and omits a missing exit code', () => {
+    expect(claudeNotificationEntry({ type: 'system', subtype: 'hook_response', hook_id: 'h1', hook_name: 'setup.sh', hook_event: 'SessionStart', output: '', stdout: '', stderr: 'boom', exit_code: 2, outcome: 'error' }))
+      .toEqual([{ kind: 'text', text: 'Hook SessionStart (setup.sh) failed (exit 2)' }])
+    // `exit_code` is optional on the wire.
+    expect(claudeNotificationEntry({ type: 'system', subtype: 'hook_response', hook_id: 'h1', hook_name: 'setup.sh', hook_event: 'SessionStart', output: '', stdout: '', stderr: 'boom', outcome: 'error' }))
+      .toEqual([{ kind: 'text', text: 'Hook SessionStart (setup.sh) failed' }])
+    expect(claudeNotificationEntry({ type: 'system', subtype: 'hook_response', hook_id: 'h1', hook_name: 'setup.sh', hook_event: 'SessionStart', output: '', stdout: '', stderr: '', exit_code: 0, outcome: 'success' }))
+      .toEqual([])
+    expect(claudeNotificationEntry({ type: 'system', subtype: 'hook_response', hook_id: 'h1', hook_name: 'setup.sh', hook_event: 'SessionStart', outcome: 'cancelled' }))
+      .toEqual([])
+  })
+
+  it('reads a failing hook_response that states no event or no name', () => {
+    // The row never shows an empty pair of brackets or a double space.
+    expect(claudeNotificationEntry({ type: 'system', subtype: 'hook_response', hook_id: 'h1', hook_event: 'SessionStart', outcome: 'error', exit_code: 1 }))
+      .toEqual([{ kind: 'text', text: 'Hook SessionStart failed (exit 1)' }])
+    expect(claudeNotificationEntry({ type: 'system', subtype: 'hook_response', hook_id: 'h1', hook_name: 'setup.sh', outcome: 'error' }))
+      .toEqual([{ kind: 'text', text: 'Hook (setup.sh) failed' }])
+    expect(claudeNotificationEntry({ type: 'system', subtype: 'hook_response', hook_id: 'h1', outcome: 'error' }))
+      .toEqual([{ kind: 'text', text: 'Hook failed' }])
+  })
+
+  it('reads ui_log and ui_toast frames', () => {
+    expect(claudeNotificationEntry({ type: 'system', subtype: 'ui_log', plugin: 'my-plugin', text: 'hello' }))
+      .toEqual([{ kind: 'text', text: 'my-plugin: hello' }])
+    expect(claudeNotificationEntry({ type: 'system', subtype: 'ui_toast', plugin: 'my-plugin', text: 'hello', timeout_ms: 3000 }))
+      .toEqual([{ kind: 'text', text: 'my-plugin: hello' }])
+    // A frame that states no plugin shows its text without an empty prefix.
+    expect(claudeNotificationEntry({ type: 'system', subtype: 'ui_log', text: 'hello' }))
+      .toEqual([{ kind: 'text', text: 'hello' }])
+  })
+
+  it('reads each model fallback frame', () => {
+    for (const subtype of ['model_fallback', 'model_refusal_fallback', 'model_consent_fallback']) {
+      expect(claudeNotificationEntry({ type: 'system', subtype, original_model: 'claude-opus-5-5', fallback_model: 'claude-sonnet-5-5', content: 'Switched to claude-sonnet-5-5' }), subtype)
+        .toEqual([{ kind: 'text', text: 'Switched to claude-sonnet-5-5' }])
+    }
+  })
+
+  it('reads an api_retry frame, with only the optional fields that it states', () => {
+    expect(claudeNotificationEntry({ type: 'system', subtype: 'api_retry', attempt: 2, max_retries: 5, retry_delay_ms: 4000, error_status: 529, error: 'overloaded' }))
+      .toEqual([{ kind: 'retry', scope: 'api', attempt: 2, maxAttempts: 5, delayMs: 4000, error: '529 overloaded' }])
+    expect(claudeNotificationEntry({ type: 'system', subtype: 'api_retry' }))
+      .toEqual([{ kind: 'retry', scope: 'api' }])
+  })
+
+  // `/clear`, and the plan exit that starts a fresh conversation. The worker
+  // rewrites it into the neutral `context_cleared` type; a transcript recorded
+  // before that still carries the frame.
+  it('reads a conversation_reset frame as the context-cleared row', () => {
+    expect(claudeNotificationEntry({ type: 'conversation_reset', new_conversation_id: 'conv-2' }))
+      .toEqual([{ kind: 'context-cleared' }])
+  })
+
+  it('reads a permission_denied frame with and without its tool and reason', () => {
+    expect(claudeNotificationEntry({ type: 'system', subtype: 'permission_denied', tool_name: 'Bash', decision_reason: 'the command removes a directory' }))
+      .toEqual([{ kind: 'text', text: 'Permission denied: Bash - the command removes a directory' }])
+    expect(claudeNotificationEntry({ type: 'system', subtype: 'permission_denied', message: 'no reason given' }))
+      .toEqual([{ kind: 'text', text: 'Permission denied - no reason given' }])
+    expect(claudeNotificationEntry({ type: 'system', subtype: 'permission_denied' }))
+      .toEqual([{ kind: 'text', text: 'Permission denied' }])
+  })
+
+  it('reads an api_error frame and falls back to its bare words', () => {
+    expect(claudeNotificationEntry({ type: 'system', subtype: 'api_error', error: 'overloaded' }))
+      .toEqual([{ kind: 'text', text: 'API error: overloaded' }])
+    expect(claudeNotificationEntry({ type: 'system', subtype: 'api_error', message: 'boom' }))
+      .toEqual([{ kind: 'text', text: 'API error: boom' }])
+    expect(claudeNotificationEntry({ type: 'system', subtype: 'api_error' }))
+      .toEqual([{ kind: 'text', text: 'API error' }])
+  })
+
+  // A frame that carries no words gets no entry: an empty notification is worse
+  // than none. The classifier then hides the row of a subtype that this reader
+  // knows (claudeReadsSystemSubtype). The `post_turn_summary` frame states its
+  // summary in fields that no reader shows, and the hidden-subtype table hides
+  // its row before this reader runs.
+  it('states nothing for a frame whose words are empty', () => {
+    expect(claudeNotificationEntry({ type: 'system', subtype: 'notification', text: '' })).toEqual([])
+    expect(claudeNotificationEntry({ type: 'system', subtype: 'informational', content: '' })).toEqual([])
+    expect(claudeNotificationEntry({ type: 'system', subtype: 'ui_log', plugin: 'my-plugin', text: '' })).toEqual([])
+    expect(claudeNotificationEntry({ type: 'system', subtype: 'model_fallback', content: '' })).toEqual([])
+    expect(claudeNotificationEntry({ type: 'system', subtype: 'post_turn_summary', summary: 'said things' })).toEqual([])
+  })
+
+  it('states nothing for a frame of an unknown subtype or type', () => {
+    expect(claudeNotificationEntry({ type: 'system', subtype: 'some_future_event', text: 'hello' })).toEqual([])
+    expect(claudeNotificationEntry({ type: 'system' })).toEqual([])
+    expect(claudeNotificationEntry({ type: 'some_future_type', subtype: 'notification', text: 'hello' })).toEqual([])
+  })
+})
+
+describe('claudeReadsSystemSubtype', () => {
+  it('knows each subtype that draws its own words', () => {
+    for (const subtype of [
+      ...Object.values(CLAUDE_SYSTEM_SUBTYPE),
+      'api_error',
+      'notification',
+      'memory_recall',
+      'ui_log',
+      'ui_toast',
+      'model_fallback',
+    ]) {
+      expect(claudeReadsSystemSubtype(subtype), subtype).toBe(true)
+    }
+  })
+
+  it('does not know an unknown subtype, the status subtype, or a key of the object prototype', () => {
+    // `status` has words only at `compacting`, so another value of it must keep
+    // the no-display card. A prototype key off the wire must not read as known.
+    for (const subtype of ['some_future_event', '', 'status', 'toString', 'constructor', '__proto__'])
+      expect(claudeReadsSystemSubtype(subtype), subtype).toBe(false)
+  })
+
+  it('knows no subtype that the hidden table lists', () => {
+    // A subtype is read or hidden, never both: a hidden subtype never reaches
+    // the reader, so a reader for it would be dead code.
+    for (const subtype of Object.values(CLAUDE_HIDDEN_SYSTEM_SUBTYPE))
+      expect(claudeReadsSystemSubtype(subtype), subtype).toBe(false)
   })
 })

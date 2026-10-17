@@ -546,6 +546,7 @@ func TestZCodeClearContext_OpensAFreshSessionAndDropsPerSessionState(t *testing.
 	a.toolCalls["call-1"] = &zcodeToolCall{name: "Bash", input: json.RawMessage(`{"command":"ls"}`), final: true}
 	a.pendingControls["req-1"] = newPendingControl(json.RawMessage(`{"type":"control_request"}`))
 	a.latestContextUsage = map[string]any{"context_tokens": int64(12)}
+	a.lastGoalUpdate = agent.GoalUpdate{NativeID: "g1", Objective: "Ship it", Status: agent.GoalStatusActive}
 	a.Mu.Unlock()
 	a.children.rememberChild("spawn-1", "sub-1", "child-1")
 	a.children.rememberTitle("spawn-2", "a title")
@@ -577,6 +578,9 @@ func TestZCodeClearContext_OpensAFreshSessionAndDropsPerSessionState(t *testing.
 	assert.Empty(t, a.toolCalls, "one record per call, so a session replace drops every fact about it")
 	assert.Empty(t, a.pendingControls)
 	assert.Nil(t, a.latestContextUsage)
+	// The goal goes with the session. A goal check of the replaced session must
+	// not mark the cleared goal on the card of the fresh one.
+	assert.Zero(t, a.lastGoalUpdate)
 	// The subagent index goes with the session too. A tool-call id that the replaced
 	// session was still running never reaches a result, so an entry left here would
 	// route the next session's row into a transcript that belongs to a conversation

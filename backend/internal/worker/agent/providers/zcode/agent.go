@@ -141,6 +141,10 @@ type Agent struct {
 	// reconnecting frontend can be rehydrated from the persisted turn end.
 	latestContextUsage map[string]any
 	contextWindow      int64
+	// lastGoalUpdate is the last goal this agent reported. The goal check's
+	// lifecycle re-reports that goal with its own StatusDetail, so the verifier's
+	// "verifying" rides the same objective and status the card already shows.
+	lastGoalUpdate agent.GoalUpdate
 	// sessionCostUsd is the accrued cost the app-server reports on
 	// runtime.contextUsage. sessionCostKnown distinguishes "no cost reported" from a
 	// genuine zero, which a free plan does report.

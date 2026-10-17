@@ -166,7 +166,12 @@ func TestCodexStartOrResumeThread(t *testing.T) {
 func TestCodexClearContextStartsFreshThread(t *testing.T) {
 	t.Parallel()
 
+	unsubscribed := make(chan struct{})
 	a, sink, requests := newCodexAgentForRPC(t, func(method string) agenttest.RPCReply {
+		if method == "thread/unsubscribe" {
+			close(unsubscribed)
+			return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+		}
 		require.Equal(t, "thread/start", method)
 		return agenttest.RPCReply{Result: json.RawMessage(`{
 			"thread":{"id":"thread-new"},
@@ -178,7 +183,7 @@ func TestCodexClearContextStartsFreshThread(t *testing.T) {
 		}`)}
 	})
 	a.threadID = "thread-old"
-	a.turnID = "turn-old"
+	a.mainTurn.id = "turn-old"
 	a.turnSawPlan = true
 	a.turnPlanText = "old plan"
 	a.turnAssistantText = "old answer"
@@ -192,7 +197,7 @@ func TestCodexClearContextStartsFreshThread(t *testing.T) {
 	require.NoError(t, clearErr)
 	assert.Equal(t, "thread-new", sessionID)
 	assert.Equal(t, "thread-new", a.threadID)
-	assert.Empty(t, a.turnID)
+	assert.Empty(t, a.mainTurn.id)
 	assert.False(t, a.turnSawPlan)
 	assert.Empty(t, a.turnPlanText)
 	assert.Empty(t, a.turnAssistantText)
@@ -201,8 +206,9 @@ func TestCodexClearContextStartsFreshThread(t *testing.T) {
 	assert.True(t, a.permissionsAcknowledged, "the new thread's response acknowledges its settings")
 	assert.Equal(t, "thread-new", sink.LastSessionID())
 
+	<-unsubscribed
 	sent := requests()
-	require.Len(t, sent, 1)
+	require.Len(t, sent, 2)
 	assert.Equal(t, "thread/start", sent[0].Method)
 	assert.NotContains(t, sent[0].Params, "threadId", "a clear must not resume the old thread")
 	assert.Equal(t, "clear", sent[0].Params["sessionStartSource"])
@@ -213,6 +219,11 @@ func TestCodexClearContextStartsFreshThread(t *testing.T) {
 	assert.NotContains(t, sent[0].Params, "sandbox")
 	assert.Equal(t, ServiceTierFast, sent[0].Params["serviceTier"])
 	assert.Equal(t, map[string]interface{}{"model_reasoning_summary": "detailed"}, sent[0].Params["config"])
+	// The replaced thread is retired, so its frames reach no transcript. The
+	// unsubscribe tells Codex to stop sending them, and Codex can then unload
+	// the thread.
+	assert.Equal(t, "thread/unsubscribe", sent[1].Method)
+	assert.Equal(t, "thread-old", sent[1].Params["threadId"])
 }
 
 func TestCodexClearContextDoesNotRouteLateChildOutputToTheNewRoot(t *testing.T) {

@@ -145,7 +145,7 @@ func newCommandStopAgent(t *testing.T, reply func(capturedCodexStopRequest) agen
 			AgentID: "command-stop", ProviderName: "codex", Ctx: ctx, Cancel: cancel,
 			Stdin: agenttest.NopStdin(writer), APITimeout: 30 * time.Second,
 		})},
-		sink: agent.NewProviderServices(sink), threadID: "root-thread", turnID: "current-turn",
+		sink: agent.NewProviderServices(sink), threadID: "root-thread", mainTurn: codexMainTurn{id: "current-turn"},
 	}
 	return a, sink, func() []capturedCodexStopRequest {
 		mu.Lock()

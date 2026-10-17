@@ -3,6 +3,7 @@ package codex
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"regexp"
@@ -16,22 +17,56 @@ import (
 
 const codexRawExecutionLimit = 128
 
+// Raw item types and the code-mode tool that only Go reads. The contract
+// tables hold the exec vocabulary that the browser reads also.
+const (
+	codexRawItemFunctionCall       = "function_call"
+	codexRawItemFunctionCallOutput = "function_call_output"
+	codexRawToolWait               = "wait"
+)
+
 type codexRawExecutionKey struct {
 	threadID string
 	turnID   string
 	callID   string
 }
 
+// codexRawExecutionCall is one code-mode cell: the exec call that starts it,
+// and the wait calls that read the rest of its output after it yields.
 type codexRawExecutionCall struct {
 	request       agent.MessageContent
 	output        agent.MessageContent
 	owner         agent.TranscriptOwner
 	sink          agent.ProviderServices
-	suppressed    bool
+	commands      map[codexStoredCommandResult]struct{}
 	completed     bool
 	requestStored bool
 	color         int32
 	order         uint64
+	// cellID identifies the cell after the exec output yields. It is empty
+	// for a cell that ended in its exec output.
+	cellID string
+	// waits holds the call ID of each wait on the cell that has no output yet.
+	waits map[string]struct{}
+	// continuations holds the `output` value of each wait output, in order.
+	// Each yield returns only the output since the yield before it.
+	continuations []json.RawMessage
+	// ended reports that an output stated a final status. The final status
+	// decides the card once, and a later retry only writes it again.
+	ended bool
+}
+
+// awaited reports whether the model waits on the cell now: before the exec
+// output, and inside a wait. Codex omits the parent of a nested tool call, so
+// a typed tool event covers the cell only in these intervals. A tool call that
+// the model makes while the cell runs in the background is not the cell's.
+func (call *codexRawExecutionCall) awaited() bool {
+	return !call.completed && (call.output.Original == nil || len(call.waits) > 0)
+}
+
+// outputs returns every output of the cell in order, from its exec output.
+func (call *codexRawExecutionCall) outputs(execOutput json.RawMessage) []json.RawMessage {
+	return append([]json.RawMessage{execOutput}, call.continuations...)
 }
 
 // Buffer native requests until output determines whether another tool row overlaps them.
@@ -39,16 +74,7 @@ func (a *Agent) handleCodexRawExecution(raw, params json.RawMessage) {
 	var envelope contracts.CodexRawExecutionParams
 	var item contracts.CodexRawExecutionItem
 	if json.Unmarshal(params, &envelope) != nil || envelope.ThreadID == "" || envelope.TurnID == "" ||
-		json.Unmarshal(envelope.Item, &item) != nil || item.CallID == "" ||
-		(item.Type != contracts.CodexRawItemCustomToolCall && item.Type != contracts.CodexRawItemCustomToolCallOutput) {
-		return
-	}
-	if item.Type == contracts.CodexRawItemCustomToolCall &&
-		(item.Name != contracts.CodexRawToolExec || item.Input == nil) {
-		return
-	}
-	if (item.Namespace != "" && item.Namespace != contracts.CodexRawNamespaceFunctions) ||
-		(item.Type == contracts.CodexRawItemCustomToolCallOutput && item.Name != "" && item.Name != contracts.CodexRawToolExec) {
+		json.Unmarshal(envelope.Item, &item) != nil || item.CallID == "" || !codexRawExecutionItemAccepted(item) {
 		return
 	}
 	sink := a.sink
@@ -56,16 +82,20 @@ func (a *Agent) handleCodexRawExecution(raw, params json.RawMessage) {
 	if !mainThread {
 		route, ok := a.ensureCodexChildRoute(envelope.ThreadID)
 		if !ok {
-			a.enqueuePendingCodexChildEvent(envelope.ThreadID, codexPendingChildEvent{
-				kind: codexPendingRawExecution, raw: append(json.RawMessage(nil), raw...), params: append(json.RawMessage(nil), params...),
-			})
+			// Any function_call_output can arrive, so the queue keeps only the
+			// output of a wait call that it holds already.
+			if item.Type != codexRawItemFunctionCallOutput || a.pendingCodexChildWait(envelope.ThreadID, item.CallID) {
+				a.enqueuePendingCodexChildEvent(envelope.ThreadID, codexPendingChildEvent{
+					kind: codexPendingRawExecution, raw: append(json.RawMessage(nil), raw...), params: append(json.RawMessage(nil), params...),
+				})
+			}
 			return
 		}
 		a.replayPendingCodexChildEvents(envelope.ThreadID, route)
 		sink = route.childSink
 	}
 	a.Mu.Lock()
-	turnID := a.turnID
+	turnID := a.mainTurn.id
 	if !mainThread {
 		if state := a.collabChildren[envelope.ThreadID]; state != nil {
 			turnID = state.turnID
@@ -75,98 +105,441 @@ func (a *Agent) handleCodexRawExecution(raw, params json.RawMessage) {
 	}
 	key := codexRawExecutionKey{threadID: envelope.ThreadID, turnID: envelope.TurnID, callID: item.CallID}
 	a.Mu.Unlock()
-	call := a.rawExecutionCalls[key]
 	if turnID == "" || turnID != envelope.TurnID {
 		return
 	}
-	if item.Type == contracts.CodexRawItemCustomToolCall {
-		if call != nil {
-			return
-		}
-		if a.rawExecutionCalls == nil {
-			a.rawExecutionCalls = make(map[codexRawExecutionKey]*codexRawExecutionCall)
-		}
-		if len(a.rawExecutionCalls) >= codexRawExecutionLimit {
-			var oldest codexRawExecutionKey
-			var oldestCall *codexRawExecutionCall
-			for candidate, tracked := range a.rawExecutionCalls {
-				if oldestCall == nil || tracked.order < oldestCall.order {
-					oldest, oldestCall = candidate, tracked
-				}
-			}
-			delete(a.rawExecutionCalls, oldest)
-		}
-		// Capture the owner now. Capture row geometry only when the pair reaches storage.
-		captured := sink.CaptureMessage(agent.MessageContent{}, agent.SpanInfo{})
-		a.rawExecutionCalls[key] = &codexRawExecutionCall{
-			request: agent.MessageContent{Original: append([]byte(nil), raw...), AgentSessionID: captured.AgentSessionID},
-			sink:    sink, order: a.rawExecutionOrder,
-		}
-		if captured.Publication != nil {
-			a.rawExecutionCalls[key].owner = captured.Publication.Owner()
-		}
-		a.rawExecutionOrder++
+	switch item.Type {
+	case contracts.CodexRawItemCustomToolCall:
+		a.startCodexRawExecution(key, raw, sink)
+	case contracts.CodexRawItemCustomToolCallOutput:
+		a.handleCodexExecOutput(key, raw, item.Output)
+	case codexRawItemFunctionCall:
+		a.startCodexCellWait(key, envelope.Item)
+	case codexRawItemFunctionCallOutput:
+		a.handleCodexCellWaitOutput(key, item.Output)
+	}
+}
+
+// codexRawExecutionItemAccepted reports whether one raw item can belong to a
+// code-mode cell: an exec call, an exec output, a wait call, or a function
+// output that can answer a wait. The call ID decides the last one later.
+func codexRawExecutionItemAccepted(item contracts.CodexRawExecutionItem) bool {
+	if item.Namespace != "" && item.Namespace != contracts.CodexRawNamespaceFunctions {
+		return false
+	}
+	switch item.Type {
+	case contracts.CodexRawItemCustomToolCall:
+		return item.Name == contracts.CodexRawToolExec && item.Input != nil
+	case contracts.CodexRawItemCustomToolCallOutput:
+		return item.Name == "" || item.Name == contracts.CodexRawToolExec
+	case codexRawItemFunctionCall:
+		return item.Name == codexRawToolWait
+	case codexRawItemFunctionCallOutput:
+		return item.Name == "" || item.Name == codexRawToolWait
+	default:
+		return false
+	}
+}
+
+// startCodexRawExecution records one exec request. Its row waits for the end
+// of the cell, because a nested typed tool row can still cover the cell.
+func (a *Agent) startCodexRawExecution(key codexRawExecutionKey, raw json.RawMessage, sink agent.ProviderServices) {
+	if a.rawExecutionCalls[key] != nil {
 		return
 	}
+	if a.rawExecutionCalls == nil {
+		a.rawExecutionCalls = make(map[codexRawExecutionKey]*codexRawExecutionCall)
+	}
+	if len(a.rawExecutionCalls) >= codexRawExecutionLimit {
+		var oldest codexRawExecutionKey
+		var oldestCall *codexRawExecutionCall
+		for candidate, tracked := range a.rawExecutionCalls {
+			if oldestCall == nil || tracked.order < oldestCall.order {
+				oldest, oldestCall = candidate, tracked
+			}
+		}
+		a.finishCodexRawExecution(oldest, agent.MessageCompletionInterrupted)
+	}
+	// Capture the owner now. Capture row geometry only when the pair reaches storage.
+	captured := sink.CaptureMessage(agent.MessageContent{}, agent.SpanInfo{})
+	call := &codexRawExecutionCall{
+		request: agent.MessageContent{Original: append([]byte(nil), raw...), AgentSessionID: captured.AgentSessionID},
+		sink:    sink, order: a.rawExecutionOrder,
+	}
+	if captured.Publication != nil {
+		call.owner = captured.Publication.Owner()
+	}
+	a.rawExecutionCalls[key] = call
+	a.rawExecutionOrder++
+}
 
-	output := bytes.TrimSpace(item.Output)
-	if call == nil || call.completed || len(output) == 0 || (output[0] != '"' && output[0] != '[') {
+// handleCodexExecOutput reads the exec output. A yield keeps the cell open
+// for its wait calls. A final status ends the cell.
+func (a *Agent) handleCodexExecOutput(key codexRawExecutionKey, raw, output json.RawMessage) {
+	call := a.rawExecutionCalls[key]
+	if call == nil || call.completed || !codexRawOutputWellFormed(output) {
 		return
 	}
 	if call.output.Original == nil {
-		if call.suppressed || codexSuppressRawExecutionOutput(item.Output) {
-			call.release()
+		call.output = agent.MessageContent{Original: append([]byte(nil), raw...), AgentSessionID: call.request.AgentSessionID}
+		segment := parseCodexExecSegment(output, call.commands)
+		if segment.running {
+			call.cellID = segment.cellID
 			return
 		}
-		call.output = agent.MessageContent{Original: append([]byte(nil), raw...), AgentSessionID: call.request.AgentSessionID}
+		if a.endCodexCell(call, output, segment) {
+			return
+		}
 	}
-	a.persistCodexRawExecution(key, call)
+	// A repeated exec output of a cell that still runs changes nothing. A
+	// repeated output of an ended cell retries a failed write.
+	if call.ended {
+		a.persistCodexRawExecution(key, call)
+	}
 }
 
-const codexExecTimingOutputPattern = `\nWall time \d+(?:\.\d+)? seconds(?: \(code-mode [\d.]+ seconds; overhead -?[\d.]+ seconds\))?\nOutput:\n$`
+// startCodexCellWait records a wait call on a cell that still runs. A wait on
+// a cell that LeapMux does not track writes nothing.
+func (a *Agent) startCodexCellWait(key codexRawExecutionKey, rawItem json.RawMessage) {
+	var item struct {
+		Arguments string `json:"arguments"`
+	}
+	var arguments struct {
+		CellID string `json:"cell_id"`
+	}
+	if json.Unmarshal(rawItem, &item) != nil || json.Unmarshal([]byte(item.Arguments), &arguments) != nil || arguments.CellID == "" {
+		return
+	}
+	for cellKey, call := range a.rawExecutionCalls {
+		if cellKey.threadID != key.threadID || cellKey.turnID != key.turnID || call.cellID != arguments.CellID ||
+			call.completed || call.ended {
+			continue
+		}
+		if call.waits == nil {
+			call.waits = make(map[string]struct{})
+		}
+		call.waits[key.callID] = struct{}{}
+		return
+	}
+}
 
-var codexCompletedExecHeader = regexp.MustCompile(`^` + regexp.QuoteMeta(contracts.CodexExecOutputCompletedHeader) + codexExecTimingOutputPattern)
+// handleCodexCellWaitOutput reads one wait output. The output joins the cell
+// that the wait targets. A yield keeps the cell open, and a final status ends it.
+func (a *Agent) handleCodexCellWaitOutput(waitKey codexRawExecutionKey, output json.RawMessage) {
+	if !codexRawOutputWellFormed(output) {
+		return
+	}
+	for key, call := range a.rawExecutionCalls {
+		if key.threadID != waitKey.threadID || key.turnID != waitKey.turnID {
+			continue
+		}
+		if _, waiting := call.waits[waitKey.callID]; !waiting {
+			continue
+		}
+		delete(call.waits, waitKey.callID)
+		if call.completed || call.ended {
+			return
+		}
+		call.continuations = append(call.continuations, append(json.RawMessage(nil), bytes.TrimSpace(output)...))
+		segment := parseCodexExecSegment(output, call.commands)
+		if segment.running {
+			return
+		}
+		if !a.endCodexCell(call, nil, segment) {
+			a.persistCodexRawExecution(key, call)
+		}
+		return
+	}
+}
 
-var codexEmptyYieldHeader = regexp.MustCompile(`^Script running with cell ID \S+` + codexExecTimingOutputPattern)
+// endCodexCell records that the cell ended and decides its card once. It
+// reports true when the rule suppresses the card. execOutput is the exec output
+// when the caller holds it decoded, or nil to read it from the stored frame.
+func (a *Agent) endCodexCell(call *codexRawExecutionCall, execOutput json.RawMessage, last codexExecSegment) bool {
+	call.ended = true
+	if execOutput == nil {
+		execOutput = codexStoredExecOutput(call.output.Original)
+	}
+	outputs := call.outputs(execOutput)
+	if last.completed && max(last.content, codexCellContent(outputs[:len(outputs)-1], call.commands)) == codexExecContentPolls {
+		call.release()
+		return true
+	}
+	return false
+}
 
-// Suppress empty yielded status and successful output made entirely of empty shell-poll receipts.
-// After a completed header, each printed block must hold an empty poll (see codexEmptyPollValue).
-func codexSuppressRawExecutionOutput(raw json.RawMessage) bool {
+// codexStoredExecOutput reads the `output` value of a stored exec output frame.
+func codexStoredExecOutput(frame []byte) json.RawMessage {
+	var decoded struct {
+		Params contracts.CodexRawExecutionParams `json:"params"`
+	}
+	var item contracts.CodexRawExecutionItem
+	if json.Unmarshal(frame, &decoded) != nil || json.Unmarshal(decoded.Params.Item, &item) != nil {
+		return nil
+	}
+	return item.Output
+}
+
+// pendingCodexChildWait reports whether the queue of an unrouted child holds
+// the wait call with this call ID.
+func (a *Agent) pendingCodexChildWait(threadID, callID string) bool {
+	a.Mu.Lock()
+	var events []codexPendingChildEvent
+	if state := a.collabChildren[threadID]; state != nil {
+		events = state.pendingEvents
+	}
+	a.Mu.Unlock()
+	for _, event := range events {
+		if event.kind != codexPendingRawExecution {
+			continue
+		}
+		var envelope contracts.CodexRawExecutionParams
+		var item contracts.CodexRawExecutionItem
+		if json.Unmarshal(event.params, &envelope) == nil && json.Unmarshal(envelope.Item, &item) == nil &&
+			item.Type == codexRawItemFunctionCall && item.CallID == callID {
+			return true
+		}
+	}
+	return false
+}
+
+// codexJSONRPCParams is the key of the JSON-RPC params in a stored raw frame.
+const codexJSONRPCParams = "params"
+
+// resolveCodexExecSupplement puts the wait outputs of a code cell on the exec
+// output item that they continue, under the LeapMux key continuationOutputs.
+// It reports false when the supplement does not join this row.
+//
+// The stored row is the whole rawResponseItem/completed frame, so the item is
+// at params.item. A frame without an object at params holds the item at its
+// own top level. The browser reads the same two places
+// (frontend/src/components/chat/providers/codex/resolveMessage.ts).
+func resolveCodexExecSupplement(content agent.MessageContent) ([]byte, bool) {
+	var extra contracts.CodexExecSupplement
+	if json.Unmarshal(content.Supplemental, &extra) != nil || extra.CallID == "" || len(extra.ContinuationOutputs) == 0 {
+		return nil, false
+	}
+	var frame map[string]json.RawMessage
+	if json.Unmarshal(content.Original, &frame) != nil || frame == nil {
+		return nil, false
+	}
+	params := frame
+	var nested map[string]json.RawMessage
+	if json.Unmarshal(frame[codexJSONRPCParams], &nested) == nil && nested != nil {
+		params = nested
+	}
+	var item map[string]json.RawMessage
+	if json.Unmarshal(params[contracts.CodexRawFieldItem], &item) != nil || item == nil {
+		return nil, false
+	}
+	var itemType, callID string
+	if json.Unmarshal(item[contracts.CodexRawFieldType], &itemType) != nil || itemType != contracts.CodexRawItemCustomToolCallOutput {
+		return nil, false
+	}
+	if json.Unmarshal(item[contracts.CodexRawFieldCallID], &callID) != nil || callID != extra.CallID {
+		return nil, false
+	}
+	encodedOutputs, err := json.Marshal(extra.ContinuationOutputs)
+	if err != nil {
+		return nil, false
+	}
+	item[contracts.CodexSupplementContinuationOutputs] = encodedOutputs
+	encodedItem, err := json.Marshal(item)
+	if err != nil {
+		return nil, false
+	}
+	params[contracts.CodexRawFieldItem] = encodedItem
+	if nested != nil {
+		encodedParams, err := json.Marshal(params)
+		if err != nil {
+			return nil, false
+		}
+		frame[codexJSONRPCParams] = encodedParams
+	}
+	resolved, err := json.Marshal(frame)
+	if err != nil {
+		return nil, false
+	}
+	return resolved, true
+}
+
+// codexRawOutputWellFormed reports whether a raw `output` value is the text
+// or the content list that Codex writes.
+func codexRawOutputWellFormed(output json.RawMessage) bool {
+	output = bytes.TrimSpace(output)
+	return len(output) > 0 && (output[0] == '"' || output[0] == '[')
+}
+
+const codexExecTimingOutputPattern = `\nWall time \d+(?:\.\d+)? seconds(?: \(code-mode [\d.]+ seconds; overhead -?[\d.]+ seconds\))?\nOutput:\n`
+
+var codexCompletedExecHeader = regexp.MustCompile(`^` + regexp.QuoteMeta(contracts.CodexExecOutputCompletedHeader) + codexExecTimingOutputPattern + `$`)
+
+// codexRunningExecHeader matches the header of a yield, and its first group is
+// the cell ID. The text after the header is output of the cell.
+var codexRunningExecHeader = regexp.MustCompile(`^` + regexp.QuoteMeta(contracts.CodexExecOutputRunningHeaderPrefix) + `(\S+)` + codexExecTimingOutputPattern)
+
+// codexExecContent ranks what one output of a cell holds. A cell holds the
+// largest rank of its outputs.
+type codexExecContent int
+
+const (
+	// codexExecContentNone: no output at all.
+	codexExecContentNone codexExecContent = iota
+	// codexExecContentPolls: empty polls or receipts that stored commands already show.
+	codexExecContentPolls
+	// codexExecContentOther: output that no typed row shows.
+	codexExecContentOther
+)
+
+// codexExecSegment is one output of a cell: the exec output or a wait output.
+type codexExecSegment struct {
+	// running reports a yield. cellID then identifies the cell.
+	running bool
+	cellID  string
+	// completed reports the header "Script completed" alone in its block.
+	completed bool
+	content   codexExecContent
+}
+
+// codexExecBlock retains ambiguity that a plain struct decoder would discard.
+type codexExecBlock struct {
+	Type      string
+	Text      string
+	ambiguous bool
+}
+
+func (block *codexExecBlock) UnmarshalJSON(raw []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	opening, err := decoder.Token()
+	if err != nil || opening != json.Delim('{') {
+		return fmt.Errorf("the Codex content block is not an object")
+	}
+	seen := make(map[string]bool)
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		key, ok := token.(string)
+		if !ok {
+			return fmt.Errorf("the Codex content key is not a string")
+		}
+		block.ambiguous = block.ambiguous || seen[key]
+		seen[key] = true
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return err
+		}
+		switch key {
+		case "type", "text":
+			var text string
+			if len(value) == 0 || value[0] != '"' || json.Unmarshal(value, &text) != nil {
+				block.ambiguous = true
+				continue
+			}
+			if key == "type" {
+				block.Type = text
+			} else {
+				block.Text = text
+			}
+		default:
+			block.ambiguous = true
+		}
+	}
+	_, err = decoder.Token()
+	block.ambiguous = block.ambiguous || !seen["type"] || !seen["text"]
+	return err
+}
+
+// parseCodexExecSegment reads the status and the content of one output.
+//
+// Text output keeps the rule that it had before cells: completed text output
+// always shows, and so does a yield with text after its header.
+func parseCodexExecSegment(raw json.RawMessage, commands map[codexStoredCommandResult]struct{}) codexExecSegment {
+	other := codexExecSegment{content: codexExecContentOther}
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 {
-		return false
+		return other
 	}
 	if raw[0] == '"' {
 		var text string
-		return json.Unmarshal(raw, &text) == nil && codexEmptyYieldHeader.MatchString(text)
-	}
-	var blocks []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	}
-	if json.Unmarshal(raw, &blocks) != nil || len(blocks) == 0 || blocks[0].Type != contracts.CodexExecOutputTextContent {
-		return false
-	}
-	if codexEmptyYieldHeader.MatchString(blocks[0].Text) {
-		for _, block := range blocks[1:] {
-			if block.Type != contracts.CodexExecOutputTextContent || block.Text != "" {
-				return false
-			}
+		if json.Unmarshal(raw, &text) != nil {
+			return other
 		}
-		return true
+		if segment, ok := parseCodexRunningSegment(text); ok {
+			return segment
+		}
+		return other
 	}
-	if len(blocks) < 2 || !codexCompletedExecHeader.MatchString(blocks[0].Text) {
-		return false
+	var blocks []codexExecBlock
+	if json.Unmarshal(raw, &blocks) != nil || len(blocks) == 0 || blocks[0].Type != contracts.CodexExecOutputTextContent {
+		return other
+	}
+	var segment codexExecSegment
+	if running, ok := parseCodexRunningSegment(blocks[0].Text); ok {
+		segment = running
+		if segment.content == codexExecContentOther {
+			return segment
+		}
+	} else if codexCompletedExecHeader.MatchString(blocks[0].Text) {
+		segment = codexExecSegment{completed: true, content: codexExecContentNone}
+	} else {
+		return other
+	}
+	if blocks[0].ambiguous {
+		segment.content = codexExecContentOther
+		return segment
 	}
 	for _, block := range blocks[1:] {
-		if block.Type != contracts.CodexExecOutputTextContent {
-			return false
+		switch {
+		case block.ambiguous || block.Type != contracts.CodexExecOutputTextContent:
+			segment.content = codexExecContentOther
+		case block.Text == "" && segment.running:
+			// An empty block of a yield holds nothing.
+		case codexCoveredReceiptJSON(block.Text, commands):
+			segment.content = max(segment.content, codexExecContentPolls)
+		default:
+			segment.content = codexExecContentOther
 		}
-		if !codexEmptyPollJSON(block.Text) {
-			return false
+		if segment.content == codexExecContentOther {
+			return segment
 		}
 	}
-	return true
+	return segment
+}
+
+// parseCodexRunningSegment preserves every byte after a recognized yield header.
+func parseCodexRunningSegment(text string) (codexExecSegment, bool) {
+	match := codexRunningExecHeader.FindStringSubmatch(text)
+	if match == nil {
+		return codexExecSegment{}, false
+	}
+	segment := codexExecSegment{running: true, cellID: match[1]}
+	if len(text) > len(match[0]) {
+		segment.content = codexExecContentOther
+	}
+	return segment, true
+}
+
+// codexSuppressCellOutputs accepts only completed cells of empty poll receipts.
+func codexSuppressCellOutputs(outputs ...json.RawMessage) bool {
+	if len(outputs) == 0 {
+		return false
+	}
+	last := parseCodexExecSegment(outputs[len(outputs)-1], nil)
+	return last.completed && max(last.content, codexCellContent(outputs[:len(outputs)-1], nil)) == codexExecContentPolls
+}
+
+// codexCellContent stops when one segment requires a visible card.
+func codexCellContent(outputs []json.RawMessage, commands map[codexStoredCommandResult]struct{}) codexExecContent {
+	content := codexExecContentNone
+	for _, output := range outputs {
+		content = max(content, parseCodexExecSegment(output, commands).content)
+		if content == codexExecContentOther {
+			break
+		}
+	}
+	return content
 }
 
 // Match encoding/json's nesting limit. Token traversal otherwise has no nesting limit.
@@ -174,18 +547,18 @@ const codexPollJSONDepthLimit = 10000
 
 // Read exactly one printed JSON value. Stop when content makes suppression unsafe.
 // Tokens preserve duplicate keys and avoid allocating a complete tree for rejected output.
-func codexEmptyPollJSON(text string) bool {
+func codexCoveredReceiptJSON(text string, commands map[codexStoredCommandResult]struct{}) bool {
 	decoder := json.NewDecoder(strings.NewReader(text))
 	decoder.UseNumber()
 	token, err := decoder.Token()
-	if err != nil || !codexEmptyPollValue(decoder, token, 0) {
+	if err != nil || !codexCoveredReceiptValue(decoder, token, 0, commands) {
 		return false
 	}
 	_, err = decoder.Token()
 	return err == io.EOF
 }
 
-// codexEmptyPollValue accepts a receipt or a nonempty collection of empty successful receipts.
+// codexCoveredReceiptValue accepts empty polls or receipts that stored commands already show.
 // A script can print receipts in arrays or under container keys, including receipt field keys.
 // These values keep the execution pair:
 //   - A string outside a recognized receipt or status field.
@@ -193,7 +566,7 @@ func codexEmptyPollJSON(text string) bool {
 //   - A number outside a recognized receipt field or an i/index label.
 //   - A rejected record.
 //   - A duplicate object key.
-func codexEmptyPollValue(decoder *json.Decoder, token json.Token, depth int) bool {
+func codexCoveredReceiptValue(decoder *json.Decoder, token json.Token, depth int, commands map[codexStoredCommandResult]struct{}) bool {
 	if depth >= codexPollJSONDepthLimit {
 		return false
 	}
@@ -204,14 +577,14 @@ func codexEmptyPollValue(decoder *json.Decoder, token json.Token, depth int) boo
 		}
 		for decoder.More() {
 			item, err := decoder.Token()
-			if err != nil || !codexEmptyPollValue(decoder, item, depth+1) {
+			if err != nil || !codexCoveredReceiptValue(decoder, item, depth+1, commands) {
 				return false
 			}
 		}
 		closing, err := decoder.Token()
 		return err == nil && closing == json.Delim(']')
 	case json.Delim('{'):
-		return codexEmptyPollObject(decoder, depth)
+		return codexCoveredReceiptObject(decoder, depth, commands)
 	default:
 		return false
 	}
@@ -220,9 +593,10 @@ func codexEmptyPollValue(decoder *json.Decoder, token json.Token, depth int) boo
 // Classify each object as a receipt or a container while reading each field once.
 // Nested receipts can use any key except status, which identifies a settled record.
 // A scalar receipt field cannot become a container label when receipt validation fails.
-func codexEmptyPollObject(decoder *json.Decoder, depth int) bool {
+func codexCoveredReceiptObject(decoder *json.Decoder, depth int, commands map[codexStoredCommandResult]struct{}) bool {
 	fields := make(map[string]bool)
-	receipt, container := true, true
+	receipt, emptyReceipt, container := true, true, true
+	var result codexStoredCommandResult
 	foundPoll, valuePoll := false, false
 	for decoder.More() {
 		token, err := decoder.Token()
@@ -236,7 +610,7 @@ func codexEmptyPollObject(decoder *json.Decoder, depth int) bool {
 			return false
 		}
 		if _, nested := value.(json.Delim); nested {
-			if !codexEmptyPollValue(decoder, value, depth+1) {
+			if !codexCoveredReceiptValue(decoder, value, depth+1, commands) {
 				return false
 			}
 			receipt = false
@@ -246,7 +620,20 @@ func codexEmptyPollObject(decoder *json.Decoder, depth int) bool {
 				valuePoll = true
 			}
 		} else {
-			receipt = receipt && codexEmptyPollReceiptField(key, value)
+			emptyReceipt = emptyReceipt && codexEmptyPollReceiptField(key, value)
+			valid := codexEmptyPollReceiptField(key, value)
+			if len(commands) > 0 {
+				switch key {
+				case "output":
+					result.output, valid = value.(string)
+				case "exit_code":
+					result.exitCode, valid = codexJSONInteger(value)
+				case "original_token_count":
+					count, ok := codexJSONInteger(value)
+					valid = ok && count >= 0
+				}
+			}
+			receipt = receipt && valid
 			container = container && codexEmptyPollLabelField(key, value)
 		}
 		if !receipt && !container {
@@ -258,8 +645,18 @@ func codexEmptyPollObject(decoder *json.Decoder, depth int) bool {
 		return false
 	}
 	if receipt {
-		return fields["chunk_id"] && fields["wall_time_seconds"] && fields["original_token_count"] && fields["output"] &&
-			(fields["session_id"] || fields["exit_code"])
+		complete := fields["chunk_id"] && fields["wall_time_seconds"] && fields["original_token_count"] && fields["output"]
+		if !complete {
+			return false
+		}
+		if emptyReceipt {
+			return fields["session_id"] || fields["exit_code"]
+		}
+		if !fields["exit_code"] || fields["session_id"] {
+			return false
+		}
+		_, stored := commands[result]
+		return stored
 	}
 	return container && foundPoll && (!fields["status"] || valuePoll)
 }
@@ -320,12 +717,24 @@ func (call *codexRawExecutionCall) release() {
 	call.output = agent.MessageContent{}
 	call.owner = nil
 	call.sink = nil
+	call.waits = nil
+	call.continuations = nil
+	call.commands = nil
 }
 
 func (a *Agent) persistCodexRawExecution(key codexRawExecutionKey, call *codexRawExecutionCall) {
 	if (call.owner != nil && !call.owner.IsCurrent()) || a.IsDiscardingOutput() {
 		call.release()
 		return
+	}
+	if len(call.continuations) > 0 && call.output.Supplemental == nil {
+		supplement, err := json.Marshal(contracts.CodexExecSupplement{CallID: key.callID, ContinuationOutputs: call.continuations})
+		if err != nil {
+			slog.Error("Cannot encode the Codex cell output", "agent_id", a.AgentID(), "call_id", key.callID, "error", err)
+			call.release()
+			return
+		}
+		call.output.Supplemental = supplement
 	}
 	sink := call.sink
 	span := agent.SpanInfo{SpanID: key.callID, SpanType: contracts.CodexRawToolExec}
@@ -366,52 +775,95 @@ func (a *Agent) persistCodexRawExecution(key codexRawExecutionKey, call *codexRa
 	}
 }
 
-// Codex omits parent execution IDs. Tool events suppress pending pairs within the same thread and turn.
+// codexStoredCommandResult proves which output and exit status already reached storage.
+type codexStoredCommandResult struct {
+	output   string
+	exitCode int64
+}
+
+// observeCodexRawExecutionTool records only a successfully stored command completion.
+// Temporal overlap alone cannot prove that a typed row covers a cell's output.
 func (a *Agent) observeCodexRawExecutionTool(event codexItemEvent) {
-	switch event.itemType {
-	case contracts.CodexItemTypeCommandExecution, contracts.CodexItemTypeFileChange,
-		contracts.CodexItemTypeMcpToolCall, contracts.CodexItemTypeDynamicToolCall,
-		contracts.CodexItemTypeImageGeneration, contracts.CodexItemTypeImageView,
-		contracts.CodexItemTypeCollabAgentToolCall, contracts.CodexItemTypeWebSearch,
-		contracts.CodexItemTypeSleep, contracts.CodexItemTypeEnteredReviewMode,
-		contracts.CodexItemTypeExitedReviewMode, contracts.CodexItemTypeHookPrompt,
-		contracts.CodexItemTypeFunctionCallOutput:
-	default:
+	if event.itemType != contracts.CodexItemTypeCommandExecution || event.itemID == "" || event.threadID == "" || event.turnID == "" {
 		return
 	}
-	if event.itemID == "" || event.threadID == "" || event.turnID == "" {
+	var command struct {
+		Output   *string `json:"aggregatedOutput"`
+		ExitCode *int64  `json:"exitCode"`
+	}
+	if json.Unmarshal(event.item, &command) != nil || command.Output == nil || command.ExitCode == nil {
 		return
 	}
+	result := codexStoredCommandResult{output: *command.Output, exitCode: *command.ExitCode}
 	for key, call := range a.rawExecutionCalls {
-		if key.threadID == event.threadID && key.turnID == event.turnID && !call.completed && call.output.Original == nil {
-			call.suppressed = true
+		if key.threadID == event.threadID && key.turnID == event.turnID && call.awaited() {
+			if call.commands == nil {
+				call.commands = make(map[codexStoredCommandResult]struct{})
+			}
+			call.commands[result] = struct{}{}
 		}
 	}
 }
 
 // Retry eligible pairs once before the turn ends. Requests without output stay absent from history.
-func (a *Agent) finishCodexRawExecutions(threadID string) {
+//
+// A cell that still runs keeps the output that it stated, with the retained
+// completion of the turn, because LeapMux reads no more of the cell after the
+// turn. A cell that holds no output, or only empty shell-poll receipts, keeps
+// no card. Other output remains visible even when a typed tool ran nearby.
+func (a *Agent) finishCodexRawExecutions(threadID string, completion agent.MessageCompletion) {
+	a.finishMatchingCodexRawExecutions(completion, func(key codexRawExecutionKey) bool { return key.threadID == threadID })
+}
+
+// finishAllCodexRawExecutions retains output before the process or thread tree ends.
+// The caller holds outputMu and keeps each old transcript owner available.
+func (a *Agent) finishAllCodexRawExecutions(completion agent.MessageCompletion) {
+	a.finishMatchingCodexRawExecutions(completion, func(codexRawExecutionKey) bool { return true })
+}
+
+func (a *Agent) finishMatchingCodexRawExecutions(completion agent.MessageCompletion, matches func(codexRawExecutionKey) bool) {
 	var keys []codexRawExecutionKey
 	for key := range a.rawExecutionCalls {
-		if key.threadID == threadID {
+		if matches(key) {
 			keys = append(keys, key)
 		}
 	}
 	sort.Slice(keys, func(i, j int) bool { return a.rawExecutionCalls[keys[i]].order < a.rawExecutionCalls[keys[j]].order })
 	for _, key := range keys {
-		call := a.rawExecutionCalls[key]
-		if !call.completed && call.output.Original != nil {
-			a.persistCodexRawExecution(key, call)
-		}
-		delete(a.rawExecutionCalls, key)
+		a.finishCodexRawExecution(key, completion)
 	}
 }
 
-// A new turn drops stale state even when the preceding turn sent no completion.
-func (a *Agent) clearCodexRawExecutionsBeforeTurn(threadID, turnID string) {
-	for key := range a.rawExecutionCalls {
-		if key.threadID == threadID && key.turnID != turnID {
-			delete(a.rawExecutionCalls, key)
-		}
+// finishCodexRawExecution retains available output before it removes a cell.
+// Every lifecycle removal uses this rule, including capacity eviction.
+func (a *Agent) finishCodexRawExecution(key codexRawExecutionKey, completion agent.MessageCompletion) {
+	call := a.rawExecutionCalls[key]
+	if call == nil {
+		return
 	}
+	switch {
+	case call.completed || call.output.Original == nil:
+	case call.ended:
+		a.persistCodexRawExecution(key, call)
+	case codexCellContent(call.outputs(codexStoredExecOutput(call.output.Original)), nil) == codexExecContentOther:
+		call.output.Completion = codexRetainedCompletion(completion)
+		a.persistCodexRawExecution(key, call)
+	}
+	delete(a.rawExecutionCalls, key)
+}
+
+// codexRetainedCompletion is the completion of a call that the turn ended
+// before the call did. A turn that completed still cut the call.
+func codexRetainedCompletion(completion agent.MessageCompletion) agent.MessageCompletion {
+	if completion == agent.MessageCompletionComplete {
+		return agent.MessageCompletionInterrupted
+	}
+	return completion
+}
+
+// A new turn retains prior output even when the preceding turn sent no completion.
+func (a *Agent) clearCodexRawExecutionsBeforeTurn(threadID, turnID string) {
+	a.finishMatchingCodexRawExecutions(agent.MessageCompletionInterrupted, func(key codexRawExecutionKey) bool {
+		return key.threadID == threadID && key.turnID != turnID
+	})
 }

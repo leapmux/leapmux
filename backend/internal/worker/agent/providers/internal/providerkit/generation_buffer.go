@@ -15,6 +15,12 @@ type generationSegment struct {
 	trace *generationDigest
 }
 
+// orderedSegment pairs one segment with its scope, for an ordered walk.
+type orderedSegment struct {
+	scopeID string
+	segment *generationSegment
+}
+
 // GenerationBuffer keeps provider deltas until their item reaches a boundary.
 type GenerationBuffer struct {
 	mu        sync.Mutex
@@ -55,6 +61,33 @@ func (b *GenerationBuffer) ScopeSnapshot(scopeID string) (agent.AssembledMessage
 		return "", "", false
 	}
 	return segment.kind, segment.text.String(), true
+}
+
+// ScopeIDs returns the scope of each retained segment, in first-seen order.
+func (b *GenerationBuffer) ScopeIDs() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	segments := b.orderedSegmentsLocked(func(*generationSegment) bool { return true })
+	scopeIDs := make([]string, 0, len(segments))
+	for _, entry := range segments {
+		scopeIDs = append(scopeIDs, entry.scopeID)
+	}
+	return scopeIDs
+}
+
+// orderedSegmentsLocked returns the segments that match, in first-seen order.
+// The caller holds b.mu.
+func (b *GenerationBuffer) orderedSegmentsLocked(matches func(*generationSegment) bool) []orderedSegment {
+	segments := make([]orderedSegment, 0, len(b.segments))
+	for scopeID, segment := range b.segments {
+		if matches(segment) {
+			segments = append(segments, orderedSegment{scopeID: scopeID, segment: segment})
+		}
+	}
+	sort.Slice(segments, func(left, right int) bool {
+		return segments[left].segment.order < segments[right].segment.order
+	})
+	return segments
 }
 
 func (b *GenerationBuffer) Finish(scopeID string, completion agent.MessageCompletion) ([]byte, bool, error) {
@@ -101,18 +134,15 @@ func (b *GenerationBuffer) finishMatching(
 	matches func(*generationSegment) bool,
 ) ([][]byte, error) {
 	b.mu.Lock()
-	segments := make([]*generationSegment, 0, len(b.segments))
-	for key, segment := range b.segments {
-		if matches(segment) {
-			segments = append(segments, segment)
-			delete(b.segments, key)
-		}
+	segments := b.orderedSegmentsLocked(matches)
+	for _, entry := range segments {
+		delete(b.segments, entry.scopeID)
 	}
-	sort.Slice(segments, func(left, right int) bool { return segments[left].order < segments[right].order })
 	b.mu.Unlock()
 
 	result := make([][]byte, 0, len(segments))
-	for _, segment := range segments {
+	for _, entry := range segments {
+		segment := entry.segment
 		if segment.text.Len() == 0 {
 			continue
 		}
@@ -178,20 +208,7 @@ func (b *GenerationBuffer) persistMatching(
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	type orderedSegment struct {
-		scopeID string
-		segment *generationSegment
-	}
-	segments := make([]orderedSegment, 0, len(b.segments))
-	for scopeID, segment := range b.segments {
-		if matches(segment) {
-			segments = append(segments, orderedSegment{scopeID: scopeID, segment: segment})
-		}
-	}
-	sort.Slice(segments, func(left, right int) bool {
-		return segments[left].segment.order < segments[right].segment.order
-	})
-	for _, entry := range segments {
+	for _, entry := range b.orderedSegmentsLocked(matches) {
 		if entry.segment.text.Len() == 0 {
 			delete(b.segments, entry.scopeID)
 			continue
@@ -222,17 +239,7 @@ func (b *GenerationBuffer) MoveAllTo(destination *GenerationBuffer) {
 		return
 	}
 	b.mu.Lock()
-	type orderedSegment struct {
-		scopeID string
-		segment *generationSegment
-	}
-	segments := make([]orderedSegment, 0, len(b.segments))
-	for scopeID, segment := range b.segments {
-		segments = append(segments, orderedSegment{scopeID: scopeID, segment: segment})
-	}
-	sort.Slice(segments, func(left, right int) bool {
-		return segments[left].segment.order < segments[right].segment.order
-	})
+	segments := b.orderedSegmentsLocked(func(*generationSegment) bool { return true })
 	b.segments = nil
 	b.nextOrder = 0
 	b.mu.Unlock()

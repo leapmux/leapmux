@@ -41,7 +41,7 @@ func TestCodexTurnActive_ReadsNativeTurnID(t *testing.T) {
 	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"turn-7"}}}`)))
 
 	a.Mu.Lock()
-	turnID := a.turnID
+	turnID := a.mainTurn.id
 	a.Mu.Unlock()
 	require.Equal(t, "turn-7", turnID)
 
@@ -71,8 +71,8 @@ func TestCodexTurnActive_ChildThreadCompletionLeavesTheRootTurnOpen(t *testing.T
 	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"turn/completed","params":{"threadId":"child-1","turn":{"id":"turn-c1","status":"completed"}}}`)))
 	assert.Equal(t, []bool{true}, sink.TurnActives(), "a registered child's turn end is not the root's")
 
-	// An UNREGISTERED thread takes the other branch of the same test -- a late
-	// receiver the spawn never named -- and must not clear the root either.
+	// An unregistered thread takes the other branch: a late receiver that the spawn never identified.
+	// Its completion must not clear the root either.
 	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"turn/completed","params":{"threadId":"stranger","turn":{"id":"turn-x","status":"completed"}}}`)))
 	assert.Equal(t, []bool{true}, sink.TurnActives(), "an unknown thread is still not the main thread")
 

@@ -52,8 +52,10 @@ func (codexProvider) Classify(raw json.RawMessage) agent.NotificationClassificat
 	var env struct {
 		Method string `json:"method"`
 		Params *struct {
-			Name string `json:"name,omitempty"`
-			Item *struct {
+			Name      string `json:"name,omitempty"`
+			WillRetry bool   `json:"willRetry,omitempty"`
+			TurnID    string `json:"turnId,omitempty"`
+			Item      *struct {
 				Type string `json:"type,omitempty"`
 			} `json:"item,omitempty"`
 		} `json:"params,omitempty"`
@@ -62,6 +64,26 @@ func (codexProvider) Classify(raw json.RawMessage) agent.NotificationClassificat
 		return agent.NotificationClassification{}
 	}
 	switch env.Method {
+	case contracts.CodexMethodError:
+		// Only the retryable error persists. A burst folds into the latest
+		// attempt, as Claude's api_retry does.
+		if env.Params != nil && env.Params.WillRetry {
+			return agent.NotificationClassification{
+				Kind: agent.NotificationKindAPIRetry,
+				Key:  "codex:error:retry",
+			}
+		}
+		return agent.NotificationClassification{}
+	case contracts.CodexMethodModelSafetyBufferingUpdated:
+		// Repeated buffering updates of one turn fold into one row.
+		turnID := "unknown"
+		if env.Params != nil && env.Params.TurnID != "" {
+			turnID = env.Params.TurnID
+		}
+		return agent.NotificationClassification{
+			Kind: agent.NotificationKindProviderScoped,
+			Key:  "codex:model/safetyBuffering/updated:" + turnID,
+		}
 	case "account/rateLimits/updated":
 		return agent.NotificationClassification{
 			Kind: agent.NotificationKindProviderScoped,

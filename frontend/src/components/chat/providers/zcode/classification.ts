@@ -1,14 +1,16 @@
 import type { MessageCategory } from '../../messageClassifier'
 import type { ClassificationInput } from '../registry'
 import { ZCODE_EVENT, ZCODE_METHOD } from '~/generated/contracts/zcode-protocol'
+import { assertNever } from '~/lib/assertNever'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { isPlainNotificationType } from '~/lib/notificationTypes'
 import { isNotificationThreadWrapper } from '../../messageUtils'
 import { notificationClassifierFor } from '../../notificationClassification'
 import { zcodeNotificationEntry } from './extractors/notification'
 import { zcodePlanText } from './extractors/plan'
-import { zcodeToolSpanRole } from './extractors/toolCommon'
-import { zcodeAssistantText, zcodeIsBackgroundTask, zcodeIsModelResponse } from './messageContent'
+import { zcodeEnvelope, zcodeToolSpanRole } from './extractors/toolCommon'
+import { zcodeAssistantText, zcodeIsMainReply } from './messageContent'
+import { ZCODE_SESSION_UPDATE_ROWS, zcodeSessionUpdateKind } from './sessionUpdateKind'
 
 /**
  * The event types that thread into chat as notifications.
@@ -31,7 +33,7 @@ const ZCODE_NOTIFICATION_TYPES = new Set<string>([
  * a list of deliberate decisions rather than a default branch:
  *
  *   - The session lifecycle pair repeats the state the create/resume RPC returned.
- *   - A model-written title would fight LeapMux's own naming.
+ *   - A model-written title would conflict with the title that LeapMux gives.
  *   - The message/part projection is the desktop application's rendering model, and
  *     it repeats the text the model-response `session.updated` already carries.
  *   - The permission/userInput ANNOUNCEMENTS duplicate the interaction requests,
@@ -70,8 +72,24 @@ export function classifyZCodeMessage(input: ClassificationInput): MessageCategor
   // later `wrapper.messages` read need a cast to compile.
   if (wrapper && wrapper.messages.length === 0)
     return { kind: 'hidden' }
-  if (wrapper && wrapper.messages.some(message => isObject(message) && pickString(message, 'method') === ZCODE_METHOD.StateUpdated))
+  // A thread of persisted notifications builds ONE entry per member, so a member
+  // that draws nothing does not hide the members after it. `state.updated` carries
+  // the compaction rows that older builds stored, and `session.updated` carries the
+  // final state of a goal check, the compaction lifecycle, the retry notice and the
+  // rest. A model response is not one of them: the worker writes it through
+  // PersistMessage, so a wrapper that holds one falls through to the per-message
+  // classification.
+  if (wrapper && wrapper.messages.some((message) => {
+    if (!isObject(message))
+      return false
+    if (pickString(message, 'method') === ZCODE_METHOD.StateUpdated)
+      return true
+    const envelope = zcodeEnvelope(message)
+    return envelope?.type === ZCODE_EVENT.SessionUpdated
+      && ZCODE_SESSION_UPDATE_ROWS[zcodeSessionUpdateKind(envelope.payload)] === 'notification'
+  })) {
     return notification(wrapper.messages, 'hidden')
+  }
   if (isNotificationThreadWrapper(wrapper, ZCODE_NOTIFICATION_TYPES)) {
     // A thread of only unrenderable notifications collapses to hidden rather than
     // falling through to a raw-JSON bubble.
@@ -121,12 +139,27 @@ export function classifyZCodeMessage(input: ClassificationInput): MessageCategor
 
   if (type === ZCODE_EVENT.SessionUpdated) {
     const payload = pickObject(parent, 'payload') ?? {}
-    // The catch-all event. A background-task update belongs to the registry, and
-    // the request-telemetry variants carry no conversation, so only a model
-    // response with text becomes a bubble.
-    if (zcodeIsBackgroundTask(payload) || !zcodeIsModelResponse(payload))
-      return { kind: 'hidden' }
-    return zcodeAssistantText(parent).trim() ? { kind: 'assistant_text' } : { kind: 'hidden' }
+    const row = ZCODE_SESSION_UPDATE_ROWS[zcodeSessionUpdateKind(payload)]
+    switch (row) {
+      // A notification row goes through the notification reader, which words
+      // each shape: the goal check verdict, the compaction lifecycle, the
+      // microcompact boundary, the retry, the registry fallback, the hook run,
+      // the workspace hook admission and the discarded queued input. An entry
+      // that the reader cannot word stays hidden rather than surfacing as raw
+      // JSON.
+      case 'notification':
+        return notification([parent], 'hidden')
+      case 'reply':
+        // A side query is a generation the app-server ran for itself. Its text is
+        // not the turn's reply, and older builds stored it: it stays hidden.
+        return zcodeIsMainReply(payload) && zcodeAssistantText(parent).trim()
+          ? { kind: 'assistant_text' }
+          : { kind: 'hidden' }
+      case 'none':
+        return { kind: 'hidden' }
+      default:
+        return assertNever(row)
+    }
   }
 
   if (ZCODE_NOTIFICATION_TYPES.has(type)) {

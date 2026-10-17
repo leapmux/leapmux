@@ -1,5 +1,5 @@
 {
-  "_readme": "The Codex joined-output resolve, replayed by BOTH implementations: `codexProvider.ResolveProviderData` in the Go worker and `resolveCodexMessage` in the browser plugin. Codex fills `aggregatedOutput` only on a COMPLETED item, so a turn that ends first leaves the started item with no output and the worker's join is the only copy. A divergence between the two copies draws a retained command row with its output missing and states nothing about why. Each case gives the frame Codex sent, the envelope the worker stored beside it, and the object both sides must produce. The key names come from contracts/codex-protocol.json; these cases pin the BEHAVIOUR the names carry.",
+  "_readme": "The Codex supplement resolve, replayed by BOTH implementations: `codexProvider.ResolveProviderData` in the Go worker and `resolveCodexMessage` in the browser plugin. Codex fills `aggregatedOutput` only on a COMPLETED item, so a turn that ends first leaves the started item with no output and the worker's join is the only copy. A divergence between the two copies draws a retained command row with its output missing and states nothing about why. Each case gives the frame Codex sent, the envelope the worker stored beside it, and the object both sides must produce. The key names come from contracts/codex-protocol.json; these cases pin the BEHAVIOUR the names carry. A second join puts the wait outputs of a code-mode cell on the exec output item that they continue, under the LeapMux key continuationOutputs. The stored row is the whole rawResponseItem/completed frame, so the item is at params.item, or at the top level of a frame without an object at params. A divergence there draws a cell card that lacks the output after its first yield.",
   "cases": [
     {
       "name": "the joined output lands on the item it names",
@@ -392,6 +392,936 @@
           "aggregatedOutput": "a.go\n"
         },
         "requestId": "req-9"
+      }
+    },
+    {
+      "name": "the wait outputs of a cell land on the exec output that they continue",
+      "original": {
+        "method": "rawResponseItem/completed",
+        "params": {
+          "threadId": "thread-1",
+          "turnId": "turn-1",
+          "item": {
+            "type": "custom_tool_call_output",
+            "call_id": "exec-1",
+            "output": [
+              {
+                "type": "input_text",
+                "text": "Script running with cell ID 7\nWall time 1.0 seconds\nOutput:\n"
+              },
+              {
+                "type": "input_text",
+                "text": "partial"
+              }
+            ]
+          }
+        }
+      },
+      "supplemental": {
+        "callId": "exec-1",
+        "continuationOutputs": [
+          [
+            {
+              "type": "input_text",
+              "text": "Script running with cell ID 7\nWall time 1.0 seconds\nOutput:\n"
+            },
+            {
+              "type": "input_text",
+              "text": "more"
+            }
+          ],
+          "Script completed\nWall time 0.5 seconds\nOutput:\nfinal"
+        ]
+      },
+      "expected": {
+        "method": "rawResponseItem/completed",
+        "params": {
+          "threadId": "thread-1",
+          "turnId": "turn-1",
+          "item": {
+            "type": "custom_tool_call_output",
+            "call_id": "exec-1",
+            "output": [
+              {
+                "type": "input_text",
+                "text": "Script running with cell ID 7\nWall time 1.0 seconds\nOutput:\n"
+              },
+              {
+                "type": "input_text",
+                "text": "partial"
+              }
+            ],
+            "continuationOutputs": [
+              [
+                {
+                  "type": "input_text",
+                  "text": "Script running with cell ID 7\nWall time 1.0 seconds\nOutput:\n"
+                },
+                {
+                  "type": "input_text",
+                  "text": "more"
+                }
+              ],
+              "Script completed\nWall time 0.5 seconds\nOutput:\nfinal"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "a frame without params holds the exec output at its top level",
+      "original": {
+        "item": {
+          "type": "custom_tool_call_output",
+          "call_id": "exec-1",
+          "output": [
+            {
+              "type": "input_text",
+              "text": "Script running with cell ID 7\nWall time 1.0 seconds\nOutput:\n"
+            },
+            {
+              "type": "input_text",
+              "text": "partial"
+            }
+          ]
+        }
+      },
+      "supplemental": {
+        "callId": "exec-1",
+        "continuationOutputs": [
+          [
+            {
+              "type": "input_text",
+              "text": "Script running with cell ID 7\nWall time 1.0 seconds\nOutput:\n"
+            },
+            {
+              "type": "input_text",
+              "text": "more"
+            }
+          ],
+          "Script completed\nWall time 0.5 seconds\nOutput:\nfinal"
+        ]
+      },
+      "expected": {
+        "item": {
+          "type": "custom_tool_call_output",
+          "call_id": "exec-1",
+          "output": [
+            {
+              "type": "input_text",
+              "text": "Script running with cell ID 7\nWall time 1.0 seconds\nOutput:\n"
+            },
+            {
+              "type": "input_text",
+              "text": "partial"
+            }
+          ],
+          "continuationOutputs": [
+            [
+              {
+                "type": "input_text",
+                "text": "Script running with cell ID 7\nWall time 1.0 seconds\nOutput:\n"
+              },
+              {
+                "type": "input_text",
+                "text": "more"
+              }
+            ],
+            "Script completed\nWall time 0.5 seconds\nOutput:\nfinal"
+          ]
+        }
+      }
+    },
+    {
+      "name": "params that are not an object leave the exec output at the top level",
+      "original": {
+        "params": "not an object",
+        "item": {
+          "type": "custom_tool_call_output",
+          "call_id": "exec-1",
+          "output": [
+            {
+              "type": "input_text",
+              "text": "Script running with cell ID 7\nWall time 1.0 seconds\nOutput:\n"
+            },
+            {
+              "type": "input_text",
+              "text": "partial"
+            }
+          ]
+        }
+      },
+      "supplemental": {
+        "callId": "exec-1",
+        "continuationOutputs": [
+          [
+            {
+              "type": "input_text",
+              "text": "Script running with cell ID 7\nWall time 1.0 seconds\nOutput:\n"
+            },
+            {
+              "type": "input_text",
+              "text": "more"
+            }
+          ],
+          "Script completed\nWall time 0.5 seconds\nOutput:\nfinal"
+        ]
+      },
+      "expected": {
+        "params": "not an object",
+        "item": {
+          "type": "custom_tool_call_output",
+          "call_id": "exec-1",
+          "output": [
+            {
+              "type": "input_text",
+              "text": "Script running with cell ID 7\nWall time 1.0 seconds\nOutput:\n"
+            },
+            {
+              "type": "input_text",
+              "text": "partial"
+            }
+          ],
+          "continuationOutputs": [
+            [
+              {
+                "type": "input_text",
+                "text": "Script running with cell ID 7\nWall time 1.0 seconds\nOutput:\n"
+              },
+              {
+                "type": "input_text",
+                "text": "more"
+              }
+            ],
+            "Script completed\nWall time 0.5 seconds\nOutput:\nfinal"
+          ]
+        }
+      }
+    },
+    {
+      "name": "the join replaces a continuation list that the item already carries",
+      "original": {
+        "method": "rawResponseItem/completed",
+        "params": {
+          "threadId": "thread-1",
+          "turnId": "turn-1",
+          "item": {
+            "type": "custom_tool_call_output",
+            "call_id": "exec-1",
+            "output": [
+              {
+                "type": "input_text",
+                "text": "Script running with cell ID 7\nWall time 1.0 seconds\nOutput:\n"
+              },
+              {
+                "type": "input_text",
+                "text": "partial"
+              }
+            ],
+            "continuationOutputs": [
+              "stale"
+            ]
+          }
+        }
+      },
+      "supplemental": {
+        "callId": "exec-1",
+        "continuationOutputs": [
+          [
+            {
+              "type": "input_text",
+              "text": "Script running with cell ID 7\nWall time 1.0 seconds\nOutput:\n"
+            },
+            {
+              "type": "input_text",
+              "text": "more"
+            }
+          ],
+          "Script completed\nWall time 0.5 seconds\nOutput:\nfinal"
+        ]
+      },
+      "expected": {
+        "method": "rawResponseItem/completed",
+        "params": {
+          "threadId": "thread-1",
+          "turnId": "turn-1",
+          "item": {
+            "type": "custom_tool_call_output",
+            "call_id": "exec-1",
+            "output": [
+              {
+                "type": "input_text",
+                "text": "Script running with cell ID 7\nWall time 1.0 seconds\nOutput:\n"
+              },
+              {
+                "type": "input_text",
+                "text": "partial"
+              }
+            ],
+            "continuationOutputs": [
+              [
+                {
+                  "type": "input_text",
+                  "text": "Script running with cell ID 7\nWall time 1.0 seconds\nOutput:\n"
+                },
+                {
+                  "type": "input_text",
+                  "text": "more"
+                }
+              ],
+              "Script completed\nWall time 0.5 seconds\nOutput:\nfinal"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "the wait outputs of another call cannot reach the row",
+      "original": {
+        "method": "rawResponseItem/completed",
+        "params": {
+          "threadId": "thread-1",
+          "turnId": "turn-1",
+          "item": {
+            "type": "custom_tool_call_output",
+            "call_id": "exec-1",
+            "output": [
+              {
+                "type": "input_text",
+                "text": "Script running with cell ID 7\nWall time 1.0 seconds\nOutput:\n"
+              },
+              {
+                "type": "input_text",
+                "text": "partial"
+              }
+            ]
+          }
+        }
+      },
+      "supplemental": {
+        "callId": "exec-2",
+        "continuationOutputs": [
+          [
+            {
+              "type": "input_text",
+              "text": "Script running with cell ID 7\nWall time 1.0 seconds\nOutput:\n"
+            },
+            {
+              "type": "input_text",
+              "text": "more"
+            }
+          ],
+          "Script completed\nWall time 0.5 seconds\nOutput:\nfinal"
+        ]
+      },
+      "expected": {
+        "method": "rawResponseItem/completed",
+        "params": {
+          "threadId": "thread-1",
+          "turnId": "turn-1",
+          "item": {
+            "type": "custom_tool_call_output",
+            "call_id": "exec-1",
+            "output": [
+              {
+                "type": "input_text",
+                "text": "Script running with cell ID 7\nWall time 1.0 seconds\nOutput:\n"
+              },
+              {
+                "type": "input_text",
+                "text": "partial"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "the wait outputs cannot reach an item that is not an exec output",
+      "original": {
+        "method": "rawResponseItem/completed",
+        "params": {
+          "threadId": "thread-1",
+          "turnId": "turn-1",
+          "item": {
+            "type": "custom_tool_call",
+            "call_id": "exec-1",
+            "output": [
+              {
+                "type": "input_text",
+                "text": "Script running with cell ID 7\nWall time 1.0 seconds\nOutput:\n"
+              },
+              {
+                "type": "input_text",
+                "text": "partial"
+              }
+            ]
+          }
+        }
+      },
+      "supplemental": {
+        "callId": "exec-1",
+        "continuationOutputs": [
+          [
+            {
+              "type": "input_text",
+              "text": "Script running with cell ID 7\nWall time 1.0 seconds\nOutput:\n"
+            },
+            {
+              "type": "input_text",
+              "text": "more"
+            }
+          ],
+          "Script completed\nWall time 0.5 seconds\nOutput:\nfinal"
+        ]
+      },
+      "expected": {
+        "method": "rawResponseItem/completed",
+        "params": {
+          "threadId": "thread-1",
+          "turnId": "turn-1",
+          "item": {
+            "type": "custom_tool_call",
+            "call_id": "exec-1",
+            "output": [
+              {
+                "type": "input_text",
+                "text": "Script running with cell ID 7\nWall time 1.0 seconds\nOutput:\n"
+              },
+              {
+                "type": "input_text",
+                "text": "partial"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "an exec output whose type is null takes no wait outputs",
+      "original": {
+        "method": "rawResponseItem/completed",
+        "params": {
+          "threadId": "thread-1",
+          "turnId": "turn-1",
+          "item": {
+            "type": null,
+            "call_id": "exec-1",
+            "output": [
+              {
+                "type": "input_text",
+                "text": "Script running with cell ID 7\nWall time 1.0 seconds\nOutput:\n"
+              },
+              {
+                "type": "input_text",
+                "text": "partial"
+              }
+            ]
+          }
+        }
+      },
+      "supplemental": {
+        "callId": "exec-1",
+        "continuationOutputs": [
+          [
+            {
+              "type": "input_text",
+              "text": "Script running with cell ID 7\nWall time 1.0 seconds\nOutput:\n"
+            },
+            {
+              "type": "input_text",
+              "text": "more"
+            }
+          ],
+          "Script completed\nWall time 0.5 seconds\nOutput:\nfinal"
+        ]
+      },
+      "expected": {
+        "method": "rawResponseItem/completed",
+        "params": {
+          "threadId": "thread-1",
+          "turnId": "turn-1",
+          "item": {
+            "type": null,
+            "call_id": "exec-1",
+            "output": [
+              {
+                "type": "input_text",
+                "text": "Script running with cell ID 7\nWall time 1.0 seconds\nOutput:\n"
+              },
+              {
+                "type": "input_text",
+                "text": "partial"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "an exec output whose call id is not text takes no wait outputs",
+      "original": {
+        "method": "rawResponseItem/completed",
+        "params": {
+          "threadId": "thread-1",
+          "turnId": "turn-1",
+          "item": {
+            "type": "custom_tool_call_output",
+            "call_id": 7,
+            "output": [
+              {
+                "type": "input_text",
+                "text": "Script running with cell ID 7\nWall time 1.0 seconds\nOutput:\n"
+              },
+              {
+                "type": "input_text",
+                "text": "partial"
+              }
+            ]
+          }
+        }
+      },
+      "supplemental": {
+        "callId": "exec-1",
+        "continuationOutputs": [
+          [
+            {
+              "type": "input_text",
+              "text": "Script running with cell ID 7\nWall time 1.0 seconds\nOutput:\n"
+            },
+            {
+              "type": "input_text",
+              "text": "more"
+            }
+          ],
+          "Script completed\nWall time 0.5 seconds\nOutput:\nfinal"
+        ]
+      },
+      "expected": {
+        "method": "rawResponseItem/completed",
+        "params": {
+          "threadId": "thread-1",
+          "turnId": "turn-1",
+          "item": {
+            "type": "custom_tool_call_output",
+            "call_id": 7,
+            "output": [
+              {
+                "type": "input_text",
+                "text": "Script running with cell ID 7\nWall time 1.0 seconds\nOutput:\n"
+              },
+              {
+                "type": "input_text",
+                "text": "partial"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "an empty continuation list joins nothing",
+      "original": {
+        "method": "rawResponseItem/completed",
+        "params": {
+          "threadId": "thread-1",
+          "turnId": "turn-1",
+          "item": {
+            "type": "custom_tool_call_output",
+            "call_id": "exec-1",
+            "output": [
+              {
+                "type": "input_text",
+                "text": "Script running with cell ID 7\nWall time 1.0 seconds\nOutput:\n"
+              },
+              {
+                "type": "input_text",
+                "text": "partial"
+              }
+            ]
+          }
+        }
+      },
+      "supplemental": {
+        "callId": "exec-1",
+        "continuationOutputs": []
+      },
+      "expected": {
+        "method": "rawResponseItem/completed",
+        "params": {
+          "threadId": "thread-1",
+          "turnId": "turn-1",
+          "item": {
+            "type": "custom_tool_call_output",
+            "call_id": "exec-1",
+            "output": [
+              {
+                "type": "input_text",
+                "text": "Script running with cell ID 7\nWall time 1.0 seconds\nOutput:\n"
+              },
+              {
+                "type": "input_text",
+                "text": "partial"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "a null continuation list joins nothing",
+      "original": {
+        "method": "rawResponseItem/completed",
+        "params": {
+          "threadId": "thread-1",
+          "turnId": "turn-1",
+          "item": {
+            "type": "custom_tool_call_output",
+            "call_id": "exec-1",
+            "output": [
+              {
+                "type": "input_text",
+                "text": "Script running with cell ID 7\nWall time 1.0 seconds\nOutput:\n"
+              },
+              {
+                "type": "input_text",
+                "text": "partial"
+              }
+            ]
+          }
+        }
+      },
+      "supplemental": {
+        "callId": "exec-1",
+        "continuationOutputs": null
+      },
+      "expected": {
+        "method": "rawResponseItem/completed",
+        "params": {
+          "threadId": "thread-1",
+          "turnId": "turn-1",
+          "item": {
+            "type": "custom_tool_call_output",
+            "call_id": "exec-1",
+            "output": [
+              {
+                "type": "input_text",
+                "text": "Script running with cell ID 7\nWall time 1.0 seconds\nOutput:\n"
+              },
+              {
+                "type": "input_text",
+                "text": "partial"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "a continuation list that is not a list joins nothing",
+      "original": {
+        "method": "rawResponseItem/completed",
+        "params": {
+          "threadId": "thread-1",
+          "turnId": "turn-1",
+          "item": {
+            "type": "custom_tool_call_output",
+            "call_id": "exec-1",
+            "output": [
+              {
+                "type": "input_text",
+                "text": "Script running with cell ID 7\nWall time 1.0 seconds\nOutput:\n"
+              },
+              {
+                "type": "input_text",
+                "text": "partial"
+              }
+            ]
+          }
+        }
+      },
+      "supplemental": {
+        "callId": "exec-1",
+        "continuationOutputs": "final"
+      },
+      "expected": {
+        "method": "rawResponseItem/completed",
+        "params": {
+          "threadId": "thread-1",
+          "turnId": "turn-1",
+          "item": {
+            "type": "custom_tool_call_output",
+            "call_id": "exec-1",
+            "output": [
+              {
+                "type": "input_text",
+                "text": "Script running with cell ID 7\nWall time 1.0 seconds\nOutput:\n"
+              },
+              {
+                "type": "input_text",
+                "text": "partial"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "a supplement call id that is not text joins nothing",
+      "original": {
+        "method": "rawResponseItem/completed",
+        "params": {
+          "threadId": "thread-1",
+          "turnId": "turn-1",
+          "item": {
+            "type": "custom_tool_call_output",
+            "call_id": "exec-1",
+            "output": [
+              {
+                "type": "input_text",
+                "text": "Script running with cell ID 7\nWall time 1.0 seconds\nOutput:\n"
+              },
+              {
+                "type": "input_text",
+                "text": "partial"
+              }
+            ]
+          }
+        }
+      },
+      "supplemental": {
+        "callId": 7,
+        "continuationOutputs": [
+          [
+            {
+              "type": "input_text",
+              "text": "Script running with cell ID 7\nWall time 1.0 seconds\nOutput:\n"
+            },
+            {
+              "type": "input_text",
+              "text": "more"
+            }
+          ],
+          "Script completed\nWall time 0.5 seconds\nOutput:\nfinal"
+        ]
+      },
+      "expected": {
+        "method": "rawResponseItem/completed",
+        "params": {
+          "threadId": "thread-1",
+          "turnId": "turn-1",
+          "item": {
+            "type": "custom_tool_call_output",
+            "call_id": "exec-1",
+            "output": [
+              {
+                "type": "input_text",
+                "text": "Script running with cell ID 7\nWall time 1.0 seconds\nOutput:\n"
+              },
+              {
+                "type": "input_text",
+                "text": "partial"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "a supplement that states no call id joins nothing",
+      "original": {
+        "method": "rawResponseItem/completed",
+        "params": {
+          "threadId": "thread-1",
+          "turnId": "turn-1",
+          "item": {
+            "type": "custom_tool_call_output",
+            "call_id": "exec-1",
+            "output": [
+              {
+                "type": "input_text",
+                "text": "Script running with cell ID 7\nWall time 1.0 seconds\nOutput:\n"
+              },
+              {
+                "type": "input_text",
+                "text": "partial"
+              }
+            ]
+          }
+        }
+      },
+      "supplemental": {
+        "continuationOutputs": [
+          [
+            {
+              "type": "input_text",
+              "text": "Script running with cell ID 7\nWall time 1.0 seconds\nOutput:\n"
+            },
+            {
+              "type": "input_text",
+              "text": "more"
+            }
+          ],
+          "Script completed\nWall time 0.5 seconds\nOutput:\nfinal"
+        ]
+      },
+      "expected": {
+        "method": "rawResponseItem/completed",
+        "params": {
+          "threadId": "thread-1",
+          "turnId": "turn-1",
+          "item": {
+            "type": "custom_tool_call_output",
+            "call_id": "exec-1",
+            "output": [
+              {
+                "type": "input_text",
+                "text": "Script running with cell ID 7\nWall time 1.0 seconds\nOutput:\n"
+              },
+              {
+                "type": "input_text",
+                "text": "partial"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "a tool key of the wrong type does not stop the cell join",
+      "original": {
+        "method": "rawResponseItem/completed",
+        "params": {
+          "threadId": "thread-1",
+          "turnId": "turn-1",
+          "item": {
+            "type": "custom_tool_call_output",
+            "call_id": "exec-1",
+            "output": [
+              {
+                "type": "input_text",
+                "text": "Script running with cell ID 7\nWall time 1.0 seconds\nOutput:\n"
+              },
+              {
+                "type": "input_text",
+                "text": "partial"
+              }
+            ]
+          }
+        }
+      },
+      "supplemental": {
+        "callId": "exec-1",
+        "continuationOutputs": [
+          [
+            {
+              "type": "input_text",
+              "text": "Script running with cell ID 7\nWall time 1.0 seconds\nOutput:\n"
+            },
+            {
+              "type": "input_text",
+              "text": "more"
+            }
+          ],
+          "Script completed\nWall time 0.5 seconds\nOutput:\nfinal"
+        ],
+        "itemId": 5
+      },
+      "expected": {
+        "method": "rawResponseItem/completed",
+        "params": {
+          "threadId": "thread-1",
+          "turnId": "turn-1",
+          "item": {
+            "type": "custom_tool_call_output",
+            "call_id": "exec-1",
+            "output": [
+              {
+                "type": "input_text",
+                "text": "Script running with cell ID 7\nWall time 1.0 seconds\nOutput:\n"
+              },
+              {
+                "type": "input_text",
+                "text": "partial"
+              }
+            ],
+            "continuationOutputs": [
+              [
+                {
+                  "type": "input_text",
+                  "text": "Script running with cell ID 7\nWall time 1.0 seconds\nOutput:\n"
+                },
+                {
+                  "type": "input_text",
+                  "text": "more"
+                }
+              ],
+              "Script completed\nWall time 0.5 seconds\nOutput:\nfinal"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "a continuation keeps each wait output value as it is",
+      "original": {
+        "method": "rawResponseItem/completed",
+        "params": {
+          "threadId": "thread-1",
+          "turnId": "turn-1",
+          "item": {
+            "type": "custom_tool_call_output",
+            "call_id": "exec-1",
+            "output": [
+              {
+                "type": "input_text",
+                "text": "Script running with cell ID 7\nWall time 1.0 seconds\nOutput:\n"
+              },
+              {
+                "type": "input_text",
+                "text": "partial"
+              }
+            ]
+          }
+        }
+      },
+      "supplemental": {
+        "callId": "exec-1",
+        "continuationOutputs": [
+          null,
+          3,
+          {
+            "type": "input_text"
+          }
+        ]
+      },
+      "expected": {
+        "method": "rawResponseItem/completed",
+        "params": {
+          "threadId": "thread-1",
+          "turnId": "turn-1",
+          "item": {
+            "type": "custom_tool_call_output",
+            "call_id": "exec-1",
+            "output": [
+              {
+                "type": "input_text",
+                "text": "Script running with cell ID 7\nWall time 1.0 seconds\nOutput:\n"
+              },
+              {
+                "type": "input_text",
+                "text": "partial"
+              }
+            ],
+            "continuationOutputs": [
+              null,
+              3,
+              {
+                "type": "input_text"
+              }
+            ]
+          }
+        }
       }
     }
   ]

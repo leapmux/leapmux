@@ -20,10 +20,11 @@ import './plugin'
  * payloads would assert that rule rather than the classification this test is about.
  */
 const PAYLOAD: Record<string, Record<string, unknown>> = {
-  // `session.updated` is the app-server's catch-all, and a MODEL RESPONSE is the one
-  // variant that carries assistant text. It states a `stopReason` beside its content,
-  // which is what tells it from the telemetry variants that share the type.
-  [ZCODE_EVENT.SessionUpdated]: { content: 'Done.', stopReason: 'end_turn' },
+  // `session.updated` is the app-server's catch-all, and a MODEL RESPONSE of the
+  // main turn is the one variant that carries assistant text. It states a
+  // `stopReason` beside its content and identifies its source, which is what tells it
+  // from the side queries and telemetry variants that share the type.
+  [ZCODE_EVENT.SessionUpdated]: { content: 'Done.', querySource: 'main_turn', stopReason: 'end_turn' },
   [ZCODE_EVENT.ToolUpdated]: {
     kind: ZCODE_TOOL_KIND.Scheduled,
     toolCallId: 'z1',
@@ -57,7 +58,7 @@ describe('zcode event vocabulary', () => {
     expect(Object.keys(ZCODE_EVENT).length).toBeGreaterThanOrEqual(25)
   })
 
-  it.each(Object.values(ZCODE_EVENT))('names %s', (type) => {
+  it.each(Object.values(ZCODE_EVENT))('classifies %s', (type) => {
     const kind = classify(type)
     const expected = STRUCTURAL[type]
     if (expected) {

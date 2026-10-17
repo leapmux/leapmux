@@ -17,11 +17,17 @@ type zcodeStateSnapshot struct {
 		SessionID string `json:"sessionId"`
 		Mode      string `json:"mode"`
 		Title     string `json:"title"`
-		// Target is where the app-server actually states the session goal. ZCode
-		// calls the goal a target in its storage and runtime, and the shipped
-		// build sends it HERE and nowhere else: a session/create reply carries
-		// `session.target: null`, and a session/goal reply carries the whole
-		// object. Raw for the same three-case reason as Goal below.
+		// Target states the session goal. ZCode calls the goal a target in its
+		// storage and runtime, and the snapshot carries it here and nowhere
+		// else: a session/create reply carries `session.target: null`, and a
+		// session/goal reply carries the whole object. ZCode 3.14.5 has no
+		// top-level `goal` key in its snapshot schema, and its `state.updated`
+		// patches carry none either.
+		//
+		// Target is RAW so the three cases stay distinct: absent (key missing),
+		// null (no goal), and an object. A decoded pointer would fold the first
+		// two together, and a snapshot with no goal must CLEAR one that a
+		// previous process stored.
 		Target json.RawMessage `json:"target"`
 	} `json:"session"`
 	Settings *zcodeSettingsSnapshot `json:"settings"`
@@ -39,28 +45,6 @@ type zcodeStateSnapshot struct {
 		ContextUsed   int64 `json:"contextUsed"`
 		ContextWindow int64 `json:"contextWindow"`
 	} `json:"projection"`
-	// Goal is RAW so the three cases stay distinct: absent (key missing),
-	// null (no goal), and an object. A decoded pointer would fold the first
-	// two together, and a snapshot with no goal must CLEAR one that a previous
-	// process stored.
-	//
-	// The shipped build sends no `goal` key at all -- see Session.Target, which
-	// is where it puts one. This stays because it costs nothing and a build that
-	// does send the documented key keeps working.
-	Goal json.RawMessage `json:"goal"`
-}
-
-// goalState returns the goal a state document states, from whichever key carries
-// it.
-//
-// The `goal` key is what ZCode's protocol documents. `session.target` is what the
-// shipped app-server sends, under the name its own storage uses. A document that
-// carries both is read from `goal`, because that is the documented one.
-func (s zcodeStateSnapshot) goalState() json.RawMessage {
-	if len(s.Goal) > 0 {
-		return s.Goal
-	}
-	return s.Session.Target
 }
 
 // openSession creates a fresh session, or resumes the one the client specified.
@@ -97,7 +81,7 @@ func (a *Agent) openSession(resumeID string, timeout time.Duration) error {
 		// it updates the panel and writes no transcript row for a goal that may
 		// be hours old. Outside applyParsedStateSnapshot, which holds a.Mu for
 		// its whole body and must not call into the sink.
-		a.reportZCodeGoal(snap.goalState(), true)
+		a.reportZCodeGoal(snap.Session.Target, true)
 		return nil
 	}
 
@@ -141,7 +125,7 @@ func (a *Agent) openSession(resumeID string, timeout time.Duration) error {
 	}
 	// A create RESTATES the session's goal -- normally that it has none, which
 	// is what clears one a previous session left on the row.
-	a.reportZCodeGoal(snap.goalState(), true)
+	a.reportZCodeGoal(snap.Session.Target, true)
 	return nil
 }
 
@@ -407,11 +391,12 @@ func (a *Agent) ClearContext() (string, error) {
 	a.generationBuffer.Reset()
 	a.sink.ReportProgress(agent.ResetProgress())
 	a.sink.ResetSpans()
-	// A goal belongs to a SESSION, and this call replaced the session. The
-	// create snapshot omits the `goal` key rather than spelling it null, and
-	// reportZCodeGoal returns early on an absent key, so nothing else removes
-	// the previous session's goal.
-	a.sink.ClearGoal(false)
+	// A goal belongs to a SESSION, and this call replaced the session. The create
+	// snapshot can omit the goal, and reportZCodeGoal reports nothing for an
+	// absent key, so this clear is what removes the previous session's goal. It
+	// also forgets the goal that a goal check of the replaced session would
+	// report again.
+	a.clearZCodeGoal(false)
 
 	if sessionID == "" {
 		return "", fmt.Errorf("the new ZCode session has no ID")

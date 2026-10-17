@@ -2,6 +2,7 @@ package agent_test
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,6 +18,63 @@ import (
 type stubProvider struct {
 	groups         []*leapmuxv1.AvailableOptionGroup
 	clearContextFn func() (string, error)
+}
+
+// retryStubProvider adds the turn-retry route to the stub.
+type retryStubProvider struct {
+	stubProvider
+	begin func(turnID, model string) (agent.TurnRetry, error)
+}
+
+func (s *retryStubProvider) BeginTurnRetry(turnID, model string) (agent.TurnRetry, error) {
+	return s.begin(turnID, model)
+}
+
+// stubTurnRetry records which phases of one accepted retry ran. A nil hook
+// succeeds. Each phase also records whether the lifecycle lock was held.
+type stubTurnRetry struct {
+	manager *agent.Manager
+	agentID string
+	replace func() error
+	start   func() error
+
+	mu     sync.Mutex
+	phases []string
+	locked []bool
+}
+
+func (r *stubTurnRetry) record(phase string) {
+	locked := r.manager.LifecycleLockCallersForTest(r.agentID) > 0
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.phases = append(r.phases, phase)
+	r.locked = append(r.locked, locked)
+}
+
+func (r *stubTurnRetry) Replace() error {
+	r.record("replace")
+	if r.replace != nil {
+		return r.replace()
+	}
+	return nil
+}
+
+func (r *stubTurnRetry) Start() error {
+	r.record("start")
+	if r.start != nil {
+		return r.start()
+	}
+	return nil
+}
+
+func (r *stubTurnRetry) Abandon(error) { r.record("abandon") }
+
+// Phases returns the phases that ran, in order, and whether each one held the
+// lifecycle lock.
+func (r *stubTurnRetry) Phases() ([]string, []bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.phases...), append([]bool(nil), r.locked...)
 }
 
 type nonComparableProvider struct {
@@ -98,6 +156,139 @@ func TestManager_ClearContextWaitsForLifecycleLock(t *testing.T) {
 		t.Fatal("ClearContext did not continue after the lifecycle lock was released")
 	}
 	assert.False(t, premature, "ClearContext entered the provider while another lifecycle operation held the lock")
+}
+
+func TestManager_RetryTurnWithoutAnAgentRefuses(t *testing.T) {
+	t.Parallel()
+
+	m := agent.NewManager(testRegistry, nil)
+
+	assert.ErrorIs(t, m.RetryTurn("missing", "turn-1", "gpt-5.5"), agent.ErrAgentNotFound)
+	assert.Zero(t, m.LifecycleLockCallersForTest("missing"),
+		"the failed lookup must release the lifecycle lock")
+}
+
+func TestManager_RetryTurnWithoutATurnRetrierRefuses(t *testing.T) {
+	t.Parallel()
+
+	m := agent.NewManager(testRegistry, nil)
+	m.PutAgentForTest("stub", &stubProvider{})
+
+	assert.ErrorIs(t, m.RetryTurn("stub", "turn-1", "gpt-5.5"), agent.ErrTurnRetryUnavailable)
+	assert.Zero(t, m.LifecycleLockCallersForTest("stub"),
+		"the refusal must release the lifecycle lock")
+}
+
+func TestManager_RetryTurnPropagatesABeginError(t *testing.T) {
+	t.Parallel()
+
+	m := agent.NewManager(testRegistry, nil)
+	m.PutAgentForTest("retrying", &retryStubProvider{begin: func(string, string) (agent.TurnRetry, error) {
+		return nil, agent.ErrTurnRetryUnavailable
+	}})
+
+	assert.ErrorIs(t, m.RetryTurn("retrying", "turn-1", "gpt-5.5"), agent.ErrTurnRetryUnavailable)
+	m.WaitTurnRetriesForTest()
+	assert.Zero(t, m.LifecycleLockCallersForTest("retrying"),
+		"the refusal must release the lifecycle lock")
+}
+
+// The RPC answers when the provider accepts the retry. The phases that wait for
+// provider requests run after the answer, so a slow stop or history change can never
+// reach the caller's deadline.
+func TestManager_RetryTurnAnswersBeforeThePhasesRun(t *testing.T) {
+	t.Parallel()
+
+	m := agent.NewManager(testRegistry, nil)
+	replacing := make(chan struct{})
+	releaseReplace := make(chan struct{})
+	retry := &stubTurnRetry{manager: m, agentID: "retrying", replace: func() error {
+		close(replacing)
+		<-releaseReplace
+		return nil
+	}}
+	var beginLocked bool
+	m.PutAgentForTest("retrying", &retryStubProvider{begin: func(turnID, model string) (agent.TurnRetry, error) {
+		beginLocked = m.LifecycleLockCallersForTest("retrying") > 0
+		assert.Equal(t, "turn-1", turnID)
+		assert.Equal(t, "gpt-5.5", model)
+		return retry, nil
+	}})
+
+	require.NoError(t, m.RetryTurn("retrying", "turn-1", "gpt-5.5"),
+		"the RPC answers while Replace still waits")
+	assert.True(t, beginLocked, "BeginTurnRetry runs under the lifecycle lock")
+	<-replacing
+	close(releaseReplace)
+	m.WaitTurnRetriesForTest()
+
+	phases, locked := retry.Phases()
+	assert.Equal(t, []string{"replace", "start"}, phases)
+	assert.Equal(t, []bool{true, false}, locked,
+		"Replace runs under the lifecycle lock, and Start runs after the lock releases")
+	assert.Zero(t, m.LifecycleLockCallersForTest("retrying"))
+}
+
+// A Replace that fails states its own failure. Start must not run on a thread
+// that was never installed.
+func TestManager_RetryTurnSkipsTheStartAfterAFailedReplace(t *testing.T) {
+	t.Parallel()
+
+	m := agent.NewManager(testRegistry, nil)
+	retry := &stubTurnRetry{manager: m, agentID: "retrying", replace: func() error { return assert.AnError }}
+	m.PutAgentForTest("retrying", &retryStubProvider{begin: func(string, string) (agent.TurnRetry, error) {
+		return retry, nil
+	}})
+
+	require.NoError(t, m.RetryTurn("retrying", "turn-1", "gpt-5.5"))
+	m.WaitTurnRetriesForTest()
+
+	phases, _ := retry.Phases()
+	assert.Equal(t, []string{"replace"}, phases)
+	assert.Zero(t, m.LifecycleLockCallersForTest("retrying"),
+		"the failed Replace must release the lifecycle lock")
+}
+
+// A Start failure reaches the transcript through the provider. The manager has
+// no caller left to answer, so it only completes the goroutine.
+func TestManager_RetryTurnCompletesAfterAFailedStart(t *testing.T) {
+	t.Parallel()
+
+	m := agent.NewManager(testRegistry, nil)
+	retry := &stubTurnRetry{manager: m, agentID: "retrying", start: func() error { return assert.AnError }}
+	m.PutAgentForTest("retrying", &retryStubProvider{begin: func(string, string) (agent.TurnRetry, error) {
+		return retry, nil
+	}})
+
+	require.NoError(t, m.RetryTurn("retrying", "turn-1", "gpt-5.5"))
+	m.WaitTurnRetriesForTest()
+
+	phases, _ := retry.Phases()
+	assert.Equal(t, []string{"replace", "start"}, phases)
+	assert.Zero(t, m.LifecycleLockCallersForTest("retrying"))
+}
+
+// A restart between the acceptance and the phases replaces the provider that
+// accepted the retry. The retry must not run its requests against the new
+// provider, so it ends without a notice.
+func TestManager_RetryTurnAbandonsARetryWhoseProviderChanged(t *testing.T) {
+	t.Parallel()
+
+	m := agent.NewManager(testRegistry, nil)
+	retry := &stubTurnRetry{manager: m, agentID: "retrying"}
+	m.PutAgentForTest("retrying", &retryStubProvider{begin: func(string, string) (agent.TurnRetry, error) {
+		// A restart registers a new provider while the acceptance still holds
+		// the lifecycle lock, so the retry goroutine finds it first.
+		m.PutAgentForTest("retrying", &stubProvider{})
+		return retry, nil
+	}})
+
+	require.NoError(t, m.RetryTurn("retrying", "turn-1", "gpt-5.5"))
+	m.WaitTurnRetriesForTest()
+
+	phases, locked := retry.Phases()
+	assert.Equal(t, []string{"abandon"}, phases, "no request runs against the new provider")
+	assert.Equal(t, []bool{false}, locked, "Abandon runs after the lifecycle lock releases")
 }
 
 func TestManager_SendInputUnknownAgent(t *testing.T) {

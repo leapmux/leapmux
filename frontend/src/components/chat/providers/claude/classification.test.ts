@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { CLAUDE_HIDDEN_SYSTEM_SUBTYPE } from '~/generated/contracts/claude-protocol'
 import { input } from '../testUtils'
 import { classifyClaudeCodeMessage } from './classification'
 
@@ -101,6 +102,93 @@ describe('classifyClaudeCodeMessage', () => {
       patch: { is_backgrounded: true },
     }
     expect(classifyClaudeCodeMessage(input(parent))).toEqual({ kind: 'hidden' })
+  })
+
+  it('hides every system subtype the contract table lists', () => {
+    // A stored row of each entry draws nothing. The Worker never writes one, so
+    // these are rows an older build stored.
+    for (const subtype of Object.values(CLAUDE_HIDDEN_SYSTEM_SUBTYPE)) {
+      expect(classifyClaudeCodeMessage(input({ type: 'system', subtype, session_id: 's-1' })), subtype)
+        .toEqual({ kind: 'hidden' })
+    }
+  })
+
+  it('hides a stored permission_check_status row and a stored vcs_state_changed row', () => {
+    // The two shapes an audit found stored and drawn as no-display cards.
+    expect(classifyClaudeCodeMessage(input({
+      type: 'system',
+      subtype: CLAUDE_HIDDEN_SYSTEM_SUBTYPE.PermissionCheckStatus,
+      tool_use_id: 'toolu_1',
+      status: 'checking',
+      uuid: 'u-1',
+      session_id: 's-1',
+    }))).toEqual({ kind: 'hidden' })
+    expect(classifyClaudeCodeMessage(input({
+      type: 'system',
+      subtype: CLAUDE_HIDDEN_SYSTEM_SUBTYPE.VcsStateChanged,
+      kind: 'push',
+      branch: 'main',
+      cwd: '/w',
+      uuid: 'u-1',
+      session_id: 's-1',
+    }))).toEqual({ kind: 'hidden' })
+  })
+
+  it('hides an informational row only at level info', () => {
+    // The interface shows level info in its own transcript mode only.
+    expect(classifyClaudeCodeMessage(input({ type: 'system', subtype: 'informational', content: 'verbose only', level: 'info' })))
+      .toEqual({ kind: 'hidden' })
+    for (const level of ['notice', 'suggestion', 'warning']) {
+      expect(classifyClaudeCodeMessage(input({ type: 'system', subtype: 'informational', content: 'Stop hook failed: boom', level })), level)
+        .toEqual({ kind: 'notification', entries: [{ kind: 'text', text: 'Stop hook failed: boom' }] })
+    }
+    // A frame that states no level draws its content.
+    expect(classifyClaudeCodeMessage(input({ type: 'system', subtype: 'informational', content: 'Stop hook failed: boom' })))
+      .toEqual({ kind: 'notification', entries: [{ kind: 'text', text: 'Stop hook failed: boom' }] })
+  })
+
+  it('hides a row of a known subtype whose reader finds no words', () => {
+    // A known frame that states nothing draws nothing. The no-display card is
+    // for a frame that no reader knows.
+    for (const frame of [
+      { type: 'system', subtype: 'notification', key: 'compact-error', text: '', priority: 'high', color: 'error' },
+      { type: 'system', subtype: 'memory_recall', mode: 'select', memories: [] },
+      { type: 'system', subtype: 'informational', content: '', level: 'warning' },
+      { type: 'system', subtype: 'ui_log', plugin: 'my-plugin', text: '' },
+      { type: 'system', subtype: 'model_fallback', content: '' },
+    ]) {
+      expect(classifyClaudeCodeMessage(input(frame)), frame.subtype).toEqual({ kind: 'hidden' })
+    }
+  })
+
+  it('keeps a row of an unknown subtype as a notification with no entries', () => {
+    // The no-display card that this category draws is the signal that a new
+    // frame exists, so an unknown subtype must not hide.
+    expect(classifyClaudeCodeMessage(input({ type: 'system', subtype: 'some_future_event', session_id: 's-1' })))
+      .toEqual({ kind: 'notification', entries: [] })
+  })
+
+  it('hides a hook_response row unless the hook failed', () => {
+    expect(classifyClaudeCodeMessage(input({ type: 'system', subtype: 'hook_response', hook_id: 'h1', hook_name: 'setup.sh', hook_event: 'SessionStart', outcome: 'success', exit_code: 0 })))
+      .toEqual({ kind: 'hidden' })
+    expect(classifyClaudeCodeMessage(input({ type: 'system', subtype: 'hook_response', hook_id: 'h1', hook_name: 'setup.sh', hook_event: 'SessionStart', outcome: 'error', exit_code: 2 })))
+      .toEqual({ kind: 'notification', entries: [{ kind: 'text', text: 'Hook SessionStart (setup.sh) failed (exit 2)' }] })
+  })
+
+  // The two new hidden rules hold on the consolidated-thread path too. Two rows
+  // Hub threads into one wrapper draw the visible member and drop the hidden one.
+  it('drops an informational row at level info from a consolidated thread', () => {
+    const info = { type: 'system', subtype: 'informational', content: 'verbose only', level: 'info' }
+    const warning = { type: 'system', subtype: 'informational', content: 'Stop hook failed: boom', level: 'warning' }
+    const wrapper = { old_seqs: [301, 302], messages: [info, warning] }
+    expect(classifyClaudeCodeMessage(input(warning, wrapper)))
+      .toEqual({ kind: 'notification', entries: [{ kind: 'text', text: 'Stop hook failed: boom' }] })
+  })
+
+  it('collapses a thread of only non-error hook responses to hidden', () => {
+    const passed = { type: 'system', subtype: 'hook_response', hook_id: 'h1', hook_name: 'setup.sh', hook_event: 'SessionStart', outcome: 'success', exit_code: 0 }
+    const wrapper = { old_seqs: [301], messages: [passed] }
+    expect(classifyClaudeCodeMessage(input(passed, wrapper))).toEqual({ kind: 'hidden' })
   })
 
   it('hides assistant thinking with empty text', () => {

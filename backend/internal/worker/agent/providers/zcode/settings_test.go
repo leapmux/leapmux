@@ -1900,3 +1900,47 @@ func TestHandleZCodeStateUpdated_ASnapshotOfAnotherReasonStatesTheFirstMode(t *t
 
 	assert.Equal(t, contracts.ZCodeModeYolo, zcodePermissionMode(t, a))
 }
+
+// The compaction lifecycle owns the compaction rows now. A `state.updated`
+// compaction reason is the release signal for the queue turn, and a row from it as
+// well would draw the same compaction twice. The reasons still finish the turn:
+// the queue must not stay busy on a row nobody writes any more.
+func TestHandleZCodeStateUpdated_CompactionReasonsPersistNothingAndStillFinishTheTurn(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		reason string
+		finish bool
+	}{
+		{contracts.ZCodeStateReasonCompactStarted, false},
+		{contracts.ZCodeStateReasonSessionCompacted, true},
+		{contracts.ZCodeStateReasonSessionCompactFailed, true},
+		{contracts.ZCodeStateReasonSessionCompactCancelled, true},
+	} {
+		t.Run(tc.reason, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.ControlSink{}
+			a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
+			a.Mu.Lock()
+			a.compactionSessionID = "sess-1"
+			a.Mu.Unlock()
+			a.PublishTurnActive()
+
+			a.HandleOutput(zcodeStateLine(t, ScopeSession, tc.reason, `{"status":"idle"}`))
+
+			assert.Equal(t, 0, sink.MessageCount(), "the state.updated reason is no row")
+			assert.Equal(t, 0, sink.NotificationCount())
+			a.Mu.Lock()
+			running := a.compactionSessionID
+			a.Mu.Unlock()
+			active, _ := sink.LastTurnActive()
+			if tc.finish {
+				assert.Empty(t, running, "a final reason releases the compaction state")
+				assert.False(t, active, "a final reason releases the queue turn")
+				return
+			}
+			assert.Equal(t, "sess-1", running, "the start of a rewrite keeps the compaction state")
+			assert.True(t, active, "the start of a rewrite keeps the queue turn busy")
+		})
+	}
+}

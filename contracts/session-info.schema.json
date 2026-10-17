@@ -14,7 +14,8 @@
     "rateLimitUpdateModes",
     "runningToolFields",
     "runningToolRetryFields",
-    "goalProgressFields"
+    "goalProgressFields",
+    "turnRetryOfferFields"
   ],
   "properties": {
     "_readme": { "type": "string", "minLength": 1 },
@@ -25,7 +26,8 @@
     "rateLimitUpdateModes": { "$ref": "#/$defs/table" },
     "runningToolFields": { "$ref": "#/$defs/table" },
     "runningToolRetryFields": { "$ref": "#/$defs/table" },
-    "goalProgressFields": { "$ref": "#/$defs/table" }
+    "goalProgressFields": { "$ref": "#/$defs/table" },
+    "turnRetryOfferFields": { "$ref": "#/$defs/table" }
   },
   "$defs": {
     "table": {

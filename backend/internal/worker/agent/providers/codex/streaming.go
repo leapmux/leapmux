@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
@@ -16,11 +18,7 @@ func (a *Agent) clearReasoningStateForThread(threadID string) {
 	a.Mu.Lock()
 	for key := range a.reasoningStreamKind {
 		if strings.HasPrefix(key, prefix) {
-			delete(a.reasoningStreamKind, key)
-			delete(a.reasoningRetainedKind, key)
-			delete(a.reasoningSummaryIndex, key)
-			delete(a.reasoningSummarySeen, key)
-			delete(a.reasoningSummaryBreak, key)
+			a.deleteCodexReasoningStateLocked(key)
 		}
 	}
 	a.Mu.Unlock()
@@ -53,14 +51,9 @@ func (a *Agent) bufferCodexModelText(
 }
 
 func (a *Agent) reportCodexModelProgress(scopeID, threadID, text string) {
-	sink := a.sink
-	if !a.isMainThreadID(threadID) {
-		route, routed := a.ensureCodexChildRoute(threadID)
-		if !routed {
-			return
-		}
-		a.replayPendingCodexChildEvents(threadID, route)
-		sink = route.childSink
+	sink, routed := a.codexReadyThreadSink(threadID)
+	if !routed {
+		return
 	}
 	sink.ReportProgress(agent.ModelTextProgress(scopeID, text))
 }
@@ -71,6 +64,60 @@ func (a *Agent) discardCodexModelText(scopeID, threadID string) {
 		return
 	}
 	a.codexChildGenerationBuffer(threadID).Discard(scopeID)
+}
+
+// persistDroppedCodexResponse persists the partial items of the response that
+// a new input preempted in one thread.
+//
+// A new input preempts the response that streams (the instant_interrupt
+// feature). The input is a user's steer, or a parent's message to a subagent.
+// Codex then drops the partial items of that response: they got item/started
+// and deltas, but they get no item/completed, and no frame states the drop.
+// Codex records a new input only after every frame of the response before it,
+// so the userMessage item/started of the input is the first frame at which an
+// open item is certainly dropped. A response that ended normally left no open
+// item, so the input that starts a turn finds nothing here.
+//
+// The input queue writes the steer's own row after Codex accepts the steer, on
+// another goroutine, so the partial rows can land on either side of that row.
+// They always precede the follow-up answer, and they state that the model
+// stopped.
+func (a *Agent) persistDroppedCodexResponse(threadID string) {
+	if a.isMainThreadID(threadID) {
+		a.persistDroppedCodexGeneration(&a.generationBuffer, a.sink, a.generationBuffer.ScopeIDs())
+		return
+	}
+	buffer := a.codexChildGenerationBuffer(threadID)
+	scopeIDs := buffer.ScopeIDs()
+	if len(scopeIDs) == 0 {
+		return
+	}
+	route, routed := a.ensureCodexChildRoute(threadID)
+	if !routed {
+		// The items that stream after this frame join the same buffer before
+		// the route exists, so the event keeps the open items of THIS frame.
+		a.enqueuePendingCodexChildEvent(threadID, codexPendingChildEvent{kind: codexPendingDroppedGeneration, scopeIDs: scopeIDs})
+		return
+	}
+	a.replayPendingCodexChildEvents(threadID, route)
+	a.persistDroppedCodexGeneration(buffer, route.childSink, scopeIDs)
+}
+
+// persistDroppedCodexGeneration persists each listed segment of buffer as
+// interrupted, in the order given, and ends its model progress. A segment that
+// fails to persist stays in the buffer for the turn end.
+func (a *Agent) persistDroppedCodexGeneration(buffer *providerkit.GenerationBuffer, sink providerkit.GenerationServices, scopeIDs []string) {
+	discarding := a.IsDiscardingOutput()
+	for _, scopeID := range scopeIDs {
+		if discarding {
+			buffer.Discard(scopeID)
+		} else if _, err := buffer.PersistScope(scopeID, agent.MessageCompletionInterrupted, func(raw []byte) error {
+			return sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw}, agent.SpanInfo{})
+		}); err != nil {
+			slog.Error("codex persist dropped partial generation", "agent_id", a.AgentID(), "scope", scopeID, "error", err)
+		}
+		sink.ReportProgress(agent.CompleteModelProgress(scopeID))
+	}
 }
 
 func (a *Agent) codexChildGenerationBuffer(threadID string) *providerkit.GenerationBuffer {
@@ -304,16 +351,23 @@ func (a *Agent) handleThreadSettingsUpdated(params json.RawMessage) {
 	}
 	settings := notif.ThreadSettings
 	a.Mu.Lock()
+	pending := a.pendingStart
 	// Each axis moves ONLY when the frame states it. An absent field is the app
 	// server saying nothing about that axis, and writing "" would clear a value
 	// the reader chose.
-	if settings.Model != "" {
+	if settings.Model != "" && a.codexStartOwnsSettingLocked(pending, agent.OptionIDModel) {
 		a.model = settings.Model
+		if pending != nil {
+			pending.modelObserved = true
+		}
 	}
-	if settings.Effort != "" {
+	if settings.Effort != "" && a.codexStartOwnsSettingLocked(pending, agent.OptionIDEffort) {
 		a.effort = settings.Effort
+		if pending != nil {
+			pending.effortObserved = true
+		}
 	}
-	if settings.CollaborationMode != nil && settings.CollaborationMode.Mode != "" {
+	if settings.CollaborationMode != nil && settings.CollaborationMode.Mode != "" && a.codexStartOwnsSettingLocked(pending, contracts.CodexOptionCollaborationMode) {
 		a.collaborationMode = settings.CollaborationMode.Mode
 	}
 	vals := a.codexAxisValuesLocked()
@@ -324,6 +378,11 @@ func (a *Agent) handleThreadSettingsUpdated(params json.RawMessage) {
 // handleAgentMessageDelta counts and buffers item/agentMessage/delta.
 func (a *Agent) handleAgentMessageDelta(params json.RawMessage) {
 	if delta, ok := parseCodexModelDelta(params); ok {
+		if a.isMainThreadID(delta.ThreadID) {
+			// The first agent text ends any retry offer: from here the faster
+			// model would answer a different request.
+			a.markCodexTurnAgentMessage()
+		}
 		if delta.ItemID == "" {
 			delta.ItemID = codexAssistantFallbackScope
 		}
@@ -410,4 +469,14 @@ func (a *Agent) handleCodexToolOutputDelta(params json.RawMessage) {
 		}
 		reportOutput(a.sink)
 	}
+}
+
+// deleteCodexReasoningStateLocked removes every field for one reasoning item.
+// The caller holds a.Mu and selects the item that it must remove.
+func (a *Agent) deleteCodexReasoningStateLocked(key string) {
+	delete(a.reasoningStreamKind, key)
+	delete(a.reasoningRetainedKind, key)
+	delete(a.reasoningSummaryIndex, key)
+	delete(a.reasoningSummarySeen, key)
+	delete(a.reasoningSummaryBreak, key)
 }

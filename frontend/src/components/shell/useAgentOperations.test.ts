@@ -3,7 +3,7 @@ import type { Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
 import type { ControlRequest } from '~/stores/control.store'
 
 import { create } from '@bufbuild/protobuf'
-import { Code } from '@connectrpc/connect'
+import { Code, ConnectError } from '@connectrpc/connect'
 import { createRoot } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as workerRpc from '~/api/workerRpc'
@@ -33,6 +33,7 @@ const mockListAvailableProviders = vi.fn().mockResolvedValue({ providers: [] })
 const mockShowWarnToast = vi.fn()
 const mockUpdateAgentGoal = vi.fn()
 const mockApproveAutoReviewDenial = vi.fn()
+const mockRetryAgentTurn = vi.fn()
 
 vi.mock('~/api/workerRpc', async importOriginal => ({
   ...await importOriginal<typeof import('~/api/workerRpc')>(),
@@ -44,6 +45,7 @@ vi.mock('~/api/workerRpc', async importOriginal => ({
   updateAgentSettings: (...args: unknown[]) => mockUpdateAgentSettings(...args),
   updateAgentGoal: (...args: unknown[]) => mockUpdateAgentGoal(...args),
   approveAutoReviewDenial: (...args: unknown[]) => mockApproveAutoReviewDenial(...args),
+  retryAgentTurn: (...args: unknown[]) => mockRetryAgentTurn(...args),
   listAvailableProviders: (...args: unknown[]) => mockListAvailableProviders(...args),
 }))
 
@@ -1279,6 +1281,66 @@ describe('useAgentOperations', () => {
           mockApproveAutoReviewDenial.mockRejectedValueOnce(refusal)
           await expect(ops.handleApproveAutoReviewDenial('a1', 'm1', 'r1')).rejects.toBe(refusal)
           expect(mockShowWarnToast).toHaveBeenCalledWith('Failed to approve the action', refusal)
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+  })
+
+  describe('handleRetryTurn', () => {
+    /** Place a Codex agent on worker w-1, so the retry resolves its worker. */
+    function setupCodexAgent() {
+      const ctx = setup()
+      const agent = create(AgentInfoSchema, {
+        id: 'codex-1',
+        workerId: 'w-1',
+        agentProvider: AgentProvider.CODEX,
+        agentSessionId: 'thread-1',
+      })
+      ctx.add({ id: agent.id, ...protoToAgentTabFields(fixtureStore, agent.workerId, agent) })
+      return ctx
+    }
+
+    it('sends the offered turn and model to the worker of the agent', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { ops } = setupCodexAgent()
+          // The toast spy is shared by the whole file and never reset, so this
+          // reads only what THIS retry reported.
+          mockShowWarnToast.mockClear()
+          mockRetryAgentTurn.mockReset()
+          mockRetryAgentTurn.mockResolvedValueOnce({})
+
+          await expect(ops.handleRetryTurn('codex-1', 'turn-1', 'gpt-6-luna')).resolves.toBe(true)
+
+          expect(mockRetryAgentTurn).toHaveBeenCalledOnce()
+          expect(mockRetryAgentTurn).toHaveBeenCalledWith('w-1', { agentId: 'codex-1', turnId: 'turn-1', model: 'gpt-6-luna' })
+          expect(mockShowWarnToast).not.toHaveBeenCalled()
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
+    // The banner has no slot for a refusal, so the toast is the only place
+    // where the user reads it. The call resolves false, so the banner can let
+    // the user try again while the offer stands.
+    it('reports a refused retry through a toast and resolves false', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { ops } = setupCodexAgent()
+          mockShowWarnToast.mockClear()
+          mockRetryAgentTurn.mockReset()
+          const refusal = new ConnectError('the agent no longer offers this retry', Code.FailedPrecondition)
+          mockRetryAgentTurn.mockRejectedValueOnce(refusal)
+
+          await expect(ops.handleRetryTurn('codex-1', 'turn-1', 'gpt-6-luna')).resolves.toBe(false)
+
+          expect(mockShowWarnToast).toHaveBeenCalledOnce()
+          expect(mockShowWarnToast).toHaveBeenCalledWith('Failed to retry with a faster model', refusal)
         }
         finally {
           dispose()

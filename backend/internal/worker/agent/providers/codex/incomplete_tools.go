@@ -130,10 +130,7 @@ func (a *Agent) persistIncompleteCodexTools(childThreadID string, all bool, comp
 	if a.IsDiscardingOutput() {
 		return 0
 	}
-	retainedCompletion := completion
-	if retainedCompletion == agent.MessageCompletionComplete {
-		retainedCompletion = agent.MessageCompletionInterrupted
-	}
+	retainedCompletion := codexRetainedCompletion(completion)
 	sort.Slice(itemIDs, func(left, right int) bool {
 		leftTool, rightTool := tools[itemIDs[left]], tools[itemIDs[right]]
 		if leftTool.order != rightTool.order {
@@ -193,7 +190,9 @@ func buildIncompleteCodexToolSupplement(itemID string, tool codexIncompleteToolS
 	})
 }
 
-// ResolveProviderData puts the joined output back on the item it belongs to.
+// ResolveProviderData puts the data that the worker stored beside a row back on
+// the item it belongs to: the joined output of an incomplete tool call, or the
+// wait outputs of a code cell (see resolveCodexExecSupplement).
 //
 // The identity keys are checked first: a supplement that identifies another item, or
 // another item type, cannot reach this row. The original bytes stay unchanged; this
@@ -202,40 +201,52 @@ func (codexProvider) ResolveProviderData(content agent.MessageContent) []byte {
 	if len(content.Supplemental) == 0 {
 		return content.Original
 	}
+	if resolved, ok := resolveCodexToolSupplement(content); ok {
+		return resolved
+	}
+	if resolved, ok := resolveCodexExecSupplement(content); ok {
+		return resolved
+	}
+	return content.Original
+}
+
+// resolveCodexToolSupplement puts the joined output of an incomplete tool call
+// on its item. It reports false when the supplement does not join this row.
+func resolveCodexToolSupplement(content agent.MessageContent) ([]byte, bool) {
 	var extra contracts.CodexToolSupplement
 	if json.Unmarshal(content.Supplemental, &extra) != nil || extra.ItemID == "" || extra.AggregatedOutput == "" {
-		return content.Original
+		return nil, false
 	}
 	var params map[string]json.RawMessage
 	if json.Unmarshal(content.Original, &params) != nil || params == nil {
-		return content.Original
+		return nil, false
 	}
 	var item map[string]json.RawMessage
 	if json.Unmarshal(params[contracts.CodexItemEnvelope], &item) != nil || item == nil {
-		return content.Original
+		return nil, false
 	}
 	var itemID, itemType string
 	if json.Unmarshal(item[contracts.CodexItemID], &itemID) != nil || itemID != extra.ItemID {
-		return content.Original
+		return nil, false
 	}
 	if json.Unmarshal(item[contracts.CodexItemType], &itemType) != nil || itemType != extra.ItemType {
-		return content.Original
+		return nil, false
 	}
 	encodedOutput, err := json.Marshal(extra.AggregatedOutput)
 	if err != nil {
-		return content.Original
+		return nil, false
 	}
 	item[contracts.CodexItemAggregatedOutput] = encodedOutput
 	encodedItem, err := json.Marshal(item)
 	if err != nil {
-		return content.Original
+		return nil, false
 	}
 	params[contracts.CodexItemEnvelope] = encodedItem
 	resolved, err := json.Marshal(params)
 	if err != nil {
-		return content.Original
+		return nil, false
 	}
-	return resolved
+	return resolved, true
 }
 
 func renderCodexToolOutput(events []codexToolOutputEvent, truncated bool) string {

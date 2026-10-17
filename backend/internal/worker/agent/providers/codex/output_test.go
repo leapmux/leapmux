@@ -172,8 +172,9 @@ func newCodexAgentWithSink(sink agentapi.ProviderServices) *Agent {
 		JSONRPCProcess: providerkit.JSONRPCProcess{Process: providerkit.NewProcessFrom(providerkit.ProcessConfig{
 			AgentID: "test-agent",
 		})},
-		sink:     sink,
-		threadID: "main-thread",
+		sink:               sink,
+		threadID:           "main-thread",
+		turnRetrySupported: true,
 	}
 	a.sink = agentapi.NewModelProgressResetSink(a.sink)
 	return a
@@ -191,7 +192,7 @@ func TestHandleCodexOutput_TurnStartedOpensTheTurn(t *testing.T) {
 	statusActiveCount := sink.StatusActiveCount()
 	sessionInfoCount := sink.SessionInfoCount()
 	agent.Mu.Lock()
-	turnID := agent.turnID
+	turnID := agent.mainTurn.id
 	agent.Mu.Unlock()
 	assert.Equal(t, 0, statusActiveCount, "turn/started must NOT re-broadcast full status")
 	assert.Equal(t, "turn-42", turnID, "interrupts and steering target this turn")
@@ -439,6 +440,669 @@ func TestHandleCodexOutput_SubagentFailureWaitsForItsRoute(t *testing.T) {
 	assert.JSONEq(t, failure, string(child.LastNotification().Content))
 }
 
+// Each RENDER notice persists its raw frame so the frontend words it.
+func TestHandleCodexOutput_RenderNoticesPersistRaw(t *testing.T) {
+	t.Parallel()
+
+	for _, input := range []string{
+		`{"method":"warning","params":{"threadId":"main-thread","message":"careful"}}`,
+		`{"method":"configWarning","params":{"summary":"Error parsing rules; custom rules not applied.","details":"unexpected token","path":"/home/u/.codex/rules/x.rules"}}`,
+		`{"method":"deprecationNotice","params":{"summary":"The foo option is deprecated","details":"Use bar instead."}}`,
+		`{"method":"model/verification","params":{"threadId":"main-thread","turnId":"u1","verifications":["trustedAccessForCyber"]}}`,
+		`{"method":"modelProvider/authRecoveryStarted","params":{"threadId":"main-thread","turnId":"u1","provider":"amazon-bedrock","message":"AWS session has expired. Reauthenticating..."}}`,
+		`{"method":"modelProvider/authRecoveryCompleted","params":{"threadId":"main-thread","turnId":"u1","provider":"amazon-bedrock","message":"Reauthenticated."}}`,
+	} {
+		sink := &agenttest.Sink{}
+		agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+
+		handleCodexOutput(agent, providerkit.ParseLine([]byte(input)))
+
+		require.Equal(t, 1, sink.NotificationCount(), input)
+		assert.Zero(t, sink.MessageCount(), input)
+		assert.JSONEq(t, input, string(sink.LastNotification().Content), input)
+	}
+}
+
+// A notice that repeats with the same text tells the reader nothing new, so
+// each of the three repeating notices keeps one row per Codex process.
+func TestHandleCodexOutput_NoticesDedupePerProcess(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name    string
+		input   string
+		changed string
+		// The verification notice is one fixed sentence, so it stays deduped
+		// even when the turn that carries it changes.
+		changedAdds bool
+	}{
+		{
+			name:        "configWarning",
+			input:       `{"method":"configWarning","params":{"summary":"Error parsing rules","details":"unexpected token","path":"/home/u/.codex/rules/x.rules"}}`,
+			changed:     `{"method":"configWarning","params":{"summary":"Error parsing rules","details":"a different detail","path":"/home/u/.codex/rules/x.rules"}}`,
+			changedAdds: true,
+		},
+		{
+			name:        "deprecationNotice",
+			input:       `{"method":"deprecationNotice","params":{"summary":"The foo option is deprecated","details":"Use bar instead."}}`,
+			changed:     `{"method":"deprecationNotice","params":{"summary":"The baz option is deprecated","details":"Use bar instead."}}`,
+			changedAdds: true,
+		},
+		{
+			name:    "model/verification",
+			input:   `{"method":"model/verification","params":{"threadId":"main-thread","turnId":"u1","verifications":["trustedAccessForCyber"]}}`,
+			changed: `{"method":"model/verification","params":{"threadId":"main-thread","turnId":"u2","verifications":["trustedAccessForCyber"]}}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			sink := &agenttest.Sink{}
+			agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+
+			handleCodexOutput(agent, providerkit.ParseLine([]byte(tc.input)))
+			handleCodexOutput(agent, providerkit.ParseLine([]byte(tc.input)))
+			require.Equal(t, 1, sink.NotificationCount(), "one row per distinct text per process")
+
+			handleCodexOutput(agent, providerkit.ParseLine([]byte(tc.changed)))
+			if tc.changedAdds {
+				require.Equal(t, 2, sink.NotificationCount(), "a different text is a new row")
+			} else {
+				require.Equal(t, 1, sink.NotificationCount(), "one fixed notice per process")
+			}
+		})
+	}
+}
+
+// The dedupe key includes the method. A config warning and a deprecation notice
+// with the same fields are two different notices, and each keeps its row.
+func TestHandleCodexOutput_NoticeDedupeKeepsEachMethodApart(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+	configWarning := `{"method":"configWarning","params":{"summary":"The foo option is deprecated","details":"Use bar instead."}}`
+	deprecationNotice := `{"method":"deprecationNotice","params":{"summary":"The foo option is deprecated","details":"Use bar instead."}}`
+
+	handleCodexOutput(agent, providerkit.ParseLine([]byte(configWarning)))
+	handleCodexOutput(agent, providerkit.ParseLine([]byte(deprecationNotice)))
+
+	notifications := sink.PersistedNotifications()
+	require.Len(t, notifications, 2, "each method keeps its own row")
+	assert.JSONEq(t, configWarning, string(notifications[0].Content))
+	assert.JSONEq(t, deprecationNotice, string(notifications[1].Content))
+}
+
+// The verification notice draws text only for the trustedAccessForCyber flag.
+// A verification frame without that flag must not use up the one row that the
+// flagged frame needs.
+func TestHandleCodexOutput_VerificationDedupeKeepsEachFlagSetApart(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+	unflagged := `{"method":"model/verification","params":{"threadId":"main-thread","turnId":"u1","verifications":[]}}`
+	flagged := `{"method":"model/verification","params":{"threadId":"main-thread","turnId":"u2","verifications":["trustedAccessForCyber"]}}`
+
+	handleCodexOutput(agent, providerkit.ParseLine([]byte(unflagged)))
+	handleCodexOutput(agent, providerkit.ParseLine([]byte(flagged)))
+	handleCodexOutput(agent, providerkit.ParseLine([]byte(flagged)))
+
+	notifications := sink.PersistedNotifications()
+	require.Len(t, notifications, 2, "one row per distinct flag set per process")
+	assert.JSONEq(t, flagged, string(notifications[1].Content))
+}
+
+// thread/compacted and thread/name/updated route by threadId, as every other
+// stored frame does. A child's frame waits for its route and then reaches the
+// child transcript, never the parent.
+func TestHandleCodexOutput_SystemMetadataRoutesByThreadId(t *testing.T) {
+	t.Parallel()
+
+	for _, method := range []string{contracts.CodexMethodThreadCompacted, contracts.CodexMethodThreadNameUpdated} {
+		t.Run(method, func(t *testing.T) {
+			t.Parallel()
+
+			sink := &agenttest.Sink{}
+			agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+			main := fmt.Sprintf(`{"method":%q,"params":{"threadId":"main-thread","turnId":"root-turn"}}`, method)
+			child := fmt.Sprintf(`{"method":%q,"params":{"threadId":"child-1","turnId":"child-turn"}}`, method)
+
+			handleCodexOutput(agent, providerkit.ParseLine([]byte(main)))
+			handleCodexOutput(agent, providerkit.ParseLine([]byte(child)))
+			require.Equal(t, 1, sink.NotificationCount(), "only the main frame reaches the parent")
+			assert.JSONEq(t, main, string(sink.LastNotification().Content))
+
+			handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"spawn-1","kind":"started","agentThreadId":"child-1","agentPath":"/root/child"}}}`)))
+
+			assert.Equal(t, 1, sink.NotificationCount(), "the parent transcript stays unchanged")
+			childSink := sink.Child("child-of-spawn-1")
+			require.Equal(t, 1, childSink.NotificationCount(), "the queued child frame reaches the child")
+			assert.JSONEq(t, child, string(childSink.LastNotification().Content))
+		})
+	}
+}
+
+// The guardian notice for an approved call repeats an outcome the tool card
+// already shows.
+func TestHandleCodexOutput_GuardianApprovedNoticeIsDropped(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+
+	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"guardianWarning","params":{"threadId":"main-thread","message":"Automatic approval review approved (rm -rf build)"}}`)))
+
+	assert.Zero(t, sink.NotificationCount())
+	assert.Zero(t, sink.MessageCount())
+}
+
+// thread/closed has no transcript content. A main thread closing under the
+// running worker stays in the log.
+func TestHandleCodexOutput_ThreadClosedPersistsNothing(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+
+	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"thread/closed","params":{"threadId":"main-thread"}}`)))
+
+	assert.Zero(t, sink.NotificationCount())
+	assert.Zero(t, sink.MessageCount())
+	assert.Zero(t, sink.SessionInfoCount())
+}
+
+// The automatic review holds one call before it runs. The hold is live state:
+// the tool card's badge shows it, and no transcript row appears.
+func TestHandleCodexOutput_AutoApprovalReviewStartedBroadcastsTheHold(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+	agent.sink.UpdateSessionID("main-session")
+
+	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"item/autoApprovalReview/started","params":{"threadId":"main-thread","turnId":"u1","startedAtMs":1792000000000,"reviewId":"r1","targetItemId":"call_1","review":{"status":"inProgress","riskLevel":null,"userAuthorization":null,"rationale":null},"action":{"type":"command","source":"shell","command":"rm -rf build","cwd":"/w"}}}`)))
+
+	assert.Zero(t, sink.NotificationCount(), "the hold writes no row")
+	assert.Zero(t, sink.MessageCount())
+	require.Equal(t, 1, sink.SessionInfoCount())
+	tool, ok := sink.LastSessionInfoValue(contracts.SessionInfoKeyRunningTool)
+	require.True(t, ok)
+	assert.Equal(t, map[string]interface{}{
+		contracts.RunningToolFieldSpanId:          "call_1",
+		contracts.RunningToolFieldAgentSessionId:  "main-session",
+		contracts.RunningToolFieldPermissionCheck: true,
+	}, tool, "the hold states the call, the session of its rows and the check")
+}
+
+// A review that identifies no call broadcasts nothing.
+func TestHandleCodexOutput_AutoApprovalReviewWithoutATargetBroadcastsNothing(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+
+	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"item/autoApprovalReview/started","params":{"threadId":"main-thread","turnId":"u1","reviewId":"r1","targetItemId":null,"review":{"status":"inProgress"}}}`)))
+
+	assert.Zero(t, sink.SessionInfoCount())
+}
+
+// A denied review that identifies no call still states its verdict. It has no
+// tool card to release, so it broadcasts nothing.
+func TestHandleCodexOutput_AutoApprovalReviewCompletedWithoutATargetPersistsTheVerdict(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+	input := `{"method":"item/autoApprovalReview/completed","params":{"threadId":"main-thread","turnId":"u1","reviewId":"r1","targetItemId":null,"decisionSource":"agent","review":{"status":"denied","rationale":"touches secrets"},"action":{"type":"command","source":"shell","command":"rm -rf build","cwd":"/w"}}}`
+
+	handleCodexOutput(agent, providerkit.ParseLine([]byte(input)))
+
+	require.Equal(t, 1, sink.NotificationCount())
+	assert.JSONEq(t, input, string(sink.LastNotification().Content))
+	assert.Zero(t, sink.SessionInfoCount(), "no call holds, so nothing ends")
+}
+
+// A child's review holds a call in the child transcript. The hold broadcasts
+// on the child sink and carries the child's session, which the child's rows
+// carry, so the child's tool card matches it.
+func TestHandleCodexOutput_ChildAutoApprovalReviewBroadcastsOnTheChildSink(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+	agent.sink.UpdateSessionID("main-session")
+	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"spawn-1","kind":"started","agentThreadId":"child-1","agentPath":"/root/child"}}}`)))
+	child := sink.Child("child-of-spawn-1")
+	child.UpdateSessionID("child-session")
+	parentInfos := sink.SessionInfoCount()
+
+	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"item/autoApprovalReview/started","params":{"threadId":"child-1","turnId":"child-turn","reviewId":"r1","targetItemId":"call_1","review":{"status":"inProgress"}}}`)))
+
+	tool, ok := child.LastSessionInfoValue(contracts.SessionInfoKeyRunningTool)
+	require.True(t, ok, "the child sink receives the hold")
+	assert.Equal(t, map[string]interface{}{
+		contracts.RunningToolFieldSpanId:          "call_1",
+		contracts.RunningToolFieldAgentSessionId:  "child-session",
+		contracts.RunningToolFieldPermissionCheck: true,
+	}, tool)
+	assert.Equal(t, parentInfos, sink.SessionInfoCount(), "the parent sink receives nothing")
+
+	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"item/autoApprovalReview/completed","params":{"threadId":"child-1","turnId":"child-turn","reviewId":"r1","targetItemId":"call_1","review":{"status":"approved"},"action":{"type":"command","command":"ls"}}}`)))
+
+	tool, ok = child.LastSessionInfoValue(contracts.SessionInfoKeyRunningTool)
+	require.True(t, ok)
+	assert.Equal(t, map[string]interface{}{
+		contracts.RunningToolFieldSpanId:          "call_1",
+		contracts.RunningToolFieldAgentSessionId:  "child-session",
+		contracts.RunningToolFieldPermissionCheck: nil,
+	}, tool, "the completed review ends the child's hold")
+	assert.Equal(t, parentInfos, sink.SessionInfoCount(), "the parent sink receives nothing")
+}
+
+// A child whose route does not exist has no tool card to hold. The review
+// broadcasts nothing, and above all nothing on the parent sink.
+func TestHandleCodexOutput_UnroutedChildAutoApprovalReviewBroadcastsNothing(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+
+	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"item/autoApprovalReview/started","params":{"threadId":"child-unknown","turnId":"child-turn","reviewId":"r1","targetItemId":"call_1","review":{"status":"inProgress"}}}`)))
+
+	assert.Zero(t, sink.SessionInfoCount())
+	assert.Zero(t, sink.NotificationCount())
+}
+
+// A review hold can be the first child frame that resolves a recovered route.
+// It must replay the child frames that waited for that route first, as every
+// other route site does, so the queued rows keep their order.
+func TestHandleCodexOutput_ChildAutoApprovalReviewReplaysTheQueuedChildFrames(t *testing.T) {
+	t.Parallel()
+
+	sink := &transientCodexEnsureFailureSink{Sink: &agenttest.Sink{}, ensureFailures: 2}
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+	// The first creation attempt fails, so the route does not exist yet.
+	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"spawn-1","kind":"started","agentThreadId":"child-1","agentPath":"/root/child"}}}`)))
+	// The second attempt fails too, so the warning waits in the child queue.
+	warning := `{"method":"warning","params":{"threadId":"child-1","message":"careful"}}`
+	handleCodexOutput(agent, providerkit.ParseLine([]byte(warning)))
+	require.Zero(t, sink.NotificationCount())
+
+	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"item/autoApprovalReview/started","params":{"threadId":"child-1","turnId":"child-turn","reviewId":"r1","targetItemId":"call_1","review":{"status":"inProgress"}}}`)))
+
+	child := sink.Child("child-of-spawn-1")
+	require.Equal(t, 1, child.NotificationCount(), "the queued warning replays when the hold resolves the route")
+	assert.JSONEq(t, warning, string(child.LastNotification().Content))
+	assert.Zero(t, sink.NotificationCount(), "the parent transcript stays unchanged")
+}
+
+// Every review outcome ends the hold, a status from a later Codex release
+// included. The auto-review tests own which reviews reach the transcript.
+func TestHandleCodexOutput_AutoApprovalReviewCompletedEndsTheHold(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		status string
+	}{
+		{status: "denied"},
+		{status: "timedOut"},
+		{status: "approved"},
+		{status: "aborted"},
+		{status: "inProgress"},
+		{status: "aStatusFromALaterRelease"},
+		{status: ""},
+	} {
+		t.Run(tc.status, func(t *testing.T) {
+			t.Parallel()
+
+			sink := &agenttest.Sink{}
+			agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+			input := fmt.Sprintf(`{"method":"item/autoApprovalReview/completed","params":{"threadId":"main-thread","turnId":"u1","startedAtMs":1792000000000,"completedAtMs":1792000004000,"reviewId":"r1","targetItemId":"call_1","decisionSource":"agent","review":{"status":%q,"riskLevel":"high","userAuthorization":null,"rationale":"touches secrets"},"action":{"type":"command","source":"shell","command":"rm -rf build","cwd":"/w"}}}`, tc.status)
+
+			handleCodexOutput(agent, providerkit.ParseLine([]byte(input)))
+
+			require.Equal(t, 1, sink.SessionInfoCount(), "every outcome ends the hold")
+			tool, ok := sink.LastSessionInfoValue(contracts.SessionInfoKeyRunningTool)
+			require.True(t, ok)
+			fields := tool.(map[string]interface{})
+			assert.Equal(t, "call_1", fields[contracts.RunningToolFieldSpanId])
+			assert.Nil(t, fields[contracts.RunningToolFieldPermissionCheck], "the hold ends")
+		})
+	}
+}
+
+// The buffering notice persists raw and, while the answer can still be
+// replayed, offers a retry on the faster model. Repeats of one turn fold into
+// one row through the Classify key (see TestCodexClassifyFoldsRetryAndBufferingNotices).
+func TestHandleCodexOutput_SafetyBufferingOffersAFasterRetry(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+	a.model = "gpt-5.4"
+	a.mainTurn.id = "turn-1"
+	a.mainTurn.input = []map[string]interface{}{{"type": "text", "text": "Hello."}}
+	input := `{"method":"model/safetyBuffering/updated","params":{"threadId":"main-thread","turnId":"turn-1","model":"gpt-5.4","useCases":["cyber"],"reasons":["probes"],"showBufferingUi":true,"fasterModel":"gpt-5.5"}}`
+
+	handleCodexOutput(a, providerkit.ParseLine([]byte(input)))
+
+	require.Equal(t, 1, sink.NotificationCount())
+	assert.JSONEq(t, input, string(sink.LastNotification().Content))
+	offer, ok := sink.LastSessionInfoValue(contracts.SessionInfoKeyTurnRetryOffer)
+	require.True(t, ok)
+	assert.Equal(t, map[string]interface{}{
+		contracts.TurnRetryOfferFieldTurnId:       "turn-1",
+		contracts.TurnRetryOfferFieldModel:        "gpt-5.5",
+		contracts.TurnRetryOfferFieldLearnMoreUrl: codexTurnRetryLearnMoreURL,
+	}, offer, "the offer carries exactly the contract fields")
+}
+
+// The Codex TUI offers the retry only while the answer can still be replayed.
+// A condition that does not hold suppresses the offer and keeps the notice.
+func TestHandleCodexOutput_SafetyBufferingOfferConditions(t *testing.T) {
+	t.Parallel()
+
+	const frame = `{"method":"model/safetyBuffering/updated","params":{"threadId":"main-thread","turnId":"turn-1","model":"gpt-5.4","showBufferingUi":true,"fasterModel":"%s"}}`
+
+	for _, tc := range []struct {
+		name    string
+		frame   string
+		prepare func(a *Agent)
+	}{
+		{
+			name:  "no faster model",
+			frame: `{"method":"model/safetyBuffering/updated","params":{"threadId":"main-thread","turnId":"turn-1","model":"gpt-5.4","showBufferingUi":true,"fasterModel":""}}`,
+		},
+		{
+			name:  "the current model is the fastest",
+			frame: `{"method":"model/safetyBuffering/updated","params":{"threadId":"main-thread","turnId":"turn-1","model":"gpt-5.4","showBufferingUi":true,"fasterModel":"gpt-5.4"}}`,
+		},
+		{
+			name:  "a different turn",
+			frame: `{"method":"model/safetyBuffering/updated","params":{"threadId":"main-thread","turnId":"turn-9","model":"gpt-5.4","showBufferingUi":true,"fasterModel":"gpt-5.5"}}`,
+		},
+		{
+			name:  "no retained input",
+			frame: fmt.Sprintf(frame, "gpt-5.5"),
+			prepare: func(a *Agent) {
+				a.mainTurn.input = nil
+			},
+		},
+		{
+			name:  "the answer already started",
+			frame: fmt.Sprintf(frame, "gpt-5.5"),
+			prepare: func(a *Agent) {
+				a.mainTurn.agentMessageStarted = true
+			},
+		},
+		{
+			name:  "a retry is in flight",
+			frame: fmt.Sprintf(frame, "gpt-5.5"),
+			prepare: func(a *Agent) {
+				a.retry = &codexTurnRetry{a: a}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			sink := &agenttest.Sink{}
+			a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+			a.model = "gpt-5.4"
+			a.mainTurn.id = "turn-1"
+			a.mainTurn.input = []map[string]interface{}{{"type": "text", "text": "Hello."}}
+			if tc.prepare != nil {
+				tc.prepare(a)
+			}
+
+			handleCodexOutput(a, providerkit.ParseLine([]byte(tc.frame)))
+
+			require.Equal(t, 1, sink.NotificationCount(), "the notice persists")
+			assert.Empty(t, sink.SessionInfoValues(contracts.SessionInfoKeyTurnRetryOffer),
+				"no offer is made")
+		})
+	}
+}
+
+// The offer ends when the answer can no longer be replayed or the turn ends.
+// Each trigger broadcasts the withdrawal.
+func TestHandleCodexOutput_SafetyBufferingClearTriggers(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name    string
+		trigger func(a *Agent)
+	}{
+		{
+			name: "the buffering stops",
+			trigger: func(a *Agent) {
+				handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"model/safetyBuffering/updated","params":{"threadId":"main-thread","turnId":"turn-1","showBufferingUi":false}}`)))
+			},
+		},
+		{
+			name: "the first agent delta",
+			trigger: func(a *Agent) {
+				handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"item/agentMessage/delta","params":{"threadId":"main-thread","itemId":"m1","delta":"Hi"}}`)))
+			},
+		},
+		{
+			name: "the first agent item",
+			trigger: func(a *Agent) {
+				handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn-1","item":{"type":"agentMessage","id":"m1","text":""}}}`)))
+			},
+		},
+		{
+			name: "the turn ends",
+			trigger: func(a *Agent) {
+				handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"completed"}}}`)))
+			},
+		},
+		{
+			name: "the user stops",
+			trigger: func(a *Agent) {
+				// A stop with no running turn still withdraws the offer.
+				a.Mu.Lock()
+				a.mainTurn.id = ""
+				a.Mu.Unlock()
+				_ = a.Interrupt(agentapi.StopContext{})
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			sink := &agenttest.Sink{}
+			a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+			armRetryableTurn(t, a, sink)
+			require.Len(t, sink.SessionInfoValues(contracts.SessionInfoKeyTurnRetryOffer), 1)
+
+			tc.trigger(a)
+
+			values := sink.SessionInfoValues(contracts.SessionInfoKeyTurnRetryOffer)
+			require.Len(t, values, 2, "the withdrawal broadcasts")
+			assert.Nil(t, values[1])
+			a.Mu.Lock()
+			offer := a.retryOffer
+			a.Mu.Unlock()
+			assert.Nil(t, offer)
+		})
+	}
+}
+
+// A child thread persists its own buffering notice and holds no offer: the
+// offer belongs to the running main turn.
+func TestHandleCodexOutput_SafetyBufferingOnAChildMakesNoOffer(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+	a.model = "gpt-5.4"
+	a.mainTurn.id = "turn-1"
+	a.mainTurn.input = []map[string]interface{}{{"type": "text", "text": "Hello."}}
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"spawn-1","kind":"started","agentThreadId":"child-1","agentPath":"/root/child"}}}`)))
+	input := `{"method":"model/safetyBuffering/updated","params":{"threadId":"child-1","turnId":"child-turn","model":"gpt-5.4","showBufferingUi":true,"fasterModel":"gpt-5.5"}}`
+
+	handleCodexOutput(a, providerkit.ParseLine([]byte(input)))
+
+	child := sink.Child("child-of-spawn-1")
+	require.Equal(t, 1, child.NotificationCount())
+	assert.JSONEq(t, input, string(child.LastNotification().Content))
+	assert.Zero(t, sink.NotificationCount(), "the parent transcript stays unchanged")
+	assert.Empty(t, sink.SessionInfoValues(contracts.SessionInfoKeyTurnRetryOffer))
+}
+
+// A child's answer starts the child's own turn. The parent's offer identifies the
+// parent turn and stays live: only the parent's own text ends it.
+func TestHandleCodexOutput_ChildAgentTextKeepsTheParentRetryOffer(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+	armRetryableTurn(t, a, sink)
+	// Spawn child-1 so its frames route to its own transcript.
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn-1","item":{"type":"subAgentActivity","id":"spawn-1","kind":"started","agentThreadId":"child-1","agentPath":"/root/child"}}}`)))
+
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"item/agentMessage/delta","params":{"threadId":"child-1","itemId":"m1","delta":"Child text"}}`)))
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"item/started","params":{"threadId":"child-1","turnId":"child-turn","item":{"type":"agentMessage","id":"m2","text":""}}}`)))
+
+	assert.Len(t, sink.SessionInfoValues(contracts.SessionInfoKeyTurnRetryOffer), 1,
+		"the child text broadcasts no withdrawal")
+	a.Mu.Lock()
+	offer := a.retryOffer
+	a.Mu.Unlock()
+	require.NotNil(t, offer)
+	assert.Equal(t, "turn-1", offer.turnID)
+}
+
+// The `error` frame carries its text in `params.error.message`. The old reader
+// decoded `params.message`, which is always empty, so no error ever reached the
+// transcript.
+func TestHandleCodexOutput_ErrorWillRetryPersistsTheRawFrame(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+	input := `{"jsonrpc":"2.0","method":"error","params":{"error":{"message":"Reconnecting... 2/5","codexErrorInfo":null,"additionalDetails":null},"willRetry":true,"threadId":"main-thread","turnId":"u1"}}`
+
+	handleCodexOutput(a, providerkit.ParseLine([]byte(input)))
+
+	require.Equal(t, 1, sink.NotificationCount(), "the reader must see that Codex keeps trying")
+	assert.Zero(t, sink.MessageCount())
+	assert.JSONEq(t, input, string(sink.LastNotification().Content))
+}
+
+func TestHandleCodexOutput_ErrorRoutesByThreadId(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+	input := `{"jsonrpc":"2.0","method":"error","params":{"error":{"message":"Reconnecting... 1/5","codexErrorInfo":null,"additionalDetails":null},"willRetry":true,"threadId":"child-1","turnId":"u1"}}`
+
+	// The frame arrives before the route exists and waits in the child queue.
+	handleCodexOutput(a, providerkit.ParseLine([]byte(input)))
+	assert.Zero(t, sink.MessageCount())
+	assert.Zero(t, sink.NotificationCount(), "the parent transcript must not receive the child error")
+
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"spawn-1","kind":"started","agentThreadId":"child-1","agentPath":"/root/child"}}}`)))
+
+	child := sink.Child("child-of-spawn-1")
+	require.Equal(t, 1, child.NotificationCount())
+	assert.JSONEq(t, input, string(child.LastNotification().Content))
+}
+
+// A final error duplicates the failed turn's `turn/completed`, whose TurnError
+// codexResultDivider already draws with its details.
+func TestHandleCodexOutput_ErrorWithoutRetryPersistsNothing(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"jsonrpc":"2.0","method":"error","params":{"error":{"message":"This request has been flagged for potentially high-risk cyber activity.","codexErrorInfo":"cyberPolicy"},"willRetry":false,"threadId":"main-thread","turnId":"u1"}}`)))
+
+	assert.Zero(t, sink.NotificationCount())
+	assert.Zero(t, sink.MessageCount())
+	assert.Empty(t, sink.LeapMuxNotifications())
+}
+
+// The default path stores each unclaimed frame as its own message row. Two
+// plan updates in one notification-thread row freeze the plan card on the first
+// plan: the row's classifier reads the wrapper's first message.
+func TestHandleCodexOutput_DefaultPathFramesAreStandaloneMessageRows(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+	first := `{"method":"turn/plan/updated","params":{"threadId":"main-thread","plan":[{"step":"Inspect","status":"inProgress"}]}}`
+	second := `{"method":"turn/plan/updated","params":{"threadId":"main-thread","plan":[{"step":"Inspect","status":"completed"},{"step":"Write","status":"inProgress"}]}}`
+
+	handleCodexOutput(agent, providerkit.ParseLine([]byte(first)))
+	handleCodexOutput(agent, providerkit.ParseLine([]byte(second)))
+
+	require.Equal(t, 2, sink.MessageCount(), "each frame is its own message row")
+	assert.Zero(t, sink.NotificationCount(), "the default path joins no notification thread")
+	messages := sink.Messages()
+	assert.JSONEq(t, first, string(messages[0].Content))
+	assert.JSONEq(t, second, string(messages[1].Content))
+}
+
+// The child transcript stores a child's default-path frames with the same
+// primitive as the main thread's: one message row per frame, whether the frame
+// waited for its route or arrived after the route existed.
+func TestHandleCodexOutput_ChildDefaultPathFramesAreStandaloneMessageRows(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+	first := `{"method":"turn/plan/updated","params":{"threadId":"child-1","plan":[{"step":"Inspect","status":"inProgress"}]}}`
+	second := `{"method":"turn/plan/updated","params":{"threadId":"child-1","plan":[{"step":"Inspect","status":"completed"},{"step":"Write","status":"inProgress"}]}}`
+
+	// The first frame waits in the child queue; the second arrives after the
+	// route exists.
+	handleCodexOutput(agent, providerkit.ParseLine([]byte(first)))
+	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"spawn-1","kind":"started","agentThreadId":"child-1","agentPath":"/root/child"}}}`)))
+	handleCodexOutput(agent, providerkit.ParseLine([]byte(second)))
+
+	assert.Zero(t, sink.MessageCount(), "the parent transcript stays unchanged")
+	assert.Zero(t, sink.NotificationCount(), "the parent notification thread stays unchanged")
+	child := sink.Child("child-of-spawn-1")
+	require.Equal(t, 2, child.MessageCount(), "each child frame is its own message row")
+	assert.Zero(t, child.NotificationCount())
+	messages := child.Messages()
+	assert.JSONEq(t, first, string(messages[0].Content))
+	assert.JSONEq(t, second, string(messages[1].Content))
+}
+
+// A frame that identifies a child thread belongs to the child's transcript,
+// whether the default path stores it (the plan) or a claimed case stores it
+// (the warning). The parent's to-do list reads only the parent's own rows, so a
+// child plan in the parent replaced the parent's list.
+func TestHandleCodexOutput_QueuedChildFramesRouteToTheChildTranscript(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+	plan := `{"method":"turn/plan/updated","params":{"threadId":"child-1","plan":[{"step":"child step","status":"inProgress"}]}}`
+	warning := `{"method":"warning","params":{"threadId":"child-1","message":"careful"}}`
+
+	// Both frames arrive before the route exists and wait in the child queue.
+	handleCodexOutput(agent, providerkit.ParseLine([]byte(plan)))
+	handleCodexOutput(agent, providerkit.ParseLine([]byte(warning)))
+	assert.Zero(t, sink.MessageCount(), "the parent transcript must not receive a queued child frame")
+	assert.Zero(t, sink.NotificationCount(), "the parent notification thread must stay unchanged")
+
+	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"spawn-1","kind":"started","agentThreadId":"child-1","agentPath":"/root/child"}}}`)))
+
+	assert.Zero(t, sink.MessageCount(), "the parent transcript must not receive the child frame")
+	assert.Zero(t, sink.NotificationCount(), "the parent notification thread must stay unchanged")
+	child := sink.Child("child-of-spawn-1")
+	stored := append(append([]agenttest.Message{}, child.Messages()...), child.PersistedNotifications()...)
+	require.Len(t, stored, 2, "the child transcript owns both frames")
+	assert.JSONEq(t, plan, string(stored[0].Content))
+	assert.JSONEq(t, warning, string(stored[1].Content))
+}
+
 func TestHandleCodexOutput_MultiAgentV2PersistsPromptAndMirrorsFinalReport(t *testing.T) {
 	t.Parallel()
 
@@ -472,7 +1136,6 @@ func TestHandleCodexOutput_RawResponseMirrorsAddNoTranscriptRows(t *testing.T) {
 	for _, raw := range []string{
 		`{"method":"rawResponseItem/completed","params":{"threadId":"main-thread","item":{"type":"function_call","name":"exec_command","arguments":"{}","call_id":"call-1"}}}`,
 		`{"method":"rawResponseItem/completed","params":{"threadId":"main-thread","item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"answer"}]}}}`,
-		`{"method":"rawResponse/completed","params":{"threadId":"main-thread","responseId":"response-1"}}`,
 	} {
 		handleCodexOutput(a, providerkit.ParseLine([]byte(raw)))
 	}
@@ -517,7 +1180,7 @@ func TestHandleCodexOutput_ThreadNameUpdatedPersistsRawAsAgent(t *testing.T) {
 	sink := &agenttest.ControlSink{}
 	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
-	input := `{"method":"thread/name/updated","params":{"threadId":"thread-1","name":"Refactoring auth"}}`
+	input := `{"method":"thread/name/updated","params":{"threadId":"main-thread","name":"Refactoring auth"}}`
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(input)))
 
 	require.Equal(t, 1, sink.NotificationCount(),
@@ -529,34 +1192,6 @@ func TestHandleCodexOutput_ThreadNameUpdatedPersistsRawAsAgent(t *testing.T) {
 		"Codex-emitted lifecycle metadata must persist as AGENT")
 	assert.JSONEq(t, input, string(last.Content),
 		"raw envelope must be preserved so future renderers can read every field")
-}
-
-func TestHandleCodexOutput_SkillsChangedDoesNotReachTranscript(t *testing.T) {
-	t.Parallel()
-
-	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
-
-	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"skills/changed","params":{}}`)))
-
-	assert.Zero(t, sink.MessageCount())
-	assert.Zero(t, sink.NotificationCount())
-	assert.Zero(t, sink.SessionInfoCount())
-	assert.Empty(t, sink.TurnActives())
-}
-
-func TestHandleCodexOutput_RemoteControlStatusChangedDoesNotReachTranscript(t *testing.T) {
-	t.Parallel()
-
-	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
-
-	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"remoteControl/status/changed","params":{"status":"disabled","serverName":"OpenAI","installationId":"install-1","environmentId":null}}`)))
-
-	assert.Zero(t, sink.MessageCount())
-	assert.Zero(t, sink.NotificationCount())
-	assert.Zero(t, sink.SessionInfoCount())
-	assert.Empty(t, sink.TurnActives())
 }
 
 func TestHandleCodexOutput_RateLimitExceededSchedulesResume(t *testing.T) {
@@ -1823,37 +2458,19 @@ func TestHandleCodexOutput_TokenUsageUpdatedBroadcastsContextUsageWithoutPersist
 	require.Equal(t, int64(23), usage["context_tokens"])
 }
 
-func TestHandleCodexOutput_ThreadStatusChangedDoesNotReachTheTranscript(t *testing.T) {
+// A successful hook run has no outcome worth a row. `initialize` opts `hook/started`
+// out, so only the completion can arrive empty.
+func TestHandleCodexOutput_SuccessfulHookCompletionDoesNotReachTheTranscript(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
 	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 	agent.threadID = "thread-1"
 
-	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"thread/status/changed","params":{"threadId":"thread-1","status":{"type":"active","activeFlags":["waitingOnApproval"]}}}`)))
+	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"hook/completed","params":{"threadId":"thread-1","turnId":"turn-1","run":{"id":"hook-1","status":"completed"}}}`)))
 
 	assert.Zero(t, sink.MessageCount())
 	assert.Zero(t, sink.NotificationCount())
-	assert.Zero(t, sink.SessionInfoCount())
-	assert.Empty(t, sink.TurnActives())
-}
-
-func TestHandleCodexOutput_SuccessfulHookLifecycleDoesNotReachTheTranscript(t *testing.T) {
-	t.Parallel()
-
-	for _, input := range []string{
-		`{"method":"hook/started","params":{"threadId":"thread-1","turnId":"turn-1","run":{"id":"hook-1","status":"running"}}}`,
-		`{"method":"hook/completed","params":{"threadId":"thread-1","turnId":"turn-1","run":{"id":"hook-1","status":"completed"}}}`,
-	} {
-		sink := &agenttest.Sink{}
-		agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
-		agent.threadID = "thread-1"
-
-		handleCodexOutput(agent, providerkit.ParseLine([]byte(input)))
-
-		assert.Zero(t, sink.MessageCount(), input)
-		assert.Zero(t, sink.NotificationCount(), input)
-	}
 }
 
 func TestHandleCodexOutput_UnsuccessfulHookCompletionPersists(t *testing.T) {
@@ -1989,7 +2606,7 @@ func TestHandleCodexOutput_TurnCompletedChildPersistsChildTurnEnd(t *testing.T) 
 	childTurnCompleted := `{"method":"turn/completed","params":{"threadId":"child-1","turn":{"id":"turn-1","status":"completed","items":[],"error":null}}}`
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(childTurnCompleted)))
 
-	// The turn-end divider lands in the CHILD transcript, not the parent's.
+	// The CHILD transcript stores the turn-end divider, not the parent's.
 	child := sink.Child("child-of-call-1")
 	turnEnds := 0
 	for _, m := range child.Messages() {
@@ -2560,7 +3177,7 @@ func TestHandleCodexOutput_ChildThreadTurnStartedDoesNotReplaceInterruptTurn(t *
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"turn/started","params":{"threadId":"child-1","turn":{"id":"child-turn"}}}`)))
 
 	agent.Mu.Lock()
-	turnID := agent.turnID
+	turnID := agent.mainTurn.id
 	agent.Mu.Unlock()
 	assert.Equal(t, "main-turn", turnID, "interrupts and steering must keep targeting the active main-thread turn")
 	// A collab child's run is its background-task registry row, which the Worker
@@ -2948,7 +3565,7 @@ func TestCodexInterruptKeepsAnApprovalCardWhenTheInterruptFails(t *testing.T) {
 	a.SetContextForTest(context.Background())
 	a.SetStdinForTest(agenttest.NopStdin(refusingWriter{}))
 	a.Mu.Lock()
-	a.threadID, a.turnID = "thread", "turn"
+	a.threadID, a.mainTurn.id = "thread", "turn"
 	a.Mu.Unlock()
 
 	a.HandleOutput([]byte(`{"jsonrpc":"2.0","id":7,"method":"item/commandExecution/requestApproval","params":{}}`))
@@ -2974,7 +3591,7 @@ func TestCodexInterruptAnswersAnElicitationBeforeItInterrupts(t *testing.T) {
 	a.SetContextForTest(context.Background())
 	a.SetStdinForTest(agenttest.NopStdin(refusingWriter{}))
 	a.Mu.Lock()
-	a.threadID, a.turnID = "thread", "turn"
+	a.threadID, a.mainTurn.id = "thread", "turn"
 	a.Mu.Unlock()
 
 	a.HandleOutput([]byte(`{"jsonrpc":"2.0","id":7,"method":"` + contracts.MCPElicitationMethodCodex + `","params":{}}`))
@@ -3090,7 +3707,7 @@ func TestAppendCodexToolEventAdvancesTheTailPastTheRetentionCap(t *testing.T) {
 }
 
 // The retention cap cuts at a BYTE index into a UTF-8 stream, so it steps back to
-// the start of the rune it lands inside. A partial rune renders as a replacement
+// the start of the rune that contains the cut. A partial rune renders as a replacement
 // character in the row that Codex's own output writes.
 func TestAppendCodexToolEventCutsTheCapAtARuneBoundary(t *testing.T) {
 	t.Parallel()
@@ -3098,7 +3715,7 @@ func TestAppendCodexToolEventCutsTheCapAtARuneBoundary(t *testing.T) {
 	a := newCodexAgentWithSink(agentapi.NewProviderServices(&agenttest.Sink{}))
 	a.Mu.Lock()
 	// Four bytes of budget remain, and each Hangul syllable is three bytes, so the
-	// cap lands inside the second one.
+	// cap falls inside the second one.
 	a.incompleteTools = map[string]*codexIncompleteTool{
 		"cmd-1": {outputBytes: codexIncompleteOutputLimit - 4},
 	}

@@ -1,0 +1,260 @@
+{
+  "_readme": "The ZCode `session.updated` kind discriminator, pinned on BOTH sides of the language boundary. `session.updated` is the app-server's catch-all: every internal event with no explicit wire mapping becomes one, with a free-form payload, and the shapes are told apart by which fields they carry. TestZCodeSessionUpdateKindConformance in the worker replays these cases against `zcodeSessionUpdatedPayload.kind`, and the browser's sessionUpdateKind conformance replay runs them against `zcodeSessionUpdateKind` in the provider plugin. A divergence between the two copies classifies a stored row differently on the two sides: the worker persists one kind of notification while the browser draws another. The cases cover each shape, the fields that must NOT decide alone (status, toolCallId, requestId, source, mode, turnId), the field types both decoders must refuse the same way, and the pairs of shapes whose fields overlap, which state the order of specificity. The source words come from contracts/zcode-protocol.json. A discriminator key that carries a JSON type other than its documented one decides nothing on either side: the worker reads every discriminator from raw bytes, and the browser reads only string-typed values. The cases state that too.",
+  "cases": [
+    {
+      "name": "a network status carries its request id",
+      "payload": { "type": "model_stream_stalled", "requestId": "req-1" },
+      "kind": "networkStatus"
+    },
+    {
+      "name": "a background task carries its task id",
+      "payload": { "taskId": "task-1", "status": "running" },
+      "kind": "backgroundTask"
+    },
+    {
+      "name": "a string task id alone marks a background task",
+      "payload": { "taskId": "t1" },
+      "kind": "backgroundTask"
+    },
+    {
+      "name": "a subagent event carries its parent tool call id",
+      "payload": { "agentId": "agent-1", "parentToolCallId": "call-1" },
+      "kind": "subagent"
+    },
+    {
+      "name": "a finished generation carries content and a stop reason",
+      "payload": { "content": "Hello", "stopReason": "stop" },
+      "kind": "modelResponse"
+    },
+    {
+      "name": "a goal check carries its verification id and its target id",
+      "payload": { "verificationId": "verify-1", "targetId": "target-1", "status": "started" },
+      "kind": "goalVerification"
+    },
+    {
+      "name": "a goal change carries an action and a source",
+      "payload": { "action": "status_updated", "source": "tool", "target": { "targetID": "target-1", "objective": "Ship", "status": "active" } },
+      "kind": "goalChange"
+    },
+    {
+      "name": "a cleared goal change carries a null target",
+      "payload": { "action": "cleared", "source": "command", "target": null },
+      "kind": "goalChange"
+    },
+    {
+      "name": "a mode change carries the mode and the plan flag",
+      "payload": { "mode": "plan", "planEnabled": true },
+      "kind": "modeChange"
+    },
+    {
+      "name": "a compaction lifecycle carries its operation id",
+      "payload": { "operationId": "op-1", "trigger": "auto", "status": "started" },
+      "kind": "compaction"
+    },
+    {
+      "name": "a microcompact boundary states its strategy",
+      "payload": { "strategy": "local_tool_result_clear" },
+      "kind": "microcompact"
+    },
+    {
+      "name": "a model switch carries a model selection",
+      "payload": { "modelSelection": { "modelId": "m-1" } },
+      "kind": "modelSelected"
+    },
+    {
+      "name": "a hook run carries its run id and its invocation id",
+      "payload": { "hookRunId": "run-1", "hookInvocationId": "inv-1" },
+      "kind": "hookRun"
+    },
+    {
+      "name": "a hook admission carries a pending count and a digest",
+      "payload": { "pendingCount": 0, "bundleDigest": "digest-1" },
+      "kind": "hookAdmission"
+    },
+    {
+      "name": "a discarded queued input carries its target turn id",
+      "payload": { "pendingInputIds": ["input-1"], "reason": "user_removed", "targetTurnId": "turn-1" },
+      "kind": "steerDiscarded"
+    },
+    {
+      "name": "an empty payload is dropped",
+      "payload": {},
+      "kind": "drop"
+    },
+    {
+      "name": "a bare status decides nothing",
+      "payload": { "status": "started" },
+      "kind": "drop"
+    },
+    {
+      "name": "a bare tool call id decides nothing",
+      "payload": { "toolCallId": "call-1" },
+      "kind": "drop"
+    },
+    {
+      "name": "a bare request id decides nothing",
+      "payload": { "requestId": "req-1" },
+      "kind": "drop"
+    },
+    {
+      "name": "a bare turn id decides nothing",
+      "payload": { "turnId": "turn-1" },
+      "kind": "drop"
+    },
+    {
+      "name": "a bare source decides nothing",
+      "payload": { "source": "tool" },
+      "kind": "drop"
+    },
+    {
+      "name": "a bare mode decides nothing",
+      "payload": { "mode": "plan" },
+      "kind": "drop"
+    },
+    {
+      "name": "a network status without its request id is dropped",
+      "payload": { "type": "model_stream_stalled" },
+      "kind": "drop"
+    },
+    {
+      "name": "a subagent event without its parent tool call id is dropped",
+      "payload": { "agentId": "agent-1" },
+      "kind": "drop"
+    },
+    {
+      "name": "content without a stop reason is not a model response",
+      "payload": { "content": "Hello" },
+      "kind": "drop"
+    },
+    {
+      "name": "a goal check without its target id is dropped",
+      "payload": { "verificationId": "verify-1" },
+      "kind": "drop"
+    },
+    {
+      "name": "a goal change without its source is dropped",
+      "payload": { "action": "cleared", "target": null },
+      "kind": "drop"
+    },
+    {
+      "name": "a mode change without the plan flag is dropped",
+      "payload": { "mode": "plan", "planEnabled": null },
+      "kind": "drop"
+    },
+    {
+      "name": "a compaction without its status is dropped",
+      "payload": { "operationId": "op-1", "trigger": "auto" },
+      "kind": "drop"
+    },
+    {
+      "name": "another microcompact strategy is dropped",
+      "payload": { "strategy": "full" },
+      "kind": "drop"
+    },
+    {
+      "name": "a hook run without its invocation id is dropped",
+      "payload": { "hookRunId": "run-1" },
+      "kind": "drop"
+    },
+    {
+      "name": "a non-string content is not a model response",
+      "payload": { "content": 5, "stopReason": "stop" },
+      "kind": "drop"
+    },
+    {
+      "name": "a non-string stop reason is not a model response",
+      "payload": { "content": "Hello", "stopReason": 5 },
+      "kind": "drop"
+    },
+    {
+      "name": "a non-boolean plan flag is not a mode change",
+      "payload": { "mode": "plan", "planEnabled": "true" },
+      "kind": "drop"
+    },
+    {
+      "name": "a null target id is not a goal check",
+      "payload": { "verificationId": "verify-1", "targetId": null },
+      "kind": "drop"
+    },
+    {
+      "name": "a non-string strategy is not a microcompact boundary",
+      "payload": { "strategy": 5 },
+      "kind": "drop"
+    },
+    {
+      "name": "a null model selection is not a model switch",
+      "payload": { "modelSelection": null },
+      "kind": "drop"
+    },
+    {
+      "name": "a non-string task id is not a background task",
+      "payload": { "taskId": 5 },
+      "kind": "drop"
+    },
+    {
+      "name": "an empty task id is not a background task",
+      "payload": { "taskId": "" },
+      "kind": "drop"
+    },
+    {
+      "name": "an empty verification id still marks a goal check",
+      "payload": { "verificationId": "", "targetId": "target-1" },
+      "kind": "goalVerification"
+    },
+    {
+      "name": "a non-string task id decides nothing beside generation fields",
+      "payload": { "taskId": 5, "content": "Hello", "stopReason": "stop" },
+      "kind": "modelResponse"
+    },
+    {
+      "name": "a non-string agent id is not a subagent event",
+      "payload": { "agentId": 5, "parentToolCallId": "call-1" },
+      "kind": "drop"
+    },
+    {
+      "name": "a non-string parent tool call id is not a subagent event",
+      "payload": { "agentId": "agent-1", "parentToolCallId": 5 },
+      "kind": "drop"
+    },
+    {
+      "name": "a task id wins over generation fields",
+      "payload": { "taskId": "task-1", "content": "Hello", "stopReason": "stop" },
+      "kind": "backgroundTask"
+    },
+    {
+      "name": "a subagent event wins over generation fields",
+      "payload": { "agentId": "agent-1", "parentToolCallId": "call-1", "content": "Hello", "stopReason": "stop" },
+      "kind": "subagent"
+    },
+    {
+      "name": "a model response wins over goal fields",
+      "payload": { "content": "Hello", "stopReason": "stop", "verificationId": "verify-1", "targetId": "target-1" },
+      "kind": "modelResponse"
+    },
+    {
+      "name": "a goal check wins over a goal change",
+      "payload": { "verificationId": "verify-1", "targetId": "target-1", "action": "status_updated", "source": "tool", "target": null },
+      "kind": "goalVerification"
+    },
+    {
+      "name": "a goal change wins over a mode change",
+      "payload": { "action": "status_updated", "source": "tool", "target": null, "mode": "plan", "planEnabled": true },
+      "kind": "goalChange"
+    },
+    {
+      "name": "a compaction wins over a microcompact boundary",
+      "payload": { "operationId": "op-1", "trigger": "auto", "status": "started", "strategy": "local_tool_result_clear" },
+      "kind": "compaction"
+    },
+    {
+      "name": "a microcompact boundary wins over a model switch",
+      "payload": { "strategy": "local_tool_result_clear", "modelSelection": { "modelId": "m-1" } },
+      "kind": "microcompact"
+    },
+    {
+      "name": "a network status wins over a task id",
+      "payload": { "type": "model_stream_stalled", "requestId": "req-1", "taskId": "task-1" },
+      "kind": "networkStatus"
+    }
+  ]
+}

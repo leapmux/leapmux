@@ -7,7 +7,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'bun:test'
 
-import { buildAjv, discoverJsonFiles, formatFailureLines, resolveSchemaPath, RULES, toPosixRel, validateAll, validateSchemalessDir } from './validate-json.mjs'
+import { buildAjv, discoverJsonFiles, findDuplicateKeys, formatFailureLines, resolveSchemaPath, RULES, toPosixRel, validateAll, validateSchemalessDir } from './validate-json.mjs'
 
 const ROOT = resolve(import.meta.dirname, '..')
 const SCRATCH_ROOT = join(ROOT, '.tmp')
@@ -184,6 +184,113 @@ describe('validateAll', () => {
     expect(result.failures[0]?.reason).toBe('bad-schema')
     expect(result.failures[0]?.reasonText).toContain(detail)
     expect(formatFailureLines(result.failures)[0]).toContain('contracts/a-broken.json:')
+  })
+})
+
+describe('findDuplicateKeys', () => {
+  it('reports nothing when each object states each key once', () => {
+    expect(findDuplicateKeys('{"a":1,"b":{"a":2},"c":[{"a":3},{"a":4}],"d":[]}')).toEqual([])
+  })
+
+  it('reports a repeated key with the JSON Pointer of its object', () => {
+    expect(findDuplicateKeys('{"methods":{"Warning":"w","Error":"e","Warning":"w"}}')).toEqual([{ path: '/methods', key: 'Warning' }])
+  })
+
+  it('reports a repeated key of the root object with the root pointer', () => {
+    expect(findDuplicateKeys('{"a":1,"a":2}')).toEqual([{ path: '', key: 'a' }])
+  })
+
+  it('reports each extra occurrence of a key', () => {
+    expect(findDuplicateKeys('{"a":1,"a":2,"a":3}')).toEqual([{ path: '', key: 'a' }, { path: '', key: 'a' }])
+  })
+
+  it('compares the decoded keys, so an escaped spelling is the same key', () => {
+    expect(findDuplicateKeys('{"a":1,"\\u0061":2}')).toEqual([{ path: '', key: 'a' }])
+  })
+
+  it('reads strings that hold JSON punctuation, quotes and backslashes as one token', () => {
+    expect(findDuplicateKeys('{"k":"{\\"k\\":[1,2]}","k\\\\":"]","\\"k\\"":",","x":"}"}')).toEqual([])
+  })
+
+  it('counts array elements of every type in the pointer', () => {
+    expect(findDuplicateKeys('[1,"s",true,null,[],{"b":1,"b":2}]')).toEqual([{ path: '/5', key: 'b' }])
+  })
+
+  it('escapes a tilde and a slash in the pointer', () => {
+    expect(findDuplicateKeys('{"a/b~c":{"x":1,"x":2}}')).toEqual([{ path: '/a~1b~0c', key: 'x' }])
+  })
+
+  it('reads a key again after a nested value closes', () => {
+    expect(findDuplicateKeys('{"a":{"b":[1,{"c":2}]},"a":3}')).toEqual([{ path: '', key: 'a' }])
+  })
+
+  it('accepts whitespace between every token', () => {
+    expect(findDuplicateKeys(' {\n  "a" : 1 ,\n  "a" : [ 1 , { "b" : 2 } ]\n}\n')).toEqual([{ path: '', key: 'a' }])
+  })
+
+  it('walks a deep nesting without recursion', () => {
+    const depth = 20000
+    const text = `${'['.repeat(depth)}{"a":1,"a":2}${']'.repeat(depth)}`
+    expect(findDuplicateKeys(text)).toEqual([{ path: '/0'.repeat(depth), key: 'a' }])
+  })
+
+  it('reports nothing for a top-level scalar', () => {
+    expect(findDuplicateKeys('"a"')).toEqual([])
+    expect(findDuplicateKeys('42')).toEqual([])
+  })
+})
+
+describe('validateAll duplicate keys', () => {
+  it('reports a repeated key in a data file although the last value conforms', () => {
+    const dir = scratchDirectory('validate-json-duplicate-')
+    mkdirSync(join(dir, 'contracts'))
+    writeFileSync(join(dir, 'contracts', 'dup.json'), '{"value":"text","value":1}')
+    writeFileSync(join(dir, 'contracts', 'dup.schema.json'), JSON.stringify({
+      type: 'object',
+      additionalProperties: false,
+      required: ['value'],
+      properties: { value: { type: 'integer' } },
+    }))
+    const { failures } = validateAll(dir, { ajv: buildAjv() })
+    expect(failures).toHaveLength(1)
+    expect(failures[0]?.reason).toBe('invalid')
+    expect(formatFailureLines(failures)).toEqual([
+      'contracts/dup.json/: the key "value" appears more than once in this object. JSON.parse keeps only the last value.',
+    ])
+  })
+
+  it('reports a repeated key beside a schema violation in the same file', () => {
+    const dir = scratchDirectory('validate-json-duplicate-')
+    mkdirSync(join(dir, 'contracts'))
+    writeFileSync(join(dir, 'contracts', 'dup.json'), '{"nested":{"a":1,"a":2},"value":"text"}')
+    writeFileSync(join(dir, 'contracts', 'dup.schema.json'), JSON.stringify({
+      type: 'object',
+      properties: { value: { type: 'integer' } },
+    }))
+    const { failures } = validateAll(dir, { ajv: buildAjv() })
+    const lines = formatFailureLines(failures)
+    expect(lines).toHaveLength(2)
+    expect(lines[0]).toBe('contracts/dup.json/nested: the key "a" appears more than once in this object. JSON.parse keeps only the last value.')
+    expect(lines[1]).toContain('contracts/dup.json/value: must be integer')
+  })
+
+  it('reports a repeated key in a schema as a bad schema', () => {
+    const dir = scratchDirectory('validate-json-duplicate-')
+    mkdirSync(join(dir, 'contracts'))
+    writeFileSync(join(dir, 'contracts', 'dup.json'), '[]')
+    writeFileSync(join(dir, 'contracts', 'dup.schema.json'), '{"type":"object","type":"array"}')
+    const { failures } = validateAll(dir, { ajv: buildAjv() })
+    expect(failures).toHaveLength(1)
+    expect(failures[0]?.reason).toBe('bad-schema')
+    expect(failures[0]?.reasonText).toBe('schema states a key more than once: the key "type" at /. JSON.parse keeps only the last value.')
+  })
+
+  it('reports a repeated key in a contract that the generator validates', () => {
+    const dir = scratchDirectory('validate-json-duplicate-')
+    writeFileSync(join(dir, 'dup.json'), '{"a":1,"a":1}')
+    writeFileSync(join(dir, 'dup.schema.json'), JSON.stringify({ type: 'object' }))
+    const { failures } = validateSchemalessDir(dir, { ajv: buildAjv() })
+    expect(failures.map(f => f.reason)).toEqual(['invalid'])
   })
 })
 

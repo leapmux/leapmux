@@ -16,20 +16,24 @@ import (
 )
 
 type claudePendingControl struct {
-	instanceID      string
-	sessionID       string
-	agentID         string
-	toolUseID       string
-	payload         []byte
-	automaticReply  []byte
-	ready           bool
-	published       bool
-	answering       bool
-	answered        bool
-	automatic       bool
-	automaticFailed bool
-	publicationDone chan struct{}
-	publicationOnce sync.Once
+	instanceID string
+	sessionID  string
+	agentID    string
+	toolUseID  string
+	// elicitationServer and elicitationID identify one server's elicitation.
+	// A completion must match both values. Each MCP server assigns its own IDs.
+	elicitationServer string
+	elicitationID     string
+	payload           []byte
+	automaticReply    []byte
+	ready             bool
+	published         bool
+	answering         bool
+	answered          bool
+	automatic         bool
+	automaticFailed   bool
+	publicationDone   chan struct{}
+	publicationOnce   sync.Once
 }
 
 func (a *Agent) claudeCodeHandleControlRequest(content []byte) {
@@ -39,6 +43,21 @@ func (a *Agent) claudeCodeHandleControlRequest(content []byte) {
 	}
 	if json.Unmarshal(content, &envelope) != nil || envelope.RequestID == "" {
 		return
+	}
+	// The optional fields that touch the live state decode one at a time, so a
+	// mistyped field costs only itself. A `can_use_tool` is the permission
+	// decision that reaches the reader, so the call that it escalates waits on
+	// no automatic check any more. An `elicitation` keeps its elicitation id on
+	// the record with its server, because a completion identifies that pair.
+	fields := parseClaudeControlRequestFields(content)
+	if fields.Subtype == claudeControlRequestCanUseTool {
+		if sink, ok := a.claudePermissionCheckSink(fields.AgentID); ok {
+			providerkit.PublishPermissionCheck(sink, fields.ToolUseID, false)
+		}
+	}
+	elicitationID := ""
+	if fields.Subtype == contracts.MCPElicitationSubtypeClaude {
+		elicitationID = fields.ElicitationID
 	}
 	var request struct {
 		Subtype             string          `json:"subtype"`
@@ -50,6 +69,7 @@ func (a *Agent) claudeCodeHandleControlRequest(content []byte) {
 	}
 	valid := json.Unmarshal(envelope.Request, &request) == nil
 	record := &claudePendingControl{instanceID: id.Generate(), agentID: request.AgentID, toolUseID: request.ToolUseID,
+		elicitationServer: fields.MCPServerName, elicitationID: elicitationID,
 		payload: bytes.Clone(content), publicationDone: make(chan struct{})}
 	var input map[string]json.RawMessage
 	if valid && request.Subtype == "can_use_tool" && request.ToolName != "" && !request.RequiresInteraction &&
@@ -248,6 +268,29 @@ func (a *Agent) finishControlAnswer(requestID string, record *claudePendingContr
 	if current && publish {
 		a.publishRegisteredControl(requestID, record)
 	}
+}
+
+// claimElicitation claims an unanswered request from the specified MCP server.
+// Both identities must match, and the request must belong to the current session.
+func (a *Agent) claimElicitation(server, elicitationID string) (string, *claudePendingControl) {
+	if server == "" || elicitationID == "" {
+		return "", nil
+	}
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	if a.StoppedLocked() {
+		return "", nil
+	}
+	for requestID, record := range a.incomingControls {
+		if record.elicitationServer != server || record.elicitationID != elicitationID || !record.ready || record.answering || record.answered ||
+			record.sessionID != a.sessionID {
+			continue
+		}
+		record.answering = true
+		record.automatic = true
+		return requestID, record
+	}
+	return "", nil
 }
 
 func (a *Agent) retireControl(requestID string) {

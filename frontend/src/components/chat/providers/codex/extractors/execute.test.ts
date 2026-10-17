@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { providerRow } from '~/test-support/toolCallFixture'
 import { input } from '../../testUtils'
 import { codexCommandActionsFromItem, codexCommandFromItem, codexRawExecRole, codexUnwrapCommand } from './execute'
@@ -10,11 +10,76 @@ const rawExecSource = 'text("Native computed output: " + (40 + 2));'
 const rawExecRequest = { threadId: 'native-thread', turnId: 'native-turn', item: { type: 'custom_tool_call', call_id: 'native-exec-call', name: 'exec', input: rawExecSource, status: 'completed' } }
 const rawExecResult = (output: unknown) => ({ threadId: 'native-thread', turnId: 'native-turn', item: { type: 'custom_tool_call_output', call_id: 'native-exec-call', output } })
 
-function rawExecRow(output: unknown, request = rawExecRequest) {
-  return providerRow(AgentProvider.CODEX, rawExecResult(output), { category: { kind: 'tool_use' }, role: 'result', spanType: 'exec', request: input(request, undefined, AgentProvider.CODEX) })
+function rawExecRow(output: unknown, request = rawExecRequest, extra: { supplementalContent?: unknown, completion?: MessageCompletion } = {}) {
+  return providerRow(AgentProvider.CODEX, rawExecResult(output), { category: { kind: 'tool_use' }, role: 'result', spanType: 'exec', request: input(request, undefined, AgentProvider.CODEX), ...extra })
+}
+
+const cellHeader = (status: string) => ({ type: 'input_text', text: `${status}\nWall time 1.0 seconds\nOutput:\n` })
+const cellText = (text: string) => ({ type: 'input_text', text })
+const cellYield = 'Script running with cell ID 7'
+
+/** The supplement the worker stores beside the exec output of a cell that yielded. */
+function cellSupplement(...continuationOutputs: unknown[]) {
+  return { callId: 'native-exec-call', continuationOutputs }
 }
 
 describe('codex native exec extraction', () => {
+  it('reports the native unsupported execution call as failed', () => {
+    const output = 'unsupported custom tool call: exec'
+    expect(rawExecRow(output)).toMatchObject({ kind: 'tool', call: { kind: 'execute', status: 'failed', result: { commands: [{ output, failed: true }] } } })
+  })
+
+  it.each([
+    'prefix unsupported custom tool call: exec',
+    'unsupported custom tool call: exec suffix',
+    'unsupported custom tool call: exec\n',
+    'unsupported custom tool call: another_tool',
+  ])('preserves an unknown dispatch message as text: %j', (output) => {
+    expect(rawExecRow(output)).toMatchObject({ kind: 'tool', call: { result: { unparsed: true, text: output } } })
+  })
+
+  it('keeps printed dispatch errors separate from native failure', () => {
+    const output = 'unsupported custom tool call: exec'
+    expect(rawExecRow([cellHeader('Script completed'), cellText(output)])).toMatchObject({ kind: 'tool', call: { status: 'completed', result: { commands: [{ output }] } } })
+    expect(rawExecRow([cellText(output)])).toMatchObject({ kind: 'tool', call: { result: { unparsed: true, text: output } } })
+  })
+
+  it.each([0.1, 0.3, 1234567890.1])('retains native cancellation after %s seconds', (seconds) => {
+    const output = `aborted by user after ${seconds.toFixed(1)}s`
+    expect(rawExecRow(output)).toMatchObject({ kind: 'tool', call: { kind: 'execute', status: 'cancelled', result: { commands: [{ output, durationMs: seconds * 1000 }] } } })
+  })
+
+  it.each([
+    '',
+    'prefix aborted by user after 0.3s',
+    'aborted by user after 0.3s suffix',
+    'aborted by user after 0.3s\n',
+    'aborted by user after -0.3s',
+    'aborted by user after 0.0s',
+    'aborted by user after 3s',
+    'aborted by user after 0.30s',
+    `aborted by user after ${'9'.repeat(400)}.1s`,
+    `aborted by user after 1${'0'.repeat(306)}.1s`,
+  ])('preserves a malformed cancellation as unknown text: %j', (output) => {
+    expect(rawExecRow(output)).toMatchObject({ kind: 'tool', call: { kind: 'execute', result: { unparsed: true, text: output } } })
+  })
+
+  it('keeps a printed cancellation inside the script body as ordinary output', () => {
+    const output = 'aborted by user after 0.3s'
+    expect(rawExecRow([cellHeader('Script completed'), cellText(output)])).toMatchObject({ kind: 'tool', call: { status: 'completed', result: { commands: [{ output }] } } })
+    expect(rawExecRow([cellText(output)])).toMatchObject({ kind: 'tool', call: { result: { unparsed: true, text: output } } })
+  })
+
+  it('retains earlier output when a native cancellation ends a yielded cell', () => {
+    const row = rawExecRow([cellHeader(cellYield), cellText('partial')], rawExecRequest, {
+      supplementalContent: cellSupplement('aborted by user after 0.3s'),
+    })
+    expect(row).toMatchObject({ kind: 'tool', call: { kind: 'execute', status: 'cancelled', result: { commands: [{ output: 'partial\naborted by user after 0.3s' }] } } })
+    if (row?.kind !== 'tool' || row.call.kind !== 'execute' || !row.call.result || !('commands' in row.call.result))
+      throw new Error('The cancelled cell lost its output.')
+    expect(row.call.result.commands[0]).not.toHaveProperty('durationMs')
+  })
+
   it.each([
     { label: 'absent', namespace: undefined },
     { label: 'null', namespace: null },
@@ -184,5 +249,76 @@ describe('codexCommandActionsFromItem', () => {
     expect(codexCommandActionsFromItem({ commandActions: [null, 'read', {}, { type: 'read', path: '/repo/a.ts' }] })).toEqual([])
     expect(codexCommandActionsFromItem({ commandActions: 'not-an-array' })).toEqual([])
     expect(codexCommandActionsFromItem({})).toEqual([])
+  })
+})
+
+describe('codex code cell continuation', () => {
+  it('joins the output of every yield and wait into one card with the final status', () => {
+    const row = rawExecRow([cellHeader(cellYield), cellText('partial')], rawExecRequest, {
+      supplementalContent: cellSupplement([cellHeader(cellYield), cellText('more')], [cellHeader('Script completed'), cellText('final')]),
+    })
+    expect(row).toMatchObject({ kind: 'tool', call: { kind: 'execute', status: 'completed', result: { commands: [{ output: 'partial\nmore\nfinal' }] } } })
+    if (row?.kind !== 'tool' || row.call.kind !== 'execute' || !row.call.result || !('commands' in row.call.result))
+      throw new Error('The joined cell lost its execute result.')
+    // The cell ran across several calls, so no one wall time states its duration.
+    expect(row.call.result.commands[0]).not.toHaveProperty('durationMs')
+  })
+
+  it('reads a wait output in the native string variant', () => {
+    expect(rawExecRow([cellHeader(cellYield)], rawExecRequest, {
+      supplementalContent: cellSupplement('Script completed\nWall time 0.5 seconds\nOutput:\nfinal'),
+    })).toMatchObject({ kind: 'tool', call: { kind: 'execute', status: 'completed', result: { commands: [{ output: 'final' }] } } })
+  })
+
+  it('reports a cell whose last wait failed', () => {
+    expect(rawExecRow([cellHeader(cellYield), cellText('partial')], rawExecRequest, {
+      supplementalContent: cellSupplement([cellHeader('Script failed'), cellText('Script error:\nError: 77')]),
+    })).toMatchObject({ kind: 'tool', call: { kind: 'execute', status: 'failed', result: { commands: [{ output: 'partial\nScript error:\nError: 77', failed: true }] } } })
+  })
+
+  it('reports a cell that a wait terminated as cancelled', () => {
+    expect(rawExecRow([cellHeader(cellYield), cellText('partial')], rawExecRequest, {
+      supplementalContent: cellSupplement([cellHeader('Script terminated')]),
+    })).toMatchObject({ kind: 'tool', call: { kind: 'execute', status: 'cancelled', result: { commands: [{ output: 'partial' }] } } })
+  })
+
+  it('reports a cell that still ran at the turn end as cancelled, with the output it stated', () => {
+    expect(rawExecRow([cellHeader(cellYield), cellText('partial')], rawExecRequest, { completion: MessageCompletion.INTERRUPTED }))
+      .toMatchObject({ kind: 'tool', call: { kind: 'execute', status: 'cancelled', result: { commands: [{ output: 'partial' }] } } })
+  })
+
+  it('takes the status from the last header, never from text that the script printed', () => {
+    expect(rawExecRow([cellHeader(cellYield), cellText('Script failed\nA printed status-like value')], rawExecRequest, {
+      supplementalContent: cellSupplement([cellHeader('Script completed'), cellText('done')]),
+    })).toMatchObject({ kind: 'tool', call: { kind: 'execute', status: 'completed' } })
+  })
+
+  it('collects the images of every output', () => {
+    const image = { type: 'input_image', image_url: 'data:image/png;base64,AAAA' }
+    const row = rawExecRow([cellHeader(cellYield), image], rawExecRequest, {
+      supplementalContent: cellSupplement([cellHeader('Script completed'), image]),
+    })
+    expect(row).toMatchObject({ kind: 'tool', call: { kind: 'execute', images: [expect.anything(), expect.anything()] } })
+  })
+
+  it('skips a continuation value that is neither text nor a list', () => {
+    expect(rawExecRow([cellHeader(cellYield), cellText('partial')], rawExecRequest, {
+      supplementalContent: cellSupplement(null, 3, [cellHeader('Script completed'), cellText('final')]),
+    })).toMatchObject({ kind: 'tool', call: { kind: 'execute', status: 'completed', result: { commands: [{ output: 'partial\nfinal' }] } } })
+  })
+
+  it('retains every output as unparsed text when one header is not a native header', () => {
+    const row = rawExecRow([cellHeader(cellYield), cellText('partial')], rawExecRequest, {
+      supplementalContent: cellSupplement('A different native output format\n42'),
+    })
+    expect(row).toMatchObject({ kind: 'tool', call: { kind: 'execute', result: { unparsed: true, text: expect.stringContaining('A different native output format') } } })
+    expect(row).toMatchObject({ kind: 'tool', call: { kind: 'execute', result: { text: expect.stringContaining('partial') } } })
+  })
+
+  it('ignores the supplement of another call', () => {
+    const row = rawExecRow([cellHeader('Script completed'), cellText('own output')], rawExecRequest, {
+      supplementalContent: { callId: 'another-call', continuationOutputs: [[cellHeader('Script failed'), cellText('foreign')]] },
+    })
+    expect(row).toMatchObject({ kind: 'tool', call: { kind: 'execute', status: 'completed', result: { commands: [{ output: 'own output' }] } } })
   })
 })

@@ -37,20 +37,22 @@ export function retryDetailText(retry: ToolProgressRetry): string {
   return `${parts.join(' · ')}.`
 }
 
-/** The badge text for a live retry, with the reason its tooltip states. */
-interface BadgeRetry {
+/** The badge text for one live state, with the reason its tooltip states. */
+interface BadgeText {
   label: string
   detail: string
 }
 
 /**
  * What the badge displays, as plain values COPIED out of the progress entry.
- * The two retry strings travel together in one object, so neither can go absent
- * while the other is set.
+ * The two strings of one state travel together in one object, so neither can go
+ * absent while the other is set. The permission check wins over the retry and
+ * the elapsed time, because it says what holds the call right now.
  */
 interface BadgeView {
   elapsedText?: string
-  retry?: BadgeRetry
+  retry?: BadgeText
+  permissionCheck?: BadgeText
 }
 
 /**
@@ -79,7 +81,15 @@ function badgeView(entry: ToolProgressEntry | undefined): BadgeView | undefined 
       detail: retryDetailText(retry),
     }
   }
-  return view.elapsedText === undefined && view.retry === undefined ? undefined : view
+  if (entry.permissionCheck === true) {
+    view.permissionCheck = {
+      label: 'Checking permission…',
+      detail: 'An automatic reviewer checks this call before it runs.',
+    }
+  }
+  return view.elapsedText === undefined && view.retry === undefined && view.permissionCheck === undefined
+    ? undefined
+    : view
 }
 
 export interface ToolRunningBadgeProps {
@@ -99,21 +109,23 @@ export interface ToolRunningBadgeProps {
 }
 
 /**
- * The "still running" badge on a tool card's header: an elapsed time, or the
- * retry state of a Task subagent that backs off.
+ * The "still running" badge on a tool card's header: an elapsed time, the
+ * retry state of a Task subagent that backs off, or the notice that an
+ * automatic reviewer holds the call before it runs.
  *
- * It writes at most one text node per update, and the agent updates at most
- * every 30 seconds (Claude Code's heartbeat interval), so this is not a live
- * clock and there is deliberately no timer here. Interpolation between the ticks
- * costs a DOM write per second per running tool, on a row where the user may
- * select text.
+ * It writes at most one text node per update, and the agent updates the elapsed
+ * time at most every 30 seconds (Claude Code's heartbeat interval), so this is
+ * not a live clock and there is deliberately no timer here. Interpolation
+ * between the ticks costs a DOM write per second per running tool, on a row
+ * where the user may select text.
  *
  * The elapsed time therefore steps 30, 60, 90, and only Claude's MAIN agent
- * reports one at all -- so a tool inside a subagent, a tool under any other
- * provider, and a tool shorter than 30 seconds all show nothing. Deriving the
- * value from the tool_use row's own timestamp would close every one of those
- * gaps and would reverse the no-timer decision above:
- * https://github.com/leapmux/leapmux/issues/439
+ * reports one at all. A tool inside a subagent, a tool under any other
+ * provider, and a tool shorter than 30 seconds therefore show no elapsed time.
+ * Such a tool still shows the other states that its provider reports, such as
+ * a permission check. Deriving the elapsed time from the tool_use row's own
+ * timestamp would close every one of those gaps and would reverse the no-timer
+ * decision above: https://github.com/leapmux/leapmux/issues/439
  */
 export const ToolRunningBadge: Component<ToolRunningBadgeProps> = (props) => {
   // Read the live value FIRST, so this memo subscribes to every field badgeView
@@ -145,12 +157,12 @@ export const ToolRunningBadge: Component<ToolRunningBadgeProps> = (props) => {
   return (
     <Show when={shown()}>
       {view => (
-        <Tooltip text={view().retry?.detail ?? ''}>
+        <Tooltip text={view().permissionCheck?.detail ?? view().retry?.detail ?? ''}>
           <span
-            class={view().retry ? `${styles.root} ${styles.retry}` : styles.root}
+            class={view().retry && !view().permissionCheck ? `${styles.root} ${styles.retry}` : styles.root}
             data-testid="tool-running-badge"
           >
-            {view().retry?.label ?? view().elapsedText}
+            {view().permissionCheck?.label ?? view().retry?.label ?? view().elapsedText}
           </span>
         </Tooltip>
       )}

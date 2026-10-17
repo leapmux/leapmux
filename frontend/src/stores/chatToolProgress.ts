@@ -71,6 +71,11 @@ export interface ToolProgressEntry {
   outputTail?: string
   /** Output was lost BEFORE the tail, so the row says the text is a window. */
   outputTruncated?: boolean
+  /**
+   * An automatic reviewer holds this call before it runs. The badge shows it in
+   * place of the elapsed time. An explicit `null` on an update ends it.
+   */
+  permissionCheck?: true
 }
 
 /**
@@ -80,13 +85,15 @@ export interface ToolProgressEntry {
  *
  * `retry` distinguishes three states on purpose: absent leaves the entry's
  * retry alone (a heartbeat), an object sets it, and `null` clears it (the CLI's
- * resolved-retry signal).
+ * resolved-retry signal). `permissionCheck` uses the same three states: absent
+ * leaves it, `true` sets it, and `null` clears it.
  */
 export interface ToolProgressUpdate extends MessageSpanIdentity {
   elapsedSeconds?: number
   retry?: ToolProgressRetry | null
   outputTail?: string
   outputTruncated?: boolean
+  permissionCheck?: true | null
 }
 
 export function createToolProgressStore() {
@@ -138,6 +145,8 @@ export function createToolProgressStore() {
           next.outputTail = update.outputTail
         if (update.outputTruncated !== undefined)
           next.outputTruncated = update.outputTruncated
+        if (update.permissionCheck === true)
+          next.permissionCheck = true
         return next
       })
       // The retry clear is a SEPARATE path set, not a `retry: undefined` in the
@@ -146,6 +155,8 @@ export function createToolProgressStore() {
       // This is the same explicit-undefined idiom clearThinkingTokens uses.
       if (update.retry === null)
         setState('byAgent', agentId, key, 'retry', undefined!)
+      if (update.permissionCheck === null)
+        setState('byAgent', agentId, key, 'permissionCheck', undefined!)
     },
 
     /** One span's live progress, or undefined when the tool is not running. */
