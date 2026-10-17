@@ -67,7 +67,7 @@ function globToRegExp(glob) {
   return new RegExp(`^${body}$`)
 }
 
-describe('GitHub Actions caches', () => {
+describe('cache and pin invariants of the GitHub Actions workflows', () => {
   it('stores the spinner cache in the directory that Task clones into', () => {
     const step = actionSteps('.github/actions/setup-build/action.yaml')
       .find(entry => entry.name === 'Cache awesome-claude-spinners')

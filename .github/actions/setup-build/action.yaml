@@ -5,12 +5,17 @@ description: >
   desktop-artifacts.yaml and notice.yaml so an action-version bump is one edit
   instead of one per job.
 
-# The OS differences live here rather than in the caller: whether apt runs,
-# where Tauri caches, whether protoc and the MSVC environment are needed, and
-# which shell reads versions.env are all functions of `runner.os`, so the caller
-# does not have to know them. What callers DO vary (a release version override,
-# whether this job may save the compiled caches, whether it needs clippy) are
-# inputs.
+# The OS differences live here, not in the caller. Each of these is a
+# function of `runner.os`, so the caller does not have to know them:
+# * whether apt runs;
+# * where Tauri caches;
+# * whether protoc and the MSVC environment are needed;
+# * which shell reads versions.env.
+#
+# What the callers DO vary are inputs:
+# * a release version override;
+# * whether this job may save the compiled caches;
+# * whether it needs clippy.
 #
 # Checkout is deliberately NOT here: a composite action can only run once its
 # own file is on disk, so the caller must check out first.
@@ -48,13 +53,14 @@ inputs:
     default: 'false'
   compile:
     description: >
-      Whether this job COMPILES anything. The three heaviest steps exist only
-      for the Tauri build (the ~20 WebKitGTK/GStreamer -dev packages, the
-      linuxdeploy download cache, and restoring the ~1.3 GB Rust target cache),
-      and a job that only reads dependency metadata (`cargo fetch`,
-      `cargo metadata`, `go list`) needs none of them. Set 'false' there. The
-      Go build cache is restored even then, because prepare-backend builds
-      sqlc.
+      Whether this job COMPILES anything. Set 'false' for a job that only
+      reads dependency metadata, for example with `cargo metadata` and
+      `go list`. That job then skips the three heaviest steps, which only the
+      Tauri build needs. The first installs about 20 WebKitGTK and GStreamer
+      -dev packages. The second restores the linuxdeploy download cache. The
+      third restores the Rust target cache, which is about 1.3 GB. The Go
+      build cache is restored even when this input is 'false', because
+      prepare-backend builds sqlc.
     required: false
     default: 'true'
 
@@ -103,13 +109,13 @@ runs:
         # root and _apt, and `tar` failed with "Permission denied" on them,
         # so the whole archive never saved.
         path: /var/cache/apt/archives/*.deb
-        # Hash only this action: the package list lives here now, so hashing
-        # the two callers as well rotated the key on every unrelated workflow
-        # edit and minted a near-duplicate archive each time.
+        # Hash only this action, because the package list lives here. A hash
+        # of the callers would change the key on each unrelated workflow edit
+        # and save a near-duplicate archive each time.
         key: apt-${{ runner.os }}-${{ runner.arch }}-${{ env.CACHE_WEEK }}-${{ hashFiles('.github/actions/setup-build/action.yaml') }}
-        # Fall back past the weekly epoch, as the Tauri cache below does.
-        # Pinning the fallback to CACHE_WEEK meant every Linux job re-downloaded
-        # the whole apt set cold each Monday.
+        # Fall back past the weekly epoch, as the Tauri cache below does. A
+        # fallback that includes CACHE_WEEK would make every Linux job
+        # download the whole package set again each Monday.
         restore-keys: apt-${{ runner.os }}-${{ runner.arch }}-
 
     - name: Install Tauri system dependencies
@@ -276,15 +282,15 @@ runs:
         save-if: ${{ inputs.save-build-caches == 'true' }}
 
     - name: Cache Tauri downloads
-      # On Linux the cached contents (linuxdeploy AppImage, the extracted
-      # AppRun, the linuxdeploy-plugin-* scripts) are post-processed by
-      # desktop/rust/scripts/patch-linuxdeploy.sh, which also installs a
-      # compiled wrapper built from linuxdeploy-wrapper.c. That script is
-      # idempotent on a clean download but skips patches it has already left
-      # behind, so on a cache hit a changed patch input would silently keep the
-      # old patches until the weekly rotation -- hence hashing both inputs into
-      # the Linux key. Windows caches hold unrelated tooling those scripts
-      # never touch, so its key is just the weekly epoch.
+      # On Linux, desktop/rust/scripts/patch-linuxdeploy.sh changes the cached
+      # files: the linuxdeploy AppImage, the extracted AppRun and the
+      # linuxdeploy-plugin-* scripts. It also installs a compiled wrapper that
+      # it builds from linuxdeploy-wrapper.c. The script is idempotent on a
+      # clean download, but it skips each patch that it already applied. On a
+      # cache hit, a changed patch input would therefore keep the old patches
+      # until the weekly rotation, with no message. The Linux key hashes both
+      # inputs for that reason. The Windows cache holds other tooling that
+      # those scripts never touch, so its key is only the weekly epoch.
       #
       # macOS is absent: the macOS build creates no Tauri cache directory, and
       # the save then fails with a path validation error.
@@ -296,9 +302,9 @@ runs:
       with:
         path: ${{ runner.os == 'Linux' && '~/.cache/tauri' || '~/AppData/Local/tauri' }}
         key: tauri-${{ runner.os }}-${{ runner.arch }}-${{ env.CACHE_WEEK }}${{ runner.os == 'Linux' && format('-{0}', hashFiles('desktop/rust/scripts/patch-linuxdeploy.sh', 'desktop/rust/scripts/linuxdeploy-wrapper.c')) || '' }}
-        # Fall back to last week's cache at the Monday CACHE_WEEK rotation
-        # boundary so we don't redownload the linuxdeploy AppImage + GTK
-        # plugins every Monday.
+        # Fall back to the cache of the previous week when CACHE_WEEK rotates
+        # on Monday. Without the fallback, each Monday's jobs download the
+        # linuxdeploy AppImage and the GTK plugins again.
         restore-keys: tauri-${{ runner.os }}-${{ runner.arch }}-
 
     - name: Cache awesome-claude-spinners

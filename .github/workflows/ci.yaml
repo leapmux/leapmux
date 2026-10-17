@@ -111,7 +111,7 @@ jobs:
             echo "path=$src_sidecar"
             file "$src_sidecar"
             echo "--- readelf -l | grep INTERP ---"
-            readelf -l "$src_sidecar" 2>&1 | grep -E 'INTERP|interpreter' || echo "(no INTERP segment — static binary)"
+            readelf -l "$src_sidecar" 2>&1 | grep -E 'INTERP|interpreter' || echo "(no INTERP segment: static binary)"
             echo "--- ldd output ---"
             ldd "$src_sidecar" 2>&1
             echo "ldd exit=$?"
@@ -137,8 +137,8 @@ jobs:
 
       - name: Test (full)
         if: matrix.arch == 'amd64'
-        # `task test` lints and tests every module — amd64 is the canonical
-        # runner, so it exercises the full suite including the Docker-backed
+        # `task test` lints and tests every module. amd64 is the canonical
+        # runner, so it runs the full suite, which includes the Docker-backed
         # storage backends (postgres/mysql/cockroachdb/tidb/yugabytedb).
         run: task test
 
@@ -172,8 +172,8 @@ jobs:
 
       - name: Test (no Docker-backed storage)
         # `task test-no-docker` lints and tests frontend/backend/desktop
-        # with the Docker-backed storage backends excluded — amd64 Linux
-        # still runs the full suite on every commit.
+        # without the Docker-backed storage backends. amd64 Linux still runs
+        # the full suite on every commit.
         run: task test-no-docker
 
       - name: Build

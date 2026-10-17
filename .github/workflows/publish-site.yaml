@@ -4,9 +4,9 @@ name: Publish site
 # the Cloudflare Worker "leapmux-site" (Workers Static Assets) on every push to
 # main that touches the site.
 #
-# leapmux-site is a Worker, not a Pages project, so deployment uses
-# `wrangler deploy` against site/wrangler.jsonc -- which holds the Worker name
-# and the ./public assets directory.
+# leapmux-site is a Worker, not a Pages project, so the deployment runs
+# `wrangler deploy` against site/wrangler.jsonc. That file holds the Worker
+# name and the ./public assets directory.
 #
 # Configure a "cloudflare-publish" GitHub environment with:
 #   - secret CLOUDFLARE_API_TOKEN   - API token with the "Workers Scripts: Edit"
@@ -17,8 +17,9 @@ name: Publish site
 on:
   push:
     branches: [main]
-    # Only redeploy when the site (content, config, theme, or this workflow)
-    # changes -- backend/frontend-only commits leave the published site current.
+    # Deploy again only when the site or this workflow changes. A commit that
+    # changes only the backend or the frontend leaves the published site
+    # current.
     # Remove this `paths` filter to deploy on every commit to main.
     paths:
       - "site/**"
@@ -70,6 +71,7 @@ jobs:
           wranglerVersion: ${{ env.WRANGLER_VERSION }}
           # Run wrangler in site/ so it picks up site/wrangler.jsonc, whose
           # ./public assets dir resolves relative to that file. This is a
-          # Workers Static Assets deploy -- `wrangler deploy`, not `pages deploy`.
+          # Workers Static Assets deploy, so the command is `wrangler deploy`,
+          # not `pages deploy`.
           workingDirectory: site
           command: deploy

@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-# Global ARGs — versions are defined in versions.env (no defaults here).
+# Global ARGs. versions.env defines the versions, so no ARG has a default here.
 ARG BASE_IMAGE
 ARG GOLANG_VERSION
 ARG NODE_VERSION
@@ -83,8 +83,8 @@ FROM ${BASE_IMAGE}
 ARG S6_OVERLAY_VERSION
 ARG TARGETARCH
 
-# Install s6-overlay (Docker uses amd64/arm64 but s6-overlay releases use
-# x86_64/aarch64, so we map the architecture name before downloading).
+# Install s6-overlay. Docker uses amd64/arm64, but the s6-overlay releases
+# use x86_64/aarch64, so the script maps the architecture name first.
 # Alpine needs ca-certificates for HTTPS; Ubuntu needs ca-certificates, wget,
 # and xz-utils (Alpine's BusyBox provides wget and xz-capable tar natively).
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \

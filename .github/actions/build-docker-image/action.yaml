@@ -8,13 +8,15 @@ description: >
 # docker/build-push-action block. This action holds the one definition.
 #
 # The cache design:
-# * `tools` and `builder` do not change with each commit. The alpine variant
-#   exports their layers under `tools-<arch>` with `mode=max`, and both
+# * The `tools` stage does not change with each commit. The alpine variant
+#   exports its layers under `tools-<arch>` with `mode=max`, and both
 #   variants import that scope. Only one job writes it, so the two variants
 #   cannot race for the key.
-# * The final-image layers change with every commit. Each variant exports
-#   them under `<variant>-<arch>` with `mode=min`, which keeps the per-commit
-#   builder layers out of the cache.
+# * The `builder` stage changes with every commit, because it starts with
+#   `COPY . .`. No cache holds its layers.
+# * Each variant exports its final-image layers under `<variant>-<arch>`
+#   with `mode=min`. `mode=min` exports only the layers of the result image,
+#   so the per-commit `builder` layers stay out of the cache.
 # * The Dockerfile's cache mounts are not cache entries of their own. This
 #   action fills them from the GitHub Actions caches through
 #   buildkit-cache-dance, and extracts the Go build output back for saving.
@@ -44,9 +46,9 @@ inputs:
     default: ''
   save-caches:
     description: >
-      Whether this job writes the Docker caches. Set 'true' only on main:
-      actions/cache never replaces an existing key, so the first saver's
-      partial archive would stay.
+      Whether this job writes the Docker caches. Set 'true' only on main. An
+      entry that a pull request saves serves only that pull request, and it
+      uses storage that the entries of main need.
     required: false
     default: 'false'
 

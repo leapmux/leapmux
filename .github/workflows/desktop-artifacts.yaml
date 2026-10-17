@@ -29,11 +29,12 @@ on:
         default: true
 
 env:
-  # Match ci.yaml: trim dev-profile debuginfo so the cached desktop/rust
-  # `target/` stays small. This value is hashed into the rust-cache key, so
-  # it MUST equal ci.yaml's setting or the `shared-key: desktop` cache the
-  # two workflows share would split in two. Reusable workflows don't inherit
-  # caller env, so it's redeclared here. See ci.yaml for the full rationale.
+  # Match ci.yaml: trim the dev-profile debuginfo, so the cached desktop/rust
+  # `target/` stays small. rust-cache hashes this value into its key, so it
+  # MUST equal ci.yaml's setting. Otherwise the `shared-key: desktop` cache
+  # that the two workflows share splits in two. A reusable workflow does not
+  # inherit the caller's env, so this file declares the value again. See
+  # ci.yaml for the full rationale.
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
 
 jobs:
@@ -120,7 +121,7 @@ jobs:
             echo "path=$src_sidecar"
             file "$src_sidecar"
             echo "--- readelf -l | grep INTERP ---"
-            readelf -l "$src_sidecar" 2>&1 | grep -E 'INTERP|interpreter' || echo "(no INTERP segment — static binary)"
+            readelf -l "$src_sidecar" 2>&1 | grep -E 'INTERP|interpreter' || echo "(no INTERP segment: static binary)"
             echo "--- ldd output ---"
             ldd "$src_sidecar" 2>&1
             echo "ldd exit=$?"
@@ -261,10 +262,10 @@ jobs:
         uses: arduino/setup-task@c0bc642852239c2689f73f4ea6459c29405f3c52 # v3.0.0
         with:
           version: ${{ env.TASK_VERSION }}
-          # Authenticate the action's GitHub API calls (listing releases,
-          # downloading assets) so it doesn't hit the 60/hr unauthenticated
-          # rate limit on shared-IP runners — has been failing intermittently
-          # on Windows without it.
+          # Authenticate the action's GitHub API calls, which list releases
+          # and download assets. Without the token, the calls share the 60/hr
+          # unauthenticated rate limit of the runner's IP, and they fail
+          # intermittently on Windows.
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Restore dependency caches
@@ -355,10 +356,10 @@ jobs:
         uses: arduino/setup-task@c0bc642852239c2689f73f4ea6459c29405f3c52 # v3.0.0
         with:
           version: ${{ env.TASK_VERSION }}
-          # Authenticate the action's GitHub API calls (listing releases,
-          # downloading assets) so it doesn't hit the 60/hr unauthenticated
-          # rate limit on shared-IP runners — has been failing intermittently
-          # on Windows without it.
+          # Authenticate the action's GitHub API calls, which list releases
+          # and download assets. Without the token, the calls share the 60/hr
+          # unauthenticated rate limit of the runner's IP, and they fail
+          # intermittently on Windows.
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Apple signing

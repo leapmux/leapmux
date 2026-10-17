@@ -66,10 +66,13 @@ jobs:
         run: git push origin HEAD "v${{ inputs.version }}"
 
       - name: Create GitHub Release (draft)
-        # Create as a draft so users don't see a release with missing assets
-        # while desktop builds, signing, notarization, and docker pushes are
-        # still in flight. The publish-release job below flips draft=false
-        # only after all artifacts have been attached and all images pushed.
+        # Create the release as a draft, so that users do not see a release
+        # with missing assets while these jobs still run:
+        # * the desktop builds;
+        # * the signing and the notarization;
+        # * the Docker pushes.
+        # The publish-release job below sets draft=false only after all
+        # artifacts are attached and all images are pushed.
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -93,8 +96,8 @@ jobs:
     # only by the macos-app-sign job inside this reusable workflow.
     #
     # See ci.yaml's matching call site for why `secrets: inherit` is
-    # required — env-scoped secrets do not flow into a `workflow_call`
-    # target without it, even for jobs that declare the environment.
+    # required. Without it, env-scoped secrets do not flow into a
+    # `workflow_call` target, even for jobs that declare the environment.
     needs: release
     if: github.ref == 'refs/heads/main'
     uses: ./.github/workflows/desktop-artifacts.yaml
