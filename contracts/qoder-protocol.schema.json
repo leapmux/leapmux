@@ -13,7 +13,8 @@
     "modes",
     "effortLevels",
     "permissionOutcomes",
-    "capabilities"
+    "capabilities",
+    "statuses"
   ],
   "$defs": {
     "table": {
@@ -147,6 +148,9 @@
       "$ref": "#/$defs/table"
     },
     "capabilities": {
+      "$ref": "#/$defs/table"
+    },
+    "statuses": {
       "$ref": "#/$defs/table"
     }
   }

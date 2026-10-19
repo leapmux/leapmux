@@ -2,38 +2,38 @@ package qoder
 
 import "encoding/json"
 
-// Qoder CLI NDJSON message types. The worker stores the original bytes of each
-// output line. It parses only the frames that drive its own state: the `type`
-// field for lifecycle, the init frame, plan mode, goals, child streams, and
-// control replies. On input it builds the user frame, with the prompt text last.
+// Qoder CLI uses newline-delimited JSON (NDJSON) messages.
+// The worker preserves stored native frames and consumes protocol state.
+// On input, it places attachments before the prompt text.
 
-// MessageType is the top-level `type` field of one NDJSON line.
-type MessageType string
-
+// These control envelopes use the shared neutral shape.
+// The provider owns their native dispatch and cancellation.
 const (
-	MessageTypeUser           MessageType = "user"
-	MessageTypeControlRequest MessageType = "control_request"
-	MessageTypeSystem         MessageType = "system"
-	MessageTypeAssistant      MessageType = "assistant"
-	MessageTypeResult         MessageType = "result"
+	frameTypeControlRequest       = "control_request"
+	frameTypeControlResponse      = "control_response"
+	frameTypeControlCancelRequest = "control_cancel_request"
 )
 
-// The control-frame names are the CROSS-PROVIDER neutral envelope that shared
-// service code already spells. They stay out of the contract for that reason,
-// and live here as the provider's own Go-side spelling.
+// These system subtypes carry no transcript content.
 const (
-	frameTypeControlRequest  = "control_request"
-	frameTypeControlResponse = "control_response"
+	qoderSubtypeHookStarted            = "hook_started"
+	qoderSubtypeHookProgress           = "hook_progress"
+	qoderSubtypePermissionDenied       = "permission_denied"
+	qoderSubtypeElicitationComplete    = "elicitation_complete"
+	qoderSubtypeArtifactsUpdate        = "artifacts_update"
+	qoderSubtypeCommandsChanged        = "commands_changed"
+	qoderSubtypeControlRequestProgress = "control_request_progress"
+	qoderSubtypeTaskProgress           = "task_progress"
 )
 
 // MessageEnvelope extracts the `type` field for lifecycle management.
 type MessageEnvelope struct {
-	Type MessageType `json:"type"`
+	Type string `json:"type"`
 }
 
 // UserInputMessage is written to stdin with --input-format stream-json.
 type UserInputMessage struct {
-	Type    MessageType      `json:"type"`
+	Type    string           `json:"type"`
 	Message UserInputContent `json:"message"`
 }
 
@@ -85,8 +85,6 @@ type systemInitMessage struct {
 	Capabilities []string `json:"capabilities"`
 }
 
-// resultMessage is the part of a result line the worker reads.
-
 // assistantMessage is the part of an assistant line the worker reads.
 type assistantMessage struct {
 	ParentToolUseID *string `json:"parent_tool_use_id"`
@@ -97,21 +95,22 @@ type assistantMessage struct {
 // can_use_tool decision. The browser sends the neutral behavior envelope; the
 // worker translates it here.
 //
-// Qoder's own answer reader accepts two spellings. A decision can state an
-// `outcome` (proceed_once, proceed_always, proceed_always_and_save, cancel,
-// modify_with_editor) or a `behavior` with the fields that go with it. LeapMux
-// states `behavior`, because that is the shape that carries the two things a
-// decision needs: the user's rejection words and a modified tool input.
+// Qoder accepts an outcome or a behavior with its associated fields.
+// The native outcomes are:
+//   - proceed_once
+//   - proceed_always
+//   - proceed_always_and_save
+//   - cancel
+//   - modify_with_editor
 //
-// A rejection carries the words on BOTH `message` and `reason`: the reader
-// takes `message` on the `behavior` spelling and `reason` on the `allowed`
-// spelling, and a deny must reach the model whichever reader runs.
+// LeapMux uses behavior to preserve rejection text and changed tool input.
+// A rejection states the text in message and reason.
+// The behavior reader uses message. The allowed reader uses reason.
+// Both readers must deliver the rejection text to the model.
 //
-// `updatedInput` must travel WITHOUT an `outcome`. The reader resolves an
-// explicit outcome first and then takes the modified input from a `payload`
-// field, so an answer that states both `outcome:"proceed_once"` and
-// `updatedInput` drops the input -- which is exactly what an AskUserQuestion
-// reply would lose.
+// An answer with updatedInput must omit outcome.
+// Qoder resolves outcome first and then reads changed input from payload.
+// An outcome beside updatedInput would therefore discard the changed input, including AskUserQuestion answers.
 type canUseToolAnswer struct {
 	Behavior        string         `json:"behavior"`
 	Outcome         string         `json:"outcome,omitempty"`

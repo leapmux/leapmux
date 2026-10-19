@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -18,7 +19,7 @@ import (
 const qoderSettingsLimit = 1 << 20
 
 // readQoderConfiguredModels reads choices that a custom provider declares.
-// Native available_models_update replaces these choices when it lists models.
+// A native catalog replaces these choices, including when every native model is disabled.
 func readQoderConfiguredModels(opts agent.Options) (models []qoderModel, err error) {
 	root := qoderConfigRoot(opts)
 	if !filepath.IsAbs(root) {
@@ -89,7 +90,7 @@ func readQoderConfiguredModels(opts agent.Options) (models []qoderModel, err err
 	return models, nil
 }
 
-// qoderModel is one choice that Qoder reports on available_models_update.
+// qoderModel is one enabled native choice or a configured fallback before a catalog arrives.
 type qoderModel struct {
 	id          string
 	displayName string
@@ -98,12 +99,19 @@ type qoderModel struct {
 
 // qoderModelsUpdate is Qoder's full model catalog and current selection.
 type qoderModelsUpdate struct {
-	Models []struct {
-		Value       string `json:"value"`
-		DisplayName string `json:"displayName"`
-		Description string `json:"description"`
-	} `json:"models"`
-	CurrentModel string `json:"currentModel"`
+	Models       []qoderModelEntry `json:"models"`
+	CurrentModel string            `json:"currentModel"`
+}
+
+type qoderModelEntry struct {
+	Value       string `json:"value"`
+	DisplayName string `json:"displayName"`
+	Description string `json:"description"`
+	IsEnabled   bool   `json:"isEnabled"`
+}
+
+type qoderInitializeResponse struct {
+	Models []qoderModelEntry `json:"models"`
 }
 
 func (a *Agent) handleAvailableModelsUpdate(raw []byte) {
@@ -112,36 +120,58 @@ func (a *Agent) handleAvailableModelsUpdate(raw []byte) {
 		slog.Warn("qoder: unreadable model catalog", "agent_id", a.AgentID(), "error", err)
 		return
 	}
-	models := make([]qoderModel, 0, len(update.Models))
-	seen := make(map[string]bool, len(update.Models))
-	for _, entry := range update.Models {
-		if entry.Value == "" || seen[entry.Value] {
+	a.applyModelCatalog(update.Models, update.CurrentModel, false)
+}
+
+func qoderEnabledModels(entries []qoderModelEntry) []qoderModel {
+	models := make([]qoderModel, 0, len(entries))
+	seen := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		if !entry.IsEnabled || strings.TrimSpace(entry.Value) == "" || seen[entry.Value] {
 			continue
 		}
 		seen[entry.Value] = true
-		name := entry.DisplayName
+		name := strings.TrimSpace(entry.DisplayName)
 		if name == "" {
 			name = entry.Value
 		}
 		models = append(models, qoderModel{id: entry.Value, displayName: name, description: entry.Description})
 	}
+	return models
+}
+
+// applyModelCatalog keeps a native update that arrives before the initialize caller resumes.
+func (a *Agent) applyModelCatalog(entries []qoderModelEntry, current string, initialize bool) {
+	models := qoderEnabledModels(entries)
 	a.mu.Lock()
-	a.models = models
-	if update.CurrentModel != "" {
-		a.model = update.CurrentModel
+	if initialize && a.modelsReported {
+		a.mu.Unlock()
+		return
+	}
+	changed := current != "" && current != a.model
+	if entries != nil {
+		changed = changed || !a.modelsReported || !slices.Equal(a.models, models)
+		a.models = models
+		a.modelsReported = true
+	}
+	if current != "" {
+		a.model = current
 	}
 	a.mu.Unlock()
+	if changed {
+		a.sink.PersistSettingsRefresh(agent.CurrentOptions(a.OptionGroups()))
+	}
 }
 
 // qoderModelGroup keeps the running model visible before Qoder sends a catalog.
-func qoderModelGroup(models []qoderModel, current string) *leapmuxv1.AvailableOptionGroup {
+func qoderModelGroup(models []qoderModel, current string, includeCurrent bool) *leapmuxv1.AvailableOptionGroup {
 	defs := make([]agent.OptionDef, 0, len(models)+1)
 	currentFound := false
 	for _, model := range models {
 		defs = append(defs, agent.OptionDef{Id: model.id, Name: model.displayName, Description: model.description})
 		currentFound = currentFound || model.id == current
 	}
-	if current != "" && !currentFound {
+	if includeCurrent && current != "" && !currentFound {
 		defs = append(defs, agent.OptionDef{Id: current, Name: current})
 	}
 	if len(defs) == 0 {

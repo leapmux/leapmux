@@ -150,17 +150,22 @@ func (a *Agent) handleTurnStarted(env codewhaleEnvelope) {
 		turnID = payload.Turn.ID
 	}
 	if a.markTurnStarted(turnID) {
-		a.generationBuffer.Reset()
+		a.discardGeneration()
+		a.finishSteerRequestBoundary()
+		a.modelRequestObserved = false
 		a.sink.ReportProgress(agent.ResetModelProgress())
 		a.PublishTurnActive()
 	}
 }
 
-// handleTurnCompleted closes a turn: it settles what the turn left open,
-// persists the turn end, and clears the flag.
-//
-// PersistTurnEnd runs BEFORE the clear. The turn end hands the turn's tool count
-// to the Worker's activity latch, and the clear is the edge that spends it.
+// codewhaleTurnEnd retains the native end while a steer request remains unresolved.
+type codewhaleTurnEnd struct {
+	env     codewhaleEnvelope
+	payload turnEventPayload
+	turnID  string
+}
+
+// handleTurnCompleted records the native end and waits for outstanding steer requests.
 func (a *Agent) handleTurnCompleted(env codewhaleEnvelope) {
 	var payload turnEventPayload
 	if err := json.Unmarshal(env.Payload, &payload); err != nil {
@@ -170,18 +175,55 @@ func (a *Agent) handleTurnCompleted(env codewhaleEnvelope) {
 	if payload.Turn.ID != "" {
 		turnID = payload.Turn.ID
 	}
+	a.Mu.Lock()
+	stale := a.finishedTurns.contains(turnID) || a.turnID != "" && turnID != "" && a.turnID != turnID
+	a.finishedTurns.add(turnID)
+	pending := a.steerCall != nil
+	a.Mu.Unlock()
+	if stale {
+		slog.Debug("codewhale ignored a stale turn end", "agent_id", a.AgentID(), "turn_id", turnID)
+		if err := agent.FlushPendingOutput(a.sink); err != nil {
+			slog.Error("codewhale retry pending output", "agent_id", a.AgentID(), "error", err)
+		}
+		return
+	}
+	end := codewhaleTurnEnd{env: env, payload: payload, turnID: turnID}
+	if pending {
+		a.pendingTurnEnd = &end
+		a.PublishTurnActive()
+		return
+	}
+	a.completeTurn(end)
+}
+
+// completeTurn runs once after every native steer call of this turn returns.
+func (a *Agent) completeTurn(end codewhaleTurnEnd) {
+	env, payload, turnID := end.env, end.payload, end.turnID
+	a.Mu.Lock()
+	compacting := a.compactionLive
+	a.Mu.Unlock()
 	completion := turnCompletion(payload.Turn.Status)
+	if compacting && a.endCompaction(turnID) {
+		outcome := providerkit.CompactionEndFailed
+		if completion == agent.MessageCompletionInterrupted {
+			outcome = providerkit.CompactionEndAborted
+		}
+		providerkit.PersistCompactionEnded(a.sink, outcome, "")
+	}
 	a.flushGeneration(completion)
 	a.persistIncompleteTools(completion)
+	a.finishSteerRequestBoundary()
 	// A question or an approval cannot outlive its turn. The runtime settles each
 	// one with its own event as well; this retires any card that event missed.
 	a.withdrawControlsOfTurn(turnID)
 	a.ResetCumulativeOutput()
 	a.sink.ReportProgress(agent.ResetModelProgress())
 
-	// A steer that the turn never committed goes back to the queue before the
-	// queue learns that the turn ended, so it is the next message sent.
+	// A proved native cancellation returns the retained input to the queue.
+	// An unresolved delivery becomes uncertain before the queue releases the turn.
 	a.settleSteersOfTurn(turnID)
+	failure, _ := providerkit.RawString(payload.Turn.Error)
+	a.persistHeldErrors(turnID, failure, false)
 
 	if err := a.sink.PersistTurnEnd(a.turnEndContent(env.raw), agent.SpanInfo{}); err != nil {
 		slog.Error("codewhale persist turn end", "agent_id", a.AgentID(), "error", err)
@@ -208,15 +250,52 @@ func turnCompletion(status string) agent.MessageCompletion {
 
 // --- items ---
 
-// handleItemStarted opens a tool call's span. Every other item waits for its
-// final event, which carries the whole item.
+// handleItemStarted opens a tool span or records a generated item.
+// A new item of the same generated kind replaces an unfinished stream attempt.
 func (a *Agent) handleItemStarted(env codewhaleEnvelope) {
 	payload, ok := parseItemPayload(env)
 	if !ok {
 		return
 	}
+	item := payload.Item
+	switch item.Kind {
+	case contracts.CodewhaleItemKindContextCompaction:
+		a.publishCompaction()
+		return
+	case contracts.CodewhaleItemKindAgentMessage, contracts.CodewhaleItemKindAgentReasoning:
+		if item.ID == "" {
+			return
+		}
+		for kind, id := range a.openGeneratedItems {
+			if id == item.ID {
+				if kind != item.Kind {
+					slog.Debug("codewhale ignored a conflicting generated item kind", "agent_id", a.AgentID(), "item_id", item.ID)
+				}
+				return
+			}
+		}
+		if previous := a.openGeneratedItems[item.Kind]; previous != "" {
+			// A replacement of the same generated kind is a stream resume even without a request snapshot.
+			a.discardGeneration()
+			a.finishSteerRequestBoundary()
+		}
+		if a.openGeneratedItems == nil {
+			a.openGeneratedItems = make(map[string]string)
+		}
+		a.openGeneratedItems[item.Kind] = item.ID
+		return
+	}
+	if codewhaleNotificationItemKinds[item.Kind] || item.Kind == itemKindUserMessage {
+		return
+	}
 	spanID, name, input, isTool := payload.toolIdentity()
-	if !isTool || spanID == "" {
+	if !isTool {
+		if !codewhaleToolItemKind(item.Kind) {
+			a.persistUnknownFrame(env)
+		}
+		return
+	}
+	if spanID == "" {
 		return
 	}
 	a.openToolCall(env, payload.Item.ID, spanID, name, input)
@@ -239,6 +318,9 @@ func (a *Agent) handleItemDelta(env codewhaleEnvelope) {
 	case contracts.CodewhaleItemKindAgentReasoning:
 		kind = agent.AssembledMessageKindReasoning
 	default:
+		if !codewhaleToolItemKind(payload.Kind) && !codewhaleNotificationItemKinds[payload.Kind] && payload.Kind != itemKindUserMessage {
+			a.persistUnknownFrame(env)
+		}
 		return
 	}
 	a.generationBuffer.Append(env.ItemID, kind, payload.Delta, providerkit.JoinVerbatim)
@@ -252,31 +334,27 @@ func (a *Agent) handleItemFinished(env codewhaleEnvelope) {
 		return
 	}
 	item := payload.Item
+	if codewhaleNotificationItemKinds[item.Kind] {
+		a.handleNoticeItem(env, item)
+		return
+	}
 	switch item.Kind {
 	case contracts.CodewhaleItemKindAgentMessage, contracts.CodewhaleItemKindAgentReasoning:
 		a.finishGeneratedItem(env, item)
 		return
-	case contracts.CodewhaleItemKindUserMessage:
+	case itemKindUserMessage:
 		// LeapMux already persisted what the reader sent, and a goal kickoff or a
 		// continuation pass is the runtime's own prompt.
 		return
-	case contracts.CodewhaleItemKindContextCompaction:
-		a.persistNotification(env)
-		return
-	case contracts.CodewhaleItemKindStatus:
-		if !statusItemIsPlumbing(item.Summary, item.metadata().Visibility) {
-			a.persistNotification(env)
-		}
-		return
-	case contracts.CodewhaleItemKindError:
-		a.persistNotification(env)
-		return
+
 	}
 	spanID, name, _, isTool := payload.toolIdentity()
 	if !isTool {
 		spanID = a.spanForItem(item.ID)
 		if spanID == "" {
-			slog.Debug("codewhale unknown item kind", "agent_id", a.AgentID(), "kind", item.Kind)
+			if !codewhaleToolItemKind(item.Kind) {
+				a.persistUnknownFrame(env)
+			}
 			return
 		}
 	}
@@ -289,12 +367,107 @@ func (a *Agent) handleItemFinished(env codewhaleEnvelope) {
 	a.closeToolCall(env, payload, spanID, name)
 }
 
+func codewhaleToolItemKind(kind string) bool {
+	switch kind {
+	case contracts.CodewhaleItemKindToolCall, contracts.CodewhaleItemKindFileChange, contracts.CodewhaleItemKindCommandExecution:
+		return true
+	default:
+		return false
+	}
+}
+
+// publishCompaction reports the start once for the active native compaction.
+func (a *Agent) publishCompaction() {
+	a.Mu.Lock()
+	live := a.compactionLive
+	a.compactionLive = true
+	a.Mu.Unlock()
+	if !live {
+		providerkit.PublishCompaction(a.sink, "")
+	}
+}
+
+// endCompaction records the native end and clears its live indicator.
+// It returns whether this agent observed a live start.
+func (a *Agent) endCompaction(turnID string) bool {
+	a.Mu.Lock()
+	live := a.compactionLive
+	a.compactionLive = false
+	if turnID != "" {
+		a.compactionEndedTurn = turnID
+	}
+	a.Mu.Unlock()
+	if live || turnID != "" {
+		providerkit.EndCompaction(a.sink)
+	}
+	return live
+}
+
+// handleNoticeItem keeps native notice membership separate from tool handling.
+func (a *Agent) handleNoticeItem(env codewhaleEnvelope, item turnItem) {
+	switch item.Kind {
+	case contracts.CodewhaleItemKindStatus:
+		if !statusItemIsPlumbing(item.Summary, item.metadata().Visibility) {
+			a.persistNotification(env)
+		}
+	case contracts.CodewhaleItemKindContextCompaction:
+		turnID := env.TurnID
+		if turnID == "" {
+			turnID = item.TurnID
+		}
+		a.endCompaction(turnID)
+		a.persistNotification(env)
+	case contracts.CodewhaleItemKindError:
+		if env.TurnID != "" && item.TurnID != "" && env.TurnID != item.TurnID {
+			// Conflicting native identities cannot prove that a divider repeats this error.
+			a.persistNotification(env)
+			return
+		}
+		if env.TurnID == "" {
+			env.TurnID = item.TurnID
+		}
+		if env.TurnID == "" {
+			// No turn can supply a matching divider for this error.
+			a.persistNotification(env)
+			return
+		}
+		a.heldErrors = append(a.heldErrors, env)
+	}
+}
+
+// persistHeldErrors stores errors that the matching turn divider does not repeat.
+// Process exit stores every remaining error because no later divider can replace it.
+func (a *Agent) persistHeldErrors(turnID, repeated string, all bool) {
+	pending := a.heldErrors
+	a.heldErrors = nil
+	for _, env := range pending {
+		if !all && env.TurnID != turnID {
+			a.heldErrors = append(a.heldErrors, env)
+			continue
+		}
+		payload, ok := parseItemPayload(env)
+		if !all && ok {
+			text := strings.TrimSpace(payload.Item.Detail)
+			if text == "" {
+				text = strings.TrimSpace(payload.Item.Summary)
+			}
+			if text == strings.TrimSpace(repeated) {
+				continue
+			}
+		}
+		a.persistNotification(env)
+	}
+}
+
 // finishGeneratedItem persists a message or a reasoning item from its final
 // event. The event's `detail` holds the whole text, so the buffer that kept the
 // deltas is dropped; it stands in only when the event states no text.
 func (a *Agent) finishGeneratedItem(env codewhaleEnvelope, item turnItem) {
+	defer a.releaseSteerOutputs([]steerOutputKey{{kind: steerGeneratedOutput, id: item.ID}})
 	completion := completionFor(env.Event)
-	defer a.sink.ReportProgress(agent.CompleteModelProgress(item.ID))
+	if a.openGeneratedItems[item.Kind] == item.ID {
+		delete(a.openGeneratedItems, item.Kind)
+	}
 	if strings.TrimSpace(item.Detail) == "" {
 		// The event carries no text of its own, so the deltas are the only copy.
 		if err := providerkit.PersistGenerationScopes(&a.generationBuffer, a.sink, []string{item.ID}, completion, a.IsDiscardingOutput()); err != nil {
@@ -302,6 +475,7 @@ func (a *Agent) finishGeneratedItem(env codewhaleEnvelope, item turnItem) {
 		}
 		return
 	}
+	defer a.sink.ReportProgress(agent.CompleteModelProgress(item.ID))
 	a.generationBuffer.Discard(item.ID)
 	if a.IsDiscardingOutput() {
 		return
@@ -312,11 +486,59 @@ func (a *Agent) finishGeneratedItem(env codewhaleEnvelope, item turnItem) {
 	}
 }
 
+// discardGeneration drops open attempt scopes without changing accepted pending writes.
+func (a *Agent) discardGeneration() {
+	ids := a.openGenerationIDs()
+	providerkit.DiscardGenerationScopes(&a.generationBuffer, a.sink, ids)
+	clear(a.openGeneratedItems)
+	a.releaseSteerOutputs(generatedSteerOutputs(ids))
+}
+
+// handleModelRequestSnapshot reads preparation and final diagnostics from the native request stream.
+// Preparation starts a new attempt. The snapshot does not prove delivery to the model provider.
+func (a *Agent) handleModelRequestSnapshot(env codewhaleEnvelope) {
+	var payload struct {
+		Snapshot *struct {
+			TurnID struct {
+				Value     string `json:"value"`
+				Truncated *bool  `json:"truncated"`
+			} `json:"turn_id"`
+			Step     *int64          `json:"step"`
+			Finished json.RawMessage `json:"terminal"`
+		} `json:"snapshot"`
+	}
+	if json.Unmarshal(env.Payload, &payload) != nil || payload.Snapshot == nil {
+		return
+	}
+	snapshot := payload.Snapshot
+	if snapshot.Step == nil || *snapshot.Step < 0 || snapshot.TurnID.Value == "" || snapshot.TurnID.Truncated == nil || *snapshot.TurnID.Truncated {
+		return
+	}
+	a.Mu.Lock()
+	own := env.TurnID != "" && (a.turnID == "" || a.turnID == env.TurnID)
+	a.Mu.Unlock()
+	if !own {
+		return
+	}
+	a.modelRequestObserved = true
+	if providerkit.RawPresent(snapshot.Finished) {
+		if providerkit.StringField(snapshot.Finished, "status") != "" {
+			a.finishSteerRequestBoundary()
+		}
+		return
+	}
+	a.discardGeneration()
+	a.finishSteerRequestBoundary()
+}
+
 // flushGeneration stores unfinished streamed text in its original order.
 func (a *Agent) flushGeneration(completion agent.MessageCompletion) {
+	ids := a.openGenerationIDs()
 	if err := providerkit.FlushGeneration(&a.generationBuffer, a.sink, completion, a.IsDiscardingOutput()); err != nil {
 		slog.Error("codewhale persist streamed text", "agent_id", a.AgentID(), "error", err)
 	}
+	clear(a.openGeneratedItems)
+	a.releaseSteerOutputs(generatedSteerOutputs(ids))
 }
 
 // persistNotification records one runtime event as a notification row.
@@ -478,6 +700,7 @@ func (a *Agent) releaseHeldCall(spanID string) {
 // toward the turn's tools. A held call that asked nothing leaves no row at all
 // (see toolCallIsHeld).
 func (a *Agent) closeToolCall(env codewhaleEnvelope, payload itemEventPayload, spanID, name string) {
+	defer a.releaseSteerOutputs([]steerOutputKey{{kind: steerToolOutput, id: spanID}})
 	md := payload.Item.metadata()
 	a.Mu.Lock()
 	call := a.tools.remove(spanID)
@@ -559,6 +782,7 @@ func (a *Agent) persistIncompleteTools(completion agent.MessageCompletion) {
 	}
 	a.Mu.Unlock()
 	sort.Slice(calls, func(i, j int) bool { return calls[i].order < calls[j].order })
+	keys := make([]steerOutputKey, 0, len(calls))
 	for _, call := range calls {
 		if call.held {
 			// The turn ended before the call asked anything. It still ran, so both of
@@ -574,5 +798,7 @@ func (a *Agent) persistIncompleteTools(completion agent.MessageCompletion) {
 		}
 		a.sink.CloseSpan(call.spanID)
 		a.sink.ReportProgress(agent.CompleteOutputProgress(call.spanID))
+		keys = append(keys, steerOutputKey{kind: steerToolOutput, id: call.spanID})
 	}
+	a.releaseSteerOutputs(keys)
 }

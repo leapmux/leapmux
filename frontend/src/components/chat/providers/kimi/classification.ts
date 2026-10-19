@@ -1,6 +1,6 @@
 import type { MessageCategory } from '../../messageClassifier'
 import type { ClassificationInput } from '../registry'
-import { KIMI_EVENT, KIMI_TOOL } from '~/generated/contracts/kimi-protocol'
+import { KIMI_EVENT, KIMI_NOTIFICATION_EVENT, KIMI_TOOL } from '~/generated/contracts/kimi-protocol'
 import { isObject, pickString } from '~/lib/jsonPick'
 import { isPlainNotificationType } from '~/lib/notificationTypes'
 import { isNotificationThreadWrapper } from '../../messageUtils'
@@ -10,29 +10,10 @@ import { kimiNotificationEntry } from './extractors/notification'
 import { kimiPlanText } from './extractors/plan'
 import { kimiEvent } from './protocol'
 
-/**
- * The event types the worker records as notification rows.
- *
- * A turn the agent started by itself, a retry, a compaction, a warning, an error and a
- * background task's notice. Each states something the reader acts on and owns no other
- * surface. The same set keeps a consolidated thread of them alive.
- */
-export const KIMI_NOTIFICATION_TYPES: ReadonlySet<string> = new Set<string>([
-  KIMI_EVENT.TurnStarted,
-  KIMI_EVENT.TurnStepRetrying,
-  KIMI_EVENT.CompactionStarted,
-  KIMI_EVENT.CompactionCompleted,
-  KIMI_EVENT.CompactionBlocked,
-  KIMI_EVENT.CompactionCancelled,
-  KIMI_EVENT.Warning,
-  KIMI_EVENT.Error,
-  KIMI_EVENT.TaskNotified,
-])
-
 /** Whether one thread entry is a Kimi Code notice. */
 function kimiNotifies(entry: unknown): boolean {
   const event = kimiEvent(entry)
-  return !!event && KIMI_NOTIFICATION_TYPES.has(event.type)
+  return !!event && KIMI_NOTIFICATION_EVENT.has(event.type)
 }
 
 /** Kimi Code message classification. */
@@ -91,8 +72,8 @@ export function classifyKimiMessage(input: ClassificationInput): MessageCategory
     case KIMI_EVENT.TurnEnded:
       return { kind: 'result_divider' }
   }
-  if (KIMI_NOTIFICATION_TYPES.has(event.type))
+  if (KIMI_NOTIFICATION_EVENT.has(event.type))
     return notification([parent], 'hidden')
-  // Every other event carries no surface of its own; the worker persists none of them.
-  return { kind: 'hidden' }
+  // The Worker preserves unknown native events as separate message rows.
+  return { kind: 'unknown' }
 }

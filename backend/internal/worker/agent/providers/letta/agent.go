@@ -1,14 +1,13 @@
 package letta
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/coder/quartz"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -28,26 +27,33 @@ type Agent struct {
 	workingDir    string
 	taskLogRoot   string
 	taskLogDirect bool
-	clock         quartz.Clock
 	wsURL         string
 	ws            *wsConn
+	cancelRuntime context.CancelFunc
 
 	dispatchMu   sync.Mutex
 	sendMu       sync.Mutex
 	settingsMu   sync.Mutex
 	approvalWork providerkit.CoalescingWork
+	// The output dispatcher owns held errors and the process-exit boundary.
+	heldErrors      map[string][]lettaHeldError
+	outputEnded     bool
+	finishedTurnIDs []string
+	compactionLive  map[string]bool
 
 	// --- guarded by Mu ---
 
 	agentID         string
 	conversationID  string
 	turnActive      bool
+	transportErr    error
 	settings        lettaSettings
 	catalog         lettaCatalog
 	tools           map[string]*lettaTool
 	turnToolCallIDs map[string]struct{}
 	children        map[string]*lettaChild
 	generation      providerkit.GenerationBuffer
+	retries         map[string]*providerkit.RetryResolution
 	// runtimeReady holds the open runtime_start handshake, until the response
 	// settles it. Start waits on it before it returns the agent.
 	runtimeReady         *runtimeWaiter
@@ -67,7 +73,7 @@ var (
 const lettaSendWait = 30 * time.Second
 
 // errAgentStopped reports that the agent's process already ended.
-var errAgentStopped = errors.New("the Letta Code server has stopped")
+var errAgentStopped = errors.New("the Letta Code server stopped")
 
 // lettaSettings is the live configuration of the conversation.
 type lettaSettings struct {
@@ -178,10 +184,10 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 	// A scope-less input is not a delivery the server can refuse: it is
 	// dropped with no reply at all. Fail it here instead.
 	if scope.AgentID == "" || scope.ConversationID == "" {
-		return errors.New("the Letta runtime identity is not known yet; the input cannot be addressed")
+		return errors.New("the worker cannot send input before the Letta runtime identity arrives")
 	}
 
-	a.armTurn()
+	a.setTurnActive(true)
 	cmd := a.createMessageCommand(scope, payload)
 	// One line per delivered input. The scope fields name the runtime the
 	// frame addresses, which is the difference between a turn and a silent
@@ -194,7 +200,7 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 		"content_len", len(content))
 	if err := a.sendCommand(cmd); err != nil {
 		slog.Warn("letta: input send failed", "agent_id", a.AgentID(), "error", err)
-		a.disarmTurn()
+		a.setTurnActive(false)
 		return err
 	}
 	return nil
@@ -259,43 +265,35 @@ func buildUserMessages(content string, attachments []*leapmuxv1.Attachment) ([]a
 	}}, nil
 }
 
-// armTurn marks a turn active and publishes the flag. A repeat of the current
-// state publishes nothing, so a frame that is not a turn signal moves nothing.
-func (a *Agent) armTurn() {
+// setTurnActive changes the turn flag and reserves its publication sequence under the same lock.
+// A repeated state produces no publication.
+func (a *Agent) setTurnActive(active bool) {
 	a.Mu.Lock()
-	if a.turnActive {
+	if a.turnActive == active {
 		a.Mu.Unlock()
 		return
 	}
-	a.turnActive = true
+	a.turnActive = active
+	seq := a.NextTurnSeq()
 	a.Mu.Unlock()
-	a.sink.SetTurnState(agent.TurnState{Active: true}, a.NextTurnSeq())
-}
-
-// disarmTurn marks no turn active and publishes the flag. A repeat of the
-// current state publishes nothing.
-func (a *Agent) disarmTurn() {
-	a.Mu.Lock()
-	if !a.turnActive {
-		a.Mu.Unlock()
-		return
-	}
-	a.turnActive = false
-	a.Mu.Unlock()
-	a.sink.SetTurnState(agent.TurnState{Active: false}, a.NextTurnSeq())
+	a.sink.SetTurnState(agent.TurnState{Active: active}, seq)
 }
 
 // PublishTurnActive republishes the turn flag through the sink.
 func (a *Agent) PublishTurnActive() agent.TurnState {
 	a.Mu.Lock()
 	state := agent.TurnState{Active: a.turnActive, Steerable: false}
+	seq := a.NextTurnSeq()
 	a.Mu.Unlock()
-	a.sink.SetTurnState(state, a.NextTurnSeq())
+	a.sink.SetTurnState(state, seq)
 	return state
 }
 
 // Interrupt aborts the running turn with abort_message.
 func (a *Agent) Interrupt(stop agent.StopContext) error {
+	// A new input must not reach the socket between the active check and the abort write.
+	a.sendMu.Lock()
+	defer a.sendMu.Unlock()
 	a.Mu.Lock()
 	active := a.turnActive
 	a.Mu.Unlock()
@@ -317,14 +315,19 @@ func (a *Agent) ClearContext() (string, error) {
 // Stop ends the process.
 func (a *Agent) Stop() {
 	a.Process.Stop()
+	a.finishOutputAfterExit(agent.MessageCompletionInterrupted)
 	a.withdrawPermissions()
 }
 
 // Wait retires permissions when the native server exits without a turn-end frame.
 func (a *Agent) Wait() error {
 	err := a.Process.Wait()
+	a.finishOutputAfterExit(a.ProcessExitCompletion())
 	a.withdrawPermissions()
-	return err
+	a.Mu.Lock()
+	transportErr := a.transportErr
+	a.Mu.Unlock()
+	return errors.Join(err, transportErr)
 }
 
 // nextRequestID issues a command correlation id.

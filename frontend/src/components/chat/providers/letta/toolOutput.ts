@@ -1,16 +1,13 @@
 import { LETTA_DELTA_FIELD, LETTA_DELTA_KIND, LETTA_TOOL_OUTPUT } from '~/generated/contracts/letta-protocol'
-import { isObject, pickObject, pickString } from '~/lib/jsonPick'
+import { isObject, pickString } from '~/lib/jsonPick'
 
 export type LettaReturnedData
   = | { kind: 'present', value: unknown, status: string | undefined }
     | { kind: 'absent' | 'invalid' }
 
-/** Read the stored native payload or its raw frame wrapper. */
+/** Read the stored native object without changing its shape. */
 export function lettaToolPayload(payload: unknown): Record<string, unknown> | null {
-  if (!isObject(payload))
-    return null
-  const nested = pickObject(payload, 'payload')
-  return nested && Object.keys(nested).length > 0 ? nested : payload
+  return isObject(payload) ? payload : null
 }
 
 /** Recognize only the exact native ID for this call's current output window. */

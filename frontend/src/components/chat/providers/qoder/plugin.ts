@@ -3,7 +3,7 @@ import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { OPTION_ID_PERMISSION_MODE } from '../../settingsGroups'
 import { registerProvider } from '../registry'
 import { classifyQoderMessage } from './classification'
-import { qoderCompactionBoundary, qoderNotificationEntry } from './extractors/notification'
+import { qoderCompactionBoundary, qoderCompactionStart, qoderNotificationEntry } from './extractors/notification'
 import { qoderOutputFilePaths } from './extractors/outputFilePaths'
 import { qoderResultDivider } from './extractors/resultDivider'
 import { qoderExtractRow } from './extractors/row'
@@ -17,6 +17,7 @@ const qoderPlugin: ProviderPlugin = {
     relatedMessages: qoderRelatedMessages,
     classify: classifyQoderMessage,
     notificationEntry: qoderNotificationEntry,
+    compactionStart: qoderCompactionStart,
     extractRow: qoderExtractRow,
     extractDivider: qoderResultDivider,
   },

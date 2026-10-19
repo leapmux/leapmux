@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // Kimi Code's session goal.
@@ -27,15 +28,20 @@ import (
 
 // kimiGoalSnapshot is `goal.updated.snapshot` and the reply of GET .../goal.
 type kimiGoalSnapshot struct {
-	GoalID      string `json:"goalId"`
-	Objective   string `json:"objective"`
-	Status      string `json:"status"`
-	TurnsUsed   *int32 `json:"turnsUsed"`
-	TokensUsed  *int64 `json:"tokensUsed"`
-	WallClockMs *int64 `json:"wallClockMs"`
+	EndReason   json.RawMessage `json:"terminalReason"`
+	GoalID      string          `json:"goalId"`
+	Objective   string          `json:"objective"`
+	Status      string          `json:"status"`
+	TurnsUsed   *int32          `json:"turnsUsed"`
+	TokensUsed  *int64          `json:"tokensUsed"`
+	WallClockMs *int64          `json:"wallClockMs"`
 	Budget      *struct {
 		TokenBudget *int64 `json:"tokenBudget"`
 	} `json:"budget"`
+}
+
+type kimiGoalChange struct {
+	Reason string `json:"reason"`
 }
 
 // kimiGoalState is what the agent remembers about the session's goal.
@@ -72,16 +78,26 @@ func (a *Agent) handleGoalUpdated(event kimiEvent) {
 	}
 	var payload struct {
 		Snapshot *kimiGoalSnapshot `json:"snapshot"`
+		Change   json.RawMessage   `json:"change"`
 	}
 	if !event.decode(&payload) {
 		return
 	}
-	a.applyGoal(payload.Snapshot, false)
+	var change *kimiGoalChange
+	if providerkit.RawPresent(payload.Change) {
+		var decoded kimiGoalChange
+		if err := json.Unmarshal(payload.Change, &decoded); err != nil {
+			slog.Debug("read the Kimi goal change detail", "agent_id", a.AgentID(), "error", err)
+		} else {
+			change = &decoded
+		}
+	}
+	a.applyGoal(payload.Snapshot, change, false)
 }
 
 // applyGoal records one goal report. snapshot marks a report that restates the
 // goal -- the read at a resume -- rather than a change.
-func (a *Agent) applyGoal(goal *kimiGoalSnapshot, snapshot bool) {
+func (a *Agent) applyGoal(goal *kimiGoalSnapshot, change *kimiGoalChange, snapshot bool) {
 	if goal == nil || strings.TrimSpace(goal.Objective) == "" {
 		a.Mu.Lock()
 		// A goal that completed is gone by the server's rule, and its completion is
@@ -105,11 +121,19 @@ func (a *Agent) applyGoal(goal *kimiGoalSnapshot, snapshot bool) {
 	createdAt := a.goal.createdAt
 	a.Mu.Unlock()
 
+	detail, _ := providerkit.RawString(goal.EndReason)
+	detail = strings.TrimSpace(detail)
+	if detail == "" && change != nil {
+		detail = strings.TrimSpace(change.Reason)
+	}
+	if detail == "" {
+		detail = goal.Status
+	}
 	update := agent.GoalUpdate{
 		NativeID:     goal.GoalID,
 		Objective:    goal.Objective,
 		Status:       status,
-		StatusDetail: goal.Status,
+		StatusDetail: detail,
 		CreatedAt:    createdAt,
 		TokensUsed:   goal.TokensUsed,
 		Iterations:   goal.TurnsUsed,
@@ -135,7 +159,7 @@ func (a *Agent) readGoal(ctx context.Context, sessionID string) {
 		slog.Debug("kimi read goal failed", "agent_id", a.AgentID(), "error", err)
 		return
 	}
-	a.applyGoal(goal, true)
+	a.applyGoal(goal, nil, true)
 }
 
 // SupportedGoalActions reports every action once the engine runs its goal
@@ -196,7 +220,7 @@ func (a *Agent) PerformGoalAction(action agent.GoalAction, objective string) (ag
 			// LeapMux's copy goes here too. dispatchMu keeps the removal in order
 			// with the goal events.
 			a.dispatchMu.Lock()
-			a.applyGoal(nil, false)
+			a.applyGoal(nil, nil, false)
 			a.dispatchMu.Unlock()
 		}
 		return agent.GoalOutcome{}, nil

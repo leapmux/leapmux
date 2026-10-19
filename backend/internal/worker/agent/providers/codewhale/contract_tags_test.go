@@ -54,6 +54,7 @@ func TestStructTagsMatchTheContract(t *testing.T) {
 		{"tool input", toolStart{}, "Input", contracts.CodewhaleToolFieldInput},
 		{"turn record", turnEventPayload{}, "Turn", contracts.CodewhaleTurnFieldTurn},
 		{"turn status", turnRecord{}, "Status", contracts.CodewhaleTurnFieldStatus},
+		{"turn error", turnRecord{}, "Error", contracts.CodewhaleTurnFieldError},
 		{"approval tool name", approvalEventPayload{}, "ToolName", contracts.CodewhaleApprovalFieldToolName},
 		{"user input request", userInputEventPayload{}, "Request", contracts.CodewhaleUserInputFieldRequest},
 		{"request questions", userInputRequest{}, "Questions", contracts.CodewhaleQuestionFieldQuestions},

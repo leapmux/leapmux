@@ -2,18 +2,21 @@ package kimi
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
+	"strings"
+	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
-// kimiEvent is the part of every event payload the dispatcher reads: its type,
-// and the agent it belongs to. The payload is the whole event, and the worker
-// persists it verbatim -- its `type` repeats the frame's.
+// kimiEvent identifies an event's type and native agent.
+// Raw keeps the event payload before provider-owned filtering.
 type kimiEvent struct {
 	Type    string `json:"type"`
 	AgentID string `json:"agentId"`
-	// Raw is the payload's own bytes, which is what a persisted row holds.
+	// Raw contains the event payload. Its type repeats the enclosing frame's type.
 	Raw json.RawMessage `json:"-"`
 }
 
@@ -46,19 +49,21 @@ func (e kimiEvent) decode(v any) bool {
 
 // handleFrame dispatches one event frame.
 //
-// A frame of another session is dropped: after a context clear the previous
-// session stays loaded in the server, and a late event of it must not reach the
-// new transcript. A global frame of the server that states another session is
-// dropped the same way. One that states no session reaches dispatchEvent, which
-// ignores every global event type.
+// A previous session can remain loaded after a context clear. Its late events must not reach the new transcript.
+// The global session has a separate warning reader. Events without a session ID reach the normal dispatcher.
 func (a *Agent) handleFrame(frame kimiFrame) {
 	a.dispatchMu.Lock()
 	defer a.dispatchMu.Unlock()
+	if frame.SessionID == kimiGlobalSessionID {
+		a.handleGlobalFrame(frame)
+		return
+	}
 
 	a.Mu.Lock()
 	current := a.sessionID
 	a.Mu.Unlock()
 	if frame.SessionID != "" && frame.SessionID != current {
+		slog.Debug("ignore a Kimi frame from another session", "agent_id", a.AgentID(), "session_id", frame.SessionID, "type", frame.Type)
 		return
 	}
 	event, ok := parseKimiEvent(frame)
@@ -69,12 +74,77 @@ func (a *Agent) handleFrame(frame kimiFrame) {
 	a.dispatchEvent(event)
 }
 
+// handleGlobalFrame keeps config warnings from this server launch. dispatchMu serializes its writes.
+// Other global events update the native server's own session and configuration lists.
+func (a *Agent) handleGlobalFrame(frame kimiFrame) {
+	// The startup replay reads early warnings again after the sink receives its native session ID.
+	if a.IsDiscardingOutput() || a.sink.MessageSessionID() == "" {
+		return
+	}
+	event, ok := parseKimiEvent(frame)
+	if !ok || event.Type != contracts.KimiEventConfigWarning {
+		return
+	}
+	at, err := time.Parse(time.RFC3339Nano, frame.Timestamp)
+	if err != nil || at.Before(a.serverLaunchedAt) {
+		return
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(event.Raw, &fields) != nil {
+		return
+	}
+	var warnings []json.RawMessage
+	if json.Unmarshal(fields["warnings"], &warnings) != nil {
+		return
+	}
+	var fresh []json.RawMessage
+	keys := make(map[string]struct{})
+	for _, warning := range warnings {
+		domain := providerkit.StringField(warning, "domain")
+		message := providerkit.StringField(warning, "message")
+		if strings.TrimSpace(message) == "" {
+			continue
+		}
+		key := fmt.Sprintf("%d:%s%s", len(domain), domain, message)
+		if _, exists := a.storedConfigWarnings[key]; exists {
+			continue
+		}
+		if _, exists := keys[key]; exists {
+			continue
+		}
+		keys[key] = struct{}{}
+		fresh = append(fresh, warning)
+	}
+	if len(fresh) == 0 {
+		return
+	}
+	// Preserve native fields while removing warnings that an earlier frame already supplied.
+	fields["warnings"], err = json.Marshal(fresh)
+	if err != nil {
+		slog.Error("encode Kimi config warnings", "agent_id", a.AgentID(), "error", err)
+		return
+	}
+	raw, err := json.Marshal(fields)
+	if err != nil {
+		slog.Error("encode the Kimi config warning event", "agent_id", a.AgentID(), "error", err)
+		return
+	}
+	event.Raw = raw
+	if !a.persistEvent(a.sink, event) {
+		return
+	}
+	if a.storedConfigWarnings == nil {
+		a.storedConfigWarnings = make(map[string]struct{})
+	}
+	for key := range keys {
+		a.storedConfigWarnings[key] = struct{}{}
+	}
+}
+
 // dispatchEvent routes one event.
 //
-// The switch lists EVERY event type the server declares, including the ones the
-// provider ignores, each with its reason. A type added by a later release then
-// reaches the default branch and is logged, instead of being absorbed by a branch
-// that looks deliberate.
+// The switch states the verdict for every known event and the reason for each internal event.
+// The default preserves unknown events as separate message rows.
 func (a *Agent) dispatchEvent(event kimiEvent) {
 	if a.holdForLink(event) {
 		return
@@ -100,20 +170,30 @@ func (a *Agent) dispatchEvent(event kimiEvent) {
 		a.handleStepCompleted(event)
 	case contracts.KimiEventCompactionStarted:
 		a.handleCompactionStarted(event)
+	case contracts.KimiEventCompactionBlocked:
+		a.handleCompactionBlocked(event)
 	case contracts.KimiEventCompactionCompleted,
-		contracts.KimiEventCompactionBlocked,
 		contracts.KimiEventCompactionCancelled:
 		a.handleCompactionFinished(event)
-	case contracts.KimiEventTurnStepRetrying,
-		contracts.KimiEventWarning,
+	case contracts.KimiEventTurnStepRetrying:
+		a.handleStepRetrying(event)
+	case contracts.KimiEventWarning,
 		contracts.KimiEventTaskNotified:
-		a.persistEventNotification(event)
+		a.persistRunEvent(event)
 	case contracts.KimiEventError:
 		a.handleError(event)
 	case contracts.KimiEventAgentStatusUpdated:
 		a.handleStatusUpdated(event)
 	case contracts.KimiEventGoalUpdated:
 		a.handleGoalUpdated(event)
+	case contracts.KimiEventHookResult:
+		var hook struct {
+			Blocked bool `json:"blocked"`
+		}
+		if event.decode(&hook) && hook.Blocked {
+			a.persistRunEvent(event)
+		}
+		// A passed hook is an engine record. A blocked hook states why the prompt did not run.
 	case contracts.KimiEventSubagentSpawned:
 		a.handleSubagentSpawned(event)
 	case contracts.KimiEventSubagentCompleted,
@@ -148,7 +228,7 @@ func (a *Agent) dispatchEvent(event kimiEvent) {
 	case contracts.KimiEventPromptSubmitted, contracts.KimiEventPromptQueued,
 		contracts.KimiEventPromptStarted, contracts.KimiEventPromptCompleted,
 		contracts.KimiEventPromptAborted:
-		// The prompt lifecycle repeats what turn.started and turn.ended state.
+		// The POST reply states a blocked outcome. Native turn events own every turn that actually starts.
 	case contracts.KimiEventContextSpliced, contracts.KimiEventContextUndone:
 		// The engine's own context edits: injected reminders and undo. They are
 		// the model's input, not the conversation.
@@ -165,10 +245,12 @@ func (a *Agent) dispatchEvent(event kimiEvent) {
 		// event.approval.* pair is the actionable one.
 	case contracts.KimiEventPlanRevision:
 		// A plan file revision. The plan reaches LeapMux through its approval.
-	case contracts.KimiEventHookResult, contracts.KimiEventMcpServerStatus,
-		contracts.KimiEventSkillActivated, contracts.KimiEventPluginCommandActivated,
+	case contracts.KimiEventMcpServerStatus,
+		contracts.KimiEventPluginCommandActivated,
 		contracts.KimiEventToolListUpdated, contracts.KimiEventTowerInboxSent:
 		// Engine bookkeeping the conversation does not show.
+	case contracts.KimiEventSkillActivated:
+		// The Skill tool card states the activation. A slash activation is already the user's own message.
 	case contracts.KimiEventShellStarted, contracts.KimiEventShellOutput, contracts.KimiEventShellCompleted:
 		// The TUI's own `!` shell, which LeapMux does not drive.
 	case contracts.KimiEventSessionMetaUpdated:
@@ -182,9 +264,9 @@ func (a *Agent) dispatchEvent(event kimiEvent) {
 		contracts.KimiEventConfigChanged, contracts.KimiEventConfigWarning,
 		contracts.KimiEventModelCatalogChanged, contracts.KimiEventPluginChanged,
 		contracts.KimiEventCapabilityChanged, contracts.KimiEventUnitChanged:
-		// The server's global events, for its own web UI. The session's busy flag
-		// is turn.started and turn.ended.
+		// handleGlobalFrame handles the global envelope before this dispatcher runs.
+		// Native turn events own the busy flag. Session and configuration records supply no transcript row.
 	default:
-		slog.Debug("kimi unknown event type", "agent_id", a.AgentID(), "type", event.Type)
+		a.persistRunEvent(event)
 	}
 }

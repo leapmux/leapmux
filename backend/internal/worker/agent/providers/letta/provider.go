@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
@@ -15,8 +16,23 @@ type lettaProvider struct {
 	agent.ProviderDefaults
 }
 
-// Classify groups the notices that repeat.
+// Classify folds retries and warning status rows. A summary marks a compaction boundary.
 func (lettaProvider) Classify(raw json.RawMessage) agent.NotificationClassification {
+	switch providerkit.StringField(raw, contracts.LettaDeltaFieldMessageType) {
+	case contracts.LettaDeltaKindRetry:
+		return agent.APIRetryNotification()
+	case contracts.LettaDeltaKindEventMessage:
+		if providerkit.StringField(raw, contracts.LettaDeltaFieldEventType) == contracts.LettaEventTypeRetry {
+			return agent.APIRetryNotification()
+		}
+	case contracts.LettaDeltaKindSummaryMessage:
+		return agent.CompactionBoundaryNotification()
+	case contracts.LettaDeltaKindStatus:
+		level := providerkit.StringField(raw, "level")
+		if lettaWarningLevel(level) {
+			return agent.ProviderScopedNotification("letta:status")
+		}
+	}
 	return agent.NotificationClassification{}
 }
 

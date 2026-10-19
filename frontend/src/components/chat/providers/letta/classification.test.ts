@@ -1,7 +1,7 @@
 import type { NotificationEntry } from '../../model/notification'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { LETTA_MODEL_ERROR_MARKER, lettaLoopError, lettaModelErrorThread, lettaSubagentSnapshot } from '~/test-support/lettaFixtures'
+import { LETTA_MODEL_ERROR_MARKER, lettaLoopError, lettaMixedErrorThread, lettaSubagentSnapshot } from '~/test-support/lettaFixtures'
 import { input } from '../testUtils'
 import { classifyLettaMessage } from './classification'
 import { lettaRelatedMessages, lettaSpanRole } from './spanRole'
@@ -97,6 +97,7 @@ describe('letta native tool phases', () => {
 
 describe('classifyLettaMessage notices', () => {
   const marker = LETTA_MODEL_ERROR_MARKER
+  const words = `400: {"type":"invalid_request_error","code":"invalid_request_error","message":"${marker}"}`
 
   /** The entries that one stored thread draws. */
   function threadEntries(messages: Record<string, unknown>[]): NotificationEntry[] {
@@ -113,19 +114,15 @@ describe('classifyLettaMessage notices', () => {
     const final = lettaLoopError(marker, true)
 
     expect(threadEntries([open, final])).toEqual([
-      { kind: 'text', text: open.message },
-      { kind: 'text', text: final.message },
+      { kind: 'text', text: words },
+      { kind: 'text', text: words },
     ])
   })
 
-  // The first member of a failed turn is the snapshot that opens every turn, so the
-  // error never sits first.
-  it('draws the error that follows the snapshot which opens a failed turn', () => {
-    const [, open, final] = lettaModelErrorThread(marker)
-
-    expect(threadEntries(lettaModelErrorThread(marker))).toEqual([
-      { kind: 'text', text: open?.message },
-      { kind: 'text', text: final?.message },
+  // A protocol snapshot must not prevent the reader from reading a later stored error.
+  it('draws a retained error after a protocol snapshot', () => {
+    expect(threadEntries(lettaMixedErrorThread(marker))).toEqual([
+      { kind: 'text', text: words },
     ])
   })
 
@@ -134,7 +131,7 @@ describe('classifyLettaMessage notices', () => {
 
     expect(classifyLettaMessage(input(frame, null, AgentProvider.LETTA))).toEqual({
       kind: 'notification',
-      entries: [{ kind: 'text', text: frame.message }],
+      entries: [{ kind: 'text', text: words }],
     })
   })
 
@@ -152,30 +149,39 @@ describe('classifyLettaMessage notices', () => {
     ['no words', { message_type: 'loop_error', run_id: 'local-run-1', is_terminal: true }],
     ['a blank message and no structured error', { message_type: 'loop_error', message: '  ', is_terminal: true }],
     ['a message that is not text', { message_type: 'loop_error', message: 42, is_terminal: true }],
-  ])('draws a loop error with %s as its raw frame', (_name, frame) => {
+  ])('keeps a loop error with %s visible without raw JSON', (_name, frame) => {
     expect(classifyLettaMessage(input(frame, null, AgentProvider.LETTA))).toEqual({
       kind: 'notification',
-      entries: [{ kind: 'text', text: JSON.stringify(frame) }],
+      entries: [],
     })
   })
 
-  it('draws a notice that this build does not know as its raw frame', () => {
+  it('keeps an unknown notice visible without raw JSON', () => {
     const frame = { message_type: 'future_notice', detail: 'A later release sends this.' }
 
     expect(classifyLettaMessage(input(frame, null, AgentProvider.LETTA))).toEqual({
       kind: 'notification',
-      entries: [{ kind: 'text', text: JSON.stringify(frame) }],
+      entries: [],
     })
   })
 
-  // The snapshot is protocol state. The Worker draws each child of it as the child's
-  // own rows and tab. It arrives at the start of every turn and at each state change
-  // of a child, so drawing every member of a thread would show them all.
-  it('hides the subagent snapshot, alone and in a thread', () => {
+  // The worker stores no snapshot row. An older stored snapshot receives the diagnostic policy.
+  it('keeps an old subagent snapshot visible as an unrecognized notice', () => {
     const snapshot = lettaSubagentSnapshot()
 
-    expect(classifyLettaMessage(input(snapshot, null, AgentProvider.LETTA))).toEqual({ kind: 'hidden' })
-    expect(classifyLettaMessage(input(snapshot, { old_seqs: [], messages: [snapshot, snapshot] }, AgentProvider.LETTA))).toEqual({ kind: 'hidden' })
+    expect(classifyLettaMessage(input(snapshot, null, AgentProvider.LETTA))).toEqual({ kind: 'notification', entries: [] })
+    expect(classifyLettaMessage(input(snapshot, { old_seqs: [], messages: [snapshot, snapshot] }, AgentProvider.LETTA))).toEqual({ kind: 'notification', entries: [] })
+  })
+
+  it('keeps an absent payload and an invalid native tool call unknown', () => {
+    expect(classifyLettaMessage(input(undefined, null, AgentProvider.LETTA))).toEqual({ kind: 'unknown' })
+    expect(classifyLettaMessage(input({ message_type: 'tool_call_message', tool_calls: [{ name: 'Bash' }] }, null, AgentProvider.LETTA))).toEqual({ kind: 'unknown' })
+  })
+
+  it('does not claim an old payload wrapper as native output', () => {
+    const parsed = input({ payload: { message_type: 'client_tool_start', tool_name: 'Bash', tool_call_id: 'old' } }, null, AgentProvider.LETTA)
+    expect(classifyLettaMessage(parsed)).toEqual({ kind: 'notification', entries: [] })
+    expect(lettaSpanRole(parsed)).toBe('other')
   })
 
   it('hides a thread that holds no member', () => {

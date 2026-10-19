@@ -158,14 +158,14 @@ func TestClassify(t *testing.T) {
 			raw:  `{"type":"session.status","properties":{"sessionID":"ses_test","status":{"type":"idle"}}}`,
 		},
 		{
-			name: "a compaction that starts is a status",
+			name: "a live compaction start has no stored classification",
 			raw:  `{"type":"message.part.updated","properties":{"part":{"id":"prt_1","type":"compaction","auto":true}}}`,
-			want: agent.StatusNotification(),
+			want: agent.NotificationClassification{},
 		},
 		{
 			name: "a compaction with a null projection still starts",
 			raw:  `{"type":"message.part.updated","properties":{"part":{"id":"prt_1","type":"compaction","projection":null}}}`,
-			want: agent.StatusNotification(),
+			want: agent.NotificationClassification{},
 		},
 		{
 			name: "a compaction that ends is the boundary",

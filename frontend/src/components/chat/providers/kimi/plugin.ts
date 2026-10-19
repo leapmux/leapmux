@@ -2,7 +2,7 @@ import type { ProviderPlugin } from '../capabilities'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { registerProvider } from '../registry'
 import { classifyKimiMessage } from './classification'
-import { kimiCompactionBoundary, kimiNotificationEntry } from './extractors/notification'
+import { kimiCompactionBoundary, kimiCompactionStart, kimiNotificationEntry } from './extractors/notification'
 import { kimiOutputFilePaths } from './extractors/outputFilePaths'
 import { kimiResultDivider } from './extractors/resultDivider'
 import { kimiExtractRow } from './extractors/row'
@@ -19,6 +19,7 @@ const kimiPlugin: ProviderPlugin = {
     relatedMessages: kimiRelatedMessages,
     extractDivider: kimiResultDivider,
     notificationEntry: kimiNotificationEntry,
+    compactionStart: kimiCompactionStart,
   },
   controls: kimiControls,
   session: {

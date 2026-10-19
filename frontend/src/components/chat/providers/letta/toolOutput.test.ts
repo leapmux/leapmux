@@ -15,10 +15,11 @@ describe('isLettaToolProgress', () => {
 })
 
 describe('lettaToolPayload', () => {
-  it('preserves the stored payload and normalizes only a present wrapper', () => {
+  it('preserves stored objects without interpreting an old payload wrapper', () => {
     const payload = { message_type: 'tool_return_message', tool_call_id: 'call' }
     expect(lettaToolPayload(payload)).toBe(payload)
-    expect(lettaToolPayload({ payload })).toBe(payload)
+    const wrapper = { payload }
+    expect(lettaToolPayload(wrapper)).toBe(wrapper)
     const emptyWrapper = { payload: {} }
     expect(lettaToolPayload(emptyWrapper)).toBe(emptyWrapper)
     for (const value of [null, undefined, false, 0, [], 'native'])

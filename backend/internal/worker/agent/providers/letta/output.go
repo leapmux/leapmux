@@ -1,8 +1,12 @@
 package letta
 
 import (
+	"bytes"
 	"encoding/json"
 	"log/slog"
+	"slices"
+	"sort"
+	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -19,6 +23,9 @@ import (
 
 // lettaAttachmentLabel identifies the provider in an attachment refusal.
 const lettaAttachmentLabel = "Letta Code"
+
+// lettaFinishedTurnLimit limits the recent native ends that suppress delayed repeats.
+const lettaFinishedTurnLimit = 16
 
 // isLettaRawInterrupt reports whether a raw frame is LeapMux's own interrupt
 // marker for Letta.
@@ -53,6 +60,12 @@ type lettaDelta struct {
 	PromptTokens     *int64                `json:"prompt_tokens"`
 	CompletionTokens *int64                `json:"completion_tokens"`
 	TotalTokens      *int64                `json:"total_tokens"`
+	ContextTokens    json.RawMessage       `json:"context_tokens"`
+	EventType        string                `json:"event_type"`
+	EventData        json.RawMessage       `json:"event_data"`
+	IsFinal          *bool                 `json:"is_terminal"`
+	Message          string                `json:"message"`
+	Level            string                `json:"level"`
 }
 
 type lettaNativeToolCall struct {
@@ -62,15 +75,21 @@ type lettaNativeToolCall struct {
 }
 
 // onStreamDelta dispatches one stream_delta payload.
-func (a *Agent) onStreamDelta(payload []byte, subagentID string) {
+func (a *Agent) onStreamDelta(payload []byte, subagentID string, scope *runtimeScope) {
+	kind := providerkit.StringField(payload, contracts.LettaDeltaFieldMessageType)
+	switch kind {
+	case lettaDeltaApprovalRequestMessage, lettaDeltaApprovalClassificationEnd, lettaDeltaErrorMessage:
+		return
+	}
+	target, ok := a.toolOutputTarget(subagentID, kind)
+	if !ok {
+		slog.Debug("letta ignored a delta without an active target", "agent_id", a.AgentID(), "subagent_id", subagentID)
+		return
+	}
 	var delta lettaDelta
 	if err := json.Unmarshal(payload, &delta); err != nil {
 		slog.Debug("letta: bad stream delta", "agent_id", a.AgentID(), "error", err)
-		return
-	}
-	target, ok := a.toolOutputTarget(subagentID, delta.MessageType)
-	if !ok {
-		slog.Debug("letta: unknown child delta", "agent_id", a.AgentID(), "subagent_id", subagentID)
+		a.persistUnknownDelta(target, payload, scope)
 		return
 	}
 
@@ -108,19 +127,210 @@ func (a *Agent) onStreamDelta(payload []byte, subagentID string) {
 		if subagentID == "" || text != a.children[subagentID].prompt {
 			a.persistRowTo(target, payload, agent.SpanInfo{})
 		}
-	case contracts.LettaDeltaKindRetry, contracts.LettaDeltaKindLoopError:
-		// A retry and a loop error are events the reader may want to see.
-		if _, err := target.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: payload}); err != nil {
-			slog.Debug("letta: persist notification failed", "agent_id", a.AgentID(), "error", err)
+	case contracts.LettaDeltaKindRetry:
+		a.handleRetry(payload, target, subagentID)
+	case contracts.LettaDeltaKindEventMessage:
+		switch delta.EventType {
+		case contracts.LettaEventTypeRetry:
+			a.handleRetry(payload, target, subagentID)
+		case contracts.LettaEventTypeCompaction:
+			a.startCompaction(target, subagentID, strings.TrimSpace(providerkit.StringField(delta.EventData, contracts.LettaDeltaFieldTrigger)))
+		default:
+			a.persistUnknownDelta(target, payload, scope)
 		}
+	case contracts.LettaDeltaKindSummaryMessage:
+		a.flushGenerationFor(subagentID, agent.MessageCompletionComplete)
+		a.endCompaction(target, subagentID)
+		a.persistNoticeTo(target, payload)
+	case contracts.LettaDeltaKindLoopError:
+		a.handleLoopError(payload, &delta, target, subagentID)
 	case contracts.LettaDeltaKindUsageStatistics:
 		publishLettaUsage(target, &delta)
-	case contracts.LettaDeltaKindStopReason, contracts.LettaDeltaKindStatus:
+	case contracts.LettaDeltaKindStatus:
+		if lettaWarningLevel(delta.Level) && delta.Message != "Interrupted" && strings.TrimSpace(delta.Message) != "" {
+			a.persistNoticeTo(target, payload)
+		}
+	case contracts.LettaDeltaKindStopReason:
 		// Protocol state. `turn_finished` already states the stop reason as a
 		// result divider.
 	default:
-		// An unknown delta kind must move nothing.
+		a.persistUnknownDelta(target, payload, scope)
 	}
+}
+
+func (a *Agent) ownsRuntime(scope *runtimeScope) bool {
+	if scope == nil || scope.AgentID == "" || scope.ConversationID == "" {
+		return false
+	}
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	return scope.AgentID == a.agentID && scope.ConversationID == a.conversationID
+}
+
+func (a *Agent) persistUnknownDelta(target agent.ProviderServices, payload []byte, scope *runtimeScope) {
+	if !a.ownsRuntime(scope) {
+		slog.Debug("letta ignored an unknown delta outside the current runtime", "agent_id", a.AgentID())
+		return
+	}
+	a.persistRowTo(target, payload, agent.SpanInfo{})
+}
+
+func (a *Agent) persistUnknownFrame(payload []byte) {
+	var frame struct {
+		Runtime *runtimeScope `json:"runtime"`
+	}
+	if json.Unmarshal(payload, &frame) != nil || !a.ownsRuntime(frame.Runtime) {
+		slog.Debug("letta ignored an unknown frame outside the current runtime", "agent_id", a.AgentID())
+		return
+	}
+	a.persistRowTo(a.sink, payload, agent.SpanInfo{})
+}
+
+func lettaWarningLevel(level string) bool {
+	return level == "warning" || level == "error"
+}
+
+func (a *Agent) startCompaction(target agent.ProviderServices, id, trigger string) {
+	if a.compactionLive[id] {
+		return
+	}
+	a.flushGenerationFor(id, agent.MessageCompletionComplete)
+	if a.compactionLive == nil {
+		a.compactionLive = make(map[string]bool)
+	}
+	a.compactionLive[id] = true
+	providerkit.PublishCompaction(target, trigger)
+}
+
+func (a *Agent) endCompaction(target agent.ProviderServices, id string) {
+	delete(a.compactionLive, id)
+	providerkit.EndCompaction(target)
+}
+
+func (a *Agent) finishOpenCompaction(target agent.ProviderServices, id string, completion agent.MessageCompletion) {
+	if !a.compactionLive[id] {
+		return
+	}
+	a.endCompaction(target, id)
+	outcome := providerkit.CompactionEndFailed
+	if completion == agent.MessageCompletionInterrupted {
+		outcome = providerkit.CompactionEndAborted
+	}
+	providerkit.PersistCompactionEnded(target, outcome, "")
+}
+
+func (a *Agent) retryForTarget(id string) *providerkit.RetryResolution {
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	if a.retries == nil {
+		a.retries = make(map[string]*providerkit.RetryResolution)
+	}
+	if a.retries[id] == nil {
+		a.retries[id] = &providerkit.RetryResolution{}
+	}
+	return a.retries[id]
+}
+
+func (a *Agent) handleRetry(payload []byte, target agent.ProviderServices, id string) {
+	kept := a.heldErrors[id][:0]
+	for _, held := range a.heldErrors[id] {
+		if held.final {
+			kept = append(kept, held)
+		}
+	}
+	if len(kept) == 0 {
+		delete(a.heldErrors, id)
+	} else {
+		a.heldErrors[id] = kept
+	}
+	scope := lettaGenerationScope(id)
+	providerkit.DiscardGenerationScopes(&a.generation, target, []string{scope, scope + ":reasoning"})
+	if _, err := target.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: payload}); err != nil {
+		slog.Error("letta could not persist a retry", "agent_id", a.AgentID(), "error", err)
+	}
+	a.retryForTarget(id).NoteRetry()
+}
+
+type lettaHeldError struct {
+	payload []byte
+	final   bool
+}
+
+// handleLoopError retains root errors until the native turn end supplies its reason.
+// A child supplies no equivalent error-bearing divider, so its final error persists at once.
+func (a *Agent) handleLoopError(payload []byte, delta *lettaDelta, target agent.ProviderServices, id string) {
+	final := delta.IsFinal != nil && *delta.IsFinal
+	if a.heldErrors == nil {
+		a.heldErrors = make(map[string][]lettaHeldError)
+	}
+	if final && id != "" {
+		a.flushGenerationFor(id, agent.MessageCompletionError)
+		a.flushHeldErrors(target, id, delta.Message)
+		a.persistNoticeTo(target, payload)
+		return
+	}
+	kept := a.heldErrors[id][:0]
+	for _, held := range a.heldErrors[id] {
+		if delta.Message != "" && providerkit.StringField(held.payload, contracts.LettaDeltaFieldMessage) == delta.Message {
+			continue
+		}
+		kept = append(kept, held)
+	}
+	a.heldErrors[id] = append(kept, lettaHeldError{payload: bytes.Clone(payload), final: final})
+}
+
+func (a *Agent) flushHeldErrors(target agent.ProviderServices, id, reason string) {
+	held := a.heldErrors[id]
+	delete(a.heldErrors, id)
+	for _, entry := range held {
+		if reason != "" && providerkit.StringField(entry.payload, contracts.LettaDeltaFieldMessage) == reason {
+			continue
+		}
+		a.persistNoticeTo(target, entry.payload)
+	}
+}
+
+func (a *Agent) persistNoticeTo(target agent.ProviderServices, payload []byte) {
+	if _, err := target.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: payload}); err != nil {
+		slog.Error("letta could not persist a notification", "agent_id", a.AgentID(), "error", err)
+	}
+}
+
+// finishOutputAfterExit preserves unfinished output before the worker retires this process.
+func (a *Agent) finishOutputAfterExit(completion agent.MessageCompletion) {
+	a.dispatchMu.Lock()
+	defer a.dispatchMu.Unlock()
+	if a.outputEnded {
+		return
+	}
+	a.outputEnded = true
+	a.Mu.Lock()
+	if a.transportErr != nil {
+		completion = agent.MessageCompletionError
+	}
+	a.Mu.Unlock()
+	if a.IsDiscardingOutput() {
+		a.generation.DiscardMatching(func(string) bool { return true })
+		a.heldErrors = nil
+		return
+	}
+	ids := []string{""}
+	for id, child := range a.children {
+		if child.registered && !child.closed {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		if target, ok := a.outputTarget(id); ok {
+			a.flushGenerationFor(id, completion)
+			a.finishOpenCompaction(target, id, completion)
+			a.flushHeldErrors(target, id, "")
+			a.retryForTarget(id).Reset()
+			a.finishToolOutputScope(id, target)
+		}
+	}
+	a.setTurnActive(false)
 }
 
 // onNativeToolCalls gives each call in one native message its own span and row.
@@ -182,7 +392,10 @@ func (a *Agent) onAssistantDelta(delta *lettaDelta, subagentID string) {
 	if text == "" {
 		return
 	}
-	a.flushGenerationScope(subagentID, true)
+	// Keep reasoning open until the model commits a tool or turn boundary, so a retry can discard the whole attempt.
+	if target, ok := a.outputTarget(subagentID); ok {
+		a.retryForTarget(subagentID).Resolve(target)
+	}
 	a.generation.Append(lettaGenerationScope(subagentID), agent.AssembledMessageKindText, text, providerkit.JoinVerbatim)
 }
 
@@ -195,6 +408,9 @@ func (a *Agent) onReasoningDelta(delta *lettaDelta, subagentID string) {
 	if text == "" {
 		return
 	}
+	if target, ok := a.outputTarget(subagentID); ok {
+		a.retryForTarget(subagentID).Resolve(target)
+	}
 	a.generation.Append(lettaGenerationScope(subagentID)+":reasoning", agent.AssembledMessageKindReasoning, text, providerkit.JoinVerbatim)
 }
 
@@ -203,7 +419,8 @@ func (a *Agent) onToolStart(payload []byte, delta *lettaDelta, target agent.Prov
 	if delta.ToolCallID == "" || delta.ToolName == "" {
 		return
 	}
-	a.flushGenerationFor(subagentID)
+	a.retryForTarget(subagentID).Resolve(target)
+	a.flushGenerationFor(subagentID, agent.MessageCompletionComplete)
 	spanID := "letta-tool-" + delta.ToolCallID
 	toolKey := lettaToolKey(subagentID, delta.ToolCallID)
 	a.Mu.Lock()
@@ -270,6 +487,8 @@ func (a *Agent) onToolReturn(payload []byte, delta *lettaDelta, target agent.Pro
 // turn ended. The tag is pinned to the `deltaFields` table of the contract.
 type lettaTurnFinished struct {
 	StopReason string `json:"stop_reason"`
+	Error      string `json:"error"`
+	TurnID     string `json:"turn_id"`
 }
 
 // lettaTurnCompletion maps the native stop reason of a finished turn onto the
@@ -291,33 +510,44 @@ func lettaTurnCompletion(stopReason string) agent.MessageCompletion {
 
 // onTurnFinished ends the turn. PersistTurnEnd runs before the clear.
 func (a *Agent) onTurnFinished(payload []byte) {
-	a.flushGenerationFor("")
+	var finished lettaTurnFinished
+	if err := json.Unmarshal(payload, &finished); err != nil {
+		slog.Debug("letta could not decode all turn-end fields", "agent_id", a.AgentID(), "error", err)
+	}
+	if finished.TurnID != "" {
+		if slices.Contains(a.finishedTurnIDs, finished.TurnID) {
+			return
+		}
+		a.finishedTurnIDs = append(a.finishedTurnIDs, finished.TurnID)
+		if len(a.finishedTurnIDs) > lettaFinishedTurnLimit {
+			a.finishedTurnIDs = slices.Delete(a.finishedTurnIDs, 0, len(a.finishedTurnIDs)-lettaFinishedTurnLimit)
+		}
+	}
+	a.retryForTarget("").Reset()
 	a.Mu.Lock()
 	toolUses := len(a.turnToolCallIDs)
 	a.turnToolCallIDs = nil
 	a.Mu.Unlock()
-	var finished lettaTurnFinished
-	if err := json.Unmarshal(payload, &finished); err != nil {
-		// A stop reason that is not text reads as no stop reason. The turn still
-		// ends, as a turn that ran to its own end.
-		slog.Debug("letta: unreadable stop reason", "agent_id", a.AgentID(), "error", err)
-	}
-	content := agent.MessageContent{Original: payload, Completion: lettaTurnCompletion(finished.StopReason)}
+	completion := lettaTurnCompletion(finished.StopReason)
+	a.flushGenerationFor("", completion)
+	a.finishOpenCompaction(a.sink, "", completion)
+	a.flushHeldErrors(a.sink, "", finished.Error)
+	content := agent.MessageContent{Original: payload, Completion: completion}
 	if err := a.sink.PersistTurnEnd(agent.WithToolUseCount(content, toolUses), agent.SpanInfo{}); err != nil {
 		slog.Debug("letta: persist turn end failed", "agent_id", a.AgentID(), "error", err)
 	}
 	a.finishToolOutputScope("", a.sink)
 	a.withdrawPermissions()
-	a.disarmTurn()
+	a.setTurnActive(false)
 }
 
 // flushGenerationFor stores the reasoning and text completed so far in one transcript.
-func (a *Agent) flushGenerationFor(subagentID string) {
-	a.flushGenerationScope(subagentID, true)
-	a.flushGenerationScope(subagentID, false)
+func (a *Agent) flushGenerationFor(subagentID string, completion agent.MessageCompletion) {
+	a.flushGenerationScope(subagentID, true, completion)
+	a.flushGenerationScope(subagentID, false, completion)
 }
 
-func (a *Agent) flushGenerationScope(subagentID string, reasoning bool) {
+func (a *Agent) flushGenerationScope(subagentID string, reasoning bool, completion agent.MessageCompletion) {
 	target, ok := a.outputTarget(subagentID)
 	if !ok {
 		return
@@ -326,8 +556,12 @@ func (a *Agent) flushGenerationScope(subagentID string, reasoning bool) {
 	if reasoning {
 		scope += ":reasoning"
 	}
-	raw, ready, err := a.generation.Finish(scope, agent.MessageCompletionComplete)
-	if err != nil || !ready {
+	raw, ready, err := a.generation.Finish(scope, completion)
+	if err != nil {
+		slog.Error("letta could not finish generated output", "agent_id", a.AgentID(), "error", err)
+		return
+	}
+	if !ready {
 		return
 	}
 	a.persistRowTo(target, raw, agent.SpanInfo{})
@@ -352,8 +586,8 @@ func (a *Agent) onLoopStatus(payload []byte) {
 	switch n.Status {
 	case contracts.LettaLoopStatusSendingAPIRequest, contracts.LettaLoopStatusWaitingForAPIResponse,
 		contracts.LettaLoopStatusProcessingAPIResponse:
-		a.armTurn()
+		a.setTurnActive(true)
 	case contracts.LettaLoopStatusWaitingOnInput:
-		a.disarmTurn()
+		// This state precedes turn_finished, including after an abort. The final frame owns queue release.
 	}
 }

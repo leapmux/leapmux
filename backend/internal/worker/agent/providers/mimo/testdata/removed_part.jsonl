@@ -1,0 +1,16 @@
+{"type":"session.status","properties":{"sessionID":"ses_test","status":{"type":"busy"}}}
+{"type":"message.updated","properties":{"sessionID":"ses_test","info":{"id":"msg_g001a149cdf367001xEEGSoAcC","parentID":"msg_g001a149cdf35200121EH0VZAx","role":"assistant","agentID":"main","time":{"created":1792239596391},"sessionID":"ses_test"}}}
+{"type":"message.part.updated","properties":{"sessionID":"ses_test","part":{"id":"prt_g001a149cdf38a001O0QQ0GHf9","messageID":"msg_g001a149cdf367001xEEGSoAcC","sessionID":"ses_test","type":"text","text":"","time":{"start":1792239596426}},"time":1792239596426}}
+{"type":"message.part.delta","properties":{"sessionID":"ses_test","messageID":"msg_g001a149cdf367001xEEGSoAcC","partID":"prt_g001a149cdf38a001O0QQ0GHf9","field":"text","delta":"DISCARDED-ONE "}}
+{"type":"message.part.delta","properties":{"sessionID":"ses_test","messageID":"msg_g001a149cdf367001xEEGSoAcC","partID":"prt_g001a149cdf38a001O0QQ0GHf9","field":"text","delta":"DISCARDED-TWO "}}
+{"type":"message.part.removed","properties":{"sessionID":"ses_test","messageID":"msg_g001a149cdf367001xEEGSoAcC","partID":"prt_g001a149cdf389001XDk5GRU3i"}}
+{"type":"message.part.removed","properties":{"sessionID":"ses_test","messageID":"msg_g001a149cdf367001xEEGSoAcC","partID":"prt_g001a149cdf38a001O0QQ0GHf9"}}
+{"type":"session.status","properties":{"sessionID":"ses_test","status":{"type":"retry","attempt":1,"phaseAttempt":1,"message":"Connection reset by server","next":1792239599074,"phase":"stream","scope":"live-step"}}}
+{"type":"session.retry.attempt","properties":{"sessionID":"ses_test","messageID":"msg_g001a149cdf367001xEEGSoAcC","attempt":1,"phaseAttempt":1,"maxAttempts":8,"phase":"stream","kind":"unknown","scope":"live-step","reason":"Connection reset by server","nextDelayMs":2042}}
+{"type":"session.status","properties":{"sessionID":"ses_test","status":{"type":"busy"}}}
+{"type":"message.part.updated","properties":{"sessionID":"ses_test","part":{"id":"prt_g001a149cdfdec001mN6y94WP6","messageID":"msg_g001a149cdf367001xEEGSoAcC","sessionID":"ses_test","type":"text","text":"","time":{"start":1792239599084}},"time":1792239599084}}
+{"type":"message.part.delta","properties":{"sessionID":"ses_test","messageID":"msg_g001a149cdf367001xEEGSoAcC","partID":"prt_g001a149cdfdec001mN6y94WP6","field":"text","delta":"RETRIED-"}}
+{"type":"message.part.delta","properties":{"sessionID":"ses_test","messageID":"msg_g001a149cdf367001xEEGSoAcC","partID":"prt_g001a149cdfdec001mN6y94WP6","field":"text","delta":"ANSWER"}}
+{"type":"message.part.updated","properties":{"sessionID":"ses_test","part":{"id":"prt_g001a149cdfdec001mN6y94WP6","messageID":"msg_g001a149cdf367001xEEGSoAcC","sessionID":"ses_test","type":"text","text":"RETRIED-ANSWER","time":{"start":1792239599084,"end":1792239599187}},"time":1792239599187}}
+{"type":"message.updated","properties":{"sessionID":"ses_test","info":{"id":"msg_g001a149cdf367001xEEGSoAcC","parentID":"msg_g001a149cdf35200121EH0VZAx","role":"assistant","agentID":"main","time":{"created":1792239596391},"sessionID":"ses_test"}}}
+{"type":"session.status","properties":{"sessionID":"ses_test","status":{"type":"idle"}}}

@@ -1,0 +1,130 @@
+{
+  "models": [
+    {
+      "value": "auto",
+      "displayName": "Auto",
+      "description": "",
+      "source": "system",
+      "isEnabled": false
+    },
+    {
+      "value": "ultimate",
+      "displayName": "Ultimate",
+      "description": "",
+      "source": "system",
+      "isEnabled": false
+    },
+    {
+      "value": "fast",
+      "displayName": "Fast",
+      "description": "",
+      "source": "system",
+      "isEnabled": false
+    },
+    {
+      "value": "efficient",
+      "displayName": "Efficient",
+      "description": "",
+      "source": "system",
+      "isEnabled": false
+    },
+    {
+      "value": "smodel",
+      "displayName": "Sonus",
+      "description": "",
+      "source": "system",
+      "isEnabled": false
+    },
+    {
+      "value": "cmodel",
+      "displayName": "Cantus",
+      "description": "",
+      "source": "system",
+      "isEnabled": false
+    },
+    {
+      "value": "qmodel_38max",
+      "displayName": "Qwen3.8-Max",
+      "description": "",
+      "source": "system",
+      "isEnabled": false
+    },
+    {
+      "value": "qfmodel",
+      "displayName": "Qwen3.8-Flash",
+      "description": "",
+      "source": "system",
+      "isEnabled": true
+    },
+    {
+      "value": "qmodel_latest",
+      "displayName": "Qwen3.7-Max",
+      "description": "",
+      "source": "system",
+      "isEnabled": false
+    },
+    {
+      "value": "qmodel",
+      "displayName": "Qwen3.7-Plus",
+      "description": "",
+      "source": "system",
+      "isEnabled": false
+    },
+    {
+      "value": "kmodel_latest",
+      "displayName": "Kimi-K3",
+      "description": "",
+      "source": "system",
+      "isEnabled": false
+    },
+    {
+      "value": "kmodel",
+      "displayName": "Kimi-K2.8-Preview",
+      "description": "",
+      "source": "system",
+      "isEnabled": false
+    },
+    {
+      "value": "gmodel",
+      "displayName": "GLM-5.3",
+      "description": "",
+      "source": "system",
+      "isEnabled": false
+    },
+    {
+      "value": "gfmodel",
+      "displayName": "GLM-5.3-Flash",
+      "description": "",
+      "source": "system",
+      "isEnabled": false
+    },
+    {
+      "value": "dmodel",
+      "displayName": "DeepSeek-V4-Pro",
+      "description": "",
+      "source": "system",
+      "isEnabled": false
+    },
+    {
+      "value": "dfmodel",
+      "displayName": "DeepSeek-Flash",
+      "description": "",
+      "source": "system",
+      "isEnabled": false
+    },
+    {
+      "value": "mmodel",
+      "displayName": "MiniMax-M3",
+      "description": "",
+      "source": "system",
+      "isEnabled": false
+    },
+    {
+      "value": "zhipu-intl/glm5.3-cp",
+      "displayName": "GLM-5.3 (Z.ai - International)",
+      "description": "",
+      "source": "user",
+      "isEnabled": true
+    }
+  ]
+}

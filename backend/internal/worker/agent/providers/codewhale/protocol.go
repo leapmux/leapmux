@@ -3,6 +3,8 @@ package codewhale
 import (
 	"regexp"
 	"strings"
+
+	"github.com/leapmux/leapmux/generated/contracts"
 )
 
 // Codewhale runtime API vocabulary that only the worker spells.
@@ -70,6 +72,10 @@ const (
 	eventGoalUpdated            = "thread_goal_updated"
 	eventGoalCleared            = "thread_goal_cleared"
 	eventModelToolsSnapshot     = "model.tools.snapshot"
+	eventTurnArtifacts          = "turn.artifacts"
+	eventTurnWorkspaceSnapshot  = "turn.workspace_snapshot"
+	eventApprovalGrantAdded     = "approval.grant_added"
+	eventApprovalGrantRevoked   = "approval.grant_revoked"
 )
 
 // Event families that the worker ignores as a whole. The runtime emits them
@@ -77,6 +83,9 @@ const (
 // registers none), agent mail, and the `agent.*` family that the runtime drops
 // before it reaches a runtime thread (see subagent.go).
 var ignoredEventPrefixes = []string{"tool_call.", "agent_mail.", "agent."}
+
+// itemKindUserMessage identifies a native prompt echo and stored steer history. Only the worker reads it.
+const itemKindUserMessage = "user_message"
 
 // Turn status words of a turn that has not ended. The final words are in the
 // contract, because the browser plugin reads them off the turn end.
@@ -142,25 +151,26 @@ var listeningLinePattern = regexp.MustCompile(`Runtime API listening on (\S+)`)
 // another process took after the worker reserved it.
 const bindFailureText = "Failed to bind"
 
-// plumbingStatusPrefixes identify the status items that describe the runtime's
-// own loop rather than something the reader acted on. The runtime sends them
-// untagged up to 0.10.0: a later release marks them `visibility: internal`,
-// which statusItemIsPlumbing reads as well.
+// plumbingStatusPrefixes identify status items about the runtime's own loop.
+// Versions through 0.10.0 send these items without a visibility tag.
+// Later releases mark them as `visibility: internal`. statusItemIsPlumbing reads that tag also.
 //
 //   - "Continuing" covers the tool-result and the goal-continuation passes.
 //   - "Executing tools sequentially" is the dispatcher's own note.
 //   - "Resuming turn with" reports queued subagent completions.
-//   - "Loaded deferred tool" is the schema hydration of a first call.
-//   - "Steer input accepted" repeats a steer that LeapMux already shows.
+//   - "Loaded deferred tool" reports the schema that a first call loaded.
+//   - "Steer input accepted" repeats the steer that the input queue already shows.
+//   - "Steer input queued" repeats the accepted input in LeapMux's queue.
 //   - "Request cancelled" repeats the interrupted turn end.
-//   - "Policy:" (0.9.13) and "Permissions:" (later releases) repeat a posture or
-//     mode change, which LeapMux already shows as a settings change.
+//   - "Policy:" (0.9.13) and "Permissions:" (later releases) report posture or mode changes.
+//     LeapMux already shows those as settings changes.
 var plumbingStatusPrefixes = []string{
 	"Continuing",
 	"Executing tools sequentially",
 	"Resuming turn with",
 	"Loaded deferred tool",
 	"Steer input accepted",
+	"Steer input queued",
 	"Request cancelled",
 	"Policy:",
 	"Permissions:",
@@ -180,4 +190,18 @@ func statusItemIsPlumbing(summary, visibility string) bool {
 		}
 	}
 	return false
+}
+
+// These memberships come from the same contract subsets that the browser reads.
+var (
+	codewhaleNotificationEvents    = notificationMemberSet(contracts.CodewhaleNotificationEventMembers)
+	codewhaleNotificationItemKinds = notificationMemberSet(contracts.CodewhaleNotificationItemKindMembers)
+)
+
+func notificationMemberSet(values []string) map[string]bool {
+	result := make(map[string]bool, len(values))
+	for _, value := range values {
+		result[value] = true
+	}
+	return result
 }

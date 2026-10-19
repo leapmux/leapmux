@@ -38,6 +38,28 @@ func TestGenerationPendingWritesKeepTheirBytesCompletionAndDestination(t *testin
 	assert.Equal(t, []string{"answer"}, second)
 }
 
+func TestGenerationPersistenceReportsRetainedAndRefusedWritesSeparately(t *testing.T) {
+	t.Parallel()
+	var buffer GenerationBuffer
+	buffer.Append("scope", agent.AssembledMessageKindText, "answer", JoinVerbatim)
+	cause := errors.New("the transcript is unavailable")
+	_, err := buffer.PersistScope("scope", agent.MessageCompletionComplete, func([]byte) error { return cause })
+	require.ErrorIs(t, err, cause)
+	assert.True(t, agent.OutputRetained(err), "the shared queue owns the immutable write")
+	assert.Empty(t, buffer.ScopeIDs())
+	assert.True(t, buffer.HasPendingWrites())
+
+	var invalid GenerationBuffer
+	invalid.Append("scope", agent.AssembledMessageKindText, "answer", JoinVerbatim)
+	_, err = invalid.PersistScope("scope", agent.MessageCompletion("invalid"), func([]byte) error {
+		t.Error("an invalid completion reached the sink")
+		return nil
+	})
+	require.Error(t, err)
+	assert.False(t, agent.OutputRetained(err), "validation refused the new write")
+	assert.Equal(t, []string{"scope"}, invalid.ScopeIDs())
+}
+
 func TestGenerationPendingBatchFreezesEverySelectedScopeBeforeTheFirstWrite(t *testing.T) {
 	t.Parallel()
 	var buffer GenerationBuffer

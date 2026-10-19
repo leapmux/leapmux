@@ -5,6 +5,7 @@ import (
 	"log/slog"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // These event types stay inside the worker. The worker converts them into:
@@ -19,7 +20,9 @@ const (
 	eventServerConnected        = "server.connected"
 	eventServerHeartbeat        = "server.heartbeat"
 	eventMessageUpdated         = "message.updated"
+	eventMessageRemoved         = "message.removed"
 	eventMessagePartDelta       = "message.part.delta"
+	eventMessagePartRemoved     = "message.part.removed"
 	eventSessionCompacted       = "session.compacted"
 	eventSessionGoal            = "session.goal"
 	eventPermissionReplied      = "permission.replied"
@@ -33,18 +36,17 @@ const (
 )
 
 // mimoIgnoredEvents are the event types the worker reads and acts on nowhere.
-// Each entry states its reason. A new server event reaches dispatchEvent's default branch, which logs it.
+// Each entry states its reason. The default branch preserves an unknown event of the current session.
 var mimoIgnoredEvents = map[string]string{
-	"session.idle":              "a deprecated repeat of session.status idle",
-	"session.created":           "the create route already returned the session",
-	"session.updated":           "LeapMux titles an agent itself; a title the model wrote would fight that",
-	"session.deleted":           "LeapMux deletes no MiMo session",
-	"session.diff":              "the transcript already holds each edit",
-	"session.cwd":               "the working directory is LeapMux's to choose",
-	"session.retry.attempt":     "session.status retry carries the same attempt, and it is what LeapMux persists",
-	"session.try_best.detected": "a TUI hint about the model's effort",
-	"message.removed":           "LeapMux offers no revert, so it never asks for a removal",
-	"message.part.removed":      "LeapMux offers no revert, so it never asks for a removal",
+	"session.idle":    "a deprecated repeat of session.status idle",
+	"session.created": "the create route already returned the session",
+	"session.updated": "LeapMux titles an agent itself; a title the model wrote would fight that",
+	"session.deleted": "LeapMux deletes no MiMo session",
+	"session.diff":    "the transcript already holds each edit",
+	"session.cwd":     "the working directory is LeapMux's to choose",
+	// MiMo emits this only with MIMOCODE_ENABLE_TRY_BEST_HANDOFF, which is off by default.
+	// A synthetic text part pauses the turn. LeapMux skips it, and the next idle ends the turn.
+	"session.try_best.detected": "the native idle ends the optional handoff turn",
 	"command.executed":          "the goal and compaction routes report their own effect",
 	"inbox.arrived":             "actor.status states the same completion, and the parent turn it starts reports itself",
 	"actor.stuck":               "legacy; the server never emits it",
@@ -124,8 +126,10 @@ type mimoStatus struct {
 }
 
 type mimoStatusEvent struct {
-	SessionID string     `json:"sessionID"`
-	Status    mimoStatus `json:"status"`
+	SessionID string `json:"sessionID"`
+	Status    struct {
+		Type string `json:"type"`
+	} `json:"status"`
 }
 
 // mimoTokens is the token count of an assistant message and of a step.
@@ -292,14 +296,20 @@ func (a *Agent) dispatchEvent(data []byte) {
 		// The stream loop reads the first. The second keeps the stream open.
 	case contracts.MiMoEventSessionStatus:
 		a.handleSessionStatus(event)
+	case contracts.MiMoEventSessionRetryAttempt:
+		a.handleRetryAttempt(event)
 	case contracts.MiMoEventSessionError:
 		a.handleSessionError(event)
 	case eventMessageUpdated:
 		a.handleMessageUpdated(event)
+	case eventMessageRemoved:
+		a.handleMessageRemoved(event)
 	case contracts.MiMoEventMessagePartUpdated:
 		a.handlePartUpdated(event)
 	case eventMessagePartDelta:
 		a.handlePartDelta(event)
+	case eventMessagePartRemoved:
+		a.handlePartRemoved(event)
 	case eventSessionCompacted:
 		// The compaction part states the same boundary, and it carries the summary.
 	case eventSessionGoal:
@@ -326,6 +336,11 @@ func (a *Agent) dispatchEvent(data []byte) {
 		if _, ignored := mimoIgnoredEvents[event.Type]; ignored {
 			return
 		}
-		slog.Debug("mimo unknown event type", "agent_id", a.AgentID(), "type", event.Type)
+		sessionID := providerkit.StringField(event.Properties, "sessionID")
+		if sessionID != "" && a.ownsSession(sessionID) {
+			a.persistUnknownEvent(event, sessionID)
+		} else {
+			slog.Debug("mimo ignored an unknown event outside the current session", "agent_id", a.AgentID(), "type", event.Type)
+		}
 	}
 }

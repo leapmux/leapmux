@@ -62,7 +62,7 @@ var providerDirs = map[leapmuxv1.AgentProvider]string{
 // the base implements those rules for all twelve providers. OpenCode also runs the
 // busy refusal over its own agent type.
 var requiredSuites = map[string][]string{
-	"muse": {"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens", "AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions", "AssertPreservesTheResponseWithoutARequest", "AssertWithholdsTheResponseForAMalformedRequest", "AssertTokenResumeRule", "AssertChildCapabilities", "RunSupplementConformance"},
+	"muse": {"AssertUnknownFramePersists", "RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens", "AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions", "AssertPreservesTheResponseWithoutARequest", "AssertWithholdsTheResponseForAMalformedRequest", "AssertTokenResumeRule", "AssertChildCapabilities", "RunSupplementConformance"},
 
 	"commandcode": {
 		"AssertUnknownFramePersists", "RunRetryAttemptCase",
@@ -100,7 +100,7 @@ var requiredSuites = map[string][]string{
 		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
 		"AssertPreservesTheResponseWithoutARequest", "AssertTokenResumeRule", "AssertChildCapabilities",
 	},
-	"cline": {
+	"cline": {"AssertUnknownFramePersists",
 		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
 		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
 		"AssertPreservesTheResponseWithoutARequest", "AssertWithholdsTheResponseForAMalformedRequest",
@@ -113,7 +113,7 @@ var requiredSuites = map[string][]string{
 		"AssertPreservesTheResponseWithoutARequest", "AssertWithholdsTheResponseForAMalformedRequest",
 		"AssertTokenResumeRule", "AssertChildCapabilities",
 	},
-	"qoder": {
+	"qoder": {"AssertUnknownFramePersists",
 		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
 		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
 		"AssertPreservesTheResponseWithoutARequest", "AssertWithholdsTheResponseForAMalformedRequest",
@@ -126,7 +126,7 @@ var requiredSuites = map[string][]string{
 		"AssertPreservesTheResponseWithoutARequest", "AssertWithholdsTheResponseForAMalformedRequest",
 		"AssertTokenResumeRule", "AssertChildCapabilities",
 	},
-	"codewhale": {
+	"codewhale": {"AssertUnknownFramePersists", "RunRetryAttemptCase",
 		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
 		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
 		"AssertPreservesTheResponseWithoutARequest", "AssertWithholdsTheResponseForAMalformedRequest",
@@ -151,7 +151,7 @@ var requiredSuites = map[string][]string{
 	"goose": {"RequireReadsSessionStore", "AssertChildCapabilities"},
 	"grok":  {"RequireReadsSessionStore", "AssertTokenResumeRule", "AssertControlIdentitiesStaySeparate", "AssertChildCapabilities"},
 	"kilo":  {"RequireReadsSessionStore", "AssertChildCapabilities"},
-	"letta": {
+	"letta": {"AssertUnknownFramePersists", "RunRetryAttemptCase",
 		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
 		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
 		"AssertPreservesTheResponseWithoutARequest", "AssertWithholdsTheResponseForAMalformedRequest",
@@ -161,7 +161,7 @@ var requiredSuites = map[string][]string{
 	"dirac":     {"RequireReadsSessionStore", "AssertChildCapabilities"},
 	"fastagent": {"RequireReadsSessionStore", "AssertChildCapabilities"},
 	"junie":     {"RequireReadsSessionStore", "AssertChildCapabilities"},
-	"kimi": {
+	"kimi": {"AssertUnknownFramePersists", "RunRetryAttemptCase",
 		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
 		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
 		"AssertPreservesTheResponseWithoutARequest", "AssertWithholdsTheResponseForAMalformedRequest",
@@ -191,7 +191,7 @@ var requiredSuites = map[string][]string{
 		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
 		"AssertTokenResumeRule", "RequireToolStoreHandlesClosed", "AssertChildCapabilities",
 	},
-	"mimo": {
+	"mimo": {"AssertUnknownFramePersists", "RunRetryAttemptCase",
 		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
 		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
 		"AssertPreservesTheResponseWithoutARequest", "AssertWithholdsTheResponseForAMalformedRequest",

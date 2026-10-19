@@ -4,445 +4,557 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"path/filepath"
-	"strconv"
+	"slices"
+	"sort"
 	"strings"
 
-	"github.com/leapmux/leapmux/generated/contracts"
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/sessionstore"
 )
 
-// Steering, and the steers that the runtime drops.
+// The native HTTP reply can acknowledge only a queued steer. turn.steered proves that the model read it.
+// Native receipts identify an item. The queue retains the original input until the shared ledger reports its outcome.
 //
-// POST /v1/threads/{id}/turns/{turn_id}/steer puts the text into the engine's
-// mailbox. The engine settles each steer exactly once (`PendingSteer`, #6276):
-//
-//   - Accepted: it committed the text into the turn at a step boundary, and the
-//     model reads it. The runtime emits `turn.steered`.
-//   - Dropped: the turn ended, or moved on, before a step boundary took the
-//     text. The model never reads it. The runtime emits `turn.steer_dropped`.
-//
-// From 0.10.0 the route waits 2 s for that verdict (STEER_SETTLE_WAIT). An
-// accepted steer answers 200, and a dropped one answers 409. A steer that
-// waits longer -- behind a tool call, or a model request -- answers 200 with
-// the text still queued, and its verdict arrives later on the event stream. The
-// runtime emits the drop event for every drop, the 409 ones included.
-//
-// A steer that waits in the mailbox when its turn ends is dropped only when the
-// engine next reads the mailbox, which is the start of the NEXT turn. Until then
-// no event states it. The runtime's store states it at once: a steer item that
-// the engine never committed stays `queued` or turns `canceled`, and the
-// runtime's own history rebuild leaves both out because the model never saw
-// them. So at each turn end, and at a process exit, the agent reads that record
-// for every steer whose verdict it still waits for.
-//
-// The record can lag the engine in one window. The runtime writes a commit on a
-// task of its own, while the turn makes the model request that follows the
-// commit, so the record states the commit before the turn can end unless that
-// write takes longer than the whole request. The agent reads the record as the
-// runtime's history rebuild reads it, and trusts it.
-//
-// 0.9.13 records each steer as delivered at once, emits `turn.steered`, and has
-// no drop event.
-//
-// The input queue records a steer as delivered when SteerInput returns nil. So
-// the agent keeps a ticket for each steer that it sent, and:
-//
-//   - A steer whose drop LeapMux learns before it answers the queue is refused
-//     with ErrNoActiveTurn, and the queue sends the text as a turn of its own.
-//   - A steer whose drop LeapMux learns after it answered the queue is handed
-//     back to the queue through the sink's RequeueDroppedInput, as the reader's
-//     next message.
-//   - A drop that the queue already acts on -- a refused steer, or one handed
-//     back -- draws no row, because the runtime's reason tells the reader to
-//     resend a message that LeapMux sends again itself.
-//   - A drop that nothing acts on draws the runtime's event as a row, so the
-//     reader learns that the model never read the text.
+// The runtime writes steer outcomes on a detached task. A queued record can lag an actual model read.
+// Only completed and canceled records prove an outcome. An unresolved delivery becomes uncertain when its turn ends.
+// The worker does not replay that input automatically.
 
-// steerAbsorbCapacity limits how many drops the agent remembers as already
-// acted on. A drop event arrives at most one turn after its steer, and a turn
-// takes few steers, so a short memory is enough, and it keeps the ring from
-// growing with the session.
+// steerAbsorbCapacity limits recent receipt identities and refused drops that the worker remembers.
 const steerAbsorbCapacity = 64
 
-// steerVerdict is what an event stated about a steer before the route answered.
-type steerVerdict int
-
-const (
-	steerVerdictNone steerVerdict = iota
-	steerVerdictDelivered
-	steerVerdictDropped
-)
-
-// steerKey identifies a steer as the runtime's events state it: the turn, and
-// the prompt as the route trims it.
 type steerKey struct {
 	turnID string
 	input  string
 }
 
-// steerTicket is one steer that LeapMux sent and whose fate is not settled.
+type steerOutputKind uint8
+
+const (
+	steerGeneratedOutput steerOutputKind = iota
+	steerToolOutput
+)
+
+type steerOutputKey struct {
+	kind steerOutputKind
+	id   string
+}
+
+// steerTicket retains native identity evidence. The shared queue owns the input and its attachments.
 type steerTicket struct {
-	// dropID identifies the steer within the agent. The hand-back carries it.
-	dropID string
-	key    steerKey
-	// content and attachments are what the reader sent, which a hand-back queues
-	// again as they were.
-	content     string
-	attachments []*leapmuxv1.Attachment
-	// replied is true once the route answered 2xx and SteerInput told the queue
-	// that the steer was delivered.
-	replied bool
-	// verdict is what an event stated while the route had not answered yet.
-	verdict steerVerdict
+	key            steerKey
+	ledgerID       providerkit.SteerTicket
+	nativeID       string
+	before         map[string]bool
+	baselineOK     bool
+	replied        bool
+	verdict        agent.SteerOutcome
+	preceding      map[steerOutputKey]bool
+	waitRequestEnd bool
 }
 
-// codewhaleSteers tracks the steers that LeapMux sent. The caller holds Mu.
+// codewhaleSteers holds unresolved submissions. The caller holds Agent.Mu.
+// Ledger reports run outside Agent.Mu.
 type codewhaleSteers struct {
-	open []*steerTicket
-	// absorbed holds the drops that draw no row, oldest first.
+	open     []*steerTicket
+	ledger   providerkit.SteerLedger
 	absorbed []steerKey
-	seq      uint64
+	observed []string
 }
 
-// begin records a steer that SteerInput is about to send.
-func (s *codewhaleSteers) begin(turnID, prompt, content string, attachments []*leapmuxv1.Attachment) *steerTicket {
-	s.seq++
-	ticket := &steerTicket{
-		dropID:      turnID + "/" + strconv.FormatUint(s.seq, 10),
-		key:         steerKey{turnID: turnID, input: strings.TrimSpace(prompt)},
-		content:     content,
-		attachments: attachments,
-	}
+func (s *codewhaleSteers) begin(turnID, prompt string, before map[string]bool, baselineOK bool) *steerTicket {
+	key := steerKey{turnID: turnID, input: strings.TrimSpace(prompt)}
+	ticket := &steerTicket{key: key, before: before, baselineOK: baselineOK, ledgerID: s.ledger.Add(turnID + "\x00" + key.input)}
 	s.open = append(s.open, ticket)
 	return ticket
 }
 
-// match returns the oldest open steer with key that no event settled yet, or
-// nil.
-func (s *codewhaleSteers) match(key steerKey) *steerTicket {
+func (s *codewhaleSteers) remove(ticket *steerTicket) {
+	s.open = slices.DeleteFunc(s.open, func(candidate *steerTicket) bool { return candidate == ticket })
+}
+
+func (s *codewhaleSteers) seen(id string) bool { return id != "" && slices.Contains(s.observed, id) }
+
+func (s *codewhaleSteers) observe(id string) {
+	if id == "" || s.seen(id) {
+		return
+	}
+	if len(s.observed) == steerAbsorbCapacity {
+		s.observed = slices.Delete(s.observed, 0, 1)
+	}
+	s.observed = append(s.observed, id)
+}
+
+// match uses an exact known ID first. At most one accepted steer can lack an ID.
+// That restriction prevents a receipt from selecting the wrong identical input.
+func (s *codewhaleSteers) match(key steerKey, id string) *steerTicket {
+	if id == "" || s.seen(id) {
+		return nil
+	}
 	for _, ticket := range s.open {
-		if ticket.key == key && ticket.verdict == steerVerdictNone {
+		if ticket.nativeID == id {
+			if ticket.key == key {
+				return ticket
+			}
+			return nil
+		}
+	}
+	for _, ticket := range s.open {
+		if ticket.nativeID == "" && ticket.key == key && !ticket.before[id] {
 			return ticket
 		}
 	}
 	return nil
 }
 
-// remove forgets one steer.
-func (s *codewhaleSteers) remove(ticket *steerTicket) {
-	for i, open := range s.open {
-		if open == ticket {
-			s.open = append(s.open[:i], s.open[i+1:]...)
-			return
-		}
-	}
-}
-
-// absorb records a drop that the queue acts on already, so its event draws no
-// row.
-func (s *codewhaleSteers) absorb(key steerKey) {
-	if len(s.absorbed) == steerAbsorbCapacity {
-		s.absorbed = s.absorbed[1:]
-	}
-	s.absorbed = append(s.absorbed, key)
-}
-
-// takeAbsorbed reports whether a drop of key was absorbed, and forgets one such
-// drop.
-func (s *codewhaleSteers) takeAbsorbed(key steerKey) bool {
-	for i, absorbed := range s.absorbed {
-		if absorbed == key {
-			s.absorbed = append(s.absorbed[:i], s.absorbed[i+1:]...)
+func (s *codewhaleSteers) unidentified() bool {
+	for _, ticket := range s.open {
+		if ticket.replied && ticket.nativeID == "" {
 			return true
 		}
 	}
 	return false
 }
 
-// awaiting returns every steer that the route accepted and whose verdict no
-// event stated yet, for turnID, or for every turn when turnID is "".
+func (s *codewhaleSteers) absorb(key steerKey) {
+	if len(s.absorbed) == steerAbsorbCapacity {
+		s.absorbed = slices.Delete(s.absorbed, 0, 1)
+	}
+	s.absorbed = append(s.absorbed, key)
+}
+
+func (s *codewhaleSteers) takeAbsorbed(key steerKey) bool {
+	for i, candidate := range s.absorbed {
+		if candidate == key {
+			s.absorbed = slices.Delete(s.absorbed, i, i+1)
+			return true
+		}
+	}
+	return false
+}
+
 func (s *codewhaleSteers) awaiting(turnID string) []*steerTicket {
 	var tickets []*steerTicket
 	for _, ticket := range s.open {
-		if ticket.replied && ticket.verdict == steerVerdictNone && (turnID == "" || ticket.key.turnID == turnID) {
+		if ticket.verdict == agent.SteerOutcomePending && (turnID == "" || ticket.key.turnID == turnID) {
 			tickets = append(tickets, ticket)
 		}
 	}
 	return tickets
 }
 
-// settleSteerReply reads the route's answer to one steer against what the
-// events already stated, and returns what SteerInput tells the queue.
-//
-// The route refuses a steer with 409 when the engine dropped it within the
-// route's wait, and when no turn runs; with 404 when the thread is gone; and
-// with 400 when the turn is stopping, when it is no longer in progress, and
-// when the thread's engine is not loaded or changed. Each one means that the
-// running turn takes no steer, so the queue sends the text as a turn of its
-// own.
-func (a *Agent) settleSteerReply(ticket *steerTicket, err error) error {
-	a.Mu.Lock()
-	defer a.Mu.Unlock()
-	verdict := ticket.verdict
-	var status *providerkit.HTTPStatusError
-	switch {
-	case err == nil:
-		switch verdict {
-		case steerVerdictDropped:
-			// The drop arrived before the answer: the model never read the text, and
-			// the queue has not counted it as delivered yet.
-			a.steers.remove(ticket)
-			return agent.ErrNoActiveTurn
-		case steerVerdictDelivered:
-			a.steers.remove(ticket)
-			return nil
-		default:
-			ticket.replied = true
-			return nil
-		}
-	case errors.As(err, &status):
-		a.steers.remove(ticket)
-		switch status.StatusCode {
-		case httpStatusConflict, httpStatusNotFound, httpStatusBadRequest:
-			if verdict == steerVerdictNone {
-				// The runtime states a drop that its route refused as well. The queue
-				// sends the text again, so that event draws no row.
-				a.steers.absorb(ticket.key)
-			}
-			return agent.ErrNoActiveTurn
-		default:
-			return err
-		}
-	default:
-		// The request failed on its way, and the engine may hold the text. An event
-		// that already stated its fate settles it.
-		a.steers.remove(ticket)
-		switch verdict {
-		case steerVerdictDelivered:
-			return nil
-		case steerVerdictDropped:
-			return agent.ErrNoActiveTurn
-		default:
-			return fmt.Errorf("%w: Codewhale did not confirm the steer: %v", agent.ErrDeliveryUncertain, err)
-		}
+func (s *codewhaleSteers) resolve(ticket *steerTicket, id string, outcome agent.SteerOutcome) {
+	if ticket.verdict != agent.SteerOutcomePending {
+		return
 	}
+	ticket.verdict = outcome
+	if id != "" {
+		ticket.nativeID = id
+		s.ledger.SetID(ticket.ledgerID, id)
+		s.observe(id)
+	}
+	switch outcome {
+	case agent.SteerOutcomeEchoed:
+		if len(ticket.preceding) > 0 || ticket.waitRequestEnd {
+			return
+		}
+		s.ledger.Echo(ticket.ledgerID)
+	case agent.SteerOutcomeDropped:
+		s.ledger.Drop(ticket.ledgerID)
+	case agent.SteerOutcomeUncertain:
+		s.ledger.Uncertain(ticket.ledgerID)
+	case agent.SteerOutcomePending:
+		panic("cannot resolve a pending steer")
+	}
+	s.remove(ticket)
 }
 
-// steerEventPayload is the payload of turn.steered and turn.steer_dropped.
+// bindSteerItem identifies the new native user item without claiming that the model read it.
+// Native item IDs that existed before the write cannot identify this submission.
+// The caller holds dispatchMu, and no other steer request starts before this call returns.
+func (a *Agent) bindSteerItem(ticket *steerTicket) {
+	a.Mu.Lock()
+	eligible := ticket.verdict == agent.SteerOutcomePending && ticket.nativeID == "" && ticket.baselineOK
+	a.Mu.Unlock()
+	if !eligible {
+		return
+	}
+	items, ok := readTurnSteers(a.store, ticket.key.turnID, ticket.before)
+	if !ok {
+		return
+	}
+	var id string
+	for _, item := range items {
+		if strings.TrimSpace(item.Detail) != ticket.key.input {
+			continue
+		}
+		if id != "" {
+			return
+		}
+		id = item.ID
+	}
+	if id == "" {
+		return
+	}
+	a.Mu.Lock()
+	if ticket.verdict == agent.SteerOutcomePending && ticket.nativeID == "" {
+		ticket.nativeID = id
+		a.steers.ledger.SetID(ticket.ledgerID, id)
+	}
+	a.Mu.Unlock()
+}
+
+// settleSteerReply gives native evidence precedence over the HTTP result.
+func (a *Agent) settleSteerReply(ticket *steerTicket, err error) error {
+	a.dispatchMu.Lock()
+	defer a.dispatchMu.Unlock()
+	a.bindSteerItem(ticket)
+	a.Mu.Lock()
+	before := a.steerableLocked()
+	var result error
+	switch ticket.verdict {
+	case agent.SteerOutcomeEchoed:
+	case agent.SteerOutcomeDropped:
+		result = agent.ErrNoActiveTurn
+	case agent.SteerOutcomeUncertain:
+		result = fmt.Errorf("%w: Codewhale could not prove the steer outcome", agent.ErrDeliveryUncertain)
+	case agent.SteerOutcomePending:
+		if err == nil {
+			ticket.replied = true
+		} else {
+			a.steers.remove(ticket)
+			a.steers.ledger.Forget(ticket.ledgerID)
+			var status *providerkit.HTTPStatusError
+			if errors.As(err, &status) {
+				switch status.StatusCode {
+				case httpStatusConflict, httpStatusNotFound, httpStatusBadRequest:
+					a.steers.absorb(ticket.key)
+					result = agent.ErrNoActiveTurn
+				default:
+					result = err
+				}
+			} else {
+				result = fmt.Errorf("%w: Codewhale did not confirm the steer: %v", agent.ErrDeliveryUncertain, err)
+			}
+		}
+	}
+	changed := before != a.steerableLocked()
+	a.Mu.Unlock()
+	if !a.IsDiscardingOutput() {
+		a.steers.ledger.Settle(a.sink)
+	}
+	if changed {
+		a.PublishTurnActive()
+	}
+	return result
+}
+
 type steerEventPayload struct {
 	TurnID string `json:"turn_id"`
 	Input  string `json:"input"`
+	Item   struct {
+		ID string `json:"id"`
+	} `json:"item"`
 }
 
-// steerEventKey reads which steer an event states.
-func steerEventKey(env codewhaleEnvelope) (steerKey, bool) {
+func steerEventKey(env codewhaleEnvelope) (steerKey, string, bool) {
 	var payload steerEventPayload
-	if err := json.Unmarshal(env.Payload, &payload); err != nil {
-		return steerKey{}, false
+	if json.Unmarshal(env.Payload, &payload) != nil {
+		return steerKey{}, "", false
 	}
-	turnID := payload.TurnID
+	if env.TurnID != "" && payload.TurnID != "" && env.TurnID != payload.TurnID {
+		return steerKey{}, "", false
+	}
+	if env.ItemID != "" && payload.Item.ID != "" && env.ItemID != payload.Item.ID {
+		return steerKey{}, "", false
+	}
+	turnID, id := env.TurnID, env.ItemID
 	if turnID == "" {
-		turnID = env.TurnID
+		turnID = payload.TurnID
 	}
-	return steerKey{turnID: turnID, input: strings.TrimSpace(payload.Input)}, turnID != ""
+	if id == "" {
+		id = payload.Item.ID
+	}
+	return steerKey{turnID: turnID, input: strings.TrimSpace(payload.Input)}, id, turnID != ""
 }
 
-// handleSteerDelivered settles a steer that the model read. LeapMux already
-// shows the text the reader typed, so the event draws no row.
 func (a *Agent) handleSteerDelivered(env codewhaleEnvelope) {
-	key, ok := steerEventKey(env)
+	key, id, ok := steerEventKey(env)
 	if !ok {
 		return
 	}
+	preceding := a.steerPredecessors()
 	a.Mu.Lock()
-	defer a.Mu.Unlock()
-	ticket := a.steers.match(key)
-	if ticket == nil {
-		return
+	before := a.steerableLocked()
+	ticket := a.steers.match(key, id)
+	if ticket != nil {
+		ticket.preceding = preceding
+		ticket.waitRequestEnd = a.modelRequestObserved
+		a.steers.resolve(ticket, id, agent.SteerOutcomeEchoed)
 	}
-	if ticket.replied {
-		a.steers.remove(ticket)
-		return
+	changed := before != a.steerableLocked()
+	a.Mu.Unlock()
+	a.steers.ledger.Settle(a.sink)
+	if changed {
+		a.PublishTurnActive()
 	}
-	ticket.verdict = steerVerdictDelivered
 }
 
-// handleSteerDropped acts on a steer that the model never read. See the file
-// comment for the four cases.
 func (a *Agent) handleSteerDropped(env codewhaleEnvelope) {
-	key, ok := steerEventKey(env)
+	key, id, ok := steerEventKey(env)
 	if !ok {
 		a.persistNotification(env)
 		return
 	}
 	a.Mu.Lock()
-	ticket := a.steers.match(key)
-	switch {
-	case ticket != nil && !ticket.replied:
-		// SteerInput has not answered the queue yet, and it refuses the steer.
-		ticket.verdict = steerVerdictDropped
-		a.Mu.Unlock()
-		return
-	case ticket != nil:
-		a.steers.remove(ticket)
-		a.Mu.Unlock()
-		if !a.handBackSteer(ticket) {
-			a.persistNotification(env)
-		}
-		return
-	case a.steers.takeAbsorbed(key):
-		a.Mu.Unlock()
-		return
-	default:
-		a.Mu.Unlock()
+	before := a.steerableLocked()
+	known := a.steers.seen(id)
+	ticket := a.steers.match(key, id)
+	if ticket != nil {
+		a.steers.resolve(ticket, id, agent.SteerOutcomeDropped)
+		known = true
+	} else if !known {
+		known = a.steers.takeAbsorbed(key)
+	}
+	changed := before != a.steerableLocked()
+	a.Mu.Unlock()
+	a.steers.ledger.Settle(a.sink)
+	if changed {
+		a.PublishTurnActive()
+	}
+	if !known {
 		a.persistNotification(env)
 	}
 }
 
-// handBackSteer queues a dropped steer again as the reader's next message, and
-// reports whether the Worker took it.
-func (a *Agent) handBackSteer(ticket *steerTicket) bool {
-	if a.IsDiscardingOutput() {
-		return false
-	}
-	if err := a.sink.RequeueDroppedInput(ticket.dropID, ticket.content, ticket.attachments); err != nil {
-		slog.Error("codewhale queue a dropped steer again", "agent_id", a.AgentID(), "turn_id", ticket.key.turnID, "error", err)
-		return false
-	}
-	return true
-}
+// settleSteersOfTurn reports each exact native record before the final row releases the queue.
+// A queued or unreadable record proves no outcome and must not trigger automatic replay.
+func (a *Agent) settleSteersOfTurn(turnID string) { a.settleStoredSteers(turnID) }
 
-// settleSteersOfTurn hands back each steer of a turn that ended whose text the
-// runtime's record states the model never read. Call it on the turn end, under
-// dispatchMu, before the turn flag clears, so the text is back in the queue
-// when the queue learns that the turn ended.
-//
-// A steer that the record states delivered is forgotten. A steer that the
-// record does not state yet waits for its event.
-func (a *Agent) settleSteersOfTurn(turnID string) {
-	if turnID == "" {
-		return
-	}
+func (a *Agent) settleSteersAfterExit() { a.settleStoredSteers("") }
+
+func (a *Agent) settleStoredSteers(turnID string) {
 	a.Mu.Lock()
 	tickets := a.steers.awaiting(turnID)
 	a.Mu.Unlock()
-	if len(tickets) == 0 {
+	if a.IsDiscardingOutput() {
+		a.Mu.Lock()
+		a.steers.open = nil
+		a.steers.ledger.Reset()
+		a.Mu.Unlock()
 		return
 	}
-	a.settleFromStore(turnID, tickets)
-}
-
-// settleSteersAfterExit settles every steer that waits for its verdict, once
-// the process exited: nothing states them after this. A steer that the record
-// does not state is dropped from the memory with a log line, because no
-// verdict can arrive for it any more.
-func (a *Agent) settleSteersAfterExit() {
-	a.Mu.Lock()
-	tickets := a.steers.awaiting("")
-	a.Mu.Unlock()
-	byTurn := make(map[string][]*steerTicket)
-	var turns []string
+	turnItems := make(map[string]map[string]bool)
 	for _, ticket := range tickets {
-		if _, seen := byTurn[ticket.key.turnID]; !seen {
-			turns = append(turns, ticket.key.turnID)
+		a.bindSteerItem(ticket)
+		a.Mu.Lock()
+		id := ticket.nativeID
+		a.Mu.Unlock()
+		outcome := agent.SteerOutcomeUncertain
+		ids, read := turnItems[ticket.key.turnID]
+		if !read {
+			ids, _ = readTurnItemIDs(a.store, ticket.key.turnID)
+			turnItems[ticket.key.turnID] = ids
 		}
-		byTurn[ticket.key.turnID] = append(byTurn[ticket.key.turnID], ticket)
-	}
-	for _, turnID := range turns {
-		a.settleFromStore(turnID, byTurn[turnID])
-	}
-	a.Mu.Lock()
-	for _, ticket := range a.steers.awaiting("") {
-		slog.Warn("codewhale steer with no verdict when the runtime exited", "agent_id", a.AgentID(), "turn_id", ticket.key.turnID)
-		a.steers.remove(ticket)
-	}
-	a.Mu.Unlock()
-}
-
-// settleFromStore settles the tickets of one turn from the turn's record in the
-// store.
-func (a *Agent) settleFromStore(turnID string, tickets []*steerTicket) {
-	undelivered, delivered, ok := readTurnSteers(a.store, turnID)
-	if !ok {
-		return
-	}
-	for _, ticket := range tickets {
-		switch {
-		case undelivered[ticket.key.input] > 0:
-			undelivered[ticket.key.input]--
-			if !a.handBackSteer(ticket) {
-				// The ticket stays, so the drop event states the steer to the reader.
-				continue
+		if id != "" && ids[id] {
+			if item, ok := readSteerItem(a.store, ticket.key.turnID, id); ok && strings.TrimSpace(item.Detail) == ticket.key.input {
+				switch item.Status {
+				case itemStatusCompleted:
+					outcome = agent.SteerOutcomeEchoed
+				case itemStatusCanceled:
+					outcome = agent.SteerOutcomeDropped
+				}
 			}
-			a.Mu.Lock()
-			a.steers.remove(ticket)
-			// The runtime states this drop later, when the engine next reads its
-			// mailbox. The queue sends the text again, so that event draws no row.
-			a.steers.absorb(ticket.key)
-			a.Mu.Unlock()
-		case delivered[ticket.key.input] > 0:
-			delivered[ticket.key.input]--
-			a.Mu.Lock()
-			a.steers.remove(ticket)
-			a.Mu.Unlock()
 		}
+		a.Mu.Lock()
+		if ticket.verdict == agent.SteerOutcomePending {
+			a.steers.resolve(ticket, id, outcome)
+			if outcome != agent.SteerOutcomeEchoed {
+				a.steers.absorb(ticket.key)
+			}
+		}
+		a.Mu.Unlock()
 	}
+	a.steers.ledger.Settle(a.sink)
 }
 
-// storedTurn is the part of a turn record that lists its items.
 type storedTurn struct {
+	ID      string   `json:"id"`
 	ItemIDs []string `json:"item_ids"`
 }
 
-// storedItem is the part of an item record that states a steer.
 type storedItem struct {
+	ID     string `json:"id"`
+	TurnID string `json:"turn_id"`
 	Kind   string `json:"kind"`
 	Status string `json:"status"`
 	Detail string `json:"detail"`
 }
 
-// readTurnSteers reads the reader's messages of one turn from the store, and
-// counts their texts by whether the model read them. A message the engine never
-// committed is `queued` or `canceled`, and one it committed is `completed`. ok
-// is false when the turn record cannot be read. An item that cannot be read is
-// left out, so a steer that it states waits for its event.
-//
-// The texts are trimmed, as the steer route trims a prompt.
-func readTurnSteers(store codewhaleStore, turnID string) (undelivered, delivered map[string]int, ok bool) {
-	if store.dir == "" || turnID == "" || strings.ContainsAny(turnID, `/\`) {
-		return nil, nil, false
+func nativeRecordID(id string) bool { return id != "" && !strings.ContainsAny(id, `/\`) }
+
+func readTurnItemIDs(store codewhaleStore, turnID string) (map[string]bool, bool) {
+	if store.dir == "" || !nativeRecordID(turnID) {
+		return nil, false
 	}
-	root := store.runtimeDir()
 	var turn storedTurn
-	if err := sessionstore.ReadSidecarFile(filepath.Join(root, "turns", turnID+".json"), storeRecordMaxBytes, func(data []byte) error {
+	if err := sessionstore.ReadSidecarFile(filepath.Join(store.runtimeDir(), "turns", turnID+".json"), storeRecordMaxBytes, func(data []byte) error {
 		return json.Unmarshal(data, &turn)
-	}); err != nil {
-		return nil, nil, false
+	}); err != nil || turn.ID != turnID || turn.ItemIDs == nil {
+		return nil, false
 	}
-	undelivered = make(map[string]int)
-	delivered = make(map[string]int)
-	for _, itemID := range turn.ItemIDs {
-		if itemID == "" || strings.ContainsAny(itemID, `/\`) {
+	ids := make(map[string]bool, len(turn.ItemIDs))
+	for _, id := range turn.ItemIDs {
+		if !nativeRecordID(id) || ids[id] {
+			return nil, false
+		}
+		ids[id] = true
+	}
+	return ids, true
+}
+
+func readSteerItem(store codewhaleStore, turnID, id string) (storedItem, bool) {
+	if store.dir == "" || !nativeRecordID(turnID) || !nativeRecordID(id) {
+		return storedItem{}, false
+	}
+	var item storedItem
+	if err := sessionstore.ReadSidecarFile(filepath.Join(store.runtimeDir(), "items", id+".json"), storeRecordMaxBytes, func(data []byte) error {
+		return json.Unmarshal(data, &item)
+	}); err != nil || item.ID != id || item.TurnID != turnID {
+		return storedItem{}, false
+	}
+	return item, item.Kind == itemKindUserMessage
+}
+
+// readTurnSteers reads new native items only. An unreadable new record makes the identity ambiguous.
+func readTurnSteers(store codewhaleStore, turnID string, before map[string]bool) ([]storedItem, bool) {
+	ids, ok := readTurnItemIDs(store, turnID)
+	if !ok {
+		return nil, false
+	}
+	var items []storedItem
+	for id := range ids {
+		if before[id] {
 			continue
 		}
 		var item storedItem
-		if err := sessionstore.ReadSidecarFile(filepath.Join(root, "items", itemID+".json"), storeRecordMaxBytes, func(data []byte) error {
+		if err := sessionstore.ReadSidecarFile(filepath.Join(store.runtimeDir(), "items", id+".json"), storeRecordMaxBytes, func(data []byte) error {
 			return json.Unmarshal(data, &item)
-		}); err != nil || item.Kind != contracts.CodewhaleItemKindUserMessage {
-			continue
+		}); err != nil || item.ID != id || item.TurnID != turnID {
+			return nil, false
 		}
-		text := strings.TrimSpace(item.Detail)
-		switch item.Status {
-		case itemStatusQueued, itemStatusCanceled:
-			undelivered[text]++
-		case itemStatusCompleted:
-			delivered[text]++
+		if item.Kind == itemKindUserMessage {
+			items = append(items, item)
 		}
 	}
-	return undelivered, delivered, true
+	return items, true
+}
+
+// finishSteerCall releases a final native turn row after its outstanding HTTP request settles.
+func (a *Agent) finishSteerCall(ticket *steerTicket) {
+	a.dispatchMu.Lock()
+	defer a.dispatchMu.Unlock()
+	a.Mu.Lock()
+	if a.steerCall == ticket {
+		a.steerCall = nil
+	}
+	ready := a.steerCall == nil
+	a.Mu.Unlock()
+	if ready {
+		a.drainDeferredTurnEnd()
+	}
+}
+
+func (a *Agent) drainDeferredTurnEnd() {
+	end := a.pendingTurnEnd
+	if end == nil {
+		return
+	}
+	a.pendingTurnEnd = nil
+	a.completeTurn(*end)
+	deferred := a.deferredEvents
+	a.deferredEvents = nil
+	for _, env := range deferred {
+		a.dispatchAdmittedFrame(env)
+	}
+}
+
+// openGenerationIDs includes native starts that emitted no delta.
+// Pending writes remain in the shared output queue and have no open scope here.
+func (a *Agent) openGenerationIDs() []string {
+	ids := a.generationBuffer.ScopeIDs()
+	seen := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		seen[id] = true
+	}
+	var extra []string
+	for _, id := range a.openGeneratedItems {
+		if !seen[id] {
+			seen[id] = true
+			extra = append(extra, id)
+		}
+	}
+	sort.Strings(extra)
+	return append(ids, extra...)
+}
+
+// steerPredecessors captures the native output that precedes this receipt.
+// CodeWhale can emit turn.steered before the preceding generated item's final event.
+func (a *Agent) steerPredecessors() map[steerOutputKey]bool {
+	preceding := make(map[steerOutputKey]bool)
+	for _, id := range a.openGenerationIDs() {
+		preceding[steerOutputKey{kind: steerGeneratedOutput, id: id}] = true
+	}
+	a.Mu.Lock()
+	for id := range a.tools.bySpan {
+		preceding[steerOutputKey{kind: steerToolOutput, id: id}] = true
+	}
+	a.Mu.Unlock()
+	return preceding
+}
+
+// releaseSteerOutputs reports read inputs only after their preceding native rows enter the ordered sink.
+func (a *Agent) releaseSteerOutputs(keys []steerOutputKey) {
+	discarding := a.IsDiscardingOutput()
+	a.Mu.Lock()
+	kept := a.steers.open[:0]
+	for _, ticket := range a.steers.open {
+		for _, key := range keys {
+			delete(ticket.preceding, key)
+		}
+		if ticket.verdict == agent.SteerOutcomeEchoed && len(ticket.preceding) == 0 && !ticket.waitRequestEnd {
+			if discarding {
+				a.steers.ledger.Forget(ticket.ledgerID)
+			} else {
+				a.steers.ledger.Echo(ticket.ledgerID)
+			}
+		} else {
+			kept = append(kept, ticket)
+		}
+	}
+	clear(a.steers.open[len(kept):])
+	a.steers.open = kept
+	a.Mu.Unlock()
+	if !discarding {
+		a.steers.ledger.Settle(a.sink)
+	}
+}
+
+func generatedSteerOutputs(ids []string) []steerOutputKey {
+	keys := make([]steerOutputKey, 0, len(ids))
+	for _, id := range ids {
+		keys = append(keys, steerOutputKey{kind: steerGeneratedOutput, id: id})
+	}
+	return keys
+}
+
+// finishSteerRequestBoundary releases receipts after the preceding model request finishes.
+func (a *Agent) finishSteerRequestBoundary() {
+	a.Mu.Lock()
+	for _, ticket := range a.steers.open {
+		ticket.waitRequestEnd = false
+	}
+	a.Mu.Unlock()
+	a.releaseSteerOutputs(nil)
 }

@@ -28,7 +28,7 @@ func (a *Agent) loadModelCatalog(timeout time.Duration) error {
 		a.clearCatalogPending(pending)
 		return err
 	}
-	if err := pending.waiter.wait(a.Context(), a.ProcessDone(), timeout); err != nil {
+	if err := pending.waiter.wait(a.Context(), a.Clock(), a.ProcessDone(), timeout); err != nil {
 		a.clearCatalogPending(pending)
 		return err
 	}

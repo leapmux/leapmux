@@ -16,22 +16,15 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
-// Agent manages one `kimi web` process and the one session LeapMux drives in
-// it.
-//
-// The process is the kap-server, which speaks no protocol on its stdio: stdout
-// carries the ready line and log lines, and the conversation runs over REST and
-// one WebSocket (connection.go). So Agent embeds Process for the lifecycle
-// alone -- start, stop, exit, stderr -- and routes everything else through the
-// server's HTTP API.
+// Agent manages one kimi web process and one native session.
+// The kap-server writes readiness and log lines to stdout. Conversation events use REST and one WebSocket, as connection.go describes.
+// The embedded Process owns process lifetime and stderr. The native API supplies the other operations.
 type Agent struct {
 	providerkit.Process
 
 	sink       agent.ProviderServices
 	workingDir string
-	// clock supplies the time the agent records -- a goal's first sight and a
-	// session's attach -- and the event stream's timers. Production uses the real
-	// clock, and a test injects a mock.
+	// clock supplies recorded timestamps and event-stream timers. Tests can inject a mock.
 	clock quartz.Clock
 
 	api    *kimiClient
@@ -42,14 +35,16 @@ type Agent struct {
 	// at startup and never mutated, so it needs no lock.
 	features map[string]bool
 
-	// dispatchMu serializes event dispatch. The stream's dispatcher goroutine and
-	// HandleOutput both reach handleFrame, and one event's handling reads and
-	// writes several fields in sequence -- a tool call opened by one goroutine and
-	// closed by the other before it opened would leave its card running for good.
+	// dispatchMu serializes handleFrame calls from the event stream and HandleOutput.
+	// Without it, a tool result could precede its opener and leave the card active indefinitely.
 	dispatchMu sync.Mutex
-	// sessionMu serializes the operations that change which session the agent
-	// drives or how it is configured: ClearContext, UpdateSettings, and the goal
-	// writes. Never held while a.Mu is held.
+	// The launch stamp is immutable. dispatchMu protects the warning fingerprints.
+	serverLaunchedAt      time.Time
+	storedConfigWarnings  map[string]struct{}
+	storedSessionWarnings map[string]struct{}
+	// sessionMu serializes session replacement and configuration changes.
+	// ClearContext and UpdateSettings use it. Goal writes use it also.
+	// A caller must not acquire it while it holds Mu.
 	sessionMu    sync.Mutex
 	approvalWork providerkit.CoalescingWork
 
@@ -108,18 +103,16 @@ var (
 	_ agent.GoalWriter       = (*Agent)(nil)
 )
 
-// kimiSendWait limits how long SendInput waits for the server to accept a
-// prompt. The server replies once the prompt launched or queued, which takes a
-// few milliseconds; the limit stops a stalled server from holding the caller.
+// kimiSendWait limits how long a stalled server can hold SendInput.
+// The reply can state that the prompt started, entered the queue, or was blocked.
 const kimiSendWait = 30 * time.Second
 
 // SendInput delivers a user message to the main agent.
 //
-// It returns once the server accepted the prompt -- the POST replies when the
-// turn launched -- and never waits for the turn. A running turn refuses the
-// input with ErrAgentBusy, so the LeapMux input queue holds it; Kimi Code would
-// queue it itself, but then LeapMux would show the message as the start of a
-// turn that has not started.
+// The POST reply states whether the prompt started, queued, or was blocked.
+// This call never waits for a turn to finish.
+// A running turn returns ErrAgentBusy so the LeapMux queue retains the input.
+// Native queueing would otherwise show that input before its turn starts.
 func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
 	return a.sendInput(nil, content, attachments)
 }
@@ -157,19 +150,12 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 	// with no event left to clear it. A second message that slips in before
 	// turn.started waits in the server's own queue and runs next, which delivers
 	// it all the same.
-	_, err = a.submitPrompt(sessionID, kimiMainAgentID, parts)
+	reply, err := a.submitPrompt(sessionID, kimiMainAgentID, parts)
+	if err == nil && reply.Status == kimiPromptBlocked {
+		a.PublishTurnActive()
+	}
 	return err
 }
-
-// kimiPromptReply is the data of POST /sessions/{id}/prompts.
-type kimiPromptReply struct {
-	PromptID string `json:"prompt_id"`
-	Status   string `json:"status"`
-}
-
-// kimiPromptQueued is the `status` of a prompt the server queued behind a
-// running turn. A prompt that launched a turn states `running`.
-const kimiPromptQueued = "queued"
 
 // submitPrompt posts one prompt to one agent of the session.
 func (a *Agent) submitPrompt(sessionID, agentID string, parts []map[string]any) (kimiPromptReply, error) {

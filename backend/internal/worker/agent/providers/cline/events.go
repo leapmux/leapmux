@@ -7,18 +7,13 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
-// Event dispatch.
-//
-// The hub's dispatcher goroutine calls handleEvent for each event, in the order
-// the daemon published them, and HandleOutput does the same for a test. One
-// event's handling runs under dispatchMu.
-//
-// Cline states the session of each event, and states no agent on the events
-// that carry output: a subagent's text and tool calls, and a teammate's, arrive
-// among the lead's. The worker routes that output by what it saw before it
-// (routeContent, subagent.go).
+// The hub dispatcher sends events in native order. HandleOutput supplies the same path for tests.
+// dispatchMu serializes each event with lifecycle changes.
+// Text and tool events carry no agent identity. The worker uses the active spawn chain to find their transcript.
+// Teammate notices carry their agent identity. handleSessionNotice resolves their active run.
 
 // handleEvent dispatches one event.
 func (a *Agent) handleEvent(event hubEvent) {
@@ -45,6 +40,14 @@ func (a *Agent) handleEvent(event hubEvent) {
 		a.handleSessionUpdated(event)
 	case eventIterationStarted:
 		a.handleIterationStarted()
+	case eventIterationFinished:
+		if t := a.routeWithinTurn(); t != nil {
+			a.discardUnflushedReasoning(t)
+		}
+	case eventPendingPrompts:
+		a.handlePendingPrompts(event)
+	case eventPendingPromptSubmitted:
+		a.handlePendingPromptSubmitted(event)
 	case eventReasoningDelta:
 		if t := a.routeContent(); t != nil {
 			a.handleReasoningDelta(t, event.Payload)
@@ -86,21 +89,39 @@ func (a *Agent) handleEvent(event hubEvent) {
 		a.handleCapabilityRequested(event)
 	case eventApprovalResolved, eventCapabilityResolved:
 		a.handleControlResolved(event)
+	case eventRunHeartbeat, eventAgentDone:
+	// Heartbeats keep the connection active. The run end supplies the completion.
+	case eventUINotify:
+	// The hub's desktop notice repeats the run end.
+	case eventSessionAttached, eventSessionDetached:
+	// These events describe the hub's client registry.
+	default:
+		if event.SessionID != "" && event.SessionID == a.currentSession() {
+			a.Mu.Lock()
+			target := a.out.lead
+			a.Mu.Unlock()
+			a.persistRow(target, event.Raw, noCompletion)
+		} else {
+			slog.Debug("cline ignored an unknown event outside the current session", "agent_id", a.AgentID(), "event", event.Event)
+		}
 	}
 }
 
-// handleRunStarted confirms the delivery of the send that started the run.
-// A run that no send of this agent started -- another client's -- starts a turn
-// that takes no steer.
+// handleRunStarted confirms the send that started the run.
+// Cline sends another run.started for each steer. An active turn keeps its identity.
+// A run that another client starts creates a turn that takes no steer.
 func (a *Agent) handleRunStarted(event hubEvent) {
-	var started struct {
+	var started *struct {
 		RequestID string `json:"requestId"`
 		ClientID  string `json:"clientId"`
 	}
-	_ = json.Unmarshal(event.Payload, &started)
+	if err := json.Unmarshal(event.Payload, &started); err != nil || started == nil {
+		slog.Debug("cline ignored a malformed run start", "agent_id", a.AgentID(), "error", err)
+		return
+	}
 	delivered := started.RequestID != "" && a.settleDelivery(started.RequestID, nil)
 	a.Mu.Lock()
-	// A send that already gave up waiting armed the turn of this run.
+	// A send that stopped waiting already started this turn.
 	ours := started.RequestID != "" && a.turn.active && a.turn.requestID == started.RequestID
 	a.Mu.Unlock()
 	if !delivered && !ours {
@@ -224,27 +245,116 @@ func (a *Agent) dispatchToolFinished(event hubEvent) {
 	}
 }
 
-// handleSessionNotice persists a notice of the lead: a compaction of its
-// context, and each status that Cline shows the user. A notice of a subagent
-// or a teammate is theirs, and Cline states no transcript that could show it
-// in its place.
+// handleSessionNotice routes a native notice without starting a turn.
 func (a *Agent) handleSessionNotice(event hubEvent) {
 	var notice struct {
-		Message string `json:"message"`
-		Agent   struct {
-			Kind string `json:"kind"`
+		Message  string `json:"message"`
+		Metadata struct {
+			Kind  string `json:"kind"`
+			Phase string `json:"phase"`
+		} `json:"metadata"`
+		Agent struct {
+			Kind        string `json:"kind"`
+			TeamAgentID string `json:"teamAgentId"`
 		} `json:"agent"`
 	}
-	if json.Unmarshal(event.Payload, &notice) != nil || notice.Message == "" {
+	if json.Unmarshal(event.Payload, &notice) != nil || notice.Message == "" || a.IsDiscardingOutput() {
 		return
 	}
-	if notice.Agent.Kind != "" && notice.Agent.Kind != agentKindLead {
+	var sink agent.ProviderServices
+	var target *transcript
+	switch notice.Agent.Kind {
+	case "", agentKindLead:
+		target = a.routeWithinTurn()
+		if target != nil {
+			sink = a.sinkFor(target)
+		}
+	case agentKindTeammate:
+		if run := a.teamRunOfAgent(notice.Agent.TeamAgentID); run != nil && run.childID != "" {
+			target = run.transcript
+			sink = a.sinkFor(target)
+		}
+	}
+	if sink == nil {
+		slog.Debug("cline ignored a notice without an unambiguous owner", "agent_id", a.AgentID(), "kind", notice.Agent.Kind)
 		return
 	}
-	if a.IsDiscardingOutput() {
-		return
+	if isCompactionNotice(notice.Metadata.Kind) {
+		switch notice.Metadata.Phase {
+		case contracts.ClineNoticePhaseStarted:
+			a.Mu.Lock()
+			target.compactionLive = true
+			a.Mu.Unlock()
+			providerkit.PublishCompaction(sink, "")
+			return
+		case contracts.ClineNoticePhaseCompleted, contracts.ClineNoticePhaseSkipped, contracts.ClineNoticePhaseFailed:
+			a.Mu.Lock()
+			target.compactionLive = false
+			a.Mu.Unlock()
+			providerkit.EndCompaction(sink)
+		}
 	}
-	if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: event.Raw}); err != nil {
+	if target != nil && notice.Metadata.Kind == contracts.ClineNoticeKindMaxTokensCompaction && notice.Metadata.Phase == contracts.ClineNoticePhaseStarted {
+		a.discardUnflushedReasoning(target)
+	}
+	if _, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: event.Raw}); !agent.OutputRetained(err) {
 		slog.Error("cline persist notice", "agent_id", a.AgentID(), "error", err)
+		return
 	}
+	a.Mu.Lock()
+	lead := target == a.out.lead
+	a.Mu.Unlock()
+	if lead && notice.Metadata.Kind == contracts.ClineNoticeKindProviderErrorRetry {
+		if notice.Metadata.Phase == contracts.ClineNoticePhaseFailed {
+			a.leadRetry.Reset()
+		} else {
+			a.leadRetry.NoteRetry()
+		}
+	}
+}
+
+// handlePendingPrompts replaces the steer count with the native queue snapshot.
+func (a *Agent) handlePendingPrompts(event hubEvent) {
+	var payload struct {
+		Prompts []struct {
+			Delivery string `json:"delivery"`
+		} `json:"prompts"`
+	}
+	if json.Unmarshal(event.Payload, &payload) != nil {
+		return
+	}
+	count := 0
+	for _, prompt := range payload.Prompts {
+		if prompt.Delivery == deliverySteer {
+			count++
+		}
+	}
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	if !a.turn.active || event.SessionID != a.sessionID {
+		return
+	}
+	a.turn.steersPending = count
+	a.turn.steerReports++
+}
+
+// handlePendingPromptSubmitted removes one steer after the native model reads it.
+func (a *Agent) handlePendingPromptSubmitted(event hubEvent) {
+	var payload struct {
+		Prompt struct {
+			Delivery string `json:"delivery"`
+		} `json:"prompt"`
+	}
+	if json.Unmarshal(event.Payload, &payload) != nil || payload.Prompt.Delivery != deliverySteer {
+		return
+	}
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	if !a.turn.active || event.SessionID != a.sessionID {
+		return
+	}
+	if a.turn.steersPending > 0 {
+		a.turn.steersPending--
+	}
+	a.turn.steerReports++
 }

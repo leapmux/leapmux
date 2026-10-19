@@ -8,7 +8,7 @@ import { buildDenyResponse, CONTROL_REJECTED_BY_USER_MESSAGE } from '~/utils/con
 import { createControlAnswerState } from '../../controls/types'
 import { providerFor } from '../registry'
 import { classifyClineMessage } from './classification'
-import { clineCompactionBoundary, clineNotificationEntry } from './extractors/notification'
+import { clineCompactionBoundary, clineCompactionStart, clineNotificationEntry } from './extractors/notification'
 import { clineResultDivider } from './extractors/resultDivider'
 import { clineExtractRow } from './extractors/row'
 import { clineConfiguration } from './pluginConfiguration'
@@ -51,7 +51,8 @@ describe('cline plugin', () => {
   // A registration that is present but holds the readers of another provider passes a
   // presence check, so the test compares each hook with Cline's own function.
   it('registers the Cline readers for the CLINE provider', () => {
-    expect(Object.keys(plugin.transcript).sort()).toEqual(['classify', 'extractDivider', 'extractRow', 'notificationEntry', 'relatedMessages', 'spanRole'])
+    expect(Object.keys(plugin.transcript).sort()).toEqual(['classify', 'compactionStart', 'extractDivider', 'extractRow', 'notificationEntry', 'relatedMessages', 'spanRole'])
+    expect(plugin.transcript.compactionStart).toBe(clineCompactionStart)
     expect(plugin.transcript.classify).toBe(classifyClineMessage)
     expect(plugin.transcript.extractRow).toBe(clineExtractRow)
     expect(plugin.transcript.extractDivider).toBe(clineResultDivider)

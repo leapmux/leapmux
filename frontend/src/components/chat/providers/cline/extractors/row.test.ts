@@ -24,7 +24,11 @@ describe('clineExtractRow', () => {
     expect(extract(event('assistant.finished', { text: 'done' }), 'assistant_text')).toEqual({ kind: 'assistant-text', text: 'done' })
     expect(extract(event('reasoning.finished', { reasoning: 'Think.' }), 'assistant_thinking')).toEqual({ kind: 'assistant-thinking', text: 'Think.' })
     expect(extract(event('assistant.finished', { text: '  ' }), 'assistant_text')).toEqual({ kind: 'hidden' })
-    expect(extract(event('reasoning.finished', { reasoning: '' }), 'assistant_thinking')).toEqual({ kind: 'hidden' })
+    expect(extract(event('reasoning.finished', { reasoning: '' }), 'assistant_thinking')).toBeNull()
+  })
+
+  it.each(['', '  ', null, 42, undefined])('returns no row for blank or invalid reasoning %s', (reasoning) => {
+    expect(extract(event('reasoning.finished', { reasoning }), 'assistant_thinking')).toBeNull()
   })
 
   it('states the media a message returned', () => {

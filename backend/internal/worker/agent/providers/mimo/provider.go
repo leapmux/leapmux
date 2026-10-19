@@ -100,18 +100,24 @@ func (mimoProvider) ResolveControlResponse(ctx agent.ControlResponseContext) age
 	return res
 }
 
-// Classify groups MiMo's notifications in a thread: the retry attempts of one
-// turn fold into the latest, and a compaction's start gives way to its end.
+// Classify folds retry attempts and identifies native compaction ends.
 func (mimoProvider) Classify(raw json.RawMessage) agent.NotificationClassification {
 	event, ok := parseEvent(raw)
 	if !ok {
 		return agent.NotificationClassification{}
 	}
 	switch event.Type {
+	case contracts.MiMoEventSessionRetryAttempt:
+		return agent.APIRetryNotification()
 	case contracts.MiMoEventSessionStatus:
 		var payload mimoStatusEvent
-		if json.Unmarshal(event.Properties, &payload) == nil && payload.Status.Type == contracts.MiMoStatusTypeRetry {
-			return agent.APIRetryNotification()
+		if json.Unmarshal(event.Properties, &payload) == nil {
+			switch payload.Status.Type {
+			case contracts.MiMoStatusTypeRetry:
+				return agent.APIRetryNotification()
+			case contracts.MiMoStatusTypeNotice:
+				return agent.ProviderScopedNotification("mimo:notice")
+			}
 		}
 	case contracts.MiMoEventMessagePartUpdated:
 		var payload mimoPartEvent
@@ -119,8 +125,7 @@ func (mimoProvider) Classify(raw json.RawMessage) agent.NotificationClassificati
 			return agent.NotificationClassification{}
 		}
 		if !compactionEndedIn(payload.Part) {
-			// The start is a status: the boundary that ends the compaction clears it.
-			return agent.StatusNotification()
+			return agent.NotificationClassification{}
 		}
 		return agent.CompactionBoundaryNotification()
 	}

@@ -36,12 +36,12 @@ describe('museExtractRow', () => {
     expect(providerRow(AgentProvider.MUSE_CODE, nativeItem(kind, { text: '' }))).toEqual({ kind: 'hidden' })
   })
 
-  it.each(['subagent', 'reminderChild'])('keeps native %s state on its sidebar surface', (kind) => {
-    expect(providerRow(AgentProvider.MUSE_CODE, nativeItem(kind))).toEqual({ kind: 'hidden' })
+  it.each(['subagent', 'reminderChild'])('returns no row for a stored native %s state', (kind) => {
+    expect(providerRow(AgentProvider.MUSE_CODE, nativeItem(kind))).toBeNull()
   })
 
-  it('keeps an active workflow hidden until its result arrives', () => {
-    expect(providerRow(AgentProvider.MUSE_CODE, nativeItem('workflow', { status: 'inProgress' }))).toEqual({ kind: 'hidden' })
+  it('returns no row for a stored active workflow', () => {
+    expect(providerRow(AgentProvider.MUSE_CODE, nativeItem('workflow', { status: 'inProgress' }))).toBeNull()
   })
 
   it.each(['hookRun', 'futureItem'])('returns no invented row for native %s', (kind) => {

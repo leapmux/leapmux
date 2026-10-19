@@ -19,17 +19,25 @@ import (
 
 // Agent is one Cline session, driven through a private hub daemon.
 //
-// The daemon speaks no protocol on its stdio: the conversation runs over one
-// WebSocket (rpc.go). So Agent embeds the daemon's Process for the lifecycle
-// alone -- start, stop, exit, stderr -- and routes everything else through the
-// hub client.
+// The daemon sends no protocol frames through standard input or output.
+// The conversation uses one WebSocket connection (rpc.go).
+// Agent embeds Process for these lifecycle operations:
+//   - Start the daemon.
+//   - Stop the daemon.
+//   - Observe its exit.
+//   - Read its standard error.
+//
+// The hub client handles every other operation.
 type Agent struct {
 	*providerkit.Process
 
-	sink agent.ProviderServices
-	opts agent.Options
-	// dir is the agent's private directory: the discovery record, the private
-	// task database and the attached files live in it.
+	sink      agent.ProviderServices
+	leadRetry providerkit.RetryResolution
+	opts      agent.Options
+	// dir is the private directory for these files:
+	//   - The discovery record.
+	//   - The private task database.
+	//   - The attached files.
 	dir *agentdir.Dir
 	// workspaceRoot is the git top level of the working directory, or the
 	// directory itself outside a repository, as Cline's CLI states it.
@@ -52,24 +60,31 @@ type Agent struct {
 	// A test shortens it.
 	sendWait time.Duration
 
-	// ctx lives as long as the agent: Stop and the daemon's exit cancel it. The
-	// hub client, every command and every goroutine of the agent end with it.
+	// ctx lasts for the agent's lifetime. Stop and the daemon's exit cancel it.
+	// Cancellation ends the hub client and every command. It ends every agent goroutine also.
 	ctx    context.Context
 	cancel context.CancelFunc
-	// background tracks the goroutines that outlive the event that started
-	// them: a child transcript read from Cline's store, a mode change after a
-	// turn, an automatic answer, and an abort that waited for its run. Stop and
-	// Wait wait for them.
+	// background tracks work that outlives its initial event:
+	//   - Read a child transcript from Cline's store.
+	//   - Change the mode after a turn.
+	//   - Answer a request automatically.
+	//   - Abort a run after it starts.
+	//
+	// Stop and Wait wait for these goroutines.
 	background sync.WaitGroup
 
 	// dispatchMu serializes event dispatch. The hub's dispatcher goroutine and
 	// HandleOutput both reach handleEvent, and one event's handling reads and
 	// writes the output state in sequence.
 	dispatchMu sync.Mutex
-	// sessionMu serializes the operations that change which session the agent
-	// drives or how Cline builds it: the first open, ClearContext, a rebuild for
-	// a new mode, the settings writes, and the release of the claims at the
-	// teardown. A holder of Mu never takes it.
+	// sessionMu serializes changes to the session and its configuration:
+	//   - Open the initial session.
+	//   - Clear the context.
+	//   - Rebuild the session for a new mode.
+	//   - Write the settings.
+	//   - Release session claims during teardown.
+	//
+	// A caller that holds Mu never takes sessionMu.
 	sessionMu sync.Mutex
 	// claims holds each session that the agent claimed and did not release
 	// (hostedSessions). Guarded by sessionMu.
@@ -117,9 +132,8 @@ type Agent struct {
 }
 
 // Compile-time checks of the optional interfaces this agent implements.
-// Manager.SupportsSteering answers false, with no build error, for a provider
-// that stops satisfying InputSteerer, so the assertion makes that regression a
-// compile error.
+// Manager.SupportsSteering returns false when a provider no longer implements InputSteerer.
+// This assertion makes that regression a compile error.
 var (
 	_ agent.Agent        = (*Agent)(nil)
 	_ agent.InputSteerer = (*Agent)(nil)
@@ -128,6 +142,10 @@ var (
 // turnState is the turn the agent owes the user a reply for. Guarded by Mu.
 type turnState struct {
 	active bool
+	// sequence identifies this turn across delayed steer replies.
+	sequence      uint64
+	steersPending int
+	steerReports  uint64
 	// requestID is the session.send_input that started the turn, or "" for a
 	// turn that Cline started by itself.
 	requestID string
@@ -161,10 +179,9 @@ type turnState struct {
 	settling bool
 }
 
-// hasNoRun reports whether no run end can end the turn: output that arrived
-// with no turn armed it (ensureTurn), and no run of it started. A turn that a
-// LeapMux message started waits for the run that the message starts, and a
-// settling turn ends with its mode change.
+// hasNoRun identifies a turn that unsolicited output started before any native run.
+// A turn that a LeapMux message started waits for its native run.
+// A settling turn ends with its mode change.
 func (t turnState) hasNoRun() bool {
 	return t.active && !t.steerable && !t.settling && !t.runStarted
 }
@@ -193,14 +210,12 @@ func (a *Agent) SendInputForSession(sessionID, content string, attachments []*le
 
 // sendInput starts a turn.
 //
-// A plain message during a turn would join Cline's own queue and run as the
-// next turn, out of LeapMux's sight, so the agent refuses it while a turn runs:
-// the LeapMux input queue owns queueing. The turn is armed BEFORE the send, so
-// the queue holds the next message behind this one from the moment it leaves.
+// A plain message during a turn would enter Cline's queue without LeapMux's knowledge.
+// The agent refuses that message because LeapMux owns the input queue.
+// The worker starts the turn before the send, so the queue holds the next message.
 //
-// It returns once the daemon started the turn: the daemon answers the command
-// only when the turn ends, and publishes run.started with the command's
-// request id at once.
+// The send returns when the daemon publishes run.started with the command's request ID.
+// The daemon sends the command reply only when the turn ends.
 func (a *Agent) sendInput(expected *string, content string, attachments []*leapmuxv1.Attachment) error {
 	a.sendMu.Lock()
 	defer a.sendMu.Unlock()
@@ -226,10 +241,10 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 	if err != nil {
 		return err
 	}
-	a.armTurn()
+	a.beginInputTurn()
 	if err := a.deliver(sessionID, input.payload(sessionID, mode, "")); err != nil {
 		if !errors.Is(err, agent.ErrDeliveryUncertain) {
-			a.disarmTurn()
+			a.releaseInputTurn()
 		}
 		return err
 	}
@@ -277,12 +292,10 @@ func (a *Agent) deliver(sessionID string, payload map[string]any) error {
 	}
 }
 
-// watchTurnReply waits for the reply of one session.send_input. A refusal that
-// arrives before run.started fails the delivery. A reply that arrives after the
-// turn's end event changes nothing. A failure after run.started with no end
-// event -- the run's promise rejected inside the daemon -- ends the
-// turn as an error, which is what the daemon's own run.failed states in every
-// other case.
+// watchTurnReply waits for the reply to one session.send_input.
+// A refusal before run.started fails the delivery. A reply after the turn-end event changes nothing.
+// A failed promise in the daemon can produce a failed reply after run.started without an end event.
+// That reply ends the turn as an error, as a native run.failed event does.
 func (a *Agent) watchTurnReply(sessionID, requestID string, replies <-chan hubReply) {
 	ctx := a.ctx
 	var reply hubReply
@@ -307,7 +320,7 @@ func (a *Agent) watchTurnReply(sessionID, requestID string, replies <-chan hubRe
 		failure = refused
 	}
 	if a.settleDelivery(requestID, failure) {
-		// The delivery failed, and the sender disarms the turn.
+		// The delivery failed, and the sender releases the turn.
 		return
 	}
 	if !ok {
@@ -339,18 +352,18 @@ func (a *Agent) settleDelivery(requestID string, err error) bool {
 	return true
 }
 
-// SupportsSteering reports true: the hub takes a steer during any turn that
-// LeapMux started, and joins it to the turn at its next step.
+// SupportsSteering accepts a steer during any turn that LeapMux started.
 func (a *Agent) SupportsSteering() bool { return true }
 
-// SteerInput adds a message to the running turn. The daemon queues it with the
-// `steer` delivery, answers at once, and submits it as the next user message
-// of the same run when the current model step ends.
+// SteerInput adds a message to the running turn.
+// Cline stops the running model request as soon as it accepts the steer.
+// The cut answer keeps an interrupted completion. The next model request receives the steer.
 func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
 	a.sendMu.Lock()
 	defer a.sendMu.Unlock()
 	a.Mu.Lock()
 	sessionID, active, steerable, stopped, mode := a.sessionID, a.turn.active, a.turn.steerable, a.StoppedLocked(), a.settings.sessionMode()
+	sequence, reports := a.turn.sequence, a.turn.steerReports
 	a.Mu.Unlock()
 	if stopped {
 		return errAgentStopped
@@ -373,29 +386,35 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 		}
 		return fmt.Errorf("%w: Cline did not confirm the steer: %v", agent.ErrDeliveryUncertain, err)
 	}
+	a.Mu.Lock()
+	// Native reports take precedence, including a submission that arrives before this reply.
+	if a.sessionID == sessionID && a.turn.active && a.turn.sequence == sequence && a.turn.steerReports == reports {
+		a.turn.steersPending++
+	}
+	a.Mu.Unlock()
 	return nil
 }
 
-// armTurn marks a new turn active and publishes it.
-func (a *Agent) armTurn() {
+// beginInputTurn marks a new turn active and publishes it.
+func (a *Agent) beginInputTurn() {
 	now := a.clock.Now()
 	a.Mu.Lock()
-	a.turn = turnState{active: true, steerable: true, startedAt: now}
+	a.turn = turnState{active: true, steerable: true, startedAt: now, sequence: a.NextTurnSeq()}
 	a.Mu.Unlock()
 	a.sink.ReportProgress(agent.ResetModelProgress())
 	a.PublishTurnActive()
 }
 
-// disarmTurn releases a turn whose message never reached Cline.
-func (a *Agent) disarmTurn() {
+// releaseInputTurn releases a turn whose message never reached Cline.
+func (a *Agent) releaseInputTurn() {
 	a.Mu.Lock()
 	a.turn = turnState{}
 	a.Mu.Unlock()
 	a.PublishTurnActive()
 }
 
-// ensureTurn arms a turn that Cline started by itself: a team run that ended
-// resumes the lead with no message from the user. Such a turn takes no steer.
+// ensureTurn starts a turn that Cline initiated without a user message.
+// Such a turn takes no steer. A completed team run can resume the lead this way.
 func (a *Agent) ensureTurn() {
 	now := a.clock.Now()
 	a.Mu.Lock()

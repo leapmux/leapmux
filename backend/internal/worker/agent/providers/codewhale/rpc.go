@@ -40,9 +40,10 @@ type threadRecord struct {
 
 // turnRecord is the part of the runtime's TurnRecord that the provider reads.
 type turnRecord struct {
-	ID           string `json:"id"`
-	Status       string `json:"status"`
-	InputSummary string `json:"input_summary"`
+	ID           string          `json:"id"`
+	Status       string          `json:"status"`
+	InputSummary string          `json:"input_summary"`
+	Error        json.RawMessage `json:"error"`
 }
 
 // createThreadRequest opens a thread. `allow_shell` is always sent: the

@@ -22,6 +22,8 @@ export interface SteerDuringTextOptions {
   steerOrder?: 'strict' | 'any'
   /** Use the held model stream when native stdout emits no text deltas. */
   progress?: 'counter' | 'model-stream'
+  /** Run provider assertions on the live transcript and after a reload. */
+  checkTranscript?: () => Promise<void>
 }
 
 export interface StopWithPendingSteerOptions {
@@ -94,14 +96,16 @@ export async function exerciseSteerDuringText(context: ManagedNativeScenarioCont
     await steerQueuedInput(context.page, { message: context.modelScript.prompt(steering), match: steering })
   }
   if (options.answer === 'preempt') {
-    await exerciseInterruptedPartialAnswer(context, { cut: steer, followUp: { answer: reply } })
-    for (const reload of [false, true]) {
-      if (reload)
-        await context.page.reload()
-      await expect(userBubbles(context.page).filter({ hasText: steering })).toHaveCount(1)
-      if (options.steerOrder !== 'any')
-        await expectRowsInOrder(messageContents(context.page), [INTERRUPTION_MARKER, steering, reply])
-    }
+    await exerciseInterruptedPartialAnswer(context, {
+      cut: steer,
+      followUp: { answer: reply },
+      checkTranscript: async () => {
+        await expect(userBubbles(context.page).filter({ hasText: steering })).toHaveCount(1)
+        if (options.steerOrder !== 'any')
+          await expectRowsInOrder(messageContents(context.page), [INTERRUPTION_MARKER, steering, reply])
+        await options.checkTranscript?.()
+      },
+    })
     return
   }
   const head = `ANSWERHEAD${marker}`
@@ -133,6 +137,7 @@ export async function exerciseSteerDuringText(context: ManagedNativeScenarioCont
       await expect(userBubbles(context.page).filter({ hasText: steering })).toHaveCount(1)
       await expect(messageContents(context.page).filter({ hasText: INTERRUPTION_MARKER })).toHaveCount(0)
       await expectRowsInOrder(messageContents(context.page), options.steerOrder === 'any' ? [answer, reply] : [answer, steering, reply])
+      await options.checkTranscript?.()
     }
   }, async () => { await context.modelScript.releaseGateIfHeld(gate) })
 }

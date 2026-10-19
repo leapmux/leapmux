@@ -6,6 +6,25 @@ import { input } from '../../testUtils'
 import { kimiCompactionBoundary, kimiNotificationEntry } from './notification'
 
 describe('kimiNotificationEntry', () => {
+  it('reads each config warning as a warning line', () => {
+    expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.ConfigWarning, {
+      warnings: [{ domain: 'loopControl', message: 'First warning.' }, { domain: 'models', message: 'Second warning.' }],
+    }))).toStrictEqual([{ kind: 'text', text: 'Warning: First warning.' }, { kind: 'text', text: 'Warning: Second warning.' }])
+  })
+
+  it('ignores malformed or blank config warnings', () => {
+    for (const warnings of [undefined, null, {}, [null, false, 7, { message: 7 }, { message: ' ' }]])
+      expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.ConfigWarning, { warnings }))).toStrictEqual([])
+  })
+
+  it('reads a blocked hook result as a blocked hook entry', () => {
+    expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.HookResult, {
+      blocked: true,
+      hookEvent: 'UserPromptSubmit',
+      content: 'The hook blocked this prompt.',
+    }))).toStrictEqual([{ kind: 'hook', outcome: 'blocked', event: 'UserPromptSubmit', detail: 'The hook blocked this prompt.' }])
+  })
+
   it('states why the agent started a turn by itself', () => {
     const started = (kind: string, name = '') => kimiNotificationEntry(kimiFrame(KIMI_EVENT.TurnStarted, { origin: { kind, name } }))
     expect(started('system_trigger', 'goal_continuation')).toStrictEqual([{ kind: 'text', text: 'Continuing the goal' }])
@@ -57,16 +76,25 @@ describe('kimiNotificationEntry', () => {
       .toStrictEqual([{ kind: 'retry', scope: 'api', delayMs: 0, error: 'RateLimit' }])
   })
 
+  it('drops invalid retry counters and keeps zero and fractional delay', () => {
+    for (const count of [-1, 1.5, Infinity, NaN, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.TurnStepRetrying, { nextAttempt: count, maxAttempts: count, delayMs: Infinity, errorMessage: ' ' })))
+        .toStrictEqual([{ kind: 'retry', scope: 'api' }])
+    }
+    expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.TurnStepRetrying, { nextAttempt: 0, maxAttempts: 0, delayMs: 0.5 })))
+      .toStrictEqual([{ kind: 'retry', scope: 'api', attempt: 0, maxAttempts: 0, delayMs: 0.5 }])
+  })
+
   it('reads the compaction lifecycle', () => {
-    expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.CompactionStarted, { trigger: 'manual' }))).toStrictEqual([{ kind: 'compaction', phase: 'start', detail: { trigger: 'manual' } }])
+    expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.CompactionStarted, { trigger: 'manual' }))).toStrictEqual([])
     expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.CompactionCompleted, { result: { tokensBefore: 9000, tokensAfter: 1200 } })))
       .toStrictEqual([{ kind: 'compaction', phase: 'end', detail: { pre: 9000, post: 1200 } }])
-    expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.CompactionBlocked))).toStrictEqual([{ kind: 'status', text: 'Compaction is waiting for the running turn to end' }])
-    expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.CompactionCancelled))).toStrictEqual([{ kind: 'status', text: 'Compaction cancelled' }])
+    expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.CompactionBlocked))).toStrictEqual([])
+    expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.CompactionCancelled))).toStrictEqual([{ kind: 'compaction', phase: 'end', outcome: 'aborted' }])
   })
 
   it('reads a compaction that states no trigger and no sizes', () => {
-    expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.CompactionStarted))).toStrictEqual([{ kind: 'compaction', phase: 'start' }])
+    expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.CompactionStarted))).toStrictEqual([])
     expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.CompactionCompleted))).toStrictEqual([{ kind: 'compaction', phase: 'end', detail: {} }])
     // A context compacted to nothing states a size of zero, not an absent size.
     expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.CompactionCompleted, { result: { tokensBefore: 10, tokensAfter: 0 } })))

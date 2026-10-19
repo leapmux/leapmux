@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -55,12 +56,23 @@ type Agent struct {
 	// caller; a test feeds events through HandleOutput. Take it only around one
 	// event, never around an HTTP request: a handler that needs a request runs it
 	// on its own goroutine.
-	dispatchMu   sync.Mutex
+	dispatchMu sync.Mutex
+	// steerMu serializes native steer requests and their receipt identification.
+	steerMu      sync.Mutex
 	approvalWork providerkit.CoalescingWork
 
 	// generationBuffer holds the streamed text of an item until the item's final
 	// event, so a process that dies mid-message still leaves its text behind.
 	generationBuffer providerkit.GenerationBuffer
+	// openGeneratedItems identifies the unfinished item of each generated kind. Guarded by dispatchMu.
+	openGeneratedItems map[string]string
+	// modelRequestObserved enables the native request boundary for steer ordering. Guarded by dispatchMu.
+	modelRequestObserved bool
+	// heldErrors waits for each native turn error before it stores an error item. Guarded by dispatchMu.
+	heldErrors []codewhaleEnvelope
+	// A final turn waits for its in-flight steer call. Later native frames retain their order.
+	pendingTurnEnd *codewhaleTurnEnd
+	deferredEvents []codewhaleEnvelope
 
 	// children watches the subagents this thread started. See subagent.go.
 	children *codewhaleChildren
@@ -71,7 +83,10 @@ type Agent struct {
 	// turnID is the running turn, or "" when none runs. It is the ONE source of
 	// the turn flag: PublishTurnActive reads it, SendInput refuses on it, and
 	// Interrupt addresses it.
-	turnID string
+	turnID         string
+	compactionLive bool
+	// compactionEndedTurn prevents a delayed compact reply from restarting a completed indicator.
+	compactionEndedTurn string
 	// finishedTurns remembers the turns that already ended, so a start that
 	// arrives after its own end -- the POST reply that raced the event stream --
 	// cannot open a turn that nothing will close.
@@ -99,7 +114,8 @@ type Agent struct {
 	shells codewhaleShells
 	// steers holds the steers that LeapMux sent and whose fate is not settled.
 	// See steer.go.
-	steers codewhaleSteers
+	steers    codewhaleSteers
+	steerCall *steerTicket
 }
 
 var _ agent.Agent = (*Agent)(nil)
@@ -136,22 +152,22 @@ func (s *turnSet) contains(id string) bool {
 	return false
 }
 
-// PublishTurnActive republishes the turn state from turnID, the single source.
-// Call it after every critical section that writes turnID, and never with Mu
-// held: the sink broadcasts, and a broadcast can block.
-//
-// A running turn always accepts steering: the runtime's steer route takes any
-// in-progress turn, including one that a goal continuation started.
+// PublishTurnActive reports the turn and whether another steer can be identified safely.
+// The caller holds no agent mutex while the sink publishes the state.
 func (a *Agent) PublishTurnActive() agent.TurnState {
 	a.Mu.Lock()
-	active := a.turnID != ""
+	state := agent.TurnState{Active: a.turnID != "", Steerable: a.steerableLocked()}
 	seq := a.NextTurnSeq()
 	a.Mu.Unlock()
-	return providerkit.PublishSteerableTurnActiveTo(a.sink, active, seq)
+	return providerkit.PublishTurnStateTo(a.sink, state, seq)
+}
+
+func (a *Agent) steerableLocked() bool {
+	return a.turnID != "" && !a.StoppedLocked() && !a.finishedTurns.contains(a.turnID) && !a.steers.unidentified()
 }
 
 // markTurnStarted records a running turn. It is a no-op for a turn that
-// already ended, and for the turn that already runs.
+// already ended, for the turn that already runs, or after this agent stops.
 //
 // It reports whether the turn flag changed, so the caller publishes only a real
 // change.
@@ -161,7 +177,7 @@ func (a *Agent) markTurnStarted(turnID string) bool {
 	}
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
-	if a.finishedTurns.contains(turnID) || a.turnID == turnID {
+	if a.StoppedLocked() || a.processExited() || a.finishedTurns.contains(turnID) || a.turnID == turnID {
 		return false
 	}
 	a.turnID = turnID
@@ -258,19 +274,24 @@ func classifyTurnStartError(err error) error {
 }
 
 var _ agent.InputSteerer = (*Agent)(nil)
+var _ agent.SteerEchoReporter = (*Agent)(nil)
+var _ agent.SteerSurvivor = (*Agent)(nil)
+
+// SteerRowAtEcho retains the queue item until a native receipt proves that the model read it.
+func (*Agent) SteerRowAtEcho() bool { return true }
+
+// SteerSurvivesTurnEnd lets native evidence or uncertainty resolve each retained input.
+func (*Agent) SteerSurvivesTurnEnd() bool { return true }
 
 // SupportsSteering is always true: the runtime's steer route takes any running
 // turn, so the capability needs no discovery.
 func (a *Agent) SupportsSteering() bool { return true }
 
-// SteerInput adds the message to the running turn.
-//
-// The steer route carries a prompt and nothing else, so a text attachment is
-// inlined and an image attachment is refused rather than dropped.
-//
-// A nil return tells the queue that the steer is delivered. The runtime can
-// still drop it later, and steer.go hands such a steer back to the queue.
+// SteerInput sends one native steer. Its HTTP success can mean queued, so it writes no user row.
+// Text attachments enter the native prompt. The shared queue retains the original attachments.
 func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
+	a.steerMu.Lock()
+	defer a.steerMu.Unlock()
 	a.Mu.Lock()
 	stopped := a.StoppedLocked()
 	threadID, turnID := a.threadID, a.turnID
@@ -288,9 +309,27 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 	if len(images) > 0 {
 		return fmt.Errorf("the Codewhale runtime cannot add an image to a running turn; send it as a new message")
 	}
+	before, baselineOK := readTurnItemIDs(a.store, turnID)
+	if !baselineOK {
+		slog.Debug("codewhale could not read the native steer baseline", "agent_id", a.AgentID(), "turn_id", turnID)
+	}
+	a.dispatchMu.Lock()
 	a.Mu.Lock()
-	ticket := a.steers.begin(turnID, prompt, content, attachments)
+	if a.StoppedLocked() || a.threadID != threadID || a.turnID != turnID || a.finishedTurns.contains(turnID) {
+		a.Mu.Unlock()
+		a.dispatchMu.Unlock()
+		return agent.ErrNoActiveTurn
+	}
+	if a.steers.unidentified() {
+		a.Mu.Unlock()
+		a.dispatchMu.Unlock()
+		return &agent.AgentBusyError{Err: agent.ErrAgentBusy, ActiveTurnSteerable: false}
+	}
+	ticket := a.steers.begin(turnID, prompt, before, baselineOK)
+	a.steerCall = ticket
 	a.Mu.Unlock()
+	a.dispatchMu.Unlock()
+	defer a.finishSteerCall(ticket)
 	return a.settleSteerReply(ticket, a.steerTurn(threadID, turnID, prompt))
 }
 
@@ -342,8 +381,16 @@ func (a *Agent) CompactContext() error {
 	if err != nil {
 		return classifyTurnStartError(err)
 	}
+	a.dispatchMu.Lock()
+	defer a.dispatchMu.Unlock()
 	if a.markTurnStarted(turn.ID) {
 		a.PublishTurnActive()
+	}
+	a.Mu.Lock()
+	publish := turn.ID != "" && a.turnID == turn.ID && a.compactionEndedTurn != turn.ID
+	a.Mu.Unlock()
+	if publish {
+		a.publishCompaction()
 	}
 	return nil
 }
@@ -417,8 +464,12 @@ func (a *Agent) waitForStream() {
 func (a *Agent) finishAfterExit(completion agent.MessageCompletion) {
 	a.dispatchMu.Lock()
 	defer a.dispatchMu.Unlock()
+	a.drainDeferredTurnEnd()
+	a.endCompaction("")
 	a.flushGeneration(completion)
+	a.persistHeldErrors("", "", true)
 	a.persistIncompleteTools(completion)
+	a.finishSteerRequestBoundary()
 	a.withdrawAllControls()
 	a.closeOpenChildren(completion)
 	a.closeOpenShells()

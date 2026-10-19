@@ -384,6 +384,11 @@ describe('parseScenarioSpec', () => {
       .toThrow('midStream must be a boolean')
   })
 
+  it('keeps an incomplete-stream error option', () => {
+    expect(parseScenarioSpec({ steps: [{ error: { status: 500, message: 'The stream ended.', midStream: 'truncate' } }] }).steps[0]?.error)
+      .toEqual({ status: 500, message: 'The stream ended.', midStream: 'truncate' })
+  })
+
   it('takes a tool call with JSON arguments or with raw custom-tool input', () => {
     expect(parseScenarioSpec({ steps: [{ toolCalls: [{ id: 'a', name: 'Read', arguments: { path: 'x' } }] }] }).steps[0])
       .toEqual({ toolCalls: [{ id: 'a', name: 'Read', arguments: { path: 'x' } }] })

@@ -57,8 +57,12 @@ func (museProvider) Classify(raw json.RawMessage) agent.NotificationClassificati
 	if message.Method == contracts.MuseMethodTurnRetryScheduled {
 		return agent.APIRetryNotification()
 	}
-	if message.Method == contracts.MuseMethodItemCompleted && message.Params.Item.Kind == contracts.MuseItemKindCompaction && message.Params.Item.Outcome == contracts.MuseCompactionOutcomeCompacted {
-		return agent.CompactionBoundaryNotification()
+	switch message.Method {
+	case contracts.MuseMethodItemStarted, contracts.MuseMethodItemUpdated, contracts.MuseMethodItemCompleted:
+		item := message.Params.Item
+		if item.Kind == contracts.MuseItemKindCompaction && item.Status != "" && item.Status != contracts.MuseItemStatusInProgress {
+			return agent.CompactionBoundaryNotification()
+		}
 	}
 	return agent.NotificationClassification{}
 }

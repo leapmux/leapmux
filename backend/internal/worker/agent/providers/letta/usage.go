@@ -7,7 +7,7 @@ import (
 )
 
 // publishLettaUsage reports the counts that a native usage_statistics delta states.
-// The delta gives no model context window or current context size.
+// Context size is optional. The frame supplies no model context window.
 func publishLettaUsage(target agent.ProviderServices, delta *lettaDelta) {
 	if target == nil || delta.PromptTokens == nil || delta.CompletionTokens == nil ||
 		*delta.PromptTokens < 0 || *delta.CompletionTokens < 0 ||
@@ -18,5 +18,8 @@ func publishLettaUsage(target agent.ProviderServices, delta *lettaDelta) {
 		Input:  *delta.PromptTokens,
 		Output: *delta.CompletionTokens,
 	})
+	if count, ok := providerkit.RawInt64(delta.ContextTokens); ok && count >= 0 {
+		usage[contracts.ContextUsageFieldContextTokens] = count
+	}
 	target.BroadcastSessionInfo(map[string]any{contracts.SessionInfoKeyContextUsage: usage})
 }

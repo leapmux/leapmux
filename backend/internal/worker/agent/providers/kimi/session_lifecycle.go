@@ -7,6 +7,7 @@ import (
 	"log/slog"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // Kimi Code's session lifecycle.
@@ -125,6 +126,10 @@ func (a *Agent) ClearContext() (string, error) {
 	a.Mu.Unlock()
 	for _, run := range runs {
 		if sink := a.runSink(run); sink != nil {
+			if run.compactionLive {
+				providerkit.EndCompaction(sink)
+				run.compactionLive = false
+			}
 			a.flushRun(run, sink, agent.MessageCompletionInterrupted)
 			a.closeOpenTools(run, sink, agent.MessageCompletionInterrupted)
 		}
@@ -146,6 +151,7 @@ func (a *Agent) ClearContext() (string, error) {
 		}
 	}
 	a.sink.UpdateSessionID(sessionID)
+	a.persistSessionWarnings(ctx, sessionID)
 	return sessionID, nil
 }
 

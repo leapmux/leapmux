@@ -48,6 +48,7 @@ type kimiFrame struct {
 	ID        string          `json:"id,omitempty"`
 	Seq       int64           `json:"seq,omitempty"`
 	SessionID string          `json:"session_id,omitempty"`
+	Timestamp string          `json:"timestamp,omitempty"`
 	Epoch     string          `json:"epoch,omitempty"`
 	Volatile  bool            `json:"volatile,omitempty"`
 	Code      int             `json:"code,omitempty"`
@@ -437,6 +438,45 @@ func (s *kimiStream) subscribe(ctx context.Context, sessionID string) (kimiAck, 
 	}
 	s.adoptAckCursors(ack)
 	return ack, nil
+}
+
+// replay requests recent events for an already tracked session without moving its live cursor backward.
+func (s *kimiStream) replay(ctx context.Context, sessionID string, from kimiCursor) (kimiAck, error) {
+	ack, err := s.sendSubscribe(ctx, []string{sessionID}, map[string]kimiCursor{sessionID: from})
+	if err == nil && slices.Contains(ack.NotFound, sessionID) {
+		err = errKimiSessionNotLoaded
+	}
+	if err == nil {
+		s.adoptAckCursors(ack)
+	}
+	return ack, err
+}
+
+// replayStartupConfigWarnings reads a recent part of the persistent global journal.
+// handleGlobalFrame excludes warnings from an earlier server launch.
+func (a *Agent) replayStartupConfigWarnings(ctx context.Context) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	timer := a.clock.AfterFunc(a.APITimeout(), cancel, kimiGlobalReplayTimerTag)
+	defer timer.Stop()
+	ack, err := a.stream.subscribe(ctx, kimiGlobalSessionID)
+	if err != nil {
+		slog.Warn("subscribe to Kimi config warnings", "agent_id", a.AgentID(), "error", err)
+		return
+	}
+	from, exists := ack.Cursors[kimiGlobalSessionID]
+	if !exists {
+		slog.Warn("the Kimi global subscription supplied no cursor", "agent_id", a.AgentID())
+		return
+	}
+	if from.Seq > kimiGlobalReplayWindow {
+		from.Seq -= kimiGlobalReplayWindow
+	} else {
+		from.Seq = 0
+	}
+	if _, err := a.stream.replay(ctx, kimiGlobalSessionID, from); err != nil {
+		slog.Warn("replay Kimi config warnings", "agent_id", a.AgentID(), "error", err)
+	}
 }
 
 // unsubscribe stops the events of sessionID. A failure is logged: the session's

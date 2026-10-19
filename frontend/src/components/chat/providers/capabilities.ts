@@ -396,27 +396,28 @@ export interface ProviderSessionCapability {
   contextUsageFromMessage?: (parsed: ParsedMessageContent) => ContextUsageInfo | null
 
   /**
-   * Read a CONTEXT-COMPACTION boundary out of this provider's frame, or null when the
-   * frame is not one.
+   * Read a native compaction boundary, or null for another frame.
+   * This runs with contextUsageFromMessage before row extraction and rendering.
+   * The same provider parser supplies the notification and context meter.
    *
-   * A sibling of {@link contextUsageFromMessage}, and it runs on the same path: the
-   * context-usage grid refreshes the instant a boundary lands, OUTSIDE the render tree
-   * and before any row model exists. One provider-owned parse serves that reader and the
-   * notification extractor, so `messageParser` holds no provider shape and the two
-   * readers cannot disagree about what a boundary is.
+   * These providers supply the reader:
+   * - Claude Code
+   * - Codex
+   * - Pi
+   * - GitHub Copilot
+   * - Kimi Code
+   * - Oh My Pi
+   * - Cline
+   * - Qoder
+   * - ZCode
+   * - Muse
+   * - Command Code
+   * - Droid
+   * - DeepSeek Harness
+   * - Letta
    *
-   * Claude, Codex, Pi, Copilot, Kimi Code, Oh My Pi, Cline, Qoder and ZCode supply it. ZCode
-   * reads its compaction lifecycle event, which states the sizes before and after. A plugin
-   * that omits it has no boundary with a size to read:
-   * - The Agent Client Protocol family carries none on that stream. OpenCode, for example,
-   *   compacts behind an internal agent and reports a `compacting` status alone, which
-   *   states no size.
-   * - MiMo Code's compaction part states a summary and no size.
-   * - Codewhale runs a compaction as a turn of its own.
-   * - Amp's stream states no compaction at all.
-   * The grid therefore holds its pre-compaction reading for those providers until the next
-   * message that carries usage replaces it, which is a limit of the protocol rather
-   * than a hook anybody forgot.
+   * A native boundary can lack token counts. It still marks the end of compaction.
+   * Without a valid post-compaction count, the context meter retains its last usage until a later usage report updates it.
    */
   compactionBoundaryFromMessage?: (parsed: ParsedMessageContent) => CompactionDetails | null
 

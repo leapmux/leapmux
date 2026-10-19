@@ -64,16 +64,27 @@ func (clineProvider) Classify(raw json.RawMessage) agent.NotificationClassificat
 
 // classifyNotice classifies one `session.notice` by its kind and phase.
 func classifyNotice(kind, phase string) agent.NotificationClassification {
+	if isCompactionNotice(kind) {
+		switch phase {
+		case contracts.ClineNoticePhaseCompleted, contracts.ClineNoticePhaseSkipped, contracts.ClineNoticePhaseFailed:
+			return agent.CompactionBoundaryNotification()
+		case contracts.ClineNoticePhaseStarted:
+			return agent.NotificationClassification{}
+		}
+	}
+	if kind == contracts.ClineNoticeKindProviderErrorRetry {
+		return agent.APIRetryNotification()
+	}
+	return agent.ProviderScopedNotification("cline:status")
+}
+
+// isCompactionNotice identifies the kinds whose phases describe one compaction.
+func isCompactionNotice(kind string) bool {
 	switch kind {
 	case contracts.ClineNoticeKindAutoCompaction, contracts.ClineNoticeKindManualCompaction, contracts.ClineNoticeKindOverflowRecoveryCompaction:
-		if phase == contracts.ClineNoticePhaseCompleted {
-			return agent.CompactionBoundaryNotification()
-		}
-		return agent.StatusNotification()
-	case contracts.ClineNoticeKindProviderErrorRetry:
-		return agent.APIRetryNotification()
+		return true
 	default:
-		return agent.StatusNotification()
+		return false
 	}
 }
 

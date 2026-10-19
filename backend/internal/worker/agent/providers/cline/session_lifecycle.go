@@ -12,6 +12,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
@@ -43,9 +44,6 @@ const (
 	sessionStatusRunning = "running"
 	sessionStatusIdle    = "idle"
 )
-
-// agentKindLead is the agent kind of the lead's own notices and usage.
-const agentKindLead = "lead"
 
 // sessionSource is the source that Cline's session history states for a
 // session that LeapMux created.
@@ -199,18 +197,13 @@ func (a *Agent) createPayload(settings clineSettings, spec sessionSpec) map[stri
 		"metadata":       map[string]any{"source": sessionSource, "interactive": true},
 		"runtimeOptions": runtimeOptions,
 	}
-	if hasJSON(spec.messages) {
+	if providerkit.RawPresent(spec.messages) {
 		payload["initialMessages"] = spec.messages
 	}
-	if hasJSON(spec.compaction) {
+	if providerkit.RawPresent(spec.compaction) {
 		payload["initialCompactionState"] = spec.compaction
 	}
 	return payload
-}
-
-// hasJSON reports whether raw holds a value other than null.
-func hasJSON(raw json.RawMessage) bool {
-	return len(raw) > 0 && string(raw) != "null"
 }
 
 // createSession creates a runtime session and returns its id.
@@ -502,7 +495,7 @@ func (a *Agent) applyModeChange(continuePlan bool) {
 	if err := a.deliver(sessionID, input.payload(sessionID, after.sessionMode(), "")); err != nil {
 		slog.Warn("cline continue the approved plan", "agent_id", a.AgentID(), "error", err)
 		if !errors.Is(err, agent.ErrDeliveryUncertain) {
-			a.disarmTurn()
+			a.releaseInputTurn()
 		}
 	}
 }
@@ -547,6 +540,8 @@ func (a *Agent) ClearContext() (string, error) {
 	lead := a.out.lead
 	a.Mu.Unlock()
 	a.withdrawAllControls()
+	a.leadRetry.Reset()
+	a.finishTranscriptCompaction(lead, agent.MessageCompletionInterrupted)
 	a.settleSpawns(agent.MessageCompletionInterrupted)
 	a.flushPending(lead, oldSessionID, agent.MessageCompletionInterrupted)
 	a.closeOpenTools(lead, agent.MessageCompletionInterrupted)

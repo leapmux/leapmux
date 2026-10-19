@@ -2,6 +2,10 @@ import type { McpProbeServer } from './mcpProbeServer'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { writePrivateJSON } from './privateConfigFile'
+import { quotePosixShellArgument } from './shellArguments'
+
+export const KIMI_BLOCKED_PROMPT_MARKER = 'LEAPMUX-HOOK-BLOCK'
+export const KIMI_BLOCKED_PROMPT_REASON = 'LeapMux test hook blocked this prompt'
 
 /** One model of Kimi Code's configuration: the alias that Kimi addresses it by, and the model that the endpoint receives. */
 export interface KimiModelAlias {
@@ -35,7 +39,9 @@ export interface KimiEnvironmentOptions {
 export function createKimiEnvironment(options: KimiEnvironmentOptions): Record<string, string> {
   const kimiHome = join(options.homeDir, '.kimi-code')
   mkdirSync(kimiHome, { recursive: true })
-  writeFileSync(join(kimiHome, 'config.toml'), kimiConfig(options), { mode: 0o600 })
+  const hook = join(options.homeDir, 'kimi-block-hook.sh')
+  writeFileSync(hook, `#!/bin/sh\nprintf '%s\\n' ${quotePosixShellArgument(KIMI_BLOCKED_PROMPT_REASON)} >&2\nexit 2\n`, { mode: 0o700 })
+  writeFileSync(join(kimiHome, 'config.toml'), kimiConfig(options, quotePosixShellArgument(hook)), { mode: 0o600 })
   writePrivateJSON(join(kimiHome, 'mcp.json'), {
     mcpServers: { [options.mcpEchoServer.name]: { command: options.mcpEchoServer.command, args: [...options.mcpEchoServer.args] } },
   })
@@ -60,7 +66,7 @@ export function createKimiEnvironment(options: KimiEnvironmentOptions): Record<s
  * writes would be a request with no scenario marker. Kimi sends a model request
  * only for a turn, so no other housekeeping request reaches the mock.
  */
-function kimiConfig(options: KimiEnvironmentOptions): string {
+function kimiConfig(options: KimiEnvironmentOptions, hookCommand: string): string {
   const provider = options.providerID
   return `default_model = "${options.thinking.alias}"
 telemetry = false
@@ -95,5 +101,10 @@ max_context_size = 128000
 capabilities = ["tool_use", "thinking"]
 support_efforts = ["low", "medium", "high"]
 default_effort = "medium"
+
+[[hooks]]
+event = "UserPromptSubmit"
+matcher = "${KIMI_BLOCKED_PROMPT_MARKER}"
+command = ${JSON.stringify(hookCommand)}
 `
 }

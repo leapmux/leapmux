@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { KIMI_EVENT, KIMI_TOOL } from '~/generated/contracts/kimi-protocol'
+import { KIMI_EVENT, KIMI_NOTIFICATION_EVENT, KIMI_TOOL } from '~/generated/contracts/kimi-protocol'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { kimiFrame, kimiToolResult, kimiToolStart } from '~/test-support/kimiFixtures'
+import { providerFor } from '../registry'
 import { input } from '../testUtils'
-import { classifyKimiMessage, KIMI_NOTIFICATION_TYPES } from './classification'
+import { classifyKimiMessage } from './classification'
 import '../index'
 
 function classify(parent: Record<string, unknown>, extra: { completion?: MessageCompletion, spanType?: string } = {}) {
@@ -53,9 +54,16 @@ describe('classifyKimiMessage', () => {
     expect(classify(kimiFrame(KIMI_EVENT.TurnStarted, { origin: { kind: 'user' } }))).toStrictEqual({ kind: 'hidden' })
   })
 
-  it('hides every other event', () => {
-    for (const type of [KIMI_EVENT.AgentStatusUpdated, KIMI_EVENT.PromptSubmitted, KIMI_EVENT.ContextSpliced, KIMI_EVENT.SessionMetaUpdated])
-      expect(classify(kimiFrame(type)), type).toStrictEqual({ kind: 'hidden' })
+  it('classifies events without a current stored reader as unknown', () => {
+    for (const type of [KIMI_EVENT.AgentStatusUpdated, KIMI_EVENT.PromptSubmitted, KIMI_EVENT.ContextSpliced, KIMI_EVENT.SessionMetaUpdated, 'future.event'])
+      expect(classify(kimiFrame(type)), type).toStrictEqual({ kind: 'unknown' })
+  })
+
+  it('keeps a stored start unknown and identifies it only for the shared history filter', () => {
+    const start = kimiFrame(KIMI_EVENT.CompactionStarted, { trigger: 'manual' })
+    expect(classify(start)).toStrictEqual({ kind: 'unknown' })
+    expect(providerFor(AgentProvider.KIMI_CODE)?.transcript.compactionStart?.(start)).toBe(true)
+    expect(providerFor(AgentProvider.KIMI_CODE)?.transcript.compactionStart?.(kimiFrame(KIMI_EVENT.CompactionCompleted))).toBe(false)
   })
 
   it('reads the rows the service layer writes', () => {
@@ -70,14 +78,14 @@ describe('classifyKimiMessage', () => {
     const wrapper = {
       old_seqs: [1, 2],
       messages: [
-        kimiFrame(KIMI_EVENT.CompactionStarted, { trigger: 'auto' }),
+        kimiFrame(KIMI_EVENT.Warning, { message: 'A native warning.' }),
         kimiFrame(KIMI_EVENT.CompactionCompleted, { result: { tokensBefore: 9000, tokensAfter: 1200 } }),
       ],
     }
     expect(classifyThread(wrapper.messages)).toStrictEqual({
       kind: 'notification',
       entries: [
-        { kind: 'compaction', phase: 'start', detail: { trigger: 'auto' } },
+        { kind: 'text', text: 'Warning: A native warning.' },
         { kind: 'compaction', phase: 'end', detail: { pre: 9000, post: 1200 } },
       ],
     })
@@ -113,15 +121,15 @@ describe('classifyKimiMessage', () => {
     const worded: Record<string, Record<string, unknown>> = {
       [KIMI_EVENT.TurnStarted]: { origin: { kind: 'retry' } },
       [KIMI_EVENT.TurnStepRetrying]: { nextAttempt: 2 },
-      [KIMI_EVENT.CompactionStarted]: {},
       [KIMI_EVENT.CompactionCompleted]: {},
-      [KIMI_EVENT.CompactionBlocked]: {},
       [KIMI_EVENT.CompactionCancelled]: {},
+      [KIMI_EVENT.HookResult]: { blocked: true, hookEvent: 'UserPromptSubmit', content: 'Blocked.' },
+      [KIMI_EVENT.ConfigWarning]: { warnings: [{ message: 'Warning.' }] },
       [KIMI_EVENT.Warning]: { message: 'w' },
       [KIMI_EVENT.Error]: { message: 'e' },
       [KIMI_EVENT.TaskNotified]: { title: 't' },
     }
-    expect(Object.keys(worded).sort()).toStrictEqual([...KIMI_NOTIFICATION_TYPES].sort())
+    expect(Object.keys(worded).sort()).toStrictEqual([...KIMI_NOTIFICATION_EVENT].sort())
     for (const [type, fields] of Object.entries(worded)) {
       const category = classify(kimiFrame(type, fields))
       expect(category.kind, type).toBe('notification')

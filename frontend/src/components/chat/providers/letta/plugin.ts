@@ -3,7 +3,7 @@ import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { OPTION_ID_PERMISSION_MODE } from '../../settingsGroups'
 import { registerProvider } from '../registry'
 import { classifyLettaMessage } from './classification'
-import { lettaNotificationEntry } from './extractors/notification'
+import { lettaCompactionBoundary, lettaCompactionStart, lettaNotificationEntry } from './extractors/notification'
 import { lettaOutputFilePaths } from './extractors/outputFilePaths'
 import { lettaResultDivider } from './extractors/resultDivider'
 import { lettaExtractRow } from './extractors/row'
@@ -15,12 +15,16 @@ const lettaPlugin: ProviderPlugin = {
     outputFilePaths: lettaOutputFilePaths,
     classify: classifyLettaMessage,
     notificationEntry: lettaNotificationEntry,
+    compactionStart: lettaCompactionStart,
     extractRow: lettaExtractRow,
     extractDivider: lettaResultDivider,
     spanRole: lettaSpanRole,
     relatedMessages: lettaRelatedMessages,
   },
   controls: lettaControls,
+  session: {
+    compactionBoundaryFromMessage: lettaCompactionBoundary,
+  },
   configuration: {
     // The same policy as the worker's ValidateAttachment.
     attachments: {

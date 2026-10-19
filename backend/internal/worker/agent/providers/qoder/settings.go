@@ -19,10 +19,11 @@ func (a *Agent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
 	a.mu.Lock()
 	model := a.model
 	models := a.models
+	modelsReported := a.modelsReported
 	effort := a.runningEffortLocked()
 	mode := a.displayedModeLocked()
 	a.mu.Unlock()
-	if len(models) == 0 {
+	if !modelsReported {
 		a.configuredModelsOnce.Do(func() {
 			configured, err := readQoderConfiguredModels(a.opts)
 			if err != nil {
@@ -37,7 +38,7 @@ func (a *Agent) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
 		qoderEffortGroup(effort),
 		qoderPermissionModeGroup(mode),
 	}
-	if modelGroup := qoderModelGroup(models, model); modelGroup != nil {
+	if modelGroup := qoderModelGroup(models, model, !modelsReported); modelGroup != nil {
 		groups = append([]*leapmuxv1.AvailableOptionGroup{modelGroup}, groups...)
 	}
 	return groups

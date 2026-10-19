@@ -45,21 +45,21 @@ describe('classifyClineMessage', () => {
       expect(classify(event(name, { reason: 'completed' })), name).toEqual({ kind: 'result_divider' })
   })
 
-  it('reads a notice that words something, and hides one that words nothing', () => {
-    expect(classify(event('session.notice', { message: 'auto-compacting', metadata: { kind: 'auto_compaction', phase: 'started' } })).kind).toBe('notification')
-    expect(classify(event('session.notice', {})).kind).toBe('hidden')
+  it('leaves stored compaction starts unknown and keeps current notices visible', () => {
+    expect(classify(event('session.notice', { message: 'auto-compacting', metadata: { kind: 'auto_compaction', phase: 'started' } })).kind).toBe('unknown')
+    expect(classify(event('session.notice', {}))).toEqual({ kind: 'notification', entries: [] })
     expect(classify(event('team.progress', { lastEvent: { eventType: 'run_started', runId: 'r1', agentId: 'researcher' } })).kind).toBe('notification')
   })
 
   it('reads a thread of notices', () => {
-    const thread = { old_seqs: [1, 2], messages: [event('session.notice', { message: 'auto-compacting', metadata: { kind: 'auto_compaction', phase: 'started' } })] }
+    const thread = { old_seqs: [1, 2], messages: [event('session.notice', { message: 'Context compacted.', metadata: { kind: 'auto_compaction', phase: 'completed' } })] }
     expect(classify(undefined, {}, thread).kind).toBe('notification')
     expect(classify(undefined, {}, { old_seqs: [], messages: [] })).toEqual({ kind: 'hidden' })
   })
 
-  it('hides a thread of Cline notices that words nothing', () => {
+  it('keeps a thread of unclaimed Cline notices visible', () => {
     const thread = { old_seqs: [1, 2], messages: [event('session.notice', {}), event('team.progress', { lastEvent: { eventType: 'agent_event' } })] }
-    expect(classify(undefined, {}, thread)).toEqual({ kind: 'hidden' })
+    expect(classify(undefined, {}, thread)).toEqual({ kind: 'notification', entries: [] })
   })
 
   it('reads LeapMux\'s own notifications, as a thread and as a row', () => {

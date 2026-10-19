@@ -1,38 +1,6 @@
 {
-  "_readme": "This contract defines Qoder CLI's stream-JSON vocabulary. The Go provider reads lifecycle and control frames. The TypeScript plugin classifies transcript frames. The stream envelope resembles Claude Code's, but its behavior differs, so the two providers have separate contracts. `frameKinds` lists top-level `type` values. `controlRequestSubtypes` lists control-channel requests. `systemSubtypes` lists system-line events. `modes` lists the wire permission values in camelCase; launch flags use snake_case. `effortLevels` lists values accepted by `--reasoning-effort`. `permissionOutcomes` lists tool-decision results. `capabilities` lists the features from the init frame. Go-only control-answer fields and goal tool names live in providers/qoder/protocol.go.\n\nThe Worker preserves the original native result. Qoder can report persistedOutput.path in that result. The browser shows the path beside the original preview. LeapMux reads no output file.",
+  "_readme": "This contract defines Qoder CLI's stream-JSON vocabulary. The Go provider reads lifecycle and control frames. The TypeScript plugin classifies transcript frames. The stream envelope resembles Claude Code's, but its behavior differs, so the two providers have separate contracts. `frameKinds` lists top-level `type` values. `controlRequestSubtypes` lists control-channel requests. `systemSubtypes` lists system-line events. `modes` lists the wire permission values in camelCase; launch flags use snake_case. `effortLevels` lists values accepted by `--reasoning-effort`. `permissionOutcomes` lists tool-decision results. `capabilities` lists the features from the init frame. Go-only control-answer fields and goal tool names live in providers/qoder/protocol.go.\n\nThe Worker preserves the original native result. Qoder can report persistedOutput.path in that result. The browser shows the path beside the original preview. LeapMux reads no output file.\n\nThe Worker stores visible system notices and unknown subtypes of the current session. Visible notices include compaction boundaries and retries. They also include model queue waits, failed hooks, and the first AGENTS.md size warning. A compaction start is live session state. The statuses table supplies the native compaction start token for live state and the shared history filter.",
   "_unread": {
-    "frameKinds": {
-      "Attachment": {
-        "sides": [
-          "go"
-        ],
-        "why": "The worker stores this frame whole. The browser hides this internal kind, and Go does not branch on its specific word."
-      },
-      "CommandLifecycle": {
-        "sides": [
-          "go"
-        ],
-        "why": "The worker stores this frame whole. The browser hides this internal kind, and Go does not branch on its specific word."
-      },
-      "Progress": {
-        "sides": [
-          "go"
-        ],
-        "why": "The worker stores this frame whole. The browser hides this internal kind, and Go does not branch on its specific word."
-      },
-      "StreamEvent": {
-        "sides": [
-          "go"
-        ],
-        "why": "The worker stores this frame whole. The browser hides this internal kind, and Go does not branch on its specific word."
-      },
-      "ToolProgress": {
-        "sides": [
-          "go"
-        ],
-        "why": "The worker stores this frame whole. The browser hides this internal kind, and Go does not branch on its specific word."
-      }
-    },
     "controlRequestSubtypes": {
       "CanUseTool": {
         "sides": [
@@ -89,26 +57,6 @@
         "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
       },
       "SetPlanMode": {
-        "sides": [
-          "go"
-        ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
-      }
-    },
-    "systemSubtypes": {
-      "CompactBoundary": {
-        "sides": [
-          "go"
-        ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
-      },
-      "Interrupt": {
-        "sides": [
-          "go"
-        ],
-        "why": "the worker stores a frame of this kind whole and the browser draws it from the stored bytes; no call site branches on this word yet"
-      },
-      "Status": {
         "sides": [
           "go"
         ],
@@ -224,7 +172,11 @@
     "PlanModeChanged": "plan_mode_changed",
     "GoalUpdated": "goal_updated",
     "GoalCleared": "goal_cleared",
-    "AvailableModelsUpdate": "available_models_update"
+    "AvailableModelsUpdate": "available_models_update",
+    "ApiRetry": "api_retry",
+    "ModelQueueStatus": "model_queue_status",
+    "HookResponse": "hook_response",
+    "AgentsMdSizeWarning": "agents_md_size_warning"
   },
   "modes": {
     "Default": "default",
@@ -259,5 +211,8 @@
     "SessionRewindV1": "session_rewind_v1",
     "BackgroundTasksV1": "background_tasks_v1",
     "SideQuestionV1": "side_question_v1"
+  },
+  "statuses": {
+    "Compacting": "compacting"
   }
 }

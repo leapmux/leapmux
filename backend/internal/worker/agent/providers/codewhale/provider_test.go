@@ -16,13 +16,16 @@ func TestProviderClassifiesStatusNotices(t *testing.T) {
 	provider := codewhaleProvider{}
 
 	status := provider.Classify(itemEvent(3, "item.completed", "item_1", contracts.CodewhaleItemKindStatus, "Checkpoint saved", nil))
-	assert.Equal(t, agent.StatusNotification(), status)
+	assert.Equal(t, agent.ProviderScopedNotification("codewhale:status"), status)
+
+	assert.Equal(t, agent.CompactionBoundaryNotification(), provider.Classify(itemEvent(3, "item.completed", "item_1", contracts.CodewhaleItemKindContextCompaction, "done", nil)))
+
+	assert.Equal(t, agent.ProviderScopedNotification("codewhale:status"), provider.Classify(itemEvent(3, "item.failed", "item_1", contracts.CodewhaleItemKindStatus, "x", nil)))
 
 	for name, raw := range map[string][]byte{
-		"a compaction":    itemEvent(3, "item.completed", "item_1", contracts.CodewhaleItemKindContextCompaction, "done", nil),
-		"a failed status": itemEvent(3, "item.failed", "item_1", contracts.CodewhaleItemKindStatus, "x", nil),
-		"another event":   runtimeEvent(3, "sandbox.denied", testTurnID, "", map[string]any{"tool_name": "bash"}),
-		"a broken frame":  []byte("{not json"),
+
+		"another event":  runtimeEvent(3, "sandbox.denied", testTurnID, "", map[string]any{"tool_name": "bash"}),
+		"a broken frame": []byte("{not json"),
 	} {
 		assert.Equal(t, agent.NotificationClassification{}, provider.Classify(raw), name)
 	}
@@ -78,4 +81,12 @@ func TestProviderResolvesAThreadIDAsItsOwnHandle(t *testing.T) {
 func TestPluginStatesTheChildCapabilitiesOfTheAgent(t *testing.T) {
 	t.Parallel()
 	agenttest.AssertChildCapabilities(t, Registration().Plugin, (*Agent)(nil))
+}
+
+func TestCodewhaleClassifyCompactionEndIsABoundary(t *testing.T) {
+	t.Parallel()
+	for _, event := range []string{contracts.CodewhaleEventItemCompleted, contracts.CodewhaleEventItemFailed, contracts.CodewhaleEventItemInterrupted, contracts.CodewhaleEventItemCanceled} {
+		assert.Equal(t, agent.CompactionBoundaryNotification(), (codewhaleProvider{}).Classify(itemEvent(1, event, "compact", contracts.CodewhaleItemKindContextCompaction, "The native end.", nil)))
+	}
+	assert.Equal(t, agent.NotificationClassification{}, (codewhaleProvider{}).Classify(itemEvent(1, contracts.CodewhaleEventItemStarted, "compact", contracts.CodewhaleItemKindContextCompaction, "", nil)))
 }

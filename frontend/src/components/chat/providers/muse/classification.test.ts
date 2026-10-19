@@ -54,13 +54,42 @@ describe('classifyMuseMessage native outcomes', () => {
   })
 
   it.each([
-    ['noop', 'Muse compaction did not change the context.'],
-    ['failed', 'Muse compaction failed.'],
-    ['cancelled', 'Muse compaction cancelled.'],
+    ['noop', 'skipped'],
+    ['failed', 'failed'],
+    ['cancelled', 'aborted'],
   ])('classifies native compaction outcome %s through the neutral notification model', (outcome, text) => {
     const frame = { method: 'item/completed', params: { sessionId: 'native-session', item: { itemId: 'compaction', kind: 'compaction', outcome } } }
     const original = structuredClone(frame)
-    expect(providerRow(AgentProvider.MUSE_CODE, frame)).toEqual({ kind: 'notification', thread: { entries: [{ kind: 'text', text }] } })
+    expect(providerRow(AgentProvider.MUSE_CODE, frame)).toEqual({ kind: 'notification', thread: { entries: [{ kind: 'compaction', phase: 'end', outcome: text }] } })
     expect(frame).toEqual(original)
+  })
+})
+
+describe('classifyMuseMessage hooks', () => {
+  it('renders a failed hook through the neutral model', () => {
+    const frame = { method: 'item/completed', params: { sessionId: 'native-session', item: { itemId: 'hook', kind: 'hookRun', status: 'failed', event: 'Stop', reason: 'The hook failed.' } } }
+    expect(providerRow(AgentProvider.MUSE_CODE, frame)).toEqual({ kind: 'notification', thread: { entries: [{ kind: 'hook', outcome: 'failed', event: 'Stop', detail: 'The hook failed.' }] } })
+  })
+
+  it('keeps an unknown hook outcome visible', () => {
+    const frame = { method: 'item/completed', params: { sessionId: 'native-session', item: { itemId: 'hook', kind: 'hookRun', status: 'futureStatus' } } }
+    expect(classifyMuseMessage(input(frame, undefined, AgentProvider.MUSE_CODE))).toMatchObject({ kind: 'notification' })
+  })
+})
+
+describe('classifyMuseMessage obsolete hidden rows', () => {
+  it.each(['subagent', 'reminderChild'])('classifies a stored %s item as unknown', (kind) => {
+    const frame = { method: 'item/completed', params: { sessionId: 'native-session', item: { itemId: 'item', kind, status: 'completed' } } }
+    expect(classifyMuseMessage(input(frame, undefined, AgentProvider.MUSE_CODE))).toEqual({ kind: 'unknown' })
+  })
+
+  it('classifies a non-final workflow row as unknown', () => {
+    const frame = { method: 'item/started', params: { sessionId: 'native-session', item: { itemId: 'item', kind: 'workflow', status: 'inProgress' } } }
+    expect(classifyMuseMessage(input(frame, undefined, AgentProvider.MUSE_CODE))).toEqual({ kind: 'unknown' })
+  })
+
+  it('keeps the finished workflow result', () => {
+    const frame = { method: 'item/completed', params: { sessionId: 'native-session', item: { itemId: 'item', kind: 'workflow', status: 'completed' } } }
+    expect(classifyMuseMessage(input(frame, undefined, AgentProvider.MUSE_CODE))).toEqual({ kind: 'tool_result' })
   })
 })

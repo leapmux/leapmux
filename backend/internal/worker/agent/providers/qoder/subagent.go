@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -508,6 +509,7 @@ func (a *Agent) finishChildTask(event *qoderTaskEvent) bool {
 		slog.Warn("qoder child status is unknown", "agent_id", a.AgentID(), "status", event.Status)
 		return true
 	}
+	a.finishNotifications(a.sink.ChildSink(childID), event.ToolUseID, status == bgtask.StatusStopped)
 	if err := a.sink.CloseBackgroundTask(event.ToolUseID, status); err != nil {
 		providerkit.LogRegistryRefusal("qoder", "close child", err)
 	}
@@ -517,6 +519,8 @@ func (a *Agent) finishChildTask(event *qoderTaskEvent) bool {
 }
 
 // routeChildFrame keeps every known forwarded message out of the root tab.
+// Child permissions state agent_id without parent_tool_use_id, so their control card stays in the root tab.
+// The native process routes each answer by request_id.
 func (a *Agent) routeChildFrame(raw []byte) bool {
 	var frame struct {
 		Type            string `json:"type"`
@@ -540,6 +544,22 @@ func (a *Agent) routeChildFrame(raw []byte) bool {
 		return true
 	}
 	childSink := a.sink.ChildSink(childID)
+	if qoderDropsFrame(frame.Type, providerkit.StringField(raw, "subtype")) {
+		return true
+	}
+	if frame.Type == contracts.QoderFrameKindSystem {
+		a.handleSystemTo(childSink, raw, frame.ParentToolUseID)
+		return true
+	}
+	if frame.Type == contracts.QoderFrameKindAssistant {
+		a.notificationState(frame.ParentToolUseID).retry.Resolve(childSink)
+	}
+	if frame.Type == contracts.QoderFrameKindResult {
+		a.finishNotifications(childSink, frame.ParentToolUseID, false)
+	}
+	if frame.Type == contracts.QoderFrameKindUser && !qoderUserFrameHasToolResult(raw) {
+		return true
+	}
 	if stored, _ := a.persistNativeToolFrame(childSink, raw); stored {
 		return true
 	}

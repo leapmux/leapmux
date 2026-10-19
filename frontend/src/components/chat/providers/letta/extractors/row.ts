@@ -79,7 +79,7 @@ function lettaToolRow(
   const source = lettaToolPayload(payload)
   if (!source)
     return null
-  // The Worker stores one native call per row. Raw frames can wrap that payload.
+  // The worker stores one native call per row.
   // A paired request supplies arguments only when its native call ID matches.
   const id = lettaCallId(source) ?? ''
   const candidateRequest = lettaToolPayload(span.request?.parentObject)

@@ -14,6 +14,268 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 )
 
+func TestLettaRetryDiscardsThePartial(t *testing.T) {
+	t.Parallel()
+	// Source: .tmp/probe/letta/logs/frames.jsonl, frames 15-31.
+	agenttest.RunRetryAttemptCase(t, agenttest.RetryAttemptCase{
+		Name:       "native stream retry",
+		FramesPath: "testdata/retry_partial.jsonl",
+		NewAgent: func(t *testing.T, sink *agenttest.Sink) func([]byte) {
+			a := &Agent{sink: agent.NewModelProgressResetSink(agent.NewProviderServices(sink)), agentID: "agent-local-1", conversationID: "local-conv-1"}
+			return a.HandleOutput
+		},
+		Want:      []agenttest.RetryAttemptText{{Text: "FULL-ANSWER-TWO", Completion: agent.MessageCompletionComplete}},
+		Discarded: []string{"PARTIAL-ATTEMPT-ONE"},
+	})
+}
+
+func TestLettaRetryDiscardsThoughtAndTextTogether(t *testing.T) {
+	t.Parallel()
+	for _, child := range []bool{false, true} {
+		t.Run(fmt.Sprint(child), func(t *testing.T) {
+			a, sink := newLettaChildTestAgent(t)
+			target := sink
+			feed := func(delta map[string]any) {
+				if child {
+					a.HandleOutput(lettaChildDeltaFrame(t, delta))
+					return
+				}
+				raw, err := json.Marshal(map[string]any{"type": "stream_delta", "delta": delta})
+				require.NoError(t, err)
+				a.HandleOutput(raw)
+			}
+			if child {
+				a.HandleOutput(lettaChildStateFrame(t, "running"))
+				row, ok := sink.BackgroundTask(lettaTestChildID)
+				require.True(t, ok)
+				target = sink.Child(row.ChildAgentID)
+			}
+			feed(map[string]any{"message_type": "reasoning_message", "reasoning": "FAILED-THOUGHT"})
+			feed(map[string]any{"message_type": "assistant_message", "content": "FAILED-TEXT"})
+			feed(map[string]any{"message_type": "retry", "attempt": 1})
+			feed(map[string]any{"message_type": "assistant_message", "content": "RETRIED-ANSWER"})
+			if child {
+				a.HandleOutput(lettaChildStateFrame(t, "completed"))
+			} else {
+				a.HandleOutput([]byte(lettaLiveTurnFinished))
+			}
+			for _, row := range target.Messages() {
+				assert.NotContains(t, string(row.Content), "FAILED-THOUGHT")
+				assert.NotContains(t, string(row.Content), "FAILED-TEXT")
+			}
+			require.Len(t, target.PersistedNotifications(), 1)
+			assert.Equal(t, []map[string]any{{"type": "api_retry_resolved"}}, target.LeapMuxNotifications())
+		})
+	}
+}
+
+func TestLettaEventMessageRetryPersists(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := &Agent{sink: agent.NewProviderServices(sink)}
+	delta := `{"message_type":"event_message","event_type":"retry","event_data":{"attempt":1,"max_attempts":3,"delay_ms":1000,"message":"Retry the request."}}`
+	a.HandleOutput([]byte(`{"type":"stream_delta","delta":` + delta + `}`))
+	require.Len(t, sink.PersistedNotifications(), 1)
+	assert.JSONEq(t, delta, string(sink.PersistedNotifications()[0].Content))
+}
+
+func TestLettaAbortKeepsTheTurnUntilItsTurnFinished(t *testing.T) {
+	t.Parallel()
+	fake, a := newFakeAppServer(t)
+	a.HandleOutput([]byte(lettaLiveRuntimeStartResponse))
+	a.HandleOutput([]byte(lettaLiveLoopStatus))
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
+	assert.Equal(t, "abort_message", fake.nextCommand(t)["type"])
+	// Source: .tmp/probe/letta/logs/frames2.jsonl, frames 19-24.
+	a.HandleOutput([]byte(`{"type":"update_loop_status","loop_status":{"status":"WAITING_ON_INPUT"}}`))
+	require.ErrorIs(t, a.SendInput("Wait for the cancelled turn.", nil), agent.ErrAgentBusy)
+	a.HandleOutput([]byte(lettaLiveTurnFinishedCancelled))
+	require.NoError(t, a.SendInput("Continue after the cancelled turn.", nil))
+	assert.Equal(t, "input", fake.nextCommand(t)["type"])
+}
+
+func TestLettaNormalIdleDoesNotReleaseInputBeforeTheFinalFrame(t *testing.T) {
+	t.Parallel()
+	_, a := newFakeAppServer(t)
+	a.HandleOutput([]byte(lettaLiveRuntimeStartResponse))
+	a.HandleOutput([]byte(lettaLiveLoopStatus))
+	a.HandleOutput([]byte(`{"type":"update_loop_status","loop_status":{"status":"WAITING_ON_INPUT"}}`))
+	require.ErrorIs(t, a.SendInput("Do not overtake the prior final row.", nil), agent.ErrAgentBusy)
+	a.HandleOutput([]byte(lettaLiveTurnFinished))
+	require.NoError(t, a.SendInput("The prior final row now exists.", nil))
+}
+
+func TestLettaRepeatedTurnFinishedIsIgnored(t *testing.T) {
+	t.Parallel()
+	a, sink := newLettaChildTestAgent(t)
+	a.HandleOutput([]byte(lettaLiveTurnFinished))
+	a.HandleOutput([]byte(lettaLiveLoopStatus))
+	a.HandleOutput([]byte(`{"type":"stream_delta","delta":{"message_type":"assistant_message","content":"The next answer."}}`))
+	a.HandleOutput([]byte(lettaLiveTurnFinished))
+	assert.Len(t, sink.Messages(), 1)
+	assert.Equal(t, []bool{true}, sink.TurnActives())
+	a.HandleOutput([]byte(`{"type":"turn_finished","turn_id":"next-turn","stop_reason":"end_turn"}`))
+	require.Len(t, sink.Messages(), 3)
+	assert.Contains(t, string(sink.Messages()[1].Content), "The next answer.")
+	assert.Equal(t, []bool{true, false}, sink.TurnActives())
+}
+
+func TestLettaRepeatedTurnFinishedHistoryHasALimit(t *testing.T) {
+	t.Parallel()
+	a, sink := newLettaChildTestAgent(t)
+	frame := func(id int) []byte {
+		return []byte(fmt.Sprintf(`{"type":"turn_finished","turn_id":"turn-%d","stop_reason":"end_turn"}`, id))
+	}
+	for id := 0; id < 17; id++ {
+		a.HandleOutput(frame(id))
+	}
+	a.HandleOutput(frame(0))
+	assert.Len(t, sink.Messages(), 18)
+	a.HandleOutput(frame(16))
+	assert.Len(t, sink.Messages(), 18)
+}
+
+func TestLettaNormalTurnEndKeepsTheFinalOutcome(t *testing.T) {
+	t.Parallel()
+	a, sink := newLettaChildTestAgent(t)
+	a.HandleOutput([]byte(lettaLiveLoopStatus))
+	a.HandleOutput([]byte(`{"type":"update_loop_status","loop_status":{"status":"WAITING_ON_INPUT"}}`))
+	a.HandleOutput([]byte(lettaLiveTurnFinished))
+	assert.Equal(t, []bool{true, false}, sink.TurnActives())
+	require.Len(t, sink.Messages(), 1)
+	assert.True(t, sink.Messages()[0].TurnEnd)
+	assert.Equal(t, agent.MessageCompletionComplete, sink.Messages()[0].Completion)
+}
+
+func TestLettaWarningStatusPersists(t *testing.T) {
+	t.Parallel()
+	for _, level := range []string{"warning", "error"} {
+		t.Run(level, func(t *testing.T) {
+			a, sink := newLettaChildTestAgent(t)
+			payload := fmt.Sprintf(`{"message_type":"status","level":%q,"message":"The stream recovered."}`, level)
+			a.HandleOutput([]byte(`{"type":"stream_delta","delta":` + payload + `}`))
+			require.Len(t, sink.PersistedNotifications(), 1)
+			assert.JSONEq(t, payload, string(sink.PersistedNotifications()[0].Content))
+		})
+	}
+}
+
+func TestLettaInterruptedAndModelUpdateEchoesAreDropped(t *testing.T) {
+	t.Parallel()
+	for _, payload := range []string{
+		`{"message_type":"status","level":"warning","message":"Interrupted"}`,
+		`{"message_type":"status","level":"info","message":"Model updated to native-model"}`,
+		`{"message_type":"status","level":"warning","message":" "}`,
+	} {
+		a, sink := newLettaChildTestAgent(t)
+		a.HandleOutput([]byte(`{"type":"stream_delta","delta":` + payload + `}`))
+		assert.Empty(t, sink.PersistedNotifications())
+		assert.Empty(t, sink.Messages())
+	}
+}
+
+func TestLettaCompactionIsLiveThenOneBoundary(t *testing.T) {
+	t.Parallel()
+	a, sink := newLettaChildTestAgent(t)
+	// Source: .tmp/probe/letta/logs/frames.jsonl, frames 43-44.
+	start := []byte(`{"type":"stream_delta","delta":{"message_type":"event_message","event_type":"compaction","event_data":{"trigger":"context_window_limit"}}}`)
+	a.HandleOutput(start)
+	a.HandleOutput(start)
+	value, ok := sink.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
+	require.True(t, ok)
+	assert.Equal(t, map[string]any{"trigger": "context_window_limit"}, value)
+	assert.Empty(t, sink.PersistedNotifications())
+	end := `{"message_type":"summary_message","summary":"Retained context.","compaction_stats":{"trigger":"context_window_limit","context_tokens_before":759,"context_tokens_after":396}}`
+	a.HandleOutput([]byte(`{"type":"stream_delta","delta":` + end + `}`))
+	value, ok = sink.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
+	require.True(t, ok)
+	assert.Nil(t, value)
+	require.Len(t, sink.PersistedNotifications(), 1)
+	assert.JSONEq(t, end, string(sink.PersistedNotifications()[0].Content))
+}
+
+func TestLettaCompactionStoresThePrecedingAnswerFirst(t *testing.T) {
+	t.Parallel()
+	a, sink := newLettaChildTestAgent(t)
+	a.HandleOutput([]byte(`{"type":"stream_delta","delta":{"message_type":"assistant_message","content":"The answer before compaction."}}`))
+	a.HandleOutput([]byte(`{"type":"stream_delta","delta":{"message_type":"event_message","event_type":"compaction"}}`))
+	require.Len(t, sink.Messages(), 1)
+	assert.Contains(t, string(sink.Messages()[0].Content), "The answer before compaction.")
+	assert.Empty(t, sink.PersistedNotifications())
+	a.HandleOutput([]byte(`{"type":"stream_delta","delta":{"message_type":"summary_message"}}`))
+	assert.Len(t, sink.PersistedNotifications(), 1)
+	assert.Len(t, sink.Messages(), 1)
+}
+
+func TestLettaTurnEndWithALiveCompactionWritesAnUnsuccessfulEnd(t *testing.T) {
+	t.Parallel()
+	for _, reason := range []string{"error", "cancelled"} {
+		t.Run(reason, func(t *testing.T) {
+			a, sink := newLettaChildTestAgent(t)
+			a.HandleOutput([]byte(`{"type":"stream_delta","delta":{"message_type":"event_message","event_type":"compaction"}}`))
+			a.HandleOutput([]byte(`{"type":"turn_finished","stop_reason":"` + reason + `"}`))
+			value, ok := sink.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
+			require.True(t, ok)
+			assert.Nil(t, value)
+			outcome := "failed"
+			if reason == "cancelled" {
+				outcome = "aborted"
+			}
+			assert.Equal(t, []map[string]any{{"type": "compaction_ended", "outcome": outcome}}, sink.LeapMuxNotifications())
+		})
+	}
+}
+
+func TestLettaChildCompactionEndsOnItsOwnSink(t *testing.T) {
+	t.Parallel()
+	a, sink := newLettaChildTestAgent(t)
+	a.HandleOutput(lettaChildStateFrame(t, "running"))
+	row, ok := sink.BackgroundTask(lettaTestChildID)
+	require.True(t, ok)
+	child := sink.Child(row.ChildAgentID)
+	a.HandleOutput(lettaChildDeltaFrame(t, map[string]any{"message_type": "event_message", "event_type": "compaction"}))
+	a.HandleOutput(lettaChildStateFrame(t, "error"))
+	_, rootLive := sink.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
+	assert.False(t, rootLive)
+	value, exists := child.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
+	assert.True(t, exists)
+	assert.Nil(t, value)
+	assert.Equal(t, []map[string]any{{"type": "compaction_ended", "outcome": "failed"}}, child.LeapMuxNotifications())
+}
+
+func TestUsageStatisticsReportsTheContextTokens(t *testing.T) {
+	t.Parallel()
+	for _, count := range []int64{0, 4000, -1} {
+		t.Run(fmt.Sprint(count), func(t *testing.T) {
+			a, sink := newLettaChildTestAgent(t)
+			a.HandleOutput([]byte(fmt.Sprintf(`{"type":"stream_delta","delta":{"message_type":"usage_statistics","prompt_tokens":8000,"completion_tokens":20,"context_tokens":%d}}`, count)))
+			value, ok := sink.LastSessionInfoValue(contracts.SessionInfoKeyContextUsage)
+			require.True(t, ok)
+			usage := value.(map[string]any)
+			if count < 0 {
+				assert.NotContains(t, usage, contracts.ContextUsageFieldContextTokens)
+			} else {
+				assert.Equal(t, count, usage[contracts.ContextUsageFieldContextTokens])
+			}
+		})
+	}
+}
+
+func TestUsageStatisticsIgnoresAnInvalidOptionalContextCount(t *testing.T) {
+	t.Parallel()
+	for _, count := range []any{nil, "4", true, []any{}, 1.5, json.Number("9223372036854775808")} {
+		a, sink := newLettaChildTestAgent(t)
+		raw, err := json.Marshal(map[string]any{"type": "stream_delta", "delta": map[string]any{"message_type": "usage_statistics", "prompt_tokens": 4, "completion_tokens": 2, "context_tokens": count}})
+		require.NoError(t, err)
+		a.HandleOutput(raw)
+		value, ok := sink.LastSessionInfoValue(contracts.SessionInfoKeyContextUsage)
+		require.True(t, ok, "invalid optional count: %v", count)
+		usage := value.(map[string]any)
+		assert.Equal(t, int64(4), usage[contracts.ContextUsageFieldInputTokens])
+		assert.NotContains(t, usage, contracts.ContextUsageFieldContextTokens)
+	}
+}
+
 // The App Server puts each body in its own field, rather than `payload`.
 // `stream_delta` carries `delta`.
 // `control_request` carries `request`.
@@ -157,23 +419,18 @@ func TestLoopStatusBodyLivesInTheLoopStatusField(t *testing.T) {
 	a.HandleOutput([]byte(lettaLiveLoopStatus))
 	actives := sink.TurnActives()
 	require.NotEmpty(t, actives, "the loop status moves the turn flag")
-	assert.True(t, actives[len(actives)-1], "SENDING_API_REQUEST arms the turn")
+	assert.True(t, actives[len(actives)-1], "SENDING_API_REQUEST starts the turn")
 }
 
-// A live update_subagent_state stores a readable notification row. Reading its
-// body from `payload` stores an EMPTY row, which the hub's notification
-// consolidation then rejects with "unexpected end of JSON input".
-func TestSubagentStateStoresAReadableNotification(t *testing.T) {
+// A native child snapshot updates registry state without a transcript row.
+func TestSubagentStateStoresNoRow(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}
 	a := &Agent{sink: agent.NewProviderServices(sink)}
 	a.HandleOutput([]byte(lettaLiveSubagents))
 
-	rows := sink.PersistedNotifications()
-	require.NotEmpty(t, rows, "the frame produces a notification row")
-	for _, row := range rows {
-		assert.NotEmpty(t, row.Content, "the notification row carries the frame body")
-	}
+	assert.Empty(t, sink.PersistedNotifications())
+	assert.Empty(t, sink.Messages())
 }
 
 // A live control_request opens a permission control. Its discriminator is
@@ -301,12 +558,12 @@ func TestTurnFinishedToolCountResetsAndExcludesChildCalls(t *testing.T) {
 	rootResult := []byte(`{"type":"stream_delta","delta":{"message_type":"tool_return_message","tool_call_id":"reused-read","tool_return":"root result"}}`)
 	a.HandleOutput(rootStart)
 	a.HandleOutput(rootResult)
-	a.HandleOutput([]byte(lettaLiveTurnFinished))
+	a.HandleOutput([]byte(`{"type":"turn_finished","turn_id":"tool-turn-1","stop_reason":"end_turn"}`))
 	a.HandleOutput([]byte(lettaLiveStreamDelta))
-	a.HandleOutput([]byte(lettaLiveTurnFinished))
+	a.HandleOutput([]byte(`{"type":"turn_finished","turn_id":"tool-turn-2","stop_reason":"end_turn"}`))
 	a.HandleOutput(rootStart)
 	a.HandleOutput(rootResult)
-	a.HandleOutput([]byte(lettaLiveTurnFinished))
+	a.HandleOutput([]byte(`{"type":"turn_finished","turn_id":"tool-turn-3","stop_reason":"end_turn"}`))
 
 	assert.Equal(t, []int{1, 0, 1}, agenttest.TurnToolUseCounts(t, sink.Messages()), "the root count excludes children and resets between turns")
 }
@@ -396,11 +653,14 @@ const (
 	lettaLiveTurnFinishedError     = `{"type":"turn_finished","turn_id":"batch-direct-8c27ef5b-2295-4c29-845e-e1b1ff7fc1bc","stop_reason":"error","run_id":"local-run-1","error":"{\n  \"error\": {\n    \"error\": {\n      \"type\": \"local_backend_error\",\n      \"message\": \"400: {\\\"message\\\":\\\"NATIVEERRORMARKER\\\"}\"\n    },\n    \"run_id\": \"local-run-1\"\n  }\n}","runtime":{"agent_id":"agent-local-1","conversation_id":"local-conv-1"},"event_seq":17,"emitted_at":"2026-10-04T21:41:00.680Z","idempotency_key":"turn_finished:17:2f3e0a18-6118-4be9-9d5f-364278e7366c"}`
 )
 
-// Letta Code 0.34.2 answers a model request that fails with HTTP 400 with these
-// frames, in this order. They are verbatim from a live `letta server --listen` run
-// whose model endpoint refused the request: the `update_subagent_state` snapshot that
-// opens every turn, a non-terminal `loop_error`, an `error_message`, a `stop_reason`,
-// a terminal `loop_error`, and the `turn_finished` that states the error.
+// These frames come from a native Letta Code 0.34.2 request that returned HTTP 400.
+// The server sends them in this order:
+//   - The child snapshot.
+//   - A non-final loop_error.
+//   - An error_message.
+//   - A stop_reason.
+//   - A final loop_error.
+//   - The turn_finished frame with the same error.
 var lettaLiveModelErrorFrames = []string{
 	// snapshot
 	`{"type":"update_subagent_state","subagents":[],"runtime":{"agent_id":"agent-local-9145b410-391b-46fd-8739-f16733a5894f","conversation_id":"local-conv-1"},"event_seq":6,"emitted_at":"2026-10-04T23:54:34.700Z","idempotency_key":"update_subagent_state:6:dfc2de1b-5808-472d-a664-d3a5e2f4f67d"}`,
@@ -454,19 +714,9 @@ func TestTurnFinishedRecordsHowTheTurnEnded(t *testing.T) {
 	}
 }
 
-// A failed model request reaches the transcript as notices. The browser draws the
-// error from the two loop errors, and it draws the divider of a failed turn from the
-// completion that the turn end records. The error message and the stop reason state
-// the same error again, and the turn end repeats it, so none of them is a notice.
-func TestModelErrorFramesReachTheTranscriptAsNotices(t *testing.T) {
+// The failed divider owns an error that the native loop repeats before the turn end.
+func TestLettaFailedTurnStatesItsErrorOnce(t *testing.T) {
 	t.Parallel()
-	deltaOf := func(frame string) string {
-		var parsed struct {
-			Delta json.RawMessage `json:"delta"`
-		}
-		require.NoError(t, json.Unmarshal([]byte(frame), &parsed))
-		return string(parsed.Delta)
-	}
 	sink := &agenttest.Sink{}
 	a := &Agent{sink: agent.NewProviderServices(sink)}
 
@@ -475,10 +725,7 @@ func TestModelErrorFramesReachTheTranscriptAsNotices(t *testing.T) {
 	}
 
 	notices := sink.PersistedNotifications()
-	require.Len(t, notices, 3, "the snapshot and both loop errors become notices")
-	assert.JSONEq(t, lettaLiveModelErrorFrames[0], string(notices[0].Content), "the snapshot is stored whole")
-	assert.JSONEq(t, deltaOf(lettaLiveModelErrorFrames[1]), string(notices[1].Content), "the non-terminal loop error is stored as its delta")
-	assert.JSONEq(t, deltaOf(lettaLiveModelErrorFrames[4]), string(notices[2].Content), "the terminal loop error is stored as its delta")
+	assert.Empty(t, notices, "the native divider states the error once")
 
 	rows := sink.Messages()
 	require.Len(t, rows, 1, "no other frame of the failed turn becomes a row")

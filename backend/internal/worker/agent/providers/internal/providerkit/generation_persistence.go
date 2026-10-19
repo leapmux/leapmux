@@ -119,7 +119,11 @@ func (b *GenerationBuffer) prepareAndFlush(pending []*generationPreparation, pre
 	if err == agent.ErrOutputInFlight {
 		return nil
 	}
-	return err
+	if err != nil {
+		// Snapshot creation succeeded, so the queue owns the writes despite this storage failure.
+		return &agent.PendingOutputError{Err: err}
+	}
+	return nil
 }
 
 // freezeEntriesLocked reserves every selected row before a capture can call the sink.

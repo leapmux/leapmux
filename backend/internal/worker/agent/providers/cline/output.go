@@ -81,7 +81,8 @@ func newOutputState() outputState {
 // which writes a child transcript that no live event reaches any more.
 type transcript struct {
 	// childID is the child agent, or "" for the lead.
-	childID string
+	childID        string
+	compactionLive bool
 	// sink is the services of a child's transcript, which the sink that created
 	// the child resolves. nil for the lead, whose services are the agent's own.
 	sink agent.ProviderServices
@@ -152,6 +153,43 @@ func (a *Agent) sinkFor(t *transcript) agent.ProviderServices {
 	return t.sink
 }
 
+// finishTranscriptCompaction records an unfinished compaction when its owner ends.
+func (a *Agent) finishTranscriptCompaction(t *transcript, completion agent.MessageCompletion) {
+	if t == nil {
+		return
+	}
+	a.Mu.Lock()
+	live := t.compactionLive
+	t.compactionLive = false
+	a.Mu.Unlock()
+	if !live {
+		return
+	}
+	sink := a.sinkFor(t)
+	providerkit.EndCompaction(sink)
+	if a.IsDiscardingOutput() {
+		return
+	}
+	outcome := providerkit.CompactionEndFailed
+	if completion == agent.MessageCompletionInterrupted {
+		outcome = providerkit.CompactionEndAborted
+	}
+	providerkit.PersistCompactionEnded(sink, outcome, "")
+}
+
+// resolveLeadRetry records success before the first new output of the lead.
+func (a *Agent) resolveLeadRetry(t *transcript) {
+	if a.IsDiscardingOutput() {
+		return
+	}
+	a.Mu.Lock()
+	lead := t == a.out.lead
+	a.Mu.Unlock()
+	if lead {
+		a.leadRetry.Resolve(a.sink)
+	}
+}
+
 // handleReasoningDelta counts one reasoning chunk and keeps it for the row.
 func (a *Agent) handleReasoningDelta(t *transcript, payload json.RawMessage) {
 	var delta struct {
@@ -160,6 +198,7 @@ func (a *Agent) handleReasoningDelta(t *transcript, payload json.RawMessage) {
 	if json.Unmarshal(payload, &delta) != nil || delta.Text == "" {
 		return
 	}
+	a.resolveLeadRetry(t)
 	a.Mu.Lock()
 	if t.reasoningFlushed {
 		// The reasoning of the previous message reached the transcript, and this
@@ -172,6 +211,15 @@ func (a *Agent) handleReasoningDelta(t *transcript, payload json.RawMessage) {
 	a.sinkFor(t).ReportProgress(agent.ModelTextProgress(t.progressScope("reasoning"), delta.Text))
 }
 
+// discardUnflushedReasoning removes reasoning that the native model did not retain.
+func (a *Agent) discardUnflushedReasoning(t *transcript) {
+	a.Mu.Lock()
+	t.reasoning.Reset()
+	t.reasoningFlushed = false
+	a.Mu.Unlock()
+	a.sinkFor(t).ReportProgress(agent.ResetModelScopeProgress(t.progressScope("reasoning")))
+}
+
 // handleAssistantDelta counts one text chunk.
 func (a *Agent) handleAssistantDelta(t *transcript, payload json.RawMessage) {
 	var delta struct {
@@ -180,6 +228,7 @@ func (a *Agent) handleAssistantDelta(t *transcript, payload json.RawMessage) {
 	if json.Unmarshal(payload, &delta) != nil || delta.Text == "" {
 		return
 	}
+	a.resolveLeadRetry(t)
 	a.Mu.Lock()
 	t.text.WriteString(delta.Text)
 	a.Mu.Unlock()
@@ -189,13 +238,23 @@ func (a *Agent) handleAssistantDelta(t *transcript, payload json.RawMessage) {
 // handleAssistantFinished persists one message's text, after the reasoning the
 // message streamed before it.
 func (a *Agent) handleAssistantFinished(t *transcript, event hubEvent) {
-	var finished struct {
+	var finished *struct {
 		Text string `json:"text"`
 	}
-	_ = json.Unmarshal(event.Payload, &finished)
+	if err := json.Unmarshal(event.Payload, &finished); err != nil || finished == nil {
+		slog.Debug("cline ignored a malformed final text frame", "agent_id", a.AgentID(), "error", err)
+		return
+	}
+	if strings.TrimSpace(finished.Text) != "" {
+		a.resolveLeadRetry(t)
+	}
 	a.flushReasoning(t, event.SessionID)
 	a.Mu.Lock()
 	t.text.Reset()
+	completion := noCompletion
+	if a.turn.steersPending > 0 {
+		completion = agent.MessageCompletionInterrupted
+	}
 	if t.childID == "" {
 		a.out.lastLeadText = finished.Text
 	}
@@ -205,7 +264,7 @@ func (a *Agent) handleAssistantFinished(t *transcript, event hubEvent) {
 	if strings.TrimSpace(finished.Text) == "" {
 		return
 	}
-	a.persistRow(t, event.Raw, noCompletion)
+	a.persistRow(t, event.Raw, completion)
 	a.Mu.Lock()
 	t.written.texts++
 	a.Mu.Unlock()
@@ -214,23 +273,23 @@ func (a *Agent) handleAssistantFinished(t *transcript, event hubEvent) {
 // handleReasoningFinished persists the reasoning of a message that had no text,
 // and drops the copy of reasoning that its text already put in place.
 func (a *Agent) handleReasoningFinished(t *transcript, event hubEvent) {
+	var finished *struct {
+		Reasoning string `json:"reasoning"`
+	}
+	if err := json.Unmarshal(event.Payload, &finished); err != nil || finished == nil {
+		slog.Debug("cline ignored a malformed final reasoning frame", "agent_id", a.AgentID(), "error", err)
+		return
+	}
 	a.Mu.Lock()
 	flushed := t.reasoningFlushed
 	t.reasoning.Reset()
 	t.reasoningFlushed = false
 	a.Mu.Unlock()
 	a.sinkFor(t).ReportProgress(agent.CompleteModelProgress(t.progressScope("reasoning")))
-	if flushed {
+	if flushed || strings.TrimSpace(finished.Reasoning) == "" {
 		return
 	}
-	var finished struct {
-		Reasoning string `json:"reasoning"`
-	}
-	_ = json.Unmarshal(event.Payload, &finished)
-	if strings.TrimSpace(finished.Reasoning) == "" {
-		// A redacted reasoning holds nothing a reader can read.
-		return
-	}
+	a.resolveLeadRetry(t)
 	a.persistRow(t, event.Raw, noCompletion)
 	a.Mu.Lock()
 	t.written.reasoning++
@@ -274,6 +333,7 @@ type toolEvent struct {
 
 // handleToolStarted opens one tool call in transcript t.
 func (a *Agent) handleToolStarted(t *transcript, event hubEvent, call toolEvent) {
+	a.resolveLeadRetry(t)
 	a.flushReasoning(t, event.SessionID)
 	a.openToolRow(t, call.ToolCallID, call.ToolName, event.Raw)
 }
@@ -528,6 +588,7 @@ func (a *Agent) handleRunEnded(event hubEvent) {
 // turn, and a goroutine applies the change and then clears it (afterTurn). The
 // input queue holds the next message until the session runs in its new mode.
 func (a *Agent) endTurn(completion agent.MessageCompletion, row []byte) {
+	a.leadRetry.Reset()
 	endedAt := a.clock.Now()
 	a.Mu.Lock()
 	if !a.turn.active {
@@ -541,6 +602,7 @@ func (a *Agent) endTurn(completion agent.MessageCompletion, row []byte) {
 	a.Mu.Unlock()
 
 	a.withdrawAllControls()
+	a.finishTranscriptCompaction(lead, completion)
 	a.settleSpawns(completion)
 	a.flushPending(lead, sessionID, completion)
 	// A call that a completed turn still held open did not finish: the run

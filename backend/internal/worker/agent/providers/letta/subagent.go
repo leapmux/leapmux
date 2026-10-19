@@ -39,7 +39,7 @@ type lettaNativeChild struct {
 }
 
 // onSubagentState projects native child snapshots into Worker child rows.
-func (a *Agent) onSubagentState(line []byte, payload json.RawMessage) {
+func (a *Agent) onSubagentState(payload json.RawMessage) {
 	var children []lettaNativeChild
 	if err := json.Unmarshal(payload, &children); err != nil {
 		slog.Warn("letta: child snapshot is unreadable", "agent_id", a.AgentID(), "error", err)
@@ -55,7 +55,6 @@ func (a *Agent) onSubagentState(line []byte, payload json.RawMessage) {
 		}
 		a.observeChild(child)
 	}
-	a.persistNotification(line)
 }
 
 func (a *Agent) observeChild(native lettaNativeChild) {
@@ -123,7 +122,10 @@ func (a *Agent) observeChild(native lettaNativeChild) {
 	if !status.IsFinished() {
 		return
 	}
-	a.flushGenerationFor(native.ID)
+	a.flushGenerationFor(native.ID, lettaChildCompletion(status))
+	a.finishOpenCompaction(a.sink.ChildSink(child.agentID), native.ID, lettaChildCompletion(status))
+	a.flushHeldErrors(a.sink.ChildSink(child.agentID), native.ID, "")
+	a.retryForTarget(native.ID).Reset()
 	if err := a.sink.CloseBackgroundTask(native.ID, status); err != nil {
 		slog.Warn("letta: finish child failed", "agent_id", a.AgentID(), "subagent_id", native.ID, "error", err)
 		return
@@ -146,6 +148,17 @@ func lettaChildStatus(status string) (bgtask.Status, bool) {
 		return bgtask.StatusStopped, true
 	default:
 		return bgtask.StatusUnspecified, false
+	}
+}
+
+func lettaChildCompletion(status bgtask.Status) agent.MessageCompletion {
+	switch status {
+	case bgtask.StatusFailed:
+		return agent.MessageCompletionError
+	case bgtask.StatusStopped, bgtask.StatusInterrupted:
+		return agent.MessageCompletionInterrupted
+	default:
+		return agent.MessageCompletionComplete
 	}
 }
 
@@ -290,7 +303,9 @@ func (a *Agent) finishChildFromNotification(notice lettaTaskNotification) {
 	}
 	if !child.reportWritten {
 		if !child.closed {
-			a.flushGenerationFor(childID)
+			a.flushGenerationFor(childID, lettaChildCompletion(status))
+			a.finishOpenCompaction(a.sink.ChildSink(child.agentID), childID, lettaChildCompletion(status))
+			a.flushHeldErrors(a.sink.ChildSink(child.agentID), childID, "")
 		}
 		if child.outputFile != "" && (notice.OutputFile == "" || notice.OutputFile == child.outputFile) {
 			root := a.taskLogRoot
@@ -324,6 +339,7 @@ func (a *Agent) finishChildFromNotification(notice lettaTaskNotification) {
 		}
 		a.finishToolOutputScope(childID, a.sink.ChildSink(child.agentID))
 		child.closed = true
+		a.retryForTarget(childID).Reset()
 	}
 }
 

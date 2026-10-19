@@ -16,9 +16,9 @@ func TestKimiClassify(t *testing.T) {
 
 	for payload, want := range map[string]agent.NotificationClassification{
 		`{"type":"turn.step.retrying","attempt":2}`: agent.APIRetryNotification(),
-		`{"type":"compaction.started"}`:             agent.StatusNotification(),
-		`{"type":"compaction.blocked"}`:             agent.StatusNotification(),
-		`{"type":"compaction.cancelled"}`:           agent.StatusNotification(),
+		`{"type":"compaction.started"}`:             {},
+		`{"type":"compaction.blocked"}`:             {},
+		`{"type":"compaction.cancelled"}`:           agent.CompactionBoundaryNotification(),
 		`{"type":"compaction.completed"}`:           agent.CompactionBoundaryNotification(),
 		`{"type":"warning"}`:                        {},
 		`{"type":"turn.started"}`:                   {},

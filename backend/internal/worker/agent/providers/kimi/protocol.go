@@ -5,6 +5,21 @@ import (
 	"regexp"
 )
 
+// kimiPromptReply is the data of POST /sessions/{id}/prompts.
+type kimiPromptReply struct {
+	PromptID string `json:"prompt_id"`
+	Status   string `json:"status"`
+}
+
+// A queued prompt waits for a turn. A blocked prompt starts no turn.
+const (
+	kimiPromptQueued         = "queued"
+	kimiPromptBlocked        = "blocked"
+	kimiGlobalSessionID      = "__global__"
+	kimiGlobalReplayWindow   = 256
+	kimiGlobalReplayTimerTag = "kimi-global-replay"
+)
+
 // Kimi Code's kap-server vocabulary that only the worker reads.
 //
 // The words both sides spell -- event types, tool names, decisions, modes -- are

@@ -7,11 +7,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
-// connection owns one MSP process. An agent host and a read-only query use the same transport.
+// connection owns one Muse Session Protocol (MSP) process. An agent host and a read-only query use the same transport.
 type connection struct {
 	providerkit.JSONRPCProcess
 	outputDone chan struct{}
@@ -49,6 +50,19 @@ func (c *connection) command(method string, params map[string]any, timeout time.
 	if err != nil {
 		return nil, err
 	}
+	return c.commandWithID(method, payload, commandID, timeout, observe)
+}
+
+// commandWithID retains the native idempotency key when the caller retries uncertain input.
+func (c *connection) commandWithID(method string, params map[string]any, commandID string, timeout time.Duration, observe func(json.RawMessage, error)) (json.RawMessage, error) {
+	if commandID == "" {
+		return nil, fmt.Errorf("the Muse command ID is empty")
+	}
+	payload := make(map[string]any, len(params)+1)
+	for key, value := range params {
+		payload[key] = value
+	}
+	payload["commandId"] = commandID
 	validate := func(raw json.RawMessage, nativeErr error) error {
 		if nativeErr != nil {
 			return nativeErr
@@ -60,7 +74,7 @@ func (c *connection) command(method string, params map[string]any, timeout time.
 		if err := json.Unmarshal(raw, &reply); err != nil {
 			return fmt.Errorf("%w: decode the Muse %s acknowledgement: %v", agent.ErrDeliveryUncertain, method, err)
 		}
-		validStatus := reply.Status == "accepted" || method == methodSessionCompact && reply.Status == "noop"
+		validStatus := reply.Status == "accepted" || method == methodSessionCompact && reply.Status == contracts.MuseCompactionOutcomeNoop
 		if reply.CommandID != commandID || !validStatus {
 			return fmt.Errorf("%w: Muse returned an invalid %s acknowledgement", agent.ErrDeliveryUncertain, method)
 		}

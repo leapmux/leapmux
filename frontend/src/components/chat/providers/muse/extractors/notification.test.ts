@@ -83,13 +83,13 @@ describe('museNotificationEntry native outcomes', () => {
   })
 
   it.each([
-    ['noop', 'Muse compaction did not change the context.'],
-    ['failed', 'Muse compaction failed.'],
-    ['cancelled', 'Muse compaction cancelled.'],
+    ['noop', 'skipped'],
+    ['failed', 'failed'],
+    ['cancelled', 'aborted'],
   ])('reads native compaction outcome %s when no reason exists', (outcome, text) => {
     const frame = { method: 'item/completed', params: { sessionId: 'native-session', item: { itemId: 'compaction', kind: 'compaction', outcome } } }
     const original = structuredClone(frame)
-    expect(museNotificationEntry(frame)).toEqual([{ kind: 'text', text }])
+    expect(museNotificationEntry(frame)).toEqual([{ kind: 'compaction', phase: 'end', outcome: text }])
     expect(frame).toEqual(original)
   })
 
@@ -97,7 +97,9 @@ describe('museNotificationEntry native outcomes', () => {
     const reason = ' Native exact reason\n文 '
     const frame = { method: 'item/completed', params: { sessionId: 'native-session', item: { itemId: 'compaction', kind: 'compaction', outcome, reason } } }
     const original = structuredClone(frame)
-    expect(museNotificationEntry(frame)).toEqual([{ kind: 'text', text: reason }])
+    expect(museNotificationEntry(frame)).toEqual(['noop', 'failed', 'cancelled'].includes(String(outcome))
+      ? [{ kind: 'compaction', phase: 'end', outcome: outcome === 'noop' ? 'skipped' : outcome === 'cancelled' ? 'aborted' : 'failed', error: reason }]
+      : [{ kind: 'text', text: reason }])
     expect(frame).toEqual(original)
   })
 
@@ -158,13 +160,13 @@ describe('museNotificationEntry native reason precedence', () => {
   })
 
   it.each([
-    ['noop', 'Muse compaction did not change the context.'],
-    ['failed', 'Muse compaction failed.'],
-    ['cancelled', 'Muse compaction cancelled.'],
+    ['noop', 'skipped'],
+    ['failed', 'failed'],
+    ['cancelled', 'aborted'],
   ])('uses the known %s outcome when the native reason contains whitespace only', (outcome, text) => {
     const frame = { method: 'item/completed', params: { sessionId: 'native-session', item: { itemId: 'compaction', kind: 'compaction', outcome, reason: ' \t\n' } } }
     const original = structuredClone(frame)
-    expect(museNotificationEntry(frame)).toEqual([{ kind: 'text', text }])
+    expect(museNotificationEntry(frame)).toEqual([{ kind: 'compaction', phase: 'end', outcome: text }])
     expect(frame).toEqual(original)
   })
 })
@@ -172,3 +174,51 @@ describe('museNotificationEntry native reason precedence', () => {
 function singleArgumentCases(values: readonly unknown[]): [unknown][] {
   return values.map<[unknown]>(value => [value])
 }
+
+describe('museNotificationEntry hooks', () => {
+  it.each([
+    ['failed', 'failed'],
+    ['timedOut', 'timed-out'],
+    ['rejected', 'blocked'],
+    ['cancelled', 'failed'],
+  ])('reads a %s hook run', (status, outcome) => {
+    const frame = { method: 'item/completed', params: { item: { itemId: 'hook', kind: 'hookRun', status, event: 'Stop', label: 'post-turn', reason: 'The hook refused the action.' } } }
+    expect(museNotificationEntry(frame)).toEqual([{ kind: 'hook', outcome, event: 'Stop', name: 'post-turn', detail: 'The hook refused the action.' }])
+  })
+
+  it('states a cancellation when the reason is blank', () => {
+    const frame = { method: 'item/completed', params: { item: { itemId: 'hook', kind: 'hookRun', status: 'cancelled', reason: '  ' } } }
+    expect(museNotificationEntry(frame)).toEqual([{ kind: 'hook', outcome: 'failed', detail: 'cancelled' }])
+  })
+
+  it.each(['completed', 'inProgress', 'futureStatus'])('does not invent a hook outcome for %s', (status) => {
+    const frame = { method: 'item/completed', params: { item: { itemId: 'hook', kind: 'hookRun', status } } }
+    expect(museNotificationEntry(frame)).toEqual([])
+  })
+})
+
+describe('museNotificationEntry model route', () => {
+  it('reads the model route failure', () => {
+    expect(museNotificationEntry({ method: 'session/modelRouteUnserved', params: { installedProviderId: 'native-login', modelId: 'native-model' } })).toEqual([
+      { kind: 'text', text: 'The Muse login installed provider native-login, which cannot serve this session\'s model native-model. Choose another model.' },
+    ])
+  })
+})
+
+describe('museNotificationEntry model route fields', () => {
+  it.each([undefined, null, false, 0, {}, [], '', '  '])('refuses an unreadable model or provider: %j', (value) => {
+    expect(museNotificationEntry({ method: 'session/modelRouteUnserved', params: { installedProviderId: value, modelId: 'model' } })).toEqual([])
+    expect(museNotificationEntry({ method: 'session/modelRouteUnserved', params: { installedProviderId: 'provider', modelId: value } })).toEqual([])
+  })
+})
+
+describe('museNotificationEntry retry', () => {
+  it('reads the native retry fields', () => {
+    const frame = { method: 'turn/retryScheduled', params: { attempt: 1, nextAttempt: 2, maxAttempts: 10, retryDelayMs: 1000, reason: 'The response ended early.' } }
+    expect(museNotificationEntry(frame)).toEqual([{ kind: 'retry', scope: 'api', attempt: 2, maxAttempts: 10, delayMs: 1000, error: 'The response ended early.' }])
+  })
+
+  it('omits invalid counters and blank errors', () => {
+    expect(museNotificationEntry({ method: 'turn/retryScheduled', params: { nextAttempt: -1, maxAttempts: 1.5, retryDelayMs: Infinity, reason: '  ' } })).toEqual([{ kind: 'retry', scope: 'api' }])
+  })
+})

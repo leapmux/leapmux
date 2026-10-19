@@ -15,6 +15,24 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 )
 
+func TestLettaClassify(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		raw  string
+		want agent.NotificationClassification
+	}{
+		{`{"message_type":"retry"}`, agent.APIRetryNotification()},
+		{`{"message_type":"event_message","event_type":"retry"}`, agent.APIRetryNotification()},
+		{`{"message_type":"summary_message"}`, agent.CompactionBoundaryNotification()},
+		{`{"message_type":"status","level":"warning"}`, agent.ProviderScopedNotification("letta:status")},
+		{`{"message_type":"status","level":"error"}`, agent.ProviderScopedNotification("letta:status")},
+		{`{"message_type":"status","level":"info"}`, agent.NotificationClassification{}},
+		{`{"message_type":"future"}`, agent.NotificationClassification{}},
+	} {
+		assert.Equal(t, tc.want, (lettaProvider{}).Classify([]byte(tc.raw)), tc.raw)
+	}
+}
+
 func TestRegistrationWiresThePlugin(t *testing.T) {
 	t.Parallel()
 	reg := Registration()
@@ -208,7 +226,7 @@ func TestBusyRefusalRepublishesTheTurn(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}
 	a := &Agent{sink: agent.NewProviderServices(sink)}
-	a.armTurn()
+	a.setTurnActive(true)
 	err := a.SendInput("hello", nil)
 	agenttest.AssertBusyRefusalRepublishesTheTurn(t, sink, a, err)
 }

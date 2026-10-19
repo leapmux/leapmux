@@ -1,7 +1,7 @@
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { clineTest } from '../cline-fixtures'
-import { expectCompactionNotice } from '../helpers/compaction'
+import { expectCompactionNoticeAfterReload, expectNoLiveCompaction } from '../helpers/compaction'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
@@ -37,7 +37,6 @@ clineTest.describe('Cline compaction notice', () => {
     expect(JSON.stringify(before.body).includes(oldMarker)).toBe(true)
 
     await modelScript.waitForSteps(overflow + 2)
-    await expectCompactionNotice(page)
     await waitForAgentIdle(page)
     await expect(assistantBubbles(page).filter({ hasText: 'Recovered after compaction.' }).first()).toBeVisible()
 
@@ -46,5 +45,7 @@ clineTest.describe('Cline compaction notice', () => {
     const retryBody = JSON.stringify(retry.body)
     expect(retryBody.includes(oldMarker)).toBe(false)
     expect(retryBody.includes('Reply after the context overflow recovery.')).toBe(true)
+    await expectCompactionNoticeAfterReload(page)
+    await expectNoLiveCompaction(page)
   })
 })

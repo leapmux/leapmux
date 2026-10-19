@@ -132,7 +132,6 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		model:          opts.Model(),
 		permissionMode: permissionModeWire(opts.PermissionMode()),
 		effort:         effort,
-		pendingControl: make(map[string]chan<- qoderControlResult),
 	}
 	if opts.ResumeSessionID != "" {
 		a.sessionID = opts.ResumeSessionID

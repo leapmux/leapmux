@@ -100,9 +100,8 @@ func (a *Agent) ClearContext() (string, error) {
 	if err := a.openSession("", a.APITimeout()); err != nil {
 		return "", err
 	}
-	// Commit the replacement, then retire the old session state BEFORE its
-	// subscriptions close: every late native frame of the old session then
-	// meets a retired state and changes no live turn or transcript.
+	// Retire the old live state before closing its subscriptions.
+	// A stored late frame keeps its original session and cannot change the replacement's live state.
 	a.stateMu.Lock()
 	replacement := a.sessionID
 	if previous := a.sessions[old]; previous != nil && old != replacement {
@@ -116,13 +115,16 @@ func (a *Agent) ClearContext() (string, error) {
 	a.stateMu.Unlock()
 	if old != replacement {
 		a.retireControlPublications(state)
+		a.endSessionCompactions(state)
 	}
 	a.sink.ResetSpans()
 	a.sink.UpdateSessionID(replacement)
-	// Both native subscriptions of the old session close after the commit. A
-	// refusal there cannot roll the committed replacement back, so it is
-	// logged and swallowed: the host stops delivering either way, and the
-	// retired state already ignores whatever still arrives.
+	if old != replacement {
+		a.sink.ClearGoal(false)
+	}
+	// Close both old subscriptions after the session replacement.
+	// A refusal cannot undo the replacement. Log the refusal and keep the replacement.
+	// The retired state prevents later frames from changing the replacement's live state.
 	if _, err := a.request(methodViewUnsubscribe, map[string]string{"sessionId": old}, a.APITimeout(), nil); err != nil {
 		slog.Warn("muse view unsubscribe after context clear failed", "session", old, "error", err)
 	}
@@ -147,18 +149,17 @@ func (a *Agent) CompactContext() error {
 	}
 	raw, err := a.command(methodSessionCompact, map[string]any{"sessionId": id}, a.APITimeout(), nil)
 	if err == nil {
-		// A noop compaction changed nothing and reports no item, so the compact
-		// turn the Worker opened ends with the acknowledgement itself.
+		// A noop compaction changes no context and emits no item.
+		// Its acknowledgement ends the worker's compaction turn.
 		var reply struct {
 			Status string `json:"status"`
 		}
-		if json.Unmarshal(raw, &reply) == nil && reply.Status == "noop" {
+		if json.Unmarshal(raw, &reply) == nil && reply.Status == contracts.MuseCompactionOutcomeNoop {
 			a.PublishTurnActive()
 		}
 	}
-	// The installed host refuses a manual compaction it cannot run
-	// (`compaction_unavailable`), which states the same fact as an agent that
-	// offers no compaction: the command degrades to an ordinary message.
+	// The native host returns compaction_unavailable for a manual compaction that it cannot run.
+	// Report unsupported compaction so the worker sends the command as ordinary model input.
 	var responseError *providerkit.JSONRPCResponseError
 	if err != nil && errors.As(err, &responseError) && strings.Contains(string(responseError.Data), "compaction_unavailable") {
 		return agent.ErrCompactionUnsupported

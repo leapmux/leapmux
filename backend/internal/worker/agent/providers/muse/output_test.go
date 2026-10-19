@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -329,4 +330,390 @@ func TestTextItemsRejectDeltaFieldsForOtherKinds(t *testing.T) {
 		_, _, _, ok := agenttest.DecodeAssembledMessage(message.Content)
 		assert.False(t, ok)
 	}
+}
+
+func TestMuseHookRunPassingStoresNothing(t *testing.T) {
+	a, sink := testAgent(t)
+	a.startTurn("session", "turn")
+	for revision, status := range []string{"inProgress", "completed"} {
+		feed(t, a, contracts.MuseMethodItemUpdated, map[string]any{
+			"sessionId": "session", "item": map[string]any{
+				"itemId": "hook", "revision": revision + 1, "kind": "hookRun", "status": status,
+				"event": "Stop", "label": "post-turn", "runStatus": status, "turnId": "turn",
+			},
+		})
+	}
+	assert.Empty(t, sink.Messages())
+	assert.Empty(t, sink.PersistedNotifications())
+	feed(t, a, contracts.MuseMethodTurnCompleted, map[string]any{"sessionId": "session", "turnId": "turn", "terminal": "completed"})
+	require.Len(t, sink.Messages(), 1)
+	assert.True(t, sink.Messages()[0].TurnEnd)
+}
+
+func TestMuseHookRunFailedPersists(t *testing.T) {
+	for _, status := range []string{"failed", "timedOut", "rejected", "cancelled", "futureStatus"} {
+		t.Run(status, func(t *testing.T) {
+			a, sink := testAgent(t)
+			// Muse run11 sends the hook event, label, and reason in the completed item.
+			raw := feed(t, a, contracts.MuseMethodItemCompleted, map[string]any{
+				"sessionId": "session", "item": map[string]any{
+					"itemId": "hook", "revision": 2, "kind": "hookRun", "status": status,
+					"event": "Stop", "label": "post-turn", "reason": "The hook refused the action.",
+				},
+			})
+			a.HandleOutput(raw)
+			require.Len(t, sink.Messages(), 1)
+			assert.Equal(t, raw, sink.Messages()[0].Content)
+		})
+	}
+}
+
+func TestMuseRetryResolvesAtTheFirstDelta(t *testing.T) {
+	for _, child := range []bool{false, true} {
+		for _, kind := range []string{"agentMessage", "reasoning"} {
+			t.Run(fmt.Sprintf("child=%t/kind=%s", child, kind), func(t *testing.T) {
+				a, root := testAgent(t)
+				id, sink := "session", root
+				if child {
+					id, sink = "child-session", &agenttest.Sink{}
+					a.sessions[id] = &sessionState{sink: agent.NewProviderServices(sink), childID: "child", items: make(map[string]*itemState), completed: make(map[string]bool)}
+				}
+				a.startTurn(id, "turn")
+				// Muse run6 reports nextAttempt and retryDelayMs, not a generic delayMs.
+				feed(t, a, contracts.MuseMethodTurnRetryScheduled, map[string]any{"sessionId": id, "turnId": "turn", "attempt": 1, "nextAttempt": 2, "maxAttempts": 10, "retryDelayMs": 1000, "reason": "The response ended early."})
+				feed(t, a, contracts.MuseMethodItemStarted, map[string]any{"sessionId": id, "item": map[string]any{"itemId": "answer", "kind": kind, "status": "inProgress", "revision": 1, "turnId": "turn"}})
+				assert.Empty(t, sink.LeapMuxNotifications())
+				field := "text"
+				if kind == "reasoning" {
+					field = "summary.0"
+				}
+				for _, cursor := range []string{"first", "second"} {
+					feed(t, a, contracts.MuseMethodItemDelta, map[string]any{"sessionId": id, "itemId": "answer", "field": field, "delta": "new text", "viewCursor": cursor})
+					require.Len(t, sink.LeapMuxNotifications(), 1)
+					assert.Equal(t, contracts.NotificationTypeApiRetryResolved, sink.LeapMuxNotifications()[0][contracts.NotificationFieldType])
+				}
+				if child {
+					assert.Empty(t, root.LeapMuxNotifications())
+				}
+			})
+		}
+	}
+}
+
+func TestMuseRetryDoesNotResolveAfterTheTurnEnds(t *testing.T) {
+	a, sink := testAgent(t)
+	a.startTurn("session", "turn")
+	feed(t, a, contracts.MuseMethodTurnRetryScheduled, map[string]any{"sessionId": "session", "turnId": "turn", "nextAttempt": 2})
+	feed(t, a, contracts.MuseMethodTurnCompleted, map[string]any{"sessionId": "session", "turnId": "turn", "terminal": "failed"})
+	a.startTurn("session", "next")
+	feed(t, a, contracts.MuseMethodItemStarted, map[string]any{"sessionId": "session", "item": map[string]any{"itemId": "answer", "kind": "agentMessage", "status": "inProgress", "revision": 1, "turnId": "next"}})
+	feed(t, a, contracts.MuseMethodItemDelta, map[string]any{"sessionId": "session", "itemId": "answer", "field": "text", "delta": "new text", "viewCursor": "first"})
+	assert.Empty(t, sink.LeapMuxNotifications())
+}
+
+func TestMuseFailedAttemptCarriesItsNativeCompletion(t *testing.T) {
+	for _, kind := range []string{"agentMessage", "reasoning", "toolCall"} {
+		for _, scenario := range []struct {
+			status string
+			want   agent.MessageCompletion
+		}{
+			{"failed", agent.MessageCompletionError},
+			{"timedOut", agent.MessageCompletionError},
+			{"cancelled", agent.MessageCompletionInterrupted},
+			{"completed", ""},
+		} {
+			for _, failedWrite := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%s/failed-write=%t", kind, scenario.status, failedWrite), func(t *testing.T) {
+					a, sink := testAgent(t)
+					a.startTurn("session", "turn")
+					if failedWrite {
+						sink.PersistErr = errors.New("The store is unavailable.")
+					}
+					// Muse run6 retains the failed attempt as a completed native item.
+					raw := feed(t, a, contracts.MuseMethodItemCompleted, map[string]any{"sessionId": "session", "item": map[string]any{
+						"itemId": "attempt", "kind": kind, "revision": 1, "status": scenario.status,
+						"turnId": "turn", "text": "PARTIAL-ATTEMPT-ONE", "tool": "bash",
+					}})
+					sink.PersistErr = nil
+					if failedWrite {
+						feed(t, a, contracts.MuseMethodTurnCompleted, map[string]any{"sessionId": "session", "turnId": "turn", "terminal": "completed"})
+					}
+					require.NotEmpty(t, sink.Messages())
+					message := sink.Messages()[0]
+					assert.Equal(t, raw, message.Content)
+					if kind == "toolCall" {
+						assert.Empty(t, message.Completion)
+					} else {
+						assert.Equal(t, scenario.want, message.Completion)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestMuseCompactionIsLiveUntilItsItemCompletes(t *testing.T) {
+	for _, child := range []bool{false, true} {
+		for _, outcome := range []string{"compacted", "noop", "failed", "cancelled"} {
+			t.Run(fmt.Sprintf("child=%t/outcome=%s", child, outcome), func(t *testing.T) {
+				a, root := testAgent(t)
+				id, sink := "session", root
+				if child {
+					id, sink = "child-session", &agenttest.Sink{}
+					a.sessions[id] = &sessionState{sink: agent.NewProviderServices(sink), childID: "child", items: make(map[string]*itemState), completed: make(map[string]bool)}
+				}
+				item := itemParams{SessionID: id, Item: nativeItem{ID: "compact", Kind: "compaction", Revision: 1, Status: "inProgress", Trigger: "manual"}}
+				raw := feed(t, a, contracts.MuseMethodItemStarted, item)
+				a.HandleOutput(raw)
+				assert.Equal(t, []map[string]interface{}{{contracts.SessionInfoKeyCompaction: map[string]interface{}{contracts.CompactionFieldTrigger: "manual"}}}, sink.SessionInfos())
+				assert.Empty(t, sink.Messages())
+				assert.Empty(t, sink.PersistedNotifications())
+				item.Item.Revision, item.Item.Status, item.Item.Outcome = 2, "completed", outcome
+				raw = feed(t, a, contracts.MuseMethodItemCompleted, item)
+				a.HandleOutput(raw)
+				assert.Equal(t, map[string]interface{}{contracts.SessionInfoKeyCompaction: nil}, sink.LastSessionInfo())
+				require.Len(t, sink.PersistedNotifications(), 1)
+				assert.Equal(t, raw, sink.PersistedNotifications()[0].Content)
+				if child {
+					assert.Empty(t, root.SessionInfos())
+				}
+			})
+		}
+	}
+}
+
+func TestMuseCompactionOutlivesTheModelTurn(t *testing.T) {
+	a, sink := testAgent(t)
+	a.startTurn("session", "turn")
+	feed(t, a, contracts.MuseMethodItemStarted, itemParams{SessionID: "session", Item: nativeItem{ID: "compact", Kind: "compaction", Revision: 1, Status: "inProgress"}})
+	feed(t, a, contracts.MuseMethodTurnCompleted, map[string]any{"sessionId": "session", "turnId": "turn", "terminal": "completed"})
+	assert.Equal(t, map[string]interface{}{contracts.SessionInfoKeyCompaction: map[string]interface{}{}}, sink.LastSessionInfo())
+	assert.Empty(t, sink.LeapMuxNotifications())
+	a.retireHost(agent.MessageCompletionError)
+	assert.Equal(t, map[string]interface{}{contracts.SessionInfoKeyCompaction: nil}, sink.LastSessionInfo())
+}
+
+func TestMuseCompactionEndWithoutStartClearsLiveState(t *testing.T) {
+	a, sink := testAgent(t)
+	feed(t, a, contracts.MuseMethodItemCompleted, itemParams{SessionID: "session", Item: nativeItem{ID: "compact", Kind: "compaction", Revision: 1, Status: "completed", Outcome: "failed"}})
+	assert.Equal(t, map[string]interface{}{contracts.SessionInfoKeyCompaction: nil}, sink.LastSessionInfo())
+	require.Len(t, sink.PersistedNotifications(), 1)
+}
+
+type museCompactionSessionSwitchSink struct {
+	agent.ProviderServices
+	a    *Agent
+	done chan struct{}
+}
+
+func (s *museCompactionSessionSwitchSink) PersistNotification(_ leapmuxv1.MessageSource, _ agent.MessageContent) (bool, error) {
+	locked := make(chan struct{})
+	go func() {
+		s.a.stateMu.Lock()
+		close(locked)
+		s.a.sessionID = "replacement"
+		s.a.stateMu.Unlock()
+		close(s.done)
+	}()
+	<-locked
+	return false, errors.New("The compaction write failed.")
+}
+
+func TestMuseCompactionDoesNotRaceASessionReplacement(t *testing.T) {
+	a, _ := testAgent(t)
+	a.sessions["replacement"] = &sessionState{sink: a.sink, items: make(map[string]*itemState), completed: make(map[string]bool)}
+	done := make(chan struct{})
+	a.sessions["session"].sink = &museCompactionSessionSwitchSink{ProviderServices: a.sink, a: a, done: done}
+	feed(t, a, contracts.MuseMethodItemCompleted, itemParams{SessionID: "session", Item: nativeItem{ID: "compact", Kind: "compaction", Revision: 1, Status: "completed", Outcome: "compacted"}})
+	<-done
+}
+
+func TestMuseSubagentItemStoresNoRow(t *testing.T) {
+	for _, kind := range []string{"subagent", "reminderChild"} {
+		t.Run(kind, func(t *testing.T) {
+			a, sink := testAgent(t)
+			a.startTurn("session", "turn")
+			a.sessions["child"] = &sessionState{sink: a.sink.ChildSink("child-agent"), childID: "child-agent", items: make(map[string]*itemState), completed: make(map[string]bool)}
+			turnID := "turn"
+			item := itemParams{SessionID: "session", Item: nativeItem{ID: "child-item", Kind: kind, Revision: 1, Status: "completed", TurnID: &turnID, ChildSessionID: "child", SubagentID: "native-child", Objective: "Read the code"}}
+			feed(t, a, contracts.MuseMethodItemCompleted, item)
+			assert.Empty(t, sink.Messages())
+			if kind == "subagent" {
+				row, ok := sink.BackgroundTask(bgtask.NormalizeRowKey("session:child:native-child"))
+				require.True(t, ok)
+				assert.Equal(t, bgtask.StatusSucceeded, row.Status)
+				assert.Equal(t, "child-agent", row.ChildAgentID)
+			}
+			feed(t, a, contracts.MuseMethodTurnCompleted, map[string]any{"sessionId": "session", "turnId": "turn", "terminal": "completed"})
+			require.Len(t, sink.Messages(), 1)
+			assert.True(t, sink.Messages()[0].TurnEnd)
+		})
+	}
+}
+
+type museRetryOrderSink struct {
+	agent.ProviderServices
+	rows []string
+}
+
+func (s *museRetryOrderSink) PersistMessage(source leapmuxv1.MessageSource, content agent.MessageContent, span agent.SpanInfo) error {
+	s.rows = append(s.rows, "message")
+	return s.ProviderServices.PersistMessage(source, content, span)
+}
+
+func (s *museRetryOrderSink) PersistNotification(source leapmuxv1.MessageSource, content agent.MessageContent) (bool, error) {
+	s.rows = append(s.rows, "retry")
+	return s.ProviderServices.PersistNotification(source, content)
+}
+
+func (s *museRetryOrderSink) PersistLeapMuxNotification(content map[string]interface{}) {
+	s.rows = append(s.rows, "resolution")
+	s.ProviderServices.PersistLeapMuxNotification(content)
+}
+
+func (s *museRetryOrderSink) PersistTurnEnd(content agent.MessageContent, span agent.SpanInfo) error {
+	s.rows = append(s.rows, "end")
+	return s.ProviderServices.PersistTurnEnd(content, span)
+}
+
+// feedMuseRetryBeforeItemEnd uses the event order recorded in Muse run6.
+func feedMuseRetryBeforeItemEnd(t *testing.T, a *Agent) itemParams {
+	t.Helper()
+	a.startTurn("session", "turn")
+	turn := "turn"
+	item := itemParams{SessionID: "session", Item: nativeItem{ID: "first", Kind: "agentMessage", Revision: 1, Status: "inProgress", TurnID: &turn}}
+	feed(t, a, contracts.MuseMethodItemStarted, item)
+	feed(t, a, contracts.MuseMethodItemDelta, map[string]any{"sessionId": "session", "itemId": "first", "viewCursor": "first", "delta": "partial "})
+	feed(t, a, contracts.MuseMethodTurnRetryScheduled, map[string]any{"sessionId": "session", "turnId": "turn", "nextAttempt": 2})
+	return item
+}
+
+func TestMuseRetryNoticeFollowsTheFailedAttempt(t *testing.T) {
+	a, base := testAgent(t)
+	sink := &museRetryOrderSink{ProviderServices: a.sink}
+	a.sink, a.sessions["session"].sink = sink, sink
+	item := feedMuseRetryBeforeItemEnd(t, a)
+	assert.Empty(t, sink.rows)
+	item.Item.Status, item.Item.Revision, item.Item.Text = "failed", 2, "partial "
+	feed(t, a, contracts.MuseMethodItemCompleted, item)
+	assert.Equal(t, []string{"message", "retry"}, sink.rows)
+	item.Item.ID, item.Item.Status, item.Item.Text, item.Item.Revision = "second", "inProgress", "", 1
+	feed(t, a, contracts.MuseMethodItemStarted, item)
+	feed(t, a, contracts.MuseMethodItemDelta, map[string]any{"sessionId": "session", "itemId": "second", "viewCursor": "second", "delta": "answer"})
+	assert.Equal(t, []string{"message", "retry", "resolution"}, sink.rows)
+	require.Len(t, base.Messages(), 1)
+	assert.Equal(t, agent.MessageCompletionError, base.Messages()[0].Completion)
+}
+
+func TestMuseRetryNoticeSurvivesATurnEndWithoutAnItemEnd(t *testing.T) {
+	a, _ := testAgent(t)
+	sink := &museRetryOrderSink{ProviderServices: a.sink}
+	a.sink, a.sessions["session"].sink = sink, sink
+	feedMuseRetryBeforeItemEnd(t, a)
+	feed(t, a, contracts.MuseMethodTurnCompleted, map[string]any{"sessionId": "session", "turnId": "turn", "terminal": "failed"})
+	assert.Equal(t, []string{"message", "retry", "end"}, sink.rows)
+}
+
+func TestMuseQueuedFailureKeepsTheTurnEndBeforeRelease(t *testing.T) {
+	a, sink := testFinalizationAgent(t)
+	a.sink = agent.NewModelProgressResetSink(a.sink)
+	a.sessions["session"].sink = a.sink
+	feedMuseRetryBeforeItemEnd(t, a)
+	sink.failMessage = 1
+	feed(t, a, contracts.MuseMethodTurnCompleted, map[string]any{"sessionId": "session", "turnId": "turn", "terminal": "failed"})
+	assert.Equal(t, []string{"turn_active:true", "turn_end", "turn_active:false"}, sink.TurnLifecycle())
+	require.Len(t, sink.PersistedNotifications(), 1)
+	require.Len(t, sink.Messages(), 2)
+	assert.True(t, sink.Messages()[1].TurnEnd)
+}
+
+func TestMuseRetryResolvesBeforeTheFirstTool(t *testing.T) {
+	for _, kind := range []string{"toolCall", "userShell"} {
+		t.Run(kind, func(t *testing.T) {
+			a, base := testAgent(t)
+			sink := &museRetryOrderSink{ProviderServices: a.sink}
+			a.sink, a.sessions["session"].sink = sink, sink
+			a.startTurn("session", "turn")
+			feed(t, a, contracts.MuseMethodTurnRetryScheduled, map[string]any{"sessionId": "session", "turnId": "turn", "nextAttempt": 2})
+			turn := "turn"
+			item := itemParams{SessionID: "session", Item: nativeItem{ID: "tool", Kind: kind, Tool: "bash", Revision: 1, Status: "inProgress", TurnID: &turn}}
+			feed(t, a, contracts.MuseMethodItemStarted, item)
+			if kind == "toolCall" {
+				assert.Equal(t, []string{"retry", "resolution", "message"}, sink.rows)
+				require.Len(t, base.LeapMuxNotifications(), 1)
+			} else {
+				assert.Equal(t, []string{"retry", "message"}, sink.rows)
+				assert.Empty(t, base.LeapMuxNotifications(), "a user shell is not model output")
+			}
+		})
+	}
+}
+
+func TestMuseQueuedFailuresHoldAllFinalRows(t *testing.T) {
+	a, sink := testFinalizationAgent(t)
+	a.sink = agent.NewModelProgressResetSink(a.sink)
+	a.sessions["session"].sink = a.sink
+	feedMuseRetryBeforeItemEnd(t, a)
+	sink.failMessage = 100
+	feed(t, a, contracts.MuseMethodTurnCompleted, map[string]any{"sessionId": "session", "turnId": "turn", "terminal": "failed"})
+	assert.Equal(t, []string{"turn_active:true"}, sink.TurnLifecycle())
+	assert.Empty(t, sink.Messages())
+	assert.Empty(t, sink.PersistedNotifications())
+	sink.failMessage = 0
+	require.NoError(t, agent.FlushPendingOutput(a.sink))
+	assert.Equal(t, []string{"turn_active:true", "turn_end", "turn_active:false"}, sink.TurnLifecycle())
+	require.Len(t, sink.PersistedNotifications(), 1)
+	require.Len(t, sink.Messages(), 2)
+	assert.True(t, sink.Messages()[1].TurnEnd)
+}
+
+func TestMuseRetiredItemsKeepRowsWithoutLiveEffects(t *testing.T) {
+	a, sink := testAgent(t)
+	a.sessions["session"].retired = true
+	a.sessionID = "replacement"
+	a.sessions["replacement"] = &sessionState{sink: a.sink, items: make(map[string]*itemState), completed: make(map[string]bool), log: newNativeLog("replacement")}
+	sink.UpdateSessionID("replacement")
+	item := resultItem("old-tool", "call", "origin")
+	item.Item.Revision, item.Item.Status = 1, "inProgress"
+	feed(t, a, contracts.MuseMethodItemStarted, item)
+	item.Item.Revision, item.Item.Status = 2, "completed"
+	feed(t, a, contracts.MuseMethodItemCompleted, item)
+	feed(t, a, contracts.MuseMethodItemCompleted, itemParams{SessionID: "session", Item: nativeItem{ID: "old-workflow", Kind: "workflow", Status: "completed", Revision: 1, WorkflowRunID: "old-run"}})
+	require.Len(t, sink.Messages(), 3)
+	for _, message := range sink.Messages() {
+		assert.Equal(t, "session", message.AgentSessionID)
+	}
+	assert.Empty(t, sink.OpenSpans())
+	assert.Empty(t, sink.ClosedSpans())
+	assert.Empty(t, sink.ProgressUpdates())
+	assert.Empty(t, sink.BackgroundTasks())
+	assert.Empty(t, sink.TurnActiveCalls)
+}
+
+func TestMuseQueuedToolStartOpensItsSpanAfterTheWrite(t *testing.T) {
+	a, sink := testFinalizationAgent(t)
+	a.sink = agent.NewModelProgressResetSink(a.sink)
+	a.sessions["session"].sink = a.sink
+	sink.failMessage = 1
+	item := resultItem("tool", "call", "origin")
+	item.Item.Revision, item.Item.Status = 1, "inProgress"
+	feed(t, a, contracts.MuseMethodItemStarted, item)
+	require.NoError(t, agent.FlushPendingOutput(a.sink))
+	require.Len(t, sink.Messages(), 1)
+	require.Len(t, sink.OpenSpans(), 1)
+	assert.Equal(t, "tool", sink.OpenSpans()[0].SpanID)
+}
+
+func TestMuseHistoricalRetryDoesNotResolveTheCurrentTurn(t *testing.T) {
+	a, sink := testAgent(t)
+	a.startTurn("session", "old-turn")
+	feed(t, a, contracts.MuseMethodTurnCompleted, map[string]any{"sessionId": "session", "turnId": "old-turn", "terminal": "failed"})
+	a.startTurn("session", "current-turn")
+	// A recovered view page can contain a retry notice from an earlier turn.
+	feed(t, a, contracts.MuseMethodTurnRetryScheduled, map[string]any{"sessionId": "session", "turnId": "old-turn", "nextAttempt": 2})
+	turn := "current-turn"
+	feed(t, a, contracts.MuseMethodItemStarted, itemParams{SessionID: "session", Item: nativeItem{ID: "current-answer", Kind: "agentMessage", Revision: 1, Status: "inProgress", TurnID: &turn}})
+	feed(t, a, contracts.MuseMethodItemDelta, map[string]any{"sessionId": "session", "itemId": "current-answer", "viewCursor": "current", "delta": "new answer"})
+	assert.Empty(t, sink.LeapMuxNotifications())
+	require.Len(t, sink.PersistedNotifications(), 1)
 }

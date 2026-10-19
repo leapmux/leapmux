@@ -1,6 +1,8 @@
 package codewhale
 
 import (
+	"errors"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -52,11 +54,11 @@ func TestAMessageWithNoTextKeepsItsStreamedText(t *testing.T) {
 	assert.Equal(t, want, messages[0].Content)
 }
 
-func TestItemsTheReaderDoesNotSeeAreDropped(t *testing.T) {
+func TestKnownInternalItemsAreDroppedAndUnknownItemsPersist(t *testing.T) {
 	t.Parallel()
 	a, sink := newTestAgent(t, nil)
 	// LeapMux already stored the reader's own message.
-	a.HandleOutput(itemEvent(1, "item.completed", "item_1", contracts.CodewhaleItemKindUserMessage, "Say hello.", nil))
+	a.HandleOutput(itemEvent(1, "item.completed", "item_1", itemKindUserMessage, "Say hello.", nil))
 	// The runtime's own loop.
 	for i, summary := range []string{"Continuing — tool results", "Executing tools sequentially (writes)", "Loaded deferred tool 'apply_patch'.", "Policy: Full Access / ACT", "Permissions: Ask · Work"} {
 		a.HandleOutput(itemEvent(uint64(2+i), "item.completed", "item_2", contracts.CodewhaleItemKindStatus, summary, nil))
@@ -66,7 +68,9 @@ func TestItemsTheReaderDoesNotSeeAreDropped(t *testing.T) {
 	a.HandleOutput(runtimeEvent(11, "item.delta", testTurnID, "item_4", map[string]any{"delta": "x", "kind": "tool_call"}))
 	a.HandleOutput(itemEvent(12, "item.completed", "item_5", "a_later_kind", "x", nil))
 
-	assert.Empty(t, sink.Messages())
+	rows := sink.Messages()
+	require.Len(t, rows, 1)
+	assert.Contains(t, string(rows[0].Content), "a_later_kind")
 	assert.Empty(t, sink.PersistedNotifications())
 }
 
@@ -85,9 +89,12 @@ func TestNoticesArePersistedAsNotifications(t *testing.T) {
 	for _, raw := range events {
 		a.HandleOutput(raw)
 	}
+	assert.Len(t, sink.PersistedNotifications(), len(events)-1, "the error waits for its turn")
+	a.HandleOutput(turnCompletedEvent(8, testTurnID, contracts.CodewhaleTurnStatusFailed))
 	notifications := sink.PersistedNotifications()
-	require.Len(t, notifications, len(events))
-	for i, raw := range events {
+	want := [][]byte{events[0], events[1], events[3], events[4], events[5], events[6], events[2]}
+	require.Len(t, notifications, len(want))
+	for i, raw := range want {
 		assert.Equal(t, raw, notifications[i].Content)
 	}
 }
@@ -368,4 +375,345 @@ func TestAToolItemWithNoCallIDPersistsNothing(t *testing.T) {
 	assert.Empty(t, sink.Messages())
 	assert.Empty(t, sink.OpenSpans())
 	assert.Zero(t, a.TurnToolUses)
+}
+
+func errorTurnEnd(seq uint64, turnID string, failure any) []byte {
+	return runtimeEvent(seq, contracts.CodewhaleEventTurnCompleted, turnID, "", map[string]any{"turn": map[string]any{"id": turnID, "status": contracts.CodewhaleTurnStatusFailed, "error": failure}})
+}
+
+func TestCodewhaleErrorItemEqualToTheTurnErrorStoresNoRow(t *testing.T) {
+	t.Parallel()
+	a, sink := newTestAgent(t, nil)
+	// Trimmed shape from .tmp/probe/codewhale/logs/runtime-events.jsonl, frames 56 and 58.
+	a.HandleOutput(itemEvent(1, contracts.CodewhaleEventItemFailed, "error-item", contracts.CodewhaleItemKindError, "  Invalid request (400): probe invalid request ", nil))
+	assert.Empty(t, sink.PersistedNotifications(), "the error waits for its turn outcome")
+	a.HandleOutput(errorTurnEnd(2, testTurnID, "Invalid request (400): probe invalid request"))
+	assert.Empty(t, sink.PersistedNotifications())
+	rows := sink.Messages()
+	require.Len(t, rows, 1)
+	assert.True(t, rows[0].TurnEnd)
+}
+
+func TestCodewhaleErrorItemWithOtherTextKeepsItsRow(t *testing.T) {
+	t.Parallel()
+	a, sink := newTestAgent(t, nil)
+	raw := itemEvent(1, contracts.CodewhaleEventItemFailed, "error-item", contracts.CodewhaleItemKindError, "The first failure.", nil)
+	a.HandleOutput(raw)
+	assert.Empty(t, sink.PersistedNotifications())
+	a.HandleOutput(errorTurnEnd(2, testTurnID, "The final failure."))
+	rows := sink.PersistedNotifications()
+	require.Len(t, rows, 1)
+	assert.Equal(t, raw, rows[0].Content)
+}
+
+func TestCodewhaleHeldErrorPersistsAtExit(t *testing.T) {
+	t.Parallel()
+	a, sink := newTestAgent(t, nil)
+	raw := itemEvent(1, contracts.CodewhaleEventItemFailed, "error-item", contracts.CodewhaleItemKindError, "The process failed.", nil)
+	a.HandleOutput(raw)
+	assert.Empty(t, sink.PersistedNotifications())
+	a.finishAfterExit(agent.MessageCompletionError)
+	a.finishAfterExit(agent.MessageCompletionError)
+	rows := sink.PersistedNotifications()
+	require.Len(t, rows, 1)
+	assert.Equal(t, raw, rows[0].Content)
+}
+
+func TestCodewhaleHeldErrorIsComparedOnlyWithItsOwnTurn(t *testing.T) {
+	t.Parallel()
+	a, sink := newTestAgent(t, nil)
+	raw := itemEvent(1, contracts.CodewhaleEventItemFailed, "error-item", contracts.CodewhaleItemKindError, "The first failure.", nil)
+	a.HandleOutput(raw)
+	a.HandleOutput(errorTurnEnd(2, "another-turn", "The first failure."))
+	assert.Empty(t, sink.PersistedNotifications())
+	a.HandleOutput(errorTurnEnd(3, testTurnID, "Another failure."))
+	rows := sink.PersistedNotifications()
+	require.Len(t, rows, 1)
+	assert.Equal(t, raw, rows[0].Content)
+}
+
+func TestCodewhaleErrorItemUsesItsSummaryWhenDetailIsBlank(t *testing.T) {
+	t.Parallel()
+	a, sink := newTestAgent(t, nil)
+	a.HandleOutput(runtimeEvent(1, contracts.CodewhaleEventItemFailed, testTurnID, "error-item", map[string]any{"item": map[string]any{"id": "error-item", "turn_id": testTurnID, "kind": contracts.CodewhaleItemKindError, "detail": " ", "summary": " The failure. "}}))
+	a.HandleOutput(errorTurnEnd(2, testTurnID, "The failure."))
+	assert.Empty(t, sink.PersistedNotifications())
+}
+
+func TestCodewhaleErrorWithoutATurnPersistsAtOnce(t *testing.T) {
+	t.Parallel()
+	a, sink := newTestAgent(t, nil)
+	raw := runtimeEvent(1, contracts.CodewhaleEventItemFailed, "", "error-item", map[string]any{"item": map[string]any{"id": "error-item", "kind": contracts.CodewhaleItemKindError, "detail": "The unowned error."}})
+	a.HandleOutput(raw)
+	rows := sink.PersistedNotifications()
+	require.Len(t, rows, 1)
+	assert.Equal(t, raw, rows[0].Content)
+}
+
+func TestCodewhaleHeldErrorIsDroppedDuringDiscard(t *testing.T) {
+	t.Parallel()
+	a, sink := newTestAgent(t, nil)
+	a.HandleOutput(itemEvent(1, contracts.CodewhaleEventItemFailed, "error-item", contracts.CodewhaleItemKindError, "The stopped error.", nil))
+	a.DiscardOutput()
+	a.finishAfterExit(agent.MessageCompletionInterrupted)
+	assert.Empty(t, sink.PersistedNotifications())
+}
+
+func TestCodewhaleStreamResumeDiscardsThePartial(t *testing.T) {
+	t.Parallel()
+	// Trimmed from .tmp/probe/codewhale/logs/runtime-events.jsonl, frames 7-19.
+	agenttest.RunRetryAttemptCase(t, agenttest.RetryAttemptCase{
+		Name: "stream resume", FramesPath: "testdata/stream_resume.jsonl",
+		NewAgent: func(t *testing.T, sink *agenttest.Sink) func([]byte) {
+			a, _ := newTestAgentWith(t, nil, testAgentOptions{services: func(agent.ProviderServices) agent.ProviderServices { return agent.NewProviderServices(sink) }})
+			return a.HandleOutput
+		},
+		TextOf: func(row agenttest.Message) (agenttest.RetryAttemptText, bool) {
+			if kind, text, completion, ok := agenttest.DecodeAssembledMessage(row.Content); ok && kind == agent.AssembledMessageKindText {
+				return agenttest.RetryAttemptText{Text: text, Completion: completion}, true
+			}
+			env, ok := parseEnvelope(row.Content)
+			if !ok {
+				return agenttest.RetryAttemptText{}, false
+			}
+			payload, ok := parseItemPayload(env)
+			if !ok || payload.Item.Kind != contracts.CodewhaleItemKindAgentMessage {
+				return agenttest.RetryAttemptText{}, false
+			}
+			return agenttest.RetryAttemptText{Text: payload.Item.Detail, Completion: row.Completion}, true
+		},
+		Want: []agenttest.RetryAttemptText{{Text: "RETRIED-ANSWER", Completion: agent.MessageCompletionComplete}}, Discarded: []string{"DISCARDED-"},
+	})
+}
+
+func TestCodewhaleStreamResumeDiscardsAPartialThought(t *testing.T) {
+	t.Parallel()
+	a, sink := newTestAgent(t, nil)
+	a.HandleOutput(itemEvent(1, contracts.CodewhaleEventItemStarted, "thought-one", contracts.CodewhaleItemKindAgentReasoning, "", nil))
+	a.HandleOutput(runtimeEvent(2, eventItemDelta, testTurnID, "thought-one", map[string]any{"kind": contracts.CodewhaleItemKindAgentReasoning, "delta": "DISCARDED-THOUGHT"}))
+	a.HandleOutput(itemEvent(3, contracts.CodewhaleEventItemStarted, "thought-two", contracts.CodewhaleItemKindAgentReasoning, "", nil))
+	a.HandleOutput(itemEvent(4, contracts.CodewhaleEventItemCompleted, "thought-two", contracts.CodewhaleItemKindAgentReasoning, "The next thought.", nil))
+	a.HandleOutput(turnCompletedEvent(5, testTurnID, contracts.CodewhaleTurnStatusCompleted))
+	rows := sink.Messages()
+	require.Len(t, rows, 2)
+	for _, row := range rows {
+		assert.NotContains(t, string(row.Content), "DISCARDED-")
+	}
+	assert.Contains(t, sink.ProgressUpdates(), agent.ResetModelScopeProgress("thought-one"))
+}
+
+type blockedCodewhaleMessages struct {
+	agent.ProviderServices
+	blocked atomic.Bool
+}
+
+func (s *blockedCodewhaleMessages) PersistMessage(source leapmuxv1.MessageSource, content agent.MessageContent, span agent.SpanInfo) error {
+	if s.blocked.Load() {
+		return errors.New("the controlled message write failed")
+	}
+	return s.ProviderServices.PersistMessage(source, content, span)
+}
+
+func TestCodewhaleStreamResumeKeepsPendingWritesAcrossTurns(t *testing.T) {
+	t.Parallel()
+	var blocked *blockedCodewhaleMessages
+	a, sink := newTestAgentWith(t, nil, testAgentOptions{services: func(inner agent.ProviderServices) agent.ProviderServices {
+		blocked = &blockedCodewhaleMessages{ProviderServices: inner}
+		return blocked
+	}})
+	a.HandleOutput(turnStartedEvent(1, testTurnID))
+	a.HandleOutput(runtimeEvent(2, eventItemDelta, testTurnID, "old-item", map[string]any{"kind": contracts.CodewhaleItemKindAgentMessage, "delta": "RETAINED-ANSWER"}))
+	blocked.blocked.Store(true)
+	a.HandleOutput(turnCompletedEvent(3, testTurnID, contracts.CodewhaleTurnStatusCompleted))
+	assert.Empty(t, sink.Messages())
+	a.HandleOutput(turnStartedEvent(4, "next-turn"))
+	blocked.blocked.Store(false)
+	require.NoError(t, agent.FlushPendingOutput(a.sink))
+	rows := sink.Messages()
+	require.Len(t, rows, 2)
+	_, text, _, ok := agenttest.DecodeAssembledMessage(rows[0].Content)
+	require.True(t, ok)
+	assert.Equal(t, "RETAINED-ANSWER", text)
+	assert.True(t, rows[1].TurnEnd)
+}
+
+func TestCodewhaleStreamResumeRepeatedStartKeepsTheOpenItem(t *testing.T) {
+	t.Parallel()
+	a, sink := newTestAgent(t, nil)
+	a.HandleOutput(itemEvent(1, contracts.CodewhaleEventItemStarted, "text", contracts.CodewhaleItemKindAgentMessage, "", nil))
+	a.HandleOutput(runtimeEvent(2, eventItemDelta, testTurnID, "text", map[string]any{"kind": contracts.CodewhaleItemKindAgentMessage, "delta": "The answer."}))
+	a.HandleOutput(itemEvent(3, contracts.CodewhaleEventItemStarted, "text", contracts.CodewhaleItemKindAgentMessage, "", nil))
+	a.HandleOutput(itemEvent(4, contracts.CodewhaleEventItemCompleted, "text", contracts.CodewhaleItemKindAgentMessage, "", nil))
+	rows := sink.Messages()
+	require.Len(t, rows, 1)
+	_, text, _, ok := agenttest.DecodeAssembledMessage(rows[0].Content)
+	require.True(t, ok)
+	assert.Equal(t, "The answer.", text)
+	completed := 0
+	for _, update := range sink.ProgressUpdates() {
+		if update.Operation == agent.CompleteModelProgress("text").Operation && update.ScopeID == "text" {
+			completed++
+		}
+	}
+	assert.Equal(t, 1, completed)
+}
+
+func TestCodewhaleStreamResumeKeepsTheOtherGeneratedKind(t *testing.T) {
+	t.Parallel()
+	a, sink := newTestAgent(t, nil)
+	a.HandleOutput(itemEvent(1, contracts.CodewhaleEventItemStarted, "text", contracts.CodewhaleItemKindAgentMessage, "", nil))
+	a.HandleOutput(runtimeEvent(2, eventItemDelta, testTurnID, "text", map[string]any{"kind": contracts.CodewhaleItemKindAgentMessage, "delta": "The answer."}))
+	a.HandleOutput(itemEvent(3, contracts.CodewhaleEventItemStarted, "thought", contracts.CodewhaleItemKindAgentReasoning, "", nil))
+	a.HandleOutput(runtimeEvent(4, eventItemDelta, testTurnID, "thought", map[string]any{"kind": contracts.CodewhaleItemKindAgentReasoning, "delta": "The thought."}))
+	a.HandleOutput(turnCompletedEvent(5, testTurnID, contracts.CodewhaleTurnStatusCompleted))
+	rows := sink.Messages()
+	require.Len(t, rows, 3)
+	for i, want := range []string{"The answer.", "The thought."} {
+		_, text, _, ok := agenttest.DecodeAssembledMessage(rows[i].Content)
+		require.True(t, ok)
+		assert.Equal(t, want, text)
+	}
+}
+
+func TestCodewhaleStreamResumeLateFinalKeepsTheCurrentItemIdentity(t *testing.T) {
+	t.Parallel()
+	a, sink := newTestAgent(t, nil)
+	a.HandleOutput(itemEvent(1, contracts.CodewhaleEventItemStarted, "old", contracts.CodewhaleItemKindAgentMessage, "", nil))
+	a.HandleOutput(itemEvent(2, contracts.CodewhaleEventItemStarted, "second", contracts.CodewhaleItemKindAgentMessage, "", nil))
+	a.HandleOutput(runtimeEvent(3, eventItemDelta, testTurnID, "second", map[string]any{"kind": contracts.CodewhaleItemKindAgentMessage, "delta": "DISCARDED-SECOND"}))
+	a.HandleOutput(itemEvent(4, contracts.CodewhaleEventItemInterrupted, "old", contracts.CodewhaleItemKindAgentMessage, "", nil))
+	a.HandleOutput(itemEvent(5, contracts.CodewhaleEventItemStarted, "third", contracts.CodewhaleItemKindAgentMessage, "", nil))
+	a.HandleOutput(itemEvent(6, contracts.CodewhaleEventItemCompleted, "third", contracts.CodewhaleItemKindAgentMessage, "The third answer.", nil))
+	a.HandleOutput(turnCompletedEvent(7, testTurnID, contracts.CodewhaleTurnStatusCompleted))
+	rows := sink.Messages()
+	require.Len(t, rows, 2)
+	for _, row := range rows {
+		assert.NotContains(t, string(row.Content), "DISCARDED-")
+	}
+}
+
+func TestCodewhaleAutomaticCompactionStartIsLive(t *testing.T) {
+	t.Parallel()
+	a, sink := newTestAgent(t, nil)
+	a.HandleOutput(turnStartedEvent(1, testTurnID))
+	a.HandleOutput(itemEvent(2, contracts.CodewhaleEventItemStarted, "compact", contracts.CodewhaleItemKindContextCompaction, "", nil))
+	value, exists := sink.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
+	require.True(t, exists)
+	assert.Equal(t, map[string]any{}, value)
+	assert.Empty(t, sink.Messages())
+	assert.Empty(t, sink.PersistedNotifications())
+}
+
+func TestCodewhaleCompactionTurnWithoutANativeEndWritesAnEnd(t *testing.T) {
+	t.Parallel()
+	for _, status := range []string{contracts.CodewhaleTurnStatusCompleted, contracts.CodewhaleTurnStatusFailed, contracts.CodewhaleTurnStatusInterrupted, contracts.CodewhaleTurnStatusCanceled} {
+		t.Run(status, func(t *testing.T) {
+			a, sink := newTestAgent(t, nil)
+			a.HandleOutput(turnStartedEvent(1, testTurnID))
+			a.HandleOutput(itemEvent(2, contracts.CodewhaleEventItemStarted, "compact", contracts.CodewhaleItemKindContextCompaction, "", nil))
+			a.HandleOutput(turnCompletedEvent(3, testTurnID, status))
+			value, exists := sink.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
+			require.True(t, exists)
+			assert.Nil(t, value)
+			notices := sink.Notifications()
+			require.Len(t, notices, 1)
+			outcome := contracts.CompactionEndOutcomeFailed
+			if status == contracts.CodewhaleTurnStatusInterrupted || status == contracts.CodewhaleTurnStatusCanceled {
+				outcome = contracts.CompactionEndOutcomeAborted
+			}
+			assert.Equal(t, contracts.NotificationTypeCompactionEnded, notices[0][contracts.NotificationFieldType])
+			assert.Equal(t, outcome, notices[0][contracts.NotificationFieldOutcome])
+			assert.NotContains(t, notices[0], contracts.NotificationFieldError)
+		})
+	}
+}
+
+func TestCodewhaleStaleTurnEndKeepsCurrentCompactionAndText(t *testing.T) {
+	t.Parallel()
+	a, sink := newTestAgent(t, nil)
+	a.HandleOutput(turnStartedEvent(1, testTurnID))
+	a.HandleOutput(itemEvent(2, contracts.CodewhaleEventItemStarted, "compact", contracts.CodewhaleItemKindContextCompaction, "", nil))
+	a.HandleOutput(runtimeEvent(3, eventItemDelta, testTurnID, "text", map[string]any{"kind": contracts.CodewhaleItemKindAgentMessage, "delta": "The current text."}))
+	a.HandleOutput(turnCompletedEvent(4, "old-turn", contracts.CodewhaleTurnStatusCompleted))
+	_, text, present := a.generationBuffer.ScopeSnapshot("text")
+	assert.True(t, present)
+	assert.Equal(t, "The current text.", text)
+	assert.Empty(t, sink.Messages())
+	value, exists := sink.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
+	require.True(t, exists)
+	assert.Equal(t, map[string]any{}, value)
+	assert.False(t, a.markTurnStarted("old-turn"))
+}
+
+func TestCodewhaleOrdinaryTurnCreatesNoCompactionState(t *testing.T) {
+	t.Parallel()
+	a, sink := newTestAgent(t, nil)
+	a.HandleOutput(turnStartedEvent(1, testTurnID))
+	a.HandleOutput(turnCompletedEvent(2, testTurnID, contracts.CodewhaleTurnStatusCompleted))
+	_, exists := sink.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
+	assert.False(t, exists)
+}
+
+func TestCodewhaleCompactionExitClearsTheLiveState(t *testing.T) {
+	t.Parallel()
+	a, sink := newTestAgent(t, nil)
+	a.HandleOutput(turnStartedEvent(1, testTurnID))
+	a.HandleOutput(itemEvent(2, contracts.CodewhaleEventItemStarted, "compact", contracts.CodewhaleItemKindContextCompaction, "", nil))
+	a.finishAfterExit(agent.MessageCompletionError)
+	value, exists := sink.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
+	require.True(t, exists)
+	assert.Nil(t, value)
+	assert.Empty(t, sink.PersistedNotifications())
+	assert.Empty(t, sink.Notifications())
+}
+
+func TestCodewhaleRepeatedTurnEndRetriesOnlyThePendingWrites(t *testing.T) {
+	t.Parallel()
+	var blocked *blockedCodewhaleMessages
+	a, sink := newTestAgentWith(t, nil, testAgentOptions{services: func(inner agent.ProviderServices) agent.ProviderServices {
+		blocked = &blockedCodewhaleMessages{ProviderServices: inner}
+		return blocked
+	}})
+	a.HandleOutput(turnStartedEvent(1, testTurnID))
+	a.HandleOutput(runtimeEvent(2, eventItemDelta, testTurnID, "text", map[string]any{"kind": contracts.CodewhaleItemKindAgentMessage, "delta": "The retained answer."}))
+	blocked.blocked.Store(true)
+	a.HandleOutput(turnCompletedEvent(3, testTurnID, contracts.CodewhaleTurnStatusCompleted))
+	assert.Empty(t, sink.Messages())
+	blocked.blocked.Store(false)
+	a.HandleOutput(turnCompletedEvent(4, testTurnID, contracts.CodewhaleTurnStatusCompleted))
+	rows := sink.Messages()
+	require.Len(t, rows, 2)
+	_, text, _, ok := agenttest.DecodeAssembledMessage(rows[0].Content)
+	require.True(t, ok)
+	assert.Equal(t, "The retained answer.", text)
+	assert.True(t, rows[1].TurnEnd)
+	a.HandleOutput(turnCompletedEvent(5, testTurnID, contracts.CodewhaleTurnStatusCompleted))
+	assert.Len(t, sink.Messages(), 2)
+}
+
+func TestCodewhaleKnownToolKindsWithoutIdentityStayInternal(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{contracts.CodewhaleItemKindToolCall, contracts.CodewhaleItemKindFileChange, contracts.CodewhaleItemKindCommandExecution} {
+		t.Run(kind, func(t *testing.T) {
+			a, sink := newTestAgent(t, nil)
+			a.HandleOutput(itemEvent(1, contracts.CodewhaleEventItemStarted, "incomplete", kind, "", nil))
+			a.HandleOutput(itemEvent(2, contracts.CodewhaleEventItemCompleted, "incomplete", kind, "", nil))
+			assert.Empty(t, sink.Messages())
+			assert.Empty(t, sink.OpenSpans())
+		})
+	}
+}
+
+func TestCodewhaleInvalidRequestSnapshotKeepsOpenOutput(t *testing.T) {
+	t.Parallel()
+	for _, snapshot := range []any{nil, map[string]any{}, map[string]any{"turn_id": map[string]any{"value": "engine", "truncated": false}, "step": -1}, map[string]any{"turn_id": map[string]any{"value": "engine", "truncated": true}, "step": 0}, map[string]any{"turn_id": map[string]any{"value": "engine"}, "step": 0}} {
+		a, sink := newTestAgent(t, nil)
+		a.HandleOutput(turnStartedEvent(1, testTurnID))
+		a.HandleOutput(runtimeEvent(2, eventItemDelta, testTurnID, "answer", map[string]any{"kind": contracts.CodewhaleItemKindAgentMessage, "delta": "The open answer."}))
+		a.HandleOutput(runtimeEvent(3, eventModelToolsSnapshot, testTurnID, "", map[string]any{"snapshot": snapshot}))
+		_, text, present := a.generationBuffer.ScopeSnapshot("answer")
+		assert.True(t, present)
+		assert.Equal(t, "The open answer.", text)
+		assert.Empty(t, sink.Messages())
+	}
 }

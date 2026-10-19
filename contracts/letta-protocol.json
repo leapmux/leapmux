@@ -1,5 +1,5 @@
 {
-  "_readme": "Letta Code uses a protocol_v2 App Server through `letta server --listen`. Go and TypeScript read these wire values. The Worker stores native `stream_delta` payloads. A message with several tool calls produces one native payload per call. The browser plugin reads the same `message_type` and `deltaFields`.\n\n`commands` identifies client commands. `messages` identifies server messages. The browser reads `update_subagent_state` to draw nothing for it, because the Worker draws each child as its own rows and tab. `deltaKinds` identifies stream message types. `tools` identifies native tools that both sides use. The Worker opens child rows for `Agent`, and it posts a question request when an `AskUserQuestion` call returns its receipt. The Worker streams `Bash` output, and the plugin draws the tools.\n\n`subagentStates` identifies child lifecycle values. `loopStatuses` identifies busy states. Letta owns these values except `modes` and `reply`. LeapMux owns `modes`, which maps permission choices to `runtime_start.mode`. LeapMux owns the flat browser decision fields in `reply`.\n\n`question` identifies the receipt that an accepted `AskUserQuestion` call returns and the response that answers it. Letta Code owns these words. The Worker reads the receipt and writes the response. The browser reads the saved response to draw the answer. The browser reads the `message` of the receipt to draw the result of the call. `stopReasons` identifies the `stop_reason` words of `turn_finished` that the Worker records as an interrupted turn or a failed turn.\n\n`kind`, `request_id`, and `decision` stay at the top level. They never appear under `response`. Native `client_tool_start` uses serialized `tool_args`. The separate browser control payload uses `tool_input`.\n\nThe Worker preserves each original native final return. Letta can report an output file path in its native final footer. The browser shows that path beside the original preview. LeapMux reads no output file. `toolOutput.StreamIDPrefix` identifies native current-window progress. Only the exact prefix plus `tool_call_id` identifies progress. Genuine final returns also use synthetic IDs. `toolStatuses` identifies native result status. `deltaFields.ID`, `RunID`, and `ToolReturns` retain the native message, run, and composite result identities. An empty client_tool_end carries lifecycle state. Actual returned data remains present when its value is empty, zero, false, or null.",
+  "_readme": "Letta Code uses a protocol_v2 App Server through `letta server --listen`. Go and TypeScript read these wire values. The Worker stores native `stream_delta` payloads. A message with several tool calls produces one native payload per call. The browser plugin reads the same `message_type` and `deltaFields`.\n\n`commands` identifies client command types. `messages` identifies server message types. The Worker consumes child snapshots and publishes registry state without storing a transcript row. `deltaKinds` identifies stream message types. `tools` identifies native tools that both sides use. The Worker opens child rows for `Agent`, and it posts a question request when an `AskUserQuestion` call returns its receipt. The Worker streams `Bash` output, and the plugin draws the tools.\n\n`subagentStates` identifies child lifecycle values. `loopStatuses` identifies busy states. Letta owns these values except `modes` and `reply`. LeapMux owns `modes`, which maps permission choices to `runtime_start.mode`. LeapMux owns the flat browser decision fields in `reply`.\n\n`question` identifies the receipt that an accepted `AskUserQuestion` call returns and the response that answers it. Letta Code owns these words. The Worker reads the receipt and writes the response. The browser reads the saved response to draw the answer. The browser reads the `message` of the receipt to draw the result of the call. `stopReasons` identifies the `stop_reason` words of `turn_finished` that the Worker records as an interrupted turn or a failed turn.\n\n`kind`, `request_id`, and `decision` stay at the top level. They never appear under `response`. Native `client_tool_start` uses serialized `tool_args`. The separate browser control payload uses `tool_input`.\n\nThe Worker preserves each original native final return. Letta can report an output file path in its native final footer. The browser shows that path beside the original preview. LeapMux reads no output file. `toolOutput.StreamIDPrefix` identifies native current-window progress. Only the exact prefix plus `tool_call_id` identifies progress. Genuine final returns also use synthetic IDs. `toolStatuses` identifies native result status. `deltaFields.ID`, `RunID`, and `ToolReturns` retain the native message, run, and composite result identities. An empty client_tool_end carries lifecycle state. Actual returned data remains present when its value is empty, zero, false, or null. The eventTypes table identifies native event_message variants. Retry notices use the shared retry model. Unknown notices produce no raw JSON text. Compaction event messages publish live state. Summary messages supply stored compaction boundaries and optional token counts.",
   "_unread": {
     "commands": {
       "AbortMessage": {
@@ -77,12 +77,6 @@
         "why": "The Worker stores the complete native frame. The browser draws the frame from the stored bytes. The specified sides do not compare this value."
       },
       "InputAccepted": {
-        "sides": [
-          "ts"
-        ],
-        "why": "The Worker stores the complete native frame. The browser draws the frame from the stored bytes. The specified sides do not compare this value."
-      },
-      "LoopError": {
         "sides": [
           "ts"
         ],
@@ -175,6 +169,18 @@
           "go"
         ],
         "why": "The Worker preserves native tool_args bytes without interpreting file or command arguments. The browser plugin extracts those arguments."
+      },
+      "EventData": {
+        "sides": [
+          "go"
+        ],
+        "why": "Go decodes this field through a struct tag, which contract_tags_test.go pins to the generated key."
+      },
+      "Error": {
+        "sides": [
+          "go"
+        ],
+        "why": "Go decodes this field through the turn-finished struct tag; contract_tags_test.go pins that tag to the generated key."
       }
     },
     "subagentStates": {
@@ -303,7 +309,6 @@
     "UpdateLoopStatus": "update_loop_status",
     "AbortMessageResponse": "abort_message_response",
     "UpdateQueue": "update_queue",
-    "LoopError": "loop_error",
     "AppServerInfoResponse": "app_server_info_response"
   },
   "deltaKinds": {
@@ -318,10 +323,11 @@
     "ClientToolEnd": "client_tool_end",
     "Status": "status",
     "Retry": "retry",
-    "LoopError": "loop_error"
+    "LoopError": "loop_error",
+    "EventMessage": "event_message",
+    "SummaryMessage": "summary_message"
   },
   "deltaFields": {
-    "Kind": "kind",
     "MessageType": "message_type",
     "SubagentID": "subagent_id",
     "Runtime": "runtime",
@@ -343,7 +349,12 @@
     "ToolArgs": "tool_args",
     "ID": "id",
     "RunID": "run_id",
-    "ToolReturns": "tool_returns"
+    "ToolReturns": "tool_returns",
+    "EventType": "event_type",
+    "EventData": "event_data",
+    "Message": "message",
+    "Error": "error",
+    "Trigger": "trigger"
   },
   "tools": {
     "Bash": "Bash",
@@ -417,5 +428,9 @@
   "toolStatuses": {
     "Success": "success",
     "Error": "error"
+  },
+  "eventTypes": {
+    "Retry": "retry",
+    "Compaction": "compaction"
   }
 }

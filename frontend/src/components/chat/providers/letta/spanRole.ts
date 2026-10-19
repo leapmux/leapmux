@@ -9,8 +9,7 @@ import { isLettaToolProgress, lettaReturnedData, lettaToolPayload } from './tool
  * Current output windows and empty lifecycle ends supply no result.
  * Actual returned data keeps the result role.
  *
- * The worker persists a native payload for each tool call. A raw frame wraps
- * its payload under `payload`, so normalize before reading.
+ * The worker stores one native delta for each tool call. Read its fields directly.
  */
 export function lettaSpanRole(parsed: ResolvedMessageContent): ToolSpanRole {
   const source = lettaToolPayload(parsed.parentObject)

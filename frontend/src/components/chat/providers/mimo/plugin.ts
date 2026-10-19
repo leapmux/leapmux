@@ -2,7 +2,7 @@ import type { ProviderPlugin } from '../capabilities'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { registerProvider } from '../registry'
 import { classifyMiMoMessage } from './classification'
-import { mimoNotificationEntry } from './extractors/notification'
+import { mimoCompactionStart, mimoNotificationEntry } from './extractors/notification'
 import { mimoOutputFilePaths } from './extractors/outputFilePaths'
 import { mimoResultDivider } from './extractors/resultDivider'
 import { mimoExtractRow } from './extractors/row'
@@ -18,6 +18,7 @@ const mimoPlugin: ProviderPlugin = {
     classify: classifyMiMoMessage,
     extractRow: mimoExtractRow,
     notificationEntry: mimoNotificationEntry,
+    compactionStart: mimoCompactionStart,
     extractDivider: mimoResultDivider,
   },
   controls: mimoControls,

@@ -424,6 +424,7 @@ func (a *Agent) handleActorStatus(event mimoEvent) {
 	case contracts.MiMoActorStatusRunning:
 		a.startActorTurn(payload.ActorID, wasRunning, wasClosed)
 	case contracts.MiMoActorStatusIdle:
+		a.retryForActor(payload.ActorID).Reset()
 		if wasRunning || !wasClosed {
 			a.endActorTurn(payload)
 		}
@@ -472,6 +473,7 @@ func (a *Agent) publishChildTurn(actor *mimoActor, sessionID string) {
 // endActorTurn persists unfinished output and updates the actor's registry outcome.
 // A background actor also reports its last text to the parent.
 func (a *Agent) endActorTurn(payload mimoActorStatus) {
+	a.endLiveCompactions(payload.ActorID)
 	status, completion := actorOutcomeStatus(payload.LastOutcome)
 	a.flushActorText(payload.ActorID, completion)
 	a.closeUnfinishedTools(payload.ActorID, completion)

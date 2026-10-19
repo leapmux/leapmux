@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/coder/quartz"
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
@@ -58,9 +57,10 @@ func startServer(ctx context.Context, opts agent.Options, sink agent.ProviderSer
 		Process:          providerkit.NewProcess(opts, providerkit.ProcessLaunch{ProviderName: "kimi", ShutdownGrace: shutdownGrace, PreambleDelimiter: preambleDelimiter, PreambleMetaPrefix: metaPrefix}, pipes, ctx, cancel),
 		sink:             agent.NewModelProgressResetSink(sink),
 		workingDir:       opts.WorkingDir,
-		clock:            quartz.NewReal(),
 		descendantGroups: kimiDescendantGroups,
 	}
+	a.clock = a.Clock()
+	a.serverLaunchedAt = a.clock.Now()
 	if err := a.StartCmd(); err != nil {
 		return nil, err
 	}
@@ -98,6 +98,8 @@ func startServer(ctx context.Context, opts agent.Options, sink agent.ProviderSer
 	sessionID := a.sessionID
 	a.Mu.Unlock()
 	a.sink.UpdateSessionID(sessionID)
+	a.replayStartupConfigWarnings(ctx)
+	a.persistSessionWarnings(ctx, sessionID)
 	a.sink.PersistSettingsRefresh(agent.CurrentOptions(a.OptionGroups()))
 	a.sink.BroadcastStatusActive(sessionID)
 	return a, nil

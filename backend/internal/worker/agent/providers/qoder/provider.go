@@ -15,6 +15,23 @@ type qoderProvider struct {
 	agent.ProviderDefaults
 }
 
+// Classify folds retries and model queue notices. A native compaction end is a boundary.
+func (qoderProvider) Classify(raw json.RawMessage) agent.NotificationClassification {
+	if providerkit.StringField(raw, "type") != contracts.QoderFrameKindSystem {
+		return agent.NotificationClassification{}
+	}
+	switch providerkit.StringField(raw, "subtype") {
+	case contracts.QoderSystemSubtypeCompactBoundary:
+		return agent.CompactionBoundaryNotification()
+	case contracts.QoderSystemSubtypeApiRetry:
+		return agent.APIRetryNotification()
+	case contracts.QoderSystemSubtypeModelQueueStatus:
+		return agent.ProviderScopedNotification("qoder:model-queue")
+	default:
+		return agent.NotificationClassification{}
+	}
+}
+
 // ValidateAttachment permits only the content blocks Qoder's stream input reads.
 func (qoderProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
 	if err := providerkit.RejectPDFAndBinaryAttachment("Qoder CLI", attachment); err != nil {

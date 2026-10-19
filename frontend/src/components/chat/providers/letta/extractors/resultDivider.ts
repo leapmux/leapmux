@@ -1,8 +1,9 @@
 import type { TurnEnd } from '../../../model/divider'
-import { LETTA_MESSAGE } from '~/generated/contracts/letta-protocol'
+import { LETTA_DELTA_FIELD, LETTA_MESSAGE } from '~/generated/contracts/letta-protocol'
 import { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { isObject, pickString } from '~/lib/jsonPick'
 import { turnEndLabel } from '../../../turnEndLabel'
+import { lettaErrorWords } from './notification'
 
 /**
  * The turn-end divider of a Letta Code turn.
@@ -20,13 +21,16 @@ export function lettaResultDivider(parsed: unknown, completion?: MessageCompleti
   // The wire discriminator is `type`, not `kind`, on every protocol_v2
   // message. A `turn_finished` read from `kind` is not recognized and the turn
   // end draws nothing.
-  if (!isObject(parsed) || (pickString(parsed, 'type') || pickString(parsed, 'kind')) !== LETTA_MESSAGE.TurnFinished)
+  if (!isObject(parsed) || pickString(parsed, 'type') !== LETTA_MESSAGE.TurnFinished)
     return null
   switch (completion) {
     case MessageCompletion.INTERRUPTED:
       return { label: turnEndLabel('interrupted') }
-    case MessageCompletion.ERROR:
-      return { label: turnEndLabel('failed'), isError: true }
+    case MessageCompletion.ERROR: {
+      const [head, ...lines] = lettaErrorWords(pickString(parsed, LETTA_DELTA_FIELD.Error)).split('\n')
+      const detail = lines.join('\n').trim()
+      return { label: `${turnEndLabel('failed')}${head ? ` — ${head}` : ''}`, isError: true, ...(detail ? { detail } : {}) }
+    }
     default:
       return { label: turnEndLabel('ended') }
   }

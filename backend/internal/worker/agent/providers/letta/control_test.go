@@ -27,7 +27,7 @@ func TestBypassApprovesPendingAndLaterToolsButKeepsPostedQuestions(t *testing.T)
 	sink := &agenttest.ControlSink{}
 	a.sink = agent.NewProviderServices(sink)
 	a.settings.permissionMode = contracts.LettaModeStandard
-	a.armTurn()
+	a.setTurnActive(true)
 	a.HandleOutput(permissionFrame("first", contracts.LettaToolBash, "shell-1"))
 	a.HandleOutput(permissionFrame("second", contracts.LettaToolAskUserQuestion, "ask-1"))
 	for _, frame := range receiptFrames() {
@@ -160,7 +160,7 @@ func TestMissingPermissionIDUsesTheNativeToolCallIdentity(t *testing.T) {
 }
 
 // Letta Code 0.34 made AskUserQuestion asynchronous. The tool belongs to no
-// built-in toolset any more: a client that wants it names it in
+// built-in toolset any more: a client that wants it lists it in
 // `client_toolset.include` on each `create_message` input, and the server
 // answers "Tool not found: AskUserQuestion" otherwise. The tool posts its
 // questions and returns a receipt at once. No `control_request` frame carries
@@ -296,7 +296,7 @@ func sentClientMessageID(t *testing.T, payload map[string]any) string {
 
 // The App Server gives the echo of a queued message the `client_message_id` of
 // that message as its `otid` (see TestEchoOfAQueuedMessageTheReaderSentIsNotARow).
-// The echo therefore names the message that it repeats only when the worker
+// The echo therefore identifies the message that it repeats only when the worker
 // stated an id on the way in, and each message needs an id of its own: the App
 // Server drops an input whose id it accepted already.
 func TestEveryUserMessageStatesItsOwnClientMessageID(t *testing.T) {
@@ -307,6 +307,7 @@ func TestEveryUserMessageStatesItsOwnClientMessageID(t *testing.T) {
 	first := sentClientMessageID(t, inputPayload(t, fake))
 	// The turn ends, so the agent takes the next message.
 	a.HandleOutput([]byte(`{"type":"update_loop_status","loop_status":{"status":"WAITING_ON_INPUT","active_run_ids":[],"executing_tool_call_ids":[]},"runtime":{"agent_id":"agent-local-1","conversation_id":"local-conv-1"}}`))
+	a.HandleOutput([]byte(`{"type":"turn_finished","turn_id":"first-input-turn","stop_reason":"end_turn"}`))
 	require.NoError(t, a.SendInput("Second message.", nil))
 	second := sentClientMessageID(t, inputPayload(t, fake))
 
@@ -646,7 +647,7 @@ func TestEchoOfAnAnswerFromAnotherSenderStaysARow(t *testing.T) {
 	assert.Len(t, sink.Messages(), 1, "an answer that LeapMux did not send is a row")
 }
 
-// The answer to a question is a message too. Its echo names the id of the
+// The answer to a question is a message too. Its echo gives the ID of the
 // answer, so the identity skips it whatever its text is.
 func TestEchoOfAQuestionAnswerStatesTheIDOfTheAnswer(t *testing.T) {
 	t.Parallel()

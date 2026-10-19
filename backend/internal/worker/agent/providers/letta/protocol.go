@@ -21,6 +21,13 @@ import (
 // is the transport: the ready-line pattern, the envelope fields the worker
 // writes, and the launch arguments. No browser code reads any of them.
 
+// These deltas repeat a tool/control row or carry protocol state only.
+const (
+	lettaDeltaApprovalRequestMessage    = "approval_request_message"
+	lettaDeltaApprovalClassificationEnd = "approval_classification_end"
+	lettaDeltaErrorMessage              = "error_message"
+)
+
 // lettaBinaryName is the program the provider launches.
 const lettaBinaryName = "letta"
 
@@ -52,9 +59,8 @@ type lettaCommand struct {
 	RequestID      string        `json:"request_id,omitempty"`
 	Payload        any           `json:"payload,omitempty"`
 	// runtime_start puts its fields at the top level, not under payload.
-	// A resume names an EXISTING pair (agent_id + conversation_id) and never
-	// sets the create_* fields: the protocol makes each pair mutually
-	// exclusive. The create path is the mirror image.
+	// A resume identifies an existing agent and conversation. It omits both create_* fields.
+	// The create path supplies create_* fields and omits the existing IDs.
 	AgentID            string         `json:"agent_id,omitempty"`
 	ConversationID     string         `json:"conversation_id,omitempty"`
 	CreateAgent        map[string]any `json:"create_agent,omitempty"`
@@ -88,7 +94,7 @@ const (
 // lettaClientToolset is the `client_toolset` of every `create_message` input.
 //
 // Since Letta Code 0.34 no built-in toolset holds AskUserQuestion. A client that
-// answers questions names the tool in `include` on each input, and the server
+// answers questions lists the tool in `include` on each input, and the server
 // answers "Tool not found: AskUserQuestion" to a call that no input offered. A
 // function returns the map, so no caller shares or changes one copy.
 func lettaClientToolset() map[string]any {

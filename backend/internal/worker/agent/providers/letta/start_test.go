@@ -18,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/internal/util/optionmap"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -56,6 +57,11 @@ func newFakeAppServer(t *testing.T) (*fakeAppServer, *Agent) {
 // newFakeAppServerWithSink is newFakeAppServer for a test that reads the rows
 // that the agent stores.
 func newFakeAppServerWithSink(t *testing.T, sink *agenttest.Sink) (*fakeAppServer, *Agent) {
+	t.Helper()
+	return newFakeAppServerWithClock(t, sink, quartz.NewReal())
+}
+
+func newFakeAppServerWithClock(t *testing.T, sink *agenttest.Sink, clock quartz.Clock) (*fakeAppServer, *Agent) {
 	t.Helper()
 	fake := &fakeAppServer{
 		commands: make(chan map[string]any, 8),
@@ -120,9 +126,9 @@ func newFakeAppServerWithSink(t *testing.T, sink *agenttest.Sink) (*fakeAppServe
 	conn, err := dial(ctx, "ws"+strings.TrimPrefix(fake.server.URL, "http"))
 	require.NoError(t, err)
 	t.Cleanup(func() {
+		cancel()
 		close(fake.done)
 		conn.close()
-		cancel()
 	})
 
 	a := &Agent{
@@ -132,15 +138,91 @@ func newFakeAppServerWithSink(t *testing.T, sink *agenttest.Sink) (*fakeAppServe
 			Ctx:          ctx,
 			Cancel:       cancel,
 			Stdin:        nopWriteCloser{},
+			Clock:        clock,
 		}),
-		sink:  agent.NewProviderServices(sink),
-		ws:    conn,
-		clock: quartz.NewReal(),
+		sink:          agent.NewProviderServices(sink),
+		ws:            conn,
+		cancelRuntime: cancel,
 	}
 	// The readLoop is what dispatches the response onto adoptRuntime. Start
 	// starts it before openConversation; the test must too.
 	go func() { a.readLoop(ctx, conn); close(fake.readDone) }()
 	return fake, a
+}
+
+func TestLettaRuntimeWaitTimesOutOnTheInjectedClock(t *testing.T) {
+	t.Parallel()
+	clock := testutil.NewQuartzMock(t)
+	fake, a := newFakeAppServerWithClock(t, &agenttest.Sink{}, clock)
+	trap := clock.Trap().NewTimer(providerkit.AwaitSignalTimerTag, "letta runtime")
+	defer trap.Close()
+	options := newTestOptions()
+	options.StartupTimeout = time.Hour
+	result := make(chan error, 1)
+	go func() { result <- a.openConversation(options) }()
+	assert.Equal(t, "runtime_start", fake.nextCommand(t)["type"])
+	ctx := testutil.DeadlineContext(t)
+	wait := testutil.WaitForTimer(t, ctx, trap)
+	assert.Equal(t, time.Hour, wait)
+	clock.Advance(wait).MustWait(ctx)
+	select {
+	case err := <-result:
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "within")
+	case <-ctx.Done():
+		t.Fatal("the runtime wait did not end at the injected deadline")
+	}
+}
+
+func TestLettaRuntimeWaitOutcomeWinsAgainstTheExit(t *testing.T) {
+	t.Parallel()
+	waiter := newRuntimeWaiter()
+	waiter.settle(nil)
+	exited := make(chan struct{})
+	close(exited)
+	assert.NoError(t, waiter.wait(t.Context(), testutil.NewQuartzMock(t), exited, time.Hour))
+}
+
+func TestLettaSocketLossEndsTheRuntimeAndSettlesCatalog(t *testing.T) {
+	t.Parallel()
+	clock := testutil.NewQuartzMock(t)
+	fake, a := newFakeAppServerWithClock(t, &agenttest.Sink{}, clock)
+	trap := clock.Trap().NewTimer(providerkit.AwaitSignalTimerTag, "letta runtime")
+	defer trap.Close()
+	result := make(chan error, 1)
+	go func() { result <- a.loadModelCatalog(time.Hour) }()
+	assert.Equal(t, "list_models", fake.nextCommand(t)["type"])
+	ctx := testutil.DeadlineContext(t)
+	testutil.WaitForTimer(t, ctx, trap)
+	a.ws.close()
+	select {
+	case err := <-result:
+		require.ErrorContains(t, err, "WebSocket")
+	case <-ctx.Done():
+		t.Fatal("the catalog wait continued after the native socket closed")
+	}
+	select {
+	case <-a.Context().Done():
+	case <-ctx.Done():
+		t.Fatal("the native runtime continued without its socket reader")
+	}
+	a.SimulateExitForTest()
+	require.ErrorContains(t, a.Wait(), "WebSocket")
+}
+
+func TestLettaRequestedStopDoesNotReportSocketFailure(t *testing.T) {
+	t.Parallel()
+	fake, a := newFakeAppServer(t)
+	a.SetStoppedForTest(true)
+	a.ws.close()
+	ctx := testutil.DeadlineContext(t)
+	select {
+	case <-fake.readDone:
+	case <-ctx.Done():
+		t.Fatal("the socket reader did not end after the requested stop")
+	}
+	a.SimulateExitForTest()
+	require.NoError(t, a.Wait())
 }
 
 // newTestOptions returns the options openConversation reads.

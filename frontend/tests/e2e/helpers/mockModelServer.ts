@@ -96,9 +96,11 @@ export interface MockModelServerOptions {
   /** The model identifiers the catalog routes advertise. */
   models: readonly string[]
   /**
-   * The run root of the E2E run that the server serves (./runRoot.ts). The check of the instruction files that Cursor
-   * and Amp send to their own services refuses each file outside it (./ancestorInstructions.ts). A server that serves
-   * no run, such as one of a unit test, states none, and then that check refuses only a file that holds the sentinel.
+   * The run root that this server serves (./runRoot.ts).
+   * Cursor and Amp send instruction files to their own services.
+   * The check in ./ancestorInstructions.ts refuses each file outside the run root.
+   * A server without a run, such as a unit-test server, omits this value.
+   * That server refuses only files that contain the sentinel.
    */
   runRoot?: string
 }
@@ -114,10 +116,10 @@ export interface MockModelServer {
    */
   refusedHosts: () => ReadonlyMap<string, number>
   /**
-   * The number of requests that the guard of ./ancestorInstructions.ts refused: each model request that held the text
-   * of a sentinel instruction file, and each set of instruction files that Cursor or Amp sent to its own service and
-   * the file check refused. The suite fails at shutdown when any arrived, because a request with no scenario marker
-   * fails no test of its own.
+   * The number of requests that ./ancestorInstructions.ts refused.
+   * Count each model request that contains sentinel instruction text.
+   * Count each refused instruction-file set that Cursor or Amp sends to its service also.
+   * Any refusal fails the suite at shutdown. A request without a scenario marker otherwise fails no individual test.
    */
   ancestorInstructionRequests: () => number
 }
@@ -207,8 +209,9 @@ export async function createMockModelServer(options: MockModelServerOptions): Pr
     refusedHosts.set(host, (refusedHosts.get(host) ?? 0) + 1)
   }
 
-  // Count one refusal of the guard of ./ancestorInstructions.ts, and record it where a reader finds it: in the scenario
-  // of the request, which fails its test, or in the unmatched log, which the shutdown report points at.
+  // Count each refusal from ./ancestorInstructions.ts.
+  // Record it in the matching scenario so that its test fails.
+  // If no scenario matches, use the unmatched log that the shutdown report lists.
   const refuseAncestorInstructions = (context: ModelRequestContext, reason: string): void => {
     ancestorInstructionRequests++
     const scenarioID = context.scenarioID ?? selectScenarioID(context.protocol, context.body)
@@ -362,11 +365,11 @@ export async function createMockModelServer(options: MockModelServerOptions): Pr
       recordModelResponse(response, answer.record, () => step.error ? genericModelError(step.error) : undefined)
       const transport = { request, response }
       const stream = createModelStream(response, step.stream, name => holdGate(scenario, name, transport))
-      // Codex reads a `response.metadata` event while the held step still runs. A step that
-      // carries responseMetadata therefore writes its head before the hold (its gate or its
-      // delay), and the rest of its answer after the hold. Every other step holds before the mock
-      // writes any byte. A client that disconnects during the hold ends the exchange: the hold
-      // returns false, and the writer stops after the head.
+      // Codex reads response.metadata while a step waits.
+      // A streamed response writes its initial events before the gate or delay. Its remaining events follow the wait.
+      // A response without a stream waits before its JSON body. Every other step waits before sending bytes.
+      //
+      // A disconnected client ends the exchange. The hold returns false, and the writer sends no further content.
       if (protocol === 'openai-responses' && step.responseMetadata !== undefined) {
         responseSequence++
         await writeOpenAIResponse(response, body, step, `mock-response-${responseSequence}`, stream, () => holdStep(scenario, step, transport))
@@ -560,9 +563,8 @@ function holdStep(scenario: ScenarioState, step: MockModelStep, transport: Disco
 export function holdGate(scenario: Pick<ScenarioState, 'closed' | 'gates'>, name: string, transport: DisconnectSignals): Promise<boolean> {
   const { request, response, signal } = transport
   if (scenario.closed) {
-    // A closed scenario answers nothing more. End the response here, as
-    // cancelGates does for a request that already waits, so the client sees the
-    // end at once and does not wait for its own timeout.
+    // A closed scenario answers no further request. End this response as cancelGates ends a request that already waits.
+    // The client receives the end immediately and does not wait for its timeout.
     if (response && !response.destroyed)
       response.destroy()
     return Promise.resolve(false)
@@ -887,9 +889,8 @@ async function writeOpenAIChatCompletion(response: ServerResponse, requestBody: 
     emit({ content: chunk })
   if (!stream.active)
     return
-  // The tool calls follow the text, as in the Responses and Anthropic writers. A
-  // model writes a call after the text before it, so a native client that gets
-  // the complete call first can run it while the text still streams.
+  // Tool calls follow text in all three model API writers.
+  // If the writer sends a complete call first, the client can run it while earlier text still streams.
   if (toolCalls)
     emit({ tool_calls: toolCalls })
   else if (!emitted)
@@ -915,9 +916,9 @@ async function writeOpenAIChatCompletion(response: ServerResponse, requestBody: 
 /**
  * Write one OpenAI Responses answer.
  *
- * `hold` takes the step's own hold at the split point of this writer: after `response.created` and
- * the `response.metadata` events on a stream, before the one JSON body otherwise. A caller that
- * already held the step passes nothing.
+ * `hold` uses the step's gate or delay.
+ * For a stream, it runs after response.created and all response.metadata events.
+ * Otherwise, it runs before the JSON body. A caller that already applied the hold omits this argument.
  */
 async function writeOpenAIResponse(response: ServerResponse, requestBody: unknown, step: MockModelStep, id: string, stream: ModelStream, hold?: () => Promise<boolean>): Promise<void> {
   const stopReason = step.stopReason === undefined ? undefined : stopReasonToken('openai-responses', step.stopReason)
@@ -1140,11 +1141,11 @@ function genericModelError(error: MockModelError): MockModelDeliveredError {
 }
 
 function writeModelError(response: ServerResponse, protocol: MockModelProtocol, requestBody: unknown, error: MockModelError): void {
-  const delivered = genericModelError(error)
   if (error.midStream) {
-    writeMidStreamModelError(response, protocol, requestBody, delivered)
+    writeMidStreamModelError(response, protocol, requestBody, error)
     return
   }
+  const delivered = genericModelError(error)
   if (protocol === 'anthropic-messages') {
     writeJSON(response, error.status, { type: 'error', error: { type: delivered.code, message: delivered.message } })
     return
@@ -1153,10 +1154,11 @@ function writeModelError(response: ServerResponse, protocol: MockModelProtocol, 
 }
 
 /**
- * Start the native stream, send one text delta, and end it with an error.
+ * Send one text delta, then the requested error or an incomplete event stream.
  * qodercli 1.1.65 replaces an error before any delta with its own generic text.
  */
-function writeMidStreamModelError(response: ServerResponse, protocol: MockModelProtocol, requestBody: unknown, delivered: MockModelDeliveredError): void {
+function writeMidStreamModelError(response: ServerResponse, protocol: MockModelProtocol, requestBody: unknown, error: MockModelError): void {
+  const delivered = genericModelError(error)
   if (protocol !== 'openai-chat-completions' && protocol !== 'openai-responses' && protocol !== 'anthropic-messages')
     throw new Error(`The mock cannot send a mid-stream model error on ${protocol}.`)
   if (!streamRequested(requestBody))
@@ -1171,7 +1173,8 @@ function writeMidStreamModelError(response: ServerResponse, protocol: MockModelP
     writeSSEEvent(response, { type: 'response.output_item.added', sequence_number: 1, output_index: 0, item })
     writeSSEEvent(response, { type: 'response.content_part.added', sequence_number: 2, ...position, part: { type: 'output_text', text: '', annotations: [] } })
     writeSSEEvent(response, { type: 'response.output_text.delta', sequence_number: 3, ...position, delta: 'partial ' })
-    writeSSEEvent(response, { type: 'response.failed', sequence_number: 4, response: { ...nativeResponse, status: 'failed', error: delivered } })
+    if (error.midStream !== 'truncate')
+      writeSSEEvent(response, { type: 'response.failed', sequence_number: 4, response: { ...nativeResponse, status: 'failed', error: delivered } })
     response.end()
     return
   }
@@ -1179,7 +1182,8 @@ function writeMidStreamModelError(response: ServerResponse, protocol: MockModelP
     writeSSEEvent(response, { type: 'message_start', message: { id, type: 'message', role: 'assistant', model: modelFrom(requestBody), content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 1, output_tokens: 0 } } })
     writeSSEEvent(response, { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } })
     writeSSEEvent(response, { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'partial ' } })
-    writeSSEEvent(response, { type: 'error', error: { type: delivered.code, message: delivered.message } })
+    if (error.midStream !== 'truncate')
+      writeSSEEvent(response, { type: 'error', error: { type: delivered.code, message: delivered.message } })
     response.end()
     return
   }
@@ -1190,7 +1194,8 @@ function writeMidStreamModelError(response: ServerResponse, protocol: MockModelP
     model: modelFrom(requestBody),
     choices: [{ index: 0, delta: { role: 'assistant', content: 'partial ' }, finish_reason: null }],
   })
-  writeSSEData(response, { error: { message: delivered.message, code: delivered.code } })
+  if (error.midStream !== 'truncate')
+    writeSSEData(response, { error: { message: delivered.message, code: delivered.code } })
   response.end()
 }
 

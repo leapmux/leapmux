@@ -237,3 +237,13 @@ func TestNotificationReductionRejectsCorruptState(t *testing.T) {
 	assert.Equal(t, []json.RawMessage{raw(t, settingsChanged("A", "B"))}, messages)
 	assert.Equal(t, map[string]string{"model": "A"}, state.CancelledSettings)
 }
+
+func TestClineStatusNoticeSurvivesACompaction(t *testing.T) {
+	t.Parallel()
+	status := json.RawMessage(`{"event":"session.notice","payload":{"message":"The context exceeded the window.","metadata":{"kind":"context_overflow_recovery","phase":"started"}}}`)
+	ended := json.RawMessage(`{"event":"session.notice","payload":{"message":"The context is compacted.","metadata":{"kind":"auto_compaction","phase":"completed"}}}`)
+	rows, _ := reduceNotificationPrefixes(t, []json.RawMessage{status, ended}, testRegistry.Plugin(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLINE))
+	require.Len(t, rows, 2)
+	assert.JSONEq(t, string(status), string(rows[0]))
+	assert.JSONEq(t, string(ended), string(rows[1]))
+}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -61,6 +62,314 @@ func TestTurnFrames(t *testing.T) {
 		a.HandleOutput([]byte(tc.Line))
 		return sink.TurnActives()
 	})
+}
+
+func TestMiMoRetryDropsTheRemovedPart(t *testing.T) {
+	t.Parallel()
+	// Trimmed from .tmp/probe/mimo/logs/events.jsonl, frames 10 through 37.
+	agenttest.RunRetryAttemptCase(t, agenttest.RetryAttemptCase{
+		Name: "MiMo removed failed attempt", FramesPath: "testdata/removed_part.jsonl",
+		NewAgent: func(t *testing.T, sink *agenttest.Sink) func([]byte) {
+			a, _ := newTestAgent(t, agent.NewProviderServices(sink))
+			return a.HandleOutput
+		},
+		Want:      []agenttest.RetryAttemptText{{Text: "RETRIED-ANSWER", Completion: agent.MessageCompletionComplete}},
+		Discarded: []string{"DISCARDED-"},
+	})
+}
+
+func TestMiMoChildRetryRowInTheChildTranscript(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newSinkTestAgent(t)
+	spawnActor(t, a, contracts.MiMoActorActionSpawn, true)
+	feed(a, messageEvent(t, "child-message", roleAssistant, actorID, false))
+	// Trimmed from .tmp/probe/mimo/round2/logs/events.jsonl, frame 34.
+	raw := eventJSON(t, "session.retry.attempt", map[string]any{
+		"sessionID": testSessionID, "messageID": "child-message", "attempt": 1, "maxAttempts": 8,
+		"reason": "probe child mid-stream failure", "nextDelayMs": 2092,
+	})
+	feed(a, raw)
+	assert.Empty(t, sink.PersistedNotifications())
+	child := sink.Child("child-of-" + spawnSpanID)
+	require.Len(t, child.PersistedNotifications(), 1)
+	assert.JSONEq(t, string(raw), string(child.PersistedNotifications()[0].Content))
+	assert.Equal(t, agent.APIRetryNotification(), Registration().Plugin.Classify(raw))
+}
+
+func TestMiMoMainRetryAttemptIsIgnored(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newSinkTestAgent(t)
+	feed(a, messageEvent(t, "main-message", roleAssistant, mainActorID, false),
+		eventJSON(t, "session.retry.attempt", map[string]any{"sessionID": testSessionID, "messageID": "main-message", "attempt": 1}))
+	assert.Empty(t, sink.PersistedNotifications())
+}
+
+func TestMiMoChildRetryRefusesARetainedMessageOfAnotherSession(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newSinkTestAgent(t)
+	spawnActor(t, a, contracts.MiMoActorActionSpawn, true)
+	feed(a, messageEvent(t, "child-message", roleAssistant, actorID, false))
+	a.Mu.Lock()
+	a.sessionID = "new-session"
+	a.Mu.Unlock()
+	feed(a, eventJSON(t, "session.retry.attempt", map[string]any{"sessionID": "new-session", "messageID": "child-message", "attempt": 1}))
+	assert.Empty(t, sink.PersistedNotifications())
+	assert.Empty(t, sink.Child("child-of-"+spawnSpanID).PersistedNotifications())
+}
+
+func TestMiMoRetryStateStaysWithItsActor(t *testing.T) {
+	t.Parallel()
+	a, root, _ := newSinkTestAgent(t)
+	spawnActor(t, a, contracts.MiMoActorActionSpawn, true)
+	feed(a, messageEvent(t, "root-message", roleAssistant, mainActorID, false), messageEvent(t, "child-message", roleAssistant, actorID, false),
+		statusEvent(t, contracts.MiMoStatusTypeRetry),
+		eventJSON(t, "session.retry.attempt", map[string]any{"sessionID": testSessionID, "messageID": "child-message", "attempt": 1}),
+		textPartEvent(t, partTypeText, "root-part", "root-message", "root answer", true),
+		statusEvent(t, contracts.MiMoStatusTypeIdle),
+	)
+	child := root.Child("child-of-" + spawnSpanID)
+	assert.Len(t, root.LeapMuxNotifications(), 1)
+	assert.Empty(t, child.LeapMuxNotifications())
+	feed(a, textPartEvent(t, partTypeText, "child-part", "child-message", "child answer", true))
+	assert.Len(t, child.LeapMuxNotifications(), 1)
+}
+
+func TestMiMoRetryEndsWithoutAResolutionAtIdle(t *testing.T) {
+	t.Parallel()
+	for _, child := range []bool{false, true} {
+		t.Run(fmt.Sprint(child), func(t *testing.T) {
+			a, root, _ := newSinkTestAgent(t)
+			sink, actor := root, mainActorID
+			feed(a, statusEvent(t, contracts.MiMoStatusTypeBusy))
+			if child {
+				spawnActor(t, a, contracts.MiMoActorActionSpawn, true)
+				sink, actor = root.Child("child-of-"+spawnSpanID), actorID
+			}
+			feed(a, messageEvent(t, "message", roleAssistant, actor, false))
+			if child {
+				feed(a, eventJSON(t, "session.retry.attempt", map[string]any{"sessionID": testSessionID, "messageID": "message", "attempt": 1}),
+					actorStatusEvent(t, actorID, contracts.MiMoActorStatusIdle, contracts.MiMoActorOutcomeFailure, 1, ""))
+			} else {
+				feed(a, statusEvent(t, contracts.MiMoStatusTypeRetry), statusEvent(t, contracts.MiMoStatusTypeIdle))
+			}
+			feed(a, textPartEvent(t, partTypeText, "part", "message", "late answer", true))
+			assert.Empty(t, sink.LeapMuxNotifications())
+		})
+	}
+}
+
+func TestMiMoRetryResolvesAtTheFirstPart(t *testing.T) {
+	t.Parallel()
+	for _, child := range []bool{false, true} {
+		for _, delta := range []bool{false, true} {
+			t.Run(fmt.Sprintf("child=%t/delta=%t", child, delta), func(t *testing.T) {
+				a, root, _ := newSinkTestAgent(t)
+				sink, actor := root, mainActorID
+				feed(a, statusEvent(t, contracts.MiMoStatusTypeBusy))
+				if child {
+					spawnActor(t, a, contracts.MiMoActorActionSpawn, true)
+					sink, actor = root.Child("child-of-"+spawnSpanID), actorID
+				}
+				feed(a, messageEvent(t, "retry-message", roleAssistant, actor, false))
+				if child {
+					feed(a, eventJSON(t, "session.retry.attempt", map[string]any{"sessionID": testSessionID, "messageID": "retry-message", "attempt": 1}))
+				} else {
+					feed(a, statusEvent(t, contracts.MiMoStatusTypeRetry))
+				}
+				feed(a, textPartEvent(t, partTypeText, "retry-part", "retry-message", "", false))
+				assert.Empty(t, sink.LeapMuxNotifications())
+				if delta {
+					feed(a, deltaEvent(t, "retry-part", "retry-message", "answer"))
+				} else {
+					feed(a, textPartEvent(t, partTypeText, "retry-part", "retry-message", "answer", true))
+				}
+				require.Len(t, sink.LeapMuxNotifications(), 1)
+				assert.Equal(t, contracts.NotificationTypeApiRetryResolved, sink.LeapMuxNotifications()[0][contracts.NotificationFieldType])
+				feed(a, textPartEvent(t, partTypeText, "retry-part", "retry-message", "answer", true))
+				assert.Len(t, sink.LeapMuxNotifications(), 1)
+				if child {
+					assert.Empty(t, root.LeapMuxNotifications())
+				}
+			})
+		}
+	}
+}
+
+type retryNotificationOrderSink struct {
+	*agenttest.Sink
+	order []string
+}
+
+func (s *retryNotificationOrderSink) PersistNotification(source leapmuxv1.MessageSource, content agent.MessageContent) (bool, error) {
+	s.order = append(s.order, "native")
+	return s.Sink.PersistNotification(source, content)
+}
+
+func (s *retryNotificationOrderSink) PersistWorkerNotification(content agent.MessageContent) (bool, error) {
+	s.order = append(s.order, "worker")
+	return s.Sink.PersistWorkerNotification(content)
+}
+
+func TestMiMoRetryResolutionWaitsForAHeldNativeNotice(t *testing.T) {
+	t.Parallel()
+	sink := &retryNotificationOrderSink{Sink: &agenttest.Sink{}}
+	a, _ := newTestAgent(t, agent.NewProviderServices(sink))
+	feed(a, statusEvent(t, contracts.MiMoStatusTypeBusy), messageEvent(t, "message", roleAssistant, mainActorID, false))
+	a.pendingFailures = []*mimoFailure{{sessionID: testSessionID}}
+	feed(a, statusEvent(t, contracts.MiMoStatusTypeRetry), textPartEvent(t, partTypeText, "part", "message", "answer", true))
+	assert.Empty(t, sink.order, "the resolution must wait with the retry while a failure's destination is unknown")
+	a.pendingFailures = nil
+	a.flushCapturedNotifications()
+	assert.Equal(t, []string{"native", "worker"}, sink.order)
+	assert.Empty(t, a.notificationQueue, "completed notices must release their captured data")
+}
+
+func TestMiMoRemovedPartLeavesNoRowAfterAFailure(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newSinkTestAgent(t)
+	beginPartialAnswer(t, a, "message", "part", "DISCARDED-TEXT")
+	feed(a,
+		eventJSON(t, "message.part.removed", map[string]any{"sessionID": testSessionID, "messageID": "message", "partID": "part"}),
+		eventJSON(t, contracts.MiMoEventSessionError, map[string]any{"sessionID": testSessionID, "error": map[string]any{"name": "APIError", "data": map[string]any{"message": "The model failed."}}}),
+		statusEvent(t, contracts.MiMoStatusTypeIdle),
+	)
+	assert.Empty(t, assembledRows(sink))
+	assert.Contains(t, sink.ProgressUpdates(), agent.ResetModelScopeProgress(progressScope("part")))
+}
+
+func TestMiMoRemovedPartOfAChild(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newSinkTestAgent(t)
+	spawnActor(t, a, contracts.MiMoActorActionSpawn, true)
+	// Trimmed from .tmp/probe/mimo/round2/logs/events.jsonl, frames 24 through 47.
+	raw, err := os.ReadFile("testdata/removed_part_child.jsonl")
+	require.NoError(t, err)
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		a.HandleOutput([]byte(line))
+	}
+	child := sink.Child("child-of-" + spawnSpanID)
+	rows := assembledRows(child)
+	require.Len(t, rows, 1)
+	_, text, completion := assembledText(t, rows[0].Content)
+	assert.Equal(t, "CHILD-OK", text)
+	assert.Equal(t, string(agent.MessageCompletionComplete), completion)
+	for _, row := range append(sink.Messages(), child.Messages()...) {
+		assert.NotContains(t, string(row.Content), "CHILD-PARTIAL")
+	}
+}
+
+func TestMiMoRemovedPartRequiresItsMessageAndSession(t *testing.T) {
+	t.Parallel()
+	for _, identity := range []map[string]any{
+		{"sessionID": "foreign", "messageID": "message", "partID": "part"},
+		{"sessionID": testSessionID, "messageID": "foreign", "partID": "part"},
+		{"sessionID": testSessionID, "messageID": "message", "partID": "unknown"},
+		{"sessionID": testSessionID, "partID": "part"},
+		{},
+	} {
+		a, sink, _ := newSinkTestAgent(t)
+		beginPartialAnswer(t, a, "message", "part", "Kept answer.")
+		feed(a, eventJSON(t, "message.part.removed", identity), statusEvent(t, contracts.MiMoStatusTypeIdle))
+		rows := assembledRows(sink)
+		require.Len(t, rows, 1)
+		_, text, _ := assembledText(t, rows[0].Content)
+		assert.Equal(t, "Kept answer.", text)
+	}
+}
+
+func TestMiMoRemovedPartKeepsAPublishedToolUntilTurnEnd(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newSinkTestAgent(t)
+	feed(a, statusEvent(t, contracts.MiMoStatusTypeBusy), messageEvent(t, "message", roleAssistant, mainActorID, false),
+		toolPartEvent(t, "part", "message", contracts.MiMoToolBash, "call", toolState{Status: contracts.MiMoToolStatusRunning}),
+		eventJSON(t, "message.part.removed", map[string]any{"sessionID": testSessionID, "messageID": "message", "partID": "part"}),
+	)
+	require.Len(t, sink.Messages(), 1)
+	feed(a, statusEvent(t, contracts.MiMoStatusTypeIdle))
+	assert.Contains(t, sink.ClosedSpans(), "part")
+	rows := sink.Messages()
+	require.Len(t, rows, 3)
+	assert.Equal(t, "part", rows[1].SpanID)
+	assert.True(t, rows[2].TurnEnd)
+}
+
+func TestMiMoRemovedPartKeepsACompletedToolIdentity(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newSinkTestAgent(t)
+	final := toolPartEvent(t, "part", "message", contracts.MiMoToolBash, "call", toolState{Status: contracts.MiMoToolStatusCompleted, Output: "done"})
+	feed(a, statusEvent(t, contracts.MiMoStatusTypeBusy), messageEvent(t, "message", roleAssistant, mainActorID, false), final,
+		eventJSON(t, "message.part.removed", map[string]any{"sessionID": testSessionID, "messageID": "message", "partID": "part"}), final,
+		statusEvent(t, contracts.MiMoStatusTypeIdle),
+	)
+	assert.Equal(t, []int{1}, agenttest.TurnToolUseCounts(t, sink.Messages()))
+}
+
+func TestMiMoRemovedPartDropsAnUnpublishedTool(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newSinkTestAgent(t)
+	controlled := &controlledPartSink{ProviderServices: a.sink}
+	controlled.rejectAll.Store(true)
+	a.sink = controlled
+	feed(a, statusEvent(t, contracts.MiMoStatusTypeBusy), messageEvent(t, "message", roleAssistant, mainActorID, false),
+		toolPartEvent(t, "part", "message", contracts.MiMoToolBash, "call", toolState{Status: contracts.MiMoToolStatusRunning}),
+		eventJSON(t, "message.part.removed", map[string]any{"sessionID": testSessionID, "messageID": "message", "partID": "part"}),
+	)
+	controlled.rejectAll.Store(false)
+	feed(a, statusEvent(t, contracts.MiMoStatusTypeIdle))
+	rows := sink.Messages()
+	require.Len(t, rows, 1)
+	assert.True(t, rows[0].TurnEnd)
+}
+
+func TestMiMoRemovedPartKeepsAToolOpeningRetainedByTheOutputQueue(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	controlled := &controlledPartSink{ProviderServices: agent.NewProviderServices(sink)}
+	controlled.rejectAll.Store(true)
+	a, _ := newTestAgent(t, controlled)
+	feed(a, statusEvent(t, contracts.MiMoStatusTypeBusy), messageEvent(t, "message", roleAssistant, mainActorID, false),
+		toolPartEvent(t, "part", "message", contracts.MiMoToolBash, "call", toolState{Status: contracts.MiMoToolStatusRunning}),
+	)
+	assert.NotNil(t, a.tools["part"].openingTarget, "an accepted write already owns its transcript, even while storage fails")
+	assert.Empty(t, sink.ClosedSpans(), "a retained opening must keep its span until the native call ends")
+	feed(a, eventJSON(t, "message.part.removed", map[string]any{"sessionID": testSessionID, "messageID": "message", "partID": "part"}))
+	controlled.rejectAll.Store(false)
+	feed(a, statusEvent(t, contracts.MiMoStatusTypeIdle))
+	rows := sink.Messages()
+	require.Len(t, rows, 3)
+	assert.Equal(t, "part", rows[0].SpanID)
+	assert.Equal(t, "part", rows[1].SpanID)
+	assert.True(t, rows[2].TurnEnd)
+}
+
+func TestMiMoRetainedPartsPrecedeTheTurnEndWithoutAnotherNativeEvent(t *testing.T) {
+	t.Parallel()
+	for _, final := range []bool{false, true} {
+		t.Run(fmt.Sprint(final), func(t *testing.T) {
+			sink := &agenttest.Sink{}
+			controlled := &controlledPartSink{ProviderServices: agent.NewProviderServices(sink)}
+			controlled.rejectAll.Store(true)
+			a, _ := newTestAgent(t, controlled)
+			feed(a, statusEvent(t, contracts.MiMoStatusTypeBusy), messageEvent(t, "message", roleAssistant, mainActorID, false))
+			for _, id := range []string{"first", "second"} {
+				feed(a, textPartEvent(t, partTypeText, id, "message", "", false), deltaEvent(t, id, "message", id))
+				if final {
+					feed(a, textPartEvent(t, partTypeText, id, "message", id, true))
+				}
+			}
+			feed(a, messageEvent(t, "message", roleAssistant, mainActorID, true), statusEvent(t, contracts.MiMoStatusTypeIdle))
+			assert.Empty(t, sink.Messages())
+			controlled.rejectAll.Store(false)
+			require.NoError(t, agent.FlushPendingOutput(a.sink))
+			rows := sink.Messages()
+			require.Len(t, rows, 3, "all parts must enter the shared queue before the divider")
+			_, first, _ := assembledText(t, rows[0].Content)
+			_, second, _ := assembledText(t, rows[1].Content)
+			assert.Equal(t, "first", first)
+			assert.Equal(t, "second", second)
+			assert.True(t, rows[2].TurnEnd)
+		})
+	}
 }
 
 func TestRisingTurnTokens(t *testing.T) {
@@ -1134,7 +1443,11 @@ func TestNativeMessageAbortRejectsOtherMessageStates(t *testing.T) {
 			rows := sink.Messages()
 			require.Len(t, rows, 2)
 			_, _, completion := assembledText(t, rows[0].Content)
-			assert.Equal(t, string(agent.MessageCompletionComplete), completion)
+			want := agent.MessageCompletionComplete
+			if name == "unknown name" {
+				want = agent.MessageCompletionError
+			}
+			assert.Equal(t, string(want), completion)
 			assert.Equal(t, agent.MessageCompletionComplete, rows[1].Completion)
 		})
 	}
@@ -1411,9 +1724,90 @@ func TestCompactionNotifications(t *testing.T) {
 
 	feed(a, messageEvent(t, "msg_u", roleUser, mainActorID, false), started, started, ended, ended, started)
 	notifications := sink.PersistedNotifications()
-	require.Len(t, notifications, 2, "each phase is persisted once, and a start after the end is a replay")
-	assert.JSONEq(t, string(started), string(notifications[0].Content))
-	assert.JSONEq(t, string(ended), string(notifications[1].Content))
+	require.Len(t, notifications, 1, "only the end persists, and a start after the end is a replay")
+	assert.JSONEq(t, string(ended), string(notifications[0].Content))
+	assert.Equal(t, []map[string]any{{contracts.SessionInfoKeyCompaction: map[string]any{}}, {contracts.SessionInfoKeyCompaction: nil}}, sink.SessionInfos())
+}
+
+func TestMiMoCompactionStartIsLiveState(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newSinkTestAgent(t)
+	feed(a, messageEvent(t, "compact-message", roleUser, mainActorID, false), compactionPhaseEvent(t, "compact-part", "compact-message", false))
+	assert.Empty(t, sink.PersistedNotifications())
+	value, exists := sink.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
+	assert.True(t, exists)
+	assert.Equal(t, map[string]any{}, value)
+}
+
+func TestMiMoChildCompactionPublishesOnTheChildSink(t *testing.T) {
+	t.Parallel()
+	a, root, _ := newSinkTestAgent(t)
+	spawnActor(t, a, contracts.MiMoActorActionSpawn, true)
+	feed(a, messageEvent(t, "compact-message", roleUser, actorID, false), compactionPhaseEvent(t, "compact-part", "compact-message", false))
+	child := root.Child("child-of-" + spawnSpanID)
+	value, exists := child.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
+	assert.True(t, exists)
+	assert.Equal(t, map[string]any{}, value)
+	_, exists = root.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
+	assert.False(t, exists)
+	feed(a, compactionPhaseEvent(t, "compact-part", "compact-message", true))
+	value, exists = child.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
+	assert.True(t, exists)
+	assert.Nil(t, value)
+	assert.Len(t, child.PersistedNotifications(), 1)
+}
+
+func failedCompactionSummary(t *testing.T, messageID, actor string) []byte {
+	t.Helper()
+	// Trimmed from .tmp/probe/mimo/round2/logs/events.jsonl, frame 87.
+	return eventJSON(t, eventMessageUpdated, map[string]any{"sessionID": testSessionID, "info": map[string]any{
+		"id": "summary-" + messageID, "sessionID": testSessionID, "parentID": messageID, "role": roleAssistant, "agentID": actor, "summary": true,
+		"error": map[string]any{"name": "InvalidOutputError", "data": map[string]any{"message": "Compaction produced no usable summary"}},
+	}})
+}
+
+func TestMiMoFailedCompactionStatesTheSummaryError(t *testing.T) {
+	t.Parallel()
+	for _, child := range []bool{false, true} {
+		t.Run(fmt.Sprint(child), func(t *testing.T) {
+			a, root, _ := newSinkTestAgent(t)
+			sink, actor := root, mainActorID
+			feed(a, statusEvent(t, contracts.MiMoStatusTypeBusy))
+			if child {
+				spawnActor(t, a, contracts.MiMoActorActionSpawn, true)
+				sink, actor = root.Child("child-of-"+spawnSpanID), actorID
+			}
+			removed := eventJSON(t, "message.removed", map[string]any{"sessionID": testSessionID, "messageID": "compact-message"})
+			feed(a, messageEvent(t, "compact-message", roleUser, actor, false), compactionPhaseEvent(t, "compact-part", "compact-message", false),
+				failedCompactionSummary(t, "compact-message", actor), removed, removed)
+			assert.Empty(t, sink.PersistedNotifications())
+			assert.Equal(t, []map[string]any{{
+				contracts.NotificationFieldType:    contracts.NotificationTypeCompactionEnded,
+				contracts.NotificationFieldOutcome: contracts.CompactionEndOutcomeFailed,
+				contracts.NotificationFieldError:   "Compaction produced no usable summary",
+			}}, sink.LeapMuxNotifications())
+			value, exists := sink.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
+			assert.True(t, exists)
+			assert.Nil(t, value)
+			if child {
+				assert.Empty(t, root.LeapMuxNotifications())
+			}
+		})
+	}
+}
+
+func TestMiMoCompactionEndClearsAnUnfinishedStartAtIdle(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newSinkTestAgent(t)
+	feed(a, statusEvent(t, contracts.MiMoStatusTypeBusy), messageEvent(t, "compact-message", roleUser, mainActorID, false),
+		compactionPhaseEvent(t, "compact-part", "compact-message", false), statusEvent(t, contracts.MiMoStatusTypeIdle))
+	value, exists := sink.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
+	assert.True(t, exists)
+	assert.Nil(t, value)
+	assert.Empty(t, sink.PersistedNotifications())
+	assert.Empty(t, sink.LeapMuxNotifications())
+	feed(a, compactionPhaseEvent(t, "compact-part", "compact-message", true))
+	assert.Len(t, sink.PersistedNotifications(), 1, "a later native end remains the stored boundary")
 }
 
 func TestAutoCompactionKeepsTheTurnUntilNativeIdle(t *testing.T) {
@@ -2605,7 +2999,7 @@ func TestLateUnresolvedWholeTextSurvivesClosure(t *testing.T) {
 	}
 }
 
-func TestLateRejectedCompactionNotificationsKeepBothNativePhases(t *testing.T) {
+func TestLateRejectedCompactionKeepsItsNativeEnd(t *testing.T) {
 	t.Parallel()
 	for _, rejectStart := range []bool{false, true} {
 		t.Run(fmt.Sprint(rejectStart), func(t *testing.T) {
@@ -2633,20 +3027,15 @@ func TestLateRejectedCompactionNotificationsKeepBothNativePhases(t *testing.T) {
 				controlled.notificationBlocked.Store(true)
 			}
 			feed(a, end, end)
-			before := 1
-			if rejectStart {
-				before = 0
-			}
-			assert.Equal(t, before, sink.NotificationCount())
+			assert.Zero(t, sink.NotificationCount())
 			controlled.notificationBlocked.Store(false)
 			a.SimulateExitForTest()
 			a.Stop()
 			notifications := sink.PersistedNotifications()
-			require.Len(t, notifications, 2)
-			assert.Equal(t, string(start), string(notifications[0].Content))
-			assert.Equal(t, string(end), string(notifications[1].Content))
+			require.Len(t, notifications, 1)
+			assert.Equal(t, string(end), string(notifications[0].Content))
 			a.Stop()
-			assert.Equal(t, 2, sink.NotificationCount())
+			assert.Equal(t, 1, sink.NotificationCount())
 		})
 	}
 }
@@ -2712,7 +3101,7 @@ func TestLateCapturedUnknownFailureKeepsRootNotificationOrder(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newSinkTestAgent(t)
 	failure := sessionErrorEvent(t, "APIError", "The unresolved main failure.")
-	compaction := compactionPhaseEvent(t, "part_unknown_root_compaction", "msg_unknown_root_compaction", false)
+	compaction := compactionPhaseEvent(t, "part_unknown_root_compaction", "msg_unknown_root_compaction", true)
 	retry := retryStatusEvent(t, 1)
 	feed(a, statusEvent(t, contracts.MiMoStatusTypeBusy),
 		actorStatusEvent(t, actorID, contracts.MiMoActorStatusRunning, "", 0, ""),
@@ -2736,7 +3125,7 @@ func TestLateCapturedChildAttributionReleasesRootNotifications(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newSinkTestAgent(t)
 	failure := sessionErrorEvent(t, "APIError", "The unresolved child failure.")
-	compaction := compactionPhaseEvent(t, "part_unknown_child_root_compaction", "msg_unknown_child_root_compaction", false)
+	compaction := compactionPhaseEvent(t, "part_unknown_child_root_compaction", "msg_unknown_child_root_compaction", true)
 	retry := retryStatusEvent(t, 1)
 	feed(a, statusEvent(t, contracts.MiMoStatusTypeBusy),
 		actorStatusEvent(t, actorID, contracts.MiMoActorStatusRunning, "", 0, ""),
@@ -2765,7 +3154,7 @@ func TestLateCapturedLiveChildFailureDoesNotHoldRootNotifications(t *testing.T) 
 	t.Parallel()
 	a, sink, _ := newSinkTestAgent(t)
 	failure := sessionErrorEvent(t, "APIError", "The known child failure.")
-	compaction := compactionPhaseEvent(t, "part_live_child_root_compaction", "msg_live_child_root_compaction", false)
+	compaction := compactionPhaseEvent(t, "part_live_child_root_compaction", "msg_live_child_root_compaction", true)
 	retry := retryStatusEvent(t, 1)
 	feed(a, statusEvent(t, contracts.MiMoStatusTypeBusy),
 		actorStatusEvent(t, actorID, contracts.MiMoActorStatusRunning, "", 0, ""), failure,
@@ -2794,7 +3183,7 @@ func TestLateCapturedNotificationQueueKeepsDestinationOrder(t *testing.T) {
 	controlled := &rejectedFailureReceiptSink{ProviderServices: a.sink}
 	a.sink = controlled
 	rootOne, rootTwo := retryStatusEvent(t, 1), retryStatusEvent(t, 2)
-	childCompaction := compactionPhaseEvent(t, "part_independent_child_compaction", "msg_independent_child_compaction", false)
+	childCompaction := compactionPhaseEvent(t, "part_independent_child_compaction", "msg_independent_child_compaction", true)
 	feed(a, statusEvent(t, contracts.MiMoStatusTypeBusy),
 		actorStatusEvent(t, actorID, contracts.MiMoActorStatusRunning, "", 0, ""),
 		messageEvent(t, "msg_independent_child_compaction", roleUser, actorID, false))
@@ -2973,4 +3362,170 @@ func TestLateRetainedToolCloserKeepsReplacementProgress(t *testing.T) {
 	require.Len(t, oldClosers, 1)
 	assert.Equal(t, string(closing), string(oldClosers[0].Content))
 	assert.Equal(t, testSessionID, oldClosers[0].AgentSessionID)
+}
+
+func TestMiMoRootIdleKeepsTheChildCompaction(t *testing.T) {
+	t.Parallel()
+	a, root, _ := newSinkTestAgent(t)
+	feed(a, statusEvent(t, contracts.MiMoStatusTypeBusy))
+	spawnActor(t, a, contracts.MiMoActorActionSpawn, true)
+	feed(a, messageEvent(t, "child-compact", roleUser, actorID, false), compactionPhaseEvent(t, "child-part", "child-compact", false), statusEvent(t, contracts.MiMoStatusTypeIdle))
+	child := root.Child("child-of-" + spawnSpanID)
+	value, exists := child.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
+	require.True(t, exists)
+	assert.Equal(t, map[string]any{}, value)
+	feed(a, compactionPhaseEvent(t, "child-part", "child-compact", true))
+	assert.Len(t, child.PersistedNotifications(), 1)
+}
+
+func TestMiMoCompactionKeepsItsOriginalLiveSink(t *testing.T) {
+	t.Parallel()
+	a, root, _ := newSinkTestAgent(t)
+	recovering := &recoveringChildPartSink{ProviderServices: a.sink}
+	recovering.creationFails.Store(true)
+	a.sink = recovering
+	spawnActor(t, a, contracts.MiMoActorActionSpawn, true)
+	feed(a, messageEvent(t, "fallback-compact", roleUser, actorID, false), compactionPhaseEvent(t, "fallback-part", "fallback-compact", false))
+	value, exists := root.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
+	require.True(t, exists)
+	require.Equal(t, map[string]any{}, value)
+	recovering.creationFails.Store(false)
+	feed(a, compactionPhaseEvent(t, "fallback-part", "fallback-compact", true))
+	value, exists = root.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
+	require.True(t, exists)
+	assert.Nil(t, value)
+	assert.Len(t, root.PersistedNotifications(), 1)
+}
+
+func TestMiMoCompactionRemovalRequiresTheCurrentSessionAndMessage(t *testing.T) {
+	t.Parallel()
+	for _, properties := range []map[string]any{
+		{}, {"sessionID": testSessionID}, {"messageID": "compact-message"},
+		{"sessionID": "another-session", "messageID": "compact-message"},
+		{"sessionID": testSessionID, "messageID": "another-message"},
+	} {
+		a, sink, _ := newSinkTestAgent(t)
+		feed(a, messageEvent(t, "compact-message", roleUser, mainActorID, false), compactionPhaseEvent(t, "compact-part", "compact-message", false), eventJSON(t, eventMessageRemoved, properties))
+		assert.Empty(t, sink.LeapMuxNotifications())
+		value, exists := sink.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
+		require.True(t, exists)
+		assert.Equal(t, map[string]any{}, value)
+	}
+}
+
+func TestMiMoCompactionReplayAfterIdleDoesNotRestartLiveState(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newSinkTestAgent(t)
+	start := compactionPhaseEvent(t, "compact-part", "compact-message", false)
+	feed(a, statusEvent(t, contracts.MiMoStatusTypeBusy), messageEvent(t, "compact-message", roleUser, mainActorID, false), start, statusEvent(t, contracts.MiMoStatusTypeIdle), start)
+	value, exists := sink.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
+	require.True(t, exists)
+	assert.Nil(t, value)
+	assert.Empty(t, sink.PersistedNotifications())
+}
+
+func TestMiMoCompactionClearAndStopEndEveryLiveSink(t *testing.T) {
+	t.Parallel()
+	for _, stop := range []bool{false, true} {
+		t.Run(fmt.Sprint(stop), func(t *testing.T) {
+			a, root, _ := newSinkTestAgent(t)
+			spawnActor(t, a, contracts.MiMoActorActionSpawn, true)
+			feed(a, messageEvent(t, "root-compact", roleUser, mainActorID, false), compactionPhaseEvent(t, "root-part", "root-compact", false), messageEvent(t, "child-compact", roleUser, actorID, false), compactionPhaseEvent(t, "child-part", "child-compact", false))
+			child := root.Child("child-of-" + spawnSpanID)
+			if stop {
+				a.SimulateExitForTest()
+				a.Stop()
+			} else {
+				_, err := a.ClearContext()
+				require.NoError(t, err)
+			}
+			for _, sink := range []*agenttest.Sink{root, child} {
+				value, exists := sink.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
+				require.True(t, exists)
+				assert.Nil(t, value)
+				assert.Empty(t, sink.PersistedNotifications())
+			}
+		})
+	}
+}
+
+func TestMiMoCompactionSummaryUsageKeepsTheContextAndAddsTheCost(t *testing.T) {
+	t.Parallel()
+	for _, initial := range []int64{0, 1200} {
+		t.Run(fmt.Sprint(initial), func(t *testing.T) {
+			a, sink, _ := newSinkTestAgent(t)
+			feed(a, statusEvent(t, contracts.MiMoStatusTypeBusy), usageMessageEvent(t, "normal", mainActorID, 0.5, map[string]any{"input": initial}))
+			before := a.usageSnapshot().contextUsage
+			// Trimmed summary shape from .tmp/probe/mimo/round2/logs/events.jsonl, frame 85.
+			summary := eventJSON(t, eventMessageUpdated, map[string]any{"info": map[string]any{
+				"id": "summary", "sessionID": testSessionID, "role": roleAssistant, "agentID": mainActorID,
+				"summary": true, "cost": 0.25, "tokens": map[string]any{"input": 9000, "output": 200},
+			}})
+			feed(a, summary, summary)
+			assert.Equal(t, before, a.usageSnapshot().contextUsage)
+			assert.InDelta(t, 0.75, a.usageSnapshot().costUSD, 1e-9)
+			assert.NotContains(t, sink.LastSessionInfo(), contracts.SessionInfoKeyContextUsage)
+			feed(a, usageMessageEvent(t, "next", mainActorID, 0.125, map[string]any{"input": 400}))
+			assert.EqualValues(t, 400, a.usageSnapshot().contextUsage[contracts.ContextUsageFieldContextTokens])
+			assert.InDelta(t, 0.875, a.usageSnapshot().costUSD, 1e-9)
+		})
+	}
+}
+
+func TestMiMoNoticeStatusPersists(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newSinkTestAgent(t)
+	raw := eventJSON(t, contracts.MiMoEventSessionStatus, map[string]any{"sessionID": testSessionID, "status": map[string]any{"type": "notice", "message": "The native usage notice."}})
+	feed(a, raw)
+	notices := sink.PersistedNotifications()
+	require.Len(t, notices, 1)
+	assert.JSONEq(t, string(raw), string(notices[0].Content))
+	assert.Equal(t, agent.ProviderScopedNotification("mimo:notice"), (mimoProvider{}).Classify(raw))
+	assert.False(t, a.turnActive)
+}
+
+func TestMiMoUnknownStatusOfTheOwnSessionPersists(t *testing.T) {
+	t.Parallel()
+	for _, status := range []map[string]any{
+		{"type": "future-status", "message": "New state"},
+		{"type": "future-status", "attempt": "a new format"},
+	} {
+		a, sink, _ := newSinkTestAgent(t)
+		raw := eventJSON(t, contracts.MiMoEventSessionStatus, map[string]any{"sessionID": testSessionID, "status": status})
+		feed(a, raw)
+		rows := sink.Messages()
+		require.Len(t, rows, 1)
+		assert.JSONEq(t, string(raw), string(rows[0].Content))
+		assert.Equal(t, testSessionID, rows[0].AgentSessionID)
+		assert.Empty(t, sink.PersistedNotifications())
+		assert.False(t, a.turnActive)
+	}
+}
+
+func TestMiMoRestoredFailedPartWaitsForItsNativeOutcome(t *testing.T) {
+	t.Parallel()
+	for _, child := range []bool{false, true} {
+		t.Run(fmt.Sprint(child), func(t *testing.T) {
+			a, root, _ := newSinkTestAgent(t)
+			actor, sink := mainActorID, root
+			feed(a, statusEvent(t, contracts.MiMoStatusTypeBusy))
+			if child {
+				spawnActor(t, a, contracts.MiMoActorActionSpawn, true)
+				actor = actorID
+				sink = root.Child("child-of-" + spawnSpanID)
+			}
+			// The no-retry native probe restores the removed part during error cleanup, before message.updated states the error.
+			// Source: .tmp/implementation-c29/mimo-no-retry-native/logs/events.jsonl, frames 18-26.
+			feed(a, messageEvent(t, "restored-message", roleAssistant, actor, false), textPartEvent(t, partTypeText, "restored-part", "restored-message", "", false), deltaEvent(t, "restored-part", "restored-message", "partial "),
+				eventJSON(t, eventMessagePartRemoved, map[string]any{"sessionID": testSessionID, "messageID": "restored-message", "partID": "restored-part"}),
+				sessionErrorEvent(t, "UnknownError", "The stream failed."), textPartEvent(t, partTypeText, "restored-part", "restored-message", "partial ", true))
+			assert.Empty(t, assembledRows(sink), "a restored part must wait for the native message outcome")
+			feed(a, failedMessageEvent(t, "restored-message", actor, "UnknownError", "The stream failed."))
+			rows := assembledRows(sink)
+			require.Len(t, rows, 1)
+			_, text, completion := assembledText(t, rows[0].Content)
+			assert.Equal(t, "partial ", text)
+			assert.Equal(t, string(agent.MessageCompletionError), completion)
+		})
+	}
 }

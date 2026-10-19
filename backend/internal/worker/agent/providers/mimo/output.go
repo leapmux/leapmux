@@ -1,6 +1,7 @@
 package mimo
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -60,8 +61,22 @@ type mimoMessageRecord struct {
 	attributionClosed bool
 	// streamFailure records the first accepted stream failure, independent of GET metadata.
 	streamFailure *mimoError
+	// removedParts records retractions whose restored text must wait for the native message outcome.
+	removedParts map[string]struct{}
 	// pendingParts keeps native observations once, in their original order.
 	pendingParts []*mimoPendingPart
+}
+
+// completion reads the native outcome of a completed message.
+func (r mimoMessageRecord) completion() agent.MessageCompletion {
+	switch r.errorName {
+	case contracts.MiMoErrorNameAborted:
+		return agent.MessageCompletionInterrupted
+	case "":
+		return agent.MessageCompletionComplete
+	default:
+		return agent.MessageCompletionError
+	}
 }
 
 type mimoPendingPartKind uint8
@@ -141,7 +156,7 @@ type mimoToolCall struct {
 	// the call stores it, so the row is an event MiMo sent.
 	lastFrame []byte
 	order     uint64
-	// openingTarget owns a successfully persisted opening and its closing rail.
+	// openingTarget owns an accepted opening, including a retained write, and its closing rail.
 	openingTarget  *mimoTranscriptTarget
 	progressTarget *mimoTranscriptTarget
 }
@@ -276,6 +291,45 @@ func (a *Agent) sinkForActor(actorID string) agent.ProviderServices {
 	return a.sink
 }
 
+func (a *Agent) retryForActor(actorID string) *providerkit.RetryResolution {
+	if actorID == "" {
+		actorID = mainActorID
+	}
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	if a.retries == nil {
+		a.retries = make(map[string]*providerkit.RetryResolution)
+	}
+	if a.retries[actorID] == nil {
+		a.retries[actorID] = &providerkit.RetryResolution{}
+	}
+	return a.retries[actorID]
+}
+
+func (a *Agent) resolveActorRetry(actorID string, sink agent.ProviderServices) {
+	a.retryForActor(actorID).Resolve(mimoWorkerNotifications{agent: a, sink: sink, main: actorID == "" || actorID == mainActorID})
+}
+
+// handleRetryAttempt records a child retry. Main retries use the native session status instead.
+func (a *Agent) handleRetryAttempt(event mimoEvent) {
+	var payload struct {
+		SessionID string `json:"sessionID"`
+		MessageID string `json:"messageID"`
+	}
+	if err := json.Unmarshal(event.Properties, &payload); err != nil || payload.MessageID == "" || !a.ownsSession(payload.SessionID) {
+		return
+	}
+	record := a.messageRecord(payload.SessionID, payload.MessageID)
+	a.Mu.Lock()
+	current := a.sessionID
+	a.Mu.Unlock()
+	if record.sessionID != current || !record.identityKnown || record.role != roleAssistant || record.actorID == "" || record.actorID == mainActorID {
+		return
+	}
+	a.persistCapturedNotification(a.sinkForActor(record.actorID), agent.MessageContent{Original: event.raw, AgentSessionID: record.sessionID}, false)
+	a.retryForActor(record.actorID).NoteRetry()
+}
+
 // --- messages ---
 
 func (a *Agent) handleMessageUpdated(event mimoEvent) {
@@ -317,6 +371,7 @@ func (a *Agent) handleMessageUpdated(event mimoEvent) {
 	if existing != nil {
 		record.turnEpoch = existing.turnEpoch
 		record.pendingParts = existing.pendingParts
+		record.removedParts = existing.removedParts
 		record.streamFailure = existing.streamFailure
 		record.attributionClosed = existing.attributionClosed
 		record.actor = existing.actor
@@ -357,6 +412,9 @@ func (a *Agent) handleMessageUpdated(event mimoEvent) {
 		a.noteNativeAbortLocked()
 	}
 	a.messages[info.ID] = &record
+	if info.isCompactionSummary() && info.Error != nil && info.ParentID != "" {
+		a.compactionErrors[info.ParentID] = info.Error.Data.Message
+	}
 	retireMain := record.actorID == mainActorID && record.actorKnown && (record.turnEpoch != a.turnEpoch || !a.turnActive)
 	a.Mu.Unlock()
 
@@ -639,10 +697,7 @@ func (a *Agent) flushPendingMessage(messageID string, fallback agent.MessageComp
 		if (pending.kind == mimoPendingText || pending.kind == mimoPendingStreamedText) && state != nil && state.completion == "" {
 			switch {
 			case record.completed:
-				state.completion = agent.MessageCompletionComplete
-				if record.errorName == contracts.MiMoErrorNameAborted {
-					state.completion = agent.MessageCompletionInterrupted
-				}
+				state.completion = record.completion()
 			case fallback != "":
 				state.completion = fallback
 			default:
@@ -681,7 +736,7 @@ func (a *Agent) flushPendingMessage(messageID string, fallback agent.MessageComp
 				_, err = state.buffer.PersistScopeTo(progressScope(pending.partID), state.completion, sink, agent.MessageContent{
 					AgentSessionID: record.sessionID, IdempotencyKey: "mimo-part:" + pending.partID + ":text",
 				}, agent.SpanInfo{})
-				if err == nil {
+				if agent.OutputRetained(err) {
 					a.completeTextProgress(pending.partID, state, sink)
 				}
 			}
@@ -727,10 +782,13 @@ func (a *Agent) flushPendingMessage(messageID string, fallback agent.MessageComp
 		default:
 			err = fmt.Errorf("the retained MiMo part kind is invalid")
 		}
-		if err != nil {
+		if !agent.OutputRetained(err) {
 			slog.Error("mimo persist retained part", "agent_id", a.AgentID(), "message_id", messageID, "error", err)
 			return false
 		}
+		// A later native final can replace an unwritten streamed snapshot.
+		// Keep its part identity without holding later observations behind the accepted write.
+		keepStream := pending.kind == mimoPendingStreamedText && state != nil && state.buffer != nil && state.buffer.HasPendingWrites()
 		a.Mu.Lock()
 		if pending.kind == mimoPendingActorFailure {
 			// The successful actor row reports only its exact captured failure.
@@ -744,7 +802,9 @@ func (a *Agent) flushPendingMessage(messageID string, fallback agent.MessageComp
 		record.pendingParts[0] = nil
 		record.pendingParts = record.pendingParts[1:]
 		if pending.kind == mimoPendingText || pending.kind == mimoPendingStreamedText || pending.kind == mimoPendingUserPrompt {
-			delete(a.parts, pending.partID)
+			if !keepStream {
+				delete(a.parts, pending.partID)
+			}
 		} else if closedPartID != "" {
 			if call := a.tools[closedPartID]; call != nil {
 				call.lastFrame = nil
@@ -911,6 +971,9 @@ func (a *Agent) handleTextPart(sessionID string, part mimoPart) {
 		}
 		return
 	}
+	if !state.skip && recordInfo.role == roleAssistant && part.Text != "" {
+		a.resolveActorRetry(state.actorID, a.messageTranscriptTarget(&recordInfo).sink)
+	}
 	a.Mu.Lock()
 	if state.skip {
 		record := a.messages[part.MessageID]
@@ -928,7 +991,8 @@ func (a *Agent) handleTextPart(sessionID string, part mimoPart) {
 	record := a.messages[part.MessageID]
 	state.final = &part
 	state.unresolved = nil
-	waits := state.actorID == mainActorID && len(a.interruptRequests) > 0 ||
+	_, restored := record.removedParts[part.ID]
+	waits := restored || state.actorID == mainActorID && len(a.interruptRequests) > 0 ||
 		a.awaitingAbortOutcome || len(record.pendingParts) > 0
 	if !waits && !record.completed && state.completion == "" {
 		state.completion = agent.MessageCompletionComplete
@@ -966,7 +1030,7 @@ func (a *Agent) persistFinalText(sink agent.ProviderServices, record *mimoMessag
 		return err
 	}
 	content := agent.MessageContent{Original: raw, AgentSessionID: record.sessionID, IdempotencyKey: "mimo-part:" + part.ID + ":text"}
-	if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{}); err != nil {
+	if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{}); !agent.OutputRetained(err) {
 		return err
 	}
 	if state.kind == agent.AssembledMessageKindText && record.actor != nil {
@@ -1026,12 +1090,71 @@ func (a *Agent) handlePartDelta(event mimoEvent) {
 	record := a.messages[state.messageID]
 	a.Mu.Unlock()
 	target := a.messageTranscriptTarget(record)
+	a.resolveActorRetry(state.actorID, target.sink)
 	a.reconcileTextProgress(delta.PartID, state, target)
 	a.Mu.Lock()
 	state.progressTarget = target
 	a.Mu.Unlock()
 	buffer.Append(scope, state.kind, delta.Delta, providerkit.JoinVerbatim)
 	target.sink.ReportProgress(agent.ModelTextProgress(scope, delta.Delta))
+}
+
+type mimoPartRemoved struct {
+	SessionID string `json:"sessionID"`
+	MessageID string `json:"messageID"`
+	PartID    string `json:"partID"`
+}
+
+// handlePartRemoved discards only uncommitted native output with the exact part identity.
+// A tool opening that the output queue accepted still needs its closing row at the turn end.
+func (a *Agent) handlePartRemoved(event mimoEvent) {
+	var removed mimoPartRemoved
+	if err := json.Unmarshal(event.Properties, &removed); err != nil || removed.MessageID == "" || removed.PartID == "" {
+		return
+	}
+	a.Mu.Lock()
+	if !a.ownsSessionLocked(removed.SessionID) {
+		a.Mu.Unlock()
+		return
+	}
+	sessionID := removed.SessionID
+	if sessionID == "" {
+		sessionID = a.sessionID
+	}
+	record := a.messages[removed.MessageID]
+	state, call := a.parts[removed.PartID], a.tools[removed.PartID]
+	if record == nil || record.sessionID != sessionID || state == nil && call == nil ||
+		state != nil && state.messageID != removed.MessageID ||
+		call != nil && (call.messageID != removed.MessageID || call.sessionID != sessionID) {
+		a.Mu.Unlock()
+		return
+	}
+	if call != nil && (call.openingTarget != nil || call.final) {
+		// Keep completed call identities also, so a repeated final update cannot count the call twice.
+		a.Mu.Unlock()
+		return
+	}
+	if state != nil {
+		if record.removedParts == nil {
+			record.removedParts = make(map[string]struct{})
+		}
+		record.removedParts[removed.PartID] = struct{}{}
+	}
+	record.pendingParts = slices.DeleteFunc(record.pendingParts, func(part *mimoPendingPart) bool { return part.partID == removed.PartID })
+	delete(a.parts, removed.PartID)
+	delete(a.tools, removed.PartID)
+	a.Mu.Unlock()
+	if state != nil && state.buffer != nil {
+		target := state.progressTarget
+		if target == nil {
+			target = a.messageTranscriptTarget(record)
+		}
+		providerkit.DiscardGenerationScopes(state.buffer, target.sink, []string{progressScope(removed.PartID)})
+	}
+	if call != nil && call.progressTarget != nil {
+		a.ClearCumulativeOutput(removed.PartID)
+		call.progressTarget.sink.ReportProgress(agent.CompleteOutputProgress(removed.PartID))
+	}
 }
 
 // flushActorText persists what an actor streamed and never finished, as rows
@@ -1068,10 +1191,7 @@ func (a *Agent) flushActorText(actorID string, completion agent.MessageCompletio
 		record := a.messages[stream.state.messageID]
 		stream.state.completion = completion
 		if record.completed {
-			stream.state.completion = agent.MessageCompletionComplete
-			if record.errorName == contracts.MiMoErrorNameAborted {
-				stream.state.completion = agent.MessageCompletionInterrupted
-			}
+			stream.state.completion = record.completion()
 		}
 		a.appendPendingPartLocked(record, &mimoPendingPart{kind: mimoPendingStreamedText, partID: stream.id})
 	}
@@ -1152,6 +1272,9 @@ func (a *Agent) handleToolPart(event mimoEvent, sessionID string, part mimoPart)
 		target = a.messageTranscriptTarget(&record)
 	}
 	sink := target.sink
+	if first {
+		a.resolveActorRetry(record.actorID, sink)
+	}
 	a.reconcileToolProgress(part.ID, target)
 	if first && part.Tool == contracts.MiMoToolBash {
 		a.ClearCumulativeOutput(part.ID)
@@ -1183,9 +1306,12 @@ func (a *Agent) openToolCall(sink agent.ProviderServices, part mimoPart, raw []b
 	spawns := isSpawnCall(part)
 	content := agent.MessageContent{Original: raw, AgentSessionID: sessionID, IdempotencyKey: "mimo-part:" + part.ID + ":opening"}
 	err := providerkit.OpenToolSpan(sink, content, part.ID, part.Tool, spawns)
-	if err != nil && !spawns {
-		// The shared helper opens the span even when persistence fails.
-		// Close it on this sink before a retry can select another transcript.
+	if agent.OutputRetained(err) {
+		return nil
+	}
+	if !spawns {
+		// The helper opens the span even when the writer refuses the row.
+		// Close this unowned span before another destination can accept it.
 		sink.CloseSpan(part.ID)
 	}
 	return err
@@ -1231,7 +1357,7 @@ func (a *Agent) closeToolCall(sink agent.ProviderServices, part mimoPart, raw []
 	content := agent.MessageContent{Original: raw, AgentSessionID: sessionID, IdempotencyKey: "mimo-part:" + part.ID + ":closing", Completion: completion}
 	if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{
 		SpanID: part.ID, SpanType: part.Tool, Closing: true, NoSpan: first && spawns,
-	}); err != nil {
+	}); !agent.OutputRetained(err) {
 		return err
 	}
 	a.ClearCumulativeOutput(part.ID)
@@ -1343,6 +1469,9 @@ func (a *Agent) flushUnfinishedOutput(completion agent.MessageCompletion) {
 		a.flushActorText(actorID, completion)
 		a.closeUnfinishedTools(actorID, completion)
 	}
+	if err := agent.FlushPendingOutput(a.sink); err != nil {
+		slog.Error("flush retained MiMo output", "agent_id", a.AgentID(), "error", err)
+	}
 }
 
 // --- compaction ---
@@ -1353,58 +1482,68 @@ const (
 	compactionEnded   = "end"
 )
 
-// handleCompactionPart records each compaction phase.
-// The first part starts the compaction and has no projection.
-// The final part supplies the summary in its projection.
-// Each phase becomes a notification in the affected actor's transcript.
-// The browser combines the start notification with the final notification.
-// See mimoProvider.Classify.
+// mimoCompaction retains the native identity and the sink that received its live start.
+type mimoCompaction struct {
+	phase, messageID, actorID string
+	sink                      agent.ProviderServices
+	live                      bool
+	order                     uint64
+}
+
+// handleCompactionPart publishes a live start and stores only the native end.
 func (a *Agent) handleCompactionPart(event mimoEvent, sessionID string, part mimoPart) {
+	if part.ID == "" || part.MessageID == "" {
+		return
+	}
 	phase := compactionStarted
 	if compactionEndedIn(part) {
 		phase = compactionEnded
 	}
 	actorID := a.messageRecord(sessionID, part.MessageID).actorID
 	a.Mu.Lock()
-	previous := a.compactions[part.ID]
-	if previous == phase || previous == compactionEnded {
+	state := a.compactions[part.ID]
+	if state != nil && (state.messageID != part.MessageID || state.phase == phase || state.phase == compactionEnded) {
 		a.Mu.Unlock()
 		return
 	}
-	a.compactions[part.ID] = phase
+	a.Mu.Unlock()
+	if state == nil {
+		state = &mimoCompaction{messageID: part.MessageID, actorID: actorID, sink: a.sinkForActor(actorID)}
+	}
+	a.Mu.Lock()
+	if state.order == 0 {
+		a.pendingPartOrder++
+		state.order = a.pendingPartOrder
+	}
+	state.phase, state.live = phase, phase == compactionStarted
+	a.compactions[part.ID] = state
 	var ack chan struct{}
 	var releaseManual bool
 	if actorID == mainActorID {
 		if phase == compactionStarted {
-			// CompactContext compacts the main agent, so only its compaction
-			// confirms the request.
 			ack = a.compactionAck
 			a.compactionAck = nil
 			if ack != nil {
 				a.manualCompactionID = part.ID
 			}
-		} else if part.ID != "" && part.ID == a.manualCompactionID {
+		} else if part.ID == a.manualCompactionID {
 			a.manualCompactionID = ""
 			a.manualCompactionReady = true
 			releaseManual = true
 		}
 	}
 	a.Mu.Unlock()
-	content := agent.MessageContent{Original: event.raw}
-	// A main-transcript compaction holds while a native failure can still
-	// claim the main transcript ahead of it; a child transcript's compaction
-	// is exactly addressed and writes now.
-	rootHeld := actorID == mainActorID && a.rootHoldsNotifications()
-	a.persistCapturedNotification(a.sinkForActor(actorID), content, rootHeld)
-	// The ack states the compaction started with its notice on the transcript,
-	// so it fires only after the write: a reader that returns on the ack and
-	// reads the transcript must find the notice already there.
+	if phase == compactionStarted {
+		providerkit.PublishCompaction(state.sink, "")
+	} else {
+		providerkit.EndCompaction(state.sink)
+		a.persistCapturedNotification(state.sink, agent.MessageContent{Original: event.raw}, actorID == mainActorID && a.rootHoldsNotifications())
+	}
+	// The acknowledgment releases the caller after the live start is published.
 	if ack != nil {
 		close(ack)
 	}
 	if releaseManual {
-		// The native summarize route keeps its reply until the next prompt
-		// finishes. Release the Worker queue after the summary exists.
 		a.Mu.Lock()
 		a.turnActive = false
 		a.Mu.Unlock()
@@ -1413,10 +1552,63 @@ func (a *Agent) handleCompactionPart(event mimoEvent, sessionID string, part mim
 	}
 }
 
-// compactionEndedIn reports whether a compaction part states the end of its
-// compaction: the part that ends it carries the summary in its projection.
+// compactionEndedIn reports whether the native part carries a summary projection.
 func compactionEndedIn(part mimoPart) bool {
-	return len(part.Projection) > 0 && string(part.Projection) != "null"
+	return providerkit.RawPresent(part.Projection)
+}
+
+// handleMessageRemoved closes each compaction that the native rollback removes.
+func (a *Agent) handleMessageRemoved(event mimoEvent) {
+	var payload struct {
+		SessionID string `json:"sessionID"`
+		MessageID string `json:"messageID"`
+	}
+	if json.Unmarshal(event.Properties, &payload) != nil || payload.SessionID == "" || payload.MessageID == "" {
+		return
+	}
+	a.Mu.Lock()
+	if payload.SessionID != a.sessionID {
+		a.Mu.Unlock()
+		return
+	}
+	var ended []*mimoCompaction
+	for partID, state := range a.compactions {
+		if state.messageID != payload.MessageID || state.phase == compactionEnded {
+			continue
+		}
+		state.phase, state.live = compactionEnded, false
+		ended = append(ended, state)
+		if partID == a.manualCompactionID {
+			a.manualCompactionID = ""
+			a.manualCompactionReady = false
+		}
+	}
+	detail := a.compactionErrors[payload.MessageID]
+	delete(a.compactionErrors, payload.MessageID)
+	a.Mu.Unlock()
+	slices.SortFunc(ended, func(a, b *mimoCompaction) int { return cmp.Compare(a.order, b.order) })
+	for _, state := range ended {
+		providerkit.EndCompaction(state.sink)
+		providerkit.PersistCompactionEnded(mimoWorkerNotifications{agent: a, sink: state.sink, main: state.actorID == mainActorID}, providerkit.CompactionEndFailed, detail)
+	}
+}
+
+// endLiveCompactions clears one actor's live state, or all actors when actorID is empty.
+// It keeps native identities so a replay cannot restart a completed or idle compaction.
+func (a *Agent) endLiveCompactions(actorID string) {
+	a.Mu.Lock()
+	var ended []*mimoCompaction
+	for _, state := range a.compactions {
+		if state.live && (actorID == "" || state.actorID == actorID) {
+			state.live = false
+			ended = append(ended, state)
+		}
+	}
+	a.Mu.Unlock()
+	slices.SortFunc(ended, func(a, b *mimoCompaction) int { return cmp.Compare(a.order, b.order) })
+	for _, state := range ended {
+		providerkit.EndCompaction(state.sink)
+	}
 }
 
 // --- turn lifecycle ---
@@ -1445,10 +1637,20 @@ func (a *Agent) handleSessionStatus(event mimoEvent) {
 		// each arrival as its own observation.
 		a.beginTurn()
 		a.persistCapturedNotification(a.sink, agent.MessageContent{Original: event.raw}, a.rootHoldsNotifications())
+		a.retryForActor(mainActorID).NoteRetry()
 	case contracts.MiMoStatusTypeIdle:
 		a.endTurn(event.raw)
+	case contracts.MiMoStatusTypeNotice:
+		a.persistCapturedNotification(a.sink, agent.MessageContent{Original: event.raw, AgentSessionID: payload.SessionID}, a.rootHoldsNotifications())
 	default:
-		slog.Debug("mimo unknown session status", "agent_id", a.AgentID(), "status", payload.Status.Type)
+		a.persistUnknownEvent(event, payload.SessionID)
+	}
+}
+
+// persistUnknownEvent keeps an unrecognized current-session frame as its own row.
+func (a *Agent) persistUnknownEvent(event mimoEvent, sessionID string) {
+	if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: event.raw, AgentSessionID: sessionID}, agent.SpanInfo{}); !agent.OutputRetained(err) {
+		slog.Error("persist an unknown MiMo event", "agent_id", a.AgentID(), "error", err)
 	}
 }
 
@@ -1496,6 +1698,7 @@ func (a *Agent) beginTurn() {
 // The Worker can hold an active turn before this agent starts one.
 // The input queue marks a turn active when the native server accepts its prompt.
 func (a *Agent) endTurn(idle []byte) {
+	a.retryForActor(mainActorID).Reset()
 	// A divider whose write failed retries first: the later idle can only
 	// carry that retry, never a fresh finalization over the failed turn's
 	// real outcome.
@@ -1513,6 +1716,7 @@ func (a *Agent) endTurn(idle []byte) {
 		// Keep that prompt eligible until MiMo accepts it.
 		a.manualFollowupBusy = false
 		a.Mu.Unlock()
+		a.endLiveCompactions(mainActorID)
 		a.PublishTurnActive()
 		return
 	}
@@ -1543,6 +1747,8 @@ func (a *Agent) endTurn(idle []byte) {
 		selected.notificationReady = true
 	}
 	a.Mu.Unlock()
+
+	a.endLiveCompactions(mainActorID)
 
 	// Each call that this closes clears its own output count. A subagent's call
 	// can still run, so the counts are not reset as a whole.
@@ -1588,7 +1794,6 @@ func (a *Agent) endTurn(idle []byte) {
 			failure.notificationReady = true
 		}
 	}
-	clear(a.compactions)
 	a.Mu.Unlock()
 	a.PublishTurnActive()
 	a.retireMainControls()
@@ -1624,16 +1829,16 @@ func (a *Agent) retryRetainedTurnEnd() {
 func (a *Agent) keepPendingPartsLocked() {
 	textParts := make(map[string]struct{})
 	toolCalls := make(map[string]struct{})
-	unresolvedMessages := make(map[string]struct{})
+	retainedMessages := make(map[string]struct{})
 	for partID, part := range a.parts {
-		if part.unresolved != nil {
+		if part.unresolved != nil || part.buffer != nil && part.buffer.HasPendingWrites() {
 			textParts[partID] = struct{}{}
-			unresolvedMessages[part.messageID] = struct{}{}
+			retainedMessages[part.messageID] = struct{}{}
 		}
 	}
 	for messageID, record := range a.messages {
-		_, hasUnresolvedText := unresolvedMessages[messageID]
-		if len(record.pendingParts) == 0 && !hasUnresolvedText {
+		_, hasRetainedText := retainedMessages[messageID]
+		if len(record.pendingParts) == 0 && !hasRetainedText {
 			delete(a.messages, messageID)
 			continue
 		}
@@ -1951,7 +2156,8 @@ func sumCosts(costs map[string]float64) float64 {
 
 // recordMessageUsage adds one assistant message's usage to the readout.
 // Context usage follows only the current main message's native session and turn epoch.
-// A child has its own context. Cost includes every actor in the session.
+// A child has its own context. Cost includes every actor and compaction summary in the session.
+// Summary input describes the old history, so it cannot replace the context reading.
 func (a *Agent) recordMessageUsage(info mimoMessageInfo, record mimoMessageRecord) {
 	broadcast := map[string]any{}
 	a.Mu.Lock()
@@ -1964,7 +2170,7 @@ func (a *Agent) recordMessageUsage(info mimoMessageInfo, record mimoMessageRecor
 			broadcast[contracts.SessionInfoKeyTotalCostUsd] = sumCosts(a.usage.costs)
 		}
 	}
-	if record.actorID == mainActorID && record.sessionID == a.sessionID && record.turnEpoch == a.turnEpoch && info.Tokens != nil {
+	if !record.summary && record.actorID == mainActorID && record.sessionID == a.sessionID && record.turnEpoch == a.turnEpoch && info.Tokens != nil {
 		tokens := *info.Tokens
 		used := tokens.Input + tokens.Cache.Read + tokens.Cache.Write
 		if used > 0 {

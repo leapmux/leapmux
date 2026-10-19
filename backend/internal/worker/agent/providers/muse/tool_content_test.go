@@ -1,12 +1,14 @@
 package muse
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -346,4 +348,91 @@ func TestWrongTypedOwnedNativeRecordWithdrawsAnEarlierSupplement(t *testing.T) {
 			assert.NotContains(t, string(sink.Messages()[0].SupplementalContent), `"id":"result"`)
 		})
 	}
+}
+
+type museLogRecoverySink struct {
+	agent.ProviderServices
+	updated chan struct{}
+}
+
+func (s *museLogRecoverySink) EnrichMessage(change agent.MessageEnrichment) (bool, error) {
+	changed, err := s.ProviderServices.EnrichMessage(change)
+	select {
+	case s.updated <- struct{}{}:
+	default:
+	}
+	return changed, err
+}
+
+func TestMuseLogGapRecoversTheMissingRecords(t *testing.T) {
+	a, sink := testAgent(t)
+	sink.UpdateSessionID("session")
+	state := a.sessions["session"]
+	state.log.subscriptionID = 7
+	origin := logRecord("origin", "assistant_tool_calls_committed", "message_id", 1, `"tool_calls":[{"call_id":"call","name":"bash","args":"{\"command\":\"exit 7\"}"}]`)
+	result := logRecord("result", "tool_result_batch_committed", "batch_id", 2, `"results":[{"tool_call_index":0,"tool_call_id":"call","text":"{\"exit_code\":7}"}]`)
+	feed(t, a, contracts.MuseMethodLogRecord, map[string]any{"subscriptionId": 7, "record": origin})
+	item := resultItem("item", "call", "origin")
+	item.Item.Revision = 1
+	item.Item.Status = "completed"
+	feed(t, a, contracts.MuseMethodItemCompleted, item)
+	updates := make(chan struct{}, 1)
+	state.sink = &museLogRecoverySink{ProviderServices: a.sink, updated: updates}
+	a.SetStdinForTest(&museTestPeer{agent: a, reply: func(method string, raw json.RawMessage) agenttest.RPCReply {
+		assert.Equal(t, methodLogPage, method)
+		var params struct {
+			From nativePosition `json:"from"`
+		}
+		assert.NoError(t, json.Unmarshal(raw, &params))
+		assert.Equal(t, nativePosition{ID: "origin", Sequence: 1}, params.From)
+		return agenttest.RPCReply{Result: json.RawMessage(`{"records":[` + string(result) + `],"nextCursor":{"stream":{"kind":"session","id":"session"},"after":{"id":"result","sequence":2}}}`)}
+	}})
+	feed(t, a, "log/gap", map[string]any{"subscriptionId": 7, "after": nativePosition{ID: "origin", Sequence: 1}, "next": nativePosition{ID: "result", Sequence: 2}})
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	select {
+	case <-updates:
+	case <-ctx.Done():
+		t.Fatal("the log gap did not recover the tool result")
+	}
+	require.Len(t, sink.Messages(), 1)
+	assert.Contains(t, string(sink.Messages()[0].SupplementalContent), `exit_code`)
+	assert.NotContains(t, string(sink.Messages()[0].SupplementalContent), `"nativeResultUnavailable"`)
+}
+
+func TestMuseLogGapFailedPageMarksResultUnavailable(t *testing.T) {
+	a, sink := testAgent(t)
+	sink.UpdateSessionID("session")
+	state := a.sessions["session"]
+	state.log.subscriptionID = 7
+	item := resultItem("item", "call", "origin")
+	item.Item.Revision = 1
+	item.Item.Status = "completed"
+	feed(t, a, contracts.MuseMethodItemCompleted, item)
+	updates := make(chan struct{}, 1)
+	state.sink = &museLogRecoverySink{ProviderServices: a.sink, updated: updates}
+	a.SetStdinForTest(&museTestPeer{agent: a, reply: func(method string, _ json.RawMessage) agenttest.RPCReply {
+		assert.Equal(t, methodLogPage, method)
+		return agenttest.RPCReply{Error: json.RawMessage(`{"code":-32000,"message":"The log page is unavailable."}`)}
+	}})
+	feed(t, a, "log/gap", map[string]any{"subscriptionId": 7, "after": nativePosition{ID: "origin", Sequence: 1}, "next": nativePosition{ID: "result", Sequence: 2}})
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	select {
+	case <-updates:
+	case <-ctx.Done():
+		t.Fatal("the log gap did not report the page failure")
+	}
+	require.Len(t, sink.Messages(), 1)
+	assert.Contains(t, string(sink.Messages()[0].SupplementalContent), `"nativeResultUnavailable"`)
+	assert.Contains(t, string(sink.Messages()[0].SupplementalContent), "The log page is unavailable.")
+}
+
+func TestMuseLogGapIgnoresARetiredSubscription(t *testing.T) {
+	a, _ := testAgent(t)
+	state := a.sessions["session"]
+	state.log.subscriptionID = 7
+	state.retired = true
+	feed(t, a, "log/gap", map[string]any{"subscriptionId": 7})
+	assert.Empty(t, state.log.unavailable)
 }

@@ -981,6 +981,34 @@ describe('interruptedToolTotals', () => {
 })
 
 describe('exerciseInterruptedPartialAnswer', () => {
+  it('checks additional transcript assertions before and after reload', async () => {
+    const { script } = partialScript((marker) => {
+      resume.assistantRows.push(`PARTIALHEAD${marker}\n\n${INTERRUPTION_MARKER}`)
+      resume.contentRows.push(`PARTIALHEAD${marker}\n\n${INTERRUPTION_MARKER}`)
+    })
+    const options = {
+      cut: async () => {},
+      checkTranscript: async () => { resume.events.push('provider check') },
+    }
+    await exerciseInterruptedPartialAnswer(partialContext(script), options)
+    expect(resume.events.filter(event => event === 'provider check' || event === 'reload'))
+      .toEqual(['provider check', 'reload', 'provider check'])
+  })
+
+  it('propagates an additional transcript failure and releases the stream', async () => {
+    const { script } = partialScript((marker) => {
+      resume.assistantRows.push(`PARTIALHEAD${marker}\n\n${INTERRUPTION_MARKER}`)
+      resume.contentRows.push(`PARTIALHEAD${marker}\n\n${INTERRUPTION_MARKER}`)
+    })
+    const failure = new Error('The provider notice remains visible.')
+    const options = {
+      cut: async () => {},
+      checkTranscript: async () => { throw failure },
+    }
+    await expect(exerciseInterruptedPartialAnswer(partialContext(script), options)).rejects.toBe(failure)
+    expect(script.releaseGateIfHeld).toHaveBeenCalledTimes(1)
+  })
+
   it.each(['', ' \t\n'])('refuses an empty follow-up answer: %j', async (answer) => {
     const { script } = partialScript(() => {})
     await expect(exerciseInterruptedPartialAnswer(partialContext(script), { followUp: { answer } })).rejects.toThrow('nonempty answer')

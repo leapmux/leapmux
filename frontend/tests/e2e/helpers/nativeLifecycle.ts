@@ -264,6 +264,8 @@ export async function exerciseInterruptedPartialAnswer(context: ManagedNativeSce
   cut?: (context: ManagedNativeScenarioContext) => Promise<void>
   /** Queue and require the answer that the cut starts. */
   followUp?: { answer: string }
+  /** Check provider-specific transcript facts before and after reload. */
+  checkTranscript?: () => Promise<void>
 } = {}): Promise<void> {
   if (options.followUp && !options.followUp.answer.trim())
     throw new Error('The follow-up needs a nonempty answer.')
@@ -310,6 +312,7 @@ export async function exerciseInterruptedPartialAnswer(context: ManagedNativeSce
         await expect(assistantBubbles(context.page).filter({ hasText: options.followUp.answer })).toHaveCount(1)
         await expectRowsInOrder(messageContents(context.page), [head, options.followUp.answer])
       }
+      await options.checkTranscript?.()
     }
   }
   finally {

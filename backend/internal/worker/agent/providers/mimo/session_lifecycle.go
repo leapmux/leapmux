@@ -98,6 +98,7 @@ func (a *Agent) ClearContext() (string, error) {
 	}
 
 	a.dispatchMu.Lock()
+	a.endLiveCompactions("")
 	a.flushUnfinishedOutput(agent.MessageCompletionInterrupted)
 	a.retireAllControls()
 	a.closeSessionActors(bgtask.StatusStopped)
@@ -111,7 +112,10 @@ func (a *Agent) ClearContext() (string, error) {
 	a.awaitingAbortOutcome = false
 	a.TurnToolUses = 0
 	a.keepPendingPartsLocked()
+	clear(a.retries)
 	clear(a.compactions)
+	clear(a.compactionErrors)
+	a.compactionRequestID = 0
 	a.compactionAck = nil
 	a.manualCompactionID = ""
 	a.manualCompactionReady = false
@@ -190,6 +194,8 @@ func (a *Agent) CompactContext() error {
 	}
 	ack := make(chan struct{})
 	a.compactionAck = ack
+	requestID := a.NextTurnSeq()
+	a.compactionRequestID = requestID
 	a.Mu.Unlock()
 	release := func() {
 		a.Mu.Lock()
@@ -209,7 +215,7 @@ func (a *Agent) CompactContext() error {
 		if err != nil {
 			slog.Warn("mimo compaction failed", "agent_id", a.AgentID(), "error", err)
 		}
-		a.settleManualCompactionRoute(sessionID, err)
+		a.settleManualCompactionRoute(sessionID, requestID, err)
 		result <- err
 	}()
 	timer := a.clock.NewTimer(mimoCompactionStartWait, mimoCompactionStartTimerTag)
@@ -237,10 +243,10 @@ func (a *Agent) CompactContext() error {
 // settleManualCompactionRoute resolves a native route that answered before its
 // completed part reached the event stream. The session store tells whether the
 // summary exists; the route's success alone does not.
-func (a *Agent) settleManualCompactionRoute(sessionID string, routeErr error) {
+func (a *Agent) settleManualCompactionRoute(sessionID string, requestID uint64, routeErr error) {
 	a.Mu.Lock()
 	partID := a.manualCompactionID
-	pending := a.sessionID == sessionID && partID != ""
+	pending := a.sessionID == sessionID && a.compactionRequestID == requestID && partID != ""
 	a.Mu.Unlock()
 	if !pending {
 		return
@@ -263,7 +269,7 @@ func (a *Agent) settleManualCompactionRoute(sessionID string, routeErr error) {
 	a.dispatchMu.Lock()
 	defer a.dispatchMu.Unlock()
 	a.Mu.Lock()
-	if a.sessionID != sessionID || a.manualCompactionID != partID {
+	if a.sessionID != sessionID || a.compactionRequestID != requestID || a.manualCompactionID != partID {
 		a.Mu.Unlock()
 		return
 	}
@@ -272,17 +278,16 @@ func (a *Agent) settleManualCompactionRoute(sessionID string, routeErr error) {
 	a.manualCompactionReady = routeErr == nil && readErr == nil && summarized && !held
 	a.turnActive = false
 	a.Mu.Unlock()
+	a.endLiveCompactions(mainActorID)
 	if held {
 		a.flushFailureNotifications()
 	} else {
-		kind, message := contracts.NotificationTypeAgentStatus, "MiMo had no context to compact"
+		kind, message := contracts.NotificationTypeAgentError, ""
 		switch {
 		case routeErr != nil:
 			kind, message = contracts.NotificationTypeAgentError, "MiMo could not compact the context: "+routeErr.Error()
 		case readErr != nil:
 			kind, message = contracts.NotificationTypeAgentError, "MiMo could not read the compacted context: "+readErr.Error()
-		case summarized:
-			message = ""
 		}
 		if message != "" {
 			a.sink.PersistLeapMuxNotification(map[string]any{

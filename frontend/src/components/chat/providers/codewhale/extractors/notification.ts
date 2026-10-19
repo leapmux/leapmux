@@ -12,7 +12,7 @@ const CODEWHALE_WAIT_SETTING_HINT = 'Set [tools] user_input_timeout_seconds = 0 
 
 /** The words of an item: its whole `detail`, or the `summary` when it states no detail. */
 function itemText(item: { summary: string, detail: string }): string {
-  return (item.detail || item.summary).trim()
+  return item.detail.trim() || item.summary.trim()
 }
 
 /** The entries of one finished non-tool item: a status, a compaction, or an error. */
@@ -29,7 +29,7 @@ function itemEntries(parsed: Record<string, unknown>, payload: Record<string, un
     }
     case CODEWHALE_ITEM_KIND.ContextCompaction: {
       if (item.outcome !== 'completed')
-        return [{ kind: 'compaction', phase: 'end', error: itemText(item) || 'aborted' }]
+        return [{ kind: 'compaction', phase: 'end', outcome: item.outcome === 'interrupted' ? 'aborted' : 'failed', error: itemText(item) }]
       // The event states beside the item whether the runtime started the compaction by
       // itself. Its counts are MESSAGE counts, which the token-shaped detail cannot carry.
       return [{ kind: 'compaction', phase: 'end', detail: { trigger: pickBool(payload, 'auto') ? 'auto' : 'manual' } }]
@@ -43,14 +43,7 @@ function itemEntries(parsed: Record<string, unknown>, payload: Record<string, un
   }
 }
 
-/**
- * Read one Codewhale notification row into the shared notification model.
- *
- * Codewhale's SOLE notification seam, for a standalone row and for one entry of a
- * consolidated thread alike. Returns an empty list for a row this plugin reads and
- * draws nothing for, and for a row it cannot read: a notification already reached the
- * transcript, so nothing is lost by drawing no line for it.
- */
+/** Read a native notice from a standalone row or a notification thread. */
 export function codewhaleNotificationEntry(msg: Record<string, unknown>): NotificationEntry[] {
   const envelope = codewhaleEnvelope(msg)
   if (!envelope)
@@ -67,10 +60,10 @@ export function codewhaleNotificationEntry(msg: Record<string, unknown>): Notifi
       return [{ kind: 'text', text: `Codewhale dropped ${steer} before the model read it. Send it again to deliver it.` }]
     }
     // The wait comes from Codewhale's own configuration, which LeapMux cannot change for
-    // its sessions and which no event states in advance. So the row names the setting.
+    // its sessions and which no event states in advance. The row identifies that setting.
     case CODEWHALE_EVENT.ApprovalTimeout: {
       const seconds = pickNumber(payload, 'timeout_secs')
-      const wait = seconds !== null && seconds > 0 ? `within ${formatDuration(seconds * 1000)}` : 'in time'
+      const wait = seconds !== null && seconds > 0 && Number.isFinite(seconds * 1000) ? `within ${formatDuration(seconds * 1000)}` : 'in time'
       return [{ kind: 'text', text: `Codewhale denied the call because nobody answered ${wait}. ${CODEWHALE_WAIT_SETTING_HINT}` }]
     }
     case CODEWHALE_EVENT.SandboxDenied: {
@@ -85,4 +78,10 @@ export function codewhaleNotificationEntry(msg: Record<string, unknown>): Notifi
     default:
       return itemEntries(msg, payload) ?? []
   }
+}
+
+/** Identify a stored native start for the shared compaction safety net. */
+export function codewhaleCompactionStart(message: Record<string, unknown>): boolean {
+  const item = codewhaleItem(message)
+  return item?.kind === CODEWHALE_ITEM_KIND.ContextCompaction && item.outcome === 'open'
 }

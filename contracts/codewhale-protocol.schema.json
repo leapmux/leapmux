@@ -42,7 +42,9 @@
     "mediaFields",
     "supplementFields",
     "mediaTypes",
-    "mediaRules"
+    "mediaRules",
+    "notificationEvents",
+    "notificationItemKinds"
   ],
   "$defs": {
     "table": {
@@ -240,6 +242,24 @@
           "minimum": 1,
           "maximum": 9007199254740991
         }
+      }
+    },
+    "notificationEvents": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Z][A-Za-z0-9]*$"
+      }
+    },
+    "notificationItemKinds": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Z][A-Za-z0-9]*$"
       }
     }
   }

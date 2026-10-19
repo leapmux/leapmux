@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { CLINE_NOTICE_KIND, CLINE_NOTICE_PHASE, CLINE_TEAM_RUN_EVENT } from '~/generated/contracts/cline-protocol'
-import { clineCompactionBoundary, clineIsNotice, clineNotificationEntry } from './notification'
+import { clineCompactionBoundary, clineCompactionStart, clineIsNotice, clineNotificationEntry } from './notification'
 
 function notice(kind: string, phase: string, metadata: Record<string, unknown> = {}, message = kind) {
   return { version: 'v1', event: 'session.notice', sessionId: 's1', payload: { message, noticeType: 'status', metadata: { kind, phase, ...metadata } } }
@@ -11,15 +11,27 @@ function team(eventType: string, extra: Record<string, unknown> = {}) {
 }
 
 describe('clineNotificationEntry', () => {
+  it('drops invalid retry and compaction counters', () => {
+    expect(clineNotificationEntry(notice(CLINE_NOTICE_KIND.ProviderErrorRetry, 'started', { attempt: -1, maxRetries: 1.5, delayMs: Infinity, providerError: ' ' })))
+      .toEqual([{ kind: 'retry', scope: 'api' }])
+    expect(clineNotificationEntry(notice(CLINE_NOTICE_KIND.AutoCompaction, 'completed', { tokensBefore: -1, tokensAfter: NaN })))
+      .toEqual([{ kind: 'compaction', phase: 'end', detail: { trigger: 'auto' } }])
+  })
+
+  it('words the max-tokens compaction notice', () => {
+    expect(clineNotificationEntry(notice('max_tokens_compaction', 'started')))
+      .toEqual([{ kind: 'status', text: 'The answer hit the output limit; compacting and retrying' }])
+  })
+
   it('reads each phase of a compaction', () => {
     expect(clineNotificationEntry(notice(CLINE_NOTICE_KIND.AutoCompaction, CLINE_NOTICE_PHASE.Started)))
-      .toEqual([{ kind: 'compaction', phase: 'start', detail: { trigger: 'auto' } }])
+      .toEqual([])
     expect(clineNotificationEntry(notice(CLINE_NOTICE_KIND.ManualCompaction, CLINE_NOTICE_PHASE.Completed, { tokensBefore: 90000, tokensAfter: 12000 })))
       .toEqual([{ kind: 'compaction', phase: 'end', detail: { trigger: 'manual', pre: 90000, post: 12000 } }])
     expect(clineNotificationEntry(notice(CLINE_NOTICE_KIND.OverflowRecoveryCompaction, CLINE_NOTICE_PHASE.Skipped)))
-      .toEqual([{ kind: 'status', text: 'Compaction skipped' }])
+      .toEqual([{ kind: 'compaction', phase: 'end', outcome: 'skipped', detail: { trigger: 'overflow' } }])
     expect(clineNotificationEntry(notice(CLINE_NOTICE_KIND.AutoCompaction, CLINE_NOTICE_PHASE.Failed)))
-      .toEqual([{ kind: 'status', text: 'Compaction failed' }])
+      .toEqual([{ kind: 'compaction', phase: 'end', outcome: 'failed', detail: { trigger: 'auto' } }])
   })
 
   // A count that the notice does not state is absent, not zero.
@@ -99,5 +111,14 @@ describe('clineCompactionBoundary', () => {
   it('reads no boundary from a row that is not a notice', () => {
     expect(clineCompactionBoundary(parsed(team(CLINE_TEAM_RUN_EVENT.RunCompleted)))).toBeNull()
     expect(clineCompactionBoundary(parsed({ type: 'context_cleared' }))).toBeNull()
+  })
+})
+
+describe('clineCompactionStart', () => {
+  it('identifies only a stored native compaction start', () => {
+    expect(clineCompactionStart(notice(CLINE_NOTICE_KIND.AutoCompaction, 'started'))).toBe(true)
+    expect(clineCompactionStart(notice(CLINE_NOTICE_KIND.AutoCompaction, 'completed'))).toBe(false)
+    expect(clineCompactionStart(notice(CLINE_NOTICE_KIND.ProviderErrorRetry, 'started'))).toBe(false)
+    expect(clineCompactionStart(null)).toBe(false)
   })
 })

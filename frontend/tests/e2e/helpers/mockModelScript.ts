@@ -9,9 +9,8 @@ import { isSystemRow, requestRows, requestSystemFields, rowContent } from './mod
  *
  * This module holds no prompt knowledge and no transport. The server
  * (`./mockModelServer`) parses a registration against it, and the test client
- * (`./mockModelScenario`) builds one. Keeping the vocabulary here lets both
- * sides state one shape, so a script that a test writes and a script that the
- * server accepts cannot drift.
+ * (`./mockModelScenario`) builds one. Both sides use this vocabulary.
+ * A test script and its server registration therefore use the same shape.
  */
 
 /**
@@ -48,10 +47,9 @@ export const MAX_STEP_DELAY_MS = 120_000
 /**
  * One tool call the model makes.
  *
- * A tool call states EITHER JSON `arguments`, for an ordinary function tool, OR
- * raw `input`, for an OpenAI CUSTOM tool. Codex's `exec` is the custom one: it
- * takes JavaScript source text rather than a JSON object, so a JSON-argument
- * call would reach its runtime as an unparsable body.
+ * An ordinary function tool takes JSON `arguments`. An OpenAI custom tool takes raw `input`.
+ * Codex's `exec` takes JavaScript source as custom-tool input.
+ * JSON arguments reach that runtime as an unreadable body.
  */
 export interface MockModelToolCall {
   id: string
@@ -60,13 +58,18 @@ export interface MockModelToolCall {
   /** Raw text input for a custom tool in either OpenAI model API. */
   input?: string
   /**
-   * The tool NAMESPACE, for a provider that groups its tools into several.
+   * The tool namespace, when the provider groups tools into namespaces.
    *
-   * Codex declares two -- `functions` holds `exec`, `wait` and
-   * `request_user_input`, and `collaboration` holds `spawn_agent`, `wait_agent`
-   * and the rest -- and a call into a non-default namespace must name it. A call
-   * that omits it comes back as `unsupported call: <name>` in the tool OUTPUT,
-   * so the turn continues and the only symptom is that the tool did nothing.
+   * Codex declares two namespaces:
+   * - `functions` holds these tools:
+   *   - `exec`
+   *   - `wait`
+   *   - `request_user_input`
+   * - `collaboration` holds `spawn_agent` and `wait_agent`, among other collaboration tools.
+   *
+   * A call to a non-default namespace must specify the namespace.
+   * Without it, the tool output contains `unsupported call: <name>`.
+   * The turn continues, and the failed tool takes no action.
    *
    * The OpenAI Responses protocol is the only one that carries it.
    */
@@ -85,11 +88,11 @@ export interface MockModelError {
   message: string
   code?: string
   /**
-   * Send the error inside a stream that already started, instead of as an HTTP
-   * status: the stream opens, one partial text delta arrives, and an error
-   * payload ends it.
+   * Start a stream and send one partial text delta before the failure.
    *
-   * The Chat Completions, Responses, and Messages routes send their native error after one text delta.
+   * True sends the native error after one text delta on the three model APIs.
+   * "truncate" ends the event stream after that delta, with no error or completion event.
+   * The HTTP response ends normally. This option does not reset the socket.
    * Each route requires a request that asks for a stream.
    * The provider-service surfaces (Cursor, Kiro, Google) do not read this flag.
    *
@@ -98,7 +101,7 @@ export interface MockModelError {
    * comes before any delta, with its own generic text. It relays the
    * provider's message of this shape in its `result`.
    */
-  midStream?: boolean
+  midStream?: boolean | 'truncate'
 }
 
 export interface MockModelDeliveredError {
@@ -109,11 +112,9 @@ export interface MockModelDeliveredError {
 /**
  * Deliver a step's `text` in pieces rather than in one, pausing between them.
  *
- * A test that observes a turn MID-FLIGHT needs two things: a turn that lasts
- * long enough to catch, and output that GROWS while it runs. `delayMs` supplies
- * the first alone -- it holds the whole answer back and then delivers it in one
- * piece, so a progress indicator driven by token counts never moves and an
- * interrupt finds nothing to truncate.
+ * A test of a running turn needs enough time to observe it and output that grows during the turn.
+ * A step-level `delayMs` delays the whole answer, then sends one piece.
+ * The progress indicator receives no changing token counts. An interruption receives no partial text to preserve.
  *
  * Reasoning chunks precede text chunks. Tool calls keep their native complete arguments.
  */
@@ -201,11 +202,10 @@ export interface MockModelStep {
    * match supplies the value. The server then replaces each `{{name}}` in
    * `text`, `reasoning`, and every tool-call string with that value.
    *
-   * This exists for a value that the agent chooses at run time and the test
-   * cannot know. Kimi Code is the case: it gives each plan a random file path
-   * and states it only in its system reminder, and the model must write the
-   * plan to that exact path. A capture that matches nothing makes the request
-   * unexpected, so the turn fails with its body recorded.
+   * This handles values that the agent chooses at runtime and the test cannot know.
+   * Kimi Code gives each plan a random path and states it only in a system reminder.
+   * The model must write the plan at that exact path.
+   * A capture with no match marks the request as unexpected. The turn fails, and the server records its body.
    */
   captures?: Record<string, string>
 }
@@ -277,9 +277,12 @@ export interface MockModelMatcher {
 /**
  * A repeatable answer for the requests a matcher selects.
  *
- * The server tries every rule before it consumes a step, so a provider's own
- * housekeeping turn — title generation, a summary, a compaction — never takes
- * the answer the test scripted for the next real turn.
+ * The server tries every rule before it consumes a step.
+ * A matching housekeeping rule cannot consume the answer for the next scripted turn.
+ * Housekeeping includes these requests:
+ * - Title generation.
+ * - A summary.
+ * - A compaction.
  */
 export interface MockModelRule {
   name: string
@@ -298,9 +301,9 @@ export interface MockModelScenarioSpec {
   /**
    * The answer for a request that outlives the queue.
    *
-   * Absent by default, which makes an unscripted turn a recorded failure. A
-   * test states one when it cannot know how many turns follow — an approval
-   * that restarts the agent, a provider that retries on its own.
+   * A fallback is absent by default, so an unscripted turn becomes a recorded failure.
+   * A test uses a fallback when it cannot predict how many turns follow.
+   * An approval can restart the agent, or a provider can retry by itself.
    */
   fallback?: MockModelStep
 }
@@ -435,9 +438,9 @@ export function validateScenarioID(id: string): void {
 /**
  * Parse a registration body into a script.
  *
- * The server validates on the wire rather than trusting the client, so a
- * malformed script fails at registration with the field that is wrong, not
- * later as a provider turn that answers nothing.
+ * The server validates the body that the client sends.
+ * An invalid script fails at registration and identifies the invalid field.
+ * It cannot become a provider turn with no answer.
  */
 export function parseScenarioSpec(body: unknown): MockModelScenarioSpec {
   if (!isObject(body))
@@ -871,13 +874,13 @@ function parseModelError(value: unknown, label: string): MockModelError {
     throw new Error(`Model ${label} error needs an HTTP status and message`)
   if (value.code !== undefined && typeof value.code !== 'string')
     throw new Error(`Model ${label} error code must be a string`)
-  if (value.midStream !== undefined && typeof value.midStream !== 'boolean')
-    throw new Error(`Model ${label} error midStream must be a boolean`)
+  if (value.midStream !== undefined && typeof value.midStream !== 'boolean' && value.midStream !== 'truncate')
+    throw new Error(`Model ${label} error midStream must be a boolean or "truncate"`)
   return {
     status: Number(value.status),
     message: value.message,
     ...(typeof value.code === 'string' ? { code: value.code } : {}),
-    ...(value.midStream === true ? { midStream: true } : {}),
+    ...(value.midStream === true || value.midStream === 'truncate' ? { midStream: value.midStream } : {}),
   }
 }
 
@@ -901,8 +904,8 @@ export function selectScenarioID(protocol: MockModelProtocol, body: unknown): st
  * for `/compact`, so its user text never holds the marker of the prompts that
  * it summarizes.
  *
- * A native surface whose request is not a generic body, such as the Cursor protobuf prompt or the Kiro event stream,
- * reads its own user texts and selects through this function.
+ * A provider service reads its own user text when its request has no generic body.
+ * Cursor's protobuf prompt and Kiro's event stream select their scenarios through this function.
  */
 export function scenarioIDFromTexts(userTexts: readonly string[], systemPrompt = ''): string {
   return userTexts.flatMap(text => scenarioMarkers(text)).at(-1) ?? scenarioMarkers(systemPrompt).at(-1) ?? AMBIENT_SCENARIO_ID

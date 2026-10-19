@@ -29,9 +29,11 @@ import (
 type fakeRuntime struct {
 	server *httptest.Server
 
-	mu       sync.Mutex
-	requests []recordedRequest
-	handlers map[string]http.HandlerFunc
+	mu            sync.Mutex
+	requests      []recordedRequest
+	handlers      map[string]http.HandlerFunc
+	steerStore    codewhaleStore
+	steerSequence uint64
 	// streams holds the open event-stream connections, oldest first.
 	streams []*fakeStream
 	// streamOpened receives one value for each stream connection.

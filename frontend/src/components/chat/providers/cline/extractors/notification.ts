@@ -2,18 +2,20 @@ import type { CompactionDetails, NotificationEntry } from '../../../model/notifi
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { CLINE_EVENT, CLINE_NOTICE_KIND, CLINE_NOTICE_PHASE, CLINE_TEAM_RUN_EVENT } from '~/generated/contracts/cline-protocol'
 import { pickNumber, pickObject, pickString } from '~/lib/jsonPick'
+import { retryEntry, tokenCount } from '../../../model/notification'
 import { CLINE_FIELD, clineEnvelope, clinePayload } from '../protocol'
 
 /**
- * Cline's two kinds of notice, as the worker persists them.
+ * Read the two native notice envelopes:
+ * - session.notice: {message, metadata: {kind, phase}, agent}.
+ * - team.progress: {lastEvent: {eventType, runId, agentId, taskId, message?}}.
  *
- *   session.notice  {message, noticeType, reason?, metadata: {kind, phase, ...}, agent}
- *   team.progress   {summary: {teamName, ...}, lastEvent: {eventType, runId, agentId, taskId, message?}}
- *
- * A `session.notice` states a status of the lead's run: a compaction of its context,
- * a retry of a model call that failed, a recovery. Its `metadata.kind` and `phase`
- * say which, and the worker groups the notices of one compaction and of one retry by
- * the same two words. A `team.progress` row states one event of a teammate run.
+ * The worker routes each notice to its owner:
+ * - The lead.
+ * - An active spawned child.
+ * - An identified teammate run.
+ * Cline leaves spawned-child notices untagged. The active spawn chain determines their owner.
+ * Compaction starts use live state. Stored compaction notices describe only an end.
  */
 
 /** The compaction kinds, and the trigger word each one states. */
@@ -35,9 +37,9 @@ const TEAM_RUN_WORDS: ReadonlyMap<string, string> = new Map([
 
 /** What a finished compaction states about the context it rewrote. */
 function compactionDetails(metadata: Record<string, unknown> | null, trigger: string): CompactionDetails {
-  const pre = pickNumber(metadata, 'tokensBefore')
-  const post = pickNumber(metadata, 'tokensAfter')
-  return { ...(trigger ? { trigger } : {}), ...(pre !== null ? { pre } : {}), ...(post !== null ? { post } : {}) }
+  const pre = tokenCount(pickNumber(metadata, 'tokensBefore'))
+  const post = tokenCount(pickNumber(metadata, 'tokensAfter'))
+  return { ...(trigger ? { trigger } : {}), ...(pre !== undefined ? { pre } : {}), ...(post !== undefined ? { post } : {}) }
 }
 
 /** The entries of one `session.notice`. */
@@ -49,14 +51,12 @@ function noticeEntries(payload: Record<string, unknown>): NotificationEntry[] {
   const trigger = COMPACTION_TRIGGERS.get(kind)
   if (trigger !== undefined) {
     switch (phase) {
-      case CLINE_NOTICE_PHASE.Started:
-        return [{ kind: 'compaction', phase: 'start', detail: { trigger } }]
       case CLINE_NOTICE_PHASE.Completed:
         return [{ kind: 'compaction', phase: 'end', detail: compactionDetails(metadata, trigger) }]
       case CLINE_NOTICE_PHASE.Skipped:
-        return [{ kind: 'status', text: 'Compaction skipped' }]
+        return [{ kind: 'compaction', phase: 'end', outcome: 'skipped', detail: { trigger } }]
       case CLINE_NOTICE_PHASE.Failed:
-        return [{ kind: 'status', text: 'Compaction failed' }]
+        return [{ kind: 'compaction', phase: 'end', outcome: 'failed', detail: { trigger } }]
       default:
         break
     }
@@ -67,19 +67,19 @@ function noticeEntries(payload: Record<string, unknown>): NotificationEntry[] {
       const maxAttempts = pickNumber(metadata, 'maxRetries')
       const delayMs = pickNumber(metadata, 'delayMs')
       const error = pickString(metadata, 'providerError')
-      return [{
-        kind: 'retry',
-        scope: 'api',
+      return [retryEntry('api', {
         ...(attempt !== null ? { attempt } : {}),
         ...(maxAttempts !== null ? { maxAttempts } : {}),
         ...(delayMs !== null ? { delayMs } : {}),
         ...(error ? { error } : {}),
-      }]
+      })]
     }
     case CLINE_NOTICE_KIND.CompactionBudgetEmergency:
       return [{ kind: 'status', text: 'Compaction trimmed the context further to fit the model' }]
     case CLINE_NOTICE_KIND.ContextOverflowRecovery:
       return [{ kind: 'status', text: 'The context exceeded the model\'s window; compacting and retrying' }]
+    case CLINE_NOTICE_KIND.MaxTokensCompaction:
+      return [{ kind: 'status', text: phase === CLINE_NOTICE_PHASE.Started ? 'The answer hit the output limit; compacting and retrying' : message }]
     case CLINE_NOTICE_KIND.MaxTokensRecovery:
       return [{ kind: 'status', text: phase === CLINE_NOTICE_PHASE.Failed ? 'Recovery from the output limit failed' : 'The answer hit the output limit; retrying' }]
     default:
@@ -100,16 +100,10 @@ function teamEntries(payload: Record<string, unknown>): NotificationEntry[] {
   return [{ kind: 'text', text }]
 }
 
-/**
- * Read one Cline notification row into the shared notification model.
- *
- * The SOLE notification seam, for a standalone row and for one entry of a consolidated
- * thread alike. Returns an empty list for a row this provider does not own, and for a
- * row of its own that states nothing it can word.
- */
+/** Read a standalone native notice or one member of a notification thread. */
 export function clineNotificationEntry(message: Record<string, unknown>): NotificationEntry[] {
   const envelope = clineEnvelope(message)
-  if (!envelope)
+  if (!envelope || clineCompactionStart(message))
     return []
   switch (envelope.event) {
     case CLINE_EVENT.SessionNotice:
@@ -140,4 +134,12 @@ export function clineCompactionBoundary(parsed: ParsedMessageContent): Compactio
   if (trigger === undefined || pickString(metadata, 'phase') !== CLINE_NOTICE_PHASE.Completed)
     return null
   return compactionDetails(metadata, trigger)
+}
+
+/** Identify an older stored start for the shared compaction safety net. */
+export function clineCompactionStart(message: unknown): boolean {
+  const payload = clinePayload(message, CLINE_EVENT.SessionNotice)
+  const metadata = pickObject(payload, CLINE_FIELD.Metadata)
+  return COMPACTION_TRIGGERS.has(pickString(metadata, 'kind'))
+    && pickString(metadata, 'phase') === CLINE_NOTICE_PHASE.Started
 }

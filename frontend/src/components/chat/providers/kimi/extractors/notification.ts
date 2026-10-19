@@ -1,7 +1,8 @@
 import type { CompactionDetails, NotificationEntry } from '../../../model/notification'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { KIMI_EVENT, KIMI_ORIGIN } from '~/generated/contracts/kimi-protocol'
-import { pickNumber, pickObject, pickString } from '~/lib/jsonPick'
+import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
+import { retryEntry } from '../../../model/notification'
 import { KIMI_GOAL_CONTINUATION, kimiEvent, kimiEventData } from '../protocol'
 
 /**
@@ -39,6 +40,13 @@ export function kimiNotificationEntry(msg: Record<string, unknown>): Notificatio
     return []
   const data = event.data
   switch (event.type) {
+    case KIMI_EVENT.ConfigWarning:
+      return (Array.isArray(data.warnings) ? data.warnings : []).flatMap((warning): NotificationEntry[] => {
+        const message = isObject(warning) ? pickString(warning, 'message') : ''
+        return message.trim() ? [{ kind: 'text', text: `Warning: ${message}` }] : []
+      })
+    case KIMI_EVENT.HookResult:
+      return [{ kind: 'hook', outcome: 'blocked', event: pickString(data, 'hookEvent'), detail: pickString(data, 'content') }]
     case KIMI_EVENT.TurnStarted: {
       const origin = pickObject(data, 'origin')
       const phrase = KIMI_ORIGIN_PHRASES.get(pickString(origin, 'kind'))
@@ -48,24 +56,18 @@ export function kimiNotificationEntry(msg: Record<string, unknown>): Notificatio
       const attempt = pickNumber(data, 'nextAttempt')
       const maxAttempts = pickNumber(data, 'maxAttempts')
       const delayMs = pickNumber(data, 'delayMs')
-      const error = pickString(data, 'errorMessage') || pickString(data, 'errorName')
-      return [{
-        kind: 'retry',
-        scope: 'api',
+      const error = pickString(data, 'errorMessage').trim() || pickString(data, 'errorName').trim()
+      return [retryEntry('api', {
         ...(attempt !== null ? { attempt } : {}),
         ...(maxAttempts !== null ? { maxAttempts } : {}),
         ...(delayMs !== null ? { delayMs } : {}),
         ...(error ? { error } : {}),
-      }]
+      })]
     }
-    case KIMI_EVENT.CompactionStarted:
-      return [{ kind: 'compaction', phase: 'start', ...(pickString(data, 'trigger') ? { detail: { trigger: pickString(data, 'trigger') } } : {}) }]
     case KIMI_EVENT.CompactionCompleted:
       return [{ kind: 'compaction', phase: 'end', detail: kimiCompactionDetails(data) }]
-    case KIMI_EVENT.CompactionBlocked:
-      return [{ kind: 'status', text: 'Compaction is waiting for the running turn to end' }]
     case KIMI_EVENT.CompactionCancelled:
-      return [{ kind: 'status', text: 'Compaction cancelled' }]
+      return [{ kind: 'compaction', phase: 'end', outcome: 'aborted' }]
     case KIMI_EVENT.Warning: {
       const message = pickString(data, 'message')
       return message ? [{ kind: 'text', text: `Warning: ${message}` }] : []
@@ -86,6 +88,11 @@ export function kimiNotificationEntry(msg: Record<string, unknown>): Notificatio
     default:
       return []
   }
+}
+
+/** Identify a stored start only for the shared history filter. */
+export function kimiCompactionStart(payload: Record<string, unknown>): boolean {
+  return kimiEventData(payload, KIMI_EVENT.CompactionStarted) !== null
 }
 
 /** What a compaction states about the context it rewrote. */

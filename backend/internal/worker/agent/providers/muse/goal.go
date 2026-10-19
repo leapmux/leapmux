@@ -7,18 +7,17 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/util/validate"
 )
 
-// deferGoalAction queues a goal write to run after the dispatch lock
-// releases. The caller holds dispatchMu.
+// deferGoalAction queues a goal write after the caller releases dispatchMu.
 func (a *Agent) deferGoalAction(apply func()) {
 	a.deferredGoalActions = append(a.deferredGoalActions, apply)
 }
 
-// takeDeferredGoalActions swaps the queued goal writes out under the dispatch
-// lock, so an action that re-enters dispatch appends to a fresh queue rather
-// than mutating the slice it is being read from.
+// takeDeferredGoalActions takes the queued goal writes under dispatchMu.
+// An action that enters dispatch again appends to a separate queue.
 func (a *Agent) takeDeferredGoalActions() []func() {
 	a.dispatchMu.Lock()
 	deferred := a.deferredGoalActions
@@ -27,21 +26,18 @@ func (a *Agent) takeDeferredGoalActions() []func() {
 	return deferred
 }
 
-// parseMuseGoalEvent interprets one session/goal_changed payload's goal field.
-//
-// An ABSENT goal and an invalid one are both invalid: the event states nothing
-// LeapMux can act on, and the current goal must survive. An EXPLICIT null goal
-// is the native clear. A valid goal object requires a readable objective and a
-// non-blank status; a status LeapMux cannot interpret maps to
-// GoalStatusUnknown with the native word kept as the display detail, because
-// proving the end of an unknown state is not the same as interpreting it.
+// parseMuseGoalEvent reads the goal field of session/goalChanged.
+// An absent or invalid goal preserves the current goal. An explicit null clears it.
+// A valid goal requires a readable objective and a nonblank status.
+// An unknown status keeps its native word as the detail.
 func parseMuseGoalEvent(raw json.RawMessage) (update agent.GoalUpdate, clear, valid bool) {
-	trimmed := strings.TrimSpace(string(raw))
-	if trimmed == "" {
+	switch providerkit.RawKindOf(raw) {
+	case providerkit.RawAbsent:
 		return agent.GoalUpdate{}, false, false
-	}
-	if trimmed == "null" {
+	case providerkit.RawNull:
 		return agent.GoalUpdate{}, true, true
+	case providerkit.RawValue:
+		// Decode the goal object below.
 	}
 	var goal struct {
 		Objective string `json:"objective"`
@@ -55,17 +51,24 @@ func parseMuseGoalEvent(raw json.RawMessage) (update agent.GoalUpdate, clear, va
 		return agent.GoalUpdate{}, false, false
 	}
 	status := agent.GoalStatusUnknown
+	detail := ""
 	switch goal.Status {
-	case "active":
+	case museGoalActive:
 		status = agent.GoalStatusActive
-	case "paused":
+	case museGoalPaused:
 		status = agent.GoalStatusPaused
-	case "completed", "satisfied":
+	case museGoalComplete:
 		status = agent.GoalStatusDone
-	case "blocked", "failed":
+	case museGoalBlocked:
 		status = agent.GoalStatusBlocked
+	case museGoalUsageLimited:
+		status, detail = agent.GoalStatusBlocked, "usage limit reached"
+	case museGoalBudgetLimited:
+		status, detail = agent.GoalStatusBlocked, "budget limit reached"
+	default:
+		detail = goal.Status
 	}
-	return agent.GoalUpdate{Objective: goal.Objective, Status: status, StatusDetail: goal.Status}, false, true
+	return agent.GoalUpdate{Objective: goal.Objective, Status: status, StatusDetail: detail}, false, true
 }
 
 func (a *Agent) SupportedGoalActions() []agent.GoalAction {

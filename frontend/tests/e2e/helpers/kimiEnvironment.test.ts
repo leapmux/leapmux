@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { createKimiEnvironment } from './kimiEnvironment'
@@ -36,6 +36,19 @@ beforeEach(() => {
 afterEach(() => rmSync(homeDir, { recursive: true, force: true }))
 
 describe('createKimiEnvironment', () => {
+  it('writes the blocking hook for the dedicated marker only', () => {
+    const env = createKimiEnvironment(options())
+    const config = readFileSync(join(env.KIMI_CODE_HOME!, 'config.toml'), 'utf8')
+    expect(config).toContain('[[hooks]]\nevent = "UserPromptSubmit"\nmatcher = "LEAPMUX-HOOK-BLOCK"')
+    expect(config.match(/\[\[hooks\]\]/g)).toHaveLength(1)
+    const script = join(homeDir, 'kimi-block-hook.sh')
+    expect(config).toContain(`command = ${JSON.stringify(`'${script}'`)}`)
+    expect(readFileSync(script, 'utf8')).toContain('LeapMux test hook blocked this prompt')
+    expect(readFileSync(script, 'utf8')).toContain('exit 2')
+    if (process.platform !== 'win32')
+      expect(statSync(script).mode & 0o777).toBe(0o700)
+  })
+
   it('maps each alias onto its model, and selects the thinking alias by default', () => {
     const env = createKimiEnvironment(options())
     const config = readFileSync(join(env.KIMI_CODE_HOME!, 'config.toml'), 'utf8')

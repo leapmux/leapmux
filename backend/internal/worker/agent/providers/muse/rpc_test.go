@@ -73,3 +73,24 @@ func (p *museTestPeer) Write(raw []byte) (int, error) {
 	return len(raw), nil
 }
 func (*museTestPeer) Close() error { return nil }
+
+func TestMuseCommandWithIDPreservesCallerFieldsAndChecksTheReply(t *testing.T) {
+	for _, echoed := range []string{"chosen-id", "other-id"} {
+		t.Run(echoed, func(t *testing.T) {
+			a, _ := testAgent(t)
+			params := map[string]any{"sessionId": "session", "commandId": "caller-id"}
+			a.SetStdinForTest(&museTestPeer{agent: a, reply: func(method string, raw json.RawMessage) agenttest.RPCReply {
+				assert.Equal(t, methodTurnStart, method)
+				assert.JSONEq(t, `{"sessionId":"session","commandId":"chosen-id"}`, string(raw))
+				return agenttest.RPCReply{Result: json.RawMessage(`{"commandId":"` + echoed + `","status":"accepted"}`)}
+			}})
+			_, err := a.commandWithID(methodTurnStart, params, "chosen-id", time.Second, nil)
+			if echoed == "chosen-id" {
+				require.NoError(t, err)
+			} else {
+				require.ErrorIs(t, err, agent.ErrDeliveryUncertain)
+			}
+			assert.Equal(t, "caller-id", params["commandId"])
+		})
+	}
+}

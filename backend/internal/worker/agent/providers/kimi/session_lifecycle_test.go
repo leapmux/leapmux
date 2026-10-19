@@ -43,6 +43,96 @@ func TestKimiCreateSession(t *testing.T) {
 	assert.Equal(t, []string{"session_1"}, subscribes[0].IDs)
 }
 
+func TestKimiSessionWarningsAfterAContextClear(t *testing.T) {
+	t.Parallel()
+	rig := newKimiTestRig(t, agent.Options{})
+	// .tmp/probe/kimi/run5/logs/driver.log records this warnings response after the profile write.
+	rig.fake.reply("GET "+kimiSessionPath("session_2", "/warnings"), fakeKapReply{Data: map[string]any{
+		"warnings": []map[string]string{{"code": "agents-md-oversized", "message": "AGENTS.md total exceeds the recommended size.", "severity": "warning"}},
+	}})
+	got, err := rig.agent.ClearContext()
+	require.NoError(t, err)
+	require.Equal(t, "session_2", got)
+	rows := rig.sink.PersistedNotifications()
+	require.Len(t, rows, 1)
+	assert.Equal(t, "session_2", rows[0].AgentSessionID)
+	assert.Contains(t, string(rows[0].Content), "AGENTS.md total exceeds the recommended size.")
+}
+
+func TestKimiClearContextEndsALiveCompaction(t *testing.T) {
+	t.Parallel()
+	rig := newKimiTestRig(t, agent.Options{})
+	rig.agent.children.link("agent-1", &kimiChild{childAgentID: "child-1", rowKey: "session_1/agent-1"})
+	for _, id := range []string{kimiMainAgentID, "agent-1"} {
+		rig.feed(t, map[string]any{"type": contracts.KimiEventCompactionStarted, "agentId": id, "trigger": "auto"})
+	}
+	_, err := rig.agent.ClearContext()
+	require.NoError(t, err)
+	value, exists := rig.sink.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
+	assert.True(t, exists)
+	assert.Nil(t, value)
+	value, exists = rig.sink.Child("child-1").LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
+	assert.True(t, exists)
+	assert.Nil(t, value)
+}
+
+func TestKimiLiveWarningPersistsOnce(t *testing.T) {
+	t.Parallel()
+	rig := newKimiOutputRig(t)
+	for range 2 {
+		rig.feed(t, map[string]any{"type": "warning", "code": "agents-md-oversized", "message": "AGENTS.md total exceeds the recommended size."})
+	}
+	assert.Len(t, rig.sink.PersistedNotifications(), 1)
+}
+
+func TestKimiSessionWarningsPersistOncePerSession(t *testing.T) {
+	t.Parallel()
+	rig := newKimiTestRig(t, agent.Options{})
+	for _, sessionID := range []string{"session_1", "session_2"} {
+		rig.fake.reply("GET "+kimiSessionPath(sessionID, "/warnings"), fakeKapReply{Data: map[string]any{
+			"warnings": []map[string]string{{"code": "agents-md-oversized", "message": "A profile warning.", "severity": "warning"}},
+		}})
+		rig.agent.Mu.Lock()
+		rig.agent.sessionID = sessionID
+		rig.agent.Mu.Unlock()
+		rig.sink.UpdateSessionID(sessionID)
+		rig.agent.persistSessionWarnings(t.Context(), sessionID)
+		rig.agent.persistSessionWarnings(t.Context(), sessionID)
+	}
+	rows := rig.sink.PersistedNotifications()
+	require.Len(t, rows, 2)
+	assert.Equal(t, "session_1", rows[0].AgentSessionID)
+	assert.Equal(t, "session_2", rows[1].AgentSessionID)
+}
+
+func TestKimiLiveWarningSuppressesTheReadCopy(t *testing.T) {
+	t.Parallel()
+	rig := newKimiTestRig(t, agent.Options{})
+	rig.sink.UpdateSessionID(rig.sessionID())
+	rig.fake.reply("GET "+kimiSessionPath(rig.sessionID(), "/warnings"), fakeKapReply{Data: map[string]any{
+		"warnings": []map[string]string{{"code": "agents-md-oversized", "message": "A profile warning."}},
+	}})
+	rig.feed(t, map[string]any{"type": "warning", "code": "agents-md-oversized", "message": "A profile warning."})
+	rig.agent.persistSessionWarnings(t.Context(), rig.sessionID())
+	assert.Len(t, rig.sink.PersistedNotifications(), 1)
+}
+
+func TestKimiSessionWarningsIgnoreInvalidEntriesAndReadFailures(t *testing.T) {
+	t.Parallel()
+	rig := newKimiTestRig(t, agent.Options{})
+	path := "GET " + kimiSessionPath(rig.sessionID(), "/warnings")
+	rig.fake.reply(path, fakeKapReply{Code: 50000, Msg: "warnings unavailable"})
+	rig.agent.persistSessionWarnings(t.Context(), rig.sessionID())
+	assert.Empty(t, rig.sink.PersistedNotifications())
+	rig.fake.reply(path, fakeKapReply{Data: map[string]any{"warnings": []any{
+		nil, 7, map[string]any{"message": 7}, map[string]any{"message": " "},
+		map[string]any{"code": "native-warning", "message": "A valid warning."},
+	}}})
+	rig.agent.persistSessionWarnings(t.Context(), rig.sessionID())
+	require.Len(t, rig.sink.PersistedNotifications(), 1)
+	assert.Contains(t, string(rig.sink.PersistedNotifications()[0].Content), "A valid warning.")
+}
+
 func TestKimiCreateSessionRefusesAnIDTheServerWouldNotIssue(t *testing.T) {
 	t.Parallel()
 	rig := newKimiTestRig(t, agent.Options{})

@@ -17,7 +17,7 @@ import (
 // event through HandleOutput.
 func (r *rig) feedTurn(t *testing.T) {
 	t.Helper()
-	r.agent.armTurn()
+	r.agent.beginInputTurn()
 }
 
 func TestReasoningReachesTheTranscriptBeforeTheText(t *testing.T) {
@@ -266,15 +266,15 @@ func TestANoticeOfTheLeadIsPersisted(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
 	r.feed(t, contracts.ClineEventSessionNotice, map[string]any{
-		"message": "auto-compacting", "noticeType": "status", "reason": "auto_compaction",
-		"metadata": map[string]any{"kind": "auto_compaction", "phase": "started"}, "agent": map[string]any{"kind": "lead"},
+		"message": "The context exceeded the window.", "noticeType": "status", "reason": "context_overflow_recovery",
+		"metadata": map[string]any{"kind": "context_overflow_recovery", "phase": "started"}, "agent": map[string]any{"kind": "lead"},
 	})
 	r.feed(t, contracts.ClineEventSessionNotice, map[string]any{
 		"message": "sub status", "noticeType": "status", "agent": map[string]any{"kind": "subagent"},
 	})
 	notifications := r.sink.PersistedNotifications()
 	require.Len(t, notifications, 1)
-	assert.Contains(t, string(notifications[0].Content), "auto-compacting")
+	assert.Contains(t, string(notifications[0].Content), "The context exceeded the window.")
 }
 
 func TestAMediaRowFollowsItsReasoning(t *testing.T) {
@@ -422,4 +422,315 @@ func TestToolOutputNeedsAnOpenCall(t *testing.T) {
 	require.NotNil(t, tool)
 	assert.Zero(t, tool.total)
 	assert.Empty(t, tool.tail)
+}
+
+func TestClineSteerCutAnswerIsInterrupted(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.feedTurn(t)
+	// Trimmed from .tmp/probe/cline/round2/logs/hub-frames.jsonl, frames 16-26.
+	r.feed(t, eventAssistantDelta, map[string]any{"text": "CUT-1 CUT-2 CUT-3 CUT-4 "})
+	pending := map[string]any{"prompts": []any{map[string]any{"id": "steer-1", "delivery": "steer", "prompt": "Say hi instead."}}}
+	r.feed(t, "session.pending_prompts", pending)
+	r.feed(t, "session.pending_prompts", pending)
+	r.feed(t, contracts.ClineEventAssistantFinished, map[string]any{"text": "CUT-1 CUT-2 CUT-3 CUT-4 "})
+	r.feed(t, eventIterationFinished, map[string]any{})
+	r.feed(t, "session.pending_prompts", map[string]any{"prompts": []any{}})
+	r.feed(t, eventPendingPromptSubmitted, map[string]any{"prompt": map[string]any{"id": "steer-1", "delivery": "steer"}})
+	r.feed(t, contracts.ClineEventAssistantFinished, map[string]any{"text": "AFTER-STEER-ANSWER"})
+	rows := r.sink.Messages()
+	require.Len(t, rows, 2)
+	assert.Equal(t, agent.MessageCompletionInterrupted, rows[0].Completion)
+	assert.Equal(t, noCompletion, rows[1].Completion)
+}
+
+func TestClineSteerReplyRecordsAnUnlistedSteer(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.feedTurn(t)
+	require.NoError(t, r.agent.SteerInput("Use the second answer.", nil))
+	r.feed(t, contracts.ClineEventAssistantFinished, map[string]any{"text": "The cut answer."})
+	rows := r.sink.Messages()
+	require.Len(t, rows, 1)
+	assert.Equal(t, agent.MessageCompletionInterrupted, rows[0].Completion)
+}
+
+func TestClineSteerReplyAfterSubmissionDoesNotInterruptTheNextAnswer(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.feedTurn(t)
+	r.hub.handle(commandSessionSendInput, func(command fakeCommand) fakeReply {
+		r.feed(t, "session.pending_prompts", map[string]any{"prompts": []any{map[string]any{"delivery": "steer"}}})
+		r.feed(t, eventPendingPromptSubmitted, map[string]any{"prompt": map[string]any{"delivery": "steer"}})
+		return fakeReply{Payload: map[string]any{"queued": true}}
+	})
+	require.NoError(t, r.agent.SteerInput("Use the second answer.", nil))
+	r.feed(t, contracts.ClineEventAssistantFinished, map[string]any{"text": "The next answer."})
+	rows := r.sink.Messages()
+	require.Len(t, rows, 1)
+	assert.Equal(t, noCompletion, rows[0].Completion)
+}
+
+func TestClineReasoningDiscardAtIterationOrCompaction(t *testing.T) {
+	t.Parallel()
+	for _, compaction := range []bool{false, true} {
+		name := "iteration"
+		if compaction {
+			name = "compaction"
+		}
+		t.Run(name, func(t *testing.T) {
+			r := newRig(t)
+			r.feedTurn(t)
+			// Trimmed from .tmp/probe/cline/round2/logs/hub-frames.jsonl, frames 43-56.
+			r.feed(t, eventReasoningDelta, map[string]any{"text": "THINK-1 "})
+			if compaction {
+				r.feed(t, contracts.ClineEventSessionNotice, map[string]any{"message": "Recover from the output limit.", "metadata": map[string]any{"kind": "max_tokens_compaction", "phase": "started"}})
+			} else {
+				r.feed(t, eventIterationFinished, map[string]any{})
+			}
+			r.feed(t, eventReasoningDelta, map[string]any{"text": "NEW-THOUGHT"})
+			r.feed(t, contracts.ClineEventAssistantFinished, map[string]any{"text": "NEW-ANSWER"})
+			rows := r.sink.Messages()
+			require.Len(t, rows, 2)
+			assert.Equal(t, "NEW-THOUGHT", payloadOf(t, rows[0])["reasoning"])
+			assert.Contains(t, r.sink.ProgressUpdates(), agent.ResetModelScopeProgress(r.agent.out.lead.progressScope("reasoning")))
+		})
+	}
+}
+
+func TestClineSteerQueueReportsKeepTheNativeCount(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name      string
+		submitted int
+		want      agent.MessageCompletion
+	}{
+		{"one remains", 1, agent.MessageCompletionInterrupted},
+		{"all submitted", 2, noCompletion},
+		{"extra submission", 3, noCompletion},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			r := newRig(t)
+			r.feedTurn(t)
+			prompts := map[string]any{"prompts": []any{map[string]any{"delivery": "steer"}, map[string]any{"delivery": "queued"}, map[string]any{"delivery": "steer"}}}
+			r.feed(t, eventPendingPrompts, prompts)
+			r.feed(t, eventPendingPrompts, prompts)
+			r.feed(t, eventPendingPrompts, map[string]any{"prompts": "malformed"})
+			r.feed(t, eventPendingPromptSubmitted, map[string]any{"prompt": map[string]any{"delivery": "queued"}})
+			for i := 0; i < test.submitted; i++ {
+				r.feed(t, eventPendingPromptSubmitted, map[string]any{"prompt": map[string]any{"delivery": "steer"}})
+			}
+			r.feed(t, contracts.ClineEventAssistantFinished, map[string]any{"text": "The answer."})
+			rows := r.sink.Messages()
+			require.Len(t, rows, 1)
+			assert.Equal(t, test.want, rows[0].Completion)
+		})
+	}
+}
+
+func TestClineSteerReplyCannotChangeTheReplacementTurn(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.feedTurn(t)
+	r.hub.handle(commandSessionSendInput, func(command fakeCommand) fakeReply {
+		r.agent.releaseInputTurn()
+		r.agent.beginInputTurn()
+		return fakeReply{Payload: map[string]any{"queued": true}}
+	})
+	require.NoError(t, r.agent.SteerInput("The old steer.", nil))
+	r.feed(t, contracts.ClineEventAssistantFinished, map[string]any{"text": "The replacement answer."})
+	rows := r.sink.Messages()
+	require.Len(t, rows, 1)
+	assert.Equal(t, noCompletion, rows[0].Completion)
+}
+
+func TestClineIterationEndStartsNoTurn(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.feed(t, eventIterationFinished, map[string]any{})
+	assert.False(t, r.turnActive())
+	assert.Empty(t, r.sink.Messages())
+}
+
+func compactionNotice(phase string) map[string]any {
+	return map[string]any{"message": "The native compaction notice.", "metadata": map[string]any{"kind": contracts.ClineNoticeKindAutoCompaction, "phase": phase}}
+}
+
+func TestClineCompactionStartIsLiveThenOnlyTheEndPersists(t *testing.T) {
+	t.Parallel()
+	for _, phase := range []string{contracts.ClineNoticePhaseCompleted, contracts.ClineNoticePhaseSkipped, contracts.ClineNoticePhaseFailed} {
+		t.Run(phase, func(t *testing.T) {
+			r := newRig(t)
+			r.feedTurn(t)
+			r.feed(t, contracts.ClineEventSessionNotice, compactionNotice(contracts.ClineNoticePhaseStarted))
+			assert.Zero(t, r.sink.NotificationCount())
+			value, exists := r.sink.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
+			require.True(t, exists)
+			assert.Equal(t, map[string]any{}, value)
+			r.feed(t, contracts.ClineEventSessionNotice, compactionNotice(phase))
+			value, exists = r.sink.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
+			require.True(t, exists)
+			assert.Nil(t, value)
+			require.Len(t, r.sink.PersistedNotifications(), 1)
+			assert.Equal(t, agent.CompactionBoundaryNotification(), (clineProvider{}).Classify(r.sink.LastNotification().Content))
+		})
+	}
+}
+
+func TestClineRunEndWithALiveCompactionWritesAFailedEnd(t *testing.T) {
+	t.Parallel()
+	for _, completion := range []agent.MessageCompletion{agent.MessageCompletionComplete, agent.MessageCompletionError, agent.MessageCompletionInterrupted} {
+		t.Run(string(completion), func(t *testing.T) {
+			r := newRig(t)
+			r.feedTurn(t)
+			r.feed(t, contracts.ClineEventSessionNotice, compactionNotice(contracts.ClineNoticePhaseStarted))
+			r.agent.dispatchMu.Lock()
+			r.agent.endTurn(completion, runEndRow(r.sessionID(), runReasonError, "The turn ended."))
+			r.agent.dispatchMu.Unlock()
+			value, exists := r.sink.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
+			require.True(t, exists)
+			assert.Nil(t, value)
+			notices := r.sink.Notifications()
+			require.Len(t, notices, 1)
+			assert.Equal(t, contracts.NotificationTypeCompactionEnded, notices[0][contracts.NotificationFieldType])
+			outcome := contracts.CompactionEndOutcomeFailed
+			if completion == agent.MessageCompletionInterrupted {
+				outcome = contracts.CompactionEndOutcomeAborted
+			}
+			assert.Equal(t, outcome, notices[0][contracts.NotificationFieldOutcome])
+			assert.NotContains(t, notices[0], contracts.NotificationFieldError)
+		})
+	}
+}
+
+func TestClineCompactionDiscardClearsLiveStateWithoutARow(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.feedTurn(t)
+	r.feed(t, contracts.ClineEventSessionNotice, compactionNotice(contracts.ClineNoticePhaseStarted))
+	r.agent.DiscardOutput()
+	r.agent.dispatchMu.Lock()
+	r.agent.endTurn(agent.MessageCompletionInterrupted, runEndRow(r.sessionID(), runReasonAborted, ""))
+	r.agent.dispatchMu.Unlock()
+	assert.Empty(t, r.sink.Notifications())
+	assert.Empty(t, r.sink.Messages())
+	value, exists := r.sink.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
+	require.True(t, exists)
+	assert.Nil(t, value)
+}
+
+func TestClineKnownHubEventsStoreNothing(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	for _, event := range []string{eventRunHeartbeat, eventAgentDone, eventUINotify, eventSessionAttached, eventSessionDetached, eventIterationFinished, eventPendingPrompts, eventPendingPromptSubmitted} {
+		r.feed(t, event, map[string]any{})
+	}
+	assert.Empty(t, r.sink.Messages())
+	assert.Empty(t, r.sink.PersistedNotifications())
+	assert.False(t, r.turnActive())
+}
+
+func TestClineRetryResolvesAtTheFirstModelOutput(t *testing.T) {
+	t.Parallel()
+	for _, event := range []string{eventAssistantDelta, eventReasoningDelta, contracts.ClineEventToolStarted, contracts.ClineEventAssistantFinished, contracts.ClineEventReasoningFinished} {
+		t.Run(event, func(t *testing.T) {
+			r := newRig(t)
+			r.feedTurn(t)
+			r.feed(t, contracts.ClineEventSessionNotice, map[string]any{"message": "Retry the model.", "metadata": map[string]any{"kind": contracts.ClineNoticeKindProviderErrorRetry, "phase": contracts.ClineNoticePhaseStarted}})
+			assert.Empty(t, r.sink.Notifications())
+			payload := map[string]any{"text": "A fresh attempt."}
+			if event == contracts.ClineEventToolStarted {
+				payload = map[string]any{"toolCallId": "retry-tool", "toolName": "read_files", "input": map[string]any{"paths": []string{"file.go"}}}
+			}
+			if event == contracts.ClineEventReasoningFinished {
+				payload = map[string]any{"reasoning": "A fresh thought."}
+			}
+			r.feed(t, event, payload)
+			require.Len(t, r.sink.Notifications(), 1, "the first output resolves before another frame")
+			r.feed(t, eventAssistantDelta, map[string]any{"text": " More text."})
+			notices := r.sink.Notifications()
+			require.Len(t, notices, 1)
+			assert.Equal(t, contracts.NotificationTypeApiRetryResolved, notices[0][contracts.NotificationFieldType])
+		})
+	}
+}
+
+func TestClineRetryEndsWithoutResolvingOnTheNextTurn(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.feedTurn(t)
+	r.feed(t, contracts.ClineEventSessionNotice, map[string]any{"message": "Retry the model.", "metadata": map[string]any{"kind": contracts.ClineNoticeKindProviderErrorRetry, "phase": contracts.ClineNoticePhaseStarted}})
+	r.agent.dispatchMu.Lock()
+	r.agent.endTurn(agent.MessageCompletionError, runEndRow(r.sessionID(), runReasonError, "The model failed."))
+	r.agent.dispatchMu.Unlock()
+	r.feedTurn(t)
+	r.feed(t, eventAssistantDelta, map[string]any{"text": "The next turn."})
+	assert.Empty(t, r.sink.Notifications())
+}
+
+func TestClineMalformedFinalFrameKeepsItsBufferedOutput(t *testing.T) {
+	t.Parallel()
+	for _, event := range []string{contracts.ClineEventAssistantFinished, contracts.ClineEventReasoningFinished} {
+		for _, invalid := range []struct {
+			name    string
+			payload any
+		}{{"string", "malformed"}, {"null", nil}, {"array", []any{}}} {
+			t.Run(event+"/"+invalid.name, func(t *testing.T) {
+				r := newRig(t)
+				r.feedTurn(t)
+				delta, key := eventAssistantDelta, "text"
+				if event == contracts.ClineEventReasoningFinished {
+					delta, key = eventReasoningDelta, "reasoning"
+				}
+				r.feed(t, delta, map[string]any{"text": "The buffered output."})
+				r.feed(t, event, invalid.payload)
+				r.agent.dispatchMu.Lock()
+				r.agent.endTurn(agent.MessageCompletionInterrupted, runEndRow(r.sessionID(), runReasonAborted, ""))
+				r.agent.dispatchMu.Unlock()
+				rows := r.sink.Messages()
+				require.Len(t, rows, 2)
+				assert.Equal(t, "The buffered output.", payloadOf(t, rows[0])[key])
+				assert.Equal(t, agent.MessageCompletionInterrupted, rows[0].Completion)
+				assert.True(t, rows[1].TurnEnd)
+			})
+		}
+	}
+}
+
+func TestClineRetryIgnoresAbsentOutputAndAStoppedRetry(t *testing.T) {
+	t.Parallel()
+	for _, stopped := range []bool{false, true} {
+		name := "retry failed"
+		if stopped {
+			name = "discarded output"
+		}
+		t.Run(name, func(t *testing.T) {
+			r := newRig(t)
+			r.feedTurn(t)
+			retry := map[string]any{"message": "Retry the model.", "metadata": map[string]any{"kind": contracts.ClineNoticeKindProviderErrorRetry, "phase": contracts.ClineNoticePhaseStarted}}
+			r.feed(t, contracts.ClineEventSessionNotice, retry)
+			for _, event := range []string{eventAssistantDelta, eventReasoningDelta, contracts.ClineEventAssistantFinished, contracts.ClineEventReasoningFinished} {
+				r.feed(t, event, map[string]any{})
+			}
+			assert.Empty(t, r.sink.Notifications())
+			if stopped {
+				r.agent.DiscardOutput()
+			} else {
+				retry["metadata"] = map[string]any{"kind": contracts.ClineNoticeKindProviderErrorRetry, "phase": contracts.ClineNoticePhaseFailed}
+				r.feed(t, contracts.ClineEventSessionNotice, retry)
+			}
+			r.feed(t, eventAssistantDelta, map[string]any{"text": "A later output."})
+			assert.Empty(t, r.sink.Notifications())
+		})
+	}
+}
+
+func TestClineMalformedRunStartDoesNotStartATurn(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.feed(t, eventRunStarted, "malformed")
+	assert.False(t, r.turnActive())
+	r.feed(t, eventRunStarted, nil)
+	assert.False(t, r.turnActive())
+	assert.Empty(t, r.sink.Messages())
 }

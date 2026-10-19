@@ -346,13 +346,13 @@ func validSettlement(line *providerkit.ParsedLine) (controlParams, string, bool)
 	if !ok {
 		return controlParams{}, "", false
 	}
-	sessionID, sessionOK := controlJSONString(fields["sessionId"])
+	sessionID, sessionOK := providerkit.RawString(fields["sessionId"])
 	if !sessionOK || sessionID == "" {
 		return controlParams{}, "", false
 	}
 	if line.Method == contracts.MuseMethodUserInputSettled {
-		inputID, inputOK := controlJSONString(fields["userInputId"])
-		outcome, outcomeOK := controlJSONString(fields["outcome"])
+		inputID, inputOK := providerkit.RawString(fields["userInputId"])
+		outcome, outcomeOK := providerkit.RawString(fields["outcome"])
 		if !inputOK || inputID == "" || !outcomeOK || strings.TrimSpace(outcome) == "" {
 			return controlParams{}, "", false
 		}
@@ -361,8 +361,8 @@ func validSettlement(line *providerkit.ParsedLine) (controlParams, string, bool)
 	if line.Method != contracts.MuseMethodApprovalResolved {
 		return controlParams{}, "", false
 	}
-	approvalID, approvalOK := controlJSONString(fields["approvalId"])
-	decision, decisionOK := controlJSONString(fields["decision"])
+	approvalID, approvalOK := providerkit.RawString(fields["approvalId"])
+	decision, decisionOK := providerkit.RawString(fields["decision"])
 	stages, stagesOK := controlJSONArray(fields["stageEvidence"])
 	if !approvalOK || approvalID == "" || !decisionOK || strings.TrimSpace(decision) == "" || !stagesOK {
 		return controlParams{}, "", false
@@ -382,14 +382,14 @@ func validApprovalStage(stage map[string]json.RawMessage, approvalID string, see
 	if !ok {
 		return false
 	}
-	referenceApproval, approvalOK := controlJSONString(requirement["approvalId"])
-	sourceIndex, indexOK := controlJSONInteger(requirement["sourceIndex"])
+	referenceApproval, approvalOK := providerkit.RawString(requirement["approvalId"])
+	sourceIndex, indexOK := providerkit.RawInt64(requirement["sourceIndex"])
 	if !approvalOK || strings.TrimSpace(referenceApproval) == "" || referenceApproval != approvalID || !indexOK || sourceIndex < 0 || seen[sourceIndex] {
 		return false
 	}
 	seen[sourceIndex] = true
-	_, positionOK := controlJSONInteger(stage["position"])
-	_, totalOK := controlJSONInteger(stage["totalStages"])
+	_, positionOK := providerkit.RawInt64(stage["position"])
+	_, totalOK := providerkit.RawInt64(stage["totalStages"])
 	if !positionOK || !totalOK {
 		return false
 	}
@@ -398,12 +398,12 @@ func validApprovalStage(stage map[string]json.RawMessage, approvalID string, see
 		return false
 	}
 	for _, raw := range argv {
-		if _, ok := controlJSONString(raw); !ok {
+		if _, ok := providerkit.RawString(raw); !ok {
 			return false
 		}
 	}
 	resolution, resolutionOK := controlJSONObject(stage["resolution"])
-	_, kindOK := controlJSONString(resolution["kind"])
+	_, kindOK := providerkit.RawString(resolution["kind"])
 	return resolutionOK && kindOK
 }
 
@@ -491,7 +491,7 @@ func nativeControlReply(request controlParams, raw []byte, key string) (string, 
 			reason := ""
 			if value, present := fields["reason"]; present {
 				var reasonOK bool
-				reason, reasonOK = controlJSONString(value)
+				reason, reasonOK = providerkit.RawString(value)
 				if !reasonOK {
 					return "", nil, errors.New(agent.RefusalUnreadableAnswer)
 				}
@@ -528,10 +528,10 @@ func readApprovalChoices(raw json.RawMessage) ([]nativeApprovalChoice, bool) {
 		if !ok {
 			return nil, false
 		}
-		id, idOK := controlJSONString(fields["choiceId"])
-		label, labelOK := controlJSONString(fields["label"])
-		decision, decisionOK := controlJSONString(fields["decision"])
-		scope, scopeOK := controlJSONString(fields["scope"])
+		id, idOK := providerkit.RawString(fields["choiceId"])
+		label, labelOK := providerkit.RawString(fields["label"])
+		decision, decisionOK := providerkit.RawString(fields["decision"])
+		scope, scopeOK := providerkit.RawString(fields["scope"])
 		if !idOK || strings.TrimSpace(id) == "" || ids[id] || !labelOK || strings.TrimSpace(label) == "" || !decisionOK || !scopeOK {
 			return nil, false
 		}
@@ -570,9 +570,9 @@ func approvalReplyChoice(available json.RawMessage, raw []byte, key string) (str
 			return "", "", errors.New(agent.RefusalUnreadableAnswer)
 		}
 		outer, ok := controlJSONObject(neutral)
-		id, idOK := controlJSONString(outer["request_id"])
+		id, idOK := providerkit.RawString(outer["request_id"])
 		answer, answerOK := controlJSONObject(outer["response"])
-		behavior, behaviorOK := controlJSONString(answer["behavior"])
+		behavior, behaviorOK := providerkit.RawString(answer["behavior"])
 		if !ok || !idOK || !answerOK || !behaviorOK {
 			return "", "", errors.New(agent.RefusalUnreadableAnswer)
 		}
@@ -585,14 +585,14 @@ func approvalReplyChoice(available json.RawMessage, raw []byte, key string) (str
 		}
 		if value, present := answer["message"]; present {
 			var ok bool
-			feedback, ok = controlJSONString(value)
+			feedback, ok = providerkit.RawString(value)
 			if !ok {
 				return "", "", errors.New(agent.RefusalUnreadableAnswer)
 			}
 		}
 		if value, present := answer["choice"]; present {
 			var ok bool
-			choice, ok = controlJSONString(value)
+			choice, ok = providerkit.RawString(value)
 			if !ok || strings.TrimSpace(choice) == "" {
 				return "", "", errors.New(agent.RefusalNoDecision)
 			}
@@ -619,12 +619,12 @@ func approvalReplyChoice(available json.RawMessage, raw []byte, key string) (str
 			return "", "", err
 		}
 		var ok bool
-		choice, ok = controlJSONString(answer["choiceId"])
+		choice, ok = providerkit.RawString(answer["choiceId"])
 		if !ok || strings.TrimSpace(choice) == "" {
 			return "", "", errors.New(agent.RefusalNoDecision)
 		}
 		if value, present := answer["feedback"]; present {
-			feedback, ok = controlJSONString(value)
+			feedback, ok = providerkit.RawString(value)
 			if !ok {
 				return "", "", errors.New(agent.RefusalUnreadableAnswer)
 			}
@@ -646,7 +646,7 @@ func nativeReplyFields(envelope map[string]json.RawMessage, key string) (map[str
 	if _, present := envelope["response"]; present {
 		return nil, errors.New(agent.RefusalUnreadableAnswer)
 	}
-	id, ok := controlJSONString(envelope["id"])
+	id, ok := providerkit.RawString(envelope["id"])
 	if !ok {
 		return nil, errors.New(agent.RefusalUnreadableAnswer)
 	}
@@ -676,22 +676,6 @@ func controlJSONArray(raw json.RawMessage) ([]json.RawMessage, bool) {
 	return values, true
 }
 
-func controlJSONString(raw json.RawMessage) (string, bool) {
-	var value *string
-	if json.Unmarshal(raw, &value) != nil || value == nil {
-		return "", false
-	}
-	return *value, true
-}
-
-func controlJSONInteger(raw json.RawMessage) (int64, bool) {
-	var value *int64
-	if json.Unmarshal(raw, &value) != nil || value == nil {
-		return 0, false
-	}
-	return *value, true
-}
-
 type nativeQuestionOption struct {
 	Label string
 }
@@ -718,11 +702,11 @@ func readNativeQuestions(raw json.RawMessage) ([]nativeQuestion, bool) {
 		if !ok {
 			return nil, false
 		}
-		id, idOK := controlJSONString(fields["id"])
-		text, textOK := controlJSONString(fields["question"])
-		_, headerOK := controlJSONString(fields["header"])
+		id, idOK := providerkit.RawString(fields["id"])
+		text, textOK := providerkit.RawString(fields["question"])
+		_, headerOK := providerkit.RawString(fields["header"])
 		selection, selectionOK := controlJSONObject(fields["selection"])
-		mode, modeOK := controlJSONString(selection["mode"])
+		mode, modeOK := providerkit.RawString(selection["mode"])
 		options, optionsOK := controlJSONArray(fields["options"])
 		if !idOK || strings.TrimSpace(id) == "" || ids[id] || !textOK || strings.TrimSpace(text) == "" || !headerOK || !selectionOK || !modeOK || !optionsOK {
 			return nil, false
@@ -735,7 +719,7 @@ func readNativeQuestions(raw json.RawMessage) ([]nativeQuestion, bool) {
 		labels := make(map[string]bool, len(options))
 		for _, raw := range options {
 			option, ok := controlJSONObject(raw)
-			label, labelOK := controlJSONString(option["label"])
+			label, labelOK := providerkit.RawString(option["label"])
 			if !ok || !labelOK || strings.TrimSpace(label) == "" || labels[label] {
 				return nil, false
 			}
@@ -816,7 +800,7 @@ func validQuestionAnswers(nativeQuestions []nativeQuestion, answers []json.RawMe
 			return false
 		}
 		if note, exists := fields["note"]; exists {
-			text, ok := controlJSONString(note)
+			text, ok := providerkit.RawString(note)
 			if !ok || utf8.RuneCountInString(text) > 500 {
 				return false
 			}
@@ -860,6 +844,6 @@ func validQuestionAnswers(nativeQuestions []nativeQuestion, answers []json.RawMe
 }
 
 func validQuestionText(raw json.RawMessage) bool {
-	text, ok := controlJSONString(raw)
+	text, ok := providerkit.RawString(raw)
 	return ok && strings.TrimSpace(text) != "" && utf8.RuneCountInString(text) <= 500
 }

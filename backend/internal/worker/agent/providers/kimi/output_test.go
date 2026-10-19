@@ -292,11 +292,11 @@ func TestKimiRecordsNotices(t *testing.T) {
 	} {
 		rig.feed(t, map[string]any{"type": eventName})
 	}
-	assert.Equal(t, 5, rig.sink.NotificationCount())
+	assert.Equal(t, 4, rig.sink.NotificationCount())
 
 	rig.agent.DiscardOutput()
 	rig.feed(t, map[string]any{"type": contracts.KimiEventWarning})
-	assert.Equal(t, 5, rig.sink.NotificationCount(), "an agent that discards its output records nothing")
+	assert.Equal(t, 4, rig.sink.NotificationCount(), "an agent that discards its output records nothing")
 }
 
 func TestKimiManualCompactionReleasesTheInputQueue(t *testing.T) {
@@ -343,7 +343,7 @@ func TestKimiRepeatedCompactionCompletionKeepsTheNextTurnActive(t *testing.T) {
 	assert.True(t, last, "a duplicate completion cannot release the next turn")
 }
 
-func TestKimiManualCompactionWithoutACompletedResultReleasesTheInputQueue(t *testing.T) {
+func TestKimiManualCompactionWaitsForAnActualEnd(t *testing.T) {
 	t.Parallel()
 	for _, eventType := range []string{contracts.KimiEventCompactionBlocked, contracts.KimiEventCompactionCancelled} {
 		t.Run(eventType, func(t *testing.T) {
@@ -352,10 +352,70 @@ func TestKimiManualCompactionWithoutACompletedResultReleasesTheInputQueue(t *tes
 			rig.feed(t, map[string]any{"type": contracts.KimiEventCompactionStarted, "trigger": "manual"})
 			rig.feed(t, map[string]any{"type": eventType})
 			last, published := rig.sink.LastTurnActive()
-			assert.True(t, published, "the native result must release the queue's compact turn")
-			assert.False(t, last, "the native result releases queued input")
+			assert.True(t, published)
+			assert.Equal(t, eventType == contracts.KimiEventCompactionBlocked, last, "a blocked compaction still waits for its end")
 		})
 	}
+}
+
+func TestKimiCompactionStartIsLiveState(t *testing.T) {
+	t.Parallel()
+	rig := newKimiOutputRig(t)
+	rig.feed(t, map[string]any{"type": contracts.KimiEventCompactionStarted, "trigger": "auto"})
+	assert.Empty(t, rig.sink.PersistedNotifications())
+	assert.Empty(t, rig.sink.Messages())
+	value, exists := rig.sink.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
+	assert.True(t, exists)
+	assert.Equal(t, map[string]any{contracts.CompactionFieldTrigger: "auto"}, value)
+	rig.feed(t, map[string]any{"type": contracts.KimiEventTurnEnded, "reason": "completed"})
+	value, _ = rig.sink.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
+	assert.NotNil(t, value, "compaction can continue after the model turn ends")
+}
+
+func TestKimiBlockedCompactionIsLiveAndKeepsTheManualFlag(t *testing.T) {
+	t.Parallel()
+	rig := newKimiOutputRig(t)
+	rig.feed(t, map[string]any{"type": contracts.KimiEventCompactionStarted, "trigger": "manual"})
+	rig.feed(t, map[string]any{"type": contracts.KimiEventCompactionBlocked})
+	assert.True(t, rig.agent.manualCompactionActive)
+	assert.Empty(t, rig.sink.PersistedNotifications())
+	value, exists := rig.sink.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
+	assert.True(t, exists)
+	assert.Equal(t, map[string]any{contracts.CompactionFieldTrigger: "waiting for the running turn to end"}, value)
+}
+
+func TestKimiCompactionEndClearsTheLiveKeyAndStoresTheEnd(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{contracts.KimiEventCompactionCompleted, contracts.KimiEventCompactionCancelled} {
+		t.Run(kind, func(t *testing.T) {
+			rig := newKimiOutputRig(t)
+			rig.feed(t, map[string]any{"type": contracts.KimiEventCompactionStarted, "trigger": "manual"})
+			rig.feed(t, map[string]any{"type": kind})
+			assert.False(t, rig.agent.manualCompactionActive)
+			require.Len(t, rig.sink.PersistedNotifications(), 1)
+			assert.Equal(t, kind, eventType(t, rig.sink.PersistedNotifications()[0]))
+			value, exists := rig.sink.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
+			assert.True(t, exists)
+			assert.Nil(t, value)
+		})
+	}
+}
+
+func TestKimiChildCompactionPublishesOnTheChildSink(t *testing.T) {
+	t.Parallel()
+	rig := newKimiOutputRig(t)
+	rig.agent.children.link("agent-1", &kimiChild{childAgentID: "child-1", rowKey: "session_1/agent-1"})
+	for _, kind := range []string{contracts.KimiEventCompactionStarted, contracts.KimiEventCompactionCancelled} {
+		rig.feed(t, map[string]any{"type": kind, "agentId": "agent-1", "trigger": "auto"})
+	}
+	assert.Empty(t, rig.sink.SessionInfos())
+	assert.Empty(t, rig.sink.PersistedNotifications())
+	child := rig.sink.Child("child-1")
+	assert.Equal(t, []map[string]any{
+		{contracts.SessionInfoKeyCompaction: map[string]any{contracts.CompactionFieldTrigger: "auto"}},
+		{contracts.SessionInfoKeyCompaction: nil},
+	}, child.SessionInfos())
+	assert.Len(t, child.PersistedNotifications(), 1)
 }
 
 func TestKimiFailedTurn(t *testing.T) {
@@ -530,4 +590,112 @@ func TestKimiToolEventWithNoCallIDIsIgnored(t *testing.T) {
 	rig.feed(t, map[string]any{"type": contracts.KimiEventToolResult, "turnId": 0, "output": "ok"})
 	assert.Zero(t, rig.sink.MessageCount(), "a call with no id has no span to open or close")
 	assert.Empty(t, rig.sink.ClosedSpans())
+}
+
+func TestKimiRetryKeepsTheFailedTextInterrupted(t *testing.T) {
+	t.Parallel()
+	// Trimmed from .tmp/probe/kimi/logs/ws-frames.jsonl, frames 15 through 25.
+	agenttest.RunRetryAttemptCase(t, agenttest.RetryAttemptCase{
+		Name: "a retried Kimi step", FramesPath: "testdata/retry_step.jsonl",
+		NewAgent: func(t *testing.T, sink *agenttest.Sink) func([]byte) {
+			return newOfflineKimiAgent(t, sink).HandleOutput
+		},
+		Want: []agenttest.RetryAttemptText{
+			{Text: "DISCARDED-ONE DISCARDED-TWO ", Completion: agent.MessageCompletionInterrupted},
+			{Text: "RETRIED-ANSWER", Completion: agent.MessageCompletionComplete},
+		},
+	})
+}
+
+func TestKimiRetryDiscardsAThinkingOnlyAttempt(t *testing.T) {
+	t.Parallel()
+	// Trimmed from .tmp/probe/kimi/logs/ws-frames.jsonl, frames 43 through 53.
+	agenttest.RunRetryAttemptCase(t, agenttest.RetryAttemptCase{
+		Name: "a retried thought", FramesPath: "testdata/retry_thinking_only.jsonl",
+		NewAgent: func(t *testing.T, sink *agenttest.Sink) func([]byte) {
+			return newOfflineKimiAgent(t, sink).HandleOutput
+		},
+		Want:      []agenttest.RetryAttemptText{{Text: "RETRIED-ANSWER", Completion: agent.MessageCompletionComplete}},
+		Discarded: []string{"DISCARDED-THOUGHT-ONE", "DISCARDED-THOUGHT-TWO"},
+	})
+}
+
+func TestKimiRetryOfASubagentStaysInItsTranscript(t *testing.T) {
+	t.Parallel()
+	rig := newKimiOutputRig(t)
+	rig.agent.children.link("agent-1", &kimiChild{childAgentID: "child-1", rowKey: "session_1/agent-1"})
+	rig.feed(t, map[string]any{"type": contracts.KimiEventAssistantDelta, "delta": "Root answer."})
+	for _, event := range []map[string]any{
+		{"type": contracts.KimiEventThinkingDelta, "delta": "Unsigned thought."},
+		{"type": contracts.KimiEventTurnStepRetrying, "nextAttempt": 2},
+		{"type": contracts.KimiEventAssistantDelta, "delta": "Child partial."},
+		{"type": contracts.KimiEventTurnStepRetrying, "nextAttempt": 3},
+		{"type": contracts.KimiEventAssistantDelta, "delta": "Child answer."},
+		{"type": contracts.KimiEventTurnEnded, "reason": "completed"},
+	} {
+		event["agentId"] = "agent-1"
+		rig.feed(t, event)
+	}
+	assert.Empty(t, rig.sink.Messages())
+	assert.Empty(t, rig.sink.PersistedNotifications())
+	child := rig.sink.Child("child-1")
+	rows := child.Messages()
+	require.Len(t, rows, 2)
+	_, partial := assembledRow(t, rows[0])
+	_, answer := assembledRow(t, rows[1])
+	assert.Equal(t, "Child partial.", partial)
+	assert.Equal(t, string(agent.MessageCompletionInterrupted), assembledCompletion(t, rows[0]))
+	assert.Equal(t, "Child answer.", answer)
+	assert.Len(t, child.PersistedNotifications(), 2)
+	assert.Len(t, child.LeapMuxNotifications(), 2)
+	rig.feed(t, map[string]any{"type": contracts.KimiEventTurnStepCompleted})
+	require.Len(t, rig.sink.Messages(), 1)
+	_, root := assembledRow(t, rig.sink.Messages()[0])
+	assert.Equal(t, "Root answer.", root)
+}
+
+func TestKimiRetryResolvesAtTheFirstOutput(t *testing.T) {
+	t.Parallel()
+	for _, output := range []map[string]any{
+		{"type": contracts.KimiEventAssistantDelta, "delta": "Answer."},
+		{"type": contracts.KimiEventThinkingDelta, "delta": "Thought."},
+		{"type": contracts.KimiEventToolCallDelta, "toolCallId": "call-1"},
+		{"type": contracts.KimiEventToolCallStarted, "toolCallId": "call-1", "name": "Read", "args": map[string]any{}},
+	} {
+		t.Run(output["type"].(string), func(t *testing.T) {
+			rig := newKimiOutputRig(t)
+			rig.feed(t, map[string]any{"type": contracts.KimiEventTurnStepRetrying, "nextAttempt": 2})
+			assert.Empty(t, rig.sink.Notifications())
+			rig.feed(t, output)
+			rig.feed(t, output)
+			require.Len(t, rig.sink.Notifications(), 1)
+			assert.Equal(t, contracts.NotificationTypeApiRetryResolved, rig.sink.Notifications()[0][contracts.NotificationFieldType])
+		})
+	}
+	t.Run("a turn end forgets an unresolved retry", func(t *testing.T) {
+		rig := newKimiOutputRig(t)
+		rig.feed(t, map[string]any{"type": contracts.KimiEventTurnStepRetrying, "nextAttempt": 2})
+		rig.feed(t, map[string]any{"type": contracts.KimiEventTurnEnded, "reason": "failed"})
+		rig.feed(t, map[string]any{"type": contracts.KimiEventAssistantDelta, "delta": "Another turn."})
+		assert.Empty(t, rig.sink.Notifications())
+	})
+}
+
+func TestKimiRetryDoesNotResolveEmptyOrDiscardedOutput(t *testing.T) {
+	t.Parallel()
+	for _, discard := range []bool{false, true} {
+		t.Run(map[bool]string{false: "empty", true: "discarded"}[discard], func(t *testing.T) {
+			rig := newKimiOutputRig(t)
+			rig.feed(t, map[string]any{"type": contracts.KimiEventTurnStepRetrying, "nextAttempt": 2})
+			text := ""
+			if discard {
+				rig.agent.DiscardOutput()
+				text = "Discarded answer."
+			}
+			rig.feed(t, map[string]any{"type": contracts.KimiEventAssistantDelta, "delta": text})
+			rig.feed(t, map[string]any{"type": contracts.KimiEventTurnStepCompleted})
+			assert.Empty(t, rig.sink.Notifications())
+			assert.Empty(t, rig.sink.Messages())
+		})
+	}
 }

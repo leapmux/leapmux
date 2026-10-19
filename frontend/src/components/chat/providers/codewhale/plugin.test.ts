@@ -12,7 +12,7 @@ import { classifyCodewhaleMessage } from './classification'
 import { codewhaleControlResponseSummary } from './controlResponse'
 import { approvalPayload, questionPayload, QUESTIONS } from './controls.fixtures'
 import { codewhaleExtractControl } from './extractControl'
-import { codewhaleNotificationEntry } from './extractors/notification'
+import { codewhaleCompactionStart, codewhaleNotificationEntry } from './extractors/notification'
 import { codewhaleOutputFilePaths } from './extractors/outputFilePaths'
 import { codewhaleResultDivider } from './extractors/resultDivider'
 import { codewhaleExtractRow } from './extractors/row'
@@ -52,6 +52,7 @@ describe('codewhale plugin', () => {
       classify: classifyCodewhaleMessage,
       extractRow: codewhaleExtractRow,
       notificationEntry: codewhaleNotificationEntry,
+      compactionStart: codewhaleCompactionStart,
       extractDivider: codewhaleResultDivider,
       outputFilePaths: codewhaleOutputFilePaths,
     })

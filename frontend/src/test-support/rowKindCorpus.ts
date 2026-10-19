@@ -481,7 +481,7 @@ export const ROW_KIND_CASES: RowKindCase[] = [
     provider: Provider.PI,
     name: 'session entry',
     payload: { type: 'entry_appended', entry: { type: 'model_change', provider: 'anthropic', modelId: 'claude-opus-5' } },
-    category: 'hidden',
+    category: 'unknown',
   },
   {
     provider: Provider.PI,
@@ -728,7 +728,7 @@ export const ROW_KIND_CASES: RowKindCase[] = [
     provider: Provider.MIMO_CODE,
     name: 'busy status',
     payload: statusFrame(MIMO_STATUS_TYPE.Busy),
-    category: 'hidden',
+    category: 'unknown',
   },
   {
     provider: Provider.MIMO_CODE,
@@ -979,7 +979,7 @@ export const ROW_KIND_CASES: RowKindCase[] = [
   {
     provider: Provider.DROID,
     name: 'assistant text',
-    payload: { type: 'assembled', kind: 'text', text: 'Hello from the mock model.' },
+    payload: { type: 'assembled_message', kind: 'text', text: 'Hello from the mock model.', completion: 'complete' },
     category: 'assistant_text',
   },
   {
@@ -1004,6 +1004,6 @@ export const ROW_KIND_CASES: RowKindCase[] = [
     provider: Provider.DROID,
     name: 'working state bookkeeping',
     payload: { type: 'droid_working_state_changed', newState: 'idle' },
-    category: 'hidden',
+    category: 'unknown',
   },
 ]

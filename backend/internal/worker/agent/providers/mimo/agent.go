@@ -98,14 +98,15 @@ type Agent struct {
 	messages    map[string]*mimoMessageRecord
 	parts       map[string]*mimoTextPart
 	tools       map[string]*mimoToolCall
+	retries     map[string]*providerkit.RetryResolution
 	// nextToolOrder orders the tool calls that a turn end closes.
 	nextToolOrder uint64
 	// pendingPartOrder preserves the observation order of retained native parts.
 	pendingPartOrder uint64
-	// compactions records the compaction parts already persisted, keyed by part
-	// id, with the phase each one reached.
-	compactions map[string]string
-	usage       mimoUsage
+	// compactions retains each native part identity and its original live sink.
+	compactions      map[string]*mimoCompaction
+	compactionErrors map[string]string
+	usage            mimoUsage
 
 	actors      map[string]*mimoActor
 	spawnActors map[string]string
@@ -119,6 +120,8 @@ type Agent struct {
 	// compactionAck is non-nil while CompactContext waits for the compaction to
 	// start.
 	compactionAck chan struct{}
+	// compactionRequestID identifies the summarize call whose reply can change the current state.
+	compactionRequestID uint64
 	// manualCompactionID identifies the main-agent compaction that the Worker
 	// requested. The native route holds its reply through the following turn.
 	manualCompactionID string
@@ -164,21 +167,22 @@ const (
 // the tests build every agent through it, and then assign the process.
 func newAgentState(sink agent.ProviderServices, rpc mimoRPC, workingDir string, clock quartz.Clock) *Agent {
 	a := &Agent{
-		rpc:         rpc,
-		workingDir:  workingDir,
-		connected:   make(chan struct{}),
-		streamDone:  make(chan struct{}),
-		clock:       clock,
-		inputSends:  map[string]int{},
-		messages:    map[string]*mimoMessageRecord{},
-		parts:       map[string]*mimoTextPart{},
-		tools:       map[string]*mimoToolCall{},
-		compactions: map[string]string{},
-		actors:      map[string]*mimoActor{},
-		spawnActors: map[string]string{},
-		workflows:   map[string]*mimoWorkflow{},
-		controls:    map[string]*mimoControl{},
-		mode:        mimoStaticModes[0].Id,
+		rpc:              rpc,
+		workingDir:       workingDir,
+		connected:        make(chan struct{}),
+		streamDone:       make(chan struct{}),
+		clock:            clock,
+		inputSends:       map[string]int{},
+		messages:         map[string]*mimoMessageRecord{},
+		parts:            map[string]*mimoTextPart{},
+		tools:            map[string]*mimoToolCall{},
+		compactions:      map[string]*mimoCompaction{},
+		compactionErrors: map[string]string{},
+		actors:           map[string]*mimoActor{},
+		spawnActors:      map[string]string{},
+		workflows:        map[string]*mimoWorkflow{},
+		controls:         map[string]*mimoControl{},
+		mode:             mimoStaticModes[0].Id,
 	}
 	a.sink = agent.NewModelProgressResetSink(mimoRootProgressSink{ProviderServices: sink, owner: a})
 	return a

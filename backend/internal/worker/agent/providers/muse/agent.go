@@ -1,8 +1,10 @@
 package muse
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -32,6 +34,13 @@ type Agent struct {
 	settings            optionmap.Map
 	models              []*agent.ModelInfo
 	sessions            map[string]*sessionState
+	uncertainInput      *museUncertainInput // sendMu protects the pending native command identity.
+}
+
+type museUncertainInput struct {
+	sessionID string
+	digest    string
+	commandID string
 }
 
 type sessionState struct {
@@ -44,6 +53,10 @@ type sessionState struct {
 	log             *nativeLog
 	toolUses        int32
 	generation      providerkit.GenerationBuffer
+	retry           providerkit.RetryResolution
+	retryItems      map[string]bool
+	retryNotices    []agent.CapturedTranscript
+	compactionLive  map[string]bool
 	childKey        string
 	childID         string
 	parentSessionID string
@@ -157,7 +170,20 @@ func (a *Agent) sendInput(expected *string, text string, attachments []*leapmuxv
 		method = methodTurnSteer
 		params["expectedTurnId"] = turn
 	}
-	_, err = a.command(method, params, a.APITimeout(), func(raw json.RawMessage, err error) {
+	encoded, err := json.Marshal(params)
+	if err != nil {
+		return fmt.Errorf("encode the Muse input: %w", err)
+	}
+	digest := fmt.Sprintf("%x", sha256.Sum256(encoded))
+	payload, commandID, err := commandParams(params)
+	if err != nil {
+		return err
+	}
+	if prior := a.uncertainInput; !steer && prior != nil && prior.sessionID == id && prior.digest == digest {
+		commandID = prior.commandID
+	}
+	a.uncertainInput = nil
+	_, err = a.commandWithID(method, payload, commandID, a.APITimeout(), func(raw json.RawMessage, err error) {
 		if err != nil {
 			return
 		}
@@ -165,12 +191,16 @@ func (a *Agent) sendInput(expected *string, text string, attachments []*leapmuxv
 		if json.Unmarshal(raw, &reply) != nil || reply.TurnID == "" {
 			return
 		}
-		if !steer {
+		if !steer && (reply.Disposition == museDispositionStarted || reply.StartedNewTurn) {
 			a.startTurn(id, reply.TurnID)
 		}
 	})
 	if err != nil {
-		return providerkit.ClassifyJSONRPCDeliveryError(method, err)
+		err = providerkit.ClassifyJSONRPCDeliveryError(method, err)
+		if !steer && errors.Is(err, agent.ErrDeliveryUncertain) {
+			a.uncertainInput = &museUncertainInput{sessionID: id, digest: digest, commandID: commandID}
+		}
+		return err
 	}
 	return nil
 }

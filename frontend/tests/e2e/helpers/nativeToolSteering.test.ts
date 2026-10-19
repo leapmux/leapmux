@@ -269,6 +269,39 @@ describe('exerciseStopWithPendingSteer', () => {
 })
 
 describe('continued steer evidence', () => {
+  it('checks a preempted steer on the original live transcript', async () => {
+    const { script } = fakeScript(0, stepIndex => bodyRequest(stepIndex, harness.sent.at(-1) ?? ''))
+    const contextWithPartial = context(Object.assign(script, { allowUnconsumed: vi.fn() }))
+    await exerciseSteerDuringText(contextWithPartial, {
+      answer: 'preempt',
+      checkTranscript: async () => { harness.events.push('provider check') },
+    })
+    expect(harness.events.filter(event => event === 'provider check' || event === 'reload'))
+      .toEqual(['provider check', 'reload', 'provider check'])
+  })
+
+  it('checks provider assertions before and after a reload', async () => {
+    const { script } = fakeScript(0, stepIndex => bodyRequest(stepIndex, harness.sent.at(-1) ?? ''))
+    const options = {
+      answer: 'continue' as const,
+      checkTranscript: async () => { harness.events.push('provider transcript check') },
+    }
+    await exerciseSteerDuringText(context(script), options)
+    expect(harness.events.filter(event => event === 'provider transcript check' || event === 'reload'))
+      .toEqual(['provider transcript check', 'reload', 'provider transcript check'])
+  })
+
+  it('propagates a provider assertion and releases the stream', async () => {
+    const { script } = fakeScript(0, stepIndex => bodyRequest(stepIndex, harness.sent.at(-1) ?? ''))
+    const failure = new Error('The provider left its queued notice visible.')
+    const options = {
+      answer: 'continue' as const,
+      checkTranscript: async () => { throw failure },
+    }
+    await expect(exerciseSteerDuringText(context(script), options)).rejects.toBe(failure)
+    expect(script.releaseGateIfHeld).toHaveBeenCalledTimes(1)
+  })
+
   it.each(['counter', 'model-stream'] as const)('checks the completed row order with %s evidence', async (progress) => {
     const { script } = fakeScript(0, stepIndex => bodyRequest(stepIndex, harness.sent.at(-1) ?? ''))
     await exerciseSteerDuringText(context(script), { answer: 'continue', progress })

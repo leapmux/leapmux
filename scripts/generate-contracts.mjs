@@ -2389,6 +2389,7 @@ export const PROVIDER_PROTOCOLS = [
     ].join('\n// '),
     tables: [
       { key: 'events', frameKind: 'name', goTable: 'Event', tsTable: 'EVENT', tsType: 'KimiEvent', doc: 'WebSocket event types -- the payload `type`' },
+      { key: 'notificationEvents', subsetOf: 'events', goTable: 'NotificationEvent', tsTable: 'NOTIFICATION_EVENT', doc: 'event types that the worker stores as notifications and the browser threads' },
       { key: 'origins', goTable: 'Origin', tsTable: 'ORIGIN', tsType: 'KimiOrigin', doc: '`turn.started.origin.kind` values, which say who started a turn' },
       { key: 'tools', goTable: 'Tool', tsTable: 'TOOL', tsType: 'KimiTool', doc: 'tool names both sides dispatch on' },
       { key: 'displayKinds', goTable: 'Display', tsTable: 'DISPLAY', tsType: 'KimiDisplayKind', doc: '`display.kind` values of a tool call or an approval' },
@@ -2758,6 +2759,8 @@ export const PROVIDER_PROTOCOLS = [
     tables: [
       { key: 'events', frameKind: 'name', goTable: 'Event', tsTable: 'EVENT', tsType: 'CodewhaleEvent', doc: 'server-sent event names that the worker persists or publishes' },
       { key: 'itemKinds', frameKind: 'name', goTable: 'ItemKind', tsTable: 'ITEM_KIND', tsType: 'CodewhaleItemKind', doc: 'turn item `kind` values' },
+      { key: 'notificationEvents', subsetOf: 'events', goTable: 'NotificationEvent', tsTable: 'NOTIFICATION_EVENT', doc: 'runtime events that the worker persists as notification rows' },
+      { key: 'notificationItemKinds', subsetOf: 'itemKinds', goTable: 'NotificationItemKind', tsTable: 'NOTIFICATION_ITEM_KIND', doc: 'non-tool item kinds that the worker persists as notification rows' },
       { key: 'turnStatuses', goTable: 'TurnStatus', tsTable: 'TURN_STATUS', tsType: 'CodewhaleTurnStatus', doc: 'final `status` words of a turn record' },
       { key: 'modes', goTable: 'Mode', tsTable: 'MODE', tsType: 'CodewhaleMode', doc: 'thread modes, carried on the LeapMux mode axis' },
       { key: 'postures', goTable: 'Posture', tsTable: 'POSTURE', tsType: 'CodewhalePosture', doc: 'thread permission postures, carried on the LeapMux permission-mode axis' },
@@ -2917,6 +2920,7 @@ export const PROVIDER_PROTOCOLS = [
       { key: 'frameKinds', frameKind: 'name', goTable: 'FrameKind', tsTable: 'FRAME_KIND', tsType: 'QoderFrameKind', doc: 'stdout line `type` values' },
       { key: 'controlRequestSubtypes', frameKind: 'name', goTable: 'ControlRequestSubtype', tsTable: 'CONTROL_REQUEST_SUBTYPE', tsType: 'QoderControlRequestSubtype', readers: ['go'], readersWhy: 'the worker dispatches the control channel; the browser never spells a subtype', doc: '`request.subtype` values of a control frame' },
       { key: 'systemSubtypes', frameKind: 'name', goTable: 'SystemSubtype', tsTable: 'SYSTEM_SUBTYPE', tsType: 'QoderSystemSubtype', readers: ['go'], readersWhy: 'the worker classifies a system frame and persists it whole; the browser draws the notification', doc: '`subtype` values of a `system` line' },
+      { key: 'statuses', goTable: 'Status', tsTable: 'STATUS', tsType: 'QoderStatus', doc: 'native live statuses that the worker and history filter read' },
       { key: 'modes', goTable: 'Mode', tsTable: 'MODE', tsType: 'QoderMode', readers: ['go'], readersWhy: 'the worker builds the option group; the browser reads the group the worker sends', doc: 'permission modes' },
       { key: 'effortLevels', goTable: 'EffortLevel', tsTable: 'EFFORT_LEVEL', tsType: 'QoderEffortLevel', readers: ['go'], readersWhy: 'the worker builds the option group; the browser reads the group the worker sends', doc: 'the --reasoning-effort values Qoder owns' },
       { key: 'permissionOutcomes', goTable: 'PermissionOutcome', tsTable: 'PERMISSION_OUTCOME', tsType: 'QoderPermissionOutcome', readers: ['go'], readersWhy: 'the worker settles the can_use_tool answer; the browser draws the banner from the request', doc: 'decision outcomes a can_use_tool answer carries' },
@@ -2964,9 +2968,10 @@ export const PROVIDER_PROTOCOLS = [
       'and the browser draws all of them.',
     ].join('\n// '),
     tables: [
-      { key: 'commands', frameKind: 'name', goTable: 'Command', tsTable: 'COMMAND', tsType: 'LettaCommand', goTagPin: 'backend/internal/worker/agent/providers/letta/contract_tags_test.go', readers: ['go'], readersWhy: 'the worker dispatches a command by name; the browser draws the row the worker stores', doc: 'client->server command `kind` values' },
-      { key: 'messages', frameKind: 'name', goTable: 'Message', tsTable: 'MESSAGE', tsType: 'LettaMessage', readers: ['ts'], readersWhy: 'the worker persists a message whole; the browser picks the field to draw', doc: 'server->client message `kind` values' },
+      { key: 'commands', frameKind: 'name', goTable: 'Command', tsTable: 'COMMAND', tsType: 'LettaCommand', goTagPin: 'backend/internal/worker/agent/providers/letta/contract_tags_test.go', readers: ['go'], readersWhy: 'the worker dispatches a command by name; the browser draws the row the worker stores', doc: 'client-to-server command type values' },
+      { key: 'messages', frameKind: 'name', goTable: 'Message', tsTable: 'MESSAGE', tsType: 'LettaMessage', doc: 'server-to-client message type values' },
       { key: 'deltaKinds', frameKind: 'name', goTable: 'DeltaKind', tsTable: 'DELTA_KIND', tsType: 'LettaDeltaKind', doc: '`message_type` values of a `stream_delta`' },
+      { key: 'eventTypes', goTable: 'EventType', tsTable: 'EVENT_TYPE', tsType: 'LettaEventType', doc: 'event_type values of native event messages' },
       { key: 'deltaFields', goTable: 'DeltaField', tsTable: 'DELTA_FIELD', tsType: 'LettaDeltaField', doc: 'fields of a stream delta payload that both sides read' },
       { key: 'toolOutput', goTable: 'ToolOutput', tsTable: 'TOOL_OUTPUT', tsType: 'LettaToolOutput', doc: 'identity of native current-window tool output' },
       { key: 'toolStatuses', goTable: 'ToolStatus', tsTable: 'TOOL_STATUS', tsType: 'LettaToolStatus', doc: 'native status of returned tool data' },

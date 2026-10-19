@@ -459,6 +459,28 @@ describe('createMockModelServer', () => {
     })
   }
 
+  for (const path of ['/v1/responses', '/v1/messages', '/v1/chat/completions']) {
+    it(`ends an incomplete stream after its text delta on ${path}`, async () => {
+      const server = await startServer()
+      await registerScenario(server, 'incomplete-stream', { steps: [{ error: { status: 500, message: 'The stream ended.', midStream: 'truncate' } }] })
+      const content = mockScenarioPrompt('incomplete-stream', 'Read the partial answer.')
+      const response = await fetch(`${server.url}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model: 'mock-model', stream: true, messages: [{ role: 'user', content }], input: [{ role: 'user', content }] }),
+      })
+      expect(response.status).toBe(200)
+      const raw = await response.text()
+      const events = raw.split('\n').filter(line => line.startsWith('data: ')).map(line => JSON.parse(line.slice(6)))
+      expect(raw).not.toContain('[DONE]')
+      expect(events.map(event => event.type)).toEqual(path === '/v1/responses'
+        ? ['response.created', 'response.output_item.added', 'response.content_part.added', 'response.output_text.delta']
+        : path === '/v1/messages' ? ['message_start', 'content_block_start', 'content_block_delta'] : [undefined])
+      expect(JSON.stringify(events.at(-1))).toContain('partial ')
+      expect(events.some(event => 'error' in event)).toBe(false)
+    })
+  }
+
   it('leaves an interrupted HTTP response without a successful delivery receipt', async () => {
     const server = await startServer()
     await registerScenario(server, 'cancel-response-receipt', { steps: [{ text: 'Do not deliver this answer.', gate: 'cancel-response' }] })

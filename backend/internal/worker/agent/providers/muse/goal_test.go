@@ -90,15 +90,19 @@ func TestMuseGoalEventsKeepKnownAndUnknownStatesDistinct(t *testing.T) {
 	for _, scenario := range []struct {
 		status string
 		want   agent.GoalStatus
+		detail string
 	}{
-		{"active", agent.GoalStatusActive},
-		{"paused", agent.GoalStatusPaused},
-		{"completed", agent.GoalStatusDone},
-		{"satisfied", agent.GoalStatusDone},
-		{"blocked", agent.GoalStatusBlocked},
-		{"failed", agent.GoalStatusBlocked},
-		{"futureState", agent.GoalStatus(5)},
-		{" active ", agent.GoalStatus(5)},
+		{"active", agent.GoalStatusActive, ""},
+		{"paused", agent.GoalStatusPaused, ""},
+		{"blocked", agent.GoalStatusBlocked, ""},
+		{"usage_limited", agent.GoalStatusBlocked, "usage limit reached"},
+		{"budget_limited", agent.GoalStatusBlocked, "budget limit reached"},
+		{"complete", agent.GoalStatusDone, ""},
+		{"completed", agent.GoalStatusUnknown, "completed"},
+		{"satisfied", agent.GoalStatusUnknown, "satisfied"},
+		{"failed", agent.GoalStatusUnknown, "failed"},
+		{"futureState", agent.GoalStatusUnknown, "futureState"},
+		{" active ", agent.GoalStatusUnknown, " active "},
 	} {
 		t.Run(scenario.status, func(t *testing.T) {
 			t.Parallel()
@@ -110,7 +114,7 @@ func TestMuseGoalEventsKeepKnownAndUnknownStatesDistinct(t *testing.T) {
 			require.Len(t, goals, 1)
 			assert.Equal(t, scenario.want, goals[0].Status)
 			assert.Equal(t, "Read the native objective", goals[0].Objective)
-			assert.Equal(t, scenario.status, goals[0].StatusDetail)
+			assert.Equal(t, scenario.detail, goals[0].StatusDetail)
 			assert.Zero(t, sink.GoalClears())
 		})
 	}
@@ -189,8 +193,9 @@ func TestMuseUnknownGoalKeepsRawBytesAndNormalizedDisplayDetail(t *testing.T) {
 			assert.Equal(t, scenario.detail, projection.StatusDetail)
 			assert.LessOrEqual(t, len(projection.StatusDetail), 256)
 			assert.True(t, utf8.ValidString(projection.StatusDetail))
-			require.Equal(t, 1, sink.NotificationCount())
-			retained := sink.LastNotification()
+			require.Len(t, sink.Messages(), 1)
+			assert.Empty(t, sink.PersistedNotifications())
+			retained := sink.Messages()[0]
 			assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, retained.Source)
 			assert.Equal(t, raw, retained.Content)
 			var event struct {

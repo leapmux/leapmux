@@ -17,37 +17,46 @@ describe('classifyQoderMessage', () => {
     })
   })
 
-  it('keeps a compacting status inside a notification thread', () => {
+  it('keeps a stored compacting start unknown inside a notification thread', () => {
     const frame = { type: QODER_FRAME_KIND.System, subtype: QODER_SYSTEM_SUBTYPE.Status, status: 'compacting' }
     expect(classifyQoderMessage(input(undefined, { old_seqs: [], messages: [frame] }, AgentProvider.QODER))).toEqual({
-      kind: 'notification',
-      entries: [{ kind: 'compaction', phase: 'start' }],
+      kind: 'unknown',
     })
   })
 
-  it('hides a final compacting status inside a notification thread', () => {
+  it('keeps an old final compacting status unknown inside a notification thread', () => {
     const frame = { type: QODER_FRAME_KIND.System, subtype: QODER_SYSTEM_SUBTYPE.Status, status: null }
-    expect(classifyQoderMessage(input(undefined, { old_seqs: [], messages: [frame] }, AgentProvider.QODER))).toEqual({ kind: 'hidden' })
+    expect(classifyQoderMessage(input(undefined, { old_seqs: [], messages: [frame] }, AgentProvider.QODER))).toEqual({ kind: 'unknown' })
   })
 
   it.each([
-    { type: QODER_FRAME_KIND.System, subtype: 'init' },
     { type: QODER_FRAME_KIND.StreamEvent, event: { type: 'message_start' } },
     { type: QODER_FRAME_KIND.CommandLifecycle, command: 'compact' },
     { type: QODER_FRAME_KIND.ToolProgress, tool_use_id: 'tool-1' },
     { type: QODER_FRAME_KIND.Progress, status: 'running' },
     { type: QODER_FRAME_KIND.Attachment, name: 'file.txt' },
-  ])('hides a native bookkeeping frame %j', (frame) => {
-    expect(classifyQoderMessage(input(frame, null, AgentProvider.QODER))).toEqual({ kind: 'hidden' })
+  ])('keeps an old internal frame unknown %j', (frame) => {
+    expect(classifyQoderMessage(input(frame, null, AgentProvider.QODER))).toEqual({ kind: 'unknown' })
+  })
+
+  it.each(['init', 'future_subtype'])('keeps a system subtype without a reader visible: %s', (subtype) => {
+    expect(classifyQoderMessage(input({ type: QODER_FRAME_KIND.System, subtype }, null, AgentProvider.QODER)))
+      .toEqual({ kind: 'notification', entries: [] })
+  })
+
+  it('reads a native retry inside its notification thread', () => {
+    const frame = { type: QODER_FRAME_KIND.System, subtype: QODER_SYSTEM_SUBTYPE.ApiRetry, attempt: 2 }
+    expect(classifyQoderMessage(input(undefined, { old_seqs: [], messages: [frame] }, AgentProvider.QODER)))
+      .toEqual({ kind: 'notification', entries: [{ kind: 'retry', scope: 'api', attempt: 2 }] })
   })
 
   it('keeps an unknown future frame visible for diagnosis', () => {
     expect(classifyQoderMessage(input({ type: 'future_frame' }, null, AgentProvider.QODER))).toEqual({ kind: 'unknown' })
   })
 
-  it('hides the native echo of a user prompt', () => {
+  it('keeps a stored user frame without a tool result unknown', () => {
     const frame = { type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'Read the image.' }] } }
-    expect(classifyQoderMessage(input(frame, null, AgentProvider.QODER))).toEqual({ kind: 'hidden' })
+    expect(classifyQoderMessage(input(frame, null, AgentProvider.QODER))).toEqual({ kind: 'unknown' })
   })
 
   it('hides an empty provisional tool result before its image arrives', () => {
