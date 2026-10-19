@@ -301,9 +301,8 @@ func TestConsolidateNotificationThread_SystemStatus(t *testing.T) {
 		raw(t, map[string]interface{}{"type": "system", "subtype": "status", "status": "idle"}),
 	}
 	result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, msgs)
-	require.Len(t, result, 1)
-	m := parseRaw(t, result[0])
-	assert.Equal(t, "idle", m["status"])
+	// Claude publishes these states live. Its reducer no longer classifies stored copies.
+	assert.Equal(t, msgs, result)
 }
 
 func TestConsolidateNotificationThread_CompactionSupersedes_ContextCleared(t *testing.T) {
@@ -487,21 +486,19 @@ func TestConsolidateNotificationThread_DefaultProviderKeepsUnknownProviderNotifi
 	assert.Equal(t, []string{"mcpServer/startupStatus/updated", "mcpServer/startupStatus/updated"}, types(t, result))
 }
 
-// TestConsolidateNotificationThread_PiCompactionStartCollapses verifies
-// that repeated `compaction_start` events (Pi's in-progress indicator)
-// collapse to the single latest entry — without the new Pi consolidator
-// the chat would accumulate one row per attempt.
-func TestConsolidateNotificationThread_PiCompactionStartCollapses(t *testing.T) {
+// TestConsolidateNotificationThread_PiSummarizationStatusCollapses verifies
+// A summarization retry keeps only the latest transient status.
+func TestConsolidateNotificationThread_PiSummarizationStatusCollapses(t *testing.T) {
 	t.Parallel()
 
 	msgs := []json.RawMessage{
-		raw(t, map[string]interface{}{"type": "compaction_start", "attempt": 1}),
-		raw(t, map[string]interface{}{"type": "compaction_start", "attempt": 2}),
-		raw(t, map[string]interface{}{"type": "compaction_start", "attempt": 3}),
+		raw(t, map[string]interface{}{"type": "summarization_retry_scheduled", "attempt": 1}),
+		raw(t, map[string]interface{}{"type": "summarization_retry_scheduled", "attempt": 2}),
+		raw(t, map[string]interface{}{"type": "summarization_retry_scheduled", "attempt": 3}),
 	}
 	result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_PI, msgs)
-	require.Len(t, result, 1, "compaction_start collapses to the latest in-progress entry")
-	assert.JSONEq(t, `{"type":"compaction_start","attempt":3}`, string(result[0]))
+	require.Len(t, result, 1, "summarization_retry_scheduled collapses to the latest in-progress entry")
+	assert.JSONEq(t, `{"type":"summarization_retry_scheduled","attempt":3}`, string(result[0]))
 }
 
 // TestConsolidateNotificationThread_PiCompactionEndsAllPreserved keeps
@@ -559,7 +556,7 @@ func TestConsolidateNotificationThread_PiCompactionResetsStatus(t *testing.T) {
 	t.Parallel()
 
 	msgs := []json.RawMessage{
-		raw(t, map[string]interface{}{"type": "compaction_start", "attempt": 1}),
+		raw(t, map[string]interface{}{"type": "summarization_retry_scheduled", "attempt": 1}),
 		raw(t, map[string]interface{}{"type": "compaction_end", "result": map[string]interface{}{"summary": "done"}}),
 	}
 	result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_PI, msgs)
@@ -580,7 +577,7 @@ func TestConsolidateNotificationThread_PiUnsuccessfulCompactionReplacesStatus(t 
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			msgs := []json.RawMessage{
-				raw(t, map[string]interface{}{"type": "compaction_start", "attempt": 1}),
+				raw(t, map[string]interface{}{"type": "summarization_retry_scheduled", "attempt": 1}),
 				raw(t, tc.end),
 			}
 			result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_PI, msgs)

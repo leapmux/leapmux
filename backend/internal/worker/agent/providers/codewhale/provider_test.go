@@ -16,7 +16,7 @@ func TestProviderClassifiesStatusNotices(t *testing.T) {
 	provider := codewhaleProvider{}
 
 	status := provider.Classify(itemEvent(3, "item.completed", "item_1", contracts.CodewhaleItemKindStatus, "Checkpoint saved", nil))
-	assert.Equal(t, agent.NotificationClassification{Kind: agent.NotificationKindStatus, Key: "codewhale:status"}, status)
+	assert.Equal(t, agent.StatusNotification(), status)
 
 	for name, raw := range map[string][]byte{
 		"a compaction":    itemEvent(3, "item.completed", "item_1", contracts.CodewhaleItemKindContextCompaction, "done", nil),

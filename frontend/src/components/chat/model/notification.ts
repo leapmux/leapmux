@@ -1,4 +1,41 @@
 import type { RateLimitInfo } from '~/models/agentSession'
+import { assignDefined } from '~/lib/jsonPick'
+
+/** The facts that a provider reports about one retry. */
+export interface RetryFacts {
+  attempt?: number
+  maxAttempts?: number
+  /** The wait before the next attempt. */
+  delayMs?: number
+  error?: string
+  /** False states that the agent gave up. */
+  willRetry?: boolean
+  /** True states that the retry succeeded. */
+  succeeded?: boolean
+}
+
+export type CompactionOutcome = 'completed' | 'failed' | 'aborted' | 'skipped'
+export type HookOutcome = 'failed' | 'blocked' | 'timed-out' | 'continued'
+
+/** Keep finite, non-negative token counts. An invalid count stays absent. */
+export function tokenCount(n: unknown): number | undefined {
+  return typeof n === 'number' && Number.isFinite(n) && n >= 0 ? n : undefined
+}
+
+/** Build a retry entry with valid counters and a nonblank error. */
+export function retryEntry(scope: 'api' | 'summarization', facts: RetryFacts): Extract<NotificationEntry, { kind: 'retry' }> {
+  const entry: Extract<NotificationEntry, { kind: 'retry' }> = { kind: 'retry', scope }
+  for (const key of ['attempt', 'maxAttempts'] as const) {
+    const value = tokenCount(facts[key])
+    if (value !== undefined && Number.isSafeInteger(value))
+      entry[key] = value
+  }
+  assignDefined(entry, 'delayMs', tokenCount(facts.delayMs))
+  assignDefined(entry, 'error', facts.error?.trim() || undefined)
+  assignDefined(entry, 'willRetry', facts.willRetry)
+  assignDefined(entry, 'succeeded', facts.succeeded)
+  return entry
+}
 
 /** One settings axis that changed, already resolved to display words. */
 export interface SettingChange {
@@ -54,19 +91,10 @@ export type NotificationEntry
      * The agent waits before it tries again. `scope` says WHAT it retries: the model
      * call itself, or the summarization that compaction runs.
      */
-    | {
+    | (RetryFacts & {
       kind: 'retry'
       scope: 'api' | 'summarization'
-      attempt?: number
-      maxAttempts?: number
-      /** How long the agent waits before the next attempt. */
-      delayMs?: number
-      error?: string
-      /** False states that the agent gave up, which reads differently from a wait. */
-      willRetry?: boolean
-      /** True states that the retry WORKED, which ends the stall the reader watched. */
-      succeeded?: boolean
-    }
+    })
     /**
      * The agent rewrote its own context.
      *
@@ -74,7 +102,8 @@ export type NotificationEntry
      * full one: it rewrites a fraction of the context, it carries no metadata at all,
      * and the row must not claim the full compaction happened.
      */
-    | { kind: 'compaction', phase: CompactionPhase, micro?: boolean, detail?: CompactionDetails, error?: string }
+    | { kind: 'compaction', phase: CompactionPhase, micro?: boolean, detail?: CompactionDetails, outcome?: CompactionOutcome, error?: string }
+    | { kind: 'hook', outcome: HookOutcome, event?: string, name?: string, exitCode?: number, detail?: string }
     | { kind: 'context-cleared' }
     /** A transient progress notice: Goose's `status_message`, Reasonix's phase changes. */
     | { kind: 'status', text: string }
@@ -82,6 +111,16 @@ export type NotificationEntry
 
 /** Which end of a context rewrite one compaction row states. */
 export type CompactionPhase = 'start' | 'end'
+
+/** Report a nonempty row that contains only compaction starts. */
+export function isCompactionStartOnly(entries: readonly NotificationEntry[]): boolean {
+  return entries.length > 0 && entries.every(entry => entry.kind === 'compaction' && entry.phase === 'start')
+}
+
+/** Report a full compaction end of any outcome. A microcompaction ends no full compaction. */
+export function hasCompactionEnd(entries: readonly NotificationEntry[]): boolean {
+  return entries.some(entry => entry.kind === 'compaction' && entry.phase === 'end' && !entry.micro)
+}
 
 /** How an automatic review of one permission request ended. */
 export type AutoReviewOutcome = 'approved' | 'denied' | 'timed-out' | 'aborted' | 'unknown'

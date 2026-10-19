@@ -1,5 +1,6 @@
 import type { TurnEnd } from '../../../model/divider'
 import { ZCODE_EVENT, ZCODE_RESULT } from '~/generated/contracts/zcode-protocol'
+import { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { pickNumber, pickObject, pickString } from '~/lib/jsonPick'
 import { turnEndLabel } from '../../../turnEndLabel'
 import { zcodeEnvelope } from './toolCommon'
@@ -19,12 +20,13 @@ const ZCODE_FAILED_RESULTS: ReadonlyMap<string, string> = new Map([
 
 /**
  * A ZCode turn end as the provider-neutral divider model.
+ * Worker completion marks a cancelled approval as interrupted even when the native result says success.
  *
  * The two ends carry different shapes: `turn.completed` states a `resultType` and a
  * millisecond `duration`, while `turn.failed` states an `error` object. Returns null
  * for any other row so the caller falls back to the raw-JSON renderer.
  */
-export function zcodeResultDivider(parsed: unknown): TurnEnd | null {
+export function zcodeResultDivider(parsed: unknown, completion?: MessageCompletion): TurnEnd | null {
   const envelope = zcodeEnvelope(parsed)
   if (!envelope)
     return null
@@ -34,7 +36,7 @@ export function zcodeResultDivider(parsed: unknown): TurnEnd | null {
     const duration = pickNumber(payload, 'duration')
     const resultType = pickString(payload, 'resultType')
     // A cancelled turn is not an error: the reader asked for it.
-    if (resultType === ZCODE_RESULT.Cancelled)
+    if (completion === MessageCompletion.INTERRUPTED || resultType === ZCODE_RESULT.Cancelled)
       return { label: turnEndLabel('interrupted', { durationMs: duration }) }
     // `turn.completed` reports a FAILURE too. Every `error_*` result used to read
     // as a plain end in the ordinary colour, so a turn that hit its budget or its

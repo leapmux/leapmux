@@ -108,6 +108,10 @@ func (a *Agent) captureFinalization(state *sessionState, id, turnID string, raw 
 			content: agent.MessageContent{Original: content, AgentSessionID: id, Completion: ended, IdempotencyKey: fmt.Sprintf("muse:partial:%s:%d", turnID, index)}})
 	}
 	pending.end = agent.WithToolUseCount(agent.MessageContent{Original: slices.Clone(raw), AgentSessionID: id, Completion: ended, IdempotencyKey: "muse:turn:" + turnID}, int(state.toolUses))
+	for i := range pending.messages {
+		pending.messages[i].content.WriteReceipt = agent.NewTranscriptWriteReceipt()
+	}
+	pending.end.WriteReceipt = agent.NewTranscriptWriteReceipt()
 	state.finalizations = append(state.finalizations, pending)
 	if state.turnID == turnID {
 		state.turnID = ""

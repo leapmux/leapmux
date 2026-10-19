@@ -1,6 +1,7 @@
 import type { BrowserContext, Page, ViewportSize } from '@playwright/test'
 import type { ModelScriptFixtures } from './helpers/modelScriptFixture'
 import type { SuiteServerState } from './helpers/suiteServer'
+import type { TranscriptGuardState } from './helpers/transcriptGuard'
 import type { AgentWorkspaceFixture, WorkspaceFixture } from './helpers/workspace'
 import { writeFileSync } from 'node:fs'
 import { basename, relative } from 'node:path'
@@ -23,6 +24,7 @@ import { getGlobalState } from './helpers/server'
 import { attachServerLog } from './helpers/serverOutput'
 import { markSuiteServerLog, readSuiteServerLog } from './helpers/suiteServerLog'
 import { attachToastLog, clearRecordedToasts, installToastRecorder } from './helpers/toast'
+import { createTranscriptGuard, runTranscriptGuard } from './helpers/transcriptGuard'
 import { loginViaToken, openWorkspace } from './helpers/ui'
 import { agentWorkspaceFixture, withTestWorkspace } from './helpers/workspace'
 
@@ -154,6 +156,7 @@ async function resetSharedPage(
 
 export const test = base.extend<
   ModelScriptFixtures & {
+    transcriptGuard: TranscriptGuardState
     activePageState: ActivePageState
     hubStateReset: void
     toastRecorder: void
@@ -175,6 +178,9 @@ export const test = base.extend<
   }
 >({
   ...modelScriptFixtures,
+
+  // eslint-disable-next-line no-empty-pattern
+  transcriptGuard: async ({}, use) => { await use(createTranscriptGuard()) },
 
   // Global setup starts one dev instance for the complete run.
   // eslint-disable-next-line no-empty-pattern
@@ -337,18 +343,20 @@ export const test = base.extend<
     await use(agentWorkspaceFixture(emptyWorkspace, agentId, agentWorkingDir))
   },
 
-  authenticatedEmptyWorkspace: async ({ page, emptyWorkspace, leapmuxServer }, use) => {
+  authenticatedEmptyWorkspace: async ({ page, emptyWorkspace, leapmuxServer, transcriptGuard }, use, testInfo) => {
     await loginViaToken(page, leapmuxServer.adminToken)
     await openWorkspace(page, emptyWorkspace.workspaceId)
     await use(emptyWorkspace)
+    await runTranscriptGuard(page, transcriptGuard, testInfo)
   },
 
   // Sign in with the token and open the workspace.
-  authenticatedWorkspace: async ({ page, workspace, leapmuxServer }, use) => {
+  authenticatedWorkspace: async ({ page, workspace, leapmuxServer, transcriptGuard }, use, testInfo) => {
     await loginViaToken(page, leapmuxServer.adminToken)
     await openWorkspace(page, workspace.workspaceId)
 
     await use(workspace)
+    await runTranscriptGuard(page, transcriptGuard, testInfo)
     // The workspace fixture handles the teardown.
   },
 })

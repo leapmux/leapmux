@@ -84,7 +84,7 @@ func startServer(ctx context.Context, opts agent.Options, sink agent.ProviderSer
 		_ = a.Wait()
 	}
 	timeout := opts.EffectiveStartupTimeout()
-	url, err := ready.waiter.Wait(ctx, a.ProcessDone(), timeout)
+	url, err := ready.waiter.Wait(ctx, a.Clock(), a.ProcessDone(), timeout)
 	if err != nil {
 		cleanup()
 		if err == providerkit.ErrServerExited {

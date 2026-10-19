@@ -19,7 +19,6 @@ export type MessageCategory
     | { kind: 'notification', entries: NotificationEntry[] }
     | { kind: 'tool_use' }
     | { kind: 'tool_result' }
-    | { kind: 'agent_prompt' }
     | { kind: 'assistant_text' }
     | { kind: 'assistant_thinking' }
     | { kind: 'assistant_plan' }
@@ -28,7 +27,6 @@ export type MessageCategory
     | { kind: 'plan_execution' }
     | { kind: 'result_divider' }
     | { kind: 'control_response', response: PersistedControlResponse }
-    | { kind: 'compact_summary' }
     | { kind: 'unknown' }
     | { kind: 'unsupported_provider' }
 

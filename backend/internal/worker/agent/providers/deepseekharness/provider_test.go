@@ -74,12 +74,12 @@ func TestProviderCountsOnlyValidatedTurnEnds(t *testing.T) {
 	}
 }
 
-func TestProviderAcceptsOnlyCompletedCompactionBoundary(t *testing.T) {
+func TestClassifyEveryCompactionEndIsABoundary(t *testing.T) {
 	provider := deepseekHarnessProvider{}
-	assert.Equal(t, agent.NotificationKindCompactionBoundary, provider.Classify(json.RawMessage(`{"type":"compaction/end","data":{}}`)).Kind)
-	assert.Equal(t, agent.NotificationKindStatus, provider.Classify(json.RawMessage(`{"type":"compaction/end","data":{"error":"failed"}}`)).Kind)
-	assert.Empty(t, provider.Classify(json.RawMessage(`{"type":"compaction/start","data":{}}`)).Kind)
-	assert.Empty(t, provider.Classify(json.RawMessage(`invalid`)).Kind)
+	assert.Equal(t, agent.NotificationKindCompactionBoundary, provider.Classify(json.RawMessage(`{"type":"compaction/end","data":{}}`)).Kind())
+	assert.Equal(t, agent.NotificationKindCompactionBoundary, provider.Classify(json.RawMessage(`{"type":"compaction/end","data":{"error":"failed"}}`)).Kind())
+	assert.Empty(t, provider.Classify(json.RawMessage(`{"type":"compaction/start","data":{}}`)).Kind())
+	assert.Empty(t, provider.Classify(json.RawMessage(`invalid`)).Kind())
 }
 
 func TestProviderReadsNativeTodoSnapshots(t *testing.T) {

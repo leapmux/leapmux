@@ -30,6 +30,7 @@ const (
 	notificationThreaded notificationWriteMode = iota + 1
 	notificationStandalone
 	notificationReport
+	notificationRetryResolution
 )
 
 func (h *OutputHandler) persistNotificationThreaded(agentID string, provider leapmuxv1.AgentProvider, plugin agent.Provider, source leapmuxv1.MessageSource, content agent.MessageContent) (bool, error) {
@@ -37,10 +38,9 @@ func (h *OutputHandler) persistNotificationThreaded(agentID string, provider lea
 }
 
 func (h *OutputHandler) writeNotification(agentID string, provider leapmuxv1.AgentProvider, plugin agent.Provider, source leapmuxv1.MessageSource, content agent.MessageContent, mode notificationWriteMode) (bool, error) {
-	if mode != notificationThreaded && mode != notificationStandalone && mode != notificationReport {
+	if mode != notificationThreaded && mode != notificationStandalone && mode != notificationReport && mode != notificationRetryResolution {
 		return false, errors.New("the notification write mode is invalid")
 	}
-	standalone := mode != notificationThreaded
 	if h.db == nil {
 		return false, errors.New("the notification store has no database")
 	}
@@ -79,7 +79,7 @@ func (h *OutputHandler) writeNotification(agentID string, provider leapmuxv1.Age
 	mutation := h.transcriptMutationMutex(rootID)
 	mutex := h.notifMutex(agentID)
 	for {
-		prepared, err := h.prepareNotification(agentID, provider, plugin, source, content, owner, standalone)
+		prepared, err := h.prepareNotification(agentID, provider, plugin, source, content, owner, mode)
 		if err != nil {
 			return false, err
 		}
@@ -131,6 +131,7 @@ type notificationPreparation struct {
 	parent  *db.Message
 	wrapper *notifThreadWrapper
 	state   agent.NotificationReductionState
+	tail    []db.Message
 }
 
 func (h *OutputHandler) notificationReference(agentID string, provider leapmuxv1.AgentProvider, source leapmuxv1.MessageSource, content agent.MessageContent, owner *transcriptOwner, standalone bool) *notifThreadRef {
@@ -193,19 +194,30 @@ func (h *OutputHandler) readNotificationParent(queries *db.Queries, agentID stri
 	return &row, nil
 }
 
-func (h *OutputHandler) prepareNotification(agentID string, provider leapmuxv1.AgentProvider, plugin agent.Provider, source leapmuxv1.MessageSource, content agent.MessageContent, owner *transcriptOwner, standalone bool) (notificationPreparation, error) {
+func (h *OutputHandler) prepareNotification(agentID string, provider leapmuxv1.AgentProvider, plugin agent.Provider, source leapmuxv1.MessageSource, content agent.MessageContent, owner *transcriptOwner, mode notificationWriteMode) (notificationPreparation, error) {
 	if err := agent.ValidateIncomingMessageMetadata(content.Metadata); err != nil {
 		return notificationPreparation{}, err
 	}
-	mutex := h.notifMutex(agentID)
-	mutex.Lock()
-	reference := h.notificationReference(agentID, provider, source, content, owner, standalone)
-	mutex.Unlock()
-	parent, err := h.readNotificationParent(h.queries, agentID, provider, source, content, owner, standalone, reference)
+	var parent *db.Message
+	var tail []db.Message
+	var err error
+	if mode == notificationRetryResolution {
+		tail, err = readRetryResolutionTail(h.queries, agentID, provider, content.AgentSessionID, owner)
+		if err == nil {
+			parent, err = retryResolutionParent(tail, plugin)
+		}
+	} else {
+		standalone := mode != notificationThreaded
+		mutex := h.notifMutex(agentID)
+		mutex.Lock()
+		reference := h.notificationReference(agentID, provider, source, content, owner, standalone)
+		mutex.Unlock()
+		parent, err = h.readNotificationParent(h.queries, agentID, provider, source, content, owner, standalone, reference)
+	}
 	if err != nil {
 		return notificationPreparation{}, err
 	}
-	prepared := notificationPreparation{parent: parent, wrapper: &notifThreadWrapper{Type: notifThreadWrapperType, Messages: []json.RawMessage{}}}
+	prepared := notificationPreparation{parent: parent, tail: tail, wrapper: &notifThreadWrapper{Type: notifThreadWrapperType, Messages: []json.RawMessage{}}}
 	if parent != nil {
 		data, err := msgcodec.Decompress(parent.Content, parent.ContentCompression)
 		if err != nil {
@@ -245,7 +257,7 @@ func notificationParentEqual(first, second *db.Message) bool {
 }
 
 func (h *OutputHandler) writeNotificationLocked(agentID string, provider leapmuxv1.AgentProvider, source leapmuxv1.MessageSource, content agent.MessageContent, entry agent.NotificationEntry, owner *transcriptOwner, mode notificationWriteMode, prepared notificationPreparation) (notificationWrite, error) {
-	standalone := mode != notificationThreaded
+	standalone := mode == notificationStandalone || mode == notificationReport
 	ctx := bgCtx()
 	connection, err := h.db.Conn(ctx)
 	if err != nil {
@@ -271,13 +283,26 @@ func (h *OutputHandler) writeNotificationLocked(agentID string, provider leapmux
 			return notificationWrite{}, err
 		}
 	}
-	reference := h.notificationReference(agentID, provider, source, content, owner, standalone)
-	parent, err := h.readNotificationParent(queries, agentID, provider, source, content, owner, standalone, reference)
-	if err != nil {
-		return notificationWrite{}, err
-	}
-	if !notificationParentEqual(prepared.parent, parent) {
-		return notificationWrite{}, errNotificationPreparationChanged
+	if mode == notificationRetryResolution {
+		tail, err := readRetryResolutionTail(queries, agentID, provider, content.AgentSessionID, owner)
+		if err != nil {
+			return notificationWrite{}, err
+		}
+		if !slices.EqualFunc(prepared.tail, tail, func(a, b db.Message) bool { return notificationParentEqual(&a, &b) }) {
+			return notificationWrite{}, errNotificationPreparationChanged
+		}
+		if prepared.parent == nil {
+			return notificationWrite{}, nil
+		}
+	} else {
+		reference := h.notificationReference(agentID, provider, source, content, owner, standalone)
+		parent, err := h.readNotificationParent(queries, agentID, provider, source, content, owner, standalone, reference)
+		if err != nil {
+			return notificationWrite{}, err
+		}
+		if !notificationParentEqual(prepared.parent, parent) {
+			return notificationWrite{}, errNotificationPreparationChanged
+		}
 	}
 	stale := owner != nil && !owner.IsCurrent()
 	lines := h.snapshotPassthroughSpanLines(agentID)
@@ -395,7 +420,7 @@ func (h *OutputHandler) storePreparedNotification(queries *db.Queries, agentID s
 	if err != nil {
 		return notificationWrite{}, err
 	}
-	reference := &notifThreadRef{msgID: parent.ID, seq: parent.Seq, source: source, sessionID: content.AgentSessionID, provider: provider}
+	reference := &notifThreadRef{msgID: parent.ID, seq: parent.Seq, source: parent.Source, sessionID: content.AgentSessionID, provider: provider}
 	if agent.JSONCanonicalEqual(data, merged) && agent.JSONCanonicalEqual(previousRendering, rendering) && workerdb.StorageEnumValue(parent.Completion) == completion && parent.SpanLines == lines {
 		if !bytes.Equal(previous, supplement) || parent.TranscriptOnly != stale {
 			rows, err := queries.UpdateNotificationJournal(ctx, db.UpdateNotificationJournalParams{

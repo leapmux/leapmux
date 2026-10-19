@@ -499,8 +499,8 @@ func TestHandleOutput_AStatusFrameNeverDrivesThePermissionCheck(t *testing.T) {
 	sink := &outputTestSink{}
 	a := newTestAgent(agent.NewProviderServices(sink))
 
-	// A `status` frame carries a status word and may name a tool call. It
-	// reports an event, never a check verdict, so it must not drive the badge.
+	// A status frame can identify a tool call but states no permission-check verdict.
+	// Only permission_check_status changes the badge.
 	a.HandleOutput([]byte(`{
 		"type": "system",
 		"subtype": "status",
@@ -512,6 +512,6 @@ func TestHandleOutput_AStatusFrameNeverDrivesThePermissionCheck(t *testing.T) {
 
 	assert.Equal(t, 0, sink.SessionInfoCount(),
 		"only a permission_check_status frame drives the badge")
-	assert.Equal(t, 1, sink.NotificationCount(),
-		"the frame still reports as the notification it is")
+	assert.Equal(t, 0, sink.NotificationCount(),
+		"a status with no compaction failure stores no row")
 }

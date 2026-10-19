@@ -31,11 +31,11 @@ func (kimiProvider) Classify(raw json.RawMessage) agent.NotificationClassificati
 	}
 	switch head.Type {
 	case contracts.KimiEventTurnStepRetrying:
-		return agent.NotificationClassification{Kind: agent.NotificationKindAPIRetry, Key: "kimi:retry"}
+		return agent.APIRetryNotification()
 	case contracts.KimiEventCompactionStarted, contracts.KimiEventCompactionBlocked, contracts.KimiEventCompactionCancelled:
-		return agent.NotificationClassification{Kind: agent.NotificationKindStatus, Key: "kimi:compaction"}
+		return agent.StatusNotification()
 	case contracts.KimiEventCompactionCompleted:
-		return agent.NotificationClassification{Kind: agent.NotificationKindCompactionBoundary, Key: "kimi:compaction"}
+		return agent.CompactionBoundaryNotification()
 	default:
 		return agent.NotificationClassification{}
 	}

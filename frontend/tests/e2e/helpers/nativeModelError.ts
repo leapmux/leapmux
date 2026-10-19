@@ -4,7 +4,7 @@ import type { QueueAfterFailure } from './ui'
 import { randomUUID } from 'node:crypto'
 import { expect } from '@playwright/test'
 import { sendNativeAnswer } from './nativeConversation'
-import { resumeQueueAfterFailure, sendMessage, visibleOnly, waitForAgentIdle } from './ui'
+import { messageContents, resumeQueueAfterFailure, sendMessage, waitForAgentIdle } from './ui'
 
 interface NativeModelErrorOptions {
   /**
@@ -94,7 +94,10 @@ export async function exerciseModelError(
   await options.answerFailure?.(error)
   // The idle wait requires the visible thinking indicator to clear, so no second indicator check follows.
   await waitForAgentIdle(context.page)
-  await expect(visibleOnly(context.page.getByText(error.message, { exact: false })).first()).toBeVisible()
+  await expect(messageContents(context.page).filter({ hasText: error.message })).toHaveCount(1)
+  await context.page.reload()
+  await waitForAgentIdle(context.page)
+  await expect(messageContents(context.page).filter({ hasText: error.message })).toHaveCount(1)
   await resumeQueueAfterFailure(context.page, options.queueAfterFailure)
   await sendNativeAnswer(context, 'Reply once after the native service failure.', `RECOVERED${marker}`)
   return failed

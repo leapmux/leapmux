@@ -21,6 +21,137 @@ type codebuddyTurnReleaseSink struct {
 	resetsAtRelease   int
 }
 
+func TestFrameDrops(t *testing.T) {
+	t.Parallel()
+	// The probe runs run1 and run3 recorded these administrative frame kinds.
+	for _, raw := range []string{
+		`{"type":"file-history-snapshot","messageId":"snapshot"}`,
+		`{"type":"ai-title","title":"A title"}`,
+		`{"type":"topic","topic":"A topic"}`,
+		`{"type":"control_notification","notification":{}}`,
+		`{"type":"system","subtype":"init","session_id":"session-1","model":"native-model","permissionMode":"plan"}`,
+		`{"type":"system","subtype":"keepalive"}`,
+		`{"type":"system","subtype":"status","status":null}`,
+		`{"type":"system","subtype":"mcp_status","event":"start"}`,
+	} {
+		t.Run(raw, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a := newOfflineAgent(t, sink)
+			a.HandleOutput([]byte(raw))
+			assert.Empty(t, sink.Messages())
+			assert.Empty(t, sink.PersistedNotifications())
+		})
+	}
+}
+
+func TestUnknownFramesPersist(t *testing.T) {
+	t.Parallel()
+	var cases []agenttest.UnknownFrameCase
+	for _, session := range []string{"session-1", "", "another-session"} {
+		for _, frame := range []map[string]any{
+			{"type": "probe_future_frame", "session_id": session},
+			{"type": "system", "subtype": "future_notice", "session_id": session},
+		} {
+			raw, err := json.Marshal(frame)
+			require.NoError(t, err)
+			cases = append(cases, agenttest.UnknownFrameCase{Name: string(raw), Frame: raw, OtherSession: session == "another-session"})
+		}
+	}
+	agenttest.AssertUnknownFramePersists(t, cases, func(t *testing.T, tc agenttest.UnknownFrameCase) *agenttest.Sink {
+		sink := &agenttest.Sink{}
+		a := newOfflineAgent(t, sink)
+		a.HandleOutput(tc.Frame)
+		return sink
+	})
+}
+
+func TestFrameDropsKeepMcpFinishAndUnknownFrames(t *testing.T) {
+	t.Parallel()
+	for _, raw := range []string{
+		`{"type":"system","subtype":"mcp_status","event":"finish","servers":[]}`,
+		`{"type":"system","subtype":"future_notice","message":"retained"}`,
+		`{"type":"future_frame","message":"retained"}`,
+	} {
+		sink := &agenttest.Sink{}
+		a := newOfflineAgent(t, sink)
+		a.HandleOutput([]byte(raw))
+		require.Len(t, sink.Messages(), 1)
+		assert.JSONEq(t, raw, string(sink.Messages()[0].Content))
+	}
+}
+
+func TestCompactingStatusIsLiveState(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newOfflineAgent(t, sink)
+	a.HandleOutput([]byte(`{"type":"system","subtype":"status","status":null}`))
+	assert.Empty(t, sink.SessionInfoValues(contracts.SessionInfoKeyCompaction))
+	for range 2 {
+		a.HandleOutput([]byte(`{"type":"system","subtype":"status","status":"compacting"}`))
+	}
+	a.HandleOutput([]byte(`{"type":"system","subtype":"status"}`))
+	assert.Equal(t, []interface{}{map[string]interface{}{}}, sink.SessionInfoValues(contracts.SessionInfoKeyCompaction))
+	for range 2 {
+		a.HandleOutput([]byte(`{"type":"system","subtype":"status","status":null}`))
+	}
+	assert.Equal(t, []interface{}{map[string]interface{}{}, nil}, sink.SessionInfoValues(contracts.SessionInfoKeyCompaction))
+	assert.Empty(t, sink.Messages())
+	assert.Empty(t, sink.PersistedNotifications())
+}
+
+func TestManualCompactionStaysLiveUntilItsResult(t *testing.T) {
+	for _, result := range []string{
+		`{"type":"result","subtype":"success","result":"","is_error":false}`,
+		`{"type":"result","subtype":"error_during_execution","result":"","is_error":true,"errors":["summary refused"]}`,
+	} {
+		t.Run(result, func(t *testing.T) {
+			sink := &agenttest.Sink{}
+			a := newOfflineAgent(t, sink)
+			require.NoError(t, a.SendInput("/compact keep the current task", nil))
+			assert.False(t, a.PublishTurnActive().Steerable)
+			assert.Equal(t, []interface{}{map[string]interface{}{"trigger": "manual"}}, sink.SessionInfoValues(contracts.SessionInfoKeyCompaction))
+			assert.Empty(t, sink.Messages())
+			// The stream can clear its previous progress before the manual command starts.
+			a.HandleOutput([]byte(`{"type":"system","subtype":"status","status":null}`))
+			assert.Len(t, sink.SessionInfoValues(contracts.SessionInfoKeyCompaction), 1)
+			a.HandleOutput([]byte(result))
+			assert.Equal(t, []interface{}{map[string]interface{}{"trigger": "manual"}, nil}, sink.SessionInfoValues(contracts.SessionInfoKeyCompaction))
+			assert.Empty(t, sink.PersistedNotifications())
+			assert.Empty(t, sink.LeapMuxNotifications())
+		})
+	}
+}
+
+func TestManualCompactionFailureToWriteEndsLiveState(t *testing.T) {
+	sink := &agenttest.Sink{}
+	a := newOfflineAgent(t, sink)
+	a.SetStdinForTest(agenttest.FailingStdin{})
+	require.Error(t, a.SendInput("/compact", nil))
+	assert.Equal(t, []interface{}{map[string]interface{}{"trigger": "manual"}, nil}, sink.SessionInfoValues(contracts.SessionInfoKeyCompaction))
+	assert.False(t, a.PublishTurnActive().Active)
+}
+
+func TestManualCompactionEarlyResultLeavesNoLiveStart(t *testing.T) {
+	sink := &agenttest.Sink{}
+	a := newOfflineAgent(t, sink)
+	// This agent has no pending permission, so the result writes no control frame from this writer.
+	a.SetStdinForTest(agenttest.NopStdin(permissionRetiringWriter{output: new(bytes.Buffer), retire: func() {
+		a.HandleOutput([]byte(`{"type":"result","subtype":"success","result":"","is_error":false}`))
+	}}))
+	require.NoError(t, a.SendInput("/compact", nil))
+	assert.Equal(t, []interface{}{map[string]interface{}{"trigger": "manual"}, nil}, sink.SessionInfoValues(contracts.SessionInfoKeyCompaction))
+}
+
+func TestOrdinaryInputDoesNotPublishCompaction(t *testing.T) {
+	for _, input := range []string{"", "/compactly", "explain /compact"} {
+		sink := &agenttest.Sink{}
+		a := newOfflineAgent(t, sink)
+		require.NoError(t, a.SendInput(input, nil))
+		assert.Empty(t, sink.SessionInfoValues(contracts.SessionInfoKeyCompaction))
+	}
+}
+
 func (s *codebuddyTurnReleaseSink) SetTurnState(state agent.TurnState, seq uint64) {
 	if !state.Active {
 		s.messagesAtRelease = s.Messages()
@@ -78,6 +209,41 @@ const (
 	// The turn failed on its own before the CLI read the stop.
 	codebuddyResultFailed = `{"type":"result","subtype":"error_during_execution","is_error":true,"duration_ms":102,"num_turns":2,"errors":["400 NATIVE ERROR MARKER (01a108db06177af38a010285fbc74cdf/e46a2031-5536-4038-bfe6-ad97284f4a24)"]}`
 )
+
+func TestUnclaimedControlResponseHasOneVerdict(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, raw, errorText string
+		unknown              bool
+	}{
+		// e2e-B03pI0 recorded this acknowledgement after the native interrupt.
+		{"success", `{"type":"control_response","response":{"subtype":"success","request_id":"interrupt-1","response":{"session_id":"session","interrupted":true,"reason":"user"}}}`, "", false},
+		{"failure", `{"type":"control_response","response":{"subtype":"error","request_id":"interrupt-1","error":"The interrupt failed."}}`, "The interrupt failed.", false},
+		{"empty failure", `{"type":"control_response","response":{"subtype":"error","request_id":"interrupt-1","error":" "}}`, "CodeBuddy refused a control request.", false},
+		{"absent identity", `{"type":"control_response","response":{"subtype":"success"}}`, "", true},
+		{"unknown subtype", `{"type":"control_response","response":{"subtype":"future","request_id":"interrupt-1","detail":true}}`, "", true},
+		{"invalid response", `{"type":"control_response","response":"future shape"}`, "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sink := &agenttest.Sink{}
+			a := newOfflineAgent(t, sink)
+			a.HandleOutput([]byte(tc.raw))
+			if tc.unknown {
+				require.Len(t, sink.Messages(), 1)
+				assert.JSONEq(t, tc.raw, string(sink.Messages()[0].Content))
+			} else {
+				assert.Empty(t, sink.Messages())
+			}
+			if tc.errorText != "" {
+				require.Len(t, sink.LeapMuxNotifications(), 1)
+				assert.Equal(t, contracts.NotificationTypeAgentError, sink.LeapMuxNotifications()[0][contracts.NotificationFieldType])
+				assert.Equal(t, tc.errorText, sink.LeapMuxNotifications()[0][contracts.NotificationFieldError])
+			} else {
+				assert.Empty(t, sink.LeapMuxNotifications())
+			}
+		})
+	}
+}
 
 func TestCodebuddyInterruptMarksOnlyTheCurrentNativeResult(t *testing.T) {
 	t.Parallel()

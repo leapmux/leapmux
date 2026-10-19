@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"google.golang.org/protobuf/proto"
 )
 
 // Agent owns one native Web process and one root Session.
@@ -23,6 +25,7 @@ type Agent struct {
 	rpc             remoteRPC
 	workingDir      string
 	opMu            sync.Mutex
+	steerMu         sync.Mutex
 	writeMu         sync.Mutex
 	dispatchMu      sync.Mutex
 	conn            *websocket.Conn
@@ -48,10 +51,27 @@ type Agent struct {
 	imageReceipts   imageHookFiles
 	streamFailure   error
 	failureStopDone chan struct{}
+	// dispatchMu protects errors until the native turn end supplies its diagnostic.
+	pendingErrors   []string
+	lastTurnError   string
+	retryResolution providerkit.RetryResolution
+	pendingSteers   []*pendingSteer
+}
+
+// pendingSteer keeps the original input until native history proves its delivery or removal.
+// Mu protects its native identity and disposition.
+type pendingSteer struct {
+	requestID   string
+	itemID      string
+	content     string
+	attachments []*leapmuxv1.Attachment
+	delivered   bool
+	removed     bool
 }
 
 var _ agent.Agent = (*Agent)(nil)
 var _ agent.InputSteerer = (*Agent)(nil)
+var _ agent.SteerSurvivor = (*Agent)(nil)
 var _ agent.ContextCompactor = (*Agent)(nil)
 var _ agent.GoalWriter = (*Agent)(nil)
 var _ agent.ChildSteerer = (*Agent)(nil)
@@ -76,6 +96,9 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 	return a.sendInput("", content, attachments, "steer")
 }
 
+// SteerSurvivesTurnEnd prevents the queue from resending an input that the native inbox retains.
+func (*Agent) SteerSurvivesTurnEnd() bool { return true }
+
 func (a *Agent) SupportsSteering() bool {
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
@@ -85,6 +108,10 @@ func (a *Agent) SupportsSteering() bool {
 func (a *Agent) sendInput(expected, content string, attachments []*leapmuxv1.Attachment, delivery string) error {
 	a.opMu.Lock()
 	defer a.opMu.Unlock()
+	if delivery == "steer" {
+		a.steerMu.Lock()
+		defer a.steerMu.Unlock()
+	}
 	a.Mu.Lock()
 	sessionID := a.sessionID
 	if a.streamFailure != nil {
@@ -129,12 +156,32 @@ func (a *Agent) sendInput(expected, content string, attachments []*leapmuxv1.Att
 	var receipt struct {
 		Accepted bool `json:"accepted"`
 	}
-	err = a.rpc.request(a.Context(), "session/prompt", map[string]any{"requestId": uuid.NewString(), "sessionId": sessionID, "mode": delivery, "content": parts}, &receipt)
+	requestID := uuid.NewString()
+	var steer *pendingSteer
+	if delivery == "steer" {
+		steer = &pendingSteer{requestID: requestID, content: content}
+		for _, attachment := range attachments {
+			steer.attachments = append(steer.attachments, proto.CloneOf(attachment))
+		}
+		a.Mu.Lock()
+		a.pendingSteers = append(a.pendingSteers, steer)
+		a.Mu.Unlock()
+	}
+	err = a.rpc.request(a.Context(), "session/prompt", map[string]any{"requestId": requestID, "sessionId": sessionID, "mode": delivery, "content": parts}, &receipt)
 	if err == nil && !receipt.Accepted {
 		err = fmt.Errorf("DeepSeek Harness did not accept the prompt")
 	}
 	if err == nil {
 		return nil
+	}
+	if steer != nil {
+		a.Mu.Lock()
+		delivered := steer.delivered
+		a.pendingSteers = slices.DeleteFunc(a.pendingSteers, func(candidate *pendingSteer) bool { return candidate == steer })
+		a.Mu.Unlock()
+		if delivered {
+			return nil
+		}
 	}
 	var native *remoteFailure
 	if errors.As(err, &native) {
@@ -164,13 +211,63 @@ func (a *Agent) setTurnState(active bool) {
 }
 
 func (a *Agent) Interrupt(stop agent.StopContext) error {
+	// A compaction command holds opMu until it ends. Its cancel must run before that reply.
+	a.steerMu.Lock()
+	defer a.steerMu.Unlock()
 	a.Mu.Lock()
 	sessionID, active := a.sessionID, a.active
+	steers := slices.Clone(a.pendingSteers)
 	a.Mu.Unlock()
-	if !active {
+	if active {
+		if err := a.rpc.request(a.Context(), "session/cancel", map[string]string{"sessionId": sessionID}, nil); err != nil {
+			return err
+		}
+	}
+	var failures error
+	for _, steer := range steers {
+		failures = errors.Join(failures, a.removePendingSteer(sessionID, steer))
+	}
+	return failures
+}
+
+func (a *Agent) removePendingSteer(sessionID string, steer *pendingSteer) error {
+	a.Mu.Lock()
+	id, delivered, removed := steer.itemID, steer.delivered, steer.removed
+	a.Mu.Unlock()
+	if delivered || id == "" {
 		return nil
 	}
-	return a.rpc.request(a.Context(), "session/cancel", map[string]string{"sessionId": sessionID}, nil)
+	if !removed {
+		var receipt struct {
+			Accepted bool `json:"accepted"`
+		}
+		err := a.rpc.request(a.Context(), "session/updateQueue", map[string]any{"sessionId": sessionID, "itemId": id, "action": map[string]string{"kind": "remove"}}, &receipt)
+		var native *remoteFailure
+		if errors.As(err, &native) && native.Code == "session/queue-item-not-found" {
+			a.forgetPendingSteer(steer)
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if !receipt.Accepted {
+			return fmt.Errorf("DeepSeek Harness did not remove the pending steer")
+		}
+		a.Mu.Lock()
+		steer.removed = true
+		a.Mu.Unlock()
+	}
+	if err := a.sink.RequeueDroppedInput("dsh-steer:"+steer.requestID, steer.content, steer.attachments); err != nil {
+		return err
+	}
+	a.forgetPendingSteer(steer)
+	return nil
+}
+
+func (a *Agent) forgetPendingSteer(steer *pendingSteer) {
+	a.Mu.Lock()
+	a.pendingSteers = slices.DeleteFunc(a.pendingSteers, func(candidate *pendingSteer) bool { return candidate == steer })
+	a.Mu.Unlock()
 }
 
 // The Web API has no synchronous Session disposal operation. The Worker

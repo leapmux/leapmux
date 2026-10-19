@@ -36,24 +36,23 @@ describe('classifyCodebuddyMessage', () => {
       .toEqual({ kind: 'hidden' })
   })
 
-  // The worker forwards every `system` line whole (`handleSystem`). These are the shapes that CodeBuddy Code 2.160.0
-  // writes in an ordinary turn.
+  // Current notices retain their readers. Administrative rows from older builds have no hidden-subtype rule.
   describe('system', () => {
     const classify = (frame: Record<string, unknown>) => classifyCodebuddyMessage(input(frame, undefined, AgentProvider.CODEBUDDY))
 
     it.each([
-      ['the session start', { type: 'system', subtype: 'init', session_id: 's', model: 'm', permissionMode: 'default', tools: [], mcp_servers: [], slash_commands: [] }],
-      ['the heartbeat while the model reasons', { type: 'system', subtype: 'keepalive', session_id: 's', reason: 'reasoning_in_progress', elapsed_ms: 1200 }],
-      ['the end of a progress state', { type: 'system', subtype: 'status', status: null, session_id: 's' }],
-      ['the start of a compaction that no boundary ends', { type: 'system', subtype: 'status', status: 'compacting', session_id: 's' }],
-      ['a background task that the worker records', { type: 'system', subtype: 'task_started', task_id: 't', task_type: 'local_agent' }],
-      ['the end of a background task that the worker records', { type: 'system', subtype: 'task_notification', task_id: 't', status: 'completed' }],
-      ['the start of the MCP servers', { type: 'system', subtype: 'mcp_status', event: 'start', servers: ['probe'], total_count: 1 }],
-      ['the progress of one MCP server', { type: 'system', subtype: 'mcp_status', event: 'server', name: 'probe', state: 'connected', completed: 1, total: 1 }],
-      ['an MCP startup in which every server started', { type: 'system', subtype: 'mcp_status', event: 'finish', failed: [], timed_out: [] }],
-      ['an informational line with no text', { type: 'system', subtype: 'informational', level: 'warning', content: '  ' }],
-    ])('hides %s', (_label, frame) => {
-      expect(classify(frame)).toEqual({ kind: 'hidden' })
+      ['the session start', { type: 'system', subtype: 'init', session_id: 's', model: 'm', permissionMode: 'default', tools: [], mcp_servers: [], slash_commands: [] }, 'unknown'],
+      ['the heartbeat while the model reasons', { type: 'system', subtype: 'keepalive', session_id: 's', reason: 'reasoning_in_progress', elapsed_ms: 1200 }, 'unknown'],
+      ['the end of a progress state', { type: 'system', subtype: 'status', status: null, session_id: 's' }, 'unknown'],
+      ['the start of a compaction that no boundary ends', { type: 'system', subtype: 'status', status: 'compacting', session_id: 's' }, 'unknown'],
+      ['a background task that the worker records', { type: 'system', subtype: 'task_started', task_id: 't', task_type: 'local_agent' }, 'unknown'],
+      ['the end of a background task that the worker records', { type: 'system', subtype: 'task_notification', task_id: 't', status: 'completed' }, 'unknown'],
+      ['the start of the MCP servers', { type: 'system', subtype: 'mcp_status', event: 'start', servers: ['probe'], total_count: 1 }, 'hidden'],
+      ['the progress of one MCP server', { type: 'system', subtype: 'mcp_status', event: 'server', name: 'probe', state: 'connected', completed: 1, total: 1 }, 'hidden'],
+      ['an MCP startup in which every server started', { type: 'system', subtype: 'mcp_status', event: 'finish', failed: [], timed_out: [] }, 'hidden'],
+      ['an informational line with no text', { type: 'system', subtype: 'informational', level: 'warning', content: '  ' }, 'hidden'],
+    ])('classifies %s from its stored facts', (_label, frame, kind) => {
+      expect(classify(frame)).toEqual({ kind })
     })
 
     it('states each MCP server that failed to start or did not start in time', () => {
@@ -82,8 +81,7 @@ describe('classifyCodebuddyMessage', () => {
     })
   })
 
-  // The worker forwards these kinds whole from its default branch. These are the shapes that CodeBuddy Code 2.160.0
-  // writes.
+  // The worker drops control receipts. It still stores native errors.
   describe('control_notification and error', () => {
     const classify = (frame: Record<string, unknown>) => classifyCodebuddyMessage(input(frame, undefined, AgentProvider.CODEBUDDY))
 
@@ -91,8 +89,8 @@ describe('classifyCodebuddyMessage', () => {
       ['a resolved permission request', { type: 'control_notification', channel: 'permission', data: { toolCallId: 'c', requestId: 'r', decision: 'allow', resolvedBy: 'user' } }],
       ['a completed elicitation', { type: 'control_notification', channel: 'elicitation', data: { id: 'e' } }],
       ['the slash-command list', { type: 'control_notification', channel: 'commands', data: { commands: [], timestamp: 1 } }],
-    ])('hides %s', (_label, frame) => {
-      expect(classify(frame)).toEqual({ kind: 'hidden' })
+    ])('draws a stored %s as unknown', (_label, frame) => {
+      expect(classify(frame)).toEqual({ kind: 'unknown' })
     })
 
     it('states the message of an error line', () => {

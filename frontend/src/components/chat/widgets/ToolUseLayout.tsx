@@ -19,6 +19,7 @@ function hasContent(values: JSX.Element[]): boolean {
 
 /** Render the common header and body for a tool-use message. */
 export function ToolUseLayout(props: {
+  testId?: string
   icon?: LucideIcon
   renderIcon?: () => JSX.Element
   toolName: string
@@ -51,7 +52,7 @@ export function ToolUseLayout(props: {
   const hasActions = () =>
     props.showHeaderActions !== false && (!!props.onToggleExpand || !!props.context?.onCopyJson || !!props.hasDiff || !!actions()?.onCopyContent || !!actions()?.onCopyMarkdown || !!actions()?.onReply)
   return (
-    <div class={toolMessage} data-tool-message>
+    <div class={toolMessage} data-tool-message data-testid={props.testId}>
       <div class={toolUseHeader}>
         <Tooltip text={props.toolName} ariaLabel>
           <span class={`${inlineFlex} ${toolUseIcon}`}>

@@ -1,16 +1,17 @@
 import type { Page } from '@playwright/test'
 import type { NativeCompactionOptions } from './manualCompaction'
-import type { MockModelRequestRecord, MockModelRule, MockModelStep } from './mockModelScript'
+import type { MockModelError, MockModelRequestRecord, MockModelRule, MockModelStep } from './mockModelScript'
 import type { ModelScript } from './modelScriptFixture'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { CLAUDE_SUMMARIZER_PATTERN, compactionSummaryText, exerciseNativeCompaction, MANUAL_COMPACTION_MARKER, MANUAL_COMPACTION_SUMMARY, OLDER_CONTEXT_MARKER } from './manualCompaction'
+import { CLAUDE_SUMMARIZER_PATTERN, compactionSummaryText, exerciseFailedNativeCompaction, exerciseNativeCompaction, MANUAL_COMPACTION_MARKER, MANUAL_COMPACTION_SUMMARY, OLDER_CONTEXT_MARKER } from './manualCompaction'
 import { matchesRequest } from './mockModelScript'
 
 /** A simulated native agent: what it sent, what the transcript shows, and how it compacts. */
 const agent = vi.hoisted(() => ({
   send: (_text: string) => {},
   transcript: [] as string[],
+  errors: [] as MockModelError[],
 }))
 
 vi.mock('./ui', () => ({
@@ -44,7 +45,7 @@ interface SimulatedAgentOptions {
 }
 
 /** A model script and a native agent that answers each prompt from it and compacts on `/compact`. */
-function simulatedAgent(options: SimulatedAgentOptions = {}): { script: ModelScript, requests: MockModelRequestRecord[] } {
+function simulatedAgent(options: SimulatedAgentOptions = {}): { script: ModelScript, requests: MockModelRequestRecord[], gateEvents: string[] } {
   const steps: MockModelStep[] = Array.from({ length: options.earlierSteps ?? 0 }, () => ({ text: 'An earlier turn.' }))
   const requests: MockModelRequestRecord[] = steps.map((_, stepIndex) => ({ stepIndex, body: { earlier: true } }) as unknown as MockModelRequestRecord)
   let nextStep = steps.length
@@ -52,13 +53,18 @@ function simulatedAgent(options: SimulatedAgentOptions = {}): { script: ModelScr
   const ruleMatches: Record<string, number> = {}
   let fallback: MockModelStep | undefined
   let history: string[] = []
+  const gateEvents: string[] = []
+  let held: { gate: string, complete: () => void } | undefined
   const request = (texts: string[], extra: Partial<MockModelRequestRecord> = {}) => ({ body: { messages: texts }, ...extra }) as unknown as MockModelRequestRecord
   const answer = (step: MockModelStep | undefined) => {
     if (!step)
       throw new Error('The simulated agent found no scripted answer.')
+    if (step.error)
+      agent.errors.push(step.error)
     return step.text ?? ''
   }
   agent.transcript = []
+  agent.errors = []
   agent.send = (text) => {
     if (text !== '/compact') {
       history.push(text)
@@ -72,23 +78,33 @@ function simulatedAgent(options: SimulatedAgentOptions = {}): { script: ModelScr
     const summarizer = options.summarizerText ?? 'Summarize the conversation.'
     const texts = [...history, summarizer]
     const rule = rules.find(candidate => typeof candidate.when.user === 'string' && summarizer.includes(candidate.when.user))
-    let summary: string
+    let summaryStep: MockModelStep | undefined
     if (rule) {
       ruleMatches[rule.name] = (ruleMatches[rule.name] ?? 0) + 1
       requests.push(request(texts))
-      summary = answer(rule.respond)
+      summaryStep = rule.respond
     }
     else if (nextStep < steps.length) {
       requests.push({ ...request(texts), stepIndex: nextStep })
-      summary = answer(steps[nextStep++])
+      summaryStep = steps[nextStep++]
     }
     else {
       requests.push(request(texts, { fallback: true }))
-      summary = answer(fallback)
+      summaryStep = fallback
     }
-    history = options.keepsHistory ? [...history, summary] : [summary]
-    if (options.completion)
-      agent.transcript.push(options.completion)
+    const summary = answer(summaryStep)
+    const complete = () => {
+      history = options.keepsHistory ? [...history, summary] : [summary]
+      if (options.completion)
+        agent.transcript.push(options.completion)
+    }
+    if (summaryStep?.gate) {
+      held = { gate: summaryStep.gate, complete }
+      gateEvents.push(`held:${summaryStep.gate}`)
+    }
+    else {
+      complete()
+    }
   }
   const script = {
     prompt: (text: string) => `${text}\n\nMARKER`,
@@ -114,8 +130,26 @@ function simulatedAgent(options: SimulatedAgentOptions = {}): { script: ModelScr
       return record
     },
     status: async () => ({ requests, ruleMatches }),
+    waitForGate: async (gate: string) => {
+      expect(held?.gate).toBe(gate)
+      gateEvents.push(`observed:${gate}`)
+    },
+    releaseGate: async (gate: string) => {
+      expect(held?.gate).toBe(gate)
+      held?.complete()
+      held = undefined
+      gateEvents.push(`released:${gate}`)
+    },
+    releaseGateIfHeld: async (gate: string) => {
+      if (held?.gate !== gate)
+        return false
+      held.complete()
+      held = undefined
+      gateEvents.push(`cleanup:${gate}`)
+      return true
+    },
   } as unknown as ModelScript
-  return { script, requests }
+  return { script, requests, gateEvents }
 }
 
 function context(script: ModelScript) {
@@ -152,6 +186,37 @@ describe('compactionSummaryText', () => {
 
 describe('exerciseNativeCompaction', () => {
   const queued: NativeCompactionOptions = { summary: { route: 'queued' } }
+
+  it.each(['queued', 'rule', 'fallback'] as const)('holds the %s summary while onHeld runs', async (route) => {
+    const { script, gateEvents } = simulatedAgent()
+    const summary: NativeCompactionOptions['summary'] = route === 'queued'
+      ? { route }
+      : route === 'rule'
+        ? { route, when: { user: 'Summarize the conversation.' }, respond: { text: MANUAL_COMPACTION_SUMMARY } }
+        : { route, requestMarker: 'Summarize the conversation.' }
+    const options = {
+      summary,
+      summaryGate: 'held-summary',
+      onHeld: async () => {
+        expect(gateEvents).toEqual(['held:held-summary', 'observed:held-summary'])
+        gateEvents.push('callback')
+      },
+    }
+    await exerciseNativeCompaction(context(script), options)
+    expect(gateEvents).toEqual(['held:held-summary', 'observed:held-summary', 'callback', 'released:held-summary'])
+  })
+
+  it('releases a held summary when onHeld fails', async () => {
+    const { script, gateEvents } = simulatedAgent()
+    const cause = new Error('the compaction indicator did not show')
+    const options = {
+      ...queued,
+      summaryGate: 'held-summary',
+      onHeld: async () => { throw cause },
+    }
+    await expect(exerciseNativeCompaction(context(script), options)).rejects.toBe(cause)
+    expect(gateEvents).toEqual(['held:held-summary', 'observed:held-summary', 'cleanup:held-summary'])
+  })
 
   it('reads every request from the queue index after an earlier turn, and returns the queued summarizer request', async () => {
     const { script } = simulatedAgent({ earlierSteps: 2 })
@@ -206,5 +271,23 @@ describe('exerciseNativeCompaction', () => {
     await exerciseNativeCompaction({ ...context(script), textStep: text => ({ text: `NATIVE ${text}` }) }, queued)
     expect(queue.mock.calls[0]?.[0]?.text).toMatch(/^NATIVE OLDER_CONTEXT/)
     expect(queue.mock.calls[3]?.[0]?.text).toBe(MANUAL_COMPACTION_SUMMARY)
+  })
+})
+
+describe('exerciseFailedNativeCompaction', () => {
+  it('scripts a refused summary after one seed turn', async () => {
+    const { script, requests } = simulatedAgent()
+    await exerciseFailedNativeCompaction(context(script), { summary: { route: 'rule', when: { user: 'Summarize the conversation.' } } })
+    expect(requests).toHaveLength(2)
+    expect(requests[0]?.stepIndex).toBe(0)
+    expect(JSON.stringify(requests[1]?.body)).toContain('Summarize the conversation.')
+    expect(agent.errors).toEqual([{ status: 400, message: 'probe compaction refused' }])
+  })
+
+  it('refuses a route that cannot select the summarizer with a rule', async () => {
+    const { script } = simulatedAgent()
+    await expect(exerciseFailedNativeCompaction(context(script), { summary: { route: 'queued' } }))
+      .rejects
+      .toThrow('needs a summarizer rule')
   })
 })

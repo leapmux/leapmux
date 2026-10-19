@@ -42,7 +42,7 @@ func (codewhaleProvider) Classify(raw json.RawMessage) agent.NotificationClassif
 	if json.Unmarshal(env.Payload, &payload) != nil || payload.Item.Kind != contracts.CodewhaleItemKindStatus {
 		return agent.NotificationClassification{}
 	}
-	return agent.NotificationClassification{Kind: agent.NotificationKindStatus, Key: codewhaleProviderName + ":status"}
+	return agent.StatusNotification()
 }
 
 // IsInterrupt recognizes the interrupt frame that SendRawInput runs. The

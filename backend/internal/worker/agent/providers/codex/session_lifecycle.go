@@ -85,6 +85,24 @@ func (a *Agent) replaceMainThread(thread codexThreadResult) (string, error) {
 		a.outputMu.Unlock()
 		return "", fmt.Errorf("the new Codex thread reused the current thread ID")
 	}
+	a.steerLedger.DropAll()
+	a.steerLedger.Settle(a.sink)
+	a.Mu.Lock()
+	a.mainTurn.steers = 0
+	clear(a.pendingSteerCalls)
+	a.Mu.Unlock()
+	a.finishDeferredCodexSteerOutput()
+	a.retryResolution.Reset()
+	a.Mu.Lock()
+	compactingThreads := make([]string, 0, len(a.openCompactions))
+	for threadID := range a.openCompactions {
+		compactingThreads = append(compactingThreads, threadID)
+	}
+	a.Mu.Unlock()
+	slices.Sort(compactingThreads)
+	for _, threadID := range compactingThreads {
+		a.persistOpenCodexCompactionEnd(threadID, agent.MessageCompletionInterrupted)
+	}
 	a.flushAllCodexGeneration(agent.MessageCompletionInterrupted)
 	a.persistIncompleteCodexTools("", true, agent.MessageCompletionInterrupted)
 	a.finishAllCodexRawExecutions(agent.MessageCompletionInterrupted)
@@ -114,7 +132,8 @@ func (a *Agent) replaceMainThread(thread codexThreadResult) (string, error) {
 	if oldThreadID != "" {
 		a.retiredCodexThreads[oldThreadID] = struct{}{}
 	}
-	for childThreadID := range a.collabChildren {
+	for childThreadID, state := range a.collabChildren {
+		state.retryResolution.Reset()
 		a.retiredCodexThreads[childThreadID] = struct{}{}
 	}
 	a.applyThreadResult(thread)
@@ -242,7 +261,7 @@ func (a *Agent) BeginTurnRetry(turnID, model string) (agent.TurnRetry, error) {
 	a.Mu.Lock()
 	offer := a.retryOffer
 	ended := a.mainTurn.ended
-	if !a.turnRetrySupported || a.StoppedLocked() || a.retry != nil || a.pendingStart != nil || offer == nil || offer.turnID != turnID || offer.model != model ||
+	if !a.turnRetrySupported || a.StoppedLocked() || a.retry != nil || a.pendingStart != nil || a.pendingSteerTurnEnd != nil || offer == nil || offer.turnID != turnID || offer.model != model ||
 		a.mainTurn.id != turnID || !a.turnInputRetainedLocked(turnID) || ended == nil {
 		a.Mu.Unlock()
 		a.retryOfferMu.Unlock()

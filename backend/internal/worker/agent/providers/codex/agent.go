@@ -31,6 +31,11 @@ const (
 	codexCompactionAckTimerTag = "codex-compaction-ack"
 )
 
+type codexOpenCompaction struct {
+	itemID string
+	turnID string
+}
+
 // Agent manages a single Codex app-server process.
 type Agent struct {
 	providerkit.JSONRPCProcess // shared process lifecycle + JSON-RPC plumbing
@@ -57,12 +62,20 @@ type Agent struct {
 	threadID           string // from thread/start response
 	turnRetrySupported bool   // Confirmed durable paginated start with raw events.
 	mainTurn           codexMainTurn
+	steerLedger        providerkit.SteerLedger
+	// Mu protects the requests and the held native turn end.
+	pendingSteerCalls   map[providerkit.SteerTicket]struct{}
+	pendingSteerTurnEnd json.RawMessage
+	// outputMu protects notifications that follow the held turn end and their replay.
+	deferredSteerOutput  []*providerkit.ParsedLine
+	replayingSteerOutput bool
 	// pendingStart keeps delivery ownership after a caller stops waiting.
 	pendingStart     *codexPendingTurnStart
 	settingRevisions map[string]uint64
 	// A contextCompaction item can confirm a compact request before its JSON-RPC
 	// response arrives. Non-nil only while CompactContext waits for acceptance.
 	compactionStartAck chan struct{}
+	openCompactions    map[string]codexOpenCompaction
 
 	// permissionMode is the LeapMux permission mode, such as "on-request" or
 	// "auto-review". codexApprovalWire maps it to the native approval policy and
@@ -107,6 +120,7 @@ type Agent struct {
 	reasoningSummarySeen  map[string]bool
 	reasoningSummaryBreak map[string]bool
 	generationBuffer      providerkit.GenerationBuffer
+	retryResolution       providerkit.RetryResolution
 	incompleteTools       map[string]*codexIncompleteTool
 	incompleteToolOrder   uint64
 	availableModels       []*agent.ModelInfo
@@ -132,9 +146,9 @@ type Agent struct {
 	// successful call stays cached until the turn ends, so a late retry cannot
 	// send another request for an already interrupted turn. Guarded by Mu.
 	interruptCalls map[codexInterruptKey]*codexInterruptCall
-	// storedNoticeKeys records the notices that reached storage in this process.
+	// acceptedNoticeKeys records the notices that reached storage in this process.
 	// A failed write leaves its key absent so the next copy can retry. Guarded by Mu.
-	storedNoticeKeys map[string]struct{}
+	acceptedNoticeKeys map[string]struct{}
 	// retryOffer is the live turn-retry offer. Guarded by Mu.
 	retryOffer *codexTurnRetryOffer
 	// retryOfferMu serializes each change of retryOffer with its broadcast, so
@@ -329,12 +343,14 @@ func newCodexThreadResult(response codexThreadResponse) (codexThreadResult, erro
 		{response.Effort, agent.OptionIDEffort, "reasoningEffort"},
 		{response.ServiceTier, contracts.CodexOptionServiceTier, "serviceTier"},
 	} {
-		if len(target.raw) == 0 {
+		switch providerkit.RawKindOf(target.raw) {
+		case providerkit.RawAbsent:
 			continue
-		}
-		if string(target.raw) == "null" {
+		case providerkit.RawNull:
 			result.settings[target.id] = nil
 			continue
+		case providerkit.RawValue:
+			// Decode the explicit setting below.
 		}
 		var value string
 		if err := json.Unmarshal(target.raw, &value); err != nil {
@@ -360,11 +376,13 @@ func newCodexThreadResult(response codexThreadResponse) (codexThreadResult, erro
 // response says nothing usable: no policy, or a granular policy object, which has no
 // LeapMux mode, so the prior value stays. A null policy reads as a nil mode.
 func codexThreadPermissionMode(policyRaw, reviewerRaw json.RawMessage) (mode *string, present bool) {
-	if len(policyRaw) == 0 {
+	switch providerkit.RawKindOf(policyRaw) {
+	case providerkit.RawAbsent:
 		return nil, false
-	}
-	if string(policyRaw) == "null" {
+	case providerkit.RawNull:
 		return nil, true
+	case providerkit.RawValue:
+		// Decode the explicit policy below.
 	}
 	var policy string
 	if json.Unmarshal(policyRaw, &policy) != nil {
@@ -381,11 +399,13 @@ func codexThreadPermissionMode(policyRaw, reviewerRaw json.RawMessage) (mode *st
 // thread response states. A null profile reads as a nil value, which keeps the
 // requested profile: Codex reports null for a thread on the legacy sandbox settings.
 func codexThreadPermissionProfile(raw json.RawMessage) (profile *string, present bool, err error) {
-	if len(raw) == 0 {
+	switch providerkit.RawKindOf(raw) {
+	case providerkit.RawAbsent:
 		return nil, false, nil
-	}
-	if string(raw) == "null" {
+	case providerkit.RawNull:
 		return nil, true, nil
+	case providerkit.RawValue:
+		// Decode the explicit profile below.
 	}
 	var active struct {
 		ID string `json:"id"`
@@ -477,6 +497,7 @@ func (a *Agent) interruptMainTurn(threadID, turnID string) (accepted bool, err e
 func (a *Agent) Stop() {
 	a.Process.Stop()
 	a.outputMu.Lock()
+	a.finishCodexSteersAfterExit()
 	a.flushAllCodexGeneration(agent.MessageCompletionInterrupted)
 	a.persistIncompleteCodexTools("", true, agent.MessageCompletionInterrupted)
 	a.finishAllCodexRawExecutions(agent.MessageCompletionInterrupted)
@@ -491,6 +512,7 @@ func (a *Agent) Wait() error {
 	err := a.Process.Wait()
 	completion := a.ProcessExitCompletion()
 	a.outputMu.Lock()
+	a.finishCodexSteersAfterExit()
 	a.flushAllCodexGeneration(completion)
 	a.persistIncompleteCodexTools("", true, completion)
 	a.finishAllCodexRawExecutions(completion)
@@ -509,7 +531,7 @@ func (a *Agent) Wait() error {
 func (a *Agent) PublishTurnActive() agent.TurnState {
 	a.Mu.Lock()
 	running := a.mainTurn.id != ""
-	held := a.retry != nil || a.pendingStart != nil
+	held := a.retry != nil || a.pendingStart != nil || a.pendingSteerTurnEnd != nil
 	seq := a.NextTurnSeq()
 	a.Mu.Unlock()
 	// Each child route tracks its own turn. The background-task registry supplies
@@ -629,12 +651,10 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 		a.Mu.Unlock()
 		return fmt.Errorf("agent is stopped")
 	}
-	if a.retry != nil || a.pendingStart != nil {
+	if a.retry != nil || a.pendingStart != nil || a.pendingSteerTurnEnd != nil {
 		a.Mu.Unlock()
-		// A retry owns the gap between the stopped turn and the new one. The
-		// turn flag still reports Active, so the refusal must not claim the turn
-		// ended.
-		return fmt.Errorf("%w: retrying", agent.ErrAgentBusy)
+		// Pending input or turn completion keeps the queue active. This refusal must not report an idle turn.
+		return fmt.Errorf("%w: input delivery or turn completion is pending", agent.ErrAgentBusy)
 	}
 	if threadID == "" || turnID == "" {
 		a.Mu.Unlock()
@@ -644,9 +664,12 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 	a.mainTurn.steers++
 	a.Mu.Unlock()
 	input := buildCodexInputBlocks(content, agent.ClassifyAttachments(attachments))
-	err := a.sendTurnSteer(threadID, turnID, input)
+	ticket, err := a.sendTurnSteer(threadID, turnID, input)
+	a.outputMu.Lock()
+	defer a.outputMu.Unlock()
 	a.retryOfferMu.Lock()
 	a.Mu.Lock()
+	delete(a.pendingSteerCalls, ticket)
 	stillActive := a.threadID == threadID && a.mainTurn.id == turnID
 	withdraw := false
 	if stillActive {
@@ -671,6 +694,10 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 		a.broadcastTurnRetryOffer(nil)
 	}
 	a.retryOfferMu.Unlock()
+	if err != nil || !stillActive {
+		a.forgetCodexSteer(ticket)
+	}
+	a.finishDeferredCodexSteerOutput()
 	if err != nil {
 		return err
 	}
@@ -679,6 +706,11 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 	}
 	return nil
 }
+
+var _ agent.SteerEchoReporter = (*Agent)(nil)
+
+// SteerRowAtEcho requests queue rows at the native echo.
+func (a *Agent) SteerRowAtEcho() bool { return true }
 
 // turnInputRetainedLocked reports whether the agent retains input for turnID,
 // which a turn retry needs to send the turn again. Call it with a.Mu held.

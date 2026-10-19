@@ -19,7 +19,7 @@ import { classifyAgentMessage } from '~/components/chat/messageClassifier'
 import { compactionContextTokens } from '~/components/chat/notificationEntries'
 import { providerFor, resolvedSpanRole, resolveMessageForRendering } from '~/components/chat/providers/registry'
 import { mergeStableOptionGroupRefs, OPTION_ID_MODEL, optionGroup } from '~/components/chat/settingsGroups'
-import { GOAL_PROGRESS_FIELD, RATE_LIMIT_FIELD, RATE_LIMIT_UPDATE_FIELD, RATE_LIMIT_UPDATE_MODE, RUNNING_TOOL_FIELD, RUNNING_TOOL_RETRY_FIELD, SESSION_INFO_KEY, TURN_RETRY_OFFER_FIELD } from '~/generated/contracts/session-info'
+import { COMPACTION_FIELD, GOAL_PROGRESS_FIELD, RATE_LIMIT_FIELD, RATE_LIMIT_UPDATE_FIELD, RATE_LIMIT_UPDATE_MODE, RUNNING_TOOL_FIELD, RUNNING_TOOL_RETRY_FIELD, SESSION_INFO_KEY, TURN_RETRY_OFFER_FIELD } from '~/generated/contracts/session-info'
 import { NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
 import { AgentStatus, ControlResponseState, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
@@ -294,6 +294,16 @@ export function handleAgentSessionInfo(
       }
     }
   }
+  if (info && SESSION_INFO_KEY.Compaction in info) {
+    const value = info[SESSION_INFO_KEY.Compaction]
+    if (value === null) {
+      chatStore.clearLiveCompaction(agentId)
+    }
+    else if (isObject(value)) {
+      const trigger = pickString(value, COMPACTION_FIELD.Trigger)
+      chatStore.setLiveCompaction(agentId, trigger ? { trigger } : {})
+    }
+  }
   // Keep goal_progress beside the goal in the chat store.
   // Its ephemeral updates can occur after each tool call without a goal transition.
   // AgentGoalChanged carries the goal and supported actions separately.
@@ -348,6 +358,7 @@ export function applyNotificationMetadata(agentId: string, msg: AgentChatMessage
     // Replay restores scalar history through receipts and retains canonical to-dos.
     if (catchUpPhase === 'live') {
       chatStore.todos.clear(agentId)
+      chatStore.clearLiveCompaction(agentId)
       clearPerTurnLiveState(agentId, stores)
     }
   }
@@ -431,7 +442,8 @@ export function handleResultDivider(
     return
   const { agentSessionStore, view } = stores
   const delivery = messageMetadataDelivery(msg, catchUpPhase, replayId)
-  // A current live divider clears every indicator, regardless of its source.
+  // A current live divider clears its turn's indicators, regardless of their source.
+  // A live compaction can outlive this turn and keeps its indicator.
   // This includes a tool whose result never arrived after interruption or process failure.
   // Historical dividers retain the replacement turn's indicators.
   if (catchUpPhase === 'live')
@@ -490,6 +502,7 @@ export function dropFinishedToolProgress(
  * Drop live per-turn state after a lifecycle event or a lost connection.
  * The Worker normally sends explicit counter clears. This cleanup also handles
  * a connection that ends before those clears arrive.
+ * A compaction can outlive its turn. Only process or connection cleanup clears that state.
  */
 export function clearPerTurnLiveState(
   agentId: string,
@@ -659,6 +672,7 @@ export function handleAgentInactive(
   stores: AgentMessageStores & { controlStore: ReturnType<typeof createControlStore> },
 ): void {
   stores.controlStore.clearProviderRequests(agentId)
+  stores.chatStore.clearLiveCompaction(agentId)
   clearPerTurnLiveState(agentId, stores)
   // A process exit changes the worker's activity state. handleAgentSettled owns the resulting alert.
   // An INACTIVE status does not establish a turn boundary.

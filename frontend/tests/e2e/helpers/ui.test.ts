@@ -78,6 +78,7 @@ import {
   toggleModeWithShortcut,
   toolCallRow,
   toolRows,
+  toolRunningBadge,
   treeRow,
   waitForAgentIdle,
   waitForAgentStarted,
@@ -683,6 +684,7 @@ describe('toolCallRow', () => {
 describe('chat and tab locators', () => {
   it.each([
     { name: 'toolRows', locate: toolRows, selector: '[data-tool-message]:visible' },
+    { name: 'toolRunningBadge', locate: toolRunningBadge, selector: '[data-testid="tool-running-badge"]:visible' },
     { name: 'chatScrollContainer', locate: chatScrollContainer, selector: '[data-chat-scroll-container="true"]:visible' },
     { name: 'composerEditor', locate: composerEditor, selector: '[data-testid="composer-editor"]:visible .ProseMirror' },
     { name: 'interruptButton', locate: interruptButton, selector: '[data-testid="interrupt-button"]:visible' },

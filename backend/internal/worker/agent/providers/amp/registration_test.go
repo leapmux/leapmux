@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/coder/quartz"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -33,7 +35,7 @@ func TestAgentDirLeavesRoomForTheBridgeSocket(t *testing.T) {
 	t.Cleanup(func() { _ = dir.Close() })
 	assert.True(t, strings.HasPrefix(dir.Path(), short), "a base too long for the socket gives way to the next one")
 	assert.LessOrEqual(t, len(filepath.Join(dir.Path(), bridgeSocketName)), agentdir.MaxSocketPathBytes())
-	bridge, err := newPermissionBridge(dir.Path())
+	bridge, err := newPermissionBridge(dir.Path(), quartz.NewMock(t))
 	require.NoError(t, err, "the bridge binds its socket in the directory")
 	bridge.close(errAgentStopped)
 

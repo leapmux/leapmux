@@ -47,3 +47,15 @@ export const PI_TOOL_RESULT_FIELD = {
   Content: 'content',
   FullOutputPath: 'fullOutputPath',
 } as const
+
+/** Pi 1.3.0 compact() adds this prefix before the native failure detail. */
+export const PI_MANUAL_COMPACTION_ERROR_PREFIX = 'Compaction failed: '
+
+/** Only the browser reads the level of an extension notice. */
+export const PI_NOTIFY_TYPE = { Info: 'info', Warning: 'warning', Error: 'error' } as const
+
+/** These labels describe the complete summary subject. */
+export const PI_SUMMARY_SOURCE_LABEL: ReadonlyMap<string, string> = new Map([
+  ['compaction', 'compaction summary'],
+  ['branchSummary', 'branch summary'],
+])

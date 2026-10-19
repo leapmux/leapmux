@@ -43,6 +43,7 @@ const (
 // string `id`, and the response echoes it on a flat {type:"response"} frame. The
 // agent shares only the pending-map mechanics, through Correlator[string].
 type Agent struct {
+	steers providerkit.SteerLedger
 	providerkit.Process
 	providerkit.Correlator[string]
 
@@ -68,9 +69,12 @@ type Agent struct {
 
 	// The fields below are guarded by Process.Mu.
 
-	// model is the running model as `<provider>/<id>`, the form omp's `--model`
-	// flag takes and the form the model option group lists.
+	// model is the selected primary model in the form `<provider>/<id>`.
 	model string
+	// fallbackModel identifies the temporary model that must not replace the primary.
+	fallbackModel string
+	// effectiveModel is the model that the latest native state reports.
+	effectiveModel string
 	// thinkingLevel is the reader's thinking level, stored as the agent's effort.
 	// agent.EffortAuto means "omp's configured default": the worker sent none.
 	thinkingLevel string
@@ -124,10 +128,12 @@ type Agent struct {
 // that stops satisfying InputSteerer, so the assertion makes that regression a
 // compile error. The same holds for compaction.
 var (
-	_ agent.Agent            = (*Agent)(nil)
-	_ agent.InputSteerer     = (*Agent)(nil)
-	_ agent.ContextCompactor = (*Agent)(nil)
-	_ agent.GoalCapable      = (*Agent)(nil)
+	_ agent.Agent             = (*Agent)(nil)
+	_ agent.InputSteerer      = (*Agent)(nil)
+	_ agent.SteerEchoReporter = (*Agent)(nil)
+	_ agent.SteerSurvivor     = (*Agent)(nil)
+	_ agent.ContextCompactor  = (*Agent)(nil)
+	_ agent.GoalCapable       = (*Agent)(nil)
 )
 
 // rootConversation returns the conversation of the session itself, and creates it
@@ -166,6 +172,12 @@ func (a *Agent) SupportsSteering() bool { return true }
 func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
 	return a.sendInput(nil, content, attachments, true)
 }
+
+// SteerRowAtEcho places a steer at the native user echo or a confirmed local command result.
+func (*Agent) SteerRowAtEcho() bool { return true }
+
+// SteerSurvivesTurnEnd keeps a late accepted steer for the next native run.
+func (*Agent) SteerSurvivesTurnEnd() bool { return true }
 
 // sendInput writes one prompt and returns once omp acknowledges it.
 //
@@ -221,9 +233,17 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 	}
 	// release undoes the record below for a prompt that no run takes.
 	var release func()
+	var ticket providerkit.SteerTicket
 	if steer {
+		ticket = a.steers.Add(payload["message"].(string))
+		// The request ID is known before the write, so an early native result can resolve this steer.
+		a.steers.SetID(ticket, pending.id)
 		a.beginSteer(pending.id)
-		release = func() { a.dropSteer(pending.id) }
+		release = func() {
+			a.dropSteer(pending.id)
+			a.steers.Forget(ticket)
+			a.steers.Settle(a.sink)
+		}
 	} else {
 		a.armTurn(pending.id)
 		release = func() { a.disarmTurn(pending.id) }
@@ -246,7 +266,13 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 			// A local slash command. omp answered it itself, and no run takes it.
 			// omp runs a built-in command before it reads the streaming behavior,
 			// so a steer can be one too.
-			release()
+			if steer {
+				a.dropSteer(pending.id)
+				a.steers.Echo(ticket)
+				a.steers.Settle(a.sink)
+			} else {
+				release()
+			}
 		case steer:
 			a.acceptSteer(pending.id)
 		}
@@ -330,7 +356,7 @@ func (a *Agent) beginPrompt(payload map[string]any) (*pendingPrompt, error) {
 // omp states `agentInvoked:false` for a slash command it answered itself. A plain
 // prompt carries no data at all, and it starts a run.
 func promptInvokesAgent(data json.RawMessage) bool {
-	if len(data) == 0 || string(data) == "null" {
+	if !providerkit.RawPresent(data) {
 		return true
 	}
 	var result struct {
@@ -360,7 +386,7 @@ func promptPayload(content string, attachments []*leapmuxv1.Attachment) map[stri
 			message.WriteString(providerkit.BuildInlineTextAttachmentBlock(attachment))
 		case agent.AttachmentKindImage:
 			images = append(images, map[string]any{
-				"type":     "image",
+				"type":     contentBlockImage,
 				"data":     base64.StdEncoding.EncodeToString(attachment.Data),
 				"mimeType": attachment.MIMEType,
 			})
@@ -453,6 +479,7 @@ func (a *Agent) finishOutput(completion agent.MessageCompletion) {
 	root := a.rootConversation()
 	a.flushGeneration(root, completion)
 	a.persistIncompleteTools(root, completion)
+	a.finishOpenCompactions()
 	a.closeSubagents(subagentStatusForCompletion(completion))
 	a.Mu.Lock()
 	a.turn.clear()
@@ -461,40 +488,34 @@ func (a *Agent) finishOutput(completion agent.MessageCompletion) {
 	a.PublishTurnActive()
 }
 
-// CompactContext runs omp's `compact` command.
-//
-// omp compacts outside any run: the command sends no agent_start and no
-// agent_end, and its RESPONSE is the result. The input queue records the dispatch
-// as a turn, so the turn is armed here and released when the response arrives,
-// and a "compacting" notice shows meanwhile. omp's response frame itself then
-// reaches the transcript, where the browser reads the compaction it states, or
-// the reason omp refused it ("Nothing to compact").
-//
-// It returns once the command is written: a compaction can take as long as a
-// model call.
+// CompactContext runs the native compact command and publishes live compaction state.
+// The command sends no agent_start or agent_end. Its response supplies the stored end.
+// The input queue stays active until that response or a transport failure resolves the command.
+// The method returns after the write because compaction can take as long as a model call.
 func (a *Agent) CompactContext() error {
 	a.sessionMu.Lock()
 	defer a.sessionMu.Unlock()
+	root := a.rootConversation()
 	a.Mu.Lock()
 	if a.StoppedLocked() {
 		a.Mu.Unlock()
 		return fmt.Errorf("agent is stopped")
 	}
-	if a.turn.active {
+	if a.turn.active || root.compactionOpen {
 		a.Mu.Unlock()
 		return agent.ErrAgentBusy
 	}
+	root.compactionOpen = true
 	a.Mu.Unlock()
 
+	providerkit.PublishCompaction(root.sink, "manual")
 	a.armTurn(compactionTurnID)
 	wait, err := a.beginCommandFrame(contracts.OhMyPiCommandCompact, nil)
 	if err != nil {
+		a.endCompaction(root)
 		a.disarmTurn(compactionTurnID)
 		return err
 	}
-	a.sink.PersistLeapMuxNotification(map[string]interface{}{
-		contracts.NotificationFieldType: contracts.NotificationTypeCompacting,
-	})
 	go func() {
 		frame, err := wait(0)
 		a.recordCompactionResult(frame, err)
@@ -510,20 +531,24 @@ const compactionTurnID = "compaction"
 // recordCompactionResult persists the outcome of a `compact` command: omp's
 // response frame, or the transport failure that left no response.
 func (a *Agent) recordCompactionResult(frame json.RawMessage, err error) {
-	if a.IsStopped() || a.IsDiscardingOutput() {
+	root := a.rootConversation()
+	a.Mu.Lock()
+	if a.StoppedLocked() || a.IsDiscardingOutput() || !root.compactionOpen {
+		a.Mu.Unlock()
 		return
 	}
+	root.compactionOpen = false
+	a.Mu.Unlock()
 	if err != nil {
 		slog.Warn("omp compact failed", "agent_id", a.AgentID(), "error", err)
-		a.sink.PersistLeapMuxNotification(map[string]interface{}{
-			contracts.NotificationFieldType:  contracts.NotificationTypeAgentError,
-			contracts.NotificationFieldError: err.Error(),
-		})
+		providerkit.EndCompaction(root.sink)
+		providerkit.PersistCompactionEnded(root.sink, providerkit.CompactionEndFailed, err.Error())
 		return
 	}
-	if _, persistErr := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: frame}); persistErr != nil {
+	if _, persistErr := root.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: frame}); persistErr != nil {
 		slog.Error("omp persist compact response", "agent_id", a.AgentID(), "error", persistErr)
 	}
+	providerkit.EndCompaction(root.sink)
 }
 
 // PublishTurnActive republishes the turn state from turn.active, the single

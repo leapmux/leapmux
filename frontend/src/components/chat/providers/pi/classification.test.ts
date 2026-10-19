@@ -1,29 +1,51 @@
 import { describe, expect, it } from 'vitest'
+import { PI_NOTIFICATION_EVENT } from '~/generated/contracts/pi-protocol'
 import { NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
 import { input } from '../testUtils'
 import { classifyPiMessage } from './classification'
 
 describe('classifyPiMessage', () => {
-  // Every entry kind, not only the custom ones. The worker keeps `custom` and
-  // `custom_message` and drops the other seven, so those seven reach a row only as
-  // one an earlier build wrote -- and each of them used to draw raw JSON.
+  it.each([...PI_NOTIFICATION_EVENT])('threads the shared notification event %s', (type) => {
+    const frame = { type, attempt: 1, result: {} }
+    expect(classifyPiMessage(input(frame, { old_seqs: [], messages: [frame] })).kind).toBe('notification')
+  })
+
+  it('keeps a compaction entry in a notification thread', () => {
+    const frame = { type: 'entry_appended', entry: { type: 'compaction', tokensBefore: 0 } }
+    expect(classifyPiMessage(input(frame, { old_seqs: [], messages: [frame] }))).toEqual({ kind: 'notification', entries: [{ kind: 'compaction', phase: 'end', detail: { pre: 0 } }] })
+  })
+
+  it('draws a displayed custom_message entry', () => {
+    expect(classifyPiMessage(input({ type: 'entry_appended', entry: { type: 'custom_message', display: true, content: 'A visible note.' } })))
+      .toEqual({ kind: 'assistant_text' })
+  })
+
+  it('draws a boundary compaction entry', () => {
+    expect(classifyPiMessage(input({ type: 'entry_appended', entry: { type: 'compaction', tokensBefore: 12000 } })))
+      .toEqual({ kind: 'notification', entries: [{ kind: 'compaction', phase: 'end', detail: { pre: 12000 } }] })
+  })
+
+  it('draws an unknown entry type as unknown', () => {
+    expect(classifyPiMessage(input({ type: 'entry_appended', entry: { type: 'future-entry' } }))).toEqual({ kind: 'unknown' })
+  })
+
+  it('draws an unknown message role as unknown', () => {
+    expect(classifyPiMessage(input({ type: 'message_end', message: { role: 'future-role', content: 'Future output' } }))).toEqual({ kind: 'unknown' })
+  })
+  // These entries no longer reach the transcript from the current Worker.
   it.each([
     'custom',
-    'custom_message',
     'message',
     'thinking_level_change',
     'model_change',
-    'compaction',
     'branch_summary',
     'label',
     'session_info',
-  ])('hides the %s session entry', (entryType) => {
-    expect(classifyPiMessage(input({ type: 'entry_appended', entry: { type: entryType, customType: 'plan-mode-state' } }))).toEqual({ kind: 'hidden' })
+  ])('leaves an old %s session entry unknown', (entryType) => {
+    expect(classifyPiMessage(input({ type: 'entry_appended', entry: { type: entryType, customType: 'plan-mode-state' } }))).toEqual({ kind: 'unknown' })
   })
 
-  // The worker consumes each of these into a surface outside the transcript -- the
-  // settings pipeline, the session-info channel, an RPC reply -- or drops it. A row
-  // an earlier build wrote must not draw raw JSON.
+  // The Worker consumes these events. No browser-only hide rule remains.
   it.each([
     'message_update',
     'queue_update',
@@ -32,8 +54,8 @@ describe('classifyPiMessage', () => {
     'thinking_level_changed',
     'extension_ui_response',
     'response',
-  ])('hides the consumed %s event', (type) => {
-    expect(classifyPiMessage(input({ type }))).toEqual({ kind: 'hidden' })
+  ])('leaves an old consumed %s event unknown', (type) => {
+    expect(classifyPiMessage(input({ type }))).toEqual({ kind: 'unknown' })
   })
 
   // The worker persists all three as notifications. Without them in the notification
@@ -59,11 +81,11 @@ describe('classifyPiMessage', () => {
       expect(result.entries).toHaveLength(2)
   })
 
-  it('hides lifecycle markers without chat UI', () => {
+  it('leaves stored lifecycle markers unknown', () => {
     // agent_settled says only that Pi will not continue on its own after the
     // agent_end that already drew the divider, so it has nothing to render.
     for (const t of ['agent_start', 'agent_settled', 'turn_start', 'turn_end', 'message_start', 'tool_execution_update']) {
-      expect(classifyPiMessage(input({ type: t }))).toEqual({ kind: 'hidden' })
+      expect(classifyPiMessage(input({ type: t }))).toEqual({ kind: 'unknown' })
     }
   })
 
@@ -111,7 +133,7 @@ describe('classifyPiMessage', () => {
     expect(classifyPiMessage(input(parent))).toEqual({ kind: 'hidden' })
   })
 
-  it('hides message_end echoes for user prompts (LeapMux already persists the user_content row)', () => {
+  it('leaves old message_end echoes for user prompts (LeapMux already persists the user_content row) unknown', () => {
     const parent = {
       type: 'message_end',
       message: {
@@ -119,10 +141,10 @@ describe('classifyPiMessage', () => {
         content: [{ type: 'text', text: 'Hi. Who are you?' }],
       },
     }
-    expect(classifyPiMessage(input(parent))).toEqual({ kind: 'hidden' })
+    expect(classifyPiMessage(input(parent))).toEqual({ kind: 'unknown' })
   })
 
-  it('hides message_end echoes for tool results (rendered via tool_execution_end span)', () => {
+  it('leaves old message_end echoes for tool results (rendered via tool_execution_end span) unknown', () => {
     const parent = {
       type: 'message_end',
       message: {
@@ -132,15 +154,15 @@ describe('classifyPiMessage', () => {
         content: [{ type: 'text', text: 'output' }],
       },
     }
-    expect(classifyPiMessage(input(parent))).toEqual({ kind: 'hidden' })
+    expect(classifyPiMessage(input(parent))).toEqual({ kind: 'unknown' })
   })
 
-  it('hides message_end echoes for bash executions (host-driven, never enters chat)', () => {
+  it('leaves old message_end echoes for bash executions (host-driven, never enters chat) unknown', () => {
     const parent = {
       type: 'message_end',
       message: { role: 'bashExecution', command: 'ls', output: 'a\nb' },
     }
-    expect(classifyPiMessage(input(parent))).toEqual({ kind: 'hidden' })
+    expect(classifyPiMessage(input(parent))).toEqual({ kind: 'unknown' })
   })
 
   it('classifies message_end with both thinking and text as assistant_text', () => {
@@ -175,8 +197,8 @@ describe('classifyPiMessage', () => {
     expect(result.kind).toBe('tool_result')
   })
 
-  it('classifies compaction events as notification', () => {
-    expect(classifyPiMessage(input({ type: 'compaction_start', reason: 'threshold' })).kind).toBe('notification')
+  it('classifies only the compaction end as a notification', () => {
+    expect(classifyPiMessage(input({ type: 'compaction_start', reason: 'threshold' })).kind).toBe('unknown')
     expect(classifyPiMessage(input({ type: 'compaction_end', reason: 'threshold' })).kind).toBe('notification')
   })
 

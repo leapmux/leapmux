@@ -6,18 +6,8 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/jsonfield"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
-
-// piEventType reads one Pi event's discriminator, or the empty string.
-func piEventType(raw []byte) string {
-	var envelope struct {
-		Type string `json:"type"`
-	}
-	if json.Unmarshal(raw, &envelope) != nil {
-		return ""
-	}
-	return envelope.Type
-}
 
 // buildPiIncompleteToolSupplement encodes the last partial result when the call reported one.
 func buildPiIncompleteToolSupplement(toolCallID string, tool piToolState) ([]byte, error) {
@@ -65,7 +55,7 @@ func resolvePiIncompleteTool(content agent.MessageContent) []byte {
 
 // Resolve only an incomplete start frame whose native identity matches its supplement.
 func (piProvider) ResolveProviderData(content agent.MessageContent) []byte {
-	if len(content.Supplemental) != 0 && piEventType(content.Original) == contracts.PiEventToolExecutionStart {
+	if len(content.Supplemental) != 0 && providerkit.StringField(content.Original, "type") == contracts.PiEventToolExecutionStart {
 		return resolvePiIncompleteTool(content)
 	}
 	return content.Original

@@ -28,10 +28,22 @@ func TestSendInputCarriesImageBytes(t *testing.T) {
 func TestSteerInputWritesNativeSteeringPlacement(t *testing.T) {
 	t.Parallel()
 	a, _, stdin := newSteerAgent(t)
-	a.armTurn()
+	a.startTurn()
 
 	require.NoError(t, a.SteerInput("guide this turn", nil))
 	params := lastRequest(t, stdin)
 	assert.Equal(t, "end_of_turn", params["queuePlacement"], "Droid processes this placement during a running turn")
 	assert.True(t, a.PublishTurnActive().Active)
+}
+
+func TestTurnStartPublishesSteeringAvailability(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newSteerAgent(t)
+	a.startTurn()
+	a.startTurn()
+	a.endTurn()
+	assert.Equal(t, []leapmuxv1.AgentInputKind{
+		leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+		leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED,
+	}, sink.TurnKinds())
 }

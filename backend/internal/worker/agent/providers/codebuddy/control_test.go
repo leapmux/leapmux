@@ -122,6 +122,7 @@ func TestCodebuddyInterruptKeepsAPermissionWhenItsRefusalFails(t *testing.T) {
 	assert.True(t, open)
 }
 
+// The retirement hook must perform no I/O. A native result can write another control frame and deadlock this writer.
 type permissionRetiringWriter struct {
 	retire func()
 	output *bytes.Buffer
@@ -139,10 +140,8 @@ func (w permissionRetiringWriter) Write(data []byte) (int, error) {
 func TestCodebuddyFailedRefusalDoesNotRestoreARetiredPermission(t *testing.T) {
 	t.Parallel()
 	for name, retire := range map[string]func(*Agent){
-		"native cancellation": func(a *Agent) {
-			a.HandleOutput([]byte(`{"type":"control_cancel_request","request_id":"perm_1"}`))
-		},
-		"turn end": func(a *Agent) { a.setTurnActive(false) },
+		"session shutdown": func(a *Agent) { a.withdrawControls() },
+		"turn end":         func(a *Agent) { a.setTurnActive(false) },
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -164,12 +163,12 @@ func TestCodebuddyRefusalSkipsAPermissionRetiredDuringAnEarlierWrite(t *testing.
 	a.HandleOutput(canUseTool("perm_a"))
 	a.HandleOutput(canUseTool("perm_b"))
 	a.SetStdinForTest(agenttest.NopStdin(permissionRetiringWriter{
-		retire: func() { a.HandleOutput([]byte(`{"type":"control_cancel_request","request_id":"perm_b"}`)) },
+		retire: func() { a.setTurnActive(false) },
 		output: stdin,
 	}))
 	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	assert.Equal(t, []string{"perm_a"}, permissionRefusals(t, stdinFrames(t, stdin)))
-	assert.Equal(t, []string{"perm_b", "perm_a"}, controls.CanceledControls())
+	assert.ElementsMatch(t, []string{"perm_b", "perm_a"}, controls.CanceledControls())
 }
 
 func TestCodebuddyFailedAnswerKeepsTheNativePermissionOpen(t *testing.T) {
@@ -227,9 +226,8 @@ func TestCodebuddyChildPermissionDoesNotDelayTheRootStop(t *testing.T) {
 	assert.Equal(t, frameTypeControlRequest, frames[0]["type"], "a child permission cannot hold the root's global stop")
 }
 
-// CodeBuddy no longer waits on a permission that the reader answered, that the CLI
-// withdrew, or that LeapMux could not publish. Only a permission waits on an answer of
-// this shape: another control request keeps its own answer.
+// CodeBuddy no longer waits on a permission after an answer, a turn end, or a publication failure.
+// Other control requests keep their own answer format.
 func TestCodebuddyInterruptRefusesNoPermissionThatNoLongerWaits(t *testing.T) {
 	t.Parallel()
 	for name, settle := range map[string]func(t *testing.T, a *Agent, controls *agenttest.ControlSink){
@@ -237,9 +235,9 @@ func TestCodebuddyInterruptRefusesNoPermissionThatNoLongerWaits(t *testing.T) {
 			a.HandleOutput(canUseTool("perm_1"))
 			require.NoError(t, a.SendRawInput([]byte(`{"type":"control_response","response":{"subtype":"success","request_id":"perm_1","response":{"allowed":true}}}`), agent.StopContext{}))
 		},
-		"the CLI withdrew it": func(_ *testing.T, a *Agent, _ *agenttest.ControlSink) {
+		"the native turn ended": func(_ *testing.T, a *Agent, _ *agenttest.ControlSink) {
 			a.HandleOutput(canUseTool("perm_1"))
-			a.HandleOutput([]byte(`{"type":"control_cancel_request","request_id":"perm_1"}`))
+			a.HandleOutput([]byte(codebuddyResultFinished))
 		},
 		"it could not be published": func(_ *testing.T, a *Agent, controls *agenttest.ControlSink) {
 			controls.PublicationError = errors.New("the store is gone")

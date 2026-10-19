@@ -1,13 +1,13 @@
 package pi
 
 import (
-	"bytes"
 	"encoding/json"
 	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // piGoalRecord is the state that pi-goal-x supplies in tool results and goal files.
@@ -52,7 +52,7 @@ func (a *Agent) reportPiGoalResult(toolName string, result json.RawMessage) {
 	if json.Unmarshal(result, &envelope) != nil || envelope.Details.Version != 3 || len(envelope.Details.Goal) == 0 {
 		return
 	}
-	if bytes.Equal(bytes.TrimSpace(envelope.Details.Goal), []byte("null")) {
+	if providerkit.RawKindOf(envelope.Details.Goal) == providerkit.RawNull {
 		a.publishPiGoal(nil, false, nil)
 		a.schedulePiGoalRefresh(false)
 		return

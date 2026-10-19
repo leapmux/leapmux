@@ -59,18 +59,20 @@ var providerDirs = map[leapmuxv1.AgentProvider]string{
 //
 // The ACP providers run the turn, busy-refusal, session-input and
 // control-response suites once, over the shared base in package acp, because
-// the base implements those rules for all eight of them. OpenCode also runs the
+// the base implements those rules for all twelve providers. OpenCode also runs the
 // busy refusal over its own agent type.
 var requiredSuites = map[string][]string{
 	"muse": {"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens", "AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions", "AssertPreservesTheResponseWithoutARequest", "AssertWithholdsTheResponseForAMalformedRequest", "AssertTokenResumeRule", "AssertChildCapabilities", "RunSupplementConformance"},
 
 	"commandcode": {
+		"AssertUnknownFramePersists", "RunRetryAttemptCase",
 		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
 		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
 		"AssertPreservesTheResponseWithoutARequest", "AssertWithholdsTheResponseForAMalformedRequest",
 		"AssertTokenResumeRule", "AssertChildCapabilities",
 	},
 	"deepseekharness": {
+		"AssertUnknownFramePersists",
 		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
 		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
 		"AssertPreservesTheResponseWithoutARequest", "AssertWithholdsTheResponseForAMalformedRequest",
@@ -80,6 +82,7 @@ var requiredSuites = map[string][]string{
 		"RequireReadsSessionStore", "AssertTokenResumeRule", "AssertControlIdentitiesStaySeparate", "AssertChildCapabilities",
 	},
 	"amp": {
+		"AssertUnknownFramePersists",
 		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
 		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
 		"AssertPreservesTheResponseWithoutARequest", "AssertWithholdsTheResponseForAMalformedRequest",
@@ -92,6 +95,7 @@ var requiredSuites = map[string][]string{
 		"RunSupplementConformance",
 	},
 	"claude": {
+		"AssertUnknownFramePersists",
 		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
 		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
 		"AssertPreservesTheResponseWithoutARequest", "AssertTokenResumeRule", "AssertChildCapabilities",
@@ -103,6 +107,7 @@ var requiredSuites = map[string][]string{
 		"AssertTokenResumeRule", "AssertChildCapabilities",
 	},
 	"codebuddy": {
+		"AssertUnknownFramePersists",
 		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
 		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
 		"AssertPreservesTheResponseWithoutARequest", "AssertWithholdsTheResponseForAMalformedRequest",
@@ -115,6 +120,7 @@ var requiredSuites = map[string][]string{
 		"AssertTokenResumeRule", "AssertChildCapabilities",
 	},
 	"droid": {
+		"AssertUnknownFramePersists", "RunRetryAttemptCase",
 		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
 		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
 		"AssertPreservesTheResponseWithoutARequest", "AssertWithholdsTheResponseForAMalformedRequest",
@@ -127,12 +133,14 @@ var requiredSuites = map[string][]string{
 		"AssertTokenResumeRule", "AssertChildCapabilities",
 	},
 	"codex": {
+		"AssertUnknownFramePersists", "RunRetryAttemptCase",
 		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
 		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
 		"AssertPreservesTheResponseWithoutARequest", "AssertWithholdsTheResponseForAMalformedRequest",
 		"AssertTokenResumeRule", "AssertControlIdentitiesStaySeparate", "RunSupplementConformance", "AssertChildCapabilities",
 	},
 	"copilot": {
+		"AssertUnknownFramePersists", "RunRetryAttemptCase",
 		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
 		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions", "AssertChildCapabilities",
 	},
@@ -164,11 +172,13 @@ var requiredSuites = map[string][]string{
 		"AssertControlIdentitiesStaySeparate", "AssertChildCapabilities",
 	},
 	"pi": {
+		"AssertUnknownFramePersists",
 		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
 		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
 		"AssertPreservesTheResponseWithoutARequest", "AssertWithholdsTheResponseForAMalformedRequest", "AssertChildCapabilities",
 	},
 	"ohmypi": {
+		"AssertUnknownFramePersists",
 		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
 		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
 		"AssertPreservesTheResponseWithoutARequest", "AssertWithholdsTheResponseForAMalformedRequest", "AssertChildCapabilities",
@@ -176,6 +186,7 @@ var requiredSuites = map[string][]string{
 	"qwen":     {"RequireReadsSessionStore", "AssertTokenResumeRule", "AssertControlIdentitiesStaySeparate", "AssertChildCapabilities"},
 	"reasonix": {"RequireReadsSessionStore", "AssertControlIdentitiesStaySeparate", "AssertChildCapabilities"},
 	"zcode": {
+		"AssertUnknownFramePersists", "RunRetryAttemptCase",
 		"RequireReadsSessionStore", "AssertTurnFrames", "AssertRisingTurnTokens",
 		"AssertBusyRefusalRepublishesTheTurn", "AssertRejectsMissingAndReplacedSessions",
 		"AssertTokenResumeRule", "RequireToolStoreHandlesClosed", "AssertChildCapabilities",

@@ -14,9 +14,8 @@ import (
 // requests over the same pipe. A message is classified by which of `id` and
 // `method` it carries -- see classifyZCodeMessage.
 //
-// Every method name, event type, streaming kind, tool-update kind, mode, and error
-// code the provider depends on is a constant here, so a rename is a compile error
-// and each dispatch switch has one source of truth.
+// Shared values come from contracts/zcode-protocol.json.
+// Methods and error codes that only Go reads stay here.
 
 // ZCode client->server methods.
 const (
@@ -33,6 +32,7 @@ const (
 	MethodSessionRead    = "session/read"
 	MethodSessionSend    = "session/send"
 	MethodSessionStop    = "session/stop"
+	MethodSessionClose   = "session/close"
 	MethodSessionCompact = "session/compact"
 
 	MethodSessionSubscribe = "session/subscribe"

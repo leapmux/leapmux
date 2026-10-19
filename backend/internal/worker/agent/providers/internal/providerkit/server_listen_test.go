@@ -10,11 +10,53 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 var testListenPattern = regexp.MustCompile(`server listening on (\S+)`)
+
+func TestAwaitSignalOutcomes(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name                                string
+		arrived, exited, cancelled, expired bool
+		want                                SignalOutcome
+	}{
+		{name: "arrived", arrived: true, want: SignalArrived},
+		{name: "exit", exited: true, want: SignalExited},
+		{name: "timeout", expired: true, want: SignalTimedOut},
+		{name: "cancel", cancelled: true, want: SignalCancelled},
+		{name: "signal wins exit", arrived: true, exited: true, want: SignalArrived},
+		{name: "signal wins timeout", arrived: true, expired: true, want: SignalArrived},
+		{name: "signal wins cancellation", arrived: true, cancelled: true, want: SignalArrived},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			clock := testutil.NewQuartzMock(t)
+			timer := clock.NewTimer(time.Minute)
+			if tc.expired {
+				clock.Advance(time.Minute).MustWait(testutil.DeadlineContext(t))
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			signal, exited := make(chan struct{}), make(chan struct{})
+			ready := readyTimerClock{Clock: clock, timer: timer, onTimer: func() {
+				if tc.arrived {
+					close(signal)
+				}
+				if tc.exited {
+					close(exited)
+				}
+				if tc.cancelled {
+					cancel()
+				}
+			}}
+			assert.Equal(t, tc.want, AwaitSignal(ctx, ready, signal, exited, time.Minute, "probe"))
+		})
+	}
+}
 
 func TestListenWaiter(t *testing.T) {
 	t.Parallel()
@@ -25,7 +67,7 @@ func TestListenWaiter(t *testing.T) {
 		assert.False(t, w.Observe([]byte("booting")))
 		assert.True(t, w.Observe([]byte("mimocode server listening on http://127.0.0.1:4096")))
 		assert.False(t, w.Observe([]byte("mimocode server listening on http://127.0.0.1:9999")), "a later match changes nothing")
-		address, err := w.Wait(t.Context(), nil, time.Second)
+		address, err := w.Wait(t.Context(), testutil.NewQuartzMock(t), nil, time.Second)
 		require.NoError(t, err)
 		assert.Equal(t, "http://127.0.0.1:4096", address)
 	})
@@ -34,7 +76,7 @@ func TestListenWaiter(t *testing.T) {
 		t.Parallel()
 		w := NewListenWaiter(testListenPattern)
 		w.Observe([]byte("server listening on 127.0.0.1:5000"))
-		address, err := w.Wait(t.Context(), nil, time.Second)
+		address, err := w.Wait(t.Context(), testutil.NewQuartzMock(t), nil, time.Second)
 		require.NoError(t, err)
 		assert.Equal(t, "http://127.0.0.1:5000", address)
 	})
@@ -44,7 +86,7 @@ func TestListenWaiter(t *testing.T) {
 		w := NewListenWaiter(testListenPattern)
 		done := make(chan string, 1)
 		go func() {
-			address, _ := w.Wait(t.Context(), nil, 30*time.Second)
+			address, _ := w.Wait(t.Context(), testutil.NewQuartzMock(t), nil, 30*time.Second)
 			done <- address
 		}()
 		w.Observe([]byte("server listening on http://[::1]:7000"))
@@ -56,7 +98,7 @@ func TestListenWaiter(t *testing.T) {
 		w := NewListenWaiter(testListenPattern)
 		exited := make(chan struct{})
 		close(exited)
-		_, err := w.Wait(t.Context(), exited, 30*time.Second)
+		_, err := w.Wait(t.Context(), testutil.NewQuartzMock(t), exited, 30*time.Second)
 		assert.ErrorIs(t, err, ErrServerExited)
 	})
 
@@ -66,7 +108,7 @@ func TestListenWaiter(t *testing.T) {
 		w.Observe([]byte("server listening on http://127.0.0.1:1"))
 		exited := make(chan struct{})
 		close(exited)
-		address, err := w.Wait(t.Context(), exited, 30*time.Second)
+		address, err := w.Wait(t.Context(), testutil.NewQuartzMock(t), exited, 30*time.Second)
 		require.NoError(t, err)
 		assert.Equal(t, "http://127.0.0.1:1", address)
 	})
@@ -74,7 +116,18 @@ func TestListenWaiter(t *testing.T) {
 	t.Run("fails at the timeout", func(t *testing.T) {
 		t.Parallel()
 		w := NewListenWaiter(testListenPattern)
-		_, err := w.Wait(t.Context(), nil, time.Millisecond)
+		clock := testutil.NewQuartzMock(t)
+		trap := clock.Trap().NewTimer(AwaitSignalTimerTag)
+		defer trap.Close()
+		done := make(chan error, 1)
+		go func() {
+			_, err := w.Wait(t.Context(), clock, nil, time.Minute)
+			done <- err
+		}()
+		ctx := testutil.DeadlineContext(t)
+		trap.MustWait(ctx).MustRelease(ctx)
+		clock.Advance(time.Minute).MustWait(ctx)
+		err := <-done
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "stated no address")
 	})
@@ -84,7 +137,7 @@ func TestListenWaiter(t *testing.T) {
 		w := NewListenWaiter(testListenPattern)
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
-		_, err := w.Wait(ctx, nil, 30*time.Second)
+		_, err := w.Wait(ctx, testutil.NewQuartzMock(t), nil, 30*time.Second)
 		assert.ErrorIs(t, err, context.Canceled)
 	})
 

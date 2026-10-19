@@ -336,6 +336,8 @@ func TestSessionInfoKeysStateTheirDedupPolicy(t *testing.T) {
 		// nothing new. The withdrawal broadcasts `null`, which the dedup lets
 		// through against the cached offer.
 		contracts.SessionInfoKeyTurnRetryOffer: {},
+		// A compaction can outlive its turn. Cache it until an explicit null ends it.
+		contracts.SessionInfoKeyCompaction: {},
 	}
 	progress := map[string]struct{}{
 		contracts.SessionInfoKeyThinkingTokens:             {},

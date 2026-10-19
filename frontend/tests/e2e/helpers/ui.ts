@@ -325,6 +325,11 @@ export function toolRows(page: Page): Locator {
   return page.locator(`[data-tool-message]${VISIBLE}`)
 }
 
+/** Locate the visible badge of a running tool. */
+export function toolRunningBadge(page: Page): Locator {
+  return page.locator(`[data-testid="tool-running-badge"]${VISIBLE}`)
+}
+
 /**
  * Locate every visible row that draws at least one span rail.
  * A tool call opens a span, and each row of the span draws its rail. `data-span-columns` states how many rails a row

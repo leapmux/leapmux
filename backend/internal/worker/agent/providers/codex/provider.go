@@ -68,10 +68,7 @@ func (codexProvider) Classify(raw json.RawMessage) agent.NotificationClassificat
 		// Only the retryable error persists. A burst folds into the latest
 		// attempt, as Claude's api_retry does.
 		if env.Params != nil && env.Params.WillRetry {
-			return agent.NotificationClassification{
-				Kind: agent.NotificationKindAPIRetry,
-				Key:  "codex:error:retry",
-			}
+			return agent.APIRetryNotification()
 		}
 		return agent.NotificationClassification{}
 	case contracts.CodexMethodModelSafetyBufferingUpdated:
@@ -80,55 +77,23 @@ func (codexProvider) Classify(raw json.RawMessage) agent.NotificationClassificat
 		if env.Params != nil && env.Params.TurnID != "" {
 			turnID = env.Params.TurnID
 		}
-		return agent.NotificationClassification{
-			Kind: agent.NotificationKindProviderScoped,
-			Key:  "codex:model/safetyBuffering/updated:" + turnID,
-		}
-	case "account/rateLimits/updated":
-		return agent.NotificationClassification{
-			Kind: agent.NotificationKindProviderScoped,
-			Key:  "codex:account/rateLimits/updated",
-		}
+		return agent.ProviderScopedNotification("codex:model/safetyBuffering/updated:" + turnID)
 	case contracts.CodexMethodMcpServerStartupStatusUpdated:
 		name := "unknown"
 		if env.Params != nil && env.Params.Name != "" {
 			name = env.Params.Name
 		}
-		return agent.NotificationClassification{
-			Kind: agent.NotificationKindProviderScoped,
-			Key:  "codex:mcpServer/startupStatus/updated:" + name,
-		}
-	case contracts.CodexMethodItemStarted:
-		// Codex emits item/started for many item kinds; only the
-		// contextCompaction subtype is consolidatable as a compacting
-		// indicator. All other item types route through the per-item
-		// handler and never hit PersistNotification.
-		if env.Params != nil && env.Params.Item != nil && env.Params.Item.Type == contracts.CodexItemTypeContextCompaction {
-			return agent.NotificationClassification{
-				Kind: agent.NotificationKindStatus,
-				Key:  "codex:item/started:contextCompaction",
-			}
-		}
-		return agent.NotificationClassification{}
+		return agent.ProviderScopedNotification("codex:mcpServer/startupStatus/updated:" + name)
 	case contracts.CodexMethodItemCompleted:
-		// The contextCompaction completion is the Codex compaction boundary:
-		// it ends the "Compacting context..." status that the matching
-		// item/started opened. Every other item type routes through the
-		// per-item handler and never hits PersistNotification.
+		// A completed compaction is a boundary. Its start exists only as live state.
+		// Other completed items use their own message handlers.
 		if env.Params != nil && env.Params.Item != nil && env.Params.Item.Type == contracts.CodexItemTypeContextCompaction {
-			return agent.NotificationClassification{
-				Kind: agent.NotificationKindCompactionBoundary,
-				Key:  "codex:item/completed:contextCompaction",
-			}
+			return agent.CompactionBoundaryNotification()
 		}
 		return agent.NotificationClassification{}
 	default:
 		return agent.NotificationClassification{}
 	}
-}
-
-func (codexProvider) Merge(class agent.NotificationClassification, previous, next json.RawMessage) (json.RawMessage, error) {
-	return next, nil
 }
 
 func (codexProvider) IsInterrupt(content string) bool {

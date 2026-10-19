@@ -6,25 +6,12 @@ import { isPlainNotificationType } from '~/lib/notificationTypes'
 import { isNotificationThreadWrapper } from '../../messageUtils'
 import { notificationClassifierFor } from '../../notificationClassification'
 import { retainedRowIsFinal } from '../registry'
-import { ampBlockText, ampMessageBlocks, ampToolResult, ampToolUse } from './extractors/toolCommon'
-
-/** The block types an assistant row can carry that this build reads. */
-const KNOWN_ASSISTANT_BLOCKS = new Set<string>([
-  AMP_BLOCK_TYPE.Text,
-  AMP_BLOCK_TYPE.Thinking,
-  AMP_BLOCK_TYPE.RedactedThinking,
-  AMP_BLOCK_TYPE.ToolUse,
-])
+import { ampBlockText, ampToolResult, ampToolUse } from './extractors/toolCommon'
 
 /**
- * The category of one assistant row.
- *
- * A tool call wins, because it owns a span. A turn that ended while the call ran
- * stores the call's row AGAIN as the closing row, and the completion is what tells
- * that copy from the request. Text wins over thinking, which a row the worker kept
- * whole can hold beside it. An empty block states nothing: an OpenAI model sends an
- * empty thinking block for its encrypted reasoning, and a redacted block holds only
- * data that no reader can read.
+ * Classify one assistant row. A tool call owns a span and takes priority.
+ * A retained final call supplies its result. Text takes priority over thinking.
+ * The current worker stores no empty or redacted assistant block.
  */
 function classifyAssistantRow(input: ClassificationInput, parent: Record<string, unknown>): MessageCategory {
   if (ampToolUse(parent))
@@ -33,10 +20,7 @@ function classifyAssistantRow(input: ClassificationInput, parent: Record<string,
     return { kind: 'assistant_text' }
   if (ampBlockText(parent, AMP_BLOCK_TYPE.Thinking, 'thinking'))
     return { kind: 'assistant_thinking' }
-  // A block this build does not know reaches the reader as the raw frame, rather than
-  // disappearing.
-  const unknownBlock = ampMessageBlocks(parent).some(block => !KNOWN_ASSISTANT_BLOCKS.has(pickString(block, 'type')))
-  return unknownBlock ? { kind: 'unknown' } : { kind: 'hidden' }
+  return { kind: 'unknown' }
 }
 
 /** Amp message classification. */
@@ -45,9 +29,7 @@ export function classifyAmpMessage(input: ClassificationInput): MessageCategory 
   const wrapper = input.wrapper
   const notification = notificationClassifierFor(input.agentProvider)
 
-  // The empty-wrapper test runs FIRST, so the thread test below stays the one
-  // narrowing on `wrapper`. Amp writes no notification of its own, so a thread holds
-  // LeapMux's own envelopes alone.
+  // Test an empty wrapper before the notification thread. Amp threads hold only LeapMux notifications.
   if (wrapper && wrapper.messages.length === 0)
     return { kind: 'hidden' }
   if (isNotificationThreadWrapper(wrapper))
@@ -56,8 +38,7 @@ export function classifyAmpMessage(input: ClassificationInput): MessageCategory 
   if (!parent)
     return { kind: 'unknown' }
 
-  // A user row the service layer persisted is LeapMux's `{content}` shape, with no Amp
-  // `type`. Amp's own echo of the user's message never reaches the transcript.
+  // The service stores user input as LeapMux's `{content}` envelope. The worker consumes Amp's native user echo.
   const type = pickString(parent, 'type')
   if (!type && typeof parent.content === 'string') {
     if (parent.hidden === true)
@@ -74,17 +55,15 @@ export function classifyAmpMessage(input: ClassificationInput): MessageCategory 
       return classifyAssistantRow(input, parent)
     case AMP_LINE_TYPE.User:
       // A user row reaches the transcript only as a tool result.
-      return ampToolResult(parent) ? { kind: 'tool_result' } : { kind: 'hidden' }
+      return ampToolResult(parent) ? { kind: 'tool_result' } : { kind: 'unknown' }
     default:
       break
   }
 
-  // LeapMux's own envelope. No branch above claims one of these rows, because Amp's
-  // vocabulary spells none of their tokens.
+  // Amp's vocabulary differs from LeapMux's notification vocabulary.
   if (isPlainNotificationType(type))
     return notification([parent])
 
-  // A `system` line other than the init line, or a line of a later Amp: the worker
-  // keeps it so that a reader can inspect it.
+  // Keep an unknown native frame available for inspection.
   return { kind: 'unknown' }
 }

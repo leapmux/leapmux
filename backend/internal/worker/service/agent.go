@@ -1064,16 +1064,12 @@ func registerAgentHandlers(d registrar, svc *Service) {
 
 	registerAutoReviewApprovalHandler(d, svc)
 
-	// RetryAgentTurn stops the running turn and sends its input again on
-	// another model, in a new provider thread that excludes the stopped
-	// attempt. File changes and other actions that the stopped attempt already
-	// took stay. The worker refuses the call unless the running agent offers
-	// this retry for this turn (the `turn_retry_offer` session-info key).
-	//
-	// The response states that the agent accepted the retry, not that the new
-	// turn started. The stop, the thread swap and the new turn arrive through
-	// the normal events, and a failure after the acceptance reaches the
-	// transcript as an agent_error notification.
+	// RetryAgentTurn stops the turn and sends its input again on a faster model.
+	// The provider removes the stopped attempt from its native history. LeapMux keeps its transcript.
+	// File changes and other actions that the stopped attempt already took stay.
+	// The running agent must offer this retry through the turn_retry_offer key.
+	// The response confirms acceptance. Normal events report the stop and the new turn.
+	// A failure after acceptance reaches the transcript as an agent_error notification.
 	registerAgentGuardedByID(d, "RetryAgentTurn", leapmuxv1.Scope_SCOPE_AGENT_WRITE, dispatchPlain,
 		func(_ context.Context, _ channel.Caller, r *leapmuxv1.RetryAgentTurnRequest, sender channel.ResponseWriter) {
 			agentID := r.GetAgentId()
@@ -1083,13 +1079,18 @@ func registerAgentHandlers(d registrar, svc *Service) {
 				sendInvalidArgument(sender, "a turn retry needs the offered turn and model")
 				return
 			}
-			dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
+			dbAgent, err := svc.getAgentByIDFn(bgCtx(), agentID)
 			if err != nil {
-				sendNotFoundError(sender, "agent not found")
+				if errors.Is(err, sql.ErrNoRows) {
+					sendNotFoundError(sender, "agent not found")
+				} else {
+					slog.Error("read agent for turn retry failed", "agent_id", agentID, "error", err)
+					sendInternalError(sender, "failed to read the agent for a turn retry")
+				}
 				return
 			}
 			if dbAgent.ParentAgentID.Valid {
-				sendFailedPrecondition(sender, "a subagent cannot retry its parent's turn")
+				sendFailedPrecondition(sender, "only a root agent offers a turn retry")
 				return
 			}
 			if err := svc.Agents.RetryTurn(agentID, turnID, model); err != nil {
@@ -1590,7 +1591,7 @@ func (svc *Service) replayAgentCatchUp(
 	//
 	// Each child sink owns its own generation counters. Replay the sink for the
 	// subscribed agent; the goal above remains root-owned.
-	if event := svc.Output.SessionInfoReplayEvent(agentID); event != nil {
+	for _, event := range svc.Output.SessionInfoReplayEvents(agentID) {
 		broadcastReplayAgentEvent(sink, agentID, event)
 		if !sink.alive() {
 			return
@@ -3582,6 +3583,7 @@ func (svc *Service) prepareClearContext(agentID string) (func(), error) {
 	// repeated resume could damage further.
 	launchOptions := applyDBSettingsToAgentOptions(svc.Agents.Registry(), svc.baseAgentOptions(agentID, dbAgent.WorkingDir, dbAgent.AgentProvider), &dbAgent)
 	sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
+	sink.ClearGoal(false)
 	confirmedSettings, err := svc.mintAndLaunch(recovery.launchContext(), "clear", launchOptions, sink, svc.startAgent)
 	if err != nil {
 		slog.Error("clear context: failed to restart agent", "agent_id", agentID, "error", err)
@@ -4168,21 +4170,9 @@ func (svc *Service) enqueueSyntheticUserInput(agentID, content string, kind leap
 // knows which plan this refers to.
 const planExecutionPromptText = "Implement the plan."
 
-// enqueuePlanExecution queues the approved plan as the next turn, in a fresh
-// context.
-//
-// A provider that saves NO plan file reaches here, so an absent path is a normal
-// state and not a fault. Only Claude Code and Codex record plan_file_path
-// (updatePlan writes it from their output readers), while Claude Code, ZCode and
-// native Copilot all raise the plan-exit control. The queued turn then carries
-// the neutral instruction above.
-//
-// The degraded turn is what keeps the approval consistent. The caller already
-// persisted the new permission mode, so a hard failure here leaves the mode
-// moved with no turn to use it, and each retry repeats that move and fails the
-// same way -- the plan can never be approved. A path that EXISTS and cannot be
-// read is the opposite case: the plan text is there, the read is the fault, and
-// a retry can still succeed.
+// enqueuePlanExecution stores the saved plan before the queue replaces the context.
+// Providers save the plan through UpdatePlan before they publish its approval request.
+// An unreadable file fails the enqueue. Without a file, the queue retains the neutral instruction.
 func (svc *Service) enqueuePlanExecution(agentID, targetMode, inputID string) error {
 	dbAgent, err := svc.Queries.GetAgentByID(bgCtx(), agentID)
 	if err != nil {
@@ -4259,6 +4249,7 @@ func (svc *Service) restartPlanContextLocked(agentID, targetMode string, dbAgent
 	// mintAndLaunch keeps a failed mint and a failed start on one exit, so the
 	// notice and the session-id reset are written by one piece of code.
 	sink := svc.Output.NewSink(agentID, dbAgent.AgentProvider)
+	sink.ClearGoal(false)
 	confirmedSettings, err := svc.mintAndLaunch(bgCtx(), "restart", launchOptions, sink, svc.startAgent)
 	if err != nil {
 		slog.Error("plan exec: failed to restart agent", "agent_id", agentID, "error", err)

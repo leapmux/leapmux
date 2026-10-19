@@ -17,6 +17,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/coder/quartz"
+
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
@@ -121,6 +123,7 @@ type pendingPermission struct {
 
 // permissionBridge is the socket listener that serves one agent's helpers.
 type permissionBridge struct {
+	clock    quartz.Clock
 	listener net.Listener
 	path     string
 	secret   []byte
@@ -159,7 +162,7 @@ type permissionBridge struct {
 // newPermissionBridge opens the listener at the socket inside dir, which must
 // be a directory that only the owner can read. It serves nothing until serve
 // runs.
-func newPermissionBridge(dir string) (*permissionBridge, error) {
+func newPermissionBridge(dir string, clock quartz.Clock) (*permissionBridge, error) {
 	path := filepath.Join(dir, bridgeSocketName)
 	if err := checkSocketPath(path); err != nil {
 		return nil, err
@@ -184,6 +187,7 @@ func newPermissionBridge(dir string) (*permissionBridge, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &permissionBridge{
+		clock:         clock,
 		listener:      listener,
 		path:          path,
 		secret:        []byte(secret),
@@ -479,9 +483,11 @@ func (b *permissionBridge) close(reason error) {
 		b.wg.Wait()
 		close(done)
 	}()
+	timer := b.clock.NewTimer(requestReadTimeout, "amp", "bridge-close")
+	defer timer.Stop()
 	select {
 	case <-done:
-	case <-time.After(requestReadTimeout):
+	case <-timer.C:
 		// A handler stuck in a write to a helper that stopped reading: close
 		// every connection so the handlers return.
 		for _, conn := range conns {

@@ -28,34 +28,27 @@ type ToolLifecycleServices interface {
 	agent.SpanServices
 }
 
-// OpenToolSpan persists a tool call's opening row and opens its span.
-//
-// A call that spawns a subagent owns no span: it reserves no color and opens
-// nothing, so it draws no rail and its card takes the neutral border. It still
-// records its span type, which a provider's closing message reads back.
-//
-// Each provider decides `spawns` itself, from its own wire shape -- that
-// decision must not move into shared code. What lives here is the ORDER the
-// decision drives, which every provider needs identically: reserve before the
-// persist so the row carries the color its rail will use, persist before the
-// open so the row sits at the parent's depth, record the type either way.
-//
-// The parent span id is empty at every call site: a provider's tool calls are
-// flat in the transcript that holds them.
-//
-// A failed persist is logged by the caller and does NOT stop the span from
-// opening, which is what each of these call sites did before.
+// OpenToolSpan persists a tool call and opens its span at the transcript root.
 func OpenToolSpan(sink ToolSpanServices, content agent.MessageContent, spanID, spanType string, spawns bool) error {
+	return OpenToolSpanWithParent(sink, content, spanID, spanType, "", spawns)
+}
+
+// OpenToolSpanWithParent persists a tool call and opens its span under the supplied parent.
+// Reserve the color before persistence. Open the span after persistence, so the row has no connector to itself.
+// A subagent spawn records its type but reserves no color and opens no span.
+// A failed write still opens the span. The caller reports the error, and a later result can close the span.
+// The provider decides whether the call spawns a subagent and whether its parent is open.
+func OpenToolSpanWithParent(sink ToolSpanServices, content agent.MessageContent, spanID, spanType, parentSpanID string, spawns bool) error {
 	var spanColor int32
 	if !spawns {
-		spanColor = sink.ReserveSpanColor(spanID, "")
+		spanColor = sink.ReserveSpanColor(spanID, parentSpanID)
 	}
 	err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{
-		SpanID: spanID, SpanType: spanType, SpanColor: spanColor, NoSpan: spawns,
+		SpanID: spanID, SpanType: spanType, ParentSpanID: parentSpanID, SpanColor: spanColor, NoSpan: spawns,
 	})
 	sink.SetSpanType(spanID, spanType)
 	if !spawns {
-		sink.OpenSpan(spanID, "")
+		sink.OpenSpan(spanID, parentSpanID)
 	}
 	return err
 }

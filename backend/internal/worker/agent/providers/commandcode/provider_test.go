@@ -1,11 +1,18 @@
 package commandcode
 
 import (
+	"encoding/json"
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/stretchr/testify/assert"
 )
+
+func TestClassifyStreamRestartIsAPIRetry(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, agent.APIRetryNotification(), (commandcodeProvider{}).Classify(json.RawMessage(`{"type":"event","event":{"type":"stream_restart","attempt":1}}`)))
+}
 
 func TestCommandCodeTokenResumeRule(t *testing.T) {
 	t.Parallel()

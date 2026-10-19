@@ -33,7 +33,7 @@ func integerEnumColumns() []integerEnumColumn {
 		{"messages.supplemental_content_compression", "UPDATE messages SET supplemental_content_compression = ?", "SELECT typeof(supplemental_content_compression), supplemental_content_compression FROM messages", 1, 2},
 		{"messages.agent_provider", "UPDATE messages SET agent_provider = ?", "SELECT typeof(agent_provider), agent_provider FROM messages", 1, int64(len(leapmuxv1.AgentProvider_name) - 1)},
 		{"agent_input_queue_items.kind", "UPDATE agent_input_queue_items SET kind = ?", "SELECT typeof(kind), kind FROM agent_input_queue_items", 1, 6},
-		{"agent_input_queue_items.state", "UPDATE agent_input_queue_items SET state = ?", "SELECT typeof(state), state FROM agent_input_queue_items", 1, 4},
+		{"agent_input_queue_items.state", "UPDATE agent_input_queue_items SET state = ?", "SELECT typeof(state), state FROM agent_input_queue_items", 1, 5},
 		{"control_deliveries.state", "UPDATE control_deliveries SET state = ?", "SELECT typeof(state), state FROM control_deliveries", 1, 4},
 		{"control_deliveries.kind", "UPDATE control_deliveries SET kind = ? WHERE id = 'enum-unattached'", "SELECT typeof(kind), kind FROM control_deliveries WHERE id = 'enum-unattached'", 1, 2},
 		{"control_response_payloads.agent_provider", "UPDATE control_response_payloads SET agent_provider = ?", "SELECT typeof(agent_provider), agent_provider FROM control_response_payloads", 1, int64(len(leapmuxv1.AgentProvider_name) - 1)},
@@ -235,9 +235,8 @@ func TestEnumColumnChecksMatchTheirProtoRanges(t *testing.T) {
 		},
 		{
 			column:       "agent_input_queue_items.state",
-			columns:      2,
-			check:        "CHECK (state BETWEEN 1 AND 4)",
-			lastAccepted: int32(leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DELIVERY_UNCERTAIN),
+			check:        "CHECK (state BETWEEN 1 AND 5)",
+			lastAccepted: int32(leapmuxv1.AgentInputState_AGENT_INPUT_STATE_AWAITING_ECHO),
 			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.AgentInputState_name),
 		},
 		{
@@ -267,7 +266,7 @@ func TestEnumColumnChecksMatchTheirProtoRanges(t *testing.T) {
 				"the CHECK is what makes that unrepresentable rather than merely unwritten",
 		},
 		{
-			column: "control_deliveries.state", check: "CHECK (state BETWEEN 1 AND 4)", columns: 2,
+			column: "control_deliveries.state", check: "CHECK (state BETWEEN 1 AND 4)",
 			lastAccepted: int32(leapmuxv1.ControlDeliveryState_CONTROL_DELIVERY_STATE_COMPLETED),
 			lastDeclared: lastDeclaredOrdinal(t, leapmuxv1.ControlDeliveryState_name),
 		},

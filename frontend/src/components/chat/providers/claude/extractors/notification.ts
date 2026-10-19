@@ -1,20 +1,17 @@
 import type { CompactionDetails, NotificationEntry } from '../../../model/notification'
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import { CLAUDE_FRAME_KIND, CLAUDE_HIDDEN_SYSTEM_SUBTYPE, CLAUDE_HOOK_OUTCOME, CLAUDE_SYSTEM_SUBTYPE } from '~/generated/contracts/claude-protocol'
+import { CLAUDE_COMPACT_RESULT, CLAUDE_FRAME_KIND, CLAUDE_HIDDEN_SYSTEM_SUBTYPE, CLAUDE_HOOK_OUTCOME, CLAUDE_STATUS, CLAUDE_SYSTEM_SUBTYPE } from '~/generated/contracts/claude-protocol'
 import { NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
 import { isObject, pickNumber, pickString } from '~/lib/jsonPick'
 import { getInnerMessage } from '~/lib/messageParser'
-import { compactionMetaFromBoundary } from '../../../model/notification'
+import { compactionMetaFromBoundary, retryEntry } from '../../../model/notification'
 import { claudeRateLimitInfo } from '../rateLimits'
 
 /**
  * The `system` subtypes LeapMux draws nothing for.
  *
- * The contract table is the one list. The Worker consumes or drops each entry
- * before it stores a row, and this lookup hides the rows that an older build
- * stored: the two sides must agree or a stored row draws a no-display card.
- * The `_readme` of `contracts/claude-protocol.json` gives the reason for each
- * entry.
+ * This lookup reads the same contract table as the Worker's drop list.
+ * contracts/claude-protocol.json states the reason for each entry.
  */
 const HIDDEN_SYSTEM_SUBTYPES: Record<string, true> = Object.fromEntries(
   Object.values(CLAUDE_HIDDEN_SYSTEM_SUBTYPE).map(subtype => [subtype, true] as const),
@@ -25,15 +22,12 @@ export function claudeSystemSubtypeHidden(subtype: string): boolean {
   return HIDDEN_SYSTEM_SUBTYPES[subtype] === true
 }
 
-/**
- * Claude's in-progress compaction: `{type:system,subtype:status,status:compacting}`.
- *
- * The TRAILING status (`status:null`) closes the compaction and carries nothing new,
- * so `isFinalCompactingStatus` hides it; only this one draws.
- */
-function isCompactingStatus(m: Record<string, unknown>): boolean {
-  return m.type === 'system' && m.subtype === 'status' && m.status === NOTIFICATION_TYPE.Compacting
+/** Identify the native status that ends a failed compaction. */
+function claudeCompactionFailed(m: Record<string, unknown>): boolean {
+  return m.compact_result === CLAUDE_COMPACT_RESULT.Failed
 }
+
+const CLAUDE_STOP_HOOK_ERROR_KEY = 'stop-hook-error'
 
 /** Claude's full compaction boundary. */
 function isCompactBoundary(m: Record<string, unknown>): boolean {
@@ -92,14 +86,12 @@ function apiRetryEntries(m: Record<string, unknown>): NotificationEntry[] {
   const maxAttempts = pickNumber(m, 'max_retries', undefined)
   const delayMs = pickNumber(m, 'retry_delay_ms', undefined)
   const error = [errorStatus, pickString(m, 'error')].filter(Boolean).join(' ') || undefined
-  return [{
-    kind: 'retry',
-    scope: 'api',
+  return [retryEntry('api', {
     ...(attempt !== undefined ? { attempt } : {}),
     ...(maxAttempts !== undefined ? { maxAttempts } : {}),
     ...(delayMs !== undefined ? { delayMs } : {}),
     ...(error !== undefined ? { error } : {}),
-  }]
+  })]
 }
 
 /** A failed hook. A hook with any other outcome states nothing to show. */
@@ -107,11 +99,14 @@ function hookResponseEntries(m: Record<string, unknown>): NotificationEntry[] {
   if (pickString(m, 'outcome') !== CLAUDE_HOOK_OUTCOME.Error)
     return []
   const name = pickString(m, 'hook_name')
-  const subject = [pickString(m, 'hook_event'), name ? `(${name})` : ''].filter(Boolean).join(' ')
+  const event = pickString(m, 'hook_event')
   const exitCode = pickNumber(m, 'exit_code', undefined)
   return [{
-    kind: 'text',
-    text: `Hook ${subject ? `${subject} ` : ''}failed${exitCode === undefined ? '' : ` (exit ${exitCode})`}`,
+    kind: 'hook',
+    outcome: 'failed',
+    ...(event ? { event } : {}),
+    ...(name ? { name } : {}),
+    ...(exitCode === undefined ? {} : { exitCode }),
   }]
 }
 
@@ -124,10 +119,15 @@ function hookResponseEntries(m: Record<string, unknown>): NotificationEntry[] {
  * here lists keeps the no-display card, because that card is the signal that a
  * new frame exists.
  *
- * The `status` subtype is not here: only its `compacting` value has words, and
- * {@link claudeNotificationEntry} reads that value before this table.
+ * Only a failed compaction status supplies an entry. Compaction starts use live session state.
  */
 const SYSTEM_SUBTYPE_READERS: Record<string, ClaudeSystemReader> = {
+  [CLAUDE_SYSTEM_SUBTYPE.Status]: (m) => {
+    if (!claudeCompactionFailed(m))
+      return []
+    const error = pickString(m, 'compact_error')
+    return [{ kind: 'compaction', phase: 'end', outcome: 'failed', ...(error ? { error } : {}) }]
+  },
   [CLAUDE_SYSTEM_SUBTYPE.ApiRetry]: apiRetryEntries,
   [CLAUDE_SYSTEM_SUBTYPE.CompactBoundary]: m => [{ kind: 'compaction', phase: 'end', detail: compactionMetaFromBoundary(m) }],
   [CLAUDE_SYSTEM_SUBTYPE.MicrocompactBoundary]: () => [{ kind: 'compaction', phase: 'end', micro: true }],
@@ -136,11 +136,9 @@ const SYSTEM_SUBTYPE_READERS: Record<string, ClaudeSystemReader> = {
     const reason = pickString(m, 'decision_reason') || pickString(m, 'message')
     return [{ kind: 'text', text: [tool ? `Permission denied: ${tool}` : 'Permission denied', reason].filter(Boolean).join(' - ') }]
   },
-  api_error: (m) => {
-    const detail = pickString(m, 'error') || pickString(m, 'message')
-    return [{ kind: 'text', text: detail ? `API error: ${detail}` : 'API error' }]
-  },
-  notification: (m) => {
+  [CLAUDE_SYSTEM_SUBTYPE.Notification]: (m) => {
+    if (m.key === CLAUDE_STOP_HOOK_ERROR_KEY)
+      return [{ kind: 'hook', outcome: 'failed', event: 'Stop' }]
     // The "Error: " prefix alone states no error, so an empty text gets no line.
     const text = pickString(m, 'text')
     if (!text)
@@ -193,8 +191,7 @@ export function claudeReadsSystemSubtype(subtype: string): boolean {
  * Every shape here is Claude's own:
  *
  * - the rate-limit event
- * - the `conversation_reset` frame of a transcript that an older Worker stored
- * - the compaction status
+ * - the failed compaction status
  * - each `system` subtype that {@link SYSTEM_SUBTYPE_READERS} lists
  *
  * They used to sit in the shared notification switch, where a second
@@ -212,14 +209,15 @@ export function claudeNotificationEntry(m: Record<string, unknown>): Notificatio
     }
     return info.status === 'allowed' ? [] : [{ kind: 'rate-limit', tiers: [claudeRateLimitInfo(info)] }]
   }
-  // `/clear`, and the plan exit that starts a fresh conversation. The worker
-  // rewrites it into the neutral `context_cleared` type, so this branch serves a
-  // transcript recorded before it did.
-  if (m.type === 'conversation_reset')
-    return [{ kind: 'context-cleared' }]
   if (m.type !== CLAUDE_FRAME_KIND.System)
     return []
-  if (isCompactingStatus(m))
-    return [{ kind: 'compaction', phase: 'start' }]
   return systemSubtypeReader(pickString(m, 'subtype'))?.(m) ?? []
+}
+
+/** Identify an old stored start without restoring its notification reader. */
+export function claudeCompactionStart(message: Record<string, unknown>): boolean {
+  return message.type === CLAUDE_FRAME_KIND.System
+    && message.subtype === CLAUDE_SYSTEM_SUBTYPE.Status
+    && message.status === CLAUDE_STATUS.Compacting
+    && !claudeCompactionFailed(message)
 }

@@ -1,6 +1,6 @@
 import type { ControlResponseSummary } from '../../model/controlResponse'
 import type { PersistedControlResponse } from '../../persistedControlResponse'
-import { COPILOT_EVENT } from '~/generated/contracts/copilot-protocol'
+import { COPILOT_AUTO_MODE_SWITCH_RESPONSE, COPILOT_EVENT, COPILOT_SAMPLING_DECISION } from '~/generated/contracts/copilot-protocol'
 import { MCP_ELICITATION_ACTION } from '~/generated/contracts/mcp-elicitation'
 import { pickObject, pickString } from '~/lib/jsonPick'
 import { permissionOptionLabel } from '../../controls/permissionOptionLabels'
@@ -25,10 +25,32 @@ const COPILOT_DECISION_CANCELLED = 'cancelled'
  * way, through the same helper.
  */
 export function copilotControlResponseSummary(cr: PersistedControlResponse): ControlResponseSummary | null {
-  const answer = pickObject(pickObject(cr.response, 'response'), 'response')
+  const envelope = pickObject(cr.response, 'response')
+  if (copilotEvent(cr.request)?.type === COPILOT_EVENT.AutoModeSwitchRequested) {
+    switch (pickString(envelope, 'response')) {
+      case COPILOT_AUTO_MODE_SWITCH_RESPONSE.Yes:
+        return label('Switched to Auto for this turn')
+      case COPILOT_AUTO_MODE_SWITCH_RESPONSE.YesAlways:
+        return label('Switched to Auto from now on')
+      case COPILOT_AUTO_MODE_SWITCH_RESPONSE.No:
+        return label('Declined the switch to Auto')
+      default:
+        return null
+    }
+  }
+  const answer = pickObject(envelope, 'response')
   if (!answer)
     return null
   switch (copilotEvent(cr.request)?.type) {
+    case COPILOT_EVENT.SamplingRequested:
+      switch (pickString(answer, 'decision')) {
+        case COPILOT_SAMPLING_DECISION.Allow:
+          return label(CONTROL_DECISION_WORDS.permission.allow)
+        case COPILOT_SAMPLING_DECISION.Deny:
+          return label(CONTROL_DECISION_WORDS.permission.deny)
+        default:
+          return null
+      }
     case COPILOT_EVENT.PermissionRequested: {
       const decision = pickString(answer, 'kind')
       if (decision === COPILOT_DECISION_CANCELLED)

@@ -31,7 +31,7 @@ import { retryUntilPass } from './retryUntilPass'
 import { getGlobalState } from './server'
 import { quotePosixShellArgument, uniqueMarker } from './shellArguments'
 import { RELEASE_POLL_MS } from './toolOutputControl'
-import { assistantBubbles, composerEditor, interruptButton, messageBubbles, messageContents, resumePausedQueue, sendMessage, tabById, userBubbles, visibleOnly, waitForAgentIdle } from './ui'
+import { assistantBubbles, composerEditor, expectRowsInOrder, interruptButton, messageBubbles, messageContents, resumePausedQueue, sendMessage, tabById, userBubbles, visibleOnly, waitForAgentIdle } from './ui'
 import { closeNativeAgentAndWait, inspectLastTabCloseViaAPI } from './workerTabs'
 
 interface LifecyclePreparation {
@@ -260,7 +260,13 @@ export async function exerciseInterruptTurn(
 export async function exerciseInterruptedPartialAnswer(context: ManagedNativeScenarioContext, options: LifecyclePreparation & {
   /** Confirm native receipt of this exact text when the provider supplies no live token count. */
   waitForPartialReceipt?: (text: string) => Promise<void>
+  /** Replace the interrupt with another action that cuts the answer. */
+  cut?: (context: ManagedNativeScenarioContext) => Promise<void>
+  /** Queue and require the answer that the cut starts. */
+  followUp?: { answer: string }
 } = {}): Promise<void> {
+  if (options.followUp && !options.followUp.answer.trim())
+    throw new Error('The follow-up needs a nonempty answer.')
   await options.prepare?.()
   const marker = uniqueMarker()
   const head = `PARTIALHEAD${marker}`
@@ -268,7 +274,10 @@ export async function exerciseInterruptedPartialAnswer(context: ManagedNativeSce
   const text = `${head} ${tail} ends the answer.`
   const gate = `native-partial-answer-${marker}`
   try {
-    await context.modelScript.queue({ ...nativeTextStep(context, text), text, stream: { chunkChars: head.length, delayMs: 0, gates: [{ afterChunk: 1, name: gate }] } })
+    const start = await context.modelScript.queue(
+      { ...nativeTextStep(context, text), text, stream: { chunkChars: head.length, delayMs: 0, gates: [{ afterChunk: 1, name: gate }] } },
+      ...(options.followUp ? [nativeTextStep(context, options.followUp.answer)] : []),
+    )
     context.modelScript.allowUnconsumed('The interrupt ends the streamed answer after its first chunk.')
     await sendMessage(context.page, context.modelScript.prompt('Stream the scripted answer.'))
     await context.modelScript.waitForGate(gate)
@@ -283,7 +292,12 @@ export async function exerciseInterruptedPartialAnswer(context: ManagedNativeSce
         message: 'the live token counter shows that the Worker received the first chunk',
       }).toBe(true)
     }
-    await interruptButton(context.page).click()
+    if (options.cut)
+      await options.cut(context)
+    else
+      await interruptButton(context.page).click()
+    if (options.followUp)
+      await context.modelScript.waitForSteps(start + 2)
     await waitForAgentIdle(context.page)
     for (const reload of [false, true]) {
       if (reload)
@@ -292,6 +306,10 @@ export async function exerciseInterruptedPartialAnswer(context: ManagedNativeSce
       await expect(messageContents(context.page).filter({ hasText: tail }), 'no row draws the text that never streamed').toHaveCount(0)
       // The marker states the cut text alone. The divider states the stop in its own label.
       await expect(messageContents(context.page).filter({ hasText: INTERRUPTION_MARKER }), 'the chat draws the marker once, on the cut text').toHaveCount(1)
+      if (options.followUp) {
+        await expect(assistantBubbles(context.page).filter({ hasText: options.followUp.answer })).toHaveCount(1)
+        await expectRowsInOrder(messageContents(context.page), [head, options.followUp.answer])
+      }
     }
   }
   finally {

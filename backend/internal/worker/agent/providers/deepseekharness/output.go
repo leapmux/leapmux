@@ -3,11 +3,29 @@ package deepseekharness
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
+
+// These native records update internal state or repeat content that another event supplies.
+// Only the Worker reads this drop list.
+var silentSessionEvents = map[string]struct{}{
+	"agent-preset/selected": {}, "approval/asked": {}, "approval/decided": {}, "approval/policy": {},
+	contracts.DeepseekHarnessEventAssistantAttempt: {}, "command/done": {}, "command/run": {},
+	"compaction/prune": {}, "compaction/summary": {}, "developer/message": {},
+	"feedback/message-delete": {}, "feedback/message-put": {}, "feedback/record": {}, "hook/invoked": {},
+	"image/offload": {}, "model/selection": {}, "permission/preset": {}, "request/header": {},
+	"sandbox/mode": {}, "schedule/change": {}, "session-log-deepseek/delivery-accepted": {},
+	"session/end-seed": {}, "session/title": {}, "session/title-llm-request": {}, "step/start": {}, "step/end": {},
+	"subagent/descriptor": {}, "subagent/model-selection-policy": {}, "system/message": {},
+	"team/member": {}, "team/message/delivered": {}, "team/message/queued": {}, "team/task": {},
+	"tool/ptc-dispatch": {}, "tool/ptc-dispatch-start": {}, "web/deepseek-search-llm-request": {}, "workspace/changes": {},
+}
 
 type assistantMessageEventData struct {
 	Message struct {
@@ -19,6 +37,7 @@ type assistantMessageEventData struct {
 }
 
 // handleSessionEvent preserves the original event bytes and native block order.
+// The output queue owns retained writes. Only refused writes prevent cursor advancement.
 func (a *Agent) handleSessionEvent(stream *sessionStream, raw []byte) error {
 	var event sessionEvent
 	if err := json.Unmarshal(raw, &event); err != nil || event.Type == "" || event.Seq == nil || *event.Seq < 0 || *event.Seq > maxSessionSequence || len(event.Data) == 0 {
@@ -31,7 +50,7 @@ func (a *Agent) handleSessionEvent(stream *sessionStream, raw []byte) error {
 		stream.lastSeq = *event.Seq
 		return nil
 	}
-	if err := a.applySessionEvent(stream, event, raw); err != nil {
+	if err := a.applySessionEvent(stream, event, raw); !agent.OutputRetained(err) {
 		return err
 	}
 	stream.lastSeq = *event.Seq
@@ -57,6 +76,9 @@ func (a *Agent) applySessionEvent(stream *sessionStream, event sessionEvent, raw
 		if err := json.Unmarshal(event.Data, &data); err != nil {
 			return err
 		}
+		if stream.childAgentID == "" {
+			a.retryResolution.Resolve(sink)
+		}
 		completion := agent.MessageCompletionComplete
 		if data.Interrupted {
 			completion = agent.MessageCompletionInterrupted
@@ -80,13 +102,58 @@ func (a *Agent) applySessionEvent(stream *sessionStream, event sessionEvent, raw
 			blockContent.IdempotencyKey += fmt.Sprintf(":block:%d", index)
 			blockContent.Supplemental = supplemental
 			blockContent.Completion = completion
-			if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, blockContent, agent.SpanInfo{}); err != nil {
+			if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, blockContent, agent.SpanInfo{}); !agent.OutputRetained(err) {
 				return err
 			}
 		}
 	case contracts.DeepseekHarnessEventUserMessage:
+		if stream.childAgentID == "" {
+			var message struct {
+				Source struct {
+					RPCID string `json:"rpcId"`
+				} `json:"source"`
+			}
+			if err := json.Unmarshal(event.Data, &message); err != nil {
+				return err
+			}
+			a.Mu.Lock()
+			a.pendingSteers = slices.DeleteFunc(a.pendingSteers, func(steer *pendingSteer) bool {
+				if steer.requestID != message.Source.RPCID {
+					return false
+				}
+				steer.delivered = true
+				return true
+			})
+			a.Mu.Unlock()
+		}
 		if stream.childAgentID != "" && isUnstoredChildInput(event.Data) {
 			return sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, content, agent.SpanInfo{})
+		}
+	case "agent/inbox/spliced":
+		if stream.childAgentID == "" {
+			var inbox struct {
+				Inserted []struct {
+					ID     string `json:"id"`
+					Source struct {
+						RPCID string `json:"rpcId"`
+					} `json:"source"`
+				} `json:"inserted"`
+			}
+			if err := json.Unmarshal(event.Data, &inbox); err != nil {
+				return err
+			}
+			a.Mu.Lock()
+			for _, item := range inbox.Inserted {
+				if strings.TrimSpace(item.ID) == "" || strings.TrimSpace(item.Source.RPCID) == "" {
+					continue
+				}
+				for _, steer := range a.pendingSteers {
+					if steer.requestID == item.Source.RPCID {
+						steer.itemID = item.ID
+					}
+				}
+			}
+			a.Mu.Unlock()
 		}
 	case contracts.DeepseekHarnessEventToolCall:
 		var call struct {
@@ -96,9 +163,12 @@ func (a *Agent) applySessionEvent(stream *sessionStream, event sessionEvent, raw
 		if err := json.Unmarshal(event.Data, &call); err != nil || call.ID == "" || call.Name == "" {
 			return fmt.Errorf("DeepSeek Harness tool call has no identity")
 		}
+		if stream.childAgentID == "" {
+			a.retryResolution.Resolve(sink)
+		}
 		sink.OpenSpan(call.ID, "")
 		sink.SetSpanType(call.ID, call.Name)
-		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{SpanID: call.ID, SpanType: call.Name, SpanColor: sink.ReserveSpanColor(call.ID, "")}); err != nil {
+		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{SpanID: call.ID, SpanType: call.Name, SpanColor: sink.ReserveSpanColor(call.ID, "")}); !agent.OutputRetained(err) {
 			return err
 		}
 		stream.tools++
@@ -121,7 +191,7 @@ func (a *Agent) applySessionEvent(stream *sessionStream, event sessionEvent, raw
 		}
 		content.Completion = completion
 		err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{SpanID: id, SpanType: sink.GetSpanType(id), SpanColor: sink.ReserveSpanColor(id, ""), Closing: true})
-		if err != nil {
+		if !agent.OutputRetained(err) {
 			return err
 		}
 		if err := a.bindChildResult(stream, id, event.Data); err != nil {
@@ -131,6 +201,21 @@ func (a *Agent) applySessionEvent(stream *sessionStream, event sessionEvent, raw
 		sink.CloseSpan(id)
 	case contracts.DeepseekHarnessEventTurnEnd:
 		completion := nativeTurnCompletion(event.Data)
+		if stream.childAgentID == "" {
+			a.retryResolution.Reset()
+			var end struct {
+				Reason struct {
+					Error struct {
+						Message string `json:"message"`
+					} `json:"error"`
+				} `json:"reason"`
+			}
+			if err := json.Unmarshal(event.Data, &end); err != nil {
+				return err
+			}
+			a.flushPendingErrors(end.Reason.Error.Message)
+			a.lastTurnError = end.Reason.Error.Message
+		}
 		if err := a.finishPendingTools(stream, completion); err != nil {
 			return err
 		}
@@ -141,7 +226,7 @@ func (a *Agent) applySessionEvent(stream *sessionStream, event sessionEvent, raw
 		content.Metadata = metadata
 		content.Completion = completion
 		content = agent.WithToolUseCount(content, int(stream.tools))
-		if err := sink.PersistTurnEnd(content, agent.SpanInfo{}); err != nil {
+		if err := sink.PersistTurnEnd(content, agent.SpanInfo{}); !agent.OutputRetained(err) {
 			return err
 		}
 		if stream.childAgentID == "" {
@@ -153,9 +238,34 @@ func (a *Agent) applySessionEvent(stream *sessionStream, event sessionEvent, raw
 		}
 	case contracts.DeepseekHarnessEventRequestContext:
 		stream.learnContextWindow(event.Data)
-		return sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{})
-	case contracts.DeepseekHarnessEventCompactionEnd:
-		return sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{})
+	case contracts.DeepseekHarnessEventCompactionStart:
+		trigger := "auto"
+		if providerkit.StringField(event.Data, "sourceCommandId") != "" {
+			trigger = "manual"
+		}
+		stream.compactionLive = true
+		providerkit.PublishCompaction(sink, trigger)
+	case contracts.DeepseekHarnessEventCompactionEnd, contracts.DeepseekHarnessEventLlmRetry:
+		// The shared membership table selects the notification write below.
+	case contracts.DeepseekHarnessEventHookResult:
+		// dsh-hook-protocol/events derives these fields from the hook process and its decision.
+		var result struct {
+			Decision string `json:"decision"`
+			ExitCode *int64 `json:"exitCode"`
+			Stderr   string `json:"stderrSummary"`
+		}
+		if err := json.Unmarshal(event.Data, &result); err != nil {
+			return sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{})
+		}
+		blocked := result.Decision == contracts.DeepseekHarnessHookDecisionBlock || result.Decision == contracts.DeepseekHarnessHookDecisionDeny || result.Decision == contracts.DeepseekHarnessHookDecisionStop
+		failed := result.ExitCode != nil && *result.ExitCode != 0 || result.ExitCode == nil && strings.TrimSpace(result.Stderr) != ""
+		if !blocked && !failed {
+			return nil
+		}
+	case contracts.DeepseekHarnessEventDeliverablesPresented:
+		// The native file list is transcript content, including files from nested tool calls.
+	case contracts.DeepseekHarnessEventLlmRetryStarted:
+		// The retry event supplies the attempt count and diagnostic.
 	case contracts.DeepseekHarnessEventPlanMode:
 		if stream.childAgentID == "" {
 			var state struct {
@@ -184,6 +294,22 @@ func (a *Agent) applySessionEvent(stream *sessionStream, event sessionEvent, raw
 	case contracts.DeepseekHarnessEventTodoWrite:
 		content.Completion = agent.MessageCompletionComplete
 		return sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{})
+	default:
+		if _, silent := silentSessionEvents[event.Type]; silent {
+			return nil
+		}
+		return sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{})
+	}
+	if slices.Contains(contracts.DeepseekHarnessNotificationEventMembers, event.Type) {
+		if _, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content); !agent.OutputRetained(err) {
+			return err
+		}
+		if event.Type == contracts.DeepseekHarnessEventCompactionEnd {
+			providerkit.EndCompaction(sink)
+			stream.compactionLive = false
+		} else if event.Type == contracts.DeepseekHarnessEventLlmRetry && stream.childAgentID == "" {
+			a.retryResolution.NoteRetry()
+		}
 	}
 	return nil
 }
@@ -290,7 +416,7 @@ func (a *Agent) finishPendingTools(stream *sessionStream, completion agent.Messa
 			return fmt.Errorf("DeepSeek Harness pending tool has no native sequence")
 		}
 		content := agent.MessageContent{Original: raw, AgentSessionID: stream.sessionID, Completion: completion, IdempotencyKey: fmt.Sprintf("session-event:%d:retained-close", *event.Seq)}
-		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{SpanID: id, SpanType: sink.GetSpanType(id), SpanColor: sink.ReserveSpanColor(id, ""), Closing: true}); err != nil {
+		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, agent.SpanInfo{SpanID: id, SpanType: sink.GetSpanType(id), SpanColor: sink.ReserveSpanColor(id, ""), Closing: true}); !agent.OutputRetained(err) {
 			return err
 		}
 		sink.CloseSpan(id)

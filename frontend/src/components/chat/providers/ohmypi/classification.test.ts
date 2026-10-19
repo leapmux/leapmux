@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { OH_MY_PI_EVENT } from '~/generated/contracts/ohmypi-protocol'
+import { OH_MY_PI_EVENT, OH_MY_PI_NOTIFICATION_EVENT } from '~/generated/contracts/ohmypi-protocol'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { input } from '../testUtils'
 import { classifyOhMyPiMessage } from './classification'
@@ -36,7 +36,7 @@ describe('classifyOhMyPiMessage', () => {
 
   it('hides an assistant message whose text is blank, and a message_end that holds no message', () => {
     expect(classify({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: ' \n\t' }] } })).toEqual({ kind: 'hidden' })
-    expect(classify({ type: 'message_end' })).toEqual({ kind: 'hidden' })
+    expect(classify({ type: 'message_end' })).toEqual({ kind: 'unknown' })
   })
 
   it('reads an assistant message by its text alone', () => {
@@ -50,9 +50,9 @@ describe('classifyOhMyPiMessage', () => {
     expect(classify(message([]))).toEqual({ kind: 'hidden' })
   })
 
-  it('hides a user, tool result and shell echo message', () => {
-    for (const role of ['user', 'toolResult', 'bashExecution'])
-      expect(classify({ type: 'message_end', message: { role, content: [] } }), role).toEqual({ kind: 'hidden' })
+  it('leaves a stored native user or tool message unknown', () => {
+    for (const role of ['user', 'toolResult', 'bashExecution', 'future-role'])
+      expect(classify({ type: 'message_end', message: { role, content: [] } }), role).toEqual({ kind: 'unknown' })
   })
 
   it('reads a custom message as a notification and never as the reply, and a hidden one as nothing', () => {
@@ -64,7 +64,7 @@ describe('classifyOhMyPiMessage', () => {
       .toEqual({ kind: 'notification', entries: [{ kind: 'text', text: 'Supervised process web exited with exit code 0.' }] })
     expect(classify({ type: 'message_end', message: { role: 'custom', customType: 'skill-prompt', content: '# Release', display: true, details: { name: 'release' }, attribution: 'user' } }))
       .toEqual({ kind: 'notification', entries: [{ kind: 'text', text: 'Loaded the skill release' }] })
-    expect(classify({ type: 'message_end', message: { role: 'custom', content: 'Hidden.', display: false } })).toEqual({ kind: 'hidden' })
+    expect(classify({ type: 'message_end', message: { role: 'custom', content: 'Hidden.', display: false } })).toEqual({ kind: 'notification', entries: [{ kind: 'text', text: 'Hidden.' }] })
     expect(classify({ type: 'message_end', message: { role: 'custom', content: '  ' } })).toEqual({ kind: 'hidden' })
   })
 
@@ -83,21 +83,21 @@ describe('classifyOhMyPiMessage', () => {
     expect(classify({ type: 'response', command: 'prompt', success: true })).toEqual({ kind: 'hidden' })
   })
 
-  it('hides every frame the worker drops', () => {
+  it('leaves stored consumed frames unknown', () => {
     for (const type of ['agent_start', 'turn_start', 'turn_end', 'message_start', 'message_update', 'tool_execution_update', 'goal_updated', 'subagent_event', 'host_tool_call', 'extension_ui_response'])
-      expect(classify({ type }), type).toEqual({ kind: 'hidden' })
+      expect(classify({ type }), type).toEqual({ kind: 'unknown' })
   })
 
-  it('hides the settle and queue frames that omp 18.6.0 sends, which an earlier worker stored', () => {
-    expect(classify({ type: 'session_settled' })).toEqual({ kind: 'hidden' })
-    expect(classify({ type: 'queue_update', steering: ['steer'], followUp: [] })).toEqual({ kind: 'hidden' })
+  it('leaves stored settle and queue frames unknown', () => {
+    expect(classify({ type: 'session_settled' })).toEqual({ kind: 'unknown' })
+    expect(classify({ type: 'queue_update', steering: ['steer'], followUp: [] })).toEqual({ kind: 'unknown' })
   })
 
   it('reads a thread of notifications and hides an empty one', () => {
-    const thread = classifyOhMyPiMessage(input(undefined, { old_seqs: [], messages: [{ type: 'auto_compaction_start' }, { type: 'auto_compaction_end', result: { tokensBefore: 10 } }] }, AgentProvider.OH_MY_PI))
+    const thread = classifyOhMyPiMessage(input(undefined, { old_seqs: [], messages: [{ type: 'auto_retry_end', success: true }, { type: 'auto_compaction_end', result: { tokensBefore: 10 } }] }, AgentProvider.OH_MY_PI))
     expect(thread).toEqual({
       kind: 'notification',
-      entries: [{ kind: 'compaction', phase: 'start' }, { kind: 'compaction', phase: 'end', detail: { trigger: 'auto', pre: 10 } }],
+      entries: [{ kind: 'retry', scope: 'api', succeeded: true }, { kind: 'compaction', phase: 'end', detail: { trigger: 'auto', pre: 10 } }],
     })
     expect(classifyOhMyPiMessage(input(undefined, { old_seqs: [], messages: [] }, AgentProvider.OH_MY_PI))).toEqual({ kind: 'hidden' })
   })
@@ -107,11 +107,16 @@ describe('classifyOhMyPiMessage', () => {
     expect(blank).toEqual({ kind: 'hidden' })
   })
 
-  it('decides every frame the contract lists, so none reaches the unknown card', () => {
-    // A minimal frame of each type: the decision must not depend on a field that a
-    // frame of that type can leave out.
-    const unknown = Object.values(OH_MY_PI_EVENT).filter(type => classify({ type }).kind === 'unknown')
-    expect(unknown, 'Classify each new omp frame: hide it, or read it as a row.').toEqual([])
+  it('threads every generated notification event', () => {
+    for (const type of OH_MY_PI_NOTIFICATION_EVENT) {
+      const frame = { type, message: 'notice', text: 'output', error: 'failure' }
+      const category = classifyOhMyPiMessage(input(undefined, { old_seqs: [], messages: [frame] }, AgentProvider.OH_MY_PI))
+      expect(category.kind, type).not.toBe('unknown')
+    }
+  })
+
+  it('leaves a stored compaction start unknown', () => {
+    expect(classify({ type: OH_MY_PI_EVENT.AutoCompactionStart })).toEqual({ kind: 'unknown' })
   })
 
   it('reads LeapMux\'s own notification envelope', () => {

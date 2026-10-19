@@ -351,6 +351,7 @@ func (a *Agent) endStoppedZCodeTurn(generation uint64) {
 	a.cancelStoppedZCodeTurnLocked()
 	a.Mu.Unlock()
 	defer a.PublishTurnActive()
+	a.endZCodeCompaction()
 
 	// The text the model had already produced is a real segment that ended early.
 	// The buffer is empty when the abort found the stream idle, so this costs

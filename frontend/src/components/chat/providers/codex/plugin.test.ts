@@ -591,65 +591,12 @@ describe('codex contextUsageFromMessage', () => {
 describe('codex rateLimitsFromMessage', () => {
   const plugin = providerFor(AgentProvider.CODEX)!
 
-  it('extracts Codex native rate limit info', () => {
-    const result = plugin?.session?.rateLimitsFromMessage!(parsed({
+  it('reads no rate limit from a stored account/rateLimits/updated row', () => {
+    expect(plugin).toBeDefined()
+    expect(plugin.session?.rateLimitsFromMessage?.(parsed({
       method: 'account/rateLimits/updated',
-      params: {
-        rateLimits: {
-          primary: { usedPercent: 85, windowDurationMins: 300, resetsAt: 1774070211 },
-          secondary: { usedPercent: 4, windowDurationMins: 10080, resetsAt: 1774525963 },
-        },
-      },
-    }))
-    expect(result?.mode).toBe('replace')
-    expect(result?.values.five_hour?.utilization).toBeCloseTo(0.85)
-    expect(result?.values.five_hour?.status).toBe('allowed_warning')
-    expect(result?.values.seven_day?.utilization).toBeCloseTo(0.04)
-    expect(result?.values.seven_day?.status).toBe('allowed')
-    expect(result?.values.account_block).toEqual({})
-  })
-
-  it('returns the account-block clearing entry without tiers', () => {
-    expect(plugin?.session?.rateLimitsFromMessage!(parsed({
-      method: 'account/rateLimits/updated',
-      params: { rateLimits: {} },
-    }))).toEqual({ mode: 'replace', values: { account_block: {} } })
-  })
-
-  it('elevates the most-utilized window to exceeded when reached-type fires under 100%', () => {
-    const result = plugin?.session?.rateLimitsFromMessage!(parsed({
-      method: 'account/rateLimits/updated',
-      params: {
-        rateLimits: {
-          rateLimitReachedType: 'rate_limit_reached',
-          primary: { usedPercent: 99, windowDurationMins: 300, resetsAt: 1774070211 },
-          secondary: { usedPercent: 20, windowDurationMins: 10080, resetsAt: 1774525963 },
-        },
-      },
-    }))
-    expect(result?.values.five_hour?.status).toBe('exceeded')
-    expect(result?.values.seven_day?.status).toBe('allowed')
-  })
-
-  it('does not elevate for non-time-window reached-type', () => {
-    const result = plugin?.session?.rateLimitsFromMessage!(parsed({
-      method: 'account/rateLimits/updated',
-      params: {
-        rateLimits: {
-          rateLimitReachedType: 'workspace_owner_credits_depleted',
-          primary: { usedPercent: 20, windowDurationMins: 300, resetsAt: 1774070211 },
-        },
-      },
-    }))
-    expect(result?.values.five_hour?.status).toBe('allowed')
-    expect(result?.values.account_block).toEqual({
-      rateLimitType: 'workspace_owner_credits_depleted',
-      status: 'exceeded',
-    })
-  })
-
-  it('returns null for a non-rate-limit method', () => {
-    expect(plugin?.session?.rateLimitsFromMessage!(parsed({ method: 'turn/completed' }))).toBeNull()
+      params: { rateLimits: { primary: { usedPercent: 99, windowDurationMins: 300 } } },
+    }))).toBeUndefined()
   })
 })
 

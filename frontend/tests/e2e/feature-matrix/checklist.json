@@ -6423,11 +6423,11 @@
         "verified": true
       },
       "codebuddy-code": {
-        "support": "supported",
-        "userNote": "",
-        "detailNote": "",
+        "support": "agent-limit",
+        "userNote": "CodeBuddy Code offers no goal control through its stream-JSON protocol, which LeapMux uses.",
+        "detailNote": "CodeBuddy Code does not run its goal commands in stream-JSON mode, although initialization lists /goal. LeapMux refuses set, clear, pause and resume. The complete native specs passed with CodeBuddy 2.168.2 in run e2e-wrm8Vp on 2026-10-19.",
         "spec": "frontend/tests/e2e/codebuddy-code/session-goal-set-and-clear.spec.ts",
-        "audit": "source-verified",
+        "audit": "unsupported",
         "testStatus": "passed",
         "verified": true
       },
@@ -6696,8 +6696,8 @@
       },
       "codebuddy-code": {
         "support": "agent-limit",
-        "userNote": "CodeBuddy Code offers goal pause and resume only in its Web UI and Agent Client Protocol modes. It offers them not in headless or stream-JSON mode, which LeapMux uses. See the [goal guide](https://www.codebuddy.ai/docs/cli/goal).",
-        "detailNote": "CodeBuddy Code exposes no native standing goal pause or resume operation through this integration. The Worker refuses both actions. Existing native goal set/clear support stays separate.\n\nClassified as an agent limit for the stream-JSON protocol: the goal guide marks pause and resume as available in Web UI and ACP only, with no support in headless mode. The slash command is registered as '/goal <condition> | clear', and the control request subtypes of 2.160.0 include no goal operation. The ACP mode of the same binary has a goalControl extension method with pause and resume, which LeapMux does not use (binary check, 2026-10-05). Open question for the maintainers: if the ACP mode counts as the native protocol, this cell is a LeapMux limit.\n\nSources fetched on 2026-10-05:\n- <https://www.codebuddy.ai/docs/cli/goal>: The support table lists goal pause and resume as available in Web UI and ACP, and as not available in the terminal interface, headless mode, and Remote Control.",
+        "userNote": "CodeBuddy Code offers no goal control through its stream-JSON protocol, which LeapMux uses.",
+        "detailNote": "CodeBuddy Code does not run its goal commands in stream-JSON mode, although initialization lists /goal. LeapMux refuses set, clear, pause and resume. The complete native specs passed with CodeBuddy 2.168.2 in run e2e-wrm8Vp on 2026-10-19.",
         "spec": "frontend/tests/e2e/codebuddy-code/session-goal-pause-and-resume.spec.ts",
         "audit": "unsupported",
         "testStatus": "passed",
@@ -8582,8 +8582,8 @@
       },
       "amp": {
         "support": "supported",
-        "userNote": "",
-        "detailNote": "",
+        "userNote": "A new Amp conversation offers steering after its first reply supplies a native thread ID.",
+        "detailNote": "A new conversation has no native thread ID until Amp sends its first reply. LeapMux offers steering after that reply. A resumed conversation already has its thread ID. The native spec checks both states.",
         "spec": "frontend/tests/e2e/amp/steer-mid-turn.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -11892,7 +11892,7 @@
       "factory-droid": {
         "support": "leapmux-limit",
         "userNote": "",
-        "detailNote": "The LeapMux provider adapter stores native output but publishes no live ReportProgress update. The indicator cannot report an advancing token or byte count on this path.\n\nClassified as a LeapMux limit: Droid streams text deltas, and the Droid adapter assembles them without a ReportProgress call (source read 2026-10-05).\n\nTested version: Factory Droid 0.233.0.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/521.",
+        "detailNote": "The native generation-progress spec shows no advancing token or byte count during the model stream. LeapMux reports live tool output separately, and the shell spec verifies that output. This result does not imply that the adapter lacks ReportProgress calls.\n\nTested version: Factory Droid 0.243.0.\n\nTrack the generation counters: https://github.com/leapmux/leapmux/issues/521.",
         "spec": "frontend/tests/e2e/factory-droid/generation-progress.spec.ts",
         "audit": "unsupported",
         "verified": true,

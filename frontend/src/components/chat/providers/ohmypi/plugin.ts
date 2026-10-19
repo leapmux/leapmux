@@ -2,7 +2,7 @@ import type { ProviderPlugin } from '../capabilities'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { registerProvider } from '../registry'
 import { classifyOhMyPiMessage } from './classification'
-import { ohMyPiCompactionBoundary, ohMyPiNotificationEntry } from './extractors/notification'
+import { ohMyPiCompactionBoundary, ohMyPiCompactionStart, ohMyPiNotificationEntry } from './extractors/notification'
 import { ohMyPiResultDivider } from './extractors/resultDivider'
 import { ohMyPiExtractRow } from './extractors/row'
 import { ohMyPiControls } from './pluginControls'
@@ -19,6 +19,7 @@ const ohMyPiPlugin: ProviderPlugin = {
     classify: classifyOhMyPiMessage,
     extractRow: ohMyPiExtractRow,
     notificationEntry: ohMyPiNotificationEntry,
+    compactionStart: ohMyPiCompactionStart,
     extractDivider: ohMyPiResultDivider,
   },
   controls: ohMyPiControls,

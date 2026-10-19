@@ -399,6 +399,8 @@ func (t *droidChildTail) projectToolCall(target droidOutputTarget, id, name stri
 	}{Type: "tool_call", ToolUse: droidToolUse{ID: id, Name: name, Input: input}})
 	if err == nil {
 		t.agent.onToolCall(payload, target)
+		// An archive block is committed. Store it before the next block in this message.
+		t.agent.flushPendingToolCall(target, id)
 	}
 }
 

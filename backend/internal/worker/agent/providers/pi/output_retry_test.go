@@ -20,12 +20,13 @@ func startPiRetryBackoff(a *Agent) {
 	a.HandleOutput([]byte(piRetryStart))
 }
 
-func TestPiCancelledBackoffSettlesWithoutAnotherDivider(t *testing.T) {
+func TestPiCancelledRetrySettlesTheTurnAsInterrupted(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.ControlSink{}
 	rig := newPiTestRig(t, agent.NewProviderServices(sink))
 	a := rig.agent
 	startPiRetryBackoff(a)
+	assert.Empty(t, sink.Messages())
 	a.HandleOutput([]byte(piRetryCancelled))
 	a.HandleOutput([]byte(`{"type":"agent_settled"}`))
 	a.Mu.Lock()
@@ -41,6 +42,8 @@ func TestPiCancelledBackoffSettlesWithoutAnotherDivider(t *testing.T) {
 		if frame.Type == "agent_end" {
 			dividers++
 			assert.Equal(t, []byte(piRetryAttemptEnd), row.Content, "the existing native divider remains unchanged")
+			assert.True(t, row.TurnEnd)
+			assert.Equal(t, agent.MessageCompletionInterrupted, row.Completion)
 		}
 	}
 	assert.Equal(t, 1, dividers, "settlement must not add a duplicate divider")
@@ -65,21 +68,21 @@ func TestPiAbortDuringBackoffAcceptsLaterInput(t *testing.T) {
 	require.NoError(t, a.SendInput("A normal prompt after the accepted backoff abort.", nil))
 }
 
-func TestPiDuplicateCancellationCannotEndAnotherRetryTurn(t *testing.T) {
+func TestPiDuplicateSettlementDoesNotAffectTheNextTurn(t *testing.T) {
 	t.Parallel()
 	a := newPiAgentWithSink(agent.NewProviderServices(&agenttest.ControlSink{}))
 	startPiRetryBackoff(a)
 	a.HandleOutput([]byte(piRetryCancelled))
 	a.HandleOutput([]byte(piRetryCancelled))
+	a.HandleOutput([]byte(`{"type":"agent_settled"}`))
+	a.HandleOutput([]byte(`{"type":"agent_settled"}`))
 	a.HandleOutput([]byte(`{"type":"agent_start"}`))
-	a.HandleOutput([]byte(`{"type":"agent_settled"}`))
-	a.HandleOutput([]byte(`{"type":"agent_settled"}`))
 	a.Mu.Lock()
 	assert.True(t, a.currentTurnActive, "duplicate old evidence cannot own the replacement")
 	a.Mu.Unlock()
 }
 
-func TestPiMalformedRetryStartCannotOwnACancellation(t *testing.T) {
+func TestPiMalformedRetryStartDoesNotBlockSettlement(t *testing.T) {
 	t.Parallel()
 	for _, started := range []string{
 		`{"type":"auto_retry_start","attempt":0,"maxAttempts":3,"delayMs":2000}`,
@@ -99,7 +102,7 @@ func TestPiMalformedRetryStartCannotOwnACancellation(t *testing.T) {
 			a.HandleOutput([]byte(piRetryCancelled))
 			a.HandleOutput([]byte(`{"type":"agent_settled"}`))
 			a.Mu.Lock()
-			assert.True(t, a.currentTurnActive)
+			assert.False(t, a.currentTurnActive)
 			a.Mu.Unlock()
 		})
 	}
@@ -110,8 +113,8 @@ func TestPiMalformedSettlementKeepsTheValidCancellationMarker(t *testing.T) {
 	a := newPiAgentWithSink(agent.NewProviderServices(&agenttest.ControlSink{}))
 	startPiRetryBackoff(a)
 	a.HandleOutput([]byte(piRetryCancelled))
-	a.handlePiAgentSettled([]byte(`{"type":null}`))
-	a.handlePiAgentSettled([]byte(`{"type":"agent_start"}`))
+	a.handlePiAgentSettled([]byte(`{"type":null}`), a.Clock().Now())
+	a.handlePiAgentSettled([]byte(`{"type":"agent_start"}`), a.Clock().Now())
 	a.Mu.Lock()
 	assert.True(t, a.currentTurnActive)
 	a.Mu.Unlock()
@@ -121,7 +124,7 @@ func TestPiMalformedSettlementKeepsTheValidCancellationMarker(t *testing.T) {
 	a.Mu.Unlock()
 }
 
-func TestPiOldRetrySettlementPreservesAReplacementTurn(t *testing.T) {
+func TestPiNextTurnStartsAfterTheCancelledRetrySettles(t *testing.T) {
 	t.Parallel()
 	a := newPiAgentWithSink(agent.NewProviderServices(&agenttest.ControlSink{}))
 	startPiRetryBackoff(a)
@@ -129,9 +132,9 @@ func TestPiOldRetrySettlementPreservesAReplacementTurn(t *testing.T) {
 	oldGeneration := a.turnGeneration
 	a.Mu.Unlock()
 	a.HandleOutput([]byte(piRetryCancelled))
-	// A replacement starts before the previous run's settlement reaches the reader.
-	a.HandleOutput([]byte(`{"type":"agent_start"}`))
+	// The native settlement precedes the next turn.
 	a.HandleOutput([]byte(`{"type":"agent_settled"}`))
+	a.HandleOutput([]byte(`{"type":"agent_start"}`))
 	a.Mu.Lock()
 	assert.True(t, a.currentTurnActive, "the old settlement must not end the replacement")
 	assert.Greater(t, a.turnGeneration, oldGeneration, "the cancelled retry makes the later start a replacement")
@@ -165,14 +168,17 @@ func TestPiExhaustedRetriesKeepTheFinalNativeFailure(t *testing.T) {
 	count := sink.MessageCount()
 	a.HandleOutput([]byte(`{"type":"auto_retry_end","success":false,"attempt":1,"finalError":"500 retry limit"}`))
 	a.HandleOutput([]byte(`{"type":"agent_settled"}`))
-	assert.Equal(t, count, sink.MessageCount(), "settlement adds no message or duplicate divider")
+	assert.Zero(t, count, "the divider waits for settlement")
+	require.Equal(t, 1, sink.MessageCount())
+	assert.True(t, sink.Messages()[0].TurnEnd)
+	assert.Contains(t, string(sink.Messages()[0].Content), "500 retry limit")
 	assert.Equal(t, 2, sink.NotificationCount(), "the native retry end still adds its notice")
 	a.Mu.Lock()
 	assert.False(t, a.currentTurnActive)
 	a.Mu.Unlock()
 }
 
-func TestPiMalformedOrUnmatchedRetryEventsCannotSettleATurn(t *testing.T) {
+func TestPiRetryNoticesDoNotReplaceNativeSettlement(t *testing.T) {
 	t.Parallel()
 	for _, ended := range []string{
 		`{"type":"auto_retry_end","attempt":1,"finalError":"Retry cancelled"}`,
@@ -190,9 +196,12 @@ func TestPiMalformedOrUnmatchedRetryEventsCannotSettleATurn(t *testing.T) {
 			a := newPiAgentWithSink(agent.NewProviderServices(&agenttest.ControlSink{}))
 			startPiRetryBackoff(a)
 			a.HandleOutput([]byte(ended))
-			a.HandleOutput([]byte(`{"type":"agent_settled"}`))
 			a.Mu.Lock()
 			assert.True(t, a.currentTurnActive, "unmatched evidence cannot end the retry turn")
+			a.Mu.Unlock()
+			a.HandleOutput([]byte(`{"type":"agent_settled"}`))
+			a.Mu.Lock()
+			assert.False(t, a.currentTurnActive)
 			a.Mu.Unlock()
 		})
 	}

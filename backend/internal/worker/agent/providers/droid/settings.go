@@ -297,8 +297,4 @@ func (a *Agent) onSettingsUpdated(payload []byte) {
 		a.sink.PersistSettingsRefresh(refresh)
 	}
 	a.queuePermissionApprovals()
-	target, ok := a.outputTargetFor("")
-	if ok {
-		a.persistNotification(payload, target)
-	}
 }

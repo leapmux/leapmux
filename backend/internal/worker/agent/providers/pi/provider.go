@@ -10,7 +10,8 @@ import (
 )
 
 // piProvider consolidates lifecycle notifications and recognizes the interrupt frame.
-// Repeated compaction and retry events replace earlier status events.
+// API retries share one slot. Summary retries are transient status until a compaction ends.
+// Every compaction end is a boundary. Starts are live state and have no stored row.
 // Each extension error stays separate so the transcript preserves partial failures.
 type piProvider struct {
 	agent.ProviderDefaults
@@ -39,33 +40,30 @@ func (piProvider) ResolveResumeHandle(handle, homeDir string) (string, error) {
 
 func (piProvider) Classify(raw json.RawMessage) agent.NotificationClassification {
 	var env struct {
-		Type    string                     `json:"type"`
-		Aborted bool                       `json:"aborted"`
-		Result  map[string]json.RawMessage `json:"result"`
+		Type  string `json:"type"`
+		Entry struct {
+			Type string `json:"type"`
+		} `json:"entry"`
 	}
 	if err := json.Unmarshal(raw, &env); err != nil {
 		return agent.NotificationClassification{}
 	}
 	switch env.Type {
 	case contracts.PiEventCompactionEnd:
-		if env.Aborted || env.Result == nil {
-			// A failed end replaces its start status without creating a boundary.
-			return agent.NotificationClassification{Kind: agent.NotificationKindStatus, Key: "pi:" + contracts.PiEventCompactionStart}
+		return agent.CompactionBoundaryNotification()
+	case contracts.PiEventEntryAppended:
+		if env.Entry.Type == contracts.PiEntryTypeCompaction {
+			return agent.CompactionBoundaryNotification()
 		}
-		// Each completed boundary stays in the transcript.
-		return agent.NotificationClassification{Kind: agent.NotificationKindCompactionBoundary, Key: "pi:" + contracts.PiEventCompactionEnd}
-	case contracts.PiEventCompactionStart:
-		// Replace the earlier status so the UI shows one compaction indicator.
-		return agent.NotificationClassification{Kind: agent.NotificationKindStatus, Key: "pi:" + contracts.PiEventCompactionStart}
+		return agent.NotificationClassification{}
+	case contracts.PiEventSummarizationRetryScheduled, contracts.PiEventSummarizationRetryAttemptStart,
+		contracts.PiEventSummarizationRetryFinished:
+		return agent.StatusNotification()
 	case contracts.PiEventAutoRetryStart, contracts.PiEventAutoRetryEnd:
-		return agent.NotificationClassification{Kind: agent.NotificationKindAPIRetry, Key: "pi:" + env.Type}
+		return agent.APIRetryNotification()
 	default:
 		return agent.NotificationClassification{}
 	}
-}
-
-func (piProvider) Merge(class agent.NotificationClassification, previous, next json.RawMessage) (json.RawMessage, error) {
-	return next, nil
 }
 
 func (piProvider) IsInterrupt(content string) bool {

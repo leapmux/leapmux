@@ -13,7 +13,7 @@ import (
 func TestJSONRPCControlFailureRetainsTheWriteStage(t *testing.T) {
 	for _, written := range []int{0, 2} {
 		cause := errors.New("the pipe closed")
-		connection := &JSONRPCProcess{Process: Process{stdin: partialStdinWriter{written: written, err: cause}}}
+		connection := newObserverTestProcess(t, partialStdinWriter{written: written, err: cause})
 		_, err := connection.SendRequest("control.answer", json.RawMessage(`{}`), time.Second)
 		require.Error(t, err)
 		err = ClassifyJSONRPCDeliveryError("control response", err)

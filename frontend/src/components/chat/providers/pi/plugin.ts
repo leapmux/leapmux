@@ -2,7 +2,7 @@ import type { ProviderPlugin } from '../capabilities'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { registerProvider } from '../registry'
 import { classifyPiMessage } from './classification'
-import { piCompactionBoundary, piNotificationEntry } from './extractors/notification'
+import { piCompactionBoundary, piCompactionStart, piNotificationEntry } from './extractors/notification'
 import { piOutputFilePaths } from './extractors/outputFilePaths'
 import { piResultDivider } from './extractors/resultDivider'
 import { piExtractRow } from './extractors/row'
@@ -14,6 +14,7 @@ import { piRelatedMessages, piSpanRole } from './spanRole'
 
 const piPlugin: ProviderPlugin = {
   transcript: {
+    compactionStart: piCompactionStart,
     outputFilePaths: piOutputFilePaths,
     resolveMessage: resolvePiMessage,
     spanRole: piSpanRole,

@@ -3,6 +3,8 @@ import type { NativeScenarioContext } from './nativeScenario'
 import { randomUUID } from 'node:crypto'
 import { expect } from '@playwright/test'
 import { escapeRegExp } from '../../../src/lib/regexp'
+import { withCleanup } from './cleanup'
+import { validateGateName } from './mockModelScript'
 import { nativeScenarioModelContextText, nativeTextStep } from './nativeScenario'
 import { assistantBubbles, messageBubbles, sendMessage, waitForAgentIdle } from './ui'
 
@@ -52,7 +54,12 @@ export type CompactionSummaryRoute
     | { route: 'queued' }
 
 /** The provider facts of one native compaction. Each provider states them once, for both compaction cells. */
-export interface NativeCompactionOptions {
+export interface NativeCompactionHold {
+  summaryGate?: string
+  onHeld?: () => Promise<void>
+}
+
+export interface NativeCompactionOptions extends NativeCompactionHold {
   summary: CompactionSummaryRoute
   /** Put the summary into the reply format that the native summarizer requires. The result must keep the summary. */
   summaryEnvelope?: (summary: string) => string
@@ -63,6 +70,30 @@ export interface NativeCompactionOptions {
    * history size with the summary needs this, because the mock reports one token by default.
    */
   reportedInputTokens?: number
+}
+
+function validateCompactionHold(options: NativeCompactionHold): void {
+  if (options.summaryGate !== undefined)
+    validateGateName(options.summaryGate)
+  if (options.onHeld && options.summaryGate === undefined)
+    throw new Error('The compaction hold callback requires a summary gate.')
+}
+
+/** Request compaction and inspect its live state before the held summary can finish. */
+export async function requestNativeCompaction(context: NativeScenarioContext, options: NativeCompactionHold = {}): Promise<void> {
+  validateCompactionHold(options)
+  const gate = options.summaryGate
+  await withCleanup(async () => {
+    await sendMessage(context.page, '/compact')
+    if (gate !== undefined) {
+      await context.modelScript.waitForGate(gate)
+      await options.onHeld?.()
+      await context.modelScript.releaseGate(gate)
+    }
+  }, async () => {
+    if (gate !== undefined)
+      await context.modelScript.releaseGateIfHeld(gate)
+  })
 }
 
 /** The requests that a native compaction scenario read. */
@@ -91,6 +122,23 @@ export async function seedManualCompactionConversation(context: NativeScenarioCo
   }
 }
 
+/** Seed one turn and refuse the native summarizer request through its own rule. */
+export async function exerciseFailedNativeCompaction(context: NativeScenarioContext, options: NativeCompactionOptions): Promise<void> {
+  if (options.summary.route !== 'rule')
+    throw new Error('The failed compaction scenario needs a summarizer rule.')
+  const { page, modelScript } = context
+  const seed = COMPACTION_SEED_TURNS[0]!
+  const start = await modelScript.queue(nativeTextStep(context, seed.answer))
+  await sendMessage(page, modelScript.prompt(seed.prompt))
+  await modelScript.waitForSteps(start + 1)
+  await waitForAgentIdle(page)
+  const name = `failed-native-compaction-${randomUUID()}`
+  await modelScript.rule({ name, when: options.summary.when, respond: { error: { status: 400, message: 'probe compaction refused' } } })
+  await sendMessage(page, '/compact')
+  await expect.poll(async () => (await modelScript.status()).ruleMatches[name] ?? 0, 'the native summarizer received the scripted refusal').toBeGreaterThan(0)
+  await waitForAgentIdle(page)
+}
+
 /** The summary reply of one scenario. It always holds {@link MANUAL_COMPACTION_MARKER}. */
 export function compactionSummaryText(options: Pick<NativeCompactionOptions, 'summaryEnvelope'>): string {
   const text = options.summaryEnvelope ? options.summaryEnvelope(MANUAL_COMPACTION_SUMMARY) : MANUAL_COMPACTION_SUMMARY
@@ -107,8 +155,10 @@ export function compactionSummaryText(options: Pick<NativeCompactionOptions, 'su
  * the queue, so an earlier turn of the test changes nothing. The caller checks the notice, which differs by provider.
  */
 export async function exerciseNativeCompaction(context: NativeScenarioContext, options: NativeCompactionOptions): Promise<NativeCompactionResult> {
+  validateCompactionHold(options)
   const { page, modelScript } = context
-  const summary = { text: compactionSummaryText(options), ...(options.summaryUsage ? { usage: options.summaryUsage } : {}) }
+  const hold = options.summaryGate !== undefined ? { gate: options.summaryGate } : {}
+  const summary = { text: compactionSummaryText(options), ...(options.summaryUsage ? { usage: options.summaryUsage } : {}), ...hold }
   await seedManualCompactionConversation(context, options.reportedInputTokens)
   const route = options.summary
   const ruleName = `native-compaction-summary-${randomUUID()}`
@@ -116,10 +166,10 @@ export async function exerciseNativeCompaction(context: NativeScenarioContext, o
   if (route.route === 'fallback')
     await modelScript.fallback(summary)
   else if (route.route === 'rule')
-    await modelScript.rule({ name: ruleName, when: route.when, respond: route.respond ?? summary })
+    await modelScript.rule({ name: ruleName, when: route.when, respond: { ...route.respond ?? summary, ...hold } })
   else
     summaryStep = await modelScript.queue(summary)
-  await sendMessage(page, '/compact')
+  await requestNativeCompaction(context, options)
 
   let summaryRequest: MockModelRequestRecord | undefined
   if (route.route === 'fallback') {

@@ -8,6 +8,9 @@ package amp
 // id. Amp prints it late, when the first inference of the process starts.
 const systemSubtypeInit = "init"
 
+// blockTypeRedactedThinking carries no visible text. The worker stores no row for it.
+const blockTypeRedactedThinking = "redacted_thinking"
+
 // stopReasonEndTurn ends a turn. Amp states it on the assistant message that
 // closes the turn, and it prints no other turn end.
 const stopReasonEndTurn = "end_turn"

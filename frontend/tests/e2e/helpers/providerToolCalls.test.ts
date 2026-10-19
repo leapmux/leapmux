@@ -4,6 +4,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import process from 'node:process'
+import { DatabaseSync } from 'node:sqlite'
 import { fileURLToPath } from 'node:url'
 import { runInNewContext } from 'node:vm'
 import { describe, expect, it } from 'vitest'
@@ -15,6 +16,7 @@ import {
   backgroundBashToolCall,
   bashToolCall,
   blockGoalToolCall,
+  claudeSkillToolCall,
   claudeSubagentHandbackToolCall,
   claudeTaskCreateToolCall,
   claudeTaskUpdateToolCall,
@@ -39,6 +41,7 @@ import {
   commandCodeTaskUpdateToolCall,
   completeGoalToolCall,
   copilotApplyPatchToolCall,
+  copilotAsyncBashToolCall,
   createGoalToolCall,
   cursorCreatePlanToolCall,
   cursorGenerateImageToolCall,
@@ -401,9 +404,9 @@ describe('droidToolSearchToolCall', () => {
 })
 
 describe('droidScriptToolCall', () => {
-  it('keeps raw source and a zero observation period with the exact native call ID', () => {
-    const script = '\nreturn "출력" + (40 + 2);\n'
-    expect(droidScriptToolCall('native-script', script, 0)).toEqual({ id: 'call_native-script', name: 'Script', arguments: { script, waitForMs: 0 } })
+  it('keeps raw source and native directives with the exact native call ID', () => {
+    const script = '// @script: {"await":true}\nreturn "출력" + (40 + 2);\n'
+    expect(droidScriptToolCall('native-script', script)).toEqual({ id: 'call_native-script', name: 'Script', arguments: { script } })
     expect(droidScriptToolCall('call_native-script', script).arguments).toEqual({ script })
   })
 
@@ -417,8 +420,8 @@ describe('droidScriptToolCall', () => {
     expect(() => droidScriptToolCall('script', source)).toThrow('nonempty source')
   })
 
-  it.each([-1, Number.NaN, Number.POSITIVE_INFINITY])('rejects an invalid observation period: %s', (waitForMs) => {
-    expect(() => droidScriptToolCall('script', 'return 0;', waitForMs)).toThrow('nonnegative milliseconds')
+  it.each([null, undefined, 0, -1, Number.NaN, Number.POSITIVE_INFINITY, {}, []])('rejects a non-string source: %j', (source) => {
+    expect(() => Reflect.apply(droidScriptToolCall, undefined, ['script', source])).toThrow('nonempty source')
   })
 })
 
@@ -763,6 +766,14 @@ describe('image-read tool calls', () => {
         code: `nodeRepl.write(${JSON.stringify(label)}); await nodeRepl.emitImage({ base64: "AQID", mimeType: 'image/png' })`,
         title: `Show ${label}`,
       },
+    })
+  })
+
+  it('builds the Claude Skill call', () => {
+    expect(claudeSkillToolCall('skill-1', 'keybindings-help')).toEqual({
+      id: 'skill-1',
+      name: 'Skill',
+      arguments: { skill: 'keybindings-help' },
     })
   })
 
@@ -1455,10 +1466,7 @@ describe('updateTodosToolCall', () => {
     expect(updateTodosToolCall(AgentProvider.REASONIX, 'call-1', [{ step: 'One', status: 'pending' }]).name).toBe('todo_write')
   })
 
-  // Goose and Copilot take a markdown checklist. Only `x` reads as completed;
-  // every other marker stays pending. Goose's field is `content`; Copilot's is
-  // `todos`.
-  it('writes the Goose checklist in content, and the Copilot checklist in todos', () => {
+  it('writes the Goose checklist and the Copilot SQL snapshot', () => {
     const steps = [
       { step: 'First', status: 'completed' as const },
       { step: 'Second', status: 'pending' as const },
@@ -1471,9 +1479,39 @@ describe('updateTodosToolCall', () => {
     })
     expect(updateTodosToolCall(AgentProvider.GITHUB_COPILOT, 'call-1', steps)).toEqual({
       id: 'call-1',
-      name: 'update_todo',
-      arguments: { todos: '- [x] First\n- [ ] Second\n- [ ] Third' },
+      name: 'sql',
+      arguments: { description: 'Replace session to-dos', query: expect.stringContaining('INSERT INTO todos') },
     })
+  })
+
+  it('executes a Copilot snapshot with quoted text and replaces the previous list', () => {
+    const database = new DatabaseSync(':memory:')
+    try {
+      database.exec('CREATE TABLE todos (id TEXT PRIMARY KEY, title TEXT NOT NULL, description TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN (\'pending\',\'in_progress\',\'done\',\'blocked\'))); CREATE TABLE todo_deps (todo_id TEXT, depends_on TEXT);')
+      const execute = (steps: Array<{ step: string, status: TodoStatus }>) => {
+        const call = updateTodosToolCall(AgentProvider.GITHUB_COPILOT, 'sql-todos', steps)
+        const query = call.arguments?.query
+        if (typeof query !== 'string')
+          throw new Error('The Copilot to-do call must supply SQL.')
+        database.exec(query)
+      }
+      execute([{ step: 'O\'Reilly\'); DROP TABLE todos; --', status: 'completed' }, { step: 'Current', status: 'in_progress' }, { step: 'Blocked', status: 'blocked' }])
+      expect(database.prepare('SELECT title, status FROM todos ORDER BY id').all().map(row => ({ ...row }))).toEqual([
+        { title: 'O\'Reilly\'); DROP TABLE todos; --', status: 'done' },
+        { title: 'Current', status: 'in_progress' },
+        { title: 'Blocked', status: 'blocked' },
+      ])
+      execute([{ step: 'Replacement', status: 'pending' }])
+      expect(database.prepare('SELECT title FROM todos').all().map(row => row.title)).toEqual(['Replacement'])
+      execute([])
+      expect(database.prepare('SELECT * FROM todos').all()).toEqual([])
+      expect(() => execute([{ step: 'Invalid', status: 'cancelled' }])).toThrow('accepts no status')
+      for (const step of ['', ' ', 'null\0byte'])
+        expect(() => execute([{ step, status: 'pending' }])).toThrow('nonblank and contain no null byte')
+    }
+    finally {
+      database.close()
+    }
   })
 
   // OpenCode and Kilo require a priority for each item. Cursor folds the
@@ -1519,11 +1557,22 @@ describe('updateTodosToolCall', () => {
   })
 })
 
+describe('copilotAsyncBashToolCall', () => {
+  it('requests an attached asynchronous shell through the native bash tool', () => {
+    expect(copilotAsyncBashToolCall('shell', 'printf done')).toEqual({
+      id: 'shell',
+      name: 'bash',
+      arguments: { command: 'printf done', description: 'Run the scripted background command', mode: 'async' },
+    })
+  })
+})
+
 /**
  * The statuses that each bulk to-do builder accepts, from each native tool schema. Kiro's create command and Oh My Pi's
  * init command take no status at all, so their builders read none and refuse none.
  */
 const TODO_STATUSES_BY_PROVIDER: ReadonlyMap<AgentProvider, readonly TodoStatus[]> = new Map([
+  [AgentProvider.GITHUB_COPILOT, ['pending', 'in_progress', 'completed', 'blocked']],
   [AgentProvider.CURSOR, ['pending', 'in_progress', 'completed', 'cancelled']],
   [AgentProvider.OPENCODE, ['pending', 'in_progress', 'completed', 'cancelled']],
   [AgentProvider.KILO, ['pending', 'in_progress', 'completed', 'cancelled']],

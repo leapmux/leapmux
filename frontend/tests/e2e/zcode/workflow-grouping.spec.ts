@@ -34,7 +34,7 @@ zcodeTest('shows a native CreateWorkflow run without grouped work', async ({ nat
   await expect(workflowFilter).toHaveAttribute('aria-selected', 'true')
   const row = backgroundTaskRows(page, { kind: 'workflow' }).filter({ hasText: WORKFLOW_NAME }).first()
   await expect(row).toBeVisible()
-  await expect(row).toHaveAttribute('data-status', /^(running|completed)$/)
+  await expect(row).toHaveAttribute('data-status', 'succeeded')
   await page.getByTestId('bg-task-filter-all').filter({ visible: true }).first().click()
   await expect(backgroundTaskRows(page)).toHaveCount(1)
   await expect.poll(() => workflowGroupHeading(row)).toBe('')

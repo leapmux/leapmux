@@ -95,8 +95,7 @@ func newClaudeInterruptRigResponding(t *testing.T, beforeAck []string, respond f
 			StderrDone:   make(chan struct{}),
 			APITimeout:   2 * time.Second,
 		}),
-		sink:           agentapi.NewProviderServices(sink),
-		pendingControl: make(map[string]chan<- claudeCodeControlResult),
+		sink: agentapi.NewProviderServices(sink),
 	}
 	a.SkipStderr()
 

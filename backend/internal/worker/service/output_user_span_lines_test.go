@@ -84,14 +84,14 @@ func persistNotif(t *testing.T, sink agent.ProviderServices, source leapmuxv1.Me
 func TestSnapshotPassthroughSpanLines_EmptyTracker(t *testing.T) {
 	t.Parallel()
 
-	h := NewOutputHandler(nil, nil, NewWatcherManager(), agent.NewManager(testRegistry, nil), nil)
+	h := NewOutputHandler(nil, nil, NewWatcherManager(), agent.NewManager(testRegistry, nil), nil, nil)
 	assert.Equal(t, "[]", h.snapshotPassthroughSpanLines("agent-1"))
 }
 
 func TestSnapshotPassthroughSpanLines_SingleOpenSpan(t *testing.T) {
 	t.Parallel()
 
-	h := NewOutputHandler(nil, nil, NewWatcherManager(), agent.NewManager(testRegistry, nil), nil)
+	h := NewOutputHandler(nil, nil, NewWatcherManager(), agent.NewManager(testRegistry, nil), nil, nil)
 	h.rootTracker("agent-1").OpenSpan("span-A", "")
 
 	parsed := parseSpanLinesJSON(t, h.snapshotPassthroughSpanLines("agent-1"))
@@ -105,7 +105,7 @@ func TestSnapshotPassthroughSpanLines_SingleOpenSpan(t *testing.T) {
 func TestSnapshotPassthroughSpanLines_NestedSpans(t *testing.T) {
 	t.Parallel()
 
-	h := NewOutputHandler(nil, nil, NewWatcherManager(), agent.NewManager(testRegistry, nil), nil)
+	h := NewOutputHandler(nil, nil, NewWatcherManager(), agent.NewManager(testRegistry, nil), nil, nil)
 	h.rootTracker("agent-1").OpenSpan("span-A", "")
 	h.rootTracker("agent-1").OpenSpan("span-B", "span-A")
 
@@ -122,7 +122,7 @@ func TestSnapshotPassthroughSpanLines_NestedSpans(t *testing.T) {
 func TestSnapshotPassthroughSpanLines_PerAgentIsolation(t *testing.T) {
 	t.Parallel()
 
-	h := NewOutputHandler(nil, nil, NewWatcherManager(), agent.NewManager(testRegistry, nil), nil)
+	h := NewOutputHandler(nil, nil, NewWatcherManager(), agent.NewManager(testRegistry, nil), nil, nil)
 	h.rootTracker("agent-1").OpenSpan("span-A", "")
 
 	// Other agents must see an empty snapshot — span trackers are per-agent.

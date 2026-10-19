@@ -17,6 +17,36 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
+func TestRouteSubagentMessage_DropsTheForwardedSyntheticSkillBody(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newTestAgent(agentapi.NewProviderServices(sink))
+	a.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"task-1","tool_use_id":"spawn-1","task_type":"local_agent","description":"Reviewer","prompt":"Inspect."}`))
+	child := sink.Child("child-of-spawn-1")
+	before := child.Messages()
+	// The r2_subagent_skill probe forwards this synthetic text under the parent's spawn ID.
+	a.HandleOutput([]byte(`{"type":"user","isSynthetic":true,"parent_tool_use_id":"spawn-1","message":{"role":"user","content":[{"type":"text","text":"# Keybindings Skill"}]}}`))
+	assert.Empty(t, sink.Messages())
+	assert.Equal(t, before, child.Messages())
+}
+
+func TestRouteSubagentMessage_KeepsTheSubagentAPIError(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newTestAgent(agentapi.NewProviderServices(sink))
+	a.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"task-1","tool_use_id":"spawn-1","task_type":"local_agent","description":"Reviewer","prompt":"Inspect."}`))
+	child := sink.Child("child-of-spawn-1")
+	before := len(child.Messages())
+	raw := claudeAPIErrorForTest(t, "API Error: 500 probe failure", "spawn-1")
+	a.HandleOutput(raw)
+	result := []byte(`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"spawn-1","is_error":true,"content":"Agent terminated early due to an API error: 500 probe failure"}]}}`)
+	a.HandleOutput(result)
+	require.Len(t, child.Messages(), before+1)
+	assert.JSONEq(t, string(raw), string(child.Messages()[before].Content))
+	require.Len(t, sink.Messages(), 1)
+	assert.JSONEq(t, string(result), string(sink.Messages()[0].Content))
+}
+
 func TestClaudeSubagentHandbackPersistsOneSharedReportInBothTranscripts(t *testing.T) {
 	t.Parallel()
 

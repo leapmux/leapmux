@@ -5,6 +5,12 @@ import (
 	"encoding/json"
 )
 
+// jsonAbsentOrNull reports an absent field or JSON null, ignoring surrounding whitespace.
+func jsonAbsentOrNull(raw json.RawMessage) bool {
+	raw = bytes.TrimSpace(raw)
+	return len(raw) == 0 || bytes.Equal(raw, []byte("null"))
+}
+
 // JSONCanonicalEqual reports whether two encoded values say the same thing, whatever
 // order their object keys arrived in.
 //

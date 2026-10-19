@@ -180,11 +180,7 @@ func TestCodexRawExecRetriesOnlyFailedPersistence(t *testing.T) {
 			require.Len(t, sink.Messages(), 2)
 			assert.Equal(t, 1, a.TurnToolUses)
 			assert.Equal(t, sink.Messages()[0].SpanColor, sink.Messages()[1].SpanColor)
-			if failResult {
-				assert.Len(t, sink.ReservedColorSpans(), 1)
-			} else {
-				assert.Len(t, sink.ReservedColorSpans(), 2, "retry the released reservation before storing the request")
-			}
+			assert.Len(t, sink.ReservedColorSpans(), 1, "the queue retains the original span geometry")
 		})
 	}
 }
@@ -594,7 +590,7 @@ func TestCodexRawExecPreservesSpanGeometry(t *testing.T) {
 	require.Empty(t, sink.Messages()[2].SpansOpenAtPersist)
 }
 
-func TestCodexRawExecRetriesAtTurnEnd(t *testing.T) {
+func TestCodexRawExecRetriesBeforeLaterRowsAtTurnEnd(t *testing.T) {
 	t.Parallel()
 	sink := &codexRawExecFailingSink{failures: 1, failResult: true}
 	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
@@ -607,7 +603,8 @@ func TestCodexRawExecRetriesAtTurnEnd(t *testing.T) {
 	a.finishCodexRawExecutions("main-thread", agentapi.MessageCompletionComplete)
 	require.Len(t, sink.Messages(), 3)
 	require.Empty(t, a.rawExecutionCalls)
-	require.Equal(t, output, sink.Messages()[2].Content)
+	require.Equal(t, output, sink.Messages()[1].Content)
+	require.Contains(t, string(sink.Messages()[2].Content), `"id":"nested-tool"`)
 }
 
 func TestCodexRawExecDropsStaleTurns(t *testing.T) {

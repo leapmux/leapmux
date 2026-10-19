@@ -23,6 +23,47 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
+func TestBridgeCloseForcesConnectionsOnTheInjectedClock(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	bridge := h.agent.bridge
+	server, client := net.Pipe()
+	defer func() { _ = server.Close(); _ = client.Close() }()
+	bridge.mu.Lock()
+	bridge.conns[server] = true
+	bridge.wg.Add(1)
+	bridge.mu.Unlock()
+	readEnded := make(chan struct{})
+	go func() {
+		defer bridge.wg.Done()
+		defer close(readEnded)
+		var one [1]byte
+		_, _ = server.Read(one[:])
+	}()
+	trap := h.clock.Trap().NewTimer("amp", "bridge-close")
+	defer trap.Close()
+	closed := make(chan struct{})
+	go func() { bridge.close(errAgentStopped); close(closed) }()
+	ctx := testutil.DeadlineContext(t)
+	assert.Equal(t, requestReadTimeout, testutil.WaitForTimer(t, ctx, trap))
+	select {
+	case <-closed:
+		t.Fatal("the bridge closed before the forced-close deadline")
+	default:
+	}
+	h.clock.Advance(requestReadTimeout).MustWait(ctx)
+	select {
+	case <-readEnded:
+	case <-ctx.Done():
+		t.Fatal("the bridge did not force the connection closed")
+	}
+	select {
+	case <-closed:
+	case <-ctx.Done():
+		t.Fatal("the bridge did not finish closing")
+	}
+}
+
 // The permission tests run the REAL helper function against the agent's real
 // bridge, over the bridge's Unix domain socket, so each test covers the path
 // that Amp's delegate rule takes: helper -> bridge -> agent -> banner -> answer

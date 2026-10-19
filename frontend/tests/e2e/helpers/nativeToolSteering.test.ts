@@ -2,9 +2,10 @@ import type { Page } from '@playwright/test'
 import type { MockModelRequestRecord, MockModelStep } from './mockModelScript'
 import type { ModelScript } from './modelScriptFixture'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
+import type { SteerDuringTextOptions } from './nativeToolSteering'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentActivityState, AgentInputState, AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { exerciseQueuedTurnWithoutSteering, exerciseSteerAfterTool, exerciseSteerBeforeTool } from './nativeToolSteering'
+import { exerciseQueuedTurnWithoutSteering, exerciseSteerAfterTool, exerciseSteerBeforeTool, exerciseSteerDuringText, exerciseStopWithPendingSteer } from './nativeToolSteering'
 import { bashToolCall } from './providerToolCalls'
 import { startWaitLimitForTests } from './testDeadline'
 
@@ -17,7 +18,20 @@ const harness = vi.hoisted(() => ({
   /** The Worker queue state of the next sent message, as the held turn leaves it. */
   queueNextSend: undefined as { state: number, canSteer: boolean, canPreempt: boolean } | undefined,
   steerFailure: undefined as Error | undefined,
+  stopWithPending: false,
 }))
+
+describe('exerciseSteerDuringText', () => {
+  it.each([
+    { answer: '' },
+    { answer: 'other' },
+    { answer: 'continue', steerOrder: 'other' },
+    { answer: 'continue', progress: 'other' },
+    { answer: 'preempt', progress: 'model-stream' },
+  ])('refuses invalid options before it starts a turn: %j', async (options) => {
+    await expect(exerciseSteerDuringText({} as ManagedNativeScenarioContext, options as SteerDuringTextOptions)).rejects.toThrow('The steer scenario needs')
+  })
+})
 
 /** A fake locator that the mocked `expect` recognizes. Its name states the element. */
 interface FakeLocator {
@@ -25,6 +39,8 @@ interface FakeLocator {
   filter: () => FakeLocator
   first: () => FakeLocator
   getByRole: (role: string, options: { name: string }) => FakeLocator
+  click: () => Promise<void>
+  allTextContents: () => Promise<string[]>
 }
 
 function fake(name: string): FakeLocator {
@@ -33,6 +49,14 @@ function fake(name: string): FakeLocator {
     filter: () => fake(name),
     first: () => fake(name),
     getByRole: (_role, options) => fake(`${name} ${options.name}`),
+    click: async () => {
+      harness.events.push('interrupt')
+      harness.queue = harness.queue.map(item => ({ ...item, state: AgentInputState.QUEUED }))
+    },
+    allTextContents: async () => {
+      harness.events.push('read token counter')
+      return ['1 token']
+    },
   }
 }
 
@@ -59,6 +83,11 @@ vi.mock('./ui', () => ({
   interruptButton: () => fake('[data-testid="interrupt-button"]:visible'),
   messageContents: () => fake('content'),
   userBubbles: () => fake('user'),
+  expectRowsInOrder: async () => { harness.events.push('check row order') },
+  resumePausedQueue: async () => {
+    harness.events.push('resume queue')
+    harness.queue = []
+  },
 }))
 
 vi.mock('./steer', () => ({
@@ -67,6 +96,8 @@ vi.mock('./steer', () => ({
       throw harness.steerFailure
     harness.sent.push(input.message)
     harness.events.push(`steer:${input.message}`)
+    if (harness.stopWithPending)
+      harness.queue = [{ id: 'pending', text: input.message, state: AgentInputState.AWAITING_ECHO, canSteer: false, canPreempt: false }]
   },
   expectSteeredReply: async (_page: Page, reply: string, at: string) => {
     harness.events.push(`steered reply:${reply}:${at}`)
@@ -87,7 +118,7 @@ vi.mock('./api', () => ({
   getTestChannel: async () => ({
     callWorker: async (_workerId: string, method: string, _request: unknown, _response: unknown, payload: { agentId: string }) => {
       if (method === 'ListAgentInputQueue')
-        return { snapshot: { agentId: payload.agentId, items: harness.queue } }
+        return { snapshot: { agentId: payload.agentId, activeTurn: false, items: harness.queue } }
       harness.events.push(`worker:${method}`)
       throw harness.steerFailure ?? Object.assign(new Error('agent provider does not support steering'), { source: 'rpc', code: 9 })
     },
@@ -171,7 +202,7 @@ function fakeScript(offset: number, request: (stepIndex: number, queued: readonl
 
 function context(script: ReturnType<typeof fakeScript>['script']): ManagedNativeScenarioContext {
   return {
-    page: { locator: (selector: string) => fake(selector) } as unknown as Page,
+    page: { locator: (selector: string) => fake(selector), reload: async () => { harness.events.push('reload') } } as unknown as Page,
     modelScript: script as unknown as ModelScript,
     provider: AgentProvider.OPENCODE,
     providerAgent: { provider: AgentProvider.OPENCODE, prefix: 'native-e2e' },
@@ -192,6 +223,60 @@ beforeEach(() => {
   harness.queue = []
   harness.queueNextSend = undefined
   harness.steerFailure = undefined
+  harness.stopWithPending = false
+})
+
+describe('exerciseStopWithPendingSteer', () => {
+  it('checks the queue before resuming and checks the saved rows after reload', async () => {
+    harness.stopWithPending = true
+    const { script } = fakeScript(3, stepIndex => bodyRequest(stepIndex, harness.sent.at(-1) ?? ''))
+    await exerciseStopWithPendingSteer(context(script))
+    expect(harness.events.indexOf('interrupt')).toBeLessThan(harness.events.indexOf('resume queue'))
+    expect(harness.events.indexOf('queued row visible')).toBeLessThan(harness.events.indexOf('resume queue'))
+    expect(harness.events).toContain('steps:5')
+    expect(harness.events).toContain('request:4')
+    expect(harness.events.filter(event => event === 'user count:0')).toHaveLength(2)
+    expect(harness.events.filter(event => event === 'user count:1')).toHaveLength(2)
+    expect(harness.events).toContain('reload')
+    expect(script.releaseGateIfHeld).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps the accepted row and checks the new delivery row after a stop', async () => {
+    harness.stopWithPending = true
+    const { script } = fakeScript(0, stepIndex => bodyRequest(stepIndex, harness.sent.at(-1) ?? ''))
+    await exerciseStopWithPendingSteer(context(script), { rowAt: 'acceptance' })
+    expect(harness.events.filter(event => event === 'user count:1')).toHaveLength(2)
+    expect(harness.events.filter(event => event === 'user count:2')).toHaveLength(2)
+    expect(harness.events).not.toContain('user count:0')
+    expect(harness.events).toContain('reload')
+  })
+
+  it('fails when the requeued steer reaches the model twice', async () => {
+    harness.stopWithPending = true
+    const { script } = fakeScript(0, stepIndex => bodyRequest(stepIndex, harness.sent.at(-1) ?? '', harness.sent.at(-1) ?? ''))
+    await expect(exerciseStopWithPendingSteer(context(script))).rejects.toThrow('the next request reads the requeued steer exactly once')
+    expect(harness.events).not.toContain('reload')
+    expect(script.releaseGateIfHeld).toHaveBeenCalledTimes(2)
+  })
+
+  it('releases the held model request when steering fails', async () => {
+    const { script } = fakeScript(0, stepIndex => bodyRequest(stepIndex))
+    harness.steerFailure = new Error('native steer refused')
+    await expect(exerciseStopWithPendingSteer(context(script))).rejects.toBe(harness.steerFailure)
+    expect(script.releaseGateIfHeld).toHaveBeenCalledTimes(1)
+    expect(harness.events).not.toContain('resume queue')
+  })
+})
+
+describe('continued steer evidence', () => {
+  it.each(['counter', 'model-stream'] as const)('checks the completed row order with %s evidence', async (progress) => {
+    const { script } = fakeScript(0, stepIndex => bodyRequest(stepIndex, harness.sent.at(-1) ?? ''))
+    await exerciseSteerDuringText(context(script), { answer: 'continue', progress })
+    expect(harness.events.filter(event => event === 'check row order')).toHaveLength(2)
+    expect(harness.events.includes('read token counter')).toBe(progress === 'counter')
+    expect(harness.events.indexOf('gate released')).toBeGreaterThan(harness.events.findIndex(event => event.startsWith('steer:')))
+    expect(script.releaseGateIfHeld).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('exerciseSteerBeforeTool', () => {

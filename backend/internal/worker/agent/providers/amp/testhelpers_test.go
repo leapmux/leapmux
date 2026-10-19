@@ -63,11 +63,11 @@ func newHarness(t *testing.T, opts ...harnessOption) *harness {
 		opt(&options)
 	}
 	dir := agentdirtest.NewDir(t, agentDirSpec())
-	bridge, err := newPermissionBridge(dir.Path())
+	clock := quartz.NewMock(t)
+	bridge, err := newPermissionBridge(dir.Path(), clock)
 	require.NoError(t, err)
 	sink := &agenttest.ControlSink{}
 	events := &eventSink{ControlSink: sink}
-	clock := quartz.NewMock(t)
 	h := &harness{t: t, sink: sink, events: events, clock: clock, started: make(chan *fakeProc, 16)}
 	h.agent = newAgent(options, agent.NewProviderServices(events), launchConfig{
 		opts:          options,
@@ -77,6 +77,9 @@ func newHarness(t *testing.T, opts ...harnessOption) *harness {
 		home:          t.TempDir(),
 	}, bridge, dir, clock)
 	h.agent.startFn = h.start
+	h.agent.exportFn = func(_ context.Context, threadID string) ([]byte, error) {
+		return json.Marshal(map[string]any{"id": threadID, "messages": []any{}})
+	}
 	t.Cleanup(h.agent.Stop)
 	return h
 }
@@ -317,13 +320,21 @@ func (fp *fakeProc) lines() []map[string]any {
 
 // lineRecorder is a stdin that records every line.
 type lineRecorder struct {
-	mu      sync.Mutex
-	buf     strings.Builder
-	closed  bool
-	onClose func()
+	mu          sync.Mutex
+	buf         strings.Builder
+	closed      bool
+	onClose     func()
+	beforeWrite func()
 }
 
 func (r *lineRecorder) Write(data []byte) (int, error) {
+	r.mu.Lock()
+	before := r.beforeWrite
+	r.beforeWrite = nil
+	r.mu.Unlock()
+	if before != nil {
+		before()
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
@@ -443,7 +454,7 @@ func shortTempDir(t *testing.T) string {
 // newTestBridge opens a bridge for a test and closes it when the test ends.
 func newTestBridge(t *testing.T) *permissionBridge {
 	t.Helper()
-	bridge, err := newPermissionBridge(shortTempDir(t))
+	bridge, err := newPermissionBridge(shortTempDir(t), quartz.NewMock(t))
 	require.NoError(t, err)
 	t.Cleanup(func() { bridge.close(errAgentStopped) })
 	return bridge

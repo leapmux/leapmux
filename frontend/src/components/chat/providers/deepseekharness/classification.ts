@@ -1,6 +1,6 @@
 import type { MessageCategory } from '../../messageClassifier'
 import type { ClassificationInput } from '../capabilities'
-import { DEEPSEEK_HARNESS_CONTENT_TYPE, DEEPSEEK_HARNESS_EVENT } from '~/generated/contracts/deepseek-harness-protocol'
+import { DEEPSEEK_HARNESS_CONTENT_TYPE, DEEPSEEK_HARNESS_EVENT, DEEPSEEK_HARNESS_NOTIFICATION_EVENT } from '~/generated/contracts/deepseek-harness-protocol'
 import { pickString } from '~/lib/jsonPick'
 import { isNotificationThreadWrapper } from '../../messageUtils'
 import { notificationClassifierFor } from '../../notificationClassification'
@@ -8,19 +8,7 @@ import { retainedRowIsFinal } from '../registry'
 import { deepseekHarnessNotificationEntry } from './extractors/notification'
 import { deepseekHarnessAssistantBlock, deepseekHarnessCallId, deepseekHarnessEventData } from './protocol'
 
-const NOTIFICATION_EVENTS: ReadonlySet<string> = new Set([DEEPSEEK_HARNESS_EVENT.CompactionEnd])
-const HIDDEN_EVENTS: ReadonlySet<string> = new Set([
-  DEEPSEEK_HARNESS_EVENT.TurnStart,
-  DEEPSEEK_HARNESS_EVENT.AssistantAttempt,
-  DEEPSEEK_HARNESS_EVENT.RequestContext,
-  DEEPSEEK_HARNESS_EVENT.WorkflowStart,
-  DEEPSEEK_HARNESS_EVENT.WorkflowEnd,
-  DEEPSEEK_HARNESS_EVENT.WorkflowAgentStart,
-  DEEPSEEK_HARNESS_EVENT.WorkflowAgentEnd,
-  DEEPSEEK_HARNESS_EVENT.GoalChange,
-  DEEPSEEK_HARNESS_EVENT.PlanMode,
-  DEEPSEEK_HARNESS_EVENT.SubagentCatalog,
-])
+const NOTIFICATION_EVENTS: ReadonlySet<string> = DEEPSEEK_HARNESS_NOTIFICATION_EVENT
 
 export function classifyDeepseekHarnessMessage(input: ClassificationInput): MessageCategory {
   const notification = notificationClassifierFor(input.agentProvider, deepseekHarnessNotificationEntry)
@@ -48,7 +36,7 @@ export function classifyDeepseekHarnessMessage(input: ClassificationInput): Mess
       return pickString(block, 'text') ? { kind: 'assistant_thinking' } : { kind: 'hidden' }
     if (block.type === DEEPSEEK_HARNESS_CONTENT_TYPE.Text)
       return pickString(block, 'text') ? { kind: 'assistant_text' } : { kind: 'hidden' }
-    return { kind: 'hidden' }
+    return { kind: 'unknown' }
   }
   if (type === DEEPSEEK_HARNESS_EVENT.UserMessage && deepseekHarnessEventData(payload))
     return { kind: 'user_content' }
@@ -56,5 +44,5 @@ export function classifyDeepseekHarnessMessage(input: ClassificationInput): Mess
     return { kind: 'hidden' }
   if (NOTIFICATION_EVENTS.has(type))
     return notification([payload], 'hidden')
-  return HIDDEN_EVENTS.has(type) ? { kind: 'hidden' } : { kind: 'unknown' }
+  return { kind: 'unknown' }
 }

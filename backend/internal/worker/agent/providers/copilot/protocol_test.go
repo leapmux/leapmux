@@ -47,6 +47,7 @@ func TestNativeCopilotIdleDoesNotInventOrRepeatATurnEnd(t *testing.T) {
 	agent := &Agent{sink: agent.NewProviderServices(sink), sessionID: "session"}
 	idle := []byte(`{"method":"session.event","params":{"sessionId":"session","event":{"type":"session.idle","data":{}}}}`)
 	agent.HandleOutput(idle)
+	require.Empty(t, sink.Messages(), "idle before a turn creates no divider")
 	agent.HandleOutput([]byte(`{"method":"session.event","params":{"sessionId":"session","event":{"type":"assistant.turn_start","data":{}}}}`))
 	agent.HandleOutput(idle)
 	agent.HandleOutput(idle)
@@ -57,5 +58,6 @@ func TestNativeCopilotIdleDoesNotInventOrRepeatATurnEnd(t *testing.T) {
 		}
 	}
 	require.Equal(t, 1, ends)
-	require.Len(t, sink.Messages(), 4, "every original event must remain available")
+	require.Len(t, sink.Messages(), 1, "only the active turn creates a divider")
+	require.JSONEq(t, string(idle), string(sink.Messages()[0].Content))
 }

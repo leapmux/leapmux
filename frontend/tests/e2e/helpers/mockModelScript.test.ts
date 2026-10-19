@@ -942,3 +942,16 @@ describe('describeScenarioStatus', () => {
       .toBe('0 of 0 queued answers consumed, 1 request the script did not answer')
   })
 })
+describe('stopReason', () => {
+  it.each(['refusal', 'max_tokens'])('keeps the supported stop reason %s', (stopReason) => {
+    expect(parseScenarioSpec({ steps: [{ text: 'Answer', stopReason }] }).steps[0]).toMatchObject({ stopReason })
+  })
+
+  it.each(['', 'stop', 0, null, true])('refuses an invalid stop reason: %j', (stopReason) => {
+    expect(() => parseScenarioSpec({ steps: [{ text: 'Answer', stopReason }] })).toThrow('stopReason')
+  })
+
+  it.each([{ error: { status: 400, message: 'failed' } }, { toolCalls: [] }])('refuses a stop reason with incompatible output: %j', (output) => {
+    expect(() => parseScenarioSpec({ steps: [{ ...output, stopReason: 'refusal' }] })).toThrow('cannot combine stopReason')
+  })
+})

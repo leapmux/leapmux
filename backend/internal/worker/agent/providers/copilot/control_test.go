@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"testing/synctest"
+	"time"
 
 	agentapi "github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
@@ -132,4 +134,135 @@ func TestNativeCopilotControlsRejectForeignAndResolvedRequests(t *testing.T) {
 		agent.HandleOutput([]byte(raw))
 	}
 	require.Zero(t, sink.PublishedControlCount())
+}
+
+func TestAutoModeSwitchAskPublishesACard(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.ControlSink{}
+	a := newCopilotControlAgent(agentapi.NewProviderServices(sink))
+	// Trimmed from .tmp/verify-c29/copilot/run3/frames.jsonl.
+	raw := []byte(`{"method":"session.event","params":{"sessionId":"session","event":{"type":"auto_mode_switch.requested","data":{"requestId":"switch-1","errorCode":"user_model_rate_limited","retryAfterSeconds":1},"ephemeral":true}}}`)
+	a.HandleOutput(raw)
+	require.Equal(t, 1, sink.PublishedControlCount())
+	require.Equal(t, raw, sink.LastPublishedControl().Payload)
+}
+
+func TestAutoModeSwitchCompletedWithdrawsTheCard(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.ControlSink{}
+	a := newCopilotControlAgent(agentapi.NewProviderServices(sink))
+	a.HandleOutput([]byte(`{"method":"session.event","params":{"sessionId":"session","event":{"type":"auto_mode_switch.requested","data":{"requestId":"switch-1"}}}}`))
+	require.Equal(t, 1, sink.PublishedControlCount())
+	id := sink.LastPublishedControl().RequestID
+	a.HandleOutput([]byte(`{"method":"session.event","params":{"sessionId":"session","event":{"type":"auto_mode_switch.completed","data":{"requestId":"switch-1"}}}}`))
+	require.Equal(t, []string{id}, sink.CanceledControls())
+	require.Empty(t, a.controls)
+}
+
+// samplingWaitStdin signals that the request reached the transport and sends no reply.
+type samplingWaitStdin struct {
+	agenttest.Stdin
+	once    sync.Once
+	written chan struct{}
+}
+
+func (s *samplingWaitStdin) Write(raw []byte) (int, error) {
+	n, err := s.Stdin.Write(raw)
+	s.once.Do(func() { close(s.written) })
+	return n, err
+}
+
+func TestSamplingStopCancelsAnInferenceThatHasNoReply(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	stdin := &samplingWaitStdin{written: make(chan struct{})}
+	sink := &agenttest.ControlSink{}
+	a := newCopilotControlAgent(agentapi.NewProviderServices(sink))
+	a.Process = providerkit.NewProcessFrom(providerkit.ProcessConfig{
+		Ctx: ctx, Cancel: cancel, Stdin: stdin, ProcessDone: done,
+	})
+	a.HandleOutput([]byte(`{"method":"session.event","params":{"sessionId":"session","event":{"type":"sampling.requested","data":{"requestId":"sample-1","serverName":"sampler","mcpRequestId":"sampling-1","request":{"messages":[],"maxTokens":20}}}}}`))
+	require.Equal(t, 1, sink.PublishedControlCount())
+	id := sink.LastPublishedControl().RequestID
+	answered := make(chan error, 1)
+	go func() {
+		answered <- a.SendRawInput(fmt.Appendf(nil, `{"response":{"request_id":%q,"response":{"decision":"allow"}}}`, id), agentapi.StopContext{})
+	}()
+	deadline, endDeadline := context.WithTimeout(t.Context(), 30*time.Second)
+	defer endDeadline()
+	select {
+	case <-stdin.written:
+	case <-deadline.Done():
+		t.Fatal("the sampling request did not reach the transport")
+	}
+	require.Contains(t, stdin.String(), `"method":"session.mcp.executeSampling"`)
+	stopped := make(chan struct{})
+	go func() {
+		a.Stop()
+		close(stopped)
+	}()
+	// synctest cannot detect this wait because an RWMutex wait is not durable.
+	// The deadline detects a stuck stop; it does not control a product state window.
+	select {
+	case err := <-answered:
+		require.Error(t, err)
+	case <-deadline.Done():
+		t.Error("Stop did not cancel the sampling request")
+	}
+	require.NoError(t, ctx.Err(), "sampling cancellation must keep graceful shutdown available")
+	require.NotContains(t, stdin.String(), `"method":"session.ui.handlePendingSampling"`)
+	// End the fake process so both calls return after an assertion fails.
+	a.SetStoppedForTest(true)
+	cancel()
+	close(done)
+	<-stopped
+}
+
+func TestSamplingContextCannotRestartAfterAConcurrentStop(t *testing.T) {
+	t.Parallel()
+	a := newCopilotControlAgent(agentapi.NewProviderServices(&agenttest.ControlSink{}))
+	done := make(chan struct{})
+	a.Process = providerkit.NewProcessFrom(providerkit.ProcessConfig{Ctx: t.Context(), ProcessDone: done})
+	a.sessionMu.Lock()
+	stopped := make(chan struct{})
+	go func() { a.Stop(); close(stopped) }()
+	var callers sync.WaitGroup
+	contexts := make(chan context.Context, 32)
+	for range cap(contexts) {
+		callers.Go(func() { contexts <- a.samplingContext() })
+	}
+	callers.Wait()
+	deadline, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	select {
+	case <-a.samplingContext().Done():
+	case <-deadline.Done():
+		t.Error("Stop did not cancel sampling before it took the session lock")
+	}
+	close(contexts)
+	for ctx := range contexts {
+		if !errors.Is(ctx.Err(), context.Canceled) {
+			t.Error("a concurrent caller received an uncancelled sampling context")
+		}
+	}
+	a.SetStoppedForTest(true)
+	close(done)
+	a.sessionMu.Unlock()
+	<-stopped
+	require.ErrorIs(t, a.samplingContext().Err(), context.Canceled)
+}
+
+func TestSamplingAfterCancellationWritesNoRequest(t *testing.T) {
+	t.Parallel()
+	stdin := &agenttest.Stdin{}
+	a := newCopilotControlAgent(agentapi.NewProviderServices(&agenttest.ControlSink{}))
+	a.Process = providerkit.NewProcessFrom(providerkit.ProcessConfig{Ctx: t.Context(), Stdin: stdin})
+	a.samplingContext()
+	a.samplingCancel()
+	pending := &copilotPendingControl{sessionID: "session", nativeRequestID: "sample", data: []byte(`{"serverName":"sampler","mcpRequestId":1,"request":{"messages":[]}}`)}
+	_, err := a.resolveSampling(pending, []byte(`{"decision":"allow"}`))
+	require.ErrorIs(t, err, context.Canceled)
+	require.NotErrorIs(t, err, agentapi.ErrDeliveryUncertain)
+	require.Empty(t, stdin.String())
 }

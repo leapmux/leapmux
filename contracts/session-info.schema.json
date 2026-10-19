@@ -15,7 +15,8 @@
     "runningToolFields",
     "runningToolRetryFields",
     "goalProgressFields",
-    "turnRetryOfferFields"
+    "turnRetryOfferFields",
+    "compactionFields"
   ],
   "properties": {
     "_readme": { "type": "string", "minLength": 1 },
@@ -27,7 +28,8 @@
     "runningToolFields": { "$ref": "#/$defs/table" },
     "runningToolRetryFields": { "$ref": "#/$defs/table" },
     "goalProgressFields": { "$ref": "#/$defs/table" },
-    "turnRetryOfferFields": { "$ref": "#/$defs/table" }
+    "turnRetryOfferFields": { "$ref": "#/$defs/table" },
+    "compactionFields": { "$ref": "#/$defs/table" }
   },
   "$defs": {
     "table": {

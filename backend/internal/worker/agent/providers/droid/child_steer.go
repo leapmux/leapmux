@@ -16,11 +16,6 @@ import (
 // A native background child without a bound process is busy but cannot take a
 // steer through the root process. The input queue holds a send until it ends.
 
-// child_session_available is the notification type that announces a child
-// session. It is not yet in the droid-protocol contract table; the binary
-// defines it in its notification schema.
-const droidNotificationChildSessionAvailable = "child_session_available"
-
 var _ agent.ChildSteerer = (*Agent)(nil)
 
 // SendChildInput sends through a process loaded with the child session. A
@@ -71,7 +66,7 @@ func (a *Agent) SteerChildInput(childKey, content string, attachments []*leapmux
 	if connection.err != nil {
 		return connection.err
 	}
-	return connection.agent.SteerInput(content, attachments)
+	return connection.agent.sendInput(nil, content, attachments, droidInputChildSteer)
 }
 
 // ActiveChildTurnState reports a child's turn after a refusal. The queue reads

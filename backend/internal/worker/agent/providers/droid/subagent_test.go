@@ -50,9 +50,9 @@ func TestChildSessionMessagesAndTurnEndStayInChildTranscript(t *testing.T) {
 	rootCount := len(sink.Messages())
 
 	for _, frame := range []string{
-		`{"type":"notification","params":{"sessionId":"child-1","notification":{"type":"create_message","message":{"id":"msg-1","role":"assistant"}}}}`,
 		`{"type":"notification","params":{"sessionId":"child-1","notification":{"type":"assistant_text_delta","messageId":"msg-1","blockIndex":0,"textDelta":"CHILD_EARLY"}}}`,
 		`{"type":"notification","params":{"sessionId":"child-1","notification":{"type":"assistant_text_complete","messageId":"msg-1","blockIndex":0}}}`,
+		`{"type":"notification","params":{"sessionId":"child-1","notification":{"type":"create_message","message":{"id":"msg-1","role":"assistant","content":[{"type":"text","text":"CHILD_EARLY"}]}}}}`,
 		`{"type":"notification","params":{"sessionId":"child-1","notification":{"type":"tool_call","toolUse":{"id":"read-1","name":"Read","input":{"file_path":"/note.txt"}}}}}`,
 		`{"type":"notification","params":{"sessionId":"child-1","notification":{"type":"tool_result","toolUseId":"read-1","content":"CHILD_READ_MARKER","isError":false}}}`,
 		`{"type":"notification","params":{"sessionId":"child-1","notification":{"type":"agent_turn_completed","turnId":"turn-1","reason":"completed"}}}`,
@@ -63,7 +63,7 @@ func TestChildSessionMessagesAndTurnEndStayInChildTranscript(t *testing.T) {
 	childRows := sink.Child(childID).Messages()
 	require.GreaterOrEqual(t, len(childRows), 5, "the child keeps its prompt, answer, tool call, result, and turn end")
 	assert.Equal(t, rootCount, len(sink.Messages()), "child output does not enter the root transcript")
-	assert.Contains(t, string(childRows[2].Content), "CHILD_EARLY")
+	assert.Contains(t, string(childRows[1].Content), "CHILD_EARLY")
 	assert.Contains(t, string(childRows[4].Content), "CHILD_READ_MARKER")
 	assert.True(t, childRows[len(childRows)-1].TurnEnd)
 	assert.False(t, a.ActiveChildTurnState("child-1").Active)

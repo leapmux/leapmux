@@ -86,7 +86,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		_ = a.Wait()
 	}
 	timeout := opts.EffectiveStartupTimeout()
-	address, err := listening.Wait(ctx, a.ProcessDone(), timeout)
+	address, err := listening.Wait(ctx, a.Clock(), a.ProcessDone(), timeout)
 	if err != nil {
 		cleanup()
 		return nil, a.FormatStartupError("listen", err)

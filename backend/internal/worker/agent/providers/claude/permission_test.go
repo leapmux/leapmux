@@ -48,7 +48,7 @@ func newPermissionAgent(t *testing.T, deferred bool) (*Agent, *agenttest.Control
 	done := make(chan struct{})
 	sink := &agenttest.ControlSink{}
 	peer := &permissionPeer{deferred: deferred}
-	a := &Agent{Process: providerkit.NewProcessFrom(providerkit.ProcessConfig{AgentID: "claude-permissions", ProviderName: "claude", Ctx: ctx, Cancel: cancel, ProcessDone: done, Stdin: peer, APITimeout: 30 * time.Second}), sink: agent.NewProviderServices(sink), pendingControl: make(map[string]chan<- claudeCodeControlResult), confirmedPermissionMode: contracts.ClaudeModeDefault, sessionID: "session"}
+	a := &Agent{Process: providerkit.NewProcessFrom(providerkit.ProcessConfig{AgentID: "claude-permissions", ProviderName: "claude", Ctx: ctx, Cancel: cancel, ProcessDone: done, Stdin: peer, APITimeout: 30 * time.Second}), sink: agent.NewProviderServices(sink), confirmedPermissionMode: contracts.ClaudeModeDefault, sessionID: "session"}
 	peer.agent = a
 	t.Cleanup(func() { close(done); a.Process.Stop() })
 	return a, sink, peer
@@ -124,8 +124,9 @@ func TestClaudeDuplicateControlRepliesDoNotBlockTheReader(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		a, _, _ := newPermissionAgent(t, false)
 		response := &providerkit.ParsedLine{Type: claudeMsgTypeControlResponse, Raw: []byte(`{"type":"control_response","response":{"subtype":"success","request_id":"request","response":{"mode":"default"}}}`)}
-		channel := make(chan claudeCodeControlResult, 1)
-		a.registerPendingControl("request", channel)
+		channel, release, err := a.controlReplies.Register("request")
+		require.NoError(t, err)
+		defer release()
 		require.True(t, a.handlePendingControlResponse(response))
 		done := make(chan bool, 1)
 		go func() { done <- a.handlePendingControlResponse(response) }()
@@ -134,14 +135,14 @@ func TestClaudeDuplicateControlRepliesDoNotBlockTheReader(t *testing.T) {
 		select {
 		case consumed := <-done:
 			returned = true
-			assert.True(t, consumed)
+			assert.False(t, consumed)
 		default:
 			t.Error("a duplicate reply blocked the native reader")
 		}
 		<-channel
 		synctest.Wait()
 		if !returned {
-			assert.True(t, <-done)
+			assert.False(t, <-done)
 		}
 	})
 }

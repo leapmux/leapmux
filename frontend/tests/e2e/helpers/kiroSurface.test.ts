@@ -294,6 +294,25 @@ describe('the Kiro surface of the mock', () => {
     ])
   })
 
+  it.each([{ inputTokens: 0, outputTokens: 0 }, { inputTokens: 60000, outputTokens: 123 }, { outputTokens: 3 }])('reports the step usage: %j', async (usage) => {
+    const server = await startServer()
+    await registerMockModelScenario(server.url, 'kiro-usage', { steps: [{ text: 'Answer', usage }] })
+    const answer = await events(await call(server, 'KiroRuntimeService.GenerateAssistantResponse', turnBody(mockScenarioPrompt('kiro-usage', 'Reply.'))))
+    const input = usage.inputTokens ?? 1
+    expect(answer.at(-1)).toEqual(['metadataEvent', {
+      tokenUsage: { uncachedInputTokens: input, outputTokens: usage.outputTokens, totalTokens: input + usage.outputTokens },
+      stopReason: 'END_TURN',
+    }])
+  })
+
+  it.each(['refusal', 'max_tokens'] as const)('refuses the unsupported stop reason %s before it sends an event stream', async (stopReason) => {
+    const server = await startServer()
+    await registerMockModelScenario(server.url, 'kiro-stop', { steps: [{ text: 'Answer', stopReason }] })
+    const response = await call(server, 'KiroRuntimeService.GenerateAssistantResponse', turnBody(mockScenarioPrompt('kiro-stop', 'Reply.')))
+    expect(response.status).toBe(400)
+    expect(await response.text()).toContain(`The mock cannot state stop reason ${stopReason} on aws-event-stream`)
+  })
+
   // Kiro reads the text of a turn before its tool calls, as the model wrote them.
   it('streams the text of a step before its tool calls', async () => {
     const server = await startServer()

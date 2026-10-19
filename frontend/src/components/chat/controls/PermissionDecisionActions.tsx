@@ -34,6 +34,7 @@ export type SendPermissionOption = (
  */
 export const PermissionDecisionActions: Component<ActionsProps & {
   options: Accessor<PermissionOption[]>
+  independentOptions?: boolean
   send: SendPermissionOption
 }> = (props) => {
   const layout = createMemo(() => layoutPermissionOptions(props.options()))
@@ -69,7 +70,7 @@ export const PermissionDecisionActions: Component<ActionsProps & {
   const handleOption = async (option: PermissionOption | undefined) => {
     if (!option)
       return
-    if (isAllowPermissionKind(option.kind)) {
+    if (!props.independentOptions && isAllowPermissionKind(option.kind)) {
       await respondThenApplyPermissionPreset(
         props.send(props.onRespond, props.request.requestId, option.optionId),
         props.presets,
@@ -87,31 +88,39 @@ export const PermissionDecisionActions: Component<ActionsProps & {
     <ControlDecisionFooter
       hasEditorContent={props.hasEditorContent}
       onSendFeedback={props.onTriggerSend}
+      independentActions={() => props.independentOptions
+        ? props.options().map(option => ({
+            label: permissionOptionLabel(option),
+            testId: `control-decision-${option.optionId}`,
+            destructive: isRejectPermissionKind(option.kind),
+            onSelect: () => handleOption(option),
+          }))
+        : []}
       allowChoicePill={() => {
         const options = scopeOptions()
-        return layout().positive && options
+        return !props.independentOptions && layout().positive && options
           ? { label: 'Allow scope', options, selected: selectedScope() ?? options[0].key, onSelect: scopeChoice.setChoice }
           : undefined
       }}
-      permissionPill={() => layout().positive ? permissionPill() : undefined}
+      permissionPill={() => !props.independentOptions && layout().positive ? permissionPill() : undefined}
       // The decision slots are passed only when the layout filled them: an
       // explicit `undefined` is not assignable to an optional prop under
       // exactOptionalPropertyTypes, and the footer reads absent the same.
-      {...(layout().negative
+      {...(!props.independentOptions && layout().negative
         ? { negativeAction: { label: decisionLabel(layout(), 'reject'), testId: 'control-deny-btn', onSelect: () => handleDecision('reject') } }
         : {})}
-      {...(layout().positive
+      {...(!props.independentOptions && layout().positive
         ? { positiveAction: { label: decisionLabel(layout(), 'allow'), testId: 'control-allow-btn', onSelect: () => handleDecision('allow') } }
         : {})}
-      additionalActions={() => layout().additional.map(option => ({
-        label: permissionOptionLabel(option),
-        testId: `control-decision-${option.optionId}`,
-        // A refusal reads as a refusal wherever it lands. "Reject always" and
-        // "Allow for this workspace" are both extras, and an undifferentiated
-        // menu made them look like the same kind of answer.
-        destructive: isRejectPermissionKind(option.kind),
-        onSelect: () => handleOption(option),
-      }))}
+      additionalActions={() => props.independentOptions
+        ? []
+        : layout().additional.map(option => ({
+            label: permissionOptionLabel(option),
+            testId: `control-decision-${option.optionId}`,
+            // Mark a refusal clearly in the menu, apart from a broader approval.
+            destructive: isRejectPermissionKind(option.kind),
+            onSelect: () => handleOption(option),
+          }))}
     />
   )
 }

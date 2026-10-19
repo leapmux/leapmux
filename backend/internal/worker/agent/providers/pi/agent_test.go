@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/quartz"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionids"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -49,6 +50,11 @@ type piTestRig struct {
 // supplied responder craft a response, or replies with an option success.
 func newPiTestRig(t *testing.T, sink agent.ProviderServices) *piTestRig {
 	t.Helper()
+	return newPiTestRigWithClock(t, sink, nil)
+}
+
+func newPiTestRigWithClock(t *testing.T, sink agent.ProviderServices, clock quartz.Clock) *piTestRig {
+	t.Helper()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	stdinReader, stdinWriter, err := os.Pipe()
@@ -66,6 +72,7 @@ func newPiTestRig(t *testing.T, sink agent.ProviderServices) *piTestRig {
 			ProcessDone:  make(chan struct{}),
 			StderrDone:   make(chan struct{}),
 			APITimeout:   2 * time.Second,
+			Clock:        clock,
 		}),
 		sink:        sink,
 		provider:    DefaultProvider,
@@ -319,7 +326,7 @@ func TestPi_HandlePiResponse_IgnoresNonResponseLines(t *testing.T) {
 	assert.False(t, consumed)
 }
 
-func TestPi_SendInput_FreshTurnOmitsSteer(t *testing.T) {
+func TestPi_SendInput_FreshTurnSendsFollowUp(t *testing.T) {
 	t.Parallel()
 
 	rig := newPiTestRig(t, agenttest.Nop())
@@ -336,11 +343,41 @@ func TestPi_SendInput_FreshTurnOmitsSteer(t *testing.T) {
 	select {
 	case payload := <-gotPayload:
 		assert.Equal(t, "hello", payload["message"])
-		_, hasSteer := payload["streamingBehavior"]
-		assert.False(t, hasSteer, "fresh turn should not set streamingBehavior")
+		assert.Equal(t, "followUp", payload["streamingBehavior"])
 	case <-time.After(2 * time.Second):
 		t.Fatal("prompt command never reached the fake peer")
 	}
+}
+
+func TestPiPromptRefusalRepublishesTheTurn(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	rig := newPiTestRig(t, agent.NewProviderServices(sink))
+	rig.setResponder(func(req piRecordedRequest) (json.RawMessage, bool, string) {
+		// Native preflight refusal from .tmp/verify-c29/pi/run2/frames.jsonl.
+		return nil, false, "Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message."
+	})
+	require.NoError(t, rig.agent.SendInput("next prompt", nil))
+	require.Eventually(t, func() bool {
+		active, published := sink.LastTurnActive()
+		return published && !active
+	}, 30*time.Second, time.Millisecond)
+	assert.Len(t, sink.LeapMuxNotifications(), 1)
+}
+
+func TestPiHandledPromptRepublishesTheTurn(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	rig := newPiTestRig(t, agent.NewProviderServices(sink))
+	rig.setResponder(func(req piRecordedRequest) (json.RawMessage, bool, string) {
+		return json.RawMessage(`{"disposition":"handled"}`), true, ""
+	})
+	require.NoError(t, rig.agent.SendInput("handled prompt", nil))
+	require.Eventually(t, func() bool {
+		active, published := sink.LastTurnActive()
+		return published && !active
+	}, 30*time.Second, time.Millisecond)
+	assert.Empty(t, sink.LeapMuxNotifications())
 }
 
 func TestPiManualCompactUsesNativeRPCCommand(t *testing.T) {

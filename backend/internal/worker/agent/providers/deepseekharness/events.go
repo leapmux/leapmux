@@ -10,6 +10,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
@@ -25,6 +26,7 @@ type sessionStream struct {
 	startedAt       int64
 	ready           chan struct{}
 	readyOnce       bool
+	compactionLive  bool
 	// followRetries counts the times that the follow of this stream opened again after
 	// the native process reported that the descriptor of the child was not written yet.
 	followRetries int
@@ -389,14 +391,39 @@ func (a *Agent) handleRemoteEvent(raw []byte) error {
 			var id string
 			var cause string
 			if json.Unmarshal(frame.Args[0], &id) == nil && json.Unmarshal(frame.Args[1], &cause) == nil && id == a.session() {
-				// Native agent errors leave the Remote transport healthy. The durable turn end releases the queue.
-				a.sink.PersistLeapMuxNotification(map[string]any{"type": "error", "message": cause})
+				a.Mu.Lock()
+				active := a.active
+				a.Mu.Unlock()
+				if active {
+					// The durable turn end can repeat this error and owns the queue release.
+					a.pendingErrors = append(a.pendingErrors, cause)
+				} else if cause == "" || cause != a.lastTurnError {
+					a.persistAgentError(cause)
+					a.setTurnState(false)
+				}
 			}
 		}
 	default:
 		return fmt.Errorf("DeepSeek Harness sent an unknown Remote event")
 	}
 	return nil
+}
+
+func (a *Agent) persistAgentError(cause string) {
+	a.sink.PersistLeapMuxNotification(map[string]any{
+		contracts.NotificationFieldType:  contracts.NotificationTypeAgentError,
+		contracts.NotificationFieldError: cause,
+	})
+}
+
+// flushPendingErrors keeps each diagnostic that the end does not repeat.
+func (a *Agent) flushPendingErrors(endError string) {
+	for _, cause := range a.pendingErrors {
+		if cause == "" || cause != endError {
+			a.persistAgentError(cause)
+		}
+	}
+	a.pendingErrors = nil
 }
 
 func (a *Agent) reportStreamFailure(err error) {
@@ -439,7 +466,8 @@ func (a *Agent) reportStreamFailure(err error) {
 	a.streamFailure = errors.Join(err, cleanupError)
 	a.Mu.Unlock()
 	slog.Warn("DeepSeek Harness Remote stream failed", "agent_id", a.AgentID(), "error", err)
-	a.sink.PersistLeapMuxNotification(map[string]any{"type": "error", "message": err.Error()})
+	a.flushPendingErrors(err.Error())
+	a.persistAgentError(err.Error())
 	a.setTurnState(false)
 	// Stop can wait for the process. Keep the Remote reader free to finish during that wait.
 	// Wait joins this owned stop operation before it removes the private output files.

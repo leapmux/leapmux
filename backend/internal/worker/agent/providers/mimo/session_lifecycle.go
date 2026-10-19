@@ -117,7 +117,6 @@ func (a *Agent) ClearContext() (string, error) {
 	a.manualCompactionReady = false
 	a.manualFollowupSending = false
 	a.manualFollowupBusy = false
-	clear(a.buffers)
 	a.usage = mimoUsage{}
 	a.goal = mimoGoalState{}
 	a.Mu.Unlock()

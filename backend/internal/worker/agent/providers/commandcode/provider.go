@@ -46,18 +46,10 @@ func (commandcodeProvider) Classify(raw json.RawMessage) agent.NotificationClass
 		return agent.NotificationClassification{}
 	}
 	switch event.Type {
-	case contracts.CommandCodeEventApiRetry:
-		return agent.NotificationClassification{Kind: agent.NotificationKindAPIRetry}
-	case contracts.CommandCodeEventCompactionDone:
-		if event.Trigger != "manual" && event.TokensSaved > 0 {
-			return agent.NotificationClassification{Kind: agent.NotificationKindCompactionBoundary}
-		}
+	case contracts.CommandCodeEventApiRetry, contracts.CommandCodeEventStreamRestart:
+		return agent.APIRetryNotification()
 	case contracts.CommandCodeEventCompactionOutcome:
-		if event.Trigger == "manual" && event.Outcome == "summarized" {
-			return agent.NotificationClassification{Kind: agent.NotificationKindCompactionBoundary}
-		}
-	case contracts.CommandCodeEventNotice:
-		return agent.NotificationClassification{Kind: agent.NotificationKindStatus}
+		return agent.CompactionBoundaryNotification()
 	}
 	return agent.NotificationClassification{}
 }

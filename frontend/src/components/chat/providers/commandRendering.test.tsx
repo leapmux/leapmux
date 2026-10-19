@@ -166,7 +166,13 @@ function renderCodexMessageBubble(item: Record<string, unknown>, host?: MessageB
   // fixture carries no `item.id`, so Codex's own classifier calls it `unknown`, and
   // these cases are about the mounted row's toolbar rather than the classification.
   const content: ParsedMessageContent = { rawText: JSON.stringify(parsed), topLevel: parsed, parentObject: parsed, wrapper: null }
-  const prepared: PreparedMessage = { message, original: content, resolved: resolveMessageForRendering(content, AgentProvider.CODEX), category: { kind: 'tool_use' } }
+  const prepared: PreparedMessage = {
+    compactionStartOnly: false,
+    message,
+    original: content,
+    resolved: resolveMessageForRendering(content, AgentProvider.CODEX),
+    category: { kind: 'tool_use' },
+  }
   return render(() => (
     <MessageBubble
       message={message}

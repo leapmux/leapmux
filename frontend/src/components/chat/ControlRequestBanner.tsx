@@ -318,19 +318,18 @@ export const ControlRequestActions: Component<BannerActionsProps> = (props) => {
                 <Match when={surfaceOf(props.controlSurface, 'permission')}>
                   {permission => (
                     <Show
-                      when={permission().permission.options.length > 0}
+                      when={permission().permission.independentOptions || permission().permission.options.length > 0}
                       fallback={<GenericToolActions {...props} request={request()} />}
                     >
                       {/*
-                        The runtime stated its own answers, so the reader picks one of
-                        THOSE rather than the shared Allow/Deny pair -- and the layout
-                        reads their KINDS, because the option-id vocabulary is each
-                        agent's own.
+                        The runtime supplies these answers. The model states whether they are independent choices or permission scopes.
+                        The provider owns each option ID.
                       */}
                       <PermissionDecisionActions
                         {...props}
                         request={request()}
                         options={() => permission().permission.options}
+                        independentOptions={permission().permission.independentOptions ?? false}
                         send={sendPermissionOption()}
                       />
                     </Show>

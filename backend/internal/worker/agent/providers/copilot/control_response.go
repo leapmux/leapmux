@@ -105,6 +105,20 @@ type copilotControlDecision struct {
 // waiting and the request answerable rather than sending it a value it would refuse.
 func copilotNativeAnswer(eventType string, data json.RawMessage, decision copilotControlDecision) (any, string) {
 	switch eventType {
+	case contracts.CopilotEventSamplingRequested:
+		decisionWord := contracts.CopilotSamplingDecisionDeny
+		if decision.allow {
+			decisionWord = contracts.CopilotSamplingDecisionAllow
+		}
+		return map[string]any{"decision": decisionWord}, ""
+	case contracts.CopilotEventAutoModeSwitchRequested:
+		if !decision.allow {
+			return contracts.CopilotAutoModeSwitchResponseNo, ""
+		}
+		if decision.scope == contracts.CopilotApprovalScopeSession || decision.scope == contracts.CopilotApprovalScopeProject {
+			return contracts.CopilotAutoModeSwitchResponseYesAlways, ""
+		}
+		return contracts.CopilotAutoModeSwitchResponseYes, ""
 	case contracts.CopilotEventPermissionRequested:
 		if !decision.allow {
 			// The feedback rides the decision. An empty message stays empty rather
@@ -253,6 +267,8 @@ func copilotControlEvent(payload json.RawMessage) (string, json.RawMessage, bool
 		contracts.CopilotEventUserInputRequested,
 		contracts.CopilotEventExitPlanModeRequested,
 		contracts.CopilotEventElicitationRequested,
+		contracts.CopilotEventAutoModeSwitchRequested,
+		contracts.CopilotEventSamplingRequested,
 	} {
 		if data, ok := copilotEventOfType(payload, eventType); ok {
 			return eventType, data, true

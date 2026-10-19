@@ -14,7 +14,7 @@ import { currentNativeAgent } from '../helpers/nativeScenario'
 import { readObservedNativeDecision, waitForOneNativeControl } from '../helpers/nativeStoredControlDecision'
 import { exitPlanModeToolCall } from '../helpers/providerToolCalls'
 import { newProviderWorkingDir } from '../helpers/providerWorkingDir'
-import { answerPlanReview, assistantBubbles, controlActions, controlBanner, enterControlFeedback, expectSettingsChip, openWorkspace, planReviewButton, savedControlAnswer, sendMessage, userBubbles, visibleOnly, waitForAgentIdle } from '../helpers/ui'
+import { answerPlanReview, assistantBubbles, controlActions, controlBanner, enterControlFeedback, expectSettingsChip, messageContents, openWorkspace, planReviewButton, savedControlAnswer, sendMessage, userBubbles, visibleOnly, waitForAgentIdle } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { zcodeTest } from '../zcode-fixtures'
 import { ZCODE_AGENT } from './scenarios'
@@ -153,4 +153,45 @@ zcodeTest('approves a native ZCode plan into a chosen mode applied after the nat
   // The native report confirms that the deferred preset replaced Build after the plan exit.
   await expectSettingsChip(page, 'Yolo')
   expect(readFileSync(join(directory, '.zcode', 'plans', `plan-${zcodePlanFileStem(agent.agentSessionId)}.md`), 'utf8')).toBe(plan)
+})
+
+zcodeTest('approves a native ZCode plan with Clear Context and leaves no card of the retired session', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
+  await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, ZCODE_AGENT, {
+    directoryPrefix: 'zcode-clear-plan-',
+    optionValues: { [OPTION_ID_PERMISSION_MODE]: 'plan' },
+  })
+  await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
+  const start = await modelScript.queue(
+    { toolCalls: [exitPlanModeToolCall(AgentProvider.ZCODE, 'clear-plan', modelScript.prompt('# Clear context plan\n\n- Change no files.'))] },
+    { text: 'PLAN_RAN' },
+  )
+  await sendMessage(page, modelScript.prompt('Request approval for the scripted plan.'))
+  await modelScript.waitForSteps(start + 1)
+  await expect(controlBanner(page)).toContainText('Plan Ready for Review')
+  await visibleOnly(page.getByTestId('plan-clear-context-checkbox')).locator('input[type="checkbox"]').check()
+  await answerPlanReview(page, 'approve')
+  await modelScript.waitForSteps(start + 2)
+  await expect(messageContents(page).filter({ hasText: 'Context cleared' })).toHaveCount(1)
+  await expect(assistantBubbles(page).filter({ hasText: 'PLAN_RAN' })).toHaveCount(1)
+  await waitForAgentIdle(page)
+  await expect(controlBanner(page)).toHaveCount(0)
+  const continuation = await modelScript.requestAt(start + 1)
+  expect(JSON.stringify(continuation.body)).toContain('Clear context plan')
+  expect(JSON.stringify(continuation.body)).not.toContain('User has approved your plan. You can now start coding.')
+})
+
+zcodeTest('stops a ZCode turn that waits for plan approval and marks it interrupted', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
+  await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, ZCODE_AGENT, {
+    directoryPrefix: 'zcode-stop-plan-',
+    optionValues: { [OPTION_ID_PERMISSION_MODE]: 'plan' },
+  })
+  await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
+  const start = await modelScript.queue({ toolCalls: [exitPlanModeToolCall(AgentProvider.ZCODE, 'stop-plan', '# Stop this plan\n\n- Change no files.')] })
+  await sendMessage(page, modelScript.prompt('Request approval for the scripted plan.'))
+  await modelScript.waitForSteps(start + 1)
+  await expect(controlBanner(page)).toContainText('Plan Ready for Review')
+  await controlBanner(page).getByTestId('control-interrupt').click()
+  await waitForAgentIdle(page)
+  await expect(controlBanner(page)).toHaveCount(0)
+  await expect(messageContents(page).filter({ hasText: 'Turn interrupted' })).toHaveCount(1)
 })

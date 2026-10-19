@@ -2,6 +2,7 @@ import type { ChildProcess } from 'node:child_process'
 /* eslint-disable no-console */
 import type { ModelScriptFixtures } from './helpers/modelScriptFixture'
 import type { ServerOutput } from './helpers/serverOutput'
+import type { TranscriptGuardState } from './helpers/transcriptGuard'
 import type { AgentWorkspaceFixture } from './helpers/workspace'
 import { rmSync } from 'node:fs'
 import { join } from 'node:path'
@@ -34,6 +35,7 @@ import { createTestDirectory } from './helpers/runDirectory'
 import { getGlobalState, hubSpawnEnv, mockAgentEnv, waitForHubStart, waitForServer } from './helpers/server'
 import { attachServerLog, createServerOutput, reportStartupFailure } from './helpers/serverOutput'
 import { attachToastLog, installToastRecorder } from './helpers/toast'
+import { createTranscriptGuard } from './helpers/transcriptGuard'
 import { loginViaToken, openWorkspace } from './helpers/ui'
 import { agentWorkspaceFixture, withTestWorkspace } from './helpers/workspace'
 
@@ -159,6 +161,7 @@ export async function restartHub(serverInfo: SeparateServerInfo): Promise<void> 
 
 export const processTest = base.extend<
   ModelScriptFixtures & {
+    transcriptGuard: TranscriptGuardState
     debugLogging: boolean
     toastRecorder: void
     /** The working directory of the agent that the `workspace` fixture opens. See the same option in `./fixtures.ts`. */
@@ -173,6 +176,9 @@ export const processTest = base.extend<
   // hubSpawnEnv supplies this run's isolated agent configuration to each Hub.
   // Every agent reaches the run's mock endpoint. Teardown verifies each test's model script.
   ...modelScriptFixtures,
+
+  // eslint-disable-next-line no-empty-pattern
+  transcriptGuard: async ({}, use) => { await use(createTranscriptGuard()) },
 
   debugLogging: [false, { option: true }],
 

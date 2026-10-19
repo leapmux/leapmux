@@ -11,7 +11,7 @@ import { UNTRUSTED_LINK_ATTRIBUTE } from '~/lib/untrustedLinkClicks'
 import { srOnly } from '~/styles/shared.css'
 import * as styles from './TurnRetryOfferBanner.css'
 
-const BANNER_TEXT = 'Giving this request a little extra thought. If you would rather not wait, retry with a faster model. It may be less capable on complex requests.'
+const BANNER_TEXT = 'If you would rather not wait, retry on a faster model. A faster model can be less capable on complex tasks.'
 
 export interface TurnRetryOfferBannerProps {
   /** The live offer of the worker, or undefined when it made none. */
@@ -30,7 +30,7 @@ export interface TurnRetryOfferBannerProps {
 }
 
 /**
- * Offer to stop a buffered request and send it again on a faster model.
+ * Offer to stop the current attempt and send its input again on a faster model.
  *
  * Keep one status node mounted before the offer arrives.
  * Some screen readers announce nothing when a live region appears with its content.
@@ -174,7 +174,7 @@ export const TurnRetryOfferBanner: Component<TurnRetryOfferBannerProps> = (props
             onConfirm={() => void retry(offer())}
             onCancel={() => keepWaiting(offer().turnId)}
           >
-            {`This stops the current attempt and removes it from the native conversation history. LeapMux keeps the stopped attempt in this transcript. File changes and other actions that the agent already took stay. LeapMux sends your message again on ${label()}, which can be less capable on complex tasks.`}
+            {`This stops the current attempt and removes it from the native conversation history. LeapMux keeps the stopped attempt in this transcript. File changes and other actions that the agent already took stay. LeapMux sends your message again on ${label()}, a faster model that can be less capable on complex tasks.`}
           </ConfirmDialog>
         )}
       </Show>

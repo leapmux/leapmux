@@ -22,6 +22,7 @@ import { getRuntimeState, isTauriApp, platformBridge } from '~/api/platformBridg
 import { apiLoadingTimeoutMs, workspaceBootstrapTimeoutMs } from '~/api/transport'
 import { setExpectedUserId } from '~/api/workerRpc'
 import { createAgentComposerActionStateStore } from '~/components/chat/agentComposerActionState'
+import { pluginFor } from '~/components/chat/providers/registry'
 import { BootSplash } from '~/components/common/BootSplash'
 import { CliPathDialog } from '~/components/desktop/CliPathDialog'
 import { isWorkspaceMutatable } from '~/components/shell/sectionUtils'
@@ -1248,6 +1249,7 @@ export const AppShell: Component = () => {
       return undefined
     const current = chatStore.goal.get(rootId)
     const surface: GoalSurface = {
+      ...(pluginFor(tabView.getAgentTab(rootId)?.agentProvider)?.session?.goalStatusUnconfirmed ? { statusUnconfirmed: true as const } : {}),
       ...(current !== undefined ? { current } : {}),
       progress: chatStore.goal.progress(rootId),
       actions: chatStore.goal.supportedActions(rootId),

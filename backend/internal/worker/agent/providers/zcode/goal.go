@@ -10,6 +10,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // ZCode's session goal, which its own code calls a "target" -- goal is the
@@ -140,10 +141,10 @@ func zcodeGoalStatusDetail(wire string, status agent.GoalStatus) string {
 // be hours old, exactly like Codex's resume push. A `target_changed` event
 // reports a change as it happens.
 func (a *Agent) reportZCodeGoal(raw json.RawMessage, snapshot bool) {
-	if len(raw) == 0 {
+	if providerkit.RawKindOf(raw) == providerkit.RawAbsent {
 		return
 	}
-	if string(raw) == "null" {
+	if providerkit.RawKindOf(raw) == providerkit.RawNull {
 		// A session snapshot RESTATES the absence; a goal change announces it.
 		a.clearZCodeGoal(snapshot)
 		return
@@ -193,8 +194,8 @@ func (a *Agent) clearZCodeGoal(snapshot bool) {
 // transition then writes the neutral `goal_updated` row. A progress-only action
 // updates the card alone. `cleared` and a null target state the removal.
 func (a *Agent) handleZCodeGoalChanged(payload zcodeSessionUpdatedPayload) {
-	action, _ := zcodeRawString(payload.Action)
-	if action == contracts.ZCodeGoalActionCleared || string(payload.Target) == "null" {
+	action, _ := providerkit.RawString(payload.Action)
+	if action == contracts.ZCodeGoalActionCleared || providerkit.RawKindOf(payload.Target) == providerkit.RawNull {
 		a.clearZCodeGoal(false)
 		return
 	}
@@ -213,7 +214,7 @@ func (a *Agent) handleZCodeGoalChanged(payload zcodeSessionUpdatedPayload) {
 // goal: the check marks nothing and writes no row. A check that runs while no
 // goal is known keeps its row, because nothing contradicts it.
 func (a *Agent) handleZCodeGoalVerification(event zcodeEventEnvelope, payload zcodeSessionUpdatedPayload) {
-	status, _ := zcodeRawString(payload.Status)
+	status, _ := providerkit.RawString(payload.Status)
 	switch status {
 	case contracts.ZCodeGoalVerificationStatusStarted,
 		contracts.ZCodeGoalVerificationStatusCompleted,
@@ -225,7 +226,7 @@ func (a *Agent) handleZCodeGoalVerification(event zcodeEventEnvelope, payload zc
 	a.Mu.Lock()
 	update := a.lastGoalUpdate
 	a.Mu.Unlock()
-	if targetID, _ := zcodeRawString(payload.TargetID); update.NativeID != "" && targetID != update.NativeID {
+	if targetID, _ := providerkit.RawString(payload.TargetID); update.NativeID != "" && targetID != update.NativeID {
 		return
 	}
 	if status == contracts.ZCodeGoalVerificationStatusStarted {

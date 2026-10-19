@@ -74,6 +74,11 @@ func (a *Agent) handlePermissionRequest(id, params json.RawMessage) {
 		a.replyZCodeControlFailure(id, "leapmux could not read the permission request")
 		return
 	}
+	if !a.isCurrentZCodeSession(req.SessionID) {
+		a.replyZCodePermission(id, req.Options, agent.ControlBehaviorDeny, "The session is no longer active.")
+		slog.Debug("zcode declined a retired session permission request", "session_id", req.SessionID)
+		return
+	}
 	requestID := req.RequestID
 	if requestID == "" {
 		// Without an id the answer cannot be routed back, and an unanswerable prompt
@@ -212,6 +217,11 @@ func (a *Agent) handleUserInputRequest(id, params, original json.RawMessage) {
 		a.replyZCodeControlFailure(id, "leapmux could not read the user-input request")
 		return
 	}
+	if !a.isCurrentZCodeSession(req.SessionID) {
+		a.replyZCodeUserInput(id, agent.ControlBehaviorDeny, zcodeUserInputReply{PlanApproval: req.isPlanApproval()})
+		slog.Debug("zcode declined a retired session input request", "session_id", req.SessionID)
+		return
+	}
 	if req.RequestID == "" {
 		// Without an id the answer cannot be routed back, and an unanswerable prompt
 		// would stall the turn. LeapMux denies it, so the turn continues.
@@ -260,9 +270,14 @@ func (a *Agent) handleUserInputRequest(id, params, original json.RawMessage) {
 		}
 	}
 
+	planText := req.planText()
 	toolName := zcodeControlAskUserQuestion
 	if req.isPlanApproval() {
 		toolName = zcodeControlPlanApproval
+		if strings.TrimSpace(planText) != "" {
+			// A context-clear approval reads this canonical copy after it replaces the native session.
+			a.sink.UpdatePlan([]byte(planText), leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE, providerkit.ExtractPlanTitle(planText))
+		}
 	}
 
 	// The questions are re-encoded in the shape the SHARED AskUserQuestion control
@@ -273,7 +288,7 @@ func (a *Agent) handleUserInputRequest(id, params, original json.RawMessage) {
 	input, err := json.Marshal(map[string]any{
 		"questions": zcodeSharedQuestions(req),
 		"prompt":    req.Prompt,
-		"plan":      req.planText(),
+		"plan":      planText,
 	})
 	if err != nil {
 		slog.Error("zcode marshal user input questions", "agent_id", a.AgentID(), "error", err)

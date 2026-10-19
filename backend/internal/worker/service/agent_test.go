@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -119,9 +120,27 @@ func TestRetryAgentTurnValidatesTheOfferedTurnAndModel(t *testing.T) {
 	}
 }
 
-// RetryAgentTurn answers NotFound when no running agent can take the retry.
-// Both an id this worker never held and a stored agent without a running
-// provider are refused.
+// A store failure must remain distinct from an absent agent.
+func TestRetryAgentTurnMapsAStoreFaultToInternal(t *testing.T) {
+	t.Parallel()
+	svc, dispatcher, _ := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(t.Context(), db.CreateAgentParams{
+		ID: "root-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	}))
+	svc.getAgentByIDFn = func(context.Context, string) (db.Agent, error) {
+		return db.Agent{}, errors.New("store unavailable")
+	}
+	writer := newTestWriter()
+	dispatch(dispatcher, "RetryAgentTurn", &leapmuxv1.RetryAgentTurnRequest{
+		AgentId: "root-1", TurnId: "turn-1", Model: "gpt-6-luna",
+	}, writer)
+	rejections := writer.rejections()
+	require.Len(t, rejections, 1)
+	assert.Equal(t, int32(codes.Internal), rejections[0].code)
+}
+
+// RetryAgentTurn refuses an absent agent or a stored agent with no running process.
 func TestRetryAgentTurnMapsAMissingAgent(t *testing.T) {
 	t.Parallel()
 

@@ -1,6 +1,6 @@
 import type { MessageCategory } from '../../messageClassifier'
 import type { ClassificationInput } from '../capabilities'
-import { COMMAND_CODE_EVENT, COMMAND_CODE_FRAME_KIND, COMMAND_CODE_METHOD } from '~/generated/contracts/commandcode-protocol'
+import { COMMAND_CODE_EVENT, COMMAND_CODE_FRAME_KIND, COMMAND_CODE_METHOD, COMMAND_CODE_NOTIFICATION_EVENT } from '~/generated/contracts/commandcode-protocol'
 import { pickString } from '~/lib/jsonPick'
 import { isNotificationThreadWrapper } from '../../messageUtils'
 import { notificationClassifierFor } from '../../notificationClassification'
@@ -10,24 +10,8 @@ import { commandCodeEvent, commandCodeText } from './protocol'
 import { COMMAND_CODE_TOOL_RESULTS } from './spanRole'
 
 const NOTIFICATION_EVENTS: ReadonlySet<string> = new Set([
-  COMMAND_CODE_EVENT.Notice,
-  COMMAND_CODE_EVENT.ApiRetry,
-  COMMAND_CODE_EVENT.RunError,
-  COMMAND_CODE_EVENT.CompactionStart,
-  COMMAND_CODE_EVENT.CompactionDone,
-  COMMAND_CODE_EVENT.CompactionOutcome,
+  ...COMMAND_CODE_NOTIFICATION_EVENT,
   COMMAND_CODE_EVENT.SubagentProgress,
-])
-
-const HIDDEN_EVENTS: ReadonlySet<string> = new Set([
-  COMMAND_CODE_EVENT.RunStart,
-  COMMAND_CODE_EVENT.RunEnd,
-  COMMAND_CODE_EVENT.ModelRequestEnd,
-  COMMAND_CODE_EVENT.ToolUpdate,
-  COMMAND_CODE_EVENT.SubagentStart,
-  COMMAND_CODE_EVENT.SubagentStop,
-  COMMAND_CODE_EVENT.PermissionModeChanged,
-  COMMAND_CODE_EVENT.ConfigSettingChanged,
 ])
 
 const NOTIFICATION_FRAME_KINDS = new Set([COMMAND_CODE_FRAME_KIND.Event])
@@ -60,5 +44,5 @@ export function classifyCommandCodeMessage(input: ClassificationInput): MessageC
     return commandCodeText(event.content) ? { kind: 'assistant_text' } : { kind: 'hidden' }
   if (NOTIFICATION_EVENTS.has(type))
     return notification([parent])
-  return HIDDEN_EVENTS.has(type) ? { kind: 'hidden' } : { kind: 'unknown' }
+  return { kind: 'unknown' }
 }

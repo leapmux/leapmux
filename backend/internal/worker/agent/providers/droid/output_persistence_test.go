@@ -75,7 +75,7 @@ func TestFailedGenerationWriteDoesNotKeepEndedTurnActive(t *testing.T) {
 			t.Run(fmt.Sprintf("child=%t/%s", child, boundary.name), func(t *testing.T) {
 				t.Parallel()
 				a, root, _ := newSteerAgent(t)
-				a.armTurn()
+				a.startTurn()
 				sessionID := "main-session"
 				destination := root
 				if child {
@@ -129,7 +129,7 @@ func TestFailedGenerationWriteDoesNotKeepEndedTurnActive(t *testing.T) {
 func TestCompletedTextRetainsOutputAfterPersistenceFailure(t *testing.T) {
 	t.Parallel()
 	for _, end := range []string{
-		`{"type":"assistant_text_complete","messageId":"partial","blockIndex":0}`,
+		`{"type":"create_message","message":{"id":"partial","role":"assistant","content":[{"type":"text","text":"retained"}]}}`,
 		`{"type":"agent_turn_completed","reason":"cancelled"}`,
 	} {
 		t.Run(end, func(t *testing.T) {
@@ -146,7 +146,7 @@ func TestCompletedTextRetainsOutputAfterPersistenceFailure(t *testing.T) {
 			_, text, _, ok := agenttest.DecodeAssembledMessage(rows[0].Content)
 			require.True(t, ok)
 			assert.Equal(t, "retained", text)
-			assert.Empty(t, a.outputStates["main-session"].pending)
+			assert.False(t, a.outputStates["main-session"].hasPendingOutput())
 			count := len(sink.Messages())
 			a.HandleOutput(droidAuditNotification(t, "main-session", []byte(`{"type":"assistant_text_complete","messageId":"partial","blockIndex":0}`)))
 			assert.Len(t, sink.Messages(), count, "a late text completion does not duplicate the retained output")

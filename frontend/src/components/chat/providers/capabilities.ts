@@ -152,6 +152,9 @@ export interface ProviderTranscriptCapability {
    */
   resolveMessage?: (parsed: ParsedMessageContent) => Record<string, unknown> | undefined
 
+  /** Identify a stored native compaction start for the history filter only. */
+  compactionStart?: (message: Record<string, unknown>) => boolean
+
   /** Classify a parsed message into a rendering category. */
   classify: (input: ClassificationInput, context?: ClassificationContext) => MessageCategory
 
@@ -358,6 +361,8 @@ export interface ProviderControlCapability {
  * what it reserves, and how its sessions are named.
  */
 export interface ProviderSessionCapability {
+  /** The provider cannot confirm the current goal status. Show its objective without a status label. */
+  goalStatusUnconfirmed?: boolean
   /**
    * Extract an explicit rate-limit merge or replacement from a provider frame.
    * Returns null when the frame carries no rate-limit update.

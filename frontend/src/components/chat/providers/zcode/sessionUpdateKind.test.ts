@@ -17,19 +17,19 @@ import { ZCODE_SESSION_UPDATE_ROWS, zcodeSessionUpdateKind } from './sessionUpda
  */
 const ROWS: { name: string, payload: Record<string, unknown>, row: ZCodeSessionUpdateRow }[] = [
   { name: 'a network status', payload: { type: ZCODE_NETWORK_STATUS.RetryScheduled, requestId: 'q1' }, row: 'notification' },
-  { name: 'a background task', payload: { taskId: 'task-1' }, row: 'none' },
-  { name: 'a subagent update', payload: { agentId: 'child-1', parentToolCallId: 'spawn-1' }, row: 'none' },
+  { name: 'a background task', payload: { taskId: 'task-1' }, row: 'unknown' },
+  { name: 'a subagent update', payload: { agentId: 'child-1', parentToolCallId: 'spawn-1' }, row: 'unknown' },
   { name: 'a model response', payload: { content: 'Hello', stopReason: 'stop' }, row: 'reply' },
   { name: 'a goal check', payload: { verificationId: 'v1', targetId: 'g1' }, row: 'notification' },
-  { name: 'a goal change', payload: { action: 'cleared', source: 'command', target: null }, row: 'none' },
-  { name: 'a mode change', payload: { mode: 'plan', planEnabled: true }, row: 'none' },
+  { name: 'a goal change', payload: { action: 'cleared', source: 'command', target: null }, row: 'unknown' },
+  { name: 'a mode change', payload: { mode: 'plan', planEnabled: true }, row: 'unknown' },
   { name: 'a compaction lifecycle', payload: { operationId: 'c1', trigger: 'auto', status: 'completed' }, row: 'notification' },
   { name: 'a microcompact boundary', payload: { strategy: ZCODE_MICROCOMPACT_STRATEGY.LocalToolResultClear }, row: 'notification' },
   { name: 'a model switch', payload: { modelSelection: { modelId: 'm1' } }, row: 'notification' },
   { name: 'a hook run', payload: { hookRunId: 'h1', hookInvocationId: 'i1' }, row: 'notification' },
   { name: 'a workspace hook admission', payload: { pendingCount: 2, bundleDigest: 'abc' }, row: 'notification' },
   { name: 'a discarded queued input', payload: { pendingInputIds: ['p1'], reason: 'user_removed', targetTurnId: 'turn_1' }, row: 'notification' },
-  { name: 'a telemetry shape', payload: { messageCount: 3 }, row: 'none' },
+  { name: 'a telemetry shape', payload: { messageCount: 3 }, row: 'unknown' },
 ]
 
 describe('ZCODE_SESSION_UPDATE_ROWS', () => {

@@ -115,8 +115,13 @@ func TestCopilotManualCompactionReportsNativeFailure(t *testing.T) {
 			require.NoError(t, err)
 			t.Cleanup(func() { provider.Stop(); _ = provider.Wait() })
 			a := provider.(*Agent)
+			a.HandleOutput(nativeCopilotSessionEvent(t, a.currentNativeSessionID(), "", contracts.CopilotEventSessionCompactionStart, map[string]any{"trigger": "manual"}))
 			require.NoError(t, a.CompactContext())
 			require.Eventually(t, func() bool { return len(sink.LeapMuxNotifications()) == 1 }, 30*time.Second, time.Millisecond)
+			infos := sink.SessionInfos()
+			require.NotEmpty(t, infos)
+			require.Contains(t, infos[len(infos)-1], "compaction")
+			require.Nil(t, infos[len(infos)-1]["compaction"])
 			notification := sink.LeapMuxNotifications()[0]
 			require.Equal(t, contracts.NotificationTypeAgentError, notification[contracts.NotificationFieldType])
 			require.Contains(t, notification[contracts.NotificationFieldError], "could not compact")
@@ -127,4 +132,87 @@ func TestCopilotManualCompactionReportsNativeFailure(t *testing.T) {
 			}, 30*time.Second, time.Millisecond)
 		})
 	}
+}
+
+func TestAutomaticCompactionThatOutlivesTheTurnIsLiveState(t *testing.T) {
+	t.Parallel()
+	a, sink := newNativeCopilotForEvents(t)
+	// Trimmed from .tmp/verify-c29/copilot/round2/auto/frames.jsonl.
+	a.HandleOutput([]byte(`{"method":"session.event","params":{"sessionId":"session-1","event":{"type":"assistant.turn_start","data":{"turnId":"0"},"ephemeral":true}}}`))
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventSessionCompactionStart, map[string]any{"trigger": "auto"}))
+	require.Empty(t, sink.Messages())
+	require.Equal(t, []map[string]any{{"compaction": map[string]any{"trigger": "auto"}}}, sink.SessionInfos())
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventSessionIdle, map[string]any{}))
+	require.Len(t, sink.SessionInfos(), 1, "the turn end must keep the live compaction")
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventSessionCompactionComplete, map[string]any{"success": true, "tokensRemoved": 40}))
+	infos := sink.SessionInfos()
+	require.Contains(t, infos[len(infos)-1], "compaction")
+	require.Nil(t, infos[len(infos)-1]["compaction"])
+	count := 0
+	for _, row := range sink.Messages() {
+		if _, ok := copilotEventOfType(row.Content, contracts.CopilotEventSessionCompactionComplete); ok {
+			count++
+		}
+	}
+	require.Equal(t, 1, count)
+}
+
+func TestCompactionLiveStateUsesTheChildSink(t *testing.T) {
+	t.Parallel()
+	a, root := newNativeCopilotForEvents(t)
+	child := &agenttest.Sink{}
+	a.children = map[string]*copilotNativeChild{"child": {nativeAgentID: "child", sink: agent.NewProviderServices(child)}}
+	a.HandleOutput(nativeCopilotEvent(t, "child", contracts.CopilotEventSessionCompactionStart, map[string]any{}))
+	require.Empty(t, child.Messages())
+	require.Empty(t, root.SessionInfos())
+	require.Equal(t, []map[string]any{{"compaction": map[string]any{}}}, child.SessionInfos())
+	a.HandleOutput(nativeCopilotEvent(t, "child", contracts.CopilotEventSessionCompactionComplete, map[string]any{"success": false}))
+	require.Len(t, child.Messages(), 1)
+	require.Nil(t, child.SessionInfos()[1]["compaction"])
+}
+
+func TestCompactionEndsWhenTheSessionIsReplaced(t *testing.T) {
+	t.Parallel()
+	a, sink := newNativeCopilotForEvents(t)
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventSessionCompactionStart, map[string]any{}))
+	a.forgetNativeSessionState("new-session")
+	infos := sink.SessionInfos()
+	require.Len(t, infos, 2)
+	require.Contains(t, infos[1], "compaction")
+	require.Nil(t, infos[1]["compaction"])
+}
+
+type compactionResetSink struct {
+	agent.ProviderServices
+	entered chan struct{}
+	resume  chan struct{}
+}
+
+func (s *compactionResetSink) SetTurnState(state agent.TurnState, seq uint64) {
+	s.ProviderServices.SetTurnState(state, seq)
+	close(s.entered)
+	<-s.resume
+}
+
+func TestCompactionResetWaitsForTheOutputLock(t *testing.T) {
+	t.Parallel()
+	a, sink := newNativeCopilotForEvents(t)
+	observer := &compactionResetSink{ProviderServices: a.sink, entered: make(chan struct{}), resume: make(chan struct{})}
+	a.sink = agent.NewProviderServices(observer)
+	a.stateMu.Lock()
+	a.active = true
+	a.stateMu.Unlock()
+	a.HandleOutput(nativeCopilotEvent(t, "", contracts.CopilotEventSessionCompactionStart, map[string]any{}))
+	a.outputMu.Lock()
+	finished := make(chan struct{})
+	go func() { a.forgetNativeSessionState("replacement"); close(finished) }()
+	<-observer.entered
+	if len(sink.SessionInfos()) != 1 {
+		t.Error("the live compaction changed before the session reset held the output lock")
+	}
+	close(observer.resume)
+	a.outputMu.Unlock()
+	<-finished
+	require.Len(t, sink.SessionInfos(), 2)
+	require.Nil(t, sink.SessionInfos()[1]["compaction"])
 }

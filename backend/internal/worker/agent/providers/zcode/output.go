@@ -21,9 +21,6 @@ import (
 func handleZCodeOutput(a *Agent, line *providerkit.ParsedLine) {
 	switch line.Method {
 	case NotifySessionEvent:
-		// A frame is proof the turn is alive, so it restarts the window a stop armed.
-		// Telemetry notifications do not, which is why this sits on the event case.
-		a.refreshStoppedZCodeTurn()
 		event, ok := parseZCodeEvent(line.Params)
 		if !ok {
 			slog.Warn("zcode session/event carried no event type", "agent_id", a.AgentID(), "len", len(line.Raw))
@@ -46,10 +43,8 @@ func handleZCodeOutput(a *Agent, line *providerkit.ParsedLine) {
 
 // dispatchZCodeEvent routes one session event.
 //
-// The switch lists EVERY member of the app-server's event enumeration, including the
-// ones LeapMux ignores, each with the reason. A new event type therefore reaches the
-// default branch and is logged, instead of being silently absorbed by a branch that
-// looks deliberate.
+// The switch lists each known event and explains each intentional drop.
+// The default branch persists an unknown event of the current session.
 //
 // Two goroutines reach this function. The read loop delivers live notifications, and
 // `subscribe` dispatches the events its own reply replays -- on the CALLER's goroutine,
@@ -87,6 +82,8 @@ func (a *Agent) dispatchZCodeEvent(event zcodeEventEnvelope) {
 		a.Mu.Unlock()
 	}
 
+	// Only a new event of the current session extends the stop wait.
+	a.refreshStoppedZCodeTurn()
 	switch event.Type {
 	case contracts.ZCodeEventTurnStarted:
 		a.handleZCodeTurnStarted(event)
@@ -112,8 +109,8 @@ func (a *Agent) dispatchZCodeEvent(event zcodeEventEnvelope) {
 		// consumed it. The event is the second copy.
 
 	case contracts.ZCodeEventSessionTitleUpdated:
-		// LeapMux titles an agent from the user's first message and from its own
-		// renaming flow. A model-written session title would fight that.
+		// LeapMux sets the title from the user's first message and its rename action.
+		// A native session title must not replace that title.
 
 	case contracts.ZCodeEventMessageUpserted, contracts.ZCodeEventMessageRemoved,
 		contracts.ZCodeEventPartStarted, contracts.ZCodeEventPartDelta,
@@ -143,6 +140,18 @@ func (a *Agent) dispatchZCodeEvent(event zcodeEventEnvelope) {
 
 	default:
 		slog.Debug("zcode unknown event type", "agent_id", a.AgentID(), "type", event.Type)
+		a.persistUnknownZCodeEvent(event)
+	}
+}
+
+// persistUnknownZCodeEvent preserves an unknown session event for inspection.
+func (a *Agent) persistUnknownZCodeEvent(event zcodeEventEnvelope) {
+	raw := event.persistBytes()
+	if raw == nil {
+		return
+	}
+	if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw}, agent.SpanInfo{}); err != nil {
+		slog.Error("zcode failed to persist an unknown event", "agent_id", a.AgentID(), "type", event.Type, "error", err)
 	}
 }
 
@@ -180,15 +189,21 @@ func (e zcodeEventEnvelope) withPayload(payload json.RawMessage) zcodeEventEnvel
 	return e
 }
 
-// persistZCodeNotification records a lifecycle event as a notification row.
-func (a *Agent) persistZCodeNotification(event zcodeEventEnvelope) {
+// persistZCodeNotification records a lifecycle event and reports whether persistence succeeded.
+func (a *Agent) persistZCodeNotification(event zcodeEventEnvelope) bool {
+	return a.persistZCodeNotificationTo(a.sink, event)
+}
+
+func (a *Agent) persistZCodeNotificationTo(sink agent.ProviderServices, event zcodeEventEnvelope) bool {
 	content := event.persistBytes()
 	if content == nil {
-		return
+		return false
 	}
-	if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: content}); err != nil {
+	if _, err := sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: content}); err != nil {
 		slog.Error("zcode persist notification", "agent_id", a.AgentID(), "type", event.Type, "error", err)
+		return false
 	}
+	return true
 }
 
 // --- turn lifecycle ---
@@ -243,6 +258,7 @@ func (a *Agent) handleZCodeTurnStarted(event zcodeEventEnvelope) {
 	a.Mu.Lock()
 	a.turnGeneration++
 	a.cancelStoppedZCodeTurnLocked()
+	a.stopCancelledRequest = false
 	a.turnActive = true
 	a.backgroundTurn = background
 	if !background {
@@ -278,9 +294,18 @@ func (a *Agent) handleZCodeTurnCompleted(event zcodeEventEnvelope) {
 	if payload.Usage != nil {
 		a.recordZCodeUsage(*payload.Usage)
 	}
-	a.finishZCodeTurn(event, zcodeTurnEnd{toolCallCount: payload.ToolCallCount, cancelled: payload.ResultType == contracts.ZCodeResultCancelled})
+	cancelled := a.takeStopCancelledRequest() || payload.ResultType == contracts.ZCodeResultCancelled
+	a.finishZCodeTurn(event, zcodeTurnEnd{toolCallCount: payload.ToolCallCount, cancelled: cancelled})
 	// A completed turn is not an error, so any pending auto-continue for one is stale.
 	providerkit.ScheduleOrCancelAPIErrorAutoContinue(a.sink, false, event.persistBytes())
+}
+
+func (a *Agent) takeStopCancelledRequest() bool {
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	cancelled := a.stopCancelledRequest
+	a.stopCancelledRequest = false
+	return cancelled
 }
 
 // zcodeTurnFailed is the turn.failed payload. `error.retryable` is the app-server's
@@ -350,9 +375,11 @@ type zcodeTurnEnd struct {
 // turn, and closing the spans there would tear down the cards of tool calls the
 // user's own turn is still running.
 func (a *Agent) finishZCodeTurn(event zcodeEventEnvelope, end zcodeTurnEnd) {
+	a.retryResolution.Reset()
 	toolCallCount := end.toolCallCount
 	a.Mu.Lock()
 	background := a.backgroundTurn
+	a.stopCancelledRequest = false
 	// The turn reported its own end, so the stop's window has nothing left to watch.
 	// It is dropped in the SAME critical section that clears turnActive: a frame the
 	// read loop delivered between the two re-armed the window, and it then ended a
@@ -425,7 +452,11 @@ func (a *Agent) finishZCodeTurn(event zcodeEventEnvelope, end zcodeTurnEnd) {
 	if toolCallCount == 0 {
 		toolUses += closed
 	}
-	if err := a.sink.PersistTurnEnd(agent.WithToolUseCount(zcodeTurnContent(content, a.usageSnapshot()), toolUses), agent.SpanInfo{}); err != nil {
+	turnContent := agent.WithToolUseCount(zcodeTurnContent(content, a.usageSnapshot()), toolUses)
+	if end.cancelled {
+		turnContent.Completion = agent.MessageCompletionInterrupted
+	}
+	if err := a.sink.PersistTurnEnd(turnContent, agent.SpanInfo{}); err != nil {
 		slog.Error("zcode persist turn end", "agent_id", a.AgentID(), "type", event.Type, "error", err)
 	}
 	a.sink.ResetSpans()
@@ -477,7 +508,7 @@ func (a *Agent) handleZCodeModelStreaming(event zcodeEventEnvelope) {
 		if payload.Delta == "" {
 			return
 		}
-		a.flushZCodeGenerationScope(zcodeReasoningScope(payload.AssistantMessageID), agent.MessageCompletionComplete)
+		// Keep reasoning open until the response ends so a retry can discard it.
 		textScope := zcodeTextScope(payload.AssistantMessageID)
 		a.generationBuffer.Append(textScope, agent.AssembledMessageKindText, payload.Delta, providerkit.JoinVerbatim)
 		a.sink.ReportProgress(agent.ModelTextProgress(textScope, payload.Delta))
@@ -977,38 +1008,20 @@ type zcodeSessionUpdatedPayload struct {
 	TargetTurnID    json.RawMessage `json:"targetTurnId"`
 }
 
-// zcodeRawPresent reports whether a key held a value other than JSON null.
-func zcodeRawPresent(raw json.RawMessage) bool {
-	return len(raw) > 0 && string(raw) != "null"
-}
-
-// zcodeRawString reads a raw key as a JSON string. ok is false for a key that is
-// absent, null or any other JSON type.
-func zcodeRawString(raw json.RawMessage) (string, bool) {
-	if !zcodeRawPresent(raw) {
-		return "", false
-	}
-	var value string
-	if json.Unmarshal(raw, &value) != nil {
-		return "", false
-	}
-	return value, true
-}
-
 // kind tells the shapes apart by which fields they carry, in order of
 // specificity -- never on `status`, `toolCallId`, `requestId`, `source`, `mode` or
 // `turnId` alone. The browser's `zcodeSessionUpdateKind` applies the same order,
 // and the two read the network status prefix and the microcompact strategy from
 // one contract.
 func (p zcodeSessionUpdatedPayload) kind() zcodeSessionUpdateKind {
-	if status, ok := zcodeRawString(p.Type); ok && strings.HasPrefix(status, contracts.ZCodeNetworkStatusPrefixModel) && zcodeRawPresent(p.RequestID) {
+	if status, ok := providerkit.RawString(p.Type); ok && strings.HasPrefix(status, contracts.ZCodeNetworkStatusPrefixModel) && providerkit.RawPresent(p.RequestID) {
 		return zcodeSessionUpdateNetworkStatus
 	}
-	if taskID, ok := zcodeRawString(p.TaskID); ok && taskID != "" {
+	if taskID, ok := providerkit.RawString(p.TaskID); ok && taskID != "" {
 		return zcodeSessionUpdateBackgroundTask
 	}
-	if agentID, ok := zcodeRawString(p.AgentID); ok && agentID != "" {
-		if parentCallID, ok := zcodeRawString(p.ParentToolCallID); ok && parentCallID != "" {
+	if agentID, ok := providerkit.RawString(p.AgentID); ok && agentID != "" {
+		if parentCallID, ok := providerkit.RawString(p.ParentToolCallID); ok && parentCallID != "" {
 			return zcodeSessionUpdateSubagent
 		}
 	}
@@ -1016,37 +1029,37 @@ func (p zcodeSessionUpdatedPayload) kind() zcodeSessionUpdateKind {
 	// RawMessage therefore starts at the value, and a quote identifies a string.
 	// Decode its text only when the selected handler needs the main reply.
 	if len(p.Content) > 0 && p.Content[0] == '"' {
-		if stopReason, ok := zcodeRawString(p.StopReason); ok && stopReason != "" {
+		if stopReason, ok := providerkit.RawString(p.StopReason); ok && stopReason != "" {
 			return zcodeSessionUpdateModelResponse
 		}
 	}
-	if zcodeRawPresent(p.VerificationID) && zcodeRawPresent(p.TargetID) {
+	if providerkit.RawPresent(p.VerificationID) && providerkit.RawPresent(p.TargetID) {
 		return zcodeSessionUpdateGoalVerification
 	}
 	// The `target` KEY marks a goal change, and it is present as an object or as
 	// null: `cleared` states its removal through the null.
-	if zcodeRawPresent(p.Action) && zcodeRawPresent(p.Source) && len(p.Target) > 0 {
+	if providerkit.RawPresent(p.Action) && providerkit.RawPresent(p.Source) && len(p.Target) > 0 {
 		return zcodeSessionUpdateGoalChange
 	}
 	if _, _, ok := parseZCodeModeChange(p.Mode, p.PlanEnabled); ok {
 		return zcodeSessionUpdateModeChange
 	}
-	if zcodeRawPresent(p.OperationID) && zcodeRawPresent(p.Trigger) && zcodeRawPresent(p.Status) {
+	if providerkit.RawPresent(p.OperationID) && providerkit.RawPresent(p.Trigger) && providerkit.RawPresent(p.Status) {
 		return zcodeSessionUpdateCompaction
 	}
-	if strategy, ok := zcodeRawString(p.Strategy); ok && strategy == contracts.ZCodeMicrocompactStrategyLocalToolResultClear {
+	if strategy, ok := providerkit.RawString(p.Strategy); ok && strategy == contracts.ZCodeMicrocompactStrategyLocalToolResultClear {
 		return zcodeSessionUpdateMicrocompact
 	}
-	if zcodeRawPresent(p.ModelSelection) {
+	if providerkit.RawPresent(p.ModelSelection) {
 		return zcodeSessionUpdateModelSelected
 	}
-	if zcodeRawPresent(p.HookRunID) && zcodeRawPresent(p.HookInvocationID) {
+	if providerkit.RawPresent(p.HookRunID) && providerkit.RawPresent(p.HookInvocationID) {
 		return zcodeSessionUpdateHookRun
 	}
-	if zcodeRawPresent(p.PendingCount) && zcodeRawPresent(p.BundleDigest) {
+	if providerkit.RawPresent(p.PendingCount) && providerkit.RawPresent(p.BundleDigest) {
 		return zcodeSessionUpdateHookAdmission
 	}
-	if zcodeRawPresent(p.PendingInputIDs) && zcodeRawPresent(p.Reason) && zcodeRawPresent(p.TargetTurnID) {
+	if providerkit.RawPresent(p.PendingInputIDs) && providerkit.RawPresent(p.Reason) && providerkit.RawPresent(p.TargetTurnID) {
 		return zcodeSessionUpdateSteerDiscarded
 	}
 	return zcodeSessionUpdateDrop
@@ -1056,7 +1069,7 @@ func (p zcodeSessionUpdatedPayload) kind() zcodeSessionUpdateKind {
 // JSON type, or an absent one, states nothing: usage is nil, and contextWindow is
 // zero. It never drops the reply that carries it.
 func (p zcodeSessionUpdatedPayload) usageAndContextWindow() (usage *zcodeUsage, contextWindow int64) {
-	if zcodeRawPresent(p.Usage) {
+	if providerkit.RawPresent(p.Usage) {
 		var decoded zcodeUsage
 		if json.Unmarshal(p.Usage, &decoded) == nil {
 			usage = &decoded
@@ -1079,7 +1092,7 @@ func (p zcodeSessionUpdatedPayload) networkStatusHasAPIRetry() bool {
 	if json.Unmarshal(p.Meta, &meta) != nil {
 		return false
 	}
-	return zcodeRawPresent(meta.ZCode.APIRetry)
+	return providerkit.RawPresent(meta.ZCode.APIRetry)
 }
 
 // hookRunIsVisibleFailure reports whether a hook run reached an outcome the user
@@ -1089,7 +1102,7 @@ func (p zcodeSessionUpdatedPayload) networkStatusHasAPIRetry() bool {
 // `cancelled` hook stopped because its turn stopped, so it is not a failure that
 // the user must read.
 func (p zcodeSessionUpdatedPayload) hookRunIsVisibleFailure() bool {
-	outcome, _ := zcodeRawString(p.Outcome)
+	outcome, _ := providerkit.RawString(p.Outcome)
 	switch outcome {
 	case contracts.ZCodeHookRunOutcomeFailed, contracts.ZCodeHookRunOutcomeBlocked, contracts.ZCodeHookRunOutcomeTimedOut:
 	default:
@@ -1142,16 +1155,24 @@ func (a *Agent) handleZCodeSessionUpdated(event zcodeEventEnvelope) {
 		// Only the retry notice is worth a row. The other network statuses hold
 		// headers and base URLs. A side query's retry follows the rule of its
 		// reply: the model call is the app-server's own, so it is not the user's.
-		status, _ := zcodeRawString(payload.Type)
-		if status == contracts.ZCodeNetworkStatusRetryScheduled && payload.networkStatusHasAPIRetry() && zcodeIsMainQuery(payload.QuerySource) {
-			a.persistZCodeNotification(event)
+		status, _ := providerkit.RawString(payload.Type)
+		if !zcodeIsMainQuery(payload.QuerySource) {
+			return
+		}
+		switch status {
+		case contracts.ZCodeNetworkStatusRetryScheduled:
+			if payload.networkStatusHasAPIRetry() && a.persistZCodeNotification(event) {
+				a.retryResolution.NoteRetry()
+			}
+		case zcodeNetworkStatusRequestCompleted:
+			a.retryResolution.Resolve(a.sink)
 		}
 	case zcodeSessionUpdateBackgroundTask:
 		a.handleZCodeBackgroundTask(event)
 	case zcodeSessionUpdateSubagent:
 		a.handleZCodeSubagentLifecycle(event)
 	case zcodeSessionUpdateModelResponse:
-		stopReason, _ := zcodeRawString(payload.StopReason)
+		stopReason, _ := providerkit.RawString(payload.StopReason)
 		if !zcodeIsMainReply(payload.QuerySource, stopReason) {
 			// A side query is a generation the app-server runs for itself. It is
 			// not the turn's reply, so it closes no stream, records no usage and
@@ -1169,7 +1190,7 @@ func (a *Agent) handleZCodeSessionUpdated(event zcodeEventEnvelope) {
 		if usage != nil {
 			a.recordZCodeUsage(*usage)
 		}
-		content, _ := zcodeRawString(payload.Content)
+		content, _ := providerkit.RawString(payload.Content)
 		a.persistZCodeAssistantMessage(event, content)
 	case zcodeSessionUpdateGoalVerification:
 		a.handleZCodeGoalVerification(event, payload)
@@ -1180,14 +1201,32 @@ func (a *Agent) handleZCodeSessionUpdated(event zcodeEventEnvelope) {
 		if exitMode := a.handleZCodeModeChanged(mode, planEnabled, parseZCodeModeSource(payload.Source)); exitMode != "" {
 			a.sendDeferredZCodeExitMode(exitMode)
 		}
-	case zcodeSessionUpdateCompaction, zcodeSessionUpdateMicrocompact:
-		// The compaction lifecycle is the single source of ZCode compaction rows,
-		// and a microcompact is its own boundary.
+	case zcodeSessionUpdateCompaction:
+		// A start is live state. Only the native end becomes a stored row.
+		status, _ := providerkit.RawString(payload.Status)
+		switch status {
+		case contracts.ZCodeCompactionStatusStarted, contracts.ZCodeCompactionStatusRetrying:
+			trigger, _ := providerkit.RawString(payload.Trigger)
+			a.Mu.Lock()
+			wasLive := a.compactionLive
+			a.compactionLive = true
+			a.Mu.Unlock()
+			if !wasLive {
+				providerkit.PublishCompaction(a.sink, trigger)
+			}
+			return
+		case contracts.ZCodeCompactionStatusCompleted, contracts.ZCodeCompactionStatusSkipped,
+			contracts.ZCodeCompactionStatusFailed, contracts.ZCodeCompactionStatusInterrupted:
+			a.endZCodeCompaction()
+		}
+		a.persistZCodeNotification(event)
+	case zcodeSessionUpdateMicrocompact:
+		a.endZCodeCompaction()
 		a.persistZCodeNotification(event)
 	case zcodeSessionUpdateModelSelected:
-		// Only the fallback states a switch that the registry made. The post-turn
-		// session/read refreshes every other model selection.
-		if origin, _ := zcodeRawString(payload.Origin); origin == contracts.ZCodeModelSelectionOriginRegistryFallback {
+		// Adopt the registry fallback immediately. The session read confirms other selections.
+		if origin, _ := providerkit.RawString(payload.Origin); origin == contracts.ZCodeModelSelectionOriginRegistryFallback {
+			a.adoptZCodeRegistryFallback(payload)
 			a.persistZCodeNotification(event)
 		}
 	case zcodeSessionUpdateHookRun:
@@ -1195,13 +1234,16 @@ func (a *Agent) handleZCodeSessionUpdated(event zcodeEventEnvelope) {
 			a.persistZCodeNotification(event)
 		}
 	case zcodeSessionUpdateHookAdmission:
+		// ZCode 3.15.3 cannot reduce a positive count to zero in this session.
+		// LeapMux sends neither v4/command nor workspace/hooks/trustGrant.
+		// ZCode does not watch its trust store for external changes.
 		var pending int
 		if json.Unmarshal(payload.PendingCount, &pending) != nil || pending <= 0 {
 			return
 		}
 		a.persistZCodeNotification(event)
 	case zcodeSessionUpdateSteerDiscarded:
-		if reason, _ := zcodeRawString(payload.Reason); reason == zcodeSteerDiscardReasonPromoted {
+		if reason, _ := providerkit.RawString(payload.Reason); reason == zcodeSteerDiscardReasonPromoted {
 			return
 		}
 		a.persistZCodeNotification(event)
@@ -1209,6 +1251,38 @@ func (a *Agent) handleZCodeSessionUpdated(event zcodeEventEnvelope) {
 		// Telemetry: the per-request model and iteration counters, the provider
 		// request record and the shapes that the list above gives.
 	}
+}
+
+const zcodeNetworkStatusRequestCompleted = "model_request_completed"
+
+func (a *Agent) endZCodeCompaction() {
+	a.Mu.Lock()
+	wasLive := a.compactionLive
+	a.compactionLive = false
+	a.Mu.Unlock()
+	if wasLive {
+		providerkit.EndCompaction(a.sink)
+	}
+}
+
+func (a *Agent) adoptZCodeRegistryFallback(payload zcodeSessionUpdatedPayload) {
+	var model zcodeModelRef
+	if json.Unmarshal(payload.ModelSelection, &model) != nil || model.ModelID == "" {
+		return
+	}
+	window, validWindow := providerkit.RawInt64(payload.ContextWindow)
+	a.Mu.Lock()
+	a.model = zcodeModelID(model.ProviderID, model.ModelID)
+	if validWindow && window > 0 {
+		a.contextWindow = window
+	}
+	settings := map[string]string{
+		agent.OptionIDModel:          a.model,
+		agent.OptionIDEffort:         a.thoughtLevel,
+		agent.OptionIDPermissionMode: a.permissionModeLocked(),
+	}
+	a.Mu.Unlock()
+	a.sink.PersistSettingsRefresh(settings)
 }
 
 // zcodeIsMainReply reports whether a model response is the RUNNING TURN's reply.
@@ -1278,53 +1352,22 @@ func parseZCodeModeSource(raw json.RawMessage) string {
 	return source
 }
 
-func (a *Agent) flushZCodeGenerationScope(scopeID string, completion agent.MessageCompletion) {
-	if scopeID == "" {
-		return
-	}
-	if a.IsDiscardingOutput() {
-		a.generationBuffer.Reset()
-		return
-	}
-	ok, err := a.generationBuffer.PersistScope(scopeID, completion, func(raw []byte) error {
-		return a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw}, agent.SpanInfo{})
-	})
-	if err != nil {
-		slog.Error("zcode persist reasoning", "agent_id", a.AgentID(), "error", err)
-		return
-	}
-	if !ok {
-		return
-	}
-	a.sink.ReportProgress(agent.CompleteModelProgress(scopeID))
-}
-
 func (a *Agent) flushZCodeGenerationKind(kind agent.AssembledMessageKind, completion agent.MessageCompletion) {
-	if a.IsDiscardingOutput() {
-		a.generationBuffer.Reset()
-		return
+	var scopes []string
+	for _, scopeID := range a.generationBuffer.ScopeIDs() {
+		if scopeKind, _, ok := a.generationBuffer.ScopeSnapshot(scopeID); ok && scopeKind == kind {
+			scopes = append(scopes, scopeID)
+		}
 	}
-	a.persistZCodeGenerationKind(kind, completion)
+	if err := providerkit.PersistGenerationScopes(&a.generationBuffer, a.sink, scopes, completion, a.IsDiscardingOutput()); err != nil {
+		slog.Error("zcode failed to persist generation", "agent_id", a.AgentID(), "error", err)
+	}
 }
 
 func (a *Agent) flushZCodeGeneration(completion agent.MessageCompletion) {
-	if a.IsDiscardingOutput() {
-		a.generationBuffer.Reset()
-		return
+	if err := providerkit.FlushGeneration(&a.generationBuffer, a.sink, completion, a.IsDiscardingOutput()); err != nil {
+		slog.Error("zcode failed to persist generation", "agent_id", a.AgentID(), "error", err)
 	}
-	if err := a.generationBuffer.PersistAll(completion, a.persistZCodeGenerationRow); err != nil {
-		slog.Error("zcode persist generation", "agent_id", a.AgentID(), "error", err)
-	}
-}
-
-func (a *Agent) persistZCodeGenerationKind(kind agent.AssembledMessageKind, completion agent.MessageCompletion) {
-	if err := a.generationBuffer.PersistKind(kind, completion, a.persistZCodeGenerationRow); err != nil {
-		slog.Error("zcode persist generation", "agent_id", a.AgentID(), "error", err)
-	}
-}
-
-func (a *Agent) persistZCodeGenerationRow(raw []byte) error {
-	return a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw}, agent.SpanInfo{})
 }
 
 func zcodeReasoningScope(assistantMessageID string) string {
@@ -1450,6 +1493,7 @@ func (a *Agent) handleZCodeBackgroundTask(event zcodeEventEnvelope) {
 	if kind == bgtask.KindSubagent && task.ToolCallID != "" {
 		childID, childTitle, ok := a.ensureZCodeSubagentTranscript(rowKey, task.ToolCallID, title)
 		if ok {
+			a.children.rememberSession(rowKey, task.ChildSessionID)
 			upsert.ChildAgentID = childID
 			// The creator may have used the spawn's own label instead of this event's, so
 			// the row states what the tab states.
@@ -1484,12 +1528,15 @@ func zcodeBackgroundTitle(task zcodeBackgroundTask) (title string, titleIsComman
 
 // zcodePermissionResolved is the permission.resolved payload.
 type zcodePermissionResolved struct {
-	RequestID  string `json:"requestId"`
-	ToolCallID string `json:"toolCallId"`
-	ToolName   string `json:"toolName"`
-	Decision   string `json:"decision"`
-	Reason     string `json:"reason"`
+	ChildSessionID string `json:"childSessionId"`
+	RequestID      string `json:"requestId"`
+	ToolCallID     string `json:"toolCallId"`
+	ToolName       string `json:"toolName"`
+	Decision       string `json:"decision"`
+	Reason         string `json:"reason"`
 }
+
+const zcodePermissionCancelledReason = "Permission request cancelled"
 
 // handleZCodePermissionResolved records a decision LeapMux did not make.
 //
@@ -1503,6 +1550,13 @@ func (a *Agent) handleZCodePermissionResolved(event zcodeEventEnvelope) {
 		slog.Warn("zcode permission.resolved unmarshal failed", "agent_id", a.AgentID(), "error", err)
 		return
 	}
+	if payload.Decision == contracts.ZCodeDecisionDeny && payload.Reason == zcodePermissionCancelledReason {
+		a.Mu.Lock()
+		if a.stopWindow.armed() {
+			a.stopCancelledRequest = true
+		}
+		a.Mu.Unlock()
+	}
 	if a.forgetZCodeControlRequest(payload.RequestID) {
 		// The user answered this one through LeapMux; the structured answer row already
 		// records it.
@@ -1514,7 +1568,17 @@ func (a *Agent) handleZCodePermissionResolved(event zcodeEventEnvelope) {
 	if payload.Decision == contracts.ZCodeDecisionAllow {
 		return
 	}
-	a.persistZCodeNotification(event)
+	a.persistZCodeNotificationTo(a.zcodePermissionSink(payload), event)
+}
+
+func (a *Agent) zcodePermissionSink(payload zcodePermissionResolved) agent.ProviderServices {
+	if childID, ok := a.children.toolChild(payload.ToolCallID); ok {
+		return a.sink.ChildSink(childID)
+	}
+	if childID, ok := a.children.sessionChild(payload.ChildSessionID); ok {
+		return a.sink.ChildSink(childID)
+	}
+	return a.sink
 }
 
 // handleZCodeUserInputResolved drops the resolved request from the forwarded set.
@@ -1553,7 +1617,8 @@ func (a *Agent) handleZCodeUserInputResolved(event zcodeEventEnvelope) {
 // The one report that changes what LeapMux holds is the DISCARDED TAIL: text the
 // app-server threw away before its retry. A later failure would otherwise persist
 // it from the generation buffer as if it were the reply, so the discard drops both
-// buffered scopes of the message that it identifies. The payload states the
+// buffered scopes of the message that it identifies and resets their live progress.
+// The payload states the
 // discard through its byte counters -- the only recovery payload that carries
 // them. Every other report keeps the logging-only behavior above.
 func (a *Agent) handleZCodeStreamRecovery(event zcodeEventEnvelope) {
@@ -1569,11 +1634,13 @@ func (a *Agent) handleZCodeStreamRecovery(event zcodeEventEnvelope) {
 	if payload.AssistantMessageID == "" {
 		return
 	}
-	if !zcodeRawPresent(payload.DiscardedReasoningBytes) && !zcodeRawPresent(payload.DiscardedTextBytes) {
+	if !providerkit.RawPresent(payload.DiscardedReasoningBytes) && !providerkit.RawPresent(payload.DiscardedTextBytes) {
 		return
 	}
-	a.generationBuffer.Discard(zcodeTextScope(payload.AssistantMessageID))
-	a.generationBuffer.Discard(zcodeReasoningScope(payload.AssistantMessageID))
+	providerkit.DiscardGenerationScopes(&a.generationBuffer, a.sink, []string{
+		zcodeTextScope(payload.AssistantMessageID),
+		zcodeReasoningScope(payload.AssistantMessageID),
+	})
 }
 
 // zcodeJoinOutputTails puts the two progress streams on their own lines.

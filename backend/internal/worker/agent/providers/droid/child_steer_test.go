@@ -24,16 +24,23 @@ type bufferStdin struct {
 	mu      sync.Mutex
 	buf     bytes.Buffer
 	written chan struct{}
+	respond func(droidEnvelope)
 }
 
 func (b *bufferStdin) Write(p []byte) (int, error) {
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	n, err := b.buf.Write(p)
 	if b.written != nil {
 		select {
 		case b.written <- struct{}{}:
 		default:
+		}
+	}
+	b.mu.Unlock()
+	if b.respond != nil {
+		var request droidEnvelope
+		if json.Unmarshal(p, &request) == nil {
+			b.respond(request)
 		}
 	}
 	return n, err
@@ -81,6 +88,11 @@ func newSteerAgentWithProcessDone(t *testing.T, processDone chan struct{}) (*Age
 	a.Mu.Lock()
 	a.sessionID = "main-session"
 	a.Mu.Unlock()
+	stdin.respond = func(request droidEnvelope) {
+		if request.Method == droidMethodAddUserMessage {
+			answerDroidInput(t, a, request.ID, false)
+		}
+	}
 	return a, sink, stdin
 }
 
@@ -158,7 +170,7 @@ func TestSendChildInputWritesEndOfTurn(t *testing.T) {
 func TestSendChildInputRefusesABusyChild(t *testing.T) {
 	t.Parallel()
 	a, child, _, childStdin := newBoundChildAgent(t)
-	child.armTurn()
+	child.startTurn()
 
 	err := a.SendChildInput(steerChildID, "hello", nil)
 	require.ErrorIs(t, err, agent.ErrAgentBusy, "a running child refuses a new message")
@@ -189,7 +201,7 @@ func TestSendChildInputWaitsForAnUnboundBackgroundChild(t *testing.T) {
 func TestSteerChildInputWritesEndOfTurn(t *testing.T) {
 	t.Parallel()
 	a, child, _, childStdin := newBoundChildAgent(t)
-	child.armTurn()
+	child.startTurn()
 
 	require.NoError(t, a.SteerChildInput(steerChildID, "more", nil))
 	params := lastRequest(t, childStdin)
@@ -245,7 +257,7 @@ func TestActiveChildTurnStateIsPerChild(t *testing.T) {
 	assert.False(t, a.ActiveChildTurnState("child-1").Active, "a disarm clears the flag")
 }
 
-// child_session_available arms the child's turn and persists the announcement.
+// child_session_available starts the child turn and updates its registry row.
 func TestChildSessionAvailableArmsTheTurn(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newSteerAgent(t)
@@ -253,14 +265,17 @@ func TestChildSessionAvailableArmsTheTurn(t *testing.T) {
 	a.HandleOutput([]byte(`{"type":"notification","params":{"sessionId":"main-session","notification":{"type":"child_session_available","childSessionId":"child-1","toolUseId":"tu-1","subagentType":"explorer","description":"Inspect the parser"}}}`))
 	assert.True(t, a.ActiveChildTurnState("child-1").Active,
 		"a spawned child starts running")
-	assert.NotEmpty(t, sink.PersistedNotifications(), "the announcement is persisted for the browser")
+	assert.Empty(t, sink.PersistedNotifications(), "the registry carries the child announcement")
+	row, ok := sink.BackgroundTask("child-1")
+	require.True(t, ok)
+	assert.NotEmpty(t, row.ChildAgentID)
 }
 
 // A turn end for a child session disarms that child, not the main turn.
 func TestAgentTurnCompletedForAChildDisarmsTheChild(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newSteerAgent(t)
-	a.armTurn()
+	a.startTurn()
 	a.HandleOutput([]byte(droidChildAvailable))
 	row, ok := sink.BackgroundTask("child-1")
 	require.True(t, ok)
@@ -278,7 +293,7 @@ func TestAgentTurnCompletedForAChildDisarmsTheChild(t *testing.T) {
 func TestAgentTurnCompletedForTheMainSessionDisarmsTheTurn(t *testing.T) {
 	t.Parallel()
 	a, _, _ := newSteerAgent(t)
-	a.armTurn()
+	a.startTurn()
 
 	a.HandleOutput([]byte(`{"type":"notification","params":{"sessionId":"main-session","notification":{"type":"agent_turn_completed","turnId":"t-1","reason":"completed"}}}`))
 	assert.False(t, func() bool { a.Mu.Lock(); defer a.Mu.Unlock(); return a.turnActive }(),

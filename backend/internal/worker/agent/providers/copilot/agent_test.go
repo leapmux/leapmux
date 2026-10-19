@@ -3,6 +3,7 @@ package copilot
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -194,4 +195,169 @@ func TestCopilotAnswersNoOrphanResponse(t *testing.T) {
 	// goroutine. See TestCopilotAnswersNoNotification.
 	require.Never(t, func() bool { return written.String() != "" },
 		200*time.Millisecond, 5*time.Millisecond, "a response is nobody's request and draws no reply")
+}
+
+type copilotSteerRequest struct {
+	ID     int64           `json:"id"`
+	Method string          `json:"method"`
+	Params json.RawMessage `json:"params"`
+}
+
+type copilotSteerScript struct {
+	removed        bool
+	earlyEcho      bool
+	echoOnWithdraw bool
+	sendError      bool
+	sendResult     json.RawMessage
+	withdrawError  bool
+	withdrawResult json.RawMessage
+}
+
+func newCopilotSteeringAgent(t *testing.T, script copilotSteerScript) (*Agent, *agenttest.Sink, *[]copilotSteerRequest) {
+	t.Helper()
+	a, sink := newNativeCopilotForEvents(t)
+	a.active = true
+	done := make(chan struct{})
+	var calls []copilotSteerRequest
+	writer := copilotRequestWriter(func(raw []byte) (int, error) {
+		var request copilotSteerRequest
+		if err := json.Unmarshal(raw, &request); err != nil {
+			return 0, err
+		}
+		calls = append(calls, request)
+		result := json.RawMessage(`{}`)
+		switch request.Method {
+		case "session.send":
+			if script.sendError {
+				a.Deliver(request.ID, []byte(`{"error":{"code":-32603,"message":"send refused"}}`))
+				return len(raw), nil
+			}
+			if script.earlyEcho {
+				a.HandleOutput(nativeCopilotEvent(t, "", "user.message", map[string]any{"content": providerkit.StringField(request.Params, "prompt")}))
+			}
+			result = json.RawMessage(`{"messageId":"native-steer"}`)
+			if script.sendResult != nil {
+				result = script.sendResult
+			}
+		case "session.queue.withdrawMessage":
+			if script.echoOnWithdraw {
+				a.HandleOutput(nativeCopilotEvent(t, "", "user.message", map[string]any{"content": providerkit.StringField(request.Params, "expectedPrompt")}))
+			}
+			if script.withdrawError {
+				a.Deliver(request.ID, []byte(`{"error":{"code":-32603,"message":"withdrawal refused"}}`))
+				return len(raw), nil
+			}
+			encoded, err := json.Marshal(map[string]bool{"removed": script.removed})
+			if err != nil {
+				return 0, err
+			}
+			result = encoded
+			if script.withdrawResult != nil {
+				result = script.withdrawResult
+			}
+		}
+		a.Deliver(request.ID, append(append([]byte(`{"result":`), result...), '}'))
+		return len(raw), nil
+	})
+	a.Process = providerkit.NewProcessFrom(providerkit.ProcessConfig{Ctx: t.Context(), Stdin: agenttest.NopStdin(writer), ProcessDone: done})
+	t.Cleanup(func() { close(done); a.Process.Stop() })
+	return a, sink, &calls
+}
+
+func TestSteerEchoAtUserMessage(t *testing.T) {
+	for _, early := range []bool{false, true} {
+		t.Run(fmt.Sprint(early), func(t *testing.T) {
+			a, sink, _ := newCopilotSteeringAgent(t, copilotSteerScript{earlyEcho: early})
+			require.NoError(t, a.SteerInput("change direction", nil))
+			if !early {
+				assert.Empty(t, sink.SteerEchoReports())
+			}
+			a.HandleOutput(nativeCopilotEvent(t, "", "user.message", map[string]any{"content": "change direction"}))
+			assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}}, sink.SteerEchoReports())
+			assert.Empty(t, sink.Messages(), "the queue owns the user transcript row")
+		})
+	}
+}
+
+func TestInterruptWithdrawsAPendingSteerAndReportsTheDrop(t *testing.T) {
+	a, sink, calls := newCopilotSteeringAgent(t, copilotSteerScript{removed: true})
+	require.NoError(t, a.SteerInput("change direction", nil))
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
+	require.Len(t, *calls, 3)
+	assert.Equal(t, "session.queue.withdrawMessage", (*calls)[1].Method)
+	assert.JSONEq(t, `{"sessionId":"session-1","messageId":"native-steer","expectedPrompt":"change direction"}`, string((*calls)[1].Params))
+	assert.Equal(t, "session.abort", (*calls)[2].Method)
+	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeDropped, Count: 1}}, sink.SteerEchoReports())
+}
+
+func TestInterruptKeepsASteerThatTheRuntimeAlreadyClaimed(t *testing.T) {
+	a, sink, calls := newCopilotSteeringAgent(t, copilotSteerScript{})
+	require.NoError(t, a.SteerInput("change direction", nil))
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
+	require.Len(t, *calls, 3)
+	assert.Empty(t, sink.SteerEchoReports())
+	a.HandleOutput(nativeCopilotEvent(t, "", "user.message", map[string]any{"content": "change direction"}))
+	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}}, sink.SteerEchoReports())
+}
+
+func TestSteerDeclaresRowAtEchoAndSurvival(t *testing.T) {
+	t.Parallel()
+	a := &Agent{}
+	echo, ok := any(a).(agent.SteerEchoReporter)
+	require.True(t, ok)
+	assert.True(t, echo.SteerRowAtEcho())
+	survivor, ok := any(a).(agent.SteerSurvivor)
+	require.True(t, ok)
+	assert.True(t, survivor.SteerSurvivesTurnEnd())
+}
+
+func TestSteerContextReplacementReportsUnechoedDrops(t *testing.T) {
+	a, sink, _ := newCopilotSteeringAgent(t, copilotSteerScript{})
+	require.NoError(t, a.SteerInput("change direction", nil))
+	a.sessionMu.Lock()
+	a.forgetNativeSessionState("replacement")
+	a.sessionMu.Unlock()
+	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeDropped, Count: 1}}, sink.SteerEchoReports())
+	assert.Empty(t, a.steers.Pending())
+}
+
+func TestSteerIgnoresAMalformedOrChildEcho(t *testing.T) {
+	a, sink, _ := newCopilotSteeringAgent(t, copilotSteerScript{})
+	require.NoError(t, a.SteerInput("", nil))
+	for _, data := range []map[string]any{{}, {"content": nil}, {"content": 7}} {
+		a.HandleOutput(nativeCopilotEvent(t, "", "user.message", data))
+	}
+	a.HandleOutput(nativeCopilotEvent(t, "child", "user.message", map[string]any{"content": ""}))
+	assert.Empty(t, sink.SteerEchoReports())
+	a.HandleOutput(nativeCopilotEvent(t, "", "user.message", map[string]any{"content": ""}))
+	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}}, sink.SteerEchoReports())
+}
+
+func TestSteerFailedRequestForgetsItsEcho(t *testing.T) {
+	for _, script := range []copilotSteerScript{{sendError: true}, {sendResult: json.RawMessage(`{}`)}} {
+		a, sink, _ := newCopilotSteeringAgent(t, script)
+		require.Error(t, a.SteerInput("change direction", nil))
+		a.HandleOutput(nativeCopilotEvent(t, "", "user.message", map[string]any{"content": "change direction"}))
+		assert.Empty(t, sink.SteerEchoReports())
+		assert.Empty(t, a.steers.Pending())
+	}
+}
+
+func TestInterruptAbortsEvenWhenSteerWithdrawalFails(t *testing.T) {
+	for _, script := range []copilotSteerScript{{withdrawError: true}, {withdrawResult: json.RawMessage(`{}`)}} {
+		a, sink, calls := newCopilotSteeringAgent(t, script)
+		require.NoError(t, a.SteerInput("change direction", nil))
+		require.NoError(t, a.Interrupt(agent.StopContext{}))
+		assert.Equal(t, "session.abort", (*calls)[len(*calls)-1].Method)
+		assert.Empty(t, sink.SteerEchoReports())
+		a.HandleOutput(nativeCopilotEvent(t, "", "user.message", map[string]any{"content": "change direction"}))
+		assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}}, sink.SteerEchoReports())
+	}
+}
+
+func TestInterruptDoesNotDropASteerThatEchoedDuringWithdrawal(t *testing.T) {
+	a, sink, _ := newCopilotSteeringAgent(t, copilotSteerScript{removed: true, echoOnWithdraw: true})
+	require.NoError(t, a.SteerInput("change direction", nil))
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
+	assert.Equal(t, []agenttest.SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}}, sink.SteerEchoReports())
 }

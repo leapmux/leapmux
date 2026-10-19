@@ -8,6 +8,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
 const (
@@ -202,6 +203,16 @@ type Snapshot struct {
 	Items               []SnapshotItem
 }
 
+// HeadIndex finds the first item that does not await an echo, or returns -1.
+func (s Snapshot) HeadIndex() int {
+	for index, item := range s.Items {
+		if item.State != leapmuxv1.AgentInputState_AGENT_INPUT_STATE_AWAITING_ECHO {
+			return index
+		}
+	}
+	return -1
+}
+
 type NewItem struct {
 	ID               string
 	AgentID          string
@@ -287,6 +298,8 @@ func (e *DeliveryError) Unwrap() error {
 type Dispatcher interface {
 	Dispatch(item DispatchItem) (DispatchResult, error)
 	Steer(item DispatchItem) (DispatchResult, error)
+	PrepareSteer(agentID string)
+	SteerPolicy(agentID string) agent.SteerPolicy
 	SupportsSteering(agentID string) bool
 	// Interrupt cancels the agent's active turn without any of the stop-side
 	// bookkeeping the InterruptAgent RPC applies (queue pause, control

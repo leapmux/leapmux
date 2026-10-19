@@ -354,6 +354,14 @@ func (a *agentInputQueueAdapter) AcceptsKind(agentID string, kind leapmuxv1.Agen
 	return kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK
 }
 
+func (a *agentInputQueueAdapter) PrepareSteer(agentID string) {
+	a.svc.Agents.PrepareSteer(agentID)
+}
+
+func (a *agentInputQueueAdapter) SteerPolicy(agentID string) agent.SteerPolicy {
+	return a.svc.Agents.SteerPolicy(agentID)
+}
+
 func (a *agentInputQueueAdapter) SupportsSteering(agentID string) bool {
 	dbAgent, err := a.svc.Queries.GetAgentByID(bgCtx(), agentID)
 	if err != nil {

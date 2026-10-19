@@ -35,33 +35,27 @@ func (ompProvider) ListStoredSessions(ctx context.Context, q agent.StoredSession
 }
 
 // Classify groups lifecycle notifications instead of adding a row for each update.
-// A completed compaction creates a boundary, including the response to the Worker's compact command.
-// A current compaction or a refused compact command creates a replaceable status.
+// Every compaction end creates a boundary, including a refused compact command.
+// A compaction start uses live state and has no stored classification.
 // A retry and its completion share one retry notice.
 func (ompProvider) Classify(raw json.RawMessage) agent.NotificationClassification {
 	var env struct {
 		Type    string `json:"type"`
 		Command string `json:"command"`
-		Success bool   `json:"success"`
 	}
 	if err := json.Unmarshal(raw, &env); err != nil {
 		return agent.NotificationClassification{}
 	}
 	switch env.Type {
 	case contracts.OhMyPiEventAutoCompactionEnd:
-		return agent.NotificationClassification{Kind: agent.NotificationKindCompactionBoundary, Key: "omp:" + env.Type}
-	case contracts.OhMyPiEventAutoCompactionStart:
-		return agent.NotificationClassification{Kind: agent.NotificationKindStatus, Key: "omp:" + env.Type}
+		return agent.CompactionBoundaryNotification()
 	case contracts.OhMyPiEventAutoRetryStart, contracts.OhMyPiEventAutoRetryEnd:
-		return agent.NotificationClassification{Kind: agent.NotificationKindAPIRetry, Key: "omp:" + env.Type}
+		return agent.APIRetryNotification()
 	case contracts.OhMyPiEventResponse:
 		if env.Command != contracts.OhMyPiCommandCompact {
 			return agent.NotificationClassification{}
 		}
-		if env.Success {
-			return agent.NotificationClassification{Kind: agent.NotificationKindCompactionBoundary, Key: "omp:" + contracts.OhMyPiCommandCompact}
-		}
-		return agent.NotificationClassification{Kind: agent.NotificationKindStatus, Key: "omp:" + contracts.OhMyPiCommandCompact}
+		return agent.CompactionBoundaryNotification()
 	default:
 		return agent.NotificationClassification{}
 	}

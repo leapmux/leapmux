@@ -53,60 +53,48 @@ func (a *Agent) sendControlAndWait(ctx context.Context, requestBody string, time
 
 // sendControlAndWaitWithID registers the supplied identity before the request reaches stdin.
 func (a *Agent) sendControlAndWaitWithID(ctx context.Context, requestID, requestBody string, timeout time.Duration) (claudeCodeControlResult, error) {
-	ch := make(chan claudeCodeControlResult, 1)
-	a.registerPendingControl(requestID, ch)
+	ch, release, err := a.controlReplies.Register(requestID)
+	if err != nil {
+		return claudeCodeControlResult{}, err
+	}
+	defer release()
 
 	msg := fmt.Sprintf(`{"type":"control_request","request_id":"%s","request":%s}`, requestID, requestBody)
 	if err := a.SendRawInput([]byte(msg), agent.StopContext{}); err != nil {
-		a.unregisterPendingControl(requestID)
-		// A write failure almost always means the child closed its stdin —
-		// i.e. it exited before we could hand off the request. Wait briefly
-		// for the wait goroutine to finalize so callers see "agent process
-		// exited with code N" (with captured stderr) instead of a raw
-		// "broken pipe" symptom. This also removes a race in
-		// TestAgent_EarlyExitDetected where, on fast Linux runners, the
-		// subprocess exits before the initialize write reaches the pipe.
+		release()
+		// A closed stdin can precede the process exit report.
+		// Wait briefly so the caller receives the exit status and captured stderr.
+		timer := a.Clock().NewTimer(claudeControlWriteExitWait, claudeControlWriteExitTimerTag)
+		defer timer.Stop(claudeControlWriteExitTimerTag)
 		select {
 		case <-a.ProcessDone():
 			return claudeCodeControlResult{}, a.ProcessExitError()
-		case <-time.After(1 * time.Second):
+		case <-timer.C:
 			return claudeCodeControlResult{}, err
 		}
 	}
 	agent.TraceStartupPhase(a.AgentID(), "control_stdin_write")
 
-	select {
-	case resp := <-ch:
-		a.unregisterPendingControl(requestID)
-		if !resp.Success {
-			return resp, fmt.Errorf("%s", resp.Error)
-		}
-		return resp, nil
-	case <-a.ProcessDone():
-		a.unregisterPendingControl(requestID)
-		return claudeCodeControlResult{}, a.ProcessExitError()
-	case <-ctx.Done():
-		a.unregisterPendingControl(requestID)
-		return claudeCodeControlResult{}, ctx.Err()
-	case <-time.After(timeout):
-		a.unregisterPendingControl(requestID)
-		// A response delivered before unregister won the race with the timeout.
-		select {
-		case resp := <-ch:
-			if !resp.Success {
-				return resp, fmt.Errorf("%s", resp.Error)
-			}
-			return resp, nil
-		default:
-			return claudeCodeControlResult{}, errControlTimeout
-		}
+	raw, err := providerkit.AwaitReply(&a.Process, ctx, ch, "claude control", timeout)
+	if errors.Is(err, providerkit.ErrAwaitTimeout) {
+		return claudeCodeControlResult{}, errControlTimeout
 	}
+	if err != nil {
+		return claudeCodeControlResult{}, err
+	}
+	response := parseClaudeControlResult(raw)
+	if !response.Success {
+		return response, errors.New(response.Error)
+	}
+	return response, nil
 }
 
-// errControlTimeout is returned by sendControlAndWait when the agent does not respond to a
-// control request within the timeout. It is a sentinel (its message is unchanged) so the
-// live permission-mode path can tell a deferred ack -- the CLI holds the set_permission_mode
-// response until an active turn ends -- from a genuine failure via errors.Is.
+const claudeControlWriteExitWait = time.Second
+const claudeControlWriteExitTimerTag = "claude-control-write-exit"
+
+// errControlTimeout identifies a control reply that did not arrive before its deadline.
+// The permission-mode path uses errors.Is to distinguish a deferred acknowledgment from a refusal.
+// Claude can defer set_permission_mode until the active turn ends.
 var errControlTimeout = errors.New("timeout waiting for agent to respond")
 
 // sendApplyFlagSettings marshals flagSettings into an apply_flag_settings
@@ -234,27 +222,26 @@ func isAutoModeUnavailableError(err error) bool {
 	return err != nil && strings.Contains(err.Error(), autoModeUnavailableErrorPrefix)
 }
 
-func (a *Agent) registerPendingControl(requestID string, ch chan<- claudeCodeControlResult) {
-	a.pendingControlMu.Lock()
-	defer a.pendingControlMu.Unlock()
-	a.pendingControl[requestID] = ch
-}
-
-func (a *Agent) unregisterPendingControl(requestID string) {
-	a.pendingControlMu.Lock()
-	defer a.pendingControlMu.Unlock()
-	delete(a.pendingControl, requestID)
-}
-
-// handlePendingControlResponse checks if a parsed line is a control_response
-// matching a pending request. If so, it sends the result to the waiting
-// channel and returns true (the line should be consumed, not forwarded).
+// handlePendingControlResponse sends a matching raw reply to its caller.
+// A late or unmatched reply returns false and reaches the normal output handler.
 func (a *Agent) handlePendingControlResponse(line *providerkit.ParsedLine) bool {
 	// Quick check using the pre-parsed Type field.
 	if line.Type != claudeMsgTypeControlResponse {
 		return false
 	}
+	var envelope struct {
+		Response struct {
+			RequestID string `json:"request_id"`
+		} `json:"response"`
+	}
+	if json.Unmarshal(line.Raw, &envelope) != nil || envelope.Response.RequestID == "" {
+		return false
+	}
+	return a.controlReplies.Deliver(envelope.Response.RequestID, line.Raw)
+}
 
+// parseClaudeControlResult reads the native reply without changing its fields.
+func parseClaudeControlResult(raw json.RawMessage) claudeCodeControlResult {
 	var envelope struct {
 		Response struct {
 			Subtype   string          `json:"subtype"`
@@ -263,18 +250,11 @@ func (a *Agent) handlePendingControlResponse(line *providerkit.ParsedLine) bool 
 			Error     string          `json:"error"`
 		} `json:"response"`
 	}
-	if err := json.Unmarshal(line.Raw, &envelope); err != nil {
-		return false
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return claudeCodeControlResult{Error: fmt.Sprintf("invalid control response: %v", err)}
 	}
 
 	reqID := envelope.Response.RequestID
-	a.pendingControlMu.Lock()
-	ch, ok := a.pendingControl[reqID]
-	a.pendingControlMu.Unlock()
-
-	if !ok {
-		return false
-	}
 
 	// Parse known fields from the inner response object.
 	var innerResponse struct {
@@ -286,17 +266,15 @@ func (a *Agent) handlePendingControlResponse(line *providerkit.ParsedLine) bool 
 		UnavailableModels     []claudeCodeModelInfo `json:"unavailable_models"`
 	}
 	if len(envelope.Response.Response) > 0 {
-		// Best-effort: a partial/unknown response shape still yields the fields it
-		// does carry. But log a type-mismatch failure (e.g. a schema-drifted models
-		// array) so dynamic model discovery silently falling back to the static
-		// catalog is diagnosable rather than indistinguishable from an old CLI.
+		// Keep the fields that decode before a type mismatch.
+		// Log the mismatch so a catalog fallback does not hide a changed native schema.
 		if err := json.Unmarshal(envelope.Response.Response, &innerResponse); err != nil {
 			slog.Warn("failed to parse control response inner fields",
-				"agent_id", a.AgentID(), "request_id", reqID, "error", err)
+				"request_id", reqID, "error", err)
 		}
 	}
 
-	result := claudeCodeControlResult{
+	return claudeCodeControlResult{
 		Success:               envelope.Response.Subtype == "success",
 		Mode:                  innerResponse.Mode,
 		Error:                 envelope.Response.Error,
@@ -307,14 +285,4 @@ func (a *Agent) handlePendingControlResponse(line *providerkit.ParsedLine) bool 
 		UnavailableModels:     innerResponse.UnavailableModels,
 		RawResponse:           envelope.Response.Response,
 	}
-	a.pendingControlMu.Lock()
-	defer a.pendingControlMu.Unlock()
-	if a.pendingControl[reqID] != ch {
-		return false
-	}
-	select {
-	case ch <- result:
-	default:
-	}
-	return true
 }

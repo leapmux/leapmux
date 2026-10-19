@@ -224,7 +224,7 @@ export interface NativeChildProfile {
   prepare?: (context: ManagedNativeScenarioContext) => Promise<void>
   /** Register report handling that the provider owns while the child is held. */
   beforeRelease?: (context: ManagedNativeScenarioContext, child: ProfiledNativeChild) => Promise<void>
-  /** Resolve the exact native task ID of the child from the native frames of its parent. */
+  /** Resolve the native task ID from the parent's native frames or the Worker's authoritative child links. */
   resolveTaskId?: (context: ManagedNativeScenarioContext, parentId: string, child: ProfiledNativeChild) => Promise<string>
 }
 

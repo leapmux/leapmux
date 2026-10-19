@@ -527,7 +527,7 @@ func codexGuardianAction(raw json.RawMessage) (codexGuardianActionValue, error) 
 // never both, so the legacy roots win when the request states them: Codex fills both
 // forms from legacy roots.
 func codexGuardianFileSystemPermissions(raw json.RawMessage) (codexGuardianFileSystem, error) {
-	if isJSONNullOrAbsent(raw) {
+	if !providerkit.RawPresent(raw) {
 		return nil, nil
 	}
 	var permissions struct {
@@ -564,11 +564,6 @@ func mappedSpelling(table map[string]string, value, what string) (string, error)
 		return mapped, nil
 	}
 	return "", fmt.Errorf("codex auto-review %s %q has no core spelling", what, value)
-}
-
-func isJSONNullOrAbsent(raw json.RawMessage) bool {
-	trimmed := strings.TrimSpace(string(raw))
-	return trimmed == "" || trimmed == "null"
 }
 
 // codexFileURI converts an absolute path into a file URI. A value that is already a

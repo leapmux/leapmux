@@ -27,7 +27,6 @@ const (
 	codexMethodTurnDiffUpdated               = "turn/diff/updated"
 	codexMethodAccountGatewayOAuthChanged    = "account/gatewayOAuth/changed"
 	codexMethodThreadReverted                = "thread/reverted"
-	codexMethodThreadReadStateChanged        = "thread/readState/changed"
 	codexMethodThreadQueueChanged            = "thread/queue/changed"
 	codexMethodThreadEnvironmentConnected    = "thread/environment/connected"
 	codexMethodThreadEnvironmentDisconnected = "thread/environment/disconnected"
@@ -56,7 +55,7 @@ var codexOptedOutNotificationMethods = []string{
 	// turn/started and turn/completed own the turn state.
 	contracts.CodexMethodThreadStatusChanged,
 	// Read cursors for multi-client apps.
-	codexMethodThreadReadStateChanged,
+	contracts.CodexMethodThreadReadStateChanged,
 	// Another Codex client's queue.
 	codexMethodThreadQueueChanged,
 	// A remote environment. LeapMux runs local processes.

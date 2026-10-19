@@ -3,6 +3,7 @@ package codex
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -11,6 +12,43 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestCodexWarningIsStoredOncePerThreadAndText(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+	warning := `{"method":"warning","params":{"threadId":"main-thread","message":"Model metadata missing"}}`
+	feedCodexLines(a, warning,
+		`{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"completed"}}}`,
+		`{"method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"turn-2"}}}`,
+		warning,
+		`{"method":"warning","params":{"threadId":"main-thread","warning":{"message":"Another warning"}}}`,
+		`{"method":"warning","params":{"threadId":"main-thread","warning":{"message":"Another warning"}}}`,
+	)
+	require.Len(t, sink.PersistedNotifications(), 2)
+	childWarning := strings.ReplaceAll(warning, "main-thread", "child-1")
+	feedCodexLines(a, childWarning, childWarning)
+	feedCodexLines(a, `{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"spawn-1","kind":"started","agentThreadId":"child-1","agentPath":"/root/child"}}}`)
+	child := sink.Child("child-of-spawn-1")
+	require.NotNil(t, child)
+	require.Len(t, child.PersistedNotifications(), 1, "a queued duplicate also folds after its route appears")
+	assert.JSONEq(t, childWarning, string(child.PersistedNotifications()[0].Content))
+	feedCodexLines(a, childWarning)
+	assert.Len(t, child.PersistedNotifications(), 1)
+	assert.Len(t, sink.PersistedNotifications(), 2)
+}
+
+func TestCodexWarningRetriesAFailedWrite(t *testing.T) {
+	t.Parallel()
+	sink := &codexRetryRecordingSink{rejectRetry: true}
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+	warning := `{"method":"warning","params":{"threadId":"main-thread","message":"Model metadata missing"}}`
+	feedCodexLines(a, warning)
+	assert.Empty(t, sink.PersistedNotifications())
+	sink.rejectRetry = false
+	feedCodexLines(a, warning, warning)
+	assert.Len(t, sink.PersistedNotifications(), 1)
+}
 
 func TestCodexBufferingUpdateReplacesTheCompleteOffer(t *testing.T) {
 	t.Parallel()

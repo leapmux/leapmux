@@ -12,6 +12,29 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestRefreshZCodeUsageFromSession_PublishesChangedSettings(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+	answerZCodeRequest(t, a, stdin, MethodSessionRead, `{"settings":{"model":{"current":{"providerId":"p","modelId":"new"}}}}`)
+	a.refreshZCodeUsageFromSession()
+	require.Equal(t, 1, sink.SettingsRefreshCount())
+	assert.Equal(t, "p/new", sink.LastSettingsRefresh().Model)
+}
+
+func TestRefreshZCodeUsageFromSession_PublishesNothingForUnchangedSettings(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	stdin := &zcodeRecordedStdin{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+	a.model = "p/current"
+	answerZCodeRequest(t, a, stdin, MethodSessionRead, `{"settings":{"model":{"current":{"providerId":"p","modelId":"current"}}}}`)
+	a.refreshZCodeUsageFromSession()
+	assert.Zero(t, sink.SettingsRefreshCount())
+	assert.Equal(t, "p/current", a.model)
+}
+
 // zcodeWideAndNarrowSnapshot is a live catalog of two models that share the levels low and high.
 // The wide model also offers max. Both default to high. The session runs on the wide model at the
 // level that the format verb states.

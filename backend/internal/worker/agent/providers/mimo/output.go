@@ -107,7 +107,7 @@ type mimoTextPart struct {
 	unresolvedOrder uint64
 	// completion freezes the resolved outcome across persistence failures.
 	completion agent.MessageCompletion
-	// buffer keeps the original streamed scope after its session ends.
+	// buffer owns only this part. Each message retains and retries its own pending rows.
 	buffer         *providerkit.GenerationBuffer
 	streamOrder    *uint64
 	progressTarget *mimoTranscriptTarget
@@ -274,18 +274,6 @@ func (a *Agent) sinkForActor(actorID string) agent.ProviderServices {
 	}
 	// The main transcript keeps output when the worker cannot create the child transcript.
 	return a.sink
-}
-
-// bufferFor returns the streamed-text buffer of one actor.
-func (a *Agent) bufferFor(actorID string) *providerkit.GenerationBuffer {
-	a.Mu.Lock()
-	defer a.Mu.Unlock()
-	buffer := a.buffers[actorID]
-	if buffer == nil {
-		buffer = &providerkit.GenerationBuffer{}
-		a.buffers[actorID] = buffer
-	}
-	return buffer
 }
 
 // --- messages ---
@@ -505,7 +493,7 @@ func (a *Agent) reconcileMessageProgress(messageID string) {
 			a.reconcileTextProgress(id, part, owner)
 		}
 		if part.skip && part.buffer != nil {
-			part.buffer.Discard(progressScope(id))
+			part.buffer.Reset()
 		}
 	}
 	for id, call := range calls {
@@ -690,11 +678,9 @@ func (a *Agent) flushPendingMessage(messageID string, fallback agent.MessageComp
 			if state == nil || state.buffer == nil {
 				err = fmt.Errorf("the retained MiMo streamed scope is absent")
 			} else {
-				_, err = state.buffer.PersistScope(progressScope(pending.partID), state.completion, func(raw []byte) error {
-					return sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{
-						Original: raw, AgentSessionID: record.sessionID, IdempotencyKey: "mimo-part:" + pending.partID + ":text",
-					}, agent.SpanInfo{})
-				})
+				_, err = state.buffer.PersistScopeTo(progressScope(pending.partID), state.completion, sink, agent.MessageContent{
+					AgentSessionID: record.sessionID, IdempotencyKey: "mimo-part:" + pending.partID + ":text",
+				}, agent.SpanInfo{})
 				if err == nil {
 					a.completeTextProgress(pending.partID, state, sink)
 				}
@@ -962,7 +948,7 @@ func (a *Agent) handleTextPart(sessionID string, part mimoPart) {
 	// The final native text replaces its streamed copy. Its live scope stays
 	// visible until the final row persists.
 	if state.buffer != nil {
-		state.buffer.Discard(progressScope(part.ID))
+		state.buffer.Reset()
 	}
 	a.flushPendingMessage(part.MessageID, "")
 }
@@ -1023,12 +1009,11 @@ func (a *Agent) handlePartDelta(event mimoEvent) {
 		return
 	}
 	scope := progressScope(delta.PartID)
-	buffer := state.buffer
-	if buffer == nil {
-		buffer = a.bufferFor(state.actorID)
-	}
 	a.Mu.Lock()
-	state.buffer = buffer
+	if state.buffer == nil {
+		state.buffer = &providerkit.GenerationBuffer{}
+	}
+	buffer := state.buffer
 	// Whole user parts emit no deltas. The model delta makes this buffer authoritative.
 	state.unresolved = nil
 	if state.streamOrder == nil {
@@ -1327,9 +1312,6 @@ func (a *Agent) flushUnfinishedOutput(completion agent.MessageCompletion) {
 		record.attributionClosed = true
 	}
 	holders := map[string]struct{}{mainActorID: {}}
-	for actorID := range a.buffers {
-		holders[actorID] = struct{}{}
-	}
 	for _, call := range a.tools {
 		holders[call.actorID] = struct{}{}
 	}

@@ -110,6 +110,11 @@ func (c *copilotConnection) verifyNativeProtocol(opts agent.Options) error {
 
 // requestSession adds the target session without changing the caller's parameters.
 func (c *copilotConnection) requestSession(sessionID, method string, values map[string]any, timeout time.Duration) (json.RawMessage, error) {
+	return c.requestSessionContext(c.Context(), sessionID, method, values, timeout)
+}
+
+// requestSessionContext adds the session while preserving the caller's cancellation.
+func (c *copilotConnection) requestSessionContext(ctx context.Context, sessionID, method string, values map[string]any, timeout time.Duration) (json.RawMessage, error) {
 	if sessionID == "" {
 		return nil, fmt.Errorf("the Copilot session ID is empty")
 	}
@@ -122,5 +127,5 @@ func (c *copilotConnection) requestSession(sessionID, method string, values map[
 	if err != nil {
 		return nil, fmt.Errorf("encode Copilot request: %w", err)
 	}
-	return c.SendRequest("session."+method, params, timeout)
+	return c.SendRequestContext(ctx, "session."+method, params, timeout)
 }

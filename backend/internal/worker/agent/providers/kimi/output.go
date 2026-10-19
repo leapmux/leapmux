@@ -420,35 +420,18 @@ func (a *Agent) flushRun(run *kimiRun, sink agent.ProviderServices, completion a
 	if sink == nil {
 		return
 	}
-	if a.IsDiscardingOutput() {
-		run.generation.Reset()
-		return
-	}
-	persist := func(raw []byte) error {
-		return sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw}, agent.SpanInfo{})
-	}
-	if err := run.generation.PersistAll(completion, persist); err != nil {
+	if err := providerkit.FlushGeneration(&run.generation, sink, completion, a.IsDiscardingOutput()); err != nil {
 		slog.Error("kimi persist generation", "agent_id", a.AgentID(), "kimi_agent", run.agentID, "error", err)
 	}
-	sink.ReportProgress(agent.CompleteModelProgress(kimiTextScope(run.agentID)))
-	sink.ReportProgress(agent.CompleteModelProgress(kimiThinkingScope(run.agentID)))
 }
 
 // flushScope persists one segment of a run.
 func (a *Agent) flushScope(run *kimiRun, sink agent.ProviderServices, scope string, completion agent.MessageCompletion) {
-	if a.IsDiscardingOutput() {
-		run.generation.Discard(scope)
+	if sink == nil {
 		return
 	}
-	ok, err := run.generation.PersistScope(scope, completion, func(raw []byte) error {
-		return sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw}, agent.SpanInfo{})
-	})
-	if err != nil {
+	if err := providerkit.PersistGenerationScopes(&run.generation, sink, []string{scope}, completion, a.IsDiscardingOutput()); err != nil {
 		slog.Error("kimi persist generation", "agent_id", a.AgentID(), "kimi_agent", run.agentID, "error", err)
-		return
-	}
-	if ok {
-		sink.ReportProgress(agent.CompleteModelProgress(scope))
 	}
 }
 

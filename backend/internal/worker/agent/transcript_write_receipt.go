@@ -1,9 +1,14 @@
 package agent
 
-import "sync/atomic"
+import (
+	"sync"
+	"sync/atomic"
+)
 
 // TranscriptWriteReceipt derives one reset boundary from a committed storage result.
 type TranscriptWriteReceipt struct {
+	orderedMu       sync.Mutex
+	ordered         *orderedOutputRecord
 	messageSequence atomic.Int64
 	created         atomic.Bool
 	resetClaimed    atomic.Bool

@@ -5,6 +5,7 @@ import ts from 'typescript'
 import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '../../src/generated/proto/leapmux/v1/agent_pb'
 import { test as base } from './fixtures'
+import { createTranscriptGuard, runTranscriptGuard } from './helpers/transcriptGuard'
 import * as workspaceHelpers from './helpers/workspace'
 import { processTest } from './process-control-fixtures'
 import { cliSkipFixture, createProviderProcessTest, createProviderTest } from './provider-fixture-factory'
@@ -14,6 +15,11 @@ vi.mock('./fixtures', async () => {
   const { test } = await import('@playwright/test')
   return { test }
 })
+
+vi.mock('./helpers/transcriptGuard', async importOriginal => ({
+  ...await importOriginal<typeof import('./helpers/transcriptGuard')>(),
+  runTranscriptGuard: vi.fn(async () => {}),
+}))
 
 describe('cliSkipFixture', () => {
   /** Run the fixture callback with a recording test info, as Playwright runs an automatic fixture. */
@@ -375,6 +381,32 @@ describe('createProviderTest', () => {
 })
 
 describe('createProviderProcessTest', () => {
+  it('checks the transcript after the process workspace fixture runs', async () => {
+    const capture = vi.spyOn(processTest, 'extend')
+    try {
+      createProviderProcessTest({
+        agent: { provider: AgentProvider.CODEX, prefix: 'process-unit' },
+        nativeContext: async () => UNIT_FIXTURES as ManagedNativeScenarioContext,
+        skipReason: null,
+      })
+      const registered = capture.mock.calls[0]?.[0] as unknown as {
+        authenticatedWorkspace: (args: object, use: (workspace: unknown) => Promise<void>, info: object) => Promise<void>
+      }
+      const transcriptGuard = createTranscriptGuard()
+      const authenticatedWorkspace = { workspaceId: 'workspace' }
+      const info = { status: 'passed', expectedStatus: 'passed' }
+      vi.mocked(runTranscriptGuard).mockClear()
+      await registered.authenticatedWorkspace({ page: UNIT_FIXTURES.page, authenticatedWorkspace, transcriptGuard }, async (actual) => {
+        expect(actual).toBe(authenticatedWorkspace)
+        expect(runTranscriptGuard).not.toHaveBeenCalled()
+      }, info)
+      expect(runTranscriptGuard).toHaveBeenCalledExactlyOnceWith(UNIT_FIXTURES.page, transcriptGuard, info)
+    }
+    finally {
+      capture.mockRestore()
+    }
+  })
+
   it('registers provider housekeeping before the process scenario uses its model script', async () => {
     const events: string[] = []
     const modelRules = [{ name: 'provider-title', when: { system: 'title helper' }, respond: { text: 'A title' } }]

@@ -611,6 +611,77 @@ describe('checkProviderProtocol', () => {
   })
 })
 
+describe('subsetOf tables', () => {
+  const parent = { key: 'events', goTable: 'Event', tsTable: 'EVENT', tsType: 'ProbeEvent', doc: 'events', frameKind: 'name' }
+  const subset = { key: 'notifications', subsetOf: 'events', goTable: 'NotificationEvent', tsTable: 'NOTIFICATION_EVENT', doc: 'notification events' }
+  const spec = { name: 'probe-protocol', title: 'Probe', goPrefix: 'Probe', tsPrefix: 'PROBE', tables: [parent, subset] }
+  const data = () => ({ events: { A: 'a', B: 'b' }, notifications: ['B'] })
+
+  it('accepts a subset of a declared table', () => {
+    expect(checkProviderProtocol(spec, data())).toEqual({})
+  })
+
+  it('refuses an unknown parent', () => {
+    expectContractError(() => checkProviderProtocol({ ...spec, tables: [parent, { ...subset, subsetOf: 'missing' }] }, data()), 'parent table')
+  })
+
+  it('refuses a key the parent lacks', () => {
+    expectContractError(() => checkProviderProtocol(spec, { ...data(), notifications: ['Missing'] }), 'not a key of events')
+  })
+
+  it('refuses a repeated key', () => {
+    expectContractError(() => checkProviderProtocol(spec, { ...data(), notifications: ['B', 'B'] }), 'repeats key B')
+  })
+
+  it('refuses an empty subset', () => {
+    expectContractError(() => checkProviderProtocol(spec, { ...data(), notifications: [] }), 'empty')
+  })
+
+  it('refuses a subset of a subset', () => {
+    const nested = { ...spec, tables: [...spec.tables, { ...subset, key: 'nested', subsetOf: 'notifications' }] }
+    expectContractError(() => checkProviderProtocol(nested, { ...data(), nested: ['B'] }), 'subset of a subset')
+  })
+
+  it.each(['frameKind', 'goSlice', 'defaultsFor', 'tsType'])('refuses %s on a subset', (field) => {
+    const marked = { ...spec, tables: [parent, { ...subset, [field]: field === 'frameKind' ? 'name' : true }] }
+    expectContractError(() => checkProviderProtocol(marked, data()), `cannot state ${field}`)
+  })
+
+  it('refuses a non-array subset and a non-string member', () => {
+    expectContractError(() => checkProviderProtocol(spec, { ...data(), notifications: { B: 'b' } }), 'array')
+    expectContractError(() => checkProviderProtocol(spec, { ...data(), notifications: [1] }), 'string key')
+  })
+
+  it('refuses a numeric member value because the Go slice holds strings', () => {
+    expectContractError(() => checkProviderProtocol(spec, { ...data(), events: { B: 1 } }), 'string value')
+  })
+
+  it('refuses a generated Members name that a parent constant uses', () => {
+    const collision = { ...spec, tables: [parent, { ...subset, goTable: 'Event' }] }
+    expectContractError(() => checkProviderProtocol(collision, { ...data(), events: { B: 'b', Members: 'members' } }), 'collides')
+  })
+
+  it('emits a Go slice of the parent constants', () => {
+    expect(emitGoProviderProtocol(spec, data())).toContain('var ProbeNotificationEventMembers = []string{\n\tProbeEventB,\n}')
+  })
+
+  it('emits a TS set of the parent values', () => {
+    const emitted = emitTsProviderProtocol(spec, data())
+    expect(emitted).toContain('export const PROBE_NOTIFICATION_EVENT: ReadonlySet<string> = new Set([PROBE_EVENT.B])')
+    expect(emitted).not.toContain('export type undefined')
+  })
+
+  it('emits the parent before a subset that precedes it in the descriptor', () => {
+    const emitted = emitTsProviderProtocol({ ...spec, tables: [subset, parent] }, data())
+    expect(emitted.indexOf('export const PROBE_EVENT =')).toBeLessThan(emitted.indexOf('export const PROBE_NOTIFICATION_EVENT'))
+  })
+
+  it('retains the declared reader checks for a subset', () => {
+    const oneSide = { ...spec, tables: [parent, { ...subset, readers: ['go'] }] }
+    expectContractError(() => checkProviderProtocol(oneSide, data()), 'readersWhy')
+  })
+})
+
 describe('muse native to-do vocabulary', () => {
   const spec = PROVIDER_PROTOCOLS.find(spec => spec.name === 'muse-protocol')
 
@@ -1907,6 +1978,7 @@ describe('checkSessionInfo', () => {
       runningToolRetryFields: { Attempt: 'attempt' },
       goalProgressFields: { TokensUsed: 'tokens_used' },
       turnRetryOfferFields: { TurnId: 'turn_id' },
+      compactionFields: { Trigger: 'trigger' },
       ...overrides,
     }
   }
@@ -1969,8 +2041,8 @@ describe('checkSessionInfo', () => {
   // generation report the missing registration.
   it('rejects a contract table that no SESSION_INFO_TABLES entry renders', () => {
     expectContractError(
-      () => checkSessionInfo(sessionInfo({ compactionFields: { PreTokens: 'pre_tokens' } })),
-      'compactionFields has no SESSION_INFO_TABLES entry',
+      () => checkSessionInfo(sessionInfo({ probeFutureFields: { PreTokens: 'pre_tokens' } })),
+      'probeFutureFields has no SESSION_INFO_TABLES entry',
     )
   })
 
@@ -2039,6 +2111,7 @@ describe('checkWorkerVocab / checkDesktop', () => {
   const backgroundTaskEnumValues = enumValues(DESCRIPTOR, 'leapmux/v1/agent.proto', 'BackgroundTaskStatus')
   const workerVocab = overrides => ({
     backgroundTaskStatusTokens: readContract('worker-vocab').backgroundTaskStatusTokens,
+    compactionEndOutcomes: readContract('worker-vocab').compactionEndOutcomes,
     notificationTypes: { AgentError: 'agent_error' },
     workerWrittenNotificationTypes: ['AgentError'],
     goalStatusTokens: { None: '', Running: 'running' },
@@ -2053,7 +2126,6 @@ describe('checkWorkerVocab / checkDesktop', () => {
       completions: { Complete: 'complete', Interrupted: 'interrupted', Error: 'error', Finished: 'finished' },
     },
     notificationThreadWrapperType: 'notification_thread',
-    codexRateLimitReachedTimeWindow: 'rate_limit_reached',
     modelSentinels: { accountDefaultModel: 'default', effortAuto: 'auto' },
     ...overrides,
   })
@@ -2617,6 +2689,15 @@ describe('emitGoExternalApps and emitTsExternalApps', () => {
 })
 
 describe('background-task status vocabulary', () => {
+  it('emits the compaction end outcomes', () => {
+    const vocab = readContract('worker-vocab')
+    const go = emitGoWorkerVocab(vocab)
+    const ts = emitTsWorkerVocab(vocab)
+    expect(go).toMatch(/^\tCompactionEndOutcomeFailed\s+= "failed"$/m)
+    expect(go).toMatch(/^\tCompactionEndOutcomeAborted\s+= "aborted"$/m)
+    expect(ts).toContain('export const COMPACTION_END_OUTCOME = {\n  Failed: "failed",\n  Aborted: "aborted",\n} as const')
+  })
+
   const tokens = {
     Unspecified: '',
     Pending: 'pending',

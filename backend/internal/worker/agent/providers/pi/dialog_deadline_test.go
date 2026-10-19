@@ -26,10 +26,9 @@ func newPiDeadlineFixture(t *testing.T) (*Agent, *agenttest.ControlSink, *bytes.
 	t.Helper()
 	output := &bytes.Buffer{}
 	sink := &agenttest.ControlSink{}
-	a := newPiAgentWithSink(agent.NewProviderServices(sink))
-	a.SetStdinForTest(agenttest.NopStdin(output))
 	clock := testutil.NewQuartzMock(t)
-	a.clock = clock
+	a := newPiAgentWithClock(agent.NewProviderServices(sink), clock)
+	a.SetStdinForTest(agenttest.NopStdin(output))
 	return a, sink, output, testutil.DeadlineContext(t), clock
 }
 
@@ -109,10 +108,9 @@ func TestPiQuestionDialogThatTimedOutIsForgotten(t *testing.T) {
 func TestPiStoppedAgentWithdrawsNoDialogAtItsDeadline(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.ControlSink{}
-	rig := newPiTestRig(t, agent.NewProviderServices(sink))
 	clock := testutil.NewQuartzMock(t)
+	rig := newPiTestRigWithClock(t, agent.NewProviderServices(sink), clock)
 	ctx := testutil.DeadlineContext(t)
-	rig.agent.clock = clock
 	rig.agent.handlePiExtensionUIRequest([]byte(piTimedConfirm))
 	require.Len(t, sink.PublishedControls(), 1)
 	// No subprocess runs, so the exit comes first and Stop does not wait for it.

@@ -397,9 +397,9 @@ func taskLabel(raw json.RawMessage) string {
 // events.
 //
 // The event is a frame of the subagent's own stream, in the shape the session's
-// stream uses. Its messages and tool calls reach the child transcript, and a run's
-// end draws the child's own turn-end row. Everything else -- its streamed deltas,
-// its settings, its notices -- stays with the subagent.
+// stream uses. Messages, tools, and notices reach the child transcript.
+// A compaction start updates the child's live state. A run end stores its divider.
+// The worker consumes redundant deltas and lifecycle frames.
 func (a *Agent) handleSubagentEvent(raw []byte) {
 	var frame struct {
 		Payload struct {
@@ -437,6 +437,31 @@ func (a *Agent) handleSubagentEvent(raw []byte) {
 		a.handleToolUpdate(state.conv, event)
 	case contracts.OhMyPiEventToolExecutionEnd:
 		a.handleToolEnd(state.conv, event)
+	case contracts.OhMyPiEventAutoCompactionStart:
+		trigger := providerkit.StringField(event, "reason")
+		if trigger == "" {
+			trigger = "auto"
+		}
+		a.beginCompaction(state.conv, trigger)
+	case contracts.OhMyPiEventAutoCompactionEnd:
+		a.persistCompactionEnd(state.conv, event)
+	case contracts.OhMyPiEventTtsrTriggered:
+		a.Mu.Lock()
+		state.conv.ttsrPending = true
+		a.Mu.Unlock()
+		a.persistConversationNotification(state.conv, event)
+	case contracts.OhMyPiEventAutoRetryStart, contracts.OhMyPiEventAutoRetryEnd,
+		contracts.OhMyPiEventNotice, contracts.OhMyPiEventExtensionError, contracts.OhMyPiEventCommandOutput:
+		a.persistConversationNotification(state.conv, event)
+	case contracts.OhMyPiEventMessageUpdate, contracts.OhMyPiEventMessageStart,
+		contracts.OhMyPiEventTurnStart, contracts.OhMyPiEventTurnEnd,
+		contracts.OhMyPiEventToolStreamUpdate, contracts.OhMyPiEventQueueUpdate,
+		contracts.OhMyPiEventSessionSettled, contracts.OhMyPiEventCacheWarmingStart,
+		contracts.OhMyPiEventCacheWarmingEnd, contracts.OhMyPiEventAdvisorCostChanged:
+		// Finished messages and tool events already carry this transcript content.
+		// Queue state, cache warming, and advisor costs supply no child transcript row.
+	default:
+		a.persistRaw(state.conv, event)
 	}
 }
 
@@ -445,6 +470,7 @@ func (a *Agent) handleSubagentEvent(raw []byte) {
 func (a *Agent) startChildRun(c *conversation) {
 	now := a.Clock().Now()
 	a.Mu.Lock()
+	c.ttsrPending = false
 	c.runStartedAt = now
 	c.toolUses = 0
 	a.Mu.Unlock()
@@ -460,6 +486,7 @@ func (a *Agent) endChildRun(c *conversation, raw []byte) {
 	}
 	endedAt := a.Clock().Now()
 	a.Mu.Lock()
+	c.ttsrPending = false
 	startedAt := c.runStartedAt
 	c.runStartedAt = time.Time{}
 	toolUses := c.toolUses
@@ -495,7 +522,7 @@ func (a *Agent) rememberYield(c *conversation, result json.RawMessage) {
 			Data json.RawMessage `json:"data"`
 		} `json:"details"`
 	}
-	if json.Unmarshal(result, &envelope) != nil || len(envelope.Details.Data) == 0 || string(envelope.Details.Data) == "null" {
+	if json.Unmarshal(result, &envelope) != nil || !providerkit.RawPresent(envelope.Details.Data) {
 		return
 	}
 	report := ""

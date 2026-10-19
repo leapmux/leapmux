@@ -17,17 +17,14 @@ const (
 	MessageTypeControlRequest MessageType = "control_request"
 
 	// Output messages read from stdout.
-	MessageTypeSystem               MessageType = "system"
-	MessageTypeAssistant            MessageType = "assistant"
-	MessageTypeResult               MessageType = "result"
-	MessageTypeControlRequestOut    MessageType = "control_request"
-	MessageTypeControlResponse      MessageType = "control_response"
-	MessageTypeControlCancelRequest MessageType = "control_cancel_request"
-	MessageTypeToolProgress         MessageType = "tool_progress"
-	MessageTypeActiveGoal           MessageType = "active_goal"
-	MessageTypeConversationReset    MessageType = "conversation_reset"
-	// MessageTypeControlNotification is CodeBuddy-only: a channel permission relay.
-	MessageTypeControlNotification MessageType = "control_notification"
+	MessageTypeSystem            MessageType = "system"
+	MessageTypeAssistant         MessageType = "assistant"
+	MessageTypeResult            MessageType = "result"
+	MessageTypeControlRequestOut MessageType = "control_request"
+	MessageTypeControlResponse   MessageType = "control_response"
+	MessageTypeToolProgress      MessageType = "tool_progress"
+	MessageTypeActiveGoal        MessageType = "active_goal"
+	MessageTypeConversationReset MessageType = "conversation_reset"
 	// MessageTypeError is CodeBuddy-only: `{type:"error",error:"..."}` on stream failure.
 	MessageTypeError MessageType = "error"
 )
@@ -38,6 +35,14 @@ const (
 const (
 	frameTypeControlRequest  = "control_request"
 	frameTypeControlResponse = "control_response"
+)
+
+// These administrative frame kinds and event values have only worker readers.
+const (
+	frameTypeFileHistorySnapshot = "file-history-snapshot"
+	frameTypeAiTitle             = "ai-title"
+	frameTypeTopic               = "topic"
+	mcpStatusFinishEvent         = "finish"
 )
 
 // MessageEnvelope is used only to extract the `type` field for lifecycle
@@ -120,6 +125,7 @@ type systemInitMessage struct {
 
 // resultMessage is the part of a result line the worker reads.
 type resultMessage struct {
+	RequestID  json.RawMessage                `json:"_requestId"`
 	Result     json.RawMessage                `json:"result"`
 	IsError    bool                           `json:"is_error"`
 	Errors     []string                       `json:"errors"`
@@ -178,9 +184,12 @@ type codebuddyModelUsage struct {
 
 // assistantMessage is the part of an `assistant` line the worker reads.
 type assistantMessage struct {
-	ParentToolUseID *string `json:"parent_tool_use_id"`
-	SessionID       string  `json:"session_id"`
+	ParentToolUseID *string         `json:"parent_tool_use_id"`
+	SessionID       string          `json:"session_id"`
+	RequestID       json.RawMessage `json:"_requestId"`
+	MessageID       json.RawMessage `json:"_messageId"`
 	Message         struct {
+		Usage   json.RawMessage `json:"usage"`
 		Content []struct {
 			Type string `json:"type"`
 			Text string `json:"text"`

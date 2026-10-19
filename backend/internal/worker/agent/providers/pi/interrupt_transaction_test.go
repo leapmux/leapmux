@@ -111,12 +111,14 @@ func TestPiFailedAbortDoesNotMarkANativeEndInterrupted(t *testing.T) {
 					if duringWrite {
 						// A native event can arrive before the writer returns its result.
 						a.HandleOutput(ended)
+						a.HandleOutput([]byte(`{"type":"agent_settled"}`))
 					}
 					return 0, failure
 				})
 				require.ErrorIs(t, a.Interrupt(agent.StopContext{}), failure)
 				if !duringWrite {
 					a.HandleOutput(ended)
+					a.HandleOutput([]byte(`{"type":"agent_settled"}`))
 				}
 				rows := sink.Messages()
 				require.NotEmpty(t, rows)
@@ -136,6 +138,7 @@ func TestPiDeliveredAbortKeepsNativeAbortedOutputBeforeTheWriteReturns(t *testin
 	setPiInterruptWriter(a, func(data []byte) (int, error) {
 		a.HandleOutput([]byte(`{"type":"message_end","message":{"role":"assistant","stopReason":"aborted","content":[{"type":"text","text":"Cut text"}]}}`))
 		a.HandleOutput([]byte(`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"aborted"}]}`))
+		a.HandleOutput([]byte(`{"type":"agent_settled"}`))
 		if err := replyToPiAbort(a, data); err != nil {
 			return 0, err
 		}
@@ -231,6 +234,7 @@ func TestPiUncertainAbortRequiresExactNativeEvidence(t *testing.T) {
 			a.HandleOutput([]byte(`{"type":"agent_start"}`))
 			setPiInterruptWriter(a, func(data []byte) (int, error) {
 				a.HandleOutput([]byte(`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"` + scenario.reason + `","errorMessage":"An unrelated native error."}]}`))
+				a.HandleOutput([]byte(`{"type":"agent_settled"}`))
 				if scenario.acknowledged {
 					if err := replyToPiAbort(a, data); err != nil {
 						return 0, err
@@ -279,6 +283,7 @@ func TestPiOldAbortWritePreservesAReplacementQuestion(t *testing.T) {
 			return output.Write(data)
 		}
 		a.HandleOutput([]byte(`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"aborted"}]}`))
+		a.HandleOutput([]byte(`{"type":"agent_settled"}`))
 		a.HandleOutput([]byte(`{"type":"agent_start"}`))
 		a.HandleOutput([]byte(`{"type":"tool_execution_start","toolCallId":"replacement-question","toolName":"ask_user_question","args":{"questions":[{"question":"Choose","options":[{"label":"A","description":"first"},{"label":"B","description":"second"}]}]}}`))
 		a.HandleOutput([]byte(`{"type":"extension_ui_request","id":"replacement-select","method":"select","title":"Choose","options":["1. A — first","2. B — second","3. Type something."]}`))
@@ -303,6 +308,7 @@ func TestPiOldAbortWritePreservesAReplacementQuestion(t *testing.T) {
 	assert.JSONEq(t, `{"type":"extension_ui_response","id":"replacement-input","value":"My replacement answer"}`, frames[1])
 	assert.Len(t, sink.PublishedControls(), 1)
 	a.HandleOutput([]byte(`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"stop"}]}`))
+	a.HandleOutput([]byte(`{"type":"agent_settled"}`))
 	rows := sink.Messages()
 	require.NotEmpty(t, rows)
 	assert.NotEqual(t, agent.MessageCompletionInterrupted, rows[len(rows)-1].Completion)
@@ -334,6 +340,7 @@ func TestPiLateOldAcknowledgementPreservesALaterStop(t *testing.T) {
 		return a.interruptOutput.writes == 0
 	}, 30*time.Second, time.Millisecond)
 	a.HandleOutput([]byte(`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"aborted"}]}`))
+	a.HandleOutput([]byte(`{"type":"agent_settled"}`))
 	a.HandleOutput([]byte(`{"type":"agent_start"}`))
 	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	require.NoError(t, replyToPiAbort(a, oldCommand))
@@ -373,6 +380,7 @@ func TestPiPendingAbortRoutesItsReplyWhileTheEventQueueIsFull(t *testing.T) {
 		return len(data), nil
 	})
 	require.NoError(t, a.Interrupt(agent.StopContext{}))
+	a.HandleOutput([]byte(`{"type":"agent_settled"}`))
 	frames, retained, _ := piOutputQueueState(&a.interruptOutput)
 	assert.Zero(t, frames)
 	assert.Zero(t, retained)

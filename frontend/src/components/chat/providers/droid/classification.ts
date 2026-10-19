@@ -8,9 +8,7 @@ import { droidNotificationEntry } from './extractors/notification'
 /**
  * Factory Droid message classification.
  *
- * The worker persists each notification payload verbatim, so the dispatcher
- * reads the same `type` the CLI wrote. A frame this build does not know reaches
- * the reader as the raw frame rather than disappearing.
+ * The worker stores native payloads for visible notices. Unknown frames stay available through the no-display card.
  */
 export function classifyDroidMessage(input: ClassificationInput): MessageCategory {
   const notification = notificationClassifierFor(input.agentProvider, droidNotificationEntry)
@@ -18,27 +16,21 @@ export function classifyDroidMessage(input: ClassificationInput): MessageCategor
   if (wrapper && wrapper.messages.length === 0)
     return { kind: 'hidden' }
   if (wrapper)
-    return notification(wrapper.messages, 'hidden')
+    return notification(wrapper.messages)
 
   const parent = input.parentObject
   if (!parent)
-    return { kind: 'hidden' }
-
-  // A worker-assembled row carries the worker's own `type` field.
-  const assembled = pickString(parent, 'type')
-  if (assembled === 'assembled') {
-    const text = pickString(parent, 'text') ?? ''
-    return text ? { kind: 'assistant_text' } : { kind: 'hidden' }
-  }
+    return { kind: 'unknown' }
 
   const type = pickString(parent, DROID_NOTIFICATION_FIELD.Type)
   switch (type) {
     case DROID_NOTIFICATION.CreateMessage: {
       const message = pickObject(parent, DROID_NOTIFICATION_FIELD.Message)
       const role = pickString(message, DROID_NOTIFICATION_FIELD.Role)
-      if (role === 'user')
-        return { kind: 'user_content' }
-      return { kind: 'hidden' }
+      // The worker stores assistant metadata beside its assembled content rows.
+      if (role === 'assistant')
+        return { kind: 'hidden' }
+      break
     }
     case DROID_TOOL_NOTIFICATION.ToolCall:
       return { kind: 'tool_use' }
@@ -47,6 +39,8 @@ export function classifyDroidMessage(input: ClassificationInput): MessageCategor
     case DROID_NOTIFICATION.AgentTurnCompleted:
       return { kind: 'result_divider' }
     default:
-      return notification([parent], 'hidden')
+      break
   }
+  const category = notification([parent])
+  return category.kind === 'notification' && category.entries.length > 0 ? category : { kind: 'unknown' }
 }

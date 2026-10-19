@@ -11,6 +11,7 @@ claudeTest.describe('claude session goal input queue', () => {
     await exerciseTextGoalQueue(native, {
       objective: 'Wait for the Claude goal route unlock.',
       clearCommand: '/goal clear',
+      statusUnconfirmed: true,
     })
   })
 })

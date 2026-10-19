@@ -28,6 +28,28 @@ type codexResolvedControlSink struct {
 	unconditionalCancellations int
 }
 
+func TestCodexUnknownFramesPersist(t *testing.T) {
+	t.Parallel()
+	cases := []agenttest.UnknownFrameCase{
+		{Name: "main thread", Frame: []byte(`{"method":"leapmux/probe","params":{"threadId":"main-thread","future":true}}`)},
+		{Name: "child thread", Frame: []byte(`{"method":"leapmux/probe","params":{"threadId":"child-1","future":true}}`)},
+		{Name: "another thread", Frame: []byte(`{"method":"leapmux/probe","params":{"threadId":"other-thread","future":true}}`), OtherSession: true},
+	}
+	agenttest.AssertUnknownFramePersists(t, cases, func(t *testing.T, tc agenttest.UnknownFrameCase) *agenttest.Sink {
+		sink := &agenttest.Sink{}
+		a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+		if tc.Name == "child thread" {
+			feedCodexLines(a, `{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"spawn-1","kind":"started","agentThreadId":"child-1","agentPath":"/root/child"}}}`)
+		}
+		feedCodexLines(a, string(tc.Frame))
+		if tc.Name == "child thread" {
+			assert.Empty(t, sink.Messages(), "the child frame must not enter the parent transcript")
+			return sink.Child("child-of-spawn-1")
+		}
+		return sink
+	})
+}
+
 func (s *codexResolvedControlSink) PublishControlRequest(request agentapi.ControlRequest) error {
 	s.publishedInstance = request.InstanceID
 	return s.ControlSink.PublishControlRequest(request)
@@ -296,22 +318,14 @@ func TestHandleCodexOutput_PermissionsApproval(t *testing.T) {
 	assert.Equal(t, "jsonrpc:9", rec.RequestID)
 }
 
-func TestHandleCodexOutput_ContextCompactionStartPersistsRawAsAgent(t *testing.T) {
+func TestHandleCodexOutput_ACompactionStartIsLiveStateOnly(t *testing.T) {
 	t.Parallel()
-
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
-
-	input := `{"method":"item/started","params":{"item":{"type":"contextCompaction","id":"compact-1"},"threadId":"main-thread","turnId":"turn1"}}`
-	handleCodexOutput(agent, providerkit.ParseLine([]byte(input)))
-
-	require.Equal(t, 1, sink.NotificationCount())
-	require.Equal(t, 0, sink.MessageCount())
-	last := sink.LastNotification()
-	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, last.Source,
-		"contextCompaction must persist as AGENT (Codex-emitted, not LeapMux-synthesized)")
-	assert.JSONEq(t, input, string(last.Content),
-		"raw JSON-RPC envelope must be preserved verbatim — synthesized {type:\"compacting\"} discarded item.id and threadId")
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+	feedCodexLines(a, `{"method":"item/started","params":{"item":{"type":"contextCompaction","id":"compact-1"},"threadId":"main-thread","turnId":"turn1"}}`)
+	assert.Empty(t, sink.PersistedNotifications())
+	assert.Empty(t, sink.Messages())
+	assert.Contains(t, sink.SessionInfos(), map[string]interface{}{"compaction": map[string]interface{}{}})
 }
 
 func TestHandleCodexOutput_McpStartupNonFailuresDoNotReachTheTranscript(t *testing.T) {
@@ -556,7 +570,7 @@ func TestHandleCodexOutput_VerificationDedupeKeepsEachFlagSetApart(t *testing.T)
 // thread/compacted and thread/name/updated route by threadId, as every other
 // stored frame does. A child's frame waits for its route and then reaches the
 // child transcript, never the parent.
-func TestHandleCodexOutput_SystemMetadataRoutesByThreadId(t *testing.T) {
+func TestHandleCodexOutput_UnknownMetadataRoutesByThreadID(t *testing.T) {
 	t.Parallel()
 
 	for _, method := range []string{contracts.CodexMethodThreadCompacted, contracts.CodexMethodThreadNameUpdated} {
@@ -570,15 +584,15 @@ func TestHandleCodexOutput_SystemMetadataRoutesByThreadId(t *testing.T) {
 
 			handleCodexOutput(agent, providerkit.ParseLine([]byte(main)))
 			handleCodexOutput(agent, providerkit.ParseLine([]byte(child)))
-			require.Equal(t, 1, sink.NotificationCount(), "only the main frame reaches the parent")
-			assert.JSONEq(t, main, string(sink.LastNotification().Content))
+			require.Equal(t, 1, sink.MessageCount(), "only the main frame reaches the parent")
+			assert.JSONEq(t, main, string(sink.Messages()[0].Content))
 
 			handleCodexOutput(agent, providerkit.ParseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"spawn-1","kind":"started","agentThreadId":"child-1","agentPath":"/root/child"}}}`)))
 
-			assert.Equal(t, 1, sink.NotificationCount(), "the parent transcript stays unchanged")
+			assert.Equal(t, 1, sink.MessageCount(), "the parent transcript stays unchanged")
 			childSink := sink.Child("child-of-spawn-1")
-			require.Equal(t, 1, childSink.NotificationCount(), "the queued child frame reaches the child")
-			assert.JSONEq(t, child, string(childSink.LastNotification().Content))
+			require.Equal(t, 1, childSink.MessageCount(), "the queued child frame reaches the child")
+			assert.JSONEq(t, child, string(childSink.Messages()[0].Content))
 		})
 	}
 }
@@ -1047,6 +1061,45 @@ func TestHandleCodexOutput_DefaultPathFramesAreStandaloneMessageRows(t *testing.
 	assert.JSONEq(t, second, string(messages[1].Content))
 }
 
+func TestHandleCodexOutput_AnOrphanReplyStoresNoRow(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+	feedCodexLines(a, `{"id":7,"result":{}}`)
+	assert.Empty(t, sink.Messages())
+	assert.Empty(t, sink.PersistedNotifications())
+}
+
+func TestHandleCodexOutput_ACompletedUserMessageStoresNoRow(t *testing.T) {
+	t.Parallel()
+	for _, threadID := range []string{"main-thread", "child-1"} {
+		t.Run(threadID, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+			feedCodexLines(a, `{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"spawn-1","kind":"started","agentThreadId":"child-1","agentPath":"/root/child"}}}`)
+			feedCodexLines(a, fmt.Sprintf(`{"method":"item/completed","params":{"threadId":%q,"item":{"type":"userMessage","id":"input-1","content":[{"type":"text","text":"Hello"}]}}}`, threadID))
+			assert.Empty(t, sink.Messages())
+			assert.Empty(t, sink.PersistedNotifications())
+			child := sink.Child("child-of-spawn-1")
+			require.NotNil(t, child)
+			assert.Empty(t, child.Messages())
+			assert.Empty(t, child.PersistedNotifications())
+		})
+	}
+}
+
+func TestHandleCodexOutput_AUserMessageCompletionCannotResolveAModelRetry(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+	feedCodexLines(a,
+		`{"method":"error","params":{"threadId":"main-thread","willRetry":true,"error":{"message":"retry"}}}`,
+		`{"method":"item/completed","params":{"threadId":"main-thread","item":{"type":"userMessage","id":"input-1","content":[]}}}`,
+	)
+	assert.Empty(t, sink.LeapMuxNotifications(), "a user input is not model output")
+}
+
 // The child transcript stores a child's default-path frames with the same
 // primitive as the main thread's: one message row per frame, whether the frame
 // waited for its route or arrived after the route existed.
@@ -1183,11 +1236,9 @@ func TestHandleCodexOutput_ThreadNameUpdatedPersistsRawAsAgent(t *testing.T) {
 	input := `{"method":"thread/name/updated","params":{"threadId":"main-thread","name":"Refactoring auth"}}`
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(input)))
 
-	require.Equal(t, 1, sink.NotificationCount(),
-		"thread/name/updated must persist for reconnect rehydration")
-	require.Equal(t, 0, sink.MessageCount(),
-		"thread/name/updated must NOT fall through to the default AGENT branch")
-	last := sink.LastNotification()
+	require.Equal(t, 1, sink.MessageCount(), "an unclaimed method retains its raw frame")
+	assert.Zero(t, sink.NotificationCount(), "an unclaimed method joins no notification thread")
+	last := sink.Messages()[0]
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, last.Source,
 		"Codex-emitted lifecycle metadata must persist as AGENT")
 	assert.JSONEq(t, input, string(last.Content),

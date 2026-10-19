@@ -249,3 +249,23 @@ func TestCopilotLeavesAnotherProvidersResponseAlone(t *testing.T) {
 	assert.Equal(t, agent.PlanModeControlNone, resolution.PlanModeControl)
 	assert.JSONEq(t, string(response), string(resolution.Content))
 }
+
+func TestCopilotNativeAnswerMapsAutoModeSwitchScopes(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		decision copilotControlDecision
+		want     string
+	}{
+		{name: "reject", want: "no"},
+		{name: "once", decision: copilotControlDecision{allow: true}, want: "yes"},
+		{name: "session", decision: copilotControlDecision{allow: true, scope: "session"}, want: "yes_always"},
+		{name: "project", decision: copilotControlDecision{allow: true, scope: "project"}, want: "yes_always"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			answer, refusal := copilotNativeAnswer(contracts.CopilotEventAutoModeSwitchRequested, nil, tc.decision)
+			require.Empty(t, refusal)
+			assert.Equal(t, tc.want, answer)
+		})
+	}
+}

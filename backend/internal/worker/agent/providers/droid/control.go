@@ -105,6 +105,17 @@ func (a *Agent) onRequestPermission(env *droidEnvelope) {
 		a.respond(env.ID, droidPermissionResult{SelectedOption: contracts.DroidPermissionOptionProceedOnce})
 		return
 	}
+	sessions := params.AssociatedSessionIDs
+	if len(sessions) == 0 {
+		sessions = []string{a.mainSessionID()}
+	}
+	for _, sessionID := range sessions {
+		if target, ok := a.outputTargetFor(sessionID); ok {
+			for _, use := range params.ToolUses {
+				a.flushPendingToolCall(target, use.ToolUse.ID)
+			}
+		}
+	}
 	toolUse := params.ToolUses[0]
 	requestID := "droid-perm-" + toolUse.ToolUse.ID
 

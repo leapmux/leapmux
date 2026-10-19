@@ -1,11 +1,9 @@
-import type { AutoReviewOutcome, AutoReviewRisk, CompactionDetails, CompactionPhase, NotificationEntry } from '../../../model/notification'
+import type { AutoReviewOutcome, AutoReviewRisk, CompactionDetails, NotificationEntry } from '../../../model/notification'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { CODEX_AUTO_REVIEW_ACTION, CODEX_AUTO_REVIEW_STATUS, CODEX_ITEM, CODEX_METHOD } from '~/generated/contracts/codex-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { getInnerMessage } from '~/lib/messageParser'
-import { compactionMetaFromBoundary } from '../../../model/notification'
-import { codexHookIsFailureOrUnknown } from '../hookNotifications'
-import { codexMcpOauthIsFailureOrUnknown, codexMcpStartupIsFailureOrUnknown } from '../mcpNotifications'
+import { compactionMetaFromBoundary, retryEntry } from '../../../model/notification'
 
 const STARTUP_METHOD = CODEX_METHOD.McpServerStartupStatusUpdated
 
@@ -47,8 +45,6 @@ function parseMcpStartup(parsed: Record<string, unknown>): ParsedMcpStartup | nu
 }
 
 function startupGroupEntry(parsed: Record<string, unknown>): NotificationEntry | null {
-  if (!codexMcpStartupIsFailureOrUnknown(parsed))
-    return null
   const p = parseMcpStartup(parsed)
   if (!p)
     return null
@@ -56,8 +52,7 @@ function startupGroupEntry(parsed: Record<string, unknown>): NotificationEntry |
   const prefix = p.kind === 'unknown'
     ? `MCP server status update (${stateLabel})`
     : 'MCP server failed to start'
-  // A name-less startup has no server to group under the prefix, so render the
-  // prefix alone as a plain line rather than grouping a placeholder beneath it.
+  // A startup without a server name supplies only the status prefix and error.
   if (!p.name)
     return { kind: 'text', text: `${prefix}${p.errorSuffix}` }
   const groupKey = p.kind === 'unknown' ? `status:${stateLabel}` : p.kind
@@ -65,7 +60,7 @@ function startupGroupEntry(parsed: Record<string, unknown>): NotificationEntry |
 }
 
 function mcpOauthFailureEntry(parsed: Record<string, unknown>): NotificationEntry | null {
-  if (!codexMcpOauthIsFailureOrUnknown(parsed))
+  if (parsed.method !== CODEX_METHOD.McpServerOauthLoginCompleted)
     return null
   const params = pickObject(parsed, 'params')
   const name = pickString(params, 'name').trim()
@@ -77,7 +72,7 @@ function mcpOauthFailureEntry(parsed: Record<string, unknown>): NotificationEntr
 }
 
 function hookFailureEntry(parsed: Record<string, unknown>): NotificationEntry | null {
-  if (!codexHookIsFailureOrUnknown(parsed))
+  if (parsed.method !== CODEX_METHOD.HookCompleted)
     return null
   const run = pickObject(pickObject(parsed, 'params'), 'run')
   const status = pickString(run, 'status') || 'status unknown'
@@ -87,58 +82,31 @@ function hookFailureEntry(parsed: Record<string, unknown>): NotificationEntry | 
     .filter(Boolean)
     .join('; ')
   const detail = entryText || pickString(run, 'statusMessage').trim()
+  if (status === 'failed' || status === 'blocked' || status === 'timed-out' || status === 'continued') {
+    const event = pickString(run, 'eventName').trim()
+    return { kind: 'hook', outcome: status, ...(event ? { event } : {}), ...(detail ? { detail } : {}) }
+  }
   return { kind: 'status', text: `Hook ${status}${detail ? `: ${detail}` : ''}` }
 }
 
-/**
- * The context-compaction item Codex reports, in either of its two envelopes.
- *
- * A `contextCompaction` item arrives at the top level of a persisted row and inside
- * the raw `item/started` or `item/completed` JSON-RPC notification, so both are read.
- * `started` is the boundary in progress; `completed` is the boundary itself.
- */
-function codexCompactionPhase(m: Record<string, unknown>): CompactionPhase | null {
-  // A row an older worker synthesized carries Claude's `compact_boundary` shape,
-  // because the worker used to normalize every provider's boundary into it. Those
-  // rows are persisted, so Codex still reads its own history.
-  if (m.type === 'system' && m.subtype === 'compact_boundary')
-    return 'end'
-  if (m.type === 'system' && m.subtype === 'status' && m.status === 'compacting')
-    return 'start'
-  const item = pickObject(m, 'item') ?? pickObject(pickObject(m, 'params'), 'item')
-  if (item?.type !== CODEX_ITEM.ContextCompaction)
-    return null
-  if (m.method === CODEX_METHOD.ItemStarted)
-    return 'start'
-  return 'end'
+/** Only the native completed item states a stored compaction end. */
+function codexCompactionEnd(message: Record<string, unknown>): boolean {
+  return message.method === CODEX_METHOD.ItemCompleted
+    && pickObject(pickObject(message, 'params'), 'item')?.type === CODEX_ITEM.ContextCompaction
 }
 
-/**
- * The compaction boundary a Codex message states, or null when it states none.
- *
- * A sibling of Claude's, and it serves the same two readers: the context-usage grid
- * outside the render tree, and the notification extractor below.
- */
+/** Read a native compaction end for the context meter and notification renderer. */
 export function codexCompactionBoundary(parsed: ParsedMessageContent): CompactionDetails | null {
   const inner = getInnerMessage(parsed)
-  if (!isObject(inner) || codexCompactionPhase(inner) !== 'end')
+  if (!isObject(inner) || !codexCompactionEnd(inner))
     return null
   return compactionMetaFromBoundary(inner)
 }
 
 const STRICT_REVIEW_NOTICE = 'This request needs extra safety checks, which can take more time.'
 
-/**
- * Read one Codex notification frame into the shared notification model.
- *
- * Returns an empty array for a frame Codex recognizes and suppresses, and for one it
- * does not recognize at all -- a notification that produced no entry draws nothing,
- * which is the safe answer either way.
- */
+/** Read one native notification into neutral entries. An unknown frame supplies no entry. */
 export function codexNotificationEntry(msg: Record<string, unknown>): NotificationEntry[] {
-  if (msg.method === CODEX_METHOD.SkillsChanged || msg.method === CODEX_METHOD.RemoteControlStatusChanged)
-    return []
-
   const oauthFailure = mcpOauthFailureEntry(msg)
   if (oauthFailure)
     return [oauthFailure]
@@ -151,10 +119,9 @@ export function codexNotificationEntry(msg: Record<string, unknown>): Notificati
   if (hookFailure)
     return [hookFailure]
 
-  const phase = codexCompactionPhase(msg)
-  if (phase) {
-    const detail = phase === 'end' ? compactionMetaFromBoundary(msg) : null
-    return [{ kind: 'compaction', phase, ...(detail !== null ? { detail } : {}) }]
+  if (codexCompactionEnd(msg)) {
+    const detail = compactionMetaFromBoundary(msg)
+    return [{ kind: 'compaction', phase: 'end', ...(detail !== null ? { detail } : {}) }]
   }
 
   // An `error` frame states whether Codex intends to try again, which is the
@@ -165,12 +132,10 @@ export function codexNotificationEntry(msg: Record<string, unknown>): Notificati
     const message = pickString(detail, 'message')
     const info = pickString(detail, 'codexErrorInfo')
     const errorText = [message, info].filter(Boolean).join(' — ') || undefined
-    return [{
-      kind: 'retry',
-      scope: 'api',
+    return [retryEntry('api', {
       willRetry: error.willRetry === true,
       ...(errorText !== undefined ? { error: errorText } : {}),
-    }]
+    })]
   }
   if (msg.method === CODEX_METHOD.Warning) {
     const params = pickObject(msg, 'params') ?? msg
@@ -312,4 +277,10 @@ export function codexAutoReviewAction(action: Record<string, unknown> | null | u
 /** Quote one shell word only when it needs quoting, so a plain argv reads plainly. */
 function quoteShellWord(word: string): string {
   return /^[\w./:=@%+,-]+$/.test(word) ? word : `'${word.replaceAll('\'', `'\\''`)}'`
+}
+
+/** Identify an old stored start without restoring its notification reader. */
+export function codexCompactionStart(message: Record<string, unknown>): boolean {
+  return message.method === CODEX_METHOD.ItemStarted
+    && pickObject(pickObject(message, 'params'), 'item')?.type === CODEX_ITEM.ContextCompaction
 }

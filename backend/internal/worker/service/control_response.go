@@ -252,14 +252,15 @@ func (plan controlResponsePlan) approvedClearContext() bool {
 }
 
 // exitPlanClearingContext identifies a plan exit that replaces the provider session.
-// LeapMux must retain its own answer row because the replaced process cannot emit an answer echo.
+// LeapMux retains its own answer row because it rejects events from the retired session.
+// A provider can retain that session in the same process until its native close completes.
 func (plan controlResponsePlan) exitPlanClearingContext() bool {
 	return plan.approvedClearContext() && plan.resolution.PlanModeControl == agent.PlanModeControlExit
 }
 
 // needsTranscriptRow omits duplicate answer displays.
 // Plan feedback already uses a queued user message. A native answer echo also replaces the LeapMux row.
-// A fresh-context plan exit still needs the row because the old process cannot emit that echo.
+// A fresh-context plan exit still needs the row because LeapMux rejects the retired session's echo.
 //
 // The decision ignores whether the control request still exists, and that is
 // deliberate (#258). An agent restart deletes the request row, and the delivered

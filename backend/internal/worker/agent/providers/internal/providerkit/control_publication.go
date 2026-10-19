@@ -288,7 +288,7 @@ func (b *JSONRPCProcess) SendRawInputToOutstandingRequest(data []byte, stop agen
 		ID     json.RawMessage `json:"id"`
 		Method *string         `json:"method"`
 	}
-	if json.Unmarshal(data, &frame) != nil || frame.Method != nil || isJSONNull(frame.ID) {
+	if json.Unmarshal(data, &frame) != nil || frame.Method != nil || !RawPresent(frame.ID) {
 		return b.SendRawInput(data, stop)
 	}
 	restore, open := b.takeOutstandingControl(data)

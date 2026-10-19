@@ -8,7 +8,6 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func TestProviderFor_PiClassification(t *testing.T) {
@@ -19,22 +18,22 @@ func TestProviderFor_PiClassification(t *testing.T) {
 	plugin := registry.Plugin(leapmuxv1.AgentProvider_AGENT_PROVIDER_PI)
 
 	assert.Equal(t,
-		agent.NotificationClassification{Kind: agent.NotificationKindStatus, Key: "pi:compaction_start"},
+		agent.NotificationClassification{},
 		plugin.Classify(json.RawMessage(`{"type":"compaction_start","sessionId":"s1"}`)),
-		"compaction_start is the in-progress indicator — Status so the latest collapses to one entry",
+		"the start is live state and has no stored row",
 	)
 	assert.Equal(t,
-		agent.NotificationClassification{Kind: agent.NotificationKindCompactionBoundary, Key: "pi:compaction_end"},
+		agent.CompactionBoundaryNotification(),
 		plugin.Classify(json.RawMessage(`{"type":"compaction_end","sessionId":"s1","result":{"summary":"compacted"}}`)),
 		"compaction_end is the boundary signal — each occurrence is preserved as a marker",
 	)
 	assert.Equal(t,
-		agent.NotificationClassification{Kind: agent.NotificationKindAPIRetry, Key: "pi:auto_retry_start"},
+		agent.APIRetryNotification(),
 		plugin.Classify(json.RawMessage(`{"type":"auto_retry_start","attempt":2}`)),
 		"auto_retry_start mirrors Claude's api_retry — collapse to the latest attempt",
 	)
 	assert.Equal(t,
-		agent.NotificationClassification{Kind: agent.NotificationKindAPIRetry, Key: "pi:auto_retry_end"},
+		agent.APIRetryNotification(),
 		plugin.Classify(json.RawMessage(`{"type":"auto_retry_end","attempt":2}`)),
 	)
 	assert.False(t,
@@ -54,28 +53,28 @@ func TestProviderFor_PiClassification(t *testing.T) {
 		"empty input must produce an empty classification",
 	)
 
-	// Merge mirrors Codex/Claude — last-write-wins with no field merge.
-	merged, err := plugin.Merge(
-		agent.NotificationClassification{Kind: agent.NotificationKindStatus, Key: "pi:compaction_start"},
-		json.RawMessage(`{"type":"compaction_start","attempt":1}`),
-		json.RawMessage(`{"type":"compaction_start","attempt":2}`),
-	)
-	require.NoError(t, err)
-	assert.JSONEq(t, `{"type":"compaction_start","attempt":2}`, string(merged))
 }
 
-func TestPiFailedCompactionEndDoesNotCreateABoundary(t *testing.T) {
+func TestPiClassifyCompactionEndIsABoundaryForEveryOutcome(t *testing.T) {
 	t.Parallel()
 	plugin := Registration().Plugin
 	for _, raw := range []string{
+		`{"type":"compaction_end","result":{"summary":"done"}}`,
 		`{"type":"compaction_end","reason":"manual","aborted":false,"errorMessage":"Nothing to compact (session too small)"}`,
 		`{"type":"compaction_end","reason":"manual","aborted":false,"result":null,"errorMessage":"Nothing to compact (session too small)"}`,
 		`{"type":"compaction_end","reason":"manual","aborted":true}`,
 	} {
 		assert.Equal(t,
-			agent.NotificationClassification{Kind: agent.NotificationKindStatus, Key: "pi:compaction_start"},
+			agent.CompactionBoundaryNotification(),
 			plugin.Classify(json.RawMessage(raw)), raw,
 		)
+	}
+}
+
+func TestPiClassifySummarizationRetryIsStatus(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{"summarization_retry_scheduled", "summarization_retry_attempt_start", "summarization_retry_finished"} {
+		assert.Equal(t, agent.StatusNotification(), Registration().Plugin.Classify(json.RawMessage(`{"type":"`+kind+`"}`)))
 	}
 }
 

@@ -1,6 +1,17 @@
 import { COMMAND_CODE_FRAME_KIND } from '~/generated/contracts/commandcode-protocol'
 import { isObject, pickString } from '~/lib/jsonPick'
 
+export const COMMAND_CODE_NOTICE_LEVEL: ReadonlyMap<string, string> = new Map([
+  ['info', ''],
+  ['warning', 'Warning'],
+])
+
+export const COMMAND_CODE_CONTINUATION_KIND_LABEL: ReadonlyMap<string, string> = new Map([
+  ['empty', 'empty response'],
+  ['length', 'token limit'],
+  ['intent', 'unfinished action'],
+])
+
 /** Read a native event without claiming another provider envelope. */
 export function commandCodeEvent(payload: unknown): Record<string, unknown> | undefined {
   return isObject(payload) && payload.type === COMMAND_CODE_FRAME_KIND.Event && isObject(payload.event)

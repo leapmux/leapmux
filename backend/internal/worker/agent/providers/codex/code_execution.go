@@ -34,15 +34,14 @@ type codexRawExecutionKey struct {
 // codexRawExecutionCall is one code-mode cell: the exec call that starts it,
 // and the wait calls that read the rest of its output after it yields.
 type codexRawExecutionCall struct {
-	request       agent.MessageContent
-	output        agent.MessageContent
-	owner         agent.TranscriptOwner
-	sink          agent.ProviderServices
-	commands      map[codexStoredCommandResult]struct{}
-	completed     bool
-	requestStored bool
-	color         int32
-	order         uint64
+	request   agent.MessageContent
+	output    agent.MessageContent
+	owner     agent.TranscriptOwner
+	sink      agent.ProviderServices
+	commands  map[codexStoredCommandResult]struct{}
+	completed bool
+	color     int32
+	order     uint64
 	// cellID identifies the cell after the exec output yields. It is empty
 	// for a cell that ended in its exec output.
 	cellID string
@@ -93,6 +92,9 @@ func (a *Agent) handleCodexRawExecution(raw, params json.RawMessage) {
 		}
 		a.replayPendingCodexChildEvents(envelope.ThreadID, route)
 		sink = route.childSink
+	}
+	if err := agent.FlushPendingOutput(sink); err != nil {
+		slog.Error("retry retained Codex execution output", "agent_id", a.AgentID(), "error", err)
 	}
 	a.Mu.Lock()
 	turnID := a.mainTurn.id
@@ -737,34 +739,27 @@ func (a *Agent) persistCodexRawExecution(key codexRawExecutionKey, call *codexRa
 		call.output.Supplemental = supplement
 	}
 	sink := call.sink
-	span := agent.SpanInfo{SpanID: key.callID, SpanType: contracts.CodexRawToolExec}
-	// A failed write must release its reservation or open span before another event arrives.
-	defer sink.CloseSpan(key.callID)
-	if !call.requestStored {
-		if call.request.Publication == nil {
-			call.color = sink.ReserveSpanColor(key.callID, "")
-			span.SpanColor = call.color
-			call.request = sink.CaptureMessage(call.request, span)
-		}
-		span.SpanColor = call.color
-		if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, call.request, span); err != nil {
-			// The deferred close releases the reservation. Recapture geometry before the next request write.
-			call.request.Publication = nil
-			slog.Error("Cannot persist the Codex execution request", "agent_id", a.AgentID(), "call_id", key.callID, "error", err)
-			return
-		}
-		call.requestStored = true
+	if agent.OutputQueueFor(sink) == nil {
+		sink = agent.NewOrderedProviderServices(a.generationBuffer.OutputQueue(), sink)
 	}
+	defer sink.CloseSpan(key.callID)
+	call.color = sink.ReserveSpanColor(key.callID, "")
+	opening := agent.SpanInfo{SpanID: key.callID, SpanType: contracts.CodexRawToolExec, SpanColor: call.color}
+	request := sink.CaptureMessage(call.request, opening)
 	sink.SetSpanType(key.callID, contracts.CodexRawToolExec)
 	sink.OpenSpan(key.callID, "")
-	span.Closing = true
-	span.SpanColor = call.color
-	if call.output.Publication == nil {
-		call.output = sink.CaptureMessage(call.output, span)
-	}
-	if err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, call.output, span); err != nil {
-		slog.Error("Cannot persist the Codex execution output", "agent_id", a.AgentID(), "call_id", key.callID, "error", err)
-		return
+	closing := opening
+	closing.Closing = true
+	output := sink.CaptureMessage(call.output, closing)
+	err := agent.PersistTranscriptBatch(sink, []agent.TranscriptMessage{
+		{Source: leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, Content: request, Span: opening},
+		{Source: leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, Content: output, Span: closing},
+	})
+	if err != nil {
+		slog.Error("persist the Codex execution pair", "agent_id", a.AgentID(), "call_id", key.callID, "error", err)
+		if !agent.OutputRetained(err) {
+			return
+		}
 	}
 	call.release()
 	sink.ReportProgress(agent.CompleteOutputProgress(key.callID))
@@ -813,6 +808,11 @@ func (a *Agent) observeCodexRawExecutionTool(event codexItemEvent) {
 // no card. Other output remains visible even when a typed tool ran nearby.
 func (a *Agent) finishCodexRawExecutions(threadID string, completion agent.MessageCompletion) {
 	a.finishMatchingCodexRawExecutions(completion, func(key codexRawExecutionKey) bool { return key.threadID == threadID })
+	if sink, ready := a.codexReadyThreadSink(threadID); ready {
+		if err := agent.FlushPendingOutput(sink); err != nil {
+			slog.Error("retry Codex output at turn end", "error", err)
+		}
+	}
 }
 
 // finishAllCodexRawExecutions retains output before the process or thread tree ends.

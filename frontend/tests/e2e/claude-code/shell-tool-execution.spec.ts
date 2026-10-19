@@ -7,7 +7,7 @@ import { exerciseShellToolExecution } from '../helpers/nativeToolExecution'
 import { bashToolCall } from '../helpers/providerToolCalls'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { quotePosixShellArgument } from '../helpers/shellArguments'
-import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, chooseSettingsOption, expectAssistantAnswer, expectSettingsChip, sendMessage, toolRows, waitForAgentStarted, waitForSettingsIdle } from '../helpers/ui'
+import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, chooseSettingsOption, expectAssistantAnswer, expectSettingsChip, sendMessage, toolRows, toolRunningBadge, waitForAgentStarted, waitForSettingsIdle } from '../helpers/ui'
 
 /**
  * The heartbeat case checks a native CLI tool_progress event in the browser.
@@ -88,7 +88,7 @@ setTimeout(() => server.close(), 180000).unref()
     // Require the server's actual port file. A tool that fails immediately can still create a card without a heartbeat.
     const port = await waitForBoundPort(portFile)
 
-    const badge = page.locator('[data-testid="tool-running-badge"]:visible')
+    const badge = toolRunningBadge(page)
 
     // Use the existing native timer exception described by FIRST_HEARTBEAT_DEADLINE_MS.
     await expect(badge).toBeVisible({ timeout: FIRST_HEARTBEAT_DEADLINE_MS })

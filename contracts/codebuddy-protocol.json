@@ -1,5 +1,5 @@
 {
-  "_readme": "This contract holds CodeBuddy Code's stream-json vocabulary for tables that both the Go provider and the TypeScript renderer plugin read. The command is `codebuddy -p --input-format stream-json --output-format stream-json`. CodeBuddy deliberately uses a stream with the shape of Claude Code 2.1.220. The shapes that LeapMux parses differ in necessary details. This contract shares no table with claude-protocol.json.\n\n`frameKinds` holds the top-level `type` values on stdout. `controlRequestSubtypes` holds the request subtypes that LeapMux sends and the CLI sends back. Both sides dispatch on them. `modes` holds the four permission modes that get_available_modes advertises. `effortLevels` holds the --effort values that CodeBuddy owns. These values differ from Claude's low/medium/high/ultra set.\n\n`systemSubtypes` holds the system-line subtypes that both sides classify.\n\n`controlAnswer` holds the fields of CodeBuddy's can_use_tool answer. The generated `CodebuddyCanUseToolAnswer` struct takes its JSON tags from that table. The browser sends a neutral behavior envelope. Only the worker translates it into this answer.\n\nThe worker stores the translated answer as the saved row of the request. The browser reads `allowed` and `reason` from that row to draw the decision. The browser reads neither `interrupt` nor `updatedInput` (see `_unread`).\n\nThe browser owns native result pointer fields in its provider protocol module. The worker preserves the original native frame. The browser shows each native path beside the original preview. LeapMux reads no output file.",
+  "_readme": "This contract holds CodeBuddy Code's stream-json vocabulary for tables that both the Go provider and the TypeScript renderer plugin read. The command is `codebuddy -p --input-format stream-json --output-format stream-json`. CodeBuddy deliberately uses a stream with the shape of Claude Code 2.1.220. The shapes that LeapMux parses differ in necessary details. This contract shares no table with claude-protocol.json.\n\n`frameKinds` holds the top-level `type` values on stdout. `controlRequestSubtypes` holds the request subtypes that LeapMux sends and the CLI sends back. Both sides dispatch on them. `modes` holds the four permission modes that get_available_modes advertises. `effortLevels` holds the --effort values that CodeBuddy owns. These values differ from Claude's low/medium/high/ultra set.\n\n`systemSubtypes` holds the system-line subtypes that both sides classify.\n\n`controlAnswer` holds the fields of CodeBuddy's can_use_tool answer. The generated `CodebuddyCanUseToolAnswer` struct takes its JSON tags from that table. The browser sends a neutral behavior envelope. Only the worker translates it into this answer.\n\nThe worker stores the translated answer as the saved row of the request. The browser reads `allowed` and `reason` from that row to draw the decision. The browser reads neither `interrupt` nor `updatedInput` (see `_unread`).\n\nThe browser owns native result pointer fields in its provider protocol module. The worker preserves the original native frame. The browser shows each native path beside the original preview. LeapMux reads no output file.\n\nLeapMux owns resultSupplement. It records an error that a preceding assistant row already states. The supplement identifies the native request and session. The browser checks both identities and the exact error before it omits the repeated reason from the result divider. Both native rows remain available unchanged.",
   "_unread": {
     "frameKinds": {
       "ActiveGoal": {
@@ -8,12 +8,6 @@
           "ts"
         ],
         "why": "CodeBuddy Code 2.160.0 never writes this kind. The worker stores the whole frame from its default branch. The browser draws it as an unrecognized row."
-      },
-      "ControlNotification": {
-        "sides": [
-          "go"
-        ],
-        "why": "The worker stores the whole frame from its default branch. The browser classifies it from the stored bytes."
       },
       "Error": {
         "sides": [
@@ -59,32 +53,6 @@
           "go"
         ],
         "why": "The worker stores the whole frame. The browser draws it from the stored bytes. No Go call site branches on this subtype yet."
-      }
-    },
-    "systemSubtypes": {
-      "Keepalive": {
-        "sides": [
-          "go"
-        ],
-        "why": "The worker stores every system frame whole without a branch on its subtype. The browser classifies this subtype from the stored bytes."
-      },
-      "Status": {
-        "sides": [
-          "go"
-        ],
-        "why": "The worker stores every system frame whole without a branch on its subtype. The browser classifies this subtype from the stored bytes."
-      },
-      "McpStatus": {
-        "sides": [
-          "go"
-        ],
-        "why": "The worker stores every system frame whole without a branch on its subtype. The browser classifies this subtype from the stored bytes."
-      },
-      "Informational": {
-        "sides": [
-          "go"
-        ],
-        "why": "The worker stores every system frame whole without a branch on its subtype. The browser classifies this subtype from the stored bytes."
       }
     },
     "controlAnswer": {
@@ -153,7 +121,30 @@
     "Interrupt": "interrupt",
     "UpdatedInput": "updatedInput"
   },
+  "resultSupplement": {
+    "RequestID": "requestId",
+    "SessionID": "sessionId",
+    "RepeatedError": "repeatedError"
+  },
   "structs": {
+    "CodebuddyResultSupplement": {
+      "doc": "The Worker records an error that an earlier assistant row already states.\nThe browser matches the native request and session before it omits that repeated reason from the result divider.\nBoth original native rows remain unchanged.",
+      "table": "resultSupplement",
+      "fields": [
+        {
+          "key": "RequestID",
+          "type": "string"
+        },
+        {
+          "key": "SessionID",
+          "type": "string"
+        },
+        {
+          "key": "RepeatedError",
+          "type": "string"
+        }
+      ]
+    },
     "CodebuddyCanUseToolAnswer": {
       "doc": "CodeBuddy's answer to one can_use_tool request. The CLI reads `allowed` and\nrejects a `behavior` envelope. The worker translates the browser's neutral\ndecision into this answer.\n\nAn allow states `allowed:true`. It carries nonempty `updatedInput` when the\nbrowser supplies an answer through the tool input. A denial states\n`allowed:false` and the reason that the model reads.",
       "table": "controlAnswer",

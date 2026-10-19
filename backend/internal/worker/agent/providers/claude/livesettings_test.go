@@ -11,10 +11,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/quartz"
+
 	"github.com/leapmux/leapmux/generated/contracts"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/optionids"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -690,24 +693,16 @@ func TestUpdateSettings_AutoSwitchClearsStaleAutoModeAvailable(t *testing.T) {
 		"a successful live switch to auto clears the stale autoModeAvailable=false so the picker offers auto again")
 }
 
-// newTestAgentWithDeferredPermissionMode spawns a mock whose control protocol NEVER acks
-// set_permission_mode (simulating the CLI holding the ack until an active turn ends), with
-// a short APITimeout so min(permissionModeApplyTimeout, APITimeout) makes the live wait
-// time out quickly.
-func newTestAgentWithDeferredPermissionMode(t *testing.T) *Agent {
+// newTestAgentWithDeferredPermissionMode accepts control writes without sending a reply.
+func newTestAgentWithDeferredPermissionMode(t *testing.T, clock quartz.Clock) *Agent {
 	t.Helper()
-	a, err := spawnMockClaudeAgent(context.Background(), "TestHelperProcessWithControlProtocol",
-		[]string{"GO_WANT_HELPER_PROCESS_CONTROL=1", "GO_HELPER_NO_ACK_PERMISSION_MODE=1"},
-		agent.Options{
-			AgentID:    "test-ctrl-deferred",
-			Options:    map[string]string{agent.OptionIDModel: "opus[1m]"},
-			WorkingDir: t.TempDir(),
-			APITimeout: 200 * time.Millisecond,
-		},
-		agenttest.Nop())
-	require.NoError(t, err)
-	a.confirmedPermissionMode = contracts.ClaudeModeDefault
-	return a
+	return &Agent{
+		Process: providerkit.NewProcessFrom(providerkit.ProcessConfig{
+			AgentID: "test-ctrl-deferred", Ctx: t.Context(), Clock: clock, Stdin: &agenttest.Stdin{}, APITimeout: time.Minute,
+		}),
+		sink:                    agenttest.Nop(),
+		confirmedPermissionMode: contracts.ClaudeModeDefault,
+	}
 }
 
 // TestUpdateSettings_PermissionModeDeferredAck verifies the S4 behavior: a
@@ -719,10 +714,17 @@ func newTestAgentWithDeferredPermissionMode(t *testing.T) *Agent {
 func TestUpdateSettings_PermissionModeDeferredAck(t *testing.T) {
 	t.Parallel()
 
-	a := newTestAgentWithDeferredPermissionMode(t)
-	defer stopTestAgent(a)
-
-	result := a.UpdateSettings(map[string]string{agent.OptionIDPermissionMode: contracts.ClaudeModePlan})
+	clock := testutil.NewQuartzMock(t)
+	a := newTestAgentWithDeferredPermissionMode(t, clock)
+	trap := clock.Trap().NewTimer(providerkit.AwaitResponseTimerTag)
+	defer trap.Close()
+	results := make(chan agent.SettingsApplyResult, 1)
+	go func() {
+		results <- a.UpdateSettings(map[string]string{agent.OptionIDPermissionMode: contracts.ClaudeModePlan})
+	}()
+	wait := testutil.WaitForTimer(t, testutil.DeadlineContext(t), trap)
+	clock.Advance(wait).MustWait(testutil.DeadlineContext(t))
+	result := <-results
 	assert.True(t, result.AppliedLive, "a deferred set_permission_mode ack must not request a restart")
 	assert.Equal(t, agent.OptionSettlementUnresolved, result.Settlements[agent.OptionIDPermissionMode].State,
 		"a deferred acknowledgement must not claim that the provider confirmed the mode")
@@ -730,6 +732,47 @@ func TestUpdateSettings_PermissionModeDeferredAck(t *testing.T) {
 		"the pending request supplies the displayed mode")
 	assert.Equal(t, contracts.ClaudeModeDefault, a.confirmedPermissionMode,
 		"the pending request retains the last native confirmation")
+	requestID := a.permissionModeChange.requestID
+	a.HandleOutput([]byte(fmt.Sprintf(`{"type":"control_response","response":{"subtype":"success","request_id":%q,"response":{"mode":"plan"}}}`, requestID)))
+	assert.Equal(t, contracts.ClaudeModePlan, a.confirmedPermissionMode)
+	assert.Nil(t, a.permissionModeChange)
+}
+
+type readyControlClock struct {
+	quartz.Clock
+	timer   *quartz.Timer
+	onTimer func()
+}
+
+func (c readyControlClock) NewTimer(time.Duration, ...string) *quartz.Timer {
+	c.onTimer()
+	return c.timer
+}
+
+func TestSendControlAndWait_AReplyAtTheDeadlineCounts(t *testing.T) {
+	t.Parallel()
+	clock := testutil.NewQuartzMock(t)
+	timer := clock.NewTimer(time.Minute)
+	clock.Advance(time.Minute).MustWait(testutil.DeadlineContext(t))
+	var a *Agent
+	a = newTestAgentWithDeferredPermissionMode(t, readyControlClock{Clock: clock, timer: timer, onTimer: func() {
+		assert.True(t, a.handlePendingControlResponse(providerkit.ParseLine([]byte(`{"type":"control_response","response":{"subtype":"success","request_id":"deadline","response":{"mode":"plan"}}}`))))
+	}})
+	result, err := a.sendControlAndWaitWithID(t.Context(), "deadline", `{"subtype":"set_permission_mode","mode":"plan"}`, time.Nanosecond)
+	require.NoError(t, err)
+	assert.True(t, result.Success)
+	assert.Equal(t, "plan", result.Mode)
+}
+
+func TestSendControlAndWait_EndsOnTheCallerContext(t *testing.T) {
+	t.Parallel()
+	clock := testutil.NewQuartzMock(t)
+	a := newTestAgentWithDeferredPermissionMode(t, clock)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	_, err := a.sendControlAndWait(ctx, `{"subtype":"initialize"}`, time.Minute)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.NoError(t, a.Context().Err())
 }
 
 // TestClaudeHandleControlResponse_DeferredModeReconcilesInMemory is the regression guard for
@@ -1235,12 +1278,12 @@ func TestHandlePendingControlResponse_ParsesInitializeFields(t *testing.T) {
 	t.Parallel()
 
 	a := &Agent{
-		Process:        providerkit.NewProcessFrom(providerkit.ProcessConfig{AgentID: "test"}),
-		pendingControl: make(map[string]chan<- claudeCodeControlResult),
+		Process: providerkit.NewProcessFrom(providerkit.ProcessConfig{AgentID: "test"}),
 	}
 
-	ch := make(chan claudeCodeControlResult, 1)
-	a.registerPendingControl("req-1", ch)
+	ch, release, err := a.controlReplies.Register("req-1")
+	require.NoError(t, err)
+	defer release()
 
 	raw := []byte(`{"type":"control_response","response":{` +
 		`"subtype":"success","request_id":"req-1","response":{` +
@@ -1254,7 +1297,7 @@ func TestHandlePendingControlResponse_ParsesInitializeFields(t *testing.T) {
 	consumed := a.handlePendingControlResponse(line)
 	assert.True(t, consumed)
 
-	result := <-ch
+	result := parseClaudeControlResult(<-ch)
 	assert.True(t, result.Success)
 	assert.Equal(t, "Explanatory", result.OutputStyle)
 	assert.Equal(t, []string{"default", "Explanatory", "Learning"}, result.AvailableOutputStyles)
@@ -1267,12 +1310,12 @@ func TestHandlePendingControlResponse_ParsesModels(t *testing.T) {
 	t.Parallel()
 
 	a := &Agent{
-		Process:        providerkit.NewProcessFrom(providerkit.ProcessConfig{AgentID: "test"}),
-		pendingControl: make(map[string]chan<- claudeCodeControlResult),
+		Process: providerkit.NewProcessFrom(providerkit.ProcessConfig{AgentID: "test"}),
 	}
 
-	ch := make(chan claudeCodeControlResult, 1)
-	a.registerPendingControl("req-models", ch)
+	ch, release, err := a.controlReplies.Register("req-models")
+	require.NoError(t, err)
+	defer release()
 
 	// An initialize response carrying the model catalog: a "default" alias
 	// sentinel, a disabled entry, the [1m] variants, an effort-bearing Fable, a
@@ -1292,7 +1335,7 @@ func TestHandlePendingControlResponse_ParsesModels(t *testing.T) {
 	line := &providerkit.ParsedLine{Type: "control_response", Raw: raw}
 	assert.True(t, a.handlePendingControlResponse(line))
 
-	result := <-ch
+	result := parseClaudeControlResult(<-ch)
 	assert.True(t, result.Success)
 	require.Len(t, result.Models, 5, "all raw entries decode, including default/disabled")
 	require.Len(t, result.UnavailableModels, 1)
@@ -1320,12 +1363,12 @@ func TestHandlePendingControlResponse_ParsesGetSettingsResponse(t *testing.T) {
 	t.Parallel()
 
 	a := &Agent{
-		Process:        providerkit.NewProcessFrom(providerkit.ProcessConfig{AgentID: "test"}),
-		pendingControl: make(map[string]chan<- claudeCodeControlResult),
+		Process: providerkit.NewProcessFrom(providerkit.ProcessConfig{AgentID: "test"}),
 	}
 
-	ch := make(chan claudeCodeControlResult, 1)
-	a.registerPendingControl("req-2", ch)
+	ch, release, err := a.controlReplies.Register("req-2")
+	require.NoError(t, err)
+	defer release()
 
 	raw := []byte(`{"type":"control_response","response":{` +
 		`"subtype":"success","request_id":"req-2","response":{` +
@@ -1337,7 +1380,7 @@ func TestHandlePendingControlResponse_ParsesGetSettingsResponse(t *testing.T) {
 	consumed := a.handlePendingControlResponse(line)
 	assert.True(t, consumed)
 
-	result := <-ch
+	result := parseClaudeControlResult(<-ch)
 	assert.True(t, result.Success)
 	assert.NotEmpty(t, result.RawResponse)
 

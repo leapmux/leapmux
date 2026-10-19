@@ -93,6 +93,21 @@ func TestZCodeInterrupt_ASessionEventRefreshesTheFallback(t *testing.T) {
 }
 
 // An agent that was never stopped arms nothing, so an ordinary turn pays no cost.
+func TestZCodeOutput_AnEventOfARetiredSessionDoesNotRefreshTheStopWindow(t *testing.T) {
+	t.Parallel()
+	a := newZCodeTestAgent(t, agent.NewProviderServices(&agenttest.Sink{}))
+	timer := &zcodeCapturedTimer{}
+	a.afterFunc = timer.afterFunc
+	a.Mu.Lock()
+	a.turnActive = true
+	a.armStoppedZCodeTurnLocked()
+	a.Mu.Unlock()
+	require.Equal(t, 1, timer.armed)
+	a.HandleOutput([]byte(`{"method":"session/event","params":{"sessionId":"retired","seq":2,"type":"turn.started","payload":{}}}`))
+	assert.Equal(t, 1, timer.armed)
+	a.cancelStoppedZCodeTurn()
+}
+
 func TestZCodeOutput_ASessionEventWithNoStopArmsNothing(t *testing.T) {
 	t.Parallel()
 

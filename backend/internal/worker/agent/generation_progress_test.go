@@ -283,3 +283,18 @@ func TestLateModelOperationsKeepAZeroByteOutputMinimum(t *testing.T) {
 		})
 	}
 }
+
+func TestModelProgressResetSinkRetainsNativeWritesInOrder(t *testing.T) {
+	t.Parallel()
+	inner := &agenttest.Sink{PersistErr: assert.AnError}
+	sink := agent.NewModelProgressResetSink(agent.NewProviderServices(inner))
+	err := sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"text":"earlier"}`)}, agent.SpanInfo{})
+	require.ErrorIs(t, err, assert.AnError)
+	assert.True(t, agent.OutputRetained(err))
+	inner.PersistErr = nil
+	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"text":"later"}`)}, agent.SpanInfo{}))
+	messages := inner.Messages()
+	require.Len(t, messages, 3, "one failed attempt and two successful writes")
+	assert.JSONEq(t, `{"text":"earlier"}`, string(messages[1].Content))
+	assert.JSONEq(t, `{"text":"later"}`, string(messages[2].Content))
+}

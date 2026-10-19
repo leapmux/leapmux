@@ -1,7 +1,6 @@
 package claude
 
 import (
-	"bytes"
 	"encoding/json"
 	"log/slog"
 	"slices"
@@ -27,9 +26,10 @@ import (
 //	          "tokens_at_start":int,"last_reason":str?} | null,
 //	 "uuid":str,"session_id":str}
 //
-// It arrives because Start launches with --output-format stream-json
-// --verbose, and the headless writer emits every drained frame unfiltered under
-// those two flags.
+// Claude Code 2.1.302 emits active_goal only under CLAUDE_CODE_REMOTE.
+// LeapMux's local launch receives no such frame, even with stream-json and verbose output.
+// The command observer records delivered /goal text. The browser shows the objective without an unconfirmed status.
+// handleActiveGoal remains available for a build that sends this frame.
 //
 // A null `value` means the goal is gone -- met, impossible, or cleared by the
 // user. Claude states no status enum on this frame, so a present value is an
@@ -123,12 +123,9 @@ func claudeGoalTime(unixMillis int64) time.Time {
 
 // observeSlashCommands records whether THIS Claude build has /goal.
 //
-// It reads the `slash_commands` of the `system` init frame, which Claude Code
-// emits once at startup. That list is the CLI's own statement of the commands
-// that THIS build has. Without it the capability would be a guess:
-// /goal shipped in 2.1.139, and against an older build the panel would offer a
-// button whose only effect is sending the literal text "/goal ..." to the
-// model as a prompt.
+// It reads slash_commands from the system init frame at the start of each turn.
+// Claude sends no init before the first user message. The list states which commands this build accepts.
+// Without the list, a goal button could send literal /goal text to a build that does not support the command.
 //
 // A frame that carries no list at all leaves the answer alone rather than
 // clearing it, so a future shape change degrades to "unknown" instead of
@@ -168,17 +165,15 @@ func (a *Agent) observeChangedCommands(content []byte) {
 	if err := json.Unmarshal(content, &frame); err != nil || frame.Subtype != contracts.ClaudeHiddenSystemSubtypeCommandsChanged {
 		return
 	}
-	// An ABSENT or `null` `commands` states no list at all, so it cannot be the
-	// replacement payload and the answer stays as it is. A real array runs the
-	// replacement, an empty one included, as the frame's own contract says.
-	raw := bytes.TrimSpace(frame.Commands)
-	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+	// An absent or null commands field keeps the current list.
+	// An array replaces the list, including an empty array.
+	if providerkit.RawKindOf(frame.Commands) != providerkit.RawValue {
 		return
 	}
 	var commands []struct {
 		Name string `json:"name"`
 	}
-	if err := json.Unmarshal(raw, &commands); err != nil {
+	if err := json.Unmarshal(frame.Commands, &commands); err != nil {
 		slog.Warn("invalid claude commands_changed JSON", "agent_id", a.AgentID(), "error", err)
 		return
 	}
@@ -191,12 +186,9 @@ func (a *Agent) observeChangedCommands(content []byte) {
 
 // applySlashCommandNames records whether THIS Claude build has /goal.
 //
-// The list carries bare names, without the leading slash. A change to the
-// answer re-publishes the goal capability, because the Manager's single publish
-// at registration already ran with the old answer. Nothing orders these stdout
-// frames against the control response the startup handshake waits for, so the
-// frame can arrive after the agent registers. Without this the browser keeps an
-// empty action list and the goal card hides its "Set a goal" button.
+// The list carries bare names without the leading slash.
+// A change publishes the goal capability again because registration precedes the first turn's init frame.
+// Without that publish, the browser keeps an empty action list and hides the Set a goal button.
 func (a *Agent) applySlashCommandNames(names []string) {
 	has := slices.Contains(names, strings.TrimPrefix(claudeGoalCommand, "/"))
 	a.Mu.Lock()
@@ -234,9 +226,8 @@ func (a *Agent) SupportedGoalActions() []agent.GoalAction {
 // PerformGoalAction builds the user message that changes Claude's goal. The
 // queue delivers it; nothing changes until it does.
 //
-// Claude emits no active_goal frame when it accepts the command, so the
-// observer writes the row. A later frame reports the per-turn evaluation and
-// the removal, and handleActiveGoal reads it.
+// The local Claude launch emits no active_goal frame, so the command observer writes the objective.
+// LeapMux cannot confirm later evaluations or automatic removal. The browser therefore shows no live goal status.
 func (a *Agent) PerformGoalAction(action agent.GoalAction, objective string) (agent.GoalOutcome, error) {
 	return claudeGoalRoute.Perform(action, objective)
 }

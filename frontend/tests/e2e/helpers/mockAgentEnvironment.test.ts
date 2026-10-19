@@ -628,7 +628,7 @@ describe('createMockAgentEnvironment', () => {
       expect(id).toContain('leapmux-e2e')
   })
 
-  it('disables the Codex background memory turn, which carries no scenario marker', async () => {
+  it('writes the Codex memory switches and enables update_plan', async () => {
     const { env } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
     const codex = readFileSync(join(env.CODEX_HOME!, 'config.toml'), 'utf8')
     expect(codex).toContain('[memories]')

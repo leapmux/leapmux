@@ -545,8 +545,7 @@ type Config struct {
 	// and ReadFile's payload budget; other stream sends still reject at
 	// sendEncrypted when the reassembled frame exceeds the negotiated gate.
 	MaxMessageSize int
-	// Clock supplies the two startup registries' timers. Nil installs the real
-	// clock.
+	// Clock supplies the startup and output-retry timers. Nil installs the real clock.
 	//
 	// bootstrap.Wire passes the Client's clock, so the reader-drain grace inside
 	// a tab's terminal and that same tab's pending-resize wait run on ONE clock.
@@ -590,7 +589,7 @@ func New(cfg Config) *Service {
 
 	queries := db.New(cfg.DB)
 	watchers := NewWatcherManager()
-	output := NewOutputHandler(cfg.DB, queries, watchers, cfg.Agents, cfg.WakeLock)
+	output := NewOutputHandler(cfg.DB, queries, watchers, cfg.Agents, cfg.WakeLock, cfg.Clock)
 	output.DataDir = cfg.DataDir
 	svc := &Service{
 		Config:          cfg,
@@ -638,6 +637,25 @@ func New(cfg Config) *Service {
 			ReclassifyOnEdit: true,
 		})
 		return added, err
+	})
+	svc.Output.SetSteerEchoFuncs(func(agentID string, count int, spanLines string) error {
+		_, err := svc.InputQueue.AcceptEchoedSteers(bgCtx(), agentID, count, spanLines)
+		if errors.Is(err, inputqueue.ErrManagerStopped) {
+			return nil
+		}
+		return err
+	}, func(agentID string, count int) error {
+		_, err := svc.InputQueue.RequeueDroppedSteers(bgCtx(), agentID, count)
+		if errors.Is(err, inputqueue.ErrManagerStopped) {
+			return nil
+		}
+		return err
+	}, func(agentID string, count int) error {
+		_, err := svc.InputQueue.ResolveUnechoedSteers(bgCtx(), agentID, count)
+		if errors.Is(err, inputqueue.ErrManagerStopped) {
+			return nil
+		}
+		return err
 	})
 	svc.startAgentFn = svc.Agents.StartAgent
 	svc.startBackgroundAgentFn = svc.Agents.StartBackgroundAgent
@@ -845,6 +863,12 @@ func (svc *Service) RestoreState() {
 // relaunch's old-process stop; stopAndWait serializes this hook before a new
 // process registers, so fresh spawns can never be clobbered.
 func (svc *Service) HandleAgentProcessExit(agentID string, _ int, _ error, stopped bool) {
+	subtreeIDs := svc.agentSubtreeIDs(agentID)
+	for _, id := range subtreeIDs {
+		if _, err := svc.InputQueue.ResolveUnechoedSteers(bgCtx(), id, -1); err != nil && !errors.Is(err, inputqueue.ErrManagerStopped) {
+			slog.Error("resolve unechoed steers after process exit failed", "agent_id", id, "error", err)
+		}
+	}
 	svc.Output.ClearPendingControlRequests(agentID)
 	svc.Output.MarkAgentBackgroundTasksExited(agentID, stopped)
 	// Re-publish the session goal, which now reads DORMANT: the projection
@@ -853,7 +877,7 @@ func (svc *Service) HandleAgentProcessExit(agentID string, _ int, _ error, stopp
 	// holding the tab open, which would otherwise keep a live Active dot and
 	// working Pause and Clear buttons until its next cold load.
 	svc.Output.publishGoalCapabilities(agentID)
-	for _, queueAgentID := range svc.agentSubtreeIDs(agentID) {
+	for _, queueAgentID := range subtreeIDs {
 		if stopped {
 			// An explicit stop does NOT pause: the user asked for this exit, and
 			// the queue's own /clear dispatch stops the process on purpose. The
@@ -1022,6 +1046,8 @@ func (svc *Service) Shutdown() {
 	// whole settleDelay. Nothing can re-open a window afterwards: the
 	// SetShuttingDown latch at the top of this function makes holdSettleLocked
 	// refuse.
+	// Output retries can publish completion and start an activity refresh. Stop them before the final activity drain.
+	svc.Output.StopOutputRetries()
 	svc.Output.CancelHeldSettles()
 
 	// Then join the deferred activity refreshes the exits above spawned. Each

@@ -23,11 +23,9 @@ it('classifies an assembled plan from typed row metadata', () => {
  * which is what forces the whole-domain sweeps below to stay whole.
  */
 const ALL_MESSAGE_KINDS = Object.keys({
-  agent_prompt: true,
   assistant_text: true,
   assistant_thinking: true,
   assistant_plan: true,
-  compact_summary: true,
   control_response: true,
   hidden: true,
   notification: true,
@@ -312,9 +310,9 @@ describe('classifyMessage', () => {
       expect(result.kind).toBe('hidden')
     })
 
-    it('does not classify system status compacting as hidden', () => {
+    it('draws no row for a stored compacting status', () => {
       const result = classifyMessage(input({ type: 'system', subtype: 'status', status: 'compacting' }))
-      expect(result.kind).not.toBe('hidden')
+      expect(result.kind).toBe('hidden')
     })
   })
 
@@ -343,9 +341,9 @@ describe('classifyMessage', () => {
       expect(result).toEqual({ kind: 'notification', entries: [] })
     })
 
-    it('classifies system status compacting as notification', () => {
+    it('does not produce a stored compaction start notification', () => {
       const result = classifyMessage(input({ type: 'system', subtype: 'status', status: 'compacting' }))
-      expect(result.kind).toBe('notification')
+      expect(result.kind).toBe('hidden')
     })
 
     it('classifies interrupted as notification', () => {
@@ -384,16 +382,14 @@ describe('classifyMessage', () => {
     expect(result.kind).toBe('result_divider')
   })
 
-  // -- compact_summary ------------------------------------------------------
-
-  it('classifies isCompactSummary as compact_summary', () => {
+  it('leaves an obsolete compact summary flag unknown', () => {
     const result = classifyMessage(input({ isCompactSummary: true }))
-    expect(result.kind).toBe('compact_summary')
+    expect(result.kind).toBe('unknown')
   })
 
-  it('does not classify isCompactSummary=false as compact_summary', () => {
+  it('leaves an unset compact summary flag unknown', () => {
     const result = classifyMessage(input({ isCompactSummary: false }))
-    expect(result.kind).not.toBe('compact_summary')
+    expect(result.kind).toBe('unknown')
   })
 
   // -- control_response -----------------------------------------------------
@@ -496,9 +492,9 @@ describe('classifyMessage', () => {
   // -- user messages --------------------------------------------------------
 
   describe('user messages', () => {
-    it('classifies user_text (string content)', () => {
+    it('leaves a stored native user string unknown', () => {
       const result = classifyMessage(input(userMsg('hello world')))
-      expect(result.kind).toBe('user_text')
+      expect(result.kind).toBe('unknown')
     })
 
     it('classifies tool_result', () => {
@@ -705,7 +701,6 @@ describe('messageBubbleClass', () => {
     expect(messageBubbleClass('hidden', MessageSource.AGENT)).toBe(chatStyles.metaMessage)
     expect(messageBubbleClass('result_divider', MessageSource.AGENT)).toBe(chatStyles.metaMessage)
     expect(messageBubbleClass('control_response', MessageSource.USER)).toBe(chatStyles.metaMessage)
-    expect(messageBubbleClass('compact_summary', MessageSource.AGENT)).toBe(chatStyles.metaMessage)
   })
 
   it('returns bandMessage for assistant_text with AGENT source', () => {
@@ -790,7 +785,7 @@ describe('messageRowChromeClass', () => {
   })
 
   it('returns an empty string for every row that stays inside the gutter', () => {
-    for (const kind of ['tool_use', 'tool_result', 'agent_prompt', 'user_text', 'user_content', 'plan_execution', 'notification', 'control_response', 'compact_summary', 'hidden', 'unsupported_provider', 'unknown'] as const) {
+    for (const kind of ['tool_use', 'tool_result', 'user_text', 'user_content', 'plan_execution', 'notification', 'control_response', 'hidden', 'unsupported_provider', 'unknown'] as const) {
       expect(messageRowChromeClass(kind, MessageSource.AGENT)).toBe('')
     }
   })

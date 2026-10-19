@@ -1,7 +1,71 @@
 import type { MockModelRequestRecord } from './mockModelScript'
+import type { NativeScenarioContext } from './nativeScenario'
 import { randomUUID } from 'node:crypto'
-import { describe, expect, it } from 'vitest'
-import { failedTurnRequests, nativeErrorMarker } from './nativeModelError'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { exerciseModelError, failedTurnRequests, nativeErrorMarker } from './nativeModelError'
+
+const errorRows = vi.hoisted(() => ({ count: 1, afterReload: 1, checks: [] as number[], events: [] as string[] }))
+vi.mock('./ui', () => ({
+  sendMessage: vi.fn(async () => {}),
+  waitForAgentIdle: async () => { errorRows.events.push('idle') },
+  resumeQueueAfterFailure: vi.fn(async () => {}),
+  visibleOnly: (value: unknown) => value,
+  messageContents: () => ({ filter: () => ({ errorRows: true }) }),
+}))
+vi.mock('./nativeConversation', () => ({ sendNativeAnswer: vi.fn(async () => {}) }))
+vi.mock('@playwright/test', () => ({
+  expect: (value: unknown) => value && typeof value === 'object' && 'errorRows' in value
+    ? {
+        first: () => value,
+        toBeVisible: async () => { expect(errorRows.count).toBeGreaterThan(0) },
+        toHaveCount: async (count: number) => {
+          errorRows.checks.push(count)
+          expect(errorRows.count).toBe(count)
+        },
+      }
+    : expect(value),
+}))
+
+describe('exerciseModelError', () => {
+  beforeEach(() => {
+    errorRows.count = 1
+    errorRows.afterReload = 1
+    errorRows.checks = []
+    errorRows.events = []
+  })
+
+  function context(): NativeScenarioContext {
+    const row = { errorRows: true, first: () => row }
+    return {
+      page: {
+        getByText: () => row,
+        reload: async () => {
+          errorRows.events.push('reload')
+          errorRows.count = errorRows.afterReload
+        },
+      },
+      modelScript: {
+        queue: async () => 0,
+        prompt: (text: string) => text,
+        waitForSteps: async () => ({ requests: [record({ stepIndex: 0 })] }),
+      },
+    } as unknown as NativeScenarioContext
+  }
+
+  it('requires exactly one error live and after a reload', async () => {
+    await exerciseModelError(context(), { queueAfterFailure: 'paused' })
+    expect(errorRows.checks).toEqual([1, 1])
+    expect(errorRows.events).toEqual(['idle', 'reload', 'idle'])
+  })
+
+  it.each(['live', 'stored'])('rejects duplicate errors in the %s transcript', async (phase) => {
+    if (phase === 'live')
+      errorRows.count = 2
+    else
+      errorRows.afterReload = 2
+    await expect(exerciseModelError(context(), { queueAfterFailure: 'paused' })).rejects.toThrow('expected 2 to be 1')
+  })
+})
 
 function record(fields: Partial<MockModelRequestRecord>): MockModelRequestRecord {
   return { protocol: 'anthropic-messages', path: '/v1/messages', body: {}, ...fields }

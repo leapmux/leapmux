@@ -24,7 +24,7 @@ type Agent struct {
 
 	// Claude Code-specific state.
 	contextUsage    *contextUsageSnapshot
-	lastAgentStatus string
+	compactionLive  bool
 	turnActive      bool
 	inputMu         sync.Mutex
 	turnEndRevision uint64
@@ -54,8 +54,10 @@ type Agent struct {
 	// that has the feature but has not said so yet. Guarded by a.Mu.
 	goalCommandKnown bool
 
-	pendingControlMu        sync.Mutex
-	pendingControl          map[string]chan<- claudeCodeControlResult
+	controlReplies          providerkit.Correlator[string]
+	heldAPIErrorMu          sync.Mutex
+	heldAPIError            *claudeHeldAPIError
+	apiRetry                providerkit.RetryResolution
 	confirmedPermissionMode string
 	// The request identity exists before its first write. A deferred request
 	// supplies the displayed mode until its matching reply arrives.
@@ -97,12 +99,16 @@ type Agent struct {
 
 func (a *Agent) Stop() {
 	a.Process.Stop()
+	a.apiRetry.Reset()
+	a.flushHeldAPIError()
 	a.withdrawControls()
 	a.sink.ReportProgress(agent.ResetProgress())
 }
 
 func (a *Agent) Wait() error {
 	err := a.Process.Wait()
+	a.apiRetry.Reset()
+	a.flushHeldAPIError()
 	a.withdrawControls()
 	a.sink.ReportProgress(agent.ResetProgress())
 	return err
@@ -116,10 +122,8 @@ func (a *Agent) Wait() error {
 //	{"type":"control_request","request_id":"...",
 //	 "request":{"subtype":"interrupt"}}
 //
-// The request is best-effort: if the agent has already exited or is
-// mid-stop the call returns the underlying error so the caller can
-// surface it, but a no-active-turn agent won't fail — Claude Code
-// silently ack's interrupts received outside a turn.
+// The call returns the underlying error when the process exited or the stop prevents delivery.
+// Claude Code acknowledges an interrupt outside a turn without an error.
 func (a *Agent) Interrupt(stop agent.StopContext) error {
 	if a.IsStopped() {
 		return fmt.Errorf("agent is stopped")
@@ -248,52 +252,52 @@ func (a *Agent) publishesSessionState() bool {
 
 // noteSessionIdle applies the CLI's own idle report.
 //
-// It REFUSES an idle that arrives while a message this Worker sent has no
-// `result` yet. Claude Code emits idle when its run loop stops, before it reads
-// the next message, so such a frame describes the state before that message --
-// and the turn it would clear is the one about to start. The Worker's input
-// queue follows this flag, so the clear would dispatch the next message INTO
-// the running turn, which is the failure the flag exists to prevent.
-//
-// Every other idle clears the turn, and that is the point of reading the frame
-// at all. A turn armed from output has only `result` to end it, so one armed by
-// a frame that no turn produced would otherwise hold the queue until the process
-// exits.
+// An idle is stale while a sent input still awaits its result.
+// Claude can emit idle before it reads that input. Accepting that idle would release the queue into the new turn.
+// Every other idle clears the turn and any unused stop note.
 func (a *Agent) noteSessionIdle() {
 	a.Mu.Lock()
-	stale := a.awaitingResult
-	if !stale {
-		a.turnActive = false
-	}
-	a.Mu.Unlock()
-	if stale {
+	if a.awaitingResult {
+		a.Mu.Unlock()
 		return
 	}
-	a.PublishTurnActive()
-}
-
-// disarmTurn records the end of the turn and publishes it, the way armTurn
-// records the start. ProviderServices.SetTurnState requires the mutation and the
-// publish at ONE site, and the falling edge kept them twenty lines apart in the
-// middle of the output handler.
-//
-// The caller decides WHEN. The publish releases the Worker's input queue, so
-// the next message dispatches on it and must find the finished turn's spans
-// already reset.
-func (a *Agent) disarmTurn() {
-	a.Mu.Lock()
-	a.turnEndRevision++
-	a.turnActive = false
-	// The `result` this ends is the answer to whatever the Worker sent, so a
-	// later idle is no longer stale.
-	a.awaitingResult = false
-	// The note belongs to the turn that just ended. A turn end that ran without one
-	// (a process exit, a refused dispatch) must not leave it for the next turn.
-	a.interruptRequested = false
-	retired := a.takeControlsLocked(func(record *claudePendingControl) bool { return record.agentID == "" })
+	retired := a.disarmTurnLocked()
 	a.Mu.Unlock()
 	a.cancelControls(retired)
 	a.PublishTurnActive()
+}
+
+// disarmTurn ends the turn and publishes the inactive state.
+// The publish releases the input queue, so the caller must reset the completed turn's spans first.
+func (a *Agent) disarmTurn() {
+	a.Mu.Lock()
+	retired := a.disarmTurnLocked()
+	a.Mu.Unlock()
+	a.cancelControls(retired)
+	a.PublishTurnActive()
+}
+
+// disarmTurnLocked keeps the idle check and the turn change under the same lock.
+func (a *Agent) disarmTurnLocked() map[string]string {
+	a.turnActive = false
+	return a.recordClaudeResultEdgeLocked()
+}
+
+// recordClaudeResultEdge completes result bookkeeping without releasing the active turn.
+func (a *Agent) recordClaudeResultEdge() {
+	a.Mu.Lock()
+	retired := a.recordClaudeResultEdgeLocked()
+	a.Mu.Unlock()
+	a.cancelControls(retired)
+}
+
+func (a *Agent) recordClaudeResultEdgeLocked() map[string]string {
+	a.turnEndRevision++
+	// The result answers the input, so a later idle can end the turn.
+	a.awaitingResult = false
+	// A stop note cannot carry into a later result or turn.
+	a.interruptRequested = false
+	return a.takeControlsLocked(func(record *claudePendingControl) bool { return record.agentID == "" })
 }
 
 // Agent steers. Manager.SupportsSteering answers false, with no build error, for a
@@ -381,6 +385,10 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 	a.Mu.Unlock()
 	writeErr := a.WriteStdin(data)
 	a.Mu.Lock()
+	if priority == "next" && writeErr == nil && !a.StoppedLocked() && a.turnEndRevision == endRevision {
+		// Do not wait again for a result that arrived during the write.
+		a.awaitingResult = true
+	}
 	if priority == "" && a.turnEndRevision == endRevision {
 		if writeErr == nil && !a.StoppedLocked() {
 			a.turnActive = true

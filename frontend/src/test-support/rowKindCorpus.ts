@@ -70,7 +70,6 @@ export const ROW_KIND_FOR_CATEGORY: Record<MessageCategory['kind'], DrawnRowKind
   notification: 'notification',
   tool_use: 'tool',
   tool_result: 'tool',
-  agent_prompt: 'agent-prompt',
   assistant_text: 'assistant-text',
   assistant_thinking: 'assistant-thinking',
   assistant_plan: 'assistant-plan',
@@ -79,7 +78,6 @@ export const ROW_KIND_FOR_CATEGORY: Record<MessageCategory['kind'], DrawnRowKind
   plan_execution: 'plan-execution',
   result_divider: 'divider',
   control_response: 'control-response',
-  compact_summary: 'compact-summary',
   unknown: 'unrecognized',
   unsupported_provider: 'hidden',
 }
@@ -221,32 +219,6 @@ export const ROW_KIND_CASES: RowKindCase[] = [
     },
     category: 'assistant_plan',
     spanType: 'ExitPlanMode',
-  },
-  {
-    provider: Provider.CLAUDE_CODE,
-    name: 'prompt to a subagent',
-    payload: {
-      type: 'user',
-      parent_tool_use_id: 'toolu_3',
-      message: { role: 'user', content: [{ type: 'text', text: 'Read the parser and report what it rejects.' }] },
-    },
-    category: 'agent_prompt',
-  },
-  {
-    provider: Provider.CLAUDE_CODE,
-    name: 'local command output',
-    payload: { type: 'user', message: { role: 'user', content: 'Context: 42% used.' } },
-    category: 'user_text',
-  },
-  {
-    provider: Provider.CLAUDE_CODE,
-    name: 'compact summary',
-    payload: {
-      type: 'user',
-      isCompactSummary: true,
-      message: { role: 'user', content: [{ type: 'text', text: 'The session corrected the token check.' }] },
-    },
-    category: 'compact_summary',
   },
   {
     // An assistant envelope whose content array holds no block the classifier knows.

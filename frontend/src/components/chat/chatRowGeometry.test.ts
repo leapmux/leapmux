@@ -26,8 +26,6 @@ const BAND_BY_KIND: Record<MessageCategory['kind'], MessageBandKind | undefined>
   // bubble, so it must NOT join the band set -- it would also lose its gap
   // against the assistant rows around it.
   plan_execution: undefined,
-  agent_prompt: undefined,
-  compact_summary: undefined,
   control_response: undefined,
   hidden: undefined,
   notification: undefined,
@@ -46,9 +44,7 @@ const SCOPED_KEY_BY_KIND: Record<MessageCategory['kind'], string> = {
   tool_result: '|d:split',
   assistant_thinking: '|t:1',
   assistant_plan: '',
-  agent_prompt: '',
   assistant_text: '',
-  compact_summary: '',
   control_response: '',
   hidden: '',
   notification: '',

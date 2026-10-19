@@ -29,7 +29,7 @@ import { encodeEventStreamEvent, EVENT_STREAM_CONTENT_TYPE } from './awsEventStr
 import { KIRO_E2E_API_KEY } from './mockAgentEnvironment'
 import { mockCredentialReceipt } from './mockCredentials'
 import { readJSONBody, readMockBody, writeMockJSON, writeResponseHeaders } from './mockHttp'
-import { contentText, scenarioIDFromTexts } from './mockModelScript'
+import { contentText, scenarioIDFromTexts, stopReasonToken } from './mockModelScript'
 import { createModelStream } from './modelStream'
 
 /** The header that states the operation of an AWS JSON 1.0 call. */
@@ -342,6 +342,8 @@ async function serveKiro(request: IncomingMessage, response: ServerResponse, bod
   // Kiro cannot read a generic model error and would repeat that request.
   let toolEvents: KiroEvent[]
   try {
+    if (answer.step.stopReason !== undefined)
+      stopReasonToken('aws-event-stream', answer.step.stopReason)
     toolEvents = (answer.step.toolCalls ?? []).flatMap(kiroToolUseEvents)
   }
   catch (error) {
@@ -393,8 +395,10 @@ async function writeKiroTurn(response: ServerResponse, body: unknown, step: Mock
     return
   for (const [eventType, payload] of toolEvents)
     response.write(encodeEventStreamEvent(eventType, payload))
+  const inputTokens = step.usage?.inputTokens ?? 1
+  const outputTokens = step.usage?.outputTokens ?? 1
   response.end(encodeEventStreamEvent('metadataEvent', {
-    tokenUsage: { uncachedInputTokens: 1, outputTokens: 1, totalTokens: 2 },
+    tokenUsage: { uncachedInputTokens: inputTokens, outputTokens, totalTokens: inputTokens + outputTokens },
     stopReason: toolEvents.length > 0 ? 'TOOL_USE' : 'END_TURN',
   }))
 }

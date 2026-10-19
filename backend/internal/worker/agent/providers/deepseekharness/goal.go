@@ -1,13 +1,13 @@
 package deepseekharness
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"math"
 	"strings"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 func (a *Agent) SupportedGoalActions() []agent.GoalAction {
@@ -80,7 +80,7 @@ func (a *Agent) readGoal(sessionID string) (*nativeGoal, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+	if !providerkit.RawPresent(raw) {
 		return nil, nil
 	}
 	var goal nativeGoal
@@ -91,7 +91,7 @@ func (a *Agent) readGoal(sessionID string) (*nativeGoal, error) {
 }
 
 func (a *Agent) applyGoalProjection(raw []byte, snapshot bool) error {
-	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+	if providerkit.RawKindOf(raw) == providerkit.RawNull {
 		a.sink.ClearGoal(snapshot)
 		return nil
 	}

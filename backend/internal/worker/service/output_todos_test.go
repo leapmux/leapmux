@@ -1150,7 +1150,7 @@ func TestOutputTodos_TaskCreateAfterEvictionAcrossRestart(t *testing.T) {
 	// the same DB and re-bind the sink. The new handler's todo cache
 	// starts empty and is re-seeded from the persisted rows on next
 	// touch.
-	svc.Output = NewOutputHandler(svc.DB, svc.Queries, svc.Watchers, svc.Agents, nil)
+	svc.Output = NewOutputHandler(svc.DB, svc.Queries, svc.Watchers, svc.Agents, nil, svc.Clock)
 	sink2 := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 
 	// First TaskCreate after the restart. With the seed bug, nextSeq

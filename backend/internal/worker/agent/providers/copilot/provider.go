@@ -22,6 +22,14 @@ type copilotProvider struct {
 	agent.ProviderDefaults
 }
 
+// Classify identifies every native compaction end as a notification boundary.
+func (copilotProvider) Classify(raw json.RawMessage) agent.NotificationClassification {
+	if _, ok := copilotEventOfType(raw, contracts.CopilotEventSessionCompactionComplete); ok {
+		return agent.CompactionBoundaryNotification()
+	}
+	return agent.NotificationClassification{}
+}
+
 // The native Copilot model request keeps only the filename of a PDF or binary blob.
 func (copilotProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
 	if attachment.Kind == agent.AttachmentKindPDF || attachment.Kind == agent.AttachmentKindBinary {
@@ -87,6 +95,39 @@ func copilotEventOfType(content []byte, eventType string) (json.RawMessage, bool
 // pending tasks". The checklist is therefore the provider's own statement of the
 // list, and the whole list arrives on every call, so this is a snapshot.
 func (copilotProvider) ExtractTodoEvent(_ string, content []byte, _ func() []byte) (todoevents.Event, bool) {
+	if bytes.Contains(content, []byte(contracts.CopilotLeapmuxRowTypeSqlTodos)) {
+		var snapshot struct {
+			Type string          `json:"type"`
+			Rows json.RawMessage `json:"rows"`
+		}
+		if json.Unmarshal(content, &snapshot) == nil && snapshot.Type == contracts.CopilotLeapmuxRowTypeSqlTodos {
+			rows, ok := decodeCopilotSQLTodos(snapshot.Rows)
+			if !ok {
+				return todoevents.Event{}, false
+			}
+			items := make([]todoevents.Item, 0, len(rows))
+			for _, row := range rows {
+				text := strings.TrimSpace(row.Title)
+				if text == "" {
+					text = strings.TrimSpace(row.Description)
+				}
+				if text == "" {
+					continue
+				}
+				status := todoevents.StatusPending
+				switch row.Status {
+				case "done":
+					status = todoevents.StatusCompleted
+				case "in_progress":
+					status = todoevents.StatusInProgress
+				case "blocked":
+					status = todoevents.StatusBlocked
+				}
+				items = append(items, todoevents.Item{ID: row.ID, Content: text, ActiveForm: text, Description: row.Description, Status: status})
+			}
+			return todoevents.Event{Kind: todoevents.KindSnapshot, Snapshot: items}, true
+		}
+	}
 	data, ok := copilotEventOfType(content, contracts.CopilotEventToolStarted)
 	if !ok {
 		return todoevents.Event{}, false
@@ -101,6 +142,28 @@ func (copilotProvider) ExtractTodoEvent(_ string, content []byte, _ func() []byt
 		return todoevents.Event{}, false
 	}
 	return todoevents.Event{Kind: todoevents.KindSnapshot, Snapshot: parseCopilotChecklist(start.Arguments.Todos)}, true
+}
+
+// copilotSQLTodo is one row from plan.readSqlTodos. Native columns are optional.
+type copilotSQLTodo struct {
+	ID          string `json:"id"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	Status      string `json:"status"`
+}
+
+// decodeCopilotSQLTodos rejects malformed data without clearing a stored to-do list.
+func decodeCopilotSQLTodos(raw json.RawMessage) ([]*copilotSQLTodo, bool) {
+	var rows []*copilotSQLTodo
+	if json.Unmarshal(raw, &rows) != nil || rows == nil {
+		return nil, false
+	}
+	for _, row := range rows {
+		if row == nil {
+			return nil, false
+		}
+	}
+	return rows, true
 }
 
 // copilotChecklistItem matches one markdown task-list row.

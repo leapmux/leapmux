@@ -17,7 +17,10 @@
     "decisions",
     "permissionOutcomes",
     "permissionDecisionSources",
-    "toolErrorCodes"
+    "toolErrorCodes",
+    "autoModeSwitchResponses",
+    "samplingDecisions",
+    "leapmuxRowTypes"
   ],
   "$defs": {
     "table": {
@@ -166,6 +169,15 @@
       "$ref": "#/$defs/table"
     },
     "toolErrorCodes": {
+      "$ref": "#/$defs/table"
+    },
+    "autoModeSwitchResponses": {
+      "$ref": "#/$defs/table"
+    },
+    "samplingDecisions": {
+      "$ref": "#/$defs/table"
+    },
+    "leapmuxRowTypes": {
       "$ref": "#/$defs/table"
     }
   }

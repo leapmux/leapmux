@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/coder/quartz"
 )
 
 // ErrServerExited reports that the agent's server process ended before it
@@ -69,31 +71,57 @@ func (w *ListenWaiter) Observe(line []byte) bool {
 //
 // A caller passes the address to NewHTTPEndpoint, which refuses anything but a
 // loopback http address.
-func (w *ListenWaiter) Wait(ctx context.Context, exited <-chan struct{}, timeout time.Duration) (string, error) {
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	// The address wins a tie with the exit: a server that printed its address and
-	// then died is reported by the first request, with the reason that request
-	// gets, rather than as a server that never started.
-	select {
-	case <-w.found:
+func (w *ListenWaiter) Wait(ctx context.Context, clock quartz.Clock, exited <-chan struct{}, timeout time.Duration) (string, error) {
+	switch AwaitSignal(ctx, clock, w.found, exited, timeout, "server address") {
+	case SignalArrived:
 		return w.address, nil
+	case SignalExited:
+		return "", ErrServerExited
+	case SignalTimedOut:
+		return "", fmt.Errorf("the agent server stated no address within %s", timeout)
+	default:
+		return "", ctx.Err()
+	}
+}
+
+// AwaitSignalTimerTag identifies timers for a signal wait.
+const AwaitSignalTimerTag = "await-signal"
+
+// SignalOutcome states what ended a signal wait.
+type SignalOutcome uint8
+
+const (
+	SignalArrived SignalOutcome = iota
+	SignalExited
+	SignalTimedOut
+	SignalCancelled
+)
+
+// AwaitSignal waits on an injected clock. A ready signal wins every simultaneous outcome.
+func AwaitSignal(ctx context.Context, clock quartz.Clock, signal, exited <-chan struct{}, timeout time.Duration, label string) SignalOutcome {
+	select {
+	case <-signal:
+		return SignalArrived
 	default:
 	}
+	timer := clock.NewTimer(timeout, AwaitSignalTimerTag, label)
+	defer timer.Stop(AwaitSignalTimerTag, label)
+	var outcome SignalOutcome
 	select {
-	case <-w.found:
-		return w.address, nil
+	case <-signal:
+		return SignalArrived
 	case <-exited:
-		select {
-		case <-w.found:
-			return w.address, nil
-		default:
-		}
-		return "", ErrServerExited
+		outcome = SignalExited
 	case <-timer.C:
-		return "", fmt.Errorf("the agent server stated no address within %s", timeout)
+		outcome = SignalTimedOut
 	case <-ctx.Done():
-		return "", ctx.Err()
+		outcome = SignalCancelled
+	}
+	select {
+	case <-signal:
+		return SignalArrived
+	default:
+		return outcome
 	}
 }
 

@@ -297,7 +297,7 @@ func (a *Agent) finishGeneratedItem(env codewhaleEnvelope, item turnItem) {
 	defer a.sink.ReportProgress(agent.CompleteModelProgress(item.ID))
 	if strings.TrimSpace(item.Detail) == "" {
 		// The event carries no text of its own, so the deltas are the only copy.
-		if _, err := a.generationBuffer.PersistScope(item.ID, completion, a.persistGenerationRow); err != nil {
+		if err := providerkit.PersistGenerationScopes(&a.generationBuffer, a.sink, []string{item.ID}, completion, a.IsDiscardingOutput()); err != nil {
 			slog.Error("codewhale persist streamed text", "agent_id", a.AgentID(), "error", err)
 		}
 		return
@@ -312,18 +312,9 @@ func (a *Agent) finishGeneratedItem(env codewhaleEnvelope, item turnItem) {
 	}
 }
 
-func (a *Agent) persistGenerationRow(raw []byte) error {
-	return a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw}, agent.SpanInfo{})
-}
-
-// flushGeneration persists every streamed text that no final event stated, with
-// the completion of whatever ended it.
+// flushGeneration stores unfinished streamed text in its original order.
 func (a *Agent) flushGeneration(completion agent.MessageCompletion) {
-	if a.IsDiscardingOutput() {
-		a.generationBuffer.Reset()
-		return
-	}
-	if err := a.generationBuffer.PersistAll(completion, a.persistGenerationRow); err != nil {
+	if err := providerkit.FlushGeneration(&a.generationBuffer, a.sink, completion, a.IsDiscardingOutput()); err != nil {
 		slog.Error("codewhale persist streamed text", "agent_id", a.AgentID(), "error", err)
 	}
 }

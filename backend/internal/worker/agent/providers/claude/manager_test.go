@@ -381,10 +381,9 @@ func TestManager_AgentExitCleanup(t *testing.T) {
 				ProcessDone: make(chan struct{}),
 				StderrDone:  make(chan struct{}),
 			}),
-			model:          opts.Model(),
-			workingDir:     opts.WorkingDir,
-			sink:           sink,
-			pendingControl: make(map[string]chan<- claudeCodeControlResult),
+			model:      opts.Model(),
+			workingDir: opts.WorkingDir,
+			sink:       sink,
 		}
 		a.SkipStderr()
 

@@ -572,6 +572,32 @@ func (m *Manager) SteerInput(agentID, content string, attachments []*leapmuxv1.A
 	return err
 }
 
+// SteerPolicy reads the running provider's constant steering declarations.
+func (m *Manager) SteerPolicy(agentID string) SteerPolicy {
+	m.mu.RLock()
+	provider := m.agents[agentID].providerOrNil()
+	m.mu.RUnlock()
+	var policy SteerPolicy
+	if reporter, ok := provider.(SteerEchoReporter); ok {
+		policy.RowAtEcho = reporter.SteerRowAtEcho()
+	}
+	if survivor, ok := provider.(SteerSurvivor); ok {
+		policy.SurvivesTurnEnd = survivor.SteerSurvivesTurnEnd()
+	}
+	return policy
+}
+
+// PrepareSteer lets the provider persist buffered text before a steer row.
+// The provider call runs outside the manager lock. An unknown agent changes nothing.
+func (m *Manager) PrepareSteer(agentID string) {
+	m.mu.RLock()
+	provider := m.agents[agentID].providerOrNil()
+	m.mu.RUnlock()
+	if preparer, ok := provider.(SteerPreparer); ok {
+		preparer.PrepareSteer()
+	}
+}
+
 // SupportsSteering reports whether the running agent can steer its active turn.
 // It asks the provider and reports the answer. It answers false for an agent
 // that does not run, and for a provider that does not implement InputSteerer.

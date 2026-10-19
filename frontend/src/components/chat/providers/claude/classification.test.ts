@@ -134,10 +134,9 @@ describe('classifyClaudeCodeMessage', () => {
     }))).toEqual({ kind: 'hidden' })
   })
 
-  it('hides an informational row only at level info', () => {
-    // The interface shows level info in its own transcript mode only.
+  it('reads a stored informational row without an obsolete level filter', () => {
     expect(classifyClaudeCodeMessage(input({ type: 'system', subtype: 'informational', content: 'verbose only', level: 'info' })))
-      .toEqual({ kind: 'hidden' })
+      .toEqual({ kind: 'notification', entries: [{ kind: 'text', text: 'verbose only' }] })
     for (const level of ['notice', 'suggestion', 'warning']) {
       expect(classifyClaudeCodeMessage(input({ type: 'system', subtype: 'informational', content: 'Stop hook failed: boom', level })), level)
         .toEqual({ kind: 'notification', entries: [{ kind: 'text', text: 'Stop hook failed: boom' }] })
@@ -169,26 +168,25 @@ describe('classifyClaudeCodeMessage', () => {
   })
 
   it('hides a hook_response row unless the hook failed', () => {
+    // The neutral reader has no outcome for a successful hook.
     expect(classifyClaudeCodeMessage(input({ type: 'system', subtype: 'hook_response', hook_id: 'h1', hook_name: 'setup.sh', hook_event: 'SessionStart', outcome: 'success', exit_code: 0 })))
       .toEqual({ kind: 'hidden' })
     expect(classifyClaudeCodeMessage(input({ type: 'system', subtype: 'hook_response', hook_id: 'h1', hook_name: 'setup.sh', hook_event: 'SessionStart', outcome: 'error', exit_code: 2 })))
-      .toEqual({ kind: 'notification', entries: [{ kind: 'text', text: 'Hook SessionStart (setup.sh) failed (exit 2)' }] })
+      .toEqual({ kind: 'notification', entries: [{ kind: 'hook', outcome: 'failed', event: 'SessionStart', name: 'setup.sh', exitCode: 2 }] })
   })
 
-  // The two new hidden rules hold on the consolidated-thread path too. Two rows
-  // Hub threads into one wrapper draw the visible member and drop the hidden one.
-  it('drops an informational row at level info from a consolidated thread', () => {
+  it('reads a stored informational row in a consolidated thread', () => {
     const info = { type: 'system', subtype: 'informational', content: 'verbose only', level: 'info' }
     const warning = { type: 'system', subtype: 'informational', content: 'Stop hook failed: boom', level: 'warning' }
     const wrapper = { old_seqs: [301, 302], messages: [info, warning] }
     expect(classifyClaudeCodeMessage(input(warning, wrapper)))
-      .toEqual({ kind: 'notification', entries: [{ kind: 'text', text: 'Stop hook failed: boom' }] })
+      .toEqual({ kind: 'notification', entries: [{ kind: 'text', text: 'verbose only' }, { kind: 'text', text: 'Stop hook failed: boom' }] })
   })
 
-  it('collapses a thread of only non-error hook responses to hidden', () => {
+  it('keeps the default empty policy for a stored thread of non-error hook responses', () => {
     const passed = { type: 'system', subtype: 'hook_response', hook_id: 'h1', hook_name: 'setup.sh', hook_event: 'SessionStart', outcome: 'success', exit_code: 0 }
     const wrapper = { old_seqs: [301], messages: [passed] }
-    expect(classifyClaudeCodeMessage(input(passed, wrapper))).toEqual({ kind: 'hidden' })
+    expect(classifyClaudeCodeMessage(input(passed, wrapper))).toEqual({ kind: 'notification', entries: [] })
   })
 
   it('hides assistant thinking with empty text', () => {
@@ -218,7 +216,7 @@ describe('classifyClaudeCodeMessage', () => {
       .toEqual({ kind: 'hidden' })
   })
 
-  it('hides a finished compaction status (status=null, compact_result=success) standalone', () => {
+  it('leaves a stored final status unknown when it is not a failure', () => {
     // The user-facing "Context compacted (...)" line comes from the separate
     // compact_boundary message; this finished status carries nothing to show.
     const parent = {
@@ -227,14 +225,10 @@ describe('classifyClaudeCodeMessage', () => {
       status: null,
       compact_result: 'success',
     }
-    expect(classifyClaudeCodeMessage(input(parent))).toEqual({ kind: 'hidden' })
+    expect(classifyClaudeCodeMessage(input(parent))).toEqual({ kind: 'unknown' })
   })
 
-  it('hides a finished compaction status when Hub consolidates it into a notification thread', () => {
-    // Regression: the consolidated-thread branch must apply the same per-message
-    // hidden rules as the standalone classifier. Before the shared predicate, a
-    // status message that is hidden on its own leaked through the wrapper path as
-    // a `notification` and rendered as raw JSON.
+  it('keeps the default empty policy for a stored thread of successful statuses', () => {
     const statusMsg = {
       type: 'system',
       subtype: 'status',
@@ -242,7 +236,7 @@ describe('classifyClaudeCodeMessage', () => {
       compact_result: 'success',
     }
     const wrapper = { old_seqs: [305], messages: [statusMsg] }
-    expect(classifyClaudeCodeMessage(input(statusMsg, wrapper))).toEqual({ kind: 'hidden' })
+    expect(classifyClaudeCodeMessage(input(statusMsg, wrapper))).toEqual({ kind: 'notification', entries: [] })
   })
 
   it('drops a hidden status from a consolidated thread but keeps the visible notification', () => {
@@ -256,13 +250,22 @@ describe('classifyClaudeCodeMessage', () => {
       .toEqual({ kind: 'notification', entries: [{ kind: 'settings-changed', changes: [{ label: 'Model', old: 'a', new: 'b' }] }] })
   })
 
-  it('keeps the in-progress compacting status visible in a consolidated thread', () => {
-    // status === 'compacting' is the live "Compacting context..." row; only the
-    // finished (non-compacting) status is hidden.
+  it('reads no compaction start from a stored status in a thread', () => {
     const compactingMsg = { type: 'system', subtype: 'status', status: 'compacting' }
     const wrapper = { old_seqs: [305], messages: [compactingMsg] }
     expect(classifyClaudeCodeMessage(input(compactingMsg, wrapper)))
-      .toEqual({ kind: 'notification', entries: [{ kind: 'compaction', phase: 'start' }] })
+      .toEqual({ kind: 'notification', entries: [] })
+  })
+
+  it('draws a failed final compaction status as a failed compaction end', () => {
+    const frame = { type: 'system', subtype: 'status', status: null, compact_result: 'failed', compact_error: 'too_few_groups' }
+    const expected = { kind: 'notification', entries: [{ kind: 'compaction', phase: 'end', outcome: 'failed', error: 'too_few_groups' }] }
+    expect(classifyClaudeCodeMessage(input(frame))).toEqual(expected)
+    expect(classifyClaudeCodeMessage(input(frame, { old_seqs: [1], messages: [frame] }))).toEqual(expected)
+  })
+
+  it('leaves a stored conversation_reset row unknown', () => {
+    expect(classifyClaudeCodeMessage(input({ type: 'conversation_reset' }))).toEqual({ kind: 'unknown' })
   })
 
   it('drops an allowed rate_limit_event from a consolidated thread (regression guard)', () => {
@@ -286,14 +289,11 @@ describe('classifyClaudeCodeMessage', () => {
     expect(classifyClaudeCodeMessage(input({ type: 'assistant', message: { content: [{ type: 'text', text: 'hi' }] } })))
       .toEqual({ kind: 'assistant_text' })
     expect(classifyClaudeCodeMessage(input({ type: 'user', message: { content: 'hi' } })))
-      .toEqual({ kind: 'user_text' })
+      .toEqual({ kind: 'unknown' })
   })
 })
 
-// A user message stamped with the spawning tool_use id means two different
-// things depending on which transcript it is in, and only the transcript can
-// tell them apart -- Claude forwards a subagent's own messages into the child
-// carrying that same id.
+// The current worker stores tool results from a child but drops its other native user frames.
 describe('classifyClaudeCodeMessage on a user message carrying parent_tool_use_id', () => {
   // The real payload from a stopped subagent's transcript.
   const interrupted = {
@@ -308,20 +308,26 @@ describe('classifyClaudeCodeMessage on a user message carrying parent_tool_use_i
     task_description: 'FOOTGUNS angle',
   }
 
-  it('is the prompt sent to a subagent in the PARENT transcript', () => {
+  it('leaves a stored forwarded user frame unknown in the parent transcript', () => {
     expect(classifyClaudeCodeMessage(input(interrupted), { isChildTranscript: false }))
-      .toEqual({ kind: 'agent_prompt' })
+      .toEqual({ kind: 'unknown' })
   })
 
-  it('is an ordinary user message in the SUBAGENT\'s own transcript', () => {
+  it('leaves a stored forwarded user frame unknown in the child transcript', () => {
     expect(classifyClaudeCodeMessage(input(interrupted), { isChildTranscript: true }))
-      .toEqual({ kind: 'user_text' })
+      .toEqual({ kind: 'unknown' })
   })
 
-  // No context at all keeps the parent reading, which is the one every
-  // non-subagent transcript uses.
-  it('defaults to the parent reading when the caller supplies no context', () => {
-    expect(classifyClaudeCodeMessage(input(interrupted))).toEqual({ kind: 'agent_prompt' })
+  it('leaves the stored forwarded frame unknown without transcript context', () => {
+    expect(classifyClaudeCodeMessage(input(interrupted))).toEqual({ kind: 'unknown' })
+  })
+
+  it('leaves a stored user frame with string content unknown', () => {
+    expect(classifyClaudeCodeMessage(input({ type: 'user', message: { role: 'user', content: 'old echo' } }))).toEqual({ kind: 'unknown' })
+  })
+
+  it('leaves a stored compact summary unknown', () => {
+    expect(classifyClaudeCodeMessage(input({ type: 'user', isCompactSummary: true, message: { content: [{ type: 'text', text: 'old summary' }] } }))).toEqual({ kind: 'unknown' })
   })
 
   // A subagent's tool RESULTS carry the same id and must stay tool results on

@@ -45,7 +45,7 @@ droidTest.describe('Factory Droid settings', () => {
         expect(request.protocol).toBe('openai-chat-completions')
         // Droid advertises ExitSpecMode in Default also. Its native settings event states the active mode.
         expect(nativeModelToolNames(request)).toContain('ExitSpecMode')
-        await expectDroidNativeSettings(native, { interactionMode: mode.interactionMode, autonomyLevel: 'off' }, 'latest')
+        await expectDroidNativeSettings(native, { interactionMode: mode.interactionMode, autonomyLevel: 'off' })
       }
       await nativeProof(await sendNativeAnswer(native, `Reply in ${mode.label} mode.`, `Droid used ${mode.label} mode.`))
       await exerciseRestoredNativeOption(native, { groupId: 'permissionMode', value: mode.value, nativeProof })

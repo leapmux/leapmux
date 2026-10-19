@@ -8,6 +8,7 @@ import { parseMessageContent } from '~/lib/messageParser'
 import { assembledMessageRow } from '~/test-support/assembledMessages'
 import { testMessageSources } from '~/test-support/messageRenderSources'
 import { renderMessageContent } from './messageContentRenderer'
+import { UnrecognizedMessage } from './messageRenderers'
 import { MESSAGE_UI_KEY } from './messageUiKeys'
 import { resolveMessageForRendering } from './providers/registry'
 import './providers'
@@ -36,6 +37,15 @@ function renderToolUseText(name: string, input: Record<string, unknown>, context
   const { container } = render(() => result)
   return container.textContent?.trim() ?? ''
 }
+
+describe('UnrecognizedMessage', () => {
+  it.each([false, true])('renders the unrendered-row test id with renderFailed=%s', (renderFailed) => {
+    const view = render(() => <UnrecognizedMessage payload={{ type: 'future' }} renderFailed={renderFailed} />)
+    expect(view.getByTestId('unrendered-row')).toHaveTextContent(renderFailed
+      ? 'LeapMux could not render this row'
+      : 'LeapMux has no display for this row')
+  })
+})
 
 describe('skill renderer', () => {
   it('renders Skill: /create-pr', () => {

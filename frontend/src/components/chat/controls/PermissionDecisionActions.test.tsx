@@ -68,6 +68,36 @@ describe('the selected-option reply of the Agent Client Protocol family', () => 
 })
 
 describe('PermissionDecisionActions', () => {
+  it.each([
+    ['Switch this turn', 'allow', 'once'],
+    ['Always switch', 'allow', 'session'],
+    ['Decline', 'deny', undefined],
+  ])('preserves the independent %s decision without permission presets', async (label, behavior, scope) => {
+    const onRespond = vi.fn().mockResolvedValue(undefined)
+    const apply = vi.fn()
+    const answerState = createControlAnswerState()
+    answerState.setChoices({ 'control-permissions-pill': 'bypass' })
+    render(() => (
+      <ControlRequestActions
+        agentProvider={AgentProvider.GITHUB_COPILOT}
+        request={{ agentId: 'agent1', requestId: 'switch', payload: { method: 'session.event', params: { event: { type: 'auto_mode_switch.requested', data: { requestId: 'switch', errorCode: 'user_model_rate_limited' } } } } }}
+        answerState={answerState}
+        onRespond={onRespond}
+        hasEditorContent={false}
+        onTriggerSend={vi.fn()}
+        presets={{ bypass: { sets: { permissionMode: 'allow_all' } }, apply }}
+      />
+    ))
+    expect(screen.getAllByRole('button').map(button => button.textContent)).toEqual(['Switch this turn', 'Always switch', 'Decline'])
+    expect(screen.queryByRole('radiogroup')).toBeNull()
+    await fireEvent.click(screen.getByRole('button', { name: label }))
+    expect(onRespond).toHaveBeenCalledTimes(1)
+    const response = JSON.parse(new TextDecoder().decode(onRespond.mock.calls[0]![0])).response.response
+    expect(response.behavior).toBe(behavior)
+    expect(response.scope).toBe(scope)
+    expect(apply).not.toHaveBeenCalled()
+  })
+
   /** Goose's wire shape: four kind-named options, emitted allow-first. */
   function renderGooseActions() {
     const apply = vi.fn()

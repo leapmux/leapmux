@@ -2,6 +2,20 @@ import { describe, expect, it } from 'vitest'
 import { input } from '../testUtils'
 import { classifyACPMessage } from './classification'
 
+describe('stored system frames', () => {
+  it.each([
+    { type: 'system', subtype: 'init' },
+    { type: 'system', subtype: 'task_notification' },
+    { type: 'system', subtype: 'status', status: null },
+    { type: 'system', subtype: 'status', status: 'compacting' },
+    { type: 'system', subtype: 'compact_boundary' },
+  ])('leaves a stored system frame unknown: %j', (parent) => {
+    const classify = classifyACPMessage()
+    expect(classify(input(parent))).toEqual({ kind: 'unknown' })
+    expect(classify(input(parent, { old_seqs: [], messages: [parent] }))).toEqual({ kind: 'unknown' })
+  })
+})
+
 describe('mode updates (ACP)', () => {
   it('keeps native mode metadata out of the visible transcript', () => {
     const classify = classifyACPMessage()

@@ -300,12 +300,11 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     return current?.kind === 'tool' ? toolCallMeta(current) : null
   })
 
-  // The renderer renders its own ToolHeaderActions (inside ToolUseLayout) for
-  // tool_use / agent_prompt — except when the row carries the RESULT of its
-  // span, which puts its actions in the bubble's outer toolbar instead.
+  // A tool request draws its actions inside ToolUseLayout.
+  // A result uses the bubble's outer toolbar.
   const hasInternalActions = () => {
     const kind = category().kind
-    if (kind !== 'tool_use' && kind !== 'agent_prompt')
+    if (kind !== 'tool_use')
       return false
     const current = row()
     return current?.kind !== 'tool' || current.role !== 'result'
@@ -656,6 +655,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
         <div
           class={bubbleClass()}
           data-testid="message-bubble"
+          data-category={category().kind}
           data-role={sourceLabel(props.message.source)}
           data-tool-call-id={toolRow()?.call.id}
           data-tool-row-role={toolRow()?.role}

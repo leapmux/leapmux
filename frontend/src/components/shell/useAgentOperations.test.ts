@@ -1340,7 +1340,7 @@ describe('useAgentOperations', () => {
           await expect(ops.handleRetryTurn('codex-1', 'turn-1', 'gpt-6-luna')).resolves.toBe(false)
 
           expect(mockShowWarnToast).toHaveBeenCalledOnce()
-          expect(mockShowWarnToast).toHaveBeenCalledWith('Failed to retry with a faster model', refusal)
+          expect(mockShowWarnToast).toHaveBeenCalledWith('Failed to retry on a faster model', refusal)
         }
         finally {
           dispose()

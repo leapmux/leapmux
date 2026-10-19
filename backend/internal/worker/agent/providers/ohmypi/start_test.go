@@ -3,6 +3,7 @@ package ohmypi
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"testing"
 	"time"
 
@@ -86,7 +87,7 @@ func TestHandshake(t *testing.T) {
 		order = append(order, command.Type)
 	}
 	r.mu.Unlock()
-	assert.Equal(t, []string{CommandNegotiateProtocol, CommandSetSubagentSubscription, CommandGetState, CommandGetAvailableModels}, order)
+	assert.Equal(t, []string{CommandNegotiateProtocol, CommandSetSubagentSubscription, CommandSetEventFilter, CommandGetState, CommandGetAvailableModels}, order)
 	assert.Equal(t, "events", r.commandsOfType(CommandSetSubagentSubscription)[0].Payload["level"])
 
 	r.agent.Mu.Lock()
@@ -103,7 +104,7 @@ func TestHandshakeToleratesOptionalFailures(t *testing.T) {
 	r := newRig(t)
 	r.respond(func(command recordedCommand) *rigReply {
 		switch command.Type {
-		case CommandNegotiateProtocol, CommandSetSubagentSubscription, CommandGetAvailableModels:
+		case CommandNegotiateProtocol, CommandSetSubagentSubscription, CommandSetEventFilter, CommandGetAvailableModels:
 			return &rigReply{Error: "unknown command"}
 		}
 		return nil
@@ -187,4 +188,26 @@ func TestAwaitReady(t *testing.T) {
 		_, err := r.agent.awaitReady(10 * time.Second)
 		assert.ErrorIs(t, err, context.Canceled)
 	})
+}
+
+func TestHandshakeSetsTheDeltaFilter(t *testing.T) {
+	t.Parallel()
+	for _, refuse := range []bool{false, true} {
+		t.Run(strconv.FormatBool(refuse), func(t *testing.T) {
+			r := newRig(t)
+			r.respond(func(command recordedCommand) *rigReply {
+				if command.Type == "set_event_filter" && refuse {
+					return &rigReply{Error: "filter refused"}
+				}
+				return nil
+			})
+			r.emit(frameReady)
+			require.NoError(t, r.agent.handshake(10*time.Second))
+			commands := r.commandsOfType("set_event_filter")
+			require.Len(t, commands, 1)
+			assert.Contains(t, commands[0].Payload, "events")
+			assert.Nil(t, commands[0].Payload["events"])
+			assert.Equal(t, "delta", commands[0].Payload["messageUpdates"])
+		})
+	}
 }

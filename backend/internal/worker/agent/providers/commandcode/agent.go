@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -16,17 +17,19 @@ import (
 // Agent owns one native Command Code RPC session and its private output files.
 type Agent struct {
 	providerkit.JSONRPCProcess
-	sink         agent.ProviderServices
-	sendMu       sync.Mutex
-	dispatchMu   sync.Mutex
-	clock        quartz.Clock
-	runtimeDir   string
-	bridgeSecret string
-	bridge       *providerkit.HTTPEndpoint
-	cleanupOnce  sync.Once
-	outputDone   chan struct{}
-	workingDir   string
-	homeDir      string
+	sink       agent.ProviderServices
+	sendMu     sync.Mutex
+	dispatchMu sync.Mutex
+	// dispatchMu guards the error while the next native row determines whether it repeats.
+	pendingRunError *agent.CapturedTranscript
+	clock           quartz.Clock
+	runtimeDir      string
+	bridgeSecret    string
+	bridge          *providerkit.HTTPEndpoint
+	cleanupOnce     sync.Once
+	outputDone      chan struct{}
+	workingDir      string
+	homeDir         string
 
 	// Mu guards the session, turn, settings, tool and child state below.
 	sessionID        string
@@ -39,11 +42,14 @@ type Agent struct {
 	turnStarted      time.Time
 	finishedTurns    []string
 	compacting       bool
+	compactionLive   bool
 	manualCompaction *compactionAttempt
 	tools            map[string]openTool
 	children         map[string]*childState
 	usage            map[string]any
 	generation       providerkit.GenerationBuffer
+	retryResolution  providerkit.RetryResolution
+	steers           providerkit.SteerLedger
 }
 
 type openTool struct {
@@ -53,9 +59,11 @@ type openTool struct {
 }
 
 var (
-	_ agent.Agent            = (*Agent)(nil)
-	_ agent.InputSteerer     = (*Agent)(nil)
-	_ agent.ContextCompactor = (*Agent)(nil)
+	_ agent.Agent             = (*Agent)(nil)
+	_ agent.InputSteerer      = (*Agent)(nil)
+	_ agent.ContextCompactor  = (*Agent)(nil)
+	_ agent.SteerEchoReporter = (*Agent)(nil)
+	_ agent.SteerSurvivor     = (*Agent)(nil)
 )
 
 // PublishTurnActive reads and publishes the same state that refuses concurrent input.
@@ -154,6 +162,12 @@ func (a *Agent) startTurn(turnID string) {
 
 func (a *Agent) SupportsSteering() bool { return true }
 
+// SteerRowAtEcho waits for turn/steers_delivered before the queue writes the input row.
+func (*Agent) SteerRowAtEcho() bool { return true }
+
+// SteerSurvivesTurnEnd reports that Command Code discards its pending steers when the turn ends.
+func (*Agent) SteerSurvivesTurnEnd() bool { return false }
+
 func (a *Agent) operationActiveLocked() bool {
 	return a.turnID != "" || a.compacting || a.manualCompaction != nil
 }
@@ -174,8 +188,22 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 		}
 		content += "\n\n" + providerkit.BuildInlineTextAttachmentBlock(attachment)
 	}
+	a.dispatchMu.Lock()
+	ticket := a.steers.Add("")
+	a.dispatchMu.Unlock()
 	_, err := a.request(methodTurnSteer, map[string]string{"input": content}, a.APITimeout())
 	if err == nil {
+		return nil
+	}
+	a.dispatchMu.Lock()
+	pending := slices.Contains(a.steers.Pending(), ticket)
+	if pending {
+		a.steers.Forget(ticket)
+		a.steers.Settle(a.sink)
+	}
+	a.dispatchMu.Unlock()
+	if !pending {
+		// A native echo or turn end already determines this input's disposition.
 		return nil
 	}
 	if providerkit.HasJSONRPCErrorCode(err, -32001) {

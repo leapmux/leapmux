@@ -23,9 +23,15 @@ type orderedSegment struct {
 
 // GenerationBuffer keeps provider deltas until their item reaches a boundary.
 type GenerationBuffer struct {
-	mu        sync.Mutex
-	segments  map[string]*generationSegment
-	nextOrder uint64
+	// writeMu serializes persistence, finish, and transfer operations.
+	// A sink callback can read, append, or discard through mu.
+	// It must not start another persistence, finish, or transfer operation on this buffer.
+	writeMu     sync.Mutex
+	mu          sync.Mutex
+	segments    map[string]*generationSegment
+	output      *agent.OutputQueue
+	outputOwner *agent.OutputOwner
+	nextOrder   uint64
 }
 
 // Append adds one provider fragment with its protocol-defined join behavior.
@@ -51,7 +57,7 @@ func (b *GenerationBuffer) Append(scopeID string, kind agent.AssembledMessageKin
 	traceGenerationSnapshot(scopeID, kind, snapshot)
 }
 
-// ScopeSnapshot reads one retained segment without changing its lifetime.
+// ScopeSnapshot reads one open stream scope without changing its lifetime.
 // The returned text stays unchanged after later buffer operations.
 func (b *GenerationBuffer) ScopeSnapshot(scopeID string) (agent.AssembledMessageKind, string, bool) {
 	b.mu.Lock()
@@ -63,7 +69,7 @@ func (b *GenerationBuffer) ScopeSnapshot(scopeID string) (agent.AssembledMessage
 	return segment.kind, segment.text.String(), true
 }
 
-// ScopeIDs returns the scope of each retained segment, in first-seen order.
+// ScopeIDs returns only open stream scopes, in first-seen order. Pending writes have no open scope.
 func (b *GenerationBuffer) ScopeIDs() []string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -90,18 +96,27 @@ func (b *GenerationBuffer) orderedSegmentsLocked(matches func(*generationSegment
 	return segments
 }
 
+// Finish drains pending writes, then returns one open scope with the requested completion.
 func (b *GenerationBuffer) Finish(scopeID string, completion agent.MessageCompletion) ([]byte, bool, error) {
+	if err := b.OutputQueue().Flush(); err != nil {
+		return nil, false, err
+	}
+	b.writeMu.Lock()
+	defer b.writeMu.Unlock()
 	b.mu.Lock()
-	segment, ok := b.segments[scopeID]
-	delete(b.segments, scopeID)
-	b.mu.Unlock()
-	if !ok || segment.text.Len() == 0 {
+	defer b.mu.Unlock()
+	segment := b.segments[scopeID]
+	if segment == nil {
 		return nil, false, nil
 	}
-	raw, err := agent.MarshalAssembledMessage(segment.kind, segment.text.String(), completion)
-	return raw, true, err
+	rows, err := b.finishEntriesLocked([]orderedSegment{{scopeID: scopeID, segment: segment}}, completion)
+	if err != nil || len(rows) == 0 {
+		return nil, false, err
+	}
+	return rows[0], true, nil
 }
 
+// Discard removes one open scope without changing pending writes or resetting the order.
 func (b *GenerationBuffer) Discard(scopeID string) {
 	if scopeID == "" {
 		return
@@ -111,14 +126,17 @@ func (b *GenerationBuffer) Discard(scopeID string) {
 	b.mu.Unlock()
 }
 
+// FinishAll drains pending writes, then returns all open scopes in first-seen order. It keeps the order counter.
 func (b *GenerationBuffer) FinishAll(completion agent.MessageCompletion) ([][]byte, error) {
 	return b.finishMatching(completion, func(*generationSegment) bool { return true })
 }
 
+// FinishKind drains pending writes, then returns open scopes of one kind in first-seen order. It keeps the order counter.
 func (b *GenerationBuffer) FinishKind(kind agent.AssembledMessageKind, completion agent.MessageCompletion) ([][]byte, error) {
 	return b.finishMatching(completion, func(segment *generationSegment) bool { return segment.kind == kind })
 }
 
+// DiscardKind removes open scopes of one kind. It keeps pending writes and the order counter.
 func (b *GenerationBuffer) DiscardKind(kind agent.AssembledMessageKind) {
 	b.mu.Lock()
 	for key, segment := range b.segments {
@@ -129,133 +147,95 @@ func (b *GenerationBuffer) DiscardKind(kind agent.AssembledMessageKind) {
 	b.mu.Unlock()
 }
 
-func (b *GenerationBuffer) finishMatching(
-	completion agent.MessageCompletion,
-	matches func(*generationSegment) bool,
-) ([][]byte, error) {
-	b.mu.Lock()
-	segments := b.orderedSegmentsLocked(matches)
-	for _, entry := range segments {
-		delete(b.segments, entry.scopeID)
+func (b *GenerationBuffer) finishMatching(completion agent.MessageCompletion, matches func(*generationSegment) bool) ([][]byte, error) {
+	if err := b.OutputQueue().Flush(); err != nil {
+		return nil, err
 	}
-	b.mu.Unlock()
+	b.writeMu.Lock()
+	defer b.writeMu.Unlock()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.finishEntriesLocked(b.orderedSegmentsLocked(matches), completion)
+}
 
-	result := make([][]byte, 0, len(segments))
-	for _, entry := range segments {
-		segment := entry.segment
-		if segment.text.Len() == 0 {
+// finishEntriesLocked encodes every row before it removes any open scope.
+func (b *GenerationBuffer) finishEntriesLocked(entries []orderedSegment, completion agent.MessageCompletion) ([][]byte, error) {
+	result := make([][]byte, 0, len(entries))
+	for _, entry := range entries {
+		if entry.segment.text.Len() == 0 {
 			continue
 		}
-		raw, err := agent.MarshalAssembledMessage(segment.kind, segment.text.String(), completion)
+		raw, err := agent.MarshalAssembledMessage(entry.segment.kind, entry.segment.text.String(), completion)
 		if err != nil {
 			return nil, err
 		}
 		result = append(result, raw)
 	}
+	for _, entry := range entries {
+		delete(b.segments, entry.scopeID)
+	}
 	return result, nil
 }
 
-// PersistAll writes each segment in first-seen order. A failed write keeps the
-// failed segment and every later segment for the next lifecycle boundary.
-func (b *GenerationBuffer) PersistAll(completion agent.MessageCompletion, persist func([]byte) error) error {
-	return b.persistMatching(completion, func(*generationSegment) bool { return true }, persist)
-}
-
-// PersistKind writes and removes all segments of one message kind.
-func (b *GenerationBuffer) PersistKind(
-	kind agent.AssembledMessageKind,
-	completion agent.MessageCompletion,
-	persist func([]byte) error,
-) error {
-	return b.persistMatching(completion, func(segment *generationSegment) bool {
-		return segment.kind == kind
-	}, persist)
-}
-
-// PersistScope writes and removes one segment. It reports whether a segment
-// existed, including an empty segment.
-func (b *GenerationBuffer) PersistScope(
-	scopeID string,
-	completion agent.MessageCompletion,
-	persist func([]byte) error,
-) (bool, error) {
+// DiscardMatching removes matching open scopes and returns them in first-seen order. It keeps pending writes.
+// The predicate runs under mu and must not call this buffer.
+func (b *GenerationBuffer) DiscardMatching(match func(scopeID string) bool) []string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	segment := b.segments[scopeID]
-	if segment == nil {
-		return false, nil
-	}
-	if segment.text.Len() == 0 {
-		delete(b.segments, scopeID)
-		return true, nil
-	}
-	raw, err := agent.MarshalAssembledMessage(segment.kind, segment.text.String(), completion)
-	if err != nil {
-		return true, err
-	}
-	if err := persist(raw); err != nil {
-		return true, err
-	}
-	delete(b.segments, scopeID)
-	return true, nil
-}
-
-func (b *GenerationBuffer) persistMatching(
-	completion agent.MessageCompletion,
-	matches func(*generationSegment) bool,
-	persist func([]byte) error,
-) error {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	for _, entry := range b.orderedSegmentsLocked(matches) {
-		if entry.segment.text.Len() == 0 {
+	var removed []string
+	for _, entry := range b.orderedSegmentsLocked(func(*generationSegment) bool { return true }) {
+		if match(entry.scopeID) {
 			delete(b.segments, entry.scopeID)
-			continue
+			removed = append(removed, entry.scopeID)
 		}
-		raw, err := agent.MarshalAssembledMessage(entry.segment.kind, entry.segment.text.String(), completion)
-		if err != nil {
-			return err
-		}
-		if err := persist(raw); err != nil {
-			return err
-		}
-		delete(b.segments, entry.scopeID)
 	}
-	return nil
+	return removed
 }
 
+// Reset drops the session output, including pending writes, and resets the first-seen order.
 func (b *GenerationBuffer) Reset() {
 	b.mu.Lock()
 	b.segments = nil
+	if b.output != nil {
+		b.output.ClearOwner(b.outputOwner)
+	}
 	b.nextOrder = 0
 	b.mu.Unlock()
 }
 
-// MoveAllTo transfers buffered segments in first-seen order. The destination
-// assigns fresh order values so existing destination segments stay first.
+// MoveAllTo transfers pending writes and open scopes. Pending writes keep their original destinations.
+// Existing destination writes stay first. Open scopes receive fresh destination order values.
 func (b *GenerationBuffer) MoveAllTo(destination *GenerationBuffer) {
 	if destination == nil || destination == b {
 		return
 	}
+	b.writeMu.Lock()
+	defer b.writeMu.Unlock()
 	b.mu.Lock()
 	segments := b.orderedSegmentsLocked(func(*generationSegment) bool { return true })
+	output, owner := b.outputLocked()
 	b.segments = nil
 	b.nextOrder = 0
 	b.mu.Unlock()
+	destination.mu.Lock()
+	destinationOutput, destinationOwner := destination.outputLocked()
+	destination.mu.Unlock()
+	output.MoveOwnerTo(owner, destinationOutput, destinationOwner)
 	for _, entry := range segments {
 		destination.Append(entry.scopeID, entry.segment.kind, entry.segment.text.String(), JoinVerbatim)
 	}
 }
 
-// RetainedTextLenForTest returns how many bytes of text the buffer holds for
-// scopeID.
+// RetainedTextLenForTest counts open and pending text for scopeID.
 func (b *GenerationBuffer) RetainedTextLenForTest(scopeID string) int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	segment := b.segments[scopeID]
-	if segment == nil {
-		return 0
+	length := 0
+	if segment := b.segments[scopeID]; segment != nil {
+		length = segment.text.Len()
 	}
-	return segment.text.Len()
+	if b.output != nil {
+		length += b.output.RetainedBytes(b.outputOwner, scopeID)
+	}
+	return length
 }

@@ -1,21 +1,23 @@
+import type { NativeCompactionHold } from '../helpers/manualCompaction'
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { expect } from '@playwright/test'
 import { expectCompactionNotice } from '../helpers/compaction'
+import { requestNativeCompaction } from '../helpers/manualCompaction'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { uniqueMarker } from '../helpers/shellArguments'
-import { sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { waitForAgentIdle } from '../helpers/ui'
 import { deepseekHarnessModelContextText } from './modelContextText'
 
 /** Run the native summarizer and prove that its checkpoint replaces the older model context. */
-export async function exerciseDeepseekHarnessCompaction(context: ManagedNativeScenarioContext): Promise<void> {
+export async function exerciseDeepseekHarnessCompaction(context: ManagedNativeScenarioContext, hold: NativeCompactionHold = {}): Promise<void> {
   const marker = uniqueMarker()
   const old = `DEEPSEEKOLD${marker}`
   for (let index = 0; index < 6; index++) {
     await sendNativeAnswer(context, index === 0 ? `Keep ${old} in the older task.` : `Prepare native compaction turn ${index}.`, `The native preparation turn ${index} completed.`)
   }
   const summary = `DEEPSEEKSUMMARY${marker}`
-  const start = await context.modelScript.queue({ text: summary })
-  await sendMessage(context.page, '/compact')
+  const start = await context.modelScript.queue({ text: summary, ...(hold.summaryGate !== undefined ? { gate: hold.summaryGate } : {}) })
+  await requestNativeCompaction(context, hold)
   await context.modelScript.waitForSteps(start + 1)
   await waitForAgentIdle(context.page)
   const request = await context.modelScript.requestAt(start)

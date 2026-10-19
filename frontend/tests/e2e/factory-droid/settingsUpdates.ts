@@ -1,24 +1,16 @@
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
-import type { DroidNativeSettingsUpdate } from './settingsFrame'
-import { decompressContentToString } from '../../../src/lib/decompress'
-import { readAllAgentMessages } from '../helpers/nativeMessages'
-import { selectedAgentTabId } from '../helpers/nativeScenario'
+import type { DroidNativeSettingsSnapshot } from './settingsSnapshot'
+import { readFileSync } from 'node:fs'
+import { isAbsolute, join, win32 } from 'node:path'
+import { AgentProvider, AgentStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { sameAgentOwnership } from '../helpers/nativeMessages'
+import { nativeAgentById, selectedAgentTabId } from '../helpers/nativeScenario'
 import { retryUntilPass } from '../helpers/retryUntilPass'
-import { parseDroidNativeSettingsUpdates } from './settingsFrame'
+import { isFileNameComponent } from '../helpers/runDirectory'
+import { parseDroidNativeSettingsSnapshot } from './settingsSnapshot'
 
-/** The prefix of the request ID of a settings change that LeapMux sends. Droid copies the ID into its settings event. */
-const LEAPMUX_REQUEST_PREFIX = 'leapmux-'
-
-/** The settings fields of a Droid settings event that a check can require. */
-export type DroidSettings = Partial<Omit<DroidNativeSettingsUpdate, 'requestId'>>
-
-/**
- * Which settings event must state the expected settings:
- * - `leapmux` (the default): any event that answers a settings request of LeapMux.
- * - `latest`: the last event that states each expected field, whatever sent the request. Use it for a change that
- *   Droid makes by itself, such as the end of Spec mode after a plan approval.
- */
-export type DroidSettingsEvent = 'leapmux' | 'latest'
+/** The effective native settings that a check requires. */
+export type DroidSettings = Partial<DroidNativeSettingsSnapshot>
 
 /** Return the fields of `expected`, and refuse an expectation that states none. */
 function expectedSettingKeys(expected: DroidSettings): (keyof DroidSettings)[] {
@@ -28,43 +20,51 @@ function expectedSettingKeys(expected: DroidSettings): (keyof DroidSettings)[] {
   return keys
 }
 
-/** Return whether `updates` hold the expected settings in the event that `event` selects. Pure, for a unit test. */
-export function droidSettingsMatch(updates: readonly DroidNativeSettingsUpdate[], expected: DroidSettings, event: DroidSettingsEvent = 'leapmux'): boolean {
+/** Check each requested field against the current native snapshot. */
+export function droidSettingsMatch(snapshot: DroidNativeSettingsSnapshot, expected: DroidSettings): boolean {
   const keys = expectedSettingKeys(expected)
-  const holds = (update: DroidNativeSettingsUpdate) => keys.every(key => update[key] === expected[key])
-  if (event === 'leapmux')
-    return updates.some(update => update.requestId?.startsWith(LEAPMUX_REQUEST_PREFIX) === true && holds(update))
-  const latest = updates.filter(update => keys.every(key => update[key] !== undefined)).at(-1)
-  return latest !== undefined && holds(latest)
+  return keys.every(key => snapshot[key] === expected[key])
 }
 
 /**
- * Read every settings event that the installed Droid reported to the Worker for one agent, oldest first.
- * The read takes every page of the stored messages, so a long transcript loses no event.
+ * Read Droid's own settings file for the exact current session.
+ * The Worker consumes settings_updated frames, so the transcript cannot prove the effective settings.
+ * Ownership must remain unchanged across this file read.
  */
-export async function readDroidNativeSettings(context: Pick<ManagedNativeScenarioContext, 'leapmuxServer'>, agentId: string): Promise<DroidNativeSettingsUpdate[]> {
-  const messages = await readAllAgentMessages(context, agentId)
-  return messages.flatMap((message) => {
-    const raw = decompressContentToString(message.content, message.contentCompression)
-    return raw ? parseDroidNativeSettingsUpdates(raw) : []
-  })
+export async function readDroidNativeSettings(context: Pick<ManagedNativeScenarioContext, 'leapmuxServer'>, agentId: string): Promise<DroidNativeSettingsSnapshot> {
+  const factoryHome = context.leapmuxServer.agentEnv?.FACTORY_HOME_OVERRIDE
+  if (!factoryHome || !isAbsolute(factoryHome))
+    throw new Error('The Droid settings check requires an isolated absolute Factory home.')
+  const before = await nativeAgentById(context, agentId)
+  if (!before || before.id !== agentId || before.workerId !== context.leapmuxServer.workerId
+    || before.agentProvider !== AgentProvider.DROID || before.status !== AgentStatus.ACTIVE
+    || !before.agentSessionId.trim() || !isFileNameComponent(before.agentSessionId)
+    || (!isAbsolute(before.workingDir) && !win32.isAbsolute(before.workingDir))) {
+    throw new Error('The Droid settings read requires an active agent with an exact native session and absolute working directory.')
+  }
+  // Droid uses this directory spelling on both platforms. The native session file supplies the values.
+  const cwd = before.workingDir.replace(/[/\\]/g, '-').replaceAll(':', '')
+  const path = join(factoryHome, '.factory', 'sessions', cwd, `${before.agentSessionId}.settings.json`)
+  const snapshot = parseDroidNativeSettingsSnapshot(readFileSync(path, 'utf8'))
+  const after = await nativeAgentById(context, agentId)
+  if (!after || after.status !== AgentStatus.ACTIVE || !sameAgentOwnership(before, after))
+    throw new Error('The Droid session or agent ownership changed during the native settings read.')
+  return snapshot
 }
 
 /**
- * Wait until Droid reports the expected settings for the agent on screen, in the event that `event` selects.
- * A failure prints the settings events that Droid reported.
+ * Wait until the selected native session stores the expected settings.
+ * A failure reports the last native snapshot or read error.
  */
 export async function expectDroidNativeSettings(
   context: Pick<ManagedNativeScenarioContext, 'page' | 'leapmuxServer'>,
   expected: DroidSettings,
-  event: DroidSettingsEvent = 'leapmux',
 ): Promise<void> {
   expectedSettingKeys(expected)
   const agentId = await selectedAgentTabId(context.page)
-  // The failure states the last error: the failed Worker read, or the settings events that the last read returned.
   await retryUntilPass(async () => {
-    const updates = await readDroidNativeSettings(context, agentId)
-    if (!droidSettingsMatch(updates, expected, event))
-      throw new Error(`Droid reported no ${event} settings event that states ${JSON.stringify(expected)}: it reported ${JSON.stringify(updates)}.`)
+    const snapshot = await readDroidNativeSettings(context, agentId)
+    if (!droidSettingsMatch(snapshot, expected))
+      throw new Error(`Droid's native settings do not match ${JSON.stringify(expected)}: the file states ${JSON.stringify(snapshot)}.`)
   })
 }

@@ -41,6 +41,7 @@ import {
   parseScenarioSpec,
   resolveStepCaptures,
   selectScenarioID,
+  stopReasonToken,
   systemText,
   textChunks,
   validateGateName,
@@ -836,6 +837,7 @@ async function writeModelResponse(response: ServerResponse, protocol: MockModelP
 }
 
 async function writeOpenAIChatCompletion(response: ServerResponse, requestBody: unknown, step: MockModelStep, id: string, stream: ModelStream): Promise<void> {
+  const stopReason = step.stopReason === undefined ? undefined : stopReasonToken('openai-chat-completions', step.stopReason)
   const model = modelFrom(requestBody)
   const toolCalls = step.toolCalls?.length
     ? step.toolCalls.map((tool, index) => ({
@@ -861,7 +863,7 @@ async function writeOpenAIChatCompletion(response: ServerResponse, requestBody: 
       object: 'chat.completion',
       created: 1,
       model,
-      choices: [{ index: 0, message, finish_reason: toolCalls ? 'tool_calls' : 'stop' }],
+      choices: [{ index: 0, message, finish_reason: stopReason ?? (toolCalls ? 'tool_calls' : 'stop') }],
       usage: usage('prompt_tokens', 'completion_tokens', step),
     }, step)
     return
@@ -897,7 +899,7 @@ async function writeOpenAIChatCompletion(response: ServerResponse, requestBody: 
     object: 'chat.completion.chunk',
     created: 1,
     model,
-    choices: [{ index: 0, delta: {}, finish_reason: toolCalls ? 'tool_calls' : 'stop' }],
+    choices: [{ index: 0, delta: {}, finish_reason: stopReason ?? (toolCalls ? 'tool_calls' : 'stop') }],
   })
   writeSSEData(response, {
     id,
@@ -918,10 +920,17 @@ async function writeOpenAIChatCompletion(response: ServerResponse, requestBody: 
  * already held the step passes nothing.
  */
 async function writeOpenAIResponse(response: ServerResponse, requestBody: unknown, step: MockModelStep, id: string, stream: ModelStream, hold?: () => Promise<boolean>): Promise<void> {
+  const stopReason = step.stopReason === undefined ? undefined : stopReasonToken('openai-responses', step.stopReason)
   const output = responseItems(step, id)
   const model = modelFrom(requestBody)
   const responseBase = { id, object: 'response', created_at: 1, model, tools: [] }
-  const completed = { ...responseBase, status: 'completed', output, usage: responseUsage(step) }
+  const completed = {
+    ...responseBase,
+    status: stopReason === undefined ? 'completed' : 'incomplete',
+    ...(stopReason === undefined ? {} : { incomplete_details: { reason: stopReason } }),
+    output,
+    usage: responseUsage(step),
+  }
   if (!streamRequested(requestBody)) {
     if (hold && !await hold())
       return
@@ -988,7 +997,7 @@ async function writeOpenAIResponse(response: ServerResponse, requestBody: unknow
     }
     emit({ type: 'response.output_item.done', output_index: outputIndex, item })
   }
-  emit({ type: 'response.completed', response: completed })
+  emit({ type: stopReason === undefined ? 'response.completed' : 'response.incomplete', response: completed })
   response.end()
 }
 
@@ -1058,7 +1067,9 @@ async function writeAnthropicMessage(response: ServerResponse, requestBody: unkn
       throw new Error(`Anthropic Messages cannot send a tool namespace for ${tool.name}.`)
     content.push({ type: 'tool_use', id: tool.id, name: tool.name, input: tool.arguments })
   }
-  const stopReason = step.toolCalls?.length ? 'tool_use' : 'end_turn'
+  const stopReason = step.stopReason === undefined
+    ? (step.toolCalls?.length ? 'tool_use' : 'end_turn')
+    : stopReasonToken('anthropic-messages', step.stopReason)
   const inputTokens = step.usage?.inputTokens ?? 1
   const outputTokens = step.usage?.outputTokens ?? 1
   if (!streamRequested(requestBody)) {
@@ -1142,19 +1153,38 @@ function writeModelError(response: ServerResponse, protocol: MockModelProtocol, 
 }
 
 /**
- * Fail a Chat Completions stream after it started: one partial text delta, then
- * the error payload, then the end of the stream. The delta is what makes the
- * failure a mid-stream one. qodercli 1.1.65 replaces an error that comes before
- * any delta with its own generic text, as it does for an HTTP status error.
+ * Start the native stream, send one text delta, and end it with an error.
+ * qodercli 1.1.65 replaces an error before any delta with its own generic text.
  */
 function writeMidStreamModelError(response: ServerResponse, protocol: MockModelProtocol, requestBody: unknown, delivered: MockModelDeliveredError): void {
-  if (protocol !== 'openai-chat-completions')
-    throw new Error(`The mock sends a mid-stream model error on the OpenAI Chat Completions route only, not on ${protocol}.`)
+  if (protocol !== 'openai-chat-completions' && protocol !== 'openai-responses' && protocol !== 'anthropic-messages')
+    throw new Error(`The mock cannot send a mid-stream model error on ${protocol}.`)
   if (!streamRequested(requestBody))
     throw new Error('The mock sends a mid-stream model error only to a request that asks for a stream.')
   writeSSEHeaders(response)
+  const id = 'mock-mid-stream-error'
+  if (protocol === 'openai-responses') {
+    const nativeResponse = { id, object: 'response', created_at: 1, model: modelFrom(requestBody), status: 'in_progress', output: [] }
+    const item = { id: `${id}-message`, type: 'message', role: 'assistant', status: 'in_progress', content: [] }
+    const position = { output_index: 0, item_id: item.id, content_index: 0 }
+    writeSSEEvent(response, { type: 'response.created', sequence_number: 0, response: nativeResponse })
+    writeSSEEvent(response, { type: 'response.output_item.added', sequence_number: 1, output_index: 0, item })
+    writeSSEEvent(response, { type: 'response.content_part.added', sequence_number: 2, ...position, part: { type: 'output_text', text: '', annotations: [] } })
+    writeSSEEvent(response, { type: 'response.output_text.delta', sequence_number: 3, ...position, delta: 'partial ' })
+    writeSSEEvent(response, { type: 'response.failed', sequence_number: 4, response: { ...nativeResponse, status: 'failed', error: delivered } })
+    response.end()
+    return
+  }
+  if (protocol === 'anthropic-messages') {
+    writeSSEEvent(response, { type: 'message_start', message: { id, type: 'message', role: 'assistant', model: modelFrom(requestBody), content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 1, output_tokens: 0 } } })
+    writeSSEEvent(response, { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } })
+    writeSSEEvent(response, { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'partial ' } })
+    writeSSEEvent(response, { type: 'error', error: { type: delivered.code, message: delivered.message } })
+    response.end()
+    return
+  }
   writeSSEData(response, {
-    id: 'mock-mid-stream-error',
+    id,
     object: 'chat.completion.chunk',
     created: 1,
     model: modelFrom(requestBody),

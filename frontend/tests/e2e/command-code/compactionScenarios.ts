@@ -1,13 +1,15 @@
+import type { NativeCompactionHold } from '../helpers/manualCompaction'
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { expect } from '@playwright/test'
 import { expectCompactionNotice } from '../helpers/compaction'
+import { requestNativeCompaction } from '../helpers/manualCompaction'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
 import { nativeModelContextText } from '../helpers/nativeScenario'
 import { uniqueMarker } from '../helpers/shellArguments'
-import { sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { waitForAgentIdle } from '../helpers/ui'
 
 /** Supply real conversation context before the native summarizer runs. */
-export async function exerciseCommandCodeCompaction(context: ManagedNativeScenarioContext): Promise<void> {
+export async function exerciseCommandCodeCompaction(context: ManagedNativeScenarioContext, hold: NativeCompactionHold = {}): Promise<void> {
   const marker = uniqueMarker()
   const old = `COMMANDCODEOLD${marker}`
   for (let index = 0; index < 6; index++) {
@@ -17,8 +19,8 @@ export async function exerciseCommandCodeCompaction(context: ManagedNativeScenar
     await sendNativeAnswer(context, index === 0 ? `Keep ${old} in the old task.` : recent ? `Recent native task ${'padding '.repeat(18000)}` : `Prepare native compaction turn ${index}.`, `The native preparation turn ${index} completed.`, { entry: recent ? 'insert' : 'type' })
   }
   const summary = `COMMANDCODESUMMARY${marker}`
-  const start = await context.modelScript.queue({ text: summary })
-  await sendMessage(context.page, '/compact')
+  const start = await context.modelScript.queue({ text: summary, ...(hold.summaryGate !== undefined ? { gate: hold.summaryGate } : {}) })
+  await requestNativeCompaction(context, hold)
   await context.modelScript.waitForSteps(start + 1)
   await waitForAgentIdle(context.page)
   expect(nativeModelContextText(await context.modelScript.requestAt(start))).toContain(old)

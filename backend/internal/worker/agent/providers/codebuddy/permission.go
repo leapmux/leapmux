@@ -40,7 +40,6 @@ func (a *Agent) handleInboundControlRequest(raw []byte) {
 	if json.Unmarshal(envelope.Request, &request) != nil {
 		return
 	}
-	a.persistRaw(raw)
 	record := &nativeControl{payload: append([]byte(nil), raw...), publicationDone: make(chan struct{})}
 	a.mu.Lock()
 	_, ownTool := a.turnToolCalls[request.ToolUseID]

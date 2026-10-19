@@ -122,13 +122,26 @@ func (a *Agent) registerChildSession(parentSessionID string, payload []byte) str
 func (a *Agent) outputTargetFor(sessionID string) (droidOutputTarget, bool) {
 	mainID := a.mainSessionID()
 	if sessionID == "" || sessionID == mainID {
-		return droidOutputTarget{sink: a.sink, state: a.outputState(mainID)}, true
+		sink := a.orderedSink()
+		state := a.outputState(mainID)
+		state.outputQueue = sink.OutputQueue()
+		return droidOutputTarget{sink: sink, state: state}, true
 	}
 	childID := a.childAgents[sessionID]
 	if childID == "" {
 		return droidOutputTarget{}, false
 	}
-	return droidOutputTarget{sink: a.sink.ChildSink(childID), state: a.outputState(sessionID), childSessionID: sessionID}, true
+	state := a.outputState(sessionID)
+	sink := a.sink.ChildSink(childID)
+	queue := agent.OutputQueueFor(sink)
+	if queue == nil {
+		queue = state.outputQueue
+		if queue == nil {
+			queue = &agent.OutputQueue{}
+		}
+	}
+	state.outputQueue = queue
+	return droidOutputTarget{sink: agent.NewOrderedProviderServices(queue, sink), state: state, childSessionID: sessionID}, true
 }
 
 // outputState keeps tool and text spans separate for each native session.
@@ -152,9 +165,8 @@ func (a *Agent) closeChildSession(sessionID string, status bgtask.Status) {
 	providerkit.LogRegistryRefusal("droid", "finish child", a.sink.CloseBackgroundTask(sessionID, status))
 	if state := a.outputStates[sessionID]; state != nil {
 		state.ended = true
-		state.messageSpans = nil
 		state.tools = nil
-		if len(state.pending) == 0 {
+		if !state.hasPendingOutput() && !state.turnErrorSeen && !state.compactionLive {
 			delete(a.outputStates, sessionID)
 		}
 	}

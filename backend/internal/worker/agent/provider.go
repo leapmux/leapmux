@@ -22,12 +22,41 @@ const (
 )
 
 type NotificationClassification struct {
-	Kind NotificationKind
-	Key  string
+	kind NotificationKind
+	key  string
 }
 
 func (c NotificationClassification) Consolidatable() bool {
-	return c.Kind != NotificationKindNone
+	return c.kind != NotificationKindNone
+}
+
+// Kind returns the notification reduction kind.
+func (c NotificationClassification) Kind() NotificationKind { return c.kind }
+
+// Key returns the provider key. Only provider-scoped notifications have a key.
+func (c NotificationClassification) Key() string { return c.key }
+
+// StatusNotification selects the transient status slot.
+func StatusNotification() NotificationClassification {
+	return NotificationClassification{kind: NotificationKindStatus}
+}
+
+// APIRetryNotification selects the API retry slot.
+func APIRetryNotification() NotificationClassification {
+	return NotificationClassification{kind: NotificationKindAPIRetry}
+}
+
+// CompactionBoundaryNotification ends the transient status and retains the boundary.
+func CompactionBoundaryNotification() NotificationClassification {
+	return NotificationClassification{kind: NotificationKindCompactionBoundary}
+}
+
+// ProviderScopedNotification keeps the latest notice for a nonempty provider key.
+func ProviderScopedNotification(key string) NotificationClassification {
+	if key == "" {
+		return NotificationClassification{}
+	}
+	return NotificationClassification{kind: NotificationKindProviderScoped, key: key}
 }
 
 type PlanModeControlKind int
@@ -56,15 +85,9 @@ type Provider interface {
 	// ResolveProviderData combines native supplemental fields without changing either source.
 	ResolveProviderData(MessageContent) []byte
 	// Classify categorizes a persisted notification frame for consolidation
-	// in consolidateNotificationThread. Frames the plugin doesn't recognize
+	// in reduceNotificationThread. Frames the plugin does not recognize
 	// return NotificationClassification{} (Consolidatable() == false).
 	Classify(raw json.RawMessage) NotificationClassification
-	// Merge combines two notifications previously classified into the same
-	// group. The default keeps the newer entry verbatim; providers override
-	// when they want a richer reduction (e.g. accumulating retry counts).
-	// Merge combines the previous left-fold result with the next original notification.
-	// The service retains the original group even when the result has another native shape.
-	Merge(class NotificationClassification, previous, next json.RawMessage) (json.RawMessage, error)
 	// IsInterrupt reports whether raw input contains a provider interrupt
 	// frame. The normal frontend path uses the InterruptAgent RPC instead.
 	//
@@ -265,10 +288,6 @@ func (ProviderDefaults) ResolveProviderData(content MessageContent) []byte {
 
 func (ProviderDefaults) Classify(json.RawMessage) NotificationClassification {
 	return NotificationClassification{}
-}
-
-func (ProviderDefaults) Merge(class NotificationClassification, previous, next json.RawMessage) (json.RawMessage, error) {
-	return next, nil
 }
 
 func (ProviderDefaults) IsInterrupt(string) bool { return false }

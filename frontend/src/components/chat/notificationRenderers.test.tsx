@@ -10,6 +10,17 @@ import { clearSettingsLabelCache, updateSettingsLabelCache } from '~/lib/setting
 import { elementText, renderDivider, renderThreadElement, renderThreadGlyph, renderThreadHasIcon, renderThreadText } from '~/test-support/messageRenderProbes'
 import { renderNotificationBlocks } from './notificationRenderers'
 
+describe('renderNotificationBlocks loading state', () => {
+  it.each([true, false])('marks a divider only while loading=%s', (loading) => {
+    const view = render(() => renderNotificationBlocks([{ kind: 'divider', text: 'Compaction', loading }]))
+    const divider = view.getByTestId('notification-divider')
+    if (loading)
+      expect(divider).toHaveAttribute('data-loading', 'true')
+    else
+      expect(divider).not.toHaveAttribute('data-loading')
+  })
+})
+
 // Register the Claude and Codex plugins before testing their notification readers.
 // Each fixture passes its actual provider to the production rendering path.
 await import('./providers/claude/plugin')
@@ -71,9 +82,9 @@ describe('the notification thread: compaction and context_cleared rendering', ()
     expect(plain.container.querySelector('[data-testid="notification-divider"]')).toBeNull()
   })
 
-  it('compacting spinner: shows spinner', () => {
+  it('draws no spinner for an obsolete stored compacting status', () => {
     const messages = [compactingStatusMsg]
-    expect(renderedContains(messages, 'Compacting context...')).toBe(true)
+    expect(renderedContains(messages, 'Compacting context...')).toBe(false)
   })
 
   it('plan_execution renders together with compaction', () => {
@@ -309,10 +320,10 @@ describe('compaction token formatting: pre → post', () => {
     expect(renderText([microcompactMsg({})])).toBe('Context microcompacted')
   })
 
-  it('renders a single compacting status as a spinner divider with the icon', () => {
+  it('draws no divider for an obsolete stored compacting status', () => {
     const msg = { type: 'system', subtype: 'status', status: 'compacting' }
-    expect(renderHasIcon([msg])).toBe(true)
-    expect(renderText([msg])).toBe('Compacting context...')
+    expect(renderHasIcon([msg])).toBe(false)
+    expect(renderText([msg])).toBe('')
   })
 })
 

@@ -2,6 +2,7 @@ import type { NativeScenarioContext } from '../helpers/nativeScenario'
 import { expect } from '@playwright/test'
 import { compactionNoticeRow, expectCompactionNotice } from '../helpers/compaction'
 import { CLAUDE_SUMMARIZER_PATTERN } from '../helpers/manualCompaction'
+import { expectNoUnrenderedRow } from '../helpers/nativeConversation'
 import { sendMessage, visibleOnly, waitForAgentIdle } from '../helpers/ui'
 
 /** Exercise the actual native compaction path and preserve its context assertions. */
@@ -62,5 +63,5 @@ export async function exerciseFailedManualCompaction(context: NativeScenarioCont
   expect(status.requests.some(request => request.fallback)).toBe(true)
   await expect(visibleOnly(page.getByText('Turn failed', { exact: false })).first()).toBeVisible()
   await expect(compactionNoticeRow(page)).toHaveCount(0)
-  await expect(visibleOnly(page.getByText('LeapMux has no display for this row', { exact: true }))).toHaveCount(0)
+  await expectNoUnrenderedRow(page)
 }

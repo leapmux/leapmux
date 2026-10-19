@@ -19,8 +19,16 @@ type droidProvider struct {
 	agent.ProviderDefaults
 }
 
-// Classify groups the notices that repeat.
+// Classify identifies compaction boundaries and folds retry notices. It keeps the latest MCP failure set.
 func (droidProvider) Classify(raw json.RawMessage) agent.NotificationClassification {
+	switch providerkit.StringField(raw, "type") {
+	case contracts.DroidNotificationMcpStatusChanged:
+		return agent.ProviderScopedNotification("droid:mcp_status")
+	case contracts.DroidNotificationLlmRetry:
+		return agent.APIRetryNotification()
+	case contracts.DroidNotificationSessionCompacted:
+		return agent.CompactionBoundaryNotification()
+	}
 	return agent.NotificationClassification{}
 }
 

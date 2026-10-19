@@ -123,6 +123,9 @@ func (a *Agent) startNativeSubagent(raw []byte, event copilotEvent) {
 
 // finishNativeSubagent closes one subagent's registry row and its transcript state.
 func (a *Agent) finishNativeSubagent(raw []byte, event copilotEvent) {
+	if event.AgentID != "" {
+		a.resetNativeRetry(event.AgentID)
+	}
 	var finished copilotSubagentEvent
 	decodeError := json.Unmarshal(event.Data, &finished)
 	child := a.children[event.AgentID]
@@ -145,6 +148,7 @@ func (a *Agent) finishNativeSubagent(raw []byte, event copilotEvent) {
 		a.persistNativeFrame(raw, agent.SpanInfo{})
 		return
 	}
+	a.resetNativeRetry(child.nativeAgentID)
 	delete(a.children, child.nativeAgentID)
 	a.persistNativeFrameTo(child.sink, raw, agent.SpanInfo{})
 	providerkit.LogRegistryRefusal("copilot", "close subagent", child.owner.CloseBackgroundTask(child.nativeAgentID, status))
@@ -175,6 +179,9 @@ func (a *Agent) childForSpawnToolCall(toolCallID string) *copilotNativeChild {
 // A session replacement and a process stop both reach it, so each child leaves
 // its registry row stopped rather than running forever.
 func (a *Agent) clearNativeChildren() {
+	for nativeAgentID := range a.retries {
+		a.resetNativeRetry(nativeAgentID)
+	}
 	// A session that goes away takes every unfinished segment with it, so the text
 	// each transcript had already streamed is stored before its sink is dropped.
 	a.closeStreamedNativeText(agent.MessageCompletionInterrupted)

@@ -15,55 +15,54 @@ const (
 	droidOutputTurnEnd
 )
 
-// droidPendingOutput retains a record across a failed write.
-// The record keeps its original completion and spans. Its publication owner also stays unchanged.
-type droidPendingOutput struct {
-	record agent.CapturedTranscript
-	kind   droidOutputKind
+// orderedSink shares one queue between transcript rows, steer reports, and turn release.
+func (a *Agent) orderedSink() agent.ProviderServices {
+	queue := agent.OutputQueueFor(a.sink)
+	if queue == nil {
+		queue = &a.outputQueue
+	}
+	return agent.NewOrderedProviderServices(queue, a.sink)
 }
 
-func (output droidPendingOutput) persist() error {
-	switch output.kind {
+// enqueueOutput gives each immutable row to the shared queue before another native event can run.
+// The target supplies its own sink and queue, including for a child transcript.
+func (a *Agent) enqueueOutput(target droidOutputTarget, content agent.MessageContent, span agent.SpanInfo, kind droidOutputKind) {
+	var err error
+	switch kind {
 	case droidOutputNotification:
-		_, err := output.record.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT)
-		return err
+		_, err = target.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content)
 	case droidOutputTurnEnd:
-		return output.record.PersistTurnEnd()
+		err = target.sink.PersistTurnEnd(content, span)
 	default:
-		return output.record.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT)
+		err = target.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, span)
+	}
+	if err != nil {
+		slog.Error("droid: persist transcript failed", "agent_id", a.AgentID(), "child_session_id", target.childSessionID, "error", err)
 	}
 }
 
-// enqueueOutput preserves native order without making lifecycle completion depend on storage availability.
-// Event dispatch holds dispatchMu throughout each queue operation.
-func (a *Agent) enqueueOutput(target droidOutputTarget, content agent.MessageContent, span agent.SpanInfo, kind droidOutputKind) {
-	target.state.pending = append(target.state.pending, droidPendingOutput{
-		record: agent.CaptureTranscript(target.sink, content, span), kind: kind,
-	})
-	a.flushPendingOutput(target)
+func (state *droidOutputState) hasPendingOutput() bool {
+	return state.outputQueue != nil && state.outputQueue.HasPending()
 }
 
 func (a *Agent) flushPendingOutput(target droidOutputTarget) {
-	for len(target.state.pending) > 0 {
-		if err := target.state.pending[0].persist(); err != nil {
-			slog.Error("droid: persist transcript failed", "agent_id", a.AgentID(), "child_session_id", target.childSessionID, "error", err)
-			return
-		}
-		target.state.pending[0] = droidPendingOutput{}
-		target.state.pending = target.state.pending[1:]
+	if target.state.outputQueue == nil {
+		return
 	}
-	target.state.pending = nil
+	if err := target.state.outputQueue.Flush(); err != nil {
+		slog.Error("droid: persist pending output failed", "agent_id", a.AgentID(), "child_session_id", target.childSessionID, "error", err)
+	}
 }
 
-// releaseEndedOutput removes a finished child's state only after its last retained write succeeds.
+// releaseEndedOutput retains a finished child's state until its pending writes and live notifications resolve.
 func (a *Agent) releaseEndedOutput(target droidOutputTarget) {
-	if target.childSessionID != "" && target.state.ended && len(target.state.pending) == 0 {
+	if target.childSessionID != "" && target.state.ended && !target.state.hasPendingOutput() && !target.state.turnErrorSeen && !target.state.compactionLive {
 		delete(a.outputStates, target.childSessionID)
 	}
 }
 
-// finishOutput makes one final persistence attempt after every native output reader stops.
-// Captured records keep their original completion even when process exit supplies a different one.
+// finishOutput flushes retained records after every native output reader stops.
+// Each record keeps its original completion and publication owner.
 func (a *Agent) finishOutput(completion agent.MessageCompletion) {
 	a.dispatchMu.Lock()
 	defer a.dispatchMu.Unlock()
@@ -73,6 +72,7 @@ func (a *Agent) finishOutput(completion agent.MessageCompletion) {
 			target = droidOutputTarget{state: state, childSessionID: sessionID}
 		} else if !a.IsDiscardingOutput() {
 			a.persistRemainingGeneration(target, completion)
+			a.flushPendingToolCalls(target)
 		}
 		a.flushPendingOutput(target)
 		a.releaseEndedOutput(target)

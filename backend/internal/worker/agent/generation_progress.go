@@ -448,7 +448,12 @@ func (s modelProgressResetChildren) PersistChildTurnEnd(childAgentID string, con
 }
 
 func NewModelProgressResetSink(inner ProviderServices) ProviderServices {
-	return providerServices{
+	queue := OutputQueueFor(inner)
+	if ordered, ok := inner.(*orderedProviderServices); ok {
+		inner = ordered.ProviderServices
+	}
+	decorated := providerServices{
+		OutputEffectServices: inner, SteerEchoServices: inner,
 		TranscriptServices: modelProgressResetTranscript{
 			TranscriptServices: inner,
 			progress:           inner,
@@ -467,4 +472,5 @@ func NewModelProgressResetSink(inner ProviderServices) ProviderServices {
 		ChildServices:          modelProgressResetChildren{ChildServices: inner},
 		BackgroundTaskServices: inner,
 	}
+	return NewOrderedProviderServices(queue, decorated)
 }

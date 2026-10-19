@@ -39,11 +39,11 @@ describe('classifyAmpMessage', () => {
     expect(classify(assistant([{ type: 'thinking', thinking: '**Planning**' }]))).toEqual({ kind: 'assistant_thinking' })
   })
 
-  it('hides an assistant row that states nothing', () => {
-    expect(classify(assistant([{ type: 'text', text: '  ' }]))).toEqual({ kind: 'hidden' })
-    expect(classify(assistant([{ type: 'thinking', thinking: '' }]))).toEqual({ kind: 'hidden' })
-    expect(classify(assistant([{ type: 'redacted_thinking', data: 'abc' }]))).toEqual({ kind: 'hidden' })
-    expect(classify(assistant([]))).toEqual({ kind: 'hidden' })
+  it('classifies a stored empty assistant row as unknown', () => {
+    expect(classify(assistant([{ type: 'text', text: '  ' }]))).toEqual({ kind: 'unknown' })
+    expect(classify(assistant([{ type: 'thinking', thinking: '' }]))).toEqual({ kind: 'unknown' })
+    expect(classify(assistant([{ type: 'redacted_thinking', data: 'abc' }]))).toEqual({ kind: 'unknown' })
+    expect(classify(assistant([]))).toEqual({ kind: 'unknown' })
   })
 
   it('reads a call before the text of a row the worker kept whole', () => {
@@ -56,15 +56,15 @@ describe('classifyAmpMessage', () => {
     expect(classify(assistant([{ type: 'image', source: {} }]))).toEqual({ kind: 'unknown' })
   })
 
-  it('hides a user row that is not a tool result', () => {
-    expect(classify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'echo' }] } })).toEqual({ kind: 'hidden' })
-    expect(classify({ type: 'user', message: { role: 'user', content: 'a string' } })).toEqual({ kind: 'hidden' })
+  it('draws a non-tool user row as unknown', () => {
+    expect(classify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'echo' }] } })).toEqual({ kind: 'unknown' })
+    expect(classify({ type: 'user', message: { role: 'user', content: 'a string' } })).toEqual({ kind: 'unknown' })
   })
 
   // A block with no call id states no call, so it owns no span and its row reads by
   // the blocks that remain.
   it('reads a call block with no id as no call', () => {
-    expect(classify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', content: 'x' }] } })).toEqual({ kind: 'hidden' })
+    expect(classify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', content: 'x' }] } })).toEqual({ kind: 'unknown' })
     expect(classify(assistant([{ type: 'tool_use', name: 'shell_command', input: {} }, { type: 'text', text: 'Running.' }]))).toEqual({ kind: 'assistant_text' })
   })
 

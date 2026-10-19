@@ -60,6 +60,8 @@ export const ControlDecisionFooter: Component<{
   /** The permission pill group, or omit it when no preset is available. */
   permissionPill?: Accessor<ControlPermissionPill | undefined>
   additionalActions?: Accessor<ControlDecisionAction[]>
+  /** Separate decisions keep their own labels and do not share a permission scope. */
+  independentActions?: Accessor<ControlDecisionAction[]>
   error?: string
   /** Additional request controls before the decisions. */
   leading?: JSX.Element
@@ -100,6 +102,22 @@ export const ControlDecisionFooter: Component<{
       )}
       primary={(
         <>
+          <Show when={!props.hasEditorContent}>
+            <Index each={props.independentActions?.() ?? []}>
+              {decision => (
+                <button
+                  type="button"
+                  class={actionButtonClass(decision().destructive)}
+                  disabled={decision().disabled}
+                  onMouseDown={keepFocusOnPress}
+                  onClick={() => invokeControlAction(decision().onSelect)}
+                  data-testid={decision().testId}
+                >
+                  {decision().label}
+                </button>
+              )}
+            </Index>
+          </Show>
           <Show when={!props.hasEditorContent && additionalActions().length}>
             <DropdownMenu trigger={moreHorizontalTrigger({ 'title': 'More actions', 'data-testid': 'control-more-actions' })} aria-label="More actions">
               <Index each={additionalActions()}>

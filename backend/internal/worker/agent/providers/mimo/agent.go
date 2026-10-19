@@ -129,10 +129,6 @@ type Agent struct {
 	// cannot start a turn, so the event takes effect only after acceptance.
 	manualFollowupSending bool
 	manualFollowupBusy    bool
-
-	// buffers holds each actor's streamed text until its part ends. The map is
-	// guarded by Mu; each buffer has its own lock.
-	buffers map[string]*providerkit.GenerationBuffer
 }
 
 var (
@@ -182,7 +178,6 @@ func newAgentState(sink agent.ProviderServices, rpc mimoRPC, workingDir string, 
 		spawnActors: map[string]string{},
 		workflows:   map[string]*mimoWorkflow{},
 		controls:    map[string]*mimoControl{},
-		buffers:     map[string]*providerkit.GenerationBuffer{},
 		mode:        mimoStaticModes[0].Id,
 	}
 	a.sink = agent.NewModelProgressResetSink(mimoRootProgressSink{ProviderServices: sink, owner: a})

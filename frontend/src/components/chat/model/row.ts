@@ -1,5 +1,5 @@
 import type { ControlResponseSummary } from './controlResponse'
-import type { AgentPrompt, TurnEnd } from './divider'
+import type { TurnEnd } from './divider'
 import type { NotificationThread } from './notification'
 import type { ToolCall } from './toolCall'
 
@@ -79,9 +79,7 @@ export type ChatRow
     | { kind: 'assistant-thinking', text: string }
     | { kind: 'assistant-plan', text: string }
     | { kind: 'user', text: string, attachments: UserMessageAttachment[] }
-    | { kind: 'agent-prompt', prompt: AgentPrompt }
     | { kind: 'plan-execution', text: string }
-    | { kind: 'compact-summary', summary: string }
     /**
      * A saved answer to a control request, already reduced to the words a reader
      * sees.

@@ -15,6 +15,29 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestSink_SteerEchoReportsRecordEachCallInOrder(t *testing.T) {
+	t.Parallel()
+	sink := &Sink{}
+	sink.ReportSteersEchoed(2)
+	sink.ReportSteersDropped(1)
+	sink.ReportSteersEchoed(3)
+	assert.Equal(t, []SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 2}, {Outcome: agent.SteerOutcomeDropped, Count: 1}, {Outcome: agent.SteerOutcomeEchoed, Count: 3}}, sink.SteerEchoReports())
+	assert.Equal(t, []string{"steer-echoed:2", "steer-dropped:1", "steer-echoed:3"}, sink.TurnLifecycle())
+	copy := sink.SteerEchoReports()
+	copy[0].Count = 100
+	assert.Equal(t, 2, sink.SteerEchoReports()[0].Count)
+}
+
+func TestModelProgressResetSinkForwardsSteerReports(t *testing.T) {
+	t.Parallel()
+	sink := &Sink{}
+	wrapped := agent.NewModelProgressResetSink(agent.NewProviderServices(sink))
+	wrapped.ReportSteersEchoed(1)
+	wrapped.ReportSteersDropped(2)
+	wrapped.ReportSteersUncertain(3)
+	assert.Equal(t, []SteerEchoReport{{Outcome: agent.SteerOutcomeEchoed, Count: 1}, {Outcome: agent.SteerOutcomeDropped, Count: 2}, {Outcome: agent.SteerOutcomeUncertain, Count: 3}}, sink.SteerEchoReports())
+}
+
 func TestCapturedTestSinkRejectsForeignOwnershipBeforeNativeKeyClaims(t *testing.T) {
 	t.Parallel()
 	for _, operation := range []string{"message", "divider"} {

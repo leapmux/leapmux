@@ -144,6 +144,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 // handshake performs the native startup steps in order:
 //   - Wait for the ready frame and negotiate the protocol.
 //   - Subscribe to subagent events.
+//   - Request delta-only root message updates.
 //   - Read the session and model catalog.
 func (a *Agent) handshake(timeout time.Duration) error {
 	ready, err := a.awaitReady(timeout)
@@ -166,6 +167,10 @@ func (a *Agent) handshake(timeout time.Duration) error {
 	// parent as text alone.
 	if _, err := a.sendCommand(CommandSetSubagentSubscription, map[string]any{"level": subagentSubscriptionEvents}, timeout); err != nil {
 		slog.Warn("omp subagent subscription failed; subagents get no transcript", "agent_id", a.AgentID(), "error", err)
+	}
+
+	if _, err := a.sendCommand(CommandSetEventFilter, map[string]any{"events": nil, "messageUpdates": "delta"}, timeout); err != nil {
+		slog.Warn("omp delta filter failed; root updates include full snapshots", "agent_id", a.AgentID(), "error", err)
 	}
 
 	state, err := a.sendCommand(CommandGetState, nil, timeout)

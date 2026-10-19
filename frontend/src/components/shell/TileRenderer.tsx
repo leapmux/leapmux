@@ -39,6 +39,7 @@ import { ChatImageViewer } from '~/components/chat/ChatImageViewer'
 import { getCachedMarkPreview, warmMarkPreview } from '~/components/chat/chatMarkPreview'
 import { ChatView } from '~/components/chat/ChatView'
 import { createMessageContextResolver } from '~/components/chat/messageContextResolver'
+import { pluginFor } from '~/components/chat/providers/registry'
 import { readWorkerImage } from '~/components/chat/readWorkerImage'
 import { agentProviderLabel } from '~/components/common/AgentProviderIcon'
 import { ConfirmDialog } from '~/components/common/ConfirmDialog'
@@ -909,6 +910,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
             const goalSurface = createMemo<GoalSurface | undefined>(() => {
               const rootId = bgRootFor(agentId)
               const surface: GoalSurface = {
+                ...(pluginFor(view.getAgentTab(rootId)?.agentProvider)?.session?.goalStatusUnconfirmed ? { statusUnconfirmed: true as const } : {}),
                 // `current` is optional without undefined; the goal store
                 // answering undefined means the agent has none.
                 ...optionalProp('current', goalFor(agentId)),
@@ -930,6 +932,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
             // below is its own reactive read. `renderContext` in MessageBubble is
             // the same pattern for the same reason.
             const agentLifecycle: AgentLifecycleProps = {
+              get liveCompaction() { return chatStore.getLiveCompaction(agentId) },
               get agentWorking() { return agentThinking(agentId) },
               get thinkingTokens() { return agentSessionStore.getProgress(agentId).thinkingTokens },
               get outputBytes() { return agentSessionStore.getProgress(agentId).output?.bytes },

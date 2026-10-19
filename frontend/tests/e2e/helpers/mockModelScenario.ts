@@ -4,6 +4,7 @@ import type {
   MockModelStep,
 } from './mockModelScript'
 import { isObject } from '../../../src/lib/jsonPick'
+import { escapeRegExp } from '../../../src/lib/regexp'
 import { AMBIENT_SCENARIO_ID, SCENARIO_MARKER, validateGateName, validateScenarioID } from './mockModelScript'
 
 /**
@@ -62,6 +63,12 @@ const KIRO_INTENT_CLASSIFICATION = '"agentMode":"intent-classification"'
  * a newer rule of the same priority matches first.
  */
 export const HOUSEKEEPING_RULES: readonly MockModelRule[] = [
+  {
+    name: 'codex-memory-consolidation',
+    priority: 'high',
+    when: { protocol: 'openai-responses', user: escapeRegExp('Memory Writing Agent: Phase 2 (Consolidation)') },
+    respond: { text: 'No memories to consolidate.' },
+  },
   {
     name: 'claude-auto-harm',
     priority: 'high',

@@ -71,6 +71,8 @@ type codexPendingChildEvent struct {
 	params json.RawMessage
 	// noticeKey records successful deduplication only after this event reaches storage.
 	noticeKey string
+	// retryNotice records a retry only after this event reaches storage.
+	retryNotice bool
 	// scopeIDs is for codexPendingDroppedGeneration only.
 	scopeIDs []string
 }
@@ -91,6 +93,7 @@ type codexChildState struct {
 	finalTransition        codexChildTransition
 	transcriptFinalized    bool
 	generationBuffer       providerkit.GenerationBuffer
+	retryResolution        providerkit.RetryResolution
 	pendingGenerationBytes int
 	pendingEvents          []codexPendingChildEvent
 	pendingEventBytes      int

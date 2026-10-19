@@ -110,6 +110,8 @@ export interface PermissionPrompt {
    * `layoutPermissionOptions` lays those out.
    */
   options: PermissionOption[]
+  /** Each option makes a distinct decision. No permission scope combines these options. */
+  independentOptions?: boolean
 }
 
 /**

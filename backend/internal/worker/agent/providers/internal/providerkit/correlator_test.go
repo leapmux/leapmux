@@ -1,14 +1,74 @@
 package providerkit
 
 import (
+	"context"
 	"encoding/json"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/coder/quartz"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type readyTimerClock struct {
+	quartz.Clock
+	timer   *quartz.Timer
+	onTimer func()
+}
+
+func (c readyTimerClock) NewTimer(time.Duration, ...string) *quartz.Timer {
+	if c.onTimer != nil {
+		c.onTimer()
+	}
+	return c.timer
+}
+
+func TestAwaitReplyReturnsATypedTimeout(t *testing.T) {
+	t.Parallel()
+	clock := testutil.NewQuartzMock(t)
+	timer := clock.NewTimer(time.Minute)
+	clock.Advance(time.Minute).MustWait(testutil.DeadlineContext(t))
+	process := NewProcessFrom(ProcessConfig{Ctx: t.Context(), Clock: readyTimerClock{Clock: clock, timer: timer}})
+	value, err := AwaitReply(&process, t.Context(), make(chan int), "get_state", time.Minute)
+	assert.Zero(t, value)
+	assert.ErrorIs(t, err, ErrAwaitTimeout)
+	var timeout *AwaitTimeoutError
+	require.ErrorAs(t, err, &timeout)
+	assert.Equal(t, "get_state", timeout.Label)
+	assert.EqualError(t, err, "timeout waiting for get_state response")
+}
+
+func TestAwaitReplyEndsOnTheCallerContext(t *testing.T) {
+	t.Parallel()
+	for _, timeout := range []time.Duration{0, -1, time.Minute} {
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		process := NewProcessFrom(ProcessConfig{Ctx: t.Context(), Clock: testutil.NewQuartzMock(t)})
+		_, err := AwaitReply(&process, ctx, make(chan int), "probe", timeout)
+		assert.ErrorIs(t, err, context.Canceled)
+		assert.NoError(t, process.Context().Err())
+	}
+}
+
+func TestAwaitResponseReturnsAReplyThatIsReadyWhenTheTimerFires(t *testing.T) {
+	t.Parallel()
+	// Both channels are ready before select. Exercise both choices without a sleep.
+	for range 64 {
+		clock := testutil.NewQuartzMock(t)
+		timer := clock.NewTimer(time.Minute)
+		clock.Advance(time.Minute).MustWait(testutil.DeadlineContext(t))
+		process := NewProcessFrom(ProcessConfig{Ctx: t.Context(), Clock: readyTimerClock{Clock: clock, timer: timer}})
+		reply := make(chan json.RawMessage, 1)
+		reply <- json.RawMessage(`"ready"`)
+		raw, err := process.AwaitResponse(reply, "probe", time.Minute)
+		require.NoError(t, err)
+		assert.Equal(t, `"ready"`, string(raw))
+	}
+}
 
 func TestCorrelatorObservesBeforeDeliveryAndClaimsTheRequestOnce(t *testing.T) {
 	t.Parallel()

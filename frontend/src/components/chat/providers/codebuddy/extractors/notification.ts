@@ -2,9 +2,6 @@ import type { NotificationEntry } from '../../../model/notification'
 import { CODEBUDDY_FRAME_KIND, CODEBUDDY_SYSTEM_SUBTYPE } from '~/generated/contracts/codebuddy-protocol'
 import { pickString } from '~/lib/jsonPick'
 
-/** The `event` of the `mcp_status` line that ends the start of the MCP servers. */
-const MCP_STATUS_FINISH_EVENT = 'finish'
-
 /** The level of an `informational` line that warns the reader. */
 const INFORMATIONAL_WARNING_LEVEL = 'warning'
 
@@ -21,9 +18,8 @@ function serverSentence(names: readonly string[], singular: string, plural: stri
 /**
  * The entries of one CodeBuddy Code `system` or `error` line that the reader needs.
  *
- * - `system` `mcp_status` with `event: "finish"` states each MCP server that failed to start, and each that did not
- *   start in time. The `start` and `server` events report progress that the `finish` event sums up, so they hold no
- *   entry.
+ * - `system` `mcp_status` states each MCP server that failed to start or did not start in time.
+ *   The worker stores only the finished report.
  * - `system` `informational` states its text, with its level when the line warns.
  * - `error` states the message of a failed request. CodeBuddy Code writes one when its executor fails, and an error
  *   with no message still states that an error occurred.
@@ -40,8 +36,6 @@ export function codebuddyNotificationEntry(m: Record<string, unknown>): Notifica
     return []
   switch (pickString(m, 'subtype')) {
     case CODEBUDDY_SYSTEM_SUBTYPE.McpStatus: {
-      if (pickString(m, 'event') !== MCP_STATUS_FINISH_EVENT)
-        return []
       const failed = serverNames(m.failed)
       const timedOut = serverNames(m.timed_out)
       const entries: NotificationEntry[] = []

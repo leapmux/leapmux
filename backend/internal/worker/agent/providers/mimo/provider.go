@@ -111,7 +111,7 @@ func (mimoProvider) Classify(raw json.RawMessage) agent.NotificationClassificati
 	case contracts.MiMoEventSessionStatus:
 		var payload mimoStatusEvent
 		if json.Unmarshal(event.Properties, &payload) == nil && payload.Status.Type == contracts.MiMoStatusTypeRetry {
-			return agent.NotificationClassification{Kind: agent.NotificationKindAPIRetry, Key: "mimo:retry"}
+			return agent.APIRetryNotification()
 		}
 	case contracts.MiMoEventMessagePartUpdated:
 		var payload mimoPartEvent
@@ -120,9 +120,9 @@ func (mimoProvider) Classify(raw json.RawMessage) agent.NotificationClassificati
 		}
 		if !compactionEndedIn(payload.Part) {
 			// The start is a status: the boundary that ends the compaction clears it.
-			return agent.NotificationClassification{Kind: agent.NotificationKindStatus, Key: "mimo:compaction"}
+			return agent.StatusNotification()
 		}
-		return agent.NotificationClassification{Kind: agent.NotificationKindCompactionBoundary, Key: "mimo:compaction"}
+		return agent.CompactionBoundaryNotification()
 	}
 	return agent.NotificationClassification{}
 }

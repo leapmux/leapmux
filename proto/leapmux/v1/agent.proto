@@ -413,6 +413,9 @@ enum AgentInputState {
   AGENT_INPUT_STATE_DISPATCHING = 2;
   AGENT_INPUT_STATE_FAILED = 3;
   AGENT_INPUT_STATE_DELIVERY_UNCERTAIN = 4;
+  // The provider accepted this steer but did not confirm that the model read it.
+  // The queue keeps its content and writes the transcript row at the provider's echo.
+  AGENT_INPUT_STATE_AWAITING_ECHO = 5;
 }
 
 enum AgentInputQueuePauseReason {
@@ -1242,11 +1245,12 @@ message ApproveAutoReviewDenialRequest {
 // The worker returns success after it records the approval on the review row and writes its notice.
 message ApproveAutoReviewDenialResponse {}
 
-// RetryAgentTurn stops the running turn and sends its input again on another
-// model, in a new provider thread that excludes the stopped attempt. The worker
-// refuses it unless the running agent offers this retry for this turn (the
-// `turn_retry_offer` session-info key). File changes and other actions that the
-// stopped attempt already took stay.
+// RetryAgentTurn stops the running turn and sends its input again on a faster
+// model. The provider removes the stopped attempt from its native history, and
+// the LeapMux transcript keeps it. The worker refuses the call unless the running
+// agent offers this retry for this turn (the `turn_retry_offer` session-info
+// key). File changes and other actions that the stopped attempt already took
+// stay.
 message RetryAgentTurnRequest {
   string agent_id = 1;
   // The turn that the offer identifies. A different running turn refuses it.

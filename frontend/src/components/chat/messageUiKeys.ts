@@ -57,24 +57,12 @@ export function messageUiDefault(key: MessageUiKey, ctx: MessageUiDefaultContext
 }
 
 /**
- * The per-message UI key for a row's EXPAND toggle (the thinking/plan/agent-prompt
- * bubble), resolved from the row's classification kind.
- *
- * The SINGLE source of this mapping: ChatView and the renderers (ThinkingBubble /
- * AgentPromptView, via the `expandUiKey` context capability) both read it, so hidden premeasure
- * and visible render cannot assume different keys.
- *
- * It takes NO provider. Each kind draws through one shared component now, so the key a
- * row takes follows from its kind alone -- where a provider used to pick its own and
- * the estimator had to ask which.
- *
- * Returns THINKING for any other kind: the value is only consumed for the
- * expand-bubble rows above, so a non-thinking row's key is never read.
+ * Select the expansion key for a plan-execution or thinking row.
+ * ChatView and the renderer share this mapping so measurement and display use the same expansion state.
+ * Other row kinds do not read the default THINKING key.
  */
 export function expandedUiKeyFor(kind: MessageCategory['kind']): MessageUiKey {
   if (kind === 'plan_execution')
     return MESSAGE_UI_KEY.PLAN_EXECUTION
-  if (kind === 'agent_prompt')
-    return MESSAGE_UI_KEY.AGENT_PROMPT
   return MESSAGE_UI_KEY.THINKING
 }

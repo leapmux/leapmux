@@ -33,12 +33,11 @@ func StartOverCommand(ctx context.Context, cancel context.CancelFunc, cmd *exec.
 		// model, not the raw stored value, so the mock keeps the same "a.model lives
 		// in the normalized alias space" invariant (e.g. a stored "opus" becomes
 		// "opus[1m]") that the real launch path establishes.
-		model:          normalizeClaudeCodeModel(opts.Model()),
-		sessionID:      opts.ResumeSessionID,
-		workingDir:     opts.WorkingDir,
-		homeDir:        opts.HomeDir,
-		sink:           sink,
-		pendingControl: make(map[string]chan<- claudeCodeControlResult),
+		model:      normalizeClaudeCodeModel(opts.Model()),
+		sessionID:  opts.ResumeSessionID,
+		workingDir: opts.WorkingDir,
+		homeDir:    opts.HomeDir,
+		sink:       sink,
 	}
 	a.DrainStderr(pipes.Stderr())
 

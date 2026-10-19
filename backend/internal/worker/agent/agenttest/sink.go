@@ -35,6 +35,7 @@ type ModeChange struct {
 
 // Sink is a test implementation of ProviderServices that records calls.
 type Sink struct {
+	outputQueue agent.OutputQueue
 	// nativeChildKey belongs to this sink's direct parent and uses that parent's childSinkMu.
 	nativeChildKey string
 	// PersistErr, when set, is what PersistMessage returns. Read without the
@@ -68,7 +69,8 @@ type Sink struct {
 	// requeuedInputs records each RequeueDroppedInput call in order, including repeats.
 	// The Worker ignores a repeated drop.
 	// The test sink retains repeats so a test can detect the provider defect.
-	requeuedInputs []RequeuedInput
+	requeuedInputs   []RequeuedInput
+	steerEchoReports []SteerEchoReport
 	// RequeueErr makes RequeueDroppedInput return an error instead of recording the call.
 	// The provider must report that the queue refused the input.
 	// Set this field at construction. Reads require no lock.
@@ -451,6 +453,64 @@ func (s *Sink) RequeueDroppedInput(dropID, content string, attachments []*leapmu
 	return nil
 }
 
+// SteerEchoReport records one delivery outcome from the provider.
+type SteerEchoReport struct {
+	Outcome agent.SteerOutcome
+	Count   int
+}
+
+func (s *Sink) OutputQueue() *agent.OutputQueue { return &s.outputQueue }
+
+func (s *Sink) CaptureSteerReport(count int, outcome agent.SteerOutcome) func() error {
+	return func() error {
+		s.mu.Lock()
+		err := s.PersistErr
+		s.mu.Unlock()
+		if err != nil {
+			return err
+		}
+		switch outcome {
+		case agent.SteerOutcomeEchoed:
+			s.ReportSteersEchoed(count)
+		case agent.SteerOutcomeDropped:
+			s.ReportSteersDropped(count)
+		case agent.SteerOutcomeUncertain:
+			s.ReportSteersUncertain(count)
+		default:
+			return fmt.Errorf("invalid steer outcome: %d", outcome)
+		}
+		return nil
+	}
+}
+
+func (s *Sink) ReportSteersEchoed(count int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.steerEchoReports = append(s.steerEchoReports, SteerEchoReport{Outcome: agent.SteerOutcomeEchoed, Count: count})
+	s.turnLifecycle = append(s.turnLifecycle, fmt.Sprintf("steer-echoed:%d", count))
+}
+
+func (s *Sink) ReportSteersDropped(count int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.steerEchoReports = append(s.steerEchoReports, SteerEchoReport{Outcome: agent.SteerOutcomeDropped, Count: count})
+	s.turnLifecycle = append(s.turnLifecycle, fmt.Sprintf("steer-dropped:%d", count))
+}
+
+func (s *Sink) ReportSteersUncertain(count int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.steerEchoReports = append(s.steerEchoReports, SteerEchoReport{Outcome: agent.SteerOutcomeUncertain, Count: count})
+	s.turnLifecycle = append(s.turnLifecycle, fmt.Sprintf("steer-uncertain:%d", count))
+}
+
+// SteerEchoReports returns a copy of the reports in call order.
+func (s *Sink) SteerEchoReports() []SteerEchoReport {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.steerEchoReports)
+}
+
 // RequeuedInputs returns every RequeueDroppedInput call that the sink took, in
 // order.
 func (s *Sink) RequeuedInputs() []RequeuedInput {
@@ -735,8 +795,31 @@ func (s *Sink) BroadcastSessionInfo(info map[string]interface{}) {
 	s.sessionInfos = append(s.sessionInfos, cp)
 }
 
-// PersistLeapMuxNotification records the worker-written notification payload.
-// It keeps a copy, because the caller reuses its map.
+// PersistWorkerNotification records a captured worker envelope after its write succeeds.
+func (s *Sink) PersistWorkerNotification(content agent.MessageContent) (bool, error) {
+	return s.persistWorkerNotification(content, s.PersistLeapMuxNotification)
+}
+
+func (s *Sink) persistWorkerNotification(content agent.MessageContent, record func(map[string]interface{})) (bool, error) {
+	s.mu.Lock()
+	_, err := s.capturedOwnerLocked(content)
+	if err == nil {
+		err = s.PersistErr
+	}
+	s.mu.Unlock()
+	if err != nil {
+		return false, err
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(content.Original, &payload); err != nil {
+		return false, err
+	}
+	record(payload)
+	content.WriteReceipt.RecordStoredWrite(true)
+	return true, nil
+}
+
+// PersistLeapMuxNotification copies the worker notification because a caller can reuse its map.
 func (s *Sink) PersistLeapMuxNotification(info map[string]interface{}) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1618,9 +1701,17 @@ func (nop) ReadToolRequest(string) (*agent.StoredMessage, error)                
 func (nop) ReadToolResult(string) (*agent.StoredMessage, error)                   { return nil, nil }
 func (nop) ReadToolResultBySeq(int64) (*agent.StoredMessage, error)               { return nil, nil }
 func (nop) ReadToolResultForSession(string, string) (*agent.StoredMessage, error) { return nil, nil }
+func (nop) PersistWorkerNotification(agent.MessageContent) (bool, error)          { return false, nil }
 func (nop) PersistTurnEnd(agent.MessageContent, agent.SpanInfo) error             { return nil }
 func (nop) SetTurnState(agent.TurnState, uint64)                                  {}
 func (nop) RequeueDroppedInput(string, string, []*leapmuxv1.Attachment) error     { return nil }
+func (nop) OutputQueue() *agent.OutputQueue                                       { return nil }
+func (nop) CaptureSteerReport(int, agent.SteerOutcome) func() error {
+	return func() error { return nil }
+}
+func (nop) ReportSteersEchoed(int)    {}
+func (nop) ReportSteersUncertain(int) {}
+func (nop) ReportSteersDropped(int)   {}
 func (nop) PersistNotification(leapmuxv1.MessageSource, agent.MessageContent) (bool, error) {
 	return true, nil
 }

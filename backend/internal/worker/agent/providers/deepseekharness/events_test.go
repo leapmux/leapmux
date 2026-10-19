@@ -3,6 +3,7 @@ package deepseekharness
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,12 +12,99 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/testutil"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestAgentErrorDeduplicatesTheTurnEndInEitherOrder(t *testing.T) {
+	for _, before := range []bool{true, false} {
+		for _, same := range []bool{true, false} {
+			t.Run(fmt.Sprintf("before=%t/same=%t", before, same), func(t *testing.T) {
+				sink := &agenttest.Sink{}
+				a := newOfflineAgent(t, sink)
+				a.active = true
+				cause := "native error"
+				if !same {
+					cause = "another error"
+				}
+				remoteError := func() {
+					raw, err := json.Marshal(map[string]any{"type": "emit", "event": "api-session/error", "args": []string{"native-root", cause}})
+					require.NoError(t, err)
+					require.NoError(t, a.handleRemoteEvent(raw))
+				}
+				if before {
+					remoteError()
+					assert.Empty(t, sink.LeapMuxNotifications())
+					assert.True(t, a.active)
+				}
+				require.NoError(t, a.handleSessionEvent(a.streams["root"], []byte(`{"type":"turn/end","seq":1,"time":1000,"data":{"reason":{"kind":"error","error":{"message":"native error"}}}}`)))
+				if !before {
+					remoteError()
+				}
+				if same {
+					assert.Empty(t, sink.LeapMuxNotifications())
+				} else {
+					assert.Equal(t, []map[string]interface{}{{contracts.NotificationFieldType: contracts.NotificationTypeAgentError, contracts.NotificationFieldError: cause}}, sink.LeapMuxNotifications())
+				}
+				require.Len(t, sink.Messages(), 1)
+				assert.True(t, sink.Messages()[0].TurnEnd)
+				assert.False(t, a.active)
+			})
+		}
+	}
+}
+
+func TestAgentErrorOutsideATurnIsWrittenAndClearsTheTurn(t *testing.T) {
+	sink := &agenttest.Sink{}
+	a := newOfflineAgent(t, sink)
+	require.NoError(t, a.handleRemoteEvent([]byte(`{"type":"emit","event":"api-session/error","args":["native-root","startup error"]}`)))
+	assert.Equal(t, []map[string]interface{}{{contracts.NotificationFieldType: contracts.NotificationTypeAgentError, contracts.NotificationFieldError: "startup error"}}, sink.LeapMuxNotifications())
+	assert.Equal(t, []string{"turn_active:false"}, sink.TurnLifecycle())
+}
+
+func TestAgentErrorOfAnotherSessionDoesNotChangeTheRoot(t *testing.T) {
+	sink := &agenttest.Sink{}
+	a := newOfflineAgent(t, sink)
+	a.active = true
+	require.NoError(t, a.handleRemoteEvent([]byte(`{"type":"emit","event":"api-session/error","args":["another-session","error"]}`)))
+	assert.Empty(t, sink.LeapMuxNotifications())
+	assert.Empty(t, sink.TurnLifecycle())
+	assert.True(t, a.active)
+}
+
+type errorOrderSink struct {
+	*agenttest.Sink
+	writes []string
+}
+
+func (s *errorOrderSink) PersistLeapMuxNotification(content map[string]interface{}) {
+	s.writes = append(s.writes, content[contracts.NotificationFieldError].(string))
+	s.Sink.PersistLeapMuxNotification(content)
+}
+
+func (s *errorOrderSink) PersistTurnEnd(content agent.MessageContent, span agent.SpanInfo) error {
+	s.writes = append(s.writes, "turn end")
+	return s.Sink.PersistTurnEnd(content, span)
+}
+
+func TestAgentErrorKeepsDistinctErrorsBeforeTheTurnEnd(t *testing.T) {
+	sink := &errorOrderSink{Sink: &agenttest.Sink{}}
+	a := newOfflineAgentServing(t, agent.NewProviderServices(sink), nil)
+	a.active = true
+	for _, cause := range []string{"first", "repeated", "last", "repeated"} {
+		raw, err := json.Marshal(map[string]any{"type": "emit", "event": "api-session/error", "args": []string{"native-root", cause}})
+		require.NoError(t, err)
+		require.NoError(t, a.handleRemoteEvent(raw))
+	}
+	require.NoError(t, a.handleSessionEvent(a.streams["root"], []byte(`{"type":"turn/end","seq":1,"time":1000,"data":{"reason":{"kind":"error","error":{"message":"repeated"}}}}`)))
+	assert.Equal(t, []string{"first", "last", "turn end"}, sink.writes)
+	assert.Empty(t, a.pendingErrors)
+}
 
 func TestOneShotChildFollowUsesItsExactNativeMode(t *testing.T) {
 	t.Parallel()

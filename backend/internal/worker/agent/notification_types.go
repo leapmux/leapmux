@@ -24,6 +24,12 @@ package agent
 //   - Interrupted: the user interrupted an in-flight turn. Marks a real turn end
 //     on the frontend.
 //
+//   - ApiRetry: the worker counted a retry whose native frame states no attempt count.
+//     The count field states the attempts. The optional error field states the reason.
+//
+//   - ApiRetryResolved: the first model output after a retry confirms success.
+//     It replaces the retry entry in the notification thread.
+//
 //   - PlanExecution: the worker started plan-mode execution. Carries the plan
 //     metadata (file path, title).
 //

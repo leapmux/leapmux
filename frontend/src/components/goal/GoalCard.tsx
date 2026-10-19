@@ -4,7 +4,7 @@ import { createMemo, Show } from 'solid-js'
 import { formatSecondsParts } from '~/components/chat/rendererUtils'
 import { StatusDot } from '~/components/common/StatusDot'
 import { markdownToPlainText } from '~/lib/markdownPlainText'
-import { goalActionState, goalStatusLabel } from '~/stores/chatGoal'
+import { goalActionState, goalStatusLabel, visibleGoalStatusDetail } from '~/stores/chatGoal'
 import { srOnly } from '~/styles/shared.css'
 import * as statusDotStyles from '~/styles/statusDot.css'
 import { GoalActionsMenu } from './GoalActionsMenu'
@@ -61,7 +61,10 @@ export const GoalCard: Component<GoalCardProps> = (props) => {
     const goal = props.goal.current
     if (!goal)
       return 'No session goal'
-    const detail = goal.statusDetail ? `, ${goal.statusDetail}` : ''
+    if (props.goal.statusUnconfirmed)
+      return `Session goal: ${markdownToPlainText(goal.objective)}`
+    const statusDetail = visibleGoalStatusDetail(goal)
+    const detail = statusDetail ? `, ${statusDetail}` : ''
     // GoalObjective renders the Markdown source.
     // The live region needs the visible words without Markdown syntax.
     // GoalObjective uses the same plain text rule for its tooltip.
@@ -132,25 +135,27 @@ export const GoalCard: Component<GoalCardProps> = (props) => {
         {goal => (
           <>
             <GoalObjective objective={goal().objective} />
-            <div class={styles.statusRow}>
-              <StatusDot
-                class={statusDotClass(goal())}
-                label={goalStatusLabel(goal().status)}
-                tooltip
-                status={goal().status}
-                testId="goal-status-dot"
-              />
-              <span>{goalStatusLabel(goal().status)}</span>
-              <Show when={goal().statusDetail}>
-                {detail => (
-                  <span data-testid="goal-status-detail">
-                    (
-                    {detail()}
-                    )
-                  </span>
-                )}
-              </Show>
-            </div>
+            <Show when={!props.goal.statusUnconfirmed}>
+              <div class={styles.statusRow}>
+                <StatusDot
+                  class={statusDotClass(goal())}
+                  label={goalStatusLabel(goal().status)}
+                  tooltip
+                  status={goal().status}
+                  testId="goal-status-dot"
+                />
+                <span>{goalStatusLabel(goal().status)}</span>
+                <Show when={visibleGoalStatusDetail(goal())}>
+                  {detail => (
+                    <span data-testid="goal-status-detail">
+                      (
+                      {detail()}
+                      )
+                    </span>
+                  )}
+                </Show>
+              </div>
+            </Show>
             <Show when={metaParts().length > 0}>
               <div class={styles.meta} data-testid="goal-progress">{metaParts().join(' · ')}</div>
             </Show>

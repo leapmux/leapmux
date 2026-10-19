@@ -8,16 +8,38 @@ import (
 )
 
 const (
-	methodInitialize    = "initialize"
-	methodTurnStart     = "turn/start"
-	methodTurnSteer     = "turn/steer"
-	methodTurnInterrupt = "turn/interrupt"
-	methodSetModel      = "session/set_model"
-	methodSetEffort     = "session/set_effort"
-	methodSessionState  = "session/state"
-	bridgeFrameType     = "leapmux_commandcode_bridge"
-	bridgeSecretEnv     = "LEAPMUX_COMMANDCODE_BRIDGE_SECRET"
-	protocolVersion     = 1
+	methodInitialize      = "initialize"
+	methodTurnStart       = "turn/start"
+	methodTurnSteer       = "turn/steer"
+	methodTurnInterrupt   = "turn/interrupt"
+	methodSetModel        = "session/set_model"
+	methodSetEffort       = "session/set_effort"
+	methodSessionState    = "session/state"
+	bridgeFrameType       = "leapmux_commandcode_bridge"
+	bridgeSecretEnv       = "LEAPMUX_COMMANDCODE_BRIDGE_SECRET"
+	protocolVersion       = 1
+	methodHello           = "hello"
+	methodTurnStarted     = "turn/started"
+	methodSteersDelivered = "turn/steers_delivered"
+	methodProtocolError   = "protocol_error"
+)
+
+// These event values have only worker readers.
+const (
+	eventTextDelta         = "text_delta"
+	eventThinkingDelta     = "thinking_delta"
+	eventThinkingStart     = "thinking_start"
+	eventMessageStart      = "message_start"
+	eventMessageUpdate     = "message_update"
+	eventTurnStart         = "turn_start"
+	eventTurnEnd           = "turn_end"
+	eventModelRequestStart = "model_request_start"
+	eventToolRunning       = "tool_running"
+	eventInterrupted       = "interrupted"
+	eventSessionTitled     = "session_titled"
+	eventModelTrace        = "model_trace"
+	eventToolInputCoerced  = "tool_input_coerced"
+	eventToolInputRepaired = "tool_input_repaired"
 )
 
 type sessionView struct {
@@ -54,7 +76,6 @@ type nativeEvent struct {
 	Status       string          `json:"status"`
 	Trigger      string          `json:"trigger"`
 	Outcome      string          `json:"outcome"`
-	TokensSaved  int64           `json:"tokensSaved"`
 }
 
 type nativeUsage struct {

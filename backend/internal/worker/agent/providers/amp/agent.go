@@ -30,6 +30,7 @@ import (
 type Agent struct {
 	agentID string
 	sink    agent.ProviderServices
+	steers  providerkit.SteerLedger
 	launch  launchConfig
 	bridge  *permissionBridge
 	// dir is the agent's private directory, whose path launch.stateDir holds.
@@ -53,6 +54,8 @@ type Agent struct {
 	// stderrFn reads the stderr of a process that exited. Production leaves it
 	// nil, which reads the process's own stderr. A test installs a reader.
 	stderrFn func(proc *ampProcess) string
+	// exportFn supplies native history in tests. Production runs the export command.
+	exportFn func(context.Context, string) ([]byte, error)
 
 	// userEnvMu guards the three fields below. The first process start that
 	// reads the user's shell settles them.
@@ -70,7 +73,10 @@ type Agent struct {
 	proc *ampProcess
 	// threadID is Amp's thread, the resume handle. Empty until the first
 	// process states it in its init line.
-	threadID string
+	threadID         string
+	nativeSteers     []*ampSteerSubmission
+	reconciling      bool
+	importedMessages map[string]bool
 	// agentMode is the mode the thread starts with. modeLocked is true once the
 	// thread received its first message, after which Amp keeps the mode.
 	agentMode  string
@@ -207,6 +213,15 @@ func (a *Agent) SendInputForSession(sessionID, content string, attachments []*le
 // SupportsSteering reports true: Amp takes a steering line during any turn.
 func (a *Agent) SupportsSteering() bool { return true }
 
+// SteerRowAtEcho records the queue row when Amp echoes the prompt.
+func (*Agent) SteerRowAtEcho() bool { return true }
+
+// SteerSurvivesTurnEnd keeps a late steer in Amp's native queue.
+func (*Agent) SteerSurvivesTurnEnd() bool { return true }
+
+var _ agent.SteerEchoReporter = (*Agent)(nil)
+var _ agent.SteerSurvivor = (*Agent)(nil)
+
 // SteerInput adds a message to the running turn. Amp queues it on its server
 // and inserts it at the turn's next interruption point, after the running tool.
 func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
@@ -225,7 +240,7 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 // write, so the queue holds the next message behind this one from the moment
 // it leaves.
 func (a *Agent) sendInput(expected *string, content string, attachments []*leapmuxv1.Attachment, steer bool) error {
-	line, err := buildUserLine(content, attachments, steer)
+	line, texts, err := buildUserLine(content, attachments, steer)
 	if err != nil {
 		return err
 	}
@@ -250,7 +265,22 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 		if !active || proc == nil || proc.ending() {
 			return agent.ErrNoActiveTurn
 		}
-		return proc.writeLine(line)
+		baseline, err := a.steerBaseline()
+		if err != nil {
+			return err
+		}
+		key := ampEchoKey(texts)
+		ticket, err := a.rememberSteer(proc, key, baseline)
+		if err != nil {
+			return err
+		}
+		if err := proc.writeLine(line); err != nil {
+			a.steers.Forget(ticket)
+			a.forgetSteer(ticket)
+			a.steers.Settle(a.sink)
+			return err
+		}
+		return nil
 	}
 	if active {
 		return agent.ErrAgentBusy
@@ -292,7 +322,11 @@ func (a *Agent) processForTurn(proc *ampProcess) (*ampProcess, error) {
 	}
 	a.mu.Lock()
 	threadID, mode := a.threadID, a.agentMode
+	active := a.turn.active || a.reconciling
 	a.mu.Unlock()
+	if active {
+		return nil, agent.ErrAgentBusy
+	}
 	return a.start(threadID, mode)
 }
 
@@ -302,6 +336,9 @@ func (a *Agent) processForTurn(proc *ampProcess) (*ampProcess, error) {
 // It checks the workspace first, because a process loads the workspace's
 // settings and plugins as soon as it starts (see checkWorkspace).
 func (a *Agent) start(threadID, mode string) (*ampProcess, error) {
+	if err := a.checkUncertainThread(threadID); err != nil {
+		return nil, err
+	}
 	if err := a.checkWorkspace(); err != nil {
 		return nil, err
 	}
@@ -374,10 +411,14 @@ func (a *Agent) lockMode(proc *ampProcess) {
 // PublishTurnActive republishes the turn flag. A turn always takes steering.
 func (a *Agent) PublishTurnActive() agent.TurnState {
 	a.mu.Lock()
-	active := a.turn.active
+	state := agent.TurnState{
+		Active:    a.turn.active || a.reconciling,
+		Steerable: a.turn.active && !a.reconciling && a.threadID != "" && a.proc != nil && !a.proc.ending(),
+	}
 	seq := a.NextTurnSeq()
 	a.mu.Unlock()
-	return providerkit.PublishSteerableTurnActiveTo(a.sink, active, seq)
+	a.sink.SetTurnState(state, seq)
+	return state
 }
 
 // Interrupt stops the running turn.
@@ -388,6 +429,7 @@ func (a *Agent) PublishTurnActive() agent.TurnState {
 // after the API timeout, and on a platform that cannot send the signal
 // (Windows) it stops the process at once. A stop cannot tell Amp's server to
 // cancel, so the server can finish the turn with no executor attached.
+// The exit handler reads native history to recover pending steers and their replies.
 //
 // It does nothing when no turn runs.
 func (a *Agent) Interrupt(stop agent.StopContext) error {
@@ -462,6 +504,7 @@ func (a *Agent) stop() {
 	proc := a.proc
 	a.mu.Unlock()
 
+	a.cancel()
 	a.bridge.close(errAgentStopped)
 	if proc != nil {
 		proc.markEnding()
@@ -473,13 +516,13 @@ func (a *Agent) stop() {
 		}
 		proc.Stop()
 	}
-	a.cancel()
 	// A turn that no `result` ended -- a kill ended the process, or none ran --
 	// ends as an interruption.
+	if proc != nil {
+		<-proc.handled
+	}
 	a.finishTurn(agent.MessageCompletionInterrupted, nil)
-	// The exit handler of the process closes the shell rows too, but it can run
-	// after Stop returns. So stop closes them here, and the exit handler then
-	// finds none.
+	// A process exit closes these rows also. Stop covers an agent that started no process.
 	a.closeAllShellRows(bgtask.StatusStopped)
 	a.sink.ReportProgress(agent.ResetProgress())
 	removeAgentDir(a.agentID, a.dir)

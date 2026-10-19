@@ -3,6 +3,7 @@ package pi
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -10,7 +11,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/coder/quartz"
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -41,9 +41,10 @@ type Agent struct {
 	sessionFile string // Pi's persistent session file path (durable identifier)
 	sessionMu   sync.Mutex
 	// currentTurnActive is true while the turn is open.
-	// An agent_end with willRetry keeps it true because Pi restarts that run itself.
-	// Interrupt must still send an abort. A user message must still steer rather than queue.
+	// Each agent_end keeps it true until agent_settled ends all runs and compaction.
+	// Interrupt remains available during that interval.
 	currentTurnActive bool
+	compactionLive    bool
 	// Each write attempt retains its own delivery outcome. A failed write removes
 	// only that attempt. Attempt IDs continue across turns.
 	// Mu protects the ledger and counters. interruptOutput uses its own mutex.
@@ -51,11 +52,11 @@ type Agent struct {
 	interruptAttempt  uint64
 	turnGeneration    uint64
 	interruptOutput   piInterruptOutput
-	retryState        piRetryState
-	// turnStartedAt marks when the turn's FIRST agent_start arrived, so
-	// agent_end can report the turn's wall time. Pi's agent_end carries no
-	// duration of its own. Zero between turns, and zero for a turn whose start
-	// this worker never saw -- the divider then omits the duration.
+	heldDivider       *piHeldDivider
+	steers            providerkit.SteerLedger
+	// turnStartedAt records the first agent_start until agent_settled.
+	// The final divider includes all runs and compaction in that interval.
+	// A zero value means the worker did not observe the start, so the divider omits duration.
 	turnStartedAt time.Time
 	// Pi exposes token/cost information in assistant messages and via
 	// get_session_stats. Keep the latest normalized snapshot here so persisted
@@ -103,43 +104,24 @@ type Agent struct {
 	// tool_execution_end, and cleared when the session is replaced.
 	toolCallPrompts providerkit.PendingPrompts
 
-	// nowFn supplies the clock that times a turn. Production leaves it nil; a
-	// test installs a fixed clock so the reported duration is exact.
-	nowFn func() time.Time
-
-	// clock drives the dialog deadlines. Production leaves it nil and reads the
-	// real clock (see deadlineClock); a test installs a mock.
-	clock quartz.Clock
 	// dialogDeadlines withdraws a dialog whose deadline passed. See
 	// publishPiDialog.
 	dialogDeadlines providerkit.ControlDeadlines
 }
 
-// now reads the agent's clock. The zero value must work, because the tests
-// build an Agent as a struct literal and never reach Start.
-func (a *Agent) now() time.Time {
-	if a.nowFn != nil {
-		return a.nowFn()
+// orderedSink keeps native rows and turn-release effects behind pending generation writes.
+func (a *Agent) orderedSink() agent.ProviderServices {
+	queue := agent.OutputQueueFor(a.sink)
+	if queue == nil {
+		queue = a.generationBuffer.OutputQueue()
 	}
-	return time.Now()
+	return agent.NewOrderedProviderServices(queue, a.sink)
 }
 
-// deadlineClock returns the clock of the dialog deadlines. The zero value must
-// work, for the reason that now states.
-func (a *Agent) deadlineClock() quartz.Clock {
-	if a.clock != nil {
-		return a.clock
-	}
-	return quartz.NewReal()
-}
-
-// sessionHandleLocked returns the durable session identifier — preferring
-// `sessionFile` (the path `pi --session` reopens across restarts) and falling
-// back to the rotating runtime `sessionId`. Both shapes resume: `--session`
-// matches a bare ID against this working directory's sessions. The file wins
-// because it identifies the session from any directory, and it survives the ID
-// rotation that new_session performs.
-// Caller must hold a.Mu.
+// sessionHandleLocked returns the durable session identifier.
+// It prefers sessionFile, which pi --session reopens from any directory and retains across native ID changes.
+// Without a file, it returns sessionId. Pi resolves that ID within the working directory.
+// The caller must hold a.Mu.
 func (a *Agent) sessionHandleLocked() string {
 	if a.sessionFile != "" {
 		return a.sessionFile
@@ -212,6 +194,12 @@ func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) e
 // provider that stops satisfying InputSteerer, so this assertion makes that
 // regression a compile error.
 var _ agent.InputSteerer = (*Agent)(nil)
+var _ agent.SteerEchoReporter = (*Agent)(nil)
+var _ agent.SteerSurvivor = (*Agent)(nil)
+
+func (*Agent) SteerRowAtEcho() bool { return true }
+
+func (*Agent) SteerSurvivesTurnEnd() bool { return true }
 
 // SupportsSteering always reports true. Pi accepts a message with
 // streamingBehavior:"steer" during any turn, so the capability needs no
@@ -272,6 +260,9 @@ func (a *Agent) preparePiInput(expected *string, content string, attachments []*
 		}
 		return func() error {
 			_, err := wait(0)
+			if err != nil {
+				a.endPiCompaction()
+			}
 			// Compaction ends without agent_end. Publish the idle turn after the
 			// native compact response so queued input can proceed.
 			a.PublishTurnActive()
@@ -313,6 +304,32 @@ func (a *Agent) preparePiInput(expected *string, content string, attachments []*
 	}
 	if steer {
 		payload["streamingBehavior"] = StreamingBehaviorSteer
+	} else {
+		payload["streamingBehavior"] = StreamingBehaviorFollowUp
+	}
+	if steer {
+		ticket := a.steers.Add(messageBuilder.String())
+		wait, err := a.beginPiCommand(CommandPrompt, payload)
+		if err != nil {
+			a.forgetPiSteer(ticket)
+			return nil, err
+		}
+		return func() error {
+			raw, err := wait(a.APITimeout())
+			if err != nil {
+				a.forgetPiSteer(ticket)
+				var refusal *piCommandRefusal
+				if errors.As(err, &refusal) {
+					return err
+				}
+				return fmt.Errorf("%w: Pi did not confirm steer delivery: %v", agent.ErrDeliveryUncertain, err)
+			}
+			if piPromptDisposition(raw) == "handled" {
+				a.steers.Echo(ticket)
+				a.steers.Settle(a.orderedSink())
+			}
+			return nil
+		}, nil
 	}
 	if a.isPiExtensionCommand(messageBuilder.String()) {
 		wait, err := a.beginPiCommand(CommandPrompt, payload)
@@ -327,31 +344,35 @@ func (a *Agent) preparePiInput(expected *string, content string, attachments []*
 		}, nil
 	}
 
-	// The prompt response arrives at turn end. The queue needs only the stdin
-	// write as delivery acceptance, so the response wait runs separately.
-	return nil, a.sendPiCommandDetached(CommandPrompt, payload, func(err error) {
+	// Pi answers preflight with started, queued, or handled. It sends no second reply.
+	// The stdin write confirms delivery, so the response wait runs separately.
+	return nil, a.sendPiCommandDetached(CommandPrompt, payload, func(raw json.RawMessage, err error) {
 		if err != nil {
-			a.handlePiPromptFailure(err, steer)
+			a.handlePiPromptFailure(err)
+		} else if piPromptDisposition(raw) == "handled" {
+			a.PublishTurnActive()
 		}
 	})
 }
 
-func (a *Agent) handlePiPromptFailure(err error, steer bool) {
+func (a *Agent) forgetPiSteer(ticket providerkit.SteerTicket) {
+	a.steers.Forget(ticket)
+	a.steers.Settle(a.orderedSink())
+}
+
+func (a *Agent) handlePiPromptFailure(err error) {
 	if a.IsStopped() {
 		// Stop owns incomplete-output persistence. A detached waiter can fail
 		// after the process closes, but that is not a second visible error.
 		return
 	}
-	if !steer {
-		a.flushPiGeneration(agent.MessageCompletionError)
-		a.persistIncompletePiTools(agent.MessageCompletionError)
-		a.sink.ReportProgress(agent.ResetProgress())
-	}
-	slog.Error("pi prompt failed", "agent_id", a.AgentID(), "steer", steer, "error", err)
-	a.sink.PersistLeapMuxNotification(map[string]any{
+	// A preflight refusal owns no output. Another native run may already be active.
+	slog.Error("pi prompt failed", "agent_id", a.AgentID(), "error", err)
+	a.orderedSink().PersistLeapMuxNotification(map[string]any{
 		contracts.NotificationFieldType:  contracts.NotificationTypeAgentError,
 		contracts.NotificationFieldError: err.Error(),
 	})
+	a.PublishTurnActive()
 }
 
 // ClearContext starts a fresh Pi session in-place.
@@ -377,17 +398,20 @@ func (a *Agent) ClearContext() (string, error) {
 	if *response.Cancelled {
 		return "", agent.ErrContextClearCancelled
 	}
+	a.steers.DropAll()
+	a.steers.Settle(a.orderedSink())
+	a.endPiCompaction()
 	stateRaw, err := a.sendPiCommand(CommandGetState, nil, a.APITimeout())
 	if err != nil {
 		return "", fmt.Errorf("read the new Pi session: %w", err)
 	}
 	a.flushPiGeneration(agent.MessageCompletionInterrupted)
 	a.persistIncompletePiTools(agent.MessageCompletionInterrupted)
+	a.settleHeldPiTurn(agent.MessageCompletionInterrupted)
 	a.applyStateResponse(stateRaw)
 	a.Mu.Lock()
 	a.currentTurnActive = false
 	a.interruptRequests = nil
-	a.retryState.turn = nil
 	a.turnGeneration++
 	// Drop the turn's start mark with the session. agent_start takes a mark only
 	// when the agent holds none, so that a retried run keeps the turn's original

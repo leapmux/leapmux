@@ -96,9 +96,12 @@ func actorAbortMessageEvent(t *testing.T, messageID, actor string) []byte {
 	}})
 }
 
+// This decorator can refuse a native final before its inner queue accepts it.
+// Captured generation writes call the decorator from the queue instead.
 type controlledPartSink struct {
 	agent.ProviderServices
 	reject     atomic.Int32
+	rejectAll  atomic.Bool
 	rejectText string
 }
 
@@ -107,8 +110,10 @@ func (s *controlledPartSink) PersistMessage(source leapmuxv1.MessageSource, cont
 }
 
 func (s *controlledPartSink) persistTo(target agent.ProviderServices, source leapmuxv1.MessageSource, content agent.MessageContent, span agent.SpanInfo) error {
-	if s.reject.Load() > 0 && (s.rejectText == "" || strings.Contains(string(content.Original), s.rejectText)) {
-		s.reject.Add(-1)
+	if (s.rejectAll.Load() || s.reject.Load() > 0) && (s.rejectText == "" || strings.Contains(string(content.Original), s.rejectText)) {
+		if !s.rejectAll.Load() {
+			s.reject.Add(-1)
+		}
 		return errors.New("the controlled part write failed")
 	}
 	return target.PersistMessage(source, content, span)
@@ -411,7 +416,7 @@ func TestFailedPendingMessageDoesNotBlockANewerFinalAtIdle(t *testing.T) {
 	assert.Equal(t, string(agent.MessageCompletionComplete), completion)
 }
 
-func TestStreamedMessageFailureDoesNotBlockAnotherStreamAtIdle(t *testing.T) {
+func TestStreamedMessagesKeepTheirOrderAfterAWriteFailure(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newSinkTestAgent(t)
 	controlled := &controlledPartSink{ProviderServices: a.sink, rejectText: "The old streamed answer."}
@@ -420,20 +425,22 @@ func TestStreamedMessageFailureDoesNotBlockAnotherStreamAtIdle(t *testing.T) {
 	feed(a, messageEvent(t, "msg_new", roleAssistant, mainActorID, false),
 		textPartEvent(t, partTypeText, "part_new", "msg_new", "", false),
 		deltaEvent(t, "part_new", "msg_new", "The new streamed answer."))
-	controlled.reject.Store(10)
+	controlled.rejectAll.Store(true)
 	feed(a, statusEvent(t, contracts.MiMoStatusTypeIdle))
-	rows := assembledRows(sink)
-	require.Len(t, rows, 1, "each streamed message flushes independently")
-	_, text, completion := assembledText(t, rows[0].Content)
-	assert.Equal(t, "The new streamed answer.", text)
-	assert.Equal(t, string(agent.MessageCompletionComplete), completion)
-	controlled.reject.Store(0)
+	assert.Empty(t, assembledRows(sink), "a later stream must wait behind the failed earlier write")
+	active, _ := sink.LastTurnActive()
+	assert.True(t, active, "the queue release waits for the retained output")
+	controlled.rejectAll.Store(false)
 	a.flushUnfinishedOutput(agent.MessageCompletionInterrupted)
-	rows = assembledRows(sink)
+	rows := assembledRows(sink)
 	require.Len(t, rows, 2)
-	_, text, completion = assembledText(t, rows[1].Content)
-	assert.Equal(t, "The old streamed answer.", text)
-	assert.Equal(t, string(agent.MessageCompletionComplete), completion, "the retry keeps its original resolved outcome")
+	for i, expected := range []string{"The old streamed answer.", "The new streamed answer."} {
+		_, text, completion := assembledText(t, rows[i].Content)
+		assert.Equal(t, expected, text)
+		assert.Equal(t, string(agent.MessageCompletionComplete), completion, "the retry keeps the original resolved outcome")
+	}
+	active, _ = sink.LastTurnActive()
+	assert.False(t, active)
 }
 
 func TestLateFinalSupersedesTheFailedStreamedScope(t *testing.T) {
@@ -442,10 +449,11 @@ func TestLateFinalSupersedesTheFailedStreamedScope(t *testing.T) {
 	controlled := &controlledPartSink{ProviderServices: a.sink, rejectText: "The streamed prefix."}
 	a.sink = controlled
 	beginPartialAnswer(t, a, "msg_late", "part_late", "The streamed prefix.")
-	controlled.reject.Store(1)
+	controlled.rejectAll.Store(true)
 	feed(a, statusEvent(t, contracts.MiMoStatusTypeIdle))
 	assert.Empty(t, assembledRows(sink))
-	controlled.reject.Store(0)
+	buffer := a.parts["part_late"].buffer
+	require.True(t, buffer.HasPendingWrites())
 	feed(a, textPartEvent(t, partTypeText, "part_late", "msg_late", "The exact whole native final.", true))
 	rows := assembledRows(sink)
 	require.Len(t, rows, 1, "the exact final replaces the failed streamed identity")
@@ -456,6 +464,7 @@ func TestLateFinalSupersedesTheFailedStreamedScope(t *testing.T) {
 		messageEvent(t, "msg_late", roleAssistant, mainActorID, true))
 	assert.Len(t, assembledRows(sink), 1)
 	assert.NotContains(t, a.parts, "part_late", "the successful final releases the retained record")
+	assert.False(t, buffer.HasPendingWrites(), "the native final replaces the pending streamed copy also")
 }
 
 func TestNativeMetadataReplacesTheGuessedMessageIdentity(t *testing.T) {

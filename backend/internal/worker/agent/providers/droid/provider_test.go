@@ -14,6 +14,16 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 )
 
+func TestClassifyLlmRetryIsAPIRetry(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, agent.APIRetryNotification(), (droidProvider{}).Classify(json.RawMessage(`{"type":"llm_retry","attempt":1,"reason":"overloaded"}`)))
+}
+
+func TestClassifySessionCompactedIsABoundary(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, agent.CompactionBoundaryNotification(), (droidProvider{}).Classify(json.RawMessage(`{"type":"session_compacted","removedCount":1}`)))
+}
+
 func TestRegistrationWiresThePlugin(t *testing.T) {
 	t.Parallel()
 	reg := Registration()
@@ -243,7 +253,7 @@ func TestBusyRefusalRepublishesTheTurn(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}
 	a := &Agent{sink: agent.NewProviderServices(sink)}
-	a.armTurn()
+	a.startTurn()
 	err := a.SendInput("hello", nil)
 	agenttest.AssertBusyRefusalRepublishesTheTurn(t, sink, a, err)
 }

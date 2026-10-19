@@ -40,3 +40,16 @@ func TestClaudeSendInputDuringActiveTurnReportsAgentBusy(t *testing.T) {
 	agent := &Agent{turnActive: true, sink: agent.NewProviderServices(sink)}
 	agenttest.AssertBusyRefusalRepublishesTheTurn(t, sink, agent, agent.SendInput("later turn", nil))
 }
+
+func TestClaudeSteerMarksTheTurnAwaitingItsResult(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a, _ := newClaudeAgentWithStdin(agent.NewProviderServices(sink))
+	a.HandleOutput([]byte(`{"type":"system","subtype":"session_state_changed","state":"running"}`))
+	require.NoError(t, a.SteerInput("steer", nil))
+	a.HandleOutput([]byte(`{"type":"system","subtype":"session_state_changed","state":"idle"}`))
+	assert.ErrorIs(t, a.SendInput("next", nil), agent.ErrAgentBusy)
+	a.HandleOutput([]byte(`{"type":"result","subtype":"success"}`))
+	a.HandleOutput([]byte(`{"type":"system","subtype":"session_state_changed","state":"idle"}`))
+	assert.NoError(t, a.SendInput("next", nil))
+}

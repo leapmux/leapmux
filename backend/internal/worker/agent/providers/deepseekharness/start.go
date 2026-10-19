@@ -68,7 +68,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		_ = a.Wait()
 		return nil, a.FormatStartupError(phase, err)
 	}
-	address, err := listen.Wait(ctx, a.ProcessDone(), opts.EffectiveStartupTimeout())
+	address, err := listen.Wait(ctx, a.Clock(), a.ProcessDone(), opts.EffectiveStartupTimeout())
 	if err != nil {
 		return fail("listen", err)
 	}

@@ -25,9 +25,8 @@ type PlanUpdateRecord struct {
 	Title       string
 }
 
-// ControlSink extends Sink to also capture control requests, plan updates, and
-// LeapMux notification broadcasts. The base Sink drops all three. A provider
-// test uses it when it asserts on any of the three.
+// ControlSink adds control-request and plan records to Sink.
+// It keeps its own worker-notification collection also.
 type ControlSink struct {
 	Sink
 
@@ -99,6 +98,10 @@ func (s *ControlSink) UpdatePlan(content []byte, compression leapmuxv1.ContentCo
 		Compression: compression,
 		Title:       title,
 	})
+}
+
+func (s *ControlSink) PersistWorkerNotification(content agent.MessageContent) (bool, error) {
+	return s.persistWorkerNotification(content, s.PersistLeapMuxNotification)
 }
 
 func (s *ControlSink) PersistLeapMuxNotification(info map[string]interface{}) {

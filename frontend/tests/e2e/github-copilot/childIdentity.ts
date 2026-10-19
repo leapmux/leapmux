@@ -1,10 +1,12 @@
+import type { AgentInfo } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import type { MockModelMatcher } from '../helpers/mockModelScript'
-import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
-import { COPILOT_EVENT, COPILOT_METHOD } from '../../../src/generated/contracts/copilot-protocol'
-import { isObject } from '../../../src/lib/jsonPick'
+import { AgentProvider, AgentStatus, BackgroundTaskKind, BackgroundTaskStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { escapeRegExp } from '../../../src/lib/regexp'
-import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
+import { sameAgentOwnership } from '../helpers/nativeMessages'
+import { nativeAgentById, nativeAgentsByIds } from '../helpers/nativeScenario'
+import { readNativeSidebarSnapshot } from '../helpers/nativeSidebarSnapshot'
+import { retryUntilPass } from '../helpers/retryUntilPass'
 
 /**
  * Match the own turn of a Copilot child from the start of a line of its task.
@@ -17,47 +19,63 @@ export function copilotChildTaskMatcher(task: string): MockModelMatcher {
   return { user: `(?:^|\\n)${escapeRegExp(task)}` }
 }
 
-/** Resolve the actual child start event that belongs to this exact parent task call. */
-export function copilotChildTaskId(snapshot: NativeMessageSnapshot, spawnCallId: string): string {
-  if (snapshot.agentSessionId.trim() === '')
-    throw new Error('The native Copilot child identity requires a nonempty session ID.')
-  if (!spawnCallId)
+function validIdentity(value: unknown): value is string {
+  return typeof value === 'string' && value.trim() !== ''
+}
+
+function requireCopilotParent(parent: AgentInfo | null | undefined): AgentInfo {
+  if (!parent || parent.status !== AgentStatus.ACTIVE || parent.agentProvider !== AgentProvider.GITHUB_COPILOT
+    || ![parent.id, parent.rootAgentId, parent.workerId, parent.agentSessionId].every(validIdentity)) {
+    throw new Error('The Copilot child identity requires an active parent with native session and owner IDs.')
+  }
+  return parent
+}
+
+/** Resolve the exact spawning call through the child links that the Worker retains. */
+export function copilotChildTaskId(parent: AgentInfo, children: readonly AgentInfo[], spawnCallId: string): string {
+  requireCopilotParent(parent)
+  if (!validIdentity(spawnCallId))
     throw new Error('The native Copilot child identity requires a spawn call ID.')
-  const ids = new Set<string>()
-  for (const message of snapshot.messages) {
-    if (message.agentSessionId !== snapshot.agentSessionId)
+  const ids = new Map<string, string>()
+  for (const child of children) {
+    if (child.parentAgentId !== parent.id || child.rootAgentId !== parent.rootAgentId || child.workerId !== parent.workerId
+      || child.agentProvider !== parent.agentProvider || child.status !== AgentStatus.ACTIVE || child.spawnSpanId !== spawnCallId) {
       continue
-    const body = nativeMessageBody(message)
-    if (!isObject(body))
-      throw new Error('The native Copilot parent frame must contain an object.')
-    if (body.method !== COPILOT_METHOD.SessionEvent)
-      continue
-    const params = body.params
-    if (!isObject(params))
-      throw new Error('The native Copilot session event contains invalid parameters.')
-    if (params.sessionId !== snapshot.agentSessionId)
-      continue
-    const event = params.event
-    if (!isObject(event))
-      throw new Error('The native Copilot session event contains no event object.')
-    if (event.type !== COPILOT_EVENT.SubagentStarted)
-      continue
-    if (!isObject(event.data))
-      throw new Error('The native Copilot child start contains no data object.')
-    if (event.data.toolCallId !== spawnCallId)
-      continue
-    if (typeof event.agentId !== 'string' || event.agentId.trim() === '')
-      throw new Error('The native Copilot child start contains no agent ID.')
-    ids.add(event.agentId)
+    }
+    if (!validIdentity(child.id) || !validIdentity(child.providerChildKey))
+      throw new Error('The matching Copilot child link has no native child ID or Worker identity.')
+    const previous = ids.get(child.id)
+    if (previous !== undefined && previous !== child.providerChildKey)
+      throw new Error('The Copilot child links contain conflicting native identities.')
+    ids.set(child.id, child.providerChildKey)
   }
   if (ids.size !== 1)
     throw new Error('The exact Copilot task call must identify one native child.')
-  const id = [...ids][0]
+  const id = ids.values().next().value
   if (id === undefined)
     throw new Error('The exact Copilot task has no native child ID.')
   return id
 }
 
-export async function readCopilotChildTaskId(context: ManagedNativeScenarioContext, parentId: string, spawnCallId: string): Promise<string> {
-  return copilotChildTaskId(await readNativeMessageSnapshot(context, parentId), spawnCallId)
+export async function readCopilotChildTaskId(context: Pick<ManagedNativeScenarioContext, 'page' | 'leapmuxServer'>, parentId: string, spawnCallId: string): Promise<string> {
+  if (!validIdentity(parentId) || !validIdentity(spawnCallId))
+    throw new Error('The Copilot child lookup requires parent and spawn call IDs.')
+  const owner = requireCopilotParent(await nativeAgentById(context, parentId))
+  if (owner.id !== parentId || owner.workerId !== context.leapmuxServer.workerId)
+    throw new Error('The Copilot child lookup received another parent or Worker.')
+  return retryUntilPass(async () => {
+    const snapshot = await readNativeSidebarSnapshot(context, parentId)
+    const ids = new Set(snapshot.backgroundTasks
+      .filter(task => task.kind === BackgroundTaskKind.SUBAGENT && task.status === BackgroundTaskStatus.RUNNING
+        && validIdentity(task.childAgentId)
+        && (task.parentAgentId === parentId || (task.parentAgentId === '' && owner.id === owner.rootAgentId)))
+      .map(task => task.childAgentId))
+    if (ids.size === 0)
+      throw new Error('The Worker registered no running Copilot child.')
+    const children = (await nativeAgentsByIds(context, [...ids])).filter(child => ids.has(child.id))
+    const current = await nativeAgentById(context, parentId)
+    if (!current || current.status !== AgentStatus.ACTIVE || !sameAgentOwnership(owner, current))
+      throw new Error('The Copilot parent ownership changed during the child lookup.')
+    return copilotChildTaskId(owner, children, spawnCallId)
+  })
 }

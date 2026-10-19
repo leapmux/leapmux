@@ -1,6 +1,7 @@
 import type { NativeCompactionOptions } from '../helpers/manualCompaction'
 import type { NativeScenarioContext } from '../helpers/nativeScenario'
 import { expect } from '@playwright/test'
+import { expectNoLiveCompaction } from '../helpers/compaction'
 import { chatScrollContainer, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 /** The native compaction of Pi. A rule answers its summarizer, which Pi gives its own system prompt. */
@@ -20,7 +21,7 @@ export async function exercisePiEmptyCompaction(context: Pick<NativeScenarioCont
   await expect(chat).toContainText('Nothing to compact (session too small)')
   await waitForAgentIdle(page)
 
-  await page.reload()
+  await expectNoLiveCompaction(page)
   await expect(chat).toContainText('Nothing to compact (session too small)')
   await expect(chat).not.toContainText('Compacting context...')
 }

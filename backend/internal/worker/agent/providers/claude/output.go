@@ -57,7 +57,9 @@ const (
 	// claudeModelFallbackScopeLocal is the `scope` of a `model_refusal_fallback`
 	// frame whose fallback model serves one response only. Only the Worker
 	// reads it, so it is not in the contract.
-	claudeModelFallbackScopeLocal = "local"
+	claudeModelFallbackScopeLocal   = "local"
+	claudeLocalCommandCompact       = "compact"
+	claudeLocalCommandOutcomeFailed = "failed"
 )
 
 // claudeHiddenSystemSubtypes is the set of `system` subtypes the transcript
@@ -70,6 +72,19 @@ var claudeHiddenSystemSubtypes = func() map[string]struct{} {
 	}
 	return subtypes
 }()
+
+// Claude Code 2.1.302 declares these stdout types. Each supplies no transcript row.
+var claudeDroppedFrameTypes = map[string]string{
+	"stream_event":      "the launch disables partial-message frames",
+	"tool_use_summary":  "the tool rows already state the calls",
+	"prompt_suggestion": "the launch does not request prompt suggestions",
+	"keep_alive":        "the heartbeat states no content",
+	"auth_status":       "authentication runs outside this session",
+	"autocompact_state": "the frame reports configuration, not a compaction boundary",
+	"command_lifecycle": "the command lifecycle supplies no transcript content",
+	"transcript_mirror": "the frame mirrors the native session file",
+	"api_metrics":       "the frame supplies request telemetry",
+}
 
 // contextUsageSnapshot tracks token usage for debounced broadcasting.
 type contextUsageSnapshot struct {
@@ -180,6 +195,22 @@ func (a *Agent) handleClaudeOutput(content []byte, msgType string) {
 	slog.Debug("HandleOutput", "agent_id", a.AgentID(), "type", msgType, "len", len(content))
 
 	a.observeTurnFromOutput(content, msgType)
+	a.resolveHeldAPIError(content, msgType)
+	if msgType == claudeMsgTypeAssistant {
+		var env messageEnvelope
+		if json.Unmarshal(content, &env) == nil && env.IsAPIErrorMessage && env.ParentToolUseID == "" {
+			var texts []string
+			for _, block := range env.ContentBlocks() {
+				if block.Type == "text" {
+					texts = append(texts, block.Text)
+				}
+			}
+			a.heldAPIErrorMu.Lock()
+			a.heldAPIError = &claudeHeldAPIError{content: bytes.Clone(content), text: strings.Join(texts, "\n")}
+			a.heldAPIErrorMu.Unlock()
+			return
+		}
+	}
 
 	switch msgType {
 	case claudeMsgTypeAssistant, claudeMsgTypeSystem, claudeMsgTypeResult:
@@ -191,14 +222,7 @@ func (a *Agent) handleClaudeOutput(content []byte, msgType string) {
 		a.handlePersistableMessage(content, msgType)
 
 	case claudeMsgTypeUser:
-		if isSimpleUserTextEcho(content) {
-			// Reset tool use counter at the start of each user turn.
-			// Only reset for user text echoes, not tool_result messages,
-			// so the counter accumulates across the entire turn.
-			a.Mu.Lock()
-			a.TurnToolUses = 0
-			a.Mu.Unlock()
-		} else {
+		if !isSimpleUserTextEcho(content) {
 			a.handlePersistableMessage(content, msgType)
 		}
 
@@ -232,9 +256,69 @@ func (a *Agent) handleClaudeOutput(content []byte, msgType string) {
 		a.claudeHandleConversationReset()
 
 	default:
-		// Drop an unknown type. `stream_event` only appears when the launch uses
-		// `--include-partial-messages`, which LeapMux does not enable.
-		slog.Debug("unhandled claude output type", "agent_id", a.AgentID(), "type", msgType)
+		if reason, dropped := claudeDroppedFrameTypes[msgType]; dropped {
+			slog.Debug("claude output needs no transcript row", "agent_id", a.AgentID(), "type", msgType, "reason", reason)
+			return
+		}
+		if msgType == "" {
+			slog.Debug("claude output has no type", "agent_id", a.AgentID())
+			return
+		}
+		a.persistUnknownClaudeFrame(content)
+	}
+}
+
+type claudeHeldAPIError struct {
+	content []byte
+	text    string
+}
+
+// resolveHeldAPIError compares a held root error with the next root conversation frame.
+// System frames and synthetic context do not resolve the hold.
+func (a *Agent) resolveHeldAPIError(content []byte, msgType string) {
+	if msgType != claudeMsgTypeAssistant && msgType != claudeMsgTypeUser && msgType != claudeMsgTypeResult {
+		return
+	}
+	var env messageEnvelope
+	if json.Unmarshal(content, &env) != nil || env.ParentToolUseID != "" || claudeIsSyntheticContext(msgType, &env) {
+		return
+	}
+	a.heldAPIErrorMu.Lock()
+	held := a.heldAPIError
+	a.heldAPIError = nil
+	a.heldAPIErrorMu.Unlock()
+	if held == nil {
+		return
+	}
+	if msgType == claudeMsgTypeResult && env.IsError && env.Result == held.text {
+		return
+	}
+	a.handlePersistableMessage(held.content, claudeMsgTypeAssistant)
+}
+
+// flushHeldAPIError stores an error when the process exits without a matching result.
+func (a *Agent) flushHeldAPIError() {
+	a.heldAPIErrorMu.Lock()
+	held := a.heldAPIError
+	a.heldAPIError = nil
+	a.heldAPIErrorMu.Unlock()
+	if held != nil {
+		a.handlePersistableMessage(held.content, claudeMsgTypeAssistant)
+	}
+}
+
+// persistUnknownClaudeFrame keeps an unknown frame only when it identifies the current session.
+func (a *Agent) persistUnknownClaudeFrame(content []byte) {
+	sessionID := providerkit.StringField(content, "session_id")
+	a.Mu.Lock()
+	current := a.sessionID
+	a.Mu.Unlock()
+	if sessionID == "" || sessionID != current {
+		slog.Debug("unknown claude output does not identify the current session", "agent_id", a.AgentID(), "session_id", sessionID)
+		return
+	}
+	if err := a.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: content}, agent.SpanInfo{}); err != nil {
+		slog.Error("persist unknown claude output", "agent_id", a.AgentID(), "error", err)
 	}
 }
 
@@ -269,11 +353,19 @@ type contentBlock struct {
 // messageEnvelope is the shared top-level structure parsed once for
 // assistant, user, system, and result messages.
 type messageEnvelope struct {
-	UUID            string `json:"uuid"`
-	ParentToolUseID string `json:"parent_tool_use_id"`
-	ToolUseID       string `json:"tool_use_id"`
-	TaskDescription string `json:"task_description"`
-	Origin          struct {
+	LocalCommandRun struct {
+		Command string `json:"command"`
+	} `json:"local_command_run"`
+	LocalCommandOutcome struct {
+		Kind string `json:"kind"`
+	} `json:"local_command_outcome"`
+	IsAPIErrorMessage bool   `json:"is_api_error_message"`
+	IsSynthetic       bool   `json:"isSynthetic"`
+	UUID              string `json:"uuid"`
+	ParentToolUseID   string `json:"parent_tool_use_id"`
+	ToolUseID         string `json:"tool_use_id"`
+	TaskDescription   string `json:"task_description"`
+	Origin            struct {
 		Kind         string `json:"kind"`
 		From         string `json:"from"`
 		SenderTaskID string `json:"senderTaskId"`
@@ -567,10 +659,15 @@ func (a *Agent) handlePersistableMessage(content []byte, msgType string) {
 	}
 
 	if msgType == claudeMsgTypeSystem {
-		subtype := claudeSystemSubtypeOf(content)
+		subtype := providerkit.StringField(content, "subtype")
 		// Select the native handler before it decodes its payload fields.
 		// An unrelated malformed field must not affect this event's handler.
 		switch subtype {
+		case contracts.ClaudeSystemSubtypeStatus:
+			a.handleClaudeStatus(content)
+			return
+		case contracts.ClaudeSystemSubtypeCompactBoundary, contracts.ClaudeSystemSubtypeMicrocompactBoundary:
+			a.endClaudeCompaction()
 		case contracts.ClaudeHiddenSystemSubtypeThinkingTokens:
 			a.handleThinkingTokens(content)
 			return
@@ -625,17 +722,15 @@ func (a *Agent) handlePersistableMessage(content []byte, msgType string) {
 				return
 			}
 		case contracts.ClaudeSystemSubtypeInformational:
-			// The interface shows level info in its own transcript mode only, so
-			// a stored row would contradict it. The browser hides the rows an
-			// older build stored.
-			if claudeInformationalLevel(content) == contracts.ClaudeInformationalLevelInfo {
+			// Claude shows level info only in its transcript mode. The worker stores no row for that level.
+			if providerkit.StringField(content, "level") == contracts.ClaudeInformationalLevelInfo {
 				return
 			}
 		case contracts.ClaudeSystemSubtypeHookResponse:
 			// A hook that blocks a call reports itself in that call's own
 			// result. Only a FAILED hook needs a row of its own; the rest would
 			// add one row per hook per turn with nothing new to state.
-			if claudeHookResponseOutcome(content) != contracts.ClaudeHookOutcomeError {
+			if providerkit.StringField(content, "outcome") != contracts.ClaudeHookOutcomeError {
 				return
 			}
 		case contracts.ClaudeSystemSubtypeModelRefusalFallback:
@@ -648,7 +743,8 @@ func (a *Agent) handlePersistableMessage(content []byte, msgType string) {
 			// The frame also lists `retracted_message_uuids`, the refused partial
 			// messages that the CLI removed. LeapMux keeps those rows for now:
 			// https://github.com/leapmux/leapmux/issues/533
-			if claudeModelFallbackScope(content) != claudeModelFallbackScopeLocal {
+			// An absent scope means a session fallback. Only local opts out.
+			if providerkit.StringField(content, "scope") != claudeModelFallbackScopeLocal {
 				a.adoptClaudeModelFallback(content)
 			}
 		case contracts.ClaudeSystemSubtypeModelConsentFallback:
@@ -657,22 +753,12 @@ func (a *Agent) handlePersistableMessage(content []byte, msgType string) {
 			a.adoptClaudeModelFallback(content)
 		}
 
-		if isNotificationThreadable(content, source) {
-			if statusVal, ok := extractStatusValue(content); ok {
-				prev := a.lastAgentStatus
-				a.lastAgentStatus = statusVal
-				if statusVal == "" && prev == "" {
-					return
-				}
-			}
-			// Persist the raw `system` message verbatim (source is AGENT
-			// here — system notifications are agent-emitted). Includes
-			// `compacting` status, api_retry, and other notification-
-			// threaded subtypes — the renderer extracts `subtype`/`status`
-			// from the raw envelope so future fields like `tokensBefore`/
-			// `durationMs` don't get discarded.
+		if claudeIsConsolidatable(content) {
+			// Keep the native notification unchanged. The browser reads its display fields.
 			if _, err := a.sink.PersistNotification(source, agent.MessageContent{Original: content}); err != nil {
 				slog.Error("persist notification-threaded system message", "agent_id", a.AgentID(), "error", err)
+			} else if subtype == contracts.ClaudeSystemSubtypeApiRetry {
+				a.apiRetry.NoteRetry()
 			}
 			return
 		}
@@ -684,16 +770,23 @@ func (a *Agent) handlePersistableMessage(content []byte, msgType string) {
 		slog.Warn("invalid message envelope", "agent_id", a.AgentID(), "error", err)
 		return
 	}
+	if claudeIsSyntheticContext(msgType, &env) {
+		return
+	}
+	if msgType == claudeMsgTypeAssistant && env.ParentToolUseID == "" && claudeIsFailedCompactCommand(&env) {
+		return
+	}
+	if msgType == claudeMsgTypeResult && env.ParentToolUseID == "" {
+		a.endClaudeCompaction()
+	}
 
 	if msgType == claudeMsgTypeUser {
 		a.settleToolControls(env.ContentBlocks())
 	}
 
-	// Route subagent output (forwarded via --forward-subagent-text) into the
-	// child's OWN transcript. Every forwarded envelope -- assistant text,
-	// thinking, the child's own tool_use, its tool_result, and the child's
-	// result -- carries the SAME parent_tool_use_id (the parent's Task
-	// tool_use). None of it persists into the parent transcript.
+	// Route forwarded output into the child's transcript through parent_tool_use_id.
+	// Claude Code 2.1.302 forwards assistant output and tool results, including synthetic API errors.
+	// It sends no child result. Keep that route for a build that forwards one.
 	if env.ParentToolUseID != "" && (msgType == claudeMsgTypeAssistant ||
 		msgType == claudeMsgTypeUser || msgType == claudeMsgTypeResult) {
 		a.routeSubagentMessage(content, msgType, &env)
@@ -704,6 +797,12 @@ func (a *Agent) handlePersistableMessage(content []byte, msgType string) {
 	}
 	if msgType == claudeMsgTypeUser {
 		a.persistClaudeHandbackResult(&env)
+	}
+	if msgType == claudeMsgTypeAssistant && !env.IsAPIErrorMessage {
+		a.apiRetry.Resolve(a.sink)
+	}
+	if msgType == claudeMsgTypeResult {
+		a.apiRetry.Reset()
 	}
 
 	// Extract agent context metadata from top-level assistant and result
@@ -727,6 +826,9 @@ func (a *Agent) handlePersistableMessage(content []byte, msgType string) {
 	messageContent := agent.MessageContent{Original: content}
 	if msgType == claudeMsgTypeResult {
 		messageContent = a.MessageWithToolUses(content)
+		a.Mu.Lock()
+		a.TurnToolUses = 0
+		a.Mu.Unlock()
 		// One `result` ends one turn, so it spends the note whatever it states. The
 		// note marks the turn end only when the frame also states that the stop took
 		// effect: a turn that ended before the CLI read the stop keeps its outcome.
@@ -746,8 +848,7 @@ func (a *Agent) handlePersistableMessage(content []byte, msgType string) {
 	// so the assistant message stays at the parent depth.
 	var persistErr error
 	if msgType == claudeMsgTypeResult {
-		// Final turn-end envelope — routes through PersistTurnEnd so
-		// the sink fires the git-status auto-broadcast explicitly.
+		// PersistTurnEnd stores the final envelope and broadcasts the Git status.
 		persistErr = a.sink.PersistTurnEnd(messageContent, spanInfo)
 	} else {
 		persistErr = a.sink.PersistMessage(source, messageContent, spanInfo)
@@ -773,13 +874,9 @@ func (a *Agent) handlePersistableMessage(content []byte, msgType string) {
 	}
 
 	if msgType == claudeMsgTypeResult {
-		// The turn is over. Main thread only: a subagent's `result` carries a
-		// parent_tool_use_id and left through routeSubagentMessage far above, so
-		// a child finishing can never clear the root's turn.
-		//
-		// After PersistTurnEnd, which records this turn's tool-call count for the
-		// settle the clear is about to produce. An interrupted or errored turn
-		// ends with a `result` too, so this one site covers those paths as well.
+		// The root result ends this response. Native session state can keep the turn active for a queued steer.
+		// A build that forwards a child result routes it above, so that result cannot change the root turn.
+		// PersistTurnEnd already recorded the tool-call count. Interrupted and failed responses use this path also.
 		providerkit.ScheduleOrCancelAPIErrorAutoContinue(a.sink, env.IsError && isRetryableClaudeResultError(env.Result), content)
 
 		// Reset all span tracking so the next turn starts clean.
@@ -794,11 +891,56 @@ func (a *Agent) handlePersistableMessage(content []byte, msgType string) {
 		// arms at its own turn end, so wiping every arm here would drop a live
 		// subagent's before its task_started arrived.
 		a.tasks.clearClaudeRestarts("")
-		// LAST, because the publish inside releases the Worker's input queue:
-		// the next message dispatches on it, and it must find the spans of the
-		// finished turn already reset -- a passthrough column captured before
-		// ResetSpans draws the dead turn's bars beside the new message.
-		a.disarmTurn()
+		// A CLI with session-state reports keeps the turn active until idle.
+		// The fallback clears it here, after its spans reset, because that clear releases the queue.
+		if a.publishesSessionState() {
+			a.recordClaudeResultEdge()
+		} else {
+			a.disarmTurn()
+		}
+	}
+}
+
+// claudeIsSyntheticContext identifies native context that the user did not send.
+// A synthetic tool result still settles its control and span.
+func claudeIsSyntheticContext(msgType string, env *messageEnvelope) bool {
+	return msgType == claudeMsgTypeUser && env.IsSynthetic && !hasToolResultBlock(env)
+}
+
+// claudeIsFailedCompactCommand identifies the manual error that the final status already states.
+func claudeIsFailedCompactCommand(env *messageEnvelope) bool {
+	return env.LocalCommandRun.Command == claudeLocalCommandCompact && env.LocalCommandOutcome.Kind == claudeLocalCommandOutcomeFailed
+}
+
+// handleClaudeStatus publishes a compaction start and stores only a failed end.
+func (a *Agent) handleClaudeStatus(content []byte) {
+	failed := providerkit.StringField(content, "compact_result") == contracts.ClaudeCompactResultFailed
+	if providerkit.StringField(content, "status") == contracts.ClaudeStatusCompacting && !failed {
+		a.Mu.Lock()
+		started := !a.compactionLive
+		a.compactionLive = true
+		a.Mu.Unlock()
+		if started {
+			providerkit.PublishCompaction(a.sink, "")
+		}
+		return
+	}
+	a.endClaudeCompaction()
+	if failed {
+		if _, err := a.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: content}); err != nil {
+			slog.Error("persist failed claude compaction", "agent_id", a.AgentID(), "error", err)
+		}
+	}
+}
+
+// endClaudeCompaction clears a live start once, before the stored end.
+func (a *Agent) endClaudeCompaction() {
+	a.Mu.Lock()
+	live := a.compactionLive
+	a.compactionLive = false
+	a.Mu.Unlock()
+	if live {
+		providerkit.EndCompaction(a.sink)
 	}
 }
 
@@ -875,57 +1017,6 @@ func parsePermissionCheckStatus(content []byte) (toolUseID, agentID, status stri
 	return msg.ToolUseID, msg.AgentID, msg.Status, true
 }
 
-// claudeSystemSubtypeOf reads the `subtype` of a `system` line, or "" when the
-// line states none.
-func claudeSystemSubtypeOf(content []byte) string {
-	var msg struct {
-		Subtype string `json:"subtype"`
-	}
-	if err := json.Unmarshal(content, &msg); err != nil {
-		return ""
-	}
-	return msg.Subtype
-}
-
-// claudeInformationalLevel reads the `level` of an `informational` line, or ""
-// when the line carries none. The closed set is info, notice, suggestion and
-// warning (the interface's own render levels).
-func claudeInformationalLevel(content []byte) string {
-	var msg struct {
-		Level string `json:"level"`
-	}
-	if err := json.Unmarshal(content, &msg); err != nil {
-		return ""
-	}
-	return msg.Level
-}
-
-// claudeHookResponseOutcome reads the `outcome` of a `hook_response` line, or ""
-// when the line carries none. The closed set is success, error and cancelled.
-func claudeHookResponseOutcome(content []byte) string {
-	var msg struct {
-		Outcome string `json:"outcome"`
-	}
-	if err := json.Unmarshal(content, &msg); err != nil {
-		return ""
-	}
-	return msg.Outcome
-}
-
-// claudeModelFallbackScope reads the `scope` of a `model_refusal_fallback`
-// line, or "" when the line carries none. The closed set is session and local,
-// and the schema states that an absent scope is the session-scoped swap, so ""
-// is read as session everywhere (only "local" opts out of the model follow).
-func claudeModelFallbackScope(content []byte) string {
-	var msg struct {
-		Scope string `json:"scope"`
-	}
-	if err := json.Unmarshal(content, &msg); err != nil {
-		return ""
-	}
-	return msg.Scope
-}
-
 // adoptClaudeModelFallback folds the fallback model of a model-swap frame into
 // the session's model, so the settings the reader sees follow the swap the row
 // reports.
@@ -936,10 +1027,11 @@ func (a *Agent) adoptClaudeModelFallback(content []byte) {
 	if err := json.Unmarshal(content, &msg); err != nil || msg.FallbackModel == "" {
 		return
 	}
+	model := normalizeClaudeCodeModel(msg.FallbackModel)
 	a.Mu.Lock()
-	a.model = msg.FallbackModel
+	a.model = model
 	a.Mu.Unlock()
-	a.sink.PersistSettingsRefresh(map[string]string{agent.OptionIDModel: msg.FallbackModel})
+	a.sink.PersistSettingsRefresh(map[string]string{agent.OptionIDModel: model})
 }
 
 // claudePermissionCheckSink resolves the sink of the agent that made a tool
@@ -1261,23 +1353,13 @@ func parseClaudeControlRequestFields(content []byte) claudeControlRequestFields 
 	if err := json.Unmarshal(content, &frame); err != nil {
 		return claudeControlRequestFields{}
 	}
-	return claudeControlRequestFields{
-		Subtype:       claudeOptionalString(frame.Request["subtype"]),
-		ToolUseID:     claudeOptionalString(frame.Request["tool_use_id"]),
-		AgentID:       claudeOptionalString(frame.Request["agent_id"]),
-		MCPServerName: claudeOptionalString(frame.Request["mcp_server_name"]),
-		ElicitationID: claudeOptionalString(frame.Request["elicitation_id"]),
-	}
-}
-
-// claudeOptionalString decodes one optional JSON string. An absent, null, or
-// non-string value reads as "".
-func claudeOptionalString(raw json.RawMessage) string {
-	var value string
-	if err := json.Unmarshal(raw, &value); err != nil {
-		return ""
-	}
-	return value
+	var fields claudeControlRequestFields
+	fields.Subtype, _ = providerkit.RawString(frame.Request["subtype"])
+	fields.ToolUseID, _ = providerkit.RawString(frame.Request["tool_use_id"])
+	fields.AgentID, _ = providerkit.RawString(frame.Request["agent_id"])
+	fields.MCPServerName, _ = providerkit.RawString(frame.Request["mcp_server_name"])
+	fields.ElicitationID, _ = providerkit.RawString(frame.Request["elicitation_id"])
+	return fields
 }
 
 // claudeCodeHandleControlCancel retires the exact pending publication.
@@ -1297,7 +1379,7 @@ func (a *Agent) claudeCodeHandleControlCancel(content []byte) {
 // that the reader answered already, do nothing.
 //
 // The MCP server confirmed that the out-of-band flow of a URL-mode elicitation
-// finished, so the reader acted on the URL. Claude Code 2.1.300's headless
+// finished, so the reader acted on the URL. Claude Code 2.1.302's headless
 // completion handler only logs the completion and writes this frame. Its
 // elicitation handler still waits for the host's answer, so the MCP call stays
 // blocked until the Worker answers. The Worker therefore accepts the request,
@@ -1385,12 +1467,8 @@ func (a *Agent) claudeCodeHandleRateLimitEvent(content []byte) {
 		return
 	}
 
-	// Decode the SDK's camelCase shape and re-emit as snake_case to match
-	// the platform's session-info wire format. New fields the SDK adds in
-	// the future need to be enumerated here explicitly so they pick up the
-	// correct casing on the wire — the persisted notification still
-	// carries the raw Claude shape, so consumers that need an unknown
-	// field can fall back to that path.
+	// Convert the SDK's camelCase fields to the session-info snake_case fields.
+	// Add each new SDK field here explicitly. The stored notification retains the raw Claude fields for other readers.
 	var rlInfo struct {
 		RateLimitType      string   `json:"rateLimitType"`
 		Status             string   `json:"status"`
@@ -1558,7 +1636,7 @@ func (a *Agent) extractAndBroadcastUsage(env *messageEnvelope, msgType string) {
 		snapshot.adoptResultWindow(model, findPrimaryContextWindow(env.ModelUsage, model))
 	}
 
-	if usageMap, ok := snapshot.buildBroadcast(msgType, time.Now()); ok {
+	if usageMap, ok := snapshot.buildBroadcast(msgType, a.Clock().Now()); ok {
 		info[contracts.SessionInfoKeyContextUsage] = usageMap
 	}
 
@@ -1709,54 +1787,9 @@ func extractToolUseResultMessage(raw json.RawMessage) string {
 
 // --- Notification threading helpers ---
 
-// isNotificationThreadable decides whether a notification envelope can
-// participate in thread consolidation. Only invoked on the
-// PersistNotification path, so the AGENT branch always means
-// "agent-emitted system notification" — never assistant text or tool
-// content (those go through PersistMessage / PersistTurnEnd).
-func isNotificationThreadable(content []byte, source leapmuxv1.MessageSource) bool {
-	switch source {
-	case leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX:
-		var msg struct {
-			Type string `json:"type"`
-		}
-		if err := json.Unmarshal(content, &msg); err != nil {
-			slog.Warn("notification threadable unmarshal failed", "source", "leapmux", "error", err)
-			return false
-		}
-		switch msg.Type {
-		case contracts.NotificationTypeSettingsChanged,
-			contracts.NotificationTypeContextCleared,
-			contracts.NotificationTypeInterrupted,
-			contracts.NotificationTypeRateLimit,
-			contracts.NotificationTypeAgentError,
-			contracts.NotificationTypeCompacting:
-			return true
-		}
-		return false
-	case leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT:
-		return claudeProvider{}.Classify(content).Consolidatable()
-	default:
-		return false
-	}
-}
-
-func extractStatusValue(content []byte) (status string, ok bool) {
-	var msg struct {
-		Subtype string  `json:"subtype"`
-		Status  *string `json:"status"`
-	}
-	if err := json.Unmarshal(content, &msg); err != nil {
-		slog.Warn("extract status value unmarshal failed", "error", err)
-		return "", false
-	}
-	if msg.Subtype != "status" {
-		return "", false
-	}
-	if msg.Status != nil {
-		return *msg.Status, true
-	}
-	return "", true
+// claudeIsConsolidatable identifies native notices that can share one notification thread.
+func claudeIsConsolidatable(content []byte) bool {
+	return claudeProvider{}.Classify(content).Consolidatable()
 }
 
 var claudeSyntheticAPI5xxPattern = regexp.MustCompile(`(?i)^API Error[^[:alnum:]]+5[0-9]{2}(?:$|[^[:alnum:]].*)`)
@@ -1826,8 +1859,8 @@ const (
 // The heuristic below is for a build that publishes no such frame, which is
 // every one that predates the variable. The FIRST session_state_changed frame
 // retires it for the life of the process, so on a current CLI the turn flag
-// moves on the listed signals alone -- this frame, the Worker's own SendInput,
-// and `result`. See armTurnFromOutput.
+// moves only on session-state reports and the Worker's own SendInput.
+// A result still completes its bookkeeping but does not release the turn.
 func (a *Agent) observeTurnFromOutput(content []byte, msgType string) {
 	if msgType == claudeMsgTypeSystem && claudeIsLiveRootFrame(content) {
 		if state, ok := claudeSessionStateOf(content); ok {
@@ -1875,54 +1908,24 @@ func claudeSessionStateOf(content []byte) (string, bool) {
 	}
 }
 
-// armTurnFromOutput records a turn that the CLI runs and this Worker did not
-// start, for a build that publishes no session_state_changed frame. Such a
-// build announces a turn start in no other way (Codex has turn/started, ZCode
-// turn.started), so without this the Worker learns of a turn only from its own
-// SendInput -- and a turn the CLI runs by itself, or one it continues past a
-// `result` the Worker already consumed, stayed invisible. Both the turn flag and
-// the input queue then read idle, and the next message the user sent went
-// straight into the running turn.
+// armTurnFromOutput detects a CLI-started turn when the build sends no session_state_changed frame.
+// Native session state takes precedence. Its running state starts a turn, and its idle state ends the turn.
 //
-// It runs BEFORE the type switch, because the frames that prove a live turn
-// earliest are the ones that return early: the thinking-token telemetry never
-// reaches handlePersistableMessage, and a root `user` tool_result is skipped
-// there. Arming from the assistant message alone left the whole
-// extended-thinking window of a CLI-run turn invisible, which is the longest
-// part of it.
+// This check runs before dispatch. Thinking telemetry returns early, and the root user tool_result never reaches persistence.
+// Waiting for an assistant message would leave extended thinking outside the active turn.
+// claudeIsLiveRootFrame rejects child frames. Results and control traffic cannot start a turn.
 //
-// The class is "a ROOT frame that only a live turn produces", and
-// claudeIsLiveRootFrame supplies the first half. `result` ENDS a turn, and
-// `control_*` frames are the Worker's own traffic, so neither arms anything.
+// The system subtypes have different owners:
+//   - Thinking telemetry proves that the root model works.
+//   - init follows running at each turn start. It supplies session data, not the turn signal.
+//   - task_* and background_tasks_changed describe background work, which can continue after the root turn ends.
+//   - Status and retry notices can describe housekeeping calls. A compaction boundary can arrive during resume before a turn starts.
 //
-// The `system` type is the narrow one, because it carries four unrelated
-// families and only ONE of them reports the root's own work:
-//
-//   - The thinking-token telemetry, which the model emits as it thinks. This one
-//     arms the turn.
-//   - `init` announces a SESSION. The CLI emits it at startup, and again after a
-//     context clear, at a moment when no turn exists.
-//   - The task_* family and background_tasks_changed belong to a BACKGROUND
-//     task, which outlives the turn that spawned it. A backgrounded shell
-//     reports task_progress for as long as it runs, with the root idle.
-//   - The notification-threaded lines -- status, api_retry, both compaction
-//     boundaries -- report an event, not a live turn. A status CLEAR is the end
-//     of the work it announced, an api_retry can answer a call the CLI makes on
-//     its own, and a compaction boundary lands on a resumed session before any
-//     turn starts.
-//
-// So the `system` test is an allowlist of one, and an unknown subtype arms
-// nothing. That direction is the safe one, and the asymmetry is the whole point.
-// A turn this misses is armed a moment later by the assistant message that
-// follows it. A turn armed with no turn to end it latches until the process
-// exits: `result` is the only falling edge, and nothing ever sends one. The
-// queue then holds every message the user sends, unpaused and with no visible
-// cause, and the client shows a thinking indicator that nothing stops.
-//
-// The clear needs no counterpart rule: Claude ends EVERY turn with a `result`,
-// including an interrupted or a failed one, and a `result` always follows the
-// frames of the turn it ends. A process that dies without one is answered at the
-// process boundary instead, where the Worker releases a turn no dispatch owns.
+// Only thinking telemetry starts a turn through this system-frame check.
+// An unknown subtype starts nothing. A later assistant message can still prove that the turn runs.
+// A false start would hold the input queue and the thinking indicator until the process exits.
+// Without native session state, result ends the detected turn. With native session state, only idle ends it.
+// Process exit releases a turn when the process sends no end.
 func (a *Agent) armTurnFromOutput(content []byte, msgType string) {
 	switch msgType {
 	case claudeMsgTypeAssistant, claudeMsgTypeUser:

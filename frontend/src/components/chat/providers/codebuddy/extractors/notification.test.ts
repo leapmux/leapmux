@@ -22,8 +22,10 @@ describe('codebuddyNotificationEntry', () => {
     expect(codebuddyNotificationEntry({ type: 'system', subtype: 'mcp_status', event: 'finish', failed: 'probe' })).toEqual([])
   })
 
-  it('holds no entry for the progress events of the MCP servers', () => {
-    expect(codebuddyNotificationEntry({ type: 'system', subtype: 'mcp_status', event: 'start', servers: ['probe'], failed: ['probe'] })).toEqual([])
+  it('reads stored server lists without an event filter', () => {
+    expect(codebuddyNotificationEntry({ type: 'system', subtype: 'mcp_status', event: 'start', servers: ['probe'], failed: ['probe'] })).toEqual([
+      { kind: 'text', text: 'Failed to start MCP server: probe' },
+    ])
     expect(codebuddyNotificationEntry({ type: 'system', subtype: 'mcp_status', event: 'server', name: 'probe', state: 'failed', error: 'x' })).toEqual([])
   })
 

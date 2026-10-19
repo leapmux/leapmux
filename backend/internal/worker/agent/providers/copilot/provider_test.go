@@ -205,3 +205,13 @@ func TestPluginStatesTheChildCapabilitiesOfTheAgent(t *testing.T) {
 	t.Parallel()
 	agenttest.AssertChildCapabilities(t, Registration().Plugin, (*Agent)(nil))
 }
+
+func TestCompactionEndIsABoundary(t *testing.T) {
+	t.Parallel()
+	for _, success := range []bool{false, true} {
+		raw := copilotStoredFrame(t, contracts.CopilotEventSessionCompactionComplete, map[string]any{"success": success})
+		assert.Equal(t, agent.CompactionBoundaryNotification(), (copilotProvider{}).Classify(raw))
+	}
+	assert.False(t, (copilotProvider{}).Classify(copilotStoredFrame(t, contracts.CopilotEventSessionCompactionStart, map[string]any{})).Consolidatable())
+	assert.False(t, (copilotProvider{}).Classify([]byte(`{"method":"other","params":{"event":{"type":"session.compaction_complete"}}}`)).Consolidatable())
+}

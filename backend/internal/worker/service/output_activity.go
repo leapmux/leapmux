@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
@@ -1385,7 +1386,31 @@ func (h *OutputHandler) recordControlRequestsRemoved(agentID, rootAgentID string
 // process kept whatever activity it last saw until some unrelated event
 // corrected it.
 func (h *OutputHandler) NoteAgentProcessExited(rootAgentID string) {
+	var compactionAgents []string
+	h.sinksByAgent.Range(func(_, value interface{}) bool {
+		sink := value.(*agentOutputSink)
+		if sink.rootAgentID != rootAgentID {
+			return true
+		}
+		sink.sessionInfoMu.Lock()
+		if raw, found := sink.lastSessionInfo[contracts.SessionInfoKeyCompaction]; found && string(raw) != "null" {
+			sink.lastSessionInfo[contracts.SessionInfoKeyCompaction] = []byte("null")
+			h.watcher.EnqueueAgentEvent(sink.agentID, sessionInfoEvent(sink.agentID, map[string]interface{}{contracts.SessionInfoKeyCompaction: nil}))
+			compactionAgents = append(compactionAgents, sink.agentID)
+		}
+		sink.sessionInfoMu.Unlock()
+		return true
+	})
 	h.resetAgentActivity(rootAgentID)
+	// Process exit can hold a lifecycle lock. Drain transport work outside that lock.
+	if len(compactionAgents) > 0 && h.beginActivityRefresh() {
+		go func() {
+			defer h.activityRefreshes.Done()
+			for _, agentID := range compactionAgents {
+				h.watcher.DrainAgentEvents(agentID)
+			}
+		}()
+	}
 }
 
 // NoteAgentProcessStarted forces the agent idle as a NEW process takes over.

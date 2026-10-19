@@ -111,4 +111,18 @@ func TestNativeSpecExitPersistsTheNewMode(t *testing.T) {
 	require.Equal(t, 1, fixture.sink.SettingsRefreshCount())
 	assert.Equal(t, "default", fixture.sink.LastSettingsRefresh().PermissionMode)
 	assert.Equal(t, "default", a.SettingsSnapshot().ConfirmedOptions()[agent.OptionIDPermissionMode])
+	assert.Empty(t, fixture.sink.PersistedNotifications(), "the native snapshot updates settings and stores no raw notice")
+}
+
+func TestSettingsSnapshotStoresNoRawNotification(t *testing.T) {
+	fixture := newTestAgent(t)
+	// E2E run e2e-kxwYsi, native-retry-transcript, first stored row.
+	raw := []byte(`{"type":"notification","method":"droid.session_notification","params":{"sessionId":"s-1","notification":{"type":"settings_updated","settings":{"modelId":"custom:Droid-0","reasoningEffort":"high","autonomyMode":"auto-high","interactionMode":"auto","autonomyLevel":"high","availableAutonomyLevels":["off","low","medium","high"],"compactionThresholdCheckEnabled":true,"migrationActive":false}}}}`)
+	for range 2 {
+		fixture.agent.HandleOutput(raw)
+	}
+	assert.Empty(t, fixture.sink.PersistedNotifications())
+	assert.Equal(t, "custom:Droid-0", fixture.sink.LastSettingsRefresh().Model)
+	assert.Equal(t, 1, fixture.sink.SettingsRefreshCount())
+	assert.Equal(t, "auto-high", fixture.agent.SettingsSnapshot().ConfirmedOptions()[agent.OptionIDPermissionMode])
 }

@@ -17,13 +17,18 @@
     "messageMetadataFields",
     "messageSupplementFields",
     "rpcMethods",
-    "codexRateLimitReachedTimeWindow",
-    "codexRateLimitAccountBlockKey",
     "modelSentinels",
     "notificationFields",
-    "backgroundTaskStatusTokens"
+    "backgroundTaskStatusTokens",
+    "compactionEndOutcomes"
   ],
   "properties": {
+    "compactionEndOutcomes": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": { "pattern": "^[A-Z][A-Za-z0-9]*$" },
+      "additionalProperties": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" }
+    },
     "messageSupplementFields": {
       "type": "object",
       "additionalProperties": false,
@@ -104,10 +109,6 @@
     "_readme": {
       "type": "string",
       "minLength": 1
-    },
-    "codexRateLimitAccountBlockKey": {
-      "type": "string",
-      "pattern": "^[a-z][a-z0-9_]*$"
     },
     "notificationTypes": {
       "type": "object",
@@ -316,10 +317,6 @@
       }
     },
     "notificationThreadWrapperType": {
-      "type": "string",
-      "pattern": "^[a-z][a-z0-9_]*$"
-    },
-    "codexRateLimitReachedTimeWindow": {
       "type": "string",
       "pattern": "^[a-z][a-z0-9_]*$"
     },

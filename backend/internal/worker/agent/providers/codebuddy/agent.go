@@ -3,6 +3,7 @@ package codebuddy
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -24,7 +25,10 @@ type Agent struct {
 	permissionMode            string
 	effort                    string
 	active                    bool
+	compactionLive            bool
+	manualCompaction          bool
 	assistantTextStreamed     bool
+	lastDiagnostic            *codebuddyDiagnostic
 	pendingPlanModeTools      map[string]agent.PlanModeControlKind
 	awaitingRejectedPlanInit  bool
 	nativeTurnRestartRequired bool
@@ -39,15 +43,6 @@ type Agent struct {
 	// permissionInterruptPending holds the global stop until the main run ends.
 	permissionInterruptPending bool
 	permissionWriteMu          sync.Mutex
-
-	// hasGoalCommand records whether the running CLI advertises /goal in its
-	// `slash_commands` list. The goal controls require the CLI's own
-	// statement, never on a version table.
-	hasGoalCommand bool
-	// goalCommandKnown records whether the init frame arrived at all. Absent is
-	// UNKNOWN, which still allows the goal: a cold-started process can accept
-	// the command before its first stdout frame.
-	goalCommandKnown bool
 
 	// pendingControl routes a control_response to the caller waiting on its
 	// request id. See sendControlAndWait.
@@ -104,9 +99,10 @@ func (a *Agent) NativeTurnRestartRequired() bool {
 func (a *Agent) PublishTurnActive() agent.TurnState {
 	a.mu.Lock()
 	active := a.active
+	steerable := active && !a.manualCompaction
 	seq := a.turnOrder.NextTurnSeq()
 	a.mu.Unlock()
-	return providerkit.PublishTurnStateTo(a.sink, agent.TurnState{Active: active, Steerable: active}, seq)
+	return providerkit.PublishTurnStateTo(a.sink, agent.TurnState{Active: active, Steerable: steerable}, seq)
 }
 
 func (a *Agent) setTurnActive(active bool) {
@@ -117,7 +113,13 @@ func (a *Agent) setTurnActive(active bool) {
 		a.interruptRequests = nil
 	}
 	a.active = active
+	endCompaction := !active && a.manualCompaction
 	if !active {
+		a.lastDiagnostic = nil
+		if endCompaction {
+			a.manualCompaction = false
+			a.compactionLive = false
+		}
 		for id, record := range a.controls {
 			if record.rootPermission {
 				delete(a.controls, id)
@@ -131,11 +133,15 @@ func (a *Agent) setTurnActive(active bool) {
 	}
 	a.activityRev++
 	seq := a.turnOrder.NextTurnSeq()
+	steerable := active && !a.manualCompaction
 	a.mu.Unlock()
+	if endCompaction {
+		providerkit.EndCompaction(a.sink)
+	}
 	for _, id := range retired {
 		a.sink.CancelControlRequest(id)
 	}
-	providerkit.PublishTurnStateTo(a.sink, agent.TurnState{Active: active, Steerable: active}, seq)
+	providerkit.PublishTurnStateTo(a.sink, agent.TurnState{Active: active, Steerable: steerable}, seq)
 }
 
 // SendInput delivers one user message over stdin. The write IS the delivery.
@@ -152,6 +158,8 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 	if a.IsStopped() {
 		return fmt.Errorf("the CodeBuddy process is stopped")
 	}
+	words := strings.Fields(content)
+	manualCompaction := len(attachments) == 0 && len(words) > 0 && words[0] == "/compact"
 	a.mu.Lock()
 	if err := providerkit.CheckInputSession(expected, a.sessionID); err != nil {
 		a.mu.Unlock()
@@ -162,12 +170,22 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 		return agent.ErrAgentBusy
 	}
 	a.active = true
+	a.manualCompaction = manualCompaction
+	if manualCompaction {
+		a.compactionLive = true
+	}
 	a.assistantTextStreamed = false
+	a.lastDiagnostic = nil
 	a.turnToolCalls = nil
 	a.interruptRequests = nil
 	a.activityRev++
 	a.mu.Unlock()
 	a.PublishTurnActive()
+	if manualCompaction {
+		// The manual command runs its compact agent without a native start status.
+		// Publish before the write so an early result can end this state.
+		providerkit.PublishCompaction(a.sink, "manual")
+	}
 
 	msg := UserInputMessage{
 		Type: MessageTypeUser,

@@ -4,7 +4,7 @@ import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { buildPlanMode } from '../../settingsGroups'
 import { registerProvider } from '../registry'
 import { classifyCopilotMessage, copilotResultDivider } from './classification'
-import { copilotCompactionBoundary, copilotNotificationEntry } from './extractors/notification'
+import { copilotCompactionBoundary, copilotCompactionStart, copilotNotificationEntry } from './extractors/notification'
 import { copilotOutputFilePaths } from './extractors/outputFilePaths'
 import { copilotExtractRow } from './extractors/row'
 import { copilotControls } from './pluginControls'
@@ -22,6 +22,7 @@ const copilotPlugin: ProviderPlugin = {
     relatedMessages: copilotRelatedMessages,
     extractDivider: copilotResultDivider,
     notificationEntry: copilotNotificationEntry,
+    compactionStart: copilotCompactionStart,
   },
   controls: copilotControls,
   session: {

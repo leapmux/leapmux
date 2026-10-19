@@ -66,12 +66,8 @@ export function renderRowContent(
       return <MarkdownPlanLayout toolName="Plan" title="Proposed Plan" planText={row.text} {...(context !== undefined ? { context } : {})} />
     case 'user':
       return <UserContentMessage text={row.text} attachments={row.attachments} {...(context !== undefined ? { context } : {})} />
-    case 'agent-prompt':
-      return <AgentPromptView prompt={row.prompt} {...(context !== undefined ? { context } : {})} />
     case 'plan-execution':
       return <PlanExecutionMessage text={row.text} {...(context !== undefined ? { context } : {})} />
-    case 'compact-summary':
-      return <MarkdownText text={row.summary} {...(context !== undefined ? { context } : {})} />
     case 'control-response':
       return renderControlResponseRow(row.display, context)
     case 'hidden':
@@ -84,9 +80,7 @@ export function renderRowContent(
 /**
  * The subagent prompt card, shared by every provider that sends one.
  *
- * Promoted from Claude's local copy. Three surfaces draw this row -- a provider's own
- * prompt row, Claude's `agent_prompt`, and a prompt delivered into a child transcript
- * -- and the card must read the same for all three.
+ * Tool requests and prompts delivered into child transcripts use this same view.
  */
 export function AgentPromptView(props: { prompt: AgentPrompt, context?: ExpandableToolLayoutContext }): JSX.Element {
   // Key from the shared classification mapper (context.expandUiKey) so it matches

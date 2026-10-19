@@ -6,6 +6,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -132,7 +133,7 @@ func TestAGarbledReadyFrameStillEndsTheWait(t *testing.T) {
 func TestNotificationFrames(t *testing.T) {
 	t.Parallel()
 	frames := []string{
-		`{"type":"auto_compaction_start","reason":"threshold","action":"snapcompact"}`,
+		`{"type":"ttsr_triggered","rules":[]}`,
 		`{"type":"auto_compaction_end","action":"snapcompact","result":{"summary":"s","tokensBefore":60030},"aborted":false,"willRetry":false}`,
 		`{"type":"auto_retry_start","attempt":1,"maxAttempts":10,"delayMs":92.36,"errorMessage":"400"}`,
 		`{"type":"auto_retry_end","success":true,"attempt":1}`,
@@ -146,6 +147,7 @@ func TestNotificationFrames(t *testing.T) {
 		`{"type":"rpc_frame_error","error":"frame too large"}`,
 	}
 	r := newRig(t)
+	r.emit(`{"type":"auto_compaction_start","reason":"threshold","action":"snapcompact"}`)
 	r.emit(frames...)
 	notifications := r.sink.PersistedNotifications()
 	require.Len(t, notifications, len(frames))
@@ -166,7 +168,6 @@ func TestDroppedFrames(t *testing.T) {
 		`{"type":"tool_stream_update","toolCallId":"call_1","toolName":"edit","update":{}}`,
 		`{"type":"available_commands_update","commands":[]}`,
 		`{"type":"session_info_update","title":"x","sessionId":"y"}`,
-		`{"type":"ttsr_triggered","rules":[]}`,
 		`{"type":"advisor_cost_changed"}`,
 		`{"type":"advisor_yielded"}`,
 		`{"type":"config_warnings_changed"}`,
@@ -227,4 +228,24 @@ func TestAHostCallWithoutAnIDIsNotAnswered(t *testing.T) {
 	assert.Len(t, toolResults, 1)
 	assert.Equal(t, "h2", toolResults[0].Payload["id"])
 	assert.Empty(t, r.commandsOfType(CommandHostURIResult))
+}
+
+func TestCacheWarmingFramesStoreNoRow(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.emit(`{"type":"cache_warming_start"}`, `{"type":"cache_warming_end"}`)
+	assert.Empty(t, r.sink.Messages())
+	assert.Empty(t, r.sink.PersistedNotifications())
+}
+
+func TestUnknownFramesPersist(t *testing.T) {
+	t.Parallel()
+	agenttest.AssertUnknownFramePersists(t, []agenttest.UnknownFrameCase{
+		{Name: "root", Frame: []byte(`{"type":"probe_future_frame","value":1}`)},
+	}, func(t *testing.T, tc agenttest.UnknownFrameCase) *agenttest.Sink {
+		t.Helper()
+		r := newRig(t)
+		r.emit(string(tc.Frame))
+		return &r.sink.Sink
+	})
 }

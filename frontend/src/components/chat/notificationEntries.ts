@@ -3,12 +3,13 @@ import type { GoalTransitionToken } from '~/generated/contracts/worker-vocab'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { GoalStatus } from '~/stores/chatGoal'
-import { GOAL_TRANSITION, NOTIFICATION_FIELD, NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
-import { isObject, pickString } from '~/lib/jsonPick'
+import { COMPACTION_END_OUTCOME, GOAL_TRANSITION, NOTIFICATION_FIELD, NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
+import { assignDefined, isObject, pickNumber, pickString } from '~/lib/jsonPick'
 import { messagesOf } from '~/lib/messageParser'
 import { formatRateLimitMessage } from '~/lib/rateLimitUtils'
 import { getCachedSettingsGroupLabel, getCachedSettingsLabel } from '~/lib/settingsLabelCache'
 import { goalStatusFromWire } from '~/stores/chatGoal'
+import { retryEntry, tokenCount } from './model/notification'
 import { pluginFor } from './providers/registry'
 import { formatShortWait, formatTokenCount } from './rendererUtils'
 import { OPTION_ID_PERMISSION_MODE } from './settingsGroups'
@@ -105,6 +106,23 @@ export function leapmuxNotificationEntry(
   agentProvider: AgentProvider | undefined,
 ): NotificationEntry[] | null {
   switch (m.type) {
+    case NOTIFICATION_TYPE.ApiRetryResolved:
+      return [retryEntry('api', { succeeded: true })]
+    case NOTIFICATION_TYPE.CompactionEnded: {
+      const error = pickString(m, NOTIFICATION_FIELD.Error)?.trim()
+      return [{
+        kind: 'compaction',
+        phase: 'end',
+        outcome: m[NOTIFICATION_FIELD.Outcome] === COMPACTION_END_OUTCOME.Aborted ? 'aborted' : 'failed',
+        ...(error ? { error } : {}),
+      }]
+    }
+    case NOTIFICATION_TYPE.ApiRetry: {
+      const facts: { attempt?: number, error?: string } = {}
+      assignDefined(facts, 'attempt', pickNumber(m, NOTIFICATION_FIELD.Count, undefined))
+      assignDefined(facts, 'error', pickString(m, NOTIFICATION_FIELD.Error, undefined))
+      return [retryEntry('api', facts)]
+    }
     case NOTIFICATION_TYPE.SettingsChanged: {
       const changes = parseSettingsChanges(m[NOTIFICATION_FIELD.Changes], agentProvider)
       return changes.length > 0 ? [{ kind: 'settings-changed', changes }] : []
@@ -339,7 +357,7 @@ function formatTokenTransition(pre: number | undefined, post: number | undefined
 function formatCompactionDetail(detail: CompactionDetails | undefined): string {
   if (!detail)
     return ''
-  const tokens = formatTokenTransition(detail.pre, detail.post)
+  const tokens = formatTokenTransition(tokenCount(detail.pre), tokenCount(detail.post))
   const parts = [detail.trigger, tokens].filter(Boolean)
   return parts.length > 0 ? ` (${parts.join(', ')})` : ''
 }
@@ -364,7 +382,8 @@ function formatSettingChange(change: SettingChange): string {
  *
  * All provider retry entries use this wording.
  */
-function formatRetry(entry: Extract<NotificationEntry, { kind: 'retry' }>): string {
+function formatRetry(raw: Extract<NotificationEntry, { kind: 'retry' }>): string {
+  const entry = retryEntry(raw.scope, raw)
   const what = entry.scope === 'summarization' ? 'Summary retry' : 'API retry'
   const count = entry.attempt !== undefined
     ? ` ${entry.attempt}${entry.maxAttempts !== undefined ? `/${entry.maxAttempts}` : ''}`
@@ -377,6 +396,23 @@ function formatRetry(entry: Extract<NotificationEntry, { kind: 'retry' }>): stri
     return `${what}${count} gave up${suffix}`
   const wait = entry.delayMs !== undefined && entry.delayMs > 0 ? ` in ${formatShortWait(entry.delayMs)}` : ''
   return `${what}${count}${wait}${suffix}`
+}
+
+/** State the hook outcome and each detail that the provider supplied. */
+function formatHook(entry: Extract<NotificationEntry, { kind: 'hook' }>): string {
+  const event = entry.event?.trim()
+  const name = entry.name?.trim()
+  const detail = entry.detail?.trim()
+  const verbs = {
+    'failed': 'failed',
+    'blocked': 'blocked',
+    'timed-out': 'timed out',
+    'continued': 'made the agent continue',
+  } as const
+  const subject = event ? `Hook ${event}` : 'A hook'
+  const label = name ? ` (${name})` : ''
+  const exit = Number.isInteger(entry.exitCode) ? ` (exit ${entry.exitCode})` : ''
+  return `${subject}${label} ${verbs[entry.outcome]}${exit}${detail ? `: ${detail}` : ''}`
 }
 
 /**
@@ -408,14 +444,20 @@ function blocksForEntry(entry: Exclude<NotificationEntry, { kind: 'group' }>): N
     }
     case 'retry':
       return [{ kind: 'text', text: formatRetry(entry) }]
+    case 'hook':
+      return [{ kind: 'text', text: formatHook(entry) }]
     case 'compaction': {
       if (entry.phase === 'start')
         return [{ kind: 'divider', text: COMPACTING_LABEL, loading: true }]
-      // An aborted or failed compaction creates no completed context boundary.
-      // Display its error as text rather than a divider.
+      // Only a completed compaction draws a divider. Other outcomes state their result as text.
       const error = entry.error?.trim()
-      if (error)
-        return [{ kind: 'text', text: error === 'aborted' ? 'Context compaction aborted' : `Compaction failed (${error})` }]
+      const outcome = entry.outcome ?? (error ? 'failed' : 'completed')
+      if (outcome === 'aborted')
+        return [{ kind: 'text', text: `Context compaction aborted${error ? ` (${error})` : ''}` }]
+      if (outcome === 'failed')
+        return [{ kind: 'text', text: `Compaction failed${error ? ` (${error})` : ''}` }]
+      if (outcome === 'skipped')
+        return [{ kind: 'text', text: 'Context compaction skipped' }]
       return [{ kind: 'divider', text: entry.micro ? MICROCOMPACT_LABEL : compactedLabel(entry.detail) }]
     }
     case 'context-cleared':
@@ -500,7 +542,7 @@ export function compactionContextTokens(parsed: ParsedMessageContent, agentProvi
     if (!isObject(msg))
       continue
     // Pass each wrapper entry to the provider hook as a one-message parse.
-    const post = boundary({ ...parsed, wrapper: null, topLevel: msg, parentObject: msg })?.post
+    const post = tokenCount(boundary({ ...parsed, wrapper: null, topLevel: msg, parentObject: msg })?.post)
     if (post !== undefined)
       return post
   }

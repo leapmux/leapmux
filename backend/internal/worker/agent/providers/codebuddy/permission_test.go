@@ -18,6 +18,33 @@ type controlPublicationSink struct {
 	publish func()
 }
 
+func TestControlRequestPublishesACardAndStoresNoRow(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := permissionFixture(t)
+	before := len(sink.Messages())
+	a.HandleOutput(canUseTool("approval"))
+	assert.Equal(t, 1, sink.PublishedControlCount())
+	assert.Len(t, sink.Messages(), before)
+	a.HandleOutput(canUseTool("approval"))
+	assert.Equal(t, 1, sink.PublishedControlCount())
+	assert.Len(t, sink.Messages(), before)
+}
+
+func TestUnknownControlCancelPersistsWithoutRetiringACard(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := permissionFixture(t)
+	a.HandleOutput(canUseTool("approval"))
+	before := len(sink.Messages())
+	raw := []byte(`{"type":"control_cancel_request","request_id":"approval"}`)
+	a.HandleOutput(raw)
+	require.Len(t, sink.Messages(), before+1)
+	assert.JSONEq(t, string(raw), string(sink.Messages()[before].Content))
+	assert.Empty(t, sink.CanceledControls())
+	a.mu.Lock()
+	assert.Contains(t, a.controls, "approval")
+	a.mu.Unlock()
+}
+
 func (s *controlPublicationSink) PublishControlRequest(request agent.ControlRequest) error {
 	err := s.ControlSink.PublishControlRequest(request)
 	if s.publish != nil {

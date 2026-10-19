@@ -89,10 +89,9 @@ export interface MockModelError {
    * status: the stream opens, one partial text delta arrives, and an error
    * payload ends it.
    *
-   * Only the OpenAI Chat Completions route sends this shape, and only to a
-   * request that asks for a stream. The shared model route refuses the flag in
-   * every other case. The provider-service surfaces (Cursor, Kiro, Google) do
-   * not read it.
+   * The Chat Completions, Responses, and Messages routes send their native error after one text delta.
+   * Each route requires a request that asks for a stream.
+   * The provider-service surfaces (Cursor, Kiro, Google) do not read this flag.
    *
    * A client can treat this failure apart from an HTTP status failure.
    * qodercli 1.1.65 replaces an HTTP status error, and a stream error that
@@ -172,6 +171,8 @@ export interface MockModelStep {
   text?: string
   toolCalls?: MockModelToolCall[]
   error?: MockModelError
+  /** Stop the answer with this native reason when the protocol can state it. */
+  stopReason?: 'refusal' | 'max_tokens'
   /** Hold the answer open for this long. An interrupt test cancels inside that window. */
   delayMs?: number
   /** Hold the answer until this test releases the gate. */
@@ -546,6 +547,11 @@ function parseStep(value: unknown, label: string): MockModelStep {
     ? toolCallsValue.map((tool, toolIndex) => parseToolCall(tool, label, toolIndex))
     : undefined
   const error = value.error === undefined ? undefined : parseModelError(value.error, label)
+  const stopReason = value.stopReason
+  if (stopReason !== undefined && stopReason !== 'refusal' && stopReason !== 'max_tokens')
+    throw new Error(`Model ${label} stopReason must be refusal or max_tokens`)
+  if (stopReason !== undefined && (error !== undefined || toolCalls !== undefined))
+    throw new Error(`Model ${label} cannot combine stopReason with error or toolCalls`)
   if (value.text === undefined && value.reasoning === undefined && toolCalls === undefined && error === undefined)
     throw new Error(`Model ${label} needs text, reasoning, toolCalls, or error`)
   if (error && (value.text !== undefined || toolCalls !== undefined || value.reasoning !== undefined))
@@ -574,6 +580,7 @@ function parseStep(value: unknown, label: string): MockModelStep {
     ...(typeof value.text === 'string' ? { text: value.text } : {}),
     ...(toolCalls ? { toolCalls } : {}),
     ...(error ? { error } : {}),
+    ...(stopReason === undefined ? {} : { stopReason }),
     ...(delayMs === undefined ? {} : { delayMs }),
     ...(gate === undefined ? {} : { gate }),
     ...(stream === undefined ? {} : { stream }),
@@ -598,6 +605,17 @@ function parseStep(value: unknown, label: string): MockModelStep {
     }
   }
   return step
+}
+
+/** Map an explicit stop reason, or refuse it before the response starts. */
+export function stopReasonToken(protocol: MockModelProtocol, reason: 'refusal' | 'max_tokens'): string {
+  if (protocol === 'anthropic-messages')
+    return reason
+  if (protocol === 'openai-chat-completions')
+    return reason === 'refusal' ? 'content_filter' : 'length'
+  if (protocol === 'openai-responses' && reason === 'max_tokens')
+    return 'max_output_tokens'
+  throw new Error(`The mock cannot state stop reason ${reason} on ${protocol}`)
 }
 
 function parseGate(value: unknown, label: string): string | undefined {

@@ -10,6 +10,28 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestRefreshZCodeUsageFromSession_DropsAReadOfARetiredSession(t *testing.T) {
+	t.Parallel()
+	stdin := &zcodeRecordedStdin{}
+	sink := &agenttest.Sink{}
+	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+	done := make(chan struct{})
+	go func() { a.refreshZCodeUsageFromSession(); close(done) }()
+	request := waitZCodeRequest(t, stdin, MethodSessionRead)
+	a.Mu.Lock()
+	a.sessionID = "new"
+	a.Mu.Unlock()
+	a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, request), json.RawMessage(`{"runtime":{"stateRevision":99,"eventSeq":55,"contextUsage":{"used":5000,"size":200000}},"settings":{"mode":{"current":"yolo"}}}`)))
+	<-done
+	assert.Zero(t, sink.SessionInfoCount())
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	assert.Zero(t, a.stateRevision)
+	assert.Zero(t, a.lastSeq)
+	assert.Empty(t, a.latestContextUsage)
+	assert.NotEqual(t, "yolo", a.mode)
+}
+
 func TestZCodeContextUsageMap_EmptyReturnsNil(t *testing.T) {
 	t.Parallel()
 
@@ -136,26 +158,6 @@ func TestApplyZCodeRuntimeState_ZeroUSDIsReported(t *testing.T) {
 	a.Mu.Unlock()
 	assert.True(t, known)
 	assert.Equal(t, float64(0), amount)
-}
-
-// An absent apiRetry means the retry finished. A missing key would leave the
-// last attempt stuck on the session info.
-func TestApplyZCodeRuntimeState_AbsentAPIRetryClearsTheIndicator(t *testing.T) {
-	t.Parallel()
-
-	sink := &agenttest.ControlSink{}
-	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
-	a.applyZCodeRuntimeState(&zcodeRuntimeState{
-		APIRetry: &zcodeAPIRetry{Attempt: 2, MaxRetries: 5, RetryDelayMs: 400, Error: "429"},
-	})
-	retry, ok := sink.LastSessionInfo()["zcode_api_retry"].(map[string]any)
-	require.True(t, ok)
-	assert.Equal(t, 2, retry["attempt"])
-
-	a.applyZCodeRuntimeState(&zcodeRuntimeState{})
-	cleared, present := sink.LastSessionInfo()["zcode_api_retry"]
-	require.True(t, present)
-	assert.Nil(t, cleared)
 }
 
 func TestRecordZCodeUsage_DoesNotReplaceAuthoritativeContextTokens(t *testing.T) {

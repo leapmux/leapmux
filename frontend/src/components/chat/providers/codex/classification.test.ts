@@ -4,6 +4,44 @@ import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { input } from '../testUtils'
 import { classifyCodexMessage } from './classification'
 
+describe('stored rows with no current writer', () => {
+  it.each([
+    CODEX_METHOD.ThreadStarted,
+    CODEX_METHOD.TurnStarted,
+    CODEX_METHOD.ThreadStatusChanged,
+    CODEX_METHOD.ThreadNameUpdated,
+    CODEX_METHOD.ThreadSettingsUpdated,
+    CODEX_METHOD.ThreadTokenUsageUpdated,
+    CODEX_METHOD.SkillsChanged,
+    CODEX_METHOD.RemoteControlStatusChanged,
+    CODEX_METHOD.HookStarted,
+    CODEX_METHOD.AutoApprovalReviewStarted,
+    CODEX_METHOD.CommandExecutionRequestApproval,
+    CODEX_METHOD.FileChangeRequestApproval,
+    CODEX_METHOD.PermissionsRequestApproval,
+    CODEX_METHOD.ToolRequestUserInput,
+    CODEX_METHOD.McpToolCallProgress,
+    CODEX_METHOD.ThreadReadStateChanged,
+    CODEX_METHOD.TurnModerationMetadata,
+    CODEX_METHOD.AccountUpdated,
+    CODEX_METHOD.AccountRateLimitsUpdated,
+    CODEX_METHOD.ThreadCompacted,
+  ])('leaves a stored %s row unknown', (method) => {
+    const frame = { method, params: { threadId: 'thread-1' } }
+    expect(classifyCodexMessage(input(frame))).toEqual({ kind: 'unknown' })
+    expect(classifyCodexMessage(input(frame, { old_seqs: [], messages: [frame] }))).toEqual({ kind: 'unknown' })
+  })
+
+  it.each(['userMessage', 'subAgentActivity'])('leaves a stored %s item unknown', (type) => {
+    expect(classifyCodexMessage(input({ item: { type, id: 'item-1' } }))).toEqual({ kind: 'unknown' })
+  })
+
+  it('leaves a stored compaction start unknown', () => {
+    const frame = { method: CODEX_METHOD.ItemStarted, params: { item: { type: 'contextCompaction', id: 'item-1' } } }
+    expect(classifyCodexMessage(input(frame))).toEqual({ kind: 'unknown' })
+  })
+})
+
 describe('classifyCodexMessage', () => {
   it.each(['parameters', 'notification'])('recognizes native exec requests in the %s wrapper', (wrapper) => {
     const parameters = { threadId: 'native-thread', turnId: 'native-turn', item: { type: 'custom_tool_call', call_id: 'exec-call', name: 'exec', input: 'text(40 + 2);', status: 'completed' } }
@@ -39,13 +77,12 @@ describe('classifyCodexMessage', () => {
       .toEqual({ kind: 'unknown' })
   })
 
-  // `initialize` opts both methods out now. The rows older builds stored stay
-  // hidden.
+  // The worker opts out of both methods. Stored copies have no current reader.
   it.each([
     ['turn/moderationMetadata', { threadId: 't1', turnId: 'u1', metadata: { generation: {}, prompt: {}, tool_call: {}, tool_response: {} } }],
     ['account/updated', { authMode: 'chatgpt', planType: 'prolite' }],
-  ])('hides a stored %s row', (method, params) => {
-    expect(classifyCodexMessage(input({ method, params }))).toEqual({ kind: 'hidden' })
+  ])('leaves a stored %s row unknown', (method, params) => {
+    expect(classifyCodexMessage(input({ method, params }))).toEqual({ kind: 'unknown' })
   })
 
   // Each RENDER notice classifies as a notification with the hidden empty
@@ -77,7 +114,7 @@ describe('classifyCodexMessage', () => {
     })
   })
 
-  it('hides thread/started notifications', () => {
+  it('leaves stored thread/started notifications unknown', () => {
     const parent = {
       method: 'thread/started',
       params: {
@@ -85,10 +122,10 @@ describe('classifyCodexMessage', () => {
       },
     }
     const result = classifyCodexMessage(input(parent))
-    expect(result).toEqual({ kind: 'hidden' })
+    expect(result).toEqual({ kind: 'unknown' })
   })
 
-  it('hides turn/started notifications', () => {
+  it('leaves stored turn/started notifications unknown', () => {
     const parent = {
       method: 'turn/started',
       params: {
@@ -99,10 +136,10 @@ describe('classifyCodexMessage', () => {
       },
     }
     const result = classifyCodexMessage(input(parent))
-    expect(result).toEqual({ kind: 'hidden' })
+    expect(result).toEqual({ kind: 'unknown' })
   })
 
-  it('hides thread/status/changed notifications', () => {
+  it('leaves stored thread/status/changed notifications unknown', () => {
     const parent = {
       method: 'thread/status/changed',
       params: {
@@ -114,17 +151,17 @@ describe('classifyCodexMessage', () => {
       },
     }
     const result = classifyCodexMessage(input(parent))
-    expect(result).toEqual({ kind: 'hidden' })
+    expect(result).toEqual({ kind: 'unknown' })
   })
 
-  it.each([null, { type: 'turn', turnId: 'turn-1' }])('hides native read-state metadata with first unread %j', (firstUnread) => {
+  it.each([null, { type: 'turn', turnId: 'turn-1' }])('leaves stored read-state metadata with first unread %j unknown', (firstUnread) => {
     const frame = {
       method: 'thread/readState/changed',
       params: { threadId: 'thread-1', readState: { firstUnread, revision: 'revision-1' } },
       emittedAtMs: 1792140694686,
     }
-    expect(classifyCodexMessage(input(frame))).toEqual({ kind: 'hidden' })
-    expect(classifyCodexMessage(input(undefined, { old_seqs: [], messages: [frame] }))).toEqual({ kind: 'hidden' })
+    expect(classifyCodexMessage(input(frame))).toEqual({ kind: 'unknown' })
+    expect(classifyCodexMessage(input(undefined, { old_seqs: [], messages: [frame] }))).toEqual({ kind: 'unknown' })
   })
 
   it('keeps unknown content beside native read-state metadata visible', () => {
@@ -135,27 +172,27 @@ describe('classifyCodexMessage', () => {
     expect(classifyCodexMessage(input(undefined, wrapper))).toEqual({ kind: 'unknown' })
   })
 
-  it('hides skills/changed notifications', () => {
+  it('leaves stored skills/changed notifications unknown', () => {
     const parent = {
       method: 'skills/changed',
       params: {},
     }
     const result = classifyCodexMessage(input(parent))
-    expect(result).toEqual({ kind: 'hidden' })
+    expect(result).toEqual({ kind: 'unknown' })
   })
 
-  it('hides remoteControl/status/changed notifications', () => {
+  it('leaves stored remoteControl/status/changed notifications unknown', () => {
     const parent = {
       method: 'remoteControl/status/changed',
       params: { status: 'disabled', environmentId: null },
     }
     const result = classifyCodexMessage(input(parent))
-    expect(result).toEqual({ kind: 'hidden' })
+    expect(result).toEqual({ kind: 'unknown' })
   })
 
   it.each([
     'hook/started',
-  ])('hides %s notifications', (method) => {
+  ])('leaves stored %s notifications unknown', (method) => {
     const parent = {
       method,
       params: {
@@ -165,7 +202,7 @@ describe('classifyCodexMessage', () => {
       },
     }
     const result = classifyCodexMessage(input(parent))
-    expect(result).toEqual({ kind: 'hidden' })
+    expect(result).toEqual({ kind: 'unknown' })
   })
 
   it('renders a failed hook completion as a notification', () => {
@@ -175,19 +212,19 @@ describe('classifyCodexMessage', () => {
     }
     expect(classifyCodexMessage(input(parent))).toEqual({
       kind: 'notification',
-      entries: [{ kind: 'status', text: 'Hook failed: permission denied' }],
+      entries: [{ kind: 'hook', outcome: 'failed', detail: 'permission denied' }],
     })
   })
 
-  it('hides a successful hook completion', () => {
+  it('reads a stored completed hook as a notification', () => {
     const parent = {
       method: 'hook/completed',
       params: { run: { status: 'completed' } },
     }
-    expect(classifyCodexMessage(input(parent))).toEqual({ kind: 'hidden' })
+    expect(classifyCodexMessage(input(parent))).toMatchObject({ kind: 'notification' })
   })
 
-  it('classifies mixed wrappers when context_cleared follows a hidden Codex lifecycle event', () => {
+  it('reads context_cleared beside an obsolete lifecycle event', () => {
     const contextCleared = { type: 'context_cleared' }
     const wrapper = {
       old_seqs: [],
@@ -196,22 +233,21 @@ describe('classifyCodexMessage', () => {
         contextCleared,
       ],
     }
-    // thread/started is a hidden lifecycle event, so it is dropped from the
-    // rendered messages; the visible context_cleared keeps the thread alive.
+    // The shared context-cleared entry keeps this wrapper readable. The obsolete method supplies no entry.
     const result = classifyCodexMessage(input(undefined, wrapper))
     expect(result).toEqual({ kind: 'notification', entries: [{ kind: 'context-cleared' }] })
   })
 
-  it('classifies a completed contextCompaction item as a notification thread', () => {
+  it('leaves a compaction item without its native completion method unknown', () => {
     const wrapper = {
       old_seqs: [],
       messages: [{ threadId: 't1', turnId: 'turn1', item: { type: 'contextCompaction', id: 'compact-1' } }],
     }
     const result = classifyCodexMessage(input(undefined, wrapper))
-    expect(result.kind).toBe('notification')
+    expect(result.kind).toBe('unknown')
   })
 
-  it('classifies wrapped raw item/started+contextCompaction (Phase 4.2) as a notification thread', () => {
+  it('leaves a wrapped compaction start unknown', () => {
     const wrapper = {
       old_seqs: [],
       messages: [{
@@ -220,13 +256,11 @@ describe('classifyCodexMessage', () => {
       }],
     }
     const result = classifyCodexMessage(input(undefined, wrapper))
-    expect(result.kind).toBe('notification')
+    expect(result.kind).toBe('unknown')
   })
 
   it('classifies wrapped raw item/completed+contextCompaction as a notification thread', () => {
-    // The Worker persists the COMPLETION of a contextCompaction item as the
-    // compaction boundary. The thread that shows the compacting indicator must
-    // recognize the boundary that closes it.
+    // The worker stores the native completion as a boundary. It publishes the start only as live state.
     const wrapper = {
       old_seqs: [],
       messages: [{
@@ -264,10 +298,8 @@ describe('classifyCodexMessage', () => {
     expect(result.kind).not.toBe('notification')
   })
 
-  it('collapses a thread of only hidden Codex metadata (skills + remote-control) to hidden', () => {
-    // Both are hidden lifecycle methods that render nothing; a thread of only
-    // such entries must collapse to hidden rather than surface a `notification`
-    // that renders no rows and falls back to a raw-JSON bubble.
+  it('leaves a stored skills and remote-control wrapper unknown', () => {
+    // The worker opts out of both methods. Neither method has a browser reader.
     const wrapper = {
       old_seqs: [],
       messages: [
@@ -276,10 +308,10 @@ describe('classifyCodexMessage', () => {
       ],
     }
     const result = classifyCodexMessage(input(undefined, wrapper))
-    expect(result).toEqual({ kind: 'hidden' })
+    expect(result).toEqual({ kind: 'unknown' })
   })
 
-  it('drops hidden Codex metadata but keeps the visible notification thread entry', () => {
+  it('reads a settings change beside obsolete metadata', () => {
     const settingsChanged = { type: 'settings_changed', changes: { model: { old: 'a', new: 'b' } } }
     const wrapper = {
       old_seqs: [],
@@ -289,9 +321,7 @@ describe('classifyCodexMessage', () => {
         { method: 'remoteControl/status/changed', params: { status: 'disabled', environmentId: null } },
       ],
     }
-    // The hidden metadata is filtered from the rendered messages (the full
-    // wrapper is still preserved for "Copy Raw JSON" via parsed.rawText); only
-    // the visible settings_changed survives.
+    // Only the settings change supplies an entry. Copy Raw JSON still receives the complete wrapper.
     const result = classifyCodexMessage(input(undefined, wrapper))
     expect(result).toEqual({
       kind: 'notification',
@@ -299,9 +329,8 @@ describe('classifyCodexMessage', () => {
     })
   })
 
-  it('collapses a thread of only thread/name/updated + thread/tokenUsage/updated to hidden', () => {
-    // Both are hidden lifecycle methods, so the consolidated thread is hidden --
-    // matching how each is hidden when it arrives standalone.
+  it('leaves a stored name and usage wrapper unknown', () => {
+    // No current worker produces this wrapper. Neither method has a browser reader.
     const wrapper = {
       old_seqs: [],
       messages: [
@@ -310,10 +339,10 @@ describe('classifyCodexMessage', () => {
       ],
     }
     const result = classifyCodexMessage(input(undefined, wrapper))
-    expect(result).toEqual({ kind: 'hidden' })
+    expect(result).toEqual({ kind: 'unknown' })
   })
 
-  it('hides high-usage rate limit transcript rows', () => {
+  it('leaves stored high-usage rate limit transcript rows unknown', () => {
     const parent = {
       method: 'account/rateLimits/updated',
       params: {
@@ -326,12 +355,11 @@ describe('classifyCodexMessage', () => {
       },
     }
     const result = classifyCodexMessage(input(parent))
-    expect(result).toEqual({ kind: 'hidden' })
+    expect(result).toEqual({ kind: 'unknown' })
   })
 
-  it('hides a reached-type block from the transcript', () => {
-    // Credit depletion leaves the rolling windows with headroom, so the
-    // all-allowed check would hide it; the authoritative reached-type must not.
+  it('leaves a stored account block unknown', () => {
+    // Account state reaches the live session-info reader, not the transcript reader.
     const parent = {
       method: 'account/rateLimits/updated',
       params: {
@@ -342,24 +370,24 @@ describe('classifyCodexMessage', () => {
       },
     }
     const result = classifyCodexMessage(input(parent))
-    expect(result).toEqual({ kind: 'hidden' })
+    expect(result).toEqual({ kind: 'unknown' })
   })
 
-  it('hides MCP startup starting notifications', () => {
+  it('reads stored MCP startup starting notifications', () => {
     const parent = {
       method: 'mcpServer/startupStatus/updated',
       params: { name: 'codex_apps', status: 'starting', error: null },
     }
-    expect(classifyCodexMessage(input(parent))).toEqual({ kind: 'hidden' })
+    expect(classifyCodexMessage(input(parent))).toMatchObject({ kind: 'notification' })
   })
 
-  it('hides MCP startup finished states that are not failures', () => {
+  it('reads stored MCP startup finished states that are not failures', () => {
     for (const status of ['ready', 'cancelled']) {
       const parent = {
         method: 'mcpServer/startupStatus/updated',
         params: { name: 'codex_apps', status, error: null },
       }
-      expect(classifyCodexMessage(input(parent))).toEqual({ kind: 'hidden' })
+      expect(classifyCodexMessage(input(parent))).toMatchObject({ kind: 'notification' })
     }
   })
 
@@ -374,24 +402,24 @@ describe('classifyCodexMessage', () => {
       expect(result.entries).toHaveLength(1)
   })
 
-  it('hides MCP tool-call progress notifications', () => {
+  it('leaves stored MCP tool-call progress notifications unknown', () => {
     expect(classifyCodexMessage(input({
       method: 'item/mcpToolCall/progress',
       params: { threadId: 'thread-1', turnId: 'turn-1', itemId: 'mcp-1', message: 'Working' },
-    }))).toEqual({ kind: 'hidden' })
+    }))).toEqual({ kind: 'unknown' })
   })
 
-  it('hides successful MCP OAuth completion and keeps failures visible', () => {
+  it('reads stored successful MCP OAuth completion and keeps failures visible', () => {
     const success = { method: 'mcpServer/oauthLogin/completed', params: { name: 'docs', success: true } }
     const failure = { method: 'mcpServer/oauthLogin/completed', params: { name: 'docs', success: false, error: 'authorization failed' } }
-    expect(classifyCodexMessage(input(success))).toEqual({ kind: 'hidden' })
+    expect(classifyCodexMessage(input(success))).toMatchObject({ kind: 'notification' })
     expect(classifyCodexMessage(input(failure))).toEqual({
       kind: 'notification',
       entries: [{ kind: 'status', text: 'MCP OAuth login failed for docs: authorization failed' }],
     })
   })
 
-  it('filters non-failure MCP entries from a notification thread', () => {
+  it('reads every stored MCP entry without a success filter', () => {
     const startupFailure = { method: 'mcpServer/startupStatus/updated', params: { name: 'broken', status: 'failed', error: 'boom' } }
     const oauthFailure = { method: 'mcpServer/oauthLogin/completed', params: { name: 'docs', success: false, error: 'denied' } }
     const wrapper = {
@@ -407,7 +435,7 @@ describe('classifyCodexMessage', () => {
     const result = classifyCodexMessage(input(undefined, wrapper))
     expect(result.kind).toBe('notification')
     if (result.kind === 'notification')
-      expect(result.entries).toHaveLength(2)
+      expect(result.entries).toHaveLength(4)
   })
 
   it('classifies compacting as notification', () => {
@@ -416,12 +444,10 @@ describe('classifyCodexMessage', () => {
     expect(result).toEqual({ kind: 'notification', entries: [{ kind: 'compaction', phase: 'start' }] })
   })
 
-  it('classifies compact_boundary system messages as notification', () => {
+  it('leaves a stored synthesized compaction boundary unknown', () => {
     const parent = { type: 'system', subtype: 'compact_boundary' }
     const result = classifyCodexMessage(input(parent))
-    expect(result.kind).toBe('notification')
-    if (result.kind === 'notification')
-      expect(result.entries[0]?.kind).toBe('compaction')
+    expect(result.kind).toBe('unknown')
   })
 
   it('classifies turn/plan/updated as a Codex tool-use message', () => {
@@ -496,7 +522,7 @@ describe('classifyCodexMessage', () => {
     expect(result).toEqual({ kind: 'hidden' })
   })
 
-  it('hides thread/tokenUsage/updated notifications', () => {
+  it('leaves stored thread/tokenUsage/updated notifications unknown', () => {
     const parent = {
       method: 'thread/tokenUsage/updated',
       params: {
@@ -510,10 +536,10 @@ describe('classifyCodexMessage', () => {
       },
     }
     const result = classifyCodexMessage(input(parent))
-    expect(result).toEqual({ kind: 'hidden' })
+    expect(result).toEqual({ kind: 'unknown' })
   })
 
-  it('hides notification threads containing only hidden Codex notifications', () => {
+  it('leaves a stored usage and rate-limit wrapper unknown', () => {
     const wrapper = {
       old_seqs: [],
       messages: [
@@ -540,62 +566,59 @@ describe('classifyCodexMessage', () => {
         },
       ],
     }
-    expect(classifyCodexMessage(input(undefined, wrapper))).toEqual({ kind: 'hidden' })
+    expect(classifyCodexMessage(input(undefined, wrapper))).toEqual({ kind: 'unknown' })
   })
 
-  it('hides a standalone thread/compacted notification', () => {
-    // Codex reports an automatic compaction with this method. The chat shows
-    // the boundary that item/completed carries, so this one renders nothing.
+  it('leaves a stored standalone thread/compacted notification unknown', () => {
+    // Codex 0.163 sends no thread/compacted frame. Stored copies have no special reader.
     const parent = { method: 'thread/compacted', params: { threadId: 't1', turnId: 'turn1' } }
-    expect(classifyCodexMessage(input(parent))).toEqual({ kind: 'hidden' })
+    expect(classifyCodexMessage(input(parent))).toEqual({ kind: 'unknown' })
   })
 
-  it('hides a thread/compacted consolidated into a notification thread', () => {
+  it('leaves a stored thread/compacted consolidated into a notification thread unknown', () => {
     const compacted = { method: 'thread/compacted', params: { threadId: 't1', turnId: 'turn1' } }
     const wrapper = { old_seqs: [7], messages: [compacted] }
-    expect(classifyCodexMessage(input(compacted, wrapper))).toEqual({ kind: 'hidden' })
+    expect(classifyCodexMessage(input(compacted, wrapper))).toEqual({ kind: 'unknown' })
   })
 
-  it('hides a standalone thread/settings/updated notification', () => {
-    // Codex sends this whenever a thread setting changes: the model, the effort, the
-    // permissions. It carries nothing for the transcript, so it is a hidden lifecycle event.
+  it('leaves a stored standalone thread/settings/updated notification unknown', () => {
+    // The worker applies this settings update and stores no transcript row.
     const parent = {
       method: 'thread/settings/updated',
       params: { threadId: 't1', threadSettings: { model: 'gpt-5.5', effort: 'xhigh' } },
     }
-    expect(classifyCodexMessage(input(parent))).toEqual({ kind: 'hidden' })
+    expect(classifyCodexMessage(input(parent))).toEqual({ kind: 'unknown' })
   })
 
-  it('hides a thread/settings/updated consolidated into a notification thread', () => {
+  it('leaves a stored thread/settings/updated consolidated into a notification thread unknown', () => {
     const settingsUpdated = {
       method: 'thread/settings/updated',
       params: { threadId: 't1', threadSettings: { model: 'gpt-5.5' } },
     }
     const wrapper = { old_seqs: [6], messages: [settingsUpdated] }
-    expect(classifyCodexMessage(input(settingsUpdated, wrapper))).toEqual({ kind: 'hidden' })
+    expect(classifyCodexMessage(input(settingsUpdated, wrapper))).toEqual({ kind: 'unknown' })
   })
 
-  it('hides a standalone finished compaction status (status=null, compact_result=success)', () => {
+  it('leaves a stored synthesized compaction status unknown', () => {
     const parent = { type: 'system', subtype: 'status', status: null, compact_result: 'success' }
-    expect(classifyCodexMessage(input(parent))).toEqual({ kind: 'hidden' })
+    expect(classifyCodexMessage(input(parent))).toEqual({ kind: 'unknown' })
   })
 
-  it('hides a finished compaction status when consolidated into a notification thread', () => {
-    // Parity with the standalone classifier and with Claude: a status hidden on
-    // its own stays hidden once Hub threads it, instead of leaking as raw JSON.
+  it('leaves a stored synthesized status wrapper unknown', () => {
+    // The worker stores no synthesized system status. A wrapper adds no reader for it.
     const statusMsg = { type: 'system', subtype: 'status', status: null, compact_result: 'success' }
     const wrapper = { old_seqs: [305], messages: [statusMsg] }
-    expect(classifyCodexMessage(input(statusMsg, wrapper))).toEqual({ kind: 'hidden' })
+    expect(classifyCodexMessage(input(statusMsg, wrapper))).toEqual({ kind: 'unknown' })
   })
 
-  it('keeps the in-progress compacting status visible standalone and consolidated', () => {
+  it('leaves a stored synthesized compaction start unknown', () => {
     const compactingMsg = { type: 'system', subtype: 'status', status: 'compacting' }
-    expect(classifyCodexMessage(input(compactingMsg))).toEqual({ kind: 'notification', entries: [{ kind: 'compaction', phase: 'start' }] })
+    expect(classifyCodexMessage(input(compactingMsg))).toEqual({ kind: 'unknown' })
     const wrapper = { old_seqs: [305], messages: [compactingMsg] }
-    expect(classifyCodexMessage(input(compactingMsg, wrapper))).toEqual({ kind: 'notification', entries: [{ kind: 'compaction', phase: 'start' }] })
+    expect(classifyCodexMessage(input(compactingMsg, wrapper))).toEqual({ kind: 'unknown' })
   })
 
-  it('drops a hidden thread/settings/updated from a thread but keeps the visible entry', () => {
+  it('reads context_cleared beside an obsolete settings update', () => {
     const settingsUpdated = {
       method: 'thread/settings/updated',
       params: { threadId: 't1', threadSettings: { model: 'gpt-5.5' } },
@@ -606,13 +629,13 @@ describe('classifyCodexMessage', () => {
       .toEqual({ kind: 'notification', entries: [{ kind: 'context-cleared' }] })
   })
 
-  it('hides plain JSON-RPC response envelopes', () => {
+  it('leaves stored plain JSON-RPC response envelopes unknown', () => {
     const parent = {
       id: 1001,
       result: {},
     }
     const result = classifyCodexMessage(input(parent))
-    expect(result).toEqual({ kind: 'hidden' })
+    expect(result).toEqual({ kind: 'unknown' })
   })
 
   it('classifies turn/completed as result_divider', () => {
@@ -688,9 +711,9 @@ describe('classifyCodexMessage', () => {
       expect(classifyCodexMessage(input(frame)).kind).toBe('notification')
     })
 
-    it('hides a review start, because the completion states the outcome', () => {
+    it('leaves a stored review start unknown', () => {
       expect(classifyCodexMessage(input({ method: CODEX_METHOD.AutoApprovalReviewStarted, params: { threadId: 't1', reviewId: 'r1', review: { status: 'inProgress' } } })))
-        .toEqual({ kind: 'hidden' })
+        .toEqual({ kind: 'unknown' })
     })
 
     it.each([
@@ -698,26 +721,26 @@ describe('classifyCodexMessage', () => {
       CODEX_METHOD.FileChangeRequestApproval,
       CODEX_METHOD.PermissionsRequestApproval,
       CODEX_METHOD.ToolRequestUserInput,
-    ])('hides the %s request, which the control banner draws', (method) => {
-      expect(classifyCodexMessage(input({ id: 7, method, params: { threadId: 't1', turnId: 'u1', itemId: 'i1' } }))).toEqual({ kind: 'hidden' })
+    ])('leaves a stored %s control request unknown', (method) => {
+      expect(classifyCodexMessage(input({ id: 7, method, params: { threadId: 't1', turnId: 'u1', itemId: 'i1' } }))).toEqual({ kind: 'unknown' })
     })
   })
 
-  it('hides synthetic Codex turn failed notifications', () => {
+  it('reads stored synthetic Codex turn failed notifications', () => {
     const parent = {
       type: 'agent_error',
       error: 'Codex turn failed',
     }
-    expect(classifyCodexMessage(input(parent))).toEqual({ kind: 'hidden' })
+    expect(classifyCodexMessage(input(parent))).toMatchObject({ kind: 'notification' })
   })
 
-  it('hides notification threads containing only synthetic Codex turn failed notifications', () => {
+  it('reads stored notification threads containing only synthetic Codex turn failed notifications', () => {
     const wrapper = {
       old_seqs: [],
       messages: [
         { type: 'agent_error', error: 'Codex turn failed' },
       ],
     }
-    expect(classifyCodexMessage(input(undefined, wrapper))).toEqual({ kind: 'hidden' })
+    expect(classifyCodexMessage(input(undefined, wrapper))).toMatchObject({ kind: 'notification' })
   })
 })

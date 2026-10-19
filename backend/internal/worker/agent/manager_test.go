@@ -20,6 +20,57 @@ type stubProvider struct {
 	clearContextFn func() (string, error)
 }
 
+type preparingSteerProvider struct {
+	stubProvider
+	prepare func()
+}
+
+type steerPolicyProvider struct {
+	stubProvider
+	policy agent.SteerPolicy
+}
+
+func (p *steerPolicyProvider) SteerRowAtEcho() bool       { return p.policy.RowAtEcho }
+func (p *steerPolicyProvider) SteerSurvivesTurnEnd() bool { return p.policy.SurvivesTurnEnd }
+
+func TestManagerSteerPolicyReadsTheProviderDeclarations(t *testing.T) {
+	t.Parallel()
+	manager := agent.NewManager(testRegistry, nil)
+	for _, policy := range []agent.SteerPolicy{{}, {RowAtEcho: true}, {SurvivesTurnEnd: true}, {RowAtEcho: true, SurvivesTurnEnd: true}} {
+		manager.PutAgentForTest("provider", &steerPolicyProvider{policy: policy})
+		assert.Equal(t, policy, manager.SteerPolicy("provider"))
+	}
+	manager.PutAgentForTest("ordinary", &stubProvider{})
+	assert.Equal(t, agent.SteerPolicy{}, manager.SteerPolicy("ordinary"))
+	assert.Equal(t, agent.SteerPolicy{}, manager.SteerPolicy("missing"))
+}
+
+func (p *preparingSteerProvider) PrepareSteer() { p.prepare() }
+
+func TestManagerPrepareSteerCallsAProviderThatPreparesSteers(t *testing.T) {
+	t.Parallel()
+	manager := agent.NewManager(testRegistry, nil)
+	calls := 0
+	manager.PutAgentForTest("preparer", &preparingSteerProvider{prepare: func() {
+		calls++
+		// A callback can enter the manager because PrepareSteer releases its lock first.
+		manager.PutAgentForTest("during-prepare", &stubProvider{})
+	}})
+	manager.PrepareSteer("preparer")
+	assert.Equal(t, 1, calls)
+	assert.True(t, manager.AgentAlive("during-prepare"))
+}
+
+func TestManagerPrepareSteerIgnoresOtherProvidersAndUnknownAgents(t *testing.T) {
+	t.Parallel()
+	manager := agent.NewManager(testRegistry, nil)
+	manager.PutAgentForTest("ordinary", &stubProvider{})
+	assert.NotPanics(t, func() {
+		manager.PrepareSteer("ordinary")
+		manager.PrepareSteer("missing")
+	})
+}
+
 // retryStubProvider adds the turn-retry route to the stub.
 type retryStubProvider struct {
 	stubProvider

@@ -1,11 +1,12 @@
 package deepseekharness
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 func (a *Agent) createSession(ctx context.Context, resume string) (string, error) {
@@ -92,7 +93,7 @@ func (a *Agent) applyProjections(stream *sessionStream, values map[string]json.R
 			Mode      string  `json:"mode"`
 			Label     *string `json:"label"`
 		}
-		if json.Unmarshal(raw, &entries) != nil || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		if json.Unmarshal(raw, &entries) != nil || providerkit.RawKindOf(raw) == providerkit.RawNull {
 			return fmt.Errorf("DeepSeek Harness returned an invalid native child catalog projection")
 		}
 		for _, entry := range entries {

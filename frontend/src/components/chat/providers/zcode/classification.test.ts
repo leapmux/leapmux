@@ -5,7 +5,6 @@ import {
   ZCODE_GOAL_VERIFICATION_STATUS,
   ZCODE_METHOD,
   ZCODE_MICROCOMPACT_STRATEGY,
-  ZCODE_STATE_REASON,
   ZCODE_TOOL,
   ZCODE_TOOL_KIND,
 } from '~/generated/contracts/zcode-protocol'
@@ -24,10 +23,31 @@ function toolEvent(kind: string, payload: Record<string, unknown> = {}): Record<
 }
 
 describe('classifyZCodeMessage', () => {
-  it('classifies a native compaction state as a notice', () => {
-    const parent = { method: ZCODE_METHOD.StateUpdated, params: { reason: ZCODE_STATE_REASON.SessionCompacted } }
+  it('leaves worker-consumed frames unknown', () => {
+    for (const parent of [
+      { method: ZCODE_METHOD.StateUpdated, params: { reason: 'session_compacted' } },
+      event(ZCODE_EVENT.TurnStarted),
+      event(ZCODE_EVENT.ModelStreaming),
+      event(ZCODE_EVENT.SessionUpdated, { messageCount: 3 }),
+      event(ZCODE_EVENT.SessionUpdated, { action: 'cleared', source: 'command', target: null }),
+      toolEvent(ZCODE_TOOL_KIND.Started),
+    ]) {
+      expect(classifyZCodeMessage(input(parent))).toEqual({ kind: 'unknown' })
+    }
+  })
+
+  it('draws stored reply text without a query-source filter', () => {
+    const parent = event(ZCODE_EVENT.SessionUpdated, {
+      content: 'Stored reply',
+      stopReason: 'stop',
+      querySource: 'compact',
+    })
+    expect(classifyZCodeMessage(input(parent))).toEqual({ kind: 'assistant_text' })
+  })
+  it('leaves a stored state update unknown', () => {
+    const parent = { method: ZCODE_METHOD.StateUpdated, params: { reason: 'session_compacted' } }
     expect(classifyZCodeMessage(input(parent)))
-      .toEqual({ kind: 'notification', entries: [{ kind: 'compaction', phase: 'end', detail: {} }] })
+      .toEqual({ kind: 'unknown' })
   })
 
   it('classifies a model-response session.updated with text as assistant_text', () => {
@@ -49,29 +69,28 @@ describe('classifyZCodeMessage', () => {
 
   // `session.updated` is the app-server's catch-all: request telemetry and
   // per-iteration counters arrive as the same type and carry no conversation.
-  it('hides the telemetry variants of session.updated', () => {
+  it('leaves unknown the telemetry variants of session.updated', () => {
     for (const payload of [
       { messageCount: 3, modelRef: { providerId: 'zai', modelId: 'glm-5.3' }, iteration: 2 },
       { usage: { inputTokens: 10, outputTokens: 2 }, contextWindow: 200000 },
       { content: 'no stop reason means this is not a finished generation' },
     ]) {
       expect(classifyZCodeMessage(input(event(ZCODE_EVENT.SessionUpdated, payload))))
-        .toEqual({ kind: 'hidden' })
+        .toEqual({ kind: 'unknown' })
     }
   })
 
   // Every generation the app-server runs for itself -- the completion verifier, the
   // goal summary title, the compaction summary -- is a SIDE QUERY. Older builds
   // stored its text; the row stays hidden rather than drawing raw verifier JSON.
-  it('hides a side-query session.updated even when it carries text', () => {
+  it('draws the text of a stored model response', () => {
     for (const payload of [
       { content: '{"passed": true}', querySource: 'target_completion_verification', stopReason: 'stop' },
       { content: '{"title":"Verify Wave 01"}', querySource: 'goal_summary_title', stopReason: 'stop' },
       { content: 'Summary: ...', querySource: 'compact', stopReason: 'stop' },
-      { content: '', stopReason: 'tool_internal' },
     ]) {
       expect(classifyZCodeMessage(input(event(ZCODE_EVENT.SessionUpdated, payload))))
-        .toEqual({ kind: 'hidden' })
+        .toEqual({ kind: 'assistant_text' })
     }
   })
 
@@ -93,23 +112,23 @@ describe('classifyZCodeMessage', () => {
 
   // A goal change drives the goal card. The worker writes the neutral
   // `goal_updated` row for its transition, so the frame itself draws nothing.
-  it('hides a goal change session.updated', () => {
+  it('leaves unknown a goal change session.updated', () => {
     for (const payload of [
       { action: 'set', source: 'command', target: { targetID: 'g1', objective: 'Ship it', status: 'active' } },
       { action: 'cleared', source: 'command', target: null },
     ]) {
-      expect(classifyZCodeMessage(input(event(ZCODE_EVENT.SessionUpdated, payload)))).toEqual({ kind: 'hidden' })
+      expect(classifyZCodeMessage(input(event(ZCODE_EVENT.SessionUpdated, payload)))).toEqual({ kind: 'unknown' })
     }
   })
 
   // A background task belongs to the registry, which draws it as its own card.
-  it('hides a background-task session.updated even when it carries text', () => {
+  it('leaves unknown a background-task session.updated even when it carries text', () => {
     const parent = event(ZCODE_EVENT.SessionUpdated, {
       taskId: 'task-1',
       content: 'subagent said something',
       stopReason: 'stop',
     })
-    expect(classifyZCodeMessage(input(parent))).toEqual({ kind: 'hidden' })
+    expect(classifyZCodeMessage(input(parent))).toEqual({ kind: 'unknown' })
   })
 
   it('classifies a scheduled tool.updated as tool_use carrying the tool name', () => {
@@ -135,9 +154,9 @@ describe('classifyZCodeMessage', () => {
 
   // The Worker consumes `started` and `progress` for live counters. One
   // reaching a transcript means a provider changed its protocol.
-  it('hides the mid-flight tool kinds', () => {
+  it('leaves unknown the mid-flight tool kinds', () => {
     for (const kind of [ZCODE_TOOL_KIND.Started, ZCODE_TOOL_KIND.Progress]) {
-      expect(classifyZCodeMessage(input(toolEvent(kind)))).toEqual({ kind: 'hidden' })
+      expect(classifyZCodeMessage(input(toolEvent(kind)))).toEqual({ kind: 'unknown' })
     }
   })
 
@@ -183,7 +202,7 @@ describe('classifyZCodeMessage', () => {
     expect(classifyZCodeMessage(input(parent))).toEqual({ kind: 'hidden' })
   })
 
-  it('hides every event type that carries no UI surface', () => {
+  it('leaves unknown every event type that carries no UI surface', () => {
     for (const type of [
       ZCODE_EVENT.SessionCreated,
       ZCODE_EVENT.SessionResumed,
@@ -203,7 +222,7 @@ describe('classifyZCodeMessage', () => {
       ZCODE_EVENT.RewindTriggered,
       ZCODE_EVENT.StreamRecoveryUpdated,
     ]) {
-      expect(classifyZCodeMessage(input(event(type)))).toEqual({ kind: 'hidden' })
+      expect(classifyZCodeMessage(input(event(type)))).toEqual({ kind: 'unknown' })
     }
   })
 
@@ -222,7 +241,7 @@ describe('classifyZCodeMessage', () => {
 
   it('does not take the user path for a typed row that happens to carry content', () => {
     const parent = { type: ZCODE_EVENT.SessionUpdated, content: 'not the user', payload: {} }
-    expect(classifyZCodeMessage(input(parent))).toEqual({ kind: 'hidden' })
+    expect(classifyZCodeMessage(input(parent))).toEqual({ kind: 'unknown' })
   })
 
   it('falls back to unknown for a row with no type and no content', () => {

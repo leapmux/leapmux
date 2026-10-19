@@ -32,7 +32,7 @@ func TestApprovedPlanClearCanReplaceTheTurnThatAwaitsItsApproval(t *testing.T) {
 				Text: "Execute the approved plan.", PrepareContext: tc.clear,
 			})
 			require.NoError(t, err)
-			_, _, err = store.setTurnState(t.Context(), "agent-1", true, false)
+			_, _, err = store.setTurnState(t.Context(), "agent-1", true, false, false)
 			require.NoError(t, err)
 			if tc.approval != leapmuxv1.ControlDeliveryState_CONTROL_DELIVERY_STATE_UNSPECIFIED {
 				err = dbtest.StoreControlResponse(t.Context(), database, db.ControlResponseAnswer{

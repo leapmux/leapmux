@@ -12,6 +12,7 @@ import { collectSettingsLabelDependencies, settingsLabelCacheRevision, settingsL
 import { shallowEqual } from '~/lib/shallowEqual'
 import { rowRevisionKey } from './chatRevisionKey'
 import { buildContentKey, buildHeightKey } from './chatRowGeometry'
+import { hasCompactionEnd } from './model/notification'
 import { prepareMessage } from './rowPreparation'
 import { parseSpanLines } from './spanLinesParse'
 
@@ -265,7 +266,22 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
       if (showHidden || entry.category.kind !== 'hidden')
         result.push(entry)
     })
-    return result
+    if (showHidden)
+      return result
+    // Decision 20 keeps this safety net for starts that older builds stored.
+    // Current workers publish starts as live state. Keep this exception to the old-row removal rule.
+    // Only a later end in the loaded window can hide a start. Mixed rows stay visible.
+    const visible: ClassifiedEntry[] = []
+    let laterEnd = false
+    for (let index = result.length - 1; index >= 0; index--) {
+      const entry = result[index]!
+      if (laterEnd && entry.compactionStartOnly)
+        continue
+      if (entry.category.kind === 'notification')
+        laterEnd ||= hasCompactionEnd(entry.category.entries)
+      visible.push(entry)
+    }
+    return visible.reverse()
   })
   const hasVisibleEntries = createMemo(() => visibleEntries().length > 0)
 

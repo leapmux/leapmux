@@ -28,8 +28,8 @@ function droidNativeCall(request: MockModelRequestRecord | undefined, callId: st
 /** The closing line that Droid writes before the snapshot of a finished Script. */
 const SCRIPT_CLOSING_LINE = /^\[Script completed · /
 
-/** Droid 0.240.0 replaces the completed JSON snapshot with this final native line. */
-const SCRIPT_COMPLETED_FOOTER = /^\[Script completed · (?:\d+\.\d s elapsed · )?\d+ calls? · [^\r\n]+ in sandbox · [^\r\n]+ emitted(?: · [^\r\n]+)?\]$/u
+/** The final native completion line states counters or the absence of a log. */
+const SCRIPT_COMPLETED_FOOTER = /^\[Script completed · (?:\d+\.\d s elapsed · )?\d+ calls? · (?:no log|[^\r\n]+ in sandbox · [^\r\n]+ emitted(?: · [^\r\n]+)?)\]$/u
 
 /**
  * Find the snapshot inside the result of a Script.

@@ -3,11 +3,12 @@ import type { ParsedMessageContent } from '~/lib/messageParser'
 import { OH_MY_PI_COMMAND, OH_MY_PI_CUSTOM_TYPE, OH_MY_PI_EVENT, OH_MY_PI_EXTENSION_METHOD, OH_MY_PI_ROLE } from '~/generated/contracts/ohmypi-protocol'
 import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
 import { getInnerMessage } from '~/lib/messageParser'
-import { toTokenCount } from '../../../model/notification'
+import { retryEntry, toTokenCount } from '../../../model/notification'
 import {
   OH_MY_PI_ASYNC_JOB_TYPE_TASK,
   OH_MY_PI_IRC_CUSTOM_TYPE,
   OH_MY_PI_IRC_CUSTOM_TYPE_PREFIX,
+  OH_MY_PI_NOTICE_LEVEL,
   OH_MY_PI_NOTIFY_TYPE,
   OH_MY_PI_SKILL_PROMPT_CUSTOM_TYPE,
 } from '../protocol'
@@ -68,46 +69,35 @@ export function ohMyPiCompactionBoundary(parsed: ParsedMessageContent): Compacti
 /** The entry of one `auto_compaction_end`: a boundary, or the reason that it is none. */
 function autoCompactionEndEntry(msg: Record<string, unknown>): NotificationEntry {
   if (msg.aborted === true)
-    return { kind: 'compaction', phase: 'end', error: 'aborted' }
+    return { kind: 'compaction', phase: 'end', outcome: 'aborted' }
   if (msg.skipped === true)
-    return { kind: 'status', text: 'Compaction skipped' }
-  // omp words each failure as a whole sentence ("Auto-compaction failed: ...",
-  // "Context overflow recovery failed: ..."), so the sentence stands alone.
+    return { kind: 'compaction', phase: 'end', outcome: 'skipped' }
   const error = pickString(msg, 'errorMessage').trim()
   if (error)
-    return { kind: 'text', text: error }
+    return { kind: 'compaction', phase: 'end', outcome: 'failed', error }
   if (!isObject(msg.result))
-    return { kind: 'compaction', phase: 'end', error: 'omp stated no result' }
+    return { kind: 'compaction', phase: 'end', outcome: 'failed', error: 'omp stated no result' }
   return { kind: 'compaction', phase: 'end', detail: compactionDetail(AUTO_COMPACTION_TRIGGER, pickObject(msg, 'result')) }
 }
 
 /** One retry frame read into the shared retry entry. */
-function retryEntry(msg: Record<string, unknown>, ended: boolean): NotificationEntry {
+function ohMyPiRetryEntry(msg: Record<string, unknown>, ended: boolean): NotificationEntry {
   const attempt = pickNumber(msg, 'attempt', undefined)
   if (!ended) {
     const maxAttempts = pickNumber(msg, 'maxAttempts', undefined)
     const delayMs = pickNumber(msg, 'delayMs', undefined)
-    const error = pickString(msg, 'errorMessage') || undefined
-    return {
-      kind: 'retry',
-      scope: 'api',
+    return retryEntry('api', {
       ...(attempt !== undefined ? { attempt } : {}),
       ...(maxAttempts !== undefined ? { maxAttempts } : {}),
       ...(delayMs !== undefined ? { delayMs } : {}),
-      ...(error !== undefined ? { error } : {}),
-    }
+      error: pickString(msg, 'errorMessage'),
+    })
   }
-  // A retry that SUCCEEDED ends the stall, and the row says so. One that failed gave
-  // up, which is what `willRetry: false` states.
   const succeeded = msg.success === true
-  const error = succeeded ? undefined : pickString(msg, 'finalError') || undefined
-  return {
-    kind: 'retry',
-    scope: 'api',
+  return retryEntry('api', {
     ...(attempt !== undefined ? { attempt } : {}),
-    ...(succeeded ? { succeeded: true } : { willRetry: false }),
-    ...(error !== undefined ? { error } : {}),
-  }
+    ...(succeeded ? { succeeded: true } : { willRetry: false, error: pickString(msg, 'finalError') }),
+  })
 }
 
 /** The text of one custom message: its content, as a string or as text blocks. */
@@ -310,14 +300,12 @@ export function ohMyPiNotificationEntry(msg: Record<string, unknown>): Notificat
       const message = pickObject(msg, 'message')
       return message && pickString(message, 'role') === OH_MY_PI_ROLE.Custom ? customMessageEntries(message) : []
     }
-    case OH_MY_PI_EVENT.AutoCompactionStart:
-      return [{ kind: 'compaction', phase: 'start' }]
     case OH_MY_PI_EVENT.AutoCompactionEnd:
       return [autoCompactionEndEntry(msg)]
     case OH_MY_PI_EVENT.AutoRetryStart:
-      return [retryEntry(msg, false)]
+      return [ohMyPiRetryEntry(msg, false)]
     case OH_MY_PI_EVENT.AutoRetryEnd:
-      return [retryEntry(msg, true)]
+      return [ohMyPiRetryEntry(msg, true)]
     case OH_MY_PI_EVENT.RetryFallbackApplied: {
       const from = pickString(msg, 'from')
       const to = pickString(msg, 'to')
@@ -328,9 +316,16 @@ export function ohMyPiNotificationEntry(msg: Record<string, unknown>): Notificat
       const model = pickString(msg, 'model')
       return [{ kind: 'text', text: model ? `The fallback model ${model} answered` : 'The fallback model answered' }]
     }
+    case OH_MY_PI_EVENT.TtsrTriggered: {
+      const rules = Array.isArray(msg.rules) ? msg.rules.filter(isObject).map(rule => pickString(rule, 'name').trim()).filter(Boolean) : []
+      return [{ kind: 'text', text: `A rule stopped the reply${rules.length ? `: ${rules.join(', ')}` : ''}. omp retries it.` }]
+    }
     case OH_MY_PI_EVENT.Notice: {
       const message = pickString(msg, 'message').trim()
-      return message ? [{ kind: 'text', text: message }] : []
+      const source = pickString(msg, 'source').trim()
+      const level = pickString(msg, 'level')
+      const prefix = level === OH_MY_PI_NOTICE_LEVEL.Warning ? 'Warning: ' : level === OH_MY_PI_NOTICE_LEVEL.Error ? 'Error: ' : ''
+      return message ? [{ kind: 'text', text: `${source ? `[${source}] ` : ''}${prefix}${message}` }] : []
     }
     case OH_MY_PI_EVENT.ExtensionError: {
       const extension = pickString(msg, 'extensionPath')
@@ -363,8 +358,8 @@ export function ohMyPiNotificationEntry(msg: Record<string, unknown>): Notificat
         return []
       if (msg.success === true)
         return [{ kind: 'compaction', phase: 'end', detail: compactionDetail(MANUAL_COMPACTION_TRIGGER, pickObject(msg, 'data')) }]
-      const error = pickString(msg, 'error')
-      return [{ kind: 'status', text: error ? `Compaction skipped: ${error}` : 'Compaction skipped' }]
+      const error = pickString(msg, 'error').trim()
+      return [{ kind: 'compaction', phase: 'end', outcome: 'failed', ...(error ? { error } : {}) }]
     }
     case OH_MY_PI_EVENT.ExtensionUIRequest: {
       const method = pickString(msg, 'method')
@@ -381,4 +376,9 @@ export function ohMyPiNotificationEntry(msg: Record<string, unknown>): Notificat
     default:
       return []
   }
+}
+
+/** Identify an old stored start without changing its ordinary category. */
+export function ohMyPiCompactionStart(message: Record<string, unknown>): boolean {
+  return message.type === OH_MY_PI_EVENT.AutoCompactionStart
 }

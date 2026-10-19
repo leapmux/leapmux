@@ -1,7 +1,9 @@
 package providerkit
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -67,27 +69,55 @@ func (p *Process) AwaitResponse(
 	label string,
 	timeout time.Duration,
 ) (json.RawMessage, error) {
-	if timeout <= 0 {
-		select {
-		case raw := <-ch:
-			return raw, nil
-		case <-p.processDone:
-			return nil, p.ProcessExitError()
-		case <-p.ctx.Done():
-			return nil, p.contextEndError()
-		}
+	return AwaitReply(p, p.ctx, ch, label, timeout)
+}
+
+// ErrAwaitTimeout identifies a reply wait whose timer expired.
+var ErrAwaitTimeout = errors.New("timeout waiting for a response")
+
+// AwaitTimeoutError identifies the request whose reply did not arrive in time.
+type AwaitTimeoutError struct{ Label string }
+
+func (e *AwaitTimeoutError) Error() string {
+	return fmt.Sprintf("timeout waiting for %s response", e.Label)
+}
+
+func (e *AwaitTimeoutError) Unwrap() error { return ErrAwaitTimeout }
+
+// AwaitReply waits for a typed reply on the process clock and the caller's context.
+// A nonpositive timeout disables the timer. A ready reply wins against an expired timer.
+func AwaitReply[T any](p *Process, ctx context.Context, ch <-chan T, label string, timeout time.Duration) (T, error) {
+	var zero T
+	var deadline <-chan time.Time
+	if timeout > 0 {
+		timer := p.Clock().NewTimer(timeout, AwaitResponseTimerTag, label)
+		defer timer.Stop(AwaitResponseTimerTag, label)
+		deadline = timer.C
 	}
-	timer := p.Clock().NewTimer(timeout, AwaitResponseTimerTag, label)
-	defer timer.Stop(AwaitResponseTimerTag, label)
 	select {
 	case raw := <-ch:
 		return raw, nil
 	case <-p.processDone:
-		return nil, p.ProcessExitError()
+		return zero, p.ProcessExitError()
 	case <-p.ctx.Done():
-		return nil, p.contextEndError()
-	case <-timer.C:
-		return nil, fmt.Errorf("timeout waiting for %s response", label)
+		return zero, p.contextEndError()
+	case <-ctx.Done():
+		select {
+		case <-p.processDone:
+			return zero, p.ProcessExitError()
+		default:
+		}
+		if p.ctx.Err() != nil {
+			return zero, p.contextEndError()
+		}
+		return zero, ctx.Err()
+	case <-deadline:
+		select {
+		case raw := <-ch:
+			return raw, nil
+		default:
+			return zero, &AwaitTimeoutError{Label: label}
+		}
 	}
 }
 

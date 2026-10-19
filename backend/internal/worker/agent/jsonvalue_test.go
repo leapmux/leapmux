@@ -8,6 +8,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestJSONAbsentOrNull(t *testing.T) {
+	t.Parallel()
+	assert.True(t, jsonAbsentOrNull(nil))
+	for _, raw := range []string{"", " ", "null", " \nnull\t"} {
+		assert.True(t, jsonAbsentOrNull(json.RawMessage(raw)), raw)
+	}
+	for _, raw := range []string{`""`, `"null"`, "0", "{}", "invalid"} {
+		assert.False(t, jsonAbsentOrNull(json.RawMessage(raw)), raw)
+	}
+}
+
 // canonicalJSON is what makes the stored supplement's byte compare a true test of
 // sameness: two producers of one value must store one set of bytes.
 func TestCanonicalJSONSortsEveryObjectItReaches(t *testing.T) {

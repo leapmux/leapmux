@@ -14,8 +14,10 @@ import (
 )
 
 type coordinator struct {
-	mu       sync.Mutex
-	draining bool
+	mu          sync.Mutex
+	draining    bool
+	steerPolicy agent.SteerPolicy
+	echoSteer   *pendingEchoSteer
 	// drainAgain records a drain request that arrived while the drain loop held
 	// the flag above. scheduleDrain cannot start a second loop for it, and the
 	// running loop released the coordinator lock across a provider call, so the
@@ -39,14 +41,22 @@ type coordinator struct {
 	publishing   bool
 }
 
+// pendingEchoSteer retains an early callback until its provider call returns.
+// Each caller keeps its own pointer, even when the next steer starts before this call returns.
+type pendingEchoSteer struct {
+	inputID string
+	outcome agent.SteerOutcome
+}
+
 type queuePublication struct {
 	snapshot    Snapshot
-	accepted    *AcceptedTranscript
+	accepted    []AcceptedTranscript
 	afterAccept func()
 	failure     *queuePublicationFailure
 }
 
 type queuePublicationFailure struct {
+	level      slog.Level
 	message    string
 	attributes []any
 }
@@ -66,8 +76,12 @@ func (m *Manager) enqueueSnapshotLocked(c *coordinator, snapshot Snapshot) {
 
 // enqueueFailureLocked retains the failure in drain order. The caller holds c.mu.
 func (m *Manager) enqueueFailureLocked(c *coordinator, message string, attributes ...any) {
+	m.enqueueLogLocked(c, slog.LevelError, message, attributes...)
+}
+
+func (m *Manager) enqueueLogLocked(c *coordinator, level slog.Level, message string, attributes ...any) {
 	c.publications = append(c.publications, queuePublication{failure: &queuePublicationFailure{
-		message: message, attributes: slices.Clone(attributes),
+		level: level, message: message, attributes: slices.Clone(attributes),
 	}})
 }
 
@@ -108,11 +122,11 @@ func (m *Manager) drainPublications(c *coordinator) {
 		c.publications = c.publications[1:]
 		c.mu.Unlock()
 		if publication.failure != nil {
-			slog.Error(publication.failure.message, publication.failure.attributes...)
+			slog.Log(context.Background(), publication.failure.level, publication.failure.message, publication.failure.attributes...)
 			continue
 		}
-		if publication.accepted != nil {
-			m.observer.InputAccepted(*publication.accepted)
+		for _, accepted := range publication.accepted {
+			m.observer.InputAccepted(accepted)
 		}
 		m.observer.QueueChanged(publication.snapshot)
 		if publication.afterAccept != nil {
@@ -137,7 +151,7 @@ func (m *Manager) ReconcileProviderTurn(ctx context.Context, agentID string, adm
 	defer lease.Release()
 	c := m.coordinator(agentID)
 	c.mu.Lock()
-	snapshot, changed, err := m.store.setTurnState(ctx, agentID, state.Active, state.Steerable)
+	snapshot, changed, err := m.store.setTurnState(ctx, agentID, state.Active, state.Steerable, c.steerPolicy.RowAtEcho && !c.steerPolicy.SurvivesTurnEnd)
 	if err == nil && changed {
 		m.enqueueSnapshotLocked(c, snapshot)
 	}
@@ -234,10 +248,11 @@ func (m *Manager) mutateAndDrain(agentID string, mutate func() (Snapshot, bool, 
 // The caller must NOT hold the coordinator lock, because scheduleDrain takes
 // that same non-reentrant mutex.
 func (m *Manager) drainIfReleased(agentID string, snapshot Snapshot) {
-	if snapshot.Paused || len(snapshot.Items) == 0 {
+	head := snapshot.HeadIndex()
+	if snapshot.Paused || head < 0 {
 		return
 	}
-	if snapshot.ActiveTurn && !snapshot.Items[0].requiresContextReplacement() {
+	if snapshot.ActiveTurn && !snapshot.Items[head].requiresContextReplacement() {
 		return
 	}
 	m.scheduleDrain(agentID)
@@ -518,8 +533,9 @@ func (m *Manager) ResumeAfterArchive(ctx context.Context, agentID string) (Snaps
 // Both are idempotent, because a provider republishes the unchanged value
 // freely. A call that moves nothing broadcasts nothing.
 func (m *Manager) TurnEnded(ctx context.Context, agentID string) (Snapshot, error) {
+	c := m.coordinator(agentID)
 	return m.mutateAndDrain(agentID, func() (Snapshot, bool, error) {
-		return m.store.TurnEnded(ctx, agentID)
+		return m.store.TurnEnded(ctx, agentID, c.steerPolicy.RowAtEcho && !c.steerPolicy.SurvivesTurnEnd)
 	})
 }
 
@@ -593,6 +609,7 @@ func (m *Manager) Retry(ctx context.Context, agentID, inputID string, confirmUnc
 	return snapshot, nil
 }
 
+// Steer prepares output ordering, delivers one input, and applies the provider's echo policy.
 func (m *Manager) Steer(ctx context.Context, agentID, inputID string) (Snapshot, error) {
 	if !m.beginActivity() {
 		return Snapshot{}, ErrManagerStopped
@@ -602,8 +619,11 @@ func (m *Manager) Steer(ctx context.Context, agentID, inputID string) (Snapshot,
 	if m.dispatcher == nil || !m.dispatcher.SupportsSteering(agentID) {
 		return Snapshot{}, ErrSteeringUnsupported
 	}
+	policy := m.dispatcher.SteerPolicy(agentID)
+	m.dispatcher.PrepareSteer(agentID)
 	c.mu.Lock()
-	prepared, snapshot, err := m.store.PrepareSteer(ctx, agentID, inputID)
+	c.steerPolicy = policy
+	prepared, snapshot, err := m.store.PrepareSteer(ctx, agentID, inputID, policy.RowAtEcho)
 	if err != nil {
 		m.unlockAndPublish(c)
 		return Snapshot{}, err
@@ -612,11 +632,30 @@ func (m *Manager) Steer(ctx context.Context, agentID, inputID string) (Snapshot,
 		m.unlockAndPublish(c)
 		return snapshot, ErrTurnEnded
 	}
+	var echo *pendingEchoSteer
+	if policy.RowAtEcho {
+		echo = &pendingEchoSteer{inputID: inputID}
+		c.echoSteer = echo
+	}
 	m.enqueueSnapshotLocked(c, snapshot)
 	m.unlockAndPublish(c)
 
 	result, err := m.dispatcher.Steer(prepared.Item)
 	c.mu.Lock()
+	if c.echoSteer == echo {
+		c.echoSteer = nil
+	}
+	if echo != nil && (echo.outcome == agent.SteerOutcomeEchoed || echo.outcome == agent.SteerOutcomeUncertain) {
+		if err != nil {
+			m.enqueueLogLocked(c, slog.LevelWarn, "provider reported an error after the steer outcome", "agent_id", agentID, "error", err)
+		}
+		snapshot, snapshotErr := m.store.Snapshot(ctx, agentID)
+		m.unlockAndPublish(c)
+		return snapshot, snapshotErr
+	}
+	if echo != nil && echo.outcome == agent.SteerOutcomeDropped {
+		err = ErrTurnEnded
+	}
 	if errors.Is(err, ErrSteeringUnsupported) {
 		snapshot, storeErr := m.store.RequeuePrepared(ctx, agentID, inputID)
 		if storeErr != nil {
@@ -638,7 +677,7 @@ func (m *Manager) Steer(ctx context.Context, agentID, inputID string) (Snapshot,
 		m.drainIfReleased(agentID, snapshot)
 		return snapshot, nil
 	}
-	if !turnEnded {
+	if !turnEnded && !policy.SurvivesTurnEnd {
 		current, storeErr := m.store.Snapshot(ctx, agentID)
 		if storeErr != nil {
 			m.unlockAndPublish(c)
@@ -659,13 +698,133 @@ func (m *Manager) Steer(ctx context.Context, agentID, inputID string) (Snapshot,
 	}
 	result.StartsTurn = true
 	result.Steering = true
-	snapshot, _, err = m.acceptDispatch(c, ctx, *prepared, result)
+	if policy.RowAtEcho {
+		snapshot, err = m.holdForEcho(c, ctx, *prepared)
+	} else {
+		snapshot, _, err = m.acceptDispatch(c, ctx, *prepared, result)
+	}
 	if err != nil {
 		m.unlockAndPublish(c)
 		return Snapshot{}, err
 	}
 	m.unlockAndPublish(c)
 	m.drainIfReleased(agentID, snapshot)
+	return snapshot, nil
+}
+
+// AcceptEchoedSteers commits the oldest echoed inputs and publishes their rows in order.
+func (m *Manager) AcceptEchoedSteers(ctx context.Context, agentID string, count int, spanLines string) (Snapshot, error) {
+	if count <= 0 {
+		return m.Snapshot(ctx, agentID)
+	}
+	if !m.beginActivity() {
+		return Snapshot{}, ErrManagerStopped
+	}
+	defer m.endActivity()
+	c := m.coordinator(agentID)
+	c.mu.Lock()
+	inFlightID := ""
+	if c.echoSteer != nil && c.echoSteer.outcome == agent.SteerOutcomePending {
+		inFlightID = c.echoSteer.inputID
+	}
+	rows, inFlight, snapshot, err := m.store.AcceptEchoedSteers(ctx, agentID, count, spanLines, inFlightID)
+	if err == nil {
+		if inFlight {
+			c.echoSteer.outcome = agent.SteerOutcomeEchoed
+		}
+		if len(rows) > 0 {
+			for index := range rows {
+				rows[index].Content = slices.Clone(rows[index].Content)
+			}
+			c.publications = append(c.publications, queuePublication{snapshot: cloneQueueSnapshot(snapshot), accepted: rows})
+		}
+		if len(rows) < count {
+			m.enqueueLogLocked(c, slog.LevelWarn, "steer echo count exceeds pending inputs", "agent_id", agentID, "reported", count, "accepted", len(rows))
+		}
+	}
+	m.unlockAndPublish(c)
+	if err == nil {
+		m.drainIfReleased(agentID, snapshot)
+	}
+	return snapshot, err
+}
+
+// RequeueDroppedSteers returns dropped inputs to the queue without a transcript row.
+func (m *Manager) RequeueDroppedSteers(ctx context.Context, agentID string, count int) (Snapshot, error) {
+	if count <= 0 {
+		return m.Snapshot(ctx, agentID)
+	}
+	if !m.beginActivity() {
+		return Snapshot{}, ErrManagerStopped
+	}
+	defer m.endActivity()
+	c := m.coordinator(agentID)
+	c.mu.Lock()
+	snapshot, requeued, err := m.store.RequeueUnechoedSteers(ctx, agentID, count)
+	if err == nil {
+		if requeued > 0 {
+			m.enqueueSnapshotLocked(c, snapshot)
+		}
+		// A drop can precede the provider reply. Keep it until Steer can requeue that dispatch.
+		if requeued < count && c.echoSteer != nil && c.echoSteer.outcome == agent.SteerOutcomePending {
+			c.echoSteer.outcome = agent.SteerOutcomeDropped
+			requeued++
+		}
+		if requeued < count {
+			m.enqueueLogLocked(c, slog.LevelWarn, "steer drop count exceeds pending inputs", "agent_id", agentID, "reported", count, "requeued", requeued)
+		}
+	}
+	m.unlockAndPublish(c)
+	if err == nil {
+		m.drainIfReleased(agentID, snapshot)
+	}
+	return snapshot, err
+}
+
+// ResolveUnechoedSteers pauses unproved deliveries. A negative count selects all pending inputs at process exit.
+func (m *Manager) ResolveUnechoedSteers(ctx context.Context, agentID string, count int) (Snapshot, error) {
+	if count == 0 {
+		return m.Snapshot(ctx, agentID)
+	}
+	if !m.beginActivity() {
+		return Snapshot{}, ErrManagerStopped
+	}
+	defer m.endActivity()
+	c := m.coordinator(agentID)
+	c.mu.Lock()
+	inFlightID := ""
+	if c.echoSteer != nil && c.echoSteer.outcome == agent.SteerOutcomePending {
+		inFlightID = c.echoSteer.inputID
+	}
+	snapshot, resolved, inFlight, err := m.store.ResolveUnechoedSteers(ctx, agentID, count, inFlightID)
+	if err == nil {
+		if inFlight {
+			c.echoSteer.outcome = agent.SteerOutcomeUncertain
+		}
+		if resolved > 0 {
+			m.enqueueSnapshotLocked(c, snapshot)
+		}
+		if count > resolved {
+			m.enqueueLogLocked(c, slog.LevelWarn, "uncertain steer count exceeds pending inputs", "agent_id", agentID, "reported", count, "resolved", resolved)
+		}
+	}
+	m.unlockAndPublish(c)
+	return snapshot, err
+}
+
+// holdForEcho keeps the accepted input or records uncertain delivery if that write fails.
+// The caller holds c.mu.
+func (m *Manager) holdForEcho(c *coordinator, ctx context.Context, prepared PreparedDispatch) (Snapshot, error) {
+	snapshot, err := m.store.HoldForEcho(ctx, prepared)
+	if err != nil {
+		uncertain := fmt.Errorf("provider accepted the steer but echo tracking failed: %w", err)
+		var failErr error
+		snapshot, failErr = m.store.FailDispatch(ctx, prepared.Item.AgentID, prepared.Item.ID, uncertain, true)
+		if failErr != nil {
+			return Snapshot{}, errors.Join(err, failErr)
+		}
+	}
+	m.enqueueSnapshotLocked(c, snapshot)
 	return snapshot, nil
 }
 
@@ -699,14 +858,15 @@ func (m *Manager) Preempt(ctx context.Context, agentID, inputID string) (Snapsho
 	// separate question, so it gets its own sentinel: a caller that addressed an
 	// item which is no longer the head asked for something different from a caller
 	// whose head cannot be pre-empted, and one message cannot be true for both.
+	head := snapshot.HeadIndex()
 	switch {
-	case len(snapshot.Items) == 0:
+	case head < 0:
 		c.mu.Unlock()
 		return snapshot, ErrPreemptionState
-	case snapshot.Items[0].ID != inputID:
+	case snapshot.Items[head].ID != inputID:
 		c.mu.Unlock()
 		return snapshot, ErrNotHead
-	case !snapshot.Items[0].CanPreempt:
+	case !snapshot.Items[head].CanPreempt:
 		c.mu.Unlock()
 		return snapshot, ErrPreemptionState
 	}
@@ -974,7 +1134,7 @@ func (m *Manager) acceptDispatch(c *coordinator, ctx context.Context, prepared P
 	if err == nil {
 		transcript.Content = slices.Clone(transcript.Content)
 		c.publications = append(c.publications, queuePublication{snapshot: cloneQueueSnapshot(snapshot),
-			accepted: &transcript, afterAccept: result.AfterAccept})
+			accepted: []AcceptedTranscript{transcript}, afterAccept: result.AfterAccept})
 		return snapshot, true, nil
 	}
 	uncertainErr := fmt.Errorf("provider accepted input but transcript persistence failed: %w", err)

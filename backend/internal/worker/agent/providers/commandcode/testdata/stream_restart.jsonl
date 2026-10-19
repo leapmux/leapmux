@@ -1,0 +1,17 @@
+{"jsonrpc":"2.0","method":"turn/started","params":{"turnId":"turn_1"}}
+{"type":"event","event":{"type":"text_delta","delta":"PARTIAL-HOSTED "}}
+{"type":"event","event":{"type":"message_update","content":[{"type":"text","text":"PARTIAL-HOSTED "}]}}
+{"type":"event","event":{"type":"stream_restart","attempt":1,"maxAttempts":3,"discardedVisibleContent":true}}
+{"type":"event","event":{"type":"text_delta","delta":"FULL-HOSTED"}}
+{"type":"event","event":{"type":"message_update","content":[{"type":"text","text":"FULL-HOSTED"}]}}
+{"type":"event","event":{"type":"model_request_end","stopReason":"stop"}}
+{"type":"event","event":{"type":"message_end","content":[{"type":"text","text":"FULL-HOSTED"}]}}
+{"jsonrpc":"2.0","method":"turn/completed","params":{"turnId":"turn_1","stopReason":"end_turn","finalText":"FULL-HOSTED","turnCount":1}}
+{"jsonrpc":"2.0","method":"turn/started","params":{"turnId":"turn_2"}}
+{"type":"event","event":{"type":"text_delta","delta":"PARTIAL-TWO "}}
+{"type":"event","event":{"type":"message_update","content":[{"type":"text","text":"PARTIAL-TWO "}]}}
+{"type":"event","event":{"type":"stream_restart","attempt":1,"maxAttempts":3,"discardedVisibleContent":true}}
+{"jsonrpc":"2.0","id":4,"result":{"turnId":"turn_2","status":"interrupting"}}
+{"type":"event","event":{"type":"interrupted"}}
+{"type":"event","event":{"type":"run_end","result":{"finalText":"","stopReason":"interrupted","turnCount":1}}}
+{"jsonrpc":"2.0","method":"turn/completed","params":{"turnId":"turn_2","stopReason":"interrupted","finalText":"","turnCount":1}}

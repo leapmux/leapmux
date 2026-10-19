@@ -11,6 +11,7 @@ type PermissionCheckServices interface {
 // PublishPermissionCheck associates the check with the session that owns its tool row.
 // An explicit null ends the check. An absent field would preserve the previous state.
 // A provider must resolve its native agent identity before it calls this helper.
+// Use it only when the tool row states no session, or when that session equals MessageSessionID().
 func PublishPermissionCheck(sink PermissionCheckServices, spanID string, checking bool) {
 	if spanID == "" {
 		return

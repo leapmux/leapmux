@@ -104,10 +104,7 @@ func TestProviderFor_CodexClassification(t *testing.T) {
 	contextCompactionStart := json.RawMessage(`{"method":"item/started","params":{"item":{"type":"contextCompaction","id":"compact-1"}}}`)
 	commandExecutionStart := json.RawMessage(`{"method":"item/started","params":{"item":{"type":"commandExecution","id":"cmd-1"}}}`)
 
-	assert.Equal(t, agent.NotificationClassification{
-		Kind: agent.NotificationKindProviderScoped,
-		Key:  "codex:account/rateLimits/updated",
-	}, plugin.Classify(rateLimit))
+	assert.False(t, plugin.Classify(rateLimit).Consolidatable(), "rate limits publish live state and store no notification")
 
 	assert.False(t, plugin.Classify(skillsChanged).Consolidatable(),
 		"skill discovery state never enters a notification thread")
@@ -115,16 +112,10 @@ func TestProviderFor_CodexClassification(t *testing.T) {
 	assert.False(t, plugin.Classify(remoteControlStatus).Consolidatable(),
 		"remote-control state never enters a notification thread")
 
-	assert.Equal(t, agent.NotificationClassification{
-		Kind: agent.NotificationKindProviderScoped,
-		Key:  "codex:mcpServer/startupStatus/updated:codex_apps",
-	}, plugin.Classify(startup))
+	assert.Equal(t, agent.ProviderScopedNotification("codex:mcpServer/startupStatus/updated:codex_apps"), plugin.Classify(startup))
 
-	assert.Equal(t, agent.NotificationClassification{
-		Kind: agent.NotificationKindStatus,
-		Key:  "codex:item/started:contextCompaction",
-	}, plugin.Classify(contextCompactionStart),
-		"item/started for a contextCompaction item is the in-progress compacting indicator")
+	assert.Equal(t, agent.NotificationClassification{}, plugin.Classify(contextCompactionStart),
+		"a compaction start publishes live state and stores no row")
 
 	assert.False(t, plugin.Classify(commandExecutionStart).Consolidatable(),
 		"item/started for non-contextCompaction items must NOT be classified as a notification — those go through PersistMessage as AGENT spans")
@@ -133,17 +124,14 @@ func TestProviderFor_CodexClassification(t *testing.T) {
 	agentMessageEnd := json.RawMessage(`{"method":"item/completed","params":{"item":{"type":"agentMessage","id":"msg-1"}}}`)
 	threadCompacted := json.RawMessage(`{"method":"thread/compacted","params":{"threadId":"t1"}}`)
 
-	assert.Equal(t, agent.NotificationClassification{
-		Kind: agent.NotificationKindCompactionBoundary,
-		Key:  "codex:item/completed:contextCompaction",
-	}, plugin.Classify(contextCompactionEnd),
+	assert.Equal(t, agent.CompactionBoundaryNotification(), plugin.Classify(contextCompactionEnd),
 		"item/completed for a contextCompaction item is the boundary that ends the compacting indicator")
 
 	assert.False(t, plugin.Classify(agentMessageEnd).Consolidatable(),
 		"item/completed for every other item type goes through PersistMessage as an AGENT span")
 
 	assert.False(t, plugin.Classify(threadCompacted).Consolidatable(),
-		"thread/compacted persists as a plain threadable notification; item/completed is the boundary")
+		"thread/compacted takes the unknown-frame path; item/completed supplies the compaction boundary")
 }
 
 // The two notices that fold their repeats: a retryable-error burst collapses to
@@ -157,30 +145,21 @@ func TestCodexClassifyFoldsRetryAndBufferingNotices(t *testing.T) {
 	final := json.RawMessage(`{"method":"error","params":{"error":{"message":"flagged"},"willRetry":false,"threadId":"t1","turnId":"u1"}}`)
 	buffering := json.RawMessage(`{"method":"model/safetyBuffering/updated","params":{"threadId":"t1","turnId":"u1","showBufferingUi":true,"fasterModel":"gpt-6-luna"}}`)
 
-	assert.Equal(t, agent.NotificationClassification{
-		Kind: agent.NotificationKindAPIRetry,
-		Key:  "codex:error:retry",
-	}, plugin.Classify(willRetry))
+	assert.Equal(t, agent.APIRetryNotification(), plugin.Classify(willRetry))
 
 	assert.Equal(t, agent.NotificationClassification{}, plugin.Classify(final),
 		"a final error never persists, so it classifies as nothing")
 
-	assert.Equal(t, agent.NotificationClassification{
-		Kind: agent.NotificationKindProviderScoped,
-		Key:  "codex:model/safetyBuffering/updated:u1",
-	}, plugin.Classify(buffering))
+	assert.Equal(t, agent.ProviderScopedNotification("codex:model/safetyBuffering/updated:u1"), plugin.Classify(buffering))
 
 	// Two turns never fold together: each turn carries its own key.
 	otherTurn := json.RawMessage(`{"method":"model/safetyBuffering/updated","params":{"threadId":"t1","turnId":"u2","showBufferingUi":true,"fasterModel":"gpt-6-luna"}}`)
-	assert.NotEqual(t, plugin.Classify(buffering).Key, plugin.Classify(otherTurn).Key,
+	assert.NotEqual(t, plugin.Classify(buffering).Key(), plugin.Classify(otherTurn).Key(),
 		"two turns must not fold into one row")
 
 	// A frame that identifies no turn folds with the other turnless frames.
 	noTurn := json.RawMessage(`{"method":"model/safetyBuffering/updated","params":{"threadId":"t1","showBufferingUi":true,"fasterModel":"gpt-6-luna"}}`)
-	assert.Equal(t, agent.NotificationClassification{
-		Kind: agent.NotificationKindProviderScoped,
-		Key:  "codex:model/safetyBuffering/updated:unknown",
-	}, plugin.Classify(noTurn))
+	assert.Equal(t, agent.ProviderScopedNotification("codex:model/safetyBuffering/updated:unknown"), plugin.Classify(noTurn))
 }
 
 // The plugin states the child capabilities that the agent type implements. A

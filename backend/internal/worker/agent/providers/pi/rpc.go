@@ -18,9 +18,22 @@ import (
 // needs to interpret the result.
 type piResponseEnvelope struct {
 	Command string          `json:"command"`
-	Success bool            `json:"success"`
+	Success *bool           `json:"success"`
 	Data    json.RawMessage `json:"data"`
 	Error   string          `json:"error"`
+}
+
+// piCommandRefusal distinguishes a native refusal from an unreadable or missing reply.
+type piCommandRefusal struct {
+	command string
+	reason  string
+}
+
+func (e *piCommandRefusal) Error() string {
+	if e.reason == "" {
+		return e.command + " failed"
+	}
+	return e.command + " failed: " + e.reason
 }
 
 // sendPiCommand writes a {id, type:method, ...payload} JSONL command and
@@ -99,23 +112,28 @@ func parsePiResponse(method string, respLine json.RawMessage) (json.RawMessage, 
 	if env.Command != method {
 		return nil, fmt.Errorf("parse %s response: command %q does not match %q", method, env.Command, method)
 	}
-	if !env.Success {
-		if env.Error != "" {
-			return nil, fmt.Errorf("%s failed: %s", method, env.Error)
-		}
-		return nil, fmt.Errorf("%s failed", method)
+	if env.Success == nil {
+		return nil, fmt.Errorf("%s response has no success flag", method)
+	}
+	if !*env.Success {
+		return nil, &piCommandRefusal{command: method, reason: env.Error}
 	}
 	return env.Data, nil
 }
 
-func (a *Agent) sendPiCommandDetached(method string, payload map[string]any, handle func(error)) error {
+// piPromptDisposition reads the data field of a successful prompt response.
+func piPromptDisposition(raw json.RawMessage) string {
+	return providerkit.StringField(raw, "disposition")
+}
+
+func (a *Agent) sendPiCommandDetached(method string, payload map[string]any, handle func(json.RawMessage, error)) error {
 	wait, err := a.beginPiCommand(method, payload)
 	if err != nil {
 		return err
 	}
 	go func() {
-		_, err := wait(0)
-		handle(err)
+		raw, err := wait(0)
+		handle(raw, err)
 	}()
 	return nil
 }

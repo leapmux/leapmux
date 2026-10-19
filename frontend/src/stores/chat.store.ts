@@ -1,3 +1,4 @@
+import type { LiveCompaction } from './chatCompaction'
 import type { ChatRailData } from './chatMessageMarks'
 import type { ToolProgressEntry, ToolProgressUpdate } from './chatToolProgress'
 import type { TurnRetryOffer } from './chatTurnRetryOffer'
@@ -14,6 +15,7 @@ import { AgentChatMessageSchema, MarkType } from '~/generated/proto/leapmux/v1/a
 import { lowerBoundBySeq } from '~/lib/binarySearch'
 import { invalidateMessageParseCache } from '~/lib/messageParser'
 import { createBackgroundTaskStore } from './chatBackgroundTaskStore'
+import { createLiveCompactionStore } from './chatCompaction'
 import { createContentVersionStore } from './chatContentVersions'
 import { createGoalStore } from './chatGoalStore'
 import { createHistoryPaginator, linkWatchSignal } from './chatHistoryPaginator'
@@ -149,6 +151,7 @@ export function createChatStore() {
   // The live turn-retry offer is per-turn state. It never persists to browser
   // storage, so it lives in its own slice beside the tool progress.
   const turnRetryOffer = createTurnRetryOfferStore()
+  const liveCompaction = createLiveCompactionStore()
   const todos = createTodoStore()
   const backgroundTasks = createBackgroundTaskStore()
   const goal = createGoalStore()
@@ -339,6 +342,7 @@ export function createChatStore() {
     // The offer identifies a turn that the closed agent can no longer run. A
     // revive of this agent ID must not show the offer again.
     turnRetryOffer.clear(agentId)
+    liveCompaction.clear(agentId)
     viewportScroll.remove(agentId)
   }
 
@@ -768,6 +772,18 @@ export function createChatStore() {
     /** Record the live turn-retry offer that the worker made for the agent. */
     setTurnRetryOffer(agentId: string, offer: TurnRetryOffer) {
       turnRetryOffer.set(agentId, offer)
+    },
+
+    setLiveCompaction(agentId: string, value: LiveCompaction) {
+      liveCompaction.set(agentId, value)
+    },
+
+    getLiveCompaction(agentId: string): LiveCompaction | undefined {
+      return liveCompaction.get(agentId)
+    },
+
+    clearLiveCompaction(agentId: string) {
+      liveCompaction.clear(agentId)
     },
 
     /**
