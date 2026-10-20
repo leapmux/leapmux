@@ -682,11 +682,14 @@ export function handleControlRequest(
     controlStore.cancelRequest(cr)
     return
   }
-  // A saved response can still need local recording after its provider stops.
+  // A saved response can still need local recording after its provider stops,
+  // and a non-blocking question belongs to the conversation: a reader who
+  // returns later must still find it. A blocking request of an inactive agent
+  // with no saved response is dropped: its provider no longer waits.
   const agentEntry = view.getAgentTab(cr.agentId)
   const hasSavedResponse = cr.responseState === ControlResponseState.DELIVERED
     || cr.responseState === ControlResponseState.PENDING || cr.responseState === ControlResponseState.UNCERTAIN
-  if (catchUpPhase !== 'live' && agentEntry?.agentStatus === AgentStatus.INACTIVE && !hasSavedResponse)
+  if (catchUpPhase !== 'live' && agentEntry?.agentStatus === AgentStatus.INACTIVE && !hasSavedResponse && !cr.nonBlocking)
     return
   // Retain an unreadable control request because the provider still waits for its answer.
   // The view must show these items:
@@ -710,7 +713,7 @@ export function handleControlRequest(
     log.warn('Keeping a control request whose payload is malformed', { agentId: cr.agentId, requestId: cr.requestId, err })
     payloadFault = 'malformed'
   }
-  controlStore.addRequest(cr.agentId, { requestId: cr.requestId, agentId: cr.agentId, agentSessionId: cr.agentSessionId, payload, ...(payloadFault ? { payloadFault } : {}), originalPayload: cr.payload, agentProvider: cr.agentProvider, claimToken: cr.claimToken, sourceSeq: cr.sourceSeq, responseState: cr.responseState })
+  controlStore.addRequest(cr.agentId, { requestId: cr.requestId, agentId: cr.agentId, agentSessionId: cr.agentSessionId, payload, ...(payloadFault ? { payloadFault } : {}), originalPayload: cr.payload, agentProvider: cr.agentProvider, claimToken: cr.claimToken, sourceSeq: cr.sourceSeq, responseState: cr.responseState, ...(cr.nonBlocking ? { nonBlocking: true } : {}) })
   if (catchUpPhase === 'live') {
     // Set the hidden tab's badge when its agent needs an answer.
     // Use the same tile visibility rule as FULL watch mode.

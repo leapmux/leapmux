@@ -4,7 +4,7 @@ import type { ActionsProps } from '../../controls/types'
 import type { CodexDecision } from './controlResponse'
 
 import { createMemo, Match, Switch } from 'solid-js'
-import { CODEX_METHOD } from '~/generated/contracts/codex-protocol'
+import { CODEX_CONTROL_TOOL, CODEX_METHOD } from '~/generated/contracts/codex-protocol'
 import { buildAllowResponse, buildDenyResponse, getToolInput, getToolName } from '~/utils/controlResponse'
 import { ControlDecisionFooter } from '../../controls/ControlDecisionFooter'
 import { buildSessionPermissionPill, createSessionPermissionPresetChoice, respondThenApplyPermissionPreset } from '../../controls/permissionPresets'
@@ -176,7 +176,7 @@ export const CodexControlActions: Component<ActionsProps> = (props) => {
         />
       )}
     >
-      <Match when={toolName() === 'CodexPlanModePrompt'}>
+      <Match when={toolName() === CODEX_CONTROL_TOOL.PlanModePrompt}>
         <CodexPlanModePromptActions {...props} />
       </Match>
       <Match when={method() === CODEX_METHOD.PermissionsRequestApproval}>

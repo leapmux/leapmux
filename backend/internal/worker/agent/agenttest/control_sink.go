@@ -14,8 +14,12 @@ type ControlRequestRecord struct {
 	// holds when it stores the request (see ControlSink.PublishControlRequest).
 	AgentSessionID string
 	RequestID      string
+	InstanceID     string
 	Payload        []byte
 	SourceSeq      int64
+	// NonBlocking mirrors agent.ControlRequest.NonBlocking: true for a request
+	// the agent does not wait for.
+	NonBlocking bool
 }
 
 // PlanUpdateRecord captures a single UpdatePlan call.
@@ -59,8 +63,10 @@ func (s *ControlSink) PublishControlRequest(request agent.ControlRequest) error 
 	s.publishedControls = append(s.publishedControls, ControlRequestRecord{
 		AgentSessionID: sessionID,
 		RequestID:      request.RequestID,
+		InstanceID:     request.InstanceID,
 		Payload:        append([]byte(nil), request.Payload...),
 		SourceSeq:      request.SourceSeq,
+		NonBlocking:    request.NonBlocking,
 	})
 	return nil
 }

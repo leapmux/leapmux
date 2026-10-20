@@ -294,7 +294,7 @@ CREATE TABLE agent_input_queue_items (
     agent_id        TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
     order_index     INTEGER NOT NULL CHECK (order_index > 0),
     -- AgentInputKind ordinal. TestEnumColumnChecksMatchTheirProtoRanges pins the range.
-    kind            INTEGER NOT NULL CHECK (typeof(kind) = 'integer') CHECK (kind BETWEEN 1 AND 6),
+    kind            INTEGER NOT NULL CHECK (typeof(kind) = 'integer') CHECK (kind BETWEEN 1 AND 7),
     text            TEXT NOT NULL DEFAULT '',
     target_mode     TEXT NOT NULL DEFAULT '',
     prepare_context INTEGER NOT NULL DEFAULT 0 CHECK (prepare_context IN (0, 1)),
@@ -356,6 +356,9 @@ CREATE TABLE control_requests (
     -- A changed payload or a new request after deletion gets a fresh token.
     -- The frontend echoes the token so the worker can deduplicate answers per instance.
     claim_token TEXT NOT NULL DEFAULT '',
+    -- 1 for a request that the agent does not wait for. A process exit keeps it.
+    -- A context clear, a tab close, and a session change remove it.
+    non_blocking INTEGER NOT NULL DEFAULT 0 CHECK (non_blocking IN (0, 1)),
     created_at  DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     PRIMARY KEY (agent_id, request_id)
 );
@@ -385,12 +388,23 @@ CREATE TABLE control_response_payloads (
     plan_approval_settings BLOB NOT NULL DEFAULT X'',
     execution_session_id TEXT NOT NULL DEFAULT '',
     source_seq INTEGER NOT NULL DEFAULT 0 CHECK (source_seq >= 0),
-    feedback TEXT NOT NULL DEFAULT '',
+    -- The input that finalization queues after the answer: its text, and its
+    -- AgentInputKind ordinal. 0 means "no follow-up input" -- a real state, like
+    -- agents.goal_status -- and the tie CHECK makes it hold exactly when the text is
+    -- empty, so a forgotten kind write still fails. Only the two kinds that an
+    -- answer queues are admitted. enum_column_numbering_test.go pins both CHECKs.
+    follow_up TEXT NOT NULL DEFAULT '',
+    follow_up_kind INTEGER NOT NULL DEFAULT 0
+        CHECK (typeof(follow_up_kind) = 'integer') CHECK (follow_up_kind IN (0, 6, 7)),
+    -- The non_blocking value of the request that this answer is for, kept so a
+    -- response replayed after its request row is gone keeps its presentation.
+    non_blocking INTEGER NOT NULL DEFAULT 0 CHECK (non_blocking IN (0, 1)),
     agent_session_id TEXT NOT NULL DEFAULT '',
     agent_provider INTEGER NOT NULL
         CHECK (typeof(agent_provider) = 'integer') CHECK (agent_provider BETWEEN 1 AND 30),
     input_id TEXT NOT NULL DEFAULT '',
-    FOREIGN KEY (delivery_id, kind) REFERENCES control_deliveries(id, kind) ON DELETE CASCADE
+    FOREIGN KEY (delivery_id, kind) REFERENCES control_deliveries(id, kind) ON DELETE CASCADE,
+    CHECK ((follow_up_kind = 0) = (follow_up = ''))
 );
 CREATE INDEX idx_control_response_input ON control_response_payloads(input_id)
 WHERE input_id <> '';
@@ -409,7 +423,8 @@ CREATE VIEW control_response_answers AS
 SELECT d.id AS delivery_id, d.agent_id, d.operation_id AS request_id,
     d.instance_id AS claim_token, d.state, p.request_payload, p.response_content,
     p.resolved_content, p.plan_approval_settings, p.execution_session_id,
-    p.source_seq, p.feedback, p.agent_session_id, p.agent_provider, p.input_id
+    p.source_seq, p.follow_up, p.follow_up_kind, p.agent_session_id, p.agent_provider,
+    p.input_id, p.non_blocking
 FROM control_deliveries d JOIN control_response_payloads p ON p.delivery_id = d.id;
 
 CREATE VIEW auto_review_approvals AS

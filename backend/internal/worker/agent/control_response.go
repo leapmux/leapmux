@@ -26,8 +26,13 @@ type ControlResponseContext struct {
 // settings, and forwards Content.
 type ControlResponseResolution struct {
 	Content []byte
-	// Feedback must use a separate user input when the native response cannot carry it safely.
-	Feedback      string
+	// FollowUp queues a separate user input when the native response cannot
+	// carry the text safely.
+	FollowUp ControlFollowUp
+	// LeapMuxOwned states that LeapMux published the request, and no provider
+	// request waits for an answer. The service never forwards Content to the
+	// provider. A QUESTION_ANSWER follow-up requires it.
+	LeapMuxOwned  bool
 	SelfDisplayed bool
 	// Withhold prevents forwarding a response that the provider cannot read.
 	// Withhold covers that case alone. The service returns Refusal as the error
@@ -46,6 +51,42 @@ type ControlResponseResolution struct {
 	// refusalReason states why the provider withholds the response. It is
 	// unexported, so only Refuse sets it, and always together with Withhold.
 	refusalReason string
+}
+
+// ControlFollowUp is the input that the worker queues after it records an
+// answer. The zero value queues nothing.
+type ControlFollowUp struct {
+	// Kind is CONTROL_FEEDBACK or QUESTION_ANSWER.
+	Kind leapmuxv1.AgentInputKind
+	Text string
+}
+
+// FeedbackFollowUp queues rejection feedback that the native response cannot
+// carry. An empty text gives the zero value.
+func FeedbackFollowUp(text string) ControlFollowUp {
+	if text == "" {
+		return ControlFollowUp{}
+	}
+	return ControlFollowUp{Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK, Text: text}
+}
+
+// QuestionAnswerFollowUp queues the answer to a LeapMux-owned question. An
+// empty text gives the zero value.
+func QuestionAnswerFollowUp(text string) ControlFollowUp {
+	if text == "" {
+		return ControlFollowUp{}
+	}
+	return ControlFollowUp{Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER, Text: text}
+}
+
+// Valid reports whether the value is the zero value, or one of the two kinds
+// with a non-empty text.
+func (f ControlFollowUp) Valid() bool {
+	if f.Kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED {
+		return f.Text == ""
+	}
+	return f.Text != "" && (f.Kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK ||
+		f.Kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER)
 }
 
 // ControlResponseRefusedText is the reason that a withheld response states when

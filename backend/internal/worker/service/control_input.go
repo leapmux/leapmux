@@ -48,9 +48,14 @@ func notReadyStoreFault(err error) error {
 	}
 }
 
+// errAnswerHasNoQuestion fails an answer whose question has no stored row. No
+// later read brings the row back, so the failure is permanent.
+var errAnswerHasNoQuestion = errors.New("the answer has no recorded question")
+
 type controlInput struct {
-	text   string
-	source *db.GetControlResponseSourcesForInputRow
+	text                string
+	supplementalContent []byte
+	source              *db.GetControlResponseSourcesForInputRow
 }
 
 // resolveControlInput validates every approval-linked input before dispatch.
@@ -61,12 +66,8 @@ func (svc *Service) resolveControlInput(item inputqueue.DispatchItem, currentAge
 		AgentID: item.AgentID, InputID: item.ID,
 	})
 	if err != nil {
-		// A missing row gives an empty slice here, so every error is a store
-		// fault rather than an answer about this input. Nothing reached the
-		// provider, and the next read can succeed. notReadyInput leaves the pause
-		// reason unset, which recordDispatchFailure then answers with AGENT_STOPPED
-		// -- a false sentence about a database error, on the very read this
-		// classification exists for.
+		// A missing row returns an empty slice. Every query error here is a store fault.
+		// Nothing reached the provider, and a later read can succeed.
 		return controlInput{}, notReadyStoreFault(fmt.Errorf("read the control responses for this input: %w", err))
 	}
 	if len(sources) > 1 {
@@ -75,11 +76,8 @@ func (svc *Service) resolveControlInput(item inputqueue.DispatchItem, currentAge
 	if len(sources) == 1 {
 		source := &sources[0]
 		if source.State != storedStateCompleted {
-			// The answer row exists and is still on its way to COMPLETED.
-			// enqueuePlanExecution inserts the item BEFORE processControlResponse
-			// records the delivery, so the queue can drain it first. The
-			// NotifyDependencyReady that finalizeControlResponse sends resumes
-			// the queue, which a FAILED item would not wait for.
+			// The queue can read the input before the approval reaches COMPLETED.
+			// Retain it for a later attempt instead of permanently rejecting it.
 			return controlInput{}, notReadyInput(errors.New("the input's approval is not recorded yet"))
 		}
 		resolved.source = source
@@ -93,12 +91,37 @@ func (svc *Service) resolveControlInput(item inputqueue.DispatchItem, currentAge
 	if item.Kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK {
 		resolved.text = "The user rejected the request. Their feedback follows:\n\n" + item.Text
 	}
+	if item.Kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER {
+		if resolved.source == nil {
+			return controlInput{}, errAnswerHasNoQuestion
+		}
+		payload, err := svc.Queries.GetControlResponseRequestPayloadForInput(bgCtx(), db.GetControlResponseRequestPayloadForInputParams{
+			AgentID: item.AgentID, InputID: item.ID,
+		})
+		if storeFault(err) {
+			return controlInput{}, notReadyStoreFault(fmt.Errorf("read the control request for this answer: %w", err))
+		}
+		if err != nil {
+			// The source read above found the row, so a delete removed it
+			// between the two reads.
+			return controlInput{}, errAnswerHasNoQuestion
+		}
+		reply, err := svc.Agents.Registry().Plugin(currentAgent.AgentProvider).QuestionReply(payload, item.Text)
+		if err != nil {
+			return controlInput{}, err
+		}
+		resolved.text = reply
+		resolved.supplementalContent, err = agent.EncodeMessageSupplement(agent.MessageContent{Supplemental: payload})
+		if err != nil {
+			return controlInput{}, fmt.Errorf("encode the question source: %w", err)
+		}
+	}
 	return resolved, nil
 }
 
 func (input controlInput) validateSession(current db.Agent) error {
 	if input.source != nil && (input.sessionID() == "" || input.sessionID() != current.AgentSessionID || input.source.AgentProvider != current.AgentProvider) {
-		return errors.New("the original provider session is no longer active")
+		return fmt.Errorf("%w: the original provider session is no longer active", agent.ErrInputSessionChanged)
 	}
 	return nil
 }
@@ -117,19 +140,40 @@ func (svc *Service) sendResolvedInput(agentID string, input controlInput, attach
 	if input.source == nil {
 		return svc.Agents.SendInput(agentID, input.text, attachments)
 	}
+	provider, err := svc.controlInputProvider(agentID, input)
+	if err != nil {
+		return err
+	}
+	return agent.SendInputToSession(provider, input.sessionID(), input.text, attachments)
+}
+
+// steerResolvedInput retains the validated provider and the question's session.
+func (svc *Service) steerResolvedInput(agentID string, input controlInput, attachments []*leapmuxv1.Attachment) error {
+	if input.source == nil {
+		return svc.Agents.SteerInput(agentID, input.text, attachments)
+	}
+	provider, err := svc.controlInputProvider(agentID, input)
+	if err != nil {
+		return err
+	}
+	return agent.SteerInputToSession(provider, input.sessionID(), input.text, attachments)
+}
+
+// controlInputProvider validates the source while it retains the current provider.
+// Delivery releases the lifecycle lock before it waits for the provider.
+func (svc *Service) controlInputProvider(agentID string, input controlInput) (agent.Agent, error) {
 	provider, release := svc.Agents.LockProvider(agentID)
-	// Only the READ is classified. validateSession's answer is about this input --
-	// the original provider session is gone -- and stays a permanent failure.
+	defer release()
+	// A store fault can recover. A different source session cannot recover.
 	current, err := svc.queueAgentRow(agentID)
 	if err == nil {
 		err = input.validateSession(current)
 	}
-	release()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if provider == nil {
-		return agent.ErrAgentNotFound
+		return nil, agent.ErrAgentNotFound
 	}
-	return agent.SendInputToSession(provider, input.sessionID(), input.text, attachments)
+	return provider, nil
 }

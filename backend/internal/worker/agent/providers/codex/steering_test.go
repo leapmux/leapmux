@@ -210,3 +210,30 @@ func TestHandleCodexOutput_ASteerOfAnUnroutedSubagentFlushesOnlyTheDroppedItems(
 	assert.NotContains(t, string(messages[messageIndexContaining(messages, "The report.")].Content), `"completion":"interrupted"`)
 	assert.Less(t, dropped, messageIndexContaining(messages, "The report."))
 }
+
+func TestCodexSessionSteeringValidatesTheNativeTarget(t *testing.T) {
+	t.Parallel()
+	for _, expected := range []string{"", "previous", "current"} {
+		t.Run(expected, func(t *testing.T) {
+			t.Parallel()
+			a, _, requests := newCodexAgentForRPC(t, func(string) agenttest.RPCReply {
+				return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+			})
+			a.threadID = "current"
+			a.mainTurn.id = "turn-1"
+
+			err := a.SteerInputForSession(expected, "Keep the selected color.", nil)
+
+			if expected != "current" {
+				require.ErrorIs(t, err, agent.ErrInputSessionChanged)
+				assert.Empty(t, requests(), "a different session must receive no request")
+				return
+			}
+			require.NoError(t, err)
+			require.Len(t, requests(), 1)
+			assert.Equal(t, "turn/steer", requests()[0].Method)
+			assert.Equal(t, "current", requests()[0].Params["threadId"])
+			assert.Equal(t, "turn-1", requests()[0].Params["expectedTurnId"])
+		})
+	}
+}

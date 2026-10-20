@@ -320,27 +320,41 @@ type codexItemEvent struct {
 	itemID   string
 	threadID string
 	turnID   string
+	delivery string
 }
 
+// newCodexItemEvent reads the envelope and item header once.
 func newCodexItemEvent(raw []byte, params json.RawMessage) (codexItemEvent, bool) {
-	item, itemType, itemID, threadID := extractCodexItem(params)
-	if item == nil {
-		return codexItemEvent{}, false
-	}
 	var envelope struct {
-		TurnID string `json:"turnId"`
+		Item     json.RawMessage `json:"item"`
+		ThreadID string          `json:"threadId"`
+		TurnID   string          `json:"turnId"`
 	}
-	if json.Unmarshal(params, &envelope) != nil {
+	if err := json.Unmarshal(params, &envelope); err != nil {
+		slog.Warn("codex extract item wrapper unmarshal failed", "error", err)
 		return codexItemEvent{}, false
+	}
+	if len(envelope.Item) == 0 {
+		return codexItemEvent{}, false
+	}
+	var header struct {
+		Type     string          `json:"type"`
+		ID       string          `json:"id"`
+		Delivery json.RawMessage `json:"delivery"`
+	}
+	if err := json.Unmarshal(envelope.Item, &header); err != nil {
+		slog.Warn("codex extract item header unmarshal failed", "error", err)
+		return codexItemEvent{}, false
+	}
+	var delivery string
+	// A malformed delivery field suppresses questions, not the transcript item.
+	if len(header.Delivery) > 0 {
+		_ = json.Unmarshal(header.Delivery, &delivery)
 	}
 	return codexItemEvent{
-		raw:      raw,
-		params:   params,
-		item:     item,
-		itemType: itemType,
-		itemID:   itemID,
-		threadID: threadID,
-		turnID:   envelope.TurnID,
+		raw: raw, params: params, item: envelope.Item,
+		itemType: header.Type, itemID: header.ID, threadID: envelope.ThreadID,
+		turnID: envelope.TurnID, delivery: delivery,
 	}, true
 }
 
@@ -496,6 +510,9 @@ func (a *Agent) handleCodexItemCompletedForSink(
 	switch event.itemType {
 	case contracts.CodexItemTypeAgentMessage:
 		persistSharedItemCompleted(sink, event.params, event.itemType, event.itemID, agentID)
+		if mainThread {
+			a.publishAsyncQuestions(sink, event)
+		}
 	case contracts.CodexItemTypePlan:
 		if !mainThread {
 			persistSharedItemCompleted(sink, event.params, event.itemType, event.itemID, agentID)
@@ -678,7 +695,7 @@ func (a *Agent) handleTurnCompleted(params json.RawMessage) {
 				"type":       "control_request",
 				"request_id": requestID,
 				"request": map[string]interface{}{
-					"tool_name": ToolNamePlanModePrompt,
+					"tool_name": contracts.CodexControlToolPlanModePrompt,
 					"input":     map[string]interface{}{},
 				},
 			})
@@ -1374,32 +1391,6 @@ func codexReasoningItemHasText(item json.RawMessage) bool {
 		}
 	}
 	return strings.TrimSpace(reasoning.Text) != ""
-}
-
-// extractCodexItem extracts the item and routing fields from one item event.
-func extractCodexItem(params json.RawMessage) (item json.RawMessage, itemType, itemID, threadID string) {
-	var wrapper struct {
-		Item     json.RawMessage `json:"item"`
-		ThreadID string          `json:"threadId"`
-	}
-	if err := json.Unmarshal(params, &wrapper); err != nil {
-		slog.Warn("codex extract item wrapper unmarshal failed", "error", err)
-		return nil, "", "", ""
-	}
-	if len(wrapper.Item) == 0 {
-		return nil, "", "", ""
-	}
-
-	var header struct {
-		Type string `json:"type"`
-		ID   string `json:"id"`
-	}
-	if err := json.Unmarshal(wrapper.Item, &header); err != nil {
-		slog.Warn("codex extract item header unmarshal failed", "error", err)
-		return nil, "", "", ""
-	}
-
-	return wrapper.Item, header.Type, header.ID, wrapper.ThreadID
 }
 
 func (a *Agent) handleOutput(line *providerkit.ParsedLine) {

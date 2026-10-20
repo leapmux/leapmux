@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -99,4 +100,39 @@ WHEN NEW.id = 'session-log-owner' BEGIN SELECT RAISE(ABORT, 'session update refu
 			}
 		})
 	}
+}
+
+func TestSessionRetirementPreservesANewerSessionFromALogCallback(t *testing.T) {
+	const agentID = "retirement-log-owner"
+	svc, sink := setupRootSink(t, agentID)
+	previous := slog.Default()
+	defer slog.SetDefault(previous)
+	entered := false
+	var publicationErr error
+	slog.SetDefault(slog.New(controlFailureLogObserver{Handler: slog.NewTextHandler(io.Discard, nil), observe: func(record slog.Record) {
+		if entered || record.Message != "agent session ID updated" {
+			return
+		}
+		belongs := false
+		record.Attrs(func(attribute slog.Attr) bool {
+			belongs = belongs || attribute.Key == "agent_id" && attribute.Value.String() == agentID
+			return true
+		})
+		if !belongs {
+			return
+		}
+		entered = true
+		sink.UpdateSessionID("newer-session")
+		publicationErr = sink.PublishControlRequest(agent.ControlRequest{
+			RequestID: "current-question", NonBlocking: true, Payload: []byte(`{"question":"Which color?"}`),
+		})
+	}}))
+
+	sink.UpdateSessionID("older-session")
+
+	require.True(t, entered)
+	require.NoError(t, publicationErr)
+	request, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: agentID, RequestID: "current-question"})
+	require.NoError(t, err, "a delayed retirement must preserve the current session's question")
+	assert.Equal(t, "newer-session", request.AgentSessionID)
 }

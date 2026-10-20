@@ -8,6 +8,7 @@ import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { decodeControlBehaviorEnvelope } from '~/utils/controlResponse'
 import { sendJsonRpcResult } from '../../controls/types'
 import { feedback, firstNonEmpty, joinAnswerLines, label, labeledAnswerLine, labelOrNull } from '../../persistedControlResponse'
+import { codexAsyncQuestionSummary } from './asyncQuestion'
 
 export type CodexDecision
   = | 'accept'
@@ -397,6 +398,11 @@ function codexDecisionText(request: Record<string, unknown> | undefined, respons
  * Return null when no response-specific display applies so the caller can use the neutral behavior display.
  */
 export function codexControlResponseSummary(cr: PersistedControlResponse): ControlResponseSummary | null {
+  // LeapMux's own async question answers in the neutral envelope, and its
+  // display is the quoted question with the answer.
+  const asyncQuestion = codexAsyncQuestionSummary(cr)
+  if (asyncQuestion !== null)
+    return asyncQuestion
   const answers = codexUserInputAnswers(cr.request, cr.response)
   if (answers !== null)
     return label(answers)

@@ -16,6 +16,7 @@ import (
 	sqlitelib "modernc.org/sqlite/lib"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 	"github.com/leapmux/leapmux/internal/worker/db/dbtest"
@@ -186,6 +187,113 @@ func TestControlFeedbackPrecedesFutureInput(t *testing.T) {
 			assert.Equal(t, expected, ids)
 		})
 	}
+}
+
+func TestQuestionAnswerPrecedesFutureInput(t *testing.T) {
+	t.Parallel()
+	for _, active := range []bool{false, true} {
+		t.Run(fmt.Sprint(active), func(t *testing.T) {
+			t.Parallel()
+			_, store := newStoreFixture(t)
+			ctx := t.Context()
+			if active {
+				_, err := store.Enqueue(ctx, NewItem{ID: "active", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "active request"})
+				require.NoError(t, err)
+				prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
+				require.NoError(t, err)
+				require.NotNil(t, prepared)
+			}
+			_, err := store.Enqueue(ctx, NewItem{ID: "future", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "future task"})
+			require.NoError(t, err)
+			_, err = store.Enqueue(ctx, NewItem{ID: "answer", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER, Text: "Red"})
+			require.NoError(t, err)
+			snapshot, err := store.Snapshot(ctx, "agent-1")
+			require.NoError(t, err)
+			var ids []string
+			for _, item := range snapshot.Items {
+				ids = append(ids, item.ID)
+			}
+			expected := []string{"answer", "future"}
+			if active {
+				expected = append([]string{"active"}, expected...)
+				assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING, snapshot.Items[0].State)
+			}
+			assert.Equal(t, expected, ids, "the answer is the reply to the current request and precedes future work")
+		})
+	}
+}
+
+// TestStoreAcceptPreservesTheAnswerAndQuestionSource checks storage and input identity.
+func TestStoreAcceptPreservesTheAnswerAndQuestionSource(t *testing.T) {
+	t.Parallel()
+
+	database, store := newStoreFixture(t)
+	ctx := t.Context()
+	input := NewItem{
+		ID: "answer-1", AgentID: "agent-1",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER, Text: "Red",
+	}
+	_, err := store.Enqueue(ctx, input)
+	require.NoError(t, err)
+	prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
+	require.NoError(t, err)
+	require.NotNil(t, prepared)
+	transcript, _, err := store.Accept(ctx, *prepared, DispatchResult{
+		StartsTurn: true, TurnSteerable: true, SupplementalContent: []byte(`{"provider":{"title":"Which color should I use?"}}`),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, transcript.MarkType,
+		"a control reply draws a scroll-rail jump dot")
+	raw, err := msgcodec.Decompress(transcript.Content, transcript.ContentCompression)
+	require.NoError(t, err)
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(raw, &body))
+	assert.Equal(t, "Red", body["content"], "the row preserves the original answer")
+	source, err := msgcodec.Decompress(transcript.SupplementalContent, transcript.SupplementalContentCompression)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"provider":{"title":"Which color should I use?"}}`, string(source))
+	var storedSource []byte
+	var storedCompression leapmuxv1.ContentCompression
+	require.NoError(t, database.QueryRowContext(ctx, `SELECT supplemental_content, supplemental_content_compression FROM messages WHERE id = ?`, input.ID).Scan(&storedSource, &storedCompression))
+	assert.Equal(t, transcript.SupplementalContent, storedSource)
+	assert.Equal(t, transcript.SupplementalContentCompression, storedCompression)
+
+	var idempotencyKey string
+	require.NoError(t, database.QueryRowContext(ctx,
+		`SELECT idempotency_key FROM messages WHERE id = ?`, input.ID).Scan(&idempotencyKey))
+	assert.Equal(t, inputIdempotencyKey(input), idempotencyKey, "the key uses the queued item text")
+	withTranscript := input
+	withTranscript.Text = "> Which color should I use?\n\nRed"
+	assert.NotEqual(t, inputIdempotencyKey(withTranscript), idempotencyKey,
+		"the transcript text must not reach the idempotency key")
+}
+
+// A question answer is steerable like a user message: the worker injects it into
+// the turn that asked the question.
+func TestStorePrepareSteerTakesAQuestionAnswerHead(t *testing.T) {
+	t.Parallel()
+
+	_, store := newStoreFixture(t)
+	ctx := t.Context()
+	_, err := store.Enqueue(ctx, NewItem{ID: "active", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "active request"})
+	require.NoError(t, err)
+	prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
+	require.NoError(t, err)
+	require.NotNil(t, prepared)
+	_, _, err = store.Accept(ctx, *prepared, DispatchResult{StartsTurn: true, TurnSteerable: true})
+	require.NoError(t, err)
+	_, err = store.Enqueue(ctx, NewItem{ID: "answer", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER, Text: "Red"})
+	require.NoError(t, err)
+
+	snapshot, err := store.Snapshot(ctx, "agent-1")
+	require.NoError(t, err)
+	require.NotEmpty(t, snapshot.Items)
+	assert.True(t, snapshot.Items[0].CanSteer, "the answer can enter the running turn")
+
+	steer, _, err := store.PrepareSteer(ctx, "agent-1", "answer")
+	require.NoError(t, err)
+	require.NotNil(t, steer)
+	assert.Equal(t, "answer", steer.Item.ID)
 }
 
 func TestStoreTruncatesSnapshotTextButEditReturnsFullText(t *testing.T) {
@@ -1579,4 +1687,50 @@ func TestStoreSnapshotRefusesToSteerDuringAPlannedRestart(t *testing.T) {
 	assert.False(t, snapshot.Items[0].CanSteer, "a restart in flight refuses the steer the offer promised")
 	_, _, err = store.PrepareSteer(t.Context(), "agent-1", "head")
 	assert.ErrorIs(t, err, ErrPlannedRestart)
+}
+
+func TestStoreAutomaticQuestionAdmission(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name                                          string
+		kind                                          leapmuxv1.AgentInputKind
+		paused, active, steerable, admitted, steering bool
+	}{
+		{name: "idle question", kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER, admitted: true},
+		{name: "active steerable question", kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER, active: true, steerable: true, admitted: true, steering: true},
+		{name: "paused active question", kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER, paused: true, active: true, steerable: true},
+		{name: "paused idle question", kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER, paused: true},
+		{name: "active unsteerable question", kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER, active: true},
+		{name: "ordinary active message", kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, active: true, steerable: true},
+		{name: "active feedback", kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK, active: true, steerable: true},
+		{name: "ordinary idle message", kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, admitted: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			_, store := newStoreFixture(t)
+			_, err := store.Enqueue(t.Context(), NewItem{ID: "input", AgentID: "agent-1", Kind: test.kind, Text: "answer"})
+			require.NoError(t, err)
+			if test.active {
+				_, _, err = store.TurnStarted(t.Context(), "agent-1", test.steerable)
+				require.NoError(t, err)
+			}
+			if test.paused {
+				_, err = store.SetPaused(t.Context(), "agent-1", true, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_MANUAL)
+				require.NoError(t, err)
+			}
+			prepared, snapshot, err := store.PrepareDispatch(t.Context(), "agent-1")
+			require.NoError(t, err)
+			if !test.admitted {
+				assert.Nil(t, prepared)
+				require.Len(t, snapshot.Items, 1)
+				assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, snapshot.Items[0].State)
+				assert.Equal(t, test.paused, snapshot.Paused)
+				return
+			}
+			require.NotNil(t, prepared)
+			assert.Equal(t, test.steering, prepared.Steering)
+			assert.Positive(t, prepared.ReservedSeq)
+			assert.Equal(t, "answer", prepared.Item.Text)
+		})
+	}
 }

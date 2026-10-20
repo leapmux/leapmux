@@ -1314,6 +1314,62 @@ describe('activeControlRequest', () => {
       dispose()
     })
   })
+
+  /** One non-blocking question: the agent continues and the question waits. */
+  function nonBlockingQuestion(): ControlRequest {
+    return {
+      agentId: 'test-agent',
+      requestId: 'q1',
+      claimToken: 'tok-q1',
+      payload: { request: { tool_name: 'AskUserQuestion', input: { questions: [{ id: 'q', question: 'Choose', options: [{ label: 'First' }] }] } } },
+      nonBlocking: true,
+    }
+  }
+
+  // The one rule for a non-blocking question: the composer shows it only
+  // after the reader opens the questions. Until then the composer stays free
+  // and the question waits behind it.
+  it('keeps a lone non-blocking question closed until the reader opens the questions', () => {
+    createRoot((dispose) => {
+      const [questionsOpen, setQuestionsOpen] = createSignal(false)
+      const request = nonBlockingQuestion()
+      // A getter, not a plain field: the composer reads the flag live, exactly
+      // as the panel does from its store-backed prop.
+      const props: ControlResponseHandlingProps = {
+        agentId: 'test-agent',
+        get questionsOpen() { return questionsOpen() },
+        onQuestionsOpenChange: open => setQuestionsOpen(open),
+        controlRequests: [request],
+        onSendMessage: vi.fn(),
+      }
+      const result = useControlResponseHandling(props, createControlAnswerState(), () => undefined, vi.fn())
+
+      expect(result.activeControlRequest()).toBeNull()
+      expect(result.pendingQuestionCount()).toBe(1)
+
+      result.openQuestions()
+      expect(result.activeControlRequest()).toBe(request)
+
+      result.closeQuestions()
+      expect(result.activeControlRequest()).toBeNull()
+      dispose()
+    })
+  })
+
+  it('returns a blocking request at once', () => {
+    createRoot((dispose) => {
+      const request = makeControlRequest('b1', 'test-agent')
+      const result = useControlResponseHandling({
+        agentId: 'test-agent',
+        controlRequests: [request],
+        questionsOpen: false,
+        onSendMessage: vi.fn(),
+      }, createControlAnswerState(), () => undefined, vi.fn())
+      expect(result.activeControlRequest()).toBe(request)
+      expect(result.pendingQuestionCount()).toBe(0)
+      dispose()
+    })
+  })
 })
 
 describe('a request whose payload LeapMux cannot read', () => {

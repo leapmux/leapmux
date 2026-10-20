@@ -140,6 +140,21 @@ func TestModelResetSelectionKeepsExistingResetBoundaries(t *testing.T) {
 	assert.EqualValues(t, 2, value.ThinkingTokens, "the exact scope selector takes priority")
 }
 
+func TestModelProgressResetControlResetsOnlyForABlockingPublish(t *testing.T) {
+	t.Parallel()
+
+	inner := &agenttest.Sink{}
+	sink := agent.NewModelProgressResetSink(agent.NewProviderServices(inner))
+	// The question reports nothing: the model keeps generating while it waits.
+	require.NoError(t, sink.PublishControlRequest(agent.ControlRequest{RequestID: "question", NonBlocking: true}))
+	assert.Empty(t, inner.ProgressUpdates(), "a non-blocking publish resets no model progress")
+
+	require.NoError(t, sink.PublishControlRequest(agent.ControlRequest{RequestID: "approval"}))
+	updates := inner.ProgressUpdates()
+	require.Len(t, updates, 1, "the blocking publish reports exactly one update")
+	assert.Equal(t, agent.ProgressModelReset, updates[0].Operation)
+}
+
 func TestProgressResetSinkKeepsOutputWhenAMessagePersists(t *testing.T) {
 	t.Parallel()
 

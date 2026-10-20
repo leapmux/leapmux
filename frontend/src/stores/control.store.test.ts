@@ -2,7 +2,7 @@ import type { ControlRequest } from '~/stores/control.store'
 import { createRoot } from 'solid-js'
 import { describe, expect, it } from 'vitest'
 import { ControlResponseState } from '~/generated/proto/leapmux/v1/agent_pb'
-import { createControlStore, requestInstanceId } from '~/stores/control.store'
+import { createControlStore, pendingQuestionCount, requestInstanceId, shownControlRequest } from '~/stores/control.store'
 
 // claimToken defaults to a per-requestId token (so a re-add of the SAME id models a reconnect replay of
 // the SAME instance); pass an explicit token to model a REISSUED instance that reused the request_id.
@@ -152,15 +152,25 @@ describe('createControlStore', () => {
       const store = createControlStore()
       store.addRequest('agent-1', makeRequest('r1', 'agent-1'))
       store.addRequest('agent-2', makeRequest('r2', 'agent-2'))
+      // The flag opens only while a question waits, so give agent-2 one.
+      // Otherwise the flag stays false, and the check after clearAll proves
+      // nothing.
+      store.addRequest('agent-2', { ...makeRequest('q2', 'agent-2'), nonBlocking: true })
+      store.setQuestionsOpen('agent-2', true)
+      expect(store.questionsOpen('agent-2')).toBe(true)
       store.clearAll()
+
+      // Previously populated agents must be empty too: a store write MERGES
+      // the object it is given, so `setState('pendingByAgent', {})` would
+      // clear nothing.
+      expect(store.getRequests('agent-1')).toEqual([])
+      expect(store.getRequests('agent-2')).toEqual([])
+      expect(store.questionsOpen('agent-2')).toBe(false)
 
       // After clearAll, new additions should work correctly
       store.addRequest('agent-3', makeRequest('r3', 'agent-3'))
       expect(store.getRequests('agent-3')).toHaveLength(1)
       expect(store.getRequests('agent-3')[0]?.requestId).toBe('r3')
-
-      // Previously populated agents should not show new data
-      // (a fresh store with only agent-3 added)
       dispose()
     })
   })
@@ -303,5 +313,193 @@ describe('createControlStore', () => {
       expect(store.getRequests('agent-noise-199')).toHaveLength(0)
       dispose()
     })
+  })
+
+  // A blocking request takes the composer over, so every blocking request must
+  // precede every question that waits for the reader to open it.
+  it('places each blocking request before every non-blocking one', () => {
+    createRoot((dispose) => {
+      const store = createControlStore()
+      store.addRequest('agent-1', makeRequest('B1', 'agent-1'))
+      store.addRequest('agent-1', { ...makeRequest('Q1', 'agent-1'), nonBlocking: true })
+      store.addRequest('agent-1', makeRequest('B2', 'agent-1'))
+      expect(store.getRequests('agent-1').map(request => request.requestId)).toEqual(['B1', 'B2', 'Q1'])
+      expect(pendingQuestionCount(store.getRequests('agent-1'))).toBe(1)
+      dispose()
+    })
+  })
+
+  // A reconnect can replay one request twice: once before the worker read the
+  // flag and once after. The second arrival merges into the first entry and
+  // moves it out of the blocking group.
+  it('moves a merged request behind the blocking requests when a replay adds the non-blocking flag', () => {
+    createRoot((dispose) => {
+      const store = createControlStore()
+      store.addRequest('agent-1', makeRequest('Q1', 'agent-1'))
+      store.addRequest('agent-1', makeRequest('B1', 'agent-1'))
+      store.addRequest('agent-1', { ...makeRequest('Q1', 'agent-1'), nonBlocking: true })
+      const requests = store.getRequests('agent-1')
+      expect(requests.map(request => request.requestId)).toEqual(['B1', 'Q1'])
+      expect(requests).toHaveLength(2)
+      expect(requests[1]?.nonBlocking).toBe(true)
+      dispose()
+    })
+  })
+
+  // A provider stop drops only the requests its agent still waits for. A
+  // delivered request can still need recording, and a question belongs to the
+  // conversation.
+  it('keeps DELIVERED and non-blocking requests when the provider stops', () => {
+    createRoot((dispose) => {
+      const store = createControlStore()
+      store.addRequest('agent-1', { ...makeRequest('blocking', 'agent-1'), responseState: ControlResponseState.READY })
+      store.addRequest('agent-1', { ...makeRequest('delivered', 'agent-1'), responseState: ControlResponseState.DELIVERED })
+      store.addRequest('agent-1', { ...makeRequest('question', 'agent-1'), nonBlocking: true, responseState: ControlResponseState.READY })
+      store.clearProviderRequests('agent-1')
+      expect(store.getRequests('agent-1').map(request => request.requestId)).toEqual(['delivered', 'question'])
+      dispose()
+    })
+  })
+
+  it('closes the questions when the last one leaves, so a later question does not open by itself', () => {
+    createRoot((dispose) => {
+      const store = createControlStore()
+      store.addRequest('agent-A', { ...makeRequest('Q1', 'agent-A'), nonBlocking: true })
+      store.setQuestionsOpen('agent-A', true)
+      expect(store.questionsOpen('agent-A')).toBe(true)
+      expect(store.shownRequest('agent-A')?.requestId).toBe('Q1')
+
+      store.removeRequest('agent-A', 'Q1', 'tok-Q1')
+      expect(store.questionsOpen('agent-A')).toBe(false)
+
+      store.addRequest('agent-A', { ...makeRequest('Q2', 'agent-A'), nonBlocking: true })
+      expect(store.questionsOpen('agent-A')).toBe(false)
+      expect(store.shownRequest('agent-A')).toBeNull()
+      dispose()
+    })
+  })
+
+  // A click on the banner can race the removal of the last question. A flag
+  // that stayed set would let the next question take over the composer.
+  it('ignores a call to open the questions when no question waits', () => {
+    createRoot((dispose) => {
+      const store = createControlStore()
+      store.setQuestionsOpen('agent-1', true)
+      expect(store.questionsOpen('agent-1')).toBe(false)
+
+      store.addRequest('agent-1', makeRequest('B1', 'agent-1'))
+      store.setQuestionsOpen('agent-1', true)
+      expect(store.questionsOpen('agent-1')).toBe(false)
+
+      store.addRequest('agent-1', { ...makeRequest('Q1', 'agent-1'), nonBlocking: true })
+      expect(store.questionsOpen('agent-1')).toBe(false)
+      expect(store.shownRequest('agent-1')?.requestId).toBe('B1')
+
+      store.removeRequest('agent-1', 'B1', 'tok-B1')
+      expect(store.shownRequest('agent-1')).toBeNull()
+      dispose()
+    })
+  })
+
+  it('opens and closes the questions while one waits', () => {
+    createRoot((dispose) => {
+      const store = createControlStore()
+      store.addRequest('agent-1', { ...makeRequest('Q1', 'agent-1'), nonBlocking: true })
+      store.setQuestionsOpen('agent-1', true)
+      expect(store.questionsOpen('agent-1')).toBe(true)
+      expect(store.shownRequest('agent-1')?.requestId).toBe('Q1')
+
+      store.setQuestionsOpen('agent-1', false)
+      expect(store.questionsOpen('agent-1')).toBe(false)
+      expect(store.shownRequest('agent-1')).toBeNull()
+      dispose()
+    })
+  })
+
+  it('closes the questions on clearAgent, so a later question does not open by itself', () => {
+    createRoot((dispose) => {
+      const store = createControlStore()
+      store.addRequest('agent-A', { ...makeRequest('Q1', 'agent-A'), nonBlocking: true })
+      store.setQuestionsOpen('agent-A', true)
+      expect(store.questionsOpen('agent-A')).toBe(true)
+
+      store.clearAgent('agent-A')
+      expect(store.questionsOpen('agent-A')).toBe(false)
+
+      store.addRequest('agent-A', { ...makeRequest('Q2', 'agent-A'), nonBlocking: true })
+      expect(store.shownRequest('agent-A')).toBeNull()
+      dispose()
+    })
+  })
+
+  // A provider stop keeps every question, so the reader's open questions stay
+  // open and the next question takes the place of the dropped blocking head.
+  it('keeps the questions open when the provider stops', () => {
+    createRoot((dispose) => {
+      const store = createControlStore()
+      store.addRequest('agent-A', makeRequest('B1', 'agent-A'))
+      store.addRequest('agent-A', { ...makeRequest('Q1', 'agent-A'), nonBlocking: true })
+      store.setQuestionsOpen('agent-A', true)
+      expect(store.shownRequest('agent-A')?.requestId).toBe('B1')
+
+      store.clearProviderRequests('agent-A')
+      expect(store.questionsOpen('agent-A')).toBe(true)
+      expect(store.shownRequest('agent-A')?.requestId).toBe('Q1')
+      dispose()
+    })
+  })
+
+  it('resets the questions-open map on clearAll', () => {
+    createRoot((dispose) => {
+      const store = createControlStore()
+      store.addRequest('agent-A', { ...makeRequest('Q1', 'agent-A'), nonBlocking: true })
+      store.setQuestionsOpen('agent-A', true)
+      store.clearAll()
+      expect(store.questionsOpen('agent-A')).toBe(false)
+
+      store.addRequest('agent-A', { ...makeRequest('Q2', 'agent-A'), nonBlocking: true })
+      expect(store.shownRequest('agent-A')).toBeNull()
+      dispose()
+    })
+  })
+})
+
+describe('shownControlRequest', () => {
+  it('returns null for an empty list', () => {
+    expect(shownControlRequest([], false)).toBeNull()
+    expect(shownControlRequest([], true)).toBeNull()
+  })
+
+  it('returns the blocking head whatever the questions state is', () => {
+    const blocking = makeRequest('B1', 'agent-1')
+    const question = { ...makeRequest('Q1', 'agent-1'), nonBlocking: true }
+    expect(shownControlRequest([blocking], false)?.requestId).toBe('B1')
+    expect(shownControlRequest([blocking, question], true)?.requestId).toBe('B1')
+  })
+
+  it('hides a non-blocking head until the reader opens the questions', () => {
+    const question = { ...makeRequest('Q1', 'agent-1'), nonBlocking: true }
+    expect(shownControlRequest([question], false)).toBeNull()
+    expect(shownControlRequest([question], true)?.requestId).toBe('Q1')
+  })
+})
+
+describe('pendingQuestionCount', () => {
+  it('returns zero for an empty list', () => {
+    expect(pendingQuestionCount([])).toBe(0)
+  })
+
+  it('returns zero when every request blocks', () => {
+    expect(pendingQuestionCount([makeRequest('B1', 'agent-1'), makeRequest('B2', 'agent-1')])).toBe(0)
+  })
+
+  it('counts only the non-blocking requests of a mixed list', () => {
+    const requests = [
+      makeRequest('B1', 'agent-1'),
+      { ...makeRequest('B2', 'agent-1'), nonBlocking: false },
+      { ...makeRequest('Q1', 'agent-1'), nonBlocking: true },
+      { ...makeRequest('Q2', 'agent-1'), nonBlocking: true },
+    ]
+    expect(pendingQuestionCount(requests)).toBe(2)
   })
 })

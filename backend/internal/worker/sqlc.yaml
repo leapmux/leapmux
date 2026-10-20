@@ -120,10 +120,18 @@ sql:
             go_type:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
               type: "AgentProvider"
+          - column: "control_response_payloads.follow_up_kind"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "AgentInputKind"
           - column: "control_response_answers.agent_provider"
             go_type:
               import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
               type: "AgentProvider"
+          - column: "control_response_answers.follow_up_kind"
+            go_type:
+              import: "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+              type: "AgentInputKind"
           # The INTEGER-as-bool columns, retyped so BOTH directions are a Go
           # bool. Without these the write half needed a conversion helper and
           # the read half was open-coded as `!= 0` at fourteen sites -- a
@@ -144,6 +152,12 @@ sql:
           - column: "tab_locations.workspace_archived"
             go_type: "bool"
           - column: "tab_locations.is_quake"
+            go_type: "bool"
+          - column: "control_requests.non_blocking"
+            go_type: "bool"
+          - column: "control_response_payloads.non_blocking"
+            go_type: "bool"
+          - column: "control_response_answers.non_blocking"
             go_type: "bool"
           - column: "tab_locations.tab_type"
             go_type:

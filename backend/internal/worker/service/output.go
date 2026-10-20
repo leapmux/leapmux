@@ -690,11 +690,48 @@ func (h *OutputHandler) finishControlPublication(agentID, rootAgentID string, pu
 	h.watcher.DrainAgentEvents(agentID)
 }
 
-// ClearPendingControlRequests drops the agent's pending control_requests from the
-// DB and broadcasts a controlCancel for each, so request_ids bound to a now-exited
-// subprocess don't reappear stale on resume. It deletes by agent id ALONE (no per-process
-// generation column), so it must run only when no LATER process for the same agent id could
-// own pending requests. The worker wires it as the per-exit onExit handler, where that holds:
+// clearControlRequests runs one delete over the agent's control request rows and
+// broadcasts a controlCancel for each deleted row. The delete query is a
+// parameter because three retirements choose different row sets:
+//   - A process exit keeps the questions.
+//   - A teardown drops every row.
+//   - A session change keeps only the questions of its own session.
+//
+// agentKeepsRunning is true for the session change alone. Its agent keeps
+// running, so the retirement keeps the activity entry (see
+// lockControlMutationRetainingEntry) and every blocking prompt in memory: the
+// agent still waits for those prompts, and a later interrupt withdraws them. An
+// exit and a teardown end the lifetime that owned the prompts, so they clear
+// every prompt, not only the deleted ids.
+func (h *OutputHandler) clearControlRequests(agentID, failureMessage string, agentKeepsRunning bool, deleteRequests func(context.Context) ([]db.ControlRequest, error)) {
+	lock := h.lockControlMutation
+	if agentKeepsRunning {
+		lock = h.lockControlMutationRetainingEntry
+	}
+	_, _, release := lock(agentID, "")
+	publication := controlPublication{}
+	defer func() { h.finishControlPublication(agentID, "", publication, release) }()
+	deleted, err := deleteRequests(bgCtx())
+	if err != nil {
+		publication.recordFailure(failureMessage, "agent_id", agentID, "error", err)
+	}
+	// Each cancellation also removes its own instance from the live prompts.
+	for _, request := range deleted {
+		publication.enqueueCancellation(h, agentID, request.RequestID, request.ClaimToken)
+	}
+	if agentKeepsRunning {
+		return
+	}
+	publication.activityChanged = h.recordControlRequestsRemoved(agentID, "") || publication.activityChanged
+}
+
+// ClearPendingControlRequests drops the agent's pending BLOCKING control_requests
+// from the DB and broadcasts a controlCancel for each, so request_ids bound to a
+// now-exited subprocess don't reappear stale on resume. A non-blocking request
+// belongs to the conversation, not to the process, so an exit keeps it. It deletes
+// by agent id ALONE (no per-process generation column), so it must run only when
+// no LATER process for the same agent id could own pending requests. The worker
+// wires it as the per-exit onExit handler, where that holds:
 // agent.Manager.stopAndWait blocks every relaunch until the OLD process's exit goroutine
 // (this handler included) has fully finished BEFORE registering the new provider, so a
 // relaunch's old-process onExit can only ever clear requests that genuinely belong to the
@@ -706,19 +743,20 @@ func (h *OutputHandler) finishControlPublication(agentID, rootAgentID string, pu
 // restart stays deduped because its claim survives, and a genuinely reissued request_id is disambiguated
 // per instance by its fresh claim_token rather than by clearing the prior claim.
 func (h *OutputHandler) ClearPendingControlRequests(agentID string) {
-	_, _, release := h.lockControlMutation(agentID, "")
-	publication := controlPublication{}
-	defer func() { h.finishControlPublication(agentID, "", publication, release) }()
-	deleted, err := h.queries.DeleteControlRequestsByAgentID(bgCtx(), agentID)
-	if err != nil {
-		publication.recordFailure("clear runtime state: delete control requests", "agent_id", agentID, "error", err)
-	}
-	for _, request := range deleted {
-		publication.enqueueCancellation(h, agentID, request.RequestID, request.ClaimToken)
-	}
-	// Clears every prompt, not only the deleted ids: this runs when the
-	// subprocess owning them went away, so nothing it was blocked on survives.
-	publication.activityChanged = h.recordControlRequestsRemoved(agentID, "") || publication.activityChanged
+	h.clearControlRequests(agentID, "clear pending control requests: delete rows", false, func(ctx context.Context) ([]db.ControlRequest, error) {
+		return h.queries.DeleteBlockingControlRequestsByAgentID(ctx, agentID)
+	})
+}
+
+// RetireNonBlockingControlRequestsOutsideSession removes the questions that belong
+// to another conversation. A stored session change leaves the Codex thread that
+// asked them, so no user can answer them there.
+func (h *OutputHandler) RetireNonBlockingControlRequestsOutsideSession(agentID, sessionID string) {
+	h.clearControlRequests(agentID, "retire non-blocking control requests outside the session: delete rows", true, func(ctx context.Context) ([]db.ControlRequest, error) {
+		return h.queries.DeleteNonBlockingControlRequestsOutsideSession(ctx, db.DeleteNonBlockingControlRequestsOutsideSessionParams{
+			AgentID: agentID, AgentSessionID: sessionID,
+		})
+	})
 }
 
 // ClearAgentRuntimeState tears down the state tied to a dying SUBPROCESS: pending
@@ -731,7 +769,9 @@ func (h *OutputHandler) ClearPendingControlRequests(agentID string) {
 // relaunch also triggers and which must keep the in-memory timeline state (see
 // ClearPendingControlRequests).
 func (h *OutputHandler) ClearAgentRuntimeState(agentID string) {
-	h.ClearPendingControlRequests(agentID)
+	h.clearControlRequests(agentID, "clear agent runtime state: delete control requests", false, func(ctx context.Context) ([]db.ControlRequest, error) {
+		return h.queries.DeleteControlRequestsByAgentID(ctx, agentID)
+	})
 	h.CleanupAgent(agentID)
 }
 
@@ -1211,12 +1251,35 @@ func (s *agentOutputSink) PublishControlRequest(request agent.ControlRequest) er
 	publication := controlPublication{}
 	defer func() { s.h.finishControlPublication(s.agentID, s.rootAgentID, publication, release) }()
 	st.mu.Lock()
-	if scope.controlsStopped {
+	// A stop suppresses the blocking requests of its scope: the process no longer
+	// waits for them. A non-blocking request is a question that outlives the stop,
+	// so a stop does not withdraw it.
+	if scope.controlsStopped && !request.NonBlocking {
 		st.mu.Unlock()
 		return nil
 	}
 	previous, known := st.pendingControl[requestID]
 	st.mu.Unlock()
+	if request.NonBlocking {
+		currentAgent, err := s.h.queries.GetAgentByID(bgCtx(), s.agentID)
+		if err != nil {
+			return fmt.Errorf("read the question's current session: %w", err)
+		}
+		if currentAgent.AgentSessionID != request.AgentSessionID {
+			return nil
+		}
+		if request.InstanceID != "" {
+			answer, err := s.h.queries.GetControlResponseAnswer(bgCtx(), db.GetControlResponseAnswerParams{
+				AgentID: s.agentID, RequestID: requestID, ClaimToken: request.InstanceID,
+			})
+			if err == nil && answer.State == storedStateCompleted {
+				return nil
+			}
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("read the question's recorded answer: %w", err)
+			}
+		}
+	}
 	// The database owns persisted values. The live scope owns the request association.
 	// An unknown association starts a new instance, even when the persisted payload agrees.
 	// The SQLite generator omits a parameter used only in an ON CONFLICT predicate.
@@ -1232,8 +1295,16 @@ func (s *agentOutputSink) PublishControlRequest(request agent.ControlRequest) er
 	if claimToken == "" {
 		claimToken = id.Generate()
 	}
-	if request.InstanceID == "" && err == nil && known && previous.scope == scope && previous.claimToken == current.ClaimToken &&
-		bytes.Equal(current.Payload, payload) && current.AgentSessionID == request.AgentSessionID {
+	reusable := request.InstanceID == "" && err == nil && previous.claimToken == current.ClaimToken &&
+		bytes.Equal(current.Payload, payload) && current.AgentSessionID == request.AgentSessionID
+	if request.NonBlocking {
+		// A non-blocking request outlives its scope, so its claim reuse reads no
+		// scope: only the stored row decides.
+		if err == nil && request.InstanceID == "" && current.NonBlocking &&
+			bytes.Equal(current.Payload, payload) && current.AgentSessionID == request.AgentSessionID {
+			claimToken = current.ClaimToken
+		}
+	} else if reusable && known && previous.scope == scope {
 		claimToken = current.ClaimToken
 	}
 	stored, err := s.h.queries.StoreControlRequest(bgCtx(), db.StoreControlRequestParams{
@@ -1243,6 +1314,7 @@ func (s *agentOutputSink) PublishControlRequest(request agent.ControlRequest) er
 		Payload:        payload,
 		ClaimToken:     claimToken,
 		SourceSeq:      request.SourceSeq,
+		NonBlocking:    request.NonBlocking,
 	})
 	if err != nil {
 		return fmt.Errorf("store control request: %w", err)
@@ -1256,13 +1328,18 @@ func (s *agentOutputSink) PublishControlRequest(request agent.ControlRequest) er
 		}
 		return nil
 	}
-	st.mu.Lock()
-	if st.pendingControl == nil {
-		st.pendingControl = make(map[string]ownedControlRequest)
+	// A non-blocking request never enters pendingControl: the map is what an
+	// interrupt consults (NoteAgentStopRequested, Delivered), and a question
+	// survives both.
+	if !request.NonBlocking {
+		st.mu.Lock()
+		if st.pendingControl == nil {
+			st.pendingControl = make(map[string]ownedControlRequest)
+		}
+		st.pendingControl[requestID] = ownedControlRequest{claimToken: stored.ClaimToken, scope: scope}
+		st.mu.Unlock()
+		publication.activityChanged = !known || previous.claimToken != stored.ClaimToken
 	}
-	st.pendingControl[requestID] = ownedControlRequest{claimToken: stored.ClaimToken, scope: scope}
-	st.mu.Unlock()
-	publication.activityChanged = !known || previous.claimToken != stored.ClaimToken
 	request.SourceSeq = stored.SourceSeq
 	request.AgentSessionID = stored.AgentSessionID
 	prepared, stateErr := buildAgentControlRequest(s.h.queries, s.agentID, s.agentProvider, request, stored.ClaimToken)
@@ -1329,8 +1406,14 @@ func (s *agentOutputSink) UpdateSessionID(sessionID string) {
 		mutation.Unlock()
 		if failure != nil {
 			slog.Error(failureMessage, "agent_id", s.agentID, "error", failure)
-		} else if sessionChanged {
+			return
+		}
+		if sessionChanged {
 			slog.Info("agent session ID updated", "agent_id", s.agentID, "session_id", sessionID)
+			// The questions of the previous session belong to the Codex thread
+			// that just went away. This runs after the transcript mutex release,
+			// so the control mutation is never taken under it.
+			s.h.RetireNonBlockingControlRequestsOutsideSession(s.agentID, sessionID)
 		}
 	}()
 	if !s.registeredCurrent() {

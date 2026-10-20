@@ -103,6 +103,6 @@ func (codewhaleProvider) ResolveControlResponse(ctx agent.ControlResponseContext
 		return res
 	}
 	res.Content = encoded
-	res.Feedback = feedback
+	res.FollowUp = agent.FeedbackFollowUp(feedback)
 	return res
 }

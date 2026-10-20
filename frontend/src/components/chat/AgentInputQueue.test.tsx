@@ -77,6 +77,14 @@ describe('AgentInputQueue', () => {
     expect(screen.getByText(/Compact context · Queued · a\.txt \(4 B\)/)).toBeInTheDocument()
   })
 
+  it('renders the Answer label for a question answer input', () => {
+    renderQueue({
+      items: [item('answer', { text: 'Red', kind: AgentInputKind.QUESTION_ANSWER })],
+    })
+    expect(screen.getByText('Red')).toBeInTheDocument()
+    expect(screen.getByText(/Answer · Queued/)).toBeInTheDocument()
+  })
+
   it('moves an input up with the keyboard action', async () => {
     const handlers = renderQueue()
     const second = screen.getByTestId('queued-input-two')

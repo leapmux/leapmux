@@ -533,6 +533,20 @@ export function codexWaitCellToolCall(id: string, cellId: string): MockModelTool
 }
 
 /**
+ * One Codex async question call: the questions Codex asks WITHOUT waiting, on
+ * models whose catalog offers `request_user_input_async`. The call id
+ * identifies the questions, and the answers come back later as an ordinary
+ * user message in Codex's own reply format.
+ */
+export function codexAsyncQuestionToolCall(id: string, questions: { title: string, options?: string[] }[]): MockModelToolCall {
+  return {
+    id,
+    name: 'request_user_input_async',
+    arguments: { questions },
+  }
+}
+
+/**
  * Prefix each text line with its apply_patch hunk marker.
  */
 function patchLines(mark: '+' | '-', text: string): string {

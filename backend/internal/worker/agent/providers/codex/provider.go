@@ -12,12 +12,6 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
-// ToolNamePlanModePrompt is the tool name of the control request that LeapMux
-// itself publishes when a Codex plan-mode turn completes with a plan: the request
-// asks the reader whether to execute that plan. Codex sends no such request of its
-// own.
-const ToolNamePlanModePrompt = "CodexPlanModePrompt"
-
 // codexProvider embeds ProviderDefaults so it inherits the TurnEndToolUses default
 // (Codex puts num_tool_uses at the envelope top level, like every shipped
 // provider). Override the method here only if Codex's shape diverges.
@@ -40,6 +34,14 @@ func (p codexProvider) ResolveControlResponse(ctx agent.ControlResponseContext) 
 		return res
 	}
 	res.PlanModeControl = p.PlanModeControl(ctx.ToolName)
+	switch ctx.ToolName {
+	case contracts.CodexControlToolPlanModePrompt:
+		// LeapMux published this request itself. No Codex request waits for an
+		// answer to it.
+		res.LeapMuxOwned = true
+	case contracts.CodexControlToolAsyncQuestion:
+		return resolveCodexAsyncQuestionResponse(res, ctx.ResponseContent)
+	}
 	return res
 }
 
@@ -146,7 +148,7 @@ func (codexProvider) IsInterrupt(content string) bool {
 func (codexProvider) IsSelfDisplayingControlTool(string) bool { return false }
 
 func (codexProvider) PlanModeControl(toolName string) agent.PlanModeControlKind {
-	if toolName == ToolNamePlanModePrompt {
+	if toolName == contracts.CodexControlToolPlanModePrompt {
 		return agent.PlanModeControlPrompt
 	}
 	return agent.PlanModeControlNone

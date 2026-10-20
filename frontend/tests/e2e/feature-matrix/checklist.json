@@ -4086,8 +4086,8 @@
       },
       "codex": {
         "support": "supported",
-        "userNote": "Codex asks questions only in Plan mode. Its default mode does not offer the question tool.",
-        "detailNote": "Codex offers its `request_user_input` question tool in Plan mode. Its default mode does not offer that tool.\n\nIn Codex 0.160.0 the request_user_input tool answers with a message that it is unavailable in the current mode, outside its available modes (request_user_input_spec.rs).",
+        "userNote": "Codex asks blocking questions in Plan mode. On models that offer request_user_input_async, it also asks in any mode without waiting, and you answer or skip each question later.",
+        "detailNote": "Codex offers its `request_user_input` question tool in Plan mode. Its default mode does not offer that tool.\n\nIn Codex 0.160.0 the request_user_input tool answers with a message that it is unavailable in the current mode, outside its available modes (request_user_input_spec.rs).\n\nCodex 0.163 offers `request_user_input_async` to a main agent on models whose catalog entry lists it (`gpt-6-*` in the bundled catalog). LeapMux shows each question as a non-blocking control request and sends the answer in Codex\u2019s `send_user_message_question_reply` format.",
         "spec": "frontend/tests/e2e/codex/agent-questions.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",

@@ -483,7 +483,10 @@ export const AskUserQuestionActions: Component<ActionsProps & {
   const handleStop = async () => {
     startStopping()
     try {
-      await props.onReject('User stopped')
+      // A skip of a non-blocking question is a decision to answer none of it,
+      // and Codex keeps no pending question state: the empty reason sends
+      // nothing on. A blocking request still stops with the user's words.
+      await props.onReject(props.request.nonBlocking ? '' : 'User stopped')
     }
     catch {
       // As above: the failure already reached answerState.
@@ -540,10 +543,12 @@ export const AskUserQuestionActions: Component<ActionsProps & {
             class={actionButtonClass(true)}
             onClick={handleStop}
             disabled={stopping()}
-            data-testid="control-stop-btn"
+            data-testid={props.request.nonBlocking ? 'control-skip-btn' : 'control-stop-btn'}
           >
             <Show when={stopping()}><Spinner /></Show>
-            {stopping() ? 'Stopping...' : 'Stop'}
+            {stopping()
+              ? (props.request.nonBlocking ? 'Skipping...' : 'Stopping...')
+              : (props.request.nonBlocking ? 'Skip' : 'Stop')}
           </button>
           <Tooltip text="Auto-fill unanswered questions and submit">
             <button

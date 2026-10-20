@@ -98,6 +98,10 @@ type RendererSetup = ReturnType<typeof createTestTabStores> & {
 
 interface RenderRendererOptions {
   chatStore?: ReturnType<typeof createChatStore>
+  /** The control store the renderer reads, so a test can seed its requests. */
+  controlStore?: ReturnType<typeof createControlStore>
+  /** The renderer object itself, for tests that read its shell helpers. */
+  onRenderer?: (renderer: ReturnType<typeof createTileRenderer>) => void
   getMruAgentContext?: () => { workingDir: string, homeDir: string }
   /** The shell's "scroll the transcript to the tail" ref, so a test can spy on it. */
   forceScrollToBottomRef?: ImperativeRef<() => void>
@@ -132,7 +136,7 @@ function renderRenderer(s: RendererSetup, focusedTileId: string, options: Render
         selection: s.selection,
         chatStore: options.chatStore ?? createChatStore(),
         agentInputQueueStore: createAgentInputQueueStore(),
-        controlStore: createControlStore(),
+        controlStore: options.controlStore ?? createControlStore(),
         agentActivityStore: createAgentActivityStore(),
         layoutStore: s.layoutStore,
         agentSessionStore: createAgentSessionStore(),
@@ -202,6 +206,7 @@ function renderRenderer(s: RendererSetup, focusedTileId: string, options: Render
       },
       settingsLoading: { loading: () => false } as any,
     })
+    options.onRenderer?.(r)
     return (
       <>
         {r.renderTile(focusedTileId)}
@@ -798,5 +803,68 @@ describe('TileRenderer tab rename', () => {
     expect(updateTerminalTitle).toHaveBeenCalledWith('worker-1', { terminalId: 't1', title: 'Build watcher' })
     await waitFor(() => expect(s.view.getTerminalTab('t1')?.title).toBe('Build watcher'))
     expect(s.view.getTerminalTab('t1')?.ptyTitle).toBe('')
+  })
+})
+
+/**
+ * A drop lands where the composer's attachments go, so it obeys the composer's
+ * own rule: a SHOWN request takes the input over, and a closed non-blocking
+ * question keeps it free.
+ */
+describe('TileRenderer fileDropDisabled', () => {
+  function renderDropGuard() {
+    const s = createSetup()
+    const tileId = s.layoutStore.focusedTileId()!
+    s.addAgent('a1', tileId)
+    const controlStore = createControlStore()
+    let renderer: ReturnType<typeof createTileRenderer> | undefined
+    renderRenderer(s, tileId, {
+      controlStore,
+      onRenderer: (r) => {
+        renderer = r
+      },
+    })
+    if (!renderer)
+      throw new Error('The renderer did not register.')
+    return {
+      controlStore,
+      fileDropDisabled: () => renderer!.fileDropDisabled(),
+    }
+  }
+
+  it('enables the drop while a closed non-blocking question waits', () => {
+    const { controlStore, fileDropDisabled } = renderDropGuard()
+    controlStore.addRequest('a1', {
+      agentId: 'a1',
+      requestId: 'q1',
+      claimToken: 'tok-q1',
+      payload: { request: { tool_name: 'CodexAsyncQuestion', input: { title: 'Which color?' } } },
+      nonBlocking: true,
+    })
+    expect(fileDropDisabled()).toBe(false)
+  })
+
+  it('disables the drop while the reader has the question open', () => {
+    const { controlStore, fileDropDisabled } = renderDropGuard()
+    controlStore.addRequest('a1', {
+      agentId: 'a1',
+      requestId: 'q1',
+      claimToken: 'tok-q1',
+      payload: { request: { tool_name: 'CodexAsyncQuestion', input: { title: 'Which color?' } } },
+      nonBlocking: true,
+    })
+    controlStore.setQuestionsOpen('a1', true)
+    expect(fileDropDisabled()).toBe(true)
+  })
+
+  it('disables the drop for a blocking request', () => {
+    const { controlStore, fileDropDisabled } = renderDropGuard()
+    controlStore.addRequest('a1', {
+      agentId: 'a1',
+      requestId: 'b1',
+      claimToken: 'tok-b1',
+      payload: { request: { tool_name: 'Bash', input: {} } },
+    })
+    expect(fileDropDisabled()).toBe(true)
   })
 })

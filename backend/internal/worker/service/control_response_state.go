@@ -89,11 +89,11 @@ func (svc *Service) broadcastControlResponseState(currentAgent db.Agent, request
 		if answer.State != storedStateDelivered {
 			return
 		}
-		request = db.ControlRequest{RequestID: requestID, ClaimToken: claimToken, Payload: answer.RequestPayload, AgentSessionID: answer.AgentSessionID, SourceSeq: answer.SourceSeq}
+		request = db.ControlRequest{RequestID: requestID, ClaimToken: claimToken, Payload: answer.RequestPayload, AgentSessionID: answer.AgentSessionID, SourceSeq: answer.SourceSeq, NonBlocking: answer.NonBlocking}
 		provider = answer.AgentProvider
 	}
 	event, stateErr := buildAgentControlRequest(svc.Queries, currentAgent.ID, provider, agent.ControlRequest{
-		RequestID: requestID, Payload: request.Payload, SourceSeq: request.SourceSeq, AgentSessionID: request.AgentSessionID,
+		RequestID: requestID, Payload: request.Payload, SourceSeq: request.SourceSeq, AgentSessionID: request.AgentSessionID, NonBlocking: request.NonBlocking,
 	}, claimToken)
 	if stateErr != nil {
 		slog.Error("could not read the control response state", "agent_id", currentAgent.ID, "request_id", requestID, "error", stateErr)

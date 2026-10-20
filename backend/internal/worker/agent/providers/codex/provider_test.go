@@ -86,7 +86,7 @@ func TestSyntheticInterruptNotice(t *testing.T) {
 func TestCodexPlanModeControl(t *testing.T) {
 	t.Parallel()
 
-	assert.Equal(t, agent.PlanModeControlPrompt, codexProvider{}.PlanModeControl(ToolNamePlanModePrompt))
+	assert.Equal(t, agent.PlanModeControlPrompt, codexProvider{}.PlanModeControl(contracts.CodexControlToolPlanModePrompt))
 	assert.Equal(t, agent.PlanModeControlNone, codexProvider{}.PlanModeControl(claude.ToolNameEnterPlanMode))
 }
 

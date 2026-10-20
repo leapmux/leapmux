@@ -1316,6 +1316,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
         ...optionalProp('inputQueue', queue),
         ...optionalProp('gitTab', tab),
         ...optionalProp('controlRequests', control),
+        ...optionalProp('questionsOpen', controlStore.questionsOpen(agentId())),
         ...optionalProp('agentSessionInfo', sessionInfo),
         ...optionalProp('agentActivity', activity),
         ...optionalProp('turnRetryOffer', chatStore.getTurnRetryOffer(agentId())),
@@ -1348,6 +1349,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
         triggerSendRef={(fn) => { triggerSendRef.set(fn) }}
         focusRef={(fn) => { focusEditorRef.set(fn) }}
         onControlResponse={agentOps.handleControlResponse}
+        onQuestionsOpenChange={open => controlStore.setQuestionsOpen(agentId(), open)}
         onSettingChange={change => agentOps.handleAgentSettingChange(agentId(), change)}
         onInterrupt={() => agentOps.handleInterrupt(agentId())}
         onRetryTurn={(turnId, model) => agentOps.handleRetryTurn(agentId(), turnId, model)}
@@ -1452,7 +1454,10 @@ export function createTileRenderer(opts: TileRendererOpts) {
       const agentId = focusedAgentId()
       if (!agentId)
         return true
-      return controlStore.getRequests(agentId).length > 0
+      // The composer's own rule: a shown request takes over the input, so a
+      // drop would land where the question's answer goes. A closed
+      // non-blocking question keeps the composer free.
+      return controlStore.shownRequest(agentId) !== null
     },
     requestCloseFloatingWindow: (windowId: string) => {
       void closeFloatingWindowFlow.request({ windowId })

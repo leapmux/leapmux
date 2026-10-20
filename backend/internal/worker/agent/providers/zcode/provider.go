@@ -293,7 +293,7 @@ func (zcodeProvider) ResolveControlResponse(ctx agent.ControlResponseContext) ag
 		// sentinel and a whitespace-only reason, which is what this guard needs it for.
 		var original agent.ControlBehaviorEnvelope
 		if json.Unmarshal(ctx.ResponseContent, &original) == nil {
-			res.Feedback = original.Response.Response.Message
+			res.FollowUp = agent.FeedbackFollowUp(original.Response.Response.Message)
 		}
 	}
 	return res

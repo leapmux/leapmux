@@ -4,6 +4,7 @@ import type { BannerActionsProps, BannerContentProps } from './controls/types'
 import type { ControlRequest } from '~/stores/control.store'
 import Braces from 'lucide-solid/icons/braces'
 import Check from 'lucide-solid/icons/check'
+import ChevronDown from 'lucide-solid/icons/chevron-down'
 import Square from 'lucide-solid/icons/square'
 import { Match, onCleanup, Show, Switch } from 'solid-js'
 import { Dynamic } from 'solid-js/web'
@@ -74,11 +75,23 @@ export const ControlRequestContent: Component<BannerContentProps> = (props) => {
       {request => (
         <div class={styles.controlBanner} data-testid="control-banner">
           <div class={styles.controlBannerActions} data-testid="control-banner-actions">
+            <Show when={props.onAnswerLater}>
+              {answerLater => (
+                <IconButton
+                  icon={ChevronDown}
+                  size="sm"
+                  onClick={() => answerLater()()}
+                  title="Answer later"
+                  data-testid="control-answer-later"
+                />
+              )}
+            </Show>
             {/*
               A turn blocked on a question is one the reader may want to abandon rather
               than answer. Denying is an answer: it reaches the agent, which carries on
-              with something else. This stops the turn, and the worker withdraws the
-              question with it.
+              with something else. This stops the turn: the worker withdraws a blocking
+              request with it, and keeps a non-blocking question, whose answer the user
+              can still send later.
             */}
             <Show when={props.onInterrupt}>
               {interrupt => (

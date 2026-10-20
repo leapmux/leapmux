@@ -20,8 +20,9 @@ export interface ControlRequest {
   payload: Record<string, unknown>
   /**
    * Set when LeapMux could not read the bytes into `payload`, which is then empty. The
-   * request is still kept: the agent BLOCKS on an answer, so dropping it leaves a turn
-   * that never ends and a reader with no question. `originalPayload` holds what arrived.
+   * request is still kept: a BLOCKING request makes the agent wait for an answer, so
+   * dropping it leaves a turn that never ends and a reader with no question.
+   * `originalPayload` holds what arrived.
    */
   payloadFault?: ControlPayloadFault
   /** Original provider bytes remain available for copying and inspection. */
@@ -32,6 +33,11 @@ export interface ControlRequest {
   responseState?: ControlResponseState
   /** The worker's instance token. A response echoes it to identify the exact request. */
   claimToken?: string
+  /**
+   * True for a request that the agent does not wait for: the turn continues and the
+   * question waits for a reader who returns later. Absent means a blocking request.
+   */
+  nonBlocking?: boolean
 }
 
 /**
@@ -48,8 +54,33 @@ export function controlRequestProvider(request: ControlRequest | null | undefine
   return request?.agentProvider ?? fallback
 }
 
+/**
+ * The one rule for which request the composer shows: the head when it is blocking,
+ * or when it is non-blocking and the reader opened the questions. The store keeps
+ * every blocking request before every non-blocking one, so the head is blocking
+ * whenever a blocking request exists.
+ */
+export function shownControlRequest(requests: readonly ControlRequest[], questionsOpen: boolean): ControlRequest | null {
+  const head = requests[0]
+  if (!head)
+    return null
+  if (!head.nonBlocking)
+    return head
+  return questionsOpen ? head : null
+}
+
+/**
+ * The one rule for which requests count as waiting questions: a question is a
+ * non-blocking request. The agent does not wait for it, so it waits for the
+ * reader to open it.
+ */
+export function pendingQuestionCount(requests: readonly ControlRequest[]): number {
+  return requests.filter(request => request.nonBlocking).length
+}
+
 interface ControlStoreState {
   pendingByAgent: Record<string, ControlRequest[]>
+  questionsOpenByAgent: Record<string, boolean>
 }
 
 function mergeResponseState(current: ControlResponseState | undefined, next: ControlResponseState): ControlResponseState {
@@ -83,6 +114,7 @@ function canonicalJSON(value: unknown): string {
 export function createControlStore() {
   const [state, setState] = createStore<ControlStoreState>({
     pendingByAgent: {},
+    questionsOpenByAgent: {},
   })
 
   // Keep completed and canceled instances distinct. A late delivery receipt can restore a canceled prompt for recording.
@@ -120,11 +152,21 @@ export function createControlStore() {
       removed = list[index]
       list.splice(index, 1)
     }))
+    closeQuestionsWithoutOne(agentId)
     if (removed || claimToken) {
       const key = removalKey(agentId, requestId, claimToken, removed ? canonicalJSON(removed.payload) : '')
       if (removedInstances.get(key) !== ControlResponseState.COMPLETED)
         rememberRemoval(key, responseState)
     }
+  }
+
+  /**
+   * Close the questions of one agent when none waits any more, so a later question
+   * never opens by itself.
+   */
+  function closeQuestionsWithoutOne(agentId: string) {
+    if (state.questionsOpenByAgent[agentId] && pendingQuestionCount(state.pendingByAgent[agentId] ?? []) === 0)
+      setState('questionsOpenByAgent', agentId, false)
   }
 
   return {
@@ -149,12 +191,32 @@ export function createControlStore() {
             existing.agentProvider = request.agentProvider
           if (!existing.sourceSeq && request.sourceSeq && request.sourceSeq > 0n)
             existing.sourceSeq = request.sourceSeq
+          // A merge can only set the flag, never clear it.
+          if (request.nonBlocking && !existing.nonBlocking) {
+            existing.nonBlocking = true
+            // The entry leaves the blocking group behind: move it to the
+            // non-blocking group at the end of the list.
+            list.splice(list.indexOf(existing), 1)
+            list.push(existing)
+          }
           return
         }
-        list.push({
+        const entry = {
           ...request,
           ...(request.originalPayload !== undefined ? { originalPayload: request.originalPayload.slice() } : {}),
-        })
+        }
+        if (request.nonBlocking) {
+          list.push(entry)
+          return
+        }
+        // A blocking request joins the blocking group before the first
+        // non-blocking entry, so every blocking request precedes every
+        // non-blocking one and each group keeps its arrival order.
+        const firstNonBlocking = list.findIndex(r => r.nonBlocking)
+        if (firstNonBlocking < 0)
+          list.push(entry)
+        else
+          list.splice(firstNonBlocking, 0, entry)
       }))
     },
 
@@ -185,19 +247,53 @@ export function createControlStore() {
     },
 
     clearProviderRequests(agentId: string) {
-      setState('pendingByAgent', agentId, (state.pendingByAgent[agentId] ?? []).filter(request => request.responseState === ControlResponseState.DELIVERED))
+      // A delivered request can still need recording, and a non-blocking
+      // question belongs to the conversation: both outlive their provider.
+      setState('pendingByAgent', agentId, (state.pendingByAgent[agentId] ?? []).filter(request => request.responseState === ControlResponseState.DELIVERED || request.nonBlocking))
+      closeQuestionsWithoutOne(agentId)
     },
 
     getRequests(agentId: string): ControlRequest[] {
       return state.pendingByAgent[agentId] ?? []
     },
 
+    /** Whether the reader opened this agent's questions. */
+    questionsOpen(agentId: string): boolean {
+      return state.questionsOpenByAgent[agentId] ?? false
+    },
+
+    /**
+     * Open or close this agent's questions. A call that opens them while no
+     * question waits does nothing. Otherwise the flag would stay set, and the
+     * next question would take over the composer when it arrives. A click on
+     * the banner can race the removal of the last question, so the store
+     * checks here.
+     */
+    setQuestionsOpen(agentId: string, open: boolean) {
+      if (open && pendingQuestionCount(state.pendingByAgent[agentId] ?? []) === 0)
+        return
+      setState('questionsOpenByAgent', agentId, open)
+    },
+
+    /** The request the composer shows right now, if any. */
+    shownRequest(agentId: string): ControlRequest | null {
+      return shownControlRequest(state.pendingByAgent[agentId] ?? [], state.questionsOpenByAgent[agentId] ?? false)
+    },
+
     clearAgent(agentId: string) {
       setState('pendingByAgent', agentId, [])
+      closeQuestionsWithoutOne(agentId)
     },
 
     clearAll() {
-      setState('pendingByAgent', {})
+      // `produce`, not `setState('pendingByAgent', {})`: a store write MERGES
+      // the object it is given, so an empty one changes nothing at all (the
+      // same hazard `DirectoryTree.tsx` documents). A draft assignment replaces
+      // each map wholesale.
+      setState(produce((s) => {
+        s.pendingByAgent = {}
+        s.questionsOpenByAgent = {}
+      }))
     },
   }
 }

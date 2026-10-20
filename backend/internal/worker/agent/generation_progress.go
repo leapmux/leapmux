@@ -421,7 +421,11 @@ type modelProgressResetControl struct {
 }
 
 func (s modelProgressResetControl) PublishControlRequest(request ControlRequest) error {
-	s.progress.ReportProgress(ResetModelProgress())
+	// A non-blocking request takes no answer from the model: the model keeps
+	// generating while the question waits, so nothing resets its progress.
+	if !request.NonBlocking {
+		s.progress.ReportProgress(ResetModelProgress())
+	}
 	return s.ControlServices.PublishControlRequest(request)
 }
 

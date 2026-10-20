@@ -101,6 +101,36 @@ func TestAgentInputQueueRPCsReturnAuthoritativeSnapshots(t *testing.T) {
 	assert.Equal(t, "input-1", listed.GetSnapshot().GetItems()[0].GetId())
 }
 
+// Only the worker creates a question-answer input: it holds the provider's
+// reply, not the user's own words. The RPC refuses it before it mutates the
+// queue.
+func TestEnqueueAgentInputRefusesAQuestionAnswer(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	svc, dispatcher, _ := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+		ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	}))
+	before, err := svc.InputQueue.Snapshot(ctx, "agent-1")
+	require.NoError(t, err)
+
+	writer := newTestWriter()
+	dispatch(dispatcher, "EnqueueAgentInput", &leapmuxv1.EnqueueAgentInputRequest{
+		AgentId: "agent-1", InputId: "answer-1", Text: "Red",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER,
+	}, writer)
+
+	require.Len(t, writer.errors, 1)
+	assert.Equal(t, int32(codes.InvalidArgument), writer.errors[0].code)
+	assert.Contains(t, writer.errors[0].message, "the worker creates question-answer inputs")
+	require.Empty(t, writer.responses)
+	after, err := svc.InputQueue.Snapshot(ctx, "agent-1")
+	require.NoError(t, err)
+	assert.Equal(t, before, after, "refusal must change no durable queue state")
+}
+
 func TestReadOnlyChildUserMessageIsRefusedBeforeQueueMutation(t *testing.T) {
 	t.Parallel()
 	for _, active := range []bool{false, true} {
@@ -1707,7 +1737,7 @@ func TestControlInputWaitsForAnApprovalThatIsStillPending(t *testing.T) {
 	startEchoAgent(t, svc, "agent-1")
 	err := dbtest.StoreControlResponse(t.Context(), svc.DB, db.ControlResponseAnswer{
 		AgentID: "agent-1", RequestID: "request", ClaimToken: "claim", State: storedStatePending,
-		AgentSessionID: "session-1", InputID: "feedback-input", Feedback: "feedback", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+		AgentSessionID: "session-1", InputID: "feedback-input", FollowUp: "feedback", FollowUpKind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK, AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 	})
 	require.NoError(t, err)
 	item := inputqueue.DispatchItem{StoredItem: inputqueue.StoredItem{

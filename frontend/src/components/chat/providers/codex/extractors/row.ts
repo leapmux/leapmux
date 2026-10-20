@@ -17,7 +17,7 @@ import { prettifyJson } from '~/lib/jsonFormat'
 import { isObject, pickNumber, pickObject, pickString, stringArray } from '~/lib/jsonPick'
 import { markdownBulletList } from '~/lib/markdownList'
 import { pluralize } from '~/lib/plural'
-import { leapmuxPlanExecutionRow, leapmuxUserRow } from '../../../leapmuxRows'
+import { leapmuxPlanExecutionRow } from '../../../leapmuxRows'
 import { createToolCall } from '../../../model/createToolCall'
 import { fileEditDiffFromOldNew, fileEditDiffsFromChanges } from '../../../model/fileEditDiff'
 import { mcpToolCallDisplayName } from '../../../model/mcpToolCall'
@@ -37,6 +37,7 @@ import { codexGeneratedImage, codexItemPath, codexViewedImage } from './image'
 import { extractItem } from './item'
 import { codexMcpFromItem } from './mcp'
 import { codexPlanItemMarkdown, codexTurnPlanParams, codexTurnPlanTodos } from './plan'
+import { codexQuestionAnswerRow } from './questionAnswer'
 import { codexWebSearchActionFromItem } from './webSearch'
 
 /**
@@ -62,7 +63,7 @@ export function codexExtractRow(input: RowExtractionInput): ChatRow | null {
       return plan === null ? { kind: 'hidden' } : { kind: 'assistant-plan', text: plan }
     }
     case 'user_content':
-      return leapmuxUserRow(parsed.parentObject)
+      return codexQuestionAnswerRow(parsed.parentObject, parsed.supplementalContent)
     case 'plan_execution':
       return leapmuxPlanExecutionRow(parsed.parentObject)
     case 'tool_use':

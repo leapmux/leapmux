@@ -617,13 +617,26 @@ func classifyCodexCompactionRequestError(err error) error {
 // provider that stops satisfying InputSteerer, so this assertion makes that
 // regression a compile error.
 var _ agent.InputSteerer = (*Agent)(nil)
+var _ agent.SessionInputSteerer = (*Agent)(nil)
 
 // SupportsSteering always reports true. The Codex app-server accepts turn/steer
 // for any active turn, so the capability needs no handshake discovery.
 func (a *Agent) SupportsSteering() bool { return true }
 
 func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
+	return a.steerInput(nil, content, attachments)
+}
+
+func (a *Agent) SteerInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
+	return a.steerInput(&sessionID, content, attachments)
+}
+
+func (a *Agent) steerInput(expected *string, content string, attachments []*leapmuxv1.Attachment) error {
 	a.Mu.Lock()
+	if err := providerkit.CheckInputSession(expected, a.threadID); err != nil {
+		a.Mu.Unlock()
+		return err
+	}
 	threadID, turnID := a.threadID, a.mainTurn.id
 	if a.StoppedLocked() {
 		a.Mu.Unlock()

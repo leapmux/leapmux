@@ -104,7 +104,7 @@ func TestQwenPlanApprovalReplies(t *testing.T) {
 			id, option := selectedOptionOf(t, result.Content)
 			assert.Equal(t, "5", id, "the reply restores the native id")
 			assert.Equal(t, tc.option, option)
-			assert.Equal(t, tc.feedback, result.Feedback, "Qwen's reply has no reason field, so the reason follows as a message")
+			assert.Equal(t, agent.FeedbackFollowUp(tc.feedback), result.FollowUp, "Qwen's reply has no reason field, so the reason follows as a message")
 			if tc.exit {
 				assert.Equal(t, agent.PlanModeControlExit, result.PlanModeControl)
 			} else {

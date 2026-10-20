@@ -63,7 +63,7 @@ func TestGeminiPlanResponseKeepsTheNativeIdentityAndOptions(t *testing.T) {
 		require.False(t, result.Withhold)
 		assert.JSONEq(t, `{"jsonrpc":"2.0","id":4,"result":{"outcome":{"outcome":"selected","optionId":"`+test.option+`"}}}`, string(result.Content))
 		assert.Equal(t, test.kind, result.PlanModeControl)
-		assert.Equal(t, test.feedback, result.Feedback)
+		assert.Equal(t, agent.FeedbackFollowUp(test.feedback), result.FollowUp)
 	}
 }
 

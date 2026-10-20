@@ -95,7 +95,7 @@ func TestKimiResolvePermission(t *testing.T) {
 		res := resolve(t, "approval_1", kimiStoredApproval, browserAnswer(t, "approval_1", "deny", map[string]any{"message": "Use rg instead."}), nil)
 		require.False(t, res.Withhold)
 		assert.Equal(t, map[string]any{"decision": "rejected", "feedback": "Use rg instead."}, nativeResponse(t, res.Content))
-		assert.Empty(t, res.Feedback, "the reason rides the refusal itself")
+		assert.Empty(t, res.FollowUp, "the reason rides the refusal itself")
 	})
 
 	t.Run("a refusal with the placeholder reason carries none", func(t *testing.T) {
@@ -370,7 +370,7 @@ func TestKimiResolveQuestion(t *testing.T) {
 			res := resolve(t, "question_1", kimiStoredQuestion, browserAnswer(t, "question_1", "deny", fields), nil)
 			require.False(t, res.Withhold)
 			assert.Equal(t, map[string]any{"dismiss": true}, nativeResponse(t, res.Content))
-			assert.Empty(t, res.Feedback, "the placeholder reason is no message of the user's")
+			assert.Empty(t, res.FollowUp, "the placeholder reason is no message of the user's")
 		}
 	})
 
@@ -379,7 +379,7 @@ func TestKimiResolveQuestion(t *testing.T) {
 		res := resolve(t, "question_1", kimiStoredQuestion, browserAnswer(t, "question_1", "deny", map[string]any{"message": "Pick for me."}), nil)
 		require.False(t, res.Withhold)
 		assert.Equal(t, map[string]any{"dismiss": true}, nativeResponse(t, res.Content))
-		assert.Equal(t, "Pick for me.", res.Feedback)
+		assert.Equal(t, agent.FeedbackFollowUp("Pick for me."), res.FollowUp)
 	})
 }
 
