@@ -17,9 +17,21 @@ const agent = vi.hoisted(() => ({
 vi.mock('./ui', () => ({
   sendMessage: async (_page: Page, text: string) => agent.send(text),
   waitForAgentIdle: async () => {},
-  assistantBubbles: () => ({ filter: ({ hasText }: { hasText: string }) => ({ first: () => ({ fakeText: hasText }) }) }),
-  messageBubbles: () => ({ filter: ({ hasText }: { hasText: string }) => ({ first: () => ({ fakeText: hasText }) }) }),
+  assistantBubbles: () => ({ filter: ({ hasText }: { hasText: string }) => countableText(hasText) }),
+  messageBubbles: () => ({ filter: ({ hasText }: { hasText: string }) => countableText(hasText) }),
+  messageContents: () => ({ filter: ({ hasText }: { hasText: string }) => countableText(hasText) }),
 }))
+
+/** The transcript-counting locator stand-in that the helper's row assertions read. */
+function countableText(hasText: string) {
+  return {
+    first: () => ({ fakeText: hasText }),
+    toHaveCount: async (count: number) => {
+      const occurrences = agent.transcript.join('\n').split(hasText).length - 1
+      expect(occurrences, `the transcript shows ${JSON.stringify(hasText)} ${count} times`).toBe(count)
+    },
+  }
+}
 
 vi.mock('@playwright/test', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@playwright/test')>()
@@ -28,6 +40,9 @@ vi.mock('@playwright/test', async (importOriginal) => {
       const text = value.fakeText
       return { toBeVisible: async () => expect(agent.transcript.join('\n'), `the transcript shows ${text}`).toContain(text) }
     }
+    // The countable stand-in asserts itself: expect passes its matcher through.
+    if (typeof value === 'object' && value !== null && 'toHaveCount' in value)
+      return value
     return expect(value, message)
   }, { poll: expect.poll })
   return { ...actual, expect: fake }
@@ -40,7 +55,10 @@ interface SimulatedAgentOptions {
   summarizerText?: string
   /** The agent adds the summary to its history, but keeps the whole history before it. */
   keepsHistory?: boolean
-  /** The message that the agent writes when its compaction ends. */
+  /**
+   * The message that the agent writes when its compaction ends. An empty string
+   * states a silent agent, which the completion proof of the helper rejects.
+   */
   completion?: string
 }
 
@@ -95,8 +113,8 @@ function simulatedAgent(options: SimulatedAgentOptions = {}): { script: ModelScr
     const summary = answer(summaryStep)
     const complete = () => {
       history = options.keepsHistory ? [...history, summary] : [summary]
-      if (options.completion)
-        agent.transcript.push(options.completion)
+      // A compacting agent states the boundary that ended the compaction.
+      agent.transcript.push(options.completion ?? 'Context compacted')
     }
     if (summaryStep?.gate) {
       held = { gate: summaryStep.gate, complete }
@@ -242,7 +260,7 @@ describe('exerciseNativeCompaction', () => {
   it('proves a fallback summarizer that the proof cannot read by its completion message', async () => {
     const { script } = simulatedAgent({ completion: 'Context compacted' })
     await exerciseNativeCompaction(context(script), { summary: { route: 'fallback', completionText: 'Context compacted' } })
-    const silent = simulatedAgent()
+    const silent = simulatedAgent({ completion: '' })
     await expect(exerciseNativeCompaction(context(silent.script), { summary: { route: 'fallback', completionText: 'Context compacted' } }))
       .rejects
       .toThrow('Context compacted')

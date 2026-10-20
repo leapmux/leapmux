@@ -1,11 +1,12 @@
 import type { JSX } from 'solid-js'
+import type { AssistantTextSegment } from './model/assistantText'
 import type { AgentPrompt } from './model/divider'
 import type { ChatRow } from './model/row'
 import type { ExpandableToolLayoutContext, RowRenderContext } from './renderContext'
 import type { ChatRowExtraction } from './rowExtraction'
 import CircleAlert from 'lucide-solid/icons/circle-alert'
 import MessageSquare from 'lucide-solid/icons/message-square'
-import { untrack } from 'solid-js'
+import { For, untrack } from 'solid-js'
 import { assertNever } from '~/lib/assertNever'
 import { completionMarker } from './assembledMessage'
 import {
@@ -23,6 +24,7 @@ import { flattenNotificationEntries } from './notificationEntries'
 import { renderNotificationBlocks } from './notificationRenderers'
 import { ResultDivider } from './resultDividerRenderers'
 import { CollapsibleContent } from './results/CollapsibleContent'
+import { SteerNoteMarker } from './results/SteerNoteMarker'
 import { ToolMessage } from './results/ToolMessage'
 import { toolOutcomeLabel } from './results/toolOutcomeLabel'
 import { ToolStatusHeader } from './results/ToolStatusHeader'
@@ -41,6 +43,22 @@ import { ToolUseLayout } from './widgets/ToolUseLayout'
  * EXHAUSTIVE: a new row kind is a compile error here rather than a row that silently
  * draws nothing.
  */
+/** Draw one assistant text that its provider split into segments. */
+function AssistantSegments(props: { segments: readonly AssistantTextSegment[], context?: RowRenderContext }) {
+  return (
+    <For each={props.segments}>
+      {(segment) => {
+        if (segment.kind === 'text') {
+          if (segment.text === '')
+            return undefined
+          return <MarkdownText text={segment.text} {...(props.context !== undefined ? { context: props.context } : {})} />
+        }
+        return <SteerNoteMarker steerId={segment.steerId} note={segment.note} />
+      }}
+    </For>
+  )
+}
+
 export function renderRowContent(
   row: ChatRow,
   context: RowRenderContext | undefined,
@@ -59,6 +77,8 @@ export function renderRowContent(
     case 'divider':
       return <ResultDivider model={row.divider} />
     case 'assistant-text':
+      if (row.segments !== undefined)
+        return <AssistantSegments segments={row.segments} {...(context !== undefined ? { context } : {})} />
       return <MarkdownText text={row.text} {...(context !== undefined ? { context } : {})} />
     case 'assistant-thinking':
       return <ThinkingMessage text={row.text} {...(context !== undefined ? { context } : {})} />

@@ -32,6 +32,11 @@ type Agent struct {
 	controls   controlIndex
 	output     toolOutputState
 	compaction compactionState
+	// steers reports each steer's delivery from Kiro's own steering markers,
+	// in send order. earlySteerEchoes holds an injection that arrived before
+	// the steer reply stated its id; the reply completes it.
+	steers           providerkit.SteerLedger
+	earlySteerEchoes map[string]providerkit.SteerTicket
 
 	// goalRestoreMu orders the restore of a recovered goal run against the
 	// retirement of the session that the run belongs to. restoreGoalRun holds
@@ -50,6 +55,19 @@ var _ agent.Agent = (*Agent)(nil)
 // for a provider that stops satisfying InputSteerer, so this assertion makes
 // that regression a compile error.
 var _ agent.InputSteerer = (*Agent)(nil)
+var _ agent.SteerPreparer = (*Agent)(nil)
+
+// Kiro states each steer's delivery in its own steering markers, so the queue
+// writes the steer row at the echo, not at acceptance, and a steer that a
+// failed turn leaves behind stays pending for the next prompt.
+var _ agent.SteerEchoReporter = (*Agent)(nil)
+var _ agent.SteerSurvivor = (*Agent)(nil)
+
+// SteerRowAtEcho answers true: the marker, not the write, proves delivery.
+func (a *Agent) SteerRowAtEcho() bool { return true }
+
+// SteerSurvivesTurnEnd answers true: a steer can ride into the next prompt.
+func (a *Agent) SteerSurvivesTurnEnd() bool { return true }
 
 // Agent compacts through Kiro's own request.
 var _ agent.ContextCompactor = (*Agent)(nil)
@@ -69,13 +87,14 @@ type kiroSteerReply struct {
 // Kiro's steer carries text alone, so a steer with an attachment is refused as
 // unsupported, and the worker keeps it for the next turn, attachment and all.
 func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
-	if len(attachments) > 0 {
-		return fmt.Errorf("%w: Kiro steers a running turn with text alone", agent.ErrSteeringUnsupported)
+	if err := providerkit.TextOnlySteer("Kiro", attachments); err != nil {
+		return err
 	}
 	if !a.PromptActive() {
 		return agent.ErrNoActiveTurn
 	}
-	return a.WithSessionID(func(sessionID string) error {
+	ticket := a.steers.Add("")
+	err := a.WithSessionID(func(sessionID string) error {
 		params, err := json.Marshal(map[string]string{"sessionId": sessionID, "message": content})
 		if err != nil {
 			return fmt.Errorf("marshal the Kiro steer: %w", err)
@@ -92,8 +111,34 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 			// Kiro drops a steer only when the turn it was for is over.
 			return fmt.Errorf("%w: Kiro dropped the steer (%s)", agent.ErrNoActiveTurn, reply.Dropped)
 		}
+		a.steers.SetID(ticket, reply.MessageID)
+		// An injection that beat the reply already waits in the early set.
+		a.settleEarlySteerEcho(ticket, reply.MessageID)
 		return nil
 	})
+	if err != nil {
+		// The queue already knows the failure, so the entry leaves no report.
+		a.steers.Forget(ticket)
+		return err
+	}
+	return nil
+}
+
+// settleEarlySteerEcho completes an injection that arrived before its steer
+// reply stated the id. The echo reports at once, in send order.
+func (a *Agent) settleEarlySteerEcho(ticket providerkit.SteerTicket, id string) {
+	if id == "" {
+		return
+	}
+	a.stateMu.Lock()
+	_, early := a.earlySteerEchoes[id]
+	delete(a.earlySteerEchoes, id)
+	a.stateMu.Unlock()
+	if !early {
+		return
+	}
+	a.steers.Echo(ticket)
+	a.steers.Settle(a.Sink())
 }
 
 // kiroCompactMethod compacts the context of a session. Kiro summarizes the
@@ -142,7 +187,8 @@ func (a *Agent) CompactContext() error {
 		a.dropCompaction(id)
 		return agent.ErrAgentBusy
 	}
-	a.persistCompacting()
+	// No start row: the manual compaction is live state until Kiro answers.
+	providerkit.PublishCompaction(a.Sink(), "manual")
 	err := a.WithSessionID(func(sessionID string) error {
 		params, err := json.Marshal(map[string]string{"sessionId": sessionID})
 		if err != nil {
@@ -174,10 +220,27 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 	running := a.compaction.id
 	a.stateMu.Unlock()
 	if a.dropCompaction(running) {
+		providerkit.EndCompaction(a.Sink())
 		a.persistStatus("Stopped waiting for the context compaction")
 		a.EndAgentTurnWithoutRow()
 	}
 	return err
+}
+
+// kiroContextShowMethod asks Kiro for the context breakdown of a session, which
+// the meter reads after a compaction rewrote the window.
+const kiroContextShowMethod = "_kiro/session/context"
+
+// refreshContextUsage asks for the breakdown of the session that a compaction
+// rewrote, so the meter does not keep the pre-compaction fill.
+func (a *Agent) refreshContextUsage(sessionID string) {
+	params, err := json.Marshal(map[string]any{"sessionId": sessionID, "subcommand": "show"})
+	if err != nil {
+		return
+	}
+	if err := a.SendDetachedRequest(kiroContextShowMethod, params, func(json.RawMessage, error) {}); err != nil {
+		slog.Debug("kiro context show request failed", "agent_id", a.AgentID(), "error", err)
+	}
 }
 
 // dropCompaction forgets the compaction id, and reports whether it was the
@@ -211,8 +274,13 @@ func (a *Agent) finishCompaction(id uint64, response json.RawMessage, err error)
 	}
 	summarized := a.compaction.summarized
 	a.compaction = compactionState{lastID: a.compaction.lastID}
+	sessionID := a.CurrentSessionID()
 	a.stateMu.Unlock()
 	defer a.EndAgentTurnWithoutRow()
+	// Every end of the manual compaction ends its live state first: Kiro
+	// answers with a bare result and sends no end frame of its own, so this
+	// row is the stored end.
+	providerkit.EndCompaction(a.Sink())
 	if a.IsStopped() {
 		return
 	}
@@ -234,7 +302,15 @@ func (a *Agent) finishCompaction(id uint64, response json.RawMessage, err error)
 		// Kiro succeeds with no report when the conversation holds nothing to
 		// summarize.
 		a.persistStatus("The conversation had nothing to compact")
+	default:
+		a.refreshContextUsage(sessionID)
 	}
+}
+
+// contextWindow returns the context window of the current model, or zero when
+// the catalog states none.
+func (a *Agent) contextWindow() int64 {
+	return a.CurrentModelContextWindow()
 }
 
 // noteCompactionSummarized records that Kiro reported the result of the

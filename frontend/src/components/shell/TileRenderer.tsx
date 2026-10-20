@@ -1322,6 +1322,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
         ...optionalProp('agentSessionInfo', sessionInfo),
         ...optionalProp('agentActivity', activity),
         ...optionalProp('turnRetryOffer', chatStore.getTurnRetryOffer(agentId())),
+        ...optionalProp('promptSuggestion', chatStore.getPromptSuggestion(agentId())),
         ...optionalProp('branchActions', branchMenuActions()),
         ...(subagentReadOnly() ? { disabledReason: SUBAGENT_NO_MESSAGES_HINT } : {}),
       }
@@ -1354,6 +1355,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
         onSettingChange={change => agentOps.handleAgentSettingChange(agentId(), change)}
         onInterrupt={() => agentOps.handleInterrupt(agentId())}
         onRetryTurn={(turnId, model) => agentOps.handleRetryTurn(agentId(), turnId, model)}
+        onDismissPromptSuggestion={() => chatStore.clearPromptSuggestion(agentId())}
         canInterrupt={agentTabSupportsInterrupt(focusedAgentTab())}
         settingsLoading={settingsLoading.loading()}
         branchWorkerId={branchAction().workerId ?? ''}

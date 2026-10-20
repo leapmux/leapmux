@@ -9,7 +9,6 @@
     "InputRequeued": "input_requeued",
     "PlanExecution": "plan_execution",
     "PlanUpdated": "plan_updated",
-    "Compacting": "compacting",
     "AgentSessionInfo": "agent_session_info",
     "RateLimit": "rate_limit",
     "RateLimitEvent": "rate_limit_event",

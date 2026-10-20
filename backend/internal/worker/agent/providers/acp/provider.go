@@ -8,14 +8,10 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
-// Provider recognizes ACP's `session/cancel` notification (and the bare
-// `cancel` form retained for legacy producers) and answers ACP's MCP
-// elicitation. Every ACP provider embeds it in a plugin type of its own, and
-// that type adds what only its provider knows: where its session store lives,
-// and any attachment policy.
-// ACP doesn't consolidate notifications today, so Classify/Merge inherit the
-// no-op embedding, and so do ListStoredSessions and ValidateAttachment for a
-// provider that declares neither.
+// Provider recognizes ACP cancellation and answers Model Context Protocol (MCP) elicitation.
+// Each concrete provider embeds it and supplies its own session store and attachment policy.
+// Classify does nothing unless a concrete provider overrides it for native notifications.
+// ListStoredSessions and ValidateAttachment also retain the defaults unless the provider overrides them.
 type Provider struct {
 	agent.ProviderDefaults
 }
@@ -36,5 +32,5 @@ func (Provider) IsInterrupt(content string) bool {
 	if err := json.Unmarshal([]byte(content), &msg); err != nil {
 		return false
 	}
-	return msg.Method == "session/cancel" || msg.Method == "cancel"
+	return msg.Method == "session/cancel"
 }

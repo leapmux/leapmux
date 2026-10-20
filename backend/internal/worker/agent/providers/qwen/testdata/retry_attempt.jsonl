@@ -1,0 +1,7 @@
+{"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "session-1", "update": {"sessionUpdate": "agent_thought_chunk", "content": {"type": "text", "text": "partial reasoning "}}}}
+{"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "session-1", "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": ""}, "_meta": {"executionLifecycle": {"v": 1, "kind": "request", "phase": "started", "outcome": ""}}}}}
+{"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "session-1", "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": ""}, "_meta": {"executionLifecycle": {"v": 1, "kind": "request", "phase": "ended", "outcome": "error"}}}}}
+{"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "session-1", "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "ANSWER-AFTER-RETRY"}}}}
+{"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "session-1", "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": ""}, "_meta": {"executionLifecycle": {"v": 1, "kind": "request", "phase": "started", "outcome": ""}}}}}
+{"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "session-1", "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": ""}, "_meta": {"executionLifecycle": {"v": 1, "kind": "request", "phase": "ended", "outcome": "success"}}}}}
+{"jsonrpc": "2.0", "id": 9, "result": {"stopReason": "end_turn"}}

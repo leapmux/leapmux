@@ -56,8 +56,6 @@ export function classifyPiMessage(input: ClassificationInput): MessageCategory {
   // The Worker stores user input as {content, attachments}, without a type field.
   // Read that neutral envelope before native event dispatch.
   if (!type && typeof parent.content === 'string') {
-    if (parent.hidden === true)
-      return { kind: 'hidden' }
     if (parent.planExecution === true)
       return { kind: 'plan_execution' }
     return { kind: 'user_content' }

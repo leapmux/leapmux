@@ -5,7 +5,6 @@ import type { ResolvedMessageContent } from './rowExtractionTypes'
 import type { ToolSpanContext } from '~/components/chat/rowExtractionTypes'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import { NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
 import { MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '~/lib/jsonPick'
 import { parseMessageContent } from '~/lib/messageParser'
@@ -99,7 +98,7 @@ export function prepareMessage(message: AgentChatMessage, options: PrepareMessag
   const members = resolved.wrapper?.messages ?? [resolved.parentObject]
   const compactionStartOnly = (message.source === MessageSource.AGENT || message.source === MessageSource.LEAPMUX)
     && members.length > 0
-    && members.every(member => isObject(member) && (member.type === NOTIFICATION_TYPE.Compacting || nativeStart?.(member) === true))
+    && members.every(member => isObject(member) && nativeStart?.(member) === true)
   return { message, original, resolved, category, compactionStartOnly }
 }
 

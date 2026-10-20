@@ -338,6 +338,10 @@ func TestSessionInfoKeysStateTheirDedupPolicy(t *testing.T) {
 		contracts.SessionInfoKeyTurnRetryOffer: {},
 		// A compaction can outlive its turn. Cache it until an explicit null ends it.
 		contracts.SessionInfoKeyCompaction: {},
+		// An identical suggestion repeat offers the same text twice; the
+		// withdrawal broadcasts null, which the dedup lets through against the
+		// cached suggestion.
+		contracts.SessionInfoKeyPromptSuggestion: {},
 	}
 	progress := map[string]struct{}{
 		contracts.SessionInfoKeyThinkingTokens:             {},

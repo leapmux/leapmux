@@ -229,18 +229,22 @@ func TestGrokReportsCompactionInTheTranscript(t *testing.T) {
 		a.HandleOutput(notification(t, grokTestSession, update))
 	}
 
-	var texts []string
-	for _, notification := range sink.Notifications() {
-		assert.Equal(t, contracts.NotificationTypeAgentStatus, notification[contracts.NotificationFieldType])
-		texts = append(texts, notification[contracts.NotificationFieldText].(string))
+	// The starts stay live state and the ends store their native frames; the
+	// child session's own compaction reaches neither.
+	rows := sink.PersistedNotifications()
+	require.Len(t, rows, 4)
+	words := []string{"auto_compact_completed", "auto_compact_completed", "auto_compact_failed", "auto_compact_failed"}
+	for i, row := range rows {
+		assert.Contains(t, string(row.Content), words[i])
+		assert.Equal(t, agent.CompactionBoundaryNotification(), grokProvider{}.Classify(row.Content))
 	}
-	assert.Equal(t, []string{
-		"Compacting the context (86% of the window used)",
-		"Context compacted from 120 to 40 tokens",
-		"Context compacted to 40 tokens",
-		"Context compaction failed: degenerate summary",
-		"Context compaction failed",
-	}, texts)
+	values := sink.SessionInfoValues(contracts.SessionInfoKeyCompaction)
+	require.Len(t, values, 5)
+	assert.Equal(t, map[string]interface{}{contracts.CompactionFieldTrigger: "auto"}, values[0])
+	for _, value := range values[1:] {
+		assert.Nil(t, value)
+	}
+	assert.Empty(t, sink.Notifications(), "no worker status row states the compaction")
 }
 
 func TestGrokReportsARetryInProgressOnly(t *testing.T) {
@@ -259,14 +263,17 @@ func TestGrokReportsARetryInProgressOnly(t *testing.T) {
 	a.AttachChildSession("child-session", "call_spawn")
 	a.HandleOutput(notification(t, "child-session", map[string]any{"sessionUpdate": "retry_state", "type": "retrying", "attempt": 1, "max_retries": 5}))
 
-	var texts []string
-	for _, notification := range sink.Notifications() {
-		texts = append(texts, notification[contracts.NotificationFieldText].(string))
+	// Each retry in progress stores its native frame as a retry row; the
+	// browser folds the rounds into one entry. An exhausted or failed retry,
+	// and a child session's own retry, store nothing.
+	rows := sink.PersistedNotifications()
+	require.Len(t, rows, 2)
+	for _, row := range rows {
+		assert.Contains(t, string(row.Content), `"attempt":2`, "the recorded frame keeps its native fields")
+		break
 	}
-	assert.Equal(t, []string{
-		"Retrying the model request (attempt 2 of 5): rate limited",
-		"Retrying the model request (attempt 3 of 5)",
-	}, texts)
+	assert.Equal(t, agent.APIRetryNotification(), grokProvider{}.Classify(rows[0].Content))
+	assert.Empty(t, sink.Notifications(), "no worker status row states the retry")
 }
 
 // A turn_completed that states no prompt id ends the agent's own turn.

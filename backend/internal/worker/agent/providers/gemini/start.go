@@ -52,12 +52,13 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 					a.resetNativeModes()
 					transcript.Reset()
 				},
-				PromptEnded: func(_ error, stopped bool) {
+				PromptEnded: func(_ error, stopped bool) acp.PromptEnding {
 					completion := agent.MessageCompletionComplete
 					if stopped {
 						completion = agent.MessageCompletionInterrupted
 					}
 					a.finishNativeChildren(completion)
+					return acp.PromptEnding{}
 				},
 				BeforeWaitCleanup: func() {
 					completion := agent.MessageCompletionError

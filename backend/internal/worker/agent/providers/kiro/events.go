@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
@@ -33,8 +34,6 @@ const (
 	kiroCustomAgentConfigErrorMethod = "_kiro/customAgent/config_error"
 	// kiroPolicyErrorMethod reports a permission file that Kiro could not read.
 	kiroPolicyErrorMethod = "_kiro/policy/error"
-	// kiroExtensionPrefix marks every Kiro extension method.
-	kiroExtensionPrefix = "_kiro/"
 )
 
 // handleExtraMethod routes every Kiro method that the ACP base does not know.
@@ -74,17 +73,59 @@ func (a *Agent) handleExtraMethod(line *providerkit.ParsedLine) bool {
 		a.handlePolicyError(line.Params)
 		return true
 	}
-	// Every other Kiro notification is live chrome for Kiro's own clients: the
-	// governance state, the MCP inventory, powers, steering documents, tool
-	// tags, the session list, hooks, knowledge indexing, spec progress. None
-	// of them is conversation, so none reaches the transcript. A REQUEST falls
-	// through, so the base refuses a method LeapMux does not answer and stores
-	// the frame where the reader can see it.
-	if strings.HasPrefix(line.Method, kiroExtensionPrefix) && !line.HasID() {
+	// Every other KNOWN Kiro notification is live chrome for Kiro's own
+	// clients: the governance state, the MCP inventory, powers, steering
+	// documents, tool tags, the session list, hooks, knowledge indexing, spec
+	// progress. None of them is conversation, so none reaches the transcript.
+	// An unknown notification falls through, and the base persists it byte for
+	// byte where the reader can see it (decision 1). A REQUEST falls through
+	// too, so the base refuses a method LeapMux does not answer.
+	if !line.HasID() && kiroKnownNotifications[line.Method] {
 		slog.Debug("kiro notification not read", "agent_id", a.AgentID(), "method", line.Method)
 		return true
 	}
 	return false
+}
+
+// kiroKnownNotifications lists every `_kiro/` notification method of the KAS
+// 0.66.8 server that carries no conversation: the workflow lifecycle bridge,
+// the governance, safety, policy and sandbox state, the MCP inventory, hooks,
+// knowledge indexing, powers, steering documents, spec progress, the session
+// list twin, and the tool catalog twin. Derived from the notification senders
+// of .tmp/probe/kiro/kas/acp-server.js. A method absent here persists raw.
+var kiroKnownNotifications = map[string]bool{
+	"_kiro/code_references":                   true,
+	"_kiro/governance/state":                  true,
+	"_kiro/hooks/cancel":                      true,
+	"_kiro/hooks/didChange":                   true,
+	"_kiro/knowledge/indexingStarted":         true,
+	"_kiro/knowledge/indexingCompleted":       true,
+	"_kiro/mcp/status":                        true,
+	"_kiro/mcp/governance_disabled":           true,
+	"_kiro/policy/changed":                    true,
+	"_kiro/powers/items_changed":              true,
+	"_kiro/progressive_context/items_changed": true,
+	"_kiro/safety/propertiesChanged":          true,
+	"_kiro/safety/statusChanged":              true,
+	"_kiro/sandbox/status":                    true,
+	"_kiro/session/notify":                    true,
+	"_kiro/sessions/changed":                  true,
+	"_kiro/spec/phaseCheckpoint":              true,
+	"_kiro/spec/taskStatusChanged":            true,
+	"_kiro/steering/documents_changed":        true,
+	"_kiro/system/notify":                     true,
+	"_kiro/terminal/settings_changed":         true,
+	"_kiro/tools/didChange":                   true,
+	"_kiro/workflow/loop_iteration":           true,
+	"_kiro/workflow/node_complete":            true,
+	"_kiro/workflow/node_failed":              true,
+	"_kiro/workflow/node_paused":              true,
+	"_kiro/workflow/node_start":               true,
+	"_kiro/workflow/paused":                   true,
+	"_kiro/workflow/run_complete":             true,
+	"_kiro/workflow/run_start":                true,
+	"_kiro/workflow/steps_queued":             true,
+	"_kiro/workflow/watch_poll":               true,
 }
 
 // Kiro sends every session of the process down one connection, workflow steps
@@ -173,6 +214,9 @@ func (a *Agent) handleCustomAgentNotFound(params json.RawMessage) {
 		fallback = contracts.KiroModeDefault
 	}
 	a.persistStatus(fmt.Sprintf("Kiro has no mode %q, so it runs %q", notFound.RequestedAgent, fallback))
+	// The session now runs the fallback: the stored selection follows it, so
+	// the picker draws the mode the reader actually has.
+	a.WithOptionValue(agent.OptionIDPermissionMode, fallback, func() {})
 }
 
 // handleCustomAgentConfigError states a custom agent file that Kiro could not

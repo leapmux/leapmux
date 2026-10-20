@@ -8,6 +8,7 @@
     "_readme",
     "methods",
     "subtypes",
+    "modes",
     "actions",
     "approvalKinds",
     "approvalScopes"
@@ -25,7 +26,7 @@
       }
     },
     "unread": {
-      "description": "The per-key exemptions this domain states. `contractsAreConsumed.test.mjs` holds every KEY of a table to a reader on each side the table declares. A key one side genuinely never reads states that here: `_unread.<table>.<Key>.sides` lists the sides that skip it, and `.why` says what reads it instead. The key stays in the contract, because the other side still reads it and a rename must still reach that side. An exemption the code no longer needs fails the same test, so a stale one cannot survive.",
+      "description": "Each key requires a reader on every declared side. _unread.<table>.<Key>.sides lists sides that do not read that key. The why field identifies its remaining reader. The key stays in the contract because that reader still needs updates. The consumption test rejects obsolete exemptions.",
       "type": "object",
       "minProperties": 1,
       "additionalProperties": {
@@ -83,6 +84,9 @@
       "$ref": "#/$defs/table"
     },
     "approvalScopes": {
+      "$ref": "#/$defs/table"
+    },
+    "modes": {
       "$ref": "#/$defs/table"
     }
   }

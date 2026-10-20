@@ -524,6 +524,7 @@ export const SESSION_INFO_TABLES = [
   { json: 'goalProgressFields', goPrefix: 'GoalProgressField', ts: 'GOAL_PROGRESS_FIELD', tsType: 'GoalProgressField', what: 'fields of the goal_progress object' },
   { json: 'turnRetryOfferFields', goPrefix: 'TurnRetryOfferField', ts: 'TURN_RETRY_OFFER_FIELD', tsType: 'TurnRetryOfferField', what: 'fields of the turn_retry_offer object' },
   { json: 'compactionFields', goPrefix: 'CompactionField', ts: 'COMPACTION_FIELD', tsType: 'CompactionField', what: 'fields of the compaction object' },
+  { json: 'promptSuggestionFields', goPrefix: 'PromptSuggestionField', ts: 'PROMPT_SUGGESTION_FIELD', tsType: 'PromptSuggestionField', what: 'fields of the prompt_suggestion object' },
 ]
 
 export function checkSessionInfo(v) {
@@ -2360,6 +2361,7 @@ export const PROVIDER_PROTOCOLS = [
     ].join('\n// '),
     tables: [
       { key: 'updates', frameKind: 'name', goTable: 'Update', tsTable: 'UPDATE', tsType: 'ACPUpdate', doc: 'session update identifiers' },
+      { key: 'sessionStateUpdates', subsetOf: 'updates', goTable: 'SessionStateUpdate', tsTable: 'SESSION_STATE_UPDATE', doc: 'state updates that the conversation consumes and the browser hides' },
       { key: 'roles', goTable: 'Role', tsTable: 'ROLE', tsType: 'ACPRole', doc: 'message `role` values' },
       { key: 'toolKinds', goTable: 'ToolKind', tsTable: 'TOOL_KIND', tsType: 'ACPToolKindWord', readers: ['ts'], readersWhy: 'the worker stores a tool frame whole and never branches on its kind; the browser picks the renderer from it', doc: 'tool-call `kind` words, the behavioural set the protocol groups every tool into' },
       { key: 'supplementIdentity', goTable: 'SupplementIdentity', tsTable: 'SUPPLEMENT_IDENTITY', tsType: 'ACPSupplementIdentityField', goSlice: true, owner: 'LeapMux checks these', doc: 'protocol fields before a supplement can reach a row' },
@@ -2461,6 +2463,7 @@ export const PROVIDER_PROTOCOLS = [
       { key: 'subagentRequest', goTable: 'SubagentRequest', tsTable: 'SUBAGENT_REQUEST', tsType: 'GooseSubagentRequestField', doc: 'fields of the subagent tool request, which rides inside logging metadata' },
       { key: 'todo', goTable: 'Todo', tsTable: 'TODO', tsType: 'GooseTodo', doc: 'the extension and tool that writes the native checklist' },
       { key: 'configIds', goTable: 'Config', tsTable: 'CONFIG', tsType: 'GooseConfigId', doc: 'config-option ids of the axes both sides address by id' },
+      { key: 'goalTexts', goTable: 'GoalText', tsTable: 'GOAL_TEXT', tsType: 'GooseGoalText', readers: ['go'], readersWhy: 'only the worker infers the goal end from these texts; the browser draws the goal card from the worker', doc: 'the sentences the goal loop prints: its notice prefix, its error prefix, and its max-turns message' },
     ],
   },
   {
@@ -2498,7 +2501,8 @@ export const PROVIDER_PROTOCOLS = [
     title: 'OpenCode, Kilo and MiMo Code',
     preamble: 'The OpenCode family states a question on the daemon\'s own event stream, which its Agent Client Protocol adapter does not forward. MiMo Code sends the same question shapes on its native event stream.',
     tables: [
-      { key: 'events', frameKind: 'name', goTable: 'Event', tsTable: 'EVENT', tsType: 'OpenCodeEvent', doc: 'question lifecycle events on the daemon event stream' },
+      { key: 'events', frameKind: 'name', goTable: 'Event', tsTable: 'EVENT', tsType: 'OpenCodeEvent', doc: 'daemon events that both sides read' },
+      { key: 'statusTypes', goTable: 'StatusType', tsTable: 'STATUS_TYPE', tsType: 'OpenCodeStatusType', doc: 'status.type values of session.status that both sides read' },
       { key: 'answerFields', goTable: 'AnswerField', tsTable: 'ANSWER_FIELD', tsType: 'OpenCodeAnswerField', goTagPin: 'backend/internal/worker/agent/providers/opencode/questions_contract_test.go', doc: 'fields of the answer envelope the browser writes and the worker reads' },
     ],
   },
@@ -2641,6 +2645,7 @@ export const PROVIDER_PROTOCOLS = [
     tables: [
       { key: 'methods', goTable: 'Method', tsTable: 'METHOD', tsType: 'McpElicitationMethod', doc: 'request methods' },
       { key: 'subtypes', goTable: 'Subtype', tsTable: 'SUBTYPE', tsType: 'McpElicitationSubtype', doc: 'control request subtypes' },
+      { key: 'modes', goTable: 'Mode', tsTable: 'MODE', tsType: 'McpElicitationMode', doc: 'native elicitation modes' },
       { key: 'actions', goTable: 'Action', tsTable: 'ACTION', tsType: 'McpElicitationAction', doc: 'response actions' },
       { key: 'approvalKinds', goTable: 'ApprovalKind', tsTable: 'APPROVAL_KIND', tsType: 'McpElicitationApprovalKind', doc: 'approval request kinds' },
       { key: 'approvalScopes', goTable: 'ApprovalScope', tsTable: 'APPROVAL_SCOPE', tsType: 'McpElicitationApprovalScope', doc: 'approval duration values' },
@@ -2714,6 +2719,8 @@ export const PROVIDER_PROTOCOLS = [
     ].join('\n// '),
     tables: [
       { key: 'methods', frameKind: 'name', goTable: 'Method', tsTable: 'METHOD', tsType: 'QwenMethod', doc: 'extension methods both sides dispatch on' },
+      { key: 'compressionPhases', goTable: 'CompressionPhase', tsTable: 'COMPRESSION_PHASE', tsType: 'QwenCompressionPhase', doc: 'phases of _meta.contextCompression' },
+      { key: 'messageSources', goTable: 'MessageSource', tsTable: 'MESSAGE_SOURCE', tsType: 'QwenMessageSource', doc: 'background sources that use a separate transcript path' },
       { key: 'meta', goTable: 'Meta', tsTable: 'META', tsType: 'QwenMetaKey', doc: '`_meta` keys of an update or a tool call both sides read' },
       { key: 'toolNames', goTable: 'Tool', tsTable: 'TOOL', tsType: 'QwenTool', doc: 'tool names both sides dispatch on' },
       { key: 'modes', goTable: 'Mode', tsTable: 'MODE', tsType: 'QwenMode', doc: 'approval modes, carried on LeapMux\'s permission-mode axis' },
@@ -2741,6 +2748,7 @@ export const PROVIDER_PROTOCOLS = [
       { key: 'capabilityActions', goTable: 'CapabilityAction', tsTable: 'CAPABILITY_ACTION', tsType: 'ReasonixCapabilityAction', doc: 'capability actions' },
       { key: 'capabilityPrefixes', goTable: 'CapabilityPrefix', tsTable: 'CAPABILITY_PREFIX', tsType: 'ReasonixCapabilityPrefix', doc: 'capability identifier prefixes' },
       { key: 'toolRecord', goTable: 'ToolRecord', tsTable: 'TOOL_RECORD', tsType: 'ReasonixToolRecordKey', doc: 'the supplement envelope key and the stored tool record\'s own fields' },
+      { key: 'noticePrefixes', frameKind: 'prefix', goTable: 'NoticePrefix', tsTable: 'NOTICE_PREFIX', tsType: 'ReasonixNoticePrefix', doc: 'the prefixes that mark a notice chunk Reasonix emits beside the model stream' },
     ],
   },
   {
@@ -2999,6 +3007,7 @@ export const PROVIDER_PROTOCOLS = [
       { key: 'modes', goTable: 'Mode', tsTable: 'MODE', tsType: 'DiracMode', doc: 'session modes, carried on LeapMux\'s permission-mode axis' },
       { key: 'configIds', goTable: 'Config', tsTable: 'CONFIG', tsType: 'DiracConfig', doc: 'config option identifiers' },
       { key: 'toolNames', goTable: 'Tool', tsTable: 'TOOL', tsType: 'DiracTool', doc: 'tool names both sides dispatch on' },
+      { key: 'notices', goTable: 'Notice', tsTable: 'NOTICE', tsType: 'DiracNotice', doc: 'the exact text of the notice chunks Dirac emits beside the model stream' },
     ],
   },
   {

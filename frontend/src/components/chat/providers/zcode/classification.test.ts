@@ -234,7 +234,7 @@ describe('classifyZCodeMessage', () => {
   })
 
   it('honours the neutral hidden and planExecution flags on a user row', () => {
-    expect(classifyZCodeMessage(input({ content: 'x', hidden: true }))).toEqual({ kind: 'hidden' })
+    expect(classifyZCodeMessage(input({ content: 'x', hidden: true }))).toEqual({ kind: 'user_content' })
     expect(classifyZCodeMessage(input({ content: 'x', planExecution: true })))
       .toEqual({ kind: 'plan_execution' })
   })

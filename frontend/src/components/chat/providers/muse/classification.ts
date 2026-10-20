@@ -15,7 +15,7 @@ export function classifyMuseMessage(input: ClassificationInput): MessageCategory
   if (!payload)
     return { kind: 'unknown' }
   if (!payload.method && typeof payload.content === 'string')
-    return payload.hidden === true ? { kind: 'hidden' } : payload.planExecution === true ? { kind: 'plan_execution' } : { kind: 'user_content' }
+    return payload.planExecution === true ? { kind: 'plan_execution' } : { kind: 'user_content' }
   if (payload.method === MUSE_METHOD.TurnCompleted)
     return { kind: 'result_divider' }
   if (payload.method === MUSE_METHOD.TodoListChanged)

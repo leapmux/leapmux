@@ -1,5 +1,6 @@
 import type { LiveCompaction } from './chatCompaction'
 import type { ChatRailData } from './chatMessageMarks'
+import type { PromptSuggestion } from './chatPromptSuggestion'
 import type { ToolProgressEntry, ToolProgressUpdate } from './chatToolProgress'
 import type { TurnRetryOffer } from './chatTurnRetryOffer'
 import type { SavedViewportScroll } from './chatTypes'
@@ -24,6 +25,7 @@ import { createMessageMarksStore, resolveRailRange } from './chatMessageMarks'
 import { createMessageMarkSeeder } from './chatMessageMarkSeeder'
 import { applyFreshMessage, firstMessageSeq, insertMessageBySeq, isReapablePhantom, lastMessageSeq, mergeWindow, preferNewerSupplement } from './chatMessageOrder'
 import { createPerAgentStore } from './chatPerAgentStore'
+import { createPromptSuggestionStore } from './chatPromptSuggestion'
 import { createSpanIndex } from './chatSpanIndex'
 import { createTodoStore } from './chatTodoStore'
 import { createToolProgressStore } from './chatToolProgress'
@@ -152,6 +154,7 @@ export function createChatStore() {
   // storage, so it lives in its own slice beside the tool progress.
   const turnRetryOffer = createTurnRetryOfferStore()
   const liveCompaction = createLiveCompactionStore()
+  const promptSuggestion = createPromptSuggestionStore()
   const todos = createTodoStore()
   const backgroundTasks = createBackgroundTaskStore()
   const goal = createGoalStore()
@@ -343,6 +346,7 @@ export function createChatStore() {
     // revive of this agent ID must not show the offer again.
     turnRetryOffer.clear(agentId)
     liveCompaction.clear(agentId)
+    promptSuggestion.clear(agentId)
     viewportScroll.remove(agentId)
   }
 
@@ -784,6 +788,18 @@ export function createChatStore() {
 
     clearLiveCompaction(agentId: string) {
       liveCompaction.clear(agentId)
+    },
+
+    setPromptSuggestion(agentId: string, value: PromptSuggestion) {
+      promptSuggestion.set(agentId, value)
+    },
+
+    getPromptSuggestion(agentId: string): PromptSuggestion | undefined {
+      return promptSuggestion.get(agentId)
+    },
+
+    clearPromptSuggestion(agentId: string) {
+      promptSuggestion.clear(agentId)
     },
 
     /**

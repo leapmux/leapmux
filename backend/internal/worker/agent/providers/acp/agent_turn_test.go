@@ -974,25 +974,25 @@ func TestFollowUpPrompt_AStaleTargetStartsNoPrompt(t *testing.T) {
 func TestACPTurnOutput_ASecondBoundaryChangesNothing(t *testing.T) {
 	t.Parallel()
 	var output acpTurnOutput
-	output.appendAssistant("prompt text")
+	output.appendAssistant("prompt text", "")
 	output.rememberIncompleteTool("prompt-tool", map[string]json.RawMessage{"toolCallId": json.RawMessage(`"prompt-tool"`)},
 		json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"prompt-tool","status":"pending"}`))
 	output.completeTool("done-tool")
 
 	output.turnMu.Lock()
-	text, thought := output.markPromptBoundaryLocked()
+	prefix := output.markPromptBoundaryLocked()
 	output.turnMu.Unlock()
-	assert.Equal(t, "prompt text", text)
-	assert.Empty(t, thought)
+	assert.Equal(t, "prompt text", prefix.assistantText)
+	assert.Empty(t, prefix.thoughtText)
 
-	output.appendAssistant("agent text")
+	output.appendAssistant("agent text", "")
 	output.rememberIncompleteTool("agent-tool", map[string]json.RawMessage{"toolCallId": json.RawMessage(`"agent-tool"`)},
 		json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"agent-tool","status":"pending"}`))
 	output.turnMu.Lock()
-	text, thought = output.markPromptBoundaryLocked()
+	prefix = output.markPromptBoundaryLocked()
 	output.turnMu.Unlock()
-	assert.Empty(t, text, "a second boundary takes no text of the agent turn")
-	assert.Empty(t, thought)
+	assert.Empty(t, prefix.assistantText, "a second boundary takes no text of the agent turn")
+	assert.Empty(t, prefix.thoughtText)
 
 	prompt, bounded := output.drainPromptTurn()
 	require.True(t, bounded)

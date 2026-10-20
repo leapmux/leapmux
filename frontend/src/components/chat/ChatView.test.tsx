@@ -489,24 +489,20 @@ function makeCodexWebSearchMessage(params: {
 }
 
 function makeCodexHiddenLifecycleMessage(id: string = 'codex-hidden'): AgentChatMessage {
+  // A Claude `system init` frame: the one lifecycle row the classifier still
+  // hides through the shared hidden-subtype contract.
   return {
     $typeName: 'leapmux.v1.AgentChatMessage',
     id,
     source: MessageSource.LEAPMUX,
     content: new TextEncoder().encode(JSON.stringify({
-      type: 'notification_thread',
-      old_seqs: [],
-      messages: [
-        {
-          method: 'thread/started',
-          params: { threadId: 'thread-1' },
-        },
-      ],
+      type: 'system',
+      subtype: 'init',
     })),
     contentCompression: ContentCompression.NONE,
     seq: 1n,
     createdAt: '',
-    agentProvider: AgentProvider.CODEX,
+    agentProvider: AgentProvider.CLAUDE_CODE,
   } as AgentChatMessage
 }
 

@@ -135,10 +135,16 @@ func (a *Agent) observeChildCard(rowKey, title string, rawInput, rawOutput json.
 			fmt.Fprintf(&text, "%s: %s\n", event.Type, event.Text)
 		}
 		if text.Len() > 0 {
-			obs.ChildTranscriptPayload, _ = json.Marshal(map[string]any{
+			// A session update rather than a stored payload: the child
+			// conversation assembles the block as it assembles any update, so
+			// the text renders as an assistant row instead of a raw card.
+			obs.ChildUpdate, _ = json.Marshal(map[string]any{
 				"sessionUpdate": "agent_message_chunk",
 				"content":       map[string]string{"type": "text", "text": text.String()},
 			})
+			// Each live card delta is a complete block, so the child persists
+			// it as its own row at once.
+			obs.ChildUpdateFlush = true
 		}
 	}
 	return obs

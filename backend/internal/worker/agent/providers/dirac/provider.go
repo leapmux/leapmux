@@ -2,7 +2,9 @@ package dirac
 
 import (
 	"context"
+	"encoding/json"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -17,6 +19,19 @@ type diracProvider struct {
 }
 
 // ValidateAttachment matches the kinds Dirac reads from its ACP prompt.
+// Classify identifies a stored notice chunk as a status notification.
+func (diracProvider) Classify(content json.RawMessage) agent.NotificationClassification {
+	var chunk struct {
+		Content struct {
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if json.Unmarshal(content, &chunk) == nil && chunk.Content.Text == contracts.DiracNoticeRetryingApiRequest {
+		return agent.StatusNotification()
+	}
+	return agent.NotificationClassification{}
+}
+
 func (diracProvider) ValidateAttachment(attachment agent.ClassifiedAttachment) error {
 	return providerkit.RejectPDFAndBinaryAttachment("Dirac", attachment)
 }

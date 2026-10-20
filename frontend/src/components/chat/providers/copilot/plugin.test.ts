@@ -39,7 +39,6 @@ describe('copilot provider', () => {
       { type: 'context_cleared' },
       { type: 'agent_error', error: 'failed' },
       { type: 'plan_updated', plan_title: 'Plan' },
-      { type: 'compacting' },
     ]
     for (const notification of notifications)
       expect(plugin?.transcript.classify(input(notification)).kind).toBe('notification')
@@ -124,7 +123,7 @@ describe('copilot provider', () => {
     const classify = (row: Record<string, unknown>) => plugin?.transcript.classify!(input(row, null, AgentProvider.GITHUB_COPILOT)).kind
     expect(classify({ content: 'Typed message' })).toBe('user_content')
     expect(classify({ content: 'Implement the plan.', planExecution: true })).toBe('plan_execution')
-    expect(classify({ content: 'Internal', hidden: true })).toBe('hidden')
+    expect(classify({ content: 'Internal', hidden: true })).toBe('user_content')
   })
 
   it('labels the turn end and states an interruption', () => {

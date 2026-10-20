@@ -1,8 +1,9 @@
 import type { MessageCategory } from '../../messageClassifier'
 import type { ClassificationContext, ClassificationInput } from '../registry'
+import type { ACPNativeNotifications } from './notification'
 import { isFinishedToolCallStatus, toolCallStatus } from '~/components/chat/model/toolCallStatus'
-import { ACP_UPDATE } from '~/generated/contracts/acp-protocol'
-import { pickString } from '~/lib/jsonPick'
+import { ACP_SESSION_STATE_UPDATE } from '~/generated/contracts/acp-protocol'
+import { isObject, pickString } from '~/lib/jsonPick'
 import { isPlainNotificationType } from '~/lib/notificationTypes'
 import { messageCompletionFromProto } from '../../assembledMessage'
 import { isNotificationThreadWrapper } from '../../messageUtils'
@@ -10,9 +11,10 @@ import { classifyNotifications } from '../../notificationClassification'
 import { unwrapACPResult } from './resultWrapper'
 import { ACP_SESSION_UPDATE } from './updateVocabulary'
 
-/** The base family recognizes notification threads through the worker envelope types. */
-export function isACPNotifThread(wrapper: { messages: unknown[] } | null): boolean {
-  return isNotificationThreadWrapper(wrapper)
+/** A notification thread can contain worker envelopes or the provider's native frames. */
+export function isACPNotifThread(wrapper: { messages: unknown[] } | null, native?: ACPNativeNotifications): boolean {
+  return !!wrapper?.messages.some(message => isObject(message) && native?.isMember(message))
+    || isNotificationThreadWrapper(wrapper)
 }
 
 /**
@@ -27,6 +29,7 @@ export function isJsonRpcResponseObject(parent: Record<string, unknown>): boolea
 }
 
 export interface ACPClassifyConfig {
+  nativeNotifications?: ACPNativeNotifications
   /**
    * Provider-specific classification of a `session/update` whose
    * `sessionUpdate` is `tool_call_update`. Returns a `tool_use` category when
@@ -45,29 +48,16 @@ export interface ACPClassifyConfig {
 }
 
 export function classifyACPMessage(config: ACPClassifyConfig = {}): (input: ClassificationInput, context?: ClassificationContext) => MessageCategory {
-  const hiddenSessionUpdates = new Set<string>([
-    ACP_UPDATE.CurrentMode,
-    ACP_SESSION_UPDATE.USAGE_UPDATE,
-    ACP_SESSION_UPDATE.AVAILABLE_COMMANDS_UPDATE,
-    ACP_SESSION_UPDATE.USER_MESSAGE_CHUNK,
-    // The backend consumes config_option_update centrally for every ACP provider (it
-    // never persists it), so hide it for all of them -- including historical rows that
-    // predate the central handling and would otherwise render as an unknown message.
-    ACP_SESSION_UPDATE.CONFIG_OPTION_UPDATE,
-    // The runtime's own session title and modified time, which LeapMux never shows:
-    // it gives its tabs their own names. One update arrives per turn, so a build that
-    // persisted it wrote a raw-JSON row into every transcript -- and those rows are
-    // still in the database, which is why hiding it here is not redundant with the
-    // worker's drop.
-    ACP_SESSION_UPDATE.SESSION_INFO_UPDATE,
-  ])
+  // The worker's conversation dispatcher reads this same contract membership.
+  // Native mode records still reach storage through the separate mode handler.
+  const hiddenSessionUpdates: ReadonlySet<string> = ACP_SESSION_STATE_UPDATE
   return (input: ClassificationInput, _context?: ClassificationContext): MessageCategory => {
     const parent = input.parentObject
     const wrapper = input.wrapper
 
     if (wrapper) {
-      if (isACPNotifThread(wrapper))
-        return classifyNotifications(wrapper.messages, input.agentProvider)
+      if (isACPNotifThread(wrapper, config.nativeNotifications))
+        return classifyNotifications(wrapper.messages, input.agentProvider, config.nativeNotifications?.entries)
       if (wrapper.messages.length === 0)
         return { kind: 'hidden' }
     }
@@ -122,6 +112,9 @@ export function classifyACPMessage(config: ACPClassifyConfig = {}): (input: Clas
     if (config.agentTurnEnd?.(parent) !== undefined)
       return { kind: 'result_divider' }
 
+    if (config.nativeNotifications?.isMember(parent))
+      return classifyNotifications([parent], input.agentProvider, config.nativeNotifications.entries)
+
     if (hiddenSessionUpdates.has(sessionUpdate))
       return { kind: 'hidden' }
 
@@ -135,11 +128,9 @@ export function classifyACPMessage(config: ACPClassifyConfig = {}): (input: Clas
       return { kind: 'result_divider' }
 
     if (isPlainNotificationType(type))
-      return classifyNotifications([parent], input.agentProvider)
+      return classifyNotifications([parent], input.agentProvider, config.nativeNotifications?.entries)
 
     if (!sessionUpdateValue && typeof parent.content === 'string') {
-      if (parent.hidden === true)
-        return { kind: 'hidden' }
       if (parent.planExecution === true)
         return { kind: 'plan_execution' }
       return { kind: 'user_content' }

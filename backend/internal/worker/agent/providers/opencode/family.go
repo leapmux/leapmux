@@ -5,6 +5,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // FamilySpec states what one member of the OpenCode family changes about the
@@ -53,23 +54,33 @@ func StartFamily[T any](
 		NewAgent:       newAgent,
 		Base:           func(a *T) *acp.Base { return &family(a).Base },
 		Configure: func(a *T, sink agent.ProviderServices) acp.Hooks {
-			family(a).Questions.Configure(sink)
-			return FamilyHooks()
+			family(a).configureQuestions(sink)
+			return FamilyHooks(family(a))
 		},
 		AfterHandshake: func(a *T, handshake *acp.SessionResult, opts agent.Options) error {
 			f := family(a)
 			// The launched process is the shell, which a POSIX shell replaces with the
 			// daemon and PowerShell does not. Discovery walks below it for that case.
-			f.Questions.Begin(f.Context(), f.AgentID(), f.Cmd().Process.Pid)
+			f.Questions.Begin(f.Context(), f.Clock(), f.AgentID(), f.Cmd().Process.Pid)
 			return f.ApplyPrimaryAgentStartup(handshake, opts, spec.DefaultPrimaryAgent)
 		},
 	})
 }
 
-// FamilyHooks returns what every member of the OpenCode family changes about the
-// ACP base. It holds no state, so the start and a test read the same hooks.
-func FamilyHooks() acp.Hooks {
+// FamilyHooks binds the shared protocol hooks to one member's runtime state.
+func FamilyHooks(f *FamilyBase) acp.Hooks {
 	return acp.Hooks{
+		SegmentText:              f.segmentText,
+		CaptureTurnOutputCleanup: f.captureDaemonCleanup,
+		PromptPrepared:           f.resetDaemonGeneration,
+		ClearProviderState:       f.resetDaemonGeneration,
+		PromptEnded: func(err error, stopped bool) acp.PromptEnding {
+			f.retryResolution.Reset()
+			if err != nil || stopped {
+				providerkit.EndCompaction(f.Sink())
+			}
+			return acp.PromptEnding{}
+		},
 		ModeChannel:              acp.ModeChannelPrimaryAgent,
 		PrimaryAgentHiddenFilter: IsHiddenPrimaryAgent,
 		// This family steers with a plain second session/prompt on the SAME

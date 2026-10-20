@@ -1,5 +1,5 @@
 {
-  "_readme": "The Agent Client Protocol (ACP) defines the wire vocabulary in these tables. Both the Worker and the browser consume these values. The supplement tables identify fields that a tool row stores beside the original provider bytes. These fields can arrive after the original tool call or come from local terminal execution. LeapMux chooses the protocol and terminals keys. The other supplement keys keep their native spelling. terminalResult defines the nested fields inside each stored terminal result. permissionOutcomes defines the outcome values of session/request_permission replies. permissionKinds defines the native option kinds that the Worker and browser use to select an approval scope. Every provider that speaks ACP shares these tables.",
+  "_readme": "The Agent Client Protocol (ACP) defines the wire vocabulary in these tables. Both the Worker and the browser consume these values. The supplement tables identify fields that a tool row stores beside the original provider bytes. These fields can arrive after the original tool call or come from local terminal execution. LeapMux chooses the protocol and terminals keys. The other supplement keys keep their native spelling. terminalResult defines the nested fields inside each stored terminal result. permissionOutcomes defines the outcome values of session/request_permission replies. permissionKinds defines the native option kinds that the Worker and browser use to select an approval scope. Every provider that speaks ACP shares these tables. sessionStateUpdates lists the state updates that the conversation consumes without a row. The separate mode handler still stores current_mode_update. The browser hides the same contract membership.",
   "_unread": {
     "toolKinds": {
       "Edit": {
@@ -41,6 +41,14 @@
     "AgentMessageChunk": "agent_message_chunk",
     "AgentThoughtChunk": "agent_thought_chunk"
   },
+  "sessionStateUpdates": [
+    "CurrentMode",
+    "UsageUpdate",
+    "AvailableCommandsUpdate",
+    "UserMessageChunk",
+    "ConfigOptionUpdate",
+    "SessionInfoUpdate"
+  ],
   "roles": {
     "Result": "result"
   },

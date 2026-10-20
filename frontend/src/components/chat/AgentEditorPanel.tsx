@@ -7,8 +7,9 @@ import type { PermissionPresetController, ProviderSettingChangeHandler } from '.
 import type { BeginQueueEdit } from './queueEditSession'
 import type { WorkingTreeInfo } from '~/components/common/WorkingTree'
 import type { BranchMenuActions } from '~/components/workspace/branchActions'
-import type { AgentActivityState, AgentInfo, AgentInputQueueSnapshot, QueuedAgentInput } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { AgentInfo, AgentInputQueueSnapshot, QueuedAgentInput } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { AgentSessionInfo } from '~/stores/agentSession.store'
+import type { PromptSuggestion } from '~/stores/chatPromptSuggestion'
 import type { TurnRetryOffer } from '~/stores/chatTurnRetryOffer'
 import type { ControlRequest } from '~/stores/control.store'
 import type { createRepoGitStore } from '~/stores/repoGit.store'
@@ -25,7 +26,7 @@ import { Icon } from '~/components/common/Icon'
 import { Spinner } from '~/components/common/Spinner'
 import { Tooltip } from '~/components/common/Tooltip'
 import { usePreferences } from '~/context/PreferencesContext'
-import { AgentInputQueuePauseReason, AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentActivityState, AgentInputQueuePauseReason, AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { EDITOR_MIN_HEIGHT } from '~/lib/editor/editorMinHeight'
 import { keepFocusOnPress } from '~/lib/focusRetention'
 import { flavorFromOs } from '~/lib/paths'
@@ -53,6 +54,7 @@ import { useControlResponseHandling } from './controlResponseHandling'
 import { actionButtonClass } from './controls/ControlActionRow'
 import { createControlAnswerState } from './controls/types'
 import { MarkdownEditor } from './markdownEditor/MarkdownEditor'
+import { PromptSuggestionChip } from './PromptSuggestionChip'
 import { providerFor } from './providers/registry'
 import { activePermissionPreset, usablePresets } from './providerSettings'
 import { createQueueEditSession } from './queueEditSession'
@@ -115,6 +117,8 @@ export interface AgentEditorPanelProps {
   settingsLoading?: boolean
   /** The live turn-retry offer that the worker made, or undefined when it made none. */
   turnRetryOffer?: TurnRetryOffer
+  promptSuggestion?: PromptSuggestion
+  onDismissPromptSuggestion?: () => void
   /**
    * Stop the offered attempt and send its input again on the offered model.
    * It resolves true when the worker accepts the retry and false when the
@@ -354,7 +358,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   let editorFocusFn: (() => void) | undefined
   let editorInsertFn: ((text: string) => void) | undefined
   // Whether the MarkdownEditor has fully initialized (draft loaded, cursor restored).
-  let editorReady = false
+  const [editorReady, setEditorReady] = createSignal(false)
 
   // Track the agent ID for which the editor ref is registered.  props.agentId
   // is a reactive getter that may return null/undefined at cleanup time (e.g.
@@ -364,7 +368,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
 
   /** Register the editor ref if the editor is ready and both refs are available. */
   const tryRegisterEditorRef = (agentId: string) => {
-    if (editorReady && editorContentRef && editorFocusFn) {
+    if (editorReady() && editorContentRef && editorFocusFn) {
       // `writable` reads the SAME predicate that drives the disabled placeholder,
       // the send button, and the Enter-to-send plugin, so every surface agrees
       // about whether this composer takes input. It is passed as a thunk because
@@ -682,6 +686,13 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           // none without onRetryTurn. The fallback only satisfies the type.
           onRetry={(turnId, model) => props.onRetryTurn?.(turnId, model) ?? Promise.resolve(false)}
         />
+        <PromptSuggestionChip
+          agentId={props.agentId}
+          suggestion={props.onDismissPromptSuggestion ? props.promptSuggestion : undefined}
+          idle={props.agentActivity === AgentActivityState.IDLE}
+          editorEmpty={editorReady() && !disabled() && !hasContent() && (editorContentRef?.get() ?? '') === ''}
+          onDismiss={() => props.onDismissPromptSuggestion?.()}
+        />
         <AgentInputQueue
           clientId={props.queueClientId ?? ''}
           supportsSteering={props.agent?.supportsSteering ?? false}
@@ -786,10 +797,10 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
               editorInsertFn = fn
             },
             onReady: () => {
-              editorReady = true
               const pending = queueEdit.takePendingText()
               if (pending !== undefined)
                 editorContentRef?.set(pending)
+              setEditorReady(true)
               tryRegisterEditorRef(props.agentId)
             },
           }}

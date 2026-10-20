@@ -438,10 +438,11 @@ describe('classifyCodexMessage', () => {
       expect(result.entries).toHaveLength(4)
   })
 
-  it('classifies compacting as notification', () => {
+  it('leaves a stored compacting envelope of an older build unknown', () => {
+    // No worker writes the type (F1): a stored row draws the no-display card.
     const parent = { type: 'compacting' }
     const result = classifyCodexMessage(input(parent))
-    expect(result).toEqual({ kind: 'notification', entries: [{ kind: 'compaction', phase: 'start' }] })
+    expect(result).toEqual({ kind: 'unknown' })
   })
 
   it('leaves a stored synthesized compaction boundary unknown', () => {

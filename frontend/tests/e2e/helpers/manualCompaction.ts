@@ -6,7 +6,7 @@ import { escapeRegExp } from '../../../src/lib/regexp'
 import { withCleanup } from './cleanup'
 import { validateGateName } from './mockModelScript'
 import { nativeScenarioModelContextText, nativeTextStep } from './nativeScenario'
-import { assistantBubbles, messageBubbles, sendMessage, waitForAgentIdle } from './ui'
+import { assistantBubbles, messageBubbles, messageContents, sendMessage, waitForAgentIdle } from './ui'
 
 /**
  * The matcher pattern of the directive that the summarizer prompt of Claude Code's own `/compact` holds:
@@ -206,5 +206,9 @@ export async function exerciseNativeCompaction(context: NativeScenarioContext, o
   expect(nextContext).toContain(MANUAL_COMPACTION_MARKER)
   expect(nextContext).not.toContain(OLDER_CONTEXT_MARKER)
   await expect(assistantBubbles(page).filter({ hasText: answer }).first()).toBeVisible()
+  // The summary itself draws no bubble: the compaction is live state while it
+  // runs, and one stored boundary row ends it.
+  await expect(assistantBubbles(page).filter({ hasText: MANUAL_COMPACTION_MARKER })).toHaveCount(0)
+  await expect(messageContents(page).filter({ hasText: 'Context compacted' })).toHaveCount(1)
   return { ...(summaryRequest ? { summaryRequest } : {}), nextRequest }
 }

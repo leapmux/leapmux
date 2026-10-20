@@ -3,10 +3,12 @@ package goose
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp/acptest"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -39,7 +41,7 @@ func TestACP_GooseSubagentFromToolCallUpdate_ToolRequest(t *testing.T) {
 		assert.Equal(t, "tc-goose", obs.RowKey)
 		assert.Equal(t, "tool: Read", obs.Activity)
 		assert.Equal(t, bgtask.StatusRunning, obs.Status)
-		assert.Equal(t, "tc-goose", obs.ChildAgentKey)
+		assert.Equal(t, "tc-goose", obs.ChildSpawnSpanID)
 		if assert.NotNil(t, obs.ChildTranscriptPayload) {
 			// The payload must be a tool_call_update-shaped envelope carrying
 			// sessionUpdate + the _meta so the shared ACP classifier recognizes
@@ -56,18 +58,21 @@ func TestACP_GooseSubagentFromToolCallUpdate_ToolRequest(t *testing.T) {
 	}
 }
 
-func TestACP_GooseBackgroundLaunchIsNotAReport(t *testing.T) {
+// A final spawn update whose text delegates no child ended the spawn itself,
+// so the text is the row's report: Goose 1.55.0 has no asynchronous delegate,
+// and a failed delegate is the one final update that states no session id.
+func TestACP_GooseFinalSpawnUpdateWithoutDelegationReportsItsText(t *testing.T) {
 	t.Parallel()
 	var content []acp.ToolCallBlock
-	require.NoError(t, json.Unmarshal([]byte(`[{"type":"content","content":{"type":"text","text":"Delegation started"}}]`), &content))
+	require.NoError(t, json.Unmarshal([]byte(`[{"type":"content","content":{"type":"text","text":"Delegation failed: no session was created"}}]`), &content))
 	obs := gooseSubagentFromToolCallUpdate(acp.ToolCallUpdateEnvelope{
 		ToolCallID: "delegate-call",
-		Status:     "completed",
-		RawInput:   json.RawMessage(`{"async":true}`),
+		Status:     "failed",
 		Content:    content,
 	})
 	require.NotNil(t, obs)
-	assert.Empty(t, obs.Report.Text)
+	assert.True(t, obs.CloseRow)
+	assert.Equal(t, "Delegation failed: no session was created", obs.Report.Text)
 }
 
 // A request that states no tool call is still a request, so the row opens with the
@@ -236,7 +241,7 @@ func TestACPSubagentDetectors_CarryTheSpawnPrompt(t *testing.T) {
 	})
 	require.NotNil(t, goose)
 	assert.Equal(t, "Review the diff.", goose.Prompt)
-	assert.Equal(t, "tc-1", goose.ChildAgentKey)
+	assert.Equal(t, "tc-1", goose.ChildSpawnSpanID)
 }
 
 // A spawn payload with no task text must leave Prompt empty rather than
@@ -252,25 +257,172 @@ func TestACPSubagentDetectors_EmptyPromptWhenTheSpawnCarriesNone(t *testing.T) {
 	assert.Empty(t, goose.Prompt)
 }
 
-func TestACP_GoosePersistsTheFinalReportAfterItsToolRequests(t *testing.T) {
+// The native delegate lifecycle, from the e2e-GzBcqL evidence and Goose's own
+// sources: the spawn tool_call opens the row, the delegate ACK renames it to
+// the native session id and keeps it running (the child model request still
+// waits), the running notice confirms it, and the hidden delivery message
+// closes it with the child's readable output.
+func TestACP_GooseDelegateLifecycleKeepsTheRowRunningUntilTheChildEnds(t *testing.T) {
 	t.Parallel()
-
 	sink := &agenttest.Sink{}
-	b := &acp.Base{}
-	b.SetSinkForTest(agent.NewProviderServices(sink))
-	*b.HooksForTest() = acp.Hooks{SubagentFromToolCall: gooseSubagentFromToolCall, SubagentFromToolCallUpdate: gooseSubagentFromToolCallUpdate}
-	b.HandleToolCallForTest(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"delegate-call","title":"Review","status":"pending","rawInput":{"instructions":"Review the diff."},"_meta":{"goose":{"toolCall":{"toolName":"delegate","extensionName":"summon"}}}}`))
-	b.HandleToolCallUpdateForTest(json.RawMessage(`{"sessionUpdate":"tool_call_update","toolCallId":"delegate-call","status":"completed","content":[{"type":"content","content":{"type":"text","text":"No defects found."}}]}`))
+	a := &Agent{}
+	a.SetSinkForTest(agent.NewProviderServices(sink))
+	*a.HooksForTest() = acp.Hooks{
+		SubagentFromToolCall:       gooseSubagentFromToolCall,
+		SubagentFromToolCallUpdate: a.observeGooseSubagentUpdate,
+		ExtraMethod:                a.handleGooseExtraMethod,
+		SessionUpdateHandler:       a.observeGooseSessionUpdate,
+	}
+	a.SetSessionIDForTest("parent-1")
 
+	// The spawn: diagnostic row seq 5.
+	a.HandleToolCallForTest(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"native-held-child-1","title":"delegate","status":"pending","rawInput":{"instructions":"NATIVECHILDTASK report one word."},"_meta":{"goose":{"toolCall":{"toolName":"delegate","extensionName":"summon"}}}}`))
 	rows := sink.BackgroundTasks()
 	require.Len(t, rows, 1)
+	assert.Equal(t, bgtask.StatusRunning, rows[0].Status)
+
+	// The delegate ACK: diagnostic row seq 6. It must NOT close the row.
+	a.HandleToolCallUpdateForTest(json.RawMessage(`{"sessionUpdate":"tool_call_update","toolCallId":"native-held-child-1","status":"completed","content":[{"type":"content","content":{"type":"text","text":"Delegated to subagent 20261019_2"}}]}`))
+	rows = sink.BackgroundTasks()
+	require.Len(t, rows, 1)
+	assert.Equal(t, "20261019_2", rows[0].RowKey, "the ack renames the row to the native session id")
+	assert.Equal(t, bgtask.StatusRunning, rows[0].Status, "the ack precedes the child's run, so the row stays running")
+
+	// A tool request that names the spawn id after the rename reaches the same row.
+	a.HandleToolCallUpdateForTest(json.RawMessage(`{"sessionUpdate":"tool_call_update","toolCallId":"native-held-child-1","status":"in_progress","_meta":{"toolNotification":{"type":"message","params":{"data":{"type":"subagent_tool_request","subagent_id":"20261019_2","tool_call":{"name":"shell"}}}}}}`))
+	rows = sink.BackgroundTasks()
+	require.Len(t, rows, 1, "a late request on the renamed spawn id opens no second row")
+
+	// The running notice: diagnostic row seq 7.
+	a.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"_goose/unstable/session/update","params":{"sessionId":"parent-1","update":{"sessionUpdate":"status_message","status":{"type":"notice","message":"Running subagent 20261019_2 (NATIVECHILDTASK report one word.)"}}}}`))
+	rows = sink.BackgroundTasks()
+	require.Len(t, rows, 1)
+	assert.Equal(t, bgtask.StatusRunning, rows[0].Status)
+
+	// The bare completed notice closes the child. Without a peer the export
+	// request cannot leave, and the row still ends: the report is an addition,
+	// not the close.
+	a.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"_goose/unstable/session/update","params":{"sessionId":"parent-1","update":{"sessionUpdate":"status_message","status":{"type":"notice","message":"Subagent 20261019_2 completed"}}}}`))
+	rows = sink.BackgroundTasks()
+	require.Len(t, rows, 1)
+	assert.Equal(t, bgtask.StatusSucceeded, rows[0].Status, "the completed notice closes the child")
+}
+
+// The lifecycle notices of a multi-child round carry their summary themselves,
+// and a failed child states its reason. Sources: ops_subagent.rs.
+func TestACP_GooseSubagentNotices(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := &Agent{}
+	a.SetSinkForTest(agent.NewProviderServices(sink))
+	*a.HooksForTest() = acp.Hooks{
+		SubagentFromToolCall:       gooseSubagentFromToolCall,
+		SubagentFromToolCallUpdate: a.observeGooseSubagentUpdate,
+		ExtraMethod:                a.handleGooseExtraMethod,
+	}
+	a.SetSessionIDForTest("parent-1")
+
+	// Two children spawn and acknowledge, then the notices close them.
+	for _, spawn := range []struct{ callID, sessionID string }{
+		{"delegate-1", "20261019_2"},
+		{"delegate-2", "20261019_3"},
+	} {
+		a.HandleToolCallForTest(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"` + spawn.callID + `","title":"delegate","status":"pending","rawInput":{"instructions":"report"},"_meta":{"goose":{"toolCall":{"toolName":"delegate","extensionName":"summon"}}}}`))
+		a.HandleToolCallUpdateForTest(json.RawMessage(`{"sessionUpdate":"tool_call_update","toolCallId":"` + spawn.callID + `","status":"completed","content":[{"type":"content","content":{"type":"text","text":"Delegated to subagent ` + spawn.sessionID + `"}}]}`))
+	}
+
+	a.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"_goose/unstable/session/update","params":{"sessionId":"parent-1","update":{"sessionUpdate":"status_message","status":{"type":"notice","message":"Subagent 20261019_2 completed\n\nThe command printed goose-done."}}}}`))
+	rows := sink.BackgroundTasks()
+	require.Len(t, rows, 2)
+	byKey := map[string]bgtask.Status{}
+	for _, row := range rows {
+		byKey[row.RowKey] = row.Status
+	}
+	assert.Equal(t, bgtask.StatusSucceeded, byKey["20261019_2"])
+	assert.Equal(t, bgtask.StatusRunning, byKey["20261019_3"], "the second child still runs")
+	var child *agenttest.Sink
+	for _, row := range rows {
+		if row.RowKey == "20261019_2" {
+			child = sink.Child(row.ChildAgentID)
+		}
+	}
+	require.NotNil(t, child)
+	require.Len(t, child.LeapMuxNotifications(), 1)
+	assert.Equal(t, "The command printed goose-done.", child.LeapMuxNotifications()[0]["text"])
+
+	a.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"_goose/unstable/session/update","params":{"sessionId":"parent-1","update":{"sessionUpdate":"status_message","status":{"type":"notice","message":"Subagent 20261019_3 failed: it does not belong to this session"}}}}`))
+	rows = sink.BackgroundTasks()
+	require.Len(t, rows, 2)
+	for _, row := range rows {
+		if row.RowKey == "20261019_3" {
+			assert.Equal(t, bgtask.StatusFailed, row.Status)
+		}
+	}
+}
+
+// A bare completed notice fetches the child's own conversation through the
+// session export, because Goose attaches a summary to the notice only while
+// other subagents still run, and the hidden delivery message never reaches
+// the ACP stream. The reply's last successful final-output call becomes the
+// report. The payload below is the child-final-export-2.log probe reply,
+// trimmed.
+func TestGooseBareCompletionFetchesTheExportedReport(t *testing.T) {
+	t.Parallel()
+	export := `{"id":"20261019_2","session_type":"sub_agent","parent_session_id":"parent-1","conversation":[` +
+		`{"role":"user","content":[{"type":"text","text":"Subagent ID: 20261019_2\n\nreport one word."}]},` +
+		`{"role":"assistant","content":[{"type":"toolRequest","id":"call_2","toolCall":{"status":"success","value":{"name":"recipe__final_output","arguments":{"summary":"The command printed goose-done."}}}}]},{"role":"user","content":[{"type":"toolResponse","id":"call_2","toolResult":{"status":"success","value":{"resultType":"complete","content":[{"type":"text","text":"Final output successfully collected."}],"isError":false}}}]},{"role":"assistant","content":[{"type":"text","text":"{\"summary\":\"The command printed goose-done.\"}"}]}]}`
+	sink := &agenttest.Sink{}
+	a, requests := acptest.NewAgentForRPCWithResponder(t,
+		func() *Agent {
+			a := &Agent{}
+			a.HooksForTest().ExtraMethod = a.handleGooseExtraMethod
+			a.HooksForTest().SubagentFromToolCall = gooseSubagentFromToolCall
+			a.HooksForTest().SubagentFromToolCallUpdate = a.observeGooseSubagentUpdate
+			return a
+		},
+		func(a *Agent) *acp.Base { return &a.Base },
+		func(method string) agenttest.RPCReply {
+			if method == gooseSessionExportMethod {
+				encoded, err := json.Marshal(export)
+				require.NoError(t, err)
+				return agenttest.RPCReply{Result: json.RawMessage(`{"data":` + string(encoded) + `}`)}
+			}
+			return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+		})
+	a.SetSinkForTest(agent.NewProviderServices(sink))
+	a.SetSessionIDForTest("parent-1")
+
+	a.HandleToolCallForTest(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"delegate-1","title":"delegate","status":"pending","rawInput":{"instructions":"report one word."},"_meta":{"goose":{"toolCall":{"toolName":"delegate","extensionName":"summon"}}}}`))
+	a.HandleToolCallUpdateForTest(json.RawMessage(`{"sessionUpdate":"tool_call_update","toolCallId":"delegate-1","status":"completed","content":[{"type":"content","content":{"type":"text","text":"Delegated to subagent 20261019_2"}}]}`))
+	a.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"_goose/unstable/session/update","params":{"sessionId":"parent-1","update":{"sessionUpdate":"status_message","status":{"type":"notice","message":"Subagent 20261019_2 completed"}}}}`))
+
+	require.Eventually(t, func() bool {
+		for _, recorded := range requests() {
+			if recorded.Method == gooseSessionExportMethod {
+				return true
+			}
+		}
+		return false
+	}, time.Second, 5*time.Millisecond, "the bare completion asked for the child's conversation")
+	rows := sink.BackgroundTasks()
+	require.Len(t, rows, 1)
+	assert.Equal(t, bgtask.StatusSucceeded, rows[0].Status)
 	require.NotEmpty(t, rows[0].ChildAgentID)
 	child := sink.Child(rows[0].ChildAgentID)
-	require.Len(t, child.Messages(), 1)
-	assert.JSONEq(t, `{"content":"Review the diff."}`, string(child.Messages()[0].Content))
-	reports := child.LeapMuxNotifications()
-	require.Len(t, reports, 1)
-	assert.Equal(t, "No defects found.", reports[0]["text"])
+	require.Eventually(t, func() bool {
+		return len(child.LeapMuxNotifications()) > 0
+	}, time.Second, 5*time.Millisecond, "the exported final output became the report")
+	assert.Equal(t, "The command printed goose-done.", child.LeapMuxNotifications()[0]["text"])
+}
+
+// An ordinary final output that is not a summary-only object stays verbatim,
+// which is Goose's own readable_output rule.
+func TestACP_GooseReadableSubagentOutput(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, "plain answer", gooseReadableSubagentOutput("plain answer"))
+	assert.Equal(t, `{"a":1,"b":2}`, gooseReadableSubagentOutput(`{"a":1,"b":2}`))
+	assert.Equal(t, "the summary", gooseReadableSubagentOutput(`{"summary":"the summary"}`))
+	assert.Equal(t, `{"summary":1}`, gooseReadableSubagentOutput(`{"summary":1}`))
 }
 
 // Goose's subagent_tool_request rides an in-progress update and reports on a

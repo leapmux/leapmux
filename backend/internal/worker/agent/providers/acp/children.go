@@ -44,7 +44,7 @@ type acpChildren struct {
 	sessions map[string]string
 	// closed holds row keys that this process closes or that the registry reports as finished.
 	// Those rows route no update, and later chunks do not read the registry again.
-	// Without an identity refusal, a late tagged update stays in the parent transcript.
+	// A late tagged update enters neither the child nor the parent transcript.
 	// rememberChildAgent removes a row from this set when this process opens it again.
 	//
 	// Do not retain a row that the registry does not know.
@@ -233,7 +233,11 @@ func (b *Base) routeToChild(rowKey string, header acpUpdateHeader, update json.R
 		_, known := b.children.agents[rowKey]
 		_, closed := b.children.closed[rowKey]
 		b.children.mu.Unlock()
-		if known && !closed {
+		if closed {
+			slog.Debug("discard an update of a closed ACP child", "agent_id", b.AgentID(), "row_key", rowKey)
+			return childRouteBlocked
+		}
+		if known {
 			return childRouteBlocked
 		}
 		return childRouteUnknown
@@ -328,6 +332,14 @@ func (b *Base) AttachChildSession(sessionID, rowKey string) {
 		}
 	}
 	b.children.sessions[sessionID] = rowKey
+}
+
+// SessionOwner returns the services of the transcript that owns sessionID:
+// the main sink for the current session, and the child sink of a known child
+// session. It answers false when this agent serves no such session. A provider
+// reads it to publish live state on the transcript that owns a tool row.
+func (b *Base) SessionOwner(sessionID string) (agent.ProviderServices, bool) {
+	return b.sessionUpdateOwner(sessionID)
 }
 
 // sessionUpdateOwner resolves a known session without holding a routing lock during provider work.
@@ -458,8 +470,8 @@ func (c *childConversation) finish(status bgtask.Status) {
 	defer c.feedMu.Unlock()
 	turn := c.out.drainTurn()
 	textCompletion, toolCompletion := childCloseCompletions(status)
-	c.persistAssembledText(agent.AssembledMessageKindReasoning, turn.thoughtText, textCompletion)
-	c.persistAssembledText(agent.AssembledMessageKindText, turn.assistantText, textCompletion)
+	c.persistAssembledText(agent.AssembledMessageKindReasoning, "", turn.thoughtText, textCompletion)
+	c.persistAssembledText(agent.AssembledMessageKindText, "", turn.assistantText, textCompletion)
 	c.persistIncompleteTools(turn.incompleteTools, toolCompletion)
 }
 

@@ -20,7 +20,7 @@ export function classifyDeepseekHarnessMessage(input: ClassificationInput): Mess
   if (!payload)
     return { kind: 'unknown' }
   if (!payload.type && typeof payload.content === 'string')
-    return payload.hidden === true ? { kind: 'hidden' } : payload.planExecution === true ? { kind: 'plan_execution' } : { kind: 'user_content' }
+    return payload.planExecution === true ? { kind: 'plan_execution' } : { kind: 'user_content' }
   const type = pickString(payload, 'type')
   if (type === DEEPSEEK_HARNESS_EVENT.TurnEnd)
     return { kind: 'result_divider' }

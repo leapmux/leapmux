@@ -94,7 +94,29 @@ func (a *Agent) configure(opts agent.Options) acp.Hooks {
 		SteersByOwnRoute:           true,
 		SubagentFromToolCall:       a.subagentFromToolCall,
 		SubagentFromToolCallUpdate: a.subagentFromToolCallUpdate,
-		ClearProviderState:         a.clearProviderState,
+		// A final tool update ends the call its badge watched.
+		ToolOutputComplete: a.completeToolOutput,
+		// The turn end clears every permission-check badge and forgets a
+		// pending retry row, a stop included.
+		PromptEnded: func(error, bool) acp.PromptEnding {
+			a.clearPermissionChecks()
+			a.retryResolution.Reset()
+			a.stateMu.Lock()
+			a.chunkStreamStart = 0
+			a.stateMu.Unlock()
+			// Every prompt end clears a live compaction: a native end frame
+			// usually arrived first, and a stop or a failure never gets one.
+			providerkit.EndCompaction(a.Sink())
+			return acp.PromptEnding{}
+		},
+		// The first genuine model output after a retry resolves its row. The
+		// handler claims no update.
+		SessionUpdateHandler: a.observeRetryContent,
+		// The first chunk of a new model request drops the text that the
+		// previous request left buffered, which a retry discarded (see
+		// observeNotificationMetadata).
+		SessionNotificationMetadata: a.observeNotificationMetadata,
+		ClearProviderState:          a.clearProviderState,
 	}
 }
 

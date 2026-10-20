@@ -19,7 +19,7 @@ import { classifyAgentMessage } from '~/components/chat/messageClassifier'
 import { compactionContextTokens } from '~/components/chat/notificationEntries'
 import { providerFor, resolvedSpanRole, resolveMessageForRendering } from '~/components/chat/providers/registry'
 import { mergeStableOptionGroupRefs, OPTION_ID_MODEL, optionGroup } from '~/components/chat/settingsGroups'
-import { COMPACTION_FIELD, GOAL_PROGRESS_FIELD, RATE_LIMIT_FIELD, RATE_LIMIT_UPDATE_FIELD, RATE_LIMIT_UPDATE_MODE, RUNNING_TOOL_FIELD, RUNNING_TOOL_RETRY_FIELD, SESSION_INFO_KEY, TURN_RETRY_OFFER_FIELD } from '~/generated/contracts/session-info'
+import { COMPACTION_FIELD, GOAL_PROGRESS_FIELD, PROMPT_SUGGESTION_FIELD, RATE_LIMIT_FIELD, RATE_LIMIT_UPDATE_FIELD, RATE_LIMIT_UPDATE_MODE, RUNNING_TOOL_FIELD, RUNNING_TOOL_RETRY_FIELD, SESSION_INFO_KEY, TURN_RETRY_OFFER_FIELD } from '~/generated/contracts/session-info'
 import { NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
 import { AgentStatus, ControlResponseState, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/workspace_pb'
@@ -262,7 +262,7 @@ export function handleAgentSessionInfo(
   const { agentSessionStore, chatStore } = stores
   if (transcriptOnly || (delivery.phase === 'replay' && !agentSessionStore.acceptsReplay(agentId, delivery.replayId ?? 0n)))
     return true
-  const info = parsed.topLevel.info as Record<string, unknown> | undefined
+  const info = isObject(parsed.topLevel.info) ? parsed.topLevel.info : undefined
   const updates = wireSessionInfoToUpdates(info)
   const rateLimits = wireRateLimitUpdateFromSessionInfo(info)
   const generationProgress = wireGenerationProgress(info)
@@ -302,6 +302,17 @@ export function handleAgentSessionInfo(
     else if (isObject(value)) {
       const trigger = pickString(value, COMPACTION_FIELD.Trigger)
       chatStore.setLiveCompaction(agentId, trigger ? { trigger } : {})
+    }
+  }
+  if (info && SESSION_INFO_KEY.PromptSuggestion in info) {
+    const value = info[SESSION_INFO_KEY.PromptSuggestion]
+    if (value === null) {
+      chatStore.clearPromptSuggestion(agentId)
+    }
+    else if (isObject(value)) {
+      const text = pickString(value, PROMPT_SUGGESTION_FIELD.Text)
+      if (text.trim())
+        chatStore.setPromptSuggestion(agentId, { text })
     }
   }
   // Keep goal_progress beside the goal in the chat store.
@@ -512,6 +523,7 @@ export function clearPerTurnLiveState(
   stores.agentSessionStore.clearOutputBytes(agentId)
   stores.chatStore.clearToolProgress(agentId)
   stores.chatStore.clearTurnRetryOffer(agentId)
+  stores.chatStore.clearPromptSuggestion(agentId)
 }
 
 /**

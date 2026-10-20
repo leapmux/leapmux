@@ -123,15 +123,6 @@ func statusTexts(sink *agenttest.ControlSink) []string {
 }
 
 // countNotifications counts the notifications of one type.
-func countNotifications(sink *agenttest.ControlSink, notificationType string) int {
-	count := 0
-	for _, notification := range sink.Notifications() {
-		if notification[contracts.NotificationFieldType] == notificationType {
-			count++
-		}
-	}
-	return count
-}
 
 func TestKiroSteerInputSendsASessionSteer(t *testing.T) {
 	t.Parallel()
@@ -289,8 +280,13 @@ func TestKiroCompactContextHoldsATurnUntilTheAnswer(t *testing.T) {
 	sent := requestsFor(requests(), kiroCompactMethod)
 	require.Len(t, sent, 1)
 	assert.Equal(t, kiroTestSession, sent[0].Params["sessionId"])
-	assert.Equal(t, 1, countNotifications(sink, contracts.NotificationTypeCompacting), "the compaction states its start")
-	assert.Equal(t, []string{"Context compacted"}, statusTexts(sink), "Kiro's own report states the result, and the answer adds nothing")
+	// The manual start is live state with its trigger, and Kiro's own report
+	// states the result: the answer adds no row of its own.
+	values := sink.SessionInfoValues(contracts.SessionInfoKeyCompaction)
+	require.Len(t, values, 3)
+	assert.Equal(t, map[string]interface{}{contracts.CompactionFieldTrigger: "manual"}, values[0])
+	assert.Nil(t, values[2], "the answer ends the live state")
+	assert.Empty(t, sink.Notifications(), "Kiro's own report states the result, and the answer adds nothing")
 	actives := sink.TurnActives()
 	require.NotEmpty(t, actives)
 	assert.Contains(t, actives, true, "the queue sees the compaction as a turn")
@@ -613,5 +609,157 @@ func TestKiroCompactContextRefusesARunningTurn(t *testing.T) {
 
 	syncPeer(t, a)
 	assert.Empty(t, requestsFor(requests(), kiroCompactMethod))
-	assert.Zero(t, countNotifications(sink, contracts.NotificationTypeCompacting))
+	assert.Empty(t, sink.SessionInfoValues(contracts.SessionInfoKeyCompaction), "a refused compaction publishes no live state")
+}
+
+// kiroSteerChunk builds one agent_message_chunk of the main session.
+func kiroSteerChunk(t *testing.T, text string) []byte {
+	t.Helper()
+	return frame(t, map[string]any{
+		"method": "session/update",
+		"params": map[string]any{
+			"sessionId": kiroTestSession,
+			"update": map[string]any{
+				"sessionUpdate": "agent_message_chunk",
+				"content":       map[string]any{"type": "text", "text": text},
+				"_meta":         map[string]any{"kiro": map[string]any{"replayId": "probe-say"}},
+			},
+		},
+	})
+}
+
+// kiroSteerInfo builds one session_info_update of the main session with the
+// supplied kiro metadata kind and fields.
+func kiroSteerInfo(t *testing.T, kind string, fields map[string]any) []byte {
+	t.Helper()
+	meta := map[string]any{"kiro": map[string]any{"kind": kind}}
+	for key, value := range fields {
+		meta["kiro"].(map[string]any)[key] = value
+	}
+	return frame(t, map[string]any{
+		"method": "session/update",
+		"params": map[string]any{
+			"sessionId": kiroTestSession,
+			"update":    map[string]any{"sessionUpdate": "session_info_update", "_meta": meta},
+		},
+	})
+}
+
+// kiroSteerReplyOf makes the peer answer the steer with the supplied id.
+func kiroSteerReplyOf(id string) func(agenttest.RecordedRequest) agenttest.RPCReply {
+	return func(request agenttest.RecordedRequest) agenttest.RPCReply {
+		if request.Method == kiroSteerMethod {
+			return agenttest.RPCReply{Result: json.RawMessage(`{"queued":true,"messageId":"` + id + `"}`)}
+		}
+		return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+	}
+}
+
+// steer-continue: the echo report lands after the text the model wrote before
+// the steer, and the cleared list settles nothing that the injection already
+// echoed.
+func TestKiroSteerEchoAtSteeringInjected(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newKiroAgent(t, agent.Options{}, kiroSteerReplyOf("steer-1"))
+	a.SetPromptActiveForTest(true)
+	require.NoError(t, a.SteerInput("probe handled", nil))
+	a.HandleOutput(kiroSteerChunk(t, "Done before the steer."))
+	a.HandleOutput(kiroSteerInfo(t, "steering_injected", map[string]any{"messageId": "steer-1"}))
+	a.HandleOutput(kiroSteerChunk(t, "The rest of the answer."))
+	a.HandleOutput(kiroSteerInfo(t, "steering_cleared", map[string]any{"messageIds": []any{"steer-1"}}))
+	a.FinishPromptRequestForTest(kiroTestSession, json.RawMessage(`{"stopReason":"end_turn"}`), nil)
+
+	texts := kiroAssembledTexts(t, sink)
+	require.Len(t, texts, 2, "the flush split the text at the steer")
+	assert.Equal(t, "Done before the steer.", texts[0])
+	reports := sink.SteerEchoReports()
+	require.Len(t, reports, 1, "one echo report")
+	assert.Equal(t, agent.SteerOutcomeEchoed, reports[0].Outcome)
+	assert.Equal(t, 1, reports[0].Count)
+}
+
+// steer-fail: the turn failed and Kiro cleared the steer without injecting
+// it. The drop report reaches the queue.
+func TestKiroSteerDroppedAtSteeringCleared(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newKiroAgent(t, agent.Options{}, kiroSteerReplyOf("steer-1"))
+	a.SetPromptActiveForTest(true)
+	require.NoError(t, a.SteerInput("probe handled", nil))
+	a.HandleOutput(kiroSteerInfo(t, "steering_cleared", map[string]any{"messageIds": []any{"steer-1"}}))
+
+	reports := sink.SteerEchoReports()
+	require.Len(t, reports, 1, "one dropped steer")
+	assert.Equal(t, agent.SteerOutcomeDropped, reports[0].Outcome)
+}
+
+// steer-late: the injection arrives at the NEXT prompt, so the steer stays
+// pending across the turn end and echoes there.
+func TestKiroLateSteerSurvivesIntoTheNextPrompt(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newKiroAgent(t, agent.Options{}, kiroSteerReplyOf("steer-1"))
+	a.SetPromptActiveForTest(true)
+	require.NoError(t, a.SteerInput("probe handled", nil))
+	a.FinishPromptRequestForTest(kiroTestSession, json.RawMessage(`{"stopReason":"end_turn"}`), nil)
+	assert.Empty(t, sink.SteerEchoReports(), "the steer survives the turn end")
+
+	a.SetPromptActiveForTest(true)
+	a.HandleOutput(kiroSteerInfo(t, "steering_injected", map[string]any{"messageId": "steer-1"}))
+	reports := sink.SteerEchoReports()
+	require.Len(t, reports, 1, "the late injection echoes at the next prompt")
+	assert.Equal(t, agent.SteerOutcomeEchoed, reports[0].Outcome)
+}
+
+// The injection can arrive before the steer reply carries its id: the early
+// echo waits, and the id that the reply then states completes it.
+func TestKiroSteerInjectedBeforeTheReplyStillEchoes(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newKiroAgent(t, agent.Options{}, kiroSteerReplyOf("steer-1"))
+	a.SetPromptActiveForTest(true)
+	ticket := a.steers.Add("")
+
+	a.HandleOutput(kiroSteerInfo(t, "steering_injected", map[string]any{"messageId": "steer-1"}))
+	assert.Empty(t, sink.SteerEchoReports(), "the early echo waits for its id")
+
+	a.settleEarlySteerEcho(ticket, "steer-1")
+	reports := sink.SteerEchoReports()
+	require.Len(t, reports, 1)
+	assert.Equal(t, agent.SteerOutcomeEchoed, reports[0].Outcome)
+}
+
+// A steer call that fails reports nothing.
+func TestKiroSteerFailedCallReportsNothing(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newKiroAgent(t, agent.Options{}, func(request agenttest.RecordedRequest) agenttest.RPCReply {
+		if request.Method == kiroSteerMethod {
+			return agenttest.RPCReply{Error: json.RawMessage(`{"code":-32600,"message":"no active turn"}`)}
+		}
+		return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+	})
+	a.SetPromptActiveForTest(true)
+	require.Error(t, a.SteerInput("probe handled", nil))
+	assert.Empty(t, sink.SteerEchoReports())
+}
+
+// A context clear drops every pending steer.
+func TestKiroClearContextDropsPendingSteers(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newKiroAgent(t, agent.Options{}, kiroSteerReplyOf("steer-1"))
+	a.SetPromptActiveForTest(true)
+	require.NoError(t, a.SteerInput("probe handled", nil))
+	a.clearProviderState()
+	reports := sink.SteerEchoReports()
+	require.Len(t, reports, 1)
+	assert.Equal(t, agent.SteerOutcomeDropped, reports[0].Outcome)
+}
+
+// kiroAssembledTexts returns the assembled assistant text rows.
+func kiroAssembledTexts(t *testing.T, sink *agenttest.ControlSink) []string {
+	t.Helper()
+	var texts []string
+	for _, message := range sink.Messages() {
+		if kind, text, _, ok := agenttest.DecodeAssembledMessage(message.Content); ok && kind == agent.AssembledMessageKindText {
+			texts = append(texts, text)
+		}
+	}
+	return texts
 }

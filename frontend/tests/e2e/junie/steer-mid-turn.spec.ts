@@ -1,42 +1,45 @@
 import { expect } from '@playwright/test'
-import { withCleanup } from '../helpers/cleanup'
-import { nativeTextStep } from '../helpers/nativeScenario'
-import { queuedInputRow, steerButton } from '../helpers/steer'
-import { assistantBubbles, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { nativeScenarioModelContextText, nativeTextStep } from '../helpers/nativeScenario'
+import { uniqueMarker } from '../helpers/shellArguments'
+import { steerQueuedInput } from '../helpers/steer'
+import { assistantBubbles, messageContents, openWorkspace, sendMessage, userBubbles, waitForAgentIdle } from '../helpers/ui'
+import { openProviderAgent } from '../helpers/workspace'
 import { junieTest } from '../junie-fixtures'
+import { JUNIE_AGENT, nativeContext } from './scenarios'
 
-junieTest.describe('junie unsupported controls', () => {
-  junieTest('runs a steered prompt in the next turn', async ({ native }) => {
-    const { page, modelScript } = native
-    const firstPrompt = modelScript.prompt('Answer the first request.')
-    const secondPrompt = modelScript.prompt('Answer the second request after the first.')
-    const firstGate = 'junie-first-turn'
-    const start = await modelScript.queue(
-      { ...nativeTextStep(native, 'FIRST_JUNIE_ANSWER'), gate: firstGate },
-      nativeTextStep(native, 'SECOND_JUNIE_ANSWER'),
-    )
+junieTest('carries a steer into its own turn through _session/steering', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
+  await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, JUNIE_AGENT)
+  await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
+  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+  const marker = uniqueMarker()
+  const head = `ANSWERHEAD${marker}`
+  const tail = `ANSWERTAIL${marker}`
+  const reply = `STEEREDREPLY${marker}`
+  const steering = `STEERINPUT${marker}`
+  const gate = `junie-steer-${marker}`
+  const start = await modelScript.queue(
+    { ...nativeTextStep(context, `${head} ${tail}`), text: `${head} ${tail}`, stream: { chunkChars: head.length, delayMs: 0, gates: [{ afterChunk: 1, name: gate }] } },
+    nativeTextStep(context, reply),
+  )
+  await sendMessage(page, modelScript.prompt('Stream the scripted answer.'))
+  await modelScript.waitForGate(gate)
+  await steerQueuedInput(page, { message: modelScript.prompt(steering), match: steering })
+  await modelScript.releaseGate(gate)
+  await modelScript.waitForSteps(start + 2)
+  await waitForAgentIdle(page)
 
-    await sendMessage(page, firstPrompt)
-    await modelScript.waitForGate(firstGate)
-    await withCleanup(async () => {
-      await sendMessage(page, secondPrompt)
-      const queued = queuedInputRow(page, 'Answer the second request')
-      await expect(queued).toBeVisible()
-      await expect(steerButton(queued)).toBeVisible()
-      await steerButton(queued).click()
-      expect((await modelScript.status()).requests.some(request => request.stepIndex === start + 1)).toBe(false)
-    }, async () => {
-      await modelScript.releaseGateIfHeld(firstGate)
-    })
-
-    await modelScript.waitForSteps(start + 2)
-    await waitForAgentIdle(page)
-    expect(JSON.stringify((await modelScript.requestAt(start)).body)).not.toContain('Answer the second request')
-    expect(JSON.stringify((await modelScript.requestAt(start + 1)).body)).toContain('Answer the second request')
-    await expect(assistantBubbles(page).filter({ hasText: 'FIRST_JUNIE_ANSWER' }).first()).toBeVisible()
-    await expect(assistantBubbles(page).filter({ hasText: 'SECOND_JUNIE_ANSWER' }).first()).toBeVisible()
-    await expect(page.locator('[data-testid="result-divider"]:visible')).toHaveCount(2)
-  })
+  // Junie starts the steer as its own turn, so the steer rides the next
+  // request and the second answer renders under a single divider.
+  const next = await modelScript.requestAt(start + 1)
+  expect(nativeScenarioModelContextText(context, next)).toContain(steering)
+  for (const reload of [false, true]) {
+    if (reload) {
+      await page.reload()
+      await waitForAgentIdle(page)
+    }
+    await expect(userBubbles(page).filter({ hasText: steering })).toHaveCount(1)
+    await expect(assistantBubbles(page).filter({ hasText: reply })).toHaveCount(1)
+    await expect(page.locator('[data-testid="result-divider"]:visible')).toHaveCount(1)
+    await expect(messageContents(page).filter({ hasText: 'Turn failed' })).toHaveCount(0)
+  }
 })
-
-// Track this LeapMux limitation: https://github.com/leapmux/leapmux/issues/519.

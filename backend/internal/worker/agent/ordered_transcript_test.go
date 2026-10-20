@@ -117,6 +117,81 @@ func TestPersistTranscriptBatchCopiesEveryPayloadBeforeCapture(t *testing.T) {
 	assert.JSONEq(t, `{"text":"second"}`, string(messages[1].Content))
 }
 
+func TestPersistPreparedMessageKeepsTheCapturedSessionAndSelectedBytesOnRetry(t *testing.T) {
+	t.Parallel()
+	var queue agent.OutputQueue
+	sink := &agenttest.Sink{PersistErr: assert.AnError}
+	sink.UpdateSessionID("old")
+	writer := agent.NewOrderedProviderServices(&queue, agent.NewProviderServices(sink))
+	raw := []byte(`{"text":"selected"}`)
+	var preparations int
+	err := agent.PersistPreparedMessage(writer, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		agent.MessageContent{Original: []byte(`{"text":"before selection"}`)}, agent.SpanInfo{}, func() []byte {
+			preparations++
+			sink.UpdateSessionID("new")
+			return raw
+		})
+	require.ErrorIs(t, err, assert.AnError)
+	assert.True(t, agent.OutputRetained(err))
+	clear(raw)
+	sink.PersistErr = nil
+	require.NoError(t, queue.Flush())
+	assert.Equal(t, 1, preparations)
+	require.Len(t, sink.Messages(), 2)
+	for _, message := range sink.Messages() {
+		assert.Equal(t, "old", message.AgentSessionID)
+		assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, message.Source)
+		assert.JSONEq(t, `{"text":"selected"}`, string(message.Content))
+	}
+}
+
+func TestPersistPreparedMessageCanOmitItsRowWithoutBlockingTheNextRow(t *testing.T) {
+	t.Parallel()
+	var queue agent.OutputQueue
+	sink := &agenttest.Sink{}
+	writer := agent.NewOrderedProviderServices(&queue, agent.NewProviderServices(sink))
+	require.NoError(t, agent.PersistPreparedMessage(writer, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		agent.MessageContent{Original: []byte(`{"text":"summary"}`)}, agent.SpanInfo{}, func() []byte {
+			err := writer.PersistTurnEnd(agent.MessageContent{Original: []byte(`{"stopReason":"end_turn"}`)}, agent.SpanInfo{})
+			assert.True(t, agent.OutputRetained(err))
+			assert.Empty(t, sink.Messages())
+			return nil
+		}))
+	require.Len(t, sink.Messages(), 1)
+	assert.True(t, sink.Messages()[0].TurnEnd)
+	assert.False(t, queue.HasPending())
+}
+
+func TestPersistPreparedMessageReservesBeforeCaptureReentry(t *testing.T) {
+	t.Parallel()
+	var queue agent.OutputQueue
+	sink := &batchMutationSink{Sink: &agenttest.Sink{}}
+	writer := agent.NewOrderedProviderServices(&queue, agent.NewProviderServices(sink))
+	sink.duringCapture = func() {
+		err := writer.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, agent.MessageContent{Original: []byte(`{"content":"later"}`)}, agent.SpanInfo{})
+		assert.True(t, agent.OutputRetained(err))
+		assert.Empty(t, sink.Messages())
+	}
+	require.NoError(t, agent.PersistPreparedMessage(writer, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
+		agent.MessageContent{}, agent.SpanInfo{}, func() []byte { return []byte(`{"text":"first"}`) }))
+	require.Len(t, sink.Messages(), 2)
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, sink.Messages()[0].Source)
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, sink.Messages()[1].Source)
+}
+
+func TestPersistPreparedMessageRejectsInvalidAdmission(t *testing.T) {
+	t.Parallel()
+	var queue agent.OutputQueue
+	writer := agent.OrderedTranscript(&queue, &agenttest.Sink{})
+	prepare := func() []byte { t.Error("an invalid message reached preparation"); return nil }
+	for _, source := range []leapmuxv1.MessageSource{leapmuxv1.MessageSource_MESSAGE_SOURCE_UNSPECIFIED, 999} {
+		require.Error(t, agent.PersistPreparedMessage(writer, source, agent.MessageContent{}, agent.SpanInfo{}, prepare))
+	}
+	require.Error(t, agent.PersistPreparedMessage(writer, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{}, agent.SpanInfo{}, nil))
+	require.Error(t, agent.PersistPreparedMessage(nil, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{}, agent.SpanInfo{}, prepare))
+	assert.False(t, queue.HasPending())
+}
+
 func TestOrderedChildFailureDoesNotBlockAnotherTranscript(t *testing.T) {
 	t.Parallel()
 	root := &agenttest.Sink{}

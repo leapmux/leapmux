@@ -87,6 +87,9 @@ interface RenderPanelOptions {
   optionGroups?: AgentInfo['optionGroups']
   inputQueue?: AgentEditorPanelProps['inputQueue']
   turnRetryOffer?: AgentEditorPanelProps['turnRetryOffer']
+  promptSuggestion?: AgentEditorPanelProps['promptSuggestion']
+  onDismissPromptSuggestion?: AgentEditorPanelProps['onDismissPromptSuggestion']
+  onSendMessage?: AgentEditorPanelProps['onSendMessage']
   onRetryTurn?: AgentEditorPanelProps['onRetryTurn']
 }
 
@@ -111,7 +114,7 @@ function renderPanel(options: RenderPanelOptions = {}) {
         })}
         repoGitStore={repoGitStore}
         gitTab={gitTab}
-        onSendMessage={() => {}}
+        onSendMessage={options.onSendMessage ?? (() => {})}
         {...(options.controlStore !== undefined ? { controlRequests: options.controlStore.getRequests('a1') } : {})}
         {...(options.onControlResponse !== undefined ? { onControlResponse: options.onControlResponse } : {})}
         {...(options.onSettingChange !== undefined ? { onSettingChange: options.onSettingChange } : {})}
@@ -119,6 +122,8 @@ function renderPanel(options: RenderPanelOptions = {}) {
         {...(options.agentActivity !== undefined ? { agentActivity: options.agentActivity } : {})}
         {...(options.inputQueue !== undefined ? { inputQueue: options.inputQueue } : {})}
         {...(options.turnRetryOffer !== undefined ? { turnRetryOffer: options.turnRetryOffer } : {})}
+        {...(options.promptSuggestion !== undefined ? { promptSuggestion: options.promptSuggestion } : {})}
+        {...(options.onDismissPromptSuggestion !== undefined ? { onDismissPromptSuggestion: options.onDismissPromptSuggestion } : {})}
         {...(options.onRetryTurn !== undefined ? { onRetryTurn: options.onRetryTurn } : {})}
         branchActions={stubBranchMenuActions()}
         branchWorkerId={workerId}
@@ -312,6 +317,35 @@ describe('AgentEditorPanel', () => {
     renderPanel({ turnRetryOffer: offer, onRetryTurn: vi.fn().mockResolvedValue(true) })
     expect(screen.getByTestId('turn-retry-offer-banner')).toBeInTheDocument()
     expect(screen.getByTestId('turn-retry-offer-retry')).toBeInTheDocument()
+  })
+
+  it('inserts a suggested next message into the idle composer without sending it', async () => {
+    const send = vi.fn()
+    const dismiss = vi.fn()
+    renderPanel({
+      promptSuggestion: { text: 'run the tests' },
+      agentActivity: AgentActivityState.IDLE,
+      onDismissPromptSuggestion: dismiss,
+      onSendMessage: send,
+    })
+    await vi.waitFor(() => expect(getEditorRef('a1')).toBeDefined())
+    await fireEvent.click(screen.getByRole('button', { name: 'Use' }))
+    expect(getEditorRef('a1')?.get()).toBe('run the tests')
+    expect(send).not.toHaveBeenCalled()
+    expect(dismiss).toHaveBeenCalledOnce()
+  })
+
+  it('keeps text typed before the suggestion visibility updates', async () => {
+    const dismiss = vi.fn()
+    renderPanel({ promptSuggestion: { text: 'run the tests' }, agentActivity: AgentActivityState.IDLE, onDismissPromptSuggestion: dismiss })
+    await vi.waitFor(() => expect(getEditorRef('a1')).toBeDefined())
+    expect(screen.getByTestId('prompt-suggestion-chip')).toBeVisible()
+    getEditorRef('a1')?.insert('h')
+    await fireEvent.click(screen.getByRole('button', { name: 'Use' }))
+    expect(getEditorRef('a1')?.get()).toBe('h')
+    expect(dismiss).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(screen.queryByTestId('prompt-suggestion-chip')).not.toBeInTheDocument()
   })
 
   it.each([false, true])('hides the queue toggle during a control request and restores its state (paused=%s)', (paused) => {

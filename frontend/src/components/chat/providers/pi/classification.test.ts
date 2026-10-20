@@ -299,7 +299,6 @@ describe('classifyPiMessage', () => {
     { type: NOTIFICATION_TYPE.ContextCleared },
     { type: NOTIFICATION_TYPE.AgentError, error: 'failed' },
     { type: NOTIFICATION_TYPE.PlanUpdated, plan_title: 'Plan' },
-    { type: NOTIFICATION_TYPE.Compacting },
   ]
 
   it('reads its plain-row cases from the shared list', () => {

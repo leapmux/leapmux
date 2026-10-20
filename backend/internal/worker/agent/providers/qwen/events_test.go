@@ -8,9 +8,158 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
+
+func qwenNotifyFrame(t *testing.T, method, sessionID string, fields map[string]any) []byte {
+	t.Helper()
+	params := map[string]any{"sessionId": sessionID}
+	for key, value := range fields {
+		params[key] = value
+	}
+	return frame(t, map[string]any{"method": method, "params": params})
+}
+
+func TestQwenPromptSuggestionBroadcasts(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newQwenAgent(t, nil, nil)
+	// Trimmed from qwen/logs/suggestion-2.log.
+	a.HandleOutput(qwenNotifyFrame(t, "qwen/notify/session/prompt-suggestion", qwenTestSession, map[string]any{
+		"v": 1, "suggestion": "run the tests", "promptId": "session-1########2",
+	}))
+	value, ok := sink.LastSessionInfoValue("prompt_suggestion")
+	require.True(t, ok)
+	assert.Equal(t, map[string]any{"text": "run the tests"}, value)
+	assert.Empty(t, sink.Messages())
+	assert.Empty(t, sink.Notifications())
+}
+
+func TestQwenPromptSuggestionWithdrawsAtTheNextPrompt(t *testing.T) {
+	t.Parallel()
+	for _, send := range []struct {
+		name string
+		call func(*Agent) error
+	}{
+		{"input", func(a *Agent) error { return a.SendInput("next", nil) }},
+		{"session input", func(a *Agent) error { return a.SendInputForSession(qwenTestSession, "next", nil) }},
+		{"compaction", func(a *Agent) error { return a.CompactContext() }},
+	} {
+		t.Run(send.name, func(t *testing.T) {
+			a, sink, _ := newQwenAgent(t, nil, nil)
+			a.HandleOutput(qwenNotifyFrame(t, "qwen/notify/session/prompt-suggestion", qwenTestSession, map[string]any{"suggestion": "run the tests"}))
+			require.NoError(t, send.call(a))
+			value, ok := sink.LastSessionInfoValue("prompt_suggestion")
+			require.True(t, ok)
+			assert.Nil(t, value)
+		})
+	}
+}
+
+func TestQwenPromptSuggestionRejectsOtherSessionsAndMalformedValues(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newQwenAgent(t, nil, nil)
+	a.HandleOutput(qwenNotifyFrame(t, "qwen/notify/session/prompt-suggestion", qwenTestSession, map[string]any{"suggestion": "keep"}))
+	for _, sessionID := range []string{"other-session", ""} {
+		a.HandleOutput(qwenNotifyFrame(t, "qwen/notify/session/prompt-suggestion", sessionID, map[string]any{"suggestion": "wrong"}))
+	}
+	for _, suggestion := range []any{nil, 1, "", "   "} {
+		a.HandleOutput(qwenNotifyFrame(t, "qwen/notify/session/prompt-suggestion", qwenTestSession, map[string]any{"suggestion": suggestion}))
+	}
+	value, ok := sink.LastSessionInfoValue("prompt_suggestion")
+	require.True(t, ok)
+	assert.Equal(t, map[string]any{"text": "keep"}, value)
+	require.Error(t, a.SendInputForSession("other-session", "rejected", nil))
+	value, _ = sink.LastSessionInfoValue("prompt_suggestion")
+	assert.Equal(t, map[string]any{"text": "keep"}, value)
+}
+
+func TestQwenPromptSuggestionWithdrawsAtAgentTurnAndContextClear(t *testing.T) {
+	t.Parallel()
+	for _, clear := range []func(*testing.T, *Agent){
+		func(t *testing.T, a *Agent) { a.HandleOutput(startTurn(t, nil, qwenTestSession, "goal")) },
+		func(_ *testing.T, a *Agent) { a.clearProviderState() },
+	} {
+		a, sink, _ := newQwenAgent(t, nil, nil)
+		a.HandleOutput(qwenNotifyFrame(t, "qwen/notify/session/prompt-suggestion", qwenTestSession, map[string]any{"suggestion": "run the tests"}))
+		clear(t, a)
+		value, ok := sink.LastSessionInfoValue("prompt_suggestion")
+		require.True(t, ok)
+		assert.Nil(t, value)
+	}
+}
+
+func TestQwenRecordingDegradedIsAnError(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newQwenAgent(t, nil, nil)
+	a.HandleOutput(qwenNotifyFrame(t, "qwen/notify/session/recording-degraded", "other-session", map[string]any{"reason": "write_failed"}))
+	assert.Empty(t, sink.Notifications())
+	a.HandleOutput(qwenNotifyFrame(t, "qwen/notify/session/recording-degraded", qwenTestSession, map[string]any{"reason": "write_failed"}))
+	assert.Equal(t, []map[string]any{{
+		"type":  contracts.NotificationTypeAgentError,
+		"error": "Qwen Code stopped writing its session file (write_failed). A resume loses the turns after this point.",
+	}}, sink.Notifications())
+}
+
+func TestQwenUnknownNotifyPersists(t *testing.T) {
+	t.Parallel()
+	agenttest.AssertUnknownFramePersists(t, []agenttest.UnknownFrameCase{
+		{Name: "current session", Frame: qwenNotifyFrame(t, "qwen/notify/session/future", qwenTestSession, map[string]any{"value": 1})},
+		{Name: "other session", Frame: qwenNotifyFrame(t, "qwen/notify/session/future", "other-session", map[string]any{"value": 1}), OtherSession: true},
+	}, func(t *testing.T, tc agenttest.UnknownFrameCase) *agenttest.Sink {
+		a, sink, _ := newQwenAgent(t, nil, nil)
+		a.HandleOutput(tc.Frame)
+		return &sink.Sink
+	})
+}
+
+func TestQwenPromptSuggestionBusyInputKeepsItsValue(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newQwenAgent(t, nil, nil)
+	a.HandleOutput(qwenNotifyFrame(t, "qwen/notify/session/prompt-suggestion", qwenTestSession, map[string]any{"suggestion": "keep"}))
+	a.SetPromptActiveForTest(true)
+	require.ErrorIs(t, a.SendInput("rejected", nil), agent.ErrAgentBusy)
+	value, ok := sink.LastSessionInfoValue("prompt_suggestion")
+	require.True(t, ok)
+	assert.Equal(t, map[string]any{"text": "keep"}, value)
+}
+
+func TestQwenNotifyTableConsumesOnlyKnownNotifications(t *testing.T) {
+	t.Parallel()
+	for method, disposition := range qwenNotifyMethods {
+		t.Run(method, func(t *testing.T) {
+			a, sink, _ := newQwenAgent(t, nil, nil)
+			if disposition.read == nil {
+				a.HandleOutput(qwenNotifyFrame(t, method, qwenTestSession, nil))
+				assert.Empty(t, sink.Messages())
+				assert.Empty(t, sink.Notifications())
+			}
+			request := providerkit.ParseLine(frame(t, map[string]any{
+				"id": 9, "method": method, "params": map[string]any{"sessionId": qwenTestSession},
+			}))
+			assert.False(t, a.handleExtraMethod(request), "a request must reach the base refusal path")
+		})
+	}
+}
+
+func TestQwenUnknownNotifyWithoutASessionStoresNothing(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newQwenAgent(t, nil, nil)
+	a.HandleOutput(qwenNotifyFrame(t, "qwen/notify/session/future", "", nil))
+	assert.Empty(t, sink.Messages())
+	assert.Empty(t, sink.Notifications())
+}
+
+func TestQwenRecordingDegradedAllowsAnAbsentReason(t *testing.T) {
+	t.Parallel()
+	for _, reason := range []any{nil, 0, "  "} {
+		a, sink, _ := newQwenAgent(t, nil, nil)
+		a.HandleOutput(qwenNotifyFrame(t, "qwen/notify/session/recording-degraded", qwenTestSession, map[string]any{"reason": reason}))
+		require.Len(t, sink.Notifications(), 1)
+		assert.Equal(t, "Qwen Code stopped writing its session file. A resume loses the turns after this point.", sink.Notifications()[0]["error"])
+	}
+}
 
 // startTurn is Qwen's opening of a turn it starts by itself. A background
 // answer asks for admission with an id; a goal round states it with none.

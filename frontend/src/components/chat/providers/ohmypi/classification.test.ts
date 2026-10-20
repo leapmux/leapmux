@@ -12,7 +12,7 @@ function classify(parent: Record<string, unknown> | undefined, extra: Record<str
 describe('classifyOhMyPiMessage', () => {
   it('reads LeapMux\'s own user row', () => {
     expect(classify({ content: 'hello' })).toEqual({ kind: 'user_content' })
-    expect(classify({ content: 'x', hidden: true })).toEqual({ kind: 'hidden' })
+    expect(classify({ content: 'x', hidden: true })).toEqual({ kind: 'user_content' })
     expect(classify({ content: 'x', planExecution: true })).toEqual({ kind: 'plan_execution' })
   })
 

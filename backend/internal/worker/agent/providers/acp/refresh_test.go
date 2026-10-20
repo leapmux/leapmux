@@ -54,7 +54,7 @@ func TestACPClearContextPersistsOutgoingBufferedText(t *testing.T) {
 	})
 	sink := &agenttest.Sink{}
 	a.sink = agent.NewProviderServices(sink)
-	a.appendAssistant("unfinished answer")
+	a.appendAssistant("unfinished answer", "")
 
 	_, clearErr := a.ClearContext()
 	require.NoError(t, clearErr)

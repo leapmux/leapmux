@@ -48,7 +48,7 @@ func newOpenCodeSwitchAgent(t *testing.T, server *acptest.ModelSwitchServer) (*A
 	ag, requests := acptest.NewAgentForRPCWithRequestResponder(t,
 		func() *Agent {
 			a := &Agent{}
-			*a.HooksForTest() = FamilyHooks()
+			*a.HooksForTest() = FamilyHooks(&a.FamilyBase)
 			return a
 		},
 		func(a *Agent) *acp.Base { return &a.Base },

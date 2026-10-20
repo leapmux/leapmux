@@ -542,10 +542,11 @@ func TestGoosePlatformEventLineStatesWhatItCan(t *testing.T) {
 	}
 }
 
-// The two types this hook does NOT claim stay with the paths that own them:
-// `live_output` reaches the byte counter and the tail, and `message` is a log line
-// the runtime keeps for itself.
-func TestGooseToolNotificationClaimsOnlyItsOwnTwoTypes(t *testing.T) {
+// The type this hook does NOT claim stays with the path that owns it:
+// `live_output` reaches the byte counter and the tail. A `message` without
+// readable string data is claimed and dropped, because its level alone states
+// nothing a reader can use.
+func TestGooseToolNotificationLeavesTheUnownedTypeAlone(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
@@ -553,7 +554,6 @@ func TestGooseToolNotificationClaimsOnlyItsOwnTwoTypes(t *testing.T) {
 	a.SetSinkForTest(agent.NewProviderServices(sink))
 	for _, meta := range []string{
 		`{"toolNotification":{"type":"live_output","params":{"sequence":1,"chunks":[{"output":"x"}]}}}`,
-		`{"toolNotification":{"type":"message","params":{"level":"info","logger":"goose"}}}`,
 		`{"toolNotification":{"type":"a_type_from_a_later_release","params":{}}}`,
 		`{}`,
 	} {
@@ -561,5 +561,8 @@ func TestGooseToolNotificationClaimsOnlyItsOwnTwoTypes(t *testing.T) {
 			ToolCallID: "tool-1", Meta: json.RawMessage(meta),
 		}), meta)
 	}
+	assert.True(t, a.observeGooseToolNotification(acp.ToolCallUpdateEnvelope{
+		ToolCallID: "tool-1", Meta: json.RawMessage(`{"toolNotification":{"type":"message","params":{"level":"info","logger":"goose"}}}`),
+	}), "a log line without data is claimed and dropped")
 	assert.Empty(t, sink.Messages())
 }

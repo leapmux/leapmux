@@ -1,14 +1,15 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "opencode-protocol.schema.json",
-  "title": "OpenCode question event vocabulary",
+  "title": "OpenCode daemon event vocabulary",
   "description": "Each table maps PascalCase identifiers to protocol values. Go constants and TypeScript keys derive from those identifiers. Every table requires at least one value. An empty table supplies no dispatch case and prevents the generator from checking coverage.",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "_readme",
     "events",
-    "answerFields"
+    "answerFields",
+    "statusTypes"
   ],
   "$defs": {
     "table": {
@@ -127,6 +128,9 @@
       "$ref": "#/$defs/table"
     },
     "answerFields": {
+      "$ref": "#/$defs/table"
+    },
+    "statusTypes": {
       "$ref": "#/$defs/table"
     }
   }

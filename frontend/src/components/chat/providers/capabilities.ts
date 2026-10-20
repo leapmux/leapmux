@@ -17,6 +17,7 @@ import type { DialogResponder } from '../controls/DialogRequestControl'
 import type { SendPermissionOption } from '../controls/PermissionDecisionActions'
 import type { ActionsProps, ControlAnswerState, ControlResponseSender } from '../controls/types'
 import type { MessageCategory } from '../messageClassifier'
+import type { AssistantTextSegment } from '../model/assistantText'
 import type { ControlPrompt } from '../model/controlPrompt'
 import type { TurnEnd } from '../model/divider'
 import type { CompactionDetails, NotificationEntry } from '../model/notification'
@@ -154,6 +155,15 @@ export interface ProviderTranscriptCapability {
 
   /** Identify a stored native compaction start for the history filter only. */
   compactionStart?: (message: Record<string, unknown>) => boolean
+
+  /**
+   * Split one assembled assistant text into segments this provider marks
+   * itself. A provider whose model echoes an inline note about a steer the
+   * reader sent supplies it; the note leaves the model's prose, and the
+   * renderer draws it as a chip. Returns undefined for a text with no such
+   * mark, and the row then renders its plain text.
+   */
+  assistantTextSegments?: (text: string) => AssistantTextSegment[] | undefined
 
   /** Classify a parsed message into a rendering category. */
   classify: (input: ClassificationInput, context?: ClassificationContext) => MessageCategory

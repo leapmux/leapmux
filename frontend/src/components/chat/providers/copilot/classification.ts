@@ -102,8 +102,6 @@ export function classifyCopilotMessage(input: ClassificationInput): MessageCateg
   const event = copilotEvent(parent)
   if (!event) {
     if (typeof parent.content === 'string') {
-      if (parent.hidden === true)
-        return { kind: 'hidden' }
       if (parent.planExecution === true)
         return { kind: 'plan_execution' }
       return { kind: 'user_content' }

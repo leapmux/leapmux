@@ -832,7 +832,7 @@ func (m *Manager) holdForEcho(c *coordinator, ctx context.Context, prepared Prep
 // the next ordinary dispatch.
 //
 // Preempt is the steer of a provider that cannot inject into a running turn
-// (Cursor, Kilo): it INTERRUPTS the turn instead, and the message follows the
+// (Cursor): it INTERRUPTS the turn instead, and the message follows the
 // moment the cancelled turn reports its end. Nothing is delivered here -- the
 // item stays queued, and the drain that the provider's turn-end publish
 // triggers is what sends it. That drain is also why the item is only

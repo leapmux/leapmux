@@ -128,6 +128,49 @@ func PersistTranscriptBatch(writer TranscriptServices, messages []TranscriptMess
 	return &PendingOutputError{Err: err}
 }
 
+// PersistPreparedMessage reserves the row before capture or preparation can yield to another writer.
+// The template fixes its publication and metadata. prepare supplies only the final payload; nil omits the row.
+// A persistence failure retains the prepared bytes. A retry never calls prepare again.
+func PersistPreparedMessage(writer TranscriptServices, source leapmuxv1.MessageSource, template MessageContent, span SpanInfo, prepare func() []byte) error {
+	if prepare == nil {
+		return errors.New("the transcript message has no preparation function")
+	}
+	if err := validateOrderedContent(source, template); err != nil {
+		return err
+	}
+	queue := OutputQueueFor(writer)
+	if queue == nil {
+		return errors.New("the transcript message has no output queue")
+	}
+	var ready atomic.Bool
+	var captured CapturedTranscript
+	var ticket *OutputTicket
+	var omitted bool
+	ticket = queue.Append(OutputWrite{Label: "persist prepared message", Run: func() error {
+		if !ready.Load() {
+			return ErrOutputInFlight
+		}
+		if omitted {
+			return nil
+		}
+		return captured.PersistQueuedMessage(ticket, source)
+	}})[0]
+	direct := DirectTranscript(writer)
+	content := CaptureTranscript(direct, template, span).FrozenContent().Clone()
+	content.Original = slices.Clone(prepare())
+	omitted = content.Original == nil
+	captured = frozenTranscript(direct, content, span)
+	ready.Store(true)
+	err := queue.Flush()
+	if ticket.Done() {
+		return nil
+	}
+	if err == nil {
+		err = ErrOutputInFlight
+	}
+	return &PendingOutputError{Err: err}
+}
+
 // OutputQueueFor returns the ordering queue of an ordered transcript writer.
 func OutputQueueFor(writer TranscriptServices) *OutputQueue {
 	switch value := writer.(type) {

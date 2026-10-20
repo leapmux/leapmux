@@ -1,5 +1,5 @@
 import { grokTest } from '../grok-fixtures'
-import { exerciseSteerBeforeTool } from '../helpers/nativeToolSteering'
+import { exerciseSteerBeforeTool, exerciseSteerDuringText } from '../helpers/nativeToolSteering'
 import { openWorkspace } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { GROK_AGENT, nativeContext } from './scenarios'
@@ -10,5 +10,12 @@ grokTest.describe('Grok Build settings, folder trust and MCP forms', () => {
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
     await exerciseSteerBeforeTool(context)
+  })
+
+  grokTest('places a steer after the complete answer that precedes it', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, GROK_AGENT, { optionValues: { approvalMode: 'always-approve' } })
+    await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
+    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    await exerciseSteerDuringText(context, { answer: 'continue', splitAnswer: true })
   })
 })

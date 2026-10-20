@@ -1,4 +1,5 @@
 import type { ElicitationRequest } from '~/components/chat/model/controlPrompt'
+import { MCP_ELICITATION_MODE } from '~/generated/contracts/mcp-elicitation'
 import { REASONIX_METHOD } from '~/generated/contracts/reasonix-protocol'
 import { pickObject, pickString } from '~/lib/jsonPick'
 import { acpElicitation } from '../acp/elicitation'
@@ -9,7 +10,7 @@ export function reasonixElicitation(payload: Record<string, unknown>): Elicitati
     return acpElicitation(payload)
   const params = pickObject(payload, 'params') ?? {}
   return {
-    mode: pickString(params, 'mode', 'form'),
+    mode: pickString(params, 'mode', MCP_ELICITATION_MODE.Form),
     message: pickString(params, 'message'),
     server: pickString(params, 'server'),
     schema: params.requestedSchema,

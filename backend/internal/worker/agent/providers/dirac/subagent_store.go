@@ -64,7 +64,7 @@ func (a *Agent) beforeWaitCleanup() {
 }
 
 // hydrateSubagentArchives gives completed children an immediate archive read.
-func (a *Agent) hydrateSubagentArchives(_ error, _ bool) {
+func (a *Agent) hydrateSubagentArchives(_ error, _ bool) acp.PromptEnding {
 	a.childMu.Lock()
 	var pending []*diracChildState
 	for _, state := range a.childState {
@@ -80,6 +80,7 @@ func (a *Agent) hydrateSubagentArchives(_ error, _ bool) {
 			a.startDiracArchiveRetry(state)
 		}
 	}
+	return acp.PromptEnding{}
 }
 
 func (a *Agent) archiveClock() quartz.Clock {

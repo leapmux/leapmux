@@ -81,8 +81,6 @@ export function classifyMessage(input: ClassificationInput, context?: Classifica
   // LeapMux writes this envelope for every provider. Classify it before the
   // provider plugin so a new plugin cannot hide the user's own message.
   if (isLeapMuxUserPayload(input)) {
-    if (input.parentObject?.hidden === true)
-      return { kind: 'hidden' }
     if (input.parentObject?.planExecution === true)
       return { kind: 'plan_execution' }
     return { kind: 'user_content' }

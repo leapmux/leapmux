@@ -146,13 +146,7 @@ func (b *Base) agentSessionOfControlRequest(sessionID string) string {
 // controlRequestSessionID reads the session that a control request states. It
 // returns "" for a request that states none.
 func controlRequestSessionID(params json.RawMessage) string {
-	var request struct {
-		SessionID string `json:"sessionId"`
-	}
-	if json.Unmarshal(params, &request) != nil {
-		return ""
-	}
-	return request.SessionID
+	return providerkit.StringField(params, "sessionId")
 }
 
 // refuseControlRequest answers a control request of a session that the agent
@@ -185,6 +179,9 @@ func (b *Base) refuseControlRequest(line *providerkit.ParsedLine, sessionID stri
 // context clear leaves the question as valid as it was (see
 // Hooks.AnswerlessControlsOutliveTurns).
 func (b *Base) withdrawTurnControls() {
+	b.Mu.Lock()
+	b.urlElicitations = nil
+	b.Mu.Unlock()
 	if b.hooks.AnswerlessControlsOutliveTurns {
 		b.AnswerOutstandingControlRequests(b.sink)
 		return

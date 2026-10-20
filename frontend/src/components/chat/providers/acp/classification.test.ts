@@ -1,6 +1,47 @@
+import type { NotificationEntry } from '../../model/notification'
 import { describe, expect, it } from 'vitest'
+import { ACP_SESSION_STATE_UPDATE } from '~/generated/contracts/acp-protocol'
 import { input } from '../testUtils'
 import { classifyACPMessage } from './classification'
+
+describe('native ACP notifications', () => {
+  const nativeNotifications = {
+    isMember: (message: Record<string, unknown>) => message.notice === true,
+    entries: (message: Record<string, unknown>): NotificationEntry[] => message.notice === true ? [{ kind: 'text', text: String(message.text) }] : [],
+  }
+  const config = { nativeNotifications, agentTurnEnd: () => undefined }
+  const classify = classifyACPMessage(config)
+
+  it('reads a native notification thread through its provider reader', () => {
+    const first = { notice: true, text: 'first' }
+    const second = { notice: true, text: 'second' }
+    expect(classify(input(first, { old_seqs: [], messages: [first, second] }))).toEqual({
+      kind: 'notification',
+      entries: [{ kind: 'text', text: 'first' }, { kind: 'text', text: 'second' }],
+    })
+  })
+
+  it('reads a native notice before the generic session-state rule', () => {
+    expect(classify(input({ notice: true, text: 'done', sessionUpdate: 'session_info_update' }))).toEqual({
+      kind: 'notification',
+      entries: [{ kind: 'text', text: 'done' }],
+    })
+  })
+
+  it('keeps worker envelopes in a mixed native thread', () => {
+    const first = { notice: true, text: 'first' }
+    expect(classify(input(first, { old_seqs: [], messages: [first, { type: 'api_retry_resolved' }] }))).toEqual({
+      kind: 'notification',
+      entries: [{ kind: 'text', text: 'first' }, { kind: 'retry', scope: 'api', succeeded: true }],
+    })
+  })
+
+  it('leaves nonmembers and malformed entries outside the native reader', () => {
+    const unknown = { future: true }
+    expect(classify(input(unknown, { old_seqs: [], messages: [null, 'bad', [], unknown] }))).toEqual({ kind: 'unknown' })
+    expect(classify(input(undefined, { old_seqs: [], messages: [] }))).toEqual({ kind: 'hidden' })
+  })
+})
 
 describe('stored system frames', () => {
   it.each([
@@ -23,11 +64,11 @@ describe('mode updates (ACP)', () => {
   })
 })
 
-// Each of these reaches a surface OUTSIDE the transcript, and the worker consumes it
-// rather than persisting it. They are listed here because a row an earlier build
-// wrote is still in the database, and a build that stopped persisting one cannot
-// reach back and remove it -- so without this rule it draws raw JSON forever.
+// The conversation dispatcher and the browser use the same state-update membership.
 describe('session updates the worker consumes (ACP)', () => {
+  it.each([...ACP_SESSION_STATE_UPDATE])('hides the contract state update %s', (sessionUpdate) => {
+    expect(classifyACPMessage()(input({ sessionUpdate }))).toEqual({ kind: 'hidden' })
+  })
   it.each([
     ['usage_update', { used: 100, size: 200000 }],
     ['available_commands_update', { availableCommands: [] }],
@@ -54,7 +95,6 @@ describe('rows LeapMux itself wrote (ACP)', () => {
       { type: 'context_cleared' },
       { type: 'agent_error', error: 'failed' },
       { type: 'plan_updated', plan_title: 'Plan' },
-      { type: 'compacting' },
     ]
     for (const notification of notifications)
       expect(classify(input(notification)).kind).toBe('notification')
@@ -124,16 +164,19 @@ describe('the plan_execution notification (ACP)', () => {
 
   // The thread test is what keeps the OTHER members of a thread. A per-message test
   // reads the first member alone, so it answers for a one-member thread by accident
-  // and drops everything after it. `compacting` is the sibling here because the ACP
-  // thread test does not accept that type either.
+  // and drops everything after it. An old `compacting` row is the sibling here:
+  // the thread test does not accept that type either, so the first member a
+  // stored row supplies reaches the no-display card.
   it('keeps every member of a thread whose only accepted type is plan_execution', () => {
     const classify = classifyACPMessage()
-    const compacting = { type: 'compacting' }
-    const wrapper = { old_seqs: [], messages: [compacting, planExecution] }
-    expect(classify(input(compacting, wrapper)))
+    const stale = { type: 'compacting' }
+    const wrapper = { old_seqs: [], messages: [stale, planExecution] }
+    // The stale member contributes no entry: no worker writes the type, so a
+    // stored row of an older build draws nothing (decision 22).
+    expect(classify(input(stale, wrapper)))
       .toStrictEqual({
         kind: 'notification',
-        entries: [{ kind: 'compaction', phase: 'start' }, { kind: 'text', text: 'Executing plan' }],
+        entries: [{ kind: 'text', text: 'Executing plan' }],
       })
   })
 

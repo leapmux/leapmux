@@ -15,7 +15,7 @@ const event = (name: string, payload: Record<string, unknown> = {}) => ({ versio
 describe('classifyClineMessage', () => {
   it('reads LeapMux\'s own user row', () => {
     expect(classify({ content: 'hello' })).toEqual({ kind: 'user_content' })
-    expect(classify({ content: 'x', hidden: true })).toEqual({ kind: 'hidden' })
+    expect(classify({ content: 'x', hidden: true })).toEqual({ kind: 'user_content' })
     expect(classify({ content: 'x', planExecution: true })).toEqual({ kind: 'plan_execution' })
   })
 

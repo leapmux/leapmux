@@ -24,16 +24,12 @@ func TestACPAgent_Interrupt_SendsSessionCancelNotification(t *testing.T) {
 
 	require.NoError(t, agent.Interrupt(agentapi.StopContext{}))
 
-	// session/cancel is a notification — drain briefly.
-	deadline := time.Now().Add(time.Second)
+	// session/cancel is a notification, which the writer goroutine flushes.
 	var got []agenttest.RecordedRequest
-	for time.Now().Before(deadline) {
+	require.Eventually(t, func() bool {
 		got = requests()
-		if len(got) > 0 {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		return len(got) > 0
+	}, time.Second, 5*time.Millisecond, "the cancel never went out")
 	require.Len(t, got, 1)
 	assert.Equal(t, "session/cancel", got[0].Method)
 	assert.Equal(t, "session-1", got[0].Params["sessionId"])
@@ -110,7 +106,8 @@ func TestACPAgent_Interrupt_NoSessionIsNoop(t *testing.T) {
 	agent.Mu.Unlock()
 
 	require.NoError(t, agent.Interrupt(agentapi.StopContext{}))
-	time.Sleep(50 * time.Millisecond)
+	// The empty-session path returns before it starts any write, so the
+	// recorded requests are complete the moment the call returns.
 	assert.Empty(t, requests(),
 		"Interrupt before session/new completes must be a no-op")
 }

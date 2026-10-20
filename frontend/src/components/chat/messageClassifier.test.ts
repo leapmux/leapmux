@@ -289,10 +289,10 @@ describe('classifyMessage', () => {
       expect(result.kind).toBe('user_content')
     })
 
-    it('keeps hidden and plan envelopes distinct from user text', () => {
+    it('classifies a stored envelope with a hidden flag as user content', () => {
       const hidden = classifyMessage(input({ content: 'hidden', hidden: true }, null, AgentProvider.CODEBUDDY, MessageSource.USER))
       const plan = classifyMessage(input({ content: 'run plan', planExecution: true }, null, AgentProvider.CODEBUDDY, MessageSource.USER))
-      expect(hidden.kind).toBe('hidden')
+      expect(hidden.kind).toBe('user_content')
       expect(plan.kind).toBe('plan_execution')
     })
   })
@@ -305,14 +305,16 @@ describe('classifyMessage', () => {
       expect(result.kind).toBe('hidden')
     })
 
-    it('classifies system status (non-compacting) as hidden', () => {
+    it('classifies a non-final system status as unknown', () => {
+      // The worker stores no status frame except the failed end (B7), so the
+      // classifier hides none: an old row draws the no-display card.
       const result = classifyMessage(input({ type: 'system', subtype: 'status', status: 'running' }))
-      expect(result.kind).toBe('hidden')
+      expect(result.kind).toBe('unknown')
     })
 
-    it('draws no row for a stored compacting status', () => {
+    it('classifies a stored compacting status as unknown', () => {
       const result = classifyMessage(input({ type: 'system', subtype: 'status', status: 'compacting' }))
-      expect(result.kind).toBe('hidden')
+      expect(result.kind).toBe('unknown')
     })
   })
 
@@ -342,8 +344,10 @@ describe('classifyMessage', () => {
     })
 
     it('does not produce a stored compaction start notification', () => {
+      // No worker writes a stored compaction start (decision 21); a status
+      // frame an older build stored draws the no-display card.
       const result = classifyMessage(input({ type: 'system', subtype: 'status', status: 'compacting' }))
-      expect(result.kind).toBe('hidden')
+      expect(result.kind).toBe('unknown')
     })
 
     it('classifies interrupted as notification', () => {
@@ -578,10 +582,12 @@ describe('classifyMessage', () => {
     // turn it already reported, and a blanket membership test placed ahead of
     // plugin?.transcript.classify would render that hidden row again.
     it('leaves an agent-emitted type to the provider plugin', () => {
+      // B47 removed Codex's orphan reply rule; an agent_error reaches the
+      // plugin, which reads it as a notification.
       const result = classifyMessage(
         input({ type: 'agent_error', error: 'Codex turn failed' }, null, AgentProvider.CODEX),
       )
-      expect(result.kind).toBe('hidden')
+      expect(result.kind).toBe('notification')
     })
 
     // Every notification the worker PERSISTS arrives wrapped: `wrapNotifContent`

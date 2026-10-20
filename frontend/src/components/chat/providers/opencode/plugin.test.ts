@@ -201,9 +201,10 @@ describe('opencode classify', () => {
     expect(plugin?.transcript.classify(input(parent))).toEqual({ kind: 'user_content' })
   })
 
-  it('hides hidden user content', () => {
+  it('classifies a stored envelope with a hidden flag as user content', () => {
+    // No worker writes the field (F2): the row draws as user content.
     const parent = { content: 'internal', hidden: true }
-    expect(plugin?.transcript.classify(input(parent))).toEqual({ kind: 'hidden' })
+    expect(plugin?.transcript.classify(input(parent))).toEqual({ kind: 'user_content' })
   })
 
   it('hides JSON-RPC response envelope', () => {
@@ -240,50 +241,33 @@ describe('opencode classify', () => {
  * pure JSON-RPC, and no `sessionUpdate` vocabulary of theirs holds the word. Each
  * object here is hand-built, in Claude Code's stream-json shape.
  *
- * The guard they cover stays because the worker admits the frame by construction --
- * `handleACPOutput`'s default persists one stdout line byte for byte and never reads a
- * top-level `type`. `isHiddenACPNotification` in `../acp/classification` holds the
- * whole standing property, including the print-mode frames Cursor's bundle builds.
- * These cases pin the guard's answer so a later edit cannot quietly drop it.
+ * The worker admits the frame by construction -- `handleACPOutput`'s default persists
+ * one stdout line byte for byte and never reads a top-level `type`. An unrecognized
+ * row draws the no-display card, which is what decision 1 wants for an unexpected
+ * frame. These cases pin that answer through the registered plugin, whose native
+ * notification reader must not claim the shape either.
  */
-describe('the system-frame guard (opencode)', () => {
+describe('stored system frames (opencode)', () => {
   const plugin = providerFor(AgentProvider.OPENCODE)!
 
-  it('hides the init lifecycle frame', () => {
-    const parent = { type: 'system', subtype: 'init' }
-    expect(plugin?.transcript.classify(input(parent))).toStrictEqual({ kind: 'hidden' })
+  it('leaves a stored system frame unknown', () => {
+    for (const parent of [
+      { type: 'system', subtype: 'init' },
+      { type: 'system', subtype: 'status', status: null },
+      { type: 'system', subtype: 'status', status: 'compacting' },
+      { type: 'system', subtype: 'compact_boundary' },
+    ]) {
+      expect(plugin?.transcript.classify(input(parent))).toStrictEqual({ kind: 'unknown' })
+      expect(plugin?.transcript.classify(input(parent, { old_seqs: [], messages: [parent] }))).toStrictEqual({ kind: 'unknown' })
+    }
   })
 
-  it('keeps a system frame with no entry for the last-resort card', () => {
-    const parent = { type: 'system', subtype: 'compact_boundary' }
-    expect(plugin?.transcript.classify(input(parent))).toStrictEqual({ kind: 'notification', entries: [] })
-  })
-
-  it('hides a final (non-compacting) status standalone', () => {
-    // The trailing {subtype:status, status:null} that ends a compaction carries
-    // nothing to draw, so it must not surface as a notification that holds no block.
-    const parent = { type: 'system', subtype: 'status', status: null }
-    expect(plugin?.transcript.classify(input(parent))).toStrictEqual({ kind: 'hidden' })
-  })
-
-  it('keeps an in-progress compacting status for the last-resort card', () => {
-    const parent = { type: 'system', subtype: 'status', status: 'compacting' }
-    expect(plugin?.transcript.classify(input(parent))).toStrictEqual({ kind: 'notification', entries: [] })
-  })
-
-  // The standalone answer and the threaded answer must agree. A frame hidden on its
-  // own stays hidden once the worker threads it.
-  it('hides a final status once a notification thread holds it', () => {
-    const statusMsg = { type: 'system', subtype: 'status', status: null }
-    const wrapper = { old_seqs: [9], messages: [statusMsg] }
-    expect(plugin?.transcript.classify(input(statusMsg, wrapper))).toStrictEqual({ kind: 'hidden' })
-  })
-
-  it('drops a hidden system frame from a thread but keeps the visible notification', () => {
+  // A non-notification message in a thread contributes no entry, but a base
+  // notification type in the same thread keeps it alive.
+  it('keeps the visible notification of a thread that holds a system message', () => {
     const interrupted = { type: 'interrupted' }
     const initMsg = { type: 'system', subtype: 'init' }
     const wrapper = { old_seqs: [1, 2], messages: [initMsg, interrupted] }
-    // init is hidden; interrupted, a base notification type, keeps the thread alive.
     expect(plugin?.transcript.classify(input(initMsg, wrapper)))
       .toStrictEqual({ kind: 'notification', entries: [{ kind: 'text', text: 'Interrupted' }] })
   })

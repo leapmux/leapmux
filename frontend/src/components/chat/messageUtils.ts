@@ -47,14 +47,6 @@ const BASE_NOTIFICATION_TYPES: ReadonlySet<string> = new Set<string>([
   // row. Without the entry, such a thread reaches `unknown` and draws the raw-frame
   // card.
   NOTIFICATION_TYPE.PlanExecution,
-  // `compacting` is LeapMux's own envelope for a compaction that STARTED, and
-  // `leapmuxNotificationEntry` draws it for every provider. The worker threads it:
-  // `reduceNotificationThread` holds a case for the type, and two adjacent
-  // notifications of one source join one thread whatever their types are. A
-  // `compacting` therefore sits beside a `rate_limit` or a provider frame that this set
-  // refuses, and this entry is what keeps those members. Without it the wrapper test
-  // answers false, and the per-message set then answers for `compacting` alone.
-  NOTIFICATION_TYPE.Compacting,
   // `agent_error` is provider-NEUTRAL: `worker/service/agent.go` writes it for every
   // provider, and Pi and the Agent Client Protocol daemons write their own. This entry
   // is what keeps the members of a thread whose one accepted type is `agent_error`, for

@@ -46,7 +46,7 @@ func newKiloSwitchAgent(t *testing.T, server *acptest.ModelSwitchServer) (*Agent
 	ag, requests := acptest.NewAgentForRPCWithRequestResponder(t,
 		func() *Agent {
 			a := &Agent{}
-			*a.HooksForTest() = opencode.FamilyHooks()
+			*a.HooksForTest() = opencode.FamilyHooks(&a.FamilyBase)
 			return a
 		},
 		func(a *Agent) *acp.Base { return &a.Base },

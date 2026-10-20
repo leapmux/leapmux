@@ -10,6 +10,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // qwenCompressCommand is the prompt that compacts the conversation. Qwen runs
@@ -22,14 +23,23 @@ type Agent struct {
 
 	// stateMu guards the fields below. The reader goroutine writes most fields.
 	// Worker goroutines read them. Release stateMu before calling the base or sink.
-	stateMu  sync.Mutex
-	steer    steerQueue
-	children childState
-	tools    toolInputs
+	stateMu           sync.Mutex
+	steer             steerQueue
+	children          childState
+	tools             toolInputs
+	discreteMessageID uint64
+	retryCount        int64
+	requestHasText    bool
+	retryResolution   providerkit.RetryResolution
+	compressPending   *qwenCompactionRequest
 	// clock paces the readers of background transcripts. Start sets the real
 	// clock, and a test sets a mock.
 	clock quartz.Clock
 }
+
+// qwenCompactionRequest identifies one admitted manual compaction.
+// The nonzero size gives concurrent requests distinct pointer identities.
+type qwenCompactionRequest struct{ _ byte }
 
 // This assertion makes a missing Agent method a compile error.
 var _ agent.Agent = (*Agent)(nil)
@@ -38,6 +48,7 @@ var _ agent.Agent = (*Agent)(nil)
 // provider that stops satisfying InputSteerer, so this assertion makes that
 // regression a compile error.
 var _ agent.InputSteerer = (*Agent)(nil)
+var _ agent.SteerPreparer = (*Agent)(nil)
 
 // Agent compacts through Qwen's own `/compress` turn.
 var _ agent.ContextCompactor = (*Agent)(nil)
@@ -133,5 +144,26 @@ func pluralMessages(n int) string {
 // `/compress` makes the summary turn, and states its result on the turn's
 // messages.
 func (a *Agent) CompactContext() error {
-	return a.SendInput(qwenCompressCommand, nil)
+	request := &qwenCompactionRequest{}
+	err := a.SendPreparedPrompt(qwenCompressCommand, nil, func(string) error {
+		a.stateMu.Lock()
+		a.compressPending = request
+		a.stateMu.Unlock()
+		return nil
+	})
+	if err == nil {
+		return nil
+	}
+	return a.WithSessionID(func(string) error {
+		a.stateMu.Lock()
+		current := a.compressPending == request
+		if current {
+			a.compressPending = nil
+		}
+		a.stateMu.Unlock()
+		if current && !a.PromptActive() {
+			providerkit.EndCompaction(a.Sink())
+		}
+		return err
+	})
 }

@@ -111,21 +111,25 @@ describe('the notification thread: compaction and context_cleared rendering', ()
 
   // Raw notification fixtures.
 
-  it('codex item/started+contextCompaction (raw JSON-RPC) renders the in-progress spinner', () => {
+  it('codex item/started+contextCompaction draws no spinner', () => {
+    // B26 removed the item/started compaction start reader: the worker stores
+    // no start (decision 21), so the item draws nothing.
     const messages = [{
       method: 'item/started',
       params: { item: { type: 'contextCompaction', id: 'compact-1' }, threadId: 't1', turnId: 'turn1' },
     }]
-    expect(renderText(messages, AgentProvider.CODEX)).toBe('Compacting context...')
+    expect(renderText(messages, AgentProvider.CODEX)).toBe('')
   })
 
-  it('codex completed contextCompaction item renders the completed boundary', () => {
+  it('a bare top-level contextCompaction item draws nothing', () => {
+    // B26 removed the top-level item shape: the worker stores the raw
+    // item/completed notification only.
     const messages = [{
       threadId: 't1',
       turnId: 'turn1',
       item: { type: 'contextCompaction', id: 'compact-1' },
     }]
-    expect(renderText(messages, AgentProvider.CODEX)).toBe('Context compacted')
+    expect(renderText(messages, AgentProvider.CODEX)).toBe('')
   })
 
   it('codex item/started for non-compaction items does NOT match the compaction spinner', () => {
@@ -138,12 +142,11 @@ describe('the notification thread: compaction and context_cleared rendering', ()
     expect(renderText(messages, AgentProvider.CODEX)).not.toContain('Compacting context')
   })
 
-  it('draws the spinner for the bare {type:"compacting"} envelope, whatever the provider', () => {
-    // The shared extractor reads the worker's compacting envelope.
-    // PLAIN_ROW_TYPES classifies it as a notification before a provider reader runs.
-    // A provider without a notification hook still requires this shared entry.
+  it('draws nothing for the bare {type:"compacting"} envelope of an older build', () => {
+    // F1 removed the type: no worker writes it, and a stored row contributes
+    // no entry (decision 22).
     const messages = [{ type: 'compacting' }]
-    expect(renderText(messages, AgentProvider.CODEX)).toContain('Compacting context')
+    expect(renderText(messages, AgentProvider.CODEX)).toBe('')
   })
 
   it('legacy synthesized {type:"system",subtype:"compact_boundary",threadId} from Codex still matches Claude\'s shape', () => {
@@ -245,14 +248,13 @@ describe('compaction token formatting: pre → post', () => {
 
   // -- compact_boundary through a provider pre-pass ------------------------
 
-  it('renders a single compact_boundary the same with the Claude or Codex provider pre-pass', () => {
-    // This fixture supplies the synthesized compact_boundary envelope.
-    // Claude and Codex readers both support that envelope.
-    // Verify that they produce the same label.
+  it('renders a single compact_boundary through the Claude reader alone', () => {
+    // The synthesized compact_boundary envelope is Claude's own shape; B26
+    // removed Codex's copy, so Codex draws nothing for it.
     const msg = compactMsg({ trigger: 'auto', pre_tokens: 100000, post_tokens: 8000 })
     const expected = 'Context compacted (auto, 100.0k → 8.0k)'
     expect(elementText(renderThreadElement([msg], AgentProvider.CLAUDE_CODE))).toBe(expected)
-    expect(elementText(renderThreadElement([msg], AgentProvider.CODEX))).toBe(expected)
+    expect(elementText(renderThreadElement([msg], AgentProvider.CODEX))).toBe('')
   })
 
   it('microcompaction ignores a metadata wrapper under any key (Claude emits none)', () => {

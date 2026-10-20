@@ -198,9 +198,29 @@ func (b *JSONRPCProcess) WithdrawControlRequest(sink agent.ControlServices, requ
 // removed the record in SendRawInput, so a withdrawal keyed on the record alone
 // never cancels a card the reader just decided.
 func (b *JSONRPCProcess) WithdrawOutstandingControlRequest(sink agent.ControlServices, requestID string) bool {
+	return b.withdrawControlPublication(sink, requestID, nil)
+}
+
+// WithdrawPublishedControlRequest retires only the exact publication that the caller captured.
+// A later request can reuse the same wire ID, so its publication must remain open.
+func (b *JSONRPCProcess) WithdrawPublishedControlRequest(sink agent.ControlServices, publication PublishedControlRequest) bool {
+	if publication.record == nil {
+		return false
+	}
+	return b.withdrawControlPublication(sink, publication.RequestID, publication.record)
+}
+
+// ControlPublicationIsCurrent reports whether this publication still owns its request ID.
+func (b *JSONRPCProcess) ControlPublicationIsCurrent(publication PublishedControlRequest) bool {
+	b.outstandingMu.Lock()
+	defer b.outstandingMu.Unlock()
+	return publication.record != nil && b.outstandingControls[publication.RequestID] == publication.record
+}
+
+func (b *JSONRPCProcess) withdrawControlPublication(sink agent.ControlServices, requestID string, expected *outstandingControlRequest) bool {
 	b.outstandingMu.Lock()
 	record, open := b.outstandingControls[requestID]
-	if !open {
+	if !open || expected != nil && record != expected {
 		b.outstandingMu.Unlock()
 		return false
 	}
@@ -354,4 +374,9 @@ func (b *JSONRPCProcess) takeOutstandingControl(raw []byte) (restore func(), ope
 // elicitation that the client withdraws without a reader decision.
 func MCPElicitationCancelAnswer() any {
 	return map[string]any{"action": contracts.MCPElicitationActionCancel}
+}
+
+// MCPElicitationAcceptAnswer acknowledges a URL flow that the native server completed.
+func MCPElicitationAcceptAnswer() any {
+	return map[string]any{"action": contracts.MCPElicitationActionAccept}
 }

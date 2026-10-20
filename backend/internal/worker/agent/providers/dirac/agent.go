@@ -10,6 +10,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // diracSteerMethod is the extension notification that carries steering text
@@ -27,6 +28,10 @@ type Agent struct {
 	childDone  map[string]struct{}
 	childStop  chan struct{}
 	archiveWG  sync.WaitGroup
+	// claimedMu guards claimedCards, the tool calls whose cards the notice
+	// observer consumed (see observeDiracNotice).
+	claimedMu    sync.Mutex
+	claimedCards map[string]struct{}
 }
 
 // This assertion makes a missing Agent method a compile error.
@@ -36,6 +41,7 @@ var _ agent.Agent = (*Agent)(nil)
 // false, with no build error, for a provider that stops satisfying
 // InputSteerer, so this assertion makes that regression a compile error.
 var _ agent.InputSteerer = (*Agent)(nil)
+var _ agent.SteerPreparer = (*Agent)(nil)
 
 // SteerInput sends text into the running turn as a `dev.dirac/whisper`
 // notification. Dirac queues it and answers `dev.dirac/steering_status` with
@@ -46,10 +52,15 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 	if content == "" {
 		return nil
 	}
+	// The whisper carries text alone, so the queue keeps an attachment-bearing
+	// input for the next turn.
+	if err := providerkit.TextOnlySteer("Dirac", attachments); err != nil {
+		return err
+	}
 	if !a.PromptActive() {
 		return agent.ErrNoActiveTurn
 	}
-	return a.WithSessionID(func(sessionID string) error {
+	err := a.WithSessionID(func(sessionID string) error {
 		params, err := json.Marshal(map[string]any{
 			"sessionId": sessionID,
 			"text":      content,
@@ -57,9 +68,17 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 		if err != nil {
 			return fmt.Errorf("marshal the Dirac whisper: %w", err)
 		}
-		if err := a.SendNotification(diracSteerMethod, params); err != nil {
-			return agent.ErrNoActiveTurn
-		}
-		return nil
+		return a.SendNotification(diracSteerMethod, params)
 	})
+	// A write failure is a delivery failure, not a missing turn: the turn ran
+	// while the whisper left.
+	if err != nil {
+		return providerkit.ClassifyJSONRPCDeliveryError(diracSteerMethod, err)
+	}
+	// The turn can end while the whisper writes; a whisper into an ended turn
+	// reaches nothing.
+	if !a.PromptActive() {
+		return agent.ErrNoActiveTurn
+	}
+	return nil
 }

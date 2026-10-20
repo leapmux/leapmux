@@ -56,7 +56,7 @@ describe('classifyMiMoMessage', () => {
   it('reads a LeapMux user row', () => {
     expect(classify({ content: 'hello' })).toEqual({ kind: 'user_content' })
     expect(classify({ content: 'plan', planExecution: true })).toEqual({ kind: 'plan_execution' })
-    expect(classify({ content: 'x', hidden: true })).toEqual({ kind: 'hidden' })
+    expect(classify({ content: 'x', hidden: true })).toEqual({ kind: 'user_content' })
   })
 
   it('reads a consolidated thread of notifications', () => {
@@ -92,9 +92,10 @@ describe('classifyMiMoMessage', () => {
     expect(classify(mimoFrame(MIMO_EVENT.MessagePartUpdated, { sessionID: TEST_SESSION }))).toEqual({ kind: 'unknown' })
   })
 
-  // `hidden` wins over the plan flag: a row the worker hid stays hidden.
-  it('hides a hidden user row that also states a plan execution', () => {
-    expect(classify({ content: 'plan', planExecution: true, hidden: true })).toEqual({ kind: 'hidden' })
+  // No worker writes the hidden flag: the plan flag decides, as decision 22
+  // accepts for a stored row of an older build.
+  it('classifies a hidden-flag plan row by its plan flag', () => {
+    expect(classify({ content: 'plan', planExecution: true, hidden: true })).toEqual({ kind: 'plan_execution' })
   })
 
   it('reads a user row whose content is not text as unknown', () => {

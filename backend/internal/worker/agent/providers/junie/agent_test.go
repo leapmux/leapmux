@@ -1,6 +1,7 @@
 package junie
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -123,4 +124,62 @@ func TestJunieUpdateSettingsSendsModeViaConfigOption(t *testing.T) {
 		"the mode write rides session/set_config_option, never session/set_mode")
 	assert.Equal(t, acp.ConfigOptionIDMode, recorded[0].Params["configId"])
 	assert.Equal(t, contracts.JunieModePlan, recorded[0].Params["value"])
+}
+
+// Junie steers through its own `_session/steering` method: the reply's
+// outcome states what the session did with the input. Frames from
+// .tmp/probe/junie/run2 and run6.
+func TestJunieSteerSendsTheNativeMethod(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		outcome    string
+		replyError *agenttest.RPCReply
+		wantErr    error
+	}{
+		{"injected delivers", "injected", nil, nil},
+		{"startedNewTurn delivers", "startedNewTurn", nil, nil},
+		{"an invalid-params refusal answers no active turn", "", &agenttest.RPCReply{Error: json.RawMessage(`{"code":-32602,"message":"no active session turn"}`)}, agent.ErrNoActiveTurn},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			outcome, replyError := tc.outcome, tc.replyError
+			a, requests := acptest.NewAgentForRPCWithResponder(t,
+				func() *Agent { return &Agent{} },
+				func(a *Agent) *acp.Base { return &a.Base },
+				func(method string) agenttest.RPCReply {
+					if method == junieSteerMethod {
+						if replyError != nil {
+							return *replyError
+						}
+						return agenttest.RPCReply{Result: json.RawMessage(`{"outcome":"` + outcome + `"}`)}
+					}
+					return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+				})
+			a.SetSinkForTest(agent.NewProviderServices(&agenttest.Sink{}))
+			a.SetSessionIDForTest("junie-session")
+			a.SetPromptActiveForTest(true)
+
+			err := a.SteerInput("Steer text while active.", nil)
+			assert.Equal(t, tc.wantErr, err)
+			sent := false
+			for _, request := range requests() {
+				if request.Method == junieSteerMethod {
+					sent = true
+					assert.Equal(t, "junie-session", request.Params["sessionId"])
+				}
+			}
+			assert.True(t, sent, "the steer rode the native method")
+			assert.False(t, hasMethod(requests(), acp.MethodSessionPrompt), "the steer never rode session/prompt")
+		})
+	}
+}
+
+func hasMethod(requests []agenttest.RecordedRequest, method string) bool {
+	for _, request := range requests {
+		if request.Method == method {
+			return true
+		}
+	}
+	return false
 }

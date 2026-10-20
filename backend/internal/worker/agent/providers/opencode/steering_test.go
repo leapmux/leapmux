@@ -34,7 +34,7 @@ func TestOpenCodeSteerUsesConcurrentACPPrompt(t *testing.T) {
 func TestOpenCodeSupportsSteeringWithoutAnAdvertisedMethod(t *testing.T) {
 	t.Parallel()
 	ag := &Agent{}
-	*ag.HooksForTest() = FamilyHooks()
+	*ag.HooksForTest() = FamilyHooks(&ag.FamilyBase)
 	assert.True(t, ag.SupportsSteering())
 }
 
@@ -45,7 +45,7 @@ func TestOpenCodePublishesItsTurnAsSteerable(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}
 	ag := &Agent{}
-	*ag.HooksForTest() = FamilyHooks()
+	*ag.HooksForTest() = FamilyHooks(&ag.FamilyBase)
 	ag.SetSinkForTest(agent.NewProviderServices(sink))
 	ag.WireTurnActiveForTest()
 	ag.SetPromptActiveForTest(true)

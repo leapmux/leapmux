@@ -2,6 +2,7 @@ import type { ElicitationRequest, PermissionOption } from '../../model/controlPr
 import type { ControlExtractionInput, ExtractedControlRequest } from '../registry'
 import { ACP_PERMISSION_KIND } from '~/generated/contracts/acp-protocol'
 import { GROK_METHOD, GROK_TRUST_OUTCOME } from '~/generated/contracts/grok-protocol'
+import { MCP_ELICITATION_MODE } from '~/generated/contracts/mcp-elicitation'
 import { pickObject, pickString, stringArray } from '~/lib/jsonPick'
 import { KIND_REJECT_ONCE } from '../../model/controlPrompt'
 import { acpElicitation } from '../acp/elicitation'
@@ -70,7 +71,7 @@ export function grokElicitation(payload: Record<string, unknown>): ElicitationRe
     return acpElicitation(payload)
   const params = pickObject(payload, 'params') ?? {}
   return {
-    mode: pickString(params, 'mode', 'form'),
+    mode: pickString(params, 'mode', MCP_ELICITATION_MODE.Form),
     message: pickString(params, 'message'),
     server: pickString(params, 'serverName'),
     schema: params.requestedSchema,

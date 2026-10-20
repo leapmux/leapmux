@@ -1,20 +1,17 @@
 import type { ElicitationRequest } from '~/components/chat/model/controlPrompt'
-import { MCP_ELICITATION_METHOD } from '~/generated/contracts/mcp-elicitation'
+import { MCP_ELICITATION_METHOD, MCP_ELICITATION_MODE } from '~/generated/contracts/mcp-elicitation'
 import { pickObject, pickString } from '~/lib/jsonPick'
 
 /**
- * Every Agent Client Protocol provider's elicitation, in the MCP form fields.
- *
- * Reasonix is one of them: it sends the standard `elicitation/create` rather than
- * a vendor method, verified against its source tree. A second method used to be
- * tested here and matched nothing.
+ * Read the standard Agent Client Protocol elicitation request in MCP form fields.
+ * A provider with another native method can use this reader for its standard request path.
  */
 export function acpElicitation(payload: Record<string, unknown>): ElicitationRequest | undefined {
   if (payload.method !== MCP_ELICITATION_METHOD.ACP)
     return undefined
   const params: Record<string, unknown> = pickObject(payload, 'params', {})
   return {
-    mode: pickString(params, 'mode', 'form'),
+    mode: pickString(params, 'mode', MCP_ELICITATION_MODE.Form),
     message: pickString(params, 'message', ''),
     server: pickString(params, 'server', ''),
     schema: params.requestedSchema,

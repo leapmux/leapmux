@@ -531,7 +531,8 @@ func deliverProviderInput(p Agent, expected *string, content string, attachments
 // Every route that reaches a provider process calls this, because the provider
 // alone knows which channel its command parser reads. A route that skipped it
 // would leave the CLI holding a goal the card never shows, for the life of the
-// session: no text-route provider reports a command-driven goal change back.
+// session. Kilo needs no observer: it reports its goal through its daemon's
+// native session metadata, so the card follows that report instead.
 func observeGoalCommand(p Agent, delivery GoalCommandDelivery, content string) {
 	if commander, ok := p.(GoalTextCommander); ok {
 		commander.ObserveGoalCommand(delivery, content)

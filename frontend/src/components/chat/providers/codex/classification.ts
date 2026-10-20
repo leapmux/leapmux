@@ -176,8 +176,6 @@ export function classifyCodexMessage(input: ClassificationInput): MessageCategor
 
   // User message (persisted by LeapMux service layer)
   if (!parent.item && typeof parent.content === 'string') {
-    if (parent.hidden === true)
-      return { kind: 'hidden' }
     if (parent.planExecution === true)
       return { kind: 'plan_execution' }
     return { kind: 'user_content' }

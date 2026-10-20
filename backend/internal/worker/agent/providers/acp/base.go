@@ -69,11 +69,7 @@ const (
 	acpMethodTerminalRelease     = "terminal/release"
 	acpMethodFSReadTextFile      = "fs/read_text_file"
 	acpMethodFSWriteTextFile     = "fs/write_text_file"
-)
-
-// ACP session update type constants.
-const (
-	acpUpdatePlan = "plan"
+	acpMethodElicitationComplete = "elicitation/complete"
 )
 
 // ModeChannel identifies how an ACP provider maps configOptions `mode` to its secondary setting.
@@ -118,6 +114,7 @@ type Base struct {
 	publishTurnActive  func(active bool, seq uint64)
 	steerMethod        string
 	steerRunID         string
+	urlElicitations    map[string]acpURLElicitation
 	// closesSessions records that the initialize response advertised
 	// session/close, which a context clear sends for the session that it
 	// replaced. Guarded by b.Mu.
@@ -151,12 +148,11 @@ type Base struct {
 	// Child creation consumes an entry, and row closure removes it.
 	// A provider that never links a child therefore cannot grow the map without a limit.
 	subagentPrompts providerkit.PendingPrompts
-	// secondaryChannelOnce and secondaryChannelCache retain the resolved secondary channel.
-	// applyHooks sets hooks.ModeChannel at construction.
-	// The channel's field pointers and closures capture the stable Base pointer, so the resolution stays constant for the agent's lifetime.
-	// secondaryChannel() creates the channel on its first use after applyHooks sets the mode channel.
-	// It does not recreate the closure structure for each of its approximately seven operation callers.
-	// Base always uses a pointer, so callers never copy the channel.
+	// secondaryChannelOnce and secondaryChannelCache hold the resolved
+	// secondary channel, which secondaryChannel builds once after applyHooks
+	// selects the mode channel. The closures keep the same Base for its
+	// lifetime, so every settings operation writes through one channel. A
+	// caller never copies Base.
 	secondaryChannelOnce  sync.Once
 	secondaryChannelCache acpSecondaryChannel
 	reapplySettings       func()                // called by ClearContext after session/new to re-apply model, mode, etc.
@@ -166,7 +162,9 @@ type Base struct {
 	model                 string
 	permissionMode        string
 	currentPrimaryAgent   string
-	availableModels       []*agentapi.ModelInfo
+	// secondaryReports counts native reports, including repeats of the current value. Mu protects it.
+	secondaryReports uint64
+	availableModels  []*agentapi.ModelInfo
 	// modelsFieldInfos holds the SessionModelState models from the last full handshake or ClearContext response.
 	// A runtime config_option_update contains only the configOptions model selector.
 	// applyConfigOptionModelsLocked combines both sources, so providers with a split catalog retain models reported only through SessionModelState.
@@ -236,14 +234,15 @@ func (b *Base) persistFinishedTurn(frame json.RawMessage) {
 	textCompletion, incomplete := b.turnOutputCompletions()
 	turn, hasPromptBoundary := b.drainPromptTurn()
 	if !hasPromptBoundary {
-		main.persistFinishedText(agentapi.AssembledMessageKindReasoning, turn.thoughtText, textCompletion)
-		main.persistFinishedText(agentapi.AssembledMessageKindText, turn.assistantText, textCompletion)
+		main.persistFinishedText(agentapi.AssembledMessageKindReasoning, turn.thoughtMessageID, turn.thoughtText, textCompletion)
+		main.persistFinishedText(agentapi.AssembledMessageKindText, turn.assistantMessageID, turn.assistantText, textCompletion)
 	}
 	main.persistIncompleteTools(turn.incompleteTools, incomplete)
 	b.clearCompletedTerminals()
 	numToolUses := turn.completedToolUses + len(turn.incompleteTools)
 
 	b.persistPromptResponse(frame, numToolUses)
+	b.enqueueTurnOutputCleanup(false)
 }
 
 // turnOutputCompletions classifies buffered text and unfinished tools at a normal turn-end frame.
@@ -268,23 +267,42 @@ func acpTextProgressScope(kind agentapi.AssembledMessageKind) string {
 // finishIncompleteACPPrompt ends a prompt with an empty response or a failed request.
 // A prompt with a queued agent turn closes only the tool calls that the prompt left open.
 // The agent turn retains its progress. See BeginAgentTurn.
-func (b *Base) finishIncompleteACPPrompt(completion agentapi.MessageCompletion) {
+func (b *Base) finishIncompleteACPPrompt(completion agentapi.MessageCompletion) int {
+	defer b.enqueueTurnOutputCleanup(false)
 	turn, hasPromptBoundary := b.drainPromptTurn()
+	numToolUses := turn.completedToolUses + len(turn.incompleteTools)
 	if !hasPromptBoundary {
 		b.finishACPTurn(turn, completion)
-		return
+		return numToolUses
 	}
 	if b.IsDiscardingOutput() {
-		return
+		return numToolUses
 	}
 	b.main().persistIncompleteTools(turn.incompleteTools, completion)
 	b.clearCompletedTerminals()
+	return numToolUses
+}
+
+// finishFailedACPPrompt stores the failed output before the failure note and native end frame.
+func (b *Base) finishFailedACPPrompt(err error, ending PromptEnding) {
+	numToolUses := b.finishIncompleteACPPrompt(agentapi.MessageCompletionError)
+	slog.Error("ACP prompt failed", "agent_id", b.AgentID(), "error", err)
+	if !ending.NoteWritten {
+		b.sink.PersistLeapMuxNotification(map[string]interface{}{
+			contracts.NotificationFieldType:  contracts.NotificationTypeAgentError,
+			contracts.NotificationFieldError: fmt.Sprintf("prompt failed: %v", err),
+		})
+	}
+	if len(ending.EndFrame) > 0 && !b.IsDiscardingOutput() {
+		b.persistPromptResponse(ending.EndFrame, numToolUses)
+	}
 }
 
 // finishAllTurnOutput ends output for both the prompt and an agent turn queued behind it.
 // Stop and process exit end both turns.
 func (b *Base) finishAllTurnOutput(completion agentapi.MessageCompletion) {
 	b.finishACPTurn(b.drainTurn(), completion)
+	b.enqueueTurnOutputCleanup(true)
 }
 
 func (b *Base) finishACPTurn(turn acpTurnSnapshot, completion agentapi.MessageCompletion) {
@@ -305,6 +323,7 @@ type MethodHandler func(line *providerkit.ParsedLine) bool
 // acpUpdateHeader is the part of one session update that the dispatcher reads
 // before it decides where the update belongs.
 type acpUpdateHeader struct {
+	MessageID     string                     `json:"messageId"`
 	SessionUpdate string                     `json:"sessionUpdate"`
 	Role          string                     `json:"role"`
 	Status        string                     `json:"status"`
@@ -351,7 +370,9 @@ func (b *Base) handleACPUpdate(update json.RawMessage) {
 	case contracts.ACPUpdateCurrentMode:
 		b.handleACPModeUpdate(update)
 	case contracts.ACPUpdateUserMessageChunk:
-		// No-op: user_message_chunk is history replay.
+		// The input queue stores the main conversation's input itself, and
+		// ChildUserMessages routes child input before this dispatch, so this
+		// update writes no row.
 	case contracts.ACPUpdateAvailableCommandsUpdate:
 		b.observeAvailableCommands(update)
 	case contracts.ACPUpdateSessionInfoUpdate:
@@ -417,6 +438,20 @@ func (b *Base) ReplaceAvailableCommands(names []string) {
 	}
 }
 
+// CurrentModelContextWindow returns the context window of the current model,
+// or zero when the catalog states none.
+func (b *Base) CurrentModelContextWindow() int64 {
+	b.Mu.Lock()
+	model, catalog := b.model, b.availableModels
+	b.Mu.Unlock()
+	for _, info := range catalog {
+		if info != nil && info.Id == model {
+			return info.ContextWindow
+		}
+	}
+	return 0
+}
+
 func (b *Base) HasAvailableCommand(command string) bool {
 	b.Mu.Lock()
 	defer b.Mu.Unlock()
@@ -470,11 +505,19 @@ func (b *Base) ClearContext() (string, error) {
 
 	// A goal belongs to a session, and this call replaces that session.
 	// Codex and ZCode clear the goal in their ClearContext methods for the same reason.
-	// This ACP implementation covers every provider on the base; Reasonix currently reports goals.
+	// These ACP providers report goals:
+	//   - Goose.
+	//   - Grok Build.
+	//   - Junie.
+	//   - Kilo.
+	//   - Kiro.
+	//   - Qwen Code.
+	//   - Reasonix.
 	//
 	// A provider that reports no goal causes no write.
-	// clearGoal reads the row first and returns before the broadcast when no goal exists.
+	// ClearGoal reads the row and returns without a broadcast when no goal exists.
 	b.sink.ClearGoal(false)
+	providerkit.EndCompaction(b.sink)
 
 	b.sink.UpdateSessionID(sessionID)
 
@@ -763,12 +806,14 @@ func (b *Base) reapplyModelAndSecondary() {
 	b.reapplyOptions(storedOptions)
 }
 
-// setSecondary stores the native acknowledgment on the reader. It performs no
-// later write, so a newer native event remains authoritative after the setter returns.
+// setSecondary confirms the native acknowledgment on the reader.
+// A native mode report during the request remains authoritative, even if it precedes the acknowledgment.
 // The same callback updates the permission-mode and primary-agent axes.
 func (b *Base) setSecondary(value string) error {
 	sc := b.secondaryChannel()
-	sessionID := b.CurrentSessionID()
+	b.Mu.Lock()
+	sessionID, reports := b.sessionID, b.secondaryReports
+	b.Mu.Unlock()
 	accepting := true
 	seen := false
 	confirmed := false
@@ -780,7 +825,9 @@ func (b *Base) setSecondary(value string) error {
 		}
 		seen = true
 		if actual != "" && b.sessionID == sessionID {
-			*sc.field = actual
+			if b.secondaryReports == reports {
+				*sc.field = actual
+			}
 			confirmed = true
 		}
 	}
@@ -1154,9 +1201,12 @@ func acpApplySetting(providerName, agentID, name, value string, apply func(strin
 func acpStandardInitParams(hooks *Hooks) (json.RawMessage, error) {
 	hostFileSystem := !hooks.DisableHostFileSystem
 	capabilities := map[string]any{
-		"fs":          map[string]bool{"readTextFile": hostFileSystem, "writeTextFile": hostFileSystem},
-		"terminal":    !hooks.DisableHostTerminal,
-		"elicitation": map[string]any{"form": map[string]any{}, "url": map[string]any{}},
+		"fs":       map[string]bool{"readTextFile": hostFileSystem, "writeTextFile": hostFileSystem},
+		"terminal": !hooks.DisableHostTerminal,
+		"elicitation": map[string]any{
+			contracts.MCPElicitationModeForm: map[string]any{},
+			contracts.MCPElicitationModeURL:  map[string]any{},
+		},
 	}
 	if len(hooks.ClientCapabilityMeta) > 0 {
 		capabilities["_meta"] = hooks.ClientCapabilityMeta
@@ -1253,38 +1303,46 @@ func (b *Base) SupportsSteering() bool {
 	return b.steersLocked()
 }
 
+// SteerAdvertised sends input through the native method that the agent advertised.
 func (b *Base) SteerAdvertised(content string, attachments []*leapmuxv1.Attachment) error {
+	_, err := b.SteerAdvertisedResult(content, attachments)
+	return err
+}
+
+// SteerAdvertisedResult sends input and returns the native result after the same admission checks.
+func (b *Base) SteerAdvertisedResult(content string, attachments []*leapmuxv1.Attachment) (json.RawMessage, error) {
 	b.sessionMu.RLock()
 	defer b.sessionMu.RUnlock()
 	b.Mu.Lock()
 	method, active, sessionID := b.steerMethod, b.promptActive, b.sessionID
 	b.Mu.Unlock()
 	if method == "" {
-		return agentapi.ErrSteeringUnsupported
+		return nil, agentapi.ErrSteeringUnsupported
 	}
 	if !active {
-		return agentapi.ErrNoActiveTurn
+		return nil, agentapi.ErrNoActiveTurn
 	}
 	params, err := json.Marshal(map[string]interface{}{
 		"sessionId": sessionID,
 		"prompt":    BuildPromptBlocks(content, agentapi.ClassifyAttachments(attachments)),
 	})
 	if err != nil {
-		return fmt.Errorf("marshal ACP steer params: %w", err)
+		return nil, fmt.Errorf("marshal ACP steer params: %w", err)
 	}
-	if _, err := b.SendRequest(method, params, b.APITimeout()); err != nil {
+	result, err := b.SendRequest(method, params, b.APITimeout())
+	if err != nil {
 		if providerkit.HasJSONRPCErrorCode(err, -32600, -32602) {
-			return agentapi.ErrNoActiveTurn
+			return nil, agentapi.ErrNoActiveTurn
 		}
-		return providerkit.ClassifyJSONRPCDeliveryError(method, err)
+		return nil, providerkit.ClassifyJSONRPCDeliveryError(method, err)
 	}
 	b.Mu.Lock()
 	stillActive := b.promptActive
 	b.Mu.Unlock()
 	if !stillActive {
-		return agentapi.ErrNoActiveTurn
+		return nil, agentapi.ErrNoActiveTurn
 	}
-	return nil
+	return result, nil
 }
 
 // Stop performs these operations:
@@ -1525,6 +1583,13 @@ type SubagentObservation struct {
 	RenameFrom string
 	// A non-nil ChildTranscriptPayload persists in the child transcript through PersistChildMessage.
 	// Goose uses it for tool requests.
+	// A non-nil ChildUpdate is a session update the base feeds through the child
+	// conversation after this observation applies, so the child assembles it as
+	// it assembles any update. ChildUpdateFlush persists what the update
+	// assembled at once, for a provider whose every live block is complete in
+	// itself.
+	ChildUpdate            json.RawMessage
+	ChildUpdateFlush       bool
 	ChildTranscriptPayload []byte
 	// Report is the final report that the provider returned to the parent. The
 	// shared translator copies it into the child transcript. The parent keeps its
@@ -2446,14 +2511,10 @@ func (b *Base) trySetStartupModel(requested string) {
 
 // applyStartupPermissionMode applies the requested permission mode during startup.
 // An empty request or unchanged mode needs no write.
-// A rejected explicit request returns an error and stops startup because that selection is mandatory.
-//
-// One rejection does not stop startup: the session cannot offer a safe default that LeapMux selects for a new session.
-// Goose uses smart_approve as its safe default.
-// A native build without that mode would otherwise fail every new session with "unknown mode" for a selection the user never requested.
-// Keep the handshake's current mode in that case and log the fallback.
-// An explicit --permission-mode request still stops startup on rejection instead of silently selecting a different mode.
-// Claude applies the same safe-default fallback in applyStartupPermissionMode.
+// A session that no longer offers the requested mode keeps its reported mode.
+// An explicit selection produces a notice unless the agent supplies its own notice.
+// An unavailable safe default needs only a log entry.
+// Without a mode catalog or a reported current mode, the native setter still validates an explicit selection.
 //
 // Read the current mode under b.Mu, as trySetStartupModel reads b.model.
 // startACPHandshake starts the reader before Start* reaches this point.
@@ -2469,11 +2530,30 @@ func (b *Base) applyStartupPermissionMode(requested string, defaulted bool) erro
 	if requested == current {
 		return nil
 	}
-	if defaulted && len(available) > 0 && !HasOption(available, requested) {
-		slog.Warn("this session does not offer the safe default permission mode; keeping the mode it reported",
-			"provider", b.ProviderName(), "agent_id", b.AgentID(),
-			"requested", requested, "current", current)
-		return nil
+	if len(available) > 0 && !HasOption(available, requested) {
+		if defaulted {
+			slog.Warn("the session does not offer the default permission mode; it keeps its reported mode",
+				"provider", b.ProviderName(), "agent_id", b.AgentID(),
+				"requested", requested, "current", current)
+			return nil
+		}
+		if current != "" {
+			label := current
+			for _, option := range available {
+				if option.GetId() == current && option.GetName() != "" {
+					label = option.GetName()
+					break
+				}
+			}
+			if !b.hooks.AgentStatesModeFallback {
+				b.sink.PersistLeapMuxNotification(map[string]interface{}{
+					contracts.NotificationFieldType: contracts.NotificationTypeAgentStatus,
+					contracts.NotificationFieldText: fmt.Sprintf("The session does not offer the mode %s. It runs the mode %s.", requested, label),
+				})
+			}
+			b.BroadcastSettingsRefresh()
+			return nil
+		}
 	}
 	return b.setSecondary(requested)
 }
@@ -2485,8 +2565,12 @@ func (b *Base) applyStartupPermissionMode(requested string, defaulted bool) erro
 // Runtime and ClearContext use the same distinction, so every path interprets the option consistently.
 // These ACP providers track permission mode:
 //   - Cursor.
+//   - Dirac.
+//   - fast-agent.
+//   - Gemini.
 //   - Goose.
 //   - Grok Build.
+//   - Junie.
 //   - Kiro.
 //   - Qwen Code.
 //   - Reasonix.
@@ -2529,8 +2613,12 @@ func (b *Base) applySecondaryStartup(handshake *SessionResult, opts agentapi.Opt
 
 // ApplyPermissionModeStartup configures permission mode after the handshake for these providers:
 //   - Cursor.
+//   - Dirac.
+//   - fast-agent.
+//   - Gemini.
 //   - Goose.
 //   - Grok Build.
+//   - Junie.
 //   - Kiro.
 //   - Qwen Code.
 //   - Reasonix.
@@ -2748,6 +2836,7 @@ func (b *Base) syncConfigOptionSelectLocked(
 	if !ok {
 		return "", false, false
 	}
+	b.secondaryReports++
 	OrderModesPreferredFirst(built, preferredFirst)
 	// Keep the len>0 guard, as applyConfigOptionModelsLocked does for models.
 	// An update that produces an empty list must not clear a populated picker.
@@ -2887,6 +2976,13 @@ func parseACPConfigOptions(raw json.RawMessage) []ConfigOption {
 // cancelSession sends a notification without a reply and does not use this method.
 func (b *Base) sendSessionRPC(method string, extraParams map[string]interface{}) (json.RawMessage, error) {
 	return b.sendSessionRPCObserved(method, extraParams, nil)
+}
+
+// SendSessionRPCObserved sends an ACP session/* request whose reply a provider
+// reads before its waiting caller resumes: a steer whose reply outcome changes
+// turn state, for example. The observe callback runs on the reader goroutine.
+func (b *Base) SendSessionRPCObserved(method string, extraParams map[string]interface{}, observe func(json.RawMessage, error)) (json.RawMessage, error) {
+	return b.sendSessionRPCObserved(method, extraParams, observe)
 }
 
 // sendSessionRPCObserved validates the ACP object before the reader observes its reply.
@@ -3343,7 +3439,19 @@ func (b *Base) handleACPOutput(line *providerkit.ParsedLine) {
 	case acpMethodSessionUpdate:
 		b.handleACPSessionUpdate(line.Params)
 	case contracts.MCPElicitationMethodACP:
+		switch providerkit.StringField(line.Params, "mode") {
+		case contracts.MCPElicitationModeURL:
+			b.RememberURLElicitation(providerkit.StringField(line.Params, "elicitationId"), line)
+		case contracts.MCPElicitationModeForm:
+			// A form waits for a reader answer, not an external URL flow.
+		}
 		b.PublishSessionControlRequest(line, providerkit.MCPElicitationCancelAnswer())
+	case acpMethodElicitationComplete:
+		if line.HasID() {
+			b.RefuseUnsupportedRequest(line)
+			return
+		}
+		b.CompleteURLElicitation(providerkit.StringField(line.Params, "elicitationId"), providerkit.MCPElicitationAcceptAnswer())
 	case acpMethodSessionRequestPermission:
 		b.notePermissionToolCall(line.Params)
 		b.PublishSessionControlRequest(line, acpPermissionCancelAnswer())
@@ -3361,8 +3469,19 @@ func (b *Base) handleACPOutput(line *providerkit.ParsedLine) {
 		if b.hooks.ExtraMethod != nil && b.hooks.ExtraMethod(line) {
 			return
 		}
-		// A request needs a response even if the transcript write fails.
-		b.RefuseUnsupportedRequest(line)
+		// A notification that names a session this agent does not serve
+		// belongs to no transcript here, so it reaches no row. A request
+		// still needs its refusal either way.
+		if line.HasID() {
+			b.RefuseUnsupportedRequest(line)
+		}
+		if sessionID := providerkit.StringField(line.Params, "sessionId"); sessionID != "" && !b.ServesSession(sessionID) {
+			slog.Debug("acp drop notification of an unserved session", "agent_id", b.AgentID(), "method", line.Method, "session_id", sessionID)
+			return
+		}
+		if !line.HasID() {
+			b.RefuseUnsupportedRequest(line)
+		}
 		if err := b.sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agentapi.MessageContent{Original: line.Raw}, agentapi.SpanInfo{}); err != nil {
 			slog.Error("acp persist notification", "agent_id", b.AgentID(), "method", line.Method, "error", err)
 		}

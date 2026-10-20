@@ -1,11 +1,15 @@
 {
-  "_readme": "MCP elicitation requests and responses use these native protocol values. Reasonix has no entry: it sends the STANDARD Agent Client Protocol `elicitation/create`, verified against its source tree, which contains no `_reasonix.io/mcp/*` method at all. The stale vendor name that used to sit here matched nothing, so the branch reading it was dead and the live requests arrived through the ACP branch beside it.",
+  "_readme": "MCP elicitation requests and responses use this vocabulary. Requests state a method and a mode. The worker handles URL completion notifications that an agent forwards. The browser draws the matching control. The Agent Client Protocol method elicitation/create is standard. Reasonix's separate request_interaction extension belongs to reasonix-protocol.json.",
   "methods": {
     "ACP": "elicitation/create",
     "Codex": "mcpServer/elicitation/request"
   },
   "subtypes": {
     "Claude": "elicitation"
+  },
+  "modes": {
+    "Form": "form",
+    "URL": "url"
   },
   "actions": {
     "Accept": "accept",

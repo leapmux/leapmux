@@ -36,10 +36,12 @@ type acpToolUpdateState struct {
 }
 
 type acpTurnSnapshot struct {
-	assistantText     string
-	thoughtText       string
-	completedToolUses int
-	incompleteTools   []acpIncompleteTool
+	assistantMessageID string
+	thoughtMessageID   string
+	assistantText      string
+	thoughtText        string
+	completedToolUses  int
+	incompleteTools    []acpIncompleteTool
 }
 
 // acpPromptBoundary is the end of a prompt's output while an agent turn waits
@@ -63,9 +65,7 @@ type acpTurnOutput struct {
 
 	turnAssistantText strings.Builder
 	turnThoughtText   strings.Builder
-	// assistantMessageID and thoughtMessageID identify the message of the last
-	// chunk of each kind, for a provider that states it (Hooks.ChunkMessageID).
-	// "" until such a chunk arrives in the turn.
+	// Each ID belongs to its buffered text. A drain clears the text and its ID together.
 	assistantMessageID string
 	thoughtMessageID   string
 
@@ -85,29 +85,34 @@ type acpTurnOutput struct {
 	promptBoundary *acpPromptBoundary
 }
 
-func (o *acpTurnOutput) appendAssistant(text string) {
+func (o *acpTurnOutput) appendAssistant(text, messageID string) {
 	o.turnMu.Lock()
+	if messageID != "" && (o.turnAssistantText.Len() == 0 || o.assistantMessageID == "") {
+		o.assistantMessageID = messageID
+	}
 	// ACP ContentChunk values are append-only fragments. ACP clients concatenate
 	// them directly, and a provider can split one at any text position.
 	providerkit.AppendText(&o.turnAssistantText, text, providerkit.JoinVerbatim)
 	o.turnMu.Unlock()
 }
 
-func (o *acpTurnOutput) appendThought(text string) (fresh bool) {
+func (o *acpTurnOutput) appendThought(text, messageID string) (fresh bool) {
 	o.turnMu.Lock()
 	defer o.turnMu.Unlock()
 	fresh = o.turnThoughtText.Len() == 0
+	if messageID != "" && (fresh || o.thoughtMessageID == "") {
+		o.thoughtMessageID = messageID
+	}
 	providerkit.AppendText(&o.turnThoughtText, text, providerkit.JoinVerbatim)
 	return fresh
 }
 
-// switchMessage records id as the message of the next chunk of kind. It reports
-// whether the buffered text of that kind belongs to another message, which the
-// caller then stores first. A chunk that states no id continues the buffered
-// text, whatever message that text belongs to.
-func (o *acpTurnOutput) switchMessage(kind agent.AssembledMessageKind, id string) bool {
+// switchMessage identifies a boundary before a chunk of another known message.
+// The old ID stays with buffered text until the caller takes that text.
+// An absent ID continues the segment. Its first explicit ID also identifies any preceding untagged chunks.
+func (o *acpTurnOutput) switchMessage(kind agent.AssembledMessageKind, id string) (flushID string, flush bool) {
 	if id == "" {
-		return false
+		return "", false
 	}
 	o.turnMu.Lock()
 	defer o.turnMu.Unlock()
@@ -115,21 +120,36 @@ func (o *acpTurnOutput) switchMessage(kind agent.AssembledMessageKind, id string
 	if kind == agent.AssembledMessageKindReasoning {
 		current, buffered = &o.thoughtMessageID, &o.turnThoughtText
 	}
-	previous := *current
+	if buffered.Len() > 0 && *current != "" && *current != id {
+		return *current, true
+	}
 	*current = id
-	return previous != "" && previous != id && buffered.Len() > 0
+	return "", false
 }
 
-func (o *acpTurnOutput) takeText(kind agent.AssembledMessageKind) string {
+func (o *acpTurnOutput) takeText(kind agent.AssembledMessageKind) (text, messageID string) {
 	o.turnMu.Lock()
 	defer o.turnMu.Unlock()
-	builder := &o.turnAssistantText
+	builder, id := &o.turnAssistantText, &o.assistantMessageID
 	if kind == agent.AssembledMessageKindReasoning {
-		builder = &o.turnThoughtText
+		builder, id = &o.turnThoughtText, &o.thoughtMessageID
 	}
-	text := builder.String()
+	text, messageID = builder.String(), *id
 	builder.Reset()
-	return text
+	*id = ""
+	return text, messageID
+}
+
+// takeBufferedTextLocked takes both text segments and their identities. The caller holds turnMu.
+func (o *acpTurnOutput) takeBufferedTextLocked() acpTurnSnapshot {
+	snapshot := acpTurnSnapshot{
+		assistantText: o.turnAssistantText.String(), thoughtText: o.turnThoughtText.String(),
+		assistantMessageID: o.assistantMessageID, thoughtMessageID: o.thoughtMessageID,
+	}
+	o.turnAssistantText.Reset()
+	o.turnThoughtText.Reset()
+	o.assistantMessageID, o.thoughtMessageID = "", ""
+	return snapshot
 }
 
 func (o *acpTurnOutput) drainTurn() acpTurnSnapshot {
@@ -252,9 +272,9 @@ func requestFieldStates(raw json.RawMessage) bool {
 // closes them at the prompt's end. A second call before that end changes
 // nothing: one agent turn at most waits behind a prompt. The caller holds
 // turnMu.
-func (o *acpTurnOutput) markPromptBoundaryLocked() (assistantText, thoughtText string) {
+func (o *acpTurnOutput) markPromptBoundaryLocked() acpTurnSnapshot {
 	if o.promptBoundary != nil {
-		return "", ""
+		return acpTurnSnapshot{}
 	}
 	boundary := &acpPromptBoundary{
 		completedToolUses: o.turnToolUses,
@@ -265,10 +285,7 @@ func (o *acpTurnOutput) markPromptBoundaryLocked() (assistantText, thoughtText s
 	}
 	o.promptBoundary = boundary
 	o.turnToolUses = 0
-	assistantText, thoughtText = o.turnAssistantText.String(), o.turnThoughtText.String()
-	o.turnAssistantText.Reset()
-	o.turnThoughtText.Reset()
-	return assistantText, thoughtText
+	return o.takeBufferedTextLocked()
 }
 
 // takeUnownedOutputLocked ends the output that no turn owns, because a turn
@@ -287,13 +304,11 @@ func (o *acpTurnOutput) markPromptBoundaryLocked() (assistantText, thoughtText s
 // and the turn-end row counts the tools of its own turn only. A tool call that
 // is still open stays open, because only its own update can end it. The caller
 // holds turnMu.
-func (o *acpTurnOutput) takeUnownedOutputLocked() (assistantText, thoughtText string) {
-	assistantText, thoughtText = o.turnAssistantText.String(), o.turnThoughtText.String()
-	o.turnAssistantText.Reset()
-	o.turnThoughtText.Reset()
+func (o *acpTurnOutput) takeUnownedOutputLocked() acpTurnSnapshot {
+	snapshot := o.takeBufferedTextLocked()
 	o.turnToolUses = 0
 	o.endedTools = nil
-	return assistantText, thoughtText
+	return snapshot
 }
 
 // dropPromptBoundaryLocked removes the boundary that a queued agent turn set,
@@ -347,12 +362,15 @@ func (o *acpTurnOutput) replaceSession(updateProtocol func()) acpTurnSnapshot {
 	return snapshot
 }
 
-func (o *acpTurnOutput) resetTurnLocked() {
+func (o *acpTurnOutput) drainTurnLocked() acpTurnSnapshot {
+	snapshot := o.takeBufferedTextLocked()
+	snapshot.completedToolUses = o.turnToolUses
+	snapshot.incompleteTools = make([]acpIncompleteTool, 0, len(o.toolUpdateState))
+	for toolCallID := range o.toolUpdateState {
+		snapshot.incompleteTools = append(snapshot.incompleteTools, o.incompleteToolLocked(toolCallID))
+	}
+	o.sortIncompleteToolsLocked(snapshot.incompleteTools)
 	o.promptBoundary = nil
-	o.turnAssistantText.Reset()
-	o.turnThoughtText.Reset()
-	o.assistantMessageID = ""
-	o.thoughtMessageID = ""
 	o.toolUpdateState = nil
 	o.toolRequestContents = nil
 	o.toolSubagentRows = nil
@@ -360,20 +378,6 @@ func (o *acpTurnOutput) resetTurnLocked() {
 	o.spawnSpansReleased = nil
 	o.turnToolUses = 0
 	o.endedTools = nil
-}
-
-func (o *acpTurnOutput) drainTurnLocked() acpTurnSnapshot {
-	snapshot := acpTurnSnapshot{
-		assistantText:     o.turnAssistantText.String(),
-		thoughtText:       o.turnThoughtText.String(),
-		completedToolUses: o.turnToolUses,
-		incompleteTools:   make([]acpIncompleteTool, 0, len(o.toolUpdateState)),
-	}
-	for toolCallID := range o.toolUpdateState {
-		snapshot.incompleteTools = append(snapshot.incompleteTools, o.incompleteToolLocked(toolCallID))
-	}
-	o.sortIncompleteToolsLocked(snapshot.incompleteTools)
-	o.resetTurnLocked()
 	return snapshot
 }
 

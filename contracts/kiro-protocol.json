@@ -1,5 +1,5 @@
 {
-  "_readme": "Kiro CLI runs its v3 engine through `kiro-cli-chat acp --agent-engine v3`. It uses the Agent Client Protocol with native `_kiro/*` methods. Native metadata uses `_meta.kiro` on each update, tool call, or request. Amazon Web Services owns every method, meta key, kind, tool title, mode, option id, scope and action word below. LeapMux owns two tables:\n- The policy-preset option ID. Kiro fixes the preset at session open and never reports it back.\n- The consent-scoped permission option IDs. The browser supplies them, and the Worker converts them into native replies. The Worker performs these operations:\n- Publish extension requests.\n- Convert the answers into native replies.\n- Route subagent updates.\n- Read the to-do list and plan.\n- End turns that Kiro starts without a client prompt. The browser plugin draws the same requests, builds the same replies, reads the same tool titles and reads the same turn-end update into a divider. A word that only one side reads stays in the code of that side. configIds identifies the option for reasoning effort. The Worker sets effort through that ID. The browser uses the same ID for its status-bar chip.\n\nKiro owns its native output transformation metadata. The metadata identifies a saved output file and its UTF-16 character count. The browser shows absFilePath beside the original preview. LeapMux reads no output file.",
+  "_readme": "Kiro CLI runs its v3 engine through `kiro-cli-chat acp --agent-engine v3`. It uses the Agent Client Protocol with native `_kiro/*` methods. Native metadata uses `_meta.kiro` on each update, tool call, or request. Amazon Web Services owns every method, meta key, kind, tool title, mode, option id, scope and action word below. LeapMux owns two tables:\n- The policy-preset option ID. Kiro fixes the preset at session open and never reports it back.\n- The consent-scoped permission option IDs. The browser supplies them, and the Worker converts them into native replies. The Worker performs these operations:\n- Publish extension requests.\n- Convert the answers into native replies.\n- Route subagent updates.\n- Read the to-do list and plan.\n- End turns that Kiro starts without a client prompt. The browser plugin draws the same requests, builds the same replies, reads the same tool titles and reads the same turn-end update into a divider. A word that only one side reads stays in the code of that side. configIds identifies the option for reasoning effort. The Worker sets effort through that ID. The browser uses the same ID for its status-bar chip.\n\nKiro owns its native output transformation metadata. The metadata identifies a saved output file and its UTF-16 character count. The browser shows absFilePath beside the original preview. LeapMux reads no output file. `meta.Refusal` marks a content-filter refusal on a text chunk and on the turn end that states it: the worker and the browser both read the refusal object from the same key. `metaKinds` lists each `_meta.kiro.kind` the worker dispatches on and the browser reads back: the summarization ends and the hook update persist as native rows that both sides render.",
   "_unread": {
     "userInputActions": {
       "Answered": {
@@ -20,11 +20,15 @@
     "AgentSubtaskId": "agentSubtaskId",
     "StopReason": "stopReason",
     "Consent": "consent",
-    "Scope": "scope"
+    "Scope": "scope",
+    "Refusal": "refusal"
   },
   "metaKinds": {
     "AgentSubtask": "agent-subtask",
-    "TurnEnd": "turn_end"
+    "TurnEnd": "turn_end",
+    "SummarizationCompleted": "summarization_completed",
+    "SummarizationFailed": "summarization_failed",
+    "HookUpdate": "hook_update"
   },
   "toolTitles": {
     "TaskList": "Task List",

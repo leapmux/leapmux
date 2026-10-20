@@ -541,10 +541,9 @@ func TestChildRoute_TheCloseStoresWhatTheChildStillHeld(t *testing.T) {
 	require.NotNil(t, closing, "the tool call the child left open is stored")
 	assert.Equal(t, agent.MessageCompletionError, closing.Completion, "a completed subagent left that call unfinished")
 
-	// The closed row has no route left: a late update stays in the parent, and
-	// no child conversation opens again for the row.
+	// A late update of a closed child enters neither transcript.
 	b.HandleSessionUpdateForTest(sessionUpdate(t, "session-1", `{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"late"},"_meta":{"parentToolCallId":"call-spawn"}}`))
-	assert.Equal(t, "late", b.TurnAssistantTextForTest().String(), "the late text is in the parent's buffer")
+	assert.Empty(t, b.TurnAssistantTextForTest().String(), "the closed child's text must not enter the parent")
 	b.children.mu.Lock()
 	_, reopened := b.children.active["call-spawn"]
 	b.children.mu.Unlock()
@@ -563,7 +562,7 @@ func TestChildRoute_AnIncompleteSpawnLeavesNoRoute(t *testing.T) {
 	b.finishAllTurnOutput(agent.MessageCompletionInterrupted)
 
 	b.HandleSessionUpdateForTest(sessionUpdate(t, "session-1", `{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"late"},"_meta":{"parentToolCallId":"call-spawn"}}`))
-	assert.Equal(t, "late", b.TurnAssistantTextForTest().String(), "the late text is in the parent's buffer")
+	assert.Empty(t, b.TurnAssistantTextForTest().String(), "the closed child's text must not enter the parent")
 	b.children.mu.Lock()
 	_, reopened := b.children.active["call-spawn"]
 	b.children.mu.Unlock()
@@ -611,7 +610,7 @@ func TestChildRoute_AFinishedRegistryRowOpensNoChild(t *testing.T) {
 		b.HandleSessionUpdateForTest(sessionUpdate(t, "session-1", `{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"x"},"_meta":{"parentToolCallId":"call-old"}}`))
 	}
 
-	assert.Equal(t, "xxx", b.TurnAssistantTextForTest().String())
+	assert.Empty(t, b.TurnAssistantTextForTest().String())
 	assert.Empty(t, sink.ChildAgentIDs(), "no child transcript opens for the finished row")
 	assert.Equal(t, 1, sink.LookupBackgroundTaskCalls("call-old"), "one registry read answers every later chunk")
 }
@@ -1024,4 +1023,30 @@ func TestOpenToolSink_FindsTheTranscriptOfARunningCall(t *testing.T) {
 	b.HandleSessionUpdateForTest(sessionUpdate(t, "child-session", `{"sessionUpdate":"tool_call_update","toolCallId":"child-call","status":"completed"}`))
 	_, open = b.OpenToolSink("child-session", "child-call")
 	assert.False(t, open, "a call that ended is no longer open")
+}
+
+// A ChildUpdate feeds the child conversation, so the child assembles it as it
+// assembles any update; the flush hint persists each complete block at once.
+func TestSubagentObservationChildUpdateFeedsTheChildConversation(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	b := &Base{sink: agent.NewProviderServices(sink), sessionID: "session-1"}
+	b.ApplySubagentObservation(&SubagentObservation{
+		RowKey: "child-row", Title: "Child", Status: bgtask.StatusRunning,
+		ChildAgentKey: "child-row", Prompt: "Do the work.", Spawns: true,
+	})
+	b.ApplySubagentObservation(&SubagentObservation{
+		RowKey: "child-row", Status: bgtask.StatusRunning,
+		ChildUpdate:      json.RawMessage(`{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Block one."}}`),
+		ChildUpdateFlush: true,
+	})
+	row, ok := sink.BackgroundTask("child-row")
+	require.True(t, ok)
+	messages := sink.Child(row.ChildAgentID).Messages()
+	require.Len(t, messages, 2, "the prompt and the fed update both persist")
+	kind, text, completion, ok := agenttest.DecodeAssembledMessage(messages[1].Content)
+	require.True(t, ok)
+	assert.Equal(t, agent.AssembledMessageKindText, kind)
+	assert.Equal(t, "Block one.", text)
+	assert.Equal(t, agent.MessageCompletionComplete, completion)
 }

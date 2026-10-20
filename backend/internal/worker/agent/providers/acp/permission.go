@@ -50,7 +50,8 @@ func (b *Base) PublishSessionControlRequest(line *providerkit.ParsedLine, cancel
 		answer = permissionApprovalAnswer(line.Params)
 	}
 	if answer == nil {
-		b.PublishControlRequestInSession(b.sink, ownerSessionID, line.Raw, cancelAnswer)
+		publication := b.PublishSessionControlRequestWithApproval(b.sink, ownerSessionID, line.Raw, cancelAnswer, nil)
+		b.bindURLElicitation(line, publication)
 		return
 	}
 	queued := false

@@ -6,6 +6,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
@@ -41,10 +42,10 @@ func openCodeSpawnObservation(toolCallID, callTitle string, rawInput json.RawMes
 		SubagentID string `json:"subagentID"`
 	}
 	inputParsed := json.Unmarshal(rawInput, &input) == nil
-	prompt, promptParsed := openCodeTaskString(input.Prompt)
+	prompt, promptParsed := providerkit.RawString(input.Prompt)
 	taskID, taskIDParsed := "", true
 	if len(input.TaskID) > 0 {
-		taskID, taskIDParsed = openCodeTaskString(input.TaskID)
+		taskID, taskIDParsed = providerkit.RawString(input.TaskID)
 	}
 	argumentsReady := inputParsed && promptParsed && taskIDParsed && (input.SubagentType != "" || input.SubagentID != "")
 	// An unidentified tool requires parsed task arguments.
@@ -69,15 +70,6 @@ func openCodeSpawnObservation(toolCallID, callTitle string, rawInput json.RawMes
 		RowKey: toolCallID, Title: title, Status: bgtask.StatusRunning,
 		ChildSpawnSpanID: spawnSpanID, Prompt: prompt, Spawns: true,
 	}
-}
-
-// openCodeTaskString rejects absent, null, and non-string arguments. Empty strings remain valid.
-func openCodeTaskString(raw json.RawMessage) (string, bool) {
-	var value *string
-	if json.Unmarshal(raw, &value) != nil || value == nil {
-		return "", false
-	}
-	return *value, true
 }
 
 // SubagentFromToolCallUpdate closes a final row and adopts the native child key from valid task metadata.

@@ -58,6 +58,11 @@ func captureTranscriptWithReceipt(writer TranscriptServices, content MessageCont
 		content = writer.CaptureMessage(content, span).Clone()
 	}
 	content.WriteReceipt = receipt
+	return frozenTranscript(writer, content, span)
+}
+
+// frozenTranscript owns content that already carries its capture-time publication and receipt.
+func frozenTranscript(writer TranscriptServices, content MessageContent, span SpanInfo) CapturedTranscript {
 	return CapturedTranscript{write: &capturedTranscriptWrite{writer: writer, content: content, span: span}}
 }
 

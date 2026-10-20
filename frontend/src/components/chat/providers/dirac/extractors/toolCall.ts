@@ -1,4 +1,4 @@
-import type { ACPToolCallAdapter } from '../../acp/extractors/toolCall'
+import type { ACPToolCallAdapter, ACPToolFacts } from '../../acp/extractors/toolCall'
 import { ACP_SUPPLEMENT_REQUEST } from '~/generated/contracts/acp-protocol'
 import { DIRAC_TOOL } from '~/generated/contracts/dirac-protocol'
 import { isObject, pickString } from '~/lib/jsonPick'
@@ -31,12 +31,37 @@ export const diracToolCallAdapter: ACPToolCallAdapter = (facts, base) => {
     return acpSpecFor(remapped, 'agent')
   }
   const flattened = diracFileChangeArgs(facts.args)
-  if (flattened === undefined)
+  if (flattened === undefined) {
+    const echoed = diracEchoSuppressedFacts(facts)
+    if (echoed !== undefined)
+      return acpSpecFor(echoed, facts.wireKind)
     return base()
+  }
   return acpSpecFor(acpRemapFacts(facts, {
     tool: { ...facts.tool, [ACP_SUPPLEMENT_REQUEST.RawInput]: flattened },
     kind: facts.wireKind,
   }), facts.wireKind)
+}
+
+/**
+ * Dirac answers its own failure cards with the body they asked about: the raw
+ * output repeats the raw input's `body`. The card states the body once, in its
+ * request half, so the echoed result half is dropped. Returns undefined when
+ * the output states anything else.
+ */
+function diracEchoSuppressedFacts(facts: ACPToolFacts): ACPToolFacts | undefined {
+  const output = facts.tool.rawOutput
+  if (!isObject(output) || typeof output.body !== 'string' || output.body === '')
+    return undefined
+  const nativeInput = facts.tool[ACP_SUPPLEMENT_REQUEST.RawInput]
+  if (!isObject(nativeInput) || nativeInput.body !== output.body)
+    return undefined
+  const remapped = acpRemapFacts(facts, {
+    tool: { ...facts.tool, rawOutput: undefined },
+    kind: facts.wireKind,
+  })
+  delete remapped.structuredJson
+  return remapped
 }
 
 /**

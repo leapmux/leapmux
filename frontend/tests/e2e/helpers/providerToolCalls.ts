@@ -2386,6 +2386,16 @@ export function goosePermissionJudgmentToolCall(id: string, readOnlyRequestIds: 
   return { id, name: 'platform__tool_by_tool_permission', arguments: { read_only_request_ids: [...readOnlyRequestIds] } }
 }
 
+/**
+ * Goose's subagent ends by calling its built-in final-output tool. A child that
+ * answers with plain text instead keeps requesting turns, because its runtime
+ * loops until this call arrives. An arguments object whose only member is a
+ * string `summary` is the readable report both sides show.
+ */
+export function gooseFinalOutputToolCall(id: string, summary: string): MockModelToolCall {
+  return { id, name: 'recipe__final_output', arguments: { summary } }
+}
+
 /** Reasonix's image reader returns structured image content from a local path. */
 export function reasonixViewImageToolCall(id: string, path: string): MockModelToolCall {
   return { id, name: 'view_image', arguments: { path } }

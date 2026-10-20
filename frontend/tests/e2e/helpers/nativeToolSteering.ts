@@ -24,6 +24,18 @@ export interface SteerDuringTextOptions {
   progress?: 'counter' | 'model-stream'
   /** Run provider assertions on the live transcript and after a reload. */
   checkTranscript?: () => Promise<void>
+  /**
+   * The steer lands inside the streamed answer, so the text before it forms its
+   * own bubble above the steer row and the rest of the answer follows below.
+   * The default keeps the whole answer in one bubble above the steer row.
+   */
+  splitAnswer?: boolean
+  /**
+   * The provider's own tool cards echo the reply text (Dirac's respond tool
+   * call and result both state it), so the reply may appear in more than one
+   * row. The default requires exactly one row.
+   */
+  toolEchoesReply?: boolean
 }
 
 export interface StopWithPendingSteerOptions {
@@ -109,7 +121,8 @@ export async function exerciseSteerDuringText(context: ManagedNativeScenarioCont
     return
   }
   const head = `ANSWERHEAD${marker}`
-  const answer = `${head} ANSWERTAIL${marker}`
+  const tail = `ANSWERTAIL${marker}`
+  const answer = `${head} ${tail}`
   const gate = `native-continue-steer-${marker}`
   await withCleanup(async () => {
     const start = await context.modelScript.queue(
@@ -132,11 +145,20 @@ export async function exerciseSteerDuringText(context: ManagedNativeScenarioCont
     for (const reload of [false, true]) {
       if (reload)
         await context.page.reload()
-      await expect(assistantBubbles(context.page).filter({ hasText: answer })).toHaveCount(1)
-      await expect(assistantBubbles(context.page).filter({ hasText: reply })).toHaveCount(1)
+      if (options.splitAnswer) {
+        await expect(assistantBubbles(context.page).filter({ hasText: head })).toHaveCount(1)
+        await expect(messageContents(context.page).filter({ hasText: tail })).toHaveCount(1)
+      }
+      else {
+        await expect(assistantBubbles(context.page).filter({ hasText: answer })).toHaveCount(1)
+      }
+      if (options.toolEchoesReply)
+        await expect(assistantBubbles(context.page).filter({ hasText: reply }).first()).toBeVisible()
+      else
+        await expect(assistantBubbles(context.page).filter({ hasText: reply })).toHaveCount(1)
       await expect(userBubbles(context.page).filter({ hasText: steering })).toHaveCount(1)
       await expect(messageContents(context.page).filter({ hasText: INTERRUPTION_MARKER })).toHaveCount(0)
-      await expectRowsInOrder(messageContents(context.page), options.steerOrder === 'any' ? [answer, reply] : [answer, steering, reply])
+      await expectRowsInOrder(messageContents(context.page), options.steerOrder === 'any' ? [head, reply] : [head, steering, reply])
       await options.checkTranscript?.()
     }
   }, async () => { await context.modelScript.releaseGateIfHeld(gate) })

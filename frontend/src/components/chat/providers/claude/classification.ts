@@ -198,8 +198,6 @@ export function classifyClaudeCodeMessage(
   // Plain object with string .content and no .type → user_content (or hidden /
   // plan_execution variants).
   if (!type && typeof parentObject.content === 'string') {
-    if (parentObject.hidden === true)
-      return { kind: 'hidden' }
     if (parentObject.planExecution === true)
       return { kind: 'plan_execution' }
     return { kind: 'user_content' }

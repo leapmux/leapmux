@@ -41,8 +41,6 @@ export function classifyAmpMessage(input: ClassificationInput): MessageCategory 
   // The service stores user input as LeapMux's `{content}` envelope. The worker consumes Amp's native user echo.
   const type = pickString(parent, 'type')
   if (!type && typeof parent.content === 'string') {
-    if (parent.hidden === true)
-      return { kind: 'hidden' }
     if (parent.planExecution === true)
       return { kind: 'plan_execution' }
     return { kind: 'user_content' }

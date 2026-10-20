@@ -3,7 +3,6 @@ package grok
 import (
 	"encoding/json"
 	"log/slog"
-	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -24,26 +23,57 @@ const (
 	// command that runs in the background.
 	grokTaskBackgroundedMethod = "_x.ai/task_backgrounded"
 	grokTaskCompletedMethod    = "_x.ai/task_completed"
-	// grokExtensionPrefix marks every Grok extension method.
-	grokExtensionPrefix = "_x.ai/"
+	// grokMethodMcpElicitComplete reports that the reader finished an external
+	// URL elicitation flow.
+	grokMethodMcpElicitComplete = "_x.ai/mcp/elicit_complete"
 )
 
 // The `sessionUpdate` words of a session notification that LeapMux reads.
 // turn_completed is in the contract, because the browser reads it too.
 const (
-	grokUpdateResponseCompleted    = "response_completed"
-	grokUpdateSubagentSpawned      = "subagent_spawned"
-	grokUpdateSubagentFinished     = "subagent_finished"
-	grokUpdateWorkflowUpdated      = "workflow_updated"
-	grokUpdateGoalUpdated          = "goal_updated"
-	grokUpdateAutoCompactStarted   = "auto_compact_started"
-	grokUpdateAutoCompactCompleted = "auto_compact_completed"
-	grokUpdateAutoCompactFailed    = "auto_compact_failed"
-	grokUpdateRetryState           = "retry_state"
-	grokUpdateInteractionResolved  = "interaction_resolved"
-	grokUpdateTaskBackgrounded     = "task_backgrounded"
-	grokUpdateTaskCompleted        = "task_completed"
+	grokUpdateResponseCompleted   = "response_completed"
+	grokUpdateSubagentSpawned     = "subagent_spawned"
+	grokUpdateSubagentFinished    = "subagent_finished"
+	grokUpdateWorkflowUpdated     = "workflow_updated"
+	grokUpdateGoalUpdated         = "goal_updated"
+	grokUpdateAutoCompactStarted  = "auto_compact_started"
+	grokUpdateInteractionResolved = "interaction_resolved"
+	grokUpdatePendingInteraction  = "pending_interaction"
+	grokUpdateTaskBackgrounded    = "task_backgrounded"
+	grokUpdateTaskCompleted       = "task_completed"
 )
+
+// grokKnownTwinNotifications lists every `_x.ai/` notification method of the
+// 1.0.62 binary that carries no conversation: the MCP inventory and its
+// per-server lifecycle, and the session store's own load, update, upsert and
+// close twins. Derived from the notification senders of the `xai-grok-shell`
+// binary and checked against .tmp/verify-acp7/grok-1.0.62.strings. A method
+// absent here persists raw when its session is served.
+var grokKnownTwinNotifications = map[string]bool{
+	"_x.ai/mcp/auth_trigger":        true,
+	"_x.ai/mcp/bearer":              true,
+	"_x.ai/mcp/delete":              true,
+	"_x.ai/mcp/init_progress":       true,
+	"_x.ai/mcp/list":                true,
+	"_x.ai/mcp/mcp_initialized":     true,
+	"_x.ai/mcp/sdk_call":            true,
+	"_x.ai/mcp/server_status":       true,
+	"_x.ai/mcp/servers":             true,
+	"_x.ai/mcp/servers_updated":     true,
+	"_x.ai/mcp/setup":               true,
+	"_x.ai/mcp/toggle_tool":         true,
+	"_x.ai/mcp/tools_changed":       true,
+	"_x.ai/mcp/upsert":              true,
+	"_x.ai/mcp_initialized":         true,
+	"_x.ai/session/close":           true,
+	"_x.ai/session/load":            true,
+	"_x.ai/session/prompt_complete": true,
+	"_x.ai/session/interjection":    true,
+	"_x.ai/session/setup":           true,
+	"_x.ai/session/update":          true,
+	"_x.ai/session/upsert":          true,
+	"_x.ai/sessions/changed":        true,
+}
 
 // grokNotification is the envelope every Grok session notification shares:
 // the session it belongs to, and one update tagged by `sessionUpdate`.
@@ -68,18 +98,40 @@ func (a *Agent) handleExtraMethod(line *providerkit.ParsedLine) bool {
 	case grokQueueChangedMethod:
 		a.handleQueueChanged(line.Params)
 		return true
+	case grokMethodMcpElicitComplete:
+		a.completeURLElicitation(line.Params)
+		return true
 	}
-	// Every other Grok notification is live chrome for Grok's own TUI: setup
-	// phases, the session list, the MCP inventory, file-system and git
-	// watches, an interjection echo, the prompt-complete twin of
-	// turn_completed. None of them is conversation, so none reaches the
-	// transcript. A REQUEST falls through, so the base refuses a method LeapMux
-	// does not answer and stores the frame where the reader can see it.
-	if strings.HasPrefix(line.Method, grokExtensionPrefix) && !line.HasID() {
+	// Every other known Grok notification is live chrome for Grok's own TUI:
+	// setup phases, the session list, the MCP inventory, the session store's
+	// own sync. None of them is conversation, so none reaches the transcript.
+	// An unknown notification of a served session falls through, and the base
+	// persists it byte for byte where the reader can see it (decision 1). A
+	// REQUEST falls through too, so the base refuses a method LeapMux does not
+	// answer.
+	if !line.HasID() && grokKnownTwinNotifications[line.Method] && a.ServesSession(providerkit.StringField(line.Params, "sessionId")) {
 		slog.Debug("grok notification not read", "agent_id", a.AgentID(), "method", line.Method)
 		return true
 	}
 	return false
+}
+
+// completeURLElicitation accepts the URL elicitation flow that Grok's own
+// completion notification names, and closes its card.
+func (a *Agent) completeURLElicitation(params json.RawMessage) {
+	var completion struct {
+		ServerName    string `json:"serverName"`
+		ElicitationID string `json:"elicitationId"`
+	}
+	if json.Unmarshal(params, &completion) != nil || completion.ElicitationID == "" {
+		return
+	}
+	if !a.ServesSession(providerkit.StringField(params, "sessionId")) {
+		return
+	}
+	if a.CompleteURLElicitation(completion.ServerName+"\x00"+completion.ElicitationID, providerkit.MCPElicitationAcceptAnswer()) {
+		slog.Info("grok completed a URL elicitation", "agent_id", a.AgentID(), "server", completion.ServerName, "elicitation", completion.ElicitationID)
+	}
 }
 
 // handleSessionNotification dispatches one Grok session notification.
@@ -110,6 +162,8 @@ func (a *Agent) handleSessionNotification(line *providerkit.ParsedLine) {
 		a.handleTurnCompleted(notification, line.Raw, main)
 	case grokUpdateInteractionResolved:
 		a.handleInteractionResolved(notification.SessionID, notification.Update)
+	case grokUpdatePendingInteraction:
+		a.handlePendingInteraction(notification.SessionID, notification.Update)
 	case grokUpdateSubagentSpawned:
 		a.handleSubagentSpawned(notification.Update)
 	case grokUpdateSubagentFinished:
@@ -132,9 +186,10 @@ func (a *Agent) handleSessionNotification(line *providerkit.ParsedLine) {
 		a.handleGoalUpdated(notification.Update)
 	case grokUpdateResponseCompleted:
 		a.handleResponseCompleted(notification.Update)
-	case grokUpdateAutoCompactStarted, grokUpdateAutoCompactCompleted, grokUpdateAutoCompactFailed:
-		a.reportCompaction(header.SessionUpdate, notification.Update)
-	case grokUpdateRetryState:
-		a.reportRetry(notification.Update)
+	case grokUpdateAutoCompactStarted, contracts.GrokNotificationAutoCompactCompleted,
+		contracts.GrokNotificationAutoCompactFailed, contracts.GrokNotificationAutoCompactCancelled:
+		a.reportCompaction(header.SessionUpdate, notification.Update, line.Raw)
+	case contracts.GrokNotificationRetryState:
+		a.reportRetry(notification.Update, line.Raw)
 	}
 }

@@ -31,7 +31,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		PinnedEnv:    []string{diracNoAutoUpdateEnv},
 		SessionConfig: acp.SessionConfig{
 			NewMethod:    acp.MethodSessionNew,
-			ResumeMethod: acp.MethodSessionLoad,
+			ResumeMethod: acp.MethodSessionResume,
 		},
 		NewAgent: func() *Agent {
 			return &Agent{root: diracHome(agent.StoredSessionQuery{HomeDir: opts.HomeDir})}
@@ -61,7 +61,7 @@ func (a *Agent) configure(clock quartz.Clock) acp.Hooks {
 		},
 		PromptParams:               diracPromptParams,
 		ExtraMethod:                a.handleExtraMethod,
-		SessionUpdateHandler:       a.handleSessionUpdate,
+		SessionMetadataHandler:     a.observeDiracNotice,
 		SubagentFromToolCall:       a.subagentFromToolCall,
 		SubagentFromToolCallUpdate: a.subagentFromToolCallUpdate,
 		PromptEnded:                a.hydrateSubagentArchives,

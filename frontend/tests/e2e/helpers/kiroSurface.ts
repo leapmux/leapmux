@@ -29,7 +29,7 @@ import { encodeEventStreamEvent, EVENT_STREAM_CONTENT_TYPE } from './awsEventStr
 import { KIRO_E2E_API_KEY } from './mockAgentEnvironment'
 import { mockCredentialReceipt } from './mockCredentials'
 import { readJSONBody, readMockBody, writeMockJSON, writeResponseHeaders } from './mockHttp'
-import { contentText, scenarioIDFromTexts, stopReasonToken } from './mockModelScript'
+import { contentText, scenarioIDFromTexts } from './mockModelScript'
 import { createModelStream } from './modelStream'
 
 /** The header that states the operation of an AWS JSON 1.0 call. */
@@ -342,8 +342,8 @@ async function serveKiro(request: IncomingMessage, response: ServerResponse, bod
   // Kiro cannot read a generic model error and would repeat that request.
   let toolEvents: KiroEvent[]
   try {
-    if (answer.step.stopReason !== undefined)
-      stopReasonToken('aws-event-stream', answer.step.stopReason)
+    if (answer.step.stopReason !== undefined && answer.step.stopReason !== 'refusal')
+      throw new Error(`The mock cannot state stop reason ${answer.step.stopReason} on aws-event-stream`)
     toolEvents = (answer.step.toolCalls ?? []).flatMap(kiroToolUseEvents)
   }
   catch (error) {
@@ -397,10 +397,23 @@ async function writeKiroTurn(response: ServerResponse, body: unknown, step: Mock
     response.write(encodeEventStreamEvent(eventType, payload))
   const inputTokens = step.usage?.inputTokens ?? 1
   const outputTokens = step.usage?.outputTokens ?? 1
-  response.end(encodeEventStreamEvent('metadataEvent', {
+  const metadata: Record<string, unknown> = {
     tokenUsage: { uncachedInputTokens: inputTokens, outputTokens, totalTokens: inputTokens + outputTokens },
     stopReason: toolEvents.length > 0 ? 'TOOL_USE' : 'END_TURN',
-  }))
+  }
+  // A scripted refusal ends the stream the way Kiro's service states a content
+  // filter: the CONTENT_FILTERED stop reason beside its stopDetails.refusal.
+  if (step.stopReason === 'refusal') {
+    metadata.stopReason = 'CONTENT_FILTERED'
+    metadata.stopDetails = {
+      refusal: {
+        category: 'CYBER',
+        explanation: 'Probe refusal explanation.',
+        recommendedModel: 'kiro-probe-alt',
+      },
+    }
+  }
+  response.end(encodeEventStreamEvent('metadataEvent', metadata))
 }
 
 function writeAwsJSON(response: ServerResponse, status: number, value: unknown): void {

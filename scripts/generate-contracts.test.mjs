@@ -1979,6 +1979,7 @@ describe('checkSessionInfo', () => {
       goalProgressFields: { TokensUsed: 'tokens_used' },
       turnRetryOfferFields: { TurnId: 'turn_id' },
       compactionFields: { Trigger: 'trigger' },
+      promptSuggestionFields: { Text: 'text' },
       ...overrides,
     }
   }
@@ -1998,6 +1999,8 @@ describe('checkSessionInfo', () => {
     for (const [table, fields] of [
       ['rateLimitFields', { A: 'status', B: 'status' }],
       ['turnRetryOfferFields', { A: 'turn_id', B: 'turn_id' }],
+      ['compactionFields', { A: 'trigger', B: 'trigger' }],
+      ['promptSuggestionFields', { A: 'text', B: 'text' }],
     ]) {
       expectContractError(
         () => checkSessionInfo(sessionInfo({ [table]: fields })),

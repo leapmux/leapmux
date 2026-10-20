@@ -38,9 +38,29 @@ type controlKey struct {
 }
 
 // controlIndex maps the tool call of each open request to the LeapMux id of
-// that request. Guarded by Agent.stateMu.
+// that request, and holds each tool call that carries a pending permission
+// check. Guarded by Agent.stateMu.
 type controlIndex struct {
 	byToolCall map[controlKey]string
+	checks     map[controlKey]struct{}
+}
+
+// rememberCheck records a tool call that published a permission-check badge.
+func (c *controlIndex) rememberCheck(key controlKey) {
+	if key.toolCallID == "" {
+		return
+	}
+	if c.checks == nil {
+		c.checks = make(map[controlKey]struct{})
+	}
+	c.checks[key] = struct{}{}
+}
+
+// takeCheck forgets a tool call's badge and reports whether one was open.
+func (c *controlIndex) takeCheck(key controlKey) bool {
+	_, ok := c.checks[key]
+	delete(c.checks, key)
+	return ok
 }
 
 // remember records the request that one tool call raised.
@@ -90,9 +110,12 @@ func grokControlCancelAnswer(method string) any {
 // grokRequestParams is the part of one of Grok's requests that LeapMux reads
 // before it publishes the request.
 type grokRequestParams struct {
-	SessionID   string  `json:"sessionId"`
-	ToolCallID  string  `json:"toolCallId"`
-	PlanContent *string `json:"planContent"`
+	SessionID     string  `json:"sessionId"`
+	ToolCallID    string  `json:"toolCallId"`
+	PlanContent   *string `json:"planContent"`
+	ServerName    string  `json:"serverName"`
+	ElicitationID string  `json:"elicitationId"`
+	Mode          string  `json:"mode"`
 	// ToolCall carries the tool-call id of a session/request_permission.
 	ToolCall struct {
 		ToolCallID string `json:"toolCallId"`
@@ -130,6 +153,15 @@ func (a *Agent) observeControlRequest(line *providerkit.ParsedLine) {
 	if line.Method == contracts.GrokMethodExitPlanMode {
 		a.storePlan(params)
 	}
+	// An external URL elicitation keeps its card until Grok's own completion
+	// notification arrives, so the flow is remembered under the pair that the
+	// completion names again.
+	if line.Method == contracts.GrokMethodMcpElicit && params.Mode == contracts.MCPElicitationModeURL && params.ElicitationID != "" {
+		a.RememberURLElicitation(params.ServerName+"\x00"+params.ElicitationID, line)
+	}
+	// The request itself answers the question the badge asked, so the badge
+	// ends here: in ask mode it lasts only the moments between the two frames.
+	a.clearPermissionCheck(params.key())
 	wireID, _, found := agent.ExtractJSONRPCID(line.Raw)
 	if !found {
 		return
@@ -156,8 +188,10 @@ func (a *Agent) handleInteractionResolved(sessionID string, update json.RawMessa
 	if json.Unmarshal(update, &resolved) != nil || resolved.ToolCallID == "" {
 		return
 	}
+	key := controlKey{sessionID: sessionID, toolCallID: resolved.ToolCallID}
+	a.clearPermissionCheck(key)
 	a.stateMu.Lock()
-	requestID, ok := a.controls.take(controlKey{sessionID: sessionID, toolCallID: resolved.ToolCallID})
+	requestID, ok := a.controls.take(key)
 	a.stateMu.Unlock()
 	if !ok {
 		return
@@ -177,4 +211,74 @@ func (a *Agent) storePlan(request grokRequestParams) {
 	}
 	compressed, compression := msgcodec.Compress([]byte(*request.PlanContent))
 	a.Sink().UpdatePlan(compressed, compression, providerkit.ExtractPlanTitle(*request.PlanContent))
+}
+
+// handlePendingInteraction reads one `pending_interaction` notice. In auto
+// mode Grok holds a tool call in its own classifier before it raises the real
+// permission request, and the notice is the only live signal that the call
+// still runs: it becomes the running row's permission-check badge on the
+// transcript that owns the tool call. The badge in ask mode lasts only the
+// moments between this notice and the request itself.
+func (a *Agent) handlePendingInteraction(sessionID string, update json.RawMessage) {
+	var pending struct {
+		ToolCallID string `json:"tool_call_id"`
+		Kind       string `json:"kind"`
+	}
+	if json.Unmarshal(update, &pending) != nil || pending.ToolCallID == "" || pending.Kind != "permission" {
+		return
+	}
+	key := controlKey{sessionID: sessionID, toolCallID: pending.ToolCallID}
+	owner, ok := a.SessionOwner(sessionID)
+	if !ok {
+		return
+	}
+	a.stateMu.Lock()
+	a.controls.rememberCheck(key)
+	a.stateMu.Unlock()
+	providerkit.PublishPermissionCheck(owner, pending.ToolCallID, true)
+}
+
+// clearPermissionCheck ends the badge of one tool call when its check is open.
+func (a *Agent) clearPermissionCheck(key controlKey) {
+	a.stateMu.Lock()
+	open := a.controls.takeCheck(key)
+	a.stateMu.Unlock()
+	if !open {
+		return
+	}
+	if owner, ok := a.SessionOwner(key.sessionID); ok {
+		providerkit.PublishPermissionCheck(owner, key.toolCallID, false)
+	}
+}
+
+// clearPermissionChecks ends every open badge: the turn that raised them is
+// over, a stop included.
+func (a *Agent) clearPermissionChecks() {
+	a.stateMu.Lock()
+	keys := make([]controlKey, 0, len(a.controls.checks))
+	for key := range a.controls.checks {
+		keys = append(keys, key)
+	}
+	a.stateMu.Unlock()
+	for _, key := range keys {
+		a.clearPermissionCheck(key)
+	}
+}
+
+// completeToolOutput ends the badge of a tool call that reached its final
+// update: the call is over, whatever the classifier asked about it.
+func (a *Agent) completeToolOutput(toolCallID string) {
+	sessionID := a.CurrentSessionID()
+	a.stateMu.Lock()
+	key, open := controlKey{}, false
+	for check := range a.controls.checks {
+		if check.toolCallID == toolCallID && (check.sessionID == sessionID || check.sessionID == "") {
+			key, open = check, true
+			break
+		}
+	}
+	a.stateMu.Unlock()
+	if open {
+		a.clearPermissionCheck(key)
+	}
 }

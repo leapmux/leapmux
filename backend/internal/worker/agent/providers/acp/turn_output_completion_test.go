@@ -27,9 +27,9 @@ func TestACPCompletedTurnKeepsInterruptedTextCompletion(t *testing.T) {
 						base.noteACPInterruptRequested()
 					}
 					if kind == agent.AssembledMessageKindText {
-						base.main().out.appendAssistant("partial content")
+						base.main().out.appendAssistant("partial content", "")
 					} else {
-						base.main().out.appendThought("partial content")
+						base.main().out.appendThought("partial content", "")
 					}
 					if route == "prompt-response" {
 						response := json.RawMessage(`{"stopReason":"end_turn"}`)

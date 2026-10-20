@@ -101,7 +101,7 @@ describe('classifyCodewhaleMessage', () => {
 
   it('reads LeapMux\'s own rows', () => {
     expect(classify({ content: 'Say hello.' })).toStrictEqual({ kind: 'user_content' })
-    expect(classify({ content: 'x', hidden: true })).toStrictEqual({ kind: 'hidden' })
+    expect(classify({ content: 'x', hidden: true })).toStrictEqual({ kind: 'user_content' })
     expect(classify({ content: 'x', planExecution: true })).toStrictEqual({ kind: 'plan_execution' })
     expect(classify({ type: 'interrupted' })).toMatchObject({ kind: 'notification' })
   })

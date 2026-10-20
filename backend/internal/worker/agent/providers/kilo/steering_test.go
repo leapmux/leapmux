@@ -53,7 +53,7 @@ func TestKiloSteersThroughTheFamily(t *testing.T) {
 	_, steers := any(&Agent{}).(agent.InputSteerer)
 	assert.True(t, steers, "Kilo steers through the family's second session/prompt")
 	ag := &Agent{}
-	*ag.HooksForTest() = opencode.FamilyHooks()
+	*ag.HooksForTest() = opencode.FamilyHooks(&ag.FamilyBase)
 	assert.True(t, ag.SupportsSteering(),
 		"every OpenCode-family provider steers with a second session/prompt")
 }

@@ -26,7 +26,7 @@ export function classifyCommandCodeMessage(input: ClassificationInput): MessageC
   if (!parent)
     return { kind: 'unknown' }
   if (!parent.type && typeof parent.content === 'string') {
-    return parent.hidden === true ? { kind: 'hidden' } : parent.planExecution === true ? { kind: 'plan_execution' } : { kind: 'user_content' }
+    return parent.planExecution === true ? { kind: 'plan_execution' } : { kind: 'user_content' }
   }
   if (parent.method === COMMAND_CODE_METHOD.TurnCompleted)
     return { kind: 'result_divider' }

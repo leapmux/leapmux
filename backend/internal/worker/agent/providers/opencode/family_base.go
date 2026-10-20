@@ -4,12 +4,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sync"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
+
+var _ agent.SteerPreparer = (*Agent)(nil)
 
 // FamilyBase is what OpenCode and Kilo share beyond the ACP base.
 //
@@ -19,6 +23,18 @@ import (
 type FamilyBase struct {
 	acp.Base
 	Questions openCodeQuestions
+	// MemberEvents receives native session metadata. Set it before the daemon reader starts.
+	MemberEvents    func(eventType string, properties json.RawMessage)
+	daemonMu        sync.Mutex
+	daemonMessages  map[string]*openCodeMessageState
+	daemonParts     map[string]string
+	lastAssistant   string
+	retryResolution providerkit.RetryResolution
+}
+
+func (b *FamilyBase) configureQuestions(sink agent.ControlServices) {
+	b.Questions.Configure(sink)
+	b.Questions.observe = b.handleDaemonEvent
 }
 
 // SendRawInput answers a question through the daemon's HTTP server, and sends every

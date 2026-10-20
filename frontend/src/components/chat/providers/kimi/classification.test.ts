@@ -68,7 +68,7 @@ describe('classifyKimiMessage', () => {
 
   it('reads the rows the service layer writes', () => {
     expect(classify({ content: 'Hello.' })).toStrictEqual({ kind: 'user_content' })
-    expect(classify({ content: 'Hidden.', hidden: true })).toStrictEqual({ kind: 'hidden' })
+    expect(classify({ content: 'Hidden.', hidden: true })).toStrictEqual({ kind: 'user_content' })
     expect(classify({ content: 'Run the plan.', planExecution: true })).toStrictEqual({ kind: 'plan_execution' })
     expect(classify({ type: 'interrupted' }).kind).toBe('notification')
     expect(classify({ type: 'something else' })).toStrictEqual({ kind: 'unknown' })

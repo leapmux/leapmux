@@ -58,6 +58,12 @@ func RawInt64(raw json.RawMessage) (int64, bool) {
 	return value, err == nil
 }
 
+// RawBool reads a JSON boolean. Other values return false, so a malformed
+// flag can never read as true.
+func RawBool(raw json.RawMessage) bool {
+	return bytes.Equal(bytes.TrimSpace(raw), []byte("true"))
+}
+
 // StringField reads a string member of a JSON object. Other inputs return an empty string.
 func StringField(content []byte, key string) string {
 	var fields map[string]json.RawMessage

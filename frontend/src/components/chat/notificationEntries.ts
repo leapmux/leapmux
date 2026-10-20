@@ -129,11 +129,6 @@ export function leapmuxNotificationEntry(
     }
     case NOTIFICATION_TYPE.ContextCleared:
       return [{ kind: 'context-cleared' }]
-    // The worker envelope reports that compaction started.
-    // It supplies no trigger or token count.
-    // blocksForEntry gives this neutral start entry its shared label.
-    case NOTIFICATION_TYPE.Compacting:
-      return [{ kind: 'compaction', phase: 'start' }]
     case NOTIFICATION_TYPE.PlanExecution:
       return [{ kind: 'text', text: 'Executing plan' }]
     case NOTIFICATION_TYPE.AgentError:

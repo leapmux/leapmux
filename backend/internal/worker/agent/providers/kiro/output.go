@@ -2,12 +2,14 @@ package kiro
 
 import (
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // Kiro states the metadata of a session on `session_info_update`, under
@@ -24,6 +26,8 @@ const (
 	kiroKindSummarizationFailed = "summarization_failed"
 	kiroKindHookUpdate          = "hook_update"
 	kiroKindRecap               = "recap"
+	kiroKindSteeringInjected    = "steering_injected"
+	kiroKindSteeringCleared     = "steering_cleared"
 )
 
 // The kinds that state nothing a LeapMux transcript or card shows. Each one is
@@ -32,14 +36,14 @@ var kiroSilentKinds = map[string]string{
 	"pending_interaction":      "the request itself follows it",
 	"user_message_id_assigned": "LeapMux keeps its own message ids",
 	"focus_update":             "LeapMux names its tabs itself and follows the turn state from the turn markers",
-	"steering_queued":          "the input queue of the worker states a steer",
-	"steering_injected":        "the input queue of the worker states a steer",
-	"steering_cleared":         "the input queue of the worker states a steer",
-	"steering_inclusion":       "the steering documents are Kiro's own context",
-	"queued":                   "the turn waits inside Kiro, and its markers follow",
-	"repositories_update":      "LeapMux reads the working directory itself",
-	"summarization_separator":  "Kiro sends it only on a replay, which LeapMux turns off",
-	"summary_message":          "Kiro sends it only on a replay, which LeapMux turns off",
+	// steering_queued states the queue the worker already knows; the
+	// injected and cleared kinds drive the steer ledger instead.
+	"steering_queued":         "the input queue of the worker states a steer",
+	"steering_inclusion":      "the steering documents are Kiro's own context",
+	"queued":                  "the turn waits inside Kiro, and its markers follow",
+	"repositories_update":     "LeapMux reads the working directory itself",
+	"summarization_separator": "Kiro sends it only on a replay, which LeapMux turns off",
+	"summary_message":         "Kiro sends it only on a replay, which LeapMux turns off",
 }
 
 // Kiro's stop reasons of a turn, beside the protocol's own end_turn and
@@ -63,7 +67,7 @@ const kiroMetaReplayID = "replayId"
 
 // chunkMessageID reads the answer that one chunk belongs to, from the `_meta` of
 // the update. It is "" for a chunk that states none.
-func chunkMessageID(metadata map[string]json.RawMessage) string {
+func chunkMessageID(_ agent.AssembledMessageKind, metadata map[string]json.RawMessage) string {
 	return fieldString(kiroFields(metadata[contracts.KiroMetaNamespace]), kiroMetaReplayID)
 }
 
@@ -119,16 +123,35 @@ type turnState struct {
 	// a turn end that is not an error writes it, and otherwise the end of the
 	// prompt decides (see handlePromptEnded).
 	heldError string
+	// heldEndFrame is the native error turn end of a prompt of LeapMux's,
+	// which the failed prompt writes as its divider (see handlePromptEnded).
+	heldEndFrame json.RawMessage
 }
 
 // handleSessionMetadata reads the `_meta` of one update of the main session.
-// It answers true for an update that it consumed: every session_info_update,
-// because Kiro sends one for each marker and each metadata change, and none of
-// them is conversation.
+// It answers true for an update that it consumed: each session_info_update of
+// a kind it knows, because Kiro sends one for each marker and each metadata
+// change, and none of them is conversation. An unknown kind answers false, so
+// the update persists where the reader can see what a later build states.
 func (a *Agent) handleSessionMetadata(updateType string, metadata map[string]json.RawMessage, update json.RawMessage) bool {
 	raw := metadata[contracts.KiroMetaNamespace]
 	fields := kiroFields(raw)
 	if updateType != "session_info_update" {
+		// Kiro copies the kiro metadata of the prompt into every chunk of its
+		// turn, so a main-session text chunk with none at all is the answer of
+		// an execution that Kiro aborted: its text reaches no reader.
+		if updateType == "agent_message_chunk" && len(metadata) == 0 {
+			return true
+		}
+		// A content-filter refusal rides a text chunk of its own: the answer
+		// keeps the text before it, and the refusal frame becomes its own row.
+		if updateType == "agent_message_chunk" && len(pickRefusal(fields)) > 0 {
+			a.FlushBufferedOutput(agent.MessageCompletionComplete)
+			if _, err := a.Sink().PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: update, AgentSessionID: a.CurrentSessionID()}); err != nil {
+				slog.Error("kiro persist refusal chunk", "agent_id", a.AgentID(), "error", err)
+			}
+			return true
+		}
 		a.observeConversationUpdate(fields)
 		return false
 	}
@@ -147,17 +170,29 @@ func (a *Agent) handleSessionMetadata(updateType string, metadata map[string]jso
 	case kiroKindInteractionResolved:
 		a.handleInteractionResolved(raw)
 	case kiroKindSummarizationStart, kiroKindSummarizationDone, kiroKindSummarizationFailed:
-		a.reportSummarization(kind, raw)
+		a.reportSummarization(kind, raw, update)
 	case kiroKindHookUpdate:
-		a.reportHook(raw)
+		a.reportHook(raw, update)
 	case kiroKindRecap:
 		a.reportRecap(raw)
+	case kiroKindSteeringInjected:
+		a.handleSteeringInjected(fieldString(fields, "messageId"))
+	case kiroKindSteeringCleared:
+		a.handleSteeringCleared(fields["messageIds"])
 	default:
 		if reason, silent := kiroSilentKinds[kind]; silent {
 			slog.Debug("kiro session info not shown", "agent_id", a.AgentID(), "kind", kind, "reason", reason)
-		} else {
-			slog.Warn("kiro session info of an unknown kind", "agent_id", a.AgentID(), "kind", kind)
+			return true
 		}
+		// An unknown kind persists its update, so the reader can see what a
+		// later Kiro build states (decision 1). The base's own
+		// session_info_update case consumes silently, so this handler writes
+		// the row itself.
+		slog.Warn("kiro session info of an unknown kind", "agent_id", a.AgentID(), "kind", kind)
+		if _, err := a.Sink().PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: update, AgentSessionID: a.CurrentSessionID()}); err != nil {
+			slog.Error("kiro persist unknown session info", "agent_id", a.AgentID(), "kind", kind, "error", err)
+		}
+		return true
 	}
 	return true
 }
@@ -236,6 +271,15 @@ func (a *Agent) handleTurnEnd(stopReason string, update json.RawMessage) {
 	}
 	if agentTurn {
 		a.EndAgentTurn(append(json.RawMessage(nil), update...))
+		return
+	}
+	// An error end of a prompt of LeapMux's keeps its native frame for the
+	// divider of that prompt: the error row lands above it (see
+	// handlePromptEnded).
+	if stopReason == kiroStopError {
+		a.stateMu.Lock()
+		a.turns.heldEndFrame = append(json.RawMessage(nil), update...)
+		a.stateMu.Unlock()
 	}
 }
 
@@ -258,17 +302,25 @@ func (a *Agent) logTurnCompletion(raw json.RawMessage) {
 }
 
 // broadcastContextUsage broadcasts the fill of the context window. Kiro
-// reports it as a percentage and states no token count.
+// reports a percentage and a breakdown whose categories each state their own
+// token count; the meter sums them, because the whole window is what fills.
+// The window size arrives only when the current model states one, which the
+// reply of a compaction refreshes.
 func (a *Agent) broadcastContextUsage(raw json.RawMessage) {
 	var usage struct {
 		UsagePercentage *float64 `json:"usagePercentage"`
 		ContextUsage    struct {
 			UsagePercentage *float64 `json:"usagePercentage"`
 		} `json:"contextUsage"`
+		Breakdown json.RawMessage `json:"breakdown"`
 	}
 	if json.Unmarshal(raw, &usage) != nil {
 		return
 	}
+	var categories map[string]struct {
+		Tokens float64 `json:"tokens"`
+	}
+	_ = json.Unmarshal(usage.Breakdown, &categories)
 	percent := usage.ContextUsage.UsagePercentage
 	if percent == nil {
 		percent = usage.UsagePercentage
@@ -276,9 +328,27 @@ func (a *Agent) broadcastContextUsage(raw json.RawMessage) {
 	if percent == nil || *percent < 0 {
 		return
 	}
+	info := map[string]any{contracts.ContextUsageFieldUsagePercent: *percent}
+	if tokens := sumKiroBreakdown(categories); tokens > 0 {
+		info[contracts.ContextUsageFieldContextTokens] = tokens
+	}
+	if window := a.contextWindow(); window > 0 {
+		info[contracts.ContextUsageFieldContextWindow] = window
+	}
 	a.Sink().BroadcastSessionInfo(map[string]any{
-		contracts.SessionInfoKeyContextUsage: map[string]any{contracts.ContextUsageFieldUsagePercent: *percent},
+		contracts.SessionInfoKeyContextUsage: info,
 	})
+}
+
+// sumKiroBreakdown adds the top-level token count of every category.
+func sumKiroBreakdown(categories map[string]struct {
+	Tokens float64 `json:"tokens"`
+}) float64 {
+	var total float64
+	for _, category := range categories {
+		total += category.Tokens
+	}
+	return total
 }
 
 // handleDisplayError states an error that Kiro shows its own reader: a model
@@ -322,78 +392,64 @@ func (a *Agent) handleDisplayError(raw json.RawMessage) {
 // prompt, and the reader then reads the reason once. A prompt that returned a
 // result, or that the reader stopped, writes no failure note, so the display
 // error is the only record of the reason.
-func (a *Agent) handlePromptEnded(err error, stopped bool) {
+func (a *Agent) handlePromptEnded(err error, stopped bool) acp.PromptEnding {
 	a.stateMu.Lock()
 	held := a.turns.heldError
 	a.turns.heldError = ""
+	frame := a.turns.heldEndFrame
+	a.turns.heldEndFrame = nil
 	a.stateMu.Unlock()
-	if held == "" {
-		return
+	if held != "" {
+		if err != nil && !stopped && strings.Contains(err.Error(), held) {
+			return acp.PromptEnding{}
+		}
+		a.persistAgentError(held)
 	}
-	if err != nil && !stopped && strings.Contains(err.Error(), held) {
-		return
+	// The failed prompt writes the native error turn end as its divider, so
+	// the reader sees why the turn ended beside the error itself.
+	if err != nil && !stopped && len(frame) > 0 {
+		return acp.PromptEnding{EndFrame: frame}
 	}
-	a.persistAgentError(held)
+	return acp.PromptEnding{}
 }
 
 // reportSummarization states a compaction of the context in the transcript.
 // Kiro compacts on request and on its own at a threshold, and the reader sees
 // neither in the conversation otherwise.
-func (a *Agent) reportSummarization(kind string, raw json.RawMessage) {
-	var summarization struct {
-		Summarization struct {
-			Status string `json:"status"`
-		} `json:"summarization"`
-	}
-	_ = json.Unmarshal(raw, &summarization)
+func (a *Agent) reportSummarization(kind string, raw json.RawMessage, update json.RawMessage) {
 	switch kind {
 	case kiroKindSummarizationStart:
-		a.persistCompacting()
-	case kiroKindSummarizationDone:
+		providerkit.PublishCompaction(a.Sink(), "auto")
+	case kiroKindSummarizationDone, kiroKindSummarizationFailed:
 		a.noteCompactionSummarized()
-		a.persistStatus("Context compacted")
-	case kiroKindSummarizationFailed:
-		a.noteCompactionSummarized()
-		reason := strings.TrimSpace(strings.ReplaceAll(summarization.Summarization.Status, "_", " "))
-		if reason == "" {
-			a.persistStatus("Context compaction failed")
-			return
+		a.FlushBufferedOutput(agent.MessageCompletionComplete)
+		if _, err := a.Sink().PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: update, AgentSessionID: a.CurrentSessionID()}); err != nil {
+			slog.Error("kiro persist summarization end", "agent_id", a.AgentID(), "error", err)
 		}
-		a.persistStatus("Context compaction failed: " + reason)
+		providerkit.EndCompaction(a.Sink())
 	}
 }
 
-// reportHook states the end of a hook that Kiro ran. A hook is the user's own
-// automation, so its end is the reader's to see, and a failure most of all.
-// A running hook states nothing yet, and a hook that waits for approval raises
-// a permission request of its own.
-func (a *Agent) reportHook(raw json.RawMessage) {
-	var update struct {
+// reportHook reads the end of a hook that Kiro ran. A v2 completed hook
+// states nothing a reader can use: a failure looks the same as a success, so
+// Kiro itself cannot be asked which happened. A v1 failed or canceled hook
+// carries its command result, and its native frame becomes the row the hook
+// entry renders. A running hook states nothing yet, and a hook that waits for
+// approval raises a permission request of its own.
+func (a *Agent) reportHook(raw json.RawMessage, update json.RawMessage) {
+	var hook struct {
 		Hook struct {
-			Name   string `json:"name"`
 			Status string `json:"status"`
-			Output string `json:"output"`
 		} `json:"hook"`
 	}
-	if json.Unmarshal(raw, &update) != nil {
+	if json.Unmarshal(raw, &hook) != nil {
 		return
 	}
-	name := strings.TrimSpace(update.Hook.Name)
-	if name == "" {
-		name = "a hook"
-	}
-	output := strings.TrimSpace(update.Hook.Output)
-	switch update.Hook.Status {
-	case "completed":
-		a.persistStatus(fmt.Sprintf("Hook %s completed", name))
-	case "failed":
-		text := fmt.Sprintf("Hook %s failed", name)
-		if output != "" {
-			text += ": " + output
+	switch hook.Hook.Status {
+	case "failed", "canceled":
+		if _, err := a.Sink().PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: update, AgentSessionID: a.CurrentSessionID()}); err != nil {
+			slog.Error("kiro persist hook update", "agent_id", a.AgentID(), "error", err)
 		}
-		a.persistStatus(text)
-	case "canceled":
-		a.persistStatus(fmt.Sprintf("Hook %s canceled", name))
 	}
 }
 
@@ -411,13 +467,6 @@ func (a *Agent) reportRecap(raw json.RawMessage) {
 	if text := strings.TrimSpace(recap.Recap.Text); text != "" {
 		a.persistStatus("Recap: " + text)
 	}
-}
-
-// persistCompacting states that a compaction of the context started.
-func (a *Agent) persistCompacting() {
-	a.Sink().PersistLeapMuxNotification(map[string]any{
-		contracts.NotificationFieldType: contracts.NotificationTypeCompacting,
-	})
 }
 
 // persistStatus states one live status of Kiro's in the transcript.
@@ -519,4 +568,61 @@ func (a *Agent) handleContentChunk(params json.RawMessage) {
 	a.stateMu.Unlock()
 	sink.ReportProgress(agent.OutputTotalProgress(chunk.ToolCallID, total, false))
 	sink.ReportProgress(agent.OutputTailProgress(chunk.ToolCallID, tail, lost))
+}
+
+// handleSteeringInjected reports one steer as read by the model. The flush
+// runs first, so the text that the model wrote before the injection lands
+// above the steer row. An injection whose steer reply has not stated its id
+// yet waits in the early set; the reply completes it.
+func (a *Agent) handleSteeringInjected(messageID string) {
+	if messageID == "" {
+		return
+	}
+	a.FlushBufferedOutput(agent.MessageCompletionComplete)
+	if !a.steers.EchoID(messageID) {
+		a.stateMu.Lock()
+		if a.earlySteerEchoes == nil {
+			a.earlySteerEchoes = make(map[string]providerkit.SteerTicket)
+		}
+		a.earlySteerEchoes[messageID] = 0
+		a.stateMu.Unlock()
+		return
+	}
+	a.steers.Settle(a.Sink())
+}
+
+// handleSteeringCleared drops each steer that Kiro cleared without injecting:
+// the turn it belonged to is over, and Kiro itself states that the model never
+// read it.
+func (a *Agent) handleSteeringCleared(raw json.RawMessage) {
+	var cleared []string
+	if json.Unmarshal(raw, &cleared) != nil {
+		return
+	}
+	dropped := false
+	for _, id := range cleared {
+		a.stateMu.Lock()
+		_, early := a.earlySteerEchoes[id]
+		delete(a.earlySteerEchoes, id)
+		a.stateMu.Unlock()
+		if early {
+			// The injection never reached its own steer entry, so nothing is
+			// pending under this id. The early marker alone ends here.
+			continue
+		}
+		if a.steers.DropID(id) {
+			dropped = true
+		}
+	}
+	if dropped {
+		a.steers.Settle(a.Sink())
+	}
+}
+
+// pickRefusal reads the refusal object of one kiro metadata block, or nil.
+func pickRefusal(fields map[string]json.RawMessage) json.RawMessage {
+	if fields == nil {
+		return nil
+	}
+	return fields[contracts.KiroMetaRefusal]
 }

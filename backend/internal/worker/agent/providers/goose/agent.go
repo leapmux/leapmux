@@ -19,6 +19,17 @@ const (
 type Agent struct {
 	acp.Base
 	gooseOutput map[string]gooseOutputState
+	// The goal-end rule reads the last agent message of the running prompt.
+	// goalArmed is set by the goal notice and consumed at PromptEnded.
+	goalArmed           bool
+	goalObjective       string
+	goalLastMessageID   string
+	goalLastMessageText string
+	// gooseChildRenames remembers each delegate ack's row rename, from the
+	// spawn toolCallId to the native session id the ack stated. A tool request
+	// that arrives after the ack still names the spawn id, so it must reach
+	// the renamed row.
+	gooseChildRenames map[string]string
 }
 
 // This assertion makes a missing Agent method a compile error.
@@ -28,6 +39,7 @@ var _ agent.Agent = (*Agent)(nil)
 // provider that stops satisfying InputSteerer, so this assertion makes that
 // regression a compile error.
 var _ agent.InputSteerer = (*Agent)(nil)
+var _ agent.SteerPreparer = (*Agent)(nil)
 
 func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
 	method, active, sessionID, runID := a.SteerTarget()

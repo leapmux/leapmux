@@ -13,6 +13,14 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
+var sessionStateUpdates = func() map[string]struct{} {
+	updates := make(map[string]struct{}, len(contracts.ACPSessionStateUpdateMembers))
+	for _, update := range contracts.ACPSessionStateUpdateMembers {
+		updates[update] = struct{}{}
+	}
+	return updates
+}()
+
 // conversation renders the session updates of ONE conversation into ONE
 // transcript. The main conversation is the session that the agent serves, and
 // it writes to the transcript of the agent. A child conversation is a subagent
@@ -66,16 +74,31 @@ func (c *conversation) agentID() string {
 // can apply it to the session state.
 func (c *conversation) handleUpdate(header acpUpdateHeader, update json.RawMessage) bool {
 	updateType, status, content := header.SessionUpdate, header.Status, header.Content
+	// State updates never split or enter the conversation's transcript.
+	// The base applies their state separately, including the stored native mode record.
+	if _, stateOnly := sessionStateUpdates[updateType]; stateOnly {
+		return false
+	}
+	messageID := header.MessageID
+	if c.b.hooks.ChunkMessageID != nil && (updateType == contracts.ACPUpdateAgentMessageChunk || updateType == contracts.ACPUpdateAgentThoughtChunk) {
+		kind := agent.AssembledMessageKindText
+		if updateType == contracts.ACPUpdateAgentThoughtChunk {
+			kind = agent.AssembledMessageKindReasoning
+		}
+		if providerID := c.b.hooks.ChunkMessageID(kind, header.Meta); providerID != "" {
+			messageID = providerID
+		}
+	}
 	// Flush model segments at each chronology boundary. Status and tool-progress
 	// updates do not split a segment.
 	switch updateType {
 	case contracts.ACPUpdateAgentMessageChunk:
 		c.flushThoughtBuffer()
-		c.flushOnNewMessage(agent.AssembledMessageKindText, header.Meta)
+		c.flushOnNewMessage(agent.AssembledMessageKindText, messageID)
 	case contracts.ACPUpdateAgentThoughtChunk:
 		c.flushAssistantBuffer()
-		c.flushOnNewMessage(agent.AssembledMessageKindReasoning, header.Meta)
-	case contracts.ACPUpdateToolCall, acpUpdatePlan:
+		c.flushOnNewMessage(agent.AssembledMessageKindReasoning, messageID)
+	case contracts.ACPUpdateToolCall, contracts.ACPUpdatePlan:
 		c.flushThoughtBuffer()
 		c.flushAssistantBuffer()
 	case contracts.ACPUpdateToolCallUpdate:
@@ -83,15 +106,6 @@ func (c *conversation) handleUpdate(header acpUpdateHeader, update json.RawMessa
 			c.flushThoughtBuffer()
 			c.flushAssistantBuffer()
 		}
-	case contracts.ACPUpdateUsageUpdate,
-		contracts.ACPUpdateCurrentMode,
-		contracts.ACPUpdateUserMessageChunk,
-		contracts.ACPUpdateAvailableCommandsUpdate,
-		contracts.ACPUpdateConfigOptionUpdate,
-		contracts.ACPUpdateSessionInfoUpdate:
-		// no flush. session_info_update carries the runtime's own title and modified
-		// time, and one arrives for every turn, so a flush here split each assembled
-		// message in two. The switch below reads nothing from it.
 	default:
 		c.flushThoughtBuffer()
 		c.flushAssistantBuffer()
@@ -99,22 +113,15 @@ func (c *conversation) handleUpdate(header acpUpdateHeader, update json.RawMessa
 
 	switch updateType {
 	case contracts.ACPUpdateAgentMessageChunk:
-		c.bufferChunk(content)
+		c.bufferChunk(content, messageID)
 	case contracts.ACPUpdateAgentThoughtChunk:
-		c.handleThoughtChunk(content)
+		c.handleThoughtChunk(content, messageID)
 	case contracts.ACPUpdateToolCall:
 		c.handleToolCall(update)
 	case contracts.ACPUpdateToolCallUpdate:
 		c.handleToolCallUpdate(update)
-	case acpUpdatePlan:
+	case contracts.ACPUpdatePlan:
 		c.handlePlan(update)
-	case contracts.ACPUpdateUsageUpdate,
-		contracts.ACPUpdateConfigOptionUpdate,
-		contracts.ACPUpdateCurrentMode,
-		contracts.ACPUpdateUserMessageChunk,
-		contracts.ACPUpdateAvailableCommandsUpdate,
-		contracts.ACPUpdateSessionInfoUpdate:
-		return false
 	default:
 		if err := c.sink().PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: update}, agent.SpanInfo{}); err != nil {
 			slog.Error("persist unknown acp sessionUpdate", "agent_id", c.b.AgentID(), "child_agent_id", c.childAgentID, "type", updateType, "error", err)
@@ -123,27 +130,22 @@ func (c *conversation) handleUpdate(header acpUpdateHeader, update json.RawMessa
 	return true
 }
 
-// flushOnNewMessage stores the buffered text of one kind as a message of its
-// own when the next chunk of that kind belongs to another message. Only a
-// provider that states the message of a chunk (Hooks.ChunkMessageID) splits
-// this way. For every other provider, a run of chunks stays one message until
-// another update ends it, because the protocol states no message boundary.
-func (c *conversation) flushOnNewMessage(kind agent.AssembledMessageKind, metadata map[string]json.RawMessage) {
-	if c.b.hooks.ChunkMessageID == nil {
-		return
-	}
-	if c.out.switchMessage(kind, c.b.hooks.ChunkMessageID(metadata)) {
+// flushOnNewMessage closes the buffered segment of one message kind when a
+// chunk arrives that belongs to a different message. A chunk of the same
+// message keeps the buffer open, so one message assembles one row.
+func (c *conversation) flushOnNewMessage(kind agent.AssembledMessageKind, messageID string) {
+	if _, flush := c.out.switchMessage(kind, messageID); flush {
 		c.flushTextBuffer(kind)
 	}
 }
 
 // bufferChunk extracts text from a pre-parsed content envelope and counts it.
-func (c *conversation) bufferChunk(content json.RawMessage) {
+func (c *conversation) bufferChunk(content json.RawMessage, messageID string) {
 	text := c.b.extractACPChunkText(content, contracts.ACPUpdateAgentMessageChunk)
 	if text == "" {
 		return
 	}
-	c.out.appendAssistant(text)
+	c.out.appendAssistant(text, messageID)
 	c.sink().ReportProgress(agent.ModelTextProgress("acp:"+contracts.ACPUpdateAgentMessageChunk, text))
 }
 
@@ -151,13 +153,13 @@ func (c *conversation) bufferChunk(content json.RawMessage) {
 // later flushing. ACP providers vary in chunk size. Persisting each
 // notification would produce a separate Thinking row for each token. The
 // buffer flushes when another event interrupts it or when the turn ends.
-func (c *conversation) handleThoughtChunk(content json.RawMessage) {
+func (c *conversation) handleThoughtChunk(content json.RawMessage, messageID string) {
 	text := c.b.extractACPChunkText(content, contracts.ACPUpdateAgentThoughtChunk)
 	if text == "" {
 		return
 	}
 	// A chunk opens a segment when the thought buffer was empty before it.
-	freshSegment := c.out.appendThought(text)
+	freshSegment := c.out.appendThought(text, messageID)
 	// A new reasoning segment completes the preceding assistant counter scope.
 	if freshSegment {
 		c.sink().ReportProgress(agent.CompleteModelProgress("acp:" + contracts.ACPUpdateAgentMessageChunk))
@@ -177,18 +179,18 @@ func (c *conversation) flushAssistantBuffer() {
 }
 
 func (c *conversation) flushTextBuffer(kind agent.AssembledMessageKind) {
-	text := c.out.takeText(kind)
+	text, messageID := c.out.takeText(kind)
 	if text == "" {
 		return
 	}
-	c.persistFinishedText(kind, text, agent.MessageCompletionComplete)
+	c.persistFinishedText(kind, messageID, text, agent.MessageCompletionComplete)
 }
 
 // persistFinishedText closes the live counter and stores the segment with its actual completion.
 // Close the counter even for empty text, so it cannot count characters from the next segment.
-func (c *conversation) persistFinishedText(kind agent.AssembledMessageKind, text string, completion agent.MessageCompletion) {
+func (c *conversation) persistFinishedText(kind agent.AssembledMessageKind, messageID, text string, completion agent.MessageCompletion) {
 	c.sink().ReportProgress(agent.CompleteModelProgress("acp:" + acpTextProgressScope(kind)))
-	c.persistAssembledText(kind, text, completion)
+	c.persistAssembledText(kind, messageID, text, completion)
 }
 
 // persistAssembledText stores one assembled text segment.
@@ -199,7 +201,7 @@ func (c *conversation) persistFinishedText(kind agent.AssembledMessageKind, text
 // chunk-shaped object instead would put a message the agent never sent into the
 // column that holds the agent's own bytes -- and the interrupted path already used
 // this envelope, so the completed path had a second shape for the same content.
-func (c *conversation) persistAssembledText(kind agent.AssembledMessageKind, text string, completion agent.MessageCompletion) {
+func (c *conversation) persistAssembledText(kind agent.AssembledMessageKind, messageID, text string, completion agent.MessageCompletion) {
 	if text == "" {
 		return
 	}
@@ -208,7 +210,23 @@ func (c *conversation) persistAssembledText(kind agent.AssembledMessageKind, tex
 		slog.Warn("marshal assembled acp text", "agent_id", c.b.AgentID(), "child_agent_id", c.childAgentID, "error", err)
 		return
 	}
-	if err := c.sink().PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw}, agent.SpanInfo{}); err != nil {
+	selectText := c.b.hooks.SegmentText
+	prepare := func() []byte {
+		if c.childSink != nil || selectText == nil {
+			return raw
+		}
+		selected := selectText(kind, messageID, text)
+		if selected == "" {
+			return nil
+		}
+		selectedRaw, encodeErr := agent.MarshalAssembledMessage(kind, selected, completion)
+		if encodeErr != nil {
+			slog.Error("marshal selected ACP text", "agent_id", c.b.AgentID(), "error", encodeErr)
+			return nil
+		}
+		return selectedRaw
+	}
+	if err := agent.PersistPreparedMessage(c.sink(), leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw}, agent.SpanInfo{}, prepare); err != nil {
 		slog.Error("persist assembled acp text", "agent_id", c.b.AgentID(), "child_agent_id", c.childAgentID, "error", err)
 	}
 }
@@ -217,8 +235,8 @@ func (c *conversation) persistAssembledText(kind agent.AssembledMessageKind, tex
 // frame: the text that it assembled and each tool call that it left open are
 // stored with completion.
 func (c *conversation) finishTurn(turn acpTurnSnapshot, completion agent.MessageCompletion) {
-	c.persistAssembledText(agent.AssembledMessageKindReasoning, turn.thoughtText, completion)
-	c.persistAssembledText(agent.AssembledMessageKindText, turn.assistantText, completion)
+	c.persistAssembledText(agent.AssembledMessageKindReasoning, turn.thoughtMessageID, turn.thoughtText, completion)
+	c.persistAssembledText(agent.AssembledMessageKindText, turn.assistantMessageID, turn.assistantText, completion)
 	c.persistIncompleteTools(turn.incompleteTools, completion)
 }
 
@@ -583,6 +601,15 @@ func (c *conversation) applySubagentObservation(obs *SubagentObservation) {
 			if err := sink.PersistChildMessage(childAgentID, leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, obs.ChildTranscriptPayload, agent.SpanInfo{}); err != nil {
 				slog.Warn("acp subagent child persist failed", "provider", b.ProviderName(), "row_key", rowKey, "error", err)
 			}
+		}
+		// A child update runs after the registry row and the child conversation
+		// exist, so the route is known. A refused route stores nothing in the
+		// parent; the child conversation itself logs.
+		if obs.ChildUpdate != nil && !c.b.FeedChildUpdate(rowKey, obs.ChildUpdate) {
+			slog.Debug("acp subagent child update reached no child conversation", "provider", c.b.ProviderName(), "row_key", rowKey)
+		}
+		if obs.ChildUpdate != nil && obs.ChildUpdateFlush {
+			c.b.FinishChildTurn(rowKey)
 		}
 	}
 	lookupOK := true

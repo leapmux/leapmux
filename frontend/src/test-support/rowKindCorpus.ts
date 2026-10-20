@@ -923,35 +923,27 @@ export const ROW_KIND_CASES: RowKindCase[] = [
     category: 'unsupported_provider',
   },
   // --- Letta Code --------------------------------------------------------
+  // The worker assembles streamed text and reasoning into the shared envelope,
+  // and it stores each tool delta flat, with its message_type at the top level
+  // exactly as the wire sent it. A wrapped `{kind, payload}` frame is the wire
+  // envelope, never a stored row.
   {
     provider: Provider.LETTA,
-    name: 'assistant text',
-    payload: { kind: 'stream_delta', payload: { message_type: 'assistant_message', content: [{ type: 'text', text: 'Hello from the mock model.' }] } },
-    category: 'assistant_text',
-  },
-  {
-    provider: Provider.LETTA,
-    name: 'reasoning',
-    payload: { kind: 'stream_delta', payload: { message_type: 'reasoning_message', content: [{ type: 'text', text: 'The user says hello.' }] } },
+    name: 'assembled reasoning',
+    payload: { type: 'assembled_message', kind: 'reasoning', text: 'The user says hello.', completion: 'complete' },
     category: 'assistant_thinking',
   },
   {
     provider: Provider.LETTA,
-    name: 'tool call',
-    payload: { kind: 'stream_delta', payload: { message_type: 'client_tool_start', tool_call_id: 'call_1', tool_name: 'Bash', tool_input: { command: 'echo hi' } } },
+    name: 'tool call of the stored delta',
+    payload: { message_type: 'client_tool_start', tool_call_id: 'call_1', tool_name: 'Bash', tool_input: { command: 'echo hi' } },
     category: 'tool_use',
   },
   {
     provider: Provider.LETTA,
-    name: 'tool result',
-    payload: { kind: 'stream_delta', payload: { message_type: 'tool_return_message', tool_call_id: 'call_1', tool_name: 'Bash', tool_return: 'hi\n' } },
+    name: 'tool result of the stored delta',
+    payload: { message_type: 'tool_return_message', tool_call_id: 'call_1', tool_name: 'Bash', tool_return: 'hi\n' },
     category: 'tool_result',
-  },
-  {
-    provider: Provider.LETTA,
-    name: 'turn end',
-    payload: { kind: 'turn_finished', payload: { turn_id: 't1', stop_reason: 'end_turn' } },
-    category: 'result_divider',
   },
   // The shapes the worker really persists. The wire discriminator of a
   // protocol_v2 message is `type`, never `kind`, and the turn end is FLAT: its

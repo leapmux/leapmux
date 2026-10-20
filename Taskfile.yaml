@@ -1224,7 +1224,8 @@ tasks:
     status: *artifact_status
     cmds:
       - *forget_artifacts
-      - cd backend && go tool golangci-lint run ./...
+      # The linter uses one process lock across worktrees. Wait for its current owner.
+      - cd backend && go tool golangci-lint run --allow-serial-runners ./...
       # golangci-lint checks only the host build configuration.
       # An untagged caller can compile here but fail on Windows if its callee exists only in a Unix-tagged file.
       # Cross-platform go vet checks test files also. go build omits _test.go files and cannot detect that failure.

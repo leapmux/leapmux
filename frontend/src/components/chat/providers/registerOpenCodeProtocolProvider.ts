@@ -6,6 +6,7 @@ import { registerACPProvider } from './acp/registerACPProvider'
 import { openCodeControlResponseSummary } from './opencode/controlResponse'
 import { openCodeExtractControl } from './opencode/extractControl'
 import { openCodeToolCallAdapterFor } from './opencode/extractors/toolCall'
+import { openCodeNativeNotifications } from './openCodeEvents'
 import { extractOpenCodeQuestions, sendOpenCodeQuestionRejectResponse, sendOpenCodeQuestionResponse } from './openCodeQuestions'
 
 /**
@@ -36,6 +37,7 @@ const PLAN_PRIMARY_AGENT = 'plan'
 export function registerOpenCodeProtocolProvider(opts: OpenCodeProtocolOptions): void {
   registerACPProvider({
     provider: opts.provider,
+    nativeNotifications: openCodeNativeNotifications,
     ...(opts.outputFilePaths ? { outputFilePaths: opts.outputFilePaths } : {}),
     toolCallAdapter: openCodeToolCallAdapterFor(opts),
     settingsConfig: {

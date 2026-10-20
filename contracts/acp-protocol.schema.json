@@ -8,6 +8,7 @@
   "required": [
     "_readme",
     "updates",
+    "sessionStateUpdates",
     "roles",
     "supplementIdentity",
     "supplementRequest",
@@ -134,6 +135,12 @@
     },
     "updates": {
       "$ref": "#/$defs/table"
+    },
+    "sessionStateUpdates": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^[A-Z][A-Za-z0-9]*$" }
     },
     "roles": {
       "$ref": "#/$defs/table"

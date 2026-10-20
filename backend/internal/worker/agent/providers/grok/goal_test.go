@@ -157,7 +157,7 @@ func TestGrokGoalStatusMapping(t *testing.T) {
 	t.Parallel()
 	for wire, want := range map[string]agent.GoalStatus{
 		"active": agent.GoalStatusActive, "user_paused": agent.GoalStatusPaused, "back_off_paused": agent.GoalStatusPaused,
-		"no_progress_paused": agent.GoalStatusPaused, "infra_paused": agent.GoalStatusPaused, "doom_loop_paused": agent.GoalStatusPaused,
+		"no_progress_paused": agent.GoalStatusPaused, "infra_paused": agent.GoalStatusPaused,
 		"blocked": agent.GoalStatusBlocked, "budget_limited": agent.GoalStatusBlocked, "complete": agent.GoalStatusDone,
 		"something-new": agent.GoalStatusBlocked,
 	} {
@@ -260,7 +260,6 @@ func TestGrokGoalStatusDetail(t *testing.T) {
 	}{
 		{status: "active", message: "ignored", want: ""},
 		{status: "user_paused", message: "ignored", want: ""},
-		{status: "doom_loop_paused", message: "the legacy name of a user pause", want: ""},
 		{status: "complete", message: "ignored", want: ""},
 		{status: "back_off_paused", want: "back off paused"},
 		{status: "blocked", message: " Waiting for CI ", want: "blocked: Waiting for CI"},

@@ -22,7 +22,7 @@ func TestKiloFamilyHooksKeepNativeChildIdentityAcrossRename(t *testing.T) {
 	sink := &agenttest.Sink{}
 	a := &Agent{}
 	a.SetSinkForTest(agent.NewProviderServices(sink))
-	*a.HooksForTest() = opencode.FamilyHooks()
+	*a.HooksForTest() = opencode.FamilyHooks(&a.FamilyBase)
 	a.HandleToolCallForTest(json.RawMessage(`{"sessionUpdate":"tool_call","toolCallId":"kilo-native-call","title":"task","kind":"think","status":"pending","rawInput":{}}`))
 	empty, found := sink.BackgroundTask("kilo-native-call")
 	require.True(t, found)

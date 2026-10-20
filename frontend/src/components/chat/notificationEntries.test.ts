@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { GOAL_STATUS_TOKEN, GOAL_TRANSITION, NOTIFICATION_FIELD, NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
 import { AgentProvider, AvailableOptionGroupSchema } from '~/generated/proto/leapmux/v1/agent_pb'
 import { clearSettingsLabelCache, updateSettingsLabelCache } from '~/lib/settingsLabelCache'
-import { autoReviewTitle, COMPACTING_LABEL, compactionContextTokens, flattenNotificationEntries, leapmuxNotificationEntry, notificationEntriesFor, pendingRequestsApprovedLabel } from './notificationEntries'
+import { autoReviewTitle, compactionContextTokens, flattenNotificationEntries, leapmuxNotificationEntry, pendingRequestsApprovedLabel } from './notificationEntries'
 import * as providerRegistry from './providers/registry'
 import { providerFor } from './providers/registry'
 
@@ -158,16 +158,16 @@ describe('leapmuxNotificationEntry', () => {
       .toEqual([{ kind: 'text', text: 'API retry 3' }])
   })
 
-  it('reads the compacting envelope as the neutral start of a compaction', () => {
-    expect(leapmuxNotificationEntry({ type: NOTIFICATION_TYPE.Compacting }, AgentProvider.OPENCODE))
-      .toStrictEqual([{ kind: 'compaction', phase: 'start' }])
+  it('reads the compaction-ended envelope as a failed end', () => {
+    expect(leapmuxNotificationEntry({ type: NOTIFICATION_TYPE.CompactionEnded }, AgentProvider.OPENCODE))
+      .toStrictEqual([{ kind: 'compaction', phase: 'end', outcome: 'failed' }])
   })
 
-  it('draws the compacting row for a provider that supplies no notificationEntry hook', () => {
-    // Confirm that this provider supplies no notification hook.
-    expect(providerFor(AgentProvider.OPENCODE)?.transcript.notificationEntry).toBeUndefined()
-    expect(flattenNotificationEntries(notificationEntriesFor({ type: NOTIFICATION_TYPE.Compacting }, AgentProvider.OPENCODE)))
-      .toStrictEqual([{ kind: 'divider', text: COMPACTING_LABEL, loading: true }])
+  it('leaves an old compacting envelope of an older build unrecognized', () => {
+    // The type is gone from the vocabulary: no worker writes it, and a stored
+    // row draws the no-display card (decision 22).
+    expect(leapmuxNotificationEntry({ type: 'compacting' }, AgentProvider.OPENCODE))
+      .toBeNull()
   })
 })
 

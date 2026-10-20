@@ -2,10 +2,13 @@ package opencode
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // FamilyProvider is the plugin half OpenCode and Kilo share: both are
@@ -13,6 +16,28 @@ import (
 // todo.go) in addition to ACP plan events. Each provider embeds it in
 // a plugin type of its own, which adds where that provider keeps its sessions.
 type FamilyProvider struct{ acp.Provider }
+
+// Classify identifies native notices that share a notification thread.
+func (FamilyProvider) Classify(content json.RawMessage) agent.NotificationClassification {
+	var frame struct {
+		Type       string `json:"type"`
+		Properties struct {
+			Status json.RawMessage `json:"status"`
+		} `json:"properties"`
+	}
+	if json.Unmarshal(content, &frame) != nil {
+		return agent.NotificationClassification{}
+	}
+	switch frame.Type {
+	case contracts.OpenCodeEventSessionCompacted:
+		return agent.CompactionBoundaryNotification()
+	case contracts.OpenCodeEventSessionStatus:
+		if providerkit.StringField(frame.Properties.Status, "type") == contracts.OpenCodeStatusTypeRetry {
+			return agent.APIRetryNotification()
+		}
+	}
+	return agent.NotificationClassification{}
+}
 
 // ValidateAttachment refuses a file type that the OpenCode family cannot send
 // through its model path.

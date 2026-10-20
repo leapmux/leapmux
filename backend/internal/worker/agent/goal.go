@@ -266,7 +266,9 @@ type GoalOutcome struct {
 //   - Claude Code returns its user-message command as QueuedInput.
 //     GoalTextCommander builds and observes the text after queued delivery.
 //   - Goose uses the same user-message route through GoalTextCommander.
-//   - Kilo uses the same user-message route through GoalTextCommander.
+//   - Kilo returns its user-message command as QueuedInput, and reports the
+//     goal itself through its daemon's native session metadata, so it needs no
+//     delivery observer.
 //   - Qwen Code uses qwen/control/session/goal/control.
 //     The command takes effect at once, including during a goal round.
 //     Its goal report states the command's result.

@@ -1,5 +1,5 @@
 import type { ElicitationRequest } from '~/components/chat/model/controlPrompt'
-import { MCP_ELICITATION_SUBTYPE } from '~/generated/contracts/mcp-elicitation'
+import { MCP_ELICITATION_MODE, MCP_ELICITATION_SUBTYPE } from '~/generated/contracts/mcp-elicitation'
 import { pickObject, pickString } from '~/lib/jsonPick'
 
 export function claudeElicitation(payload: Record<string, unknown>): ElicitationRequest | undefined {
@@ -7,7 +7,7 @@ export function claudeElicitation(payload: Record<string, unknown>): Elicitation
   if (request.subtype !== MCP_ELICITATION_SUBTYPE.Claude)
     return undefined
   return {
-    mode: pickString(request, 'mode', 'form'),
+    mode: pickString(request, 'mode', MCP_ELICITATION_MODE.Form),
     message: pickString(request, 'message', ''),
     server: pickString(request, 'display_name', pickString(request, 'mcp_server_name', '')),
     schema: request.requested_schema,

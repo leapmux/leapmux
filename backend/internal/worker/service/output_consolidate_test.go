@@ -358,50 +358,15 @@ func TestConsolidateNotificationThread_CompactionSupersedes_ContextCleared(t *te
 func TestConsolidateNotificationThread_CompactingDroppedByBoundary(t *testing.T) {
 	t.Parallel()
 
-	t.Run("compacting dropped when compact_boundary follows", func(t *testing.T) {
-		msgs := []json.RawMessage{
-			raw(t, map[string]interface{}{"type": "compacting"}),
-			raw(t, map[string]interface{}{"type": "system", "subtype": "compact_boundary"}),
-		}
-		result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, msgs)
-		require.Len(t, result, 1)
-		m := parseRaw(t, result[0])
-		assert.Equal(t, "system", m["type"])
-		assert.Equal(t, "compact_boundary", m["subtype"])
-	})
-
-	t.Run("compacting dropped when microcompact_boundary follows", func(t *testing.T) {
-		msgs := []json.RawMessage{
-			raw(t, map[string]interface{}{"type": "compacting"}),
-			raw(t, map[string]interface{}{"type": "system", "subtype": "microcompact_boundary"}),
-		}
-		result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, msgs)
-		require.Len(t, result, 1)
-		m := parseRaw(t, result[0])
-		assert.Equal(t, "system", m["type"])
-		assert.Equal(t, "microcompact_boundary", m["subtype"])
-	})
-
-	t.Run("compacting kept when no boundary follows", func(t *testing.T) {
+	// The `compacting` envelope type is gone: no worker writes it. An old row a
+	// previous build stored reduces like any unrecognized LeapMux envelope: it
+	// draws the no-display card (decision 22).
+	t.Run("an old compacting row stays for the no-display card", func(t *testing.T) {
 		msgs := []json.RawMessage{
 			raw(t, map[string]interface{}{"type": "compacting"}),
 		}
 		result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, msgs)
 		assert.Equal(t, []string{"compacting"}, types(t, result))
-	})
-
-	t.Run("compacting with settings_changed and boundary", func(t *testing.T) {
-		msgs := []json.RawMessage{
-			raw(t, settingsChanged("A", "B")),
-			raw(t, map[string]interface{}{"type": "compacting"}),
-			raw(t, map[string]interface{}{"type": "system", "subtype": "compact_boundary"}),
-		}
-		result := consolidateForProvider(leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, msgs)
-		require.Len(t, result, 2)
-		assert.Equal(t, "settings_changed", msgType(t, result[0]))
-		m := parseRaw(t, result[1])
-		assert.Equal(t, "system", m["type"])
-		assert.Equal(t, "compact_boundary", m["subtype"])
 	})
 }
 

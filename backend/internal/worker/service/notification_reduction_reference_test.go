@@ -162,8 +162,6 @@ func consolidateNotificationThread(messages []json.RawMessage, plugin agent.Prov
 			}
 			rateLimitByType[key] = indexedRaw{idx: i, raw: raw}
 
-		case contracts.NotificationTypeCompacting:
-			status = indexedRaw{idx: i, raw: raw, kind: agent.NotificationKindStatus}
 		case contracts.NotificationTypeApiRetry, contracts.NotificationTypeApiRetryResolved:
 			apiRetry = indexedRaw{idx: i, raw: raw, kind: agent.NotificationKindAPIRetry}
 		case contracts.NotificationTypeCompactionEnded:

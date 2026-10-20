@@ -12,6 +12,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
 // Goose sends these notifications after the client advertises customNotifications.
@@ -19,6 +20,9 @@ const (
 	gooseSessionUpdateMethod = "_goose/unstable/session/update"
 	gooseUpdateUsage         = "usage_update"
 	gooseUpdateStatusMessage = "status_message"
+	gooseUpdateMessageUsage  = "message_usage"
+	// A live-voice end names an interaction that LeapMux never starts.
+	gooseUpdateLiveVoiceEnded = "live_voice_interaction_ended"
 	// A notice is transcript content. A progress update is live status.
 	gooseStatusNotice = "notice"
 )
@@ -123,6 +127,9 @@ type gooseToolNotification struct {
 		// platform_event
 		Extension string `json:"extension"`
 		EventType string `json:"event_type"`
+		// message: an MCP log line for the running call
+		Level string          `json:"level"`
+		Data  json.RawMessage `json:"data"`
 	} `json:"params"`
 }
 
@@ -166,13 +173,18 @@ func formatGooseCount(value float64) string {
 	return strconv.FormatFloat(value, 'f', -1, 64)
 }
 
-// observeGooseToolNotification reads the two live notifications that are neither
+// observeGooseToolNotification reads the live notifications that are neither
 // shell output nor a log line, and reports whether it claimed the update.
 //
 // `progress` is the runtime's own sentence about a call that still runs, so it goes
 // to the SAME ephemeral tail the shell output uses: the row draws it while the call
 // runs and drops it when the result lands. Copilot's `progressMessage` takes that
 // route for the same reason. Persisting one would write a row per tick.
+//
+// `message` is an MCP log line about the running call, so it takes that tail too:
+// the row draws it while the call runs. A string `params.data` is the line, with
+// its level beside it when the level reads as a problem; any other value states
+// nothing a reader can use, so it is claimed and dropped.
 //
 // `platform_event` is an extension announcing that something happened outside this
 // call -- an app created, a resource registered. That outlives the call, so it is a
@@ -191,6 +203,17 @@ func (a *Agent) observeGooseToolNotification(update acp.ToolCallUpdateEnvelope) 
 		}
 		a.Sink().ReportProgress(agent.OutputTailProgress(update.ToolCallID, line, false))
 		return true
+	case "message":
+		data, ok := providerkit.RawString(meta.Params.Data)
+		if !ok || data == "" || update.ToolCallID == "" {
+			return true
+		}
+		line := data
+		if gooseMessageLevelNeedsPrefix(meta.Params.Level) {
+			line = "[" + meta.Params.Level + "] " + data
+		}
+		a.Sink().ReportProgress(agent.OutputTailProgress(update.ToolCallID, line, false))
+		return true
 	case "platform_event":
 		if line := goosePlatformEventLine(meta); line != "" {
 			a.Sink().PersistLeapMuxNotification(map[string]interface{}{
@@ -201,6 +224,18 @@ func (a *Agent) observeGooseToolNotification(update acp.ToolCallUpdateEnvelope) 
 		return true
 	}
 	return false
+}
+
+// gooseMessageLevelNeedsPrefix reports whether an MCP log level reads as a
+// problem: warning and everything above it. A line at those levels draws its
+// level beside it, because the tail alone would read as ordinary output.
+func gooseMessageLevelNeedsPrefix(level string) bool {
+	switch level {
+	case "warning", "error", "critical", "alert", "emergency":
+		return true
+	default:
+		return false
+	}
 }
 
 // goosePlatformEventLine states which extension announced what.
@@ -268,21 +303,29 @@ func (a *Agent) handleGooseExtraMethod(line *providerkit.ParsedLine) bool {
 	if line.Method != gooseSessionUpdateMethod {
 		return false
 	}
-	a.handleGooseSessionUpdate(line.Params)
-	return true
+	return a.handleGooseSessionUpdate(line.Params)
 }
 
-// handleGooseSessionUpdate reads one `_goose/unstable/session/update`.
+// handleGooseSessionUpdate reads one `_goose/unstable/session/update` and
+// reports whether the provider claimed it.
 //
-// The three variants report different things and take different paths. A usage
-// update is the session's own context and cost totals, which the meter reads. A
-// status NOTICE is a sentence the reader must see, so it becomes a notification.
-// Everything else is live chrome: Goose's own schema says a status message "is
-// not conversation transcript content, and should not be persisted or replayed
-// as history", and a per-message usage row states a cost the cumulative total
-// beside it already carries -- a replay resends every one of them, so adding
-// them up would count the turn twice.
-func (a *Agent) handleGooseSessionUpdate(params json.RawMessage) {
+// The four variants report different things and take different paths. A usage
+// update is the session's own context and cost totals, which the meter reads.
+// A status NOTICE is a sentence the reader must see, so it becomes a
+// notification that follows the text before it. A per-message usage row states
+// a cost the cumulative total beside it already carries, and a replay resends
+// every one of them, so adding them up would count the turn twice. A
+// live-voice end cannot arrive, because LeapMux starts no live voice; the case
+// states that claim. Goose's own schema says a status message "is not
+// conversation transcript content, and should not be persisted or replayed as
+// history", which covers every status kind but the notice.
+//
+// An unknown variant returns false, and the shared dispatcher persists the line
+// byte for byte, as an unexpected frame should (decision 1).
+func (a *Agent) handleGooseSessionUpdate(params json.RawMessage) bool {
+	if sessionID := providerkit.StringField(params, "sessionId"); sessionID != "" && !a.IsCurrentSession(sessionID) {
+		return true
+	}
 	var notif struct {
 		Update struct {
 			SessionUpdate string   `json:"sessionUpdate"`
@@ -299,7 +342,7 @@ func (a *Agent) handleGooseSessionUpdate(params json.RawMessage) {
 	}
 	if err := json.Unmarshal(params, &notif); err != nil {
 		slog.Warn("goose session update unmarshal failed", "agent_id", a.AgentID(), "error", err)
-		return
+		return true
 	}
 	update := notif.Update
 	switch update.SessionUpdate {
@@ -330,13 +373,39 @@ func (a *Agent) handleGooseSessionUpdate(params json.RawMessage) {
 		if len(info) > 0 {
 			a.Sink().BroadcastSessionInfo(info)
 		}
+		return true
 	case gooseUpdateStatusMessage:
 		if update.Status.Type != gooseStatusNotice || update.Status.Message == "" {
-			return
+			return true
 		}
+		// The goal notice arms the end-of-goal rule for the running prompt: it
+		// carries the goal's own text after its prefix.
+		if rest, ok := strings.CutPrefix(update.Status.Message, contracts.GooseGoalTextNoticePrefix); ok {
+			a.armGooseGoal(strings.TrimSpace(rest))
+		}
+		// The notice follows the text of its own messages: E2 splits Goose's
+		// messages by id, so the flush closes the text before it as a row.
+		a.FlushBufferedOutput(agent.MessageCompletionComplete)
 		a.Sink().PersistLeapMuxNotification(map[string]interface{}{
 			contracts.NotificationFieldType: contracts.NotificationTypeAgentStatus,
 			contracts.NotificationFieldText: update.Status.Message,
 		})
+		// A subagent lifecycle notice drives the child's registry row: the
+		// running notice while the child runs, and the completed or failed
+		// notice at its end. A completed notice without a summary states a
+		// single child, whose final output only the session export carries.
+		if obs := gooseSubagentNotice(update.Status.Message); obs != nil {
+			a.ApplySubagentObservation(obs)
+			if obs.Status == bgtask.StatusSucceeded && obs.Report.Text == "" {
+				a.fetchGooseSubagentReport(obs.RowKey)
+			}
+		}
+		return true
+	case gooseUpdateMessageUsage:
+		return true
+	case gooseUpdateLiveVoiceEnded:
+		return true
+	default:
+		return false
 	}
 }

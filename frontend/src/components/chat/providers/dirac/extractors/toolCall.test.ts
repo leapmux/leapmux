@@ -15,6 +15,26 @@ const outputFilePreview = `native first42\n... [Output truncated to 10.0 KB to a
 const outputFileComplete = `native first42\n\n${'native middle77 文\n'.repeat(1000)}native tail42\n`
 
 describe('diracToolCallAdapter', () => {
+  it('states an echoed failure body once by dropping the result half', () => {
+    // Dirac answers its "API Request Failed" ask with the body it asked about,
+    // so the card would draw the same error in its request and result halves.
+    const native = {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'ask-1',
+      status: 'failed',
+      name: 'API Request Failed',
+      kind: 'other',
+      title: 'API Request Failed',
+      rawInput: { body: '400 NATIVEERRORbcdf' },
+      rawOutput: { body: '400 NATIVEERRORbcdf' },
+    }
+    const call = providerToolCall(AgentProvider.DIRAC, native, { spanId: 'ask-1', spanType: 'API Request Failed', agentSessionId: 'native-session' })
+    expect(call).toBeDefined()
+    // The request half keeps the body; the echoed result half states no copy.
+    expect(JSON.stringify(call?.request)).toContain('NATIVEERRORbcdf')
+    expect(JSON.stringify(call?.result)).not.toContain('NATIVEERRORbcdf')
+  })
+
   it('keeps the native log path and output preview in Copy without the status preamble', () => {
     const native = {
       sessionUpdate: 'tool_call_update',

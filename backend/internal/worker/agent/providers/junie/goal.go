@@ -8,6 +8,7 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // Junie's session goal over ACP.
@@ -139,7 +140,7 @@ func (a *Agent) handleGoalMeta(updateType string, metadata map[string]json.RawMe
 // foldGoalMeta applies one `_meta.goal` value: a snapshot object upserts the
 // goal, and a null removes it.
 func (a *Agent) foldGoalMeta(raw json.RawMessage) {
-	if isJSONNull(raw) {
+	if providerkit.RawKindOf(raw) == providerkit.RawNull {
 		a.clearGoalReport()
 		return
 	}
@@ -149,11 +150,6 @@ func (a *Agent) foldGoalMeta(raw json.RawMessage) {
 		return
 	}
 	a.upsertGoalReport(snap)
-}
-
-// isJSONNull reports a JSON null literal.
-func isJSONNull(raw json.RawMessage) bool {
-	return string(raw) == "null"
 }
 
 // upsertGoalReport folds one goal snapshot into the sink.

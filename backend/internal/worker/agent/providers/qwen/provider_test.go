@@ -18,6 +18,29 @@ import (
 // browser answers under that key.
 const qwenStoredRequestID = "jsonrpc:5"
 
+func TestQwenCompactionDoneIsABoundary(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		payload  string
+		boundary bool
+	}{
+		{`{"sessionUpdate":"agent_message_chunk","_meta":{"contextCompression":{"phase":"done"}}}`, true},
+		{`{"sessionUpdate":"agent_message_chunk","_meta":{"contextCompression":{"phase":"progress"}}}`, false},
+		{`{"sessionUpdate":"agent_message_chunk","_meta":{"contextCompression":{"phase":"future"}}}`, false},
+		{`{"sessionUpdate":"agent_thought_chunk","_meta":{"contextCompression":{"phase":"done"}}}`, false},
+		{`{"_meta":{"contextCompression":{"phase":"done"}}}`, false},
+		{`null`, false},
+		{`invalid`, false},
+	} {
+		got := (qwenProvider{}).Classify([]byte(tc.payload))
+		if tc.boundary {
+			assert.Equal(t, agent.CompactionBoundaryNotification(), got, tc.payload)
+		} else {
+			assert.False(t, got.Consolidatable(), tc.payload)
+		}
+	}
+}
+
 // planApprovalPayload is Qwen's plan approval, as the worker stores it.
 const planApprovalPayload = `{"jsonrpc":"2.0","id":5,"method":"session/request_permission","params":{"sessionId":"s",` +
 	`"options":[{"optionId":"restore_previous","name":"Yes, restore previous mode (default)","kind":"allow_once"},` +
