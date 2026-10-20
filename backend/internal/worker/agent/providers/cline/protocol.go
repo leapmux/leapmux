@@ -58,6 +58,8 @@ const (
 	eventUINotify               = "ui.notify"
 	eventSessionAttached        = "session.attached"
 	eventSessionDetached        = "session.detached"
+	eventSessionCreated         = "session.created"
+	eventSessionDeleted         = "session.deleted"
 )
 
 // The delivery words of session.send_input. A plain send starts a turn; a

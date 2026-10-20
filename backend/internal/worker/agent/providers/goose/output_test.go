@@ -22,7 +22,7 @@ func newGooseOutputAgent(sink agent.ProviderServices) *Agent {
 	// the same bindings.
 	a.HooksForTest().ExtraMethod = a.handleGooseExtraMethod
 	a.HooksForTest().SessionUpdateHandler = a.observeGooseSessionUpdate
-	a.HooksForTest().PromptEnded = a.finishGooseGoalPrompt
+	a.HooksForTest().PromptEnded = a.finishGoosePrompt
 	return a
 }
 

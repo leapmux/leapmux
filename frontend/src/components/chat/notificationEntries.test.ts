@@ -140,10 +140,12 @@ describe('flattenNotificationEntries retry', () => {
  */
 describe('leapmuxNotificationEntry', () => {
   it.each([
-    [{}, { kind: 'compaction', phase: 'end', outcome: 'failed' }],
+    // An absent outcome with no error is a compaction that completed: the
+    // worker writes it when the agent frames no end of its own.
+    [{}, { kind: 'compaction', phase: 'end', outcome: 'completed' }],
     [{ outcome: 'aborted' }, { kind: 'compaction', phase: 'end', outcome: 'aborted' }],
     [{ outcome: 'other', error: '  details  ' }, { kind: 'compaction', phase: 'end', outcome: 'failed', error: 'details' }],
-    [{ error: ' \n' }, { kind: 'compaction', phase: 'end', outcome: 'failed' }],
+    [{ error: 'boom' }, { kind: 'compaction', phase: 'end', outcome: 'failed', error: 'boom' }],
   ])('maps a worker compaction end: %j', (fields, expected) => {
     expect(leapmuxNotificationEntry({ type: 'compaction_ended', ...fields }, undefined)).toEqual([expected])
   })
@@ -158,9 +160,9 @@ describe('leapmuxNotificationEntry', () => {
       .toEqual([{ kind: 'text', text: 'API retry 3' }])
   })
 
-  it('reads the compaction-ended envelope as a failed end', () => {
+  it('reads the compaction-ended envelope as a completed end', () => {
     expect(leapmuxNotificationEntry({ type: NOTIFICATION_TYPE.CompactionEnded }, AgentProvider.OPENCODE))
-      .toStrictEqual([{ kind: 'compaction', phase: 'end', outcome: 'failed' }])
+      .toStrictEqual([{ kind: 'compaction', phase: 'end', outcome: 'completed' }])
   })
 
   it('leaves an old compacting envelope of an older build unrecognized', () => {

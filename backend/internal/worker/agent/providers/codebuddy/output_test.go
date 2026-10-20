@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -106,6 +107,7 @@ func TestManualCompactionStaysLiveUntilItsResult(t *testing.T) {
 		`{"type":"result","subtype":"error_during_execution","result":"","is_error":true,"errors":["summary refused"]}`,
 	} {
 		t.Run(result, func(t *testing.T) {
+			failed := strings.Contains(result, `"is_error":true`)
 			sink := &agenttest.Sink{}
 			a := newOfflineAgent(t, sink)
 			require.NoError(t, a.SendInput("/compact keep the current task", nil))
@@ -117,8 +119,16 @@ func TestManualCompactionStaysLiveUntilItsResult(t *testing.T) {
 			assert.Len(t, sink.SessionInfoValues(contracts.SessionInfoKeyCompaction), 1)
 			a.HandleOutput([]byte(result))
 			assert.Equal(t, []interface{}{map[string]interface{}{"trigger": "manual"}, nil}, sink.SessionInfoValues(contracts.SessionInfoKeyCompaction))
-			assert.Empty(t, sink.PersistedNotifications())
-			assert.Empty(t, sink.LeapMuxNotifications())
+			// The result stores the boundary row the compaction leaves: the one
+			// record of a compaction whose summary drew no row.
+			ends := sink.LeapMuxNotifications()
+			require.Len(t, ends, 1)
+			assert.Equal(t, contracts.NotificationTypeCompactionEnded, ends[0][contracts.NotificationFieldType])
+			if failed {
+				assert.Equal(t, "failed", ends[0][contracts.NotificationFieldOutcome])
+			} else {
+				assert.NotContains(t, ends[0], contracts.NotificationFieldOutcome)
+			}
 		})
 	}
 }

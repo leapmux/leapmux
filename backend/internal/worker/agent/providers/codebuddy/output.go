@@ -158,13 +158,27 @@ func (a *Agent) publishCompactionStatus(raw json.RawMessage) {
 	if started {
 		providerkit.PublishCompaction(a.sink, "")
 	} else if ended {
+		providerkit.PersistCompactionEnded(a.sink, providerkit.CompactionEndCompleted, "")
 		providerkit.EndCompaction(a.sink)
 	}
 }
 
 // handleAssistant publishes the frame verbatim and arms the turn from output.
+// A compaction owns the turn it runs in: its summary is live state that draws
+// no answer row (decision 21), so its assistant frames reach no transcript.
 func (a *Agent) handleAssistant(raw []byte) {
 	a.armTurnFromOutput()
+	a.mu.Lock()
+	compacting := a.compactionLive
+	if compacting {
+		// The compaction's own result must not backfill this text as the
+		// turn's answer: the stream did carry it, and the summary draws no row.
+		a.assistantTextStreamed = true
+	}
+	a.mu.Unlock()
+	if compacting {
+		return
+	}
 	var msg assistantMessage
 	if json.Unmarshal(raw, &msg) == nil {
 		a.mu.Lock()
@@ -255,6 +269,21 @@ func (a *Agent) handleResult(raw []byte) {
 	}
 	if interrupted {
 		content.Completion = agent.MessageCompletionInterrupted
+	}
+	// A manual /compact ends at its result. The compacted summary never drew a
+	// row, so the boundary row is the one record the compaction leaves.
+	a.mu.Lock()
+	manualEnded := a.manualCompaction
+	a.mu.Unlock()
+	if manualEnded {
+		outcome := providerkit.CompactionEndCompleted
+		switch {
+		case interrupted:
+			outcome = providerkit.CompactionEndAborted
+		case result.IsError:
+			outcome = providerkit.CompactionEndFailed
+		}
+		providerkit.PersistCompactionEnded(a.sink, outcome, "")
 	}
 	if err := a.sink.PersistTurnEnd(content, agent.SpanInfo{}); err != nil {
 		slog.Warn("codebuddy: persist turn end failed", "agent_id", a.AgentID(), "error", err)

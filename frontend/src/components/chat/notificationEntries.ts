@@ -110,10 +110,16 @@ export function leapmuxNotificationEntry(
       return [retryEntry('api', { succeeded: true })]
     case NOTIFICATION_TYPE.CompactionEnded: {
       const error = pickString(m, NOTIFICATION_FIELD.Error)?.trim()
+      // An absent outcome follows its error: an error with no outcome is a
+      // failed end, and a quiet one completed. The worker writes the quiet
+      // form when the agent frames no end of its own.
+      const outcome = m[NOTIFICATION_FIELD.Outcome] === undefined
+        ? (error ? 'failed' : 'completed')
+        : m[NOTIFICATION_FIELD.Outcome] === COMPACTION_END_OUTCOME.Aborted ? 'aborted' : 'failed'
       return [{
         kind: 'compaction',
         phase: 'end',
-        outcome: m[NOTIFICATION_FIELD.Outcome] === COMPACTION_END_OUTCOME.Aborted ? 'aborted' : 'failed',
+        outcome,
         ...(error ? { error } : {}),
       }]
     }

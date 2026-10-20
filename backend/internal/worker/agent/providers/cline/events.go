@@ -95,6 +95,10 @@ func (a *Agent) handleEvent(event hubEvent) {
 	// The hub's desktop notice repeats the run end.
 	case eventSessionAttached, eventSessionDetached:
 	// These events describe the hub's client registry.
+	case eventSessionCreated, eventSessionDeleted:
+	// The hub's session registry: a created or deleted session is bookkeeping.
+	// A mode rebuild creates a session per change, and none of it is
+	// conversation.
 	default:
 		if event.SessionID != "" && event.SessionID == a.currentSession() {
 			a.Mu.Lock()

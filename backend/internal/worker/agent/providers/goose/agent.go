@@ -25,6 +25,8 @@ type Agent struct {
 	goalObjective       string
 	goalLastMessageID   string
 	goalLastMessageText string
+	// compactPending states that the running prompt is a manual /compact turn.
+	compactPending bool
 	// gooseChildRenames remembers each delegate ack's row rename, from the
 	// spawn toolCallId to the native session id the ack stated. A tool request
 	// that arrives after the ack still names the spawn id, so it must reach

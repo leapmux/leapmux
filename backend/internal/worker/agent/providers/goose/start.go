@@ -53,7 +53,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 				ToolOutputComplete:     a.clearGooseToolOutput,
 				SessionMetadataHandler: a.captureSteerRunID,
 				SessionUpdateHandler:   a.observeGooseSessionUpdate,
-				PromptEnded:            a.finishGooseGoalPrompt,
+				PromptEnded:            a.finishGoosePrompt,
 				AdvertisedSteerMethod: func(response []byte) string {
 					return acp.ParseAdvertisedMethod(response, gooseSteerNamespace, gooseSteerMethod)
 				},
