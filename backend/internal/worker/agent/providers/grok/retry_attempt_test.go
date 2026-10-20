@@ -26,13 +26,14 @@ func TestGrokRetryDiscardsAndFolds(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newGrokAgent(t, agent.Options{}, nil)
 	a.SetPromptActiveForTest(true)
+	*a.HooksForTest() = a.configure(agent.Options{})
 
-	a.HandleOutput(chunk(t, "PARTIAL "))
-	a.HandleOutput(chunk(t, "attempt "))
-	a.HandleOutput(chunk(t, "one text"))
+	a.HandleOutput(streamChunk(t, "PARTIAL ", 100))
+	a.HandleOutput(streamChunk(t, "attempt ", 100))
+	a.HandleOutput(streamChunk(t, "one text", 100))
 	a.HandleOutput(retryFrame(t, 1, "reqwest error stream: stream ended before a finish reason"))
-	a.HandleOutput(chunk(t, "FULL an"))
-	a.HandleOutput(chunk(t, "swer #3"))
+	a.HandleOutput(streamChunk(t, "FULL an", 200))
+	a.HandleOutput(streamChunk(t, "swer #3", 200))
 	a.FinishPromptRequestForTest(grokTestSession, json.RawMessage(`{"stopReason":"end_turn"}`), nil)
 
 	texts := assembledTexts(t, sink)
@@ -52,11 +53,12 @@ func TestGrokRetryRoundsFoldIntoOneRow(t *testing.T) {
 	a, sink, _ := newGrokAgent(t, agent.Options{}, nil)
 	a.SetPromptActiveForTest(true)
 
+	*a.HooksForTest() = a.configure(agent.Options{})
 	for attempt := 1; attempt <= 3; attempt++ {
-		a.HandleOutput(chunk(t, "PARTIAL "))
+		a.HandleOutput(streamChunk(t, "PARTIAL ", int64(100*attempt)))
 		a.HandleOutput(retryFrame(t, attempt, "API error (status 503 Service Unavailable): stub overloaded"))
 	}
-	a.HandleOutput(chunk(t, "FULL answer #3"))
+	a.HandleOutput(streamChunk(t, "FULL answer #3", 400))
 	a.FinishPromptRequestForTest(grokTestSession, json.RawMessage(`{"stopReason":"end_turn"}`), nil)
 
 	texts := assembledTexts(t, sink)

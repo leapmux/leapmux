@@ -30,8 +30,11 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		BaseArgs:     []string{"--acp", "--subagents"},
 		PinnedEnv:    []string{diracNoAutoUpdateEnv},
 		SessionConfig: acp.SessionConfig{
-			NewMethod:    acp.MethodSessionNew,
-			ResumeMethod: acp.MethodSessionResume,
+			NewMethod: acp.MethodSessionNew,
+			// The ACP server of Dirac 0.5.17 answers -32601 to session/resume
+			// (the string serves its own client, not the server), so a resume
+			// loads the stored session instead.
+			ResumeMethod: acp.MethodSessionLoad,
 		},
 		NewAgent: func() *Agent {
 			return &Agent{root: diracHome(agent.StoredSessionQuery{HomeDir: opts.HomeDir})}

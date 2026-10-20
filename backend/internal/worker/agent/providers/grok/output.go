@@ -3,7 +3,6 @@ package grok
 import (
 	"encoding/json"
 	"log/slog"
-	"strings"
 
 	"github.com/google/uuid"
 
@@ -203,58 +202,66 @@ func (a *Agent) reportRetry(update json.RawMessage, raw []byte) {
 // of a turn has its own value, and a retry starts a new request.
 const grokStreamStartMeta = "streamStartMs"
 
-// observeNotificationMetadata drops the buffered text of a superseded model
-// request. Grok can flush the partial text of a failed attempt only after it
+// observeNotificationMetadata splits the buffered text at a model request
+// boundary. Grok can flush the partial text of a failed attempt only after it
 // sent its retry_state frame, so the discard that the frame itself runs can
-// meet an empty buffer while the partial text still arrives. The first chunk
-// of the NEXT request closes that window: its stream start differs, and
-// whatever the previous request left buffered is then the failed attempt's
-// text, which the retried request does not see either. It also resolves a
-// pending retry row, because the chunk that reaches this boundary is genuine
-// model output.
+// meet an empty buffer while the partial text still arrives: the first chunk
+// of the NEXT request closes that window, and its stream start differs from
+// the last chunk's. What happens to the text the previous request left
+// buffered follows the model's own view of it:
+//
+//   - A retry still pending states that the previous request FAILED and the
+//     retried request sees none of its text, so the buffer is dropped and the
+//     retry row resolves at this genuine output.
+//   - No pending retry states that the previous request COMPLETED and its
+//     text joined the history the new request reads, so the buffer becomes a
+//     row of its own before the new request's text starts one.
 //
 // Only a message chunk names a stream: an available-commands update repeats
-// the field with no request behind it, and it must not drop any text.
+// the field with no request behind it, and it must not split any text.
 func (a *Agent) observeNotificationMetadata(updateType string, metadata map[string]json.RawMessage) {
 	if updateType != contracts.ACPUpdateAgentMessageChunk && updateType != contracts.ACPUpdateAgentThoughtChunk {
 		return
 	}
 	stream, present := providerkit.RawInt64(metadata[grokStreamStartMeta])
 	if !present {
+		// Grok stamps every chunk of the main session with its request's
+		// stream start; a chunk without one joins no boundary.
 		return
 	}
 	a.stateMu.Lock()
 	previous := a.chunkStreamStart
 	a.chunkStreamStart = stream
 	a.stateMu.Unlock()
-	if previous != stream {
+	// The first chunk of a turn names the turn's first stream: no earlier
+	// request exists whose buffered text this boundary could close.
+	if previous == 0 || previous == stream {
+		return
+	}
+	if a.retryResolution.Pending() {
 		a.DiscardBufferedOutput()
 		a.retryResolution.Resolve(a.Sink())
+		return
 	}
+	a.FlushBufferedOutput(agent.MessageCompletionComplete)
 }
 
 // observeRetryContent resolves a pending retry row at the first genuine model
-// output of the attempt that follows it: text, a thought, or a tool call. It
-// claims no update.
+// output that states no stream of its own: a tool call, which cannot be the
+// failed attempt's trailing text. A chunk resolves at its stream boundary
+// instead (see observeNotificationMetadata), because the failed attempt's
+// delayed text flush is also a chunk. It claims no update.
 func (a *Agent) observeRetryContent(sessionID string, _ agent.ProviderServices, update json.RawMessage) bool {
 	if !a.IsCurrentSession(sessionID) {
 		return false
 	}
 	var header struct {
 		SessionUpdate string `json:"sessionUpdate"`
-		Content       struct {
-			Text string `json:"text"`
-		} `json:"content"`
 	}
 	if json.Unmarshal(update, &header) != nil {
 		return false
 	}
-	switch header.SessionUpdate {
-	case contracts.ACPUpdateAgentMessageChunk, contracts.ACPUpdateAgentThoughtChunk:
-		if strings.TrimSpace(header.Content.Text) != "" {
-			a.retryResolution.Resolve(a.Sink())
-		}
-	case contracts.ACPUpdateToolCall:
+	if header.SessionUpdate == contracts.ACPUpdateToolCall {
 		a.retryResolution.Resolve(a.Sink())
 	}
 	return false

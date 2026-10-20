@@ -24,6 +24,13 @@ func (r *RetryResolution) NoteRetry() {
 	r.mu.Unlock()
 }
 
+// Pending reports whether a retry still waits for its first genuine output.
+func (r *RetryResolution) Pending() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.pending
+}
+
 // Resolve writes one resolution before the first model output after a retry.
 // The sink runs outside the state lock.
 func (r *RetryResolution) Resolve(sink LeapMuxNotificationServices) {
