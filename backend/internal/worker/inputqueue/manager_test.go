@@ -1893,9 +1893,16 @@ func TestAutomaticQuestionSteeringAcceptsItsRowAtTheSteer(t *testing.T) {
 	dispatcher.mu.Lock()
 	assert.Equal(t, []string{"answer"}, dispatcher.steered)
 	dispatcher.mu.Unlock()
+	// The acceptance is published to the observer after the transaction that
+	// consumed the item has committed, so the snapshot poll above can observe
+	// the empty queue while the InputAccepted publication is still in flight.
+	require.Eventually(t, func() bool {
+		observer.mu.Lock()
+		defer observer.mu.Unlock()
+		return len(observer.accepted) == 1
+	}, eventuallyWait, 10*time.Millisecond)
 	observer.mu.Lock()
 	defer observer.mu.Unlock()
-	require.Len(t, observer.accepted, 1)
 	assert.Equal(t, "answer", observer.accepted[0].ID)
 }
 
