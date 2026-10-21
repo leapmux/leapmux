@@ -21,6 +21,16 @@ import (
 // call: a plain mid-turn session/send returned -32010, and sends carrying
 // intent or delivery fields returned -32602 unrecognized keys with no
 // steer events and no queued input left behind.
+//
+// One out-of-band path does reach runtime.steerTurn: the session mailbox.
+// With ZCODE_MESSAGE_ENABLED=1 the runtime drains
+// $ZCODE_MAILBOX_ROOT/<sessionId>/unread/*.json (envelope: version 1,
+// messageId, fromSessionId, toSessionId, content, createdAt) at three hook
+// events, and the PostToolUse drain calls steerTurn with delivery "guide",
+// injecting the content into the running turn at the tool boundary (probed:
+// turn.steerQueued, turn.steerDrained, and the follow-up model requests
+// carried the message). The message is wrapped as a session-message from
+// another session, not as a user steer.
 func TestZCodeDoesNotAdvertiseMidTurnSteeringWhenNativeSendIsBusy(t *testing.T) {
 	t.Parallel()
 	_, ok := any(&Agent{}).(agent.InputSteerer)
