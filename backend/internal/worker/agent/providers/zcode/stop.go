@@ -452,6 +452,7 @@ func (a *Agent) Stop() {
 		a.persistZCodeStopRow()
 	}
 	a.sink.ReportProgress(agent.ResetProgress())
+	a.cleanupZCodeMailbox()
 }
 
 // Wait retains unfinished model output after an unexpected process exit.
@@ -466,5 +467,6 @@ func (a *Agent) Wait() error {
 	a.flushZCodeGeneration(completion)
 	a.persistIncompleteZCodeTools(completion)
 	a.sink.ReportProgress(agent.ResetProgress())
+	a.cleanupZCodeMailbox()
 	return err
 }

@@ -29,7 +29,7 @@ func TestZCodeGenerationDiscardKeepsUnselectedScopes(t *testing.T) {
 
 // --- turn lifecycle ---
 
-func TestZCodeTurnActiveDoesNotOfferUnsupportedSteering(t *testing.T) {
+func TestZCodeTurnActiveWithoutAProvenMailboxIsNotSteerable(t *testing.T) {
 	t.Parallel()
 	a := newZCodeTestAgent(t, agent.NewProviderServices(&agenttest.Sink{}))
 	a.Mu.Lock()
@@ -37,6 +37,9 @@ func TestZCodeTurnActiveDoesNotOfferUnsupportedSteering(t *testing.T) {
 	a.Mu.Unlock()
 	state := a.PublishTurnActive()
 	assert.True(t, state.Active)
+	// A build whose drain hook has not shown itself gets no Steer control:
+	// steering it would mail envelopes nothing drains. The discovery test in
+	// steering_test.go covers the proven-mailbox half.
 	assert.False(t, state.Steerable)
 }
 

@@ -100,7 +100,12 @@ func (a *Agent) dispatchZCodeEvent(event zcodeEventEnvelope) {
 	case contracts.ZCodeEventPermissionResolved:
 		a.handleZCodePermissionResolved(event)
 	case contracts.ZCodeEventTurnSteerQueued, contracts.ZCodeEventTurnSteerDrained:
-		a.persistZCodeNotification(event)
+		// A steer LeapMux mailed resolves through the ledger that writes its
+		// row at the drain. The runtime's OWN steers (a background task
+		// notification, a subagent message) keep their notification row.
+		if !a.observeZCodeMailboxSteerEvent(event) {
+			a.persistZCodeNotification(event)
+		}
 	case contracts.ZCodeEventSessionClosed:
 		a.persistZCodeNotification(event)
 
@@ -216,19 +221,30 @@ func (a *Agent) persistZCodeNotificationTo(sink agent.ProviderServices, event zc
 // Never called with a.Mu held: the sink broadcasts, and a broadcast can block on
 // a slow transport.
 //
-// ZCode has no input-steering method, so neither a prompt nor a compaction is
-// steerable. A BACKGROUND turn counts as active here, deliberately. It persists no divider
-// and closes none of the user's spans, but the agent IS processing, and
-// turnActive is already what Interrupt and Stop read to decide the session is
-// live.
+// A prompt turn is steerable through the session mailbox once the app-server's
+// drain hook has proved itself live (mailboxActive); a compaction never is --
+// its summary query is not the user's conversation. A BACKGROUND turn counts as
+// active here, deliberately. It persists no divider and closes none of the
+// user's spans, but the agent IS processing, and turnActive is already what
+// Interrupt and Stop read to decide the session is live.
+//
+// A publish that leaves the agent inactive is also the one choke point every
+// turn end crosses, so it withdraws any mailbox steer the turn never drained --
+// see withdrawUndeliveredZCodeSteers for why that must not wait for the next
+// prompt.
 func (a *Agent) PublishTurnActive() agent.TurnState {
 	a.Mu.Lock()
 	state := agent.TurnState{
-		Active: a.turnActive || a.compactionSessionID != "",
+		Active:    a.turnActive || a.compactionSessionID != "",
+		Steerable: a.turnActive && a.mailboxActive,
 	}
 	seq := a.NextTurnSeq()
 	a.Mu.Unlock()
-	return providerkit.PublishTurnStateTo(a.sink, state, seq)
+	state = providerkit.PublishTurnStateTo(a.sink, state, seq)
+	if !state.Active && a.hasPendingZCodeSteers() {
+		a.withdrawUndeliveredZCodeSteers()
+	}
+	return state
 }
 
 // zcodeTurnStarted is the turn.started payload.
@@ -997,6 +1013,11 @@ type zcodeSessionUpdatedPayload struct {
 	HookInvocationID json.RawMessage `json:"hookInvocationId"`
 	Descriptor       json.RawMessage `json:"descriptor"`
 	Outcome          json.RawMessage `json:"outcome"`
+	// HookSource names the builtin that ran, and separates the session-mailbox
+	// drain (the steering transport; see steering.go) from every other hook.
+	// HookEventName tells the drain's three trigger events apart.
+	HookSource    json.RawMessage `json:"hookSource"`
+	HookEventName json.RawMessage `json:"hookEventName"`
 
 	// A workspace hook admission.
 	PendingCount json.RawMessage `json:"pendingCount"`
@@ -1233,6 +1254,9 @@ func (a *Agent) handleZCodeSessionUpdated(event zcodeEventEnvelope) {
 		if payload.hookRunIsVisibleFailure() {
 			a.persistZCodeNotification(event)
 		}
+		// A successful session-mailbox drain run is the live proof that this
+		// app-server steers what LeapMux mails it. See steering.go.
+		a.noteZCodeMailboxDrainRun(payload)
 	case zcodeSessionUpdateHookAdmission:
 		// ZCode 3.15.3 cannot reduce a positive count to zero in this session.
 		// LeapMux sends neither v4/command nor workspace/hooks/trustGrant.
@@ -1243,6 +1267,11 @@ func (a *Agent) handleZCodeSessionUpdated(event zcodeEventEnvelope) {
 		}
 		a.persistZCodeNotification(event)
 	case zcodeSessionUpdateSteerDiscarded:
+		if a.observeZCodeSteerDiscard(payload) {
+			// One of LeapMux's own mailbox steers: the ledger reported the
+			// outcome, and the queue's row or requeue is the visible result.
+			return
+		}
 		if reason, _ := providerkit.RawString(payload.Reason); reason == zcodeSteerDiscardReasonPromoted {
 			return
 		}

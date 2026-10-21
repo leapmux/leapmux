@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -360,6 +362,12 @@ func (a *Agent) ClearContext() (string, error) {
 	current := zcodeSettingsRequest{Model: a.model, ThoughtLevel: a.thoughtLevel, Mode: a.permissionModeLocked()}
 	oldSessionID := a.sessionID
 	a.Mu.Unlock()
+	if a.mailboxRoot != "" && oldSessionID != "" {
+		// The replaced session's mailbox holds envelopes no runtime will drain
+		// again; the next prompt of the new session must not fold them in as
+		// reference material. See steering.go.
+		_ = os.RemoveAll(filepath.Join(a.mailboxRoot, oldSessionID))
+	}
 
 	if err := a.openSession("", timeout); err != nil {
 		return "", err

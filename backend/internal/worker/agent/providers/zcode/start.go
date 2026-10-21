@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"time"
 
@@ -53,17 +54,33 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	// Wrap already prepended spec.PrefixArgs and seeded
 	// spec.Env onto cmd, so this is the same finalization every provider runs.
 	cmd.Env = providerkit.FinalizeAgentEnv(cmd.Environ(), opts)
+	// The steering mailbox: a per-agent root under the OS temp dir, owned by
+	// this process alone. Appended AFTER FinalizeAgentEnv so an inherited or
+	// ExtraEnv value cannot win -- the envelope writer and the runtime's drain
+	// must read one root, and a user-supplied one would desynchronize them. The
+	// root is removed at teardown. See steering.go.
+	mailboxRoot, err := os.MkdirTemp("", "leapmux-zcode-mailbox-")
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("create the ZCode steering mailbox root: %w", err)
+	}
+	cmd.Env = append(cmd.Env,
+		zcodeMailboxEnabledEnv+"=1",
+		zcodeMailboxRootEnv+"="+mailboxRoot,
+	)
 	storeLocation, err := zcodeToolStorePaths(ctx, agent.StoredSessionQuery{
 		HomeDir: opts.HomeDir, WorkingDir: opts.WorkingDir, EnvEntries: cmd.Environ(),
 		Shell: opts.Shell, LoginShell: opts.LoginShell,
 	}, newZCodeStorageQuery(&spec))
 	if err != nil {
 		cancel()
+		_ = os.RemoveAll(mailboxRoot)
 		return nil, fmt.Errorf("resolve the ZCode native store: %w", err)
 	}
 
 	pipes, err := providerkit.SetupProcessPipes(cmd, cancel)
 	if err != nil {
+		_ = os.RemoveAll(mailboxRoot)
 		return nil, err
 	}
 	stdout, stderrPipe := pipes.Stdout(), pipes.Stderr()
@@ -76,9 +93,11 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		catalog:                   catalog,
 		registryRevision:          "leapmux-" + opts.AgentID,
 		builtinProviderConfigPath: zcodeLaunchEnvValue(cmd.Env, zcodeBuiltinProviderConfigEnv),
+		mailboxRoot:               mailboxRoot,
 		mode:                      contracts.ZCodeDefaultMode,
 		toolCalls:                 map[string]*zcodeToolCall{},
 		pendingControls:           map[string]*pendingControl{},
+		mailboxSteers:             map[string]*zcodeMailboxSteer{},
 	}
 	a.sink = agent.NewModelProgressResetSink(a.sink)
 	a.sink = newZCodeToolTranscript(ctx, a.sink, func() zcodeToolStoreLocation {
@@ -108,6 +127,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	a.Mu.Unlock()
 
 	if err := a.StartCmd(); err != nil {
+		a.cleanupZCodeMailbox()
 		return nil, err
 	}
 	a.DrainStderr(stderrPipe)

@@ -32,6 +32,16 @@ type Agent struct {
 	dispatchMu sync.Mutex
 	// Control requests can arrive concurrently while the server repeats an unanswered request.
 	controlMu sync.Mutex
+	// steerMu serializes mailbox envelope writes against the turn-end
+	// withdrawal sweep, so an envelope can never be written after the sweep
+	// that should have withdrawn it. See steering.go.
+	steerMu sync.Mutex
+	// mailboxOnce guards the one mailbox-root removal at teardown.
+	mailboxOnce sync.Once
+	// mailboxRoot is the ZCODE_MAILBOX_ROOT this process launched with. Empty
+	// when the agent was built without steering (the test harness). Immutable
+	// after Start, so it needs no lock.
+	mailboxRoot string
 
 	sink       agent.ProviderServices
 	workingDir string
@@ -104,6 +114,20 @@ type Agent struct {
 	// turnGeneration changes when a native turn starts or a compaction replaces it.
 	// A delayed stop acknowledgement must not open a window for another turn.
 	turnGeneration uint64
+	// mailboxActive is true once a builtin.sessionMailbox.drain hook run
+	// succeeded in this process, which proves the app-server drains the
+	// mailbox LeapMux steers through. It is what SupportsSteering reports.
+	mailboxActive bool
+	// mailboxSteers maps the message id of each envelope LeapMux wrote and the
+	// runtime has not yet settled to its bookkeeping: the envelope's file name
+	// under the session's unread directory and its ledger ticket. The ledger
+	// resolves the ticket when the runtime states what happened to the input.
+	// nextMailboxSteer serializes the ids.
+	mailboxSteers    map[string]*zcodeMailboxSteer
+	nextMailboxSteer int64
+	// steerLedger reports accepted mailbox steers to the queue in send order:
+	// the queue holds each steer's row until the runtime proves delivery.
+	steerLedger providerkit.SteerLedger
 	// A native compaction runs outside the prompt turn. Keep its session until a
 	// state.updated result ends it, so the input queue stays busy meanwhile.
 	compactionSessionID string
