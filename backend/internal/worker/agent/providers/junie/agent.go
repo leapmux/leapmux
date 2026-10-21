@@ -54,6 +54,18 @@ var _ agent.SteerPreparer = (*Agent)(nil)
 // prompt raises.
 const junieSteerMethod = "_session/steering"
 
+// observeJunieTurnEnd reads the `_meta.lastRequestComplete` marker that ends a
+// turn Junie started by itself: a steer whose reply said `startedNewTurn`
+// began it (see SteerInput), and the marked empty chunk is that turn's only
+// end, so the agent turn ends there with no turn-end row. A turn LeapMux
+// started ends at its session/prompt response, where ending no agent turn is a
+// no-op.
+func (a *Agent) observeJunieTurnEnd(_ string, metadata map[string]json.RawMessage) {
+	if providerkit.RawBool(metadata["lastRequestComplete"]) {
+		a.EndAgentTurnWithoutRow()
+	}
+}
+
 // SteerInput injects text into the running turn through Junie's own
 // `_session/steering`. The reply's outcome states what the session did:
 // `injected` reached the running turn, and `startedNewTurn` began a new turn of

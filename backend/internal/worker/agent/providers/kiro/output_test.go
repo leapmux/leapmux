@@ -425,9 +425,9 @@ func TestKiroSummarizationStatesACompaction(t *testing.T) {
 	a, sink, _ := newKiroAgent(t, agent.Options{}, nil)
 
 	a.HandleOutput(infoUpdate(t, map[string]any{"kind": kiroKindSummarizationStart}))
-	a.HandleOutput(infoUpdate(t, map[string]any{"kind": kiroKindSummarizationDone, "summarization": map[string]any{"status": "success"}}))
-	a.HandleOutput(infoUpdate(t, map[string]any{"kind": kiroKindSummarizationFailed, "summarization": map[string]any{"status": "context_too_small"}}))
-	a.HandleOutput(infoUpdate(t, map[string]any{"kind": kiroKindSummarizationFailed}))
+	a.HandleOutput(infoUpdate(t, map[string]any{"kind": contracts.KiroKindSummarizationCompleted, "summarization": map[string]any{"status": "success"}}))
+	a.HandleOutput(infoUpdate(t, map[string]any{"kind": contracts.KiroKindSummarizationFailed, "summarization": map[string]any{"status": "context_too_small"}}))
+	a.HandleOutput(infoUpdate(t, map[string]any{"kind": contracts.KiroKindSummarizationFailed}))
 
 	// The start is live state with no row; each end stores its native frame
 	// and ends the live key.

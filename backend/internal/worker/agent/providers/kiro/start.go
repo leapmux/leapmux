@@ -81,6 +81,10 @@ func (a *Agent) configure(opts agent.Options) acp.Hooks {
 		PermissionAllowsBypass: func(*providerkit.ParsedLine) bool { return true },
 		ModeChannel:            acp.ModeChannelPermissionMode,
 		EffortConfigID:         contracts.KiroConfigEffortLevel,
+		// Kiro itself states a custom agent the session lost at the resume
+		// (_kiro/customAgent/not_found), and its own notice is the row, so the
+		// startup's shared fallback writes no second row beside it.
+		AgentStatesModeFallback: true,
 		// Kiro reports the effort axis of the session's model only after a
 		// model write, so the start writes the model that the session runs.
 		ModelWriteRevealsOptions: true,

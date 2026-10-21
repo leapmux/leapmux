@@ -253,7 +253,7 @@ func compactResponder(a **Agent, t *testing.T, reply string, summarize bool) fun
 		}
 		if summarize {
 			(*a).HandleOutput(infoUpdate(t, map[string]any{
-				"kind":          kiroKindSummarizationDone,
+				"kind":          contracts.KiroKindSummarizationCompleted,
 				"summarization": map[string]any{"status": "success", "summary": map[string]any{"conversationSummary": "short", "truncated": false}},
 			}))
 		}

@@ -72,6 +72,27 @@ func resolveKiro(t *testing.T, payload json.RawMessage, response []byte) agent.C
 	})
 }
 
+// Each native compaction end classifies as a notification boundary, and
+// nothing else Kiro stores does.
+func TestKiroClassifyMarksEachCompactionEndABoundary(t *testing.T) {
+	t.Parallel()
+	infoUpdate := func(kind string) json.RawMessage {
+		return json.RawMessage(`{"sessionUpdate":"session_info_update","_meta":{"kiro":{"kind":"` + kind + `"}}}`)
+	}
+	for _, kind := range []string{contracts.KiroKindSummarizationCompleted, contracts.KiroKindSummarizationFailed} {
+		class := kiroProvider{}.Classify(infoUpdate(kind))
+		assert.Equal(t, agent.NotificationKindCompactionBoundary, class.Kind(), kind)
+	}
+	for name, content := range map[string]string{
+		"a summarization start":  `{"sessionUpdate":"session_info_update","_meta":{"kiro":{"kind":"summarization_started"}}}`,
+		"an unknown kind":        `{"sessionUpdate":"session_info_update","_meta":{"kiro":{"kind":"focus_update"}}}`,
+		"a conversation update":  `{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hi"},"_meta":{"kiro":{"kind":"summarization_completed"}}}`,
+		"an update without meta": `{"sessionUpdate":"session_info_update"}`,
+	} {
+		assert.Equal(t, agent.NotificationClassification{}, kiroProvider{}.Classify(json.RawMessage(content)), name)
+	}
+}
+
 // kiroEveryAlwaysOption is a permission request that offers each of Kiro's
 // four options, as Kiro states them for a rule that can persist.
 func kiroEveryAlwaysOption() map[string]any {

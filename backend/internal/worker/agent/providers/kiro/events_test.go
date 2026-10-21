@@ -7,8 +7,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 )
 
 // notification encodes one Kiro notification.
@@ -140,6 +142,29 @@ func TestKiroCustomAgentNotFoundStatesTheFallback(t *testing.T) {
 		`Kiro has no mode "reviewer", so it runs "vibe"`,
 		`Kiro has no mode "gone", so it runs "vibe"`,
 	}, statusTexts(sink))
+}
+
+// A resume whose stored custom agent no longer exists writes ONE row -- Kiro's
+// own notice -- and the stored mode follows the fallback: the startup's shared
+// fallback row stays suppressed beside the notice. Frames from
+// .tmp/probe/kiro/logs/r2/agent.
+func TestKiroStartupFallbackKeepsKirosOwnNoticeAsTheRow(t *testing.T) {
+	t.Parallel()
+	opts := agent.Options{Options: map[string]string{agent.OptionIDPermissionMode: "probe-agent"}}
+	a, sink, requests := newKiroAgent(t, opts, nil)
+
+	// Kiro states the missing agent while the session loads, before the
+	// startup applies the stored mode.
+	a.HandleOutput(notification(t, kiroCustomAgentNotFoundMethod, map[string]any{
+		"sessionId": kiroTestSession, "requestedAgent": "probe-agent", "fallbackAgent": "vibe",
+	}))
+	require.NoError(t, a.ApplyPermissionModeStartup(
+		&acp.SessionResult{CurrentModeID: "vibe", Modes: []acp.ModeInfo{{ID: "vibe", Name: "Vibe"}}},
+		opts, contracts.KiroModeDefault, ""))
+
+	assert.Equal(t, []string{`Kiro has no mode "probe-agent", so it runs "vibe"`}, statusTexts(sink))
+	assert.Equal(t, "vibe", a.PermissionModeForTest(), "the stored mode follows the fallback")
+	assert.Empty(t, requests(), "the startup writes no mode the session does not offer")
 }
 
 func TestKiroCustomAgentConfigErrorStatesThePath(t *testing.T) {

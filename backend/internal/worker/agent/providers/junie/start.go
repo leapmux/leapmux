@@ -68,6 +68,10 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 				// Junie reports its goal in session_info_update under _meta.goal.
 				// It reports child lifecycle through subagent_spawned and subagent_state_update.
 				SessionMetadataHandler: a.handleSessionMetadata,
+				// A turn that a steer's `startedNewTurn` began ends at one
+				// `_meta.lastRequestComplete` chunk and holds no end frame of
+				// its own (see observeJunieTurnEnd).
+				SessionNotificationMetadata: a.observeJunieTurnEnd,
 				// Junie streams the output of a running command in rawOutput.
 				ToolOutput: a.junieToolOutput,
 				ClearProviderState: func() {

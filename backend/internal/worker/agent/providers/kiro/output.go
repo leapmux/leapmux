@@ -22,8 +22,6 @@ const (
 	kiroKindDisplayError        = "display_error"
 	kiroKindInteractionResolved = "interaction_resolved"
 	kiroKindSummarizationStart  = "summarization_started"
-	kiroKindSummarizationDone   = "summarization_completed"
-	kiroKindSummarizationFailed = "summarization_failed"
 	kiroKindHookUpdate          = "hook_update"
 	kiroKindRecap               = "recap"
 	kiroKindSteeringInjected    = "steering_injected"
@@ -169,7 +167,7 @@ func (a *Agent) handleSessionMetadata(updateType string, metadata map[string]jso
 		a.handleDisplayError(raw)
 	case kiroKindInteractionResolved:
 		a.handleInteractionResolved(raw)
-	case kiroKindSummarizationStart, kiroKindSummarizationDone, kiroKindSummarizationFailed:
+	case kiroKindSummarizationStart, contracts.KiroKindSummarizationCompleted, contracts.KiroKindSummarizationFailed:
 		a.reportSummarization(kind, raw, update)
 	case kiroKindHookUpdate:
 		a.reportHook(raw, update)
@@ -420,7 +418,7 @@ func (a *Agent) reportSummarization(kind string, raw json.RawMessage, update jso
 	switch kind {
 	case kiroKindSummarizationStart:
 		providerkit.PublishCompaction(a.Sink(), "auto")
-	case kiroKindSummarizationDone, kiroKindSummarizationFailed:
+	case contracts.KiroKindSummarizationCompleted, contracts.KiroKindSummarizationFailed:
 		a.noteCompactionSummarized()
 		a.FlushBufferedOutput(agent.MessageCompletionComplete)
 		if _, err := a.Sink().PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: update, AgentSessionID: a.CurrentSessionID()}); err != nil {

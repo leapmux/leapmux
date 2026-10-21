@@ -35,6 +35,25 @@ func (kiroProvider) ListStoredSessions(ctx context.Context, q agent.StoredSessio
 	return kiroStoredSessions(ctx, q)
 }
 
+// Classify identifies each native compaction end as a notification boundary,
+// so a reduction resolves the transient status that the same turn held before
+// it. The end rows are the summarization session_info_updates that
+// reportSummarization stores.
+func (kiroProvider) Classify(content json.RawMessage) agent.NotificationClassification {
+	var update struct {
+		SessionUpdate string                     `json:"sessionUpdate"`
+		Meta          map[string]json.RawMessage `json:"_meta"`
+	}
+	if json.Unmarshal(content, &update) != nil || update.SessionUpdate != contracts.ACPUpdateSessionInfoUpdate {
+		return agent.NotificationClassification{}
+	}
+	kind := fieldString(kiroFields(update.Meta[contracts.KiroMetaNamespace]), contracts.KiroMetaKind)
+	if kind != contracts.KiroKindSummarizationCompleted && kind != contracts.KiroKindSummarizationFailed {
+		return agent.NotificationClassification{}
+	}
+	return agent.CompactionBoundaryNotification()
+}
+
 // ValidateAttachment states what a Kiro prompt carries: text as an embedded
 // resource, an image as an image block, and a PDF as an embedded blob. Kiro
 // drops any other binary without a word, so LeapMux refuses it up front.
