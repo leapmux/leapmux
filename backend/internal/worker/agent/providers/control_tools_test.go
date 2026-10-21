@@ -3,11 +3,11 @@ package providers
 import (
 	"testing"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/agentlabels"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude"
-	"github.com/leapmux/leapmux/internal/worker/agent/providers/codex"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -68,7 +68,7 @@ func TestOnlyThePlanModeProvidersReadAPlanModeTool(t *testing.T) {
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_QODER:       true,
 	}
 	registry := Registry()
-	tools := []string{claude.ToolNameEnterPlanMode, claude.ToolNameExitPlanMode, codex.ToolNamePlanModePrompt}
+	tools := []string{claude.ToolNameEnterPlanMode, claude.ToolNameExitPlanMode, contracts.CodexControlToolPlanModePrompt}
 	for _, provider := range registry.Providers() {
 		if planModeProviders[provider] {
 			continue

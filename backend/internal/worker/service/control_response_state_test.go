@@ -3,12 +3,14 @@ package service
 import (
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/db/dbtest"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 )
@@ -207,6 +209,107 @@ func TestControlResponseReplayRecoversADeletedRequest(t *testing.T) {
 				require.NoError(t, err)
 				require.Equal(t, "new", remaining.ClaimToken)
 			}
+		})
+	}
+}
+
+// The catch-up replay carries the non_blocking flag on both recovery paths: a
+// stored request row, and a delivered answer whose request row is gone.
+func TestControlRequestReplayCarriesNonBlocking(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := setupTestService(t)
+	createClaimTestAgent(t, svc, "agent-1")
+	payload := []byte(` {"id":"question","method":"item/tool/requestUserInput"} `)
+	createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
+		AgentID: "agent-1", RequestID: "question-1", ClaimToken: "claim-1", Payload: payload, NonBlocking: true,
+	})
+	createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
+		AgentID: "agent-1", RequestID: "approval-1", ClaimToken: "claim-2",
+		Payload: []byte(` {"id":"approval","method":"item/commandExecution/requestApproval"} `),
+	})
+	require.NoError(t, dbtest.StoreControlResponse(t.Context(), svc.DB, db.ControlResponseAnswer{
+		AgentID: "agent-1", RequestID: "question-2", ClaimToken: "claim-3", State: storedStateDelivered,
+		RequestPayload: payload, NonBlocking: true, AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+	}))
+	row, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
+	require.NoError(t, err)
+	replay := newTestWriter()
+	svc.replayAgentCatchUp(newReplaySink(replay, 0), &leapmuxv1.WatchAgentEntry{AgentId: "agent-1"}, row, nil)
+
+	replayed := map[string]*leapmuxv1.AgentControlRequest{}
+	for _, stream := range replay.streamsSnapshot() {
+		if request := decodeWatchAgentEvent(t, stream).GetControlRequest(); request != nil {
+			replayed[request.RequestId] = request
+		}
+	}
+	require.Contains(t, replayed, "question-1")
+	require.Contains(t, replayed, "question-2")
+	require.Contains(t, replayed, "approval-1")
+	assert.True(t, replayed["question-1"].NonBlocking)
+	assert.True(t, replayed["question-2"].NonBlocking, "the answer replay keeps the presentation of its request")
+	assert.False(t, replayed["approval-1"].NonBlocking)
+}
+
+// responseChangedWriter records the controlResponseChanged events alone. A
+// catch-up replay of the same rows emits controlRequest events, which this
+// writer drops so a state assertion cannot absorb one.
+type responseChangedWriter struct {
+	mockResponseWriter
+	mu     sync.Mutex
+	events []*leapmuxv1.AgentControlRequest
+}
+
+func (w *responseChangedWriter) SendStream(message *leapmuxv1.InnerStreamMessage) error {
+	var response leapmuxv1.WatchEventsResponse
+	if err := proto.Unmarshal(message.GetPayload(), &response); err != nil {
+		return err
+	}
+	if event := response.GetAgentEvent().GetControlResponseChanged(); event != nil {
+		w.mu.Lock()
+		w.events = append(w.events, event)
+		w.mu.Unlock()
+	}
+	return nil
+}
+
+func (w *responseChangedWriter) snapshot() []*leapmuxv1.AgentControlRequest {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]*leapmuxv1.AgentControlRequest(nil), w.events...)
+}
+
+func TestBroadcastControlResponseStateCarriesNonBlocking(t *testing.T) {
+	for _, branch := range []string{"request row", "answer row"} {
+		t.Run(branch, func(t *testing.T) {
+			t.Parallel()
+			svc, _, _ := setupTestService(t)
+			createClaimTestAgent(t, svc, "agent-1")
+			watcher := &responseChangedWriter{mockResponseWriter: mockResponseWriter{channelID: "state-change"}}
+			registerAgentWatch(svc, "state-change", "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, watcher)
+			row, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
+			require.NoError(t, err)
+			payload := []byte(` {"id":"question","method":"item/tool/requestUserInput"} `)
+			if branch == "request row" {
+				createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
+					AgentID: "agent-1", RequestID: "question-1", ClaimToken: "claim-1", Payload: payload, NonBlocking: true,
+				})
+			} else {
+				require.NoError(t, dbtest.StoreControlResponse(t.Context(), svc.DB, db.ControlResponseAnswer{
+					AgentID: "agent-1", RequestID: "question-1", ClaimToken: "claim-1", State: storedStateDelivered,
+					RequestPayload: payload, NonBlocking: true, AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
+				}))
+			}
+
+			svc.broadcastControlResponseState(row, "question-1", "claim-1")
+
+			events := watcher.snapshot()
+			require.Len(t, events, 1)
+			assert.True(t, events[0].NonBlocking, "the state change carries the presentation of its request")
+			want := leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_READY
+			if branch == "answer row" {
+				want = leapmuxv1.ControlResponseState_CONTROL_RESPONSE_STATE_DELIVERED
+			}
+			assert.Equal(t, want, events[0].ResponseState)
 		})
 	}
 }

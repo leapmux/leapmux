@@ -3,12 +3,14 @@ import type { ToolKind } from '../../../model/toolKind'
 import type { ToolSpanContext } from '~/components/chat/rowExtractionTypes'
 import { describe, expect, it } from 'vitest'
 import { CODEX_ITEM } from '~/generated/contracts/codex-protocol'
-import { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { fileEditHasDiff } from '../../../model/fileEditDiff'
 import { TOOL_KINDS } from '../../../model/toolKind'
 import { DEFAULT_TOOL_REQUESTS } from '../../defaultToolRequests'
+import { resolveMessageForRendering } from '../../registry'
 import { CODEX_STATUS } from '../itemVocabulary'
 import { CODEX_TOOL_READERS, codexExtractRow, codexItemKind, codexReasoningHasText, codexReasoningText, codexSpecFor, codexToolFacts } from './row'
+import '~/components/chat/providers'
 
 const NO_SIDES: ToolSpanContext = { request: undefined, result: undefined, role: 'other', visibleRows: { request: false, result: false } }
 
@@ -639,5 +641,24 @@ describe('CODEX_TOOL_READERS', () => {
     expect(payload.title).toBe('AnItemFromALaterRelease')
     expect(payload.request).toEqual({ args: CODEX_PROBE.other })
     expect(payload.result).toEqual({ content: [{ type: 'text', text: 'the reason' }] })
+  })
+})
+
+describe('codexExtractRow user_content', () => {
+  it('formats the full question from its stored source beside the unmodified answer', () => {
+    const parentObject = { content: 'Red' }
+    const title = `Which color?\n${'Long title '.repeat(80)}\r\nWhich shade?`
+    const supplementalContent = { request: { tool_name: 'CodexAsyncQuestion', input: { title } } }
+    const resolved = resolveMessageForRendering({
+      parentObject,
+      topLevel: parentObject,
+      wrapper: null,
+      rawText: '',
+      supplementalContent,
+    }, AgentProvider.CODEX)
+    expect(codexExtractRow({ resolved, category: { kind: 'user_content' }, span: NO_SIDES }))
+      .toEqual({ kind: 'user', text: `> Which color?\n> ${'Long title '.repeat(80)}\n> Which shade?\n\nRed`, attachments: [] })
+    expect(parentObject.content).toBe('Red')
+    expect(supplementalContent.request.input.title).toBe(title)
   })
 })

@@ -3,10 +3,13 @@ package codex
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/testutil"
@@ -452,4 +455,415 @@ func TestCodexStandingApprovalDuringPublication(t *testing.T) {
 	require.Eventually(t, func() bool { return len(sink.CanceledControls()) > 0 }, 30*time.Second, time.Millisecond)
 	assert.Contains(t, sink.CanceledControls(), "jsonrpc:7", "the stored card is retired")
 	assert.False(t, a.OutstandingControlForTest("jsonrpc:7"))
+}
+
+// asyncQuestionCompletedLine builds the item/completed frame of an async agent
+// message. questions is the JSON array of the questions the item carries.
+func asyncQuestionCompletedLine(threadID, itemID, questions string) string {
+	return `{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"` + threadID +
+		`","turnId":"turn-1","item":{"type":"agentMessage","id":"` + itemID +
+		`","text":"Which color?\n- Blue\n- Red","delivery":"async","questions":` + questions + `}}}`
+}
+
+// asyncQuestionRequestPayload builds the stored request payload of one async
+// question, the shape that publishAsyncQuestions writes.
+func asyncQuestionRequestPayload(t *testing.T, questionItemID, title string) json.RawMessage {
+	t.Helper()
+	payload, err := json.Marshal(map[string]any{
+		"type":       "control_request",
+		"request_id": "codex-async-question-call_abc-0",
+		"request": map[string]any{
+			"tool_name": contracts.CodexControlToolAsyncQuestion,
+			"input": contracts.CodexAsyncQuestionInput{
+				QuestionItemID: questionItemID,
+				Title:          title,
+			},
+		},
+	})
+	require.NoError(t, err)
+	return payload
+}
+
+// decodePublishedAsyncQuestion reads one published async question request and
+// returns its typed input and its raw input map. It also pins the envelope keys
+// that the browser reads.
+func decodePublishedAsyncQuestion(t *testing.T, record agenttest.ControlRequestRecord) (contracts.CodexAsyncQuestionInput, map[string]any) {
+	t.Helper()
+	var envelope struct {
+		Type      string `json:"type"`
+		RequestID string `json:"request_id"`
+		Request   struct {
+			ToolName string                            `json:"tool_name"`
+			Input    contracts.CodexAsyncQuestionInput `json:"input"`
+		} `json:"request"`
+	}
+	require.NoError(t, json.Unmarshal(record.Payload, &envelope))
+	var raw struct {
+		Request struct {
+			Input map[string]any `json:"input"`
+		} `json:"request"`
+	}
+	require.NoError(t, json.Unmarshal(record.Payload, &raw))
+	assert.Equal(t, "control_request", envelope.Type)
+	assert.Equal(t, record.RequestID, envelope.RequestID)
+	assert.Equal(t, contracts.CodexControlToolAsyncQuestion, envelope.Request.ToolName)
+	return envelope.Request.Input, raw.Request.Input
+}
+
+// codexQuestionReplyEntry decodes the one entry of a reply envelope and checks
+// the tag lines that frame it.
+func codexQuestionReplyEntry(t *testing.T, input string) (answer, question, questionItemID string) {
+	t.Helper()
+	require.True(t, strings.HasPrefix(input, "<"+codexQuestionReplyTag+">\n"), "the envelope opens with the reply tag")
+	require.True(t, strings.HasSuffix(input, "\n</"+codexQuestionReplyTag+">"), "the envelope closes with the reply tag")
+	body := strings.TrimSuffix(strings.TrimPrefix(input, "<"+codexQuestionReplyTag+">\n"), "\n</"+codexQuestionReplyTag+">")
+	var entries []struct {
+		Answer         string `json:"answer"`
+		Question       string `json:"question"`
+		QuestionItemID string `json:"questionItemId"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(body), &entries))
+	require.Len(t, entries, 1)
+	return entries[0].Answer, entries[0].Question, entries[0].QuestionItemID
+}
+
+// childRecordingControlSink gives each child transcript a recording
+// agenttest.ControlSink. Sink.ChildSink gives a child a plain Sink, which drops
+// control requests, so a child-thread publish would stay invisible without it.
+type childRecordingControlSink struct {
+	*agenttest.ControlSink
+	childMu  sync.Mutex
+	children map[string]*agenttest.ControlSink
+}
+
+var _ agent.ServiceFacets = (*childRecordingControlSink)(nil)
+
+// ChildSink returns the recording services of one child transcript.
+func (s *childRecordingControlSink) ChildSink(childAgentID string) agent.ProviderServices {
+	s.childMu.Lock()
+	defer s.childMu.Unlock()
+	if s.children == nil {
+		s.children = make(map[string]*agenttest.ControlSink)
+	}
+	child := s.children[childAgentID]
+	if child == nil {
+		child = &agenttest.ControlSink{}
+		s.children[childAgentID] = child
+	}
+	return agent.NewProviderServices(child)
+}
+
+// onlyControlChild returns the one child transcript that ChildSink created.
+func (s *childRecordingControlSink) onlyControlChild(t *testing.T) *agenttest.ControlSink {
+	t.Helper()
+	s.childMu.Lock()
+	defer s.childMu.Unlock()
+	require.Len(t, s.children, 1, "one child route")
+	for _, child := range s.children {
+		return child
+	}
+	return nil
+}
+
+// TestCodexPublishAsyncQuestionsPublishesOneNonBlockingRequestPerQuestion covers
+// the main-thread item/completed of an async agent message: one non-blocking
+// request per question, with the identity that Codex's reply format carries.
+func TestCodexPublishAsyncQuestionsPublishesOneNonBlockingRequestPerQuestion(t *testing.T) {
+	t.Parallel()
+
+	a, sink, _ := newCodexControlAgent(t)
+	handleCodexOutput(a, providerkit.ParseLine([]byte(asyncQuestionCompletedLine("main-thread", "call_abc",
+		`[{"title":"Which color?","options":["Blue","Red"]},{"title":"Which shade?","options":["Light","Dark"]}]`))))
+
+	records := sink.PublishedControls()
+	require.Len(t, records, 2)
+	assert.Equal(t, "codex-async-question-call_abc-0", records[0].RequestID)
+	assert.True(t, records[0].NonBlocking, "the turn continues while the question waits")
+	assert.JSONEq(t,
+		`{"type":"control_request","request_id":"codex-async-question-call_abc-0","request":{"tool_name":"CodexAsyncQuestion","input":{"question_item_id":"[\"request_user_input_async\",\"call_abc\",0]","title":"Which color?","options":["Blue","Red"]}}}`,
+		string(records[0].Payload))
+	assert.Equal(t, "codex-async-question-call_abc-1", records[1].RequestID)
+	assert.True(t, records[1].NonBlocking, "the turn continues while the question waits")
+	assert.JSONEq(t,
+		`{"type":"control_request","request_id":"codex-async-question-call_abc-1","request":{"tool_name":"CodexAsyncQuestion","input":{"question_item_id":"[\"request_user_input_async\",\"call_abc\",1]","title":"Which shade?","options":["Light","Dark"]}}}`,
+		string(records[1].Payload))
+}
+
+// TestCodexPublishAsyncQuestionsPublishesNothing covers each item that reaches
+// the same handler with no question for the user.
+func TestCodexPublishAsyncQuestionsPublishesNothing(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a normal agent message", func(t *testing.T) {
+		t.Parallel()
+		a, sink, _ := newCodexControlAgent(t)
+		handleCodexOutput(a, providerkit.ParseLine([]byte(`{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"main-thread","turnId":"turn-1","item":{"type":"agentMessage","id":"m1","text":"Hello."}}}`)))
+
+		require.Equal(t, 1, sink.MessageCount(), "the transcript still receives the message")
+		assert.Zero(t, sink.PublishedControlCount())
+	})
+
+	t.Run("an async message with no questions", func(t *testing.T) {
+		t.Parallel()
+		a, sink, _ := newCodexControlAgent(t)
+		handleCodexOutput(a, providerkit.ParseLine([]byte(asyncQuestionCompletedLine("main-thread", "call_abc", `[]`))))
+
+		require.Equal(t, 1, sink.MessageCount(), "the transcript still receives the message")
+		assert.Zero(t, sink.PublishedControlCount())
+	})
+
+	t.Run("an async message on a child thread", func(t *testing.T) {
+		t.Parallel()
+		a, _, _ := newCodexControlAgent(t)
+		parent := &childRecordingControlSink{ControlSink: &agenttest.ControlSink{}}
+		a.sink = agent.NewProviderServices(parent)
+		handleCodexOutput(a, providerkit.ParseLine([]byte(`{"jsonrpc":"2.0","method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"spawn-1","kind":"started","agentThreadId":"child-1","agentPath":"/root/child"}}}`)))
+		handleCodexOutput(a, providerkit.ParseLine([]byte(asyncQuestionCompletedLine("child-1", "call_child", `[{"title":"Which color?"}]`))))
+
+		child := parent.onlyControlChild(t)
+		found := false
+		for _, message := range child.Messages() {
+			if strings.Contains(string(message.Content), "call_child") {
+				found = true
+			}
+		}
+		require.True(t, found, "the child transcript receives the item")
+		assert.Zero(t, child.PublishedControlCount(), "a child-thread question never reaches the user")
+		assert.Zero(t, parent.PublishedControlCount())
+	})
+}
+
+// TestCodexPublishAsyncQuestionsSkipsABlankTitle keeps the index of each question
+// even when an earlier one publishes nothing.
+func TestCodexPublishAsyncQuestionsSkipsABlankTitle(t *testing.T) {
+	t.Parallel()
+
+	a, sink, _ := newCodexControlAgent(t)
+	handleCodexOutput(a, providerkit.ParseLine([]byte(asyncQuestionCompletedLine("main-thread", "call_abc", `[{"title":"   "},{"title":"Second?"}]`))))
+
+	records := sink.PublishedControls()
+	require.Len(t, records, 1)
+	assert.True(t, records[0].NonBlocking)
+	assert.JSONEq(t,
+		`{"type":"control_request","request_id":"codex-async-question-call_abc-1","request":{"tool_name":"CodexAsyncQuestion","input":{"question_item_id":"[\"request_user_input_async\",\"call_abc\",1]","title":"Second?"}}}`,
+		string(records[0].Payload))
+}
+
+// TestCodexPublishAsyncQuestionsKeepsTheOptionsCodexShows applies the limits of
+// Codex's own question UI: the first 32 non-blank options of at most 512 bytes.
+func TestCodexPublishAsyncQuestionsKeepsTheOptionsCodexShows(t *testing.T) {
+	t.Parallel()
+
+	options := []string{"", "   ", strings.Repeat("x", 600)}
+	for i := 0; i < 40; i++ {
+		options = append(options, fmt.Sprintf("opt-%02d", i))
+	}
+	encoded, err := json.Marshal(options)
+	require.NoError(t, err)
+	a, sink, _ := newCodexControlAgent(t)
+	handleCodexOutput(a, providerkit.ParseLine([]byte(asyncQuestionCompletedLine("main-thread", "call_abc",
+		`[{"title":"Pick one.","options":`+string(encoded)+`},{"title":"Free text?"}]`))))
+
+	records := sink.PublishedControls()
+	require.Len(t, records, 2)
+	input, _ := decodePublishedAsyncQuestion(t, records[0])
+	assert.Equal(t, "Pick one.", input.Title)
+	var expected []string
+	for i := 0; i < 32; i++ {
+		expected = append(expected, fmt.Sprintf("opt-%02d", i))
+	}
+	assert.Equal(t, expected, input.Options, "the blank and long entries drop, and the first 32 stay in order")
+	freeInput, freeRawInput := decodePublishedAsyncQuestion(t, records[1])
+	assert.Equal(t, "Free text?", freeInput.Title)
+	assert.Nil(t, freeInput.Options)
+	assert.NotContains(t, freeRawInput, "options", "a question with no options carries no options key")
+	assert.Equal(t, []string{strings.Repeat("x", 512)}, codexAsyncQuestionOptions([]string{strings.Repeat("x", 512)}),
+		"an option of the full width stays")
+}
+
+// TestCodexQuestionReplyWritesTheReplyEnvelope builds Codex's own answer format:
+// the reply tag, then one JSON entry whose keys come in Codex's order (answer,
+// question, questionItemId).
+func TestCodexQuestionReplyWritesTheReplyEnvelope(t *testing.T) {
+	t.Parallel()
+
+	payload := asyncQuestionRequestPayload(t, `["request_user_input_async","call_abc",0]`, "Which color?")
+	reply, err := codexProvider{}.QuestionReply(payload, "Red")
+	require.NoError(t, err)
+	want := "<send_user_message_question_reply>\n" +
+		`[{"answer":"Red","question":"Which color?","questionItemId":"[\"request_user_input_async\",\"call_abc\",0]"}]` +
+		"\n</send_user_message_question_reply>"
+	assert.Equal(t, want, reply)
+}
+
+// TestCodexQuestionReplyKeepsTheAnswerUnescaped covers the answer text that Go's
+// JSON encoder escapes by default. Codex reads the raw bytes.
+func TestCodexQuestionReplyKeepsTheAnswerUnescaped(t *testing.T) {
+	t.Parallel()
+
+	payload := asyncQuestionRequestPayload(t, `["request_user_input_async","call_abc",0]`, "Which color?")
+	reply, err := codexProvider{}.QuestionReply(payload, "<b>&</b>")
+	require.NoError(t, err)
+	assert.Contains(t, reply, `"answer":"<b>&</b>"`)
+	assert.NotContains(t, reply, `\u003c`)
+	assert.NotContains(t, reply, `\u003e`)
+	assert.NotContains(t, reply, `\u0026`)
+}
+
+// TestCodexQuestionReplyCutsTheQuestionAtAUTF8RuneBoundary covers a title past
+// the width of Codex's own question UI, with a multi-byte rune across the cut and
+// line breaks inside.
+func TestCodexQuestionReplyCutsTheQuestionAtAUTF8RuneBoundary(t *testing.T) {
+	t.Parallel()
+
+	// The euro sign starts at byte 510 and crosses byte 512.
+	title := strings.Repeat("a", 506) + "\r\n" + "bb" + "\u20ac" + strings.Repeat("b", 87)
+	require.Len(t, title, 600)
+	payload := asyncQuestionRequestPayload(t, `["request_user_input_async","call_abc",0]`, title)
+	reply, err := codexProvider{}.QuestionReply(payload, "Red")
+	require.NoError(t, err)
+	_, question, _ := codexQuestionReplyEntry(t, reply)
+	assert.Equal(t, strings.Repeat("a", 506)+"  bb", question,
+		"the line breaks become spaces and the cut lands before the straddling rune")
+	assert.True(t, utf8.ValidString(question))
+	assert.LessOrEqual(t, len(question), codexQuestionReplyMaxBytes)
+	assert.Equal(t, strings.Repeat("a", 512), codexQuestionLine(strings.Repeat("a", 512)),
+		"a title of the full width passes through")
+}
+
+// TestCodexQuestionReplyUsesThePlainFormForALongIdentity falls back to a plain
+// quote-and-answer message when the question identity does not fit Codex's reply
+// envelope.
+func TestCodexQuestionReplyUsesThePlainFormForALongIdentity(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name  string
+		fill  int
+		plain bool
+	}{
+		{name: "an identity of the full width", fill: 479},
+		{name: "an identity one byte wider", fill: 480, plain: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			identity := `["request_user_input_async","` + strings.Repeat("x", test.fill) + `",0]`
+			if test.plain {
+				require.Greater(t, len(identity), codexQuestionReplyMaxBytes)
+			} else {
+				require.Len(t, identity, codexQuestionReplyMaxBytes)
+			}
+			payload := asyncQuestionRequestPayload(t, identity, "Which color?")
+			reply, err := codexProvider{}.QuestionReply(payload, "Red")
+			require.NoError(t, err)
+			if test.plain {
+				assert.Equal(t, "> Which color?\n\nRed", reply)
+				assert.NotContains(t, reply, codexQuestionReplyTag)
+				return
+			}
+			_, _, questionItemID := codexQuestionReplyEntry(t, reply)
+			assert.Equal(t, identity, questionItemID)
+		})
+	}
+}
+
+// TestCodexQuestionReplyPreservesTheSourceTitle checks native normalization without source mutation.
+func TestCodexQuestionReplyPreservesTheSourceTitle(t *testing.T) {
+	t.Parallel()
+
+	payload := asyncQuestionRequestPayload(t, `["request_user_input_async","call_abc",0]`, "Which color?\nAnd which shade?")
+	reply, err := codexProvider{}.QuestionReply(payload, "Red")
+	require.NoError(t, err)
+	_, question, _ := codexQuestionReplyEntry(t, reply)
+	assert.Equal(t, "Which color? And which shade?", question)
+	assert.JSONEq(t, string(asyncQuestionRequestPayload(t, `["request_user_input_async","call_abc",0]`, "Which color?\nAnd which shade?")), string(payload))
+}
+
+// TestCodexQuestionReplyRefusesAnUnusablePayload covers the request payloads
+// whose question the reply cannot identify or quote.
+func TestCodexQuestionReplyRefusesAnUnusablePayload(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name    string
+		payload string
+		want    string
+	}{
+		{name: "a request without a title", payload: `{"request":{"input":{"question_item_id":"[\"request_user_input_async\",\"call_abc\",0]"}}}`, want: "no title"},
+		{name: "a request without an identity", payload: `{"request":{"input":{"title":"Which color?"}}}`, want: "no identity"},
+		{name: "a payload that is not JSON", payload: `{`, want: "read the async question request"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := codexProvider{}.QuestionReply(json.RawMessage(test.payload), "Red")
+			require.Error(t, err)
+			assert.ErrorContains(t, err, test.want)
+		})
+	}
+}
+
+func TestCodexAsyncQuestionInstanceSurvivesRepeatedPublication(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newCodexControlAgent(t)
+	const questions = `[{"title":" "},{"title":"Which color?"},{"title":"Which color?"}]`
+	line := asyncQuestionCompletedLine("main-thread", "call-1", questions)
+	feedCodexLines(a, line, line)
+	feedCodexLines(a, asyncQuestionCompletedLine("main-thread", "call-2", questions))
+	a.threadID = "replacement-thread"
+	feedCodexLines(a, asyncQuestionCompletedLine("replacement-thread", "call-1", questions))
+	records := sink.PublishedControls()
+	require.Len(t, records, 8)
+	unique := make(map[string]struct{})
+	for index, record := range records {
+		require.NotEmpty(t, record.InstanceID)
+		unique[record.InstanceID] = struct{}{}
+		expectedSession := "main-thread"
+		if index >= 6 {
+			expectedSession = "replacement-thread"
+		}
+		assert.Equal(t, expectedSession, record.AgentSessionID)
+	}
+	assert.Len(t, unique, 6, "only repeated events reuse question identities")
+	assert.Equal(t, records[0].InstanceID, records[2].InstanceID)
+	assert.Equal(t, records[1].InstanceID, records[3].InstanceID)
+	assert.NotEqual(t, records[0].InstanceID, records[1].InstanceID, "question positions distinguish identical text")
+	assert.NotEqual(t, records[0].InstanceID, records[4].InstanceID, "native items distinguish identical text")
+	assert.NotEqual(t, records[0].InstanceID, records[6].InstanceID, "native sessions distinguish identical items")
+	assert.Equal(t, "codex-async-question-call-1-1", records[0].RequestID)
+	assert.Equal(t, "codex-async-question-call-1-2", records[1].RequestID)
+}
+
+func TestCodexQuestionIdentityPreservesUnicodeSeparators(t *testing.T) {
+	t.Parallel()
+	for _, itemID := range []string{"line\u2028separator", "paragraph\u2029separator", `literal\u2028`, `literal\u2029`, "slash\\\u2028"} {
+		identity, err := encodeCodexQuestionItemID(itemID, 0)
+		require.NoError(t, err)
+		var values []any
+		require.NoError(t, json.Unmarshal([]byte(identity), &values))
+		require.Len(t, values, 3)
+		assert.Equal(t, itemID, values[1])
+		if strings.ContainsAny(itemID, "\u2028\u2029") {
+			assert.Contains(t, identity, strings.ReplaceAll(itemID, `\`, `\\`), "native JSON identities retain Unicode separators")
+		}
+	}
+}
+
+func BenchmarkCodexOrdinaryQuestionDetection(b *testing.B) {
+	params, err := json.Marshal(map[string]any{"threadId": "main-thread", "item": map[string]any{
+		"id": "message-1", "type": "agentMessage", "text": strings.Repeat("x", 1<<20),
+	}})
+	if err != nil {
+		b.Fatal(err)
+	}
+	event, ok := newCodexItemEvent(nil, params)
+	if !ok {
+		b.Fatal("the benchmark item is invalid")
+	}
+	a := &Agent{}
+	sink := agent.NewProviderServices(&agenttest.Sink{})
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		a.publishAsyncQuestions(sink, event)
+	}
 }

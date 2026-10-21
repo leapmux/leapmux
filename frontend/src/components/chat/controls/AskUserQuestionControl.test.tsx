@@ -337,6 +337,51 @@ describe('AskUserQuestionActions', () => {
     await vi.waitFor(() => expect(respond).toHaveBeenCalledOnce())
     expect(sentAnswers(respond)).toEqual({ 'Pick a color': YOLO_ANSWER, 'Pick a size': YOLO_ANSWER })
   })
+
+  /** Render the question actions for one request and return the reject spy. */
+  function renderStopActions(request: ControlRequest): Mock {
+    const onReject = vi.fn().mockResolvedValue(undefined)
+    render(() => (
+      <AskUserQuestionActions
+        request={request}
+        answerState={createControlAnswerState()}
+        questions={[{ question: 'Choose', options: [{ label: 'First' }] }]}
+        onRespond={vi.fn()}
+        hasEditorContent={false}
+        onTriggerSend={vi.fn()}
+        onSubmitAnswers={vi.fn().mockResolvedValue(undefined)}
+        onReject={onReject}
+      />
+    ))
+    return onReject
+  }
+
+  // A non-blocking question never stops the agent, so its secondary action is
+  // a skip: a decision to answer none of it, sent with no reason. Codex keeps
+  // no pending question state, and the empty reason sends nothing on.
+  it('reads Skip for a non-blocking question and rejects with no reason', async () => {
+    const onReject = renderStopActions({ requestId: 'q1', agentId: 'a1', payload: {}, nonBlocking: true })
+
+    const skip = screen.getByTestId('control-skip-btn')
+    expect(skip).toHaveTextContent('Skip')
+    expect(screen.queryByTestId('control-stop-btn')).not.toBeInTheDocument()
+
+    await fireEvent.click(skip)
+    expect(onReject).toHaveBeenCalledOnce()
+    expect(onReject).toHaveBeenCalledWith('')
+  })
+
+  it('reads Stop for a blocking request and rejects with the stop reason', async () => {
+    const onReject = renderStopActions({ requestId: 'b1', agentId: 'a1', payload: {} })
+
+    const stop = screen.getByTestId('control-stop-btn')
+    expect(stop).toHaveTextContent('Stop')
+    expect(screen.queryByTestId('control-skip-btn')).not.toBeInTheDocument()
+
+    await fireEvent.click(stop)
+    expect(onReject).toHaveBeenCalledOnce()
+    expect(onReject).toHaveBeenCalledWith('User stopped')
+  })
 })
 
 describe('trySubmitAskUserQuestion selection limits', () => {

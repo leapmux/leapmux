@@ -306,7 +306,7 @@ func droidResolveControlResponse(ctx agent.ControlResponseContext) agent.Control
 		// TUI also cancels with no comment and lets the user explain in the next
 		// message. So the reason follows as the next user input. message is
 		// empty for a bare rejection, which then queues nothing.
-		resolution.Feedback = message
+		resolution.FollowUp = agent.FeedbackFollowUp(message)
 	}
 	return resolution
 }

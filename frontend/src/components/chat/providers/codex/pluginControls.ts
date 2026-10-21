@@ -5,6 +5,12 @@ import { pickObject, pickString } from '~/lib/jsonPick'
 import { buildAllowResponse, buildDenyResponse, getToolInput } from '~/utils/controlResponse'
 import { withElicitationResponse } from '../../controls/elicitationResponse'
 import { buildJsonRpcResult, questionsFromWire } from '../../controls/types'
+import {
+  codexAsyncQuestions,
+  isCodexAsyncQuestion,
+  sendCodexAsyncAnswer,
+  sendCodexAsyncSkip,
+} from './asyncQuestion'
 import { CodexControlActions } from './CodexControlActions'
 import {
   codexControlResponseSummary,
@@ -23,14 +29,18 @@ export const codexControls: ProviderControlCapability = {
   preservesSelectionNotes: true,
   controlResponseDisplay: withElicitationResponse(codexElicitation, codexControlResponseSummary),
   askUserQuestion: {
-    isRequest: payload => payload.method === CODEX_METHOD.ToolRequestUserInput,
-    // Read every question element through the shared validator. A valid outer
-    // array does not make a null or string element a question.
-    extractQuestions: payload => questionsFromWire(pickObject(payload, 'params')?.questions),
-    sendAnswer: (request, sendControlResponse, questions, answerState) =>
-      sendCodexUserInputResponse(sendControlResponse, request.requestId, questions, answerState),
-    sendReject: (request, sendControlResponse) =>
-      sendCodexUserInputRejectResponse(sendControlResponse, request.requestId),
+    isRequest: payload => isCodexAsyncQuestion(payload) || payload.method === CODEX_METHOD.ToolRequestUserInput,
+    extractQuestions: (payload, _source) => isCodexAsyncQuestion(payload)
+      ? codexAsyncQuestions(payload)
+      // Read every question element through the shared validator. A valid outer
+      // array does not make a null or string element a question.
+      : questionsFromWire(pickObject(payload, 'params')?.questions),
+    sendAnswer: (request, sendControlResponse, questions, answerState) => isCodexAsyncQuestion(request.payload)
+      ? sendCodexAsyncAnswer(request, sendControlResponse, answerState)
+      : sendCodexUserInputResponse(sendControlResponse, request.requestId, questions, answerState),
+    sendReject: (request, sendControlResponse, _message) => isCodexAsyncQuestion(request.payload)
+      ? sendCodexAsyncSkip(request, sendControlResponse)
+      : sendCodexUserInputRejectResponse(sendControlResponse, request.requestId),
   },
   elicitation: codexElicitation,
   buildControlResponse(payload, content, requestId) {

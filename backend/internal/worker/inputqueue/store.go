@@ -63,7 +63,7 @@ func (s *Store) KindAfterEdit(ctx context.Context, agentID, inputID, newText str
 
 func validKind(kind leapmuxv1.AgentInputKind) bool {
 	return kind >= leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE &&
-		kind <= leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK
+		kind <= leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER
 }
 
 func validateIdentity(value string) bool {
@@ -78,7 +78,8 @@ func attachmentBytes(attachments []Attachment) int64 {
 	return total
 }
 
-func validateContent(kind leapmuxv1.AgentInputKind, text string, attachments []Attachment) error {
+// ValidateContent checks the permanent content restrictions before an input is recorded.
+func ValidateContent(kind leapmuxv1.AgentInputKind, text string, attachments []Attachment) error {
 	if !validKind(kind) {
 		return fmt.Errorf("%w: input kind is required", ErrInvalidInput)
 	}
@@ -113,7 +114,20 @@ func validateContent(kind leapmuxv1.AgentInputKind, text string, attachments []A
 func steerableInputKind(kind leapmuxv1.AgentInputKind) bool {
 	return kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE ||
 		kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_CONTINUE ||
-		kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK
+		controlReplyKind(kind)
+}
+
+// controlReplyKind reports whether the input is the user's reply to a control
+// request: rejection feedback, or the answer to a question that LeapMux owns.
+// Both take the same place before future queued work.
+func controlReplyKind(kind leapmuxv1.AgentInputKind) bool {
+	return kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK ||
+		kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER
+}
+
+// automaticSteeringKind selects inputs that enter an active turn without a separate Steer action.
+func automaticSteeringKind(kind leapmuxv1.AgentInputKind) bool {
+	return kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER
 }
 
 // lockedInputState protects an input that the provider can already read.
@@ -135,7 +149,7 @@ func (s *Store) enqueue(ctx context.Context, input NewItem, apply func(*sql.Tx) 
 		return Snapshot{}, false, fmt.Errorf("%w: agent and input IDs are required", ErrInvalidInput)
 	}
 	input.Kind = s.classifier.Classify(input.Kind, input.Text)
-	if err := validateContent(input.Kind, input.Text, input.Attachments); err != nil {
+	if err := ValidateContent(input.Kind, input.Text, input.Attachments); err != nil {
 		return Snapshot{}, false, err
 	}
 
@@ -217,8 +231,8 @@ func (s *Store) enqueue(ctx context.Context, input NewItem, apply func(*sql.Tx) 
 	if err := replaceAttachments(ctx, tx, input.ID, input.Attachments); err != nil {
 		return Snapshot{}, false, err
 	}
-	if input.Kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK {
-		if err := placeControlFeedback(ctx, tx, input.AgentID, input.ID); err != nil {
+	if controlReplyKind(input.Kind) {
+		if err := placeControlReply(ctx, tx, input.AgentID, input.ID); err != nil {
 			return Snapshot{}, false, err
 		}
 	}
@@ -322,7 +336,7 @@ func (s *Store) Update(ctx context.Context, agentID, inputID, clientID string, e
 	if item.ReclassifyOnEdit {
 		kind = s.classifier.Classify(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, text)
 	}
-	if err := validateContent(kind, text, attachments); err != nil {
+	if err := ValidateContent(kind, text, attachments); err != nil {
 		return Snapshot{}, err
 	}
 	var aggregate int64
@@ -635,12 +649,15 @@ func (s *Store) finishPlannedRestart(ctx context.Context, agentID string, oldTur
 	return snapshot, changed, err
 }
 
-func (s *Store) PrepareDispatch(ctx context.Context, agentID string) (*PreparedDispatch, Snapshot, error) {
-	return s.prepare(ctx, agentID, "", false, false, false)
+// PrepareDispatch reads the head for the drain loop. steerRowAtEcho is the
+// provider's steer-row policy: a question answer that an active turn steers
+// holds its row for the echo, so prepare reserves no sequence for it.
+func (s *Store) PrepareDispatch(ctx context.Context, agentID string, steerRowAtEcho bool) (*PreparedDispatch, Snapshot, error) {
+	return s.prepare(ctx, agentID, "", dispatchAutomatic, steerRowAtEcho)
 }
 
 func (s *Store) PrepareRetry(ctx context.Context, agentID string) (*PreparedDispatch, Snapshot, error) {
-	return s.prepare(ctx, agentID, "", true, false, false)
+	return s.prepare(ctx, agentID, "", dispatchRetry, false)
 }
 
 func (s *Store) PrepareSteer(ctx context.Context, agentID, inputID string, rowAtEcho bool) (*PreparedDispatch, Snapshot, error) {
@@ -651,7 +668,7 @@ func (s *Store) PrepareSteer(ctx context.Context, agentID, inputID string, rowAt
 	if !validateIdentity(inputID) {
 		return nil, Snapshot{}, ErrNotHead
 	}
-	return s.prepare(ctx, agentID, inputID, true, true, rowAtEcho)
+	return s.prepare(ctx, agentID, inputID, dispatchSteering, rowAtEcho)
 }
 
 // dispatchGate holds every input the dispatch guard reads, so ONE predicate answers
@@ -775,7 +792,15 @@ func readDispatchGate(ctx context.Context, tx db.DBTX, agentID string) (dispatch
 	return gate, nil
 }
 
-func (s *Store) prepare(ctx context.Context, agentID, expectedInputID string, allowPaused, requireActive, rowAtEcho bool) (*PreparedDispatch, Snapshot, error) {
+type dispatchMode uint8
+
+const (
+	dispatchAutomatic dispatchMode = iota
+	dispatchRetry
+	dispatchSteering
+)
+
+func (s *Store) prepare(ctx context.Context, agentID, expectedInputID string, mode dispatchMode, rowAtEcho bool) (*PreparedDispatch, Snapshot, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, Snapshot{}, err
@@ -789,6 +814,10 @@ func (s *Store) prepare(ctx context.Context, agentID, expectedInputID string, al
 		return nil, Snapshot{}, err
 	}
 	item := gate.Head
+	allowPaused := mode != dispatchAutomatic
+	// Automatic question delivery uses the current transaction's pause and turn state.
+	requireActive := mode == dispatchSteering || mode == dispatchAutomatic && gate.ActiveTurn && gate.TurnSteerable &&
+		automaticSteeringKind(item.Kind)
 	// ErrNotHead is about the CALLER's identity, not about the guard, so it stays here
 	// and the gate never sees expectedInputID.
 	if expectedInputID != "" && (!gate.HeadFound || item.ID != expectedInputID) {
@@ -810,7 +839,14 @@ func (s *Store) prepare(ctx context.Context, agentID, expectedInputID string, al
 		return nil, Snapshot{}, err
 	}
 	var reservedSeq int64
-	if !rowAtEcho {
+	// A row held for the provider's echo reserves no sequence: the echo's
+	// accept reserves one, in order with every other echoed row. Only a
+	// steered dispatch holds its row (requireActive), so an ordinary dispatch
+	// reserves even when the provider's steer policy writes rows at echoes.
+	// A control reply's row is LeapMux's own record and never waits for an
+	// echo -- the answer text, not the provider's repetition of it, is the
+	// row -- so a control reply reserves like any ordinary dispatch.
+	if !rowAtEcho || !requireActive || controlReplyKind(item.Kind) {
 		if item.ReservedSeq > 0 {
 			reservedSeq = item.ReservedSeq
 		} else if reservedSeq, err = reserveMessageSeq(ctx, tx, agentID); err != nil {
@@ -863,7 +899,7 @@ func (s *Store) prepare(ctx context.Context, agentID, expectedInputID string, al
 	}
 	return &PreparedDispatch{
 		Item:        DispatchItem{StoredItem: item, Attachments: attachments},
-		ReservedSeq: reservedSeq,
+		ReservedSeq: reservedSeq, Steering: requireActive,
 	}, snapshot, nil
 }
 
@@ -976,7 +1012,7 @@ func (s *Store) Accept(ctx context.Context, prepared PreparedDispatch, result Di
 	if s.beforeAcceptWrite != nil {
 		s.beforeAcceptWrite()
 	}
-	accepted, err := insertInputTranscript(ctx, tx, item, attachments, item.ReservedSeq, result.SpanLines)
+	accepted, err := insertInputTranscript(ctx, tx, item, attachments, item.ReservedSeq, result.SpanLines, result.SupplementalContent)
 	if err != nil {
 		return AcceptedTranscript{}, Snapshot{}, err
 	}
@@ -1026,12 +1062,18 @@ func (s *Store) Accept(ctx context.Context, prepared PreparedDispatch, result Di
 }
 
 // insertInputTranscript writes one accepted input at the sequence that its caller reserved.
-func insertInputTranscript(ctx context.Context, tx *sql.Tx, item StoredItem, attachments []Attachment, seq int64, spanLines string) (AcceptedTranscript, error) {
+// supplemental is the raw provider source that the row keeps beside its content, or nil
+// for none; the row stores it compressed.
+func insertInputTranscript(ctx context.Context, tx *sql.Tx, item StoredItem, attachments []Attachment, seq int64, spanLines string, supplemental []byte) (AcceptedTranscript, error) {
 	content, err := transcriptContent(item, attachments)
 	if err != nil {
 		return AcceptedTranscript{}, err
 	}
 	compressed, compression := msgcodec.Compress(content)
+	supplementalContent, supplementalCompression := []byte(nil), leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE
+	if len(supplemental) > 0 {
+		supplementalContent, supplementalCompression = msgcodec.Compress(supplemental)
+	}
 	var provider leapmuxv1.AgentProvider
 	if err := tx.QueryRowContext(ctx, `SELECT agent_provider FROM agents WHERE id = ?`, item.AgentID).Scan(&provider); err != nil {
 		return AcceptedTranscript{}, err
@@ -1039,7 +1081,7 @@ func insertInputTranscript(ctx context.Context, tx *sql.Tx, item StoredItem, att
 	mark := leapmuxv1.MarkType_MARK_TYPE_UNSPECIFIED
 	if item.ReclassifyOnEdit || item.Kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE {
 		mark = leapmuxv1.MarkType_MARK_TYPE_USER_MESSAGE
-	} else if item.Kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK {
+	} else if controlReplyKind(item.Kind) {
 		mark = leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE
 	}
 	if spanLines == "" {
@@ -1048,19 +1090,21 @@ func insertInputTranscript(ctx context.Context, tx *sql.Tx, item StoredItem, att
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO messages
 		(id, agent_id, seq, source, content, content_compression, idempotency_key, depth, span_id,
-		 parent_span_id, span_type, span_lines, span_color, agent_provider, mark_type, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, 0, '', '', '', ?, 0, ?, ?, ?)`,
+		 parent_span_id, span_type, span_lines, span_color, agent_provider, mark_type, created_at,
+		 supplemental_content, supplemental_content_compression)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 0, '', '', '', ?, 0, ?, ?, ?, COALESCE(?, X''), ?)`,
 		item.ID, item.AgentID, seq, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER,
 		compressed, compression, inputIdempotencyKey(NewItem{
 			ID: item.ID, AgentID: item.AgentID, Kind: item.Kind, Text: item.Text,
 			TargetMode: item.TargetMode, PrepareContext: item.PrepareContext,
 			ReclassifyOnEdit: item.ReclassifyOnEdit, Attachments: attachments,
-		}), spanLines, provider, workerdb.OptionalStorageEnum(mark), item.CreatedAt); err != nil {
+		}), spanLines, provider, workerdb.OptionalStorageEnum(mark), item.CreatedAt, supplementalContent, supplementalCompression); err != nil {
 		return AcceptedTranscript{}, err
 	}
 	return AcceptedTranscript{
 		ID: item.ID, AgentID: item.AgentID, Seq: seq,
 		Content: compressed, ContentCompression: compression,
+		SupplementalContent: supplementalContent, SupplementalContentCompression: supplementalCompression,
 		AgentProvider: provider, MarkType: mark, SpanLines: spanLines,
 		CreatedAt: item.CreatedAt,
 	}, nil
@@ -1166,7 +1210,7 @@ func (s *Store) AcceptEchoedSteers(ctx context.Context, agentID string, count in
 		if err != nil {
 			return nil, false, Snapshot{}, err
 		}
-		row, err := insertInputTranscript(ctx, tx, item, attachments, seq, spanLines)
+		row, err := insertInputTranscript(ctx, tx, item, attachments, seq, spanLines, nil)
 		if err != nil {
 			return nil, false, Snapshot{}, err
 		}
@@ -1885,9 +1929,9 @@ func commitSnapshot(ctx context.Context, tx *sql.Tx, agentID string) (Snapshot, 
 	return snapshot, nil
 }
 
-// placeControlFeedback keeps the current request's feedback before future queued work.
-// Existing feedback and a dispatch or failure at the front retain their order.
-func placeControlFeedback(ctx context.Context, tx *sql.Tx, agentID, inputID string) error {
+// placeControlReply keeps the current request's reply before future queued work.
+// Existing replies and a dispatch or failure at the front retain their order.
+func placeControlReply(ctx context.Context, tx *sql.Tx, agentID, inputID string) error {
 	rows, err := tx.QueryContext(ctx, `SELECT id, kind, state FROM agent_input_queue_items WHERE agent_id = ? ORDER BY order_index`, agentID)
 	if err != nil {
 		return err
@@ -1905,7 +1949,7 @@ func placeControlFeedback(ctx context.Context, tx *sql.Tx, agentID, inputID stri
 		if id == inputID {
 			continue
 		}
-		if position < 0 && kind != leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK && state == leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED {
+		if position < 0 && !controlReplyKind(kind) && state == leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED {
 			position = len(ids)
 		}
 		ids = append(ids, id)
@@ -1956,10 +2000,8 @@ func writeOrder(ctx context.Context, tx db.DBTX, agentID string, itemIDs []strin
 	return nil
 }
 
-// transcriptContent builds the stored message body. Every optional part is
-// independent: a plan-execution input keeps its marker whether or not it
-// carries attachments, because each renderer keys the collapsible bubble off
-// that marker alone.
+// transcriptContent stores the original input text and independent optional fields.
+// The plan-execution marker remains present with or without attachments.
 func transcriptContent(item StoredItem, attachments []Attachment) ([]byte, error) {
 	content := map[string]any{"content": item.Text}
 	if item.Kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_PLAN_EXECUTION {

@@ -405,6 +405,9 @@ enum AgentInputKind {
   AGENT_INPUT_KIND_PLAN_EXECUTION = 4;
   AGENT_INPUT_KIND_AUTO_CONTINUE = 5;
   AGENT_INPUT_KIND_CONTROL_FEEDBACK = 6;
+  // The user's answer to a question that the agent asked without waiting. The
+  // provider turns the text into its own reply format when the input dispatches.
+  AGENT_INPUT_KIND_QUESTION_ANSWER = 7;
 }
 
 enum AgentInputState {
@@ -1078,6 +1081,10 @@ message AgentControlRequest {
   int64 source_seq = 6;
   string agent_session_id = 7;
   ControlResponseState response_state = 8;
+  // A non-blocking request does not stop the agent: the agent continues its turn,
+  // and the request waits until the user answers or skips it. A process exit and
+  // an interrupt keep it. The browser shows it only when the user opens it.
+  bool non_blocking = 9;
 }
 
 // ControlResponseState describes the worker's evidence for one response instance.

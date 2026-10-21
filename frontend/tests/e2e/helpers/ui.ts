@@ -414,13 +414,25 @@ export async function expectNoControlBanner(page: Page): Promise<void> {
  *   that text as feedback.
  * - `submit`: the button that sends the answers of a question.
  * - `stop`: the question button that refuses the question.
+ * - `skip`: the question button that skips a question the agent asked without waiting.
  * - `yolo`: the question button that fills each unanswered question with the recommended option and sends the answers.
  */
-export type ControlAction = 'allow' | 'deny' | 'submit' | 'stop' | 'yolo'
+export type ControlAction = 'allow' | 'deny' | 'submit' | 'stop' | 'skip' | 'yolo'
 
 /** Locate every visible button of one control request action. */
 export function controlButton(page: Page, action: ControlAction): Locator {
   return page.getByTestId(`control-${action}-btn`).filter({ visible: true })
+}
+
+/** Locate the visible notice that tells how many questions wait for an answer. */
+export function pendingQuestionsBanner(page: Page): Locator {
+  return page.getByTestId('pending-questions-banner').filter({ visible: true })
+}
+
+/** Open the oldest waiting question and wait for its control banner. */
+export async function openPendingQuestions(page: Page): Promise<Locator> {
+  await page.getByTestId('pending-questions-answer').filter({ visible: true }).click()
+  return waitForControlBanner(page)
 }
 
 /**

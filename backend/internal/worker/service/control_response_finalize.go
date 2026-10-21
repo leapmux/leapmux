@@ -23,8 +23,8 @@ func controlResponsePlanFromAnswer(registry *agent.Registry, answer db.ControlRe
 	meta := completeControlRequestMetadata(controlResponseRequestMetadata{
 		RequestID: answer.RequestID, ClaimToken: answer.ClaimToken,
 		AgentSessionID: answer.AgentSessionID, Payload: answer.RequestPayload,
-		SourceSeq: answer.SourceSeq,
-		Exists:    len(answer.RequestPayload) > 0,
+		SourceSeq: answer.SourceSeq, NonBlocking: answer.NonBlocking,
+		Exists: len(answer.RequestPayload) > 0,
 	})
 	plan := resolveControlResponsePlan(registry.Plugin(answer.AgentProvider), meta, answer.ResponseContent, nil)
 	if len(answer.PlanApprovalSettings) != 0 {
@@ -38,7 +38,7 @@ func controlResponsePlanFromAnswer(registry *agent.Registry, answer db.ControlRe
 	}
 	// Recovery must retain the actual prepared bytes, even if the provider encoder changes.
 	plan.resolution.Content = answer.ResolvedContent
-	plan.resolution.Feedback = answer.Feedback
+	plan.resolution.FollowUp = agent.ControlFollowUp{Kind: answer.FollowUpKind, Text: answer.FollowUp}
 	return plan, nil
 }
 
@@ -99,10 +99,9 @@ func (svc *Service) finalizeControlResponse(answer db.ControlResponseAnswer) err
 		}
 		return err
 	}
-	if answer.Feedback != "" {
+	if answer.FollowUpKind != leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED {
 		_, err = svc.InputQueue.EnqueueWithMutation(ctx, inputqueue.NewItem{
-			ID: answer.InputID, AgentID: agentID, Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK,
-			Text: answer.Feedback,
+			ID: answer.InputID, AgentID: agentID, Kind: answer.FollowUpKind, Text: answer.FollowUp,
 		}, apply)
 	} else {
 		var tx *sql.Tx

@@ -227,16 +227,20 @@ type NewItem struct {
 type PreparedDispatch struct {
 	Item        DispatchItem
 	ReservedSeq int64
+	// Steering preserves the active turn that admitted this input.
+	Steering bool
 }
 
 type AcceptedTranscript struct {
-	ID                 string
-	AgentID            string
-	Seq                int64
-	Content            []byte
-	ContentCompression leapmuxv1.ContentCompression
-	AgentProvider      leapmuxv1.AgentProvider
-	MarkType           leapmuxv1.MarkType
+	ID                             string
+	AgentID                        string
+	Seq                            int64
+	Content                        []byte
+	ContentCompression             leapmuxv1.ContentCompression
+	SupplementalContent            []byte
+	SupplementalContentCompression leapmuxv1.ContentCompression
+	AgentProvider                  leapmuxv1.AgentProvider
+	MarkType                       leapmuxv1.MarkType
 	// SpanLines carries the passthrough span column that Accept wrote into the
 	// messages row. The live broadcast must repeat it, or the same bubble
 	// renders without its bars now and with them after a reload.
@@ -249,7 +253,9 @@ type DispatchResult struct {
 	TurnSteerable bool
 	SpanLines     string
 	Steering      bool
-	AfterAccept   func()
+	// SupplementalContent stores the original provider source for frontend extraction.
+	SupplementalContent []byte
+	AfterAccept         func()
 }
 
 // DeliveryError carries a refused dispatch and what the queue must do. A busy

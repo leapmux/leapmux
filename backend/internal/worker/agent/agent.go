@@ -235,6 +235,9 @@ type ProgressServices interface {
 }
 
 // ControlRequest keeps the native payload separate from its optional transcript source.
+// A NonBlocking request is one the agent does not wait for: the turn continues and the
+// answer arrives later. The zero value is a blocking request, so every publisher that
+// does not set the flag keeps today's behavior.
 type ControlRequest struct {
 	// AgentSessionID is the provider session that the request belongs to. The
 	// worker accepts an answer only while the agent is in that session. An empty
@@ -247,6 +250,8 @@ type ControlRequest struct {
 	InstanceID string
 	Payload    []byte
 	SourceSeq  int64
+	// NonBlocking marks a request that the agent does not wait for.
+	NonBlocking bool
 }
 
 // ControlServices persists and broadcasts control requests.
@@ -859,6 +864,13 @@ type SteerSurvivor interface{ SteerSurvivesTurnEnd() bool }
 
 // SteerPolicy states when a steer gets its row and whether it survives a turn end.
 type SteerPolicy struct{ RowAtEcho, SurvivesTurnEnd bool }
+
+// SessionInputSteerer validates a recorded question's session while it selects the native target.
+// A provider without this capability cannot steer an answer to a recorded question.
+type SessionInputSteerer interface {
+	InputSteerer
+	SteerInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error
+}
 
 var (
 	ErrContextClearUnsupported = errors.New("agent provider does not support native context clearing")

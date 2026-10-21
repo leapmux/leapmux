@@ -589,7 +589,7 @@ func TestZCodeResolveControlResponse_PlanRejectionWithFeedbackKeepsTheText(t *te
 	assert.NotContains(t, result, contracts.ZCodeReplyFieldContent)
 	// The feedback is the reader's own typed text, and it reaches the agent as the next
 	// user input, so it keeps every byte the reader typed.
-	assert.Equal(t, "  split step 2  ", resolution.Feedback)
+	assert.Equal(t, agent.FeedbackFollowUp("  split step 2  "), resolution.FollowUp)
 }
 
 // With nothing typed there is no text to preserve, so the honest reply is a decline.
@@ -764,7 +764,7 @@ func TestZCodeResolveControlResponse_QuestionRejectionKeepsSeparateFeedback(t *t
 	require.NoError(t, json.Unmarshal(frame.Result, &result))
 	assert.Equal(t, contracts.ZCodeActionDecline, result[contracts.ZCodeReplyFieldAction])
 	assert.NotContains(t, result, "reason")
-	assert.Equal(t, "ask me later", resolution.Feedback)
+	assert.Equal(t, agent.FeedbackFollowUp("ask me later"), resolution.FollowUp)
 }
 
 // The questions may arrive under `schema.questions` or hoisted to the top level. One

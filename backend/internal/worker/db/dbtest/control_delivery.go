@@ -33,10 +33,11 @@ func StoreControlResponse(ctx context.Context, database *sql.DB, answer db.Contr
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO control_response_payloads
 	(delivery_id, request_payload, response_content, resolved_content, plan_approval_settings,
-	execution_session_id, source_seq, feedback, agent_session_id, agent_provider, input_id)
-	VALUES (?, COALESCE(?, X''), COALESCE(?, X''), COALESCE(?, X''), COALESCE(?, X''), ?, ?, ?, ?, ?, ?)`,
+	execution_session_id, source_seq, follow_up, follow_up_kind, non_blocking, agent_session_id, agent_provider, input_id)
+	VALUES (?, COALESCE(?, X''), COALESCE(?, X''), COALESCE(?, X''), COALESCE(?, X''), ?, ?, ?, ?, ?, ?, ?, ?)`,
 		answer.DeliveryID, answer.RequestPayload, answer.ResponseContent, answer.ResolvedContent,
-		answer.PlanApprovalSettings, answer.ExecutionSessionID, answer.SourceSeq, answer.Feedback,
+		answer.PlanApprovalSettings, answer.ExecutionSessionID, answer.SourceSeq, answer.FollowUp,
+		answer.FollowUpKind, answer.NonBlocking,
 		answer.AgentSessionID, answer.AgentProvider, answer.InputID)
 	if err != nil {
 		return err

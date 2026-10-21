@@ -54,6 +54,7 @@ import { useControlResponseHandling } from './controlResponseHandling'
 import { actionButtonClass } from './controls/ControlActionRow'
 import { createControlAnswerState } from './controls/types'
 import { MarkdownEditor } from './markdownEditor/MarkdownEditor'
+import { PendingQuestionsBanner } from './PendingQuestionsBanner'
 import { PromptSuggestionChip } from './PromptSuggestionChip'
 import { providerFor } from './providers/registry'
 import { activePermissionPreset, usablePresets } from './providerSettings'
@@ -99,6 +100,9 @@ export interface AgentEditorPanelProps {
   onSetQueuePaused?: (paused: boolean) => Promise<void>
   focusRef?: (focus: () => void) => void
   controlRequests?: ControlRequest[]
+  /** Whether the reader opened this agent's non-blocking questions. */
+  questionsOpen?: boolean
+  onQuestionsOpenChange?: (open: boolean) => void
   onControlResponse?: ControlResponseHandler
   /** Single dispatcher for all settings panel changes (model/effort/permissionMode/optionGroup). */
   onSettingChange?: ProviderSettingChangeHandler
@@ -327,16 +331,6 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   const addFiles = att.addFiles
   const removeAttachment = att.removeAttachment
   const clearAllAttachments = att.clearAllAttachments
-  const addFilesWhenReady = (...args: Parameters<typeof addFiles>) => enqueueInFlight() ? Promise.resolve(0) : addFiles(...args)
-  const addDropDataTransferWhenReady = (dataTransfer: DataTransfer) => enqueueInFlight() ? Promise.resolve(0) : att.addDroppedDataTransfer(dataTransfer)
-  const handleFileInputChange = () => {
-    if (enqueueInFlight()) {
-      if (fileInputRef)
-        fileInputRef.value = ''
-      return
-    }
-    att.handleFileInputChange(fileInputRef)
-  }
 
   const editorHeight = useEditorMinHeight({
     agentId: () => props.agentId,
@@ -448,6 +442,8 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
         }
       },
       get controlRequests() { return props.controlRequests },
+      get questionsOpen() { return props.questionsOpen },
+      get onQuestionsOpenChange() { return props.onQuestionsOpenChange },
       get messageContext() { return props.messageContext },
       get onControlResponse() { return props.onControlResponse },
       get onSettingChange() { return props.onSettingChange },
@@ -493,6 +489,23 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
       }
     },
   )
+
+  /**
+   * The ONE predicate for whether the composer accepts attachments right now.
+   * A shown control request takes the input over, and an enqueue in flight must
+   * not change the list under the input being queued.
+   */
+  const acceptsAttachments = () => !ctrl.activeControlRequest() && !enqueueInFlight()
+  const handleFileInputChange = () => {
+    if (!acceptsAttachments()) {
+      if (fileInputRef)
+        fileInputRef.value = ''
+      return
+    }
+    att.handleFileInputChange(fileInputRef)
+  }
+  const addFilesWhenReady = (...args: Parameters<typeof addFiles>) => acceptsAttachments() ? addFiles(...args) : Promise.resolve(0)
+  const addDropDataTransferWhenReady = (dataTransfer: DataTransfer) => acceptsAttachments() ? att.addDroppedDataTransfer(dataTransfer) : Promise.resolve(0)
 
   /**
    * Whether an EMPTY composer still submits something.
@@ -693,6 +706,11 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           editorEmpty={editorReady() && !disabled() && !hasContent() && (editorContentRef?.get() ?? '') === ''}
           onDismiss={() => props.onDismissPromptSuggestion?.()}
         />
+        <PendingQuestionsBanner
+          count={ctrl.pendingQuestionCount()}
+          shown={ctrl.pendingQuestionCount() > 0 && !ctrl.activeControlRequest()}
+          onAnswer={ctrl.openQuestions}
+        />
         <AgentInputQueue
           clientId={props.queueClientId ?? ''}
           supportsSteering={props.agent?.supportsSteering ?? false}
@@ -729,7 +747,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
           type="file"
           multiple
           accept={acceptAttribute()}
-          disabled={enqueueInFlight()}
+          disabled={!acceptsAttachments()}
           style={{ display: 'none' }}
           onChange={handleFileInputChange}
           data-testid="file-input"
@@ -804,11 +822,11 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
               tryRegisterEditorRef(props.agentId)
             },
           }}
-          // The ONE place that decides whether a control request blocks an
+          // `acceptsAttachments` decides whether a control request blocks an
           // attachment. `MarkdownEditor` reads these handlers at event time, so
           // an absent `attachments` refuses the paste and the drop by itself.
           // `addFiles`'s second argument marks a pasted image, which changes its filename.
-          {...(!ctrl.activeControlRequest() && !enqueueInFlight()
+          {...(acceptsAttachments()
             ? {
                 attachments: {
                   onPaste: files => addFiles(files, true),
@@ -845,6 +863,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
                     return agentProvider !== undefined ? { agentProvider } : {}
                   })()}
                   controlSurface={ctrl.activeControlSurface()}
+                  {...(request.nonBlocking ? { onAnswerLater: ctrl.closeQuestions } : {})}
                   {...(ctrl.showInterrupt() ? { onInterrupt: () => props.onInterrupt?.() } : {})}
                 />
               )}
@@ -857,7 +876,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
               optionGroups={props.agent?.optionGroups}
               optionValues={currentOptionValues()}
               onAttachFile={() => fileInputRef?.click()}
-              canAttach={!ctrl.activeControlRequest() && !enqueueInFlight()}
+              canAttach={acceptsAttachments()}
               workingTree={workingTree()}
               enterKeyMode={preferences.enterKeyMode}
               onToggleEnterMode={() => {

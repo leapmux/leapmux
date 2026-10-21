@@ -210,7 +210,8 @@ func classifyCodexTurnStartRequestError(operation string, err error) error {
 const codexSteerClientIDPrefix = "leapmux-steer-"
 
 // sendTurnSteer serializes its write with context replacement, then waits without the lock.
-func (a *Agent) sendTurnSteer(threadID, turnID string, input []map[string]interface{}) (ticket providerkit.SteerTicket, err error) {
+// A caller that owns its row itself passes trackEcho false, and the steer joins no ledger.
+func (a *Agent) sendTurnSteer(threadID, turnID string, input []map[string]interface{}, trackEcho bool) (ticket providerkit.SteerTicket, err error) {
 	defer func() {
 		if err != nil {
 			a.outputMu.Lock()
@@ -231,11 +232,13 @@ func (a *Agent) sendTurnSteer(threadID, turnID string, input []map[string]interf
 		a.turnDispatchMu.Unlock()
 		return 0, agent.ErrNoActiveTurn
 	}
-	ticket = a.steerLedger.Add(clientID)
-	if a.pendingSteerCalls == nil {
-		a.pendingSteerCalls = make(map[providerkit.SteerTicket]struct{})
+	if trackEcho {
+		ticket = a.steerLedger.Add(clientID)
+		if a.pendingSteerCalls == nil {
+			a.pendingSteerCalls = make(map[providerkit.SteerTicket]struct{})
+		}
+		a.pendingSteerCalls[ticket] = struct{}{}
 	}
-	a.pendingSteerCalls[ticket] = struct{}{}
 	a.Mu.Unlock()
 	reply := make(chan error, 1)
 	err = a.SendDetachedRequest("turn/steer", raw, func(_ json.RawMessage, err error) { reply <- err })

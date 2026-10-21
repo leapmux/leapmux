@@ -45,7 +45,7 @@ func TestApprovedPlanClearCanReplaceTheTurnThatAwaitsItsApproval(t *testing.T) {
 				_, err = store.SetPaused(t.Context(), "agent-1", true, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_MANUAL)
 				require.NoError(t, err)
 			}
-			prepared, _, err := store.PrepareDispatch(t.Context(), "agent-1")
+			prepared, _, err := store.PrepareDispatch(t.Context(), "agent-1", false)
 			require.NoError(t, err)
 			if tc.wantDispatch {
 				require.NotNil(t, prepared, "the old turn cannot finish until this approval clears its context")

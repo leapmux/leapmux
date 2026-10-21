@@ -599,6 +599,19 @@ func (m *Manager) PrepareSteer(agentID string) {
 	}
 }
 
+// SteerInputToSession uses the provider instance and session that the caller validated.
+func SteerInputToSession(provider Agent, sessionID, content string, attachments []*leapmuxv1.Attachment) error {
+	steerer, ok := provider.(SessionInputSteerer)
+	if !ok {
+		return ErrSteeringUnsupported
+	}
+	err := steerer.SteerInputForSession(sessionID, content, attachments)
+	if err == nil {
+		observeGoalCommand(provider, GoalDeliverySteer, content)
+	}
+	return err
+}
+
 // SupportsSteering reports whether the running agent can steer its active turn.
 // It asks the provider and reports the answer. It answers false for an agent
 // that does not run, and for a provider that does not implement InputSteerer.

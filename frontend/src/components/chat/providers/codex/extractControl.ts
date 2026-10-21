@@ -1,15 +1,12 @@
 import type { ControlExtractionInput, ExtractedControlRequest } from '../registry'
-import { CODEX_METHOD } from '~/generated/contracts/codex-protocol'
+import { CODEX_CONTROL_TOOL, CODEX_METHOD } from '~/generated/contracts/codex-protocol'
 import { pickString } from '~/lib/jsonPick'
 import { getToolName } from '~/utils/controlResponse'
 import { codexRequestedPermissions, getCodexParams } from './controlResponse'
 
-/** The tool name Codex gives its plan-mode prompt. */
-const CODEX_PLAN_MODE_PROMPT = 'CodexPlanModePrompt'
-
 /** Whether one control request is Codex's plan-mode prompt. */
 export function isCodexPlanModePrompt(payload: Record<string, unknown>): boolean {
-  return getToolName(payload) === CODEX_PLAN_MODE_PROMPT
+  return getToolName(payload) === CODEX_CONTROL_TOOL.PlanModePrompt
 }
 
 /**

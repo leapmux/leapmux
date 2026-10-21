@@ -13,6 +13,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
+	"github.com/leapmux/leapmux/internal/worker/inputqueue"
 )
 
 type controlResponseRequestMetadata struct {
@@ -25,6 +26,7 @@ type controlResponseRequestMetadata struct {
 	Exists         bool
 	ClaimToken     string
 	SourceSeq      int64
+	NonBlocking    bool
 }
 
 type controlResponsePlan struct {
@@ -77,6 +79,7 @@ func (svc *Service) loadControlResponseRequestMetadata(agentID, requestID string
 	meta.ClaimToken = request.ClaimToken
 	meta.AgentSessionID = request.AgentSessionID
 	meta.SourceSeq = request.SourceSeq
+	meta.NonBlocking = request.NonBlocking
 	meta.Exists = true
 	return completeControlRequestMetadata(meta), nil
 }
@@ -200,6 +203,20 @@ func (svc *Service) processControlResponse(dbAgent db.Agent, request *leapmuxv1.
 	if plan.resolution.Withhold {
 		return plan.resolution.Refusal()
 	}
+	// The follow-up invariant: a queueable kind with its text, or nothing at all.
+	// A QUESTION_ANSWER follow-up answers a question that LeapMux owns, so no
+	// provider request waits for it.
+	if !plan.resolution.FollowUp.Valid() {
+		return errors.New("the resolution states a follow-up that is neither empty nor a queueable kind with its text")
+	}
+	if plan.resolution.FollowUp.Kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER && !plan.resolution.LeapMuxOwned {
+		return errors.New("a question-answer follow-up requires a question that LeapMux owns")
+	}
+	if followUp := plan.resolution.FollowUp; followUp.Kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER {
+		if err := inputqueue.ValidateContent(followUp.Kind, followUp.Text, nil); err != nil {
+			return fmt.Errorf("validate the response input: %w", err)
+		}
+	}
 	if plan.settings != nil && (!plan.hasDecision || plan.behavior() != agent.ControlBehaviorAllow ||
 		!plan.isPlanPrompt() && plan.resolution.PlanModeControl != agent.PlanModeControlExit) {
 		return errors.New("plan settings require an approval for a matching plan request")
@@ -213,7 +230,8 @@ func (svc *Service) processControlResponse(dbAgent db.Agent, request *leapmuxv1.
 	deliveryID, err := svc.Output.claimControlResponseAnswer(db.StoreControlResponseAnswerParams{
 		AgentID: agentID, RequestID: requestID, ClaimToken: claimToken,
 		RequestPayload: plan.requestMeta.Payload, ResponseContent: content,
-		ResolvedContent: plan.resolution.Content, Feedback: plan.resolution.Feedback,
+		ResolvedContent: plan.resolution.Content, FollowUp: plan.resolution.FollowUp.Text,
+		FollowUpKind: plan.resolution.FollowUp.Kind, NonBlocking: plan.requestMeta.NonBlocking,
 		PlanApprovalSettings: plan.settingsJSON,
 		SourceSeq:            plan.requestMeta.SourceSeq,
 		AgentSessionID:       plan.requestMeta.AgentSessionID, AgentProvider: dbAgent.AgentProvider,
@@ -268,6 +286,11 @@ func (plan controlResponsePlan) exitPlanClearingContext() bool {
 // An answer that ARRIVES after the request row disappeared never reaches this
 // point, because processControlResponse refuses it.
 func (plan controlResponsePlan) needsTranscriptRow() bool {
+	// A question answer's queued input writes the row that shows it, as plan
+	// feedback does.
+	if plan.resolution.FollowUp.Kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER {
+		return false
+	}
 	if plan.isPlanPrompt() && plan.behavior() == agent.ControlBehaviorDeny && plan.rejectionMessage() != "" {
 		return false
 	}

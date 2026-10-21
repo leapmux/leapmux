@@ -693,7 +693,7 @@ func TestQuestionDismissalCarriesTheTypedReasonAsFeedback(t *testing.T) {
 			})
 
 			require.NoError(t, resolution.Refusal())
-			assert.Equal(t, tc.wantFeedback, resolution.Feedback, "Letta Code reads a dismissal without a reason, so the reason follows as a message")
+			assert.Equal(t, agent.FeedbackFollowUp(tc.wantFeedback), resolution.FollowUp, "Letta Code reads a dismissal without a reason, so the reason follows as a message")
 		})
 	}
 }

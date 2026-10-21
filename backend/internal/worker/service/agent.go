@@ -1656,7 +1656,7 @@ func (svc *Service) replayAgentCatchUp(
 	} else {
 		for _, cr := range controlReqs {
 			replayedControls[controlRequestInstance{RequestID: cr.RequestID, ClaimToken: cr.ClaimToken}] = struct{}{}
-			request, stateErr := buildAgentControlRequest(svc.Queries, agentID, dbAgent.AgentProvider, agent.ControlRequest{RequestID: cr.RequestID, Payload: cr.Payload, SourceSeq: cr.SourceSeq, AgentSessionID: cr.AgentSessionID}, cr.ClaimToken)
+			request, stateErr := buildAgentControlRequest(svc.Queries, agentID, dbAgent.AgentProvider, agent.ControlRequest{RequestID: cr.RequestID, Payload: cr.Payload, SourceSeq: cr.SourceSeq, AgentSessionID: cr.AgentSessionID, NonBlocking: cr.NonBlocking}, cr.ClaimToken)
 			if stateErr != nil {
 				slog.Error("could not read the control response state", "agent_id", agentID, "request_id", cr.RequestID, "error", stateErr)
 			}
@@ -1681,7 +1681,7 @@ func (svc *Service) replayAgentCatchUp(
 				continue
 			}
 			request, stateErr := buildAgentControlRequest(svc.Queries, agentID, answer.AgentProvider, agent.ControlRequest{
-				RequestID: answer.RequestID, Payload: answer.RequestPayload, SourceSeq: answer.SourceSeq, AgentSessionID: answer.AgentSessionID,
+				RequestID: answer.RequestID, Payload: answer.RequestPayload, SourceSeq: answer.SourceSeq, AgentSessionID: answer.AgentSessionID, NonBlocking: answer.NonBlocking,
 			}, answer.ClaimToken)
 			if stateErr != nil {
 				slog.Error("could not read the control response state", "agent_id", agentID, "request_id", answer.RequestID, "error", stateErr)
@@ -4300,7 +4300,8 @@ func buildAgentControlRequest(queries *db.Queries, agentID string, provider leap
 		AgentProvider:  provider,
 		// The per-instance token the frontend echoes in its answer so the idempotency claim can dedup
 		// a reused request_id per INSTANCE (see AgentControlRequest.claim_token).
-		ClaimToken: claimToken,
+		ClaimToken:  claimToken,
+		NonBlocking: request.NonBlocking,
 	}, err
 }
 

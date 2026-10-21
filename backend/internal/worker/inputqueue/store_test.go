@@ -16,6 +16,7 @@ import (
 	sqlitelib "modernc.org/sqlite/lib"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 	"github.com/leapmux/leapmux/internal/worker/db/dbtest"
@@ -44,7 +45,7 @@ func TestStoreAcceptKeepsTheProviderSteeringStateReportedDuringDispatch(t *testi
 				_, err := store.Enqueue(ctx, NewItem{ID: id, AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: id})
 				require.NoError(t, err)
 			}
-			prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
+			prepared, _, err := store.PrepareDispatch(ctx, "agent-1", false)
 			require.NoError(t, err)
 			require.NotNil(t, prepared)
 			reported, changed, err := store.TurnStarted(ctx, "agent-1", steerable)
@@ -393,7 +394,7 @@ func TestStoreDrainWaitsWhileASteerAwaitsItsEcho(t *testing.T) {
 	require.NoError(t, err)
 	_, _, err = store.TurnEnded(t.Context(), "agent-1", false)
 	require.NoError(t, err)
-	prepared, snapshot, err := store.PrepareDispatch(t.Context(), "agent-1")
+	prepared, snapshot, err := store.PrepareDispatch(t.Context(), "agent-1", false)
 	require.NoError(t, err)
 	assert.Nil(t, prepared)
 	assert.Equal(t, []string{"steer", "next"}, queueSnapshotIDs(snapshot))
@@ -526,7 +527,7 @@ func TestControlFeedbackPrecedesFutureInput(t *testing.T) {
 			if active {
 				_, err := store.Enqueue(ctx, NewItem{ID: "active", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "active request"})
 				require.NoError(t, err)
-				prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
+				prepared, _, err := store.PrepareDispatch(ctx, "agent-1", false)
 				require.NoError(t, err)
 				require.NotNil(t, prepared)
 			}
@@ -550,6 +551,113 @@ func TestControlFeedbackPrecedesFutureInput(t *testing.T) {
 			assert.Equal(t, expected, ids)
 		})
 	}
+}
+
+func TestQuestionAnswerPrecedesFutureInput(t *testing.T) {
+	t.Parallel()
+	for _, active := range []bool{false, true} {
+		t.Run(fmt.Sprint(active), func(t *testing.T) {
+			t.Parallel()
+			_, store := newStoreFixture(t)
+			ctx := t.Context()
+			if active {
+				_, err := store.Enqueue(ctx, NewItem{ID: "active", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "active request"})
+				require.NoError(t, err)
+				prepared, _, err := store.PrepareDispatch(ctx, "agent-1", false)
+				require.NoError(t, err)
+				require.NotNil(t, prepared)
+			}
+			_, err := store.Enqueue(ctx, NewItem{ID: "future", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "future task"})
+			require.NoError(t, err)
+			_, err = store.Enqueue(ctx, NewItem{ID: "answer", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER, Text: "Red"})
+			require.NoError(t, err)
+			snapshot, err := store.Snapshot(ctx, "agent-1")
+			require.NoError(t, err)
+			var ids []string
+			for _, item := range snapshot.Items {
+				ids = append(ids, item.ID)
+			}
+			expected := []string{"answer", "future"}
+			if active {
+				expected = append([]string{"active"}, expected...)
+				assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING, snapshot.Items[0].State)
+			}
+			assert.Equal(t, expected, ids, "the answer is the reply to the current request and precedes future work")
+		})
+	}
+}
+
+// TestStoreAcceptPreservesTheAnswerAndQuestionSource checks storage and input identity.
+func TestStoreAcceptPreservesTheAnswerAndQuestionSource(t *testing.T) {
+	t.Parallel()
+
+	database, store := newStoreFixture(t)
+	ctx := t.Context()
+	input := NewItem{
+		ID: "answer-1", AgentID: "agent-1",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER, Text: "Red",
+	}
+	_, err := store.Enqueue(ctx, input)
+	require.NoError(t, err)
+	prepared, _, err := store.PrepareDispatch(ctx, "agent-1", false)
+	require.NoError(t, err)
+	require.NotNil(t, prepared)
+	transcript, _, err := store.Accept(ctx, *prepared, DispatchResult{
+		StartsTurn: true, TurnSteerable: true, SupplementalContent: []byte(`{"provider":{"title":"Which color should I use?"}}`),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, transcript.MarkType,
+		"a control reply draws a scroll-rail jump dot")
+	raw, err := msgcodec.Decompress(transcript.Content, transcript.ContentCompression)
+	require.NoError(t, err)
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(raw, &body))
+	assert.Equal(t, "Red", body["content"], "the row preserves the original answer")
+	source, err := msgcodec.Decompress(transcript.SupplementalContent, transcript.SupplementalContentCompression)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"provider":{"title":"Which color should I use?"}}`, string(source))
+	var storedSource []byte
+	var storedCompression leapmuxv1.ContentCompression
+	require.NoError(t, database.QueryRowContext(ctx, `SELECT supplemental_content, supplemental_content_compression FROM messages WHERE id = ?`, input.ID).Scan(&storedSource, &storedCompression))
+	assert.Equal(t, transcript.SupplementalContent, storedSource)
+	assert.Equal(t, transcript.SupplementalContentCompression, storedCompression)
+
+	var idempotencyKey string
+	require.NoError(t, database.QueryRowContext(ctx,
+		`SELECT idempotency_key FROM messages WHERE id = ?`, input.ID).Scan(&idempotencyKey))
+	assert.Equal(t, inputIdempotencyKey(input), idempotencyKey, "the key uses the queued item text")
+	withTranscript := input
+	withTranscript.Text = "> Which color should I use?\n\nRed"
+	assert.NotEqual(t, inputIdempotencyKey(withTranscript), idempotencyKey,
+		"the transcript text must not reach the idempotency key")
+}
+
+// A question answer is steerable like a user message: the worker injects it into
+// the turn that asked the question.
+func TestStorePrepareSteerTakesAQuestionAnswerHead(t *testing.T) {
+	t.Parallel()
+
+	_, store := newStoreFixture(t)
+	ctx := t.Context()
+	_, err := store.Enqueue(ctx, NewItem{ID: "active", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "active request"})
+	require.NoError(t, err)
+	prepared, _, err := store.PrepareDispatch(ctx, "agent-1", false)
+	require.NoError(t, err)
+	require.NotNil(t, prepared)
+	_, _, err = store.Accept(ctx, *prepared, DispatchResult{StartsTurn: true, TurnSteerable: true})
+	require.NoError(t, err)
+	_, err = store.Enqueue(ctx, NewItem{ID: "answer", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER, Text: "Red"})
+	require.NoError(t, err)
+
+	snapshot, err := store.Snapshot(ctx, "agent-1")
+	require.NoError(t, err)
+	require.NotEmpty(t, snapshot.Items)
+	assert.True(t, snapshot.Items[0].CanSteer, "the answer can enter the running turn")
+
+	steer, _, err := store.PrepareSteer(ctx, "agent-1", "answer", false)
+	require.NoError(t, err)
+	require.NotNil(t, steer)
+	assert.Equal(t, "answer", steer.Item.ID)
 }
 
 func TestStoreTruncatesSnapshotTextButEditReturnsFullText(t *testing.T) {
@@ -583,7 +691,7 @@ func TestStoreEnqueueRetryRemainsIdempotentAfterAcceptance(t *testing.T) {
 	}
 	_, err := store.Enqueue(ctx, input)
 	require.NoError(t, err)
-	prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
+	prepared, _, err := store.PrepareDispatch(ctx, "agent-1", false)
 	require.NoError(t, err)
 	_, _, err = store.Accept(ctx, *prepared, DispatchResult{StartsTurn: true, TurnSteerable: true})
 	require.NoError(t, err)
@@ -613,7 +721,7 @@ func TestStoreAcceptKeepsIdenticalContentFromDistinctInputs(t *testing.T) {
 			Text: "same content",
 		})
 		require.NoError(t, err)
-		prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
+		prepared, _, err := store.PrepareDispatch(ctx, "agent-1", false)
 		require.NoError(t, err)
 		require.NotNil(t, prepared)
 		_, _, err = store.Accept(ctx, *prepared, DispatchResult{})
@@ -648,7 +756,7 @@ func TestStoreTextOnlyRetryTreatsEmptyAndNilAttachmentsAsEqual(t *testing.T) {
 	}
 	_, err := store.Enqueue(ctx, input)
 	require.NoError(t, err)
-	prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
+	prepared, _, err := store.PrepareDispatch(ctx, "agent-1", false)
 	require.NoError(t, err)
 	_, _, err = store.Accept(ctx, *prepared, DispatchResult{StartsTurn: true, TurnSteerable: true})
 	require.NoError(t, err)
@@ -674,7 +782,7 @@ func TestStoreClassifiesCommandsAndRejectsAttachments(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_COMPACT_CONTEXT, snapshot.Items[0].Kind)
-	prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
+	prepared, _, err := store.PrepareDispatch(ctx, "agent-1", false)
 	require.NoError(t, err)
 	accepted, _, err := store.Accept(ctx, *prepared, DispatchResult{StartsTurn: true, TurnSteerable: true})
 	require.NoError(t, err)
@@ -831,7 +939,7 @@ func TestStoreMoveCannotCrossDispatchingHead(t *testing.T) {
 		_, err := store.Enqueue(ctx, NewItem{ID: inputID, AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: inputID})
 		require.NoError(t, err)
 	}
-	prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
+	prepared, _, err := store.PrepareDispatch(ctx, "agent-1", false)
 	require.NoError(t, err)
 	require.NotNil(t, prepared)
 
@@ -847,7 +955,7 @@ func TestStoreSteerRejectsOperationHeadAndCompactionTurn(t *testing.T) {
 		ctx := context.Background()
 		_, err := store.Enqueue(ctx, NewItem{ID: "active", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "active"})
 		require.NoError(t, err)
-		prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
+		prepared, _, err := store.PrepareDispatch(ctx, "agent-1", false)
 		require.NoError(t, err)
 		_, _, err = store.Accept(ctx, *prepared, DispatchResult{StartsTurn: true, TurnSteerable: true})
 		require.NoError(t, err)
@@ -863,7 +971,7 @@ func TestStoreSteerRejectsOperationHeadAndCompactionTurn(t *testing.T) {
 		ctx := context.Background()
 		_, err := store.Enqueue(ctx, NewItem{ID: "compact", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_COMPACT_CONTEXT, Text: "/compact"})
 		require.NoError(t, err)
-		prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
+		prepared, _, err := store.PrepareDispatch(ctx, "agent-1", false)
 		require.NoError(t, err)
 		_, _, err = store.Accept(ctx, *prepared, DispatchResult{StartsTurn: true})
 		require.NoError(t, err)
@@ -885,7 +993,7 @@ func TestStoreRequeuedSteerReservesASequenceAfterTheEndedTurn(t *testing.T) {
 		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 	})
 	require.NoError(t, err)
-	active, _, err := store.PrepareDispatch(ctx, "agent-1")
+	active, _, err := store.PrepareDispatch(ctx, "agent-1", false)
 	require.NoError(t, err)
 	require.NotNil(t, active)
 	_, _, err = store.Accept(ctx, *active, DispatchResult{StartsTurn: true, TurnSteerable: true})
@@ -915,7 +1023,7 @@ func TestStoreRequeuedSteerReservesASequenceAfterTheEndedTurn(t *testing.T) {
 	require.NoError(t, err)
 	_, _, err = store.TurnEnded(ctx, "agent-1", false)
 	require.NoError(t, err)
-	retried, _, err := store.PrepareDispatch(ctx, "agent-1")
+	retried, _, err := store.PrepareDispatch(ctx, "agent-1", false)
 	require.NoError(t, err)
 	require.NotNil(t, retried)
 	assert.Greater(t, turnEndSeq, steer.ReservedSeq)
@@ -929,7 +1037,7 @@ func TestStoreReservesPositiveSequenceAndCommitsAfterAcceptance(t *testing.T) {
 	ctx := context.Background()
 	_, err := store.Enqueue(ctx, NewItem{ID: "one", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "hello"})
 	require.NoError(t, err)
-	prepared, snapshot, err := store.PrepareDispatch(ctx, "agent-1")
+	prepared, snapshot, err := store.PrepareDispatch(ctx, "agent-1", false)
 	require.NoError(t, err)
 	require.NotNil(t, prepared)
 	assert.Positive(t, prepared.ReservedSeq)
@@ -957,7 +1065,7 @@ func TestStoreAcceptTakesWriteIntentBeforeItsReads(t *testing.T) {
 	ctx := t.Context()
 	_, err := store.Enqueue(ctx, NewItem{ID: "one", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "hello"})
 	require.NoError(t, err)
-	prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
+	prepared, _, err := store.PrepareDispatch(ctx, "agent-1", false)
 	require.NoError(t, err)
 	require.NotNil(t, prepared)
 	competingConn, err := database.Conn(ctx)
@@ -994,7 +1102,7 @@ func TestStoreAcceptRollsBackWhenItsContextIsCanceled(t *testing.T) {
 	defer cancel()
 	_, err := store.Enqueue(ctx, NewItem{ID: "one", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "hello"})
 	require.NoError(t, err)
-	prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
+	prepared, _, err := store.PrepareDispatch(ctx, "agent-1", false)
 	require.NoError(t, err)
 	require.NotNil(t, prepared)
 	storedPrepared, preparedAttachments, found, err := getItem(t.Context(), database, "agent-1", "one", true)
@@ -1034,7 +1142,7 @@ func TestStoreAcceptRollsBackAfterADeferredCommitFailure(t *testing.T) {
 	require.NoError(t, err)
 	_, err = store.Enqueue(ctx, NewItem{ID: "one", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "hello"})
 	require.NoError(t, err)
-	prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
+	prepared, _, err := store.PrepareDispatch(ctx, "agent-1", false)
 	require.NoError(t, err)
 	require.NotNil(t, prepared)
 
@@ -1061,7 +1169,7 @@ func TestStorePreparationReturnsTheCommittedItem(t *testing.T) {
 			}
 			_, err := store.Enqueue(ctx, input)
 			require.NoError(t, err)
-			first, _, err := store.PrepareDispatch(ctx, input.AgentID)
+			first, _, err := store.PrepareDispatch(ctx, input.AgentID, false)
 			require.NoError(t, err)
 			require.NotNil(t, first)
 			_, err = store.RequeueAndPause(ctx, input.AgentID, input.ID, errors.New("native input is not ready"),
@@ -1090,7 +1198,7 @@ func TestStorePreparationReturnsTheCommittedItem(t *testing.T) {
 			var snapshot Snapshot
 			switch operation {
 			case "dispatch":
-				prepared, snapshot, err = store.PrepareDispatch(ctx, input.AgentID)
+				prepared, snapshot, err = store.PrepareDispatch(ctx, input.AgentID, false)
 			case "retry":
 				prepared, snapshot, err = store.PrepareRetry(ctx, input.AgentID)
 			case "steer":
@@ -1136,7 +1244,7 @@ BEGIN
   UPDATE agent_input_queue_items SET updated_at = '2030-01-02T03:04:05.000Z' WHERE id = NEW.id;
 END`, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING))
 	require.NoError(t, err)
-	prepared, snapshot, err := store.PrepareDispatch(ctx, input.AgentID)
+	prepared, snapshot, err := store.PrepareDispatch(ctx, input.AgentID, false)
 	require.NoError(t, err)
 	require.NotNil(t, prepared)
 	stored, attachments, found, err := getItem(ctx, database, input.AgentID, input.ID, true)
@@ -1166,7 +1274,7 @@ BEGIN
   DELETE FROM agent_input_queue_items WHERE id = NEW.id;
 END`, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DISPATCHING))
 	require.NoError(t, err)
-	prepared, _, err := store.PrepareDispatch(ctx, input.AgentID)
+	prepared, _, err := store.PrepareDispatch(ctx, input.AgentID, false)
 	assert.ErrorIs(t, err, ErrConflict)
 	assert.Nil(t, prepared)
 	after, snapshotErr := store.Snapshot(ctx, input.AgentID)
@@ -1189,7 +1297,7 @@ func TestStoreAcceptRejectsAChangedReservedSequence(t *testing.T) {
 	ctx := t.Context()
 	_, err := store.Enqueue(ctx, NewItem{ID: "one", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "hello"})
 	require.NoError(t, err)
-	prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
+	prepared, _, err := store.PrepareDispatch(ctx, "agent-1", false)
 	require.NoError(t, err)
 	require.NotNil(t, prepared)
 	prepared.ReservedSeq++
@@ -1208,7 +1316,7 @@ func TestStoreAcceptRejectsAMissingPreparedItem(t *testing.T) {
 	ctx := t.Context()
 	_, err := store.Enqueue(ctx, NewItem{ID: "one", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "hello"})
 	require.NoError(t, err)
-	prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
+	prepared, _, err := store.PrepareDispatch(ctx, "agent-1", false)
 	require.NoError(t, err)
 	require.NotNil(t, prepared)
 	_, err = database.ExecContext(ctx, `DELETE FROM agent_input_queue_items WHERE agent_id = ? AND id = ?`, "agent-1", "one")
@@ -1229,7 +1337,7 @@ func TestStoreRecoveryDistinguishesUncertainAndInterrupted(t *testing.T) {
 	ctx := context.Background()
 	_, err := store.Enqueue(ctx, NewItem{ID: "one", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "hello"})
 	require.NoError(t, err)
-	_, _, err = store.PrepareDispatch(ctx, "agent-1")
+	_, _, err = store.PrepareDispatch(ctx, "agent-1", false)
 	require.NoError(t, err)
 	snapshots, err := NewStore(database).Recover(ctx)
 	require.NoError(t, err)
@@ -1240,7 +1348,7 @@ func TestStoreRecoveryDistinguishesUncertainAndInterrupted(t *testing.T) {
 	database, store = newStoreFixture(t)
 	_, err = store.Enqueue(ctx, NewItem{ID: "two", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "hello"})
 	require.NoError(t, err)
-	prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
+	prepared, _, err := store.PrepareDispatch(ctx, "agent-1", false)
 	require.NoError(t, err)
 	_, _, err = store.Accept(ctx, *prepared, DispatchResult{StartsTurn: true, TurnSteerable: true})
 	require.NoError(t, err)
@@ -1276,7 +1384,7 @@ func TestStoreRetryRequiresUncertainDeliveryConfirmation(t *testing.T) {
 	ctx := context.Background()
 	_, err := store.Enqueue(ctx, NewItem{ID: "one", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "hello"})
 	require.NoError(t, err)
-	prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
+	prepared, _, err := store.PrepareDispatch(ctx, "agent-1", false)
 	require.NoError(t, err)
 	_, err = store.FailDispatch(ctx, "agent-1", "one", assert.AnError, true)
 	require.NoError(t, err)
@@ -1306,7 +1414,7 @@ func TestStoreRetryRejectsEditedFailedHead(t *testing.T) {
 	ctx := context.Background()
 	_, err := store.Enqueue(ctx, NewItem{ID: "one", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "hello"})
 	require.NoError(t, err)
-	_, _, err = store.PrepareDispatch(ctx, "agent-1")
+	_, _, err = store.PrepareDispatch(ctx, "agent-1", false)
 	require.NoError(t, err)
 	_, err = store.FailDispatch(ctx, "agent-1", "one", assert.AnError, false)
 	require.NoError(t, err)
@@ -1398,7 +1506,7 @@ func TestStoreRetryLiftsTheDeliveryPause(t *testing.T) {
 		_, err := store.Enqueue(ctx, NewItem{ID: id, AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: id})
 		require.NoError(t, err)
 	}
-	_, _, err := store.PrepareDispatch(ctx, "agent-1")
+	_, _, err := store.PrepareDispatch(ctx, "agent-1", false)
 	require.NoError(t, err)
 	failed, err := store.FailDispatch(ctx, "agent-1", "one", assert.AnError, false)
 	require.NoError(t, err)
@@ -1418,7 +1526,7 @@ func TestStoreRetryKeepsAManualPause(t *testing.T) {
 	ctx := context.Background()
 	_, err := store.Enqueue(ctx, NewItem{ID: "one", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "hello"})
 	require.NoError(t, err)
-	_, _, err = store.PrepareDispatch(ctx, "agent-1")
+	_, _, err = store.PrepareDispatch(ctx, "agent-1", false)
 	require.NoError(t, err)
 	_, err = store.FailDispatch(ctx, "agent-1", "one", assert.AnError, false)
 	require.NoError(t, err)
@@ -1462,7 +1570,7 @@ func TestStoreAcceptReportsTheSpanColumn(t *testing.T) {
 	ctx := context.Background()
 	_, err := store.Enqueue(ctx, NewItem{ID: "one", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "hello"})
 	require.NoError(t, err)
-	prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
+	prepared, _, err := store.PrepareDispatch(ctx, "agent-1", false)
 	require.NoError(t, err)
 	transcript, _, err := store.Accept(ctx, *prepared, DispatchResult{StartsTurn: true, TurnSteerable: true, SpanLines: `[{"color":2}]`})
 	require.NoError(t, err)
@@ -1503,13 +1611,13 @@ func TestStoreRecoveryReleasesAnAbandonedEditLock(t *testing.T) {
 	require.NoError(t, err)
 	_, _, _, err = store.BeginEdit(ctx, "agent-1", "one", "client-gone", false)
 	require.NoError(t, err)
-	blocked, _, err := store.PrepareDispatch(ctx, "agent-1")
+	blocked, _, err := store.PrepareDispatch(ctx, "agent-1", false)
 	require.NoError(t, err)
 	require.Nil(t, blocked, "an edited head blocks dispatch")
 
 	_, err = NewStore(database).Recover(ctx)
 	require.NoError(t, err)
-	prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
+	prepared, _, err := store.PrepareDispatch(ctx, "agent-1", false)
 	require.NoError(t, err)
 	assert.NotNil(t, prepared, "recovery released the lock, so the head dispatches")
 }
@@ -1529,7 +1637,7 @@ func TestStoreSnapshotAnswersTheSteerPrecondition(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, idle.Items[0].CanSteer, "with no active turn there is nothing to steer into")
 
-	prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
+	prepared, _, err := store.PrepareDispatch(ctx, "agent-1", false)
 	require.NoError(t, err)
 	_, active, err := store.Accept(ctx, *prepared, DispatchResult{StartsTurn: true, TurnSteerable: true})
 	require.NoError(t, err)
@@ -1543,7 +1651,7 @@ func TestStoreSnapshotAnswersTheSteerPrecondition(t *testing.T) {
 	require.NoError(t, err)
 	_, err = store.Move(ctx, "agent-1", "clear", "two")
 	require.NoError(t, err)
-	clearPrepared, _, err := store.PrepareDispatch(ctx, "agent-1")
+	clearPrepared, _, err := store.PrepareDispatch(ctx, "agent-1", false)
 	require.NoError(t, err)
 	require.NotNil(t, clearPrepared)
 	_, clearing, err := store.Accept(ctx, *clearPrepared, DispatchResult{StartsTurn: true})
@@ -1567,7 +1675,7 @@ func TestStoreAcceptKeepsTheRevisionMovingWhenTheTurnEndedMidDispatch(t *testing
 		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 	})
 	require.NoError(t, err)
-	prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
+	prepared, _, err := store.PrepareDispatch(ctx, "agent-1", false)
 	require.NoError(t, err)
 	require.NotNil(t, prepared)
 
@@ -1777,7 +1885,7 @@ func TestStoreAbandonUnownedTurnKeepsTheTurnADispatchOwns(t *testing.T) {
 		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 	})
 	require.NoError(t, err)
-	prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
+	prepared, _, err := store.PrepareDispatch(ctx, "agent-1", false)
 	require.NoError(t, err)
 	require.NotNil(t, prepared)
 
@@ -1863,7 +1971,7 @@ func TestStoreSnapshotRefusesToPreemptWhatTheDrainWouldRefuse(t *testing.T) {
 			// drain must do once the turn ends.
 			_, _, err = store.TurnEnded(t.Context(), "agent-1", false)
 			require.NoError(t, err)
-			prepared, _, err := store.PrepareDispatch(t.Context(), "agent-1")
+			prepared, _, err := store.PrepareDispatch(t.Context(), "agent-1", false)
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, prepared != nil,
 				"a Preempt the snapshot offers must be a dispatch the drain then performs")
@@ -1909,7 +2017,7 @@ func TestStoreSnapshotRefusesToPreemptAnApprovalThatIsNotRecorded(t *testing.T) 
 
 			_, _, err = store.TurnEnded(t.Context(), "agent-1", false)
 			require.NoError(t, err)
-			prepared, _, err := store.PrepareDispatch(t.Context(), "agent-1")
+			prepared, _, err := store.PrepareDispatch(t.Context(), "agent-1", false)
 			require.NoError(t, err)
 			assert.Equal(t, recorded, prepared != nil,
 				"a Preempt the snapshot offers must be a dispatch the drain then performs")
@@ -1998,4 +2106,80 @@ func TestStoreUncertainSteerFailureRollsBackTheWholeReport(t *testing.T) {
 	after, err := store.Snapshot(t.Context(), "agent-1")
 	require.NoError(t, err)
 	assert.Equal(t, before, after)
+}
+
+// A question answer that an echo-policy provider steers mid-turn accepts its
+// row at the steer: the prepare reserves the sequence, because the row is
+// LeapMux's own record and never waits for an echo. A plain user steer under
+// the same policy still holds its row for the echo and reserves nothing.
+func TestStoreAutomaticQuestionSteeringAcceptsItsRowAtTheSteer(t *testing.T) {
+	t.Parallel()
+	_, store := newStoreFixture(t)
+	_, err := store.Enqueue(t.Context(), NewItem{ID: "answer", AgentID: "agent-1",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER, Text: "Red"})
+	require.NoError(t, err)
+	_, _, err = store.TurnStarted(t.Context(), "agent-1", true)
+	require.NoError(t, err)
+	prepared, _, err := store.PrepareDispatch(t.Context(), "agent-1", true)
+	require.NoError(t, err)
+	require.NotNil(t, prepared)
+	assert.True(t, prepared.Steering)
+	assert.Positive(t, prepared.ReservedSeq, "the answer row is written at its own accept, not at a provider echo")
+
+	_, store = newStoreFixture(t)
+	_, err = store.Enqueue(t.Context(), NewItem{ID: "message", AgentID: "agent-1",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "Hello"})
+	require.NoError(t, err)
+	_, _, err = store.TurnStarted(t.Context(), "agent-1", true)
+	require.NoError(t, err)
+	steer, _, err := store.PrepareSteer(t.Context(), "agent-1", "message", true)
+	require.NoError(t, err)
+	require.NotNil(t, steer)
+	assert.Zero(t, steer.ReservedSeq, "a user steer holds its row for the provider's echo")
+}
+
+func TestStoreAutomaticQuestionAdmission(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name                                          string
+		kind                                          leapmuxv1.AgentInputKind
+		paused, active, steerable, admitted, steering bool
+	}{
+		{name: "idle question", kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER, admitted: true},
+		{name: "active steerable question", kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER, active: true, steerable: true, admitted: true, steering: true},
+		{name: "paused active question", kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER, paused: true, active: true, steerable: true},
+		{name: "paused idle question", kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER, paused: true},
+		{name: "active unsteerable question", kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER, active: true},
+		{name: "ordinary active message", kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, active: true, steerable: true},
+		{name: "active feedback", kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK, active: true, steerable: true},
+		{name: "ordinary idle message", kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, admitted: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			_, store := newStoreFixture(t)
+			_, err := store.Enqueue(t.Context(), NewItem{ID: "input", AgentID: "agent-1", Kind: test.kind, Text: "answer"})
+			require.NoError(t, err)
+			if test.active {
+				_, _, err = store.TurnStarted(t.Context(), "agent-1", test.steerable)
+				require.NoError(t, err)
+			}
+			if test.paused {
+				_, err = store.SetPaused(t.Context(), "agent-1", true, leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_MANUAL)
+				require.NoError(t, err)
+			}
+			prepared, snapshot, err := store.PrepareDispatch(t.Context(), "agent-1", false)
+			require.NoError(t, err)
+			if !test.admitted {
+				assert.Nil(t, prepared)
+				require.Len(t, snapshot.Items, 1)
+				assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, snapshot.Items[0].State)
+				assert.Equal(t, test.paused, snapshot.Paused)
+				return
+			}
+			require.NotNil(t, prepared)
+			assert.Equal(t, test.steering, prepared.Steering)
+			assert.Positive(t, prepared.ReservedSeq)
+			assert.Equal(t, "answer", prepared.Item.Text)
+		})
+	}
 }

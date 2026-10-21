@@ -806,7 +806,11 @@ func (svc *Service) clearAgentSessionID(agentID string) {
 	}); err != nil {
 		slog.Warn("failed to clear the stored agent session id",
 			"agent_id", agentID, "error", err)
+		return
 	}
+	// The next start opens a new Codex thread, so the questions of the cleared
+	// session can never be answered.
+	svc.Output.RetireNonBlockingControlRequestsOutsideSession(agentID, "")
 }
 
 func (svc *Service) getAgentByID(ctx context.Context, agentID string) (db.Agent, error) {

@@ -41,7 +41,7 @@ func (p geminiProvider) ResolveControlResponse(ctx agent.ControlResponseContext)
 		result.PlanModeControl = agent.PlanModeControlExit
 	case agent.ControlBehaviorDeny:
 		option = "cancel"
-		result.Feedback = feedback
+		result.FollowUp = agent.FeedbackFollowUp(feedback)
 	default:
 		result.Refuse(agent.RefusalNoDecision)
 		return result

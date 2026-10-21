@@ -2,10 +2,14 @@ package service
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"google.golang.org/protobuf/proto"
@@ -22,7 +26,9 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/codex"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/qoder"
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
+	"github.com/leapmux/leapmux/internal/worker/db/dbtest"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
+	"github.com/leapmux/leapmux/internal/worker/inputqueue"
 )
 
 func decodeMessageContent(t *testing.T, content []byte, compression leapmuxv1.ContentCompression) string {
@@ -2229,4 +2235,537 @@ func TestRecordControlResponsePlanModeHandsTheExitModeToARunningDeferrer(t *test
 	plan.resolution.PlanModeControl = agent.PlanModeControlNone
 	require.NoError(t, svc.recordControlResponsePlanMode("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE, plan))
 	assert.Empty(t, deferrer.modes, "no approval means no deferred mode")
+}
+
+// asyncQuestionPayload is the request payload the worker stores for one Codex
+// async question (see the Codex provider's publish path).
+func asyncQuestionPayload(requestID string) []byte {
+	return []byte(`{"type":"control_request","request_id":"` + requestID + `","request":{"tool_name":"` +
+		contracts.CodexControlToolAsyncQuestion + `","input":{"question_item_id":"[\"request_user_input_async\",\"call_1\",0]",` +
+		`"title":"Which color should I use?","options":["Blue","Red"]}}}`)
+}
+
+// questionAnswerResponse is the neutral answer to one async question.
+func questionAnswerResponse(requestID, answer string) []byte {
+	// String-only fields cannot fail JSON encoding.
+	encoded, _ := json.Marshal(map[string]any{"response": map[string]any{
+		"request_id": requestID, "response": map[string]string{"behavior": "allow", "answer": answer},
+	}})
+	return encoded
+}
+
+// questionSkipResponse is the neutral skip of one async question.
+func questionSkipResponse(requestID string) []byte {
+	return []byte(`{"response":{"request_id":"` + requestID + `","response":{"behavior":"deny"}}}`)
+}
+
+// createAsyncQuestionTestAgent stores one non-blocking async question request
+// for an agent whose session matches it, and keeps the queue paused so the
+// queued answer stays observable.
+func createAsyncQuestionTestAgent(t *testing.T, svc *Service) db.Agent {
+	t.Helper()
+	ctx := t.Context()
+	createClaimTestAgent(t, svc, "agent-1")
+	require.NoError(t, svc.Queries.UpdateAgentSessionID(ctx, db.UpdateAgentSessionIDParams{ID: "agent-1", AgentSessionID: "session-1"}))
+	_, err := svc.InputQueue.SetPaused(ctx, "agent-1", true)
+	require.NoError(t, err)
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
+		AgentID: "agent-1", AgentSessionID: "session-1", RequestID: "question-1", ClaimToken: "claim-1",
+		Payload: asyncQuestionPayload("question-1"), NonBlocking: true,
+	})
+	row, err := svc.Queries.GetAgentByID(ctx, "agent-1")
+	require.NoError(t, err)
+	return row
+}
+
+func TestSendControlResponse_AsyncQuestionAnswerQueuesTheQuestionAnswer(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := setupTestService(t)
+	row := createAsyncQuestionTestAgent(t, svc)
+	ctx := t.Context()
+
+	_, forward, responseErr := processControlResponseForTest(svc, "agent-1", row, questionAnswerResponse("question-1", "Red"), "claim-1")
+
+	require.NoError(t, responseErr)
+	assert.False(t, forward, "LeapMux owns the question, so no response reaches the provider")
+	answer, err := svc.Queries.GetControlResponseAnswer(ctx, db.GetControlResponseAnswerParams{AgentID: "agent-1", RequestID: "question-1", ClaimToken: "claim-1"})
+	require.NoError(t, err)
+	queue, err := svc.InputQueue.Snapshot(ctx, "agent-1")
+	require.NoError(t, err)
+	require.Len(t, queue.Items, 1)
+	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER, queue.Items[0].Kind)
+	assert.Equal(t, "Red", queue.Items[0].Text)
+	assert.NotEmpty(t, answer.InputID)
+	assert.Equal(t, answer.InputID, queue.Items[0].ID, "the input carries the answer's queue identity")
+	rows, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{AgentID: "agent-1", Seq: 0, Limit: 10})
+	require.NoError(t, err)
+	assert.Empty(t, controlResponseRows(rows), "the queued input's own row shows the answer")
+	_, err = svc.Queries.GetControlRequest(ctx, db.GetControlRequestParams{AgentID: "agent-1", RequestID: "question-1"})
+	assert.ErrorIs(t, err, sql.ErrNoRows, "the answered request is deleted")
+}
+
+func TestSendControlResponse_AsyncQuestionSkipRecordsTheControlRow(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := setupTestService(t)
+	row := createAsyncQuestionTestAgent(t, svc)
+	ctx := t.Context()
+
+	_, forward, responseErr := processControlResponseForTest(svc, "agent-1", row, questionSkipResponse("question-1"), "claim-1")
+
+	require.NoError(t, responseErr)
+	assert.False(t, forward, "a skip sends nothing")
+	queue, err := svc.InputQueue.Snapshot(ctx, "agent-1")
+	require.NoError(t, err)
+	assert.Empty(t, queue.Items)
+	rows := waitForMessageCount(t, svc, "agent-1", 1)
+	marked := controlResponseRows(rows)
+	require.Len(t, marked, 1, "a skip records one control-response row")
+	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, marked[0].Source)
+	_, err = svc.Queries.GetControlRequest(ctx, db.GetControlRequestParams{AgentID: "agent-1", RequestID: "question-1"})
+	assert.ErrorIs(t, err, sql.ErrNoRows, "the skipped request is deleted")
+}
+
+func TestSendControlResponse_AsyncQuestionSkipSurvivesASessionChange(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := setupTestService(t)
+	row := createAsyncQuestionTestAgent(t, svc)
+	ctx := t.Context()
+	require.NoError(t, svc.Queries.UpdateAgentSessionID(ctx, db.UpdateAgentSessionIDParams{ID: "agent-1", AgentSessionID: "session-2"}))
+
+	_, forward, responseErr := processControlResponseForTest(svc, "agent-1", row, questionSkipResponse("question-1"), "claim-1")
+
+	require.NoError(t, responseErr, "a skip sends nothing, so the session does not matter")
+	assert.False(t, forward)
+	_, err := svc.Queries.GetControlRequest(ctx, db.GetControlRequestParams{AgentID: "agent-1", RequestID: "question-1"})
+	assert.ErrorIs(t, err, sql.ErrNoRows, "the skipped request is deleted")
+}
+
+// fixedResolutionTestProvider answers every control response with one stored
+// resolution, so a test can state an invariant violation the shipped providers
+// never produce.
+type fixedResolutionTestProvider struct {
+	agent.Provider
+	resolution agent.ControlResponseResolution
+}
+
+func (p fixedResolutionTestProvider) ResolveControlResponse(agent.ControlResponseContext) agent.ControlResponseResolution {
+	return p.resolution
+}
+
+func TestProcessControlResponseRefusesAnInvalidFollowUp(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		resolution agent.ControlResponseResolution
+		want       string
+	}{
+		{
+			name:       "a question answer without LeapMux ownership",
+			resolution: agent.ControlResponseResolution{FollowUp: agent.QuestionAnswerFollowUp("Red")},
+			want:       "a question-answer follow-up requires a question that LeapMux owns",
+		},
+		{
+			name: "a kind with no text",
+			resolution: agent.ControlResponseResolution{
+				FollowUp: agent.ControlFollowUp{Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK},
+			},
+			want: "the resolution states a follow-up that is neither empty nor a queueable kind with its text",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			const provider = leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX
+			plugin := fixedResolutionTestProvider{Provider: testRegistry.Plugin(provider), resolution: tc.resolution}
+			svc, _, _ := setupTestService(t, withRegistry(registryWithPlugin(t, provider, plugin)))
+			createClaimTestAgent(t, svc, "agent-1")
+			createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
+				AgentID: "agent-1", RequestID: "question-1", ClaimToken: "claim-1", Payload: asyncQuestionPayload("question-1"),
+			})
+			row, err := svc.Queries.GetAgentByID(t.Context(), "agent-1")
+			require.NoError(t, err)
+
+			_, forward, responseErr := processControlResponseForTest(svc, "agent-1", row, questionAnswerResponse("question-1", "Red"), "claim-1")
+
+			require.ErrorContains(t, responseErr, tc.want)
+			assert.False(t, forward)
+			_, err = svc.Queries.GetControlResponseAnswer(t.Context(), db.GetControlResponseAnswerParams{AgentID: "agent-1", RequestID: "question-1", ClaimToken: "claim-1"})
+			assert.ErrorIs(t, err, sql.ErrNoRows, "nothing is stored")
+			_, err = svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "question-1"})
+			require.NoError(t, err, "the request stays available for a valid answer")
+			rows, err := svc.Queries.ListMessagesByAgentID(t.Context(), db.ListMessagesByAgentIDParams{AgentID: "agent-1", Seq: 0, Limit: 10})
+			require.NoError(t, err)
+			assert.Empty(t, rows)
+		})
+	}
+}
+
+func TestControlResponseAnswerStoresTheFollowUpKind(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a question answer", func(t *testing.T) {
+		t.Parallel()
+		svc, _, _ := setupTestService(t)
+		row := createAsyncQuestionTestAgent(t, svc)
+
+		_, _, responseErr := processControlResponseForTest(svc, "agent-1", row, questionAnswerResponse("question-1", "Red"), "claim-1")
+
+		require.NoError(t, responseErr)
+		answer, err := svc.Queries.GetControlResponseAnswer(t.Context(), db.GetControlResponseAnswerParams{AgentID: "agent-1", RequestID: "question-1", ClaimToken: "claim-1"})
+		require.NoError(t, err)
+		assert.Equal(t, "Red", answer.FollowUp)
+		assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER, answer.FollowUpKind)
+		assert.EqualValues(t, 7, answer.FollowUpKind, "the row stores the AgentInputKind ordinal")
+	})
+
+	t.Run("blocking feedback", func(t *testing.T) {
+		t.Parallel()
+		svc, _, _ := setupTestService(t)
+		ctx := t.Context()
+		require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
+			ID: "agent-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+			AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE,
+		}))
+		require.NoError(t, svc.Queries.UpdateAgentSessionID(ctx, db.UpdateAgentSessionIDParams{ID: "agent-1", AgentSessionID: "session-1"}))
+		_, err := svc.InputQueue.SetPaused(ctx, "agent-1", true)
+		require.NoError(t, err)
+		createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
+			AgentID: "agent-1", AgentSessionID: "session-1", RequestID: "request-1", ClaimToken: "claim-1",
+			Payload: []byte(`{"id":7,"method":"interaction/requestUserInput","request_id":"request-1","request":{"tool_name":"AskUserQuestion","tool_use_id":"tool-1","input":{"questions":[{"question":"Review"}]}}}`),
+		})
+		row, err := svc.Queries.GetAgentByID(ctx, "agent-1")
+		require.NoError(t, err)
+
+		_, forward, responseErr := processControlResponseForTest(svc, "agent-1", row,
+			[]byte(`{"response":{"request_id":"request-1","response":{"behavior":"deny","message":"Keep this feedback."}}}`), "claim-1")
+
+		require.NoError(t, responseErr)
+		require.True(t, forward, "the provider's decline still reaches the agent")
+		answer, err := svc.Queries.GetControlResponseAnswer(ctx, db.GetControlResponseAnswerParams{AgentID: "agent-1", RequestID: "request-1", ClaimToken: "claim-1"})
+		require.NoError(t, err)
+		assert.Equal(t, "Keep this feedback.", answer.FollowUp)
+		assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_CONTROL_FEEDBACK, answer.FollowUpKind)
+		assert.EqualValues(t, 6, answer.FollowUpKind, "the row stores the AgentInputKind ordinal")
+		assert.False(t, answer.NonBlocking, "the request was blocking")
+	})
+}
+
+func TestResumeControlResponseFinalizationQueuesTheQuestionAnswerOnce(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := setupTestService(t)
+	ctx := t.Context()
+	createClaimTestAgent(t, svc, "agent-1")
+	require.NoError(t, svc.Queries.UpdateAgentSessionID(ctx, db.UpdateAgentSessionIDParams{ID: "agent-1", AgentSessionID: "session-1"}))
+	_, err := svc.InputQueue.SetPaused(ctx, "agent-1", true)
+	require.NoError(t, err)
+	require.NoError(t, dbtest.StoreControlResponse(ctx, svc.DB, db.ControlResponseAnswer{
+		AgentID: "agent-1", RequestID: "question-1", ClaimToken: "claim-1", State: storedStateDelivered,
+		RequestPayload: asyncQuestionPayload("question-1"), ResponseContent: questionAnswerResponse("question-1", "Red"),
+		FollowUp: "Red", FollowUpKind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER,
+		InputID: "control-recovery", AgentSessionID: "session-1",
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, NonBlocking: true,
+	}))
+	answer, err := svc.Queries.GetControlResponseAnswer(ctx, db.GetControlResponseAnswerParams{AgentID: "agent-1", RequestID: "question-1", ClaimToken: "claim-1"})
+	require.NoError(t, err)
+	require.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER, answer.FollowUpKind)
+
+	require.NoError(t, svc.resumeControlResponseFinalization(answer))
+	queue, err := svc.InputQueue.Snapshot(ctx, "agent-1")
+	require.NoError(t, err)
+	require.Len(t, queue.Items, 1)
+	assert.Equal(t, "control-recovery", queue.Items[0].ID)
+	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER, queue.Items[0].Kind)
+	assert.Equal(t, "Red", queue.Items[0].Text)
+
+	require.NoError(t, svc.resumeControlResponseFinalization(answer))
+	again, err := svc.InputQueue.Snapshot(ctx, "agent-1")
+	require.NoError(t, err)
+	assert.Equal(t, queue.Items, again.Items, "the resumed finalization queues its input exactly once")
+}
+
+// recordingQuestionAgent records the two provider deliveries of an answer: the
+// steer into the running turn, and the ordinary session input of a new turn.
+type recordingQuestionAgent struct {
+	agenttest.IdleAgent
+	mu      sync.Mutex
+	steered []string
+	sent    []string
+}
+
+func (a *recordingQuestionAgent) SendInputForSession(_ string, content string, _ []*leapmuxv1.Attachment) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.sent = append(a.sent, content)
+	return nil
+}
+
+func (a *recordingQuestionAgent) SteerInput(content string, _ []*leapmuxv1.Attachment) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.steered = append(a.steered, content)
+	return nil
+}
+
+func (a *recordingQuestionAgent) SupportsSteering() bool { return true }
+
+func (a *recordingQuestionAgent) deliveries() (steered, sent []string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]string(nil), a.steered...), append([]string(nil), a.sent...)
+}
+
+// setupQuestionDeliveryTest creates an unpaused queue and a recording provider.
+func setupQuestionDeliveryTest(t *testing.T) (*Service, db.Agent, *recordingQuestionAgent) {
+	t.Helper()
+	const provider = leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX
+	plugin := &questionReplyTestPlugin{Provider: testRegistry.Plugin(provider)}
+	svc, _, _ := setupTestService(t, withRegistry(registryWithPlugin(t, provider, plugin)))
+	ctx := t.Context()
+	createClaimTestAgent(t, svc, "agent-1")
+	require.NoError(t, svc.Queries.UpdateAgentSessionID(ctx, db.UpdateAgentSessionIDParams{ID: "agent-1", AgentSessionID: "session-1"}))
+	stub := &recordingQuestionAgent{}
+	svc.Agents.PutAgentForTest("agent-1", stub)
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
+		AgentID: "agent-1", AgentSessionID: "session-1", RequestID: "question-1", ClaimToken: "claim-1",
+		Payload: asyncQuestionPayload("question-1"), NonBlocking: true,
+	})
+	row, err := svc.Queries.GetAgentByID(ctx, "agent-1")
+	require.NoError(t, err)
+	return svc, row, stub
+}
+
+func TestQuestionAnswerSteersIntoTheActiveTurn(t *testing.T) {
+	t.Parallel()
+	svc, row, stub := setupQuestionDeliveryTest(t)
+	ctx := t.Context()
+	liveMessages := make(chan *leapmuxv1.AgentChatMessage, 1)
+	writer := &turnAdmissionWatchingWriter{testResponseWriter: &testResponseWriter{channelID: "question-answer-source"}}
+	writer.onEvent = func(event *leapmuxv1.AgentEvent) {
+		if message := event.GetAgentMessage(); message != nil && message.Source == leapmuxv1.MessageSource_MESSAGE_SOURCE_USER {
+			liveMessages <- message
+		}
+	}
+	registerAgentWatch(svc, writer.channelID, row.ID, leapmuxv1.WatchMode_WATCH_MODE_FULL, writer)
+	_, err := svc.InputQueue.TurnStarted(ctx, "agent-1", true)
+	require.NoError(t, err)
+
+	_, forward, responseErr := processControlResponseForTest(svc, "agent-1", row, questionAnswerResponse("question-1", "Red"), "claim-1")
+
+	require.NoError(t, responseErr)
+	assert.False(t, forward)
+	messages := waitForMessageCount(t, svc, "agent-1", 1)
+	steered, sent := stub.deliveries()
+	assert.Equal(t, []string{questionReplyTestInput}, steered, "the steer carries the provider-built reply")
+	assert.Empty(t, sent)
+	queue, err := svc.InputQueue.Snapshot(ctx, "agent-1")
+	require.NoError(t, err)
+	assert.Empty(t, queue.Items, "the item leaves the queue as a steered input")
+	answer, err := svc.Queries.GetControlResponseAnswer(ctx, db.GetControlResponseAnswerParams{AgentID: "agent-1", RequestID: "question-1", ClaimToken: "claim-1"})
+	require.NoError(t, err)
+	assert.Equal(t, answer.InputID, messages[0].ID, "the steered input records the answer's row")
+	raw := decodeMessageContent(t, messages[0].Content, messages[0].ContentCompression)
+	assert.Equal(t, "Red", raw)
+	supplement, err := msgcodec.Decompress(messages[0].SupplementalContent, messages[0].SupplementalContentCompression)
+	require.NoError(t, err)
+	source, err := agent.DecodeMessageSupplement(nil, supplement)
+	require.NoError(t, err)
+	assert.JSONEq(t, string(asyncQuestionPayload("question-1")), string(source.Supplemental))
+	select {
+	case live := <-liveMessages:
+		assert.Equal(t, messages[0].Content, live.Content)
+		assert.Equal(t, messages[0].ContentCompression, live.ContentCompression)
+		assert.Equal(t, messages[0].SupplementalContent, live.SupplementalContent)
+		assert.Equal(t, messages[0].SupplementalContentCompression, live.SupplementalContentCompression)
+	case <-time.After(inputQueueWait):
+		t.Fatal("the accepted answer did not reach the watcher")
+	}
+}
+
+func TestQuestionAnswerDispatchesWhenNoTurnIsActive(t *testing.T) {
+	t.Parallel()
+	svc, row, stub := setupQuestionDeliveryTest(t)
+	ctx := t.Context()
+
+	_, forward, responseErr := processControlResponseForTest(svc, "agent-1", row, questionAnswerResponse("question-1", "Red"), "claim-1")
+
+	require.NoError(t, responseErr)
+	assert.False(t, forward)
+	require.Eventually(t, func() bool {
+		_, sent := stub.deliveries()
+		if len(sent) != 1 {
+			return false
+		}
+		queue, err := svc.InputQueue.Snapshot(ctx, "agent-1")
+		return err == nil && len(queue.Items) == 0
+	}, inputQueueWait, 10*time.Millisecond, "the queued answer starts the next turn")
+	steered, sent := stub.deliveries()
+	assert.Equal(t, []string{questionReplyTestInput}, sent, "the provider receives its own reply")
+	assert.Empty(t, steered, "no turn runs, so there is nothing to steer into")
+}
+
+func (a *recordingQuestionAgent) SteerInputForSession(_ string, content string, attachments []*leapmuxv1.Attachment) error {
+	return a.SteerInput(content, attachments)
+}
+
+func TestProcessControlResponseRejectsInvalidQueuedAnswerBeforeClaim(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name   string
+		answer string
+		want   error
+	}{
+		{name: "null character", answer: "red\x00blue", want: inputqueue.ErrInvalidInput},
+		{name: "oversized answer", answer: strings.Repeat("x", inputqueue.MaxItemBytes+1), want: inputqueue.ErrItemTooLarge},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			svc, _, _ := setupTestService(t)
+			row := createAsyncQuestionTestAgent(t, svc)
+			_, forwarded, err := processControlResponseForTest(svc, row.ID, row, questionAnswerResponse("question-1", test.answer), "claim-1")
+			require.ErrorIs(t, err, test.want)
+			assert.False(t, forwarded)
+			_, err = svc.Queries.GetControlResponseAnswer(t.Context(), db.GetControlResponseAnswerParams{AgentID: row.ID, RequestID: "question-1", ClaimToken: "claim-1"})
+			assert.ErrorIs(t, err, sql.ErrNoRows, "an invalid answer must not reserve the request")
+			_, _, err = processControlResponseForTest(svc, row.ID, row, questionAnswerResponse("question-1", "Red"), "claim-1")
+			require.NoError(t, err, "the user can correct the answer")
+			snapshot, err := svc.InputQueue.Snapshot(t.Context(), row.ID)
+			require.NoError(t, err)
+			require.Len(t, snapshot.Items, 1)
+			assert.Equal(t, "Red", snapshot.Items[0].Text)
+		})
+	}
+}
+
+func TestProcessControlResponseAcceptsTheMaximumQueuedAnswer(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := setupTestService(t)
+	row := createAsyncQuestionTestAgent(t, svc)
+	answer := strings.Repeat("x", inputqueue.MaxItemBytes)
+	_, _, err := processControlResponseForTest(svc, row.ID, row, questionAnswerResponse("question-1", answer), "claim-1")
+	require.NoError(t, err)
+	stored, err := svc.Queries.GetControlResponseAnswer(t.Context(), db.GetControlResponseAnswerParams{AgentID: row.ID, RequestID: "question-1", ClaimToken: "claim-1"})
+	require.NoError(t, err)
+	assert.Equal(t, storedStateCompleted, stored.State)
+	assert.Equal(t, answer, stored.FollowUp)
+}
+
+func TestQuestionAnswerRespectsAPausedActiveQueue(t *testing.T) {
+	t.Parallel()
+	for _, explicitSteer := range []bool{false, true} {
+		t.Run(fmt.Sprint(explicitSteer), func(t *testing.T) {
+			t.Parallel()
+			svc, row, stub := setupQuestionDeliveryTest(t)
+			_, err := svc.InputQueue.TurnStarted(t.Context(), row.ID, true)
+			require.NoError(t, err)
+			_, err = svc.InputQueue.SetPaused(t.Context(), row.ID, true)
+			require.NoError(t, err)
+
+			require.NoError(t, svc.processControlResponse(row, &leapmuxv1.SendControlResponseRequest{
+				AgentId: row.ID, Content: questionAnswerResponse("question-1", "Red"), ClaimToken: "claim-1",
+			}))
+
+			snapshot, err := svc.InputQueue.Snapshot(t.Context(), row.ID)
+			require.NoError(t, err)
+			require.True(t, snapshot.Paused)
+			require.Len(t, snapshot.Items, 1, "automatic delivery must respect the pause")
+			steered, sent := stub.deliveries()
+			assert.Empty(t, steered)
+			assert.Empty(t, sent)
+			if explicitSteer {
+				_, err = svc.InputQueue.Steer(t.Context(), row.ID, snapshot.Items[0].ID)
+			} else {
+				_, err = svc.InputQueue.SetPaused(t.Context(), row.ID, false)
+			}
+			require.NoError(t, err)
+			waitForMessageCount(t, svc, row.ID, 1)
+			steered, sent = stub.deliveries()
+			assert.Len(t, steered, 1)
+			assert.Empty(t, sent)
+		})
+	}
+}
+
+type heldQuestionSteerer struct {
+	recordingQuestionAgent
+	first   sync.Once
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (a *heldQuestionSteerer) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
+	a.first.Do(func() { close(a.entered); <-a.release })
+	return a.recordingQuestionAgent.SteerInput(content, attachments)
+}
+
+func (a *heldQuestionSteerer) SteerInputForSession(_ string, content string, attachments []*leapmuxv1.Attachment) error {
+	return a.SteerInput(content, attachments)
+}
+
+func TestConcurrentQuestionAnswersReachTheActiveTurnInOrder(t *testing.T) {
+	t.Parallel()
+	svc, row, _ := setupQuestionDeliveryTest(t)
+	stub := &heldQuestionSteerer{entered: make(chan struct{}), release: make(chan struct{})}
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(stub.release) }) }
+	defer release()
+	svc.Agents.PutAgentForTest(row.ID, stub)
+	_, err := svc.InputQueue.TurnStarted(t.Context(), row.ID, true)
+	require.NoError(t, err)
+	createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
+		AgentID: row.ID, AgentSessionID: row.AgentSessionID, RequestID: "question-2", ClaimToken: "claim-2",
+		Payload: asyncQuestionPayload("question-2"), NonBlocking: true,
+	})
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- svc.processControlResponse(row, &leapmuxv1.SendControlResponseRequest{
+			AgentId: row.ID, Content: questionAnswerResponse("question-1", "Red"), ClaimToken: "claim-1",
+		})
+	}()
+	select {
+	case <-stub.entered:
+	case <-time.After(inputQueueWait):
+		t.Fatal("the first answer did not reach steering")
+	}
+	require.NoError(t, svc.processControlResponse(row, &leapmuxv1.SendControlResponseRequest{
+		AgentId: row.ID, Content: questionAnswerResponse("question-2", "Blue"), ClaimToken: "claim-2",
+	}))
+	release()
+	require.NoError(t, <-firstDone)
+	messages := waitForMessageCount(t, svc, row.ID, 2)
+	steered, sent := stub.deliveries()
+	assert.Len(t, steered, 2, "both answers must reach the same active turn")
+	assert.Empty(t, sent)
+	for index, identity := range []struct{ request, claim string }{{"question-1", "claim-1"}, {"question-2", "claim-2"}} {
+		answer, err := svc.Queries.GetControlResponseAnswer(t.Context(), db.GetControlResponseAnswerParams{
+			AgentID: row.ID, RequestID: identity.request, ClaimToken: identity.claim,
+		})
+		require.NoError(t, err)
+		assert.Equal(t, answer.InputID, messages[index].ID, "the transcript must preserve answer order")
+	}
+}
+
+func TestQueuedQuestionAnswersContinueAfterTheFirstStartsATurn(t *testing.T) {
+	t.Parallel()
+	svc, row, stub := setupQuestionDeliveryTest(t)
+	_, err := svc.InputQueue.SetPaused(t.Context(), row.ID, true)
+	require.NoError(t, err)
+	createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
+		AgentID: row.ID, AgentSessionID: row.AgentSessionID, RequestID: "question-2", ClaimToken: "claim-2",
+		Payload: asyncQuestionPayload("question-2"), NonBlocking: true,
+	})
+	for _, reply := range []struct{ request, claim, text string }{{"question-1", "claim-1", "Red"}, {"question-2", "claim-2", "Blue"}} {
+		require.NoError(t, svc.processControlResponse(row, &leapmuxv1.SendControlResponseRequest{
+			AgentId: row.ID, Content: questionAnswerResponse(reply.request, reply.text), ClaimToken: reply.claim,
+		}))
+	}
+	_, err = svc.InputQueue.SetPaused(t.Context(), row.ID, false)
+	require.NoError(t, err)
+	messages := waitForMessageCount(t, svc, row.ID, 2)
+	steered, sent := stub.deliveries()
+	assert.Len(t, sent, 1, "the first answer starts the turn")
+	assert.Len(t, steered, 1, "the second answer enters that turn without a later event")
+	first, err := svc.Queries.GetControlResponseAnswer(t.Context(), db.GetControlResponseAnswerParams{
+		AgentID: row.ID, RequestID: "question-1", ClaimToken: "claim-1",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, first.InputID, messages[0].ID)
 }

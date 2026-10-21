@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 
@@ -136,6 +137,9 @@ type Provider interface {
 	// persisted alongside it (plus plan-mode metadata), but the service owns
 	// persistence, control-request deletion, option changes, and process I/O.
 	ResolveControlResponse(ctx ControlResponseContext) ControlResponseResolution
+	// QuestionReply turns the answer to a question that the provider published
+	// without waiting into the input that the provider reads. It is pure: no I/O.
+	QuestionReply(requestPayload json.RawMessage, answer string) (string, error)
 	// ControlResponseRequestID extracts the stored-control-request lookup id from a raw
 	// frontend control response, so the service can find the pending control_request row to
 	// answer. Both wire shapes it reads -- the neutral approve/reject envelope
@@ -281,6 +285,16 @@ type PlanExitModeDeferrer interface {
 }
 
 type ProviderDefaults struct{}
+
+// ErrQuestionReplyUnsupported reports that the provider publishes no question
+// that LeapMux owns.
+var ErrQuestionReplyUnsupported = errors.New("the provider publishes no question that LeapMux owns")
+
+// QuestionReply defaults to ErrQuestionReplyUnsupported: a provider that
+// publishes no LeapMux-owned question receives no answer to one.
+func (ProviderDefaults) QuestionReply(json.RawMessage, string) (string, error) {
+	return "", ErrQuestionReplyUnsupported
+}
 
 func (ProviderDefaults) ResolveProviderData(content MessageContent) []byte {
 	return content.Original

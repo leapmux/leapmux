@@ -79,6 +79,17 @@ describe('codexControlResponseSummary', () => {
     expect(codexControlResponseSummary(cr(APPROVAL_REQUEST, bare))).toBeNull()
   })
 
+  // A LeapMux-owned async question answers in the neutral envelope, and its
+  // own display (the quoted title with the answer, or the skip) wins over the
+  // decision paths below.
+  it('reads the async question summary first', () => {
+    const request = { request: { tool_name: 'CodexAsyncQuestion', input: { title: 'Which color should I use?' } } }
+    const allow = { type: 'control_response', response: { request_id: '7', response: { behavior: 'allow', answer: 'Red' } } }
+    expect(codexControlResponseSummary(cr(request, allow))).toEqual({ kind: 'label', text: 'Which color should I use?: Red' })
+    const deny = { type: 'control_response', response: { request_id: '7', response: { behavior: 'deny', message: 'Rejected by user.' } } }
+    expect(codexControlResponseSummary(cr(request, deny))).toEqual({ kind: 'label', text: 'Skipped: Which color should I use?' })
+  })
+
   describe('requestuserinput answers', () => {
     const request = {
       method: 'item/tool/requestUserInput',

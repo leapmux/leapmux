@@ -59,6 +59,7 @@ const OPERATION_LABELS = {
   [AgentInputKind.PLAN_EXECUTION]: 'Execute plan',
   [AgentInputKind.AUTO_CONTINUE]: 'Auto-continue',
   [AgentInputKind.CONTROL_FEEDBACK]: 'Control feedback',
+  [AgentInputKind.QUESTION_ANSWER]: 'Answer',
 } satisfies Record<AgentInputKind, string>
 
 /**

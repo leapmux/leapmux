@@ -16,7 +16,7 @@ import (
 
 // controlResponseQueueID keeps application effects idempotent across response retries.
 func controlResponseQueueID(agentID string, plan controlResponsePlan) string {
-	queuesInput := plan.resolution.Feedback != "" || plan.exitPlanClearingContext() || plan.isPlanPrompt() && (plan.behavior() == agent.ControlBehaviorAllow || plan.rejectionMessage() != "")
+	queuesInput := plan.resolution.FollowUp.Text != "" || plan.exitPlanClearingContext() || plan.isPlanPrompt() && (plan.behavior() == agent.ControlBehaviorAllow || plan.rejectionMessage() != "")
 	if !queuesInput {
 		return ""
 	}
@@ -26,6 +26,12 @@ func controlResponseQueueID(agentID string, plan controlResponsePlan) string {
 }
 
 func (svc *Service) executeControlResponse(agentID string, currentAgent db.Agent, plan controlResponsePlan) error {
+	// A skip of a question that LeapMux owns sends nothing, so the session does
+	// not matter: the user chose not to answer, and Codex keeps no pending
+	// question state.
+	if plan.resolution.LeapMuxOwned && plan.resolution.FollowUp == (agent.ControlFollowUp{}) && !plan.isPlanPrompt() {
+		return nil
+	}
 	// Keep session validation and every approval effect inside the lifecycle lock.
 	unlock := svc.Agents.LockAgent(agentID)
 	defer unlock()
@@ -52,6 +58,11 @@ func (svc *Service) executeControlResponse(agentID string, currentAgent db.Agent
 		provider := svc.Agents.Registry().Plugin(latest.AgentProvider)
 		mode := resolveTargetMode(plan.settings.GetPermissionMode(), provider.PlanModePermissionMode(agent.PlanModeControlExit))
 		return svc.enqueuePlanExecution(agentID, mode, controlResponseQueueID(agentID, plan))
+	}
+	// A question that LeapMux owns has no provider request waiting for an answer.
+	// Its follow-up input carries the answer at dispatch.
+	if plan.resolution.LeapMuxOwned {
+		return nil
 	}
 	// processControlResponse refuses a withheld resolution before it calls this
 	// function, so every plan that arrives here forwards its content.

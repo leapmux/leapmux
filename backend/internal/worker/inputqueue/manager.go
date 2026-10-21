@@ -158,14 +158,10 @@ func (m *Manager) ReconcileProviderTurn(ctx context.Context, agentID string, adm
 	c.mu.Unlock()
 	lease.Release()
 	m.drainPublications(c)
-	if err != nil || state.Active {
+	if err != nil {
 		return snapshot, err
 	}
-	if changed {
-		m.scheduleDrain(agentID)
-	} else {
-		m.drainIfReleased(agentID, snapshot)
-	}
+	m.drainIfReleased(agentID, snapshot)
 	return snapshot, nil
 }
 
@@ -243,19 +239,29 @@ func (m *Manager) mutateAndDrain(agentID string, mutate func() (Snapshot, bool, 
 }
 
 // drainIfReleased schedules an unpaused queue with a waiting item.
-// An active turn permits only a plan context replacement candidate. The store then verifies its recorded approval.
+// An active turn permits a recorded plan replacement or a steerable question answer.
 //
 // The caller must NOT hold the coordinator lock, because scheduleDrain takes
 // that same non-reentrant mutex.
 func (m *Manager) drainIfReleased(agentID string, snapshot Snapshot) {
+	if canDrainAutomatically(snapshot) {
+		m.scheduleDrain(agentID)
+	}
+}
+
+// canDrainAutomatically selects work that the store must validate again before delivery.
+func canDrainAutomatically(snapshot Snapshot) bool {
 	head := snapshot.HeadIndex()
 	if snapshot.Paused || head < 0 {
-		return
+		return false
 	}
-	if snapshot.ActiveTurn && !snapshot.Items[head].requiresContextReplacement() {
-		return
-	}
-	m.scheduleDrain(agentID)
+	return !snapshot.ActiveTurn || snapshot.Items[head].requiresContextReplacement() || canSteerAutomatically(snapshot)
+}
+
+func canSteerAutomatically(snapshot Snapshot) bool {
+	head := snapshot.HeadIndex()
+	return !snapshot.Paused && snapshot.ActiveTurn && head >= 0 &&
+		automaticSteeringKind(snapshot.Items[head].Kind) && snapshot.Items[head].CanSteer
 }
 
 // alwaysChanged adapts a store call whose every success moves the queue. The
@@ -550,11 +556,7 @@ func (m *Manager) TurnAbandoned(ctx context.Context, agentID string) (Snapshot, 
 }
 
 func (m *Manager) TurnStarted(ctx context.Context, agentID string, steerable bool) (Snapshot, error) {
-	if !m.beginActivity() {
-		return Snapshot{}, ErrManagerStopped
-	}
-	defer m.endActivity()
-	return m.mutateLocked(agentID, func() (Snapshot, bool, error) {
+	return m.mutateAndDrain(agentID, func() (Snapshot, bool, error) {
 		return m.store.TurnStarted(ctx, agentID, steerable)
 	})
 }
@@ -575,6 +577,9 @@ func (m *Manager) Retry(ctx context.Context, agentID, inputID string, confirmUnc
 	prepared, snapshot, err := m.store.PrepareRetry(ctx, agentID)
 	if err != nil || prepared == nil {
 		m.unlockAndPublish(c)
+		if err == nil {
+			m.drainIfReleased(agentID, snapshot)
+		}
 		return snapshot, err
 	}
 	m.enqueueSnapshotLocked(c, snapshot)
@@ -641,6 +646,15 @@ func (m *Manager) Steer(ctx context.Context, agentID, inputID string) (Snapshot,
 	m.unlockAndPublish(c)
 
 	result, err := m.dispatcher.Steer(prepared.Item)
+	return m.finishSteer(c, ctx, *prepared, result, err, echo, policy)
+}
+
+// finishSteer records the result for manual and automatic steering. echo and
+// policy are the in-flight steer's echo tracker and the provider policy that
+// Steer read, or nil and the zero value when the provider writes its row at
+// once.
+func (m *Manager) finishSteer(c *coordinator, ctx context.Context, prepared PreparedDispatch, result DispatchResult, err error, echo *pendingEchoSteer, policy agent.SteerPolicy) (Snapshot, error) {
+	agentID, inputID := prepared.Item.AgentID, prepared.Item.ID
 	c.mu.Lock()
 	if c.echoSteer == echo {
 		c.echoSteer = nil
@@ -664,17 +678,21 @@ func (m *Manager) Steer(ctx context.Context, agentID, inputID string) (Snapshot,
 		}
 		m.enqueueSnapshotLocked(c, snapshot)
 		m.unlockAndPublish(c)
-		m.drainIfReleased(agentID, snapshot)
+		if !snapshot.ActiveTurn {
+			m.drainIfReleased(agentID, snapshot)
+		}
 		return snapshot, ErrSteeringUnsupported
 	}
 	turnEnded := errors.Is(err, ErrTurnEnded)
 	if err != nil && !turnEnded {
-		snapshot, storeErr := m.recordDispatchFailure(c, ctx, *prepared, err)
+		snapshot, storeErr := m.recordDispatchFailure(c, ctx, prepared, err)
 		m.unlockAndPublish(c)
 		if storeErr != nil {
 			return snapshot, storeErr
 		}
-		m.drainIfReleased(agentID, snapshot)
+		if !snapshot.ActiveTurn {
+			m.drainIfReleased(agentID, snapshot)
+		}
 		return snapshot, nil
 	}
 	if !turnEnded && !policy.SurvivesTurnEnd {
@@ -693,15 +711,21 @@ func (m *Manager) Steer(ctx context.Context, agentID, inputID string) (Snapshot,
 		}
 		m.enqueueSnapshotLocked(c, snapshot)
 		m.unlockAndPublish(c)
-		m.drainIfReleased(agentID, snapshot)
+		if !snapshot.ActiveTurn {
+			m.drainIfReleased(agentID, snapshot)
+		}
 		return snapshot, nil
 	}
 	result.StartsTurn = true
 	result.Steering = true
-	if policy.RowAtEcho {
-		snapshot, err = m.holdForEcho(c, ctx, *prepared)
+	var snapshot Snapshot
+	// A control reply's row is LeapMux's own record, accepted at the steer:
+	// a provider may repeat a steered answer at its own echo long after the
+	// model call that holds it, and the answer's row must not wait for that.
+	if policy.RowAtEcho && !controlReplyKind(prepared.Item.Kind) {
+		snapshot, err = m.holdForEcho(c, ctx, prepared)
 	} else {
-		snapshot, _, err = m.acceptDispatch(c, ctx, *prepared, result)
+		snapshot, _, err = m.acceptDispatch(c, ctx, prepared, result)
 	}
 	if err != nil {
 		m.unlockAndPublish(c)
@@ -1079,7 +1103,10 @@ func (m *Manager) drain(agentID string, c *coordinator) {
 		// recorded before it is spent. Only one that arrives during the provider
 		// call carries news that this loop still misses.
 		c.drainAgain = false
-		prepared, snapshot, err := m.store.PrepareDispatch(context.Background(), agentID)
+		// The steer-row policy decides the reservation: a question answer that
+		// the active turn steers holds its row for the provider's echo, exactly
+		// as a manual steer does.
+		prepared, snapshot, err := m.store.PrepareDispatch(context.Background(), agentID, m.dispatcher.SteerPolicy(agentID).RowAtEcho)
 		if err != nil {
 			m.enqueueFailureLocked(c, "agent input queue prepare failed", "agent_id", agentID, "error", err)
 			c.draining = false
@@ -1094,12 +1121,45 @@ func (m *Manager) drain(agentID string, c *coordinator) {
 		m.enqueueSnapshotLocked(c, snapshot)
 		m.unlockAndPublish(c)
 
+		if prepared.Steering {
+			// Mirror Steer: the provider policy owns the row timing, and the
+			// echo tracker is what a later report resolves.
+			policy := m.dispatcher.SteerPolicy(agentID)
+			m.dispatcher.PrepareSteer(agentID)
+			c.mu.Lock()
+			c.steerPolicy = policy
+			var echo *pendingEchoSteer
+			if policy.RowAtEcho {
+				echo = &pendingEchoSteer{inputID: prepared.Item.ID}
+				c.echoSteer = echo
+			}
+			c.mu.Unlock()
+			var result DispatchResult
+			steerErr := ErrSteeringUnsupported
+			if m.dispatcher.SupportsSteering(agentID) {
+				result, steerErr = m.dispatcher.Steer(prepared.Item)
+			}
+			_, finishErr := m.finishSteer(c, context.Background(), *prepared, result, steerErr, echo, policy)
+			c.mu.Lock()
+			if finishErr != nil && !errors.Is(finishErr, ErrSteeringUnsupported) {
+				m.enqueueFailureLocked(c, "agent input queue steering persistence failed", "agent_id", agentID, "error", finishErr)
+			}
+			if m.stopRoundAndPublish(c) {
+				return
+			}
+			continue
+		}
+
 		result, dispatchErr := m.dispatcher.Dispatch(prepared.Item)
 
 		c.mu.Lock()
 		if dispatchErr != nil {
-			if _, storeErr := m.recordDispatchFailure(c, context.Background(), *prepared, dispatchErr); storeErr != nil {
+			snapshot, storeErr := m.recordDispatchFailure(c, context.Background(), *prepared, dispatchErr)
+			if storeErr != nil {
 				m.enqueueFailureLocked(c, "agent input queue failure persistence failed", "agent_id", agentID, "input_id", prepared.Item.ID, "error", storeErr)
+			} else if canSteerAutomatically(snapshot) {
+				// A busy ordinary dispatch can reveal a turn that accepts this answer.
+				c.drainAgain = true
 			}
 			if m.stopRoundAndPublish(c) {
 				return
@@ -1119,7 +1179,7 @@ func (m *Manager) drain(agentID string, c *coordinator) {
 		// scheduleDrain it fired found this loop still marked draining and did
 		// nothing -- so reading result.StartsTurn here left the queue holding
 		// the rest of its items with no turn to wait for.
-		if !persisted || snapshot.ActiveTurn {
+		if !persisted || !canDrainAutomatically(snapshot) {
 			if m.stopRoundAndPublish(c) {
 				return
 			}
@@ -1133,6 +1193,7 @@ func (m *Manager) acceptDispatch(c *coordinator, ctx context.Context, prepared P
 	transcript, snapshot, err := m.store.Accept(ctx, prepared, result)
 	if err == nil {
 		transcript.Content = slices.Clone(transcript.Content)
+		transcript.SupplementalContent = slices.Clone(transcript.SupplementalContent)
 		c.publications = append(c.publications, queuePublication{snapshot: cloneQueueSnapshot(snapshot),
 			accepted: []AcceptedTranscript{transcript}, afterAccept: result.AfterAccept})
 		return snapshot, true, nil

@@ -127,6 +127,15 @@ func TestManagerSteerPreparesTheProviderBeforeItReservesTheSequence(t *testing.T
 	t.Cleanup(manager.StopAndWait)
 	_, err := manager.TurnStarted(t.Context(), "agent-1", true)
 	require.NoError(t, err)
+	// TurnStarted schedules a drain (a turn that just became steerable can
+	// deliver a question answer), and that drain holds the coordinator lock
+	// across its store call. Let it finish before the steer runs.
+	drainCoordinator := manager.coordinator("agent-1")
+	require.Eventually(t, func() bool {
+		drainCoordinator.mu.Lock()
+		defer drainCoordinator.mu.Unlock()
+		return !drainCoordinator.draining
+	}, eventuallyWait, 10*time.Millisecond)
 	// Seed through the store so an unrelated drain cannot hold the lock during the assertion.
 	_, err = store.Enqueue(t.Context(), NewItem{ID: "steer", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "Change the answer"})
 	require.NoError(t, err)
@@ -1144,7 +1153,7 @@ func TestManagerRetryRefusesDuringAPlannedRestart(t *testing.T) {
 		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 	})
 	require.NoError(t, err)
-	prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
+	prepared, _, err := store.PrepareDispatch(ctx, "agent-1", false)
 	require.NoError(t, err)
 	require.NotNil(t, prepared)
 	_, err = store.FailDispatch(ctx, "agent-1", "one", assert.AnError, false)
@@ -1576,7 +1585,7 @@ func TestManagerObserversCanReadCommittedQueueStateDuringReentry(t *testing.T) {
 				require.NoError(t, err)
 			}
 			if operation == "retry" {
-				prepared, _, err := store.PrepareDispatch(ctx, "agent-1")
+				prepared, _, err := store.PrepareDispatch(ctx, "agent-1", false)
 				require.NoError(t, err)
 				require.NotNil(t, prepared)
 				_, err = store.FailDispatch(ctx, "agent-1", "one", assert.AnError, false)
@@ -1788,4 +1797,150 @@ func TestManagerMixedSteerOutcomesKeepTheirInputIdentity(t *testing.T) {
 	require.Len(t, f.observer.accepted, 1)
 	assert.Equal(t, "echo", f.observer.accepted[0].ID)
 	f.observer.mu.Unlock()
+}
+
+func TestAutomaticQuestionSteeringAfterABusyDispatch(t *testing.T) {
+	t.Parallel()
+	_, store := newStoreFixture(t)
+	dispatcher := &recordingDispatcher{steering: true, fail: &DeliveryError{
+		Err: errors.New("a turn already runs"), Outcome: DispatchBusy, ActiveTurnSteerable: true,
+	}}
+	observer := &recordingObserver{}
+	manager := NewManager(store, dispatcher, observer)
+	t.Cleanup(manager.StopAndWait)
+	_, err := manager.Enqueue(t.Context(), NewItem{ID: "answer", AgentID: "agent-1",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER, Text: "Red"})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		observer.mu.Lock()
+		defer observer.mu.Unlock()
+		return len(observer.accepted) == 1
+	}, eventuallyWait, 10*time.Millisecond)
+	assert.Equal(t, []string{"answer"}, dispatcher.dispatches())
+	dispatcher.mu.Lock()
+	assert.Equal(t, []string{"answer"}, dispatcher.steered)
+	dispatcher.mu.Unlock()
+}
+
+type queueTurnAdmission struct{ state agent.TurnState }
+type queueTurnLease struct{}
+
+func (queueTurnLease) Release()            {}
+func (queueTurnAdmission) IsCurrent() bool { return true }
+func (a queueTurnAdmission) Acquire() (agent.TurnState, agent.TurnStateLease) {
+	return a.state, queueTurnLease{}
+}
+
+func TestAutomaticQuestionSteeringAfterTheTurnBecomesSteerable(t *testing.T) {
+	t.Parallel()
+	for _, providerReport := range []bool{false, true} {
+		t.Run(fmt.Sprint(providerReport), func(t *testing.T) {
+			t.Parallel()
+			_, store := newStoreFixture(t)
+			_, _, err := store.TurnStarted(t.Context(), "agent-1", false)
+			require.NoError(t, err)
+			dispatcher := &recordingDispatcher{steering: true}
+			observer := &recordingObserver{}
+			manager := NewManager(store, dispatcher, observer)
+			t.Cleanup(manager.StopAndWait)
+			_, err = manager.Enqueue(t.Context(), NewItem{ID: "answer", AgentID: "agent-1",
+				Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER, Text: "Red"})
+			require.NoError(t, err)
+			coordinator := manager.coordinator("agent-1")
+			require.Eventually(t, func() bool {
+				coordinator.mu.Lock()
+				defer coordinator.mu.Unlock()
+				return !coordinator.draining
+			}, eventuallyWait, 10*time.Millisecond)
+			if providerReport {
+				_, err = manager.ReconcileProviderTurn(t.Context(), "agent-1", queueTurnAdmission{state: agent.TurnState{Active: true, Steerable: true}})
+			} else {
+				_, err = manager.TurnStarted(t.Context(), "agent-1", true)
+			}
+			require.NoError(t, err)
+			require.Eventually(t, func() bool {
+				observer.mu.Lock()
+				defer observer.mu.Unlock()
+				return len(observer.accepted) == 1
+			}, eventuallyWait, 10*time.Millisecond)
+			assert.Empty(t, dispatcher.dispatches())
+			dispatcher.mu.Lock()
+			assert.Equal(t, []string{"answer"}, dispatcher.steered)
+			dispatcher.mu.Unlock()
+		})
+	}
+}
+
+// A provider whose user steers land at the echo still accepts a question
+// answer's row at the steer: the row is LeapMux's own record, and no echo
+// report is awaited for it.
+func TestAutomaticQuestionSteeringAcceptsItsRowAtTheSteer(t *testing.T) {
+	t.Parallel()
+	_, store := newStoreFixture(t)
+	dispatcher := &recordingDispatcher{steering: true, policy: agent.SteerPolicy{RowAtEcho: true}}
+	observer := &recordingObserver{}
+	manager := NewManager(store, dispatcher, observer)
+	t.Cleanup(manager.StopAndWait)
+	_, _, err := store.TurnStarted(t.Context(), "agent-1", true)
+	require.NoError(t, err)
+	_, err = manager.Enqueue(t.Context(), NewItem{ID: "answer", AgentID: "agent-1",
+		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER, Text: "Red"})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		snapshot, snapshotErr := manager.Snapshot(t.Context(), "agent-1")
+		return snapshotErr == nil && len(snapshot.Items) == 0
+	}, eventuallyWait, 10*time.Millisecond)
+	dispatcher.mu.Lock()
+	assert.Equal(t, []string{"answer"}, dispatcher.steered)
+	dispatcher.mu.Unlock()
+	observer.mu.Lock()
+	defer observer.mu.Unlock()
+	require.Len(t, observer.accepted, 1)
+	assert.Equal(t, "answer", observer.accepted[0].ID)
+}
+
+func TestAutomaticQuestionSteeringDoesNotRepeatARefusedDelivery(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name   string
+		err    error
+		state  leapmuxv1.AgentInputState
+		paused bool
+	}{
+		{name: "unsupported", err: ErrSteeringUnsupported, state: leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED},
+		{name: "ended", err: ErrTurnEnded, state: leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED},
+		{name: "uncertain", err: &DeliveryError{Err: assert.AnError, Outcome: DispatchUncertain}, state: leapmuxv1.AgentInputState_AGENT_INPUT_STATE_DELIVERY_UNCERTAIN, paused: true},
+		{name: "failed", err: assert.AnError, state: leapmuxv1.AgentInputState_AGENT_INPUT_STATE_FAILED, paused: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			_, store := newStoreFixture(t)
+			_, _, err := store.TurnStarted(t.Context(), "agent-1", true)
+			require.NoError(t, err)
+			dispatcher := &recordingDispatcher{steering: true, steerFail: test.err}
+			observer := &recordingObserver{}
+			manager := NewManager(store, dispatcher, observer)
+			t.Cleanup(manager.StopAndWait)
+			_, err = manager.Enqueue(t.Context(), NewItem{ID: "answer", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_QUESTION_ANSWER, Text: "Red"})
+			require.NoError(t, err)
+			coordinator := manager.coordinator("agent-1")
+			require.Eventually(t, func() bool {
+				coordinator.mu.Lock()
+				defer coordinator.mu.Unlock()
+				return !coordinator.draining
+			}, eventuallyWait, 10*time.Millisecond)
+			snapshot, err := manager.Snapshot(t.Context(), "agent-1")
+			require.NoError(t, err)
+			require.Len(t, snapshot.Items, 1)
+			assert.Equal(t, test.state, snapshot.Items[0].State)
+			assert.Equal(t, test.paused, snapshot.Paused)
+			assert.Empty(t, dispatcher.dispatches())
+			dispatcher.mu.Lock()
+			assert.Equal(t, []string{"answer"}, dispatcher.steered)
+			dispatcher.mu.Unlock()
+			observer.mu.Lock()
+			assert.Empty(t, observer.accepted)
+			observer.mu.Unlock()
+		})
+	}
 }

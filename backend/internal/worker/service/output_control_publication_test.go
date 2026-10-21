@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"strings"
@@ -48,7 +49,7 @@ func (store failedControlMutationStore) QueryContext(ctx context.Context, query 
 }
 
 func TestControlPublicationFailureLogsReleaseTheMutationBeforeCallbacks(t *testing.T) {
-	for _, boundary := range []string{"publication state read", "cancellation state read", "cancellation delete", "full clear delete", "stop instance delete"} {
+	for _, boundary := range []string{"publication state read", "cancellation state read", "cancellation delete", "full clear delete", "blocking clear delete", "stop instance delete"} {
 		t.Run(boundary, func(t *testing.T) {
 			svc, _, _ := setupTestService(t)
 			const agentID = "control-failure-log-reentry"
@@ -74,7 +75,8 @@ func TestControlPublicationFailureLogsReleaseTheMutationBeforeCallbacks(t *testi
 					return svc.DB.QueryRowContext(ctx, query, arguments...)
 				},
 				query: func(ctx context.Context, query string, arguments ...any) (*sql.Rows, error) {
-					if boundary == "full clear delete" && strings.Contains(query, "-- name: DeleteControlRequestsByAgentID :many") {
+					if boundary == "full clear delete" && strings.Contains(query, "-- name: DeleteControlRequestsByAgentID :many") ||
+						boundary == "blocking clear delete" && strings.Contains(query, "-- name: DeleteBlockingControlRequestsByAgentID :many") {
 						return svc.DB.QueryContext(ctx, "SELECT missing_control_failure_column")
 					}
 					return svc.DB.QueryContext(ctx, query, arguments...)
@@ -116,6 +118,8 @@ func TestControlPublicationFailureLogsReleaseTheMutationBeforeCallbacks(t *testi
 			case "cancellation state read", "cancellation delete":
 				sink.CancelControlRequest("original")
 			case "full clear delete":
+				svc.Output.ClearAgentRuntimeState(agentID)
+			case "blocking clear delete":
 				svc.Output.ClearPendingControlRequests(agentID)
 			case "stop instance delete":
 				target, err := svc.Agents.CaptureStopTarget(agentID)
@@ -843,4 +847,358 @@ func TestWaitingCancellationRechecksTheNativePublisherAfterAdmission(t *testing.
 	<-done
 	require.True(t, admitted)
 	assert.Zero(t, cancellations.Load(), "the retired cancellation must not reach SQL after its mutex wait")
+}
+
+func TestNonBlockingControlPublicationLeavesAWorkingTurnRunning(t *testing.T) {
+	t.Parallel()
+	svc, _, sink, _ := stopOwnershipFixture(t)
+	require.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING,
+		svc.Output.AgentActivitySnapshot("agent-1", "agent-1").State)
+
+	require.NoError(t, sink.PublishControlRequest(agent.ControlRequest{
+		RequestID: "question", NonBlocking: true, Payload: []byte(`{"question":"Choose one"}`),
+	}))
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING,
+		svc.Output.AgentActivitySnapshot("agent-1", "agent-1").State,
+		"the agent does not wait for a question")
+
+	require.NoError(t, sink.PublishControlRequest(agent.ControlRequest{
+		RequestID: "approval", Payload: []byte(`{"id":7,"method":"approve"}`),
+	}))
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WAITING_FOR_USER,
+		svc.Output.AgentActivitySnapshot("agent-1", "agent-1").State,
+		"a blocking publish still holds the turn for its answer")
+}
+
+func TestDeliveredStopSuppressesOnlyBlockingPublications(t *testing.T) {
+	t.Parallel()
+	svc, _, sink, _ := stopOwnershipFixture(t)
+	writer := &controlPublicationWriter{mockResponseWriter: mockResponseWriter{channelID: "stop-suppression"}}
+	registerAgentWatch(svc, "stop-suppression", "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, writer)
+	target, err := svc.Agents.CaptureStopTarget("agent-1")
+	require.NoError(t, err)
+	svc.Output.NoteAgentStopRequested("agent-1", "agent-1").Delivered(target)
+	// The stop mark broadcasts from its own goroutine. A drain that starts
+	// while that goroutine drains returns at once and leaves the goroutine to
+	// deliver the queued events, so join it before reading the writer.
+	svc.Output.WaitActivityRefreshes()
+
+	require.NoError(t, sink.PublishControlRequest(agent.ControlRequest{
+		RequestID: "question", NonBlocking: true, Payload: []byte(`{"question":"Choose one"}`),
+	}))
+	_, err = svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "question"})
+	require.NoError(t, err, "a stop does not withdraw a question")
+	requests := writer.snapshot()
+	require.Len(t, requests, 1)
+	assert.Equal(t, "question", requests[0].RequestId)
+
+	require.NoError(t, sink.PublishControlRequest(agent.ControlRequest{
+		RequestID: "approval", Payload: []byte(`{"id":7,"method":"approve"}`),
+	}))
+	_, err = svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "approval"})
+	assert.ErrorIs(t, err, sql.ErrNoRows, "the stopped scope no longer waits for a blocking request")
+	assert.Len(t, writer.snapshot(), 1, "the suppressed request is not broadcast")
+}
+
+func TestDeliveredStopWithdrawsOnlyTheBlockingControl(t *testing.T) {
+	t.Parallel()
+	svc, _, sink, _ := stopOwnershipFixture(t)
+	writer := &controlPublicationWriter{mockResponseWriter: mockResponseWriter{channelID: "stop-withdrawal"}}
+	registerAgentWatch(svc, "stop-withdrawal", "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, writer)
+	require.NoError(t, sink.PublishControlRequest(agent.ControlRequest{
+		RequestID: "question", NonBlocking: true, Payload: []byte(`{"question":"Choose one"}`),
+	}))
+	publishStopControl(t, sink, "approval")
+	target, err := svc.Agents.CaptureStopTarget("agent-1")
+	require.NoError(t, err)
+	svc.Output.NoteAgentStopRequested("agent-1", "agent-1").Delivered(target)
+	// See TestDeliveredStopSuppressesOnlyBlockingPublications: the stop mark's
+	// goroutine can deliver the cancellation after Delivered returns.
+	svc.Output.WaitActivityRefreshes()
+
+	_, err = svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "question"})
+	require.NoError(t, err, "an interrupt keeps the questions of its turn")
+	_, err = svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "approval"})
+	assert.ErrorIs(t, err, sql.ErrNoRows, "the interrupt withdraws the request the turn was blocked on")
+	cancellations := writer.cancellationSnapshot()
+	require.Len(t, cancellations, 1)
+	assert.Equal(t, "approval", cancellations[0].RequestId)
+}
+
+func TestNonBlockingControlPublicationKeepsOneClaimAcrossScopes(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := setupTestService(t)
+	createClaimTestAgent(t, svc, "agent-1")
+	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	sink.SetTurnState(agent.TurnState{Active: true}, 1)
+	question := agent.ControlRequest{RequestID: "question", NonBlocking: true, Payload: []byte(`{"question":"Choose one"}`)}
+	require.NoError(t, sink.PublishControlRequest(question))
+	first, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "question"})
+	require.NoError(t, err)
+	sink.SetTurnState(agent.TurnState{}, 2)
+	sink.SetTurnState(agent.TurnState{Active: true}, 3)
+	require.NoError(t, sink.PublishControlRequest(question))
+	second, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "question"})
+	require.NoError(t, err)
+	assert.Equal(t, first.ClaimToken, second.ClaimToken,
+		"a question outlives its scope, so its claim reuse reads the stored row alone")
+
+	// The same scope change gives a blocking request a new instance, which is
+	// what proves the change above really happened.
+	approval := agent.ControlRequest{RequestID: "approval", Payload: []byte(`{"id":7,"method":"approve"}`)}
+	require.NoError(t, sink.PublishControlRequest(approval))
+	blockingFirst, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "approval"})
+	require.NoError(t, err)
+	sink.SetTurnState(agent.TurnState{}, 4)
+	sink.SetTurnState(agent.TurnState{Active: true}, 5)
+	require.NoError(t, sink.PublishControlRequest(approval))
+	blockingSecond, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "approval"})
+	require.NoError(t, err)
+	assert.NotEqual(t, blockingFirst.ClaimToken, blockingSecond.ClaimToken,
+		"a blocking request starts a new instance in the new scope")
+}
+
+func TestProcessExitKeepsTheNonBlockingControl(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := setupTestService(t)
+	createClaimTestAgent(t, svc, "agent-1")
+	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	writer := &controlPublicationWriter{mockResponseWriter: mockResponseWriter{channelID: "process-exit"}}
+	registerAgentWatch(svc, "process-exit", "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, writer)
+	require.NoError(t, sink.PublishControlRequest(agent.ControlRequest{
+		RequestID: "question", NonBlocking: true, Payload: []byte(`{"question":"Choose one"}`),
+	}))
+	publishStopControl(t, sink, "approval")
+
+	svc.Output.ClearPendingControlRequests("agent-1")
+
+	_, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "question"})
+	require.NoError(t, err, "a question belongs to the conversation, not to the process")
+	_, err = svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "approval"})
+	assert.ErrorIs(t, err, sql.ErrNoRows, "an exit drops the requests of the process that went away")
+	cancellations := writer.cancellationSnapshot()
+	require.Len(t, cancellations, 1)
+	assert.Equal(t, "approval", cancellations[0].RequestId)
+}
+
+func TestAgentTeardownDeletesEveryControlRequest(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := setupTestService(t)
+	createClaimTestAgent(t, svc, "agent-1")
+	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	writer := &controlPublicationWriter{mockResponseWriter: mockResponseWriter{channelID: "teardown"}}
+	registerAgentWatch(svc, "teardown", "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, writer)
+	require.NoError(t, sink.PublishControlRequest(agent.ControlRequest{
+		RequestID: "question", NonBlocking: true, Payload: []byte(`{"question":"Choose one"}`),
+	}))
+	publishStopControl(t, sink, "approval")
+
+	svc.Output.ClearAgentRuntimeState("agent-1")
+
+	_, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "question"})
+	assert.ErrorIs(t, err, sql.ErrNoRows, "the teardown leaves the Codex thread that asked")
+	_, err = svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "approval"})
+	assert.ErrorIs(t, err, sql.ErrNoRows)
+	var canceled []string
+	for _, cancellation := range writer.cancellationSnapshot() {
+		canceled = append(canceled, cancellation.RequestId)
+	}
+	assert.ElementsMatch(t, []string{"question", "approval"}, canceled,
+		"every deleted row withdraws its card")
+}
+
+func TestSessionChangeRetiresOnlyTheOtherSessionsQuestions(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := setupTestService(t)
+	createClaimTestAgent(t, svc, "agent-1")
+	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	writer := &controlPublicationWriter{mockResponseWriter: mockResponseWriter{channelID: "session-change"}}
+	registerAgentWatch(svc, "session-change", "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, writer)
+	sink.UpdateSessionID("session-a")
+	require.NoError(t, sink.PublishControlRequest(agent.ControlRequest{
+		RequestID: "question-a", AgentSessionID: "session-a", NonBlocking: true, Payload: []byte(`{"question":"A"}`),
+	}))
+	createTestControlRequest(t, t.Context(), svc.Queries, db.StoreControlRequestParams{
+		AgentID: "agent-1", RequestID: "question-b", AgentSessionID: "session-b",
+		ClaimToken: "question-b-claim", NonBlocking: true, Payload: []byte(`{"question":"B"}`),
+	})
+	publishStopControl(t, sink, "approval-a")
+	stored, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "approval-a"})
+	require.NoError(t, err)
+	require.Equal(t, "session-a", stored.AgentSessionID)
+
+	sink.UpdateSessionID("session-b")
+
+	_, err = svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "question-a"})
+	assert.ErrorIs(t, err, sql.ErrNoRows, "the question of the replaced session cannot be answered")
+	_, err = svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "question-b"})
+	require.NoError(t, err, "the questions of the new session stay")
+	_, err = svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "approval-a"})
+	require.NoError(t, err, "a session change retires no blocking request")
+	cancellations := writer.cancellationSnapshot()
+	require.Len(t, cancellations, 1)
+	assert.Equal(t, "question-a", cancellations[0].RequestId)
+}
+
+func TestSessionChangeKeepsTheBlockingPromptInMemory(t *testing.T) {
+	t.Parallel()
+	svc, _, sink, _ := stopOwnershipFixture(t)
+	writer := &controlPublicationWriter{mockResponseWriter: mockResponseWriter{channelID: "session-change-blocking"}}
+	registerAgentWatch(svc, "session-change-blocking", "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, writer)
+	sink.UpdateSessionID("session-a")
+	require.NoError(t, sink.PublishControlRequest(agent.ControlRequest{
+		RequestID: "question", AgentSessionID: "session-a", NonBlocking: true, Payload: []byte(`{"question":"Choose one"}`),
+	}))
+	publishStopControl(t, sink, "approval")
+	require.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WAITING_FOR_USER,
+		svc.Output.AgentActivitySnapshot("agent-1", "agent-1").State)
+
+	sink.UpdateSessionID("session-b")
+
+	_, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "question"})
+	assert.ErrorIs(t, err, sql.ErrNoRows, "the question of the replaced session cannot be answered")
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WAITING_FOR_USER,
+		svc.Output.AgentActivitySnapshot("agent-1", "agent-1").State,
+		"the running agent still waits for the approval that the session change kept")
+
+	target, err := svc.Agents.CaptureStopTarget("agent-1")
+	require.NoError(t, err)
+	svc.Output.NoteAgentStopRequested("agent-1", "agent-1").Delivered(target)
+	// See TestDeliveredStopSuppressesOnlyBlockingPublications: the stop mark's
+	// goroutine can deliver the cancellation after Delivered returns.
+	svc.Output.WaitActivityRefreshes()
+
+	_, err = svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "approval"})
+	assert.ErrorIs(t, err, sql.ErrNoRows, "the interrupt still withdraws the request that the turn was blocked on")
+	var canceled []string
+	for _, cancellation := range writer.cancellationSnapshot() {
+		canceled = append(canceled, cancellation.RequestId)
+	}
+	assert.Equal(t, []string{"question", "approval"}, canceled,
+		"the session change withdraws the question, and the interrupt withdraws the approval once")
+}
+
+// A retirement whose delete fails cancels no row, so only the clear-all step
+// can change the live prompts. An exit ends the process that owned them. A
+// session change leaves the agent running and still blocked on its approval.
+func TestControlRequestRetirementWithAFailedDelete(t *testing.T) {
+	t.Parallel()
+	for _, retirement := range []struct {
+		name   string
+		query  string
+		retire func(*OutputHandler)
+		want   leapmuxv1.AgentActivityState
+	}{
+		{
+			name:   "process exit",
+			query:  "-- name: DeleteBlockingControlRequestsByAgentID :many",
+			retire: func(h *OutputHandler) { h.ClearPendingControlRequests("agent-1") },
+			want:   leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING,
+		},
+		{
+			name:   "session change",
+			query:  "-- name: DeleteNonBlockingControlRequestsOutsideSession :many",
+			retire: func(h *OutputHandler) { h.RetireNonBlockingControlRequestsOutsideSession("agent-1", "session-b") },
+			want:   leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WAITING_FOR_USER,
+		},
+	} {
+		t.Run(retirement.name, func(t *testing.T) {
+			t.Parallel()
+			svc, _, sink, _ := stopOwnershipFixture(t)
+			publishStopControl(t, sink, "approval")
+			require.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WAITING_FOR_USER,
+				svc.Output.AgentActivitySnapshot("agent-1", "agent-1").State)
+			// Join the refreshes that the fixture started, because they read the
+			// queries that the next line replaces.
+			svc.Output.WaitActivityRefreshes()
+			svc.Output.queries = db.New(failedControlMutationStore{DBTX: svc.DB,
+				queryRow: svc.DB.QueryRowContext,
+				query: func(ctx context.Context, query string, arguments ...any) (*sql.Rows, error) {
+					if strings.Contains(query, retirement.query) {
+						return svc.DB.QueryContext(ctx, "SELECT missing_control_failure_column")
+					}
+					return svc.DB.QueryContext(ctx, query, arguments...)
+				},
+			})
+
+			retirement.retire(svc.Output)
+
+			_, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "approval"})
+			require.NoError(t, err, "the failed delete keeps the row")
+			assert.Equal(t, retirement.want, svc.Output.AgentActivitySnapshot("agent-1", "agent-1").State)
+		})
+	}
+}
+
+func TestClearAgentSessionIDRetiresTheClearedSessionsQuestions(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := setupTestService(t)
+	createClaimTestAgent(t, svc, "agent-1")
+	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	writer := &controlPublicationWriter{mockResponseWriter: mockResponseWriter{channelID: "cleared-session"}}
+	registerAgentWatch(svc, "cleared-session", "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, writer)
+	sink.UpdateSessionID("session-a")
+	require.NoError(t, sink.PublishControlRequest(agent.ControlRequest{
+		RequestID: "question", AgentSessionID: "session-a", NonBlocking: true, Payload: []byte(`{"question":"Choose one"}`),
+	}))
+
+	svc.clearAgentSessionID("agent-1")
+
+	_, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "question"})
+	assert.ErrorIs(t, err, sql.ErrNoRows, "the next start opens a new thread, so the old question dies with the session")
+	cancellations := writer.cancellationSnapshot()
+	require.Len(t, cancellations, 1)
+	assert.Equal(t, "question", cancellations[0].RequestId)
+}
+
+func TestNonBlockingPublicationRejectsAnObsoleteSession(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := setupTestService(t)
+	createClaimTestAgent(t, svc, "agent-1")
+	sink := svc.Output.NewSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
+	sink.UpdateSessionID("current-session")
+	require.NoError(t, sink.PublishControlRequest(agent.ControlRequest{
+		RequestID: "obsolete-question", AgentSessionID: "previous-session", NonBlocking: true,
+		Payload: []byte(`{"question":"Which color?"}`),
+	}))
+	_, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "obsolete-question"})
+	assert.ErrorIs(t, err, sql.ErrNoRows, "a delayed publication must not restore an obsolete question")
+}
+
+func TestCompletedAsyncQuestionIsNotRepublished(t *testing.T) {
+	t.Parallel()
+	for _, skip := range []bool{false, true} {
+		for _, replaceSink := range []bool{false, true} {
+			t.Run(fmt.Sprintf("skip=%t/replace=%t", skip, replaceSink), func(t *testing.T) {
+				t.Parallel()
+				svc, _, _ := setupTestService(t)
+				row := createAsyncQuestionTestAgent(t, svc)
+				sink := svc.Output.NewSink(row.ID, row.AgentProvider)
+				request := agent.ControlRequest{RequestID: "question-1", InstanceID: "claim-1",
+					AgentSessionID: "session-1", NonBlocking: true, Payload: asyncQuestionPayload("question-1")}
+				require.NoError(t, sink.PublishControlRequest(request))
+				response := questionAnswerResponse(request.RequestID, "Red")
+				if skip {
+					response = questionSkipResponse(request.RequestID)
+				}
+				_, _, err := processControlResponseForTest(svc, row.ID, row, response, request.InstanceID)
+				require.NoError(t, err)
+				if replaceSink {
+					sink = svc.Output.NewSink(row.ID, row.AgentProvider)
+				}
+
+				require.NoError(t, sink.PublishControlRequest(request))
+
+				_, err = svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: row.ID, RequestID: request.RequestID})
+				assert.ErrorIs(t, err, sql.ErrNoRows, "a completed question must not return to the pending table")
+				snapshot, err := svc.InputQueue.Snapshot(t.Context(), row.ID)
+				require.NoError(t, err)
+				if skip {
+					assert.Empty(t, snapshot.Items)
+				} else {
+					assert.Len(t, snapshot.Items, 1)
+				}
+			})
+		}
+	}
 }

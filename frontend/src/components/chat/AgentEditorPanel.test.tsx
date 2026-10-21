@@ -103,6 +103,9 @@ function renderPanel(options: RenderPanelOptions = {}) {
     isWorktree: true,
     originUrl: 'https://github.com/o/r.git',
   })
+  // The app wires the questions state from the control store, so the harness
+  // wires the same pair: a store-backed flag and its setter.
+  const panelControlStore = options.controlStore
   return render(() => (
     <PreferencesProvider>
       <AgentEditorPanel
@@ -115,7 +118,13 @@ function renderPanel(options: RenderPanelOptions = {}) {
         repoGitStore={repoGitStore}
         gitTab={gitTab}
         onSendMessage={options.onSendMessage ?? (() => {})}
-        {...(options.controlStore !== undefined ? { controlRequests: options.controlStore.getRequests('a1') } : {})}
+        {...(panelControlStore !== undefined
+          ? {
+              controlRequests: panelControlStore.getRequests('a1'),
+              questionsOpen: panelControlStore.questionsOpen('a1'),
+              onQuestionsOpenChange: (open: boolean) => panelControlStore.setQuestionsOpen('a1', open),
+            }
+          : {})}
         {...(options.onControlResponse !== undefined ? { onControlResponse: options.onControlResponse } : {})}
         {...(options.onSettingChange !== undefined ? { onSettingChange: options.onSettingChange } : {})}
         {...(options.onInterrupt !== undefined ? { onInterrupt: options.onInterrupt } : {})}
@@ -802,6 +811,97 @@ describe('AgentEditorPanel', () => {
 // What the keyboard layer asks the panel before it claims $mod+Enter. Getting
 // this wrong loses messages, so each case pins one input that must count as
 // "something to submit".
+// A non-blocking question waits for the reader instead of taking the composer
+// over. One banner line says it waits; the normal composer stays usable; the
+// reader opens the question from the banner and closes it again with "Answer
+// later".
+describe('agent editor panel pending questions', () => {
+  it('rejects a file selection after a blocking request takes the composer', async () => {
+    const controlStore = createControlStore()
+    renderPanel({ controlStore })
+    const input = screen.getByTestId('file-input')
+    expect(input).not.toBeDisabled()
+    const read = vi.spyOn(FileReader.prototype, 'readAsArrayBuffer').mockImplementation(() => undefined)
+    try {
+      addControlRequest(controlStore, { requestId: 'late-request', payload: questionRequestPayload() })
+      await fireEvent.change(input, { target: { files: [new File(['late'], 'late.txt', { type: 'text/plain' })] } })
+      expect(read).not.toHaveBeenCalled()
+      expect(input).toBeDisabled()
+      expect(getAttachments('a1')).toEqual([])
+    }
+    finally {
+      read.mockRestore()
+    }
+  })
+
+  it('accepts a file selection while a non-blocking question stays closed', async () => {
+    vi.useRealTimers()
+    const controlStore = createControlStore()
+    addControlRequest(controlStore, { requestId: 'waiting-question', payload: questionRequestPayload(), nonBlocking: true })
+    renderPanel({ controlStore })
+    const input = screen.getByTestId('file-input')
+    expect(input).not.toBeDisabled()
+    await fireEvent.change(input, { target: { files: [new File(['late'], 'late.txt', { type: 'text/plain' })] } })
+    await waitFor(() => expect(getAttachments('a1')).toHaveLength(1))
+    expect(getAttachments('a1')[0]?.filename).toBe('late.txt')
+  })
+
+  it('shows the banner and the normal composer while a non-blocking question stays closed', async () => {
+    const controlStore = createControlStore()
+    addControlRequest(controlStore, {
+      requestId: 'q1',
+      claimToken: 'tok-q1',
+      payload: questionRequestPayload(),
+      nonBlocking: true,
+    })
+    renderPanel({ controlStore })
+
+    expect(screen.getByTestId('pending-questions-banner')).toHaveTextContent('The agent asked a question.')
+    expect(screen.getByTestId('send-button')).toBeInTheDocument()
+    expect(screen.queryByTestId('control-banner')).not.toBeInTheDocument()
+
+    // The one attachment predicate answers through the plus menu: a closed
+    // question keeps the composer free, so it accepts files.
+    await fireEvent.click(screen.getByTestId('composer-plus-trigger'))
+    expect(screen.getByTestId('composer-attach-file')).not.toBeDisabled()
+  })
+
+  it('opens the question from the banner and closes it again with Answer later', async () => {
+    const controlStore = createControlStore()
+    addControlRequest(controlStore, {
+      requestId: 'q1',
+      claimToken: 'tok-q1',
+      payload: questionRequestPayload(),
+      nonBlocking: true,
+    })
+    renderPanel({ controlStore, onControlResponse: async () => {} })
+
+    fireEvent.click(screen.getByTestId('pending-questions-answer'))
+
+    await waitFor(() => expect(screen.getByTestId('control-banner')).toBeInTheDocument())
+    expect(screen.getByTestId('control-answer-later')).toBeInTheDocument()
+    expect(screen.queryByTestId('pending-questions-banner')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId('control-answer-later'))
+
+    await waitFor(() => expect(screen.getByTestId('pending-questions-banner')).toBeInTheDocument())
+    expect(screen.queryByTestId('control-banner')).not.toBeInTheDocument()
+  })
+
+  it('shows no Answer later button for a blocking request', async () => {
+    const controlStore = createControlStore()
+    addControlRequest(controlStore, {
+      requestId: 'b1',
+      claimToken: 'tok-b1',
+      payload: questionRequestPayload(),
+    })
+    renderPanel({ controlStore })
+
+    await waitFor(() => expect(screen.getByTestId('control-banner')).toBeInTheDocument())
+    expect(screen.queryByTestId('control-answer-later')).not.toBeInTheDocument()
+  })
+})
+
 describe('agent editor panel composer emptiness', () => {
   /**
    * The handle the panel registered. Read through `getActiveChatPanel`, which

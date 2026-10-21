@@ -639,13 +639,30 @@ func classifyCodexCompactionRequestError(err error) error {
 // provider that stops satisfying InputSteerer, so this assertion makes that
 // regression a compile error.
 var _ agent.InputSteerer = (*Agent)(nil)
+var _ agent.SessionInputSteerer = (*Agent)(nil)
 
 // SupportsSteering always reports true. The Codex app-server accepts turn/steer
 // for any active turn, so the capability needs no handshake discovery.
 func (a *Agent) SupportsSteering() bool { return true }
 
 func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) error {
+	return a.steerInput(nil, content, attachments, true)
+}
+
+// SteerInputForSession delivers the answer to a LeapMux-owned question. The
+// queue owns that answer's row and accepts it at the steer, so this delivery
+// joins no steer ledger: the native echo that later repeats the answer is not
+// news the queue waits for.
+func (a *Agent) SteerInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
+	return a.steerInput(&sessionID, content, attachments, false)
+}
+
+func (a *Agent) steerInput(expected *string, content string, attachments []*leapmuxv1.Attachment, trackEcho bool) error {
 	a.Mu.Lock()
+	if err := providerkit.CheckInputSession(expected, a.threadID); err != nil {
+		a.Mu.Unlock()
+		return err
+	}
 	threadID, turnID := a.threadID, a.mainTurn.id
 	if a.StoppedLocked() {
 		a.Mu.Unlock()
@@ -664,7 +681,7 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 	a.mainTurn.steers++
 	a.Mu.Unlock()
 	input := buildCodexInputBlocks(content, agent.ClassifyAttachments(attachments))
-	ticket, err := a.sendTurnSteer(threadID, turnID, input)
+	ticket, err := a.sendTurnSteer(threadID, turnID, input, trackEcho)
 	a.outputMu.Lock()
 	defer a.outputMu.Unlock()
 	a.retryOfferMu.Lock()
