@@ -463,7 +463,7 @@ func TestApproveAutoReviewDenial_RefusesADamagedRecord(t *testing.T) {
 	require.NoError(t, err)
 	damaged, err := supplement.WithMetadataMember(contracts.MessageMetadataFieldAutoReviewApprovals, json.RawMessage(`"review-1"`))
 	require.NoError(t, err)
-	compressed, compression := compressOptionalSupplement(damaged)
+	compressed, compression := msgcodec.Compress(damaged)
 	_, err = svc.Queries.EnrichMessageContent(t.Context(), db.EnrichMessageContentParams{
 		ID: row.ID, AgentID: "agent-1",
 		OriginalContent: row.Content, OriginalCompression: row.ContentCompression,

@@ -2,6 +2,7 @@ import type { ParsedMessageContent } from '~/lib/messageParser'
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it } from 'vitest'
 import { AgentChatMessageSchema, ContentCompression, MessageCompletion, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
+import { uint8ArrayToBase64 } from '~/lib/base64'
 import { prettifyJson } from '~/lib/jsonFormat'
 import { parseMessageContent } from '~/lib/messageParser'
 import { buildRawJsonEnvelope } from './chatRawJson'
@@ -161,6 +162,47 @@ describe('buildRawJsonEnvelope', () => {
     })
     const out = JSON.parse(buildRawJsonEnvelope(message, parseMessageContent(message), 'agent'))
     expect(out.supplemental_content).toBeNull()
+  })
+
+  // The supplement is an object or null, never a bare string: the field is
+  // present with null even when the message carries no supplement at all.
+  it('writes supplemental_content null when the message carries none', () => {
+    const message = create(AgentChatMessageSchema, {
+      content: new TextEncoder().encode('{}'),
+      contentCompression: ContentCompression.NONE,
+    })
+    const output = buildRawJsonEnvelope(message, parseMessageContent(message), 'agent')
+    expect(output).toContain('"supplemental_content":null')
+    expect(JSON.parse(output).supplemental_content).toBeNull()
+  })
+
+  it('writes null for a supplement that decodes to empty text', () => {
+    // The zstd empty frame an older worker stored for "no supplement".
+    const message = create(AgentChatMessageSchema, {
+      content: new TextEncoder().encode('{}'),
+      contentCompression: ContentCompression.NONE,
+      supplementalContent: new Uint8Array([0x28, 0xB5, 0x2F, 0xFD, 0x20, 0x00, 0x01, 0x00, 0x00]),
+      supplementalContentCompression: ContentCompression.ZSTD,
+    })
+    const output = buildRawJsonEnvelope(message, parseMessageContent(message), 'agent')
+    expect(output).toContain('"supplemental_content":null')
+    expect(JSON.parse(output).supplemental_content).toBeNull()
+  })
+
+  it('shows a supplement that is not a JSON object as its bytes, never a bare string', () => {
+    for (const raw of ['not json at all', '[1,2]', '"quoted"']) {
+      const message = create(AgentChatMessageSchema, {
+        content: new TextEncoder().encode('{}'),
+        contentCompression: ContentCompression.NONE,
+        supplementalContent: new TextEncoder().encode(raw),
+        supplementalContentCompression: ContentCompression.NONE,
+      })
+      const output = JSON.parse(buildRawJsonEnvelope(message, parseMessageContent(message), 'agent'))
+      expect(output.supplemental_content).toEqual({
+        compression: ContentCompression.NONE,
+        base64: uint8ArrayToBase64(new TextEncoder().encode(raw)),
+      })
+    }
   })
 
   it('builds the envelope with the core fields and parsed content', () => {

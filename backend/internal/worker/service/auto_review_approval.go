@@ -207,7 +207,7 @@ func (h *OutputHandler) recordAutoReviewApproval(agentID, messageID, reviewID st
 	if err != nil {
 		return err
 	}
-	compressed, compression := compressOptionalSupplement(next)
+	compressed, compression := msgcodec.Compress(next)
 	updated, err := h.queries.EnrichMessageContent(ctx, db.EnrichMessageContentParams{
 		ID: row.ID, AgentID: agentID,
 		OriginalContent: row.Content, OriginalCompression: row.ContentCompression,

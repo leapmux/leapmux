@@ -371,8 +371,8 @@ func (h *OutputHandler) storePreparedNotification(queries *db.Queries, agentID s
 	if err != nil {
 		return notificationWrite{}, err
 	}
-	supplementalCompressed, supplementalCompression := compressOptionalSupplement(supplement)
-	renderingCompressed, renderingCompression := compressOptionalSupplement(rendering)
+	supplementalCompressed, supplementalCompression := msgcodec.Compress(supplement)
+	renderingCompressed, renderingCompression := msgcodec.Compress(rendering)
 	wrapper := *prepared.wrapper
 	wrapper.OldSeqs = slices.Clone(prepared.wrapper.OldSeqs)
 	merged, err := json.Marshal(wrapper)
@@ -464,11 +464,4 @@ func (h *OutputHandler) storePreparedNotification(queries *db.Queries, agentID s
 	message.Seq, message.PreviousSeq = seq, parent.Seq
 	reference.seq = seq
 	return notificationWrite{reference: reference, message: message}, nil
-}
-
-func compressOptionalSupplement(supplement []byte) ([]byte, leapmuxv1.ContentCompression) {
-	if len(supplement) == 0 {
-		return nil, leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE
-	}
-	return msgcodec.Compress(supplement)
 }

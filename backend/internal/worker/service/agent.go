@@ -4470,7 +4470,7 @@ func messageToProto(m *db.Message) (*leapmuxv1.AgentChatMessage, error) {
 		if err != nil {
 			return nil, fmt.Errorf("project the stored supplement of message %q: %w", m.ID, err)
 		}
-		rendering, compression = compressOptionalSupplement(rendering)
+		rendering, compression = msgcodec.Compress(rendering)
 	}
 	return &leapmuxv1.AgentChatMessage{
 		TranscriptOnly:                 m.TranscriptOnly,

@@ -1,6 +1,7 @@
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { uint8ArrayToBase64 } from '~/lib/base64'
+import { isObject } from '~/lib/jsonPick'
 import { messageCompletionFromProto } from './assembledMessage'
 
 function jsonInt64(value: bigint): number | string {
@@ -65,12 +66,28 @@ export function buildRawJsonEnvelope(
     ? JSON.stringify({ compression: message.contentCompression, base64: uint8ArrayToBase64(message.content) })
     : rawJsonValue(parsed.rawText)
   fields.push(`"content":${content}`)
-  if (message.supplementalContent?.length) {
-    const supplemental = parsed.supplementalRawText !== undefined
-      ? rawJsonValue(parsed.supplementalRawText)
-      : JSON.stringify({ compression: message.supplementalContentCompression, base64: uint8ArrayToBase64(message.supplementalContent) })
-    fields.push(`"supplemental_content":${supplemental}`)
+  // The supplement is LeapMux's envelope, so it is an object, or null when
+  // there is none -- never a bare string. A supplement that decodes to empty
+  // text (the empty frame an older worker stored for "none"), or to null, is
+  // no supplemental content, and a stored value that is not a JSON object
+  // shows as its bytes in the base64 envelope instead.
+  let supplemental: string | null = null
+  if (message.supplementalContent?.length && parsed.supplementalRawText !== '') {
+    let value: unknown
+    if (parsed.supplementalRawText !== undefined) {
+      try {
+        value = JSON.parse(parsed.supplementalRawText)
+      }
+      catch {
+        // A damaged supplement shows as its bytes below.
+      }
+    }
+    if (isObject(value) && parsed.supplementalRawText !== undefined)
+      supplemental = parsed.supplementalRawText
+    else if (value !== null)
+      supplemental = JSON.stringify({ compression: message.supplementalContentCompression, base64: uint8ArrayToBase64(message.supplementalContent) })
   }
+  fields.push(`"supplemental_content":${supplemental ?? 'null'}`)
   return `{${fields.join(',')}}`
 }
 
